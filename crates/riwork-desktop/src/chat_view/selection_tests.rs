@@ -174,6 +174,248 @@ fn library_copy_adapter_preserves_selected_code_indentation(cx: &mut TestAppCont
 }
 
 #[gpui::test]
+fn selected_answer_reply_preserves_draft_attachments_and_never_sends(cx: &mut TestAppContext) {
+    use crate::chat::attachments::{Attachment, AttachmentKind, Preview};
+    let (handle, view, recording) = editor_tests::mount_selection(cx);
+    cx.simulate_window_resize(handle.into(), gpui::size(px(320.), px(800.)));
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |view, cx| {
+            view.composer
+                .update(cx, |state, cx| state.set_value("Existing note", window, cx));
+            view.attachments
+                .push(attachment_ui::Chip::ready(Attachment {
+                    id: "kept-file".into(),
+                    name: "note.txt".into(),
+                    path: "/private/fixture/note.txt".into(),
+                    kind: AttachmentKind::Text,
+                    bytes: 4,
+                    fingerprint: "fixture".into(),
+                    preview: Preview::Text {
+                        excerpt: "note".into(),
+                    },
+                }));
+        });
+        install(
+            &view,
+            vec![message(
+                "answer:stable",
+                "Choose **café 🦀**.\n\n```rust\n  let x = 1;\n```",
+            )],
+            window,
+            cx,
+        );
+        let focused = window.focused(cx);
+        select_glyph_span(&view, window, "answer:stable/0", "code:answer:stable/1", cx);
+        assert_eq!(copied(window, cx), "Choose café 🦀.\n  let x = 1;");
+        window.render_frame(cx);
+        assert_eq!(
+            window.focused(cx),
+            focused,
+            "Showing feedback must not move focus"
+        );
+        for id in [
+            "chat-selection-feedback",
+            "chat-selection-reply",
+            "chat-selection-feedback-hint",
+        ] {
+            let bounds = window.find(id).bounds();
+            assert!(
+                bounds.left() >= px(0.) && bounds.right() <= px(320.),
+                "{id} overflows: {bounds:?}"
+            );
+        }
+        assert_eq!(
+            window.find("chat-selection-reply").label(),
+            Some("Reply to selection")
+        );
+        window.click("chat-selection-reply", cx);
+        window.render_frame(cx);
+        let draft = view.read(cx).composer_text(cx);
+        assert_eq!(draft, "Existing note");
+        let references = view.read(cx).references.contents();
+        assert_eq!(references.len(), 1);
+        assert_eq!(references[0].origin.item(), "answer:stable");
+        assert_eq!(references[0].quote, "Choose café 🦀.\n  let x = 1;");
+        assert!(
+            window
+                .try_find(format!("reference-comment:{}", references[0].id))
+                .is_some()
+        );
+        assert_eq!(view.read(cx).attachments.len(), 1);
+        assert!(
+            !view
+                .read(cx)
+                .composer
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window)
+        );
+        assert!(
+            view.read(cx)
+                .transcript_selection
+                .selected_text(cx)
+                .is_empty()
+        );
+    })
+    .unwrap();
+    assert!(recording.try_recv().is_err());
+}
+
+#[gpui::test]
+fn selected_diff_comment_carries_exact_old_new_ranges_and_original_edit(cx: &mut TestAppContext) {
+    use crate::chat::model::{ChangeKind, FileChange, TurnOutcome};
+    let (handle, view, recording) = editor_tests::mount_selection(cx);
+    let patch = "--- a/src/main.rs\n+++ b/src/main.rs\n@@ -10,2 +10,3 @@\n old\n-removed\n+added 🦀\n+extra";
+    cx.update_window(handle.into(), |_, window, cx| {
+        let edit = Item {
+            id: "edit:stable".into(),
+            turn_id: Some("turn".into()),
+            status: ItemStatus::Completed,
+            presentation: Presentation::default(),
+            body: ItemBody::FileChange {
+                changes: vec![FileChange {
+                    path: "src/main.rs".into(),
+                    kind: ChangeKind::Modify,
+                    diff: Some(patch.into()),
+                }],
+            },
+        };
+        let mut answer = message("answer", "Done");
+        answer.turn_id = Some("turn".into());
+        view.update(cx, |view, cx| {
+            view.model.completed = vec![("turn".into(), TurnOutcome::Completed, 2)];
+            view.open.insert("answer-file:answer:0".into());
+            view.composer.update(cx, |state, cx| {
+                state.set_value("Please check this", window, cx)
+            });
+        });
+        install(&view, vec![edit, answer], window, cx);
+        select_glyph_span(
+            &view,
+            window,
+            "diff:answer-file:answer:0:4",
+            "diff:answer-file:answer:0:6",
+            cx,
+        );
+        window.render_frame(cx);
+        assert_eq!(
+            window.find("chat-selection-reply").label(),
+            Some("Comment on selected lines")
+        );
+        window.click("comment-diff:answer-file:answer:0", cx);
+        let draft = view.read(cx).composer_text(cx);
+        assert_eq!(draft, "Please check this");
+        let references = view.read(cx).references.contents();
+        assert_eq!(references[0].origin.item(), "edit:stable");
+        let draft = crate::chat_drafts::references::provider_text(&draft, &references);
+        assert!(
+            draft.starts_with("Please check this\n\nReview comment on \"src/main.rs\""),
+            "draft: {draft:?}"
+        );
+        assert!(!draft.contains("edit:stable"));
+        assert!(draft.contains("Old lines 11; new lines 11–12."));
+        assert!(draft.contains("> -removed\n> +added 🦀\n> +extra"));
+        assert_eq!(references[0].comment, "");
+    })
+    .unwrap();
+    assert!(recording.try_recv().is_err());
+}
+
+#[gpui::test]
+fn cancelling_a_selection_reply_press_keeps_the_draft_untouched(cx: &mut TestAppContext) {
+    let (handle, view, recording) = editor_tests::mount_selection(cx);
+    cx.update_window(handle.into(), |_, window, cx| {
+        install(
+            &view,
+            vec![message("answer", "Consider this passage")],
+            window,
+            cx,
+        );
+        select_glyph_span(&view, window, "answer/0", "answer/0", cx);
+        let position = window.find("chat-selection-reply").bounds().center();
+        window.dispatch_event(
+            MouseDownEvent {
+                button: MouseButton::Left,
+                position,
+                modifiers: Default::default(),
+                click_count: 1,
+                first_mouse: false,
+            }
+            .to_platform_input(),
+            cx,
+        );
+        window.render_frame(cx);
+        assert!(view.read(cx).feedback_pending.is_some());
+        assert!(view.read(cx).composer_text(cx).is_empty());
+        window.dispatch_event(
+            MouseUpEvent {
+                button: MouseButton::Left,
+                position: point(px(1.), px(1.)),
+                modifiers: Default::default(),
+                click_count: 1,
+            }
+            .to_platform_input(),
+            cx,
+        );
+        window.render_frame(cx);
+        assert!(view.read(cx).feedback_pending.is_none());
+        assert!(view.read(cx).composer_text(cx).is_empty());
+    })
+    .unwrap();
+    assert!(recording.try_recv().is_err());
+}
+
+#[gpui::test]
+fn feedback_rejects_changed_sources_cross_message_and_oversized_selections(
+    cx: &mut TestAppContext,
+) {
+    let (handle, view, recording) = editor_tests::mount_selection(cx);
+    cx.update_window(handle.into(), |_, window, cx| {
+        install(
+            &view,
+            vec![message("first", "old café"), message("second", "other")],
+            window,
+            cx,
+        );
+        select_glyph_span(&view, window, "first/0", "second/0", cx);
+        assert!(view.read(cx).current_selection_feedback(cx).is_none());
+        select_glyph_span(&view, window, "first/0", "first/0", cx);
+        assert!(
+            view.read(cx)
+                .transcript_selection
+                .selected_fragments(cx, 4)
+                .is_err()
+        );
+        let target = view.read(cx).current_selection_feedback(cx).unwrap();
+        view.update(cx, |view, cx| {
+            view.feedback_pending = Some(target.clone());
+            let chat = view.chat_id.replace("other-chat".into());
+            view.refresh_selection_document(widgets::Look::of(cx), cx);
+            assert!(view.feedback_pending.is_none());
+            assert!(!view.stage_feedback(&target, window, cx));
+            view.chat_id = chat;
+            view.feedback_pending = Some(target.clone());
+            view.model.transcript.items[0].body = ItemBody::AgentMessage {
+                text: "new café".into(),
+            };
+            view.sync_list(
+                &Applied {
+                    touched: [0].into_iter().collect(),
+                    ..Default::default()
+                },
+                cx,
+            );
+            view.refresh_selection_document(widgets::Look::of(cx), cx);
+            assert!(view.feedback_pending.is_none());
+            assert!(!view.stage_feedback(&target, window, cx));
+            assert!(view.composer_text(cx).is_empty());
+        });
+    })
+    .unwrap();
+    assert!(recording.try_recv().is_err());
+}
+
+#[gpui::test]
 #[ignore = "slow: ~150 wheel/drag frames in a headless window (about 4 s)"]
 fn virtualized_partial_selection_exports_unmounted_endpoints_and_middle_both_directions(
     cx: &mut TestAppContext,

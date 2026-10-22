@@ -1,16 +1,19 @@
-//! `chat-drafts/<chat id>`: the unsent text of each chat's message box, under the RiWork
+//! `chat-drafts/<chat id>`: each chat's unsent draft and unresolved submissions, under the RiWork
 //! data directory, so a draft outlives its tab being closed and the app restarting.
 //! Switching tabs needs none of this: a hidden chat tab keeps its view and with it the
 //! message box.
 //!
-//! A chat's file is replaced as its draft changes and removed once the draft is empty
-//! (sent, or cleared by hand). Only a canonical UUID becomes a file name. Bounded like the
-//! phone's drafts (`ios/Core/ChatDrafts.swift`): the newest 64 chats, 30 days since the last
-//! change, 256 KB each; what is over the bounds is dropped when the drafts are loaded.
+//! A chat's file is replaced as its draft changes and removed once its draft and saved
+//! submissions are empty. Only a canonical UUID becomes a file name. Keep the newest 64
+//! chats for 30 days, with 256 KiB of text per draft/submission and eight saved submissions.
+//! Plain-text records from older builds remain readable.
 //!
-//! The text alone is kept: attachments are staged files that a restart does not keep.
+//! Ready attachments already belong to the host until chat deletion. Save their identities,
+//! not source paths. Pending dispatches are separate recovery records, never unsent drafts.
+use crate::chat::attachments::{self, Attachment, Preview, SEND_COUNT};
 use gpui::{App, Global};
-#[cfg(test)]
+use serde::{Deserialize, Serialize};
+use std::os::unix::fs::OpenOptionsExt;
 use std::sync::mpsc;
 use std::{
     collections::{HashMap, HashSet},
@@ -27,10 +30,114 @@ pub const DIR_NAME: &str = "chat-drafts";
 pub const MAX_DRAFTS: usize = 64;
 pub const MAX_AGE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 pub const MAX_BYTES: usize = 256 * 1024;
+pub const MAX_SUBMISSIONS: usize = 8;
+const MAX_RECORD_BYTES: usize = (MAX_BYTES + 64 * 1024) * (MAX_SUBMISSIONS + 1);
+const RECORD_PREFIX: &str = "RIWORK_DRAFT_V1\n";
+
+pub(crate) mod references;
+pub(crate) use references::DraftReference;
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct Contents {
+    pub text: String,
+    pub attachments: Vec<Attachment>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub references: Vec<DraftReference>,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum SubmissionStatus {
+    Pending,
+    Submitted,
+    Refused(String),
+    Uncertain(String),
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct SavedSubmission {
+    pub key: String,
+    pub snapshot: Contents,
+    pub status: SubmissionStatus,
+}
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct Record {
+    pub draft: Contents,
+    pub submissions: Vec<SavedSubmission>,
+    #[serde(default)]
+    pub unready_attachments: usize,
+}
+impl Record {
+    fn empty(&self) -> bool {
+        self.draft.text.is_empty()
+            && self.draft.attachments.is_empty()
+            && self.draft.references.is_empty()
+            && self.submissions.is_empty()
+            && self.unready_attachments == 0
+    }
+    fn encode(&self) -> Result<String, String> {
+        if self.empty() {
+            return Ok(String::new());
+        }
+        if self.draft.text.len() > MAX_BYTES {
+            let mut saved = self.clone();
+            saved.draft.text.clear();
+            return saved.encode();
+        }
+        if self.draft.attachments.is_empty()
+            && self.draft.references.is_empty()
+            && self.submissions.is_empty()
+            && self.unready_attachments == 0
+            && !self.draft.text.starts_with(RECORD_PREFIX)
+        {
+            return Ok(self.draft.text.clone());
+        }
+        let encoded = serde_json::to_string(self)
+            .map(|json| format!("{RECORD_PREFIX}{json}"))
+            .map_err(|error| error.to_string())?;
+        if encoded.len() > MAX_RECORD_BYTES {
+            return Err("The saved submissions exceed the recovery storage limit; dismiss an older submission first".into());
+        }
+        Ok(encoded)
+    }
+    fn decode(text: String) -> Option<Self> {
+        let record = if let Some(json) = text.strip_prefix(RECORD_PREFIX) {
+            serde_json::from_str::<Self>(json).ok()?
+        } else {
+            Self {
+                draft: Contents {
+                    text,
+                    attachments: Vec::new(),
+                    references: Vec::new(),
+                },
+                submissions: Vec::new(),
+                unready_attachments: 0,
+            }
+        };
+        let valid = |draft: &Contents| {
+            draft.text.len() <= MAX_BYTES
+                && draft.attachments.len() <= SEND_COUNT
+                && references::valid(&draft.references)
+        };
+        if !valid(&record.draft) || record.submissions.len() > MAX_SUBMISSIONS {
+            return None;
+        }
+        let mut keys = HashSet::new();
+        for saved in &record.submissions {
+            if !valid(&saved.snapshot) || !is_chat_id(&saved.key) || !keys.insert(&saved.key) {
+                return None;
+            }
+        }
+        Some(record)
+    }
+}
+
+/// Local editor identity plus monotonic edit generation. Equal text is not proof
+/// that an acknowledgment still owns a draft another window edited meanwhile.
+pub(crate) type Owner = (u64, u64);
 
 /// The drafts of one RiWork data directory, with writes queued off the UI thread.
 pub struct Drafts {
-    texts: HashMap<String, String>,
+    records: HashMap<String, Record>,
+    owners: HashMap<String, Owner>,
+    home: PathBuf,
     /// Chats deleted in this run: a late write for one must not bring its draft back.
     deleted: HashSet<String>,
     queue: Arc<Queue>,
@@ -49,6 +156,7 @@ struct Queue {
 struct Waiting {
     texts: HashMap<String, String>,
     closed: bool,
+    acknowledgments: Vec<mpsc::Sender<Result<(), String>>>,
     #[cfg(test)]
     flushes: Vec<mpsc::Sender<()>>,
 }
@@ -69,17 +177,18 @@ impl Drafts {
         for entry in fs::read_dir(&dir).into_iter().flatten().flatten() {
             let path = entry.path();
             let name = entry.file_name().to_string_lossy().into_owned();
-            let Some(metadata) = entry.metadata().ok().filter(|m| m.is_file()) else {
+            let Some(metadata) = fs::symlink_metadata(&path).ok().filter(|m| m.is_file()) else {
                 continue;
             };
             let changed = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
             let fresh = now.duration_since(changed).unwrap_or_default() <= MAX_AGE;
-            let text = (is_chat_id(&name) && fresh && metadata.len() <= MAX_BYTES as u64)
+            let record = (is_chat_id(&name) && fresh && metadata.len() <= MAX_RECORD_BYTES as u64)
                 .then(|| read_text(&path))
                 .flatten()
-                .filter(|text| !text.is_empty());
-            match text {
-                Some(text) => found.push((changed, name, text)),
+                .and_then(Record::decode)
+                .filter(|record| !record.empty());
+            match record {
+                Some(record) => found.push((changed, name, record)),
                 // A leftover temporary file, a stale draft or one that is not text.
                 None => {
                     let _ = fs::remove_file(&path);
@@ -90,8 +199,14 @@ impl Drafts {
         for (_, name, _) in found.drain(MAX_DRAFTS.min(found.len())..) {
             let _ = fs::remove_file(dir.join(name));
         }
-        let texts: HashMap<_, _> = found.into_iter().map(|(_, id, text)| (id, text)).collect();
-        let persisted = texts.clone();
+        let records: HashMap<_, _> = found
+            .into_iter()
+            .map(|(_, id, record)| (id, record))
+            .collect();
+        let persisted = records
+            .iter()
+            .filter_map(|(id, record)| record.encode().ok().map(|encoded| (id.clone(), encoded)))
+            .collect();
         let queue = Arc::new(Queue::default());
         let thread = {
             let queue = queue.clone();
@@ -101,7 +216,9 @@ impl Drafts {
                 .expect("start the chat draft writer")
         };
         Self {
-            texts,
+            records,
+            owners: HashMap::new(),
+            home: home.to_owned(),
             deleted: HashSet::new(),
             queue,
             thread: Some(thread),
@@ -109,26 +226,79 @@ impl Drafts {
     }
 
     pub fn get(&self, chat_id: &str) -> Option<&str> {
-        self.texts.get(chat_id).map(String::as_str)
+        self.records
+            .get(chat_id)
+            .map(|record| record.draft.text.as_str())
+            .filter(|text| !text.is_empty())
     }
 
     /// Keep `text` as the draft of `chat_id` and queue it for the writer. An id that
     /// is not a UUID, or a draft over the size bound, is kept for this run only: an older
     /// copy on disk is removed rather than come back after a restart.
     pub fn set(&mut self, chat_id: &str, text: &str) -> Result<(), String> {
+        self.set_draft(
+            chat_id,
+            Contents {
+                text: text.into(),
+                attachments: Vec::new(),
+                references: Vec::new(),
+            },
+            None,
+        )
+    }
+
+    pub(crate) fn set_draft(
+        &mut self,
+        chat_id: &str,
+        draft: Contents,
+        owner: Option<Owner>,
+    ) -> Result<(), String> {
+        self.set_draft_with_unready(chat_id, draft, owner, 0)
+    }
+
+    fn set_draft_with_unready(
+        &mut self,
+        chat_id: &str,
+        draft: Contents,
+        owner: Option<Owner>,
+        unready: usize,
+    ) -> Result<(), String> {
         if self.deleted.contains(chat_id) {
             return Ok(());
         }
-        if text.is_empty() {
-            self.texts.remove(chat_id);
-        } else {
-            self.texts.insert(chat_id.to_owned(), text.to_owned());
+        if !references::valid(&draft.references) {
+            return Err("The draft's source references exceed the recovery limits".into());
+        }
+        let record = self.records.entry(chat_id.into()).or_default();
+        record.draft = draft;
+        record.unready_attachments = unready.min(SEND_COUNT);
+        if let Some(owner) = owner {
+            self.owners.insert(chat_id.into(), owner);
+        }
+        self.enqueue(chat_id)
+    }
+
+    fn enqueue(&mut self, chat_id: &str) -> Result<(), String> {
+        self.enqueue_with_barrier(chat_id, None)
+    }
+
+    fn enqueue_with_barrier(
+        &mut self,
+        chat_id: &str,
+        acknowledgment: Option<mpsc::Sender<Result<(), String>>>,
+    ) -> Result<(), String> {
+        let record = self.records.get(chat_id).cloned().unwrap_or_default();
+        if record.empty() {
+            self.records.remove(chat_id);
         }
         let mut waiting = self.queue.lock();
         if waiting.closed {
             return Err("The chat draft writer has stopped".to_owned());
         }
-        waiting.texts.insert(chat_id.to_owned(), text.to_owned());
+        waiting.texts.insert(chat_id.to_owned(), record.encode()?);
+        if let Some(acknowledgment) = acknowledgment {
+            waiting.acknowledgments.push(acknowledgment);
+        }
         drop(waiting);
         self.queue.wake.notify_one();
         Ok(())
@@ -137,7 +307,13 @@ impl Drafts {
     /// `sent` went out: the draft goes, unless it is no longer what was sent (another
     /// window of the chat has saved newer text since).
     pub fn clear_sent(&mut self, chat_id: &str, sent: &str) -> Result<(), String> {
-        if self.texts.get(chat_id).is_some_and(|kept| kept != sent) {
+        if self.records.get(chat_id).is_some_and(|record| {
+            !record.draft.references.is_empty() || !record.draft.attachments.is_empty()
+        }) {
+            // A legacy text-only receipt cannot acknowledge a later rich draft.
+            return Ok(());
+        }
+        if self.get(chat_id).is_some_and(|kept| kept != sent) {
             return Ok(());
         }
         self.set(chat_id, "")
@@ -145,9 +321,137 @@ impl Drafts {
 
     /// The chat is gone: its draft goes, and stays gone for the rest of the run.
     pub fn forget(&mut self, chat_id: &str) -> Result<(), String> {
-        let result = self.set(chat_id, "");
+        self.records.remove(chat_id);
+        self.owners.remove(chat_id);
+        let result = self.enqueue(chat_id);
         self.deleted.insert(chat_id.to_owned());
         result
+    }
+
+    pub(crate) fn begin_submission(
+        &mut self,
+        chat_id: &str,
+        owner: Owner,
+        saved: SavedSubmission,
+    ) -> Result<mpsc::Receiver<Result<(), String>>, String> {
+        if !is_chat_id(chat_id) {
+            return Err("This chat has no valid recovery identity".into());
+        }
+        if self.deleted.contains(chat_id) {
+            return Err("This chat was deleted".into());
+        }
+        let before = self.records.get(chat_id).cloned();
+        let record = self.records.entry(chat_id.into()).or_default();
+        if record.submissions.len() >= MAX_SUBMISSIONS {
+            return Err("Dismiss an older saved submission before sending another message".into());
+        }
+        if saved.snapshot.text.len() > MAX_BYTES {
+            return Err("The draft exceeds the 256 KiB recovery limit".into());
+        }
+        if !references::valid(&saved.snapshot.references) {
+            return Err("The source references exceed the recovery limits".into());
+        }
+        if self.owners.get(chat_id) == Some(&owner)
+            || (self.owners.get(chat_id).is_none() && record.draft == saved.snapshot)
+        {
+            record.draft = Contents::default();
+        }
+        record.submissions.push(saved);
+        // Queue the record and its barrier atomically, so this acknowledgment
+        // always observes the write attempt that admitted this submission.
+        let (sender, receiver) = mpsc::channel();
+        if let Err(error) = self.enqueue_with_barrier(chat_id, Some(sender)) {
+            match before {
+                Some(record) => {
+                    self.records.insert(chat_id.into(), record);
+                }
+                None => {
+                    self.records.remove(chat_id);
+                }
+            }
+            return Err(error);
+        }
+        // A provider must not see the command before its recovery snapshot is durable.
+        Ok(receiver)
+    }
+
+    fn pending_submission(&self, chat_id: &str, key: &str) -> bool {
+        !self.deleted.contains(chat_id)
+            && self.records.get(chat_id).is_some_and(|record| {
+                record
+                    .submissions
+                    .iter()
+                    .any(|saved| saved.key == key && saved.status == SubmissionStatus::Pending)
+            })
+    }
+
+    /// Explicit app reloads wait for the queued drafts before starting the replacement.
+    /// This bounded wait is deliberately separate from the asynchronous send barrier.
+    fn flush_pending(&self, timeout: Duration) -> Result<(), String> {
+        let (sender, receiver) = mpsc::channel();
+        let mut waiting = self.queue.lock();
+        if waiting.closed {
+            return Err("The chat draft writer has stopped".into());
+        }
+        waiting.acknowledgments.push(sender);
+        drop(waiting);
+        self.queue.wake.notify_one();
+        receiver
+            .recv_timeout(timeout)
+            .map_err(|_| "Timed out saving chat drafts; reload was cancelled".to_owned())?
+    }
+
+    pub(crate) fn settle_submission(
+        &mut self,
+        chat_id: &str,
+        key: &str,
+        status: SubmissionStatus,
+    ) -> Result<(), String> {
+        if self.deleted.contains(chat_id) {
+            return Ok(());
+        }
+        let Some(record) = self.records.get_mut(chat_id) else {
+            return Ok(());
+        };
+        if status == SubmissionStatus::Submitted {
+            record.submissions.retain(|saved| saved.key != key);
+        } else if let Some(saved) = record.submissions.iter_mut().find(|saved| saved.key == key) {
+            if matches!(saved.status, SubmissionStatus::Pending) {
+                saved.status = status;
+            }
+        }
+        self.enqueue(chat_id)
+    }
+
+    pub(crate) fn dismiss_submission(&mut self, chat_id: &str, key: &str) -> Result<(), String> {
+        if let Some(record) = self.records.get_mut(chat_id) {
+            record.submissions.retain(|saved| saved.key != key);
+        }
+        self.enqueue(chat_id)
+    }
+
+    pub(crate) fn recover(&self, chat_id: &str) -> Option<(Record, Vec<String>)> {
+        let mut record = self.records.get(chat_id)?.clone();
+        let mut warnings = Vec::new();
+        if record.unready_attachments > 0 {
+            warnings.push(format!(
+                "{} attachments had not finished staging. Attach them again before sending.",
+                record.unready_attachments
+            ));
+        }
+        // Recovery is metadata-only. The view restores non-sendable Checking chips
+        // and validates host-owned bytes on its background executor. Keep the
+        // identities durable even if the tab closes before validation finishes.
+        for saved in &mut record.submissions {
+            // Retain invalid submission attachment metadata for honest review, but
+            // do not make it a Ready chip or allow a partial resend.
+            if saved.status == SubmissionStatus::Pending {
+                saved.status = SubmissionStatus::Uncertain(
+                    "The view closed before delivery was confirmed".into(),
+                );
+            }
+        }
+        Some((record, warnings))
     }
 
     fn finish(&mut self) {
@@ -188,9 +492,14 @@ fn write_drafts(dir: PathBuf, mut persisted: HashMap<String, String>, queue: &Qu
     loop {
         let mut waiting = queue.lock();
         #[cfg(test)]
-        let ready = |w: &Waiting| !w.texts.is_empty() || w.closed || !w.flushes.is_empty();
+        let ready = |w: &Waiting| {
+            !w.texts.is_empty()
+                || w.closed
+                || !w.flushes.is_empty()
+                || !w.acknowledgments.is_empty()
+        };
         #[cfg(not(test))]
-        let ready = |w: &Waiting| !w.texts.is_empty() || w.closed;
+        let ready = |w: &Waiting| !w.texts.is_empty() || w.closed || !w.acknowledgments.is_empty();
         if failed.is_empty() {
             while !ready(&waiting) {
                 waiting = queue.wake.wait(waiting).unwrap_or_else(|e| e.into_inner());
@@ -204,12 +513,21 @@ fn write_drafts(dir: PathBuf, mut persisted: HashMap<String, String>, queue: &Qu
         }
         let newer = std::mem::take(&mut waiting.texts);
         let closed = waiting.closed;
+        let acknowledgments = std::mem::take(&mut waiting.acknowledgments);
         #[cfg(test)]
         let flushes = std::mem::take(&mut waiting.flushes);
         drop(waiting);
         failed.retain(|(id, _)| !newer.contains_key(id));
         let pending = std::mem::take(&mut failed).into_iter().chain(newer);
         failed = write_pending(&dir, &mut persisted, pending);
+        for acknowledgment in acknowledgments {
+            let result = if failed.is_empty() {
+                Ok(())
+            } else {
+                Err("Could not save the submission recovery snapshot; nothing was sent".into())
+            };
+            let _ = acknowledgment.send(result);
+        }
         cap_failed(&mut failed);
         wait = if failed.is_empty() {
             RETRY_FIRST
@@ -277,7 +595,10 @@ fn write_pending(
 
 fn persist(dir: &Path, chat_id: &str, text: &str) -> Result<(), String> {
     let path = dir.join(chat_id);
-    if text.is_empty() || text.len() > MAX_BYTES {
+    if text.len() > MAX_RECORD_BYTES {
+        return Err("Draft recovery record exceeds its storage limit".into());
+    }
+    if text.is_empty() {
         return match fs::remove_file(&path) {
             Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
                 Err(format!("Cannot remove {}: {error}", path.display()))
@@ -297,13 +618,55 @@ fn is_chat_id(id: &str) -> bool {
 
 fn read_text(path: &Path) -> Option<String> {
     let mut bytes = Vec::new();
-    File::open(path)
+    OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
         .ok()?
-        .take(MAX_BYTES as u64 + 1)
+        .take(MAX_RECORD_BYTES as u64 + 1)
         .read_to_end(&mut bytes)
         .ok()?;
-    (bytes.len() <= MAX_BYTES).then_some(())?;
+    (bytes.len() <= MAX_RECORD_BYTES).then_some(())?;
     String::from_utf8(bytes).ok()
+}
+
+pub(crate) fn validate_attachment(chat_dir: &Path, attachment: &Attachment) -> Result<(), String> {
+    if !is_chat_id(&attachment.id) {
+        return Err("Recovered attachment has an invalid identity".into());
+    }
+    if attachment.name.len() > 240 || attachment.name.chars().any(char::is_control) {
+        return Err("Recovered attachment has an invalid name".into());
+    }
+    // Refuse a symlink at every owned directory before reading metadata/content.
+    for path in [
+        chat_dir.parent().unwrap_or(chat_dir).to_owned(),
+        chat_dir.to_owned(),
+        chat_dir.join("attachments"),
+        chat_dir.join("attachments").join(&attachment.id),
+    ] {
+        if !fs::symlink_metadata(&path).is_ok_and(|m| m.is_dir()) {
+            return Err(format!(
+                "Attachment {} is missing or unsafe; attach it again",
+                attachment.name
+            ));
+        }
+    }
+    if let Preview::Image { path } = &attachment.preview {
+        let expected = chat_dir
+            .join("attachments")
+            .join(&attachment.id)
+            .join("preview.png");
+        if path != &expected
+            || !fs::symlink_metadata(path)
+                .is_ok_and(|m| m.is_file() && m.len() <= attachments::FILE_BYTES)
+        {
+            return Err(format!(
+                "Attachment {} has no safe preview; attach it again",
+                attachment.name
+            ));
+        }
+    }
+    attachments::validate_owned(chat_dir, std::slice::from_ref(attachment))
 }
 
 /// A new private (0600) file renamed into place, so a crash leaves the old draft or the
@@ -323,8 +686,13 @@ fn write_private_file(dir: &Path, path: &Path, data: &[u8]) -> Result<(), String
             .map_err(|error| format!("Cannot create {}: {error}", temporary.display()))?;
         file.write_all(data)
             .map_err(|error| format!("Cannot write the chat draft: {error}"))?;
+        file.sync_all()
+            .map_err(|error| format!("Cannot sync the chat draft: {error}"))?;
         fs::rename(&temporary, path)
-            .map_err(|error| format!("Cannot replace {}: {error}", path.display()))
+            .map_err(|error| format!("Cannot replace {}: {error}", path.display()))?;
+        File::open(dir)
+            .and_then(|file| file.sync_all())
+            .map_err(|error| format!("Cannot sync draft directory: {error}"))
     })();
     if result.is_err() {
         let _ = fs::remove_file(&temporary);
@@ -350,6 +718,89 @@ pub fn draft(chat_id: &str, cx: &App) -> Option<String> {
         .0
         .get(chat_id)
         .map(str::to_owned)
+}
+
+pub(crate) fn recover(chat_id: &str, cx: &App) -> Option<(Record, Vec<String>)> {
+    cx.try_global::<ChatDrafts>()?.0.recover(chat_id)
+}
+
+pub(crate) fn remember_complete(
+    chat_id: &str,
+    draft: Contents,
+    owner: Owner,
+    unready: usize,
+    cx: &mut App,
+) {
+    if cx.has_global::<ChatDrafts>() {
+        let store = cx.global_mut::<ChatDrafts>();
+        if let Err(error) = store
+            .0
+            .set_draft_with_unready(chat_id, draft, Some(owner), unready)
+        {
+            eprintln!("riwork: {error}");
+        }
+    }
+}
+
+pub(crate) fn owns(chat_id: &str, owner: Owner, cx: &App) -> bool {
+    cx.try_global::<ChatDrafts>().is_none_or(|store| {
+        store
+            .0
+            .owners
+            .get(chat_id)
+            .is_none_or(|current| current == &owner)
+    })
+}
+
+pub(crate) fn begin_submission(
+    chat_id: &str,
+    owner: Owner,
+    saved: SavedSubmission,
+    cx: &mut App,
+) -> Result<Option<mpsc::Receiver<Result<(), String>>>, String> {
+    if cx.has_global::<ChatDrafts>() {
+        let store = cx.global_mut::<ChatDrafts>();
+        store.0.begin_submission(chat_id, owner, saved).map(Some)
+    } else {
+        Ok(None)
+    }
+}
+
+pub(crate) fn pending_submission(chat_id: &str, key: &str, cx: &App) -> bool {
+    cx.try_global::<ChatDrafts>()
+        .is_none_or(|store| store.0.pending_submission(chat_id, key))
+}
+
+pub fn flush_pending(cx: &App) -> Result<(), String> {
+    cx.try_global::<ChatDrafts>().map_or(Ok(()), |store| {
+        store.0.flush_pending(Duration::from_secs(5))
+    })
+}
+
+pub(crate) fn settle_submission(chat_id: &str, key: &str, status: SubmissionStatus, cx: &mut App) {
+    if cx.has_global::<ChatDrafts>() {
+        let store = cx.global_mut::<ChatDrafts>();
+        if let Err(error) = store.0.settle_submission(chat_id, key, status) {
+            eprintln!("riwork: {error}");
+        }
+    }
+}
+
+pub(crate) fn dismiss_submission(chat_id: &str, key: &str, cx: &mut App) {
+    if cx.has_global::<ChatDrafts>() {
+        let store = cx.global_mut::<ChatDrafts>();
+        if let Err(error) = store.0.dismiss_submission(chat_id, key) {
+            eprintln!("riwork: {error}");
+        }
+    }
+}
+
+pub(crate) fn recovery_directory(chat_id: &str, cx: &App) -> Option<PathBuf> {
+    if !is_chat_id(chat_id) {
+        return None;
+    }
+    cx.try_global::<ChatDrafts>()
+        .map(|store| store.0.home.join("chats").join(chat_id))
 }
 
 /// The chat's draft goes once `sent` went out, unless it has changed since.
@@ -393,6 +844,261 @@ mod tests {
 
     fn id() -> String {
         Uuid::new_v4().to_string()
+    }
+
+    fn saved(text: &str) -> SavedSubmission {
+        SavedSubmission {
+            key: id(),
+            snapshot: Contents {
+                text: text.into(),
+                attachments: Vec::new(),
+                references: Vec::new(),
+            },
+            status: SubmissionStatus::Pending,
+        }
+    }
+
+    fn staged(home: &Path, chat: &str) -> Attachment {
+        let dir = home.join("chats").join(chat);
+        fs::create_dir_all(&dir).unwrap();
+        let source = home.join("notes.txt");
+        fs::write(&source, "A durable attachment 🦀").unwrap();
+        attachments::stage(&dir, &source).unwrap()
+    }
+
+    #[test]
+    fn ready_attachment_identity_survives_restart_and_changed_bytes_are_rejected() {
+        let home = home();
+        let chat = id();
+        let attachment = staged(&home, &chat);
+        let contents = Contents {
+            text: "please review".into(),
+            attachments: vec![attachment.clone()],
+            references: Vec::new(),
+        };
+        let mut drafts = Drafts::load(&home, SystemTime::now());
+        drafts
+            .set_draft(&chat, contents.clone(), Some((1, 1)))
+            .unwrap();
+        drafts.flush_pending(Duration::from_secs(2)).unwrap();
+        drop(drafts);
+        let reloaded = Drafts::load(&home, SystemTime::now());
+        let (record, warnings) = reloaded.recover(&chat).unwrap();
+        assert_eq!(record.draft, contents);
+        assert!(warnings.is_empty());
+        fs::write(&attachment.path, "changed after staging").unwrap();
+        let (record, warnings) = reloaded.recover(&chat).unwrap();
+        assert_eq!(record.draft.attachments, vec![attachment.clone()]);
+        assert_eq!(record.draft.text, "please review");
+        assert!(
+            warnings.is_empty(),
+            "metadata recovery performs no file reads"
+        );
+        assert!(validate_attachment(&home.join("chats").join(&chat), &attachment).is_err());
+        drop(reloaded);
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn pending_submission_recovers_as_uncertain_and_receipt_preserves_new_owner() {
+        let home = home();
+        let chat = id();
+        let mut snapshot = saved("same text");
+        snapshot.snapshot.attachments.push(staged(&home, &chat));
+        let mut drafts = Drafts::load(&home, SystemTime::now());
+        drafts
+            .set_draft(&chat, snapshot.snapshot.clone(), Some((1, 1)))
+            .unwrap();
+        drafts
+            .begin_submission(&chat, (1, 1), snapshot.clone())
+            .unwrap()
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap()
+            .unwrap();
+        let reloaded = Drafts::load(&home, SystemTime::now());
+        let (record, _) = reloaded.recover(&chat).unwrap();
+        assert_eq!(record.draft, Contents::default());
+        assert_eq!(record.submissions[0].snapshot, snapshot.snapshot);
+        assert!(matches!(
+            record.submissions[0].status,
+            SubmissionStatus::Uncertain(_)
+        ));
+        drop(reloaded);
+        // Identical text from another editor is nevertheless a distinct unsent draft.
+        drafts
+            .set_draft(&chat, snapshot.snapshot.clone(), Some((2, 1)))
+            .unwrap();
+        drafts
+            .settle_submission(&chat, &snapshot.key, SubmissionStatus::Submitted)
+            .unwrap();
+        drafts.flush();
+        drop(drafts);
+        let reloaded = Drafts::load(&home, SystemTime::now());
+        let (record, _) = reloaded.recover(&chat).unwrap();
+        assert_eq!(record.draft, snapshot.snapshot);
+        assert!(record.submissions.is_empty());
+        drop(reloaded);
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn oversized_current_text_cannot_delete_retained_submissions() {
+        let home = home();
+        let chat = id();
+        let snapshot = saved("retained intent");
+        let mut drafts = Drafts::load(&home, SystemTime::now());
+        drafts
+            .begin_submission(&chat, (1, 1), snapshot.clone())
+            .unwrap()
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap()
+            .unwrap();
+        drafts.set(&chat, &"x".repeat(MAX_BYTES + 1)).unwrap();
+        drafts.flush();
+        drop(drafts);
+        let reloaded = Drafts::load(&home, SystemTime::now());
+        let (record, _) = reloaded.recover(&chat).unwrap();
+        assert!(record.draft.text.is_empty());
+        assert_eq!(record.submissions[0].snapshot, snapshot.snapshot);
+        drop(reloaded);
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn escaped_record_overflow_refuses_admission_without_losing_prior_snapshot() {
+        let home = home();
+        let chat = id();
+        let snapshot = saved(&"\0".repeat(MAX_BYTES));
+        let mut drafts = Drafts::load(&home, SystemTime::now());
+        drafts
+            .begin_submission(&chat, (1, 1), snapshot)
+            .unwrap()
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap()
+            .unwrap();
+        let before = drafts.records.get(&chat).unwrap().clone();
+        let path = home.join(DIR_NAME).join(&chat);
+        let disk_before = fs::read(&path).unwrap();
+        let error = drafts
+            .begin_submission(&chat, (1, 2), saved(&"\0".repeat(MAX_BYTES)))
+            .unwrap_err();
+        assert!(error.contains("storage limit"));
+        assert_eq!(drafts.records.get(&chat), Some(&before));
+        drafts.flush();
+        assert_eq!(fs::read(&path).unwrap(), disk_before);
+        assert!(
+            persist(
+                &home.join(DIR_NAME),
+                &chat,
+                &"x".repeat(MAX_RECORD_BYTES + 1)
+            )
+            .is_err()
+        );
+        assert_eq!(fs::read(&path).unwrap(), disk_before);
+        drop(drafts);
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn write_failure_reports_not_durable_and_keeps_intent_for_explicit_recovery() {
+        let home = home();
+        let chat = id();
+        let dir = home.join(DIR_NAME);
+        fs::write(&dir, "blocks draft storage").unwrap();
+        let snapshot = saved("never dispatched");
+        let mut drafts = Drafts::load(&home, SystemTime::now());
+        let receiver = drafts
+            .begin_submission(&chat, (1, 1), snapshot.clone())
+            .unwrap();
+        assert!(
+            receiver
+                .recv_timeout(Duration::from_secs(2))
+                .unwrap()
+                .is_err()
+        );
+        assert_eq!(
+            drafts.records[&chat].submissions[0].snapshot,
+            snapshot.snapshot
+        );
+        assert!(drafts.flush_pending(Duration::from_secs(2)).is_err());
+        fs::remove_file(dir).unwrap();
+        drafts
+            .settle_submission(
+                &chat,
+                &snapshot.key,
+                SubmissionStatus::Refused("nothing sent".into()),
+            )
+            .unwrap();
+        drafts.flush_pending(Duration::from_secs(2)).unwrap();
+        drop(drafts);
+        let reloaded = Drafts::load(&home, SystemTime::now());
+        let (record, _) = reloaded.recover(&chat).unwrap();
+        assert!(matches!(
+            record.submissions[0].status,
+            SubmissionStatus::Refused(_)
+        ));
+        drop(reloaded);
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn dismissal_and_chat_deletion_revoke_pending_dispatch_without_deleting_staged_files() {
+        let home = home();
+        let chat = id();
+        let mut snapshot = saved("keep staged bytes");
+        snapshot.snapshot.attachments.push(staged(&home, &chat));
+        let path = snapshot.snapshot.attachments[0].path.clone();
+        let mut drafts = Drafts::load(&home, SystemTime::now());
+        drafts
+            .begin_submission(&chat, (1, 1), snapshot.clone())
+            .unwrap()
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap()
+            .unwrap();
+        assert!(drafts.pending_submission(&chat, &snapshot.key));
+        drafts.dismiss_submission(&chat, &snapshot.key).unwrap();
+        assert!(!drafts.pending_submission(&chat, &snapshot.key));
+        drafts.flush();
+        assert!(!home.join(DIR_NAME).join(&chat).exists());
+        assert!(path.is_file());
+        drafts
+            .begin_submission(&chat, (1, 1), snapshot.clone())
+            .unwrap()
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap()
+            .unwrap();
+        drafts.forget(&chat).unwrap();
+        drafts
+            .settle_submission(
+                &chat,
+                &snapshot.key,
+                SubmissionStatus::Refused("late".into()),
+            )
+            .unwrap();
+        drafts.flush();
+        assert!(!drafts.pending_submission(&chat, &snapshot.key));
+        assert!(!home.join(DIR_NAME).join(&chat).exists());
+        drop(drafts);
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn unfinished_staging_is_reported_without_restoring_arbitrary_sources() {
+        let home = home();
+        let chat = id();
+        let mut drafts = Drafts::load(&home, SystemTime::now());
+        drafts
+            .set_draft_with_unready(&chat, Contents::default(), Some((1, 1)), 2)
+            .unwrap();
+        drafts.flush();
+        drop(drafts);
+        let reloaded = Drafts::load(&home, SystemTime::now());
+        let (record, warnings) = reloaded.recover(&chat).unwrap();
+        assert!(record.draft.attachments.is_empty());
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("2 attachments had not finished staging"));
+        drop(reloaded);
+        fs::remove_dir_all(home).unwrap();
     }
 
     #[test]
@@ -516,7 +1222,7 @@ mod tests {
         fs::write(home.join(DIR_NAME).join(".draft-x.tmp"), "partial").unwrap();
         drafts.flush();
         let reloaded = Drafts::load(&home, SystemTime::now());
-        assert_eq!(reloaded.texts.len(), MAX_DRAFTS);
+        assert_eq!(reloaded.records.len(), MAX_DRAFTS);
         assert_eq!(reloaded.get(&ids[0]), None);
         assert_eq!(reloaded.get(&ids[1]), None);
         assert_eq!(reloaded.get(&ids[2]), Some("draft"));
@@ -526,7 +1232,7 @@ mod tests {
         );
         // A month later every one is stale.
         let later = SystemTime::now() + MAX_AGE + Duration::from_secs(60);
-        assert!(Drafts::load(&home, later).texts.is_empty());
+        assert!(Drafts::load(&home, later).records.is_empty());
         assert_eq!(fs::read_dir(home.join(DIR_NAME)).unwrap().count(), 0);
         let _ = fs::remove_dir_all(home);
     }

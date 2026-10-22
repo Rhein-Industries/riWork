@@ -38,6 +38,8 @@ mod sent_tests;
 #[cfg(test)]
 mod tests;
 
+const RECOVERY_NOTICE: &str = "Saved attachment checks:\n";
+
 /// Sweep Quick Look copies an earlier run left behind, and close the panel on quit.
 pub(crate) fn init(cx: &mut gpui::App) {
     #[cfg(not(test))]
@@ -78,6 +80,14 @@ impl Source {
 }
 pub(super) enum Stage {
     Pending,
+    Checking {
+        attachment: Attachment,
+        token: String,
+    },
+    Unavailable {
+        attachment: Attachment,
+        error: String,
+    },
     Ready(Attachment),
     Failed(String),
 }
@@ -111,6 +121,16 @@ impl Chip {
             Some(a)
         } else {
             None
+        }
+    }
+    /// Persist an owned identity while verification is running or has failed.
+    /// Only `attachment()` grants preview/send access to verified bytes.
+    pub fn recoverable_attachment(&self) -> Option<&Attachment> {
+        match &self.state {
+            Stage::Ready(attachment)
+            | Stage::Checking { attachment, .. }
+            | Stage::Unavailable { attachment, .. } => Some(attachment),
+            _ => None,
         }
     }
     fn image_preview(&self) -> Option<&PathBuf> {
@@ -273,6 +293,95 @@ fn read_preview_bytes(path: &std::path::Path) -> Option<Vec<u8>> {
 }
 
 impl ChatView {
+    /// Restoring a draft never reads attachment bytes on the UI thread. Each
+    /// attempt has its own token so removal, replacement and retries invalidate
+    /// late completions without preventing ordinary text edits in the meantime.
+    pub(super) fn restore_attachment_chips(
+        &mut self,
+        attachments: Vec<Attachment>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let mut checks = Vec::with_capacity(attachments.len());
+        self.attachments = attachments
+            .into_iter()
+            .map(|attachment| {
+                let token = Uuid::new_v4().to_string();
+                checks.push((attachment.id.clone(), token.clone(), attachment.clone()));
+                Chip {
+                    id: attachment.id.clone(),
+                    name: attachment.name.clone(),
+                    state: Stage::Checking { attachment, token },
+                    open: false,
+                    source: None,
+                    local_preview: None,
+                }
+            })
+            .collect();
+        self.start_recovered_validation(checks, window, cx);
+    }
+
+    fn start_recovered_validation(
+        &mut self,
+        checks: Vec<(String, String, Attachment)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(chat) = self.chat_id.clone().filter(|_| !checks.is_empty()) else {
+            return;
+        };
+        let directory = crate::chat_drafts::recovery_directory(&chat, cx);
+        let work = cx.background_executor().spawn(async move {
+            checks
+                .into_iter()
+                .map(|(id, token, attachment)| {
+                    let result = directory.as_deref()
+                        .ok_or_else(|| "The attachment recovery store is unavailable; check again after reopening this chat".to_owned())
+                        .and_then(|directory| crate::chat_drafts::validate_attachment(directory, &attachment));
+                    (id, token, attachment, result)
+                })
+                .collect::<Vec<_>>()
+        });
+        self.attachment_tasks.push(cx.spawn_in(window, async move |this, cx| {
+            let results = work.await;
+            let _ = this.update(cx, |view, cx| {
+                if view.chat_id.as_deref() != Some(&chat) {
+                    return;
+                }
+                let owns = crate::chat_drafts::owns(&chat, (view.composer.entity_id().as_u64(), view.editor_generation), cx);
+                let mut changed = false;
+                for (id, token, attachment, result) in results {
+                    let Some(chip) = view.attachments.iter_mut().find(|chip| {
+                        chip.id == id && matches!(&chip.state, Stage::Checking { attachment: current, token: current_token }
+                            if current_token == &token && current == &attachment)
+                    }) else { continue; };
+                    let result = if owns { result } else { Err("Another window changed this draft; check the saved attachment again to use it here".into()) };
+                    chip.state = match result {
+                        Ok(()) => Stage::Ready(attachment),
+                        Err(error) => Stage::Unavailable { attachment, error },
+                    };
+                    changed = true;
+                }
+                if changed {
+                    if owns {
+                        view.bump_generation();
+                        view.remember_draft(cx);
+                    }
+                    let errors: Vec<_> = view.attachments.iter().filter_map(|chip| match &chip.state {
+                        Stage::Unavailable { error, .. } => Some(error.as_str()), _ => None,
+                    }).collect();
+                    if errors.is_empty() {
+                        if view.notices.local(super::notices::LocalKey::Attachment).is_some_and(|text| text.starts_with(RECOVERY_NOTICE)) {
+                            view.notices.clear(super::notices::LocalKey::Attachment);
+                        }
+                    } else {
+                        view.notices.set(super::notices::LocalKey::Attachment, crate::chat::model::NoticeLevel::Warning, format!("{RECOVERY_NOTICE}{}", errors.join("\n")));
+                    }
+                    cx.notify();
+                }
+            });
+        }));
+    }
     pub(super) fn attach_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.accepts_input() {
             return;
@@ -404,6 +513,7 @@ impl ChatView {
                 self.start_staging(id, source, window, cx);
             }
         }
+        self.remember_draft(cx);
         self.focus(window, cx);
         cx.notify();
     }
@@ -519,9 +629,47 @@ impl ChatView {
             Err(error) => Stage::Failed(error),
         };
         self.bump_generation();
+        self.remember_draft(cx);
         cx.notify();
     }
     fn retry_staging(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(attachment) = self.attachments.iter().find_map(|chip| {
+            if chip.id != id {
+                return None;
+            }
+            match &chip.state {
+                Stage::Unavailable { attachment, .. } => Some(attachment.clone()),
+                _ => None,
+            }
+        }) {
+            if self.chat_id.as_deref().is_some_and(|chat| {
+                !crate::chat_drafts::owns(
+                    chat,
+                    (self.composer.entity_id().as_u64(), self.editor_generation),
+                    cx,
+                )
+            }) {
+                self.notices.set(super::notices::LocalKey::Attachment, crate::chat::model::NoticeLevel::Warning,
+                    format!("{RECOVERY_NOTICE}Another window owns the newer draft. Edit this draft explicitly before checking its saved attachments again."));
+                cx.notify();
+                return;
+            }
+            let token = Uuid::new_v4().to_string();
+            let chip = self
+                .attachments
+                .iter_mut()
+                .find(|chip| chip.id == id)
+                .unwrap();
+            chip.state = Stage::Checking {
+                attachment: attachment.clone(),
+                token: token.clone(),
+            };
+            self.bump_generation();
+            self.remember_draft(cx);
+            self.start_recovered_validation(vec![(id.to_owned(), token, attachment)], window, cx);
+            cx.notify();
+            return;
+        }
         if self
             .attachments
             .iter()
@@ -551,6 +699,7 @@ impl ChatView {
             self.start_local_preview(next.clone(), &source, window, cx);
         }
         self.start_staging(next, source, window, cx);
+        self.remember_draft(cx);
         cx.notify();
     }
     fn remove_attachment(&mut self, id: &str, cx: &mut Context<Self>) {
@@ -559,6 +708,7 @@ impl ChatView {
         }
         self.attachments.retain(|c| c.id != id);
         self.bump_generation();
+        self.remember_draft(cx);
         cx.notify();
     }
     pub(super) fn release_attachment_previews(&mut self, cx: &mut gpui::App) {
@@ -625,13 +775,14 @@ impl ChatView {
                 .child(div().text_size(ui_text::text(10.)).text_color(rgb(look.colors.gold)).child(label))
                 .child(button(format!("chat-review-{id}"), if expanded {"▾ Saved draft"} else {"▸ Saved draft"}, None, look).aria_expanded(expanded).on_click(cx.listener(move |view, _, _, cx| view.toggle(&review_key, None, cx))))
                 .children(expanded.then(|| div().flex().flex_col().gap(ui_text::space(3.))
-                    .child(div().id(format!("chat-saved-text-{id}")).max_h(ui_text::space(160.)).overflow_y_scroll().child(saved.snapshot.text.clone()))
+                    .child(div().id(format!("chat-saved-text-{id}")).max_h(ui_text::space(160.)).overflow_y_scroll().child(crate::chat_drafts::references::provider_text(&saved.snapshot.text, &saved.snapshot.references)))
                     .children(saved.snapshot.attachments.iter().map(|a| { let line = format!("{} · {}", a.name, size_text(a.bytes)); div().id(format!("chat-saved-attachment-{id}-{}", a.id)).role(gpui::Role::Label).aria_label(line.clone()).text_color(rgb(look.colors.muted)).child(line).test_support() }))
                     .child(button(format!("chat-copy-saved-{id}"), "Copy saved text", None, look).on_click(cx.listener(move |view, _, _, cx| { if let Some(s) = view.submissions.iter().find(|s| s.id == id) { cx.write_to_clipboard(ClipboardItem::new_string(s.snapshot.text.clone())); } })))
                 ))
                 .children((saved.status != Status::Pending && self.pending_submission.is_none()).then(|| div().flex().flex_wrap().gap(ui_text::space(6.))
                     .child(button(format!("chat-resend-{id}"), "Resend saved draft", Some(look.colors.cyan), look).on_click(cx.listener(move |view, _, window, cx| view.resend_snapshot(id, window, cx))))
                     .child(button(format!("chat-restore-{id}"), "Replace current draft with saved", None, look).on_click(cx.listener(move |view, _, window, cx| view.restore_snapshot(id, window, cx))))
+                    .child(button(format!("chat-dismiss-saved-{id}"), "Dismiss saved submission", None, look).on_click(cx.listener(move |view, _, _, cx| view.dismiss_snapshot(id, cx))))
                 )).into_any_element()
         })).into_any_element()
     }
@@ -684,20 +835,26 @@ fn attachment_card(
 ) -> AnyElement {
     let colors = look.colors;
     let key = chip.id.clone();
-    let failed = matches!(chip.state, Stage::Failed(_));
+    let failed = matches!(chip.state, Stage::Failed(_) | Stage::Unavailable { .. });
     let error = look.error();
     let radius = ui_text::space(card_radius(look));
     let side = ui_text::space(CARD_SIDE);
     let (status, tooltip) = match &chip.state {
         Stage::Pending => ("Staging…".to_owned(), format!("{} · staging…", chip.name)),
+        Stage::Checking { .. } => (
+            "Checking…".to_owned(),
+            format!("{} · checking saved attachment…", chip.name),
+        ),
         Stage::Ready(a) => {
             let size = size_text(a.bytes);
             (size.clone(), format!("{} · {size}", chip.name))
         }
-        Stage::Failed(e) => (e.clone(), e.clone()),
+        Stage::Failed(e) | Stage::Unavailable { error: e, .. } => (e.clone(), e.clone()),
     };
     let previewable = chip.attachment().is_some() || chip.local_preview.is_some();
-    let label = if failed {
+    let label = if matches!(chip.state, Stage::Unavailable { .. }) {
+        format!("Check saved attachment {} again", chip.name)
+    } else if failed {
         format!("Retry staging {}", chip.name)
     } else {
         format!("Preview {}", chip.name)
@@ -749,7 +906,7 @@ fn attachment_card(
             .into_any_element(),
         None => {
             let visible = match &chip.state {
-                Stage::Pending => div()
+                Stage::Pending | Stage::Checking { .. } => div()
                     .flex()
                     .items_center()
                     .gap(ui_text::space(4.))
@@ -760,6 +917,7 @@ fn attachment_card(
                     .child(status.clone())
                     .into_any_element(),
                 Stage::Failed(_) => "Failed · retry".into_any_element(),
+                Stage::Unavailable { .. } => "Unavailable · check again".into_any_element(),
                 Stage::Ready(_) => status.clone().into_any_element(),
             };
             // The stem is cut in the middle to the room its card leaves beside the extension,
@@ -860,11 +1018,9 @@ fn attachment_card(
             crate::tooltip::Look::Control,
         ))
         .on_click(cx.listener(move |view, _, window, cx| {
-            if view
-                .attachments
-                .iter()
-                .any(|c| c.id == action && matches!(c.state, Stage::Failed(_)))
-            {
+            if view.attachments.iter().any(|c| {
+                c.id == action && matches!(c.state, Stage::Failed(_) | Stage::Unavailable { .. })
+            }) {
                 view.retry_staging(&action, window, cx)
             } else {
                 view.open_attachment(&action, cx)
@@ -914,7 +1070,7 @@ fn attachment_card(
 /// What a thumbnail's scrim shows: a pulse while it stages, a "!" when it failed.
 fn status_mark(state: &Stage, key: &str, look: Look) -> AnyElement {
     match state {
-        Stage::Failed(_) => "!".into_any_element(),
+        Stage::Failed(_) | Stage::Unavailable { .. } => "!".into_any_element(),
         _ => widgets::pulse(format!("attachment-pulse-{key}"), look.colors.text),
     }
 }

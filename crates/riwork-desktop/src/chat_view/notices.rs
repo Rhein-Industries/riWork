@@ -38,6 +38,9 @@ pub(super) enum LocalKey {
     Attachment,
     Settings,
     Media,
+    Plan,
+    Export,
+    Reference,
 }
 
 impl LocalKey {
@@ -50,6 +53,9 @@ impl LocalKey {
             Self::Attachment => "attachment",
             Self::Settings => "settings",
             Self::Media => "media",
+            Self::Plan => "plan",
+            Self::Export => "export",
+            Self::Reference => "reference",
         }
     }
 }

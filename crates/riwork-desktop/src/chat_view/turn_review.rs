@@ -36,7 +36,12 @@ pub(super) fn file_key(answer: &str, at: usize) -> String {
     format!("answer-file:{answer}:{at}")
 }
 
+pub(super) const INLINE_FILES: usize = 8;
+
 impl ChatView {
+    pub(super) fn answer_file_visible(&self, answer: &str, at: usize) -> bool {
+        at < INLINE_FILES || self.open.contains(&file_key(answer, at))
+    }
     pub(super) fn review_depends_on(
         &self,
         at: usize,
@@ -102,97 +107,105 @@ impl ChatView {
             return None;
         }
         let count = files.len();
-        let rows = files.into_iter().enumerate().map(|(at, change)| {
-            let key = file_key(&item.id, at);
-            let path = change.path.clone();
-            let target = path.clone();
-            let can_diff = change
-                .diff
-                .as_ref()
-                .is_some_and(|diff| !diff.trim().is_empty());
-            let expanded = self.open.contains(&key);
-            let toggle_key = key.clone();
-            let copy_key = format!("copy:{key}");
-            div()
-                .w_full()
-                .min_w_0()
-                .border_t_1()
-                .border_color(rgb(look.colors.divider))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(ui_text::space(6.))
-                        .px(ui_text::space(10.))
-                        .py(ui_text::space(6.))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .text_size(ui_text::text(11.))
-                                .font_family(ui_text::code_family())
-                                .child(self.selectable(
-                                    &format!("path:{key}"),
-                                    path.clone(),
-                                    Vec::new(),
-                                    vec![(0..path.len(), path.clone())],
-                                    look,
-                                    cx,
-                                )),
-                        )
-                        .child(
-                            widgets::button(
-                                SharedString::from(format!("open:{key}")),
-                                "Open",
-                                None,
-                                look,
+        let answer = item.id.clone();
+        let rows = files
+            .into_iter()
+            .enumerate()
+            .filter(|(at, _)| self.answer_file_visible(&item.id, *at))
+            .map(|(at, change)| {
+                let key = file_key(&item.id, at);
+                let path = change.path.clone();
+                let target = path.clone();
+                let can_diff = change
+                    .diff
+                    .as_ref()
+                    .is_some_and(|diff| !diff.trim().is_empty());
+                let expanded = self.open.contains(&key);
+                let toggle_key = key.clone();
+                let copy_key = format!("copy:{key}");
+                div()
+                    .w_full()
+                    .min_w_0()
+                    .border_t_1()
+                    .border_color(rgb(look.colors.divider))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(ui_text::space(6.))
+                            .px(ui_text::space(10.))
+                            .py(ui_text::space(6.))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .text_size(ui_text::text(11.))
+                                    .font_family(ui_text::code_family())
+                                    .child(self.selectable(
+                                        &format!("path:{key}"),
+                                        path.clone(),
+                                        Vec::new(),
+                                        vec![(0..path.len(), path.clone())],
+                                        look,
+                                        cx,
+                                    )),
                             )
-                            .on_click(cx.listener(
-                                move |_, _, _, cx| {
-                                    cx.emit(ChatViewEvent::OpenFile {
-                                        target: target.clone(),
-                                    })
-                                },
-                            )),
-                        )
-                        .child(
-                            widgets::copy_button(
-                                SharedString::from(copy_key.clone()),
-                                self.copied.as_deref() == Some(copy_key.as_str()),
-                                "Copy path",
-                                "Copy file path",
-                                look,
-                            )
-                            .on_click(cx.listener(
-                                move |view, _, _, cx| view.copy(copy_key.clone(), path.clone(), cx),
-                            )),
-                        )
-                        .when(can_diff, |row| {
-                            row.child(
+                            .child(
                                 widgets::button(
-                                    SharedString::from(format!("edit:{key}")),
-                                    if expanded { "Hide edit" } else { "Show edit" },
+                                    SharedString::from(format!("open:{key}")),
+                                    "Open",
                                     None,
                                     look,
                                 )
-                                .aria_expanded(expanded)
                                 .on_click(cx.listener(
-                                    move |view, _, _, cx| {
-                                        view.toggle(&toggle_key, None, cx);
-                                        view.list.remeasure();
+                                    move |_, _, _, cx| {
+                                        cx.emit(ChatViewEvent::OpenFile {
+                                            target: target.clone(),
+                                        })
                                     },
                                 )),
                             )
-                        }),
-                )
-                .children(
-                    change
-                        .diff
-                        .as_ref()
-                        .filter(|_| expanded)
-                        .map(|text| self.diff_lines(&key, text, change.kind, look, cx)),
-                )
-        });
+                            .child(
+                                widgets::copy_button(
+                                    SharedString::from(copy_key.clone()),
+                                    self.copied.as_deref() == Some(copy_key.as_str()),
+                                    "Copy path",
+                                    "Copy file path",
+                                    look,
+                                )
+                                .on_click(cx.listener(
+                                    move |view, _, _, cx| {
+                                        view.copy(copy_key.clone(), path.clone(), cx)
+                                    },
+                                )),
+                            )
+                            .when(can_diff, |row| {
+                                row.child(
+                                    widgets::button(
+                                        SharedString::from(format!("edit:{key}")),
+                                        if expanded { "Hide edit" } else { "Show edit" },
+                                        None,
+                                        look,
+                                    )
+                                    .aria_expanded(expanded)
+                                    .on_click(cx.listener(
+                                        move |view, _, _, cx| {
+                                            view.toggle(&toggle_key, None, cx);
+                                            view.list.remeasure();
+                                        },
+                                    )),
+                                )
+                            }),
+                    )
+                    .children(
+                        change
+                            .diff
+                            .as_ref()
+                            .filter(|_| expanded)
+                            .map(|text| self.diff_lines(&key, text, change.kind, look, cx)),
+                    )
+            })
+            .collect::<Vec<_>>();
         Some(
             div()
                 .mt(ui_text::space(14.))
@@ -203,12 +216,43 @@ impl ChatView {
                 .rounded(ui_text::space(6.))
                 .child(
                     div()
+                        .flex()
+                        .flex_wrap()
+                        .items_center()
+                        .gap(ui_text::space(8.))
                         .px(ui_text::space(10.))
                         .py(ui_text::space(7.))
                         .text_size(ui_text::text(11.))
-                        .child(format!("Reported file changes · {count}")),
+                        .child(
+                            div()
+                                .flex_1()
+                                .child(format!("Reported file changes · {count}")),
+                        )
+                        .child(
+                            widgets::button(
+                                SharedString::from(format!("review-answer:{}", item.id)),
+                                "Review files",
+                                None,
+                                look,
+                            )
+                            .on_click(cx.listener(
+                                move |view, _, window, cx| {
+                                    view.open_answer_file_review(&answer, window, cx)
+                                },
+                            )),
+                        ),
                 )
                 .children(rows)
+                .when(count > INLINE_FILES, |body| {
+                    body.child(
+                        div()
+                            .px(ui_text::space(10.))
+                            .py(ui_text::space(6.))
+                            .text_size(ui_text::text(10.))
+                            .text_color(rgb(look.colors.muted))
+                            .child("Open Review files to browse every folder and reported patch."),
+                    )
+                })
                 .into_any_element(),
         )
     }

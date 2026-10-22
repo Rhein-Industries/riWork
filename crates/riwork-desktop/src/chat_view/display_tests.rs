@@ -1,6 +1,6 @@
 //! A chat's Normal/Verbose choice across a tab switch, closing and reopening the tab, and a
-//! restart. Tabs are made with `ChatView::open_deferred`, as a restored window, a project
-//! switch and a phone-opened chat make them, and the choice is saved in a settings file
+//! restart. Tabs use the deferred constructor with an inert transport, as a restored
+//! window or project switch does, and the choice is saved in a settings file
 //! under a temporary home instead of the user's.
 use super::*;
 use crate::settings::{Settings, SettingsStore};
@@ -67,12 +67,11 @@ fn mount(
                         .iter()
                         .map(|id| {
                             cx.new(|cx| {
-                                ChatView::open_deferred(
+                                ChatView::open_inert_for_tests(
                                     (*id).to_owned(),
-                                    None,
                                     HostConfig {
                                         ensure: Arc::new(|| {
-                                            Err("fixture staging is disabled".into())
+                                            panic!("display fixture must never start a host")
                                         }),
                                     },
                                     window,

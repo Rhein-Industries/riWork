@@ -8,7 +8,7 @@ pub(super) enum Row {
     Item(usize),
     /// An actionable technical item whose images are in the turn disclosure.
     Details(usize),
-    /// Successful technical items remain available without expanding the whole transcript.
+    /// Technical items, including recovered failures, remain available per turn.
     Activity {
         turn_id: String,
         items: Vec<usize>,
@@ -207,7 +207,7 @@ pub(super) fn rows(
     let mut grouped = HashSet::new();
     for (at, item) in transcript.items.iter().enumerate() {
         if (technical(item) || matches!(item.body, ItemBody::Plan { .. } | ItemBody::Todo { .. }))
-            && item.status == ItemStatus::Completed
+            && item.status != ItemStatus::InProgress
             && !visible(at, item)
             && let Some(turn) = item
                 .turn_id
@@ -423,8 +423,14 @@ mod tests {
                 &[("turn".into(), TurnOutcome::Completed, 4)],
                 DisplayMode::Normal
             ),
-            // The notices are banners, failed or not.
-            vec![Row::Item(1)]
+            // Notices are banners; a recovered tool failure remains in Activity.
+            vec![
+                Row::Item(1),
+                Row::Activity {
+                    turn_id: "turn".into(),
+                    items: vec![0]
+                },
+            ]
         );
         // A final whose only image is unavailable is not a usable answer.
         t.items[1] = with_image(text("", Some(MessagePhase::Final)));
@@ -490,11 +496,19 @@ mod tests {
             normal,
             vec![
                 Row::Item(1),
+                Row::Activity {
+                    turn_id: "turn".into(),
+                    items: vec![0]
+                },
                 Row::Artifacts {
                     turn_id: "turn".into(),
                     items: vec![0]
                 },
                 Row::Item(3),
+                Row::Activity {
+                    turn_id: "second".into(),
+                    items: vec![2]
+                },
                 Row::Artifacts {
                     turn_id: "second".into(),
                     items: vec![2]
@@ -504,9 +518,10 @@ mod tests {
         let verbose = rows(&t, &completed, DisplayMode::Verbose);
         assert_eq!(remap_anchor(&Row::Item(1), &verbose, &completed), Some(1));
         assert_eq!(remap_anchor(&Row::Item(0), &normal, &completed), Some(1));
-        assert_eq!(remap_anchor(&normal[3], &verbose, &completed), Some(2));
-        assert_eq!(remap_anchor(&Row::Item(2), &normal, &completed), Some(3));
-        assert_eq!(remap_anchor(&Row::Item(3), &normal, &completed), Some(2));
+        assert_eq!(remap_anchor(&normal[4], &verbose, &completed), Some(2));
+        assert_eq!(remap_anchor(&normal[5], &verbose, &completed), Some(2));
+        assert_eq!(remap_anchor(&Row::Item(2), &normal, &completed), Some(4));
+        assert_eq!(remap_anchor(&Row::Item(3), &normal, &completed), Some(3));
     }
 
     #[test]
@@ -738,6 +753,32 @@ mod tests {
                 .iter()
                 .all(|row| !matches!(row, Row::Activity { .. }))
         );
+    }
+
+    #[test]
+    fn recovered_failures_remain_reachable_from_the_turn_summary() {
+        let mut t = Transcript::default();
+        let mut refused = failed_command("refused");
+        refused.status = ItemStatus::Declined;
+        t.items = vec![
+            failed_command("failed"),
+            refused,
+            text("answer", Some(MessagePhase::Final)),
+        ];
+        let completed = vec![("turn".into(), TurnOutcome::Completed, 3)];
+        let collapsed = rows(&t, &completed, DisplayMode::Normal);
+        assert!(collapsed.contains(&Row::Activity {
+            turn_id: "turn".into(),
+            items: vec![0, 1],
+        }));
+        let expanded = rows_with_activity(
+            &t,
+            &completed,
+            DisplayMode::Normal,
+            &HashSet::from([activity_key("turn")]),
+        );
+        assert!(expanded.contains(&Row::Item(0)));
+        assert!(expanded.contains(&Row::Item(1)));
     }
 
     #[gpui::test]

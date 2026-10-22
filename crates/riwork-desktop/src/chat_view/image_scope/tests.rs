@@ -662,6 +662,14 @@ mod mounted {
             assert!(window.try_find("view:item-1:image:2").is_some());
             assert!(window.try_find("preview:item-1:image:2").is_none());
             // The full viewer opens for the cross-worktree image.
+            // Expanded image actions make this gallery taller than the viewport.
+            // Bring the first image back into view before sending a pointer click.
+            view.update(cx, |view, cx| {
+                view.list.pause_following_tail();
+                view.list.scroll_to(gpui::ListOffset::default());
+                cx.notify();
+            });
+            window.render_frame(cx);
             window.click("view:item-1:image:0", cx);
         })
         .unwrap();

@@ -80,40 +80,77 @@ impl ChatView {
         self.composer.read(cx).value().to_string()
     }
     pub(super) fn draft_empty(&self, cx: &gpui::App) -> bool {
-        self.composer.read(cx).value().trim().is_empty() && self.attachments.is_empty()
+        self.composer.read(cx).value().trim().is_empty()
+            && self.attachments.is_empty()
+            && self.references.is_empty()
     }
     fn current_draft(&self, cx: &gpui::App) -> Draft {
         Draft {
             text: self.composer_text(cx),
+            references: self.references.contents(),
             attachments: self
                 .attachments
                 .iter()
-                .filter_map(|chip| chip.attachment().cloned())
+                .filter_map(|chip| chip.recoverable_attachment().cloned())
                 .collect(),
         }
     }
     /// Bring back what the chat's message box held when its tab closed or the app quit
     /// (`chat_drafts`), unless something was typed meanwhile.
     pub(super) fn restore_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(text) = self
+        let Some((record, warnings)) = self
             .chat_id
             .as_deref()
-            .and_then(|id| crate::chat_drafts::draft(id, cx))
+            .and_then(|id| crate::chat_drafts::recover(id, cx))
         else {
             return;
         };
-        if self.composer_text(cx).is_empty() {
-            self.composer
-                .update(cx, |state, cx| state.set_value(text, window, cx));
+        if self.composer_text(cx).is_empty()
+            && self.attachments.is_empty()
+            && self.references.is_empty()
+        {
+            self.composer.update(cx, |state, cx| {
+                state.set_value(record.draft.text, window, cx)
+            });
+            self.restore_attachment_chips(record.draft.attachments, window, cx);
+            self.restore_references(record.draft.references, window, cx);
             self.bump_generation();
+            self.remember_draft(cx);
+        }
+        for saved in record.submissions {
+            if self
+                .submissions
+                .iter()
+                .any(|submission| submission.recovery_key == saved.key)
+            {
+                continue;
+            }
+            self.next_submission += 1;
+            self.submissions
+                .push(Submission::recover(self.next_submission, saved));
+        }
+        if !warnings.is_empty() {
+            self.notices.set(
+                notices::LocalKey::Attachment,
+                NoticeLevel::Warning,
+                warnings.join("\n"),
+            );
         }
     }
     /// Keep the message box's text as the chat's draft. `set_value` sends no Change, so
     /// the code that sets the composer calls this too.
     pub(super) fn remember_draft(&self, cx: &mut Context<Self>) {
         if let Some(id) = self.chat_id.clone() {
-            let text = self.composer_text(cx);
-            crate::chat_drafts::remember(&id, &text, cx);
+            crate::chat_drafts::remember_complete(
+                &id,
+                self.current_draft(cx),
+                (self.composer.entity_id().as_u64(), self.editor_generation),
+                self.attachments
+                    .iter()
+                    .filter(|chip| chip.recoverable_attachment().is_none())
+                    .count(),
+                cx,
+            );
         }
     }
     pub(super) fn bump_generation(&mut self) {
@@ -318,6 +355,13 @@ impl ChatView {
             self.model_input.update(cx, |state, cx| {
                 state.marked_text_range(window, cx).is_some()
             })
+        } else if let Some(editor) = self
+            .focused_reference_editor(window, cx)
+            .or_else(|| self.focused_output_editor(window, cx))
+        {
+            editor.update(cx, |state, cx| {
+                state.marked_text_range(window, cx).is_some()
+            })
         } else if self.find.field_focused(window, cx) {
             self.find.input.update(cx, |state, cx| {
                 state.marked_text_range(window, cx).is_some()
@@ -339,7 +383,11 @@ impl ChatView {
         }
         // A menu closed from the find field leaves the keys there, not in the message box.
         let in_find = self.find.field_focused(window, cx);
-        let handled = if self.media.viewer.take().is_some() {
+        let handled = if self.close_output_overlay(window, cx) {
+            true
+        } else if self.close_reference_editor(window, cx) {
+            true
+        } else if self.media.viewer.take().is_some() {
             true
         } else if self.open.remove(panels::ATTACHMENT_MENU_KEY) {
             self.focus_composer = true;
@@ -355,6 +403,8 @@ impl ChatView {
             true
         } else if self.find_takes_escape(window, cx) {
             self.close_find(window, cx);
+            true
+        } else if self.close_file_review(window, cx) {
             true
         } else if self.composer.read(cx).focus_handle(cx).is_focused(window) {
             match super::composer::escape(
@@ -414,7 +464,7 @@ impl ChatView {
             self.notices.set(
                 notices::LocalKey::Send,
                 NoticeLevel::Warning,
-                "Wait for staging, or remove the attachment with an error before sending.",
+                "Wait for attachment staging or checking, or remove the attachment with an error before sending.",
             );
             cx.notify();
             return;
@@ -460,7 +510,47 @@ impl ChatView {
         let command = submission
             .command()
             .expect("a new snapshot is undispatched");
-        let sent = submission.snapshot.text.clone();
+        let recovery = self
+            .chat_id
+            .as_deref()
+            .map(|chat| {
+                crate::chat_drafts::begin_submission(
+                    chat,
+                    (editor, generation),
+                    submission.saved(),
+                    cx,
+                )
+            })
+            .transpose();
+        let recovery = match recovery {
+            Ok(receiver) => receiver.flatten(),
+            Err(error) => {
+                submission.settle(editor, generation, Err(CallError::Refused(error.clone())));
+                if let Some(chat) = &self.chat_id {
+                    crate::chat_drafts::settle_submission(
+                        chat,
+                        &submission.recovery_key,
+                        submission.status.clone(),
+                        cx,
+                    );
+                }
+                self.submissions.push(submission);
+                if self.chat_id.as_deref().is_none_or(|chat| {
+                    crate::chat_drafts::owns(
+                        chat,
+                        (self.composer.entity_id().as_u64(), self.editor_generation),
+                        cx,
+                    )
+                }) {
+                    self.remember_draft(cx);
+                }
+                self.notices
+                    .set(notices::LocalKey::Send, NoticeLevel::Error, error);
+                cx.notify();
+                return;
+            }
+        };
+        let recovery_key = submission.recovery_key.clone();
         self.submissions.push(submission);
         self.pending_submission = Some(id);
         self.sent_at = Some(Instant::now());
@@ -468,12 +558,55 @@ impl ChatView {
         self.notices.clear(notices::LocalKey::Send);
         self.notices.clear(notices::LocalKey::Attachment);
         self.list.set_follow_mode(gpui::FollowMode::Tail);
-        // Another window of the chat may have saved newer text: only what is sent goes.
-        if editor == self.composer.entity_id().as_u64() && generation == self.editor_generation {
-            if let Some(id) = &self.chat_id {
-                crate::chat_drafts::clear_sent(id, &sent, cx);
-            }
+        if let Some(receiver) = recovery {
+            let chat_id = self.chat_id.clone();
+            let durable = cx.background_executor().spawn(async move {
+                receiver
+                    .recv()
+                    .map_err(|_| "The draft recovery writer stopped; nothing was sent".to_owned())
+                    .and_then(|result| result)
+            });
+            self.attachment_tasks
+                .push(cx.spawn_in(window, async move |this, cx| {
+                    let result = durable.await;
+                    let _ = this.update_in(cx, |view, window, cx| {
+                        if view.chat_id != chat_id || view.pending_submission != Some(id) {
+                            return;
+                        }
+                        let result = result.and_then(|()| {
+                            if view.accepts_input() && chat_id.as_deref().is_none_or(|chat| {
+                                crate::chat_drafts::pending_submission(chat, &recovery_key, cx)
+                            }) {
+                                Ok(())
+                            } else {
+                                Err("The saved submission was dismissed or the chat became unavailable; nothing was sent".into())
+                            }
+                        });
+                        match result {
+                            Ok(()) => view.dispatch_saved_submission(id, command, window, cx),
+                            Err(error) => view.submission_receipt(
+                                id,
+                                command,
+                                Err(CallError::Refused(error)),
+                                window,
+                                cx,
+                            ),
+                        }
+                    });
+                }));
+        } else {
+            self.dispatch_saved_submission(id, command, window, cx);
         }
+        cx.notify();
+    }
+
+    fn dispatch_saved_submission(
+        &mut self,
+        id: u64,
+        command: ChatCommand,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let result = self
             .feed
             .as_ref()
@@ -512,15 +645,11 @@ impl ChatView {
         self.composer.update(cx, |state, cx| {
             state.set_value(saved.snapshot.text, window, cx)
         });
-        self.remember_draft(cx);
         self.release_attachment_previews(cx);
-        self.attachments = saved
-            .snapshot
-            .attachments
-            .into_iter()
-            .map(super::attachment_ui::Chip::ready)
-            .collect();
+        self.restore_attachment_chips(saved.snapshot.attachments, window, cx);
+        self.restore_references(saved.snapshot.references, window, cx);
         self.bump_generation();
+        self.remember_draft(cx);
         self.focus(window, cx);
         cx.notify();
     }
@@ -576,26 +705,39 @@ impl ChatView {
         if submission.status != Status::Pending || command != submission.expected_command() {
             return;
         }
-        let sent = submission.snapshot.text.clone();
         let clear = submission.settle(
             self.composer.entity_id().as_u64(),
             self.editor_generation,
             result.clone(),
         );
+        if let Some(chat) = &self.chat_id {
+            crate::chat_drafts::settle_submission(
+                chat,
+                &submission.recovery_key,
+                submission.status.clone(),
+                cx,
+            );
+        }
         if self.pending_submission == Some(id) {
             self.pending_submission = None;
         }
         if clear {
             self.composer
                 .update(cx, |state, cx| state.set_value("", window, cx));
-            if let Some(id) = &self.chat_id {
-                crate::chat_drafts::clear_sent(id, &sent, cx);
-            }
             self.attachments.clear();
+            self.references.clear();
             self.bump_generation();
         }
         if let Err(error) = result {
-            self.remember_draft(cx);
+            if self.chat_id.as_deref().is_none_or(|chat| {
+                crate::chat_drafts::owns(
+                    chat,
+                    (self.composer.entity_id().as_u64(), self.editor_generation),
+                    cx,
+                )
+            }) {
+                self.remember_draft(cx);
+            }
             self.notices.set(notices::LocalKey::Send, NoticeLevel::Error, match error {
                 CallError::Refused(error) => {
                     format!("Submission refused: {error}. Your draft is retained.")
@@ -607,6 +749,20 @@ impl ChatView {
         }
         self.submissions.retain(|s| s.status != Status::Submitted);
         cx.notify();
+    }
+
+    pub(super) fn dismiss_snapshot(&mut self, id: u64, cx: &mut Context<Self>) {
+        if let Some(saved) = self
+            .submissions
+            .iter()
+            .find(|saved| saved.id == id && saved.status != Status::Pending)
+        {
+            if let Some(chat) = &self.chat_id {
+                crate::chat_drafts::dismiss_submission(chat, &saved.recovery_key, cx);
+            }
+            self.submissions.retain(|saved| saved.id != id);
+            cx.notify();
+        }
     }
 
     pub(super) fn ready_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {

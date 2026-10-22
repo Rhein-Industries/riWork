@@ -1,21 +1,11 @@
 //! Immutable dispatch snapshots. Only a matching editor identity AND generation may clear.
-use crate::chat::{attachments::Attachment, client::CallError, model::ChatCommand};
+use crate::chat::{client::CallError, model::ChatCommand};
+pub(super) use crate::chat_drafts::{Contents as Draft, SubmissionStatus as Status};
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(super) struct Draft {
-    pub text: String,
-    pub attachments: Vec<Attachment>,
-}
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) enum Status {
-    Pending,
-    Submitted,
-    Refused(String),
-    Uncertain(String),
-}
 #[derive(Clone, Debug)]
 pub(super) struct Submission {
     pub id: u64,
+    pub recovery_key: String,
     pub editor: u64,
     pub generation: u64,
     pub snapshot: Draft,
@@ -24,17 +14,42 @@ pub(super) struct Submission {
 }
 impl Submission {
     pub fn begin(id: u64, editor: u64, generation: u64, draft: Draft) -> Result<Self, String> {
-        if draft.attachments.is_empty() && draft.text.trim().is_empty() {
+        if !crate::chat_drafts::references::valid(&draft.references) {
+            return Err("The source references exceed their recovery limits".into());
+        }
+        if draft.attachments.is_empty()
+            && draft.references.is_empty()
+            && draft.text.trim().is_empty()
+        {
             return Err("the draft is empty".into());
         }
         Ok(Self {
             id,
+            recovery_key: uuid::Uuid::new_v4().to_string(),
             editor,
             generation,
             snapshot: draft,
             status: Status::Pending,
             dispatched: false,
         })
+    }
+    pub fn saved(&self) -> crate::chat_drafts::SavedSubmission {
+        crate::chat_drafts::SavedSubmission {
+            key: self.recovery_key.clone(),
+            snapshot: self.snapshot.clone(),
+            status: self.status.clone(),
+        }
+    }
+    pub fn recover(id: u64, saved: crate::chat_drafts::SavedSubmission) -> Self {
+        Self {
+            id,
+            recovery_key: saved.key,
+            editor: 0,
+            generation: 0,
+            snapshot: saved.snapshot,
+            status: saved.status,
+            dispatched: true,
+        }
     }
     pub fn command(&mut self) -> Result<ChatCommand, String> {
         if self.status != Status::Pending || self.dispatched {
@@ -47,14 +62,22 @@ impl Submission {
         Ok(self.expected_command())
     }
     pub fn expected_command(&self) -> ChatCommand {
+        let text = crate::chat_drafts::references::provider_text(
+            &self.snapshot.text,
+            &self.snapshot.references,
+        );
         if self.snapshot.attachments.is_empty() {
             // The wire shape and trimming policy of legacy Send are unchanged.
             ChatCommand::Send {
-                text: self.snapshot.text.trim().to_owned(),
+                text: if self.snapshot.references.is_empty() {
+                    text.trim().to_owned()
+                } else {
+                    text
+                },
             }
         } else {
             ChatCommand::SendAttachments {
-                text: self.snapshot.text.clone(),
+                text,
                 attachments: self.snapshot.attachments.clone(),
             }
         }

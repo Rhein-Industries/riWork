@@ -81,12 +81,22 @@ if [ -x "$remote_binary" ]; then
 fi
 # The chat's dictation helper, built beside riwork by build.rs when Swift is available.
 speech_binary="target/$profile/riwork-speech"
+diagram_binary="target/$profile/riwork-diagram"
+if [ -x "$diagram_binary" ]; then
+    cp "$diagram_binary" "$bundle/Contents/MacOS/riwork-diagram"
+else
+    echo "Diagram renderer is missing: $diagram_binary" >&2
+    exit 1
+fi
 if [ -x "$speech_binary" ]; then
     cp "$speech_binary" "$bundle/Contents/MacOS/riwork-speech"
 else
     echo "warning: $speech_binary is missing; chat dictation will be unavailable" >&2
 fi
 cp "$app_icon" "$resources/RiWork.icns"
+mkdir -p "$resources/licenses"
+cp macos/diagram/LICENSE-mermaid "$resources/licenses/Mermaid.txt"
+cp macos/diagram/THIRD_PARTY_NOTICES.txt "$resources/licenses/Mermaid-dependencies.txt"
 tic -x -o "$resources/terminfo" "$work/ghostty.terminfo"
 cp -R "$ghostty_source/shell-integration" "$resources/ghostty/"
 if [ -d "$themes" ]; then
@@ -141,6 +151,8 @@ if [ -f "$bundle/Contents/MacOS/riwork-speech" ]; then
     codesign --force --sign "$codesign_identity" --identifier "$identifier.speech" \
         "$bundle/Contents/MacOS/riwork-speech"
 fi
+codesign --force --sign "$codesign_identity" --identifier "$identifier.diagram" \
+    "$bundle/Contents/MacOS/riwork-diagram"
 codesign --force --sign "$codesign_identity" --identifier "$identifier" "$bundle"
 codesign --verify --deep --strict "$bundle"
 

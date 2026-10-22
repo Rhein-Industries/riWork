@@ -77,19 +77,22 @@ impl ChatView {
                     })
                     .into_any_element()
             }
-            Some(super::display::Row::Activity { turn_id, items }) => {
+            Some(super::display::Row::Activity { turn_id, .. }) => {
                 let key = super::display::activity_key(turn_id);
                 let expanded = self.open.contains(&key);
+                let summary = super::activity_summary::for_turn(
+                    &self.model.transcript,
+                    &self.model.completed,
+                    turn_id,
+                );
                 widgets::button(
                     SharedString::from(key.clone()),
-                    format!(
-                        "{} Activity from this turn · {}",
-                        if expanded { "▾" } else { "▸" },
-                        items.len()
-                    ),
-                    None,
+                    format!("{} {}", if expanded { "▾" } else { "▸" }, summary.label()),
+                    summary.has_failure().then(|| look.error()),
                     look,
                 )
+                .max_w_full()
+                .whitespace_normal()
                 .aria_expanded(expanded)
                 .on_click(cx.listener(move |view, _, _, cx| {
                     let offset = view.list.logical_scroll_top();
@@ -416,31 +419,7 @@ impl ChatView {
                         .as_deref()
                         .filter(|text| !text.trim().is_empty())
                 {
-                    let key = format!("plan:{}:document", item.id);
-                    let copy_key = format!("copy-plan:{}", item.id);
-                    let markdown = source.to_owned();
-                    div()
-                        .w_full()
-                        .min_w_0()
-                        .p(ui_text::space(10.))
-                        .child(self.prose(&self.parsed(item, source), &key, look, cx))
-                        .child(
-                            div().mt(ui_text::space(8.)).flex().justify_end().child(
-                                widgets::copy_button(
-                                    SharedString::from(copy_key.clone()),
-                                    self.copied.as_deref() == Some(copy_key.as_str()),
-                                    "Copy plan",
-                                    "Copy plan Markdown",
-                                    look,
-                                )
-                                .on_click(cx.listener(
-                                    move |view, _, _, cx| {
-                                        view.copy(copy_key.clone(), markdown.clone(), cx)
-                                    },
-                                )),
-                            ),
-                        )
-                        .into_any_element()
+                    self.plan_document(item, source, look, cx)
                 } else {
                     checklist(self, &item.id, steps, explanation.as_deref(), look, cx)
                 };
@@ -588,23 +567,23 @@ impl ChatView {
             .into_any_element()
     }
 
-    /// The message's blocks, parsed again only when its text has changed.
+    /// Keep completed prefixes while reparsing the message's unfinished tail.
     pub(super) fn parsed(&self, item: &Item, text: &str) -> Arc<Vec<markdown::Block>> {
-        use std::hash::{DefaultHasher, Hash, Hasher};
-        let mut hasher = DefaultHasher::new();
-        text.hash(&mut hasher);
-        let hash = hasher.finish();
-        let mut caches = self.caches.borrow_mut();
-        if let Some((known, blocks)) = caches.markdown.get(&item.id)
-            && *known == hash
-        {
-            return blocks.clone();
-        }
-        let blocks = Arc::new(markdown::parse(text));
-        caches
+        self.parsed_variant(item, text, "full")
+    }
+
+    pub(super) fn parsed_variant(
+        &self,
+        item: &Item,
+        text: &str,
+        variant: &'static str,
+    ) -> Arc<Vec<markdown::Block>> {
+        self.caches
+            .borrow_mut()
             .markdown
-            .insert(item.id.clone(), (hash, blocks.clone()));
-        blocks
+            .entry((item.id.clone(), variant))
+            .or_default()
+            .parse(text)
     }
 
     /// Counts follow the exact source, including same-length streaming edits.
@@ -778,95 +757,7 @@ impl ChatView {
         look: Look,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let colors = look.colors;
-        // Only the end of the output is read, however long it is: lines are the same before and
-        // after cleaning, and the whole of it is cleaned when it is copied.
-        let (end, hidden) = cards::tail(output, OUTPUT_LINES, OUTPUT_BYTES);
-        let shown = cards::clean_output(end);
-        let copy_key = format!("copy:{}", item.id);
-        let copied = self.copied.as_deref() == Some(copy_key.as_str());
-        let command_id = item.id.clone();
-        let scroller = self.scroller(&format!("output:{}", item.id));
-        div()
-            .w_full()
-            .flex()
-            .flex_col()
-            .when(command.trim().contains('\n'), |body| {
-                body.child(
-                    div()
-                        .px(ui_text::space(10.0))
-                        .py(ui_text::space(6.0))
-                        .text_size(ui_text::text(11.0))
-                        .font_family(ui_text::code_family())
-                        .text_color(rgb(colors.cyan))
-                        .border_b_1()
-                        .border_color(rgb(colors.divider))
-                        .child(self.selectable(
-                            &format!("command:{}", item.id),
-                            command.trim().to_owned(),
-                            Vec::new(),
-                            Vec::new(),
-                            look,
-                            cx,
-                        )),
-                )
-            })
-            .child(
-                div()
-                    .w_full()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .px(ui_text::space(10.0))
-                    .pt(ui_text::space(4.0))
-                    .text_size(ui_text::text(10.0))
-                    .text_color(rgb(colors.muted))
-                    .child(if hidden > 0 {
-                        format!("{hidden} earlier lines not shown")
-                    } else {
-                        widgets::sentence("output", look)
-                    })
-                    .child(
-                        widgets::copy_button(
-                            id(copy_key),
-                            copied,
-                            "copy output",
-                            "Copy output",
-                            look,
-                        )
-                        .on_click(cx.listener(move |view, _, _, cx| {
-                            view.copy_item(&command_id, cx);
-                        })),
-                    ),
-            )
-            .child(
-                scroller.attach(
-                    div()
-                        .id(id(format!("output:{}", item.id)))
-                        .w_full()
-                        .max_h(ui_text::space(280.0))
-                        .flex()
-                        // Items keep their own height, so what is taller than the box scrolls.
-                        .items_start()
-                        .overflow_scroll()
-                        .px(ui_text::space(10.0))
-                        .py(ui_text::space(6.0))
-                        .bg(rgb(colors.bg))
-                        .text_size(ui_text::text(11.0))
-                        .font_family(ui_text::code_family())
-                        .child(div().flex_none().min_w_full().whitespace_nowrap().child(
-                            self.selectable(
-                                &format!("output:{}", item.id),
-                                shown,
-                                Vec::new(),
-                                Vec::new(),
-                                look,
-                                cx,
-                            ),
-                        )),
-                ),
-            )
-            .into_any_element()
+        self.command_output_panel(item, command, output, look, cx)
     }
 
     fn changes_body(
@@ -880,105 +771,133 @@ impl ChatView {
     ) -> AnyElement {
         let colors = look.colors;
         let only_one = changes.len() == 1;
+        let review_item = item.id.clone();
         div()
             .w_full()
             .flex()
             .flex_col()
-            .children(changes.iter().enumerate().map(|(at, change)| {
-                let key = format!("{}#{at}", item.id);
-                let has_diff = change.diff.as_ref().is_some_and(|d| !d.trim().is_empty());
-                // A card of one file shows its diff as soon as the card opens.
-                let open = has_diff && (only_one || self.open.contains(&key));
-                let (letter, word) = cards::change_badge(change.kind);
-                let letter_color = match change.kind {
-                    ChangeKind::Add => look.diff.added,
-                    ChangeKind::Delete => look.diff.removed,
-                    // Native keeps its signal color for state: an edit is in its secondary.
-                    ChangeKind::Modify | ChangeKind::Rename if look.native => colors.magenta,
-                    ChangeKind::Modify | ChangeKind::Rename => colors.gold,
-                };
-                let (added, removed) = stats.get(at).copied().unwrap_or((0, 0));
-                let header = div()
-                    .w_full()
-                    .flex()
-                    .items_center()
-                    .gap(ui_text::space(8.0))
-                    .px(ui_text::space(10.0))
-                    .py(ui_text::space(4.0))
-                    .text_size(ui_text::text(11.0))
-                    .when(has_diff && !only_one, |row| {
-                        row.cursor_pointer().hover(move |style| {
-                            controls::hovered(style, controls::row_hover(false, colors), |style| {
-                                style.bg(rgb(colors.panel_active))
+            .child(
+                div().px(ui_text::space(10.)).py(ui_text::space(5.)).child(
+                    widgets::button(
+                        SharedString::from(format!("review-changes:{}", item.id)),
+                        format!("Review {} reported files", changes.len()),
+                        None,
+                        look,
+                    )
+                    .on_click(cx.listener(move |view, _, window, cx| {
+                        view.open_file_review_at(&review_item, 0, None, window, cx);
+                    })),
+                ),
+            )
+            .children(
+                changes
+                    .iter()
+                    .enumerate()
+                    .filter(|(at, _)| {
+                        *at < super::turn_review::INLINE_FILES
+                            || self.open.contains(&format!("{}#{at}", item.id))
+                    })
+                    .map(|(at, change)| {
+                        let key = format!("{}#{at}", item.id);
+                        let has_diff = change.diff.as_ref().is_some_and(|d| !d.trim().is_empty());
+                        // A card of one file shows its diff as soon as the card opens.
+                        let open = has_diff && (only_one || self.open.contains(&key));
+                        let (letter, word) = cards::change_badge(change.kind);
+                        let letter_color = match change.kind {
+                            ChangeKind::Add => look.diff.added,
+                            ChangeKind::Delete => look.diff.removed,
+                            // Native keeps its signal color for state: an edit is in its secondary.
+                            ChangeKind::Modify | ChangeKind::Rename if look.native => {
+                                colors.magenta
+                            }
+                            ChangeKind::Modify | ChangeKind::Rename => colors.gold,
+                        };
+                        let (added, removed) = stats.get(at).copied().unwrap_or((0, 0));
+                        let header = div()
+                            .w_full()
+                            .flex()
+                            .items_center()
+                            .gap(ui_text::space(8.0))
+                            .px(ui_text::space(10.0))
+                            .py(ui_text::space(4.0))
+                            .text_size(ui_text::text(11.0))
+                            .when(has_diff && !only_one, |row| {
+                                row.cursor_pointer().hover(move |style| {
+                                    controls::hovered(
+                                        style,
+                                        controls::row_hover(false, colors),
+                                        |style| style.bg(rgb(colors.panel_active)),
+                                    )
+                                })
                             })
-                        })
-                    })
-                    .child(
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .w(ui_text::space(14.))
+                                    .text_color(rgb(letter_color))
+                                    .child(letter),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .font_family(ui_text::mono_family())
+                                    .child(change.path.clone()),
+                            )
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .text_color(rgb(colors.muted))
+                                    .child(widgets::sentence(word, look)),
+                            )
+                            .when(added > 0, |row| {
+                                row.child(
+                                    div()
+                                        .flex_none()
+                                        .text_color(rgb(look.diff.added))
+                                        .child(format!("+{added}")),
+                                )
+                            })
+                            .when(removed > 0, |row| {
+                                row.child(
+                                    div()
+                                        .flex_none()
+                                        .text_color(rgb(look.diff.removed))
+                                        .child(format!("−{removed}")),
+                                )
+                            })
+                            .when(has_diff && !only_one, |row| {
+                                row.child(chevron(open, true, colors.muted))
+                            });
+                        let toggle_key = key.clone();
+                        let header =
+                            widgets::content_button(
+                                id(format!("file:{key}")),
+                                change.path.clone(),
+                                header,
+                                look,
+                            )
+                            .disabled(!has_diff || only_one)
+                            .aria_expanded(open)
+                            .on_click(cx.listener(
+                                move |view, _, _, cx| view.toggle(&toggle_key, Some(ix), cx),
+                            ));
                         div()
-                            .flex_none()
-                            .w(ui_text::space(14.))
-                            .text_color(rgb(letter_color))
-                            .child(letter),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .font_family(ui_text::mono_family())
-                            .child(change.path.clone()),
-                    )
-                    .child(
-                        div()
-                            .flex_none()
-                            .text_color(rgb(colors.muted))
-                            .child(widgets::sentence(word, look)),
-                    )
-                    .when(added > 0, |row| {
-                        row.child(
-                            div()
-                                .flex_none()
-                                .text_color(rgb(look.diff.added))
-                                .child(format!("+{added}")),
-                        )
-                    })
-                    .when(removed > 0, |row| {
-                        row.child(
-                            div()
-                                .flex_none()
-                                .text_color(rgb(look.diff.removed))
-                                .child(format!("−{removed}")),
-                        )
-                    })
-                    .when(has_diff && !only_one, |row| {
-                        row.child(chevron(open, true, colors.muted))
-                    });
-                let toggle_key = key.clone();
-                let header = widgets::content_button(
-                    id(format!("file:{key}")),
-                    change.path.clone(),
-                    header,
-                    look,
-                )
-                .disabled(!has_diff || only_one)
-                .aria_expanded(open)
-                .on_click(
-                    cx.listener(move |view, _, _, cx| view.toggle(&toggle_key, Some(ix), cx)),
-                );
-                div()
-                    .w_full()
-                    .when(at > 0, |file| {
-                        file.border_t_1().border_color(rgb(colors.divider))
-                    })
-                    .child(header)
-                    .children(
-                        change
-                            .diff
-                            .as_ref()
-                            .filter(|_| open)
-                            .map(|text| self.diff_lines(&key, text, change.kind, look, cx)),
-                    )
-            }))
+                            .w_full()
+                            .when(at > 0, |file| {
+                                file.border_t_1().border_color(rgb(colors.divider))
+                            })
+                            .child(header)
+                            .children(
+                                change
+                                    .diff
+                                    .as_ref()
+                                    .filter(|_| open)
+                                    .map(|text| self.diff_lines(&key, text, change.kind, look, cx)),
+                            )
+                    }),
+            )
             .into_any_element()
     }
 
@@ -1360,6 +1279,8 @@ impl ChatView {
                     .gap(ui_text::space(5.))
                     .px(ui_text::space(8.))
                     .py(ui_text::space(3.))
+                    .flex_wrap()
+                    .children(self.diff_feedback_action(key, look, cx))
                     .child(
                         widgets::button(
                             SharedString::from(wrap_key.clone()),

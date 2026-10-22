@@ -1172,7 +1172,13 @@ impl GlobalWindow {
         self.chat_tabs.claim(&id, true);
         let home = self.sessions.state_home().to_path_buf();
         let config = self.host.clone();
-        let view = cx.new(|cx| ChatView::open(id.clone(), config, window, cx));
+        let view = cx.new(|cx| {
+            #[cfg(test)]
+            if !self.services {
+                return ChatView::open_inert_for_tests(id.clone(), config, window, cx);
+            }
+            ChatView::open(id.clone(), config, window, cx)
+        });
         let (names, paths) = global_speech_context(&self.state);
         let store = self.store.clone();
         view.update(cx, |view, _| {
@@ -1288,6 +1294,12 @@ impl GlobalWindow {
             }
             // Only a chat being made says so; this one exists.
             ChatViewEvent::Created(_) => {}
+            ChatViewEvent::CodeToTerminal { text } => {
+                view.update(cx, |view, cx| {
+                    view.choose_snippet_terminal(text.clone(), Vec::new(), window, cx)
+                });
+            }
+            ChatViewEvent::FocusCodeTerminal { .. } => {}
             ChatViewEvent::Close => {
                 // Deleted: the window offers to start one again.
                 self.forget_shown(cx);

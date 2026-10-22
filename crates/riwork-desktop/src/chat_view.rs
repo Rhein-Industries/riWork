@@ -38,13 +38,16 @@ use crate::{
     ui_text,
 };
 
+mod activity_summary;
 mod approval;
 mod attachment_draft;
 mod attachment_ui;
 pub(crate) use attachment_ui::init as init_attachments;
 mod cards;
 mod code_highlight;
+mod command_output;
 mod composer;
+mod diagram;
 mod dictate;
 mod diff;
 mod display;
@@ -56,6 +59,9 @@ mod draft_tests;
 mod editor_tests;
 mod editors;
 mod feed;
+mod feedback;
+mod file_actions;
+mod file_review;
 mod find;
 #[cfg(test)]
 mod find_tests;
@@ -71,9 +77,12 @@ mod memo_tests;
 mod notice_tests;
 mod notice_ui;
 mod notices;
+mod output_actions;
 mod output_table;
 mod panels;
+mod plan_document;
 mod prose;
+mod references;
 mod rows;
 mod select;
 mod selection_document;
@@ -84,6 +93,7 @@ mod subshells;
 #[cfg(test)]
 mod subshells_tests;
 mod tool_views;
+mod turn_navigation;
 mod turn_review;
 mod worker_shelf;
 #[cfg(test)]
@@ -140,6 +150,14 @@ pub enum ChatViewEvent {
     NewChat,
     OpenFile {
         target: String,
+    },
+    /// Copy a completed shell snippet, then focus a terminal explicitly chosen by the user.
+    CodeToTerminal {
+        text: String,
+    },
+    FocusCodeTerminal {
+        shell_id: String,
+        text: String,
     },
     /// A usage-limit notice's **Show usage** was pressed.
     ShowUsage,
@@ -201,8 +219,8 @@ struct Draft {
 #[derive(Default)]
 struct Caches {
     tool_outputs: HashMap<String, (u64, Option<Arc<crate::chat::tool_output::ToolOutput>>)>,
-    /// Parsed messages by item id, with a hash of the text they were parsed from.
-    markdown: HashMap<String, (u64, Arc<Vec<markdown::Block>>)>,
+    /// Completed Markdown prefixes survive streaming changes to the unfinished tail.
+    markdown: HashMap<(String, &'static str), markdown::ParseCache>,
     /// Counts invalidated by exact changes, including same-length replacements.
     changes: HashMap<String, (Vec<crate::chat::model::FileChange>, cards::FileStats)>,
     /// Rich diff text and its kind, including same-length streaming replacements.
@@ -240,6 +258,7 @@ pub struct ChatView {
     /// How many of the list's rows are transcript items; the row after them is the footer.
     items_in_list: usize,
     visible: Vec<display::Row>,
+    turn_navigation: turn_navigation::Navigation,
     display_mode: DisplayMode,
     pending_display: Option<DisplayMode>,
     media: media::MediaState,
@@ -306,6 +325,16 @@ pub struct ChatView {
     copied: Option<String>,
     forget_copy: Option<Task<()>>,
     caches: RefCell<Caches>,
+    command_outputs: RefCell<command_output::Panels>,
+    diagrams: RefCell<diagram::Diagrams>,
+    references: references::DraftReferences,
+    file_review: Option<file_review::Review>,
+    output_overlay: Option<output_actions::Overlay>,
+    terminal_picker: Option<output_actions::TerminalPicker>,
+    file_action_targets: Vec<String>,
+    file_action_page: usize,
+    file_action_generation: u64,
+    file_action_focus: Option<gpui::FocusHandle>,
     /// The message box row's width as last laid out, which decides where its buttons go
     /// (see `composer::fit`); zero until it is first drawn.
     composer_width: std::rc::Rc<std::cell::Cell<f32>>,
@@ -315,6 +344,7 @@ pub struct ChatView {
     header_widths: std::rc::Rc<std::cell::Cell<[(f32, u64); 9]>>,
     /// Base participants for the visible, styled transcript; Base owns selection.
     transcript_selection: select::TranscriptSelection,
+    feedback_pending: Option<feedback::SelectionFeedback>,
     /// What the window was last told, so it hears of changes only.
     announced: Option<Summary>,
     /// Dictation into the message box.
@@ -382,6 +412,15 @@ impl ChatView {
     pub fn following_for_tests(&self) -> bool {
         self.feed_started || self.feed.is_some()
     }
+
+    #[cfg(test)]
+    pub(crate) fn transport_inactive_for_tests(&self) -> bool {
+        self.feed.is_none()
+            && self.pump.is_none()
+            && self.working.is_none()
+            && self.creation.is_none()
+            && self.pending_submission.is_none()
+    }
     /// Browse an existing chat without starting its host on follow/reconnect. The normal
     /// configuration remains available for explicit sends and attachment staging.
     pub fn open_existing(
@@ -431,6 +470,22 @@ impl ChatView {
         view
     }
 
+    /// A navigation fixture restores its editor but never starts real feed threads.
+    #[cfg(test)]
+    pub(crate) fn open_inert_for_tests(
+        chat_id: String,
+        config: HostConfig,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut view = Self::open_deferred(chat_id, None, config, window, cx);
+        view.restore_draft(window, cx);
+        // Rendering normally activates a deferred view. The fixture is already
+        // initialized, with deliberately no transport to activate or dispatch to.
+        view.feed_started = true;
+        view
+    }
+
     /// Keep tab metadata fresh without subscribing to the transcript.
     pub fn update_inventory(&mut self, info: &ChatInfo, cx: &mut Context<Self>) {
         if self.inventory_info.as_ref() != Some(info) {
@@ -468,6 +523,10 @@ impl ChatView {
         // One row for the footer. Rows are added before it as items arrive, and the list
         // follows the end while the user has not scrolled up.
         let list = ListState::new(1, ListAlignment::Top, px(600.0));
+        list.set_scroll_handler(cx.listener(|view, _, _, cx| {
+            view.turn_navigation.manual_scroll();
+            cx.notify();
+        }));
         list.set_follow_mode(FollowMode::Tail);
         // Settings shows or hides the mic in every open chat at once.
         cx.observe_global_in::<crate::settings::Settings>(window, |view, window, cx| {
@@ -481,6 +540,7 @@ impl ChatView {
         cx.on_release(|view, cx| {
             view.transcript_selection.retire(view.window_handle, cx);
             view.release_images(cx);
+            view.release_diagrams(cx);
             view.release_attachment_previews(cx);
         })
         .detach();
@@ -528,6 +588,7 @@ impl ChatView {
             list,
             items_in_list: 0,
             visible: Vec::new(),
+            turn_navigation: Default::default(),
             display_mode: cx
                 .try_global::<crate::settings::Settings>()
                 .map(|s| s.chat_display)
@@ -579,7 +640,18 @@ impl ChatView {
             copied: None,
             forget_copy: None,
             caches: RefCell::new(Caches::default()),
+            command_outputs: RefCell::default(),
+            diagrams: RefCell::default(),
+            references: Default::default(),
+            file_review: None,
+            output_overlay: None,
+            terminal_picker: None,
+            file_action_targets: Vec::new(),
+            file_action_page: 0,
+            file_action_generation: 0,
+            file_action_focus: None,
             transcript_selection,
+            feedback_pending: None,
             announced: None,
             dictation: dictate::Dictation::default(),
             speech_names: Vec::new(),
@@ -859,16 +931,20 @@ impl ChatView {
         self.transcript_selection.changed();
         // Streaming content cannot leave an old copied projection. Unrelated
         // tail updates preserve selection and participant/editor identities.
-        let selected_changed = self
-            .transcript_selection
-            .selected_rows(cx)
-            .into_iter()
-            .any(|row| match self.visible.get(row) {
-                Some(display::Row::Item(at) | display::Row::Details(at)) => {
-                    applied.touched.contains(at) || self.review_depends_on(*at, &applied.touched)
-                }
-                _ => false,
-            });
+        // A focused review has its own row numbers and source. Its single row
+        // must not be interpreted as row zero of the background transcript.
+        let selected_changed = self.file_review.is_none()
+            && self
+                .transcript_selection
+                .selected_rows(cx)
+                .into_iter()
+                .any(|row| match self.visible.get(row) {
+                    Some(display::Row::Item(at) | display::Row::Details(at)) => {
+                        applied.touched.contains(at)
+                            || self.review_depends_on(*at, &applied.touched)
+                    }
+                    _ => false,
+                });
         if selected_changed {
             self.transcript_selection.clear(self.window_handle, cx);
         }
@@ -891,9 +967,25 @@ impl ChatView {
         }
         self.list
             .remeasure_items(self.items_in_list..self.items_in_list + 1);
+        if self.file_review.is_some() {
+            self.find_list().remeasure();
+            // Preserve unchanged patch text, and retire a changed selection
+            // before another Copy can read its previous source projection.
+            self.refresh_selection_document(widgets::Look::of(cx), cx);
+        }
+        self.refresh_reference_states(cx);
     }
 
     fn refresh_projection(&mut self, cx: &mut Context<Self>) {
+        self.refresh_projection_inner(cx, false);
+    }
+
+    fn refresh_projection_for_find(&mut self, cx: &mut Context<Self>) {
+        self.refresh_projection_inner(cx, true);
+    }
+
+    fn refresh_projection_inner(&mut self, cx: &mut Context<Self>, preserve_selection: bool) {
+        self.turn_navigation.invalidate();
         self.transcript_selection.changed();
         let rows = display::rows_with_activity(
             &self.model.transcript,
@@ -902,7 +994,8 @@ impl ChatView {
             &self.open,
         );
         if rows != self.visible {
-            if !rows.starts_with(&self.visible) {
+            if !preserve_selection && self.file_review.is_none() && !rows.starts_with(&self.visible)
+            {
                 self.transcript_selection.retire(self.window_handle, cx);
             }
             let prefix = rows
@@ -924,6 +1017,7 @@ impl ChatView {
             self.visible = rows;
         }
         self.reindex_workers();
+        self.refresh_reference_states(cx);
     }
 
     fn follow_display_setting(&mut self, cx: &mut Context<Self>) {
@@ -1456,7 +1550,7 @@ impl ChatView {
             .map(|item| &item.body)
         {
             Some(ItemBody::AgentMessage { text }) => text.clone(),
-            Some(ItemBody::Command { output, .. }) => cards::clean_output(output),
+            Some(ItemBody::Command { output, .. }) => command_output::retained_text(output),
             _ => return,
         };
         self.copy(format!("copy:{id}"), text, cx);

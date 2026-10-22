@@ -924,3 +924,208 @@ fn escape_closing_a_menu_from_the_find_field_leaves_the_keys_there(cx: &mut Test
     press(cx, handle, "escape");
     assert!(!cx.read(|cx| view.read(cx).find.open));
 }
+
+fn command(id: &str, turn: &str, output: &str) -> Item {
+    Item {
+        id: id.into(),
+        turn_id: Some(turn.into()),
+        status: ItemStatus::Completed,
+        presentation: Presentation::default(),
+        body: ItemBody::Command {
+            command: "fixture command".into(),
+            cwd: None,
+            output: output.into(),
+            exit_code: Some(0),
+        },
+    }
+}
+
+#[gpui::test]
+fn hidden_activity_matches_open_only_the_selected_detail_and_keep_stable_identity(
+    cx: &mut TestAppContext,
+) {
+    use crate::chat::model::TurnOutcome;
+    let mut first = message("answer-one", "First answer");
+    first.turn_id = Some("one".into());
+    let mut second = message("answer-two", "Second answer");
+    second.turn_id = Some("two".into());
+    let third = message("answer-three", "Preserve this selection");
+    let (handle, view) = mount(
+        cx,
+        vec![
+            command("command-one", "one", "First needle 🦀"),
+            command("irrelevant", "one", "Other output"),
+            first,
+            command("command-two", "two", "Second needle 🦀"),
+            second,
+            third,
+        ],
+    );
+    act(cx, handle, |window, cx| {
+        view.update(cx, |view, cx| {
+            view.model.completed = vec![
+                ("one".into(), TurnOutcome::Completed, 3),
+                ("two".into(), TurnOutcome::Completed, 5),
+                (
+                    "fixture-turn:answer-three".into(),
+                    TurnOutcome::Completed,
+                    6,
+                ),
+            ];
+            view.refresh_projection(cx);
+            view.composer
+                .update(cx, |input, cx| input.set_value("Keep my draft", window, cx));
+            cx.notify();
+        })
+    });
+    scroll_to_top(cx, handle, &view);
+    assert!(cx.read(|cx| {
+        view.read(cx)
+            .transcript_selection
+            .with_source(|source| !source.iter().any(|leaf| leaf.key.starts_with("output:")))
+    }));
+    press(cx, handle, "cmd-f");
+    type_text(cx, handle, "needle");
+    assert_eq!(status(cx, &view), (Some(1), 2));
+    assert_eq!(
+        current_text(cx, &view),
+        ("output:command-one".into(), "needle".into())
+    );
+    assert!(current_in_view(cx, &view));
+    cx.read(|cx| {
+        let view = view.read(cx);
+        assert!(view.open.contains("activity:one"));
+        assert!(view.open.contains("command-one"));
+        assert!(!view.open.contains("irrelevant"));
+        assert!(!view.open.contains("activity:two"));
+        assert!(!view.open.contains("command-two"));
+        assert_eq!(view.composer_text(cx), "Keep my draft");
+        assert!(
+            !view
+                .transcript_selection
+                .with_source(|source| source.iter().any(|leaf| leaf.key == "output:command-two"))
+        );
+    });
+    // Select a later answer before the next hidden group inserts rows above it.
+    select(
+        cx,
+        handle,
+        &view,
+        "answer-three/0",
+        0,
+        "Preserve this selection".len(),
+    );
+    assert_eq!(copied(cx, handle), "Preserve this selection");
+    press(cx, handle, "cmd-g");
+    assert_eq!(status(cx, &view), (Some(2), 2));
+    assert_eq!(
+        current_text(cx, &view),
+        ("output:command-two".into(), "needle".into())
+    );
+    assert_eq!(
+        copied(cx, handle),
+        "Preserve this selection",
+        "revealing another row must preserve unchanged selected text"
+    );
+    assert!(cx.read(|cx| view.read(cx).open.contains("activity:two")));
+    act(cx, handle, |_, cx| {
+        view.update(cx, |view, cx| {
+            view.apply_display_mode(DisplayMode::Verbose, cx)
+        })
+    });
+    assert_eq!(status(cx, &view), (Some(2), 2));
+    assert_eq!(current_text(cx, &view).0, "output:command-two");
+    press(cx, handle, "cmd-shift-g");
+    assert_eq!(current_text(cx, &view).0, "output:command-one");
+    assert_eq!(
+        cx.read(|cx| view.read(cx).composer_text(cx)),
+        "Keep my draft"
+    );
+}
+
+#[gpui::test]
+fn find_opens_only_the_matching_nested_diff_and_preserves_preview_limits(cx: &mut TestAppContext) {
+    use crate::chat::model::{ChangeKind, FileChange};
+    let mut item = message("edits", "");
+    item.presentation.phase = None;
+    item.body = ItemBody::FileChange {
+        changes: vec![
+            FileChange {
+                path: "first.txt".into(),
+                kind: ChangeKind::Modify,
+                diff: Some("@@ -1 +1 @@\n-before\n+needle café".into()),
+            },
+            FileChange {
+                path: "other.txt".into(),
+                kind: ChangeKind::Modify,
+                diff: Some(format!("{}notretained", " ordinary\n".repeat(450))),
+            },
+        ],
+    };
+    let (handle, view) = mount(cx, vec![item]);
+    act(cx, handle, |_, cx| {
+        view.update(cx, |view, cx| {
+            view.apply_display_mode(DisplayMode::Verbose, cx)
+        })
+    });
+    press(cx, handle, "cmd-f");
+    type_text(cx, handle, "needle");
+    assert_eq!(status(cx, &view), (Some(1), 1));
+    assert_eq!(
+        current_text(cx, &view),
+        ("diff:edits#0:2".into(), "needle".into())
+    );
+    cx.read(|cx| {
+        let view = view.read(cx);
+        assert!(view.open.contains("edits"));
+        assert!(view.open.contains("edits#0"));
+        assert!(!view.open.contains("edits#1"));
+    });
+    press(cx, handle, "cmd-a");
+    type_text(cx, handle, "notretained");
+    assert_eq!(status(cx, &view), (None, 0));
+    assert!(!cx.read(|cx| view.read(cx).open.contains("edits#1")));
+    assert_eq!(
+        read(cx, handle, |window, _| window
+            .find("chat-find-scope")
+            .label()
+            .unwrap()
+            .to_owned()),
+        "Search includes closed details. Command logs use the current page; tool output and diffs use retained previews."
+    );
+}
+
+#[gpui::test]
+fn find_expands_a_long_plan_before_mapping_its_hidden_match(cx: &mut TestAppContext) {
+    let mut item = message("long-plan", "");
+    item.presentation.phase = None;
+    let source = format!(
+        "# Plan\n\n{}\n\nFinal needle café",
+        "A bounded preview line.\n".repeat(35)
+    );
+    item.body = ItemBody::Plan {
+        explanation: Some(source),
+        steps: Vec::new(),
+    };
+    let (handle, view) = mount(cx, vec![item]);
+    act(cx, handle, |_, cx| {
+        view.update(cx, |view, cx| {
+            view.apply_display_mode(DisplayMode::Verbose, cx)
+        })
+    });
+    assert!(!cx.read(|cx| {
+        view.read(cx)
+            .transcript_selection
+            .with_source(|source| source.iter().any(|leaf| leaf.text.contains("needle")))
+    }));
+    press(cx, handle, "cmd-f");
+    type_text(cx, handle, "needle");
+    assert_eq!(status(cx, &view), (Some(1), 1));
+    assert!(cx.read(|cx| {
+        view.read(cx)
+            .open
+            .contains(&plan_document::expansion_key("long-plan"))
+    }));
+    assert_eq!(current_text(cx, &view).1, "needle");
+    assert!(current_in_view(cx, &view));
+}

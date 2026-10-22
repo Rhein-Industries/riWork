@@ -55,6 +55,15 @@ struct Document {
     found: Vec<(String, Range<usize>, bool)>,
 }
 
+/// Rendered UTF-8 byte ranges, anchored to stable transcript leaf keys. Only the
+/// selected bytes are copied; quoting never retains an unbounded document snapshot.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct SelectionFragment {
+    pub key: String,
+    pub range: Range<usize>,
+    pub text: String,
+}
+
 impl Document {
     fn endpoint(&self, key: TextSelectionContentKey) -> Option<(usize, usize)> {
         let id = (key.value() >> 32) as u32;
@@ -233,6 +242,40 @@ impl TranscriptSelection {
     pub fn selected_text(&self, cx: &App) -> String {
         self.data.borrow().export(self.handle.snapshot(cx))
     }
+    pub(super) fn selected_fragments(
+        &self,
+        cx: &App,
+        max_bytes: usize,
+    ) -> Result<Vec<SelectionFragment>, ()> {
+        let data = self.data.borrow();
+        let Some((first, last)) = self.handle.snapshot(cx).and_then(|s| data.endpoints(s)) else {
+            return Ok(Vec::new());
+        };
+        let mut total = 0usize;
+        let mut fragments = Vec::new();
+        for at in first.0..=last.0 {
+            let leaf = &data.source[at];
+            let start = if at == first.0 { first.1 } else { 0 };
+            let end = if at == last.0 {
+                last.1
+            } else {
+                leaf.text.len()
+            };
+            if start == end {
+                continue;
+            }
+            total = total.saturating_add(end - start + usize::from(!fragments.is_empty()));
+            if total > max_bytes || fragments.len() >= 128 {
+                return Err(());
+            }
+            fragments.push(SelectionFragment {
+                key: leaf.key.clone(),
+                range: start..end,
+                text: leaf.text[start..end].to_owned(),
+            });
+        }
+        Ok(fragments)
+    }
     #[cfg(test)]
     pub(super) fn painted_find(&self) -> Vec<(String, Range<usize>, bool)> {
         self.data.borrow().found.clone()
@@ -330,6 +373,7 @@ impl TranscriptSelection {
 
 impl ChatView {
     pub(super) fn refresh_selection_document(&mut self, look: Look, cx: &mut Context<Self>) {
+        self.validate_pending_feedback();
         if !self.transcript_selection.dirty.replace(false)
             && self.transcript_selection.data.borrow().native == Some(look.native)
         {
@@ -338,13 +382,31 @@ impl ChatView {
         let source = super::selection_document::leaves(self, look);
         let changed_selected = {
             let old = self.transcript_selection.data.borrow();
-            old.rows(self.transcript_selection.handle.snapshot(cx))
-                .into_iter()
-                .any(|row| {
-                    old.source
+            self.transcript_selection
+                .handle
+                .snapshot(cx)
+                .and_then(|snapshot| old.endpoints(snapshot))
+                .is_some_and(|(first, last)| {
+                    let before = &old.source[first.0..=last.0];
+                    let bounds = source
                         .iter()
-                        .filter(|leaf| leaf.row == row)
-                        .ne(source.iter().filter(|leaf| leaf.row == row))
+                        .position(|leaf| leaf.key == before[0].key)
+                        .zip(
+                            source
+                                .iter()
+                                .position(|leaf| leaf.key == before[before.len() - 1].key),
+                        );
+                    let Some((start, end)) = bounds.filter(|(start, end)| start <= end) else {
+                        return true;
+                    };
+                    // Disclosing another Activity group changes row numbers, not
+                    // this selection. New/changed text inside its span still clears it.
+                    !before
+                        .iter()
+                        .map(|leaf| (&leaf.key, &leaf.text))
+                        .eq(source[start..=end]
+                            .iter()
+                            .map(|leaf| (&leaf.key, &leaf.text)))
                 })
         };
         if changed_selected {
@@ -363,6 +425,8 @@ impl ChatView {
         }
         data.replace_source(source);
         data.native = Some(look.native);
+        drop(data);
+        self.validate_pending_feedback();
     }
     pub(super) fn copy_transcript(
         &mut self,
@@ -377,6 +441,8 @@ impl ChatView {
                 .focus_handle(cx)
                 .is_focused(window)
             || self.find.field_focused(window, cx)
+            || self.focused_reference_editor(window, cx).is_some()
+            || self.focused_output_editor(window, cx).is_some()
             || self
                 .answers
                 .values()
@@ -422,6 +488,12 @@ impl ChatView {
             }
         }
         links.sort_by_key(|(range, _)| range.start);
+        let file_actions = self.file_actions_button(
+            key,
+            links.iter().map(|(_, target)| target.clone()).collect(),
+            look,
+            cx,
+        );
         let text: SharedString = text.into();
         let styled = StyledText::new(text.clone()).with_highlights(highlights);
         let layout = styled.layout().clone();
@@ -466,6 +538,7 @@ impl ChatView {
             .cursor_text()
             .role(gpui::Role::Label)
             .aria_label(text.clone())
+            .children(file_actions)
             .child(LeafRenderer {
                 body,
                 key: key.into(),

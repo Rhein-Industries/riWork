@@ -263,6 +263,10 @@ fn the_chat_view_is_the_global_chat_with_its_identity_draft_and_image_scope(
             view.read(cx).identity_for_tests(cx),
             (Some(chat.id.clone()), "half a thought".to_owned())
         );
+        assert!(
+            view.read(cx).transport_inactive_for_tests(),
+            "navigation fixtures have no feed, pump, or backend dispatch"
+        );
         view
     });
     // No project window can adopt it as a tab while this window shows it.
@@ -325,6 +329,13 @@ fn the_chat_view_is_the_global_chat_with_its_identity_draft_and_image_scope(
         assert_eq!(
             shown_chat(global).map(|(_, shown)| shown),
             Some(view.clone())
+        );
+    });
+
+    view.read_with(cx, |view, _| {
+        assert!(
+            view.transport_inactive_for_tests(),
+            "rendering and switching views must not activate a fixture feed"
         );
     });
 

@@ -30,14 +30,16 @@ fn main() {
         println!("cargo:rerun-if-changed={}", repository.join(path).display());
     }
     println!("cargo:rerun-if-env-changed=RIWORK_SKIP_SPEECH_HELPER");
-    if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos")
-        || env::var_os("RIWORK_SKIP_SPEECH_HELPER").is_some()
-    {
+    println!(
+        "cargo:rerun-if-changed={}",
+        repository.join("macos/diagram/main.swift").display()
+    );
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos") {
         return;
     }
     if !has_swiftc() {
         println!(
-            "cargo:warning=No Swift compiler (xcrun swiftc): chat dictation will be unavailable"
+            "cargo:warning=No Swift compiler (xcrun swiftc): chat dictation and diagram rendering will be unavailable"
         );
         return;
     }
@@ -55,6 +57,36 @@ fn main() {
     } else {
         "-Onone"
     };
+    let diagram = out.join("riwork-diagram");
+    let status = Command::new("/usr/bin/xcrun")
+        .args([
+            "--sdk",
+            "macosx",
+            "swiftc",
+            optimize,
+            "-swift-version",
+            "5",
+            "-target",
+        ])
+        .arg(format!("{arch}-apple-macos13.0"))
+        .arg(repository.join("macos/diagram/main.swift"))
+        .arg("-module-cache-path")
+        .arg(&module_cache)
+        .arg("-o")
+        .arg(&diagram)
+        .status()
+        .expect("riwork-diagram: run swiftc");
+    assert!(status.success(), "riwork-diagram: swiftc failed ({status})");
+    if let Some(profile_dir) = out.ancestors().nth(3) {
+        copy(&diagram, &profile_dir.join("riwork-diagram"));
+    }
+    println!(
+        "cargo:rustc-env=RIWORK_DIAGRAM_HELPER_BUILT={}",
+        diagram.display()
+    );
+    if env::var_os("RIWORK_SKIP_SPEECH_HELPER").is_some() {
+        return;
+    }
     let status = Command::new("/usr/bin/xcrun")
         .args(["--sdk", "macosx", "swiftc"])
         .args([optimize, "-swift-version", "5", "-target"])

@@ -6,6 +6,8 @@
 //! break inside a paragraph stays a line break, as the agents' own terminals show it. Nothing
 //! here depends on the GUI.
 
+use std::sync::Arc;
+
 /// How a run of text is set.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Style {
@@ -95,11 +97,174 @@ const MAX_DEPTH: usize = 8;
 const MAX_STYLED: usize = 16 * 1024;
 
 pub fn parse(source: &str) -> Vec<Block> {
+    parse_with_boundary(source).0
+}
+
+/// Cache only through a closed, top-level code fence followed by a complete blank
+/// line. An appended line cannot extend that block, unlike a list, quote or table.
+/// The normal block parser finds the boundary, so nested fences cannot fool it.
+#[derive(Default)]
+pub(super) struct ParseCache {
+    source: String,
+    blocks: Arc<Vec<Block>>,
+    stable: Option<(usize, usize)>,
+    #[cfg(test)]
+    reparsed_bytes: usize,
+}
+
+impl ParseCache {
+    pub(super) fn parse(&mut self, source: &str) -> Arc<Vec<Block>> {
+        if self.source == source {
+            return self.blocks.clone();
+        }
+        // Keep unusual line endings on the full parser path. Byte offsets below
+        // refer to complete LF lines, never to normalized or partially read text.
+        let reusable = !source.contains(['\r', '\u{feff}']);
+        let (offset, count) = self
+            .stable
+            .filter(|(end, _)| reusable && source.get(..*end) == self.source.get(..*end))
+            .unwrap_or_default();
+        let (tail, boundary) = parse_with_boundary(&source[offset..]);
+        let mut blocks = self.blocks[..count].to_vec();
+        blocks.extend(tail);
+        self.stable = if reusable {
+            boundary
+                .map(|(end, blocks)| (offset + end, count + blocks))
+                .or_else(|| (offset > 0).then_some((offset, count)))
+        } else {
+            None
+        };
+        #[cfg(test)]
+        {
+            self.reparsed_bytes = source.len() - offset;
+        }
+        self.source.clear();
+        self.source.push_str(source);
+        self.blocks = Arc::new(blocks);
+        self.blocks.clone()
+    }
+}
+
+fn parse_with_boundary(source: &str) -> (Vec<Block>, Option<(usize, usize)>) {
     let lines: Vec<String> = source
         .lines()
         .map(|line| line.replace('\t', "    "))
         .collect();
-    blocks(&lines, 0)
+    let mut boundary = None;
+    let blocks = blocks_with_boundary(&lines, 0, &mut boundary);
+    let boundary = boundary.and_then(|(lines, blocks)| {
+        let end = source.split_inclusive('\n').take(lines).map(str::len).sum();
+        // A whitespace-only trailing fragment is still writable by the next chunk.
+        (source.as_bytes().get(end - 1) == Some(&b'\n')).then_some((end, blocks))
+    });
+    (blocks, boundary)
+}
+
+#[cfg(test)]
+mod incremental_tests {
+    use super::*;
+
+    #[test]
+    fn every_unicode_chunk_matches_full_parse_across_block_types() {
+        let sources = [
+            "# Heading\n\nText **bold** é中🦀.\n\n```rust src/main.rs\nlet x = 1;\n```\n\n## After\n\n- one\n  - nested\n- [x] done\n\n> [!NOTE]\n> a quote\n\n| A | B |\n|---|---|\n| x | y |\n\n~~~text\nlast\n~~~\n\nTail",
+            "- list\n  ```rust\n  code\n  ```\n\n  continued\n\nOutside\n\n```\nopen",
+            "> ```\n> nested\n> ```\n\n> continued\n\n```\nroot\n```\n\n| table |\n|---|\n| row |",
+            "```\ncode\n```\n \t \n- x\n  lazy continuation\n\n    indented\n\n---\n",
+            "```\r\nwindows\r\n```\r\n\r\nTail\r\n",
+            "\u{feff}# Heading\n\n```\ncode\n```\n\nTail",
+            "Text\n```\nunfinished\n\nmore",
+        ];
+        for source in sources {
+            let mut cache = ParseCache::default();
+            for end in source.char_indices().map(|(i, _)| i).chain([source.len()]) {
+                let chunk = &source[..end];
+                assert_eq!(*cache.parse(chunk), parse(chunk), "prefix: {chunk:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn replacements_truncations_and_repeated_reads_keep_exact_source_identity() {
+        let mut cache = ParseCache::default();
+        for source in [
+            "```rs\nold\n```\n\nTail",
+            "```rs\nold\n```\n\nEdit",
+            "```rs\nnew\n```\n\nEdit",
+            "```rs\nnew",
+            "",
+            "# New document\n\n```\nchanged\n```\n\n끝",
+        ] {
+            let parsed = cache.parse(source);
+            assert_eq!(*parsed, parse(source));
+            assert!(Arc::ptr_eq(&parsed, &cache.parse(source)));
+        }
+    }
+
+    #[test]
+    fn only_complete_top_level_fences_seal_a_prefix() {
+        let mut cache = ParseCache::default();
+        let prefix = "# Start\n\n```rs\nlet x = 1;\n```\n\n";
+        cache.parse(prefix);
+        cache.parse(&format!("{prefix}Tail"));
+        assert_eq!(cache.reparsed_bytes, 4);
+        for incomplete in [
+            "```\ncode\n```\n ",
+            "```\ncode\n```\n",
+            "> ```\n> code\n> ```\n\n",
+            "- list\n  ```\n  code\n  ```\n\n",
+        ] {
+            let mut cache = ParseCache::default();
+            cache.parse(incomplete);
+            assert!(cache.stable.is_none(), "{incomplete:?}");
+        }
+    }
+
+    /// Run explicitly in an optimized test binary; timings are evidence, not a
+    /// platform-sensitive assertion in the normal suite.
+    #[test]
+    #[ignore = "manual optimized streaming benchmark"]
+    fn streaming_benchmark() {
+        use std::{hint::black_box, time::Instant};
+        let mut source = String::new();
+        for section in 0..128 {
+            source.push_str(&format!("## Section {section}\n\nSome **explanation** with [a link](https://example.com).\n\n```rust\n"));
+            for line in 0..40 {
+                source.push_str(&format!("let value_{line} = process({section}, {line});\n"));
+            }
+            source.push_str("```\n\n");
+        }
+        let ends: Vec<_> = (512..source.len())
+            .step_by(512)
+            .chain([source.len()])
+            .collect();
+        let mut full_times = Vec::new();
+        let mut cached_times = Vec::new();
+        for _ in 0..5 {
+            let start = Instant::now();
+            for &end in &ends {
+                black_box(parse(black_box(&source[..end])));
+            }
+            full_times.push(start.elapsed());
+            let mut cache = ParseCache::default();
+            let start = Instant::now();
+            for &end in &ends {
+                black_box(cache.parse(black_box(&source[..end])));
+            }
+            cached_times.push(start.elapsed());
+            assert_eq!(*cache.parse(&source), parse(&source));
+        }
+        full_times.sort();
+        cached_times.sort();
+        eprintln!(
+            "{} bytes, {} chunks; median of 5: full {:?}, incremental {:?}, {:.2}x faster",
+            source.len(),
+            ends.len(),
+            full_times[2],
+            cached_times[2],
+            full_times[2].as_secs_f64() / cached_times[2].as_secs_f64()
+        );
+    }
 }
 
 /// The concatenated text of spans, which is what the screen shows.
@@ -112,6 +277,14 @@ pub fn plain_text(spans: &[Span]) -> String {
 // ---------------------------------------------------------------------------------------
 
 fn blocks(lines: &[String], depth: usize) -> Vec<Block> {
+    blocks_with_boundary(lines, depth, &mut None)
+}
+
+fn blocks_with_boundary(
+    lines: &[String],
+    depth: usize,
+    boundary: &mut Option<(usize, usize)>,
+) -> Vec<Block> {
     let mut out = Vec::new();
     let mut paragraph: Vec<&str> = Vec::new();
     let mut i = 0;
@@ -142,6 +315,9 @@ fn blocks(lines: &[String], depth: usize) -> Vec<Block> {
                 title: fence.title,
                 text: code.join("\n"),
             });
+            if depth == 0 && i < lines.len() && lines[i].trim().is_empty() {
+                *boundary = Some((i + 1, out.len()));
+            }
             continue;
         }
         if let Some((level, text)) = heading(line) {

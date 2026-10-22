@@ -1,9 +1,9 @@
 //! Find in the chat: ⌘F in a focused chat opens a bar above the transcript that finds what
-//! the transcript shows, without regard to case, as the words are typed.
+//! the transcript retains, including closed disclosures, without regard to case.
 //!
-//! What is searched is the transcript selection's source (`selection_document`): the text
-//! each drawn leaf shows, byte for byte, for every row of the virtual list whether it is drawn
-//! now or not. A match lies inside one leaf. The matches are painted under the glyphs of the
+//! A separate search projection retains stable leaf keys and the disclosures each match
+//! needs. Hidden text never enters Copy or ordinary selection. A match lies inside one
+//! retained leaf; only its currently visible counterpart is painted under the glyphs of the
 //! leaves that are drawn (`select`), and the current one is brought into view over the next
 //! frames, by the list and by a code or output box it sits in (`reveal_find`).
 //!
@@ -20,7 +20,7 @@ use gpui_kit::base::TestSupportExt as _;
 use super::{
     ChatView, FindInChat, FindNext, FindPrevious,
     composer::{BAR_GAP, BAR_INSET},
-    selection_document::SourceLeaf,
+    selection_document::{self, SearchSource, SourceLeaf},
     widgets::Look,
 };
 use crate::{
@@ -213,6 +213,11 @@ pub(super) struct Find {
     /// Holds the focus of everything in the bar.
     bar: FocusHandle,
     hits: Rc<[Hit]>,
+    source: SearchSource,
+    /// The visible generation used to build the retained search projection.
+    source_generation: Option<u64>,
+    /// The selected search hit mapped into the visible selection document.
+    painted_current: Option<Hit>,
     current: Option<usize>,
     /// The current match by leaf key and byte, kept while the transcript changes.
     anchor: Option<(String, usize)>,
@@ -233,12 +238,22 @@ pub(super) struct Find {
 }
 
 impl Find {
+    /// An explicit transcript jump supersedes a queued reveal, while preserving
+    /// the query and match selection. Its existing next-frame callback becomes
+    /// a no-op unless a new Find operation starts another reveal first.
+    pub(super) fn cancel_reveal(&mut self) {
+        self.reveal = None;
+    }
+
     pub(super) fn new(window: &mut Window, cx: &mut Context<ChatView>) -> Self {
         Self {
             open: false,
             input: text_input::single_line("", "Find in chat", window, cx),
             bar: cx.focus_handle(),
             hits: Rc::from([]),
+            source: SearchSource::default(),
+            source_generation: None,
+            painted_current: None,
             current: None,
             anchor: None,
             searched: None,
@@ -271,7 +286,7 @@ impl Find {
 
     #[cfg(test)]
     pub(super) fn current_hit(&self) -> Option<Hit> {
-        self.hits.get(self.current?).cloned()
+        self.painted_current.clone()
     }
 
     #[cfg(test)]
@@ -361,6 +376,9 @@ impl ChatView {
         let restore = self.find.restore.take();
         self.find.open = false;
         self.find.hits = Rc::from([]);
+        self.find.source = SearchSource::default();
+        self.find.source_generation = None;
+        self.find.painted_current = None;
         self.find.current = None;
         self.find.anchor = None;
         self.find.searched = None;
@@ -421,15 +439,23 @@ impl ChatView {
         let look = Look::of(cx);
         self.refresh_selection_document(look, cx);
         let query = fold_query(&self.find.input.read(cx).value());
+        let generation = self.transcript_selection.generation();
+        if query.is_empty() {
+            self.find.source = SearchSource::default();
+            self.find.source_generation = None;
+        } else if self.find.source_generation != Some(generation) {
+            self.find.source = selection_document::search_source(self, look);
+            self.find.source_generation = Some(generation);
+        }
         let hits: Rc<[Hit]> = if query.is_empty() {
             Rc::from([])
         } else {
-            let index = &mut self.find.index;
-            self.transcript_selection
-                .with_source(|source| index.search(source, &query))
+            self.find
+                .index
+                .search(&self.find.source.leaves, &query)
                 .into()
         };
-        self.find.searched = Some(self.transcript_selection.generation());
+        self.find.searched = Some(generation);
         self.find.current = if hits.is_empty() {
             None
         } else if jump || self.find.anchor.is_none() {
@@ -451,22 +477,20 @@ impl ChatView {
     /// The first match whose row is at or below the top of the view, and within the top row
     /// one that is drawn below its top edge.
     fn first_in_view(&self, hits: &[Hit]) -> usize {
-        let top = self.list.logical_scroll_top();
-        let edge = self.list.viewport_bounds().top();
-        let selection = &self.transcript_selection;
-        selection
-            .with_source(|source| {
-                let from = hits.partition_point(|hit| source[hit.leaf].row < top.item_ix);
-                hits[from..]
-                    .iter()
-                    .position(|hit| {
-                        source[hit.leaf].row > top.item_ix
-                            || selection
-                                .painted_rect(hit.leaf, hit.range.clone())
-                                .is_none_or(|rect| rect.bottom() > edge)
-                    })
-                    .map(|at| from + at)
+        let top = self.find_list().logical_scroll_top();
+        let edge = self.find_list().viewport_bounds().top();
+        let source = &self.find.source.leaves;
+        let from = hits.partition_point(|hit| source[hit.leaf].row < top.item_ix);
+        hits[from..]
+            .iter()
+            .position(|hit| {
+                source[hit.leaf].row > top.item_ix
+                    || self
+                        .visible_find_hit(hit)
+                        .and_then(|hit| self.transcript_selection.painted_rect(hit.leaf, hit.range))
+                        .is_none_or(|rect| rect.bottom() > edge)
             })
+            .map(|at| from + at)
             .unwrap_or(0)
     }
 
@@ -475,8 +499,11 @@ impl ChatView {
         let (key, start) = self.find.anchor.as_ref()?;
         let last = hits.len() - 1;
         let leaf = self
-            .transcript_selection
-            .with_source(|source| source.iter().position(|leaf| &leaf.key == key));
+            .find
+            .source
+            .leaves
+            .iter()
+            .position(|leaf| &leaf.key == key);
         Some(match leaf {
             Some(leaf) => hits
                 .partition_point(|hit| (hit.leaf, hit.range.start) < (leaf, *start))
@@ -488,20 +515,65 @@ impl ChatView {
     fn remember_current(&mut self) {
         let hit = self.find.current.and_then(|at| self.find.hits.get(at));
         self.find.anchor = hit.and_then(|hit| {
-            self.transcript_selection.with_source(|source| {
-                source
-                    .get(hit.leaf)
-                    .map(|leaf| (leaf.key.clone(), hit.range.start))
-            })
+            self.find
+                .source
+                .leaves
+                .get(hit.leaf)
+                .map(|leaf| (leaf.key.clone(), hit.range.start))
         });
     }
 
-    fn paint_find(&self, look: Look) {
+    fn visible_find_hit(&self, hit: &Hit) -> Option<Hit> {
+        let searched = self.find.source.leaves.get(hit.leaf)?;
+        self.transcript_selection.with_source(|source| {
+            source
+                .iter()
+                .position(|leaf| leaf.key == searched.key && leaf.text == searched.text)
+                .map(|leaf| Hit {
+                    leaf,
+                    range: hit.range.clone(),
+                })
+        })
+    }
+
+    fn paint_find(&mut self, look: Look) {
         let colors = look.colors;
+        let mut mapped = self.transcript_selection.with_source(|source| {
+            let visible: HashMap<_, _> = source
+                .iter()
+                .enumerate()
+                .map(|(at, leaf)| (leaf.key.as_str(), (at, leaf.text.as_str())))
+                .collect();
+            self.find
+                .hits
+                .iter()
+                .enumerate()
+                .filter_map(|(at, hit)| {
+                    let searched = self.find.source.leaves.get(hit.leaf)?;
+                    let (leaf, text) = visible.get(searched.key.as_str())?;
+                    (*text == searched.text).then(|| {
+                        (
+                            Hit {
+                                leaf: *leaf,
+                                range: hit.range.clone(),
+                            },
+                            self.find.current == Some(at),
+                        )
+                    })
+                })
+                .collect::<Vec<_>>()
+        });
+        mapped.sort_by_key(|(hit, _)| (hit.leaf, hit.range.start));
+        let current = mapped.iter().position(|(_, current)| *current);
+        self.find.painted_current = current.map(|at| mapped[at].0.clone());
         self.transcript_selection.set_find(Some(FindPaint {
-            generation: self.find.searched.unwrap_or_default(),
-            hits: self.find.hits.clone(),
-            current: self.find.current,
+            generation: self.transcript_selection.generation(),
+            hits: mapped
+                .into_iter()
+                .map(|(hit, _)| hit)
+                .collect::<Vec<_>>()
+                .into(),
+            current,
             fill: rgb(look.tint(colors.gold, 0.3)).into(),
             strong: rgb(look.tint(colors.gold, 0.6)).into(),
             edge: rgb(colors.gold).into(),
@@ -528,6 +600,20 @@ impl ChatView {
     }
 
     fn start_reveal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.cancel_review_jump();
+        if self.file_review.is_none() {
+            self.turn_navigation.manual_scroll();
+        }
+        if let Some(id) = self
+            .find
+            .current
+            .and_then(|at| self.find.hits.get(at))
+            .and_then(|hit| self.find.source.leaves.get(hit.leaf))
+            .and_then(|leaf| leaf.key.strip_prefix("output:"))
+            .map(str::to_owned)
+        {
+            self.pause_command_output(&id);
+        }
         self.find.reveal = Some(Reveal {
             ready_at: self
                 .transcript_selection
@@ -557,17 +643,45 @@ impl ChatView {
         let (Some(hit), true) = (hit, self.find.open && reveal.tries <= REVEAL_TRIES) else {
             return;
         };
+        let Some(key) = self
+            .find
+            .source
+            .leaves
+            .get(hit.leaf)
+            .map(|leaf| leaf.key.clone())
+        else {
+            return;
+        };
+        let mut opened = false;
+        if let Some(keys) = self.find.source.disclosures.get(&key) {
+            for key in keys {
+                opened |= self.open.insert(key.clone());
+            }
+        }
+        if opened {
+            // Inserting detail rows may renumber an unrelated selected passage;
+            // its stable leaf keys/text still own that selection.
+            self.refresh_projection_for_find(cx);
+            self.find_list().remeasure();
+            self.find_matches(false, window, cx);
+            reveal.ready_at = self.transcript_selection.paints() + 1;
+            self.find.reveal = Some(reveal);
+            self.schedule_reveal(window, cx);
+            return;
+        }
         let paints = self.transcript_selection.paints();
         if paints < reveal.ready_at {
             self.find.reveal = Some(reveal);
             self.schedule_reveal(window, cx);
             return;
         }
-        let Some((row, key)) = self.transcript_selection.with_source(|source| {
-            source
-                .get(hit.leaf)
-                .map(|leaf| (leaf.row, leaf.key.clone()))
-        }) else {
+        let Some(hit) = self.visible_find_hit(&hit) else {
+            return;
+        };
+        let Some(row) = self
+            .transcript_selection
+            .with_source(|source| source.get(hit.leaf).map(|leaf| leaf.row))
+        else {
             return;
         };
         match self
@@ -575,7 +689,7 @@ impl ChatView {
             .painted_rect(hit.leaf, hit.range.clone())
         {
             None => {
-                self.list.scroll_to(ListOffset {
+                self.find_list().scroll_to(ListOffset {
                     item_ix: row,
                     offset_in_item: px(0.),
                 });
@@ -583,13 +697,13 @@ impl ChatView {
             }
             Some(rect) if self.scroll_box_to(&key, rect) => {}
             Some(rect) => {
-                let view = self.list.viewport_bounds();
+                let view = self.find_list().viewport_bounds();
                 let shown = rect.top() >= view.top() && rect.bottom() <= view.bottom();
                 if shown && !reveal.place {
                     return;
                 }
-                self.list.pause_following_tail();
-                self.list
+                self.find_list().pause_following_tail();
+                self.find_list()
                     .scroll_by(rect.top() - (view.top() + view.size.height * 0.3));
                 reveal.place = false;
             }
@@ -612,7 +726,7 @@ impl ChatView {
 
     /// Scroll the code, output or diff box leaf `key` is drawn in, if any, so `rect` is in
     /// it. Whether it moved.
-    fn scroll_box_to(&self, key: &str, rect: Bounds<Pixels>) -> bool {
+    pub(super) fn scroll_box_to(&self, key: &str, rect: Bounds<Pixels>) -> bool {
         let handle = {
             let caches = self.caches.borrow();
             let scroller = caches
@@ -733,6 +847,11 @@ impl ChatView {
                     .accessibility_label("Find in chat"),
             );
         let none = count == 0;
+        let scope = if self.file_review.is_some() {
+            "Search the current file's retained patch preview (first 400 lines). Use Previous/Next file to search another reported edit."
+        } else {
+            "Search includes closed details. Command logs use the current page; tool output and diffs use retained previews."
+        };
         div()
             .id("chat-find")
             .track_focus(&self.find.bar)
@@ -752,6 +871,18 @@ impl ChatView {
                 window.prevent_default();
             })
             .child(field)
+            .child(div()
+                .id("chat-find-scope")
+                .text_color(rgb(colors.muted))
+                .text_size(ui_text::text(10.))
+                .child(if self.file_review.is_some() { "Current file" } else { "Details included" })
+                .child(tooltip::anchor(
+                    if self.file_review.is_some() { scope } else { "Search includes closed details. Command logs: current page (200 lines / 32 KiB). Other tool output and diffs: retained previews." },
+                    tooltip::Look::Control,
+                ))
+                .role(gpui::Role::Label)
+                .aria_label(scope)
+                .test_support())
             .child(
                 div()
                     .id("chat-find-count")

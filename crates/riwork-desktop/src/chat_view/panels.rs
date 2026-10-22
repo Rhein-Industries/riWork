@@ -373,82 +373,95 @@ impl ChatView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let colors = look.colors;
-        let messages = list(
-            self.list.clone(),
-            cx.processor(|view, ix, window, cx| view.render_row(ix, window, cx)),
-        )
-        .size_full();
-        let messages = self
-            .transcript_selection
-            .viewport(messages, self.list.clone(), look);
-        // Scrolled up, not merely not yet following again after a scroll to the end.
-        let behind = self.items_in_list > 0
-            && !self.list.is_following_tail()
-            && self.list.is_scrolled_to_end() != Some(true);
-        // Running workers whose cards are out of view, one click from them.
-        let workers_chip = self.workers_chip(look, cx);
+        let transcript = if let Some(review) = self.render_file_review(look, window, cx) {
+            review
+        } else {
+            let messages = list(
+                self.list.clone(),
+                cx.processor(|view, ix, window, cx| view.render_row(ix, window, cx)),
+            )
+            .size_full();
+            let messages = self
+                .transcript_selection
+                .viewport(messages, self.list.clone(), look);
+            // Explicit turn navigation can pause following even at the bottom.
+            // Keep the action to resume live output available in that state too.
+            let behind = self.items_in_list > 0 && !self.list.is_following_tail();
+            // Running workers whose cards are out of view, one click from them.
+            let workers_chip = self.workers_chip(look, cx);
+            div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .children(self.find_bar(look, window, cx))
+                .children(self.turn_navigator(look, cx))
+                .child(
+                    div()
+                        .relative()
+                        .flex_1()
+                        .min_h_0()
+                        .child(messages)
+                        .children(workers_chip.map(|chip| {
+                            div()
+                                .absolute()
+                                .top(ui_text::space(10.0))
+                                .w_full()
+                                .flex()
+                                .justify_center()
+                                .child(chip)
+                        }))
+                        .children(behind.then(|| {
+                            div()
+                                .absolute()
+                                .bottom(ui_text::space(10.0))
+                                .w_full()
+                                .flex()
+                                .justify_center()
+                                .child(
+                                    if look.native {
+                                        // A raised grey capsule with the arrow as its symbol.
+                                        capsule("chat-latest", "Latest", Button::Secondary, look)
+                                            .child(icons::text_mark("↓", 9.0))
+                                            .shadow_md()
+                                            .cursor_pointer()
+                                            .hover(move |style| {
+                                                style.bg(rgb(Button::Secondary.hover(colors)))
+                                            })
+                                    } else {
+                                        button("chat-latest", "↓ latest", Some(colors.cyan), look)
+                                            .bg(rgb(colors.panel_active))
+                                    }
+                                    .on_click(cx.listener(
+                                        |view, _, _, cx| {
+                                            view.list.set_follow_mode(FollowMode::Tail);
+                                            cx.notify();
+                                        },
+                                    )),
+                                )
+                        })),
+                )
+                .into_any_element()
+        };
         let stack = div()
             .size_full()
             .flex()
             .flex_col()
             .child(self.toolbar(look, window, cx))
-            .children(self.find_bar(look, window, cx))
-            .child(
-                div()
-                    .relative()
-                    .flex_1()
-                    .min_h_0()
-                    .child(messages)
-                    .children(workers_chip.map(|chip| {
-                        div()
-                            .absolute()
-                            .top(ui_text::space(10.0))
-                            .w_full()
-                            .flex()
-                            .justify_center()
-                            .child(chip)
-                    }))
-                    .children(behind.then(|| {
-                        div()
-                            .absolute()
-                            .bottom(ui_text::space(10.0))
-                            .w_full()
-                            .flex()
-                            .justify_center()
-                            .child(
-                                if look.native {
-                                    // A raised grey capsule with the arrow as its symbol.
-                                    capsule("chat-latest", "Latest", Button::Secondary, look)
-                                        .child(icons::text_mark("↓", 9.0))
-                                        .shadow_md()
-                                        .cursor_pointer()
-                                        .hover(move |style| {
-                                            style.bg(rgb(Button::Secondary.hover(colors)))
-                                        })
-                                } else {
-                                    button("chat-latest", "↓ latest", Some(colors.cyan), look)
-                                        .bg(rgb(colors.panel_active))
-                                }
-                                .on_click(cx.listener(
-                                    |view, _, _, cx| {
-                                        view.list.set_follow_mode(FollowMode::Tail);
-                                        cx.notify();
-                                    },
-                                )),
-                            )
-                    })),
-            )
+            .child(div().flex_1().min_h_0().child(transcript))
             .children(self.banner(look, cx))
             .children(self.approval_bar(look, cx))
             .children(self.question_panel(look, window, cx))
             .children(self.worker_shelf(look, cx))
             .children(self.worker_bar(look, window, cx))
+            .children(self.selection_feedback(look, cx))
             .child(self.composer_box(look, window, cx));
         div()
             .relative()
             .size_full()
             .child(stack)
             .children(self.image_viewer(look, cx))
+            .children(self.code_reader(look, window, cx))
+            .children(self.file_actions_panel(look, cx))
             .into_any_element()
     }
 
@@ -2903,6 +2916,7 @@ impl ChatView {
             look,
             active,
         )
+        .children(self.reference_chips(look, window, cx))
         // The draft's attachments above the box, a staged image as its thumbnail.
         .children((!self.attachments.is_empty()).then(|| {
             div()

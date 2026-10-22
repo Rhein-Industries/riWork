@@ -32,6 +32,7 @@ const NETWORK_BYTES: u64 = 8 * 1024 * 1024;
 /// Thumbnails of sent images read at once; the rest are asked for as those come back.
 const THUMB_READS: usize = 4;
 pub(super) const ARTIFACT_PAGE: usize = 32;
+mod actions;
 
 pub(super) fn artifact_range(count: usize, page: usize) -> std::ops::Range<usize> {
     let start = page.min(count.saturating_sub(1) / ARTIFACT_PAGE) * ARTIFACT_PAGE;
@@ -195,6 +196,7 @@ pub(super) struct MediaState {
     viewer_zoom: Option<f32>,
     viewer_scroll: ScrollHandle,
     viewer_drag: Option<(Point<Pixels>, Point<Pixels>)>,
+    action_pending: bool,
     /// The thumbnails of the files users sent, by the keys `attachment_ui::thumbnails` gives.
     thumbs: HashMap<String, Thumb>,
 }
@@ -716,6 +718,52 @@ fn release(slot: Slot, cx: &mut Context<ChatView>) {
     }
 }
 impl ChatView {
+    /// Already decoded, offline generated content uses the normal bounded gallery
+    /// and the same save/copy/open actions as a PNG supplied by the agent.
+    pub(super) fn show_generated_diagram(
+        &mut self,
+        key: String,
+        image: Arc<RenderImage>,
+        png: Arc<str>,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.media.slots.contains_key(&key) && self.media.slots.len() >= LOADED {
+            let oldest = self
+                .media
+                .slots
+                .keys()
+                .find(|candidate| self.media.viewer.as_ref() != Some(*candidate))
+                .cloned();
+            if let Some(oldest) = oldest {
+                self.open.remove(&oldest);
+                if let Some(slot) = self.media.slots.remove(&oldest) {
+                    release(slot, cx);
+                }
+            }
+        }
+        self.media.generation += 1;
+        let previous = self.media.slots.insert(
+            key.clone(),
+            Slot {
+                generation: self.media.generation,
+                source: ImageSource::Data {
+                    mime: "image/png".into(),
+                    base64: png.to_string(),
+                },
+                content: Some(Ok(PreviewContent::Image {
+                    image,
+                    description: "Mermaid diagram".into(),
+                })),
+                in_files: false,
+            },
+        );
+        if let Some(previous) = previous {
+            release(previous, cx);
+        }
+        self.media.show(key);
+        cx.notify();
+    }
+
     pub(super) fn fold_group_images(&mut self, keys: &[String], cx: &mut Context<Self>) {
         for slot in self.media.fold_images(keys, &mut self.open) {
             release(slot, cx);
@@ -987,6 +1035,10 @@ impl ChatView {
                 })),
             )
             .children(body)
+            .children(
+                open.then(|| self.image_actions(key, "card", look, cx))
+                    .flatten(),
+            )
             .children(local.filter(|_| open).map(|path| {
                 button(
                     SharedString::from(format!("preview:{key}")),
@@ -1234,6 +1286,16 @@ impl ChatView {
                                 cx.notify();
                             }),
                         )),
+                )
+                .children(self.image_actions(key, "viewer", look, cx))
+                .children(
+                    self.notices
+                        .local(super::notices::LocalKey::Export)
+                        .map(|message| {
+                            div()
+                                .text_size(ui_text::text(11.))
+                                .child(message.to_owned())
+                        }),
                 )
                 .child(
                     div()

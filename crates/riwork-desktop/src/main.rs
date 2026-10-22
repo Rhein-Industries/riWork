@@ -8500,6 +8500,41 @@ impl Workspace {
             ChatViewEvent::OpenFile { target } => {
                 self.open_chat_file(view.clone(), target.clone(), window, cx)
             }
+            ChatViewEvent::CodeToTerminal { text } => {
+                let mut targets: Vec<_> = self
+                    .panes
+                    .values()
+                    .flat_map(|pane| &pane.tabs)
+                    .filter_map(|tab| {
+                        if let TabContent::Shell { shell_id, .. } = &tab.content {
+                            Some((shell_id.clone(), tab.title.clone()))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                targets.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)));
+                let mut seen = std::collections::HashSet::new();
+                targets.retain(|(id, _)| seen.insert(id.clone()));
+                view.update(cx, |view, cx| {
+                    view.choose_snippet_terminal(text.clone(), targets, window, cx)
+                });
+            }
+            ChatViewEvent::FocusCodeTerminal { shell_id, text } => {
+                let target = self.panes.iter().find_map(|(pane_id,pane)| pane.tabs.iter().find_map(|tab| {
+                    matches!(&tab.content,TabContent::Shell{shell_id:id,..} if id == shell_id).then_some((*pane_id,tab.id))
+                }));
+                if let Some((pane_id, tab_id)) = target {
+                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(text.clone()));
+                    self.select_tab(pane_id, tab_id, window, cx);
+                    self.notice =
+                        Some("Snippet copied. Paste it in this terminal when ready.".into());
+                } else {
+                    self.notice =
+                        Some("That terminal is no longer open. Choose a terminal again.".into());
+                }
+                cx.notify();
+            }
             ChatViewEvent::ShowUsage => {
                 self.open_panel(PanelKind::Usage, self.active_pane, window, cx)
             }
@@ -13694,6 +13729,7 @@ fn main() {
             // One chat for every provider: the model chosen in it decides.
             KeyBinding::new("cmd-alt-shift-c", OpenNewChat, None),
             KeyBinding::new("cmd-.", chat_view::InterruptChat, Some("ChatView")),
+            KeyBinding::new("escape", gpui_kit::base::input::Escape, Some("ChatView")),
             KeyBinding::new("ctrl-alt-d", ToggleDictation, Some("ChatView")),
             // Find in a focused chat; ⌘⇧G is Open Grok again once its bar is closed. A binding
             // with no context ranks with the deepest context, so in the chat's own fields (Kit's
@@ -13846,7 +13882,12 @@ fn main() {
                     }
                     match registration.pending_reload() {
                         Ok(Some(request)) => {
-                            match registration.launch_reload(&request, runtime_windows(cx, true)) {
+                            // The replacement reads drafts during startup, before this
+                            // process quits. Drain them now, and keep this GUI open if
+                            // the recovery store cannot confirm the write.
+                            match chat_drafts::flush_pending(cx).and_then(|_| {
+                                registration.launch_reload(&request, runtime_windows(cx, true))
+                            }) {
                                 Ok(launch) => reload = Some(launch),
                                 Err(error) => {
                                     let _ = registration.fail_reload(&request, &error);
@@ -17328,6 +17369,7 @@ mod chat_tab_tests {
             1
         );
         assert!(keys.contains(&("cmd-shift-d".to_owned(), "None".to_owned())));
+        assert!(keys.contains(&("-escape".to_owned(), "Some(\"ChatView\"".to_owned())));
         // Find in a chat: bound only in a chat tab and its fields, after the window's own ⌘F
         // and ⌘⇧G.
         for keystroke in ["cmd-f", "cmd-g", "cmd-shift-g"] {

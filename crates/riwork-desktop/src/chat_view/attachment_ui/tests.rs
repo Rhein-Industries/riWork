@@ -240,6 +240,7 @@ fn staged_png_jpeg_thumbnails_render_above_composer_and_keep_exact_draft(cx: &mu
     let draft = attachment_draft::Draft {
         text: "exact draft 🦀  ".into(),
         attachments: staged[1..].to_vec(),
+        references: Vec::new(),
     };
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);

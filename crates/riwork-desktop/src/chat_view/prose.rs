@@ -152,7 +152,18 @@ impl ChatView {
                 language,
                 title,
                 text,
-            } => self.code_block(language.as_deref(), title.as_deref(), text, key, look, cx),
+            } => {
+                let fallback =
+                    self.code_block(language.as_deref(), title.as_deref(), text, key, look, cx);
+                if language
+                    .as_deref()
+                    .is_some_and(|language| language.eq_ignore_ascii_case("mermaid"))
+                {
+                    self.diagram_block(text, key, fallback, look, cx)
+                } else {
+                    fallback
+                }
+            }
             Block::List { start, items } => div()
                 .w_full()
                 .flex()
@@ -303,6 +314,7 @@ impl ChatView {
             .child(
                 div()
                     .flex()
+                    .flex_wrap()
                     .items_center()
                     .justify_between()
                     .px(ui_text::space(8.0))
@@ -315,9 +327,11 @@ impl ChatView {
                     .child(
                         div()
                             .flex()
+                            .flex_wrap()
                             .flex_none()
                             .items_center()
                             .gap(ui_text::space(4.0))
+                            .child(self.code_actions(language, title, code, key, look, cx))
                             .child(
                                 button(
                                     SharedString::from(wrap_key.clone()),
@@ -390,6 +404,7 @@ impl ChatView {
         }
         self.transcript_selection.changed();
         self.list.remeasure_items(0..self.visible.len());
+        self.find_list().remeasure();
         cx.notify();
     }
 
