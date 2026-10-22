@@ -451,12 +451,15 @@ import RiWorkCore
         await eventually("history prepended") { conversation.transcript.items.count == 100 }
         try await Task.sleep(for: .milliseconds(500))
         XCTAssertEqual(try renderedMessageTop("1450", rig: rig, scroll: list), anchorTop, accuracy: 4, "prepending preserves the actual visible message, independent of lazy height estimates")
-        let reader = list.contentOffset.y
+        // Where the reader is, by what is seen rather than by the offset: as the bar goes the transcript shows more, rows above the
+        // reader that were still estimates can be measured (an iPad's list realizes two more), and the offset moves with them to keep
+        // the message where it is.
+        let reader = try renderedMessageTop("1450", rig: rig, scroll: list)
         await rig.transport.append(chatID, [.itemDelta(itemID: "recent-1470", delta: .text(" live edit")), .approvalResolved(requestID: "older-request", decision: .accept)])
         await eventually("live controls arrive") { conversation.openApprovals.isEmpty }
         if case .agentMessage(let text) = conversation.transcript.item("recent-1470")?.body { XCTAssertTrue(text.hasSuffix(" live edit")) } else { XCTFail("missing full live row") }
         try await Task.sleep(for: .milliseconds(300))
-        XCTAssertEqual(list.contentOffset.y, reader, accuracy: 4, "an active reader opts out of bottom following")
+        XCTAssertEqual(try renderedMessageTop("1450", rig: rig, scroll: list), reader, accuracy: 4, "an active reader opts out of bottom following")
         XCTAssertEqual(conversation.draft, "unsent draft")
         try snapshot(rig, name: "latest-first-history-reader")
         try await hold("latest-first-history-reader")
