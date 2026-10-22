@@ -324,9 +324,14 @@ import RiWorkCore
         try? await Task.sleep(for:.milliseconds(1050))
         XCTAssertFalse(controller.guideVisible)
         controller.cancel()
+        let pressed = ContinuousClock.now
         _ = controller.handle(event("\t"),perform:{_ in true})
-        try? await Task.sleep(for:.milliseconds(1050))
+        // The real one-second timer runs on the main actor, which a full run can keep busy past the second: wait for the guide, and
+        // check that it came no sooner than the hold.
+        let deadline = pressed + .seconds(5)
+        while !controller.guideVisible, ContinuousClock.now < deadline { try? await Task.sleep(for:.milliseconds(10)) }
         XCTAssertTrue(controller.guideVisible)
+        XCTAssertGreaterThanOrEqual(ContinuousClock.now - pressed, .seconds(1), "a held Tab shows help after one second, not before")
         _ = controller.handle(event("\t",phase:.up),perform:{_ in true})
         XCTAssertTrue(controller.guideVisible)
         controller.cancel()
