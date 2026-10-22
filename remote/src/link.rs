@@ -244,6 +244,25 @@ pub fn encode_body(
     })
 }
 
+/// Whether `encode_reply` would seal `response` within `max_sealed` (`Ok(false)` where it
+/// says `TooLarge`), for a caller that cuts a reply until it fits. A deflated frame is only
+/// ever sent when it is shorter than the JSON text, so a reply whose text fits with the
+/// longest `server_ms` fits either way and is not deflated to find out; only a longer one is.
+pub fn fits(response: &Value, compress: bool, max_sealed: usize) -> Result<bool> {
+    let body = serde_json::to_vec(response)?;
+    if body.first() == Some(&b'{')
+        && body.last() == Some(&b'}')
+        && body.len() - 1 + suffix(body.len() > 2, u64::MAX).len() <= max_sealed.min(MAX_INFLATED)
+    {
+        return Ok(true);
+    }
+    match encode_body(body, Instant::now(), compress, max_sealed) {
+        Ok(_) => Ok(true),
+        Err(EncodeError::TooLarge) => Ok(false),
+        Err(EncodeError::Other(e)) => Err(e),
+    }
+}
+
 /// The deflated frame for a JSON text of `json_bytes`, or `None` when it would not be smaller than the
 /// text itself (the header costs five bytes): then the text is sent as it is.
 fn framed(deflated: &[u8], json_bytes: usize) -> Option<Vec<u8>> {
@@ -382,6 +401,93 @@ mod tests {
         assert_eq!(value["server_ms"].as_u64(), Some(encoded.server_ms));
         value.as_object_mut().unwrap().remove("server_ms");
         assert_eq!(value, reply);
+    }
+
+    /// Text of `len` bytes, styled lines (deflate well) or printable noise (barely).
+    fn text(len: usize, noisy: bool) -> String {
+        let mut x = 0x9E37_79B9_7F4A_7C15u64;
+        let mut out = String::with_capacity(len + 64);
+        while out.len() < len {
+            if noisy {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                out.push(char::from(b'!' + (x % 90) as u8));
+            } else {
+                out.push_str(&format!(
+                    "\u{1b}[1mline {} of the build\u{1b}[0m\n",
+                    out.len()
+                ));
+            }
+        }
+        out.truncate(len);
+        out
+    }
+
+    #[test]
+    fn fits_answers_exactly_what_encode_reply_does() {
+        let check = |reply: &Value, compress: bool, max: usize| {
+            let fits = fits(reply, compress, max).unwrap();
+            let encoded = encode_reply(reply, Instant::now(), compress, max);
+            assert_eq!(fits, encoded.is_ok(), "{max} {compress}");
+            fits
+        };
+        let reply = |output: &str| json!({"v":1,"type":"response","id":"x","ok":true,"result":{"output":output}});
+        for noisy in [false, true] {
+            // ASCII either way, so any prefix is text of that length.
+            let full = text(2_100_000, noisy);
+            for compress in [false, true] {
+                // Lengths across the edge of a small frame, plain (some 2000 to 3000 bytes
+                // of text) or deflated (noise about 3700, styled lines far longer), so the
+                // plain text, the deflated frame and the `server_ms` field each decide some.
+                let max = 3000;
+                let (mut yes, mut no) = (0, 0);
+                for len in (1500..4400).step_by(5).chain((4400..60_000).step_by(1999)) {
+                    if check(&reply(&full[..len]), compress, max) {
+                        yes += 1;
+                    } else {
+                        no += 1;
+                    }
+                }
+                assert!(yes > 0 && no > 0, "{yes} {no} {noisy} {compress}");
+                // And around a real frame and the inflate limit.
+                for len in [100_000, 131_000, 140_000, 2_100_000] {
+                    check(&reply(&full[..len]), compress, 131_072 - 64);
+                }
+            }
+        }
+        for max in [10, 14, 15, 16, 40] {
+            check(&json!({}), true, max);
+            check(&json!({"a":1}), false, max);
+        }
+        // Not an object: refused either way.
+        assert!(fits(&json!([1]), true, 131_072).is_err());
+    }
+
+    /// `cargo test -p riwork-remote --lib fit_check_cost -- --ignored --nocapture` prints what
+    /// one "does this page still fit" check costs a session that opted into deflate: a full
+    /// `encode_reply` (serialize and deflate), against `fits` for a reply whose text fits.
+    #[test]
+    #[ignore = "prints timings; run on demand"]
+    fn fit_check_cost() {
+        for lines in [40, 200, 1000] {
+            let reply = sample(lines);
+            let rounds = 20u32;
+            let started = Instant::now();
+            for _ in 0..rounds {
+                assert!(encode_reply(&reply, Instant::now(), true, 131_072 - 64).is_ok());
+            }
+            let encoded = started.elapsed() / rounds;
+            let started = Instant::now();
+            for _ in 0..rounds {
+                assert!(fits(&reply, true, 131_072 - 64).unwrap());
+            }
+            let checked = started.elapsed() / rounds;
+            println!(
+                "{} bytes of JSON: encode_reply {encoded:?}, fits {checked:?}",
+                serde_json::to_vec(&reply).unwrap().len()
+            );
+        }
     }
 
     #[test]

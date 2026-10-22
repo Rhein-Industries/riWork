@@ -1085,16 +1085,12 @@ fn sealed(request: &str, page: &Page, compress: bool) -> std::result::Result<Opt
         "more": page.more
     });
     let mut response = success(request, result);
-    match link::encode_reply(
-        &response,
-        std::time::Instant::now(),
-        compress,
-        MAX_PLAINTEXT - FRAME_MARGIN,
-    ) {
-        Ok(_) => Ok(Some(response["result"].take())),
-        Err(link::EncodeError::TooLarge) => Ok(None),
-        Err(link::EncodeError::Other(e)) => Err(cli_fault(e)),
-    }
+    Ok(fits_frame(&response, compress)?.then(|| response["result"].take()))
+}
+/// Whether `response` fits one sealed frame the way the connection will seal it
+/// (`link::fits`: deflated only when its plain text does not fit).
+fn fits_frame(response: &Value, compress: bool) -> std::result::Result<bool, Fault> {
+    link::fits(response, compress, MAX_PLAINTEXT - FRAME_MARGIN).map_err(cli_fault)
 }
 /// All modes preserve sequence slots, recovering oversized single events identically.
 fn fit_complete_page(
@@ -1119,16 +1115,7 @@ fn fit_snapshot(
         result,
         MAX_PLAINTEXT - REPLY_SLACK - FRAME_MARGIN,
         paginate,
-        |result| match link::encode_reply(
-            &success(request, result.clone()),
-            std::time::Instant::now(),
-            compress,
-            MAX_PLAINTEXT - FRAME_MARGIN,
-        ) {
-            Ok(_) => Ok(true),
-            Err(link::EncodeError::TooLarge) => Ok(false),
-            Err(link::EncodeError::Other(e)) => Err(cli_fault(e)),
-        },
+        |result| fits_frame(&success(request, result.clone()), compress),
     )?
     .ok_or_else(|| {
         Fault::new(
@@ -1146,16 +1133,7 @@ fn fit_suggestions(
     mut result: Value,
     compress: bool,
 ) -> std::result::Result<Value, Fault> {
-    let fits = |result: &Value| match link::encode_reply(
-        &success(request, result.clone()),
-        std::time::Instant::now(),
-        compress,
-        MAX_PLAINTEXT - FRAME_MARGIN,
-    ) {
-        Ok(_) => Ok(true),
-        Err(link::EncodeError::TooLarge) => Ok(false),
-        Err(link::EncodeError::Other(e)) => Err(cli_fault(e)),
-    };
+    let fits = |result: &Value| fits_frame(&success(request, result.clone()), compress);
     if fits(&result)? {
         return Ok(result);
     }
