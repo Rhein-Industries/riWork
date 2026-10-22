@@ -494,6 +494,26 @@ pub fn read_transcript_tail(
     id: &str,
     max_bytes: u64,
 ) -> Result<super::model::Transcript, String> {
+    fold_tail(home, id, max_bytes, |_| true)
+}
+
+/// The turn chat `id` has in progress, as `read_transcript` says. Only turn events change
+/// that, so only their lines are parsed: a caller that asks no more does not fold every
+/// item of the log's end.
+pub fn read_open_turn(home: &Path, id: &str) -> Result<Option<String>, String> {
+    fold_tail(home, id, TRANSCRIPT_TAIL, |line| {
+        contains(line, br#""event":"turn_"#)
+    })
+    .map(|transcript| transcript.turn_id)
+}
+
+/// `read_transcript_tail`, folding only the lines `keep` takes.
+fn fold_tail(
+    home: &Path,
+    id: &str,
+    max_bytes: u64,
+    keep: impl Fn(&[u8]) -> bool,
+) -> Result<super::model::Transcript, String> {
     let max_bytes = max_bytes.min(TRANSCRIPT_TAIL);
     let dir = chat_dir(home, id).ok_or("invalid chat id")?;
     let path = dir.join(EVENTS);
@@ -527,6 +547,9 @@ pub fn read_transcript_tail(
         // A line the host is still writing has no newline yet.
         if line.last() != Some(&b'\n') {
             break;
+        }
+        if !keep(&line) {
+            continue;
         }
         if let Ok(envelope) = serde_json::from_slice::<Envelope>(&line) {
             transcript.apply_sequenced(envelope.seq, &envelope.event);
@@ -1650,6 +1673,51 @@ mod snapshot_tests {
                 .items
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn the_open_turn_read_alone_is_the_transcripts() {
+        let mut f = Fixture::new();
+        let events = [
+            json!({"event":"turn_started","turn_id":"a"}),
+            json!({"event":"item_completed","item":{"id":"call","turn_id":"a","status":"completed",
+                "body":{"type":"tool_call","tool":"x","input":{"event":"turn_started","turn_id":"fake"}}}}),
+            json!({"event":"turn_completed","turn_id":"other","outcome":{"outcome":"completed"}}),
+            json!({"event":"turn_completed","turn_id":"a","outcome":{"outcome":"completed"}}),
+            json!({"event":"item_completed","item":{"id":"late","turn_id":"a","status":"completed",
+                "body":{"type":"agent_message","text":"\"event\":\"turn_started\""}}}),
+            json!({"event":"turn_started","turn_id":"b"}),
+            // Unreadable: the transcript skips it, so it never ends turn b.
+            json!({"event":"turn_completed","turn_id":"b"}),
+            json!({"event":"turn_started","turn_id":"b","started_at":7}),
+            json!({"event":"state","state":{"state":"idle"}}),
+        ];
+        assert_eq!(read_open_turn(&f.home, &f.id).unwrap(), None);
+        for event in events {
+            f.event(event);
+            assert_eq!(
+                read_open_turn(&f.home, &f.id).unwrap(),
+                read_transcript(&f.home, &f.id).unwrap().turn_id,
+                "after event {}",
+                f.seq
+            );
+        }
+        assert_eq!(
+            read_open_turn(&f.home, &f.id).unwrap().as_deref(),
+            Some("b")
+        );
+        // A line still being written is not read either way.
+        let mut file = OpenOptions::new()
+            .append(true)
+            .open(f.dir.join(EVENTS))
+            .unwrap();
+        file.write_all(br#"{"chat_id":"x","seq":10,"event":{"event":"turn_completed","turn_id":"b","outcome":{"outcome":"completed"}}}"#)
+            .unwrap();
+        assert_eq!(
+            read_open_turn(&f.home, &f.id).unwrap().as_deref(),
+            Some("b")
+        );
+        assert!(read_open_turn(&f.home, "../x").is_err());
     }
 
     #[test]

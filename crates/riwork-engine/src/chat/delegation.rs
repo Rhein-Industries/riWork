@@ -177,8 +177,7 @@ impl DelegationService {
         if !matches!(parent.state, ChatState::Running | ChatState::Waiting) {
             return Err("The parent chat has no active turn; no child was started".into());
         }
-        let turn = super::log::read_transcript(&self.home, &self.caller)?
-            .turn_id
+        let turn = super::log::read_open_turn(&self.home, &self.caller)?
             .ok_or("The parent turn identity is unavailable; no child was started")?;
         if expected_turn.is_some_and(|expected| expected != turn) {
             return Err("The parent turn changed before task dispatch".into());
