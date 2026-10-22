@@ -884,15 +884,21 @@ private struct ChatViewerGlass: ViewModifier {
     }
 }
 
-private struct ChatCodeFileView: View {
+struct ChatCodeFileView: View {
     let text: String
     let firstLine: Int
     let highlightedLine: Int?
     let zoom: CGFloat
     let fit: Bool
-    private var lines: [Substring] { text.split(separator: "\n", omittingEmptySubsequences: false) }
+    /// The file's lines. Split once per body: each row reads the array it captured, since a row that read this itself would split the
+    /// whole file again, for every row on screen whenever the zoom changes (every frame of a pinch).
+    private var lines: [Substring] {
+        Perf.count("ChatCodeFileView.lines")
+        return text.split(separator: "\n", omittingEmptySubsequences: false)
+    }
     private var highlight: Color { Color(uiColor: UIColor { $0.userInterfaceStyle == .dark ? UIColor(red: 0.30, green: 0.26, blue: 0.10, alpha: 1) : UIColor(red: 1, green: 0.95, blue: 0.80, alpha: 1) }) }
     var body: some View {
+        let lines = lines
         ScrollViewReader { proxy in
             ScrollView(fit ? [.vertical] : [.horizontal, .vertical]) {
                 LazyVStack(alignment: .leading, spacing: 0) {

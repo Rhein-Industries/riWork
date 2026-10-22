@@ -131,6 +131,33 @@ import RiWorkCore
         check(.completed)
     }
 
+    /// A text file of 3,000 lines while its zoom changes, as a pinch changes it every frame: the file is split into lines once per change,
+    /// not again for every row on screen.
+    func testCodeFileSplitsItsLinesOncePerZoomChange() throws {
+        guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene else { throw XCTSkip("no window scene to show the file in") }
+        let text = (1...3000).map { "let value\($0) = compute(\($0), scale: 2) // line \($0) of the fixture file" }.joined(separator: "\n")
+        func view(_ zoom: CGFloat) -> ChatCodeFileView { ChatCodeFileView(text: text, firstLine: 1, highlightedLine: nil, zoom: zoom, fit: true) }
+        let host = UIHostingController(rootView: view(1))
+        let window = UIWindow(windowScene: scene)
+        window.frame = CGRect(x: 0, y: 0, width: 402, height: 874)
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true }
+        host.view.layoutIfNeeded()
+        let steps = 30
+        Perf.reset()
+        let clock = ContinuousClock()
+        let began = clock.now
+        for step in 1...steps {
+            host.rootView = view(1 + CGFloat(step) * 0.02)
+            host.view.layoutIfNeeded()
+        }
+        let d = (clock.now - began).components
+        let splits = Double(Perf.counts["ChatCodeFileView.lines"] ?? 0) / Double(steps)
+        print(String(format: "PERF code file zoom step %.3f ms; file splits per step %.1f", (Double(d.seconds) * 1000 + Double(d.attoseconds) / 1e15) / Double(steps), splits))
+        XCTAssertEqual(splits, 1, "one split of the file per zoom change")
+    }
+
     func testAnswerLinksReuseEarlierFileInTheTurnPager() {
         let items = [
             ChatItem(id: "edit", turnID: "one", status: .completed, body: .fileChange([.init(path: "src/main.swift", kind: .modify)])),
