@@ -492,7 +492,8 @@ extension RemoteModel {
                 }
             }
             let connection = generation
-            let canWait = !conversation.catchingUp && waitSlots.canWait(at: ProcessInfo.processInfo.systemUptime)
+            let catchUpRead = conversation.catchingUp
+            let canWait = !catchUpRead && waitSlots.canWait(at: ProcessInfo.processInfo.systemUptime)
             let since = conversation.feed.next, pin = conversation.feed.historyCursor, readEpoch = conversation.catchUpEpoch
             // A contributor mode an older host listed before this read is asked for stays shown until a read like it reaches the end.
             let listing = conversation.contributorState.listing
@@ -540,8 +541,9 @@ extension RemoteModel {
                 }
                 if chatSupport == .unknown { chatSupport = .supported }
                 // Cut short: the rest is already there. Not waiting for a slot: a short read that found nothing waits a moment.
+                // The read that caught up goes straight on to the long poll.
                 if reply.more { continue }
-                if !canWait, reply.events.isEmpty { try? await Task.sleep(for: .milliseconds(300)) }
+                if !canWait, reply.events.isEmpty, !(catchUpRead && !conversation.catchingUp) { try? await Task.sleep(for: .milliseconds(300)) }
             } catch is CancellationError {
                 // The screen went (or the chat was switched): not a failure.
                 return
