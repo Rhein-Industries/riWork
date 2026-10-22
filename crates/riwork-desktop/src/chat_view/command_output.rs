@@ -395,6 +395,18 @@ impl Panel {
 pub(super) struct Panels {
     entries: VecDeque<Panel>,
     paused: VecDeque<SavedPanel>,
+    /// The last page of each folded command as Find last read it, by item id. Kept
+    /// while the bar is open: Find reads every command again whenever the
+    /// transcript changes, so on every streamed delta.
+    folded: std::collections::HashMap<String, FoldedText>,
+}
+
+/// A folded command's text and which output it was read from: a transcript item's
+/// output only changes by being replaced, which moves `replaced_at`, or by growing.
+struct FoldedText {
+    replaced_at: u64,
+    total: usize,
+    text: String,
 }
 
 struct SavedPanel {
@@ -573,9 +585,41 @@ impl ChatView {
             return panels.panel(&item.id, output).page().text.clone();
         }
         // Searching folded commands must not evict the user's live panel state.
+        // Only the transcript's own output is remembered, and only as its events
+        // left it; other text is read afresh.
+        let replaced_at = self.model.transcript.replaced_at(&item.id);
+        let current = replaced_at != 0
+            && self.model.item(&item.id).is_some_and(|(_, current)| {
+                matches!(&current.body, crate::chat::model::ItemBody::Command { output: own, .. }
+                    if std::ptr::eq(own.as_str(), output))
+            });
+        if current
+            && let Some(known) = panels
+                .folded
+                .get(&item.id)
+                .filter(|known| known.replaced_at == replaced_at && known.total == output.len())
+        {
+            return known.text.clone();
+        }
         let (start, source) = retained_source(output);
         let log = parse(source, start);
-        log.ending(log.text.len()).text.clone()
+        let text = log.ending(log.text.len()).text.clone();
+        if current && self.find.open {
+            panels.folded.insert(
+                item.id.clone(),
+                FoldedText {
+                    replaced_at,
+                    total: output.len(),
+                    text: text.clone(),
+                },
+            );
+        }
+        text
+    }
+
+    /// The bar closed: nothing reads every folded command until it opens again.
+    pub(super) fn forget_folded_command_text(&self) {
+        self.command_outputs.borrow_mut().folded = Default::default();
     }
 
     /// Find takes authority over the nested scroll position before revealing a hit.
@@ -1107,5 +1151,75 @@ mod tests {
             );
         })
         .unwrap();
+    }
+
+    /// While Find is open a folded command is read once, and read again as soon as its
+    /// output grows or is replaced, even by output of the same length.
+    #[gpui::test]
+    fn find_reads_a_folded_command_again_only_when_its_output_changes(cx: &mut TestAppContext) {
+        use crate::chat::{
+            model::{ChatEvent, Delta},
+            wire::Envelope,
+        };
+        let (_, view, _) = super::super::editor_tests::mount_selection(cx);
+        view.update(cx, |view, _| {
+            let mut seq = 0;
+            let mut fold = |view: &mut ChatView, event| {
+                seq += 1;
+                view.model.apply(&[Envelope {
+                    chat_id: "chat".into(),
+                    seq,
+                    event,
+                }]);
+            };
+            let read = |view: &ChatView| {
+                let (_, item) = view.model.item("build").unwrap();
+                let ItemBody::Command { output, .. } = &item.body else {
+                    unreachable!()
+                };
+                view.command_output_text(item, output)
+            };
+            view.find.open = true;
+            fold(
+                view,
+                ChatEvent::ItemStarted {
+                    item: command("build", "one\n"),
+                },
+            );
+            assert_eq!(read(view), "one");
+            assert_eq!(view.command_outputs.borrow().folded.len(), 1);
+            fold(
+                view,
+                ChatEvent::ItemDelta {
+                    item_id: "build".into(),
+                    delta: Delta::Output("two\n".into()),
+                },
+            );
+            assert_eq!(read(view), "one\ntwo");
+            fold(
+                view,
+                ChatEvent::ItemCompleted {
+                    item: command("build", "six\nten\n"),
+                },
+            );
+            assert_eq!(read(view), "six\nten");
+            // Remembered: the same answer without reading the output again.
+            view.command_outputs
+                .borrow_mut()
+                .folded
+                .get_mut("build")
+                .unwrap()
+                .text = "remembered".into();
+            assert_eq!(read(view), "remembered");
+            // Text that is not the item's own output is never answered from memory.
+            let (_, item) = view.model.item("build").unwrap();
+            assert_eq!(view.command_output_text(item, "six\nten\n"), "six\nten");
+            // Nothing is kept once the bar closes.
+            view.find.open = false;
+            view.forget_folded_command_text();
+            assert!(view.command_outputs.borrow().folded.is_empty());
+            assert_eq!(read(view), "six\nten");
+            assert!(view.command_outputs.borrow().folded.is_empty());
+        });
     }
 }

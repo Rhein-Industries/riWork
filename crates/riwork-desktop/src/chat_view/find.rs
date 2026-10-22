@@ -385,6 +385,7 @@ impl ChatView {
         self.find.reveal = None;
         self.find.reveal_scheduled = false;
         self.find.index = Index::default();
+        self.forget_folded_command_text();
         self.transcript_selection.set_find(None);
         if had_keys {
             restore

@@ -680,6 +680,36 @@ fn long_chat_streaming_costs(cx: &mut TestAppContext) {
         };
         delta_ms.push(accept(cx, vec![envelope(event)]));
     }
+    // The same with Find open on a word every answer has.
+    cx.update_window(handle, |_, window, cx| {
+        view.update(cx, |view, cx| {
+            view.open_find(window, cx);
+            view.find
+                .input
+                .update(cx, |input, cx| input.set_value("result", window, cx));
+        })
+    })
+    .unwrap();
+    frame(cx);
+    let mut find_ms = Vec::new();
+    for n in 0..40 * repeat {
+        find_ms.push(accept(
+            cx,
+            vec![envelope(ChatEvent::ItemDelta {
+                item_id: "a-live".into(),
+                delta: Delta::Text(format!("more{n} text ")),
+            })],
+        ));
+    }
+    eprintln!(
+        "find open: text delta median fold={:.3} ms, drawn={:.3} ms",
+        median(&find_ms, |s| s.0),
+        median(&find_ms, |s| s.1)
+    );
+    cx.update_window(handle, |_, window, cx| {
+        view.update(cx, |view, cx| view.close_find(window, cx))
+    })
+    .unwrap();
     // Idle frames scrolled into history, where completed answers are drawn.
     view.update(cx, |view, cx| {
         view.list.scroll_to(gpui::ListOffset {
