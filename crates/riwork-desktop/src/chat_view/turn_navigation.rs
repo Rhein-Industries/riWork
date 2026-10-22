@@ -60,27 +60,40 @@ struct Turn {
     row: usize,
 }
 
+/// What groups items into a turn: its turn id, or the message that has none.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum Key<'a> {
+    Turn(&'a str),
+    Message(&'a str),
+}
+
+impl Key<'_> {
+    fn name(self) -> String {
+        match self {
+            Key::Turn(id) => format!("turn:{id}"),
+            Key::Message(id) => format!("message:{id}"),
+        }
+    }
+}
+
 /// Build in O(items + projected rows), grouping steering messages with their real
 /// turn. Legacy messages without a turn id get a stable prompt-item boundary.
 /// `rows` are the virtual list's entries; `tree` is the projection they flatten.
+/// This runs again after every projected change, so keys borrow their ids and only
+/// the list's own rows are looked up.
 fn index(items: &[Item], rows: &[display::ListRow], tree: &[display::Row]) -> Vec<Turn> {
     let mut turns: Vec<Turn> = Vec::new();
-    let mut by_key = HashMap::<String, usize>::new();
+    let mut by_key = HashMap::<Key, usize>::new();
     let mut owners = vec![None; items.len()];
     let mut latest = None;
     for (at, item) in items.iter().enumerate() {
-        let key = item
-            .turn_id
-            .as_ref()
-            .map(|id| format!("turn:{id}"))
-            .or_else(|| {
-                matches!(item.body, ItemBody::UserMessage { .. })
-                    .then(|| format!("message:{}", item.id))
-            });
+        let key = item.turn_id.as_deref().map(Key::Turn).or_else(|| {
+            matches!(item.body, ItemBody::UserMessage { .. }).then_some(Key::Message(&item.id))
+        });
         let owner = if let Some(key) = key {
-            *by_key.entry(key.clone()).or_insert_with(|| {
+            *by_key.entry(key).or_insert_with(|| {
                 turns.push(Turn {
-                    key,
+                    key: key.name(),
                     prompt: None,
                     answer: None,
                     followups: 0,
@@ -93,7 +106,7 @@ fn index(items: &[Item], rows: &[display::ListRow], tree: &[display::Row]) -> Ve
         } else if matches!(item.body, ItemBody::AgentMessage { .. }) {
             let owner = turns.len();
             turns.push(Turn {
-                key: format!("message:{}", item.id),
+                key: Key::Message(&item.id).name(),
                 prompt: None,
                 answer: None,
                 followups: 0,
@@ -137,10 +150,13 @@ fn index(items: &[Item], rows: &[display::ListRow], tree: &[display::Row]) -> Ve
         .map(|(at, item)| (item.id.as_str(), at))
         .collect();
     // A list entry has no children; its projected row's first item names its turn.
+    // Only rows the list shows are entries: a closed row's children are not.
     fn anchors<'a>(rows: &'a [display::Row], out: &mut HashMap<&'a str, &'a str>) {
         for row in rows {
             out.insert(row.id.as_str(), display::anchor_item(row));
-            anchors(&row.children, out);
+            if row.open {
+                anchors(&row.children, out);
+            }
             anchors(&row.comments, out);
         }
     }
@@ -165,7 +181,7 @@ fn index(items: &[Item], rows: &[display::ListRow], tree: &[display::Row]) -> Ve
                 let turn = id.strip_prefix("activity:")?;
                 turn.strip_prefix("legacy:")
                     .and_then(owner_of)
-                    .or_else(|| by_key.get(&format!("turn:{turn}")).copied())
+                    .or_else(|| by_key.get(&Key::Turn(turn)).copied())
             });
             (owner, false)
         };
