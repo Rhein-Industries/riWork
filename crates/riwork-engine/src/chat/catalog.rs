@@ -11,12 +11,14 @@ use super::{
     wire::Envelope,
 };
 use crate::sessions;
+use memchr::memmem::Finder;
 use serde::Serialize;
 use std::{
     fs::{File, OpenOptions},
     io::{BufRead, BufReader, Read, Seek, SeekFrom, Write},
     os::unix::fs::OpenOptionsExt,
     path::Path,
+    sync::LazyLock,
 };
 
 /// How many of the newest chats of a provider are looked at.
@@ -64,8 +66,18 @@ enum Line {
     Nothing,
 }
 
+// The keys `decode` looks for before it parses a line (see `log::contains`).
+static MODELS_LINE: LazyLock<Finder<'static>> =
+    LazyLock::new(|| Finder::new(br#""event":"models""#));
+static INFO_LINE: LazyLock<Finder<'static>> = LazyLock::new(|| Finder::new(br#""event":"info""#));
+
 fn decode(id: &str, line: &[u8]) -> Line {
     if line.last() != Some(&b'\n') {
+        return Line::Nothing;
+    }
+    // Only these two events say anything here: the rest of a chat's tail is passed over
+    // as bytes, not parsed.
+    if !log::contains(line, &MODELS_LINE) && !log::contains(line, &INFO_LINE) {
         return Line::Nothing;
     }
     let Ok(envelope) = serde_json::from_slice::<Envelope>(line) else {
@@ -376,6 +388,48 @@ mod tests {
         assert!(matches!(decode(&id, &whole), Line::Nothing));
         assert!(log::chat_dir(Path::new("/fixture"), "../escape").is_none());
         assert!(log::chat_dir(Path::new("/fixture"), &id.to_uppercase()).is_none());
+    }
+
+    #[test]
+    fn every_models_and_info_line_the_host_writes_is_read_and_nothing_else() {
+        use super::super::model::{Item, ItemBody, ItemStatus};
+        let id = uuid::Uuid::from_u128(7).to_string();
+        let mut named = info(&id, Provider::Claude);
+        named.user_title = Some(r#""event":"models" é"#.into());
+        assert!(matches!(
+            decode(&id, &line(&id, ChatEvent::Info { info: named })),
+            Line::Provider(Provider::Claude)
+        ));
+        assert!(matches!(
+            decode(&id, &line(&id, ChatEvent::Models { models: vec![] })),
+            Line::Models(models) if models.is_empty()
+        ));
+        // A marker nested in a tool's input, or quoted in text, is not a list.
+        for body in [
+            ItemBody::ToolCall {
+                server: None,
+                tool: "x".into(),
+                input: serde_json::json!({"event":"models","models":[{"id":"m","name":"M"}]}),
+                output: Some(r#"{"event":"info"}"#.into()),
+            },
+            ItemBody::AgentMessage {
+                text: r#""event":"models""#.into(),
+            },
+        ] {
+            let item = Item {
+                id: "i".into(),
+                turn_id: None,
+                status: ItemStatus::Completed,
+                body,
+                started_at: None,
+                ended_at: None,
+                presentation: Default::default(),
+            };
+            assert!(matches!(
+                decode(&id, &line(&id, ChatEvent::ItemCompleted { item })),
+                Line::Nothing
+            ));
+        }
     }
 
     #[test]
