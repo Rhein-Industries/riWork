@@ -1136,7 +1136,9 @@ import RiWorkCore
         XCTAssertLessThanOrEqual(field.convert(field.bounds, to: rig.window).maxY, bottom.minY + 1, "the composer ends above the tab row")
         let surface = try XCTUnwrap(rig.layout.frames["composer"])
         XCTAssertEqual(bottom.minY - surface.maxY, 8, accuracy: 1, "the hardware layout keeps the composer's 8-point gap above bottom navigation")
-        XCTAssertNotNil(rig.layout.frames["current-project"], "the selected iPhone tab identifies its project")
+        // The project's name under the selected tab is the iPhone's (`projectCaption`); an iPad's tab row has none.
+        let phone = UIDevice.current.userInterfaceIdiom == .phone
+        XCTAssertEqual(rig.layout.frames["current-project"] != nil, phone, "the selected iPhone tab identifies its project, an iPad tab does not")
         // Let SwiftUI commit the tab's selected fill and the loaded message before taking the review image, after the keyboard's
         // accessory window and the newly mounted conversation have both settled.
         try await Task.sleep(for: .milliseconds(500))
@@ -1180,8 +1182,10 @@ import RiWorkCore
         let screen = UIScreen.main.bounds.size
         let rig = try await makeRig(hardwareKeyboard: true, width: screen.width, height: screen.height, look: .nativeLight, defaults: suite)
         await rig.transport.append(chatID, [.info(chat()), .itemCompleted(ChatItem(id: "tab-help-proof", status: .completed, body: .agentMessage("Use the physical Tab key to reach your RiWork shortcuts.")))])
+        // The project's name under the selected tab and over a focused terminal is the iPhone's (`projectCaption`); an iPad shows neither.
+        let phone = UIDevice.current.userInterfaceIdiom == .phone
         await eventually("the terminal capture and project context are visible") {
-            !self.descendants(KeyCaptureView.self, in: rig.host.view).isEmpty && rig.layout.frames["current-project"] != nil
+            !self.descendants(KeyCaptureView.self, in: rig.host.view).isEmpty && rig.layout.frames["navigation"] != nil && (rig.layout.frames["current-project"] != nil) == phone
         }
         let terminal = try XCTUnwrap(descendants(KeyCaptureView.self, in: rig.host.view).first)
         terminal.inputViewStandIn = UIView(frame: CGRect(x: 0, y: 0, width: 1, height: 0.001))
@@ -1210,7 +1214,12 @@ import RiWorkCore
         _ = composer.handleTabShortcut(event(String(shellNumber))); _ = composer.handleTabShortcut(event(String(shellNumber), phase: .up))
         await eventually("Tab-number returns to the terminal") { rig.model.selectedChatID == nil && !rig.model.terminalCovered }
         rig.model.setFocusMode(true)
-        await eventually("focus mode retains project identity") { rig.layout.frames["current-project-focus"] != nil }
+        if phone {
+            await eventually("focus mode retains project identity") { rig.layout.frames["current-project-focus"] != nil }
+        } else {
+            await eventually("focus mode hides the navigation") { rig.layout.frames["navigation"] == nil }
+            XCTAssertNil(rig.layout.frames["current-project-focus"], "an iPad's focused terminal has no project capsule")
+        }
         await finish(rig)
     }
 
