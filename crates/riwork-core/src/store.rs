@@ -643,12 +643,31 @@ impl FileStamp {
     }
 }
 
+/// The last parse of one file and the stamp it was read under.
+pub(crate) type ParseCache<T> = Arc<Mutex<Option<(Option<FileStamp>, T)>>>;
+
+/// The parse cache of the file at `path`, shared by every store this process
+/// opens on it. Most callers open a store for one read, so a cache of their
+/// own would never be hit. A stamp check guards every use, so sharing serves
+/// nothing a fresh read would not.
+pub(crate) fn parse_cache_for<T: Send + 'static>(
+    caches: &'static Mutex<BTreeMap<PathBuf, ParseCache<T>>>,
+    path: PathBuf,
+) -> ParseCache<T> {
+    caches
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .entry(path)
+        .or_default()
+        .clone()
+}
+
 #[derive(Clone, Debug)]
 pub struct Store {
     dir: PathBuf,
     /// The last `state.json` parse and the stamp it was read under, shared by
-    /// every clone of this store.
-    snapshot_cache: Arc<Mutex<Option<(Option<FileStamp>, State)>>>,
+    /// every store of this directory in this process.
+    snapshot_cache: ParseCache<State>,
 }
 
 impl Store {
@@ -663,9 +682,10 @@ impl Store {
         }
         crate::paths::create_private_dir(&dir)
             .map_err(|error| format!("Cannot create {}: {error}", dir.display()))?;
+        static CACHES: Mutex<BTreeMap<PathBuf, ParseCache<State>>> = Mutex::new(BTreeMap::new());
         Ok(Self {
+            snapshot_cache: parse_cache_for(&CACHES, dir.join("state.json")),
             dir,
-            snapshot_cache: Arc::new(Mutex::new(None)),
         })
     }
 

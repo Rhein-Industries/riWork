@@ -2434,3 +2434,100 @@ fn a_newer_builds_memo_fields_survive_unrelated_writes() {
     let memo = store.snapshot().unwrap().project_memo("p1");
     assert_eq!((memo.text.as_str(), memo.updated_at), ("kept", 5));
 }
+
+/// About the size of a long-used state file (600 KB here): many projects, each
+/// with worktrees and a memo.
+fn large_state_json() -> serde_json::Value {
+    let ids = (0..200).map(|n| format!("{n:08}-0000-4000-8000-000000000000"));
+    let projects = ids
+        .clone()
+        .map(|id| serde_json::json!({"id": id, "name": format!("Project {id}"), "root": format!("/work/{id}"), "created_at": 1}))
+        .collect::<Vec<_>>();
+    let worktrees = ids
+        .clone()
+        .flat_map(|id| {
+            (0..4).map(move |n| serde_json::json!({"id": format!("{id}-{n}"), "project_id": id, "branch": format!("feature-{n}"), "path": format!("/work/{id}/.worktrees/{n}"), "created_at": 1}))
+        })
+        .collect::<Vec<_>>();
+    let memos = ids
+        .map(|id| {
+            (
+                id,
+                serde_json::json!({"text": "- a line of the memo\n".repeat(120), "updated_at": 1}),
+            )
+        })
+        .collect::<serde_json::Map<_, _>>();
+    serde_json::json!({"schema_version": 1, "projects": projects, "worktrees": worktrees, "tasks": [], "project_memos": memos})
+}
+
+#[test]
+#[ignore = "timing: cargo test -p riwork-core --lib -- --ignored --nocapture snapshots_of_freshly_opened"]
+fn time_snapshots_of_freshly_opened_stores() {
+    let fixture = Fixture::new();
+    write_state_json(&fixture.store(), &large_state_json());
+    let bytes = fs::metadata(fixture.path("state/state.json"))
+        .unwrap()
+        .len();
+    let rounds = 100;
+    let started = std::time::Instant::now();
+    for _ in 0..rounds {
+        // What most callers do: open a store for one read.
+        fixture.store().snapshot().unwrap();
+    }
+    eprintln!(
+        "Store::open + snapshot of a {} KB state: {:?} per call",
+        bytes / 1024,
+        started.elapsed() / rounds
+    );
+}
+
+#[test]
+fn stores_opened_separately_share_the_last_parse_and_see_every_change() {
+    let fixture = Fixture::new();
+    let state_with = |id: &str| {
+        serde_json::to_vec(&State {
+            active_project_id: Some(id.to_owned()),
+            ..State::default()
+        })
+        .unwrap()
+    };
+    let path = fixture.path("state/state.json");
+    let active = || fixture.store().snapshot().unwrap().active_project_id;
+    fixture.store();
+    fs::write(&path, state_with("aaaa")).unwrap();
+    assert_eq!(active().as_deref(), Some("aaaa"));
+    // A store opened later is served the first one's parse while the stamp
+    // stands: the same-length, same-inode, same-mtime rewrite is not read.
+    let modified = fs::metadata(&path).unwrap().modified().unwrap();
+    fs::write(&path, state_with("bbbb")).unwrap();
+    OpenOptions::new()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(modified)
+        .unwrap();
+    assert_eq!(active().as_deref(), Some("aaaa"));
+    // One store's write is seen by every other at once.
+    let (first, second) = (fixture.store(), fixture.store());
+    first.snapshot().unwrap();
+    second
+        .transaction(|state| {
+            state.active_project_id = Some("written".to_owned());
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        first.snapshot().unwrap().active_project_id.as_deref(),
+        Some("written")
+    );
+    assert_eq!(active().as_deref(), Some("written"));
+    // So are a change from outside, removal, and recreation.
+    fs::write(&path, state_with("cc")).unwrap();
+    assert_eq!(active().as_deref(), Some("cc"));
+    fs::remove_file(&path).unwrap();
+    assert_eq!(fixture.store().snapshot().unwrap(), State::default());
+    fs::write(&path, state_with("dddd")).unwrap();
+    assert_eq!(active().as_deref(), Some("dddd"));
+    // Another directory has its own state.
+    assert_eq!(Fixture::new().store().snapshot().unwrap(), State::default());
+}

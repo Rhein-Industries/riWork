@@ -6,7 +6,7 @@ use crate::{
     project_sort::ProjectOrder,
     provider::{ClaudeBilling, Provider},
     status_bar::StatusBarSettings,
-    store::FileStamp,
+    store::{FileStamp, ParseCache, parse_cache_for},
     theme::ThemeChoice,
     ui_text::{InterfaceFont, TextPoints},
 };
@@ -19,7 +19,7 @@ use std::{
     fs::{File, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, PoisonError},
+    sync::{Mutex, PoisonError},
 };
 use uuid::Uuid;
 
@@ -667,8 +667,8 @@ pub fn orchestrator_runs(home: &Path) -> OrchestratorRuns {
 pub struct SettingsStore {
     dir: PathBuf,
     /// The last `settings.json` parse and the stamp it was read under,
-    /// shared by every clone of this store.
-    load_cache: Arc<Mutex<Option<(Option<FileStamp>, Settings)>>>,
+    /// shared by every settings store of this directory in this process.
+    load_cache: ParseCache<Settings>,
 }
 
 impl SettingsStore {
@@ -683,9 +683,10 @@ impl SettingsStore {
         }
         crate::paths::create_private_dir(&dir)
             .map_err(|error| format!("Cannot create settings directory: {error}"))?;
+        static CACHES: Mutex<BTreeMap<PathBuf, ParseCache<Settings>>> = Mutex::new(BTreeMap::new());
         Ok(Self {
+            load_cache: parse_cache_for(&CACHES, dir.join("settings.json")),
             dir,
-            load_cache: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -2235,6 +2236,61 @@ mod tests {
             .update(|settings| settings.open_preview_on_select = false)
             .unwrap();
         assert!(!store.load().unwrap().open_preview_on_select);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn settings_stores_opened_separately_share_the_last_parse_and_see_every_change() {
+        let dir = env::temp_dir().join(format!("riwork-settings-shared-{}", Uuid::new_v4()));
+        let path = dir.join("settings.json");
+        let preview = || {
+            SettingsStore::open(&dir)
+                .unwrap()
+                .load()
+                .unwrap()
+                .open_preview_on_select
+        };
+        let bytes = |preview: bool| {
+            let mut bytes = serde_json::to_vec(
+                &serde_json::json!({"schema_version": 1, "open_preview_on_select": preview}),
+            )
+            .unwrap();
+            bytes.resize(64, b' ');
+            bytes
+        };
+        SettingsStore::open(&dir).unwrap();
+        fs::write(&path, bytes(true)).unwrap();
+        assert!(preview());
+        // A store opened later is served the first one's parse while the
+        // stamp stands.
+        let modified = fs::metadata(&path).unwrap().modified().unwrap();
+        fs::write(&path, bytes(false)).unwrap();
+        OpenOptions::new()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(modified)
+            .unwrap();
+        assert!(preview());
+        // One store's update is seen by every other store at once.
+        let (first, second) = (
+            SettingsStore::open(&dir).unwrap(),
+            SettingsStore::open(&dir).unwrap(),
+        );
+        assert!(first.load().unwrap().open_preview_on_select);
+        second
+            .update(|settings| settings.open_preview_on_select = false)
+            .unwrap();
+        assert!(!first.load().unwrap().open_preview_on_select);
+        assert!(!preview());
+        // So are a change from outside and removal.
+        fs::write(&path, bytes(true)).unwrap();
+        assert!(preview());
+        fs::remove_file(&path).unwrap();
+        assert_eq!(
+            SettingsStore::open(&dir).unwrap().load().unwrap(),
+            Settings::default()
+        );
         fs::remove_dir_all(dir).unwrap();
     }
 }
