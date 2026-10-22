@@ -5424,3 +5424,94 @@ fn host_persists_item_and_turn_lifecycle_metadata() {
     assert_eq!(semantics.target.as_deref(), Some("src/main.rs"));
     assert_eq!(semantics.excerpt.as_deref(), Some("done"));
 }
+
+#[test]
+fn resume_history_snapshot_releases_the_chat_lock_and_excludes_later_appends() {
+    let host = NoticeHost::new();
+    let chat = host.create(Provider::Codex);
+    let (info, snapshot) = {
+        let mut inner = lock(&chat.inner);
+        inner.info.provider_thread_id = Some("used-session".into());
+        inner.publish_info();
+        inner.append(ChatEvent::TurnStarted {
+            turn_id: "t".into(),
+            started_at: None,
+        });
+        inner.append(ChatEvent::TurnCompleted {
+            turn_id: "t".into(),
+            outcome: TurnOutcome::Completed,
+            ended_at: None,
+        });
+        (
+            inner.info.clone(),
+            inner.log.session_history_snapshot().unwrap(),
+        )
+    };
+    // Info, cancellation and worker publication can use the lock while a scan is pending.
+    {
+        let mut inner = chat
+            .inner
+            .try_lock()
+            .expect("history snapshot retained the chat lock");
+        inner.info.provider_thread_id = Some("new-empty-session".into());
+        inner.publish_info();
+        assert!(!inner.log.provider_session_has_history(&inner.info).unwrap());
+    }
+    assert!(snapshot.has_history(&info).unwrap());
+    let snapshot = { lock(&chat.inner).log.session_history_snapshot().unwrap() };
+    fs::write(chat.dir.join("events.jsonl"), b"").unwrap();
+    assert!(
+        snapshot
+            .has_history(&info)
+            .unwrap_err()
+            .contains("truncated")
+    );
+}
+
+#[test]
+#[ignore = "timing: synthetic 16 MiB history, no socket or provider process"]
+fn time_resume_history_lock_on_a_large_log() {
+    let host = NoticeHost::new();
+    let chat = host.create(Provider::Codex);
+    {
+        let mut inner = lock(&chat.inner);
+        inner.info.provider_thread_id = Some("historical-session".into());
+        inner.publish_info();
+        for _ in 0..256 {
+            inner.append(ChatEvent::ItemDelta {
+                item_id: "answer".into(),
+                delta: super::super::model::Delta::Text("x".repeat(65536)),
+            });
+        }
+    }
+    let mut locked = Vec::new();
+    let mut capture = Vec::new();
+    let mut scan = Vec::new();
+    for _ in 0..3 {
+        let start = Instant::now();
+        {
+            let inner = lock(&chat.inner);
+            assert!(inner.log.provider_session_has_history(&inner.info).unwrap());
+        }
+        locked.push(start.elapsed());
+        let start = Instant::now();
+        let (info, snapshot) = {
+            let inner = lock(&chat.inner);
+            (
+                inner.info.clone(),
+                inner.log.session_history_snapshot().unwrap(),
+            )
+        };
+        capture.push(start.elapsed());
+        let start = Instant::now();
+        assert!(snapshot.has_history(&info).unwrap());
+        scan.push(start.elapsed());
+    }
+    locked.sort();
+    capture.sort();
+    scan.sort();
+    eprintln!(
+        "16 MiB resume history: old lock held {:?}; snapshot lock held {:?}; scan outside lock {:?}",
+        locked[1], capture[1], scan[1]
+    );
+}

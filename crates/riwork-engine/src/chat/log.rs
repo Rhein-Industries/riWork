@@ -44,6 +44,105 @@ pub struct ChatLog {
     dir: PathBuf,
 }
 
+/// An open, bounded log prefix. It owns no chat lock and never launches a provider.
+pub(super) struct SessionHistorySnapshot {
+    path: PathBuf,
+    reader: io::Take<File>,
+}
+
+impl SessionHistorySnapshot {
+    /// Preserve the full history guard, including legacy bindings, switches,
+    /// identity adoption and corrupt-record failures. A tail alone is unsafe.
+    pub(super) fn has_history(self, info: &ChatInfo) -> Result<bool, String> {
+        let path = self.path;
+        let read = |error: io::Error| format!("Cannot read {}: {error}", path.display());
+        let mut reader = BufReader::new(self.reader);
+        let mut binding: Option<(super::model::Provider, Option<String>)> = None;
+        let mut history = false;
+        let mut any_history = false;
+        let mut boundary = false;
+        let mut turn = None;
+        let mut seq = 0;
+        let mut line = Vec::new();
+        loop {
+            line.clear();
+            if reader.read_until(b'\n', &mut line).map_err(read)? == 0 {
+                break;
+            }
+            let envelope: Envelope = serde_json::from_slice(&line)
+                .map_err(|error| format!("Cannot parse {}: {error}", path.display()))?;
+            if line.last() != Some(&b'\n') || envelope.chat_id != info.id || envelope.seq != seq + 1
+            {
+                return Err(format!("Invalid session history in {}", path.display()));
+            }
+            seq = envelope.seq;
+            if let ChatEvent::Info { info: said } = &envelope.event {
+                let changed = binding.as_ref().is_some_and(|(provider, thread)| {
+                    *provider != said.provider
+                        || matches!((thread, &said.provider_thread_id), (Some(a), Some(b)) if a != b)
+                });
+                if changed {
+                    // The provider can adopt its real identity in system/init
+                    // after the host has logged the first accepted input.
+                    // Activity in the still-open turn follows that identity;
+                    // a switch or an idle /clear starts a new history segment.
+                    let continuing = binding
+                        .as_ref()
+                        .is_some_and(|(provider, _)| *provider == said.provider)
+                        && (turn.is_some()
+                            || matches!(
+                                said.state,
+                                super::model::ChatState::Running | super::model::ChatState::Waiting
+                            ));
+                    if !continuing {
+                        history = false;
+                        turn = None;
+                    }
+                    boundary = true;
+                }
+                binding = Some((said.provider, said.provider_thread_id.clone()));
+                if matches!(
+                    said.state,
+                    super::model::ChatState::Running | super::model::ChatState::Waiting
+                ) {
+                    history = true;
+                    any_history = true;
+                }
+            } else if is_session_history(&envelope.event) {
+                history = true;
+                any_history = true;
+            }
+            match envelope.event {
+                ChatEvent::TurnStarted { turn_id, .. } => turn = Some(turn_id),
+                ChatEvent::TurnCompleted { turn_id, .. } if turn.as_ref() == Some(&turn_id) => {
+                    turn = None
+                }
+                _ => {}
+            }
+        }
+        if reader.into_inner().limit() != 0 {
+            return Err(format!(
+                "Session history was truncated in {}",
+                path.display()
+            ));
+        }
+        if binding.is_none() && info.provider_thread_id.is_some() {
+            // Metadata-only legacy chats (including a missing/recreated log)
+            // cannot prove that their provider session was never used.
+            return Ok(true);
+        }
+        if binding.as_ref().is_some_and(|(provider, thread)| {
+            *provider != info.provider
+                || matches!((thread, &info.provider_thread_id), (Some(a), Some(b)) if a != b)
+        }) {
+            // Metadata can be saved just before a crash prevented its Info.
+            // With ambiguous ownership, never assert that a used chat is empty.
+            return Ok(any_history || info.first_user_message.is_some());
+        }
+        Ok(history || (!boundary && info.first_user_message.is_some()))
+    }
+}
+
 impl ChatLog {
     pub(super) fn dir(&self) -> &Path {
         &self.dir
@@ -128,92 +227,26 @@ impl ChatLog {
         self.replace(INFO, &data).map(drop)
     }
 
-    /// Whether the current provider session has ever been used. Scan the whole
-    /// log as a stream: a tail or `first_user_message` alone would confuse an
-    /// empty switched session with an old conversation. Legacy records without
-    /// binding metadata belong to the only known session. An unreadable record
-    /// is an error, not evidence that a conversation is safe to replace.
-    pub(super) fn provider_session_has_history(&self, info: &ChatInfo) -> Result<bool, String> {
+    /// Freeze the complete prefix while the host holds the chat lock, then
+    /// validate it outside that lock. Appended notices cannot extend a scan or
+    /// change which provider binding the captured metadata describes.
+    pub(super) fn session_history_snapshot(&self) -> Result<SessionHistorySnapshot, String> {
         let path = self.dir.join(EVENTS);
-        let read = |error: io::Error| format!("Cannot read {}: {error}", path.display());
-        let mut reader = BufReader::new(File::open(&path).map_err(read)?);
-        let mut binding: Option<(super::model::Provider, Option<String>)> = None;
-        let mut history = false;
-        let mut any_history = false;
-        let mut boundary = false;
-        let mut turn = None;
-        let mut seq = 0;
-        let mut line = Vec::new();
-        loop {
-            line.clear();
-            if reader.read_until(b'\n', &mut line).map_err(read)? == 0 {
-                break;
-            }
-            let envelope: Envelope = serde_json::from_slice(&line)
-                .map_err(|error| format!("Cannot parse {}: {error}", path.display()))?;
-            if line.last() != Some(&b'\n') || envelope.chat_id != info.id || envelope.seq != seq + 1
-            {
-                return Err(format!("Invalid session history in {}", path.display()));
-            }
-            seq = envelope.seq;
-            if let ChatEvent::Info { info: said } = &envelope.event {
-                let changed = binding.as_ref().is_some_and(|(provider, thread)| {
-                    *provider != said.provider
-                        || matches!((thread, &said.provider_thread_id), (Some(a), Some(b)) if a != b)
-                });
-                if changed {
-                    // The provider can adopt its real identity in system/init
-                    // after the host has logged the first accepted input.
-                    // Activity in the still-open turn follows that identity;
-                    // a switch or an idle /clear starts a new history segment.
-                    let continuing = binding
-                        .as_ref()
-                        .is_some_and(|(provider, _)| *provider == said.provider)
-                        && (turn.is_some()
-                            || matches!(
-                                said.state,
-                                super::model::ChatState::Running | super::model::ChatState::Waiting
-                            ));
-                    if !continuing {
-                        history = false;
-                        turn = None;
-                    }
-                    boundary = true;
-                }
-                binding = Some((said.provider, said.provider_thread_id.clone()));
-                if matches!(
-                    said.state,
-                    super::model::ChatState::Running | super::model::ChatState::Waiting
-                ) {
-                    history = true;
-                    any_history = true;
-                }
-            } else if is_session_history(&envelope.event) {
-                history = true;
-                any_history = true;
-            }
-            match envelope.event {
-                ChatEvent::TurnStarted { turn_id, .. } => turn = Some(turn_id),
-                ChatEvent::TurnCompleted { turn_id, .. } if turn.as_ref() == Some(&turn_id) => {
-                    turn = None
-                }
-                _ => {}
-            }
-        }
-        if binding.is_none() && info.provider_thread_id.is_some() {
-            // Metadata-only legacy chats (including a missing/recreated log)
-            // cannot prove that their provider session was never used.
-            return Ok(true);
-        }
-        if binding.as_ref().is_some_and(|(provider, thread)| {
-            *provider != info.provider
-                || matches!((thread, &info.provider_thread_id), (Some(a), Some(b)) if a != b)
-        }) {
-            // Metadata can be saved just before a crash prevented its Info.
-            // With ambiguous ownership, never assert that a used chat is empty.
-            return Ok(any_history || info.first_user_message.is_some());
-        }
-        Ok(history || (!boundary && info.first_user_message.is_some()))
+        let file = File::open(&path)
+            .map_err(|error| format!("Cannot read {}: {error}", path.display()))?;
+        let length = file
+            .metadata()
+            .map_err(|error| format!("Cannot read {}: {error}", path.display()))?
+            .len();
+        Ok(SessionHistorySnapshot {
+            path,
+            reader: file.take(length),
+        })
+    }
+
+    #[cfg(test)]
+    pub(super) fn provider_session_has_history(&self, info: &ChatInfo) -> Result<bool, String> {
+        self.session_history_snapshot()?.has_history(info)
     }
 
     /// Writes the conversation a chat passes on when it switches provider

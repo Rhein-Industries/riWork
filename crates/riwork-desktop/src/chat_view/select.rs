@@ -189,12 +189,14 @@ impl Document {
     }
 }
 
+type SourceSections = HashMap<usize, (super::display::ListRow, Vec<SourceLeaf>)>;
+
 pub(super) struct TranscriptSelection {
     pub scope: TextSelectionScopeId,
     handle: TextSelectionHandle,
     data: Rc<RefCell<Document>>,
     dirty: Cell<bool>,
-    source_cache: RefCell<HashMap<String, (super::display::Row, Vec<SourceLeaf>)>>,
+    source_cache: RefCell<HashMap<String, SourceSections>>,
     #[cfg(test)]
     pub(super) source_builds: Cell<usize>,
     _refresh: Subscription,
@@ -344,32 +346,53 @@ impl TranscriptSelection {
     pub(super) fn source_was_mounted(&self, id: &str) -> bool {
         self.source_cache.borrow().contains_key(id)
     }
+    /// Content or body-detail changes invalidate every section owned by the message.
     pub(super) fn invalidate_source(&self, id: &str) {
         self.source_cache.borrow_mut().remove(id);
+    }
+    /// Refreshing one list row must keep the other mounted sections of its owner.
+    fn invalidate_source_section(&self, row: &super::display::ListRow) {
+        let mut cache = self.source_cache.borrow_mut();
+        if let Some(sections) = cache.get_mut(&row.row.id) {
+            sections.remove(&row.block_start());
+            if sections.is_empty() {
+                cache.remove(&row.row.id);
+            }
+        }
     }
     pub(super) fn invalidate_sources(&self) {
         self.source_cache.borrow_mut().clear();
     }
     pub(super) fn retain_sources(&self, rows: &[super::display::ListRow]) {
-        let visible: std::collections::HashSet<_> =
-            rows.iter().map(|entry| entry.row.id.as_str()).collect();
-        self.source_cache
-            .borrow_mut()
-            .retain(|id, _| visible.contains(id.as_str()));
+        let mut visible: HashMap<&str, std::collections::HashSet<usize>> = HashMap::new();
+        for entry in rows {
+            visible
+                .entry(&entry.row.id)
+                .or_default()
+                .insert(entry.block_start());
+        }
+        self.source_cache.borrow_mut().retain(|id, sections| {
+            let Some(keep) = visible.get(id.as_str()) else {
+                return false;
+            };
+            sections.retain(|start, _| keep.contains(start));
+            !sections.is_empty()
+        });
     }
-    fn has_cached_source(&self, row: &super::display::Row) -> bool {
+    fn has_cached_source(&self, row: &super::display::ListRow) -> bool {
         self.source_cache
             .borrow()
-            .get(&row.id)
+            .get(&row.row.id)
+            .and_then(|sections| sections.get(&row.block_start()))
             .is_some_and(|(known, _)| known == row)
     }
     pub(super) fn cached_source(
         &self,
-        row: &super::display::Row,
+        row: &super::display::ListRow,
         at: usize,
     ) -> Option<Vec<SourceLeaf>> {
         let cache = self.source_cache.borrow();
-        let (known, source) = cache.get(&row.id)?;
+        let (known, source) = cache.get(&row.row.id)?.get(&row.block_start())?;
         if known != row {
             return None;
         }
@@ -384,12 +407,14 @@ impl TranscriptSelection {
                 .collect(),
         )
     }
-    pub(super) fn cache_source(&self, row: &super::display::Row, source: &[SourceLeaf]) {
+    pub(super) fn cache_source(&self, row: &super::display::ListRow, source: &[SourceLeaf]) {
         #[cfg(test)]
         self.source_builds.set(self.source_builds.get() + 1);
         self.source_cache
             .borrow_mut()
-            .insert(row.id.clone(), (row.clone(), source.to_vec()));
+            .entry(row.row.id.clone())
+            .or_default()
+            .insert(row.block_start(), (row.clone(), source.to_vec()));
     }
     pub fn clear(&self, window: AnyWindowHandle, cx: &mut App) {
         if self.handle.snapshot(cx).is_some() || self.handle.has_local_selection(cx) {
@@ -505,7 +530,7 @@ impl ChatView {
         if self
             .list_rows
             .get(at)
-            .is_some_and(|entry| !self.transcript_selection.has_cached_source(&entry.row))
+            .is_some_and(|entry| !self.transcript_selection.has_cached_source(entry))
         {
             self.refresh_selection_rows_inner(&[at], look, false, cx);
         }
@@ -525,7 +550,7 @@ impl ChatView {
         }
         for &at in rows {
             if let Some(entry) = self.list_rows.get(at) {
-                self.transcript_selection.invalidate_source(&entry.row.id);
+                self.transcript_selection.invalidate_source_section(entry);
             }
         }
         let mut replacements: Vec<_> = rows

@@ -1153,3 +1153,27 @@ fn find_expands_a_long_plan_before_mapping_its_hidden_match(cx: &mut TestAppCont
     assert_eq!(current_text(cx, &view).1, "needle");
     assert!(current_in_view(cx, &view));
 }
+
+#[gpui::test]
+fn find_reveals_an_offscreen_section_of_one_long_answer(cx: &mut TestAppContext) {
+    let text = (0..80)
+        .map(|n| format!("paragraph {n:03} {}", "ordinary words ".repeat(20)))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let (handle, view) = mount(cx, vec![message("long", &text)]);
+    scroll_to_top(cx, handle, &view);
+    press(cx, handle, "cmd-f");
+    type_text(cx, handle, "paragraph 070");
+    assert_eq!(status(cx, &view), (Some(1), 1));
+    settle(cx, handle);
+    assert_eq!(current_text(cx, &view).0, "long/70");
+    act(cx, handle, |window, cx| {
+        let point = view
+            .read(cx)
+            .transcript_selection
+            .glyph_point("long/70", 0)
+            .expect("matched section is mounted");
+        assert!(view.read(cx).list.viewport_bounds().contains(&point));
+        assert!(window.try_find("transcript:long/0").is_none());
+    });
+}

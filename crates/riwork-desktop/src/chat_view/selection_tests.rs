@@ -75,6 +75,150 @@ fn copied(window: &mut Window, cx: &mut gpui::App) -> String {
     cx.read_from_clipboard().unwrap().text().unwrap().to_owned()
 }
 
+fn sectioned_answer() -> Vec<String> {
+    (0..12)
+        .map(|block| format!("paragraph {block:02} café 🦀"))
+        .collect()
+}
+
+#[gpui::test]
+fn sectioned_answer_keeps_mounted_sources_across_frames(cx: &mut TestAppContext) {
+    let (handle, view, recording) = editor_tests::mount_selection(cx);
+    cx.simulate_window_resize(handle.into(), gpui::size(px(800.), px(1200.)));
+    cx.update_window(handle.into(), |_, window, cx| {
+        install(
+            &view,
+            vec![message("long", &sectioned_answer().join("\n\n"))],
+            window,
+            cx,
+        );
+        // All three sections really mount in the same frame. Visiting the next
+        // section must neither evict the previous one nor rebuild it next frame.
+        for block in [0, 4, 8] {
+            assert!(
+                window
+                    .try_find(SharedString::from(format!("transcript:long/{block}")))
+                    .is_some()
+            );
+        }
+        let builds = view.read(cx).transcript_selection.source_builds.get();
+        for _ in 0..3 {
+            window.render_frame(cx);
+            assert_eq!(
+                view.read(cx).transcript_selection.source_builds.get(),
+                builds,
+                "unchanged mounted sections rebuilt their selection sources"
+            );
+            let v = view.read(cx);
+            let sections: Vec<_> = v
+                .list_rows
+                .iter()
+                .enumerate()
+                .filter(|(_, entry)| entry.row.id == "long")
+                .collect();
+            assert_eq!(sections.len(), 3);
+            for (at, entry) in sections {
+                assert!(
+                    v.transcript_selection.cached_source(entry, at).is_some(),
+                    "mounted section {} lost its source",
+                    entry.block_start()
+                );
+            }
+        }
+        // Whole-message invalidation is still available for body/detail changes.
+        let v = view.read(cx);
+        v.transcript_selection.invalidate_source("long");
+        assert!(!v.transcript_selection.source_was_mounted("long"));
+        for (at, entry) in v
+            .list_rows
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| entry.row.id == "long")
+        {
+            assert!(v.transcript_selection.cached_source(entry, at).is_none());
+        }
+    })
+    .unwrap();
+    assert!(recording.try_recv().is_err());
+}
+
+#[gpui::test]
+fn sectioned_answer_selection_survives_projection_refresh(cx: &mut TestAppContext) {
+    exercise_sectioned_selection_refresh(cx, false);
+}
+
+#[gpui::test]
+fn sectioned_answer_selection_survives_unrelated_append(cx: &mut TestAppContext) {
+    exercise_sectioned_selection_refresh(cx, true);
+}
+
+fn exercise_sectioned_selection_refresh(cx: &mut TestAppContext, append: bool) {
+    let (handle, view, recording) = editor_tests::mount_selection(cx);
+    cx.simulate_window_resize(handle.into(), gpui::size(px(800.), px(1200.)));
+    cx.update_window(handle.into(), |_, window, cx| {
+        let mut paragraphs = sectioned_answer();
+        install(
+            &view,
+            vec![message("long", &paragraphs.join("\n\n"))],
+            window,
+            cx,
+        );
+        select_glyph_span(&view, window, "long/0", "long/4", cx);
+        let expected = paragraphs[..5].join("\n");
+        assert_eq!(copied(window, cx), expected);
+        view.update(cx, |v, cx| {
+            let runs = v.projection_runs;
+            if append {
+                let applied = v.model.apply(&[crate::chat::wire::Envelope {
+                    chat_id: v.chat_id.clone().unwrap(),
+                    seq: 1,
+                    event: crate::chat::model::ChatEvent::ItemCompleted {
+                        item: message("unrelated", "unrelated appended answer"),
+                    },
+                }]);
+                assert_eq!(applied.appended, 1);
+                v.sync_list(&applied, cx);
+            } else {
+                v.refresh_projection_for(&HashSet::new(), cx);
+            }
+            assert_eq!(v.projection_runs, runs + 1);
+            // Rebuild from the mounted section cache, before another frame can
+            // repopulate it. This must preserve both selected section endpoints.
+            v.refresh_selection_document(widgets::Look::of(cx), cx);
+        });
+        assert_eq!(
+            copied(window, cx),
+            expected,
+            "unrelated projection changes cleared a valid multi-section selection"
+        );
+        window.render_frame(cx);
+        assert_eq!(copied(window, cx), expected);
+
+        // Same-length edits in both selected sections must still retire stale
+        // text before another paint, and export the new contents after rendering.
+        paragraphs[0] = paragraphs[0].replace("paragraph", "replacing");
+        paragraphs[4] = paragraphs[4].replace("paragraph", "replacing");
+        view.update(cx, |v, cx| {
+            v.model.transcript.items[0].body = ItemBody::AgentMessage {
+                text: paragraphs.join("\n\n"),
+            };
+            v.sync_list(
+                &Applied {
+                    touched: [0].into_iter().collect(),
+                    ..Default::default()
+                },
+                cx,
+            );
+        });
+        assert!(TextSelection::selected_text(window, cx).is_empty());
+        window.render_frame(cx);
+        select_glyph_span(&view, window, "long/0", "long/4", cx);
+        assert_eq!(copied(window, cx), paragraphs[..5].join("\n"));
+    })
+    .unwrap();
+    assert!(recording.try_recv().is_err());
+}
+
 #[gpui::test]
 fn base_drag_crosses_unicode_paragraphs_and_messages_in_reading_order(cx: &mut TestAppContext) {
     let (handle, view, recording) = editor_tests::mount_selection(cx);
@@ -426,21 +570,41 @@ fn feedback_rejects_changed_sources_cross_message_and_oversized_selections(
 fn virtualized_partial_selection_exports_unmounted_endpoints_and_middle_both_directions(
     cx: &mut TestAppContext,
 ) {
+    exercise_virtual_selection(cx, false);
+}
+
+#[gpui::test]
+#[ignore = "slow: real wheel/drag selection across unmounted sections of one answer"]
+fn long_answer_selection_crosses_unmounted_sections_both_directions(cx: &mut TestAppContext) {
+    exercise_virtual_selection(cx, true);
+}
+
+fn exercise_virtual_selection(cx: &mut TestAppContext, single_answer: bool) {
     const FIRST_BYTE: usize = 10; // before é
     const LAST_BYTE: usize = 17; // after 🦀
     for reverse in [false, true] {
         let (handle, view, recording) = editor_tests::mount_selection(cx);
-        let texts = (0..40)
+        let mut texts = (0..40)
             .map(|row| format!("row {row:02} café 🦀 {}TAIL", "body ".repeat(160)))
             .collect::<Vec<_>>();
-        let items = texts
-            .iter()
-            .enumerate()
-            .map(|(row, text)| message(&format!("virtual-{row}"), text))
-            .collect();
+        let key = |row| {
+            if single_answer {
+                format!("virtual/{row}")
+            } else {
+                format!("virtual-{row}/0")
+            }
+        };
+        let items = if single_answer {
+            vec![message("virtual", &texts.join("\n\n"))]
+        } else {
+            texts
+                .iter()
+                .enumerate()
+                .map(|(row, text)| message(&format!("virtual-{row}"), text))
+                .collect()
+        };
         cx.update_window(handle.into(), |_, window, cx| {
-            // This fixture measures message virtualization, with one row per message.
-            // Normal's per-turn activity headers have their own export test above.
+            // Exercise both separate messages and sections of a single answer.
             view.update(cx, |v, cx| {
                 v.pending_display = Some(DisplayMode::Verbose);
                 v.apply_display_mode(DisplayMode::Verbose, cx);
@@ -449,7 +613,15 @@ fn virtualized_partial_selection_exports_unmounted_endpoints_and_middle_both_dir
             view.update(cx, |v, cx| {
                 v.list.pause_following_tail();
                 v.list.scroll_to(gpui::ListOffset {
-                    item_ix: if reverse { 25 } else { 0 },
+                    item_ix: if reverse {
+                        selection_document::leaves(v, Look::of(cx))
+                            .iter()
+                            .find(|leaf| leaf.key == key(25))
+                            .unwrap()
+                            .row
+                    } else {
+                        0
+                    },
                     offset_in_item: px(0.),
                 });
                 cx.notify();
@@ -458,22 +630,14 @@ fn virtualized_partial_selection_exports_unmounted_endpoints_and_middle_both_dir
         })
         .unwrap();
         cx.run_until_parked();
-        let first_key = if reverse {
-            "virtual-25/0"
-        } else {
-            "virtual-0/0"
-        };
-        let last_key = if reverse {
-            "virtual-0/0"
-        } else {
-            "virtual-25/0"
-        };
+        let first_key = key(if reverse { 25 } else { 0 });
+        let last_key = key(if reverse { 0 } else { 25 });
         cx.update_window(handle.into(), |_, window, cx| {
             window.render_frame(cx);
             let at = view
                 .read(cx)
                 .transcript_selection
-                .glyph_point(first_key, if reverse { LAST_BYTE } else { FIRST_BYTE })
+                .glyph_point(&first_key, if reverse { LAST_BYTE } else { FIRST_BYTE })
                 .unwrap();
             assert!(view.read(cx).list.viewport_bounds().contains(&at));
             window.dispatch_event(
@@ -508,13 +672,13 @@ fn virtualized_partial_selection_exports_unmounted_endpoints_and_middle_both_dir
                     if let Some(at) = view
                         .read(cx)
                         .transcript_selection
-                        .glyph_point(last_key, if reverse { FIRST_BYTE } else { LAST_BYTE })
+                        .glyph_point(&last_key, if reverse { FIRST_BYTE } else { LAST_BYTE })
                         .filter(|at| viewport.contains(at))
                     {
                         assert!(
                             view.read(cx)
                                 .transcript_selection
-                                .glyph_point(first_key, FIRST_BYTE)
+                                .glyph_point(&first_key, FIRST_BYTE)
                                 .is_none(),
                             "anchor must genuinely unmount during the held drag"
                         );
@@ -524,7 +688,9 @@ fn virtualized_partial_selection_exports_unmounted_endpoints_and_middle_both_dir
                                 .is_none()
                         );
                         assert!(
-                            window.try_find("transcript:virtual-10/0").is_none(),
+                            window
+                                .try_find(SharedString::from(format!("transcript:{}", key(10))))
+                                .is_none(),
                             "an intervening selected message must also unmount during the held drag"
                         );
                         window.dispatch_event(
@@ -617,14 +783,14 @@ fn virtualized_partial_selection_exports_unmounted_endpoints_and_middle_both_dir
             for row in [0, 10, 25] {
                 assert!(
                     window
-                        .try_find(SharedString::from(format!("transcript:virtual-{row}/0")))
+                        .try_find(SharedString::from(format!("transcript:{}", key(row))))
                         .is_none(),
                     "endpoint/middle element must genuinely unmount, row {row}"
                 );
                 assert!(
                     view.read(cx)
                         .transcript_selection
-                        .glyph_point(&format!("virtual-{row}/0"), 0)
+                        .glyph_point(&key(row), 0)
                         .is_none()
                 );
             }
@@ -637,12 +803,18 @@ fn virtualized_partial_selection_exports_unmounted_endpoints_and_middle_both_dir
         assert_eq!(cx.read_from_clipboard().unwrap().text().unwrap(), expected);
         cx.update_window(handle.into(), |_, window, cx| {
             view.update(cx, |v, cx| {
-                v.model.transcript.items[39].body = ItemBody::AgentMessage {
-                    text: "unrelated tail replacement".into(),
-                };
+                texts[39] = "unrelated tail replacement".into();
+                v.model.transcript.items[if single_answer { 0 } else { 39 }].body =
+                    ItemBody::AgentMessage {
+                        text: if single_answer {
+                            texts.join("\n\n")
+                        } else {
+                            texts[39].clone()
+                        },
+                    };
                 v.sync_list(
                     &Applied {
-                        touched: [39].into_iter().collect(),
+                        touched: [if single_answer { 0 } else { 39 }].into_iter().collect(),
                         ..Default::default()
                     },
                     cx,
@@ -656,12 +828,18 @@ fn virtualized_partial_selection_exports_unmounted_endpoints_and_middle_both_dir
             );
             // A touched unmounted middle row invalidates before another paint.
             view.update(cx, |v, cx| {
-                v.model.transcript.items[10].body = ItemBody::AgentMessage {
-                    text: "different middle".into(),
-                };
+                texts[10] = "different middle".into();
+                v.model.transcript.items[if single_answer { 0 } else { 10 }].body =
+                    ItemBody::AgentMessage {
+                        text: if single_answer {
+                            texts.join("\n\n")
+                        } else {
+                            texts[10].clone()
+                        },
+                    };
                 v.sync_list(
                     &Applied {
-                        touched: [10].into_iter().collect(),
+                        touched: [if single_answer { 0 } else { 10 }].into_iter().collect(),
                         ..Default::default()
                     },
                     cx,

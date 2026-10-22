@@ -420,3 +420,61 @@ fn time_a_windows_request_poll() {
     }
     eprintln!("take_requests: {:?} per call", started.elapsed() / rounds);
 }
+
+#[test]
+fn frequent_polls_renew_the_lease_every_five_seconds_and_project_changes_immediately() {
+    let f = Fixture::new();
+    let start = Instant::now();
+    let wall = now();
+    let path = f.control.path("hosts", &f.host);
+    f.control
+        .heartbeat_at(&f.host, &f.project, start, wall)
+        .unwrap();
+    for tick in 1..20 {
+        f.control
+            .clone()
+            .heartbeat_at(
+                &f.host,
+                &f.project,
+                start + Duration::from_millis(tick * 250),
+                wall + tick / 4,
+            )
+            .unwrap();
+        assert_eq!(f.control.read::<Host>(&path).unwrap().updated_at, wall);
+    }
+    f.control
+        .heartbeat_at(&f.host, &f.project, start + HEARTBEAT_INTERVAL, wall + 5)
+        .unwrap();
+    assert_eq!(f.control.read::<Host>(&path).unwrap().updated_at, wall + 5);
+    let other = Uuid::new_v4().to_string();
+    f.control
+        .heartbeat_at(&f.host, &other, start + HEARTBEAT_INTERVAL, wall + 5)
+        .unwrap();
+    assert_eq!(f.control.read::<Host>(&path).unwrap().project_id, other);
+    // After a suspended window wakes, renew immediately, before accepting requests.
+    f.control
+        .heartbeat_at(&f.host, &other, start + Duration::from_secs(60), wall + 60)
+        .unwrap();
+    assert_eq!(f.control.read::<Host>(&path).unwrap().updated_at, wall + 60);
+}
+
+#[test]
+fn an_empty_request_poll_does_not_wait_for_the_mailbox_lock() {
+    let f = Fixture::new();
+    f.control.heartbeat(&f.host, &f.project).unwrap();
+    let held = f.control.lock().unwrap();
+    let control = f.control.clone();
+    let host = f.host.clone();
+    let project = f.project.clone();
+    let (send, receive) = std::sync::mpsc::channel();
+    let reader = thread::spawn(move || send.send(control.take_requests(&host, &project)).unwrap());
+    let result = receive.recv_timeout(Duration::from_secs(1));
+    drop(held);
+    reader.join().unwrap();
+    assert!(
+        result
+            .expect("idle poll waited on the lock")
+            .unwrap()
+            .is_empty()
+    );
+}

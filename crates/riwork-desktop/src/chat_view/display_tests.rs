@@ -5,7 +5,10 @@
 use super::*;
 use crate::settings::{Settings, SettingsStore};
 use DisplayMode::{Normal, Verbose};
-use gpui::{AnyWindowHandle, Bounds, TestAppContext, WindowBounds, WindowOptions, point, size};
+use gpui::{
+    AnyWindowHandle, Bounds, Pixels, SharedString, TestAppContext, WindowBounds, WindowOptions,
+    point, size,
+};
 use std::path::{Path, PathBuf};
 
 fn home() -> PathBuf {
@@ -876,5 +879,335 @@ fn long_answer_streaming_costs(cx: &mut TestAppContext) {
         median(late, |s| s.0),
         median(late, |s| s.1),
     );
+    let _ = std::fs::remove_dir_all(home);
+}
+
+#[gpui::test]
+fn answer_threshold_shrink_preserves_reading_anchor(cx: &mut TestAppContext) {
+    // The reported case: section 4, offset zero, survives a 12 -> 8 replacement.
+    exercise_answer_threshold_anchor(cx, 12, 4, px(0.), &[8, 9, 5, 8, 12]);
+    // A retained partition must also survive shrinking to just one section.
+    exercise_answer_threshold_anchor(cx, 12, 0, px(7.), &[4, 1, 8, 9, 12]);
+}
+
+#[gpui::test]
+fn answer_threshold_growth_preserves_reading_anchor(cx: &mut TestAppContext) {
+    // The reader is inside the initially unsplit row when the ninth block arrives.
+    exercise_answer_threshold_anchor(cx, 8, 4, px(7.), &[9, 12, 8, 5, 9]);
+}
+
+fn threshold_paragraphs() -> Vec<String> {
+    (0..12)
+        .map(|n| {
+            format!(
+                "Passage {n:02} café 🦀 {}end.",
+                "unchanged words ".repeat(80)
+            )
+        })
+        .collect()
+}
+
+fn threshold_message(id: &str, text: String) -> crate::chat::model::Item {
+    use crate::chat::model::{Item, ItemStatus, MessagePhase, Presentation};
+    Item {
+        id: id.into(),
+        turn_id: Some(format!("turn:{id}")),
+        status: ItemStatus::Completed,
+        presentation: Presentation {
+            phase: Some(MessagePhase::Final),
+            ..Default::default()
+        },
+        started_at: None,
+        ended_at: None,
+        body: ItemBody::AgentMessage { text },
+    }
+}
+
+fn exercise_answer_threshold_anchor(
+    cx: &mut TestAppContext,
+    initial: usize,
+    block: usize,
+    within_block: Pixels,
+    counts: &[usize],
+) {
+    use gpui_kit::test::TestWindowExt;
+    let (handle, view, recording) = editor_tests::mount_selection(cx);
+    cx.simulate_window_resize(handle.into(), size(px(700.), px(400.)));
+    let paragraphs = threshold_paragraphs();
+    let leaf = SharedString::from(format!("transcript:threshold/{block}"));
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |v, cx| {
+            v.model.link = Link::Live;
+            v.model.transcript.items = vec![threshold_message(
+                "threshold",
+                paragraphs[..initial].join("\n\n"),
+            )];
+            v.refresh_projection(cx);
+            let at = v
+                .list_rows
+                .iter()
+                .rposition(|entry| entry.row.id == "threshold" && entry.block_start() <= block)
+                .unwrap();
+            v.list.pause_following_tail();
+            v.list.scroll_to(gpui::ListOffset {
+                item_ix: at,
+                offset_in_item: px(0.),
+            });
+            cx.notify();
+        });
+        window.render_frame(cx);
+        // Measure the block in the real layout, including an anchor inside an
+        // unsplit row; do not assume paragraph heights or infer position from IDs.
+        let anchor_top = window.find(leaf.clone()).bounds().top();
+        let viewport_top = view.read(cx).list.viewport_bounds().top();
+        view.update(cx, |v, cx| {
+            let top = v.list.logical_scroll_top();
+            v.list.scroll_to(gpui::ListOffset {
+                item_ix: top.item_ix,
+                offset_in_item: if v.list_rows[top.item_ix].block_start() == block {
+                    within_block
+                } else {
+                    top.offset_in_item + anchor_top - viewport_top + within_block
+                },
+            });
+            cx.notify();
+        });
+        window.render_frame(cx);
+        let expected_y = window.find(leaf.clone()).bounds().top();
+        for &count in counts {
+            view.update(cx, |v, cx| {
+                v.model.transcript.items[0].body = ItemBody::AgentMessage {
+                    text: paragraphs[..count].join("\n\n"),
+                };
+                v.sync_list(
+                    &Applied {
+                        touched: [0].into_iter().collect(),
+                        ..Default::default()
+                    },
+                    cx,
+                );
+                cx.notify();
+            });
+            window.render_frame(cx);
+            assert!(!view.read(cx).list.is_following_tail());
+            assert_eq!(
+                window.find(leaf.clone()).bounds().top(),
+                expected_y,
+                "surviving block {block} moved after {initial} -> {count} threshold transition"
+            );
+
+            // An ordinary projection rebuild/mode change must retain the same
+            // established boundaries, not undo the content-update correction.
+            view.update(cx, |v, cx| v.apply_display_mode(Verbose, cx));
+            window.render_frame(cx);
+            assert_eq!(window.find(leaf.clone()).bounds().top(), expected_y);
+            view.update(cx, |v, cx| v.apply_display_mode(Normal, cx));
+            window.render_frame(cx);
+            assert_eq!(window.find(leaf.clone()).bounds().top(), expected_y);
+        }
+        view.update(cx, |v, cx| {
+            let applied = v.model.apply(&[crate::chat::wire::Envelope {
+                chat_id: v.chat_id.clone().unwrap(),
+                seq: 1,
+                event: crate::chat::model::ChatEvent::ItemCompleted {
+                    item: threshold_message("unrelated", "unrelated appended answer".into()),
+                },
+            }]);
+            assert_eq!(applied.appended, 1);
+            v.sync_list(&applied, cx);
+            cx.notify();
+        });
+        window.render_frame(cx);
+        assert!(!view.read(cx).list.is_following_tail());
+        assert_eq!(
+            window.find(leaf.clone()).bounds().top(),
+            expected_y,
+            "an unrelated appended item moved the reading anchor"
+        );
+    })
+    .unwrap();
+    assert!(recording.try_recv().is_err());
+}
+
+#[gpui::test]
+fn answer_threshold_transitions_preserve_tail_following(cx: &mut TestAppContext) {
+    use gpui_kit::test::TestWindowExt;
+    let (handle, view, recording) = editor_tests::mount_selection(cx);
+    let paragraphs = threshold_paragraphs();
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |v, cx| {
+            v.model.link = Link::Live;
+            v.model.transcript.items =
+                vec![threshold_message("threshold", paragraphs.join("\n\n"))];
+            v.refresh_projection(cx);
+            v.list.scroll_to_end();
+            cx.notify();
+        });
+        window.render_frame(cx);
+        for count in [8, 9, 4, 1, 0, 12] {
+            assert!(view.read(cx).list.is_following_tail());
+            view.update(cx, |v, cx| {
+                v.model.transcript.items[0].body = ItemBody::AgentMessage {
+                    text: paragraphs[..count].join("\n\n"),
+                };
+                v.sync_list(
+                    &Applied {
+                        touched: [0].into_iter().collect(),
+                        ..Default::default()
+                    },
+                    cx,
+                );
+                cx.notify();
+            });
+            window.render_frame(cx);
+            assert!(
+                view.read(cx).list.is_following_tail(),
+                "lost tail at {count} blocks"
+            );
+            if count > 0 {
+                assert!(
+                    window
+                        .try_find(SharedString::from(format!(
+                            "transcript:threshold/{}",
+                            count - 1
+                        )))
+                        .is_some()
+                );
+            }
+        }
+    })
+    .unwrap();
+    assert!(recording.try_recv().is_err());
+}
+
+#[gpui::test]
+fn long_answers_keep_section_keys_search_order_and_scroll_anchor_when_streaming(
+    cx: &mut TestAppContext,
+) {
+    use crate::chat::model::{Item, ItemStatus, Presentation};
+    use gpui_kit::test::TestWindowExt;
+    let home = home();
+    start(cx, &home);
+    let (handle, _, tabs) = mount(cx, &[&chat_id()]);
+    let view = &tabs[0];
+    let mut paragraphs = (0..100)
+        .map(|n| format!("Passage {n:03} café 🦀 with **emphasis** and a [link](src/lib.rs)."))
+        .collect::<Vec<_>>();
+    cx.update_window(handle, |_, window, cx| {
+        view.update(cx, |view, cx| {
+            view.model.transcript.items = vec![Item {
+                id: "long".into(),
+                turn_id: Some("turn".into()),
+                status: ItemStatus::InProgress,
+                presentation: Presentation::default(),
+                started_at: None,
+                ended_at: None,
+                body: ItemBody::AgentMessage {
+                    text: paragraphs.join("\n\n"),
+                },
+            }];
+            view.refresh_projection(cx);
+            view.list.pause_following_tail();
+            let middle = view
+                .list_rows
+                .iter()
+                .position(|entry| entry.message.as_ref().is_some_and(|part| part.start == 40))
+                .unwrap();
+            view.list.scroll_to(gpui::ListOffset {
+                item_ix: middle,
+                offset_in_item: px(0.),
+            });
+            cx.notify();
+        });
+        window.render_frame(cx);
+        let anchor = view
+            .read(cx)
+            .list_anchor(view.read(cx).list.logical_scroll_top().item_ix)
+            .unwrap();
+        let check = |view: &ChatView, cx: &gpui::App| {
+            let parts: Vec<_> = view
+                .list_rows
+                .iter()
+                .filter_map(|entry| entry.message.as_ref())
+                .collect();
+            assert!(parts.len() >= 25);
+            assert!(parts.iter().all(|part| part.blocks.len() <= 4));
+            assert_eq!(parts.iter().filter(|part| part.last).count(), 1);
+            let ItemBody::AgentMessage { text } = &view.model.transcript.items[0].body else {
+                unreachable!()
+            };
+            assert_eq!(
+                parts
+                    .iter()
+                    .flat_map(|part| part.blocks.clone())
+                    .collect::<Vec<_>>(),
+                markdown::parse(text)
+            );
+            let source = selection_document::leaves(view, Look::of(cx));
+            let search = selection_document::search_source(view, Look::of(cx));
+            assert_eq!(source, search.leaves);
+            let unique: HashSet<_> = source.iter().map(|leaf| &leaf.key).collect();
+            assert_eq!(
+                source.len(),
+                unique.len(),
+                "no duplicate source at section boundaries"
+            );
+            assert_eq!(source.first().unwrap().key, "long/0");
+        };
+        check(view.read(cx), cx);
+        for suffix in [
+            "\n\n| head | value |",
+            "\n|---|---|\n| x | y |",
+            "\n\nlast 🦀",
+        ] {
+            view.update(cx, |view, cx| {
+                let ItemBody::AgentMessage { text } = &mut view.model.transcript.items[0].body
+                else {
+                    unreachable!()
+                };
+                text.push_str(suffix);
+                view.sync_list(
+                    &Applied {
+                        touched: [0].into_iter().collect(),
+                        ..Default::default()
+                    },
+                    cx,
+                );
+            });
+            window.render_frame(cx);
+            check(view.read(cx), cx);
+            let current = view
+                .read(cx)
+                .list_anchor(view.read(cx).list.logical_scroll_top().item_ix)
+                .unwrap();
+            assert_eq!(current.source_key(), anchor.source_key());
+        }
+        // A whole-item edit of the same length invalidates the correct section.
+        paragraphs[42] = paragraphs[42].replace("Passage", "Changed");
+        view.update(cx, |view, cx| {
+            view.model.transcript.items[0].body = ItemBody::AgentMessage {
+                text: paragraphs.join("\n\n"),
+            };
+            view.sync_list(
+                &Applied {
+                    touched: [0].into_iter().collect(),
+                    ..Default::default()
+                },
+                cx,
+            );
+        });
+        window.render_frame(cx);
+        check(view.read(cx), cx);
+        assert!(
+            selection_document::leaves(view.read(cx), Look::of(cx))
+                .iter()
+                .any(|leaf| leaf.text.contains("Changed 042"))
+        );
+        assert!(
+            window.try_find("transcript:long/0").is_none(),
+            "offscreen beginning is unmounted"
+        );
+    })
+    .unwrap();
     let _ = std::fs::remove_dir_all(home);
 }

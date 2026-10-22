@@ -20,6 +20,7 @@ use uuid::Uuid;
 const MAX_JSON: u64 = 512 * 1024;
 const MAX_FRAME: u64 = 16 * 1024 * 1024;
 const HOST_LEASE: u64 = 15;
+const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 const REQUEST_LEASE: u64 = 30;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -125,8 +126,8 @@ struct Owner {
 #[derive(Clone, Debug)]
 pub struct PreviewControl {
     directory: PathBuf,
-    /// The host record this control last wrote, shared by its clones.
-    heartbeat: Arc<Mutex<Option<(PathBuf, Vec<u8>)>>>,
+    /// Last successful lease renewal, shared by clones of one window's control.
+    heartbeat: Arc<Mutex<Option<(Host, Instant)>>>,
 }
 
 impl PreviewControl {
@@ -152,45 +153,59 @@ impl PreviewControl {
 
     /// Call at least every five seconds while this project window is open.
     pub fn heartbeat(&self, host_id: &str, project_id: &str) -> Result<()> {
+        self.heartbeat_at(host_id, project_id, Instant::now(), now())
+    }
+
+    fn heartbeat_at(
+        &self,
+        host_id: &str,
+        project_id: &str,
+        monotonic: Instant,
+        wall: u64,
+    ) -> Result<()> {
         valid_id(host_id)?;
         valid_id(project_id)?;
-        let path = self.path("hosts", host_id);
-        let record = serde_json::to_vec(&Host {
-            id: host_id.into(),
-            project_id: project_id.into(),
-            pid: std::process::id(),
-            updated_at: now(),
-        })
-        .map_err(io_error)?;
-        // A window beats with every request poll (every 250 ms), but the record
-        // only changes once a second; the one already written is not written again.
         let mut written = self
             .heartbeat
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        if written
-            .as_ref()
-            .is_some_and(|(at, bytes)| *at == path && *bytes == record)
-        {
+        if written.as_ref().is_some_and(|(host, at)| {
+            host.id == host_id
+                && host.project_id == project_id
+                && monotonic.saturating_duration_since(*at) < HEARTBEAT_INTERVAL
+        }) {
             return Ok(());
         }
-        self.write_bytes(&path, &record)?;
-        *written = Some((path, record));
+        let host = Host {
+            id: host_id.into(),
+            project_id: project_id.into(),
+            pid: std::process::id(),
+            updated_at: wall,
+        };
+        self.write(&self.path("hosts", host_id), &host)?;
+        *written = Some((host, monotonic));
         Ok(())
     }
 
     pub fn remove_host(&self, host_id: &str) -> Result<()> {
         valid_id(host_id)?;
-        *self
+        let mut written = self
             .heartbeat
             .lock()
-            .unwrap_or_else(PoisonError::into_inner) = None;
+            .unwrap_or_else(PoisonError::into_inner);
+        *written = None;
         remove_optional(&self.path("hosts", host_id))
     }
 
     /// Claim before touching UI state, so another project window cannot run it twice.
     pub fn take_requests(&self, host_id: &str, project_id: &str) -> Result<Vec<PreviewRequest>> {
         self.heartbeat(host_id, project_id)?;
+        // Most windows have no commands. A request arriving after this check is
+        // seen on the next 250 ms poll. Claiming still re-reads under the lock,
+        // so two windows cannot execute the same request.
+        if self.entries("requests")?.is_empty() {
+            return Ok(Vec::new());
+        }
         let _lock = self.lock()?;
         let mut requests = vec![];
         for path in self.entries("requests")? {

@@ -7,7 +7,7 @@ use crate::{
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{BTreeMap, HashMap, HashSet, VecDeque},
     fs::{self, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
@@ -925,6 +925,18 @@ pub fn refresh_snapshot(home: &Path, project: &str) -> Result<Snapshot, String> 
     let sessions = inventory(home, project)?;
     TabStore::at(home, project)?.refresh(&sessions)
 }
+
+/// Desktop windows already follow agent activity incrementally. Reuse their
+/// latest observations instead of opening every Codex rollout again on each
+/// tab poll. Newly discovered shells still get the ordinary cold read.
+pub fn refresh_snapshot_with_activity(
+    home: &Path,
+    project: &str,
+    activity: &BTreeMap<String, crate::activity::AgentState>,
+) -> Result<Snapshot, String> {
+    let sessions = inventory_with_activity(home, project, activity)?;
+    TabStore::at(home, project)?.refresh(&sessions)
+}
 /// A shell's status from whether its tmux session is there and what its agent is doing
 /// (`AgentActivity::as_str`, absent for a shell without one): `stopped` without the
 /// session, `working` or `waiting` while an agent works or waits on an approval, `done`
@@ -983,6 +995,14 @@ pub fn shell_base_title(
 }
 /// Reads inventory without launching a provider; shared by CLI and desktop polling.
 pub fn inventory(home: &Path, project: &str) -> Result<Vec<Session>, String> {
+    inventory_with_activity(home, project, &BTreeMap::new())
+}
+
+fn inventory_with_activity(
+    home: &Path,
+    project: &str,
+    activity: &BTreeMap<String, crate::activity::AgentState>,
+) -> Result<Vec<Session>, String> {
     let state = crate::store::Store::open(home)?.snapshot()?;
     state.project(project)?;
     let manager = crate::sessions::SessionManager::at(home.to_owned())?;
@@ -995,9 +1015,9 @@ pub fn inventory(home: &Path, project: &str) -> Result<Vec<Session>, String> {
         .into_iter()
         .filter(|s| s.project_id.as_deref() == Some(project))
         .collect::<Vec<_>>();
-    // Read cold, which costs a rollout lookup and read per live Codex agent, so
-    // only for the agents of this project.
-    let agents = crate::activity::states_once(home, &shells, crate::activity::unix_now());
+    let agents = inventory_activity(&shells, activity, |missing| {
+        crate::activity::states_once(home, missing, crate::activity::unix_now())
+    });
     let mut result = Vec::new();
     for shell in &shells {
         let name = shell_base_title(
@@ -1039,6 +1059,31 @@ pub fn inventory(home: &Path, project: &str) -> Result<Vec<Session>, String> {
             .map(Session::chat),
     );
     Ok(result)
+}
+
+fn inventory_activity(
+    shells: &[crate::sessions::ShellSession],
+    known: &BTreeMap<String, crate::activity::AgentState>,
+    sample: impl FnOnce(
+        &[crate::sessions::ShellSession],
+    ) -> BTreeMap<String, crate::activity::AgentState>,
+) -> BTreeMap<String, crate::activity::AgentState> {
+    let missing: Vec<_> = shells
+        .iter()
+        .filter(|shell| !known.contains_key(&shell.id))
+        .cloned()
+        .collect();
+    let mut states = if missing.is_empty() {
+        BTreeMap::new()
+    } else {
+        sample(&missing)
+    };
+    states.extend(shells.iter().filter_map(|shell| {
+        known
+            .get(&shell.id)
+            .map(|state| (shell.id.clone(), state.clone()))
+    }));
+    states
 }
 pub fn register_shell(
     home: &Path,
@@ -1158,6 +1203,44 @@ mod tests {
     fn id(n: u8) -> String {
         format!("00000000-0000-4000-8000-{n:012}")
     }
+    #[test]
+    fn inventory_reuses_observed_activity_and_only_reads_new_shells() {
+        use crate::activity::{AgentActivity, AgentState};
+        let shell = |n: u8| {
+            serde_json::from_value::<crate::sessions::ShellSession>(
+                serde_json::json!({"id":id(n),"project_id":id(1),"worktree_id":null,
+                "kind":"project","cwd":"/fixture","command":null,"created_at_unix":1}),
+            )
+            .unwrap()
+        };
+        let shells = vec![shell(2), shell(3)];
+        let known = BTreeMap::from([
+            (id(2), AgentState::plain(AgentActivity::Working)),
+            (id(99), AgentState::plain(AgentActivity::Done)),
+        ]);
+        let states = inventory_activity(&shells, &known, |missing| {
+            assert_eq!(missing.iter().map(|s| &s.id).collect::<Vec<_>>(), [&id(3)]);
+            BTreeMap::from([(id(3), AgentState::plain(AgentActivity::Waiting))])
+        });
+        assert_eq!(states.len(), 2);
+        assert_eq!(states[&id(2)].activity, AgentActivity::Working);
+        assert_eq!(states[&id(3)].activity, AgentActivity::Waiting);
+        assert_eq!(
+            inventory_activity(&shells, &states, |_| panic!("reread observed agents")),
+            states
+        );
+        // Liveness is sampled separately and always overrides an old working observation.
+        assert_eq!(
+            shell_status(false, Some(states[&id(2)].activity.as_str())),
+            Status::Stopped
+        );
+        let cold = inventory_activity(&shells, &BTreeMap::new(), |missing| {
+            assert_eq!(missing.len(), 2);
+            states.clone()
+        });
+        assert_eq!(cold, states);
+    }
+
     struct Fixture {
         home: PathBuf,
         store: TabStore,

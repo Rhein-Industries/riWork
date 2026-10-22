@@ -90,6 +90,17 @@ impl ChatView {
         look: Look,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        self.prose_at(blocks, key, 0, look, cx)
+    }
+
+    pub(super) fn prose_at(
+        &self,
+        blocks: &[Block],
+        key: &str,
+        start: usize,
+        look: Look,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         div()
             .id(ElementId::Name(SharedString::from(format!("prose:{key}"))))
             .w_full()
@@ -106,10 +117,9 @@ impl ChatView {
                     .text_size(ui_text::text(14.0))
             })
             .children(
-                blocks
-                    .iter()
-                    .enumerate()
-                    .map(|(at, block)| self.block(block, &format!("{key}/{at}"), look, cx)),
+                blocks.iter().enumerate().map(|(at, block)| {
+                    self.block(block, &format!("{key}/{}", start + at), look, cx)
+                }),
             )
             .test_support()
             .into_any_element()

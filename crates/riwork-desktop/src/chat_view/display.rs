@@ -17,6 +17,28 @@ pub(super) use riwork_engine::chat::projection::{Row, RowKind};
 pub(super) struct ListRow {
     pub row: Row,
     pub depth: usize,
+    pub message: Option<MessagePart>,
+}
+
+/// Bounded sections of one answer keep the same Markdown leaf keys as the
+/// unsplit message. Nested blocks remain intact (lists, tables, code, quotes).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct MessagePart {
+    pub start: usize,
+    /// Keep the split boundary when the last section temporarily shrinks.
+    pub block_capacity: usize,
+    pub blocks: Vec<super::markdown::Block>,
+    pub last: bool,
+}
+
+impl ListRow {
+    pub fn block_start(&self) -> usize {
+        self.message.as_ref().map_or(0, |part| part.start)
+    }
+
+    pub fn source_key(&self) -> (String, usize) {
+        (self.row.id.clone(), self.block_start())
+    }
 }
 
 pub(super) fn list_rows(rows: &[Row]) -> Vec<ListRow> {
@@ -25,6 +47,7 @@ pub(super) fn list_rows(rows: &[Row]) -> Vec<ListRow> {
             out.push(ListRow {
                 row: leaf(row),
                 depth,
+                message: None,
             });
             if row.open {
                 append(&row.children, depth + 1, out);
@@ -305,7 +328,11 @@ mod tests {
             let mut leaf = display_find(&tree, id).clone();
             leaf.children.clear();
             leaf.comments.clear();
-            expected.push(ListRow { row: leaf, depth });
+            expected.push(ListRow {
+                row: leaf,
+                depth,
+                message: None,
+            });
         }
         assert_eq!(list_rows(&tree), expected);
     }

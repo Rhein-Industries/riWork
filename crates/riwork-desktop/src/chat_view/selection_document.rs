@@ -24,7 +24,7 @@ pub(super) fn leaves(view: &ChatView, look: Look) -> Vec<SourceLeaf> {
     for (row, entry) in view.list_rows.iter().enumerate() {
         result.extend(
             view.transcript_selection
-                .cached_source(&entry.row, row)
+                .cached_source(entry, row)
                 .unwrap_or_else(|| uncached_row_leaves(view, row, look)),
         );
     }
@@ -40,7 +40,7 @@ pub(super) fn mounted_leaves(view: &ChatView) -> Vec<SourceLeaf> {
     }
     let mut result = Vec::new();
     for (at, entry) in view.list_rows.iter().enumerate() {
-        if let Some(source) = view.transcript_selection.cached_source(&entry.row, at) {
+        if let Some(source) = view.transcript_selection.cached_source(entry, at) {
             result.extend(source);
         }
     }
@@ -50,12 +50,11 @@ pub(super) fn mounted_leaves(view: &ChatView) -> Vec<SourceLeaf> {
 /// Refresh a streaming body without rebuilding the historical selection document.
 pub(super) fn row_leaves(view: &ChatView, row: usize, look: Look) -> Vec<SourceLeaf> {
     if let Some(entry) = view.list_rows.get(row) {
-        let top = &entry.row;
-        if let Some(source) = view.transcript_selection.cached_source(top, row) {
+        if let Some(source) = view.transcript_selection.cached_source(entry, row) {
             return source;
         }
         let result = uncached_row_leaves(view, row, look);
-        view.transcript_selection.cache_source(top, &result);
+        view.transcript_selection.cache_source(entry, &result);
         return result;
     }
     Vec::new()
@@ -105,6 +104,7 @@ pub(super) fn search_source(view: &ChatView, look: Look) -> SearchSource {
         .list_rows
         .iter()
         .enumerate()
+        .rev()
         .map(|(at, entry)| (entry.row.id.as_str(), at))
         .collect();
     let mut result = SearchSource::default();
@@ -118,6 +118,36 @@ pub(super) fn search_source(view: &ChatView, look: Look) -> SearchSource {
         &mut closed,
         &mut result,
     );
+    // Search retains the whole document, but each match scrolls to the section
+    // that actually paints it. File-review leaves belong to the final section.
+    let mut sections: HashMap<&str, Vec<(usize, &display::MessagePart)>> = HashMap::new();
+    for (at, entry) in view.list_rows.iter().enumerate() {
+        if let Some(part) = &entry.message {
+            sections.entry(&entry.row.id).or_default().push((at, part));
+        }
+    }
+    for leaf in &mut result.leaves {
+        let Some(owner) = result.owners.get(&leaf.key) else {
+            continue;
+        };
+        let Some(parts) = sections.get(owner.as_str()) else {
+            continue;
+        };
+        let block = leaf
+            .key
+            .split_once(&format!("{owner}/"))
+            .and_then(|(_, tail)| tail.split('/').next()?.parse::<usize>().ok());
+        leaf.row = parts
+            .iter()
+            .find(|(_, part)| {
+                block.is_some_and(|block| {
+                    (part.start..part.start + part.blocks.len()).contains(&block)
+                })
+            })
+            .or_else(|| parts.last())
+            .unwrap()
+            .0;
+    }
     result
 }
 
@@ -221,6 +251,13 @@ fn append_own(
     if let Some((at, item)) = item {
         append_item(view, projected, at, item, row, look, search, result);
     }
+    if !search
+        && view.list_rows.get(row).is_some_and(|entry| {
+            entry.row.id == projected.id && entry.message.as_ref().is_some_and(|part| !part.last)
+        })
+    {
+        return;
+    }
     if projected.kind == RowKind::Activity {
         artifacts(view, projected.artifacts.iter(), row, result);
     } else if projected.kind != RowKind::User {
@@ -296,7 +333,19 @@ fn append_item(
             put(item.id.clone(), markdown::cited_text(text).0.into_owned());
         }
         ItemBody::AgentMessage { text } => {
-            blocks(&view.parsed(item, text), &item.id, row, result);
+            let part = (!search)
+                .then(|| view.list_rows.get(row))
+                .flatten()
+                .filter(|entry| entry.row.id == item.id)
+                .and_then(|entry| entry.message.as_ref());
+            if let Some(part) = part {
+                blocks_at(&part.blocks, &item.id, part.start, row, result);
+                if !part.last {
+                    return;
+                }
+            } else {
+                blocks(&view.parsed(item, text), &item.id, row, result);
+            }
             for (at, change) in view.answer_files(item).iter().enumerate() {
                 let key = super::turn_review::file_key(&item.id, at);
                 if !search && !view.answer_file_visible(&item.id, at) {
@@ -581,8 +630,12 @@ fn inline(spans: &[Span], key: &str, row: usize, out: &mut Vec<SourceLeaf>) {
 }
 
 fn blocks(source: &[Block], key: &str, row: usize, out: &mut Vec<SourceLeaf>) {
+    blocks_at(source, key, 0, row, out);
+}
+
+fn blocks_at(source: &[Block], key: &str, start: usize, row: usize, out: &mut Vec<SourceLeaf>) {
     for (at, block) in source.iter().enumerate() {
-        let key = format!("{key}/{at}");
+        let key = format!("{key}/{}", start + at);
         match block {
             Block::Paragraph(spans) | Block::Heading { spans, .. } | Block::Task { spans, .. } => {
                 inline(spans, &key, row, out)

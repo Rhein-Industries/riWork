@@ -108,6 +108,12 @@ impl ChatView {
                 self.prepare_opened_images(&owner, &images, cx);
             }
         }
+        let part = self
+            .list_rows
+            .get(ix)
+            .and_then(|entry| entry.message.as_ref());
+        let first = part.is_none_or(|part| part.start == 0);
+        let last = part.is_none_or(|part| part.last);
         let content = match self.list_rows.get(ix) {
             Some(entry) => div()
                 .pl(row_space(12.0 * entry.depth as f32))
@@ -132,7 +138,8 @@ impl ChatView {
             .w_full()
             .min_w_0()
             .px(ui_text::space(ROW_INSET_X))
-            .py(row_space(ROW_INSET_Y))
+            .pt(row_space(if first { ROW_INSET_Y } else { 0. }))
+            .pb(row_space(if last { ROW_INSET_Y } else { 0. }))
             .child(
                 div()
                     .id(id(format!("transcript-content:{ix}")))
@@ -161,6 +168,11 @@ impl ChatView {
         #[cfg(test)]
         self.rendered_rows.set(self.rendered_rows.get() + 1);
         let item = self.projected_item(&row.id);
+        let part = self
+            .list_rows
+            .get(ix)
+            .filter(|entry| entry.row.id == row.id)
+            .and_then(|entry| entry.message.as_ref());
         let artifacts: Vec<_> = row
             .artifacts
             .iter()
@@ -278,9 +290,26 @@ impl ChatView {
             RowKind::User | RowKind::Final | RowKind::Compaction | RowKind::Notice => div()
                 .w_full()
                 .when(matches!(row.kind, RowKind::User | RowKind::Final), |body| {
-                    body.py(ui_text::space(7.0))
+                    body.pt(ui_text::space(if part.is_none_or(|part| part.start == 0) {
+                        7.
+                    } else {
+                        12.
+                    }))
+                    .pb(ui_text::space(
+                        if part.is_none_or(|part| part.last) {
+                            7.
+                        } else {
+                            0.
+                        },
+                    ))
                 })
-                .children(item.map(|(at, item)| self.item(at, item, look, cx)))
+                .children(item.map(|(at, item)| {
+                    if let (Some(part), ItemBody::AgentMessage { text }) = (part, &item.body) {
+                        self.agent_message_part(at, item, text, Some(part), look, cx)
+                    } else {
+                        self.item(at, item, look, cx)
+                    }
+                }))
                 .into_any_element(),
             _ => match item {
                 Some((at, item)) => {
@@ -360,7 +389,9 @@ impl ChatView {
             .min_w_0()
             .child(content)
             .when(
-                !matches!(row.kind, RowKind::User | RowKind::Activity) && !artifacts.is_empty(),
+                part.is_none_or(|part| part.last)
+                    && !matches!(row.kind, RowKind::User | RowKind::Activity)
+                    && !artifacts.is_empty(),
                 |body| {
                     body.child(
                         div()
@@ -1074,8 +1105,28 @@ impl ChatView {
         look: Look,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        self.agent_message_part(ix, item, text, None, look, cx)
+    }
+
+    fn agent_message_part(
+        &self,
+        ix: usize,
+        item: &Item,
+        text: &str,
+        part: Option<&super::display::MessagePart>,
+        look: Look,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let colors = look.colors;
-        let blocks = self.parsed(item, text);
+        let parsed;
+        let blocks = if let Some(part) = part {
+            part.blocks.as_slice()
+        } else {
+            parsed = self.parsed(item, text);
+            &parsed
+        };
+        let first = part.is_none_or(|part| part.start == 0);
+        let last = part.is_none_or(|part| part.last);
         let copy_key = format!("copy:{}", item.id);
         let copied = self.copied.as_deref() == Some(copy_key.as_str());
         let message = item.id.clone();
@@ -1086,9 +1137,15 @@ impl ChatView {
             .relative()
             .w_full()
             .min_w_0()
-            .child(self.prose(&blocks, &item.id, look, cx))
-            .children(self.answer_review(item, look, cx))
-            .child(
+            .child(self.prose_at(
+                blocks,
+                &item.id,
+                part.map_or(0, |part| part.start),
+                look,
+                cx,
+            ))
+            .children(last.then(|| self.answer_review(item, look, cx)).flatten())
+            .children(first.then(|| {
                 div()
                     .absolute()
                     .top(px(0.0))
@@ -1101,8 +1158,8 @@ impl ChatView {
                             .on_click(cx.listener(move |view, _, _, cx| {
                                 view.copy_item(&message, cx);
                             })),
-                    ),
-            )
+                    )
+            }))
             .test_support()
             .into_any_element()
     }

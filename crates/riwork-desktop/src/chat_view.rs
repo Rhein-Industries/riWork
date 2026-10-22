@@ -73,6 +73,7 @@ mod media;
 mod memo;
 #[cfg(test)]
 mod memo_tests;
+mod message_parts;
 #[cfg(test)]
 mod notice_tests;
 mod notice_ui;
@@ -1031,11 +1032,16 @@ impl ChatView {
         // Content revisions include same-ID whole-item replacements, even when
         // their projected header compares equal. Invalidate their measurements
         // independently of projection equality, after any regrouping splice.
+        let changed_parts = self.refresh_message_parts(&touched_ids);
         let changed_rows: Vec<_> = self
             .list_rows
             .iter()
             .enumerate()
-            .filter(|(_, entry)| touched_ids.contains(&entry.row.id))
+            .filter(|(at, entry)| {
+                touched_ids.contains(&entry.row.id)
+                    && (entry.message.as_ref().is_none_or(|part| part.last)
+                        || changed_parts.contains(at))
+            })
             .map(|(at, _)| at)
             .collect();
         let selection_rows: Vec<_> = changed_rows
@@ -1167,24 +1173,8 @@ impl ChatView {
             let tail = self.list.is_following_tail();
             let offset = self.list.logical_scroll_top();
             let anchor = self.list_anchor(offset.item_ix);
-            let entries = display::list_rows(&rows);
-            let prefix = entries
-                .iter()
-                .zip(&self.list_rows)
-                .take_while(|(a, b)| a == b)
-                .count();
-            let suffix = entries[prefix..]
-                .iter()
-                .rev()
-                .zip(self.list_rows[prefix..].iter().rev())
-                .take_while(|(a, b)| a == b)
-                .count();
-            self.list.splice(
-                prefix..self.list_rows.len() - suffix,
-                entries.len() - prefix - suffix,
-            );
-            self.items_in_list = entries.len();
-            self.list_rows = entries;
+            let entries = self.message_list_rows(&rows);
+            self.replace_list_rows(entries);
             self.visible = rows;
             if !tail
                 && let Some(anchor) = anchor
@@ -1192,7 +1182,7 @@ impl ChatView {
             {
                 self.list.scroll_to(gpui::ListOffset {
                     item_ix: at,
-                    offset_in_item: if self.list_rows[at].row.id == anchor.id {
+                    offset_in_item: if self.list_rows[at].row.id == anchor.row.id {
                         offset.offset_in_item
                     } else {
                         px(0.)
@@ -1279,27 +1269,32 @@ impl ChatView {
         }));
     }
 
-    fn list_anchor(&self, at: usize) -> Option<display::Row> {
-        self.list_rows
-            .get(at)
-            .and_then(|entry| display::find(&self.visible, &entry.row.id))
-            .cloned()
+    fn list_anchor(&self, at: usize) -> Option<display::ListRow> {
+        let mut entry = self.list_rows.get(at)?.clone();
+        entry.row = display::find(&self.visible, &entry.row.id)?.clone();
+        Some(entry)
     }
 
-    fn remap_list_anchor(&self, anchor: &display::Row) -> Option<usize> {
+    fn remap_list_anchor(&self, anchor: &display::ListRow) -> Option<usize> {
         let id = riwork_engine::chat::projection::transcript_anchor(
             &self.model.transcript,
             &self.visible,
-            &anchor.id,
+            &anchor.row.id,
         )
         .or_else(|| {
             riwork_engine::chat::projection::transcript_anchor(
                 &self.model.transcript,
                 &self.visible,
-                display::anchor_item(anchor),
+                display::anchor_item(&anchor.row),
             )
         })?;
-        self.list_rows.iter().position(|entry| entry.row.id == id)
+        let start = anchor.message.as_ref().map_or(0, |part| part.start);
+        self.list_rows
+            .iter()
+            .rposition(|entry| {
+                entry.row.id == id && entry.message.as_ref().map_or(0, |part| part.start) <= start
+            })
+            .or_else(|| self.list_rows.iter().position(|entry| entry.row.id == id))
     }
 
     /// Bring a native card into the virtual list without opening its own body.
@@ -1388,7 +1383,7 @@ impl ChatView {
                 offset_in_item: if self
                     .list_rows
                     .get(at)
-                    .is_some_and(|entry| entry.row.id == anchor.id)
+                    .is_some_and(|entry| entry.row.id == anchor.row.id)
                 {
                     collapse_offset.map_or(offset.offset_in_item, |header| {
                         offset.offset_in_item.min(header)
@@ -1536,7 +1531,7 @@ impl ChatView {
                         offset_in_item: if self
                             .list_rows
                             .get(at)
-                            .is_some_and(|entry| entry.row.id == anchor.id)
+                            .is_some_and(|entry| entry.row.id == anchor.row.id)
                         {
                             offset.offset_in_item
                         } else {

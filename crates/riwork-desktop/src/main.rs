@@ -5791,6 +5791,7 @@ impl Workspace {
         let polled = self.begin_worker_sample(window, cx);
         self.session_refresh_pending = true;
         let previous_shells = self.shells.clone();
+        let known_activity = self.agent_activity.clone();
         // A chat shows its workers' last lines, and a worker's recorded end keeps them: read
         // them while a chat is shown or a chat's worker runs.
         let capture_output = self.panes.values().any(|pane| {
@@ -5919,13 +5920,18 @@ impl Workspace {
                     }
                 }
             }
-            let shared_tabs =
-                project_tabs::refresh_snapshot(sessions.state_home(), &work_project_id);
+            let shared_tabs = project_tabs::refresh_snapshot_with_activity(
+                sessions.state_home(),
+                &work_project_id,
+                &known_activity,
+            );
             let mut foreign_tabs = HashMap::new();
             for project in foreign_projects {
-                if let Ok(snapshot) =
-                    project_tabs::refresh_snapshot(sessions.state_home(), &project)
-                {
+                if let Ok(snapshot) = project_tabs::refresh_snapshot_with_activity(
+                    sessions.state_home(),
+                    &project,
+                    &known_activity,
+                ) {
                     for key in &shown {
                         let belongs = foreign_keys.get(key) == Some(&project);
                         if belongs {

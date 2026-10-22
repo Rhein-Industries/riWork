@@ -2306,16 +2306,17 @@ fn ensure_running_locked(shared: &Shared, chat: &Arc<Chat>) -> Result<(), String
         Ok(config) => config,
         Err(error) => return fail_start(chat, generation, error),
     };
-    let mut inner = lock(&chat.inner);
     if config.resume.is_some() {
-        config.resume_has_history = match inner.log.provider_session_has_history(&info) {
+        // Opening the prefix is brief. Parsing a long historical log must not
+        // block info/subscription requests, cancellation or worker notices.
+        let snapshot = { lock(&chat.inner).log.session_history_snapshot() };
+        config.resume_has_history = match snapshot.and_then(|snapshot| snapshot.has_history(&info))
+        {
             Ok(history) => history,
-            Err(error) => {
-                drop(inner);
-                return fail_start(chat, generation, error);
-            }
+            Err(error) => return fail_start(chat, generation, error),
         };
     }
+    let mut inner = lock(&chat.inner);
     if let Some(run) = inner.run.as_mut() {
         run.guarded_resume = config.resume.clone().filter(|_| config.resume_has_history);
     }
