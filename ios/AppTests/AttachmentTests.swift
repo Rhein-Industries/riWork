@@ -1,6 +1,7 @@
 import XCTest
 import UIKit
-import RiWorkCore
+import SwiftUI
+@testable import RiWorkCore
 @testable import RiWorkRemote
 
 /// A desktop that takes files the way the connector does (or, `old`, one from before uploads), and records what it was asked.
@@ -419,5 +420,48 @@ actor UploadTransport: RemoteTransport {
             view.bar.tapped(.attachFrom(.photos))
             XCTAssertEqual(chosen, [.files, .photos])
         }
+    }
+}
+
+/// A preview the agent made, opened from its card: the picture is decoded for the card's thumbnail and the file written for Quick Look.
+@MainActor final class ChatOutputAssetCardTests: XCTestCase {
+    /// A 24-megapixel PNG (6000 × 4000), opened from its card. The decode and the write must not hold the main thread: its CPU time from
+    /// the tap to the preview is printed (`PERF`), and the preview must still come up.
+    func testOpeningALargePictureLeavesTheMainThreadFree() async throws {
+        guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene else { throw XCTSkip("no window scene to show the card in") }
+        let format = UIGraphicsImageRendererFormat(); format.scale = 1
+        let picture = UIGraphicsImageRenderer(size: CGSize(width: 6000, height: 4000), format: format).pngData { context in
+            for band in 0..<40 {
+                UIColor(hue: CGFloat(band) / 40, saturation: 0.6, brightness: 0.9, alpha: 1).setFill()
+                context.fill(CGRect(x: 0, y: band * 100, width: 6000, height: 100))
+            }
+        }
+        let asset = ChatAsset(data: picture, name: "chart.png", mediaType: "image/png")
+        let layout = ChatLayoutInspection()
+        let card = ChatOutputAssetCard(reference: ChatAssetReference(label: "chart", path: "out/chart.png", isImage: true))
+            .environment(\.chatAssetLoader, { _, _ in asset }).environment(\.chatAssetItemID, "item").environment(\.chatLayoutInspection, layout)
+        let host = UIHostingController(rootView: card)
+        let window = UIWindow(windowScene: scene)
+        window.frame = CGRect(x: 0, y: 0, width: 402, height: 874)
+        window.rootViewController = host
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true }
+        host.view.layoutIfNeeded()
+        let open = try XCTUnwrap(layout.actions["chat-asset-out/chart.png"])
+        let thread = mach_thread_self()
+        defer { mach_port_deallocate(mach_task_self_, thread) }
+        func cpu() -> Double {
+            var info = thread_basic_info(), count = mach_msg_type_number_t(MemoryLayout<thread_basic_info>.size / MemoryLayout<integer_t>.size)
+            let status = withUnsafeMutablePointer(to: &info) { $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { thread_info(thread, thread_flavor_t(THREAD_BASIC_INFO), $0, &count) } }
+            guard status == KERN_SUCCESS else { return 0 }
+            return Double(info.user_time.seconds + info.system_time.seconds) + Double(info.user_time.microseconds + info.system_time.microseconds) / 1e6
+        }
+        let end = ContinuousClock.now + .seconds(20)
+        let cpuStart = cpu()
+        open()
+        while host.presentedViewController == nil, ContinuousClock.now < end { try await Task.sleep(for: .milliseconds(2)) }
+        print(String(format: "PERF open a 24 MP picture: main thread %.1f ms CPU", (cpu() - cpuStart) * 1000))
+        let sheet = try XCTUnwrap(host.presentedViewController, "the preview comes up")
+        sheet.dismiss(animated: false)
     }
 }

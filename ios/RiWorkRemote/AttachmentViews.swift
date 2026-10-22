@@ -575,6 +575,7 @@ struct ChatOutputAssetCard: View {
                     Image(systemName: "arrow.up.right.square").foregroundStyle(style.muted)
                 }.padding(10).frame(maxWidth: .infinity, alignment: .leading).background(style.panel).clipShape(style.block(10))
             }.buttonStyle(.plain).disabled(loading || load == nil || itemID.isEmpty)
+            .chatLayoutProbe("chat-asset-\(reference.path)", action: open)
             if let failure { Text(failure).font(style.system(.caption)).foregroundStyle(style.error).textSelection(.enabled) }
         }
         .sheet(item: $preview, onDismiss: cleanup) { file in
@@ -595,24 +596,42 @@ struct ChatOutputAssetCard: View {
             do {
                 let asset = try await load(itemID, reference.path)
                 try Task.checkCancellation()
+                // Decoding a picture of up to 40 megapixels for the thumbnail, and writing up to 8 MB, would hold the main thread.
                 if asset.mediaType.hasPrefix("image/") {
-                    guard let source = CGImageSourceCreateWithData(asset.data as CFData, nil),
-                          let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
-                          let width = properties[kCGImagePropertyPixelWidth] as? NSNumber, let height = properties[kCGImagePropertyPixelHeight] as? NSNumber,
-                          width.doubleValue * height.doubleValue <= 40_000_000,
-                          let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: 320, kCGImageSourceCreateThumbnailWithTransform: true] as CFDictionary)
-                    else { throw RemoteError.remote("This image is too large or cannot be previewed.") }
+                    let image = try await Task.detached(priority: .userInitiated) { try Self.thumbnail(asset.data) }.value
+                    try Task.checkCancellation()
                     thumbnail = UIImage(cgImage: image)
                 }
-                let folder = FileManager.default.temporaryDirectory.appendingPathComponent("riwork-chat-preview-" + UUID().uuidString, isDirectory: true)
-                try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+                let (folder, file) = try await Task.detached(priority: .userInitiated) { try Self.write(asset) }.value
+                // The card went meanwhile: nothing is shown, and the file it would have shown is not kept.
+                if Task.isCancelled { try? FileManager.default.removeItem(at: folder); return }
                 directory = folder
-                let file = folder.appendingPathComponent(asset.name)
-                try asset.data.write(to: file, options: [.atomic, .completeFileProtection])
                 preview = ChatPreviewFile(url: file)
             } catch is CancellationError { cleanup() }
             catch { cleanup(); failure = RemoteError.isUnsupportedMethod(error) ? "Update RiWork on your Mac to preview generated files." : error.localizedDescription }
         }
+    }
+
+    /// The card's thumbnail of a picture; one that is too large or cannot be read is refused.
+    nonisolated private static func thumbnail(_ data: Data) throws -> CGImage {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = properties[kCGImagePropertyPixelWidth] as? NSNumber, let height = properties[kCGImagePropertyPixelHeight] as? NSNumber,
+              width.doubleValue * height.doubleValue <= 40_000_000,
+              let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: 320, kCGImageSourceCreateThumbnailWithTransform: true] as CFDictionary)
+        else { throw RemoteError.remote("This image is too large or cannot be previewed.") }
+        return image
+    }
+    /// The file, written to a folder of its own for Quick Look. A folder whose file could not be written is removed again.
+    nonisolated private static func write(_ asset: ChatAsset) throws -> (folder: URL, file: URL) {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("riwork-chat-preview-" + UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+        let file = folder.appendingPathComponent(asset.name)
+        do { try asset.data.write(to: file, options: [.atomic, .completeFileProtection]) } catch {
+            try? FileManager.default.removeItem(at: folder)
+            throw error
+        }
+        return (folder, file)
     }
 }
 
