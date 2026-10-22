@@ -188,7 +188,7 @@ pub async fn start(storage: Storage, cli: PathBuf) -> Result<()> {
                 }};
                 let active:HashMap<_,_>=cfg.devices.into_iter().filter(|d|!d.revoked).map(|d|(d.pairing.device_id.clone(),d)).collect();
                 let removed=running.keys().filter(|id|!active.contains_key(*id)).cloned().collect::<Vec<_>>();
-                for id in removed {if let Some((cancel,_))=running.remove(&id){let _=cancel.send(true);eprintln!("Remote device {id} was removed or revoked; connection closed.");rpc.forget_uploads(&id).await;}}
+                for id in removed {if let Some((cancel,_))=running.remove(&id){let _=cancel.send(true);eprintln!("Remote device {id} was removed or revoked; connection closed.");rpc.forget_uploads(&id).await;rpc.forget_device(&id);}}
                 for (id,device) in active {
                     if let std::collections::hash_map::Entry::Vacant(entry) = running.entry(id) {
                         // A pairing made by any local process is adopted here within a tick.

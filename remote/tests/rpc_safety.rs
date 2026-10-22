@@ -304,3 +304,56 @@ async fn resize_clear_checks_the_session_before_reaching_the_cli() {
         calls(&log)
     );
 }
+/// The ids of the input ledger are kept between requests; every way the ledger
+/// can change must still be seen by the very next request.
+#[cfg(unix)]
+#[tokio::test]
+async fn request_id_conflicts_follow_every_change_of_the_input_ledger() {
+    use std::os::unix::fs::PermissionsExt;
+    let (_tmp, rpc, device) = fixture();
+    let path = rpc.storage.dir.join(format!("outcomes-{device}.json"));
+    let [a, b, c] = [(); 3].map(|()| uuid::Uuid::new_v4().to_string());
+    let ledger = |ids: &[&String]| {
+        let entries: serde_json::Map<String, Value> = ids
+            .iter()
+            .map(|id| ((*id).clone(), json!({"digest":"d","response":null})))
+            .collect();
+        json!({ "entries": entries })
+    };
+    let code = |id: &str| {
+        let mut r = req("projects.list", json!({}));
+        r["id"] = json!(id);
+        let (rpc, device) = (&rpc, device.clone());
+        async move {
+            rpc.handle(&device, r)
+                .await
+                .map(|response| response["error"]["code"].as_str().unwrap_or("").to_owned())
+        }
+    };
+    // No ledger: nothing conflicts (the missing CLI is what fails).
+    assert_eq!(code(&a).await.unwrap(), "cli_error");
+
+    private_write(&path, &ledger(&[&a])).unwrap();
+    assert_eq!(code(&a).await.unwrap(), "request_conflict");
+    assert_eq!(code(&b).await.unwrap(), "cli_error");
+    assert_eq!(code(&a).await.unwrap(), "request_conflict");
+
+    // An input recorded since: the file is replaced, as `shell.input` does it.
+    private_write(&path, &ledger(&[&a, &b])).unwrap();
+    assert_eq!(code(&b).await.unwrap(), "request_conflict");
+
+    // Rewritten in place, e.g. by recovery tooling.
+    std::fs::write(&path, serde_json::to_vec(&ledger(&[&c])).unwrap()).unwrap();
+    assert_eq!(code(&a).await.unwrap(), "cli_error");
+    assert_eq!(code(&c).await.unwrap(), "request_conflict");
+
+    // A ledger that is no longer private fails the request, as it always did.
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    assert!(code(&c).await.is_err());
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    assert_eq!(code(&c).await.unwrap(), "request_conflict");
+
+    // Removed: nothing conflicts any more.
+    std::fs::remove_file(&path).unwrap();
+    assert_eq!(code(&c).await.unwrap(), "cli_error");
+}

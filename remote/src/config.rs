@@ -4,12 +4,12 @@ use fs2::FileExt;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     env,
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     path::{Path, PathBuf},
-    sync::{Mutex, OnceLock},
+    sync::{Arc, Mutex, OnceLock},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use uuid::Uuid;
@@ -267,6 +267,95 @@ pub fn private_read<T: DeserializeOwned>(path: &Path, max: u64) -> Result<T> {
     Read::by_ref(&mut f).take(max + 1).read_to_end(&mut data)?;
     ensure!(data.len() as u64 <= max, "private file limit");
     Ok(serde_json::from_slice(&data)?)
+}
+/// One version of a private file, told without opening it. Every writer here
+/// replaces a file whole (`write_private`: temp file, then rename), so a new
+/// version is a new inode; an edit in place moves the length or the times, and
+/// a change of mode moves the change time. An equal stamp therefore means the
+/// same bytes under the same permissions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct FileStamp {
+    device: u64,
+    inode: u64,
+    len: u64,
+    modified: (i64, i64),
+    changed: (i64, i64),
+    mode: u32,
+}
+impl FileStamp {
+    /// The stamp of the regular file at `path`, never following a symlink.
+    /// `None` for anything else (missing, a symlink, unreadable metadata, or a
+    /// platform without these fields): callers then read as if they had no cache.
+    pub(crate) fn of(path: &Path) -> Option<Self> {
+        let metadata = fs::symlink_metadata(path).ok()?;
+        if !metadata.file_type().is_file() {
+            return None;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            Some(Self {
+                device: metadata.dev(),
+                inode: metadata.ino(),
+                len: metadata.len(),
+                modified: (metadata.mtime(), metadata.mtime_nsec()),
+                changed: (metadata.ctime(), metadata.ctime_nsec()),
+                mode: metadata.mode(),
+            })
+        }
+        #[cfg(not(unix))]
+        {
+            None
+        }
+    }
+}
+/// The last parse of each of a few private files, with the stamp it was read
+/// under, for files that are read far more often than they change: while a
+/// file keeps its stamp it is not opened, read or parsed again.
+pub(crate) struct ParseCache<T> {
+    entries: Mutex<HashMap<PathBuf, (FileStamp, Arc<T>)>>,
+}
+impl<T> Default for ParseCache<T> {
+    fn default() -> Self {
+        Self {
+            entries: Mutex::new(HashMap::new()),
+        }
+    }
+}
+impl<T> ParseCache<T> {
+    /// What `read` makes of `path`: the last parse while the file keeps its
+    /// stamp, else `read` itself, which must do everything an uncached read
+    /// did (its errors are returned as they are and never kept). A parse is
+    /// kept only when the file stood still across the read.
+    pub(crate) fn get(&self, path: &Path, read: impl FnOnce() -> Result<T>) -> Result<Arc<T>> {
+        let before = FileStamp::of(path);
+        if let Some(stamp) = before
+            && let Some((cached, value)) = self.lock().get(path)
+            && *cached == stamp
+        {
+            return Ok(value.clone());
+        }
+        let value = Arc::new(read()?);
+        let mut entries = self.lock();
+        match before {
+            Some(stamp) if FileStamp::of(path) == Some(stamp) => {
+                entries.insert(path.to_owned(), (stamp, value.clone()));
+            }
+            _ => {
+                entries.remove(path);
+            }
+        }
+        Ok(value)
+    }
+    /// Drops what is kept for `path`, e.g. for a device that is gone.
+    pub(crate) fn forget(&self, path: &Path) {
+        self.lock().remove(path);
+    }
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<PathBuf, (FileStamp, Arc<T>)>> {
+        self.entries
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+    }
 }
 pub fn private_write<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     write_private(path, value, true)
@@ -1033,5 +1122,67 @@ mod tests {
             .find(|d| d.pairing.device_id == mac.device_id)
             .unwrap();
         assert!(record.revoked && record.kind == DeviceKind::Desktop);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_kept_parse_is_served_only_while_the_file_keeps_its_stamp() {
+        use std::{cell::Cell, os::unix::fs::PermissionsExt};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ledger.json");
+        let cache = ParseCache::<serde_json::Value>::default();
+        let reads = Cell::new(0);
+        let get = || {
+            cache
+                .get(&path, || {
+                    reads.set(reads.get() + 1);
+                    private_read(&path, 1024)
+                })
+                .map(|value| (*value).clone())
+        };
+        private_write(&path, &json!({"n": 1})).unwrap();
+        assert_eq!(get().unwrap(), json!({"n": 1}));
+        assert_eq!(get().unwrap(), json!({"n": 1}));
+        assert_eq!(reads.get(), 1, "an unchanged file is not read again");
+
+        // Replaced whole, as every writer here does.
+        private_write(&path, &json!({"n": 2})).unwrap();
+        assert_eq!(get().unwrap(), json!({"n": 2}));
+        // Rewritten in place, to the same length.
+        let before = fs::read(&path).unwrap();
+        let mut edited = before.clone();
+        let digit = edited.iter().position(|b| *b == b'2').unwrap();
+        edited[digit] = b'3';
+        fs::write(&path, &edited).unwrap();
+        assert_eq!(get().unwrap(), json!({"n": 3}));
+        assert_eq!(reads.get(), 3);
+
+        // A mode change fails closed, as an uncached read does, and is not kept.
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(get().is_err());
+        assert!(get().is_err());
+        assert_eq!(reads.get(), 5);
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(get().unwrap(), json!({"n": 3}));
+        assert_eq!(reads.get(), 6);
+
+        // Neither a missing file nor a symlink is ever served from what was kept.
+        fs::remove_file(&path).unwrap();
+        assert!(get().is_err());
+        assert!(get().is_err());
+        let target = dir.path().join("target.json");
+        private_write(&target, &json!({"n": 4})).unwrap();
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+        assert!(get().is_err(), "private_read refuses a symlink");
+        assert!(get().is_err());
+        assert_eq!(reads.get(), 10);
+
+        // Forgetting drops the kept parse.
+        fs::remove_file(&path).unwrap();
+        private_write(&path, &json!({"n": 5})).unwrap();
+        assert_eq!(get().unwrap(), json!({"n": 5}));
+        cache.forget(&path);
+        assert_eq!(get().unwrap(), json!({"n": 5}));
+        assert_eq!(reads.get(), 12);
     }
 }

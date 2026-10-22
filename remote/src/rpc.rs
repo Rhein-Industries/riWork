@@ -1,7 +1,7 @@
 //! Narrow CLI allowlist plus a durable write-ahead input outcome ledger.
 use crate::{
     MAX_PLAINTEXT, appearance,
-    config::{Storage, private_read, private_write, private_write_relaxed},
+    config::{ParseCache, Storage, private_read, private_write, private_write_relaxed},
     crypto::uuid,
     pty::{self, PtyFault, PtySet},
     viewport::Viewport,
@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     path::PathBuf,
     process::Stdio,
     sync::{
@@ -1146,6 +1146,8 @@ pub struct Rpc {
     /// Files the phones sent (see `crate::upload`).
     uploads: Arc<crate::upload::Uploads>,
     chat_assets: Mutex<chat_assets::AssetCache>,
+    /// The request ids of each device's input outcome ledger (see `used_for_input`).
+    input_ids: ParseCache<BTreeSet<String>>,
 }
 impl Rpc {
     pub fn new(cli: PathBuf, storage: Storage) -> Self {
@@ -1169,6 +1171,7 @@ impl Rpc {
             shell_paste: AtomicBool::new(false),
             uploads: Arc::new(crate::upload::Uploads::new(storage.dir.clone())),
             chat_assets: Mutex::new(chat_assets::AssetCache::default()),
+            input_ids: ParseCache::default(),
             storage,
         }
     }
@@ -1498,6 +1501,26 @@ impl Rpc {
             Err(f) => error(&request_id, f.code, f.message),
         })
     }
+    /// Whether `device`'s input outcome ledger holds `id`. Every request but an
+    /// input asks, and the ledger only grows (up to 4096 entries, over a
+    /// megabyte), so its ids are kept from one read to the next while the file
+    /// keeps its stamp; a changed ledger is read again with the same checks.
+    fn used_for_input(&self, device: &str, id: &str) -> Result<bool> {
+        let path = self.storage.dir.join(format!("outcomes-{device}.json"));
+        let ids = self.input_ids.get(&path, || {
+            if !path.exists() {
+                return Ok(BTreeSet::new());
+            }
+            let ledger: Ledger = private_read(&path, 64 * 1024 * 1024)?;
+            Ok(ledger.entries.into_keys().collect())
+        })?;
+        Ok(ids.contains(id))
+    }
+    /// Lets go of what is kept for a device that was removed or revoked.
+    pub fn forget_device(&self, device: &str) {
+        self.input_ids
+            .forget(&self.storage.dir.join(format!("outcomes-{device}.json")));
+    }
     async fn handle_with(
         &self,
         device: &str,
@@ -1526,20 +1549,16 @@ impl Rpc {
         } else if !self.storage.authorized(device)? {
             return Err(anyhow::anyhow!("device revoked"));
         } else {
-            let ledger_path = self.storage.dir.join(format!("outcomes-{device}.json"));
             // Terminal streams are not recorded, and `pty.read` comes many times a second.
             if request.method != "shell.input"
                 && !request.method.starts_with("pty.")
-                && ledger_path.exists()
+                && self.used_for_input(device, &request.id)?
             {
-                let ledger: Ledger = private_read(&ledger_path, 64 * 1024 * 1024)?;
-                if ledger.entries.contains_key(&request.id) {
-                    return Ok(error(
-                        &request.id,
-                        "request_conflict",
-                        "request UUID already used for input",
-                    ));
-                }
+                return Ok(error(
+                    &request.id,
+                    "request_conflict",
+                    "request UUID already used for input",
+                ));
             }
             self.dispatch(device, &request, viewport, pty, reply_limit)
                 .await
@@ -2458,6 +2477,54 @@ mod tests {
         // Out of range never widens the limit.
         assert_eq!(cli_limit(i64::MAX), cli_limit(MAX_WAIT_MS));
         assert_eq!(cli_limit(-1), Duration::from_secs(15));
+    }
+
+    /// `cargo test -p riwork-remote --lib input_ledger_check_cost -- --ignored --nocapture`
+    /// prints what the request-id check costs every request that is not an input: a
+    /// read and parse of the whole ledger, against the kept ids of an unchanged one.
+    #[test]
+    #[ignore = "prints timings; run on demand"]
+    fn input_ledger_check_cost() {
+        let home = tempfile::tempdir().unwrap();
+        let storage = Storage::at(home.path().into()).unwrap();
+        let rpc = Rpc::new("/nonexistent".into(), storage);
+        for size in [5, 500, 4096] {
+            let device = uuid::Uuid::new_v4().to_string();
+            let path = rpc.storage.dir.join(format!("outcomes-{device}.json"));
+            let mut ledger = Ledger::default();
+            for _ in 0..size {
+                let id = uuid::Uuid::new_v4().to_string();
+                let response = success(&id, json!({"shell_id": id, "status": "sent"}));
+                let digest = hex::encode(Sha256::digest(id.as_bytes()));
+                ledger.entries.insert(
+                    id,
+                    Record {
+                        digest,
+                        response: Some(response),
+                    },
+                );
+            }
+            private_write(&path, &ledger).unwrap();
+            let bytes = std::fs::metadata(&path).unwrap().len();
+            let rounds = 50;
+            let started = std::time::Instant::now();
+            for _ in 0..rounds {
+                // What every request did before the ids were kept.
+                assert!(path.exists());
+                let ledger: Ledger = private_read(&path, 64 * 1024 * 1024).unwrap();
+                assert!(!ledger.entries.contains_key("unused"));
+            }
+            let read = started.elapsed() / rounds;
+            assert!(!rpc.used_for_input(&device, "unused").unwrap());
+            let started = std::time::Instant::now();
+            for _ in 0..rounds {
+                assert!(!rpc.used_for_input(&device, "unused").unwrap());
+            }
+            let kept = started.elapsed() / rounds;
+            println!(
+                "input ledger of {size} entries ({bytes} bytes): read and parse {read:?}, kept ids {kept:?}"
+            );
+        }
     }
 
     #[test]
