@@ -310,25 +310,47 @@ impl FileStamp {
             None
         }
     }
+    /// Whether both times of the stamp are at least `margin` before `now`.
+    fn settled(&self, now: SystemTime, margin: Duration) -> bool {
+        [self.modified, self.changed].iter().all(|&(secs, nanos)| {
+            let at = u64::try_from(secs).map_or(UNIX_EPOCH, |secs| {
+                UNIX_EPOCH + Duration::new(secs, nanos.clamp(0, 999_999_999) as u32)
+            });
+            now.duration_since(at).is_ok_and(|age| age >= margin)
+        })
+    }
 }
+/// How old a file's times must be before a parse of it is kept. A file system
+/// whose clock moves in ticks (ext4 and tmpfs on many Linux kernels, HFS+ in
+/// whole seconds) can give a second write within the same tick the same times,
+/// and so the same stamp; a write after the times are this old cannot share them.
+pub(crate) const SETTLED: Duration = Duration::from_secs(2);
 /// The last parse of each of a few private files, with the stamp it was read
 /// under, for files that are read far more often than they change: while a
 /// file keeps its stamp it is not opened, read or parsed again.
 pub(crate) struct ParseCache<T> {
     entries: Mutex<HashMap<PathBuf, (FileStamp, Arc<T>)>>,
+    /// See `SETTLED`; tests shorten it.
+    settle: Duration,
 }
 impl<T> Default for ParseCache<T> {
     fn default() -> Self {
-        Self {
-            entries: Mutex::new(HashMap::new()),
-        }
+        Self::settled_after(SETTLED)
     }
 }
 impl<T> ParseCache<T> {
+    /// A cache that keeps a parse once the file's times are `settle` old.
+    pub(crate) fn settled_after(settle: Duration) -> Self {
+        Self {
+            entries: Mutex::new(HashMap::new()),
+            settle,
+        }
+    }
     /// What `read` makes of `path`: the last parse while the file keeps its
     /// stamp, else `read` itself, which must do everything an uncached read
     /// did (its errors are returned as they are and never kept). A parse is
-    /// kept only when the file stood still across the read.
+    /// kept only when the file stood still across the read and its times have
+    /// settled (`SETTLED`): a file written a moment ago is read every time.
     pub(crate) fn get(&self, path: &Path, read: impl FnOnce() -> Result<T>) -> Result<Arc<T>> {
         let before = FileStamp::of(path);
         if let Some(stamp) = before
@@ -340,7 +362,10 @@ impl<T> ParseCache<T> {
         let value = Arc::new(read()?);
         let mut entries = self.lock();
         match before {
-            Some(stamp) if FileStamp::of(path) == Some(stamp) => {
+            Some(stamp)
+                if FileStamp::of(path) == Some(stamp)
+                    && stamp.settled(SystemTime::now(), self.settle) =>
+            {
                 entries.insert(path.to_owned(), (stamp, value.clone()));
             }
             _ => {
@@ -1149,7 +1174,10 @@ mod tests {
     fn devices_are_reread_whenever_another_process_changes_them() {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
-        let connector = Storage::at(dir.path().into()).unwrap();
+        let settle = Duration::from_millis(100);
+        let rest = || std::thread::sleep(settle + Duration::from_millis(50));
+        let mut connector = Storage::at(dir.path().into()).unwrap();
+        connector.devices = Arc::new(ParseCache::settled_after(settle));
         let cli = Storage::at(dir.path().into()).unwrap();
         let pair = |name: &str| {
             cli.pair(
@@ -1164,9 +1192,11 @@ mod tests {
         assert!(connector.config().unwrap().devices.is_empty());
         let phone = pair("phone");
         assert!(connector.authorized(&phone.device_id).unwrap());
+        rest();
+        assert!(connector.authorized(&phone.device_id).unwrap());
         assert!(
             Arc::ptr_eq(&connector.current().unwrap(), &connector.current().unwrap()),
-            "an unchanged file is served from the kept parse"
+            "a settled, unchanged file is served from the kept parse"
         );
 
         // Revoked elsewhere: refused at the very next look.
@@ -1176,7 +1206,9 @@ mod tests {
         let tablet = pair("tablet");
         assert!(connector.fresh_device(&tablet.device_id).unwrap().is_some());
 
-        // Edited in place, keeping the inode.
+        // Edited in place, keeping the inode, after the parse was kept.
+        rest();
+        assert!(connector.fresh_device(&tablet.device_id).unwrap().is_some());
         let path = connector.dir.join("devices.json");
         let text = fs::read_to_string(&path).unwrap();
         fs::write(&path, text.replace("\"tablet\"", "\"renamed\"")).unwrap();
@@ -1221,6 +1253,8 @@ mod tests {
                 .unwrap()
                 .device_id;
         }
+        // A file written a moment ago is read every time.
+        std::thread::sleep(SETTLED);
         let path = storage.dir.join("devices.json");
         let rounds = 2000;
         let started = Instant::now();
@@ -1253,7 +1287,9 @@ mod tests {
         use std::{cell::Cell, os::unix::fs::PermissionsExt};
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("ledger.json");
-        let cache = ParseCache::<serde_json::Value>::default();
+        let settle = Duration::from_millis(100);
+        let rest = || std::thread::sleep(settle + Duration::from_millis(50));
+        let cache = ParseCache::<serde_json::Value>::settled_after(settle);
         let reads = Cell::new(0);
         let get = || {
             cache
@@ -1263,49 +1299,70 @@ mod tests {
                 })
                 .map(|value| (*value).clone())
         };
-        private_write(&path, &json!({"n": 1})).unwrap();
-        assert_eq!(get().unwrap(), json!({"n": 1}));
-        assert_eq!(get().unwrap(), json!({"n": 1}));
-        assert_eq!(reads.get(), 1, "an unchanged file is not read again");
+        let n = |n: u32| json!({ "n": n });
+        private_write(&path, &n(1)).unwrap();
+        assert_eq!(get().unwrap(), n(1));
+        assert_eq!(get().unwrap(), n(1));
+        assert_eq!(
+            reads.get(),
+            2,
+            "a file written a moment ago is read every time"
+        );
+        rest();
+        assert_eq!(get().unwrap(), n(1));
+        assert_eq!(get().unwrap(), n(1));
+        assert_eq!(
+            reads.get(),
+            3,
+            "a settled, unchanged file is not read again"
+        );
 
         // Replaced whole, as every writer here does.
-        private_write(&path, &json!({"n": 2})).unwrap();
-        assert_eq!(get().unwrap(), json!({"n": 2}));
-        // Rewritten in place, to the same length.
-        let before = fs::read(&path).unwrap();
-        let mut edited = before.clone();
+        private_write(&path, &n(2)).unwrap();
+        assert_eq!(get().unwrap(), n(2));
+        rest();
+        assert_eq!(get().unwrap(), n(2));
+        assert_eq!(reads.get(), 5);
+        // Rewritten in place, to the same length, right after it was kept: its times
+        // are later than the kept ones by more than any tick of the file system clock.
+        let mut edited = fs::read(&path).unwrap();
         let digit = edited.iter().position(|b| *b == b'2').unwrap();
         edited[digit] = b'3';
         fs::write(&path, &edited).unwrap();
-        assert_eq!(get().unwrap(), json!({"n": 3}));
-        assert_eq!(reads.get(), 3);
+        assert_eq!(get().unwrap(), n(3));
+        assert_eq!(reads.get(), 6);
 
         // A mode change fails closed, as an uncached read does, and is not kept.
+        rest();
+        assert_eq!(get().unwrap(), n(3));
+        assert_eq!(reads.get(), 7);
         fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
         assert!(get().is_err());
         assert!(get().is_err());
-        assert_eq!(reads.get(), 5);
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
-        assert_eq!(get().unwrap(), json!({"n": 3}));
-        assert_eq!(reads.get(), 6);
+        assert_eq!(get().unwrap(), n(3));
+        assert_eq!(reads.get(), 10);
 
         // Neither a missing file nor a symlink is ever served from what was kept.
         fs::remove_file(&path).unwrap();
         assert!(get().is_err());
         assert!(get().is_err());
         let target = dir.path().join("target.json");
-        private_write(&target, &json!({"n": 4})).unwrap();
+        private_write(&target, &n(4)).unwrap();
+        rest();
         std::os::unix::fs::symlink(&target, &path).unwrap();
         assert!(get().is_err(), "private_read refuses a symlink");
         assert!(get().is_err());
-        assert_eq!(reads.get(), 10);
+        assert_eq!(reads.get(), 14);
 
         // Forgetting drops the kept parse.
         fs::remove_file(&path).unwrap();
-        private_write(&path, &json!({"n": 5})).unwrap();
-        assert_eq!(get().unwrap(), json!({"n": 5}));
+        private_write(&path, &n(5)).unwrap();
+        rest();
+        assert_eq!(get().unwrap(), n(5));
+        assert_eq!(get().unwrap(), n(5));
         cache.forget(&path);
-        assert_eq!(get().unwrap(), json!({"n": 5}));
-        assert_eq!(reads.get(), 12);
+        assert_eq!(get().unwrap(), n(5));
+        assert_eq!(reads.get(), 16);
     }
 }

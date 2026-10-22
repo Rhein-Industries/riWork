@@ -2548,7 +2548,7 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let storage = Storage::at(home.path().into()).unwrap();
         let rpc = Rpc::new("/nonexistent".into(), storage);
-        for size in [5, 500, 4096] {
+        let ledgers = [5, 500, 4096].map(|size| {
             let device = uuid::Uuid::new_v4().to_string();
             let path = rpc.storage.dir.join(format!("outcomes-{device}.json"));
             let mut ledger = Ledger::default();
@@ -2565,6 +2565,11 @@ mod tests {
                 );
             }
             private_write(&path, &ledger).unwrap();
+            (size, device, path)
+        });
+        // A file written a moment ago is read every time.
+        std::thread::sleep(crate::config::SETTLED);
+        for (size, device, path) in ledgers {
             let bytes = std::fs::metadata(&path).unwrap().len();
             let rounds = 50;
             let started = std::time::Instant::now();
