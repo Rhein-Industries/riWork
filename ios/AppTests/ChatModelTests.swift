@@ -124,20 +124,29 @@ import RiWorkCore
         let all = await rig.transport.calls(of: "chat.events")
         let first = try XCTUnwrap(all.first)
         XCTAssertEqual(first.params["since"], .number(0))
-        XCTAssertEqual(first.params["wait_ms"], .number(300), "the wait is asked for on the first request too: the desktop answers at once when there is something")
+        XCTAssertEqual(first.params["wait_ms"], .number(0), "opening a chat catches up with a read that does not wait (docs/remote-protocol.md)")
         XCTAssertNil(first.params["max_events"])
+        let second = try XCTUnwrap(all.dropFirst().first)
+        XCTAssertEqual(second.params["since"], .number(2))
+        XCTAssertEqual(second.params["wait_ms"], .number(300), "caught up, it waits for what comes next")
+        XCTAssertFalse(rig.model.conversation(chatID).catchingUp)
         await rig.transport.append(chatID, [started("b", text: "two")])
         await eventually("the new event shows up") { self.texts(rig.model) == ["one", "two"] }
         await eventually("and it asks from 3") { await rig.transport.sinces().contains(3) }
         let sinces = await rig.transport.sinces()
         XCTAssertEqual(sinces.filter { $0 == 0 }.count, 1, "events already held are never asked for again")
+        let afterCatchUp = await rig.transport.calls(of: "chat.events").dropFirst()
+        XCTAssertTrue(afterCatchUp.allSatisfy { $0.params["wait_ms"] == .number(300) }, "every read after the catch-up waits, the one that found events too")
         follower.cancel()
         await rig.model.disconnect()
     }
     func testItStopsAskingWhenTheScreenGoesAndTheDesktopsWaitKeepsItsSlot() async throws {
         let rig = try await connected(wait: 2000)
         let follower = follow(rig)
-        await eventually("a long poll is out") { await rig.transport.count("chat.events") >= 1 && rig.model.conversation(self.chatID).following }
+        // The catch-up read does not wait; the long poll comes after it.
+        await eventually("a long poll is out") {
+            await rig.transport.calls(of: "chat.events").contains { $0.params["wait_ms"] == .number(2000) } && rig.model.conversation(self.chatID).following
+        }
         try await Task.sleep(for: .milliseconds(50))
         follower.cancel()
         await follower.value
