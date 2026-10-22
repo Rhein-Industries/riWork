@@ -363,6 +363,8 @@ import RiWorkCore
         await eventually("⎋ denied the third") { conversation.openApprovals.map(\.requestID) == ["r4"] }
         press(view, "\u{8}", .command)
         await eventually("⌘⌫ denied the fourth, as Escape does on a keyboard without one") { conversation.openApprovals.isEmpty }
+        // A request leaves the bar as soon as it is answered (`decideChatApproval`), before its command has reached the desktop.
+        await eventually("the four answers reached the desktop") { await self.sentCommands(rig).count == 4 }
         let sent = await sentCommands(rig)
         func approve(_ id: String, _ decision: String) -> JSONValue { .object(["command": .string("approve"), "request_id": .string(id), "decision": .string(decision)]) }
         XCTAssertEqual(sent, [approve("r1", "accept"), approve("r2", "accept_for_session"), approve("r3", "decline"), approve("r4", "decline")])
