@@ -167,14 +167,29 @@ impl MenuTarget {
 
     fn handle_key_equivalent(&self, event: &NSEvent) -> bool {
         let flags = event.modifierFlags();
+        let key = event
+            .charactersIgnoringModifiers()
+            .map(|text| text.to_string());
+        // NSH 0.3 has no Menu key in its parser. Route the dedicated PC
+        // application key through the same per-window command channel.
+        if dedicated_menu_key(event.keyCode(), key.as_deref(), flags) {
+            let app = NSApplication::sharedApplication(self.mtm());
+            let Some(window) = app.keyWindow() else {
+                return false;
+            };
+            if event.window(self.mtm()).as_deref() != Some(&*window)
+                || !window.firstResponder().is_some_and(|r| is_nsh_view(&r))
+            {
+                return false;
+            }
+            self.emit("tabContextMenu");
+            return true;
+        }
         if !flags.contains(NSEventModifierFlags::Command)
             || flags.intersects(NSEventModifierFlags::Control | NSEventModifierFlags::Option)
         {
             return false;
         }
-        let key = event
-            .charactersIgnoringModifiers()
-            .map(|text| text.to_string());
         let shifted = flags.contains(NSEventModifierFlags::Shift);
         let Some(command) = key
             .as_deref()
@@ -202,6 +217,15 @@ impl MenuTarget {
         self.emit(command);
         true
     }
+}
+
+fn dedicated_menu_key(code: u16, key: Option<&str>, flags: NSEventModifierFlags) -> bool {
+    !flags.intersects(
+        NSEventModifierFlags::Command
+            | NSEventModifierFlags::Control
+            | NSEventModifierFlags::Option
+            | NSEventModifierFlags::Shift,
+    ) && (code == 0x6e || key == Some("\u{f735}"))
 }
 
 fn is_nsh_view(object: &AnyObject) -> bool {
@@ -554,6 +578,22 @@ fn key_equivalent(shortcut: &Shortcut) -> (String, NSEventModifierFlags) {
 mod tests {
     #[allow(unused_imports)] // Included in the harness=false AppKit test target.
     use super::*;
+
+    #[test]
+    fn dedicated_menu_key_routes_without_intercepting_modified_or_text_keys() {
+        let none = NSEventModifierFlags::empty();
+        assert!(dedicated_menu_key(0x6e, None, none));
+        assert!(dedicated_menu_key(0, Some("\u{f735}"), none));
+        assert!(!dedicated_menu_key(0, Some("m"), none));
+        for modifier in [
+            NSEventModifierFlags::Command,
+            NSEventModifierFlags::Control,
+            NSEventModifierFlags::Option,
+            NSEventModifierFlags::Shift,
+        ] {
+            assert!(!dedicated_menu_key(0x6e, Some("\u{f735}"), modifier));
+        }
+    }
 
     #[test]
     fn command_ids_are_the_v1_set() {

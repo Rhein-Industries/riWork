@@ -4546,8 +4546,6 @@ dependencies = [
 [[package]]
 name = "nsh-base"
 version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "78d139f86c6d867029ab4cf605bb9e83d6fb08e159b0a747795905d8052c7705"
 dependencies = [
  "html5ever",
  "imara-diff",
@@ -4555,6 +4553,8 @@ dependencies = [
  "markdown",
  "markup5ever_rcdom",
  "nsh-core",
+ "nsh-engine",
+ "nsh-testing",
  "regex",
  "ropey",
  "rustc-hash 2.1.3",
@@ -4689,6 +4689,19 @@ dependencies = [
  "objc2-quartz-core 0.3.2",
  "rustc-hash 2.1.3",
  "serde_json",
+]
+
+[[package]]
+name = "nsh-testing"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a6448ac8a158f40f333fa38236149e19da4eef0e3994b8e73d08faac6bd45c08"
+dependencies = [
+ "crossbeam-channel",
+ "log",
+ "nsh-core",
+ "nsh-engine",
+ "regex",
 ]
 
 [[package]]
@@ -6563,13 +6576,18 @@ version = "0.1.0"
 dependencies = [
  "arc-swap",
  "fs2",
+ "futures-util",
  "nsh-base",
  "nsh-core",
+ "nsh-engine",
+ "nsh-testing",
  "riwork-core",
+ "riwork-engine",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
+ "uuid",
 ]
 
 [[package]]

@@ -56,6 +56,8 @@ test("locked pixel geometry survives resize and pane menu edits remain in Rust",
   const app = await open("./tests/Workspace.fixture.tsx", options("fixture-resize"));
   try {
     await app.waitFor("id:workspace-dock");
+    // P1-PANE-04 ignores first-draw resize noise for the first two seconds.
+    await app.wait(2100);
     const before = latest(app).dock.center;
     await app.setViewport(1600, 900);
     const after = latest(app).dock.center;
@@ -63,12 +65,13 @@ test("locked pixel geometry survives resize and pane menu edits remain in Rust",
     expect(after.type).toBe("split");
     if (before.type === "split" && after.type === "split") expect(after.sizes?.[0]).toBe(before.sizes?.[0]);
     await app.rightClick("id:tab:panel:projects");
-    expect(app.menu()?.some((item) => item.label === "Unlock pane")).toBe(true);
-    await app.chooseMenuItem("Unlock pane");
+    // At this width the header button owns lock; its fallback menu row is omitted.
+    expect(app.menu()?.some((item) => item.label === "Unlock pane")).toBe(false);
+    await app.closeMenu();
+    await app.press("id:pane-lock-1");
     expect(latest(app).snapshot.panes.find((pane) => pane.id === 1)?.locked).toBe(false);
     // Restore fixture before disposal so following tests see its original lock set.
-    await app.rightClick("id:tab:panel:projects");
-    await app.chooseMenuItem("Lock pane");
+    await app.press("id:pane-lock-1");
   } finally { app.dispose(); }
 });
 

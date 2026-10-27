@@ -21,3 +21,11 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 [dev-dependencies]
 nsh-engine = "=0.3.0"
 tempfile = "3"
+
+[features]
+default = []
+test-support = ["riwork-nsh-workspace/test-support"]
+
+[[example]]
+name = "p1_fixture_home"
+required-features = ["test-support"]

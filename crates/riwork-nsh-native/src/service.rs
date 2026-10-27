@@ -51,19 +51,20 @@ pub fn install_process_service(service: Arc<ProcessService>) -> Result<(), Strin
 /// Initialize before the first AppView. Calls from multiple windows also converge
 /// here; RIWORK_HOME is resolved just once and cannot be supplied from JavaScript.
 pub async fn initialize() -> Result<Arc<ProcessService>, String> {
-    blocking(|| {
-        let _start = START.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(service) = PROCESS.get() {
-            return Ok(service.clone());
-        }
-        let home = resolved_home()?;
-        let store = Arc::new(CoreStoreBackend::new(home.clone()));
-        let sessions = Arc::new(EngineSessionsBackend::new(home.clone()));
-        let service = ProcessService::with_backends(home, store, sessions).map_err(io_error)?;
-        let _ = PROCESS.set(service.clone());
-        Ok(service)
-    })
-    .await
+    blocking(ensure_initialized).await
+}
+
+fn ensure_initialized() -> Result<Arc<ProcessService>, String> {
+    let _start = START.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(service) = PROCESS.get() {
+        return Ok(service.clone());
+    }
+    let home = resolved_home()?;
+    let store = Arc::new(CoreStoreBackend::new(home.clone()));
+    let sessions = Arc::new(EngineSessionsBackend::new(home.clone()));
+    let service = ProcessService::with_backends(home, store, sessions).map_err(io_error)?;
+    let _ = PROCESS.set(service.clone());
+    Ok(service)
 }
 
 /// Shared by layout IO and service startup. Layout-only headless runners do not
@@ -190,6 +191,7 @@ impl ProcessService {
                     }
                 };
                 if flags != 0 {
+                    riwork_nsh_workspace::session_io::changed();
                     watch_dirty.fetch_or(flags, Ordering::Release);
                     let _ = watch_wake.try_send(());
                 }
@@ -201,9 +203,11 @@ impl ProcessService {
             store.snapshot().context("initial store snapshot")?,
         ));
         let mut has_shells = false;
+        let mut last_sessions = None;
         let sessions_hub = Arc::new(match sessions.sample() {
             Ok(snapshot) => {
                 has_shells = !snapshot.sessions.is_empty();
+                last_sessions = Some(snapshot.clone());
                 Hub::new(snapshot)
             }
             Err(error) => {
@@ -254,6 +258,10 @@ impl ProcessService {
                         }
                         match worker_sessions.sample() {
                             Ok(snapshot) => {
+                                if last_sessions.as_ref() != Some(&snapshot) {
+                                    riwork_nsh_workspace::session_io::changed();
+                                    last_sessions = Some(snapshot.clone());
+                                }
                                 has_shells = !snapshot.sessions.is_empty();
                                 worker_sessions_hub.publish(snapshot);
                             }
@@ -321,7 +329,14 @@ impl Drop for ProcessService {
 }
 
 fn relevant(path: &Path, home: &Path) -> u8 {
-    if path == home.join("state.json") {
+    if path == home.join("fake-sessions.json")
+        || path == home.join("settings.json")
+        || (path.starts_with(home.join("project-tabs"))
+            && path.extension().is_some_and(|ext| ext == "json"))
+    {
+        riwork_nsh_workspace::session_io::changed();
+        0
+    } else if path == home.join("state.json") {
         STORE
     } else if path == home.join("sessions.json")
         || path == home.join("orchestrator-wakes.json")

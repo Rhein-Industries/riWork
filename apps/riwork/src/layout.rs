@@ -4,6 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 pub use riwork_core::layouts::Extent;
+use riwork_core::layouts::workspace;
 use riwork_core::layouts::{
     Axis, DIVIDER_THICKNESS, Layout, MIN_PANE_EXTENT, PaneId, ProjectLayout, SavedPane, SavedTab,
 };
@@ -106,7 +107,20 @@ pub struct LayoutModel {
     pane_id_remap: BTreeMap<PaneId, PaneId>,
     allocated_pane_ids: BTreeSet<PaneId>,
     unknown_panes: BTreeSet<PaneId>,
+    /// Original stored opaque-tab pane -> current in-memory pane. Unlike known
+    /// tabs, their payload stays private to LayoutStore throughout a move.
+    opaque_pane_remap: BTreeMap<PaneId, PaneId>,
     diagnostic: Option<String>,
+    focus_mode: bool,
+    centered_focus: bool,
+    // The capped/margined focused surface is presentation, not a resize of
+    // the saved split area. Restore this baseline before leaving focus.
+    unfocused_extent: Option<Extent>,
+    skip_next_preserve: bool,
+    notice: Option<String>,
+    /// Persisted key -> component identity. A pending chat keeps its first id.
+    panel_ids: BTreeMap<String, String>,
+    pending_chats: BTreeSet<String>,
 }
 
 impl LayoutModel {
@@ -133,7 +147,15 @@ impl LayoutModel {
             pane_id_remap: remap,
             allocated_pane_ids,
             unknown_panes: BTreeSet::new(),
+            opaque_pane_remap: BTreeMap::new(),
             diagnostic: None,
+            focus_mode: false,
+            centered_focus: false,
+            unfocused_extent: None,
+            skip_next_preserve: false,
+            notice: None,
+            panel_ids: BTreeMap::new(),
+            pending_chats: BTreeSet::new(),
         })
     }
 
@@ -146,24 +168,492 @@ impl LayoutModel {
     }
 
     /// Reverse session-only headroom aliases for already JS-safe disk IDs.
-    /// Genuinely unsafe IDs persist their safe remap, except that the public core
-    /// store retains opaque tabs by original disk ID: keep that identity until
-    /// core exposes an opaque-tab remap API. See the documented P1c limitation.
+    /// Genuinely unsafe IDs persist their safe remap. LayoutStore receives the
+    /// same mapping for its opaque tabs through `storage_id_remap`.
     pub fn storage_project(&self) -> ProjectLayout {
         let mut project = self.project.clone();
         let reverse = self
             .pane_id_remap
             .iter()
-            .filter(|(old, new)| **old <= MAX_SAFE_PANE_ID || self.unknown_panes.contains(new))
+            .filter(|(old, _)| **old <= MAX_SAFE_PANE_ID)
             .map(|(&old, &new)| (new, old))
             .collect();
         remap_project(&mut project, &reverse);
+        for pane in project.panes.values_mut() {
+            pane.tabs
+                .retain(|tab| !self.pending_chats.contains(&tab.key()));
+            pane.shell_ids.clear();
+            pane.active_shell_id = None;
+        }
+        // Pending chats have no durable session and cannot become saved tabs.
         project
+            .normalize()
+            .expect("removing pending chats preserves valid geometry");
+        project
+    }
+
+    pub fn storage_id_remap(&self) -> BTreeMap<PaneId, PaneId> {
+        let mut mapping: BTreeMap<_, _> = self
+            .pane_id_remap
+            .iter()
+            .filter(|(old, _)| **old > MAX_SAFE_PANE_ID)
+            .map(|(&old, &new)| (old, new))
+            .collect();
+        for (&original, &current) in &self.opaque_pane_remap {
+            let stored = self
+                .pane_id_remap
+                .iter()
+                .find_map(|(&old, &alias)| {
+                    (old <= MAX_SAFE_PANE_ID && alias == current).then_some(old)
+                })
+                .unwrap_or(current);
+            if original != stored {
+                mapping.insert(original, stored);
+            }
+        }
+        mapping
+    }
+
+    pub fn focus_mode(&self) -> bool {
+        self.focus_mode
+    }
+    pub fn centered_focus(&self) -> bool {
+        self.centered_focus
+    }
+    pub fn notice(&self) -> Option<&str> {
+        self.notice.as_deref()
+    }
+    pub fn panel_id(&self, tab: &SavedTab) -> String {
+        self.panel_ids
+            .get(&tab.key())
+            .cloned()
+            .unwrap_or_else(|| tab.key())
+    }
+    pub fn panel(&self, id: &str) -> Option<&SavedTab> {
+        self.project
+            .panes
+            .values()
+            .flat_map(|pane| &pane.tabs)
+            .find(|tab| self.panel_id(tab) == id || tab.key() == id)
+    }
+    fn tab_key(&self, id: &str) -> String {
+        self.panel_ids
+            .iter()
+            .find(|(_, alias)| alias.as_str() == id)
+            .map(|(key, _)| key.clone())
+            .unwrap_or_else(|| id.to_owned())
+    }
+
+    /// Project switch retains component ids for carried tabs while replacing the
+    /// core layout atomically. No projection is published on invalid input.
+    pub fn replace_project(&mut self, project: ProjectLayout) -> Result<DockAreaLayout, String> {
+        let replacement = Self::new(project)?;
+        self.project = replacement.project;
+        self.pane_id_remap = replacement.pane_id_remap;
+        self.allocated_pane_ids
+            .extend(replacement.allocated_pane_ids);
+        self.unknown_panes.clear();
+        self.opaque_pane_remap.clear();
+        self.last = None;
+        self.restore_focus(false, false);
+        Ok(self.dock(self.extent.unwrap_or(DEFAULT_EXTENT)))
+    }
+
+    /// Reconcile data for the current project, whose pane ids are already the
+    /// model's projected ids. Preserve focus, opaque-tab mappings and aliases.
+    pub fn update_same_project(
+        &mut self,
+        mut project: ProjectLayout,
+    ) -> Result<DockAreaLayout, String> {
+        project.normalize()?;
+        if project
+            .layout
+            .pane_ids()
+            .iter()
+            .any(|id| *id > MAX_INITIAL_DOCK_PANE_ID)
+        {
+            return Err("invalid: same-project update requires projected pane ids".into());
+        }
+        self.allocated_pane_ids.extend(project.layout.pane_ids());
+        self.project = project;
+        Ok(self.dock(self.extent.unwrap_or(DEFAULT_EXTENT)))
+    }
+
+    pub fn toggle_focus(&mut self, centered: bool) -> Result<DockAreaLayout, String> {
+        self.restore_focus(!self.focus_mode, centered);
+        Ok(self.dock(self.extent.unwrap_or(DEFAULT_EXTENT)))
+    }
+
+    pub fn restore_focus(&mut self, focused: bool, centered: bool) {
+        if focused && !self.focus_mode {
+            self.unfocused_extent = self.unfocused_extent.or(self.extent);
+        } else if !focused && self.focus_mode {
+            self.extent = self.unfocused_extent;
+            // A window restored directly into focus may never have measured
+            // its normal split area. Its first normal measurement establishes
+            // a baseline rather than resizing from the focused presentation.
+            self.skip_next_preserve = self.extent.is_none();
+        }
+        self.focus_mode = focused;
+        self.centered_focus = focused && centered;
+    }
+
+    pub fn split_shell(&mut self, tab: SavedTab, axis: Axis) -> Result<DockAreaLayout, String> {
+        if !matches!(&tab, SavedTab::Shell { shell_id } if !shell_id.is_empty()) {
+            return Err("invalid: split requires a created shell".into());
+        }
+        if self.panel(&tab.key()).is_some() {
+            return Err("invalid: split shell is already open".into());
+        }
+        let id = (1..=MAX_INITIAL_DOCK_PANE_ID)
+            .find(|id| !self.allocated_pane_ids.contains(id))
+            .ok_or("invalid: no unused pane id")?;
+        let mut candidate = self.project.clone();
+        if !candidate.layout.split(candidate.active_pane, axis, id) {
+            return Err("not_found: active pane".into());
+        }
+        candidate.panes.insert(
+            id,
+            SavedPane {
+                active_tab_key: Some(tab.key()),
+                tabs: vec![tab],
+                ..SavedPane::default()
+            },
+        );
+        candidate.active_pane = id;
+        candidate.normalize()?;
+        self.project = candidate;
+        self.allocated_pane_ids.insert(id);
+        self.restore_focus(false, false);
+        Ok(self.dock(self.extent.unwrap_or(DEFAULT_EXTENT)))
+    }
+
+    pub fn open_tab(&mut self, tab: SavedTab) -> Result<DockAreaLayout, String> {
+        let key = tab.key();
+        if let Some(source) = self
+            .project
+            .panes
+            .iter()
+            .find_map(|(&id, pane)| pane.tabs.iter().any(|tab| tab.key() == key).then_some(id))
+        {
+            if let Some(target) = (!matches!(tab, SavedTab::Panel { .. }))
+                .then(|| workspace::bring_up_target(&self.project, self.focus_mode, source, &key))
+                .flatten()
+            {
+                let from = self.project.panes.get_mut(&source).unwrap();
+                let index = from.tabs.iter().position(|tab| tab.key() == key).unwrap();
+                let tab = from.tabs.remove(index);
+                from.shell_ids.clear();
+                from.active_shell_id = None;
+                self.project.panes.get_mut(&target).unwrap().tabs.push(tab);
+                remove_emptied(&mut self.project, source, &self.unknown_panes);
+            }
+            return self.select_panel(&key);
+        }
+        let target = workspace::new_tab_target(
+            self.project.main_pane,
+            &self.project.panes,
+            self.focus_mode,
+            self.project.active_pane,
+        );
+        let mut candidate = self.project.clone();
+        let pane = candidate
+            .panes
+            .get_mut(&target)
+            .ok_or("not_found: target pane")?;
+        pane.tabs.push(tab);
+        pane.active_tab_key = Some(key);
+        candidate.active_pane = target;
+        candidate.normalize()?;
+        self.project = candidate;
+        Ok(self.dock(self.extent.unwrap_or(DEFAULT_EXTENT)))
+    }
+
+    pub fn open_pending_chat(&mut self, id: &str) -> Result<DockAreaLayout, String> {
+        let uuid = id.strip_prefix("chat-pending:").unwrap_or(id);
+        if uuid.is_empty() {
+            return Err("invalid: pending chat id is empty".into());
+        }
+        let tab = SavedTab::Chat {
+            chat_id: format!("pending:{uuid}"),
+        };
+        let key = tab.key();
+        self.pending_chats.insert(key.clone());
+        self.panel_ids.insert(key, format!("chat-pending:{uuid}"));
+        self.open_tab(tab)
+    }
+
+    pub fn resolve_pending_chat(
+        &mut self,
+        panel_id: &str,
+        chat_id: &str,
+    ) -> Result<DockAreaLayout, String> {
+        if chat_id.is_empty() {
+            return Err("invalid: chat id is empty".into());
+        }
+        let key = self.tab_key(panel_id);
+        if !self.pending_chats.contains(&key) {
+            return Err("not_found: pending chat".into());
+        }
+        let resolved = SavedTab::Chat {
+            chat_id: chat_id.to_owned(),
+        };
+        let resolved_key = resolved.key();
+        if self.panel(&resolved_key).is_some() {
+            return Err("invalid: chat is already open".into());
+        }
+        for pane in self.project.panes.values_mut() {
+            if let Some(tab) = pane.tabs.iter_mut().find(|tab| tab.key() == key) {
+                *tab = resolved.clone();
+                if pane.active_tab_key.as_deref() == Some(&key) {
+                    pane.active_tab_key = Some(resolved_key.clone());
+                }
+            }
+        }
+        let stable = self
+            .panel_ids
+            .remove(&key)
+            .unwrap_or_else(|| panel_id.to_owned());
+        self.pending_chats.remove(&key);
+        self.panel_ids.insert(resolved_key, stable);
+        self.project.normalize()?;
+        Ok(self.dock(self.extent.unwrap_or(DEFAULT_EXTENT)))
+    }
+
+    pub fn close_panel(&mut self, id: &str, internal: bool) -> Result<DockAreaLayout, String> {
+        let key = self.tab_key(id);
+        let source = self
+            .project
+            .panes
+            .iter()
+            .find_map(|(&id, pane)| pane.tabs.iter().any(|tab| tab.key() == key).then_some(id))
+            .ok_or("not_found: panel")?;
+        if !internal && self.project.effective_locked_panes().contains(&source) {
+            return Err("Unlock the pane to close its tabs".into());
+        }
+        let pane = self.project.panes.get_mut(&source).unwrap();
+        let index = pane.tabs.iter().position(|tab| tab.key() == key).unwrap();
+        let tab = pane.tabs.remove(index);
+        if pane.active_tab_key.as_deref() == Some(&key) {
+            pane.active_tab_key = pane
+                .tabs
+                .get(index.min(pane.tabs.len().saturating_sub(1)))
+                .map(SavedTab::key);
+        }
+        pane.shell_ids.clear();
+        pane.active_shell_id = None;
+        if !internal {
+            match tab {
+                SavedTab::Shell { shell_id } => {
+                    self.project.detached_shell_ids.insert(shell_id);
+                }
+                SavedTab::Chat { chat_id } if !self.pending_chats.contains(&key) => {
+                    self.project.detached_chat_ids.insert(chat_id);
+                }
+                _ => {}
+            }
+        }
+        let inheritor = workspace::pane_inheriting_space(&self.project.layout, source);
+        remove_emptied(&mut self.project, source, &self.unknown_panes);
+        if self.project.active_pane == source && !self.project.panes.contains_key(&source) {
+            if let Some(id) = inheritor {
+                self.project.active_pane = id;
+            }
+        }
+        self.pending_chats.remove(&key);
+        self.panel_ids.remove(&key);
+        self.project.normalize()?;
+        Ok(self.dock(self.extent.unwrap_or(DEFAULT_EXTENT)))
+    }
+
+    pub fn close_pane(&mut self, id: PaneId) -> Result<DockAreaLayout, String> {
+        if !self.project.panes.contains_key(&id) {
+            return Err("not_found: pane".into());
+        }
+        if self.project.effective_locked_panes().contains(&id) {
+            return Err("Unlock the pane to close it".into());
+        }
+        let Some(rest) = self.project.layout.clone().without(id) else {
+            let pane = self.project.panes.get_mut(&id).unwrap();
+            for tab in std::mem::take(&mut pane.tabs) {
+                match tab {
+                    SavedTab::Shell { shell_id } => {
+                        self.project.detached_shell_ids.insert(shell_id);
+                    }
+                    SavedTab::Chat { chat_id } => {
+                        self.project.detached_chat_ids.insert(chat_id);
+                    }
+                    _ => {}
+                }
+            }
+            pane.shell_ids.clear();
+            pane.active_shell_id = None;
+            pane.active_tab_key = None;
+            self.project.normalize()?;
+            return Ok(self.dock(self.extent.unwrap_or(DEFAULT_EXTENT)));
+        };
+        let target = workspace::aggregation_target(self.project.main_pane, id, false)
+            .filter(|main| self.project.panes.contains_key(main));
+        let inherit = target.or_else(|| workspace::pane_inheriting_space(&self.project.layout, id));
+        let closed = workspace::close_pane_tabs(&mut self.project.panes, id, target);
+        for tab in closed {
+            match tab {
+                SavedTab::Shell { shell_id } => {
+                    self.project.detached_shell_ids.insert(shell_id);
+                }
+                SavedTab::Chat { chat_id } => {
+                    self.project.detached_chat_ids.insert(chat_id);
+                }
+                _ => {}
+            }
+        }
+        self.project.layout = rest;
+        if let Some(inherit) = inherit {
+            self.project.active_pane = inherit;
+        }
+        self.project.normalize()?;
+        Ok(self.dock(self.extent.unwrap_or(DEFAULT_EXTENT)))
+    }
+
+    pub fn default_layout(&mut self) -> Result<DockAreaLayout, String> {
+        let mut result = workspace::default_layout(&mut self.project, &self.allocated_pane_ids)?;
+        let main = self
+            .project
+            .main_pane
+            .expect("default layout has a main pane");
+        let opaque_moved = self.unknown_panes.iter().any(|id| *id != main);
+        if opaque_moved {
+            // A previous save may already have replaced an unsafe disk id with
+            // its safe alias. Keep both generations in the cumulative map.
+            let previous_stored: Vec<_> = self
+                .opaque_pane_remap
+                .values()
+                .map(|&current| {
+                    self.pane_id_remap
+                        .iter()
+                        .find_map(|(&old, &alias)| {
+                            (old <= MAX_SAFE_PANE_ID && alias == current).then_some(old)
+                        })
+                        .unwrap_or(current)
+                })
+                .collect();
+            for target in self.opaque_pane_remap.values_mut() {
+                *target = main;
+            }
+            for source in previous_stored {
+                self.opaque_pane_remap.insert(source, main);
+            }
+            self.unknown_panes = BTreeSet::from([main]);
+            if result.is_none() {
+                result = Some(workspace::DefaultLayout {
+                    navigation: self.project.layout.first_pane(),
+                    main,
+                    active_pane: self.project.active_pane,
+                    moved: 0,
+                    opened: Vec::new(),
+                });
+            }
+        }
+        self.notice = Some(
+            result
+                .as_ref()
+                .map(workspace::default_layout_notice)
+                .unwrap_or_else(|| "The default layout is already in place".into()),
+        );
+        self.allocated_pane_ids
+            .extend(self.project.layout.pane_ids());
+        self.restore_focus(false, false);
+        Ok(self.dock(self.extent.unwrap_or(DEFAULT_EXTENT)))
+    }
+
+    pub fn reconcile_shells(
+        &mut self,
+        live: &[String],
+        adoptable: &[String],
+        hidden: &BTreeSet<String>,
+    ) -> Result<DockAreaLayout, String> {
+        let live: BTreeSet<_> = live.iter().collect();
+        let hidden: BTreeSet<_> = hidden
+            .iter()
+            .map(|id| id.strip_prefix("shell:").unwrap_or(id).to_owned())
+            .collect();
+        // Keep scaffolding during restore so a later successful delivery can
+        // populate the saved position, including selected empty main panes.
+        for pane in self.project.panes.values_mut() {
+            pane.tabs.retain(|tab| match tab {
+                SavedTab::Shell { shell_id } => {
+                    live.contains(shell_id)
+                        && !hidden.contains(shell_id)
+                        && !self.project.detached_shell_ids.contains(shell_id)
+                }
+                _ => true,
+            });
+            pane.shell_ids.clear();
+            pane.active_shell_id = None;
+        }
+        let locks = self.project.effective_locked_panes();
+        let target = self
+            .project
+            .main_pane
+            .filter(|id| !locks.contains(id))
+            .or_else(|| {
+                (!locks.contains(&self.project.active_pane)).then_some(self.project.active_pane)
+            })
+            .or_else(|| {
+                self.project
+                    .layout
+                    .pane_ids()
+                    .into_iter()
+                    .find(|id| !locks.contains(id))
+            });
+        if let Some(target) = target {
+            let existing: BTreeSet<_> = self
+                .project
+                .panes
+                .values()
+                .flat_map(|pane| &pane.tabs)
+                .filter_map(|tab| {
+                    if let SavedTab::Shell { shell_id } = tab {
+                        Some(shell_id.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            let mut added = BTreeSet::new();
+            for id in adoptable
+                .iter()
+                .filter(|id| {
+                    live.contains(id)
+                        && !existing.contains(*id)
+                        && !hidden.contains(*id)
+                        && !self.project.detached_shell_ids.contains(*id)
+                })
+                .take(16)
+            {
+                if added.insert(id.clone()) {
+                    self.project
+                        .panes
+                        .get_mut(&target)
+                        .unwrap()
+                        .tabs
+                        .push(SavedTab::Shell {
+                            shell_id: id.clone(),
+                        });
+                }
+            }
+        }
+        self.project.normalize()?;
+        Ok(self.dock(self.extent.unwrap_or(DEFAULT_EXTENT)))
     }
 
     /// Supplied by the persistence adapter's read-only inspection; contents stay
     /// opaque and only LayoutStore writes them. IDs here are the on-disk IDs.
     pub fn mark_unknown_panes(&mut self, panes: &BTreeSet<PaneId>) {
+        self.opaque_pane_remap = panes
+            .iter()
+            .map(|id| (*id, self.pane_id_remap.get(id).copied().unwrap_or(*id)))
+            .collect();
         self.unknown_panes = panes
             .iter()
             .map(|id| self.pane_id_remap.get(id).copied().unwrap_or(*id))
@@ -189,13 +679,20 @@ impl LayoutModel {
             &self.unknown_panes,
         ));
         self.last = Some(dock.clone());
-        dock
+        let mut visible = dock;
+        remap_panel_keys(&mut visible.center, &self.panel_ids);
+        visible
     }
 
     pub fn set_extent(&mut self, extent: Extent) -> Result<DockAreaLayout, String> {
         let extent =
             valid_extent(extent).ok_or("invalid: pane extent must be finite and positive")?;
-        if let Some(old) = self.extent {
+        let previous = if self.focus_mode {
+            None
+        } else {
+            self.unfocused_extent.take().or(self.extent)
+        };
+        if let Some(old) = previous.filter(|_| !self.skip_next_preserve) {
             let locks = self.project.effective_locked_panes();
             self.project.layout.preserve_locked(
                 old,
@@ -204,10 +701,14 @@ impl LayoutModel {
                 MIN_PANE_EXTENT,
             );
         }
+        if !self.focus_mode {
+            self.skip_next_preserve = false;
+        }
         Ok(self.dock(extent))
     }
 
     pub fn select_panel(&mut self, key: &str) -> Result<DockAreaLayout, String> {
+        let key = self.tab_key(key);
         let pane = self
             .project
             .panes
@@ -251,41 +752,35 @@ impl LayoutModel {
     /// Gather in the core's tree order. No tab is closed and locked sources,
     /// main selection, and scaffolds that protect locked geometry survive.
     pub fn gather(&mut self) -> Result<DockAreaLayout, String> {
-        let main = self
-            .project
-            .main_pane
-            .ok_or("refused: choose a main pane before gathering tabs")?;
-        let locks = self.project.effective_locked_panes();
-        let sources = self
-            .project
-            .layout
-            .gather_sources(main, &|id| locks.contains(&id));
-        let selected = self.project.panes[&main].active_tab_key.clone();
-        for source in sources {
-            let pane = self.project.panes.get_mut(&source).unwrap();
-            let tabs = std::mem::take(&mut pane.tabs);
-            pane.shell_ids.clear();
-            pane.active_shell_id = None;
-            pane.active_tab_key = None;
-            self.project.panes.get_mut(&main).unwrap().tabs.extend(tabs);
-            remove_emptied(&mut self.project, source, &self.unknown_panes);
-        }
-        self.project.panes.get_mut(&main).unwrap().active_tab_key = selected;
-        if self.project.effective_locked_panes() != locks {
-            self.project.locked_panes = Some(locks);
-        }
-        self.project.normalize()?;
+        self.restore_focus(false, false);
+        let result = workspace::gather(&mut self.project, &self.unknown_panes)?;
+        self.notice = Some(workspace::gather_notice(&result));
         Ok(self.dock(self.extent.unwrap_or(DEFAULT_EXTENT)))
     }
 
     pub fn apply_dock(
         &mut self,
-        next: DockAreaLayout,
+        mut next: DockAreaLayout,
         extent: Extent,
     ) -> Result<DockAreaLayout, String> {
         let extent =
             valid_extent(extent).ok_or("invalid: pane extent must be finite and positive")?;
-        let previous = self.last.clone().unwrap_or_else(|| self.dock(extent));
+        if self.last.is_none() {
+            self.dock(extent);
+        }
+        let previous = self.last.clone().unwrap();
+        let reverse = self
+            .panel_ids
+            .iter()
+            .map(|(key, id)| (id.clone(), key.clone()))
+            .collect();
+        remap_panel_keys(&mut next.center, &reverse);
+        for region in [&mut next.left, &mut next.right, &mut next.bottom]
+            .into_iter()
+            .flatten()
+        {
+            remap_panel_keys(&mut region.layout, &reverse);
+        }
         self.diagnostic = None;
         let previous_node = canonical(&previous.center)?;
         let has_docks = next.left.is_some() || next.right.is_some() || next.bottom.is_some();
@@ -463,6 +958,23 @@ const DEFAULT_EXTENT: Extent = Extent {
     width: 1280.0,
     height: 800.0,
 };
+
+fn remap_panel_keys(node: &mut DockNode, mapping: &BTreeMap<String, String>) {
+    match node {
+        DockNode::Tabs { panels, .. } => {
+            for panel in panels {
+                if let Some(id) = mapping.get(panel) {
+                    *panel = id.clone();
+                }
+            }
+        }
+        DockNode::Split { children, .. } => {
+            for child in children {
+                remap_panel_keys(child, mapping);
+            }
+        }
+    }
+}
 
 fn valid_extent(extent: Extent) -> Option<Extent> {
     (extent.width.is_finite()
@@ -1735,7 +2247,7 @@ mod tests {
     }
 
     #[test]
-    fn unsafe_ids_remap_all_references_and_storage_keeps_opaque_tab_identity() {
+    fn unsafe_ids_remap_all_references_and_supply_opaque_tab_persistence_mapping() {
         let unsafe_id = MAX_SAFE_PANE_ID + 10;
         let mut project = fixture(
             split(
@@ -1761,7 +2273,8 @@ mod tests {
                 .panels
                 .contains(&"empty:2".into())
         );
-        assert_eq!(model.storage_project(), project);
+        assert_eq!(model.storage_project(), *model.project());
+        assert_eq!(model.storage_id_remap(), BTreeMap::from([(unsafe_id, 2)]));
     }
 
     #[test]

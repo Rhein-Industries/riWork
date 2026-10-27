@@ -19,7 +19,7 @@ function App() {
   cleanup(() => { alive = false; session()?.dispose(); });
 
   if (params.kind === "project" && params.projectId && params.windowId) {
-    void Layouts.openSession({ windowId: params.windowId, projectId: params.projectId, restore: params.restore?.layout })
+    void Layouts.openSession({ windowId: params.windowId, projectId: params.projectId, restore: params.restore?.layout, focusMode: params.restore?.focusMode ?? false, focusCentered: params.restore?.focusCentered ?? false })
       .then((loaded) => { if (alive) session.set(loaded); else loaded.dispose(); })
       .catch((error: unknown) => notice.set(String(error)));
   } else {

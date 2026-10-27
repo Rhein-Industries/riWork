@@ -325,19 +325,7 @@ impl Host {
                 .unwrap()
                 .clone(),
         );
-        for name in [
-            "window.open",
-            "window.route",
-            "window.placement",
-            "window.list",
-            "window.focus",
-            "window.close",
-            "window.setDockInfo",
-            "app.restart",
-            "app.quit",
-            "app.restoreReady",
-            "app.setAppearance",
-        ] {
+        for &name in host_names::OPERATIONS {
             let id = id.clone();
             channel.handle(name, move |call| send(Main::Call(id.clone(), name, call)));
         }
@@ -440,6 +428,7 @@ impl Host {
                 runtime.mode = mode(&window.window);
                 if let Some(layout) = host_layouts::lookup(id) {
                     runtime.layout = Some(layout.project_layout());
+                    (runtime.focus_mode, runtime.focus_centered) = layout.focus();
                 }
                 (id.clone(), runtime)
             })
@@ -1040,6 +1029,7 @@ fn current_layouts(windows: &[(String, RuntimeWindow)]) -> Vec<RuntimeWindow> {
             let mut window = window.clone();
             if let Some(layout) = host_layouts::lookup(id) {
                 window.layout = Some(layout.project_layout());
+                (window.focus_mode, window.focus_centered) = layout.focus();
             }
             window
         })
@@ -1077,6 +1067,7 @@ impl ClosingWindows {
         for (id, window) in &mut windows {
             if let Some((_, layout)) = self.layouts.iter().find(|(candidate, _)| candidate == id) {
                 window.layout = Some(layout.project_layout());
+                (window.focus_mode, window.focus_centered) = layout.focus();
             }
             if let Some(global) = &window.global {
                 if let Err(error) = GlobalWindowStore::at(home).save(global) {
@@ -1554,5 +1545,31 @@ mod tests {
         edited.selected_task_id = Some("newest".into());
         layout.publish(edited.clone());
         assert_eq!(current_layouts(&windows)[0].layout.as_ref(), Some(&edited));
+    }
+}
+
+/// The actual registration list deliberately excludes cross-window tab transfer.
+mod host_names {
+    pub(super) const OPERATIONS: &[&str] = &[
+        "window.open",
+        "window.route",
+        "window.placement",
+        "window.list",
+        "window.focus",
+        "window.close",
+        "window.setDockInfo",
+        "app.restart",
+        "app.quit",
+        "app.restoreReady",
+        "app.setAppearance",
+    ];
+    #[cfg(test)]
+    mod tests {
+        #[test]
+        fn tab_transfer_is_refused() {
+            for reserved in ["tab.transfer", "tab.receive"] {
+                assert!(!super::OPERATIONS.contains(&reserved));
+            }
+        }
     }
 }

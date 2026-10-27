@@ -4,10 +4,16 @@ version.workspace = true
 edition.workspace = true
 publish = false
 
+[features]
+test-support = []
+
 [dependencies]
 nsh-core = "=0.3.0"
 nsh-base = "=0.3.0"
 riwork-core = { path = "../../crates/riwork-core" }
+riwork-engine = { path = "../../crates/riwork-engine" }
+uuid = { version = "1", features = ["v4"] }
+futures-util = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 fs2 = "0.4"
@@ -16,3 +22,5 @@ tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
 
 [dev-dependencies]
 tempfile = "3"
+nsh-engine = { version = "=0.3.0", default-features = false }
+nsh-testing = { version = "=0.3.0", default-features = false }

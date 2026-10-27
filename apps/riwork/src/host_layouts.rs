@@ -4,9 +4,9 @@
 //! Publishing an edit never takes the registry mutex or waits on a file lock.
 use crate::persistence::LayoutPersistence;
 use arc_swap::ArcSwap;
-use riwork_core::layouts::ProjectLayout;
+use riwork_core::layouts::{PaneId, ProjectLayout};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     sync::{Arc, Mutex, OnceLock, Weak},
 };
 
@@ -27,7 +27,8 @@ fn registry() -> &'static Mutex<Registry> {
 /// The host may retain it through AppView teardown to flush before terminating.
 pub struct HostLayout {
     current: ArcSwap<ProjectLayout>,
-    persistence: Option<Arc<LayoutPersistence>>,
+    persistence: Mutex<Option<Arc<LayoutPersistence>>>,
+    focus: std::sync::atomic::AtomicU8,
     // Serializes the short publish/enqueue operation against a host close barrier.
     // No filesystem work takes this mutex on the engine thread.
     closing: Mutex<bool>,
@@ -60,7 +61,8 @@ pub fn registration(
     }
     let handle = Arc::new(HostLayout {
         current: ArcSwap::from_pointee(snapshot),
-        persistence: Some(persistence),
+        persistence: Mutex::new(Some(persistence)),
+        focus: std::sync::atomic::AtomicU8::new(0),
         closing: Mutex::new(false),
     });
     entries
@@ -121,6 +123,18 @@ impl HostLayout {
         &self,
         operation: impl FnOnce() -> Result<(T, Option<ProjectLayout>), String>,
     ) -> Result<T, String> {
+        self.edit_with_remap(|| {
+            operation()
+                .map(|(value, project)| (value, project.map(|project| (project, BTreeMap::new()))))
+        })
+    }
+
+    /// Atomically publish a layout edit together with opaque-tab relocations.
+    pub fn edit_with_remap<T>(
+        &self,
+        operation: impl FnOnce()
+            -> Result<(T, Option<(ProjectLayout, BTreeMap<PaneId, PaneId>)>), String>,
+    ) -> Result<T, String> {
         let closing = self
             .closing
             .lock()
@@ -129,12 +143,14 @@ impl HostLayout {
             return Err("unavailable: window is closing".into());
         }
         let (result, project) = operation()?;
-        if let Some(project) = project {
+        if let Some((project, remap)) = project {
             self.publish(project.clone());
             self.persistence
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
                 .as_ref()
                 .ok_or_else(|| "unavailable: host layout is closed".to_owned())?
-                .schedule(project)?;
+                .schedule_with_remap(project, remap)?;
         }
         Ok(result)
     }
@@ -154,6 +170,37 @@ impl HostLayout {
             .closing
             .lock()
             .unwrap_or_else(|error| error.into_inner()) = false;
+    }
+
+    pub fn set_focus(&self, focused: bool, centered: bool) {
+        self.focus.store(
+            u8::from(focused) | (u8::from(centered) << 1),
+            std::sync::atomic::Ordering::Release,
+        );
+    }
+    pub fn focus(&self) -> (bool, bool) {
+        let flags = self.focus.load(std::sync::atomic::Ordering::Acquire);
+        (flags & 1 != 0, flags & 2 != 0)
+    }
+    /// Called off-engine after the outgoing flush. Swapping a writer cannot
+    /// race an accepted edit or a close barrier.
+    pub fn retarget(
+        &self,
+        persistence: Arc<LayoutPersistence>,
+        project: ProjectLayout,
+    ) -> Result<(), String> {
+        let closing = self.closing.lock().unwrap_or_else(|e| e.into_inner());
+        if *closing {
+            return Err("unavailable: window is closing".into());
+        }
+        let old = self
+            .persistence
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .replace(persistence);
+        self.publish(project);
+        drop(old);
+        Ok(())
     }
 
     /// Frozen P1c → P1b Rust handoff name (acceptance §4.1).
@@ -176,6 +223,8 @@ impl HostLayout {
     /// Dropping the handle is deliberately not a synchronous persistence barrier.
     pub fn flush(&self) -> Result<(), String> {
         self.persistence
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
             .as_ref()
             .ok_or_else(|| "unavailable: host layout is closed".to_owned())?
             .flush()
@@ -184,7 +233,12 @@ impl HostLayout {
 
 impl Drop for HostLayout {
     fn drop(&mut self) {
-        let Some(persistence) = self.persistence.take() else {
+        let Some(persistence) = self
+            .persistence
+            .get_mut()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+        else {
             return;
         };
         let deferred = DeferredPersistence(Some(persistence));
