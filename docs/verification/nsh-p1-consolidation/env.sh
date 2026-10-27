@@ -1,0 +1,19 @@
+export C12F=/private/tmp/claude-501/-Users-dominik-orca-projects-riWork-nsh-p1-consolidate/9a3154ae-fe47-4e8d-9a82-0eb37e7e6df5/scratchpad/c12f
+export RIWORK_HOME=/tmp/rw-c12f.rkR6Vz/state
+export RIWORK_RUNTIME_DIR=/tmp/rw-c12f.rkR6Vz/runtime
+export TMUX_TMPDIR=/tmp/rw-c12f.rkR6Vz/tmux
+export TMPDIR=/tmp/rw-c12f.rkR6Vz/tmp
+export NSH_CACHE=/tmp/rw-c12f.rkR6Vz/nsh-cache
+export CARGO_TARGET_DIR=/Users/dominik/orca/projects/riWork-nsh-p1-consolidate/target
+export CARGO_NET_OFFLINE=true
+export CARGO_BUILD_JOBS=6
+export RUSTUP_TOOLCHAIN=1.99.1
+export RIWORK_SKIP_SPEECH_HELPER=1
+export NSH_CLI=/tmp/riwork-nsh-toolchain-60f8aec4.18l3zV/nsh-cli-0.3.0/bin/nsh
+export NSH_TSC=/Users/dominik/Library/Caches/nsh/typescript-7.0.2-darwin-arm64/package/lib/tsc
+unset RIWORK_CHAT_ID RIWORK_SHELL_ID RIWORK_RESTORE_TICKET RIWORK_NSH_BUNDLE RIWORK_NSH_SOURCE RIWORK_NSH_FAKE_SESSIONS
+export CARGO_HOME=/Users/dominik/.cargo
+export RUSTUP_HOME=/Users/dominik/.rustup
+export HOME=/Users/dominik/orca/projects/riWork-nsh-p1-consolidate/target/nsh-integration-home-c12f
+export XDG_CONFIG_HOME=/Users/dominik/orca/projects/riWork-nsh-p1-consolidate/target/nsh-integration-home-c12f/.config
+export RW_SHORT=/tmp/rw-c12f.rkR6Vz

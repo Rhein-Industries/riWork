@@ -1,0 +1,16 @@
+{"mode": "build", "root": "/private/tmp/rw-c12f.rkR6Vz/integ", "manifest": "/private/tmp/rw-c12f.rkR6Vz/integ/build-lm1rd6za/manifest.json"}
+{"running": "nsh-version", "argv": ["/tmp/riwork-nsh-toolchain-60f8aec4.18l3zV/nsh-cli-0.3.0/bin/nsh", "--version"]}
+{"finished": "nsh-version", "exit_code": 0}
+{"running": "rustc-version", "argv": ["rustc", "--version"]}
+{"finished": "rustc-version", "exit_code": 0}
+{"running": "cargo-version", "argv": ["cargo", "--version"]}
+{"finished": "cargo-version", "exit_code": 0}
+{"running": "cargo-build", "argv": ["cargo", "build", "-p", "riwork-desktop", "-p", "riwork-cli", "--locked", "--offline"]}
+{"finished": "cargo-build", "exit_code": 0}
+{"running": "nsh-build", "argv": ["/tmp/riwork-nsh-toolchain-60f8aec4.18l3zV/nsh-cli-0.3.0/bin/nsh", "build", "apps/riwork", "--out", "/private/tmp/rw-c12f.rkR6Vz/integ/bundle"]}
+{"finished": "nsh-build", "exit_code": 0}
+{"running": "cargo-tree-binary", "argv": ["cargo", "tree", "-p", "riwork-desktop", "--target", "aarch64-apple-darwin", "--edges", "normal,build", "--locked", "--offline"]}
+{"finished": "cargo-tree-binary", "exit_code": 0}
+{"running": "cargo-tree-full", "argv": ["cargo", "tree", "-p", "riwork-desktop", "--locked", "--offline"]}
+{"finished": "cargo-tree-full", "exit_code": 0}
+{"status": "passed", "manifest": "/private/tmp/rw-c12f.rkR6Vz/integ/build-lm1rd6za/manifest.json"}

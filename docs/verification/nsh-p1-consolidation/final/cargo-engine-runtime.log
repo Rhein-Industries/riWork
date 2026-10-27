@@ -1,0 +1,73 @@
+   Compiling riwork-core v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p1-consolidate/crates/riwork-core)
+   Compiling riwork-engine v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p1-consolidate/crates/riwork-engine)
+warning: function `without_sgr` is never used
+   --> crates/riwork-engine/src/sessions/tmux_tests.rs:712:4
+    |
+712 | fn without_sgr(text: &str) -> String {
+    |    ^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `numbers` is never used
+   --> crates/riwork-engine/src/sessions/tmux_tests.rs:739:4
+    |
+739 | fn numbers(first: u32, last: u32) -> String {
+    |    ^^^^^^^
+
+warning: function `page` is never used
+   --> crates/riwork-engine/src/sessions/tmux_tests.rs:746:4
+    |
+746 | fn page(
+    |    ^^^^
+
+warning: `riwork-engine` (lib test) generated 3 warnings
+    Finished `test` profile [unoptimized] target(s) in 17.47s
+     Running unittests src/lib.rs (target/debug/deps/riwork_engine-23581aa2d2bf7c2d)
+
+running 42 tests
+test runtime::tests::a_confirmation_in_flight_holds_the_watchdog_off_for_a_bounded_time ... ignored, slow: wall-clock watchdog deadlines
+test runtime::tests::a_replacement_can_no_longer_confirm_once_it_is_being_stopped ... ignored, slow: real process group
+test runtime::tests::a_replacement_outside_its_own_group_is_signalled_alone ... ignored, slow: real child processes
+test runtime::tests::a_replacement_that_confirmed_just_before_the_timeout_is_never_stopped ... ignored, slow: real process group
+test runtime::tests::a_replacement_that_ignores_sigterm_is_killed_with_its_children ... ignored, slow: real process group and a timed grace period
+test runtime::tests::a_reused_pid_is_never_signalled ... ignored, slow: real process group
+test runtime::tests::a_stalled_filesystem_cannot_hold_the_watchdog_up ... ignored, slow: wall-clock watchdog deadline
+test runtime::tests::a_watchdog_fires_after_its_deadline_and_leaves_the_last_breadcrumb ... ignored, slow: wall-clock watchdog deadline
+test runtime::tests::a_wedged_replacement_records_where_it_hung_unregisters_and_exits_with_its_group ... ignored, slow: re-executes the test binary as a wedged replacement
+test runtime::tests::confirming_and_firing_never_both_win ... ignored, slow: 40 timed races against the watchdog
+test runtime::tests::breadcrumbs_record_the_session_cwd_and_step_of_each_attach ... ok
+test runtime::tests::identity_needs_the_same_uid_and_kernel_start_time ... ok
+test runtime::tests::diagnostics_outlive_other_leftovers_but_not_a_week ... ok
+test runtime::tests::installed_build_pointer_is_private_and_preserves_latest_executable ... ok
+test runtime::tests::diagnostics_are_private_named_by_launch_and_only_read_for_their_replacement ... ok
+test runtime::tests::a_request_for_a_vanished_executable_is_answered_instead_of_retried ... ok
+test runtime::tests::identifiers_geometry_and_private_file_read_are_validated ... ok
+test runtime::tests::all_state_homes_share_one_registry_and_drop_unregisters_only_its_instance ... ok
+test runtime::tests::an_unreadable_response_is_replaced_by_the_failure_record ... ok
+test runtime::tests::signals_never_go_to_pid_zero_one_the_caller_or_the_callers_group ... ok
+test runtime::tests::leftover_reload_files_are_pruned_but_recent_ones_and_registrations_stay ... ok
+test runtime::tests::the_diagnostic_file_holds_the_breadcrumb_count_elapsed_time_and_build ... ok
+test runtime::tests::failed_or_hung_replacement_keeps_old_alive_and_allows_retry ... ok
+test runtime::tests::the_failure_message_names_where_the_replacement_hung ... ok
+test runtime::tests::this_process_and_its_group_are_refused ... ok
+test runtime::tests::a_replacement_cannot_confirm_a_reload_the_old_gui_already_abandoned ... ok
+test runtime::tests::watchdog_child_entry ... ok
+test runtime::tests::live_gui_pids_lists_running_guis_and_changes_nothing ... ok
+test runtime::tests::removed_installed_build_falls_back_and_missing_install_is_not_recorded ... ok
+test runtime::tests::a_confirmation_that_lands_before_the_timeout_write_is_never_overwritten ... ok
+test runtime::tests::the_global_window_restores_as_itself_and_older_snapshots_hold_project_windows ... ok
+test runtime::tests::fixture_ticket_uses_real_restore_validation_and_confirmation ... ok
+test runtime::tests::a_watchdog_that_fired_refuses_to_let_the_restore_confirm ... ok
+test runtime::tests::publishing_writes_only_changes_and_never_waits_for_the_registry_lock ... ok
+test runtime::tests::readiness_requires_correct_child_and_matching_registered_windows ... ok
+test runtime::tests::unreadable_registrations_are_counted_and_only_dead_or_ancient_ones_are_pruned ... ok
+test runtime::tests::a_watchdog_mirrors_progress_to_disk_and_cleans_up_when_confirmed ... ok
+test runtime::tests::queuing_and_wait_timeout_leave_old_gui_alive_and_do_not_launch_anything ... ok
+test runtime::tests::pid_reuse_is_stale_but_renamed_or_unlinked_executable_is_still_live ... ok
+test runtime::tests::cleanup_that_hangs_cannot_hold_the_exit_up ... ok
+test runtime::tests::spawn_replacement_starts_a_detached_child_with_the_restore_environment ... ok
+test runtime::tests::a_reload_request_can_only_launch_this_app_or_the_recorded_install ... ok
+
+test result: ok. 32 passed; 0 failed; 10 ignored; 0 measured; 1292 filtered out; finished in 0.24s
+
+exit 0

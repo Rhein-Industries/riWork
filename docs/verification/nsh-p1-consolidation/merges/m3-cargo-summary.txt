@@ -1,0 +1,21 @@
+riwork_core                              unittests src/lib.rs                            292 passed   0 failed  20 ignored
+riwork                                   unittests src/nsh_main.rs                        47 passed   0 failed   0 ignored
+appkit_shell                             tests/appkit_shell.rs                            11 passed   0 failed   0 ignored
+cli_contract                             tests/cli_contract.rs                             6 passed   0 failed   0 ignored
+startup_environment                      tests/startup_environment.rs                      1 passed   0 failed   0 ignored
+riwork_nsh_native                        unittests src/lib.rs                             14 passed   0 failed   0 ignored
+appearance                               tests/appearance.rs                               3 passed   0 failed   0 ignored
+layout_session                           tests/layout_session.rs                          18 passed   0 failed   0 ignored
+native_headless                          tests/native_headless.rs                          1 passed   0 failed   0 ignored
+panel_crud                               tests/panel_crud.rs                               4 passed   0 failed   0 ignored
+services                                 tests/services.rs                                15 passed   0 failed   0 ignored
+settings                                 tests/settings.rs                                 1 passed   0 failed   0 ignored
+settings                                 tests/settings.rs                                 7 passed   0 failed   0 ignored
+riwork_nsh_terminal                      unittests src/lib.rs                             17 passed   0 failed   0 ignored
+riwork_nsh_workspace                     unittests src/lib.rs                             43 passed   0 failed   0 ignored
+layout_backend                           tests/layout_backend.rs                           0 passed   1 failed   0 ignored
+layout_gestures                          tests/layout_gestures.rs                         13 passed   0 failed   0 ignored
+layout_roundtrip                         tests/layout_roundtrip.rs                        82 passed   0 failed   0 ignored
+pane_model                               tests/pane_model.rs                              16 passed   0 failed   0 ignored
+window_size                              tests/window_size.rs                              7 passed   0 failed   0 ignored
+TOTAL 598 passed, 1 failed, 20 ignored

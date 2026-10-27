@@ -1,0 +1,418 @@
+   Compiling riwork-desktop v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p1-consolidate/crates/riwork-desktop)
+   Compiling riwork-nsh-workspace v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p1-consolidate/apps/riwork)
+warning: function `missing_folder_request` is never used
+ --> crates/riwork-desktop/tests/../src/nsh_startup.rs:4:15
+  |
+4 | pub(crate) fn missing_folder_request(args: &[String]) -> bool {
+  |               ^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `riwork-desktop` (test "startup_environment") generated 1 warning
+    Finished `test` profile [unoptimized] target(s) in 3.29s
+     Running unittests src/nsh_main.rs (target/debug/deps/riwork-1f6868d9d9395fa3)
+
+running 47 tests
+test nsh_host::host_names::tests::tab_transfer_is_refused ... ok
+test nsh_host::placement::tests::zoomed_counts_as_maximized_and_keeps_its_normal_frame ... ok
+test nsh_host::placement::tests::fullscreen_counts_as_fullscreen ... ok
+test nsh_host::tests::a_busy_registry_lock_stays_due ... ok
+test nsh_bundle::tests::missing_real_bundle_reports_the_build_recipe_without_a_bootstrap_fallback ... ok
+test nsh_bundle::tests::an_explicit_bundle_path_is_absolute_and_never_falls_back_to_source ... ok
+test nsh_host::tests::forced_appearance_from_env ... ok
+test nsh_host::tests::fallback_directory_uses_home_when_the_cwd_is_gone ... ok
+test nsh_host::tests::runtime_frames_keep_the_existing_display_local_top_left_coordinates ... ok
+test nsh_host::placement::tests::the_cascade_counts_open_non_tooltip_windows ... ok
+test nsh_host::tests::params_follow_frozen_schema_and_omit_restore_on_new_windows ... ok
+test nsh_host::tests::url_routing_and_window_arguments_are_bounded ... ok
+test nsh_host::window_registry::tests::the_last_close_quits ... ok
+test nsh_host::window_registry::tests::tooltips_do_not_count ... ok
+test nsh_menus::tests::app_commands_work_with_no_window ... ok
+test nsh_host::window_state::tests::events_only_on_change ... ok
+test nsh_menus::tests::close_tab_and_font_keys_preserve_their_modifier_boundaries ... ok
+test nsh_menus::tests::dedicated_menu_key_routes_without_intercepting_modified_or_text_keys ... ok
+test nsh_menus::tests::app_keymap_declaration_matches_native_menu_equivalents ... ok
+test nsh_menus::tests::dock_labels_are_stable_unique_and_keep_the_last_key_window_marked ... ok
+test nsh_menus::tests::deferred_menu_commands_remain_present_disabled_and_keep_their_chords ... ok
+test nsh_menus::tests::command_ids_are_the_v1_set ... ok
+test nsh_menus::tests::frozen_menu_has_only_riwork_edit_and_view_and_no_close_window_action ... ok
+test nsh_menus::tests::routing ... ok
+test nsh_menus::tests::window_commands_go_to_the_key_window ... ok
+test nsh_runtime::tests::confirmation_gives_up_after_20_s ... ok
+test nsh_host::tests::closing_a_loading_window_rejects_late_layout_registration ... ok
+test nsh_host::tests::runtime_publication_reads_current_layout_without_an_appkit_state_event ... ok
+test nsh_runtime::tests::dropping_a_lock_releases_inherited_descriptors ... ok
+test nsh_host::tests::close_flushes_the_last_accepted_edit_before_the_window_goes ... ok
+test nsh_runtime::tests::restore_acknowledgements_are_per_window_and_idempotent ... ok
+test nsh_startup::tests::only_an_explicit_missing_folder_gets_desktop_recovery ... ok
+test nsh_host::tests::failed_flush_keeps_the_snapshot_and_cancel_restores_editing ... ok
+test nsh_runtime::tests::restore_matches_targets_even_if_window_order_changes ... ok
+test nsh_runtime::tests::abandoned_replacement_does_not_remove_running_socket ... ok
+test nsh_runtime::tests::forwards_path_and_reopen_without_creating_a_second_primary ... ok
+test nsh_runtime::tests::paused_forwarding_retains_ownership_and_resumes_after_failed_restart ... ok
+test nsh_runtime::tests::replacement_keeps_old_socket_and_prevents_handoff_race ... ok
+test nsh_runtime::tests::reclaims_stale_socket_but_never_deletes_a_regular_file ... ok
+test nsh_host::tests::quit_flushes_every_layout_session_and_the_global_state_from_rust ... ok
+test nsh_host::tests::folder_arg_reuses_existing_project ... ok
+test nsh_host::tests::a_vanished_project_root_is_an_error_for_the_caller_not_a_panic ... ok
+test nsh_runtime::tests::publishes_and_unregisters_only_in_explicit_fixture_registry ... ok
+test nsh_runtime::tests::restarting_again_reports_busy_without_replacing_the_pending_request ... ok
+test nsh_host::tests::switched_layout_identity_drives_routing_publication_and_close_restore_metadata ... ok
+test nsh_host::tests::no_active_project_registers_the_cwd_fallback ... ok
+test nsh_host::tests::text_size_commands_persist_without_any_window ... ok
+
+test result: ok. 47 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.15s
+
+     Running tests/appkit_shell.rs (target/debug/deps/appkit_shell-5433bed6506c2933)
+chrome native_window=CGRect { origin: CGPoint { x: 100.0, y: 100.0 }, size: CGSize { width: 1000.0, height: 700.0 } } button=CGRect { origin: CGPoint { x: 10.0, y: 10.0 }, size: CGSize { width: 14.0, height: 14.0 } } converted=CGRect { origin: CGPoint { x: 10.0, y: 678.0 }, size: CGSize { width: 14.0, height: 14.0 } } accessibility=CGRect { origin: CGPoint { x: 109.0, y: 777.0 }, size: CGSize { width: 16.0, height: 16.0 } }
+test appkit_shell::window_chrome ... ok
+test appkit_shell::control_tab_reaches_the_nsh_keymap_once ... ok
+test appkit_shell::titlebar_double_click_reads_the_system_preference ... ok
+test appkit_shell::tooltips_create_no_nswindow ... ok
+test appkit_shell::text_size_key_equivalents_dispatch_without_a_window ... ok
+test appkit_shell::app_menu_matches_gpui ... ok
+test appkit_shell::edit_menu_uses_standard_selectors ... ok
+test appkit_shell::view_menu_matches_gpui ... ok
+test appkit_shell::view_menu_text_size_items ... ok
+test appkit_shell::app_level_key_equivalents ... ok
+test appkit_shell::dock_menu_from_a_fake_registry ... ok
+test result: ok. 11 passed; 0 failed; 0 ignored
+     Running tests/cli_contract.rs (target/debug/deps/cli_contract-cc5af5b44d22b9aa)
+
+running 6 tests
+test direct_dispatch_reference ... ok
+test mcp_stdio_keeps_protocol_bytes_without_gui_initialization ... ok
+test settings_json_keeps_the_gpui_reference_field_order ... ok
+test project_list_keeps_text_and_json_bytes_for_a_real_isolated_project ... ok
+test help_version_and_errors_keep_the_dispatchers_bytes_and_exit_status ... ok
+test chat_host_serves_in_the_same_executable_and_exits_headlessly ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.95s
+
+     Running tests/startup_environment.rs (target/debug/deps/startup_environment-7dad1f2404680b04)
+test startup::tests::gui_start_scrubs_child_ids ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored
+     Running unittests src/lib.rs (target/debug/deps/riwork_nsh_native-4c3e5e6c325e65d3)
+
+running 16 tests
+test host_flush::tests::failed_draft_flush_is_reported_after_every_writer_was_attempted ... ok
+test backend::tests::creator_resolves_home_requires_absolute_and_rejects_git_metadata ... ok
+test backend::tests::default_directory_is_created_only_inside_injected_fixture ... ok
+test presence::tests::missing_and_reappearing_directories_change_only_after_cache_expiry ... ok
+test hub::tests::first_snapshot_deduplication_overflow_and_close ... ok
+test appearance::tests::every_preset_preserves_sixteen_colors_and_ghostty_switching ... ok
+test presence::tests::concurrent_windows_and_snapshot_materialization_share_one_probe_per_path ... ok
+test backend::tests::failed_store_initialization_can_recover_in_the_same_adapter ... ok
+test dto::tests::session_dto_preserves_saved_identity_and_live_sample_fields ... ok
+test dashboard::tests::global_window_module_uses_an_injected_backend_and_validates_before_writing ... ok
+test dto::tests::bridge_camelizes_domain_fields_without_rewriting_persistence_or_opaque_data ... ok
+test backend::tests::unreadable_membership_refuses_exit_before_initializing_tmux_or_changing_registry ... ok
+test tests::native_registry_composes_services_and_layouts_in_one_frozen_module ... ok
+test backend::tests::creator_failure_cleans_only_new_empty_directories ... ok
+test testing::fixtures::tests::basic_fixture_uses_production_readers_and_fake_clock_without_processes ... ok
+test testing::fixtures::tests::restore_fixture_is_a_private_production_ticket_for_three_windows ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.22s
+
+     Running tests/appearance.rs (target/debug/deps/appearance-e527ee703ed34e18)
+
+running 3 tests
+test override_is_an_explicit_field_and_keeps_preset_and_native_preferences ... ok
+test follow_ghostty_without_a_parser_uses_the_riwork_palette_and_keeps_the_error ... ok
+test every_preset_token_is_exact ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/layout_session.rs (target/debug/deps/layout_session-5316907196cdaefa)
+
+running 18 tests
+test fake_chats_keep_runtime_status_and_workers_keep_parent_identity ... ok
+test a_failed_create_undoes_the_split ... ok
+test restore_adopts_cli_shells_into_main ... ok
+test all_locked_adopts_nothing ... ok
+test adoption_caps_at_16_per_apply ... ok
+test focus_mode_never_changes_the_saved_layout ... ok
+test no_layout_opens_riwork_cores_default ... ok
+test new_shell_uses_the_selected_worktree_else_the_root ... ok
+test a_failed_restore_retries_on_the_next_sessions_delivery_and_keeps_positions ... ok
+test restore_skips_dead_and_detached_shells ... ok
+test a_restored_empty_main_pane_does_not_create_a_shell ... ok
+test chat_pending_is_never_saved_and_maps_to_chat_id ... ok
+test split_right_adds_the_new_pane_second_at_one_half ... ok
+test a_pane_close_completion_cannot_close_the_destination_pane ... ok
+test a_failed_default_shell_retry_is_single_flight_and_clears_its_notice ... ok
+test a_shell_completion_cannot_cross_a_project_switch ... ok
+test two_windows_detach_without_stopping_then_exit_records_close ... ok
+test a_failed_switch_releases_its_edit_guard ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.50s
+
+     Running tests/native_headless.rs (target/debug/deps/native_headless-2bc13960919f0cd4)
+
+running 1 test
+test native_pushes_one_service_to_two_engines_and_stops_on_close_owner_and_engine_drop ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.91s
+
+     Running tests/panel_crud.rs (target/debug/deps/panel_crud-54bf22c8b4166edd)
+
+running 4 tests
+test session_create_close_adapters_publish_to_all_window_subscribers ... ok
+test tabs_mutations_and_external_writer_reach_both_services_without_live_inventory ... ok
+test project_folder_and_task_lifecycle_round_trip_real_files_and_second_window_subscription ... ok
+test process_sampler_pushes_worktree_presence_without_ui_polling_or_state_write ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.21s
+
+     Running tests/services.rs (target/debug/deps/services-9ecf0581912f74bb)
+
+running 15 tests
+test sessions_create_and_close_wake_the_single_sampler ... ok
+test store_rejects_non_uuid_ids ... ok
+test tabs_update_rejects_invalid_keys ... ok
+test async_reads_hop_off_the_callers_thread_and_errors_are_coded ... ok
+test errors_use_only_the_frozen_codes ... ok
+test one_settings_watcher_pushes_terminal_theme_changes_to_two_windows ... ok
+test tabs_watcher_and_bridge_updates_share_the_topic_without_idle_sampling ... ok
+test folder_mutations_publish_once_to_every_subscriber_and_preserve_disk_format ... ok
+test watcher_wakes_sessions_and_unavailable_sessions_do_not_block_store ... ok
+test local_mutations_hop_off_thread_publish_immediately_and_do_not_hide_failed_exit ... ok
+test worktree_presence_has_a_deadline_without_restarting_empty_session_fallback ... ok
+test successful_session_mutations_survive_failed_follow_up_inventory_and_recover ... ok
+test one_sampler_serves_multiple_subscribers_and_emits_only_changes ... ok
+test an_empty_inventory_sleeps_until_a_watcher_event_and_disarms_when_empty_again ... ok
+test a_quiet_home_produces_no_deliveries_for_60_s has been running for over 60 seconds
+test a_quiet_home_produces_no_deliveries_for_60_s ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 60.19s
+
+     Running tests/settings.rs (target/debug/deps/settings-1c7954bb793d0e65)
+
+running 7 tests
+test external_settings_writer_fixture ... ok
+test casing_matches_native_and_colorful_legacy_headings ... ok
+test load_errors_keep_a_diagnostic_and_recover_from_a_subscription_invalidation ... ok
+
+running 1 test
+test external_settings_writer_fixture ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.04s
+
+test typed_patch_preserves_unknown_settings_and_validates_before_writing ... ok
+test status_edits_read_under_the_lock_and_keep_other_windows_choices ... ok
+test change_text_size_is_a_read_modify_write_under_the_lock ... ok
+test a_write_by_another_process_reaches_every_subscriber_once ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.00s
+
+     Running unittests src/lib.rs (target/debug/deps/riwork_nsh_workspace-17962be26f24f6e4)
+
+running 43 tests
+test layout::tests::default_layout_command_keeps_sessions_selection_and_is_idempotent ... ok
+test layout::tests::dropping_real_tab_into_an_empty_pane_never_persists_the_sentinel ... ok
+test layout::tests::compound_topology_change_is_not_misclassified_as_a_simple_move ... ok
+test layout::tests::compound_native_edit_uses_logged_right_nested_fallback_without_data_loss ... ok
+test host_layouts::tests::a_host_close_waits_for_an_admitted_edit_and_rejects_late_edits_without_a_lock ... ok
+test layout::tests::edge_dock_fallback_moves_back_into_center_only ... ok
+test host_layouts::tests::switched_and_closed_generations_release_their_final_writer_off_the_engine ... ok
+test layout::tests::flattened_resize_reconstructs_binary_ratios_including_inner_divider ... ok
+test layout::tests::gather_uses_core_sources_keeps_main_selection_and_locked_geometry ... ok
+test layout::tests::implicit_navigation_lock_and_explicit_unlocked_state_survive_no_op ... ok
+test layout::tests::invalid_or_destructive_reports_are_transactional ... ok
+test layout::tests::local_shell_detach_reopen_preserves_identity_and_does_not_resurrect_legacy_tab ... ok
+test layout::tests::headroom_aliases_leave_free_ids_for_new_groups_and_opaque_sentinels ... ok
+test layout::tests::max_safe_persisted_id_uses_session_alias_without_poisoning_native_allocator ... ok
+test layout::tests::native_divider_resize_replays_core_ratio_clamp ... ok
+test layout::tests::native_active_index_selects_tab_and_pane_only ... ok
+test layout::tests::explicit_reopen_remembers_surviving_unlocked_pane_and_falls_back_if_locked_or_removed ... ok
+test layout::tests::native_last_panel_move_keeps_empty_scaffold_beside_locked_pane ... ok
+test layout::tests::native_id_matching_an_aliased_disk_id_cannot_overwrite_either_pane_on_save ... ok
+test integration_tests::disposed_session_rejects_project_switch_without_panicking ... ok
+test layout::tests::native_edge_move_splits_through_core_in_all_four_directions ... ok
+test layout::tests::native_move_to_existing_group_keeps_source_selection_and_selects_target ... ok
+test layout::tests::opening_local_shell_uses_unlocked_main_and_refuses_all_locked_transactionally ... ok
+test layout::tests::native_last_panel_move_removes_ordinary_source_but_restores_main_sentinel ... ok
+test layout::tests::ordinary_unsafe_ids_persist_the_safe_remap ... ok
+test host_layouts::tests::host_lookup_tracks_the_latest_snapshot_without_retaining_the_session ... ok
+test layout::tests::panel_and_shell_intents_reuse_identity_and_select_their_own_panes ... ok
+test layout::tests::native_same_group_reorder_preserves_identity_and_changes_selection ... ok
+test layout::tests::panel_shell_selection_preserves_terminal_reopen_and_lock_policy ... ok
+test layout::tests::real_nsh_normalization_and_assigned_split_ids_do_not_rewrite_the_core_tree ... ok
+test layout::tests::resizing_uses_core_locked_minima_and_returns_to_the_original_geometry ... ok
+test layout::tests::unsafe_ids_remap_all_references_and_supply_opaque_tab_persistence_mapping ... ok
+test layout::tests::window_panel_commands_reuse_identity_and_files_find_the_navigation_pane ... ok
+test layout::tests::unknown_tabs_pin_a_sentinel_even_while_known_tabs_move_out ... ok
+test layout::tests::unchanged_projection_keeps_binary_shape_and_every_project_field_at_three_extents ... ok
+test integration_tests::frozen_delivery_keeps_the_latest_revision_until_interaction_ends ... ok
+test integration_tests::the_first_2_s_after_first_draw_are_ignored ... ok
+test integration_tests::stale_revisions_are_dropped_but_a_new_epoch_is_accepted ... ok
+test integration_tests::rejected_close_time_edits_do_not_change_the_session_before_a_cancelled_close ... ok
+test host_layouts::tests::close_during_switch_rejects_commit_and_flushes_the_old_project_only ... ok
+test integration_tests::disposal_while_project_io_is_pending_never_commits_the_prepared_writer ... ok
+test integration_tests::failed_project_preparation_preserves_the_prior_editable_session ... ok
+test integration_tests::project_switch_keeps_the_host_handle_and_flushes_both_project_writers ... ok
+
+test result: ok. 43 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+
+     Running tests/layout_backend.rs (target/debug/deps/layout_backend-7813d6c59674a062)
+
+running 1 test
+test layout_module_uses_the_injected_backend_and_sync_calls_do_not_wait_for_it ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running tests/layout_gestures.rs (target/debug/deps/layout_gestures-67fc02d9216a76ac)
+
+running 13 tests
+test five_point_dividers_and_rendered_pane_extents_match_core_at_three_extents ... ok
+test gesture_reorder_in_group ... ok
+test gesture_active_index ... ok
+test gesture_sentinel_next_to_real_panels_is_dropped ... ok
+test gesture_sizes ... ok
+test a_dragged_ratio_is_clamped_to_0_1_0_9 ... ok
+test selecting_a_clipped_native_tab_reveals_it_and_can_scroll_back ... ok
+test gesture_two_changes_fall_back_and_log ... ok
+test gesture_move_to_group ... ok
+test tab_bar_suffix_stays_visible_beside_overflowing_tabs_and_drag_still_moves ... ok
+test gesture_group_disappeared_keeps_main_and_locked_neighbours ... ok
+test gesture_move_to_edge ... ok
+test native_edge_zones_change_between_34_and_36_percent_of_the_content ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.92s
+
+     Running tests/layout_roundtrip.rs (target/debug/deps/layout_roundtrip-f6f463e6068cbbbf)
+
+running 82 tests
+test an_older_layout_s_global_tabs_are_the_global_window_s ... ok
+test default_layout_allocates_navigation_below_the_core_pane_id_ceiling ... ok
+test corrupt_layout_is_untouched_until_an_edit_then_core_sets_it_aside ... ok
+test an_older_layout_loads_without_its_global_tabs_and_saves_without_them ... ok
+test default_layout_relocates_opaque_tabs_and_keeps_their_raw_payload ... ok
+test dragging_the_last_known_tab_out_keeps_its_unknown_tab_and_empty_sentinel ... ok
+test edit_l_bigid_saves_what_riwork_core_saves ... ok
+test edit_l_empty_saves_what_riwork_core_saves ... ok
+test edit_l_main_saves_what_riwork_core_saves ... ok
+test edit_l_nav_saves_what_riwork_core_saves ... ok
+test legacy_sidebar_reconstruction_keeps_shell_positions_selection_and_hidden_choice ... ok
+test edit_l_global_tabs_saves_what_riwork_core_saves ... ok
+test edit_l_nested_saves_what_riwork_core_saves ... ok
+test edit_l_preview_remote_saves_what_riwork_core_saves ... ok
+test edit_l_ratio_saves_what_riwork_core_saves ... ok
+test edit_l_carry_saves_what_riwork_core_saves ... ok
+test edit_l_carry_dest_saves_what_riwork_core_saves ... ok
+test empty_locked_panes_unknown_tabs_and_unknown_top_level_fields_survive_an_actual_save ... ok
+test edit_l_legacy_saves_what_riwork_core_saves ... ok
+test open_session_on_d_corrupt ... ok
+test nothing_is_saved_without_an_edit ... ok
+test opaque_entries_and_unknown_fields_keep_raw_whitespace_and_escapes_after_a_gesture ... ok
+test edit_l_unknown_saves_what_riwork_core_saves ... ok
+test open_session_on_d_entry ... ok
+test open_session_on_d_newer ... ok
+test newer_schema_and_unreadable_entries_show_notice_and_are_never_overwritten ... ok
+test oracle_a_narrow_locked_pane_in_a_wide_window_may_go_below_the_drag_limit ... ok
+test oracle_app_preview_launch_settings_round_trip_and_deduplicate_by_identity ... ok
+test edit_l_unlock_saves_what_riwork_core_saves ... ok
+test legacy_saves_merge_chat_dismissals_while_shared_membership_saves_its_projection ... ok
+test oracle_a_window_too_small_for_every_minimum_stays_proportional ... ok
+test oracle_l_carry ... ok
+test oracle_l_bigid ... ok
+test oracle_l_carry_dest ... ok
+test oracle_l_empty ... ok
+test oracle_l_global_tabs ... ok
+test oracle_l_main ... ok
+test oracle_l_nested ... ok
+test oracle_l_preview_remote ... ok
+test oracle_a_locked_left_nav_keeps_its_width_and_its_height_follows_the_window ... ok
+test oracle_a_small_window_takes_from_the_locked_pane_only_as_far_as_it_must ... ok
+test oracle_l_nav ... ok
+test oracle_l_unknown ... ok
+test oracle_l_unlock ... ok
+test oracle_l_ratio ... ok
+test oracle_left_navigation_locks_by_default_but_explicit_unlock_survives_round_trip ... ok
+test oracle_l_legacy ... ok
+test oracle_a_locked_nav_beside_a_locked_footer_keeps_its_width_and_the_footer_follows ... ok
+test oracle_nested_layout_round_trip_preserves_tabs_selections_and_detachment ... ok
+test oracle_ratios_a_resize_leaves_on_narrow_locked_panes_survive_a_restart ... ok
+test oracle_surplus_unlocked_slots_remain_empty_and_all_locked_keeps_sessions_recoverable ... ok
+test oracle_remote_shell_tabs_round_trip_and_are_not_this_macs_shells ... ok
+test oracle_split_ratios_round_trip_and_survive_insertions_and_collapses ... ok
+test oracle_tabs_of_an_unknown_kind_are_skipped_and_the_rest_of_the_layout_still_loads ... ok
+test oracle_the_main_pane_is_kept_per_project_and_comes_back_with_its_layout ... ok
+test oracle_newer_schema_is_neither_loaded_nor_overwritten ... ok
+test reopen_l_carry_dest_renders_golden_and_writes_nothing ... ok
+test reopen_l_bigid_renders_golden_and_writes_nothing ... ok
+test reopen_l_global_tabs_renders_golden_and_writes_nothing ... ok
+test reopen_l_carry_renders_golden_and_writes_nothing ... ok
+test reopen_l_nav_renders_golden_and_writes_nothing ... ok
+test reopen_l_main_renders_golden_and_writes_nothing ... ok
+test reopen_l_empty_renders_golden_and_writes_nothing ... ok
+test reopen_l_legacy_renders_golden_and_writes_nothing ... ok
+test reopen_l_nested_renders_golden_and_writes_nothing ... ok
+test the_default_layout_closes_nothing_and_preserves_selection_and_navigation_width ... ok
+test reopen_l_preview_remote_renders_golden_and_writes_nothing ... ok
+test reopen_l_ratio_renders_golden_and_writes_nothing ... ok
+test reopen_l_unlock_renders_golden_and_writes_nothing ... ok
+test oracle_unusable_sizes_leave_the_layout_alone ... ok
+test flush_points_write_synchronously ... ok
+test reopen_l_unknown_renders_golden_and_writes_nothing ... ok
+test oracle_only_real_changes_are_reported ... ok
+test restore_snapshot_wins_and_missing_projects_do_not_write_before_an_edit ... ok
+test safe_reload_snapshot_carries_opaque_tabs_from_the_unsaved_unsafe_disk_generation ... ok
+test gpui_written_fixtures_open_identically_and_resave_without_structure_or_metadata_loss ... ok
+test storage_preserves_unknown_tabs_when_projection_remaps_a_js_unsafe_pane_id ... ok
+test switching_flushes_the_outgoing_project_and_uses_core_locked_region_carry ... ok
+test project_switch_rejects_unknown_destination_tabs_without_losing_them_or_replacing_the_writer ... ok
+test each_trigger_saves_once_after_250_ms ... ok
+test oracle_resizing_back_and_forth_returns_to_the_same_ratios ... ok
+test trailing_save_coalesces_edits_and_flush_and_drop_do_not_wait_for_the_deadline ... ok
+
+test result: ok. 82 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.06s
+
+     Running tests/pane_model.rs (target/debug/deps/pane_model-3971e118dc7defa7)
+
+running 16 tests
+test a_closed_pane_preserves_order_membership_and_main_selection ... ok
+test restore_skips_dead_and_detached_shells ... ok
+test a_new_tab_routes_to_main_and_focus_mode_routes_to_selected ... ok
+test adoption_uses_active_unlocked_pane_when_main_is_locked_and_normalizes_hidden_keys ... ok
+test focus_mode_never_changes_the_saved_layout ... ok
+test reopening_an_existing_navigation_panel_selects_it_where_it_lives ... ok
+test same_project_updates_preserve_focus_and_opaque_aliases_across_default_layout ... ok
+test split_right_adds_the_new_pane_second_at_one_half ... ok
+test closing_the_last_pane_empties_its_tabs_without_removing_the_pane ... ok
+test locked_closes_are_refused_but_internal_removals_are_allowed ... ok
+test a_failed_create_undoes_the_split ... ok
+test centered_focus_enter_exit_preserves_the_normal_resize_baseline ... ok
+test default_and_gather_exit_focus_and_report_the_exact_result ... ok
+test chat_pending_is_never_saved_and_maps_to_chat_id ... ok
+test restore_adopts_cli_shells_into_main_with_sixteen_per_delivery_and_locked_filter ... ok
+test an_empty_main_keeps_its_sentinel_through_every_gesture ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/window_size.rs (target/debug/deps/window_size-42832f845741aae1)
+
+running 7 tests
+test remember_off_writes_nothing ... ok
+test zoomed_and_fullscreen_frames_are_ignored ... ok
+test out_of_range_sizes_are_rejected ... ok
+test turning_remember_on_captures_the_current_size ... ok
+test the_size_follows_the_window_across_a_project_switch ... ok
+test a_move_or_a_return_to_the_settled_size_writes_nothing ... ok
+test an_ordinary_resize_is_saved_after_250_ms ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.34s
+
+   Doc-tests riwork_nsh_native
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests riwork_nsh_workspace
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+exit 0

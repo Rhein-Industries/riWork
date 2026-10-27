@@ -1,0 +1,8 @@
+{"mode": "gui", "root": "/private/tmp/rw-c12f.rkR6Vz/integ", "manifest": "/private/tmp/rw-c12f.rkR6Vz/integ/gui-us690gvl/manifest.json"}
+{"running": "seed-gui-fixture", "argv": ["cargo", "run", "-p", "riwork-nsh-native", "--features", "test-support", "--example", "p1_workspace_fixture_home", "--locked", "--offline", "--", "--scenario", "p1-basic", "--out", "/private/tmp/rwnshi-gui-jojlj6eh/home", "--theme", "native"]}
+{"finished": "seed-gui-fixture", "exit_code": 0}
+{"running": "forward-second-window", "argv": ["/Users/dominik/orca/projects/riWork-nsh-p1-consolidate/target/debug/riwork", "/private/tmp/rwnshi-gui-jojlj6eh/repos/beta"]}
+{"finished": "forward-second-window", "exit_code": 0}
+{"ready": true, "pid": 7875, "fixture_root": "/private/tmp/rwnshi-gui-jojlj6eh", "manifest": "/private/tmp/rw-c12f.rkR6Vz/integ/gui-us690gvl/manifest.json", "stop_marker": "/private/tmp/rw-c12f.rkR6Vz/integ/gui-stop", "linger_seconds": 600, "cua_policy": "cua-driver MCP read-only; explicit fixture PID only"}
+{"status": "passed", "manifest": "/private/tmp/rw-c12f.rkR6Vz/integ/gui-us690gvl/manifest.json"}
+gui exit 0

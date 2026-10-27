@@ -1,0 +1,20 @@
+{
+  "provider": "cua-driver MCP (RiWork Cua.ai Driver), read-only",
+  "session": "c12f-fixture",
+  "fixture_pid": 7875,
+  "fixture_root": "/private/tmp/rwnshi-gui-jojlj6eh",
+  "calls": [
+    {"tool": "check_permissions", "args": {"prompt": false}, "result": {"accessibility": true, "screen_recording": true}},
+    {"tool": "list_windows", "args": {"pid": 7875}, "result": [
+      {"window_id": 6798, "title": "RiWork · Alpha", "bounds": {"x": 1070, "y": 334, "width": 1220, "height": 780}},
+      {"window_id": 6799, "title": "RiWork · Beta", "bounds": {"x": 1092, "y": 356, "width": 1220, "height": 780}}]},
+    {"tool": "get_window_state", "args": {"pid": 7875, "window_id": 6798, "max_elements": 300, "screenshot_out_file": "cua-alpha.png"},
+     "result": "Shared strip (role tablist) lists Projects/Files/Worktrees/Tasks/Sessions, then 'Alpha-S1, idle', 'Alpha-S2, idle', 'Alpha-S3, idle', 'Chat 2, waiting', 'CLI shell, idle', 'Later shell, idle'; pane controls; panels; toolbar; W3 status bar; native Close/Zoom/Minimize. The selected fake shell's terminal reports 'unknown shell …' with Retry: fixture sessions have no tmux backing."},
+    {"tool": "get_window_state", "args": {"pid": 7875, "window_id": 6798, "query": "Close", "tree_format": "elements", "include_screenshot": false},
+     "result": {"close_frame": {"x": 1079, "y": 341, "w": 16, "h": 16}, "offset_from_window_origin": [9, 7]}},
+    {"tool": "get_window_state", "args": {"pid": 7875, "window_id": 6799, "max_elements": 120, "screenshot_out_file": "cua-beta.png"},
+     "result": "Beta keeps classic per-pane strips (W1 unreadable-store fallback); tree truncated at the requested 120-node budget."}
+  ],
+  "input_calls": 0,
+  "cleanup": "Runner stop marker; SIGTERM fixture cleanup (exit -15); no fixture process remained."
+}

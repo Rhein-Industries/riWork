@@ -1,0 +1,269 @@
+{
+  "verification_environment": "isolated fixture homes only",
+  "mode": "build",
+  "repo": "/Users/dominik/orca/projects/riWork-nsh-p1-consolidate",
+  "root": "/private/tmp/rw-c12f.rkR6Vz/integ",
+  "target_dir": "/Users/dominik/orca/projects/riWork-nsh-p1-consolidate/target",
+  "commands": [
+    {
+      "name": "nsh-version",
+      "argv": [
+        "/tmp/riwork-nsh-toolchain-60f8aec4.18l3zV/nsh-cli-0.3.0/bin/nsh",
+        "--version"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-consolidate",
+      "environment": {
+        "HOME": "/Users/dominik/orca/projects/riWork-nsh-p1-consolidate/target/nsh-integration-home-fzcp16ab",
+        "PATH": "/Users/dominik/.local/share/riwork/cua/harness-bin:/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/Users/dominik/.local/share/riwork/cua/harness-bin:/Users/dominik/.okc/bin:/Users/dominik/Library/pnpm:/Users/dominik/.grok/bin:/Users/dominik/.bun/bin:/Users/dominik/.opencode/bin:/opt/homebrew/opt/openjdk@17/bin:/Users/dominik/.pyenv/shims:/Users/dominik/.avm/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/System/Cryptexes/App/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin:/opt/pmk/env/global/bin:/Library/Apple/usr/bin:/usr/local/share/dotnet:/Users/dominik/.starkli/bin:/Users/dominik/Library/Application Support/org.dfinity.dfx/bin:/Users/dominik/.cargo/bin:/Users/dominik/.local/bin:/Users/dominik/.docker/bin:/Users/dominik/.cache/lm-studio/bin:/Users/dominik/.nargo/bin:/opt/local/bin:/Users/dominik/.local/bin",
+        "RIWORK_HOME": "/private/tmp/rw-c12f.rkR6Vz/integ/build-lm1rd6za/state",
+        "RIWORK_RUNTIME_DIR": "/private/tmp/rw-c12f.rkR6Vz/integ/build-lm1rd6za/runtime",
+        "TMPDIR": "/tmp",
+        "TMUX_TMPDIR": "/private/tmp/rw-c12f.rkR6Vz/integ/build-lm1rd6za/tmux",
+        "XDG_CONFIG_HOME": "/Users/dominik/orca/projects/riWork-nsh-p1-consolidate/target/nsh-integration-home-fzcp16ab/.config",
+        "CARGO_HOME": "/Users/dominik/.cargo",
+        "RUSTUP_HOME": "/Users/dominik/.rustup",
+        "RUSTUP_TOOLCHAIN": "1.99.1",
+        "CARGO_TARGET_DIR": "/Users/dominik/orca/projects/riWork-nsh-p1-consolidate/target",
+        "CARGO_BUILD_JOBS": "4",
+        "CARGO_NET_OFFLINE": "true",
+        "NSH_CACHE": "/private/tmp/rw-c12f.rkR6Vz/integ/nsh-cache",
+        "NSH_TSC": "/Users/dominik/Library/Caches/nsh/typescript-7.0.2-darwin-arm64/package/lib/tsc"
+      },
+      "stdout": "/private/tmp/rw-c12f.rkR6Vz/integ/build-lm1rd6za/nsh-version.stdout",
+      "stderr": "/private/tmp/rw-c12f.rkR6Vz/integ/build-lm1rd6za/nsh-version.stderr",
+      "exit_code": 0,
+      "duration_seconds": 0.006,
+      "stdout_sha256": "b84462512c378e1bda24a6997456ae354ea2bf2c6ce9346c291ac5d30e3ee804",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "rustc-version",
+      "argv": [
+        "rustc",
+        "--version"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-consolidate",
+      "environment": {
+        "HOME": "/Users/dominik/orca/projects/riWork-nsh-p1-consolidate/target/nsh-integration-home-fzcp16ab",
+        "PATH": "/Users/dominik/.local/share/riwork/cua/harness-bin:/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/Users/dominik/.local/share/riwork/cua/harness-bin:/Users/dominik/.okc/bin:/Users/dominik/Library/pnpm:/Users/dominik/.grok/bin:/Users/dominik/.bun/bin:/Users/dominik/.opencode/bin:/opt/homebrew/opt/openjdk@17/bin:/Users/dominik/.pyenv/shims:/Users/dominik/.avm/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/System/Cryptexes/App/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin:/opt/pmk/env/global/bin:/Library/Apple/usr/bin:/usr/local/share/dotnet:/Users/dominik/.starkli/bin:/Users/dominik/Library/Application Support/org.dfinity.dfx/bin:/Users/dominik/.cargo/bin:/Users/dominik/.local/bin:/Users/dominik/.docker/bin:/Users/dominik/.cache/lm-studio/bin:/Users/dominik/.nargo/bin:/opt/local/bin:/Users/dominik/.local/bin",
+        "RIWORK_HOME": "/private/tmp/rw-c12f.rkR6Vz/integ/build-lm1rd6za/state",
+        "RIWORK_RUNTIME_DIR": "/private/tmp/rw-c12f.rkR6Vz/integ/build-lm1rd6za/runtime",
+        "TMPDIR": "/tmp",
+        "TMUX_TMPDIR": "/private/tmp/rw-c12f.rkR6Vz/integ/build-lm1rd6za/tmux",
+        "XDG_CONFIG_HOME": "/Users/dominik/orca/projects/riWork-nsh-p1-consolidate/target/nsh-integration-home-fzcp16ab/.config",
+        "CARGO_HOME": "/Users/dominik/.cargo",
+        "RUSTUP_HOME": "/Users/dominik/.rustup",
+        "RUSTUP_TOOLCHAIN": "1.99.1",
+        "CARGO_TARGET_DIR": "/Users/dominik/orca/projects/riWork-nsh-p1-consolidate/target",
+        "CARGO_BUILD_JOBS": "4",
+        "CARGO_NET_OFFLINE": "true",
+        "NSH_CACHE": "/private/tmp/rw-c12f.rkR6Vz/integ/nsh-cache",
+        "NSH_TSC": "/Users/dominik/Library/Caches/nsh/typescript-7.0.2-darwin-arm64/package/lib/tsc"
+      },
+      "stdout": "/private/tmp/rw-c12f.rkR6Vz/integ/build-lm1rd6za/rustc-version.stdout",
+      "stderr": "/private/tmp/rw-c12f.rkR6Vz/integ/build-lm1rd6za/rustc-version.stderr",
+      "exit_code": 0,
+      "duration_seconds": 0.022,
+      "stdout_sha256": "55cd0529c005d3f62869ea6e2271bfa9d5196f56dc65a8be00a371af114a4a98",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "cargo-version",
+      "argv": [
+        "cargo",
+        "--version"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-consolidate",
+      "environment": {
+        "HOME": "/Users/dominik/orca/projects/riWork-nsh-p1-consolidate/target/nsh-integration-home-fzcp16ab",
+        "PATH": "/Users/dominik/.local/share/riwork/cua/harness-bin:/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/Users/dominik/.local/share/riwork/cua/harness-bin:/Users/dominik/.okc/bin:/Users/dominik/Library/pnpm:/Users/dominik/.grok/bin:/Users/dominik/.bun/bin:/Users/dominik/.opencode/bin:/opt/homebrew/opt/openjdk@17/bin:/Users/dominik/.pyenv/shims:/Users/dominik/.avm/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/System/Cryptexes/App/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin:/opt/pmk/env/global/bin:/Library/Apple/usr/bin:/usr/local/share/dotnet:/Users/dominik/.starkli/bin:/Users/dominik/Library/Application Support/org.dfinity.dfx/bin:/Users/dominik/.cargo/bin:/Users/dominik/.local/bin:/Users/dominik/.docker/bin:/Users/dominik/.cache/lm-studio/bin:/Users/dominik/.nargo/bin:/opt/local/bin:/Users/dominik/.local/bin",
+        "RIWORK_HOME": "/private/tmp/rw-c12f.rkR6Vz/integ/build-lm1rd6za/state",
+        "RIWORK_RUNTIME_DIR": "/private/tmp/rw-c12f.rkR6Vz/integ/build-lm1rd6za/runtime",
+        "TMPDIR": "/tmp",
+        "TMUX_TMPDIR": "/private/tmp/rw-c12f.rkR6Vz/integ/build-lm1rd6za/tmux",
+        "XDG_CONFIG_HOME": "/Users/dominik/orca/projects/riWork-nsh-p1-consolidate/target/nsh-integration-home-fzcp16ab/.config",
+        "CARGO_HOME": "/Users/dominik/.cargo",
+        "RUSTUP_HOME": "/Users/dominik/.rustup",
+        "RUSTUP_TOOLCHAIN": "1.99.1",
+        "CARGO_TARGET_DIR": "/Users/dominik/orca/projects/riWork-nsh-p1-consolidate/target",
+        "CARGO_BUILD_JOBS": "4",
+        "CARGO_NET_OFFLINE": "true",
+        "NSH_CACHE": "/private/tmp/rw-c12f.rkR6Vz/integ/nsh-cache",
+        "NSH_TSC": "/Users/dominik/Library/Caches/nsh/typescript-7.0.2-darwin-arm64/package/lib/tsc"
+      },
+      "stdout": "/private/tmp/rw-c12f.rkR6Vz/integ/build-lm1rd6za/cargo-version.stdout",
+      "stderr": "/private/tmp/rw-c12f.rkR6Vz/integ/build-lm1rd6za/cargo-version.stderr",
+      "exit_code": 0,
+      "duration_seconds": 0.016,
+      "stdout_sha256": "c35608815f43d0b8788a9b826fad2bb17384f49fb328dc4fe64da9db5f5ef4d6",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "cargo-build",
+      "argv": [
+        "cargo",
+        "build",
+        "-p",
+        "riwork-desktop",
+        "-p",
+        "riwork-cli",
+        "--locked",
+        "--offline"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-consolidate",
+      "environment": {
+        "HOME": "/Users/dominik/orca/projects/riWork-nsh-p1-consolidate/target/nsh-integration-home-fzcp16ab",
+        "PATH": "/Users/dominik/.local/share/riwork/cua/harness-bin:/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/Users/dominik/.local/share/riwork/cua/harness-bin:/Users/dominik/.okc/bin:/Users/dominik/Library/pnpm:/Users/dominik/.grok/bin:/Users/dominik/.bun/bin:/Users/dominik/.opencode/bin:/opt/homebrew/opt/openjdk@17/bin:/Users/dominik/.pyenv/shims:/Users/dominik/.avm/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/System/Cryptexes/App/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin:/opt/pmk/env/global/bin:/Library/Apple/usr/bin:/usr/local/share/dotnet:/Users/dominik/.starkli/bin:/Users/dominik/Library/Application Support/org.dfinity.dfx/bin:/Users/dominik/.cargo/bin:/Users/dominik/.local/bin:/Users/dominik/.docker/bin:/Users/dominik/.cache/lm-studio/bin:/Users/dominik/.nargo/bin:/opt/local/bin:/Users/dominik/.local/bin",
+        "RIWORK_HOME": "/private/tmp/rw-c12f.rkR6Vz/integ/build-lm1rd6za/state",
+        "RIWORK_RUNTIME_DIR": "/private/tmp/rw-c12f.rkR6Vz/integ/build-lm1rd6za/runtime",
+        "TMPDIR": "/tmp",
+        "TMUX_TMPDIR": "/private/tmp/rw-c12f.rkR6Vz/integ/build-lm1rd6za/tmux",
+        "XDG_CONFIG_HOME": "/Users/dominik/orca/projects/riWork-nsh-p1-consolidate/target/nsh-integration-home-fzcp16ab/.config",
+        "CARGO_HOME": "/Users/dominik/.cargo",
+        "RUSTUP_HOME": "/Users/dominik/.rustup",
+        "RUSTUP_TOOLCHAIN": "1.99.1",
+        "CARGO_TARGET_DIR": "/Users/dominik/orca/projects/riWork-nsh-p1-consolidate/target",
+        "CARGO_BUILD_JOBS": "4",
+        "CARGO_NET_OFFLINE": "true",
+        "NSH_CACHE": "/private/tmp/rw-c12f.rkR6Vz/integ/nsh-cache",
+        "NSH_TSC": "/Users/dominik/Library/Caches/nsh/typescript-7.0.2-darwin-arm64/package/lib/tsc"
+      },
+      "stdout": "/private/tmp/rw-c12f.rkR6Vz/integ/build-lm1rd6za/cargo-build.stdout",
+      "stderr": "/private/tmp/rw-c12f.rkR6Vz/integ/build-lm1rd6za/cargo-build.stderr",
+      "exit_code": 0,
+      "duration_seconds": 6.737,
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "c14adab2fa91a479072759c4867396516402570217d12becb9a496ccd8c20b5b"
+    },
+    {
+      "name": "nsh-build",
+      "argv": [
+        "/tmp/riwork-nsh-toolchain-60f8aec4.18l3zV/nsh-cli-0.3.0/bin/nsh",
+        "build",
+        "apps/riwork",
+        "--out",
+        "/private/tmp/rw-c12f.rkR6Vz/integ/bundle"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-consolidate",
+      "environment": {
+        "HOME": "/Users/dominik/orca/projects/riWork-nsh-p1-consolidate/target/nsh-integration-home-fzcp16ab",
+        "PATH": "/Users/dominik/.local/share/riwork/cua/harness-bin:/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/Users/dominik/.local/share/riwork/cua/harness-bin:/Users/dominik/.okc/bin:/Users/dominik/Library/pnpm:/Users/dominik/.grok/bin:/Users/dominik/.bun/bin:/Users/dominik/.opencode/bin:/opt/homebrew/opt/openjdk@17/bin:/Users/dominik/.pyenv/shims:/Users/dominik/.avm/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/System/Cryptexes/App/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin:/opt/pmk/env/global/bin:/Library/Apple/usr/bin:/usr/local/share/dotnet:/Users/dominik/.starkli/bin:/Users/dominik/Library/Application Support/org.dfinity.dfx/bin:/Users/dominik/.cargo/bin:/Users/dominik/.local/bin:/Users/dominik/.docker/bin:/Users/dominik/.cache/lm-studio/bin:/Users/dominik/.nargo/bin:/opt/local/bin:/Users/dominik/.local/bin",
+        "RIWORK_HOME": "/private/tmp/rw-c12f.rkR6Vz/integ/build-lm1rd6za/state",
+        "RIWORK_RUNTIME_DIR": "/private/tmp/rw-c12f.rkR6Vz/integ/build-lm1rd6za/runtime",
+        "TMPDIR": "/tmp",
+        "TMUX_TMPDIR": "/private/tmp/rw-c12f.rkR6Vz/integ/build-lm1rd6za/tmux",
+        "XDG_CONFIG_HOME": "/Users/dominik/orca/projects/riWork-nsh-p1-consolidate/target/nsh-integration-home-fzcp16ab/.config",
+        "CARGO_HOME": "/Users/dominik/.cargo",
+        "RUSTUP_HOME": "/Users/dominik/.rustup",
+        "RUSTUP_TOOLCHAIN": "1.99.1",
+        "CARGO_TARGET_DIR": "/Users/dominik/orca/projects/riWork-nsh-p1-consolidate/target",
+        "CARGO_BUILD_JOBS": "4",
+        "CARGO_NET_OFFLINE": "true",
+        "NSH_CACHE": "/private/tmp/rw-c12f.rkR6Vz/integ/nsh-cache",
+        "NSH_TSC": "/Users/dominik/Library/Caches/nsh/typescript-7.0.2-darwin-arm64/package/lib/tsc"
+      },
+      "stdout": "/private/tmp/rw-c12f.rkR6Vz/integ/build-lm1rd6za/nsh-build.stdout",
+      "stderr": "/private/tmp/rw-c12f.rkR6Vz/integ/build-lm1rd6za/nsh-build.stderr",
+      "exit_code": 0,
+      "duration_seconds": 0.239,
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "d2247bd195c44e20e8f3f533172bd10ffa3ca22a2c19b4ba565395edb19550f1"
+    },
+    {
+      "name": "cargo-tree-binary",
+      "argv": [
+        "cargo",
+        "tree",
+        "-p",
+        "riwork-desktop",
+        "--target",
+        "aarch64-apple-darwin",
+        "--edges",
+        "normal,build",
+        "--locked",
+        "--offline"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-consolidate",
+      "environment": {
+        "HOME": "/Users/dominik/orca/projects/riWork-nsh-p1-consolidate/target/nsh-integration-home-fzcp16ab",
+        "PATH": "/Users/dominik/.local/share/riwork/cua/harness-bin:/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/Users/dominik/.local/share/riwork/cua/harness-bin:/Users/dominik/.okc/bin:/Users/dominik/Library/pnpm:/Users/dominik/.grok/bin:/Users/dominik/.bun/bin:/Users/dominik/.opencode/bin:/opt/homebrew/opt/openjdk@17/bin:/Users/dominik/.pyenv/shims:/Users/dominik/.avm/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/System/Cryptexes/App/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin:/opt/pmk/env/global/bin:/Library/Apple/usr/bin:/usr/local/share/dotnet:/Users/dominik/.starkli/bin:/Users/dominik/Library/Application Support/org.dfinity.dfx/bin:/Users/dominik/.cargo/bin:/Users/dominik/.local/bin:/Users/dominik/.docker/bin:/Users/dominik/.cache/lm-studio/bin:/Users/dominik/.nargo/bin:/opt/local/bin:/Users/dominik/.local/bin",
+        "RIWORK_HOME": "/private/tmp/rw-c12f.rkR6Vz/integ/build-lm1rd6za/state",
+        "RIWORK_RUNTIME_DIR": "/private/tmp/rw-c12f.rkR6Vz/integ/build-lm1rd6za/runtime",
+        "TMPDIR": "/tmp",
+        "TMUX_TMPDIR": "/private/tmp/rw-c12f.rkR6Vz/integ/build-lm1rd6za/tmux",
+        "XDG_CONFIG_HOME": "/Users/dominik/orca/projects/riWork-nsh-p1-consolidate/target/nsh-integration-home-fzcp16ab/.config",
+        "CARGO_HOME": "/Users/dominik/.cargo",
+        "RUSTUP_HOME": "/Users/dominik/.rustup",
+        "RUSTUP_TOOLCHAIN": "1.99.1",
+        "CARGO_TARGET_DIR": "/Users/dominik/orca/projects/riWork-nsh-p1-consolidate/target",
+        "CARGO_BUILD_JOBS": "4",
+        "CARGO_NET_OFFLINE": "true",
+        "NSH_CACHE": "/private/tmp/rw-c12f.rkR6Vz/integ/nsh-cache",
+        "NSH_TSC": "/Users/dominik/Library/Caches/nsh/typescript-7.0.2-darwin-arm64/package/lib/tsc"
+      },
+      "stdout": "/private/tmp/rw-c12f.rkR6Vz/integ/build-lm1rd6za/cargo-tree-binary.stdout",
+      "stderr": "/private/tmp/rw-c12f.rkR6Vz/integ/build-lm1rd6za/cargo-tree-binary.stderr",
+      "exit_code": 0,
+      "duration_seconds": 0.194,
+      "stdout_sha256": "924e0ce42c41abe97a9e65cd949241c965d92e7d0ffaf7b4bb7ec986ecd47780",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "cargo-tree-full",
+      "argv": [
+        "cargo",
+        "tree",
+        "-p",
+        "riwork-desktop",
+        "--locked",
+        "--offline"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-consolidate",
+      "environment": {
+        "HOME": "/Users/dominik/orca/projects/riWork-nsh-p1-consolidate/target/nsh-integration-home-fzcp16ab",
+        "PATH": "/Users/dominik/.local/share/riwork/cua/harness-bin:/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/Users/dominik/.local/share/riwork/cua/harness-bin:/Users/dominik/.okc/bin:/Users/dominik/Library/pnpm:/Users/dominik/.grok/bin:/Users/dominik/.bun/bin:/Users/dominik/.opencode/bin:/opt/homebrew/opt/openjdk@17/bin:/Users/dominik/.pyenv/shims:/Users/dominik/.avm/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/System/Cryptexes/App/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin:/opt/pmk/env/global/bin:/Library/Apple/usr/bin:/usr/local/share/dotnet:/Users/dominik/.starkli/bin:/Users/dominik/Library/Application Support/org.dfinity.dfx/bin:/Users/dominik/.cargo/bin:/Users/dominik/.local/bin:/Users/dominik/.docker/bin:/Users/dominik/.cache/lm-studio/bin:/Users/dominik/.nargo/bin:/opt/local/bin:/Users/dominik/.local/bin",
+        "RIWORK_HOME": "/private/tmp/rw-c12f.rkR6Vz/integ/build-lm1rd6za/state",
+        "RIWORK_RUNTIME_DIR": "/private/tmp/rw-c12f.rkR6Vz/integ/build-lm1rd6za/runtime",
+        "TMPDIR": "/tmp",
+        "TMUX_TMPDIR": "/private/tmp/rw-c12f.rkR6Vz/integ/build-lm1rd6za/tmux",
+        "XDG_CONFIG_HOME": "/Users/dominik/orca/projects/riWork-nsh-p1-consolidate/target/nsh-integration-home-fzcp16ab/.config",
+        "CARGO_HOME": "/Users/dominik/.cargo",
+        "RUSTUP_HOME": "/Users/dominik/.rustup",
+        "RUSTUP_TOOLCHAIN": "1.99.1",
+        "CARGO_TARGET_DIR": "/Users/dominik/orca/projects/riWork-nsh-p1-consolidate/target",
+        "CARGO_BUILD_JOBS": "4",
+        "CARGO_NET_OFFLINE": "true",
+        "NSH_CACHE": "/private/tmp/rw-c12f.rkR6Vz/integ/nsh-cache",
+        "NSH_TSC": "/Users/dominik/Library/Caches/nsh/typescript-7.0.2-darwin-arm64/package/lib/tsc"
+      },
+      "stdout": "/private/tmp/rw-c12f.rkR6Vz/integ/build-lm1rd6za/cargo-tree-full.stdout",
+      "stderr": "/private/tmp/rw-c12f.rkR6Vz/integ/build-lm1rd6za/cargo-tree-full.stderr",
+      "exit_code": 0,
+      "duration_seconds": 0.173,
+      "stdout_sha256": "47733ff1cbd5e6ac70a658f78275d94e80f61305ce0f13d649d41484d2d491b8",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "status": "passed",
+  "nsh_cli": {
+    "path": "/private/tmp/riwork-nsh-toolchain-60f8aec4.18l3zV/nsh-cli-0.3.0/bin/nsh",
+    "sha256": "90b7633c80306407fc97b2051be00af868d4577281f918ff655c650a8a5a2e60"
+  },
+  "dependency_proof": [
+    {
+      "name": "cargo-tree-binary",
+      "gpui_or_ghostty_lines": []
+    },
+    {
+      "name": "cargo-tree-full",
+      "gpui_or_ghostty_lines": []
+    }
+  ],
+  "bundle_files": {
+    "bundle.js.map": "e12becbd410d8330410da1a626b2e08b577418aac3cfce4f585157f1c732a451",
+    "app.json": "352a457b03a688e33d46263724ffbe1377689ed90b6bd56244c345fb8738b4f3",
+    "capabilities.json": "0f28a0136eb35727ba7102ad96a8d6458bc442d7edd332b3bfaea95781e9abc4",
+    "bundle.js": "c14c3d958ae944c3a7ad4ad60849af476256b8a426969cb417672b774b0d266e",
+    "bundle.nshc": "722eed158ae494bf045f0e9d16fe343a1e9b03c94d5e1625690190241371a510"
+  }
+}

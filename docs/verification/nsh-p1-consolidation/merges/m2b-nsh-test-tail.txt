@@ -1,0 +1,3 @@
+✓ apps/riwork/tests/metrics.test.ts › P1-WIN-06 empty strip extends after measured tabs without covering them (0ms)
+✓ 63 tests: 63 passed, 0 failed (35.1s)
+test exit 0

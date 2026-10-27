@@ -1,0 +1,17 @@
+riwork_core                              unittests src/lib.rs                            278 passed   0 failed  20 ignored
+riwork                                   unittests src/nsh_main.rs                        29 passed   0 failed   0 ignored
+appkit_shell                             tests/appkit_shell.rs                             7 passed   0 failed   0 ignored
+cli_contract                             tests/cli_contract.rs                             6 passed   0 failed   0 ignored
+startup_environment                      tests/startup_environment.rs                      1 passed   0 failed   0 ignored
+riwork_nsh_native                        unittests src/lib.rs                             13 passed   0 failed   0 ignored
+appearance                               tests/appearance.rs                               3 passed   0 failed   0 ignored
+native_headless                          tests/native_headless.rs                          1 passed   0 failed   0 ignored
+panel_crud                               tests/panel_crud.rs                               4 passed   0 failed   0 ignored
+services                                 tests/services.rs                                15 passed   0 failed   0 ignored
+settings                                 tests/settings.rs                                 1 passed   0 failed   0 ignored
+settings                                 tests/settings.rs                                 7 passed   0 failed   0 ignored
+riwork_nsh_terminal                      unittests src/lib.rs                             17 passed   0 failed   0 ignored
+riwork_nsh_workspace                     unittests src/lib.rs                             38 passed   0 failed   0 ignored
+layout_backend                           tests/layout_backend.rs                           1 passed   0 failed   0 ignored
+layout_roundtrip                         tests/layout_roundtrip.rs                        13 passed   0 failed   0 ignored
+TOTAL 434 passed, 0 failed, 20 ignored

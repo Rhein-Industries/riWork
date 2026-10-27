@@ -1,0 +1,1012 @@
+[
+ {
+  "section": "5.1 Process and CLI entry (P1b)",
+  "item": "P1-PROC-01",
+  "m5": "PASS",
+  "owner": "W2",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.1 Process and CLI entry (P1b)",
+  "item": "P1-PROC-02",
+  "m5": "PASS",
+  "owner": "W2",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.1 Process and CLI entry (P1b)",
+  "item": "P1-PROC-03",
+  "m5": "PASS",
+  "owner": "W2",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run; worker GUI route carried",
+  "note": ""
+ },
+ {
+  "section": "5.1 Process and CLI entry (P1b)",
+  "item": "P1-PROC-04",
+  "m5": "FAIL",
+  "owner": "W2",
+  "worker": "PARTIAL",
+  "consolidated": "PARTIAL",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.1 Process and CLI entry (P1b)",
+  "item": "P1-PROC-05",
+  "m5": "FAIL",
+  "owner": "W2",
+  "worker": "PARTIAL",
+  "consolidated": "PARTIAL",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.1 Process and CLI entry (P1b)",
+  "item": "P1-PROC-06",
+  "m5": "PASS",
+  "owner": "W2",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run + consolidation fixture",
+  "note": ""
+ },
+ {
+  "section": "5.1 Process and CLI entry (P1b)",
+  "item": "P1-PROC-07",
+  "m5": "FAIL",
+  "owner": "W2",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.2 Restart, reload and restore (P1b with P1c)",
+  "item": "P1-RLD-01",
+  "m5": "FAIL",
+  "owner": "W2",
+  "worker": "PARTIAL",
+  "consolidated": "PARTIAL",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.2 Restart, reload and restore (P1b with P1c)",
+  "item": "P1-RLD-02",
+  "m5": "FAIL",
+  "owner": "W2",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run; worker GUI route carried",
+  "note": ""
+ },
+ {
+  "section": "5.2 Restart, reload and restore (P1b with P1c)",
+  "item": "P1-RLD-03",
+  "m5": "PASS",
+  "owner": "W2",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.2 Restart, reload and restore (P1b with P1c)",
+  "item": "P1-RLD-04",
+  "m5": "PASS",
+  "owner": "W2",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.3 Windows and chrome",
+  "item": "P1-WIN-01",
+  "m5": "PASS",
+  "owner": "W2",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run + consolidation fixture",
+  "note": ""
+ },
+ {
+  "section": "5.3 Windows and chrome",
+  "item": "P1-WIN-02",
+  "m5": "FAIL",
+  "owner": "W2",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run + consolidation fixture",
+  "note": ""
+ },
+ {
+  "section": "5.3 Windows and chrome",
+  "item": "P1-WIN-03",
+  "m5": "FAIL",
+  "owner": "W2",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run; worker GUI route carried",
+  "note": ""
+ },
+ {
+  "section": "5.3 Windows and chrome",
+  "item": "P1-WIN-04",
+  "m5": "FAIL",
+  "owner": "W2",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.3 Windows and chrome",
+  "item": "P1-WIN-05",
+  "m5": "FAIL",
+  "owner": "W2",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run + consolidation fixture",
+  "note": ""
+ },
+ {
+  "section": "5.3 Windows and chrome",
+  "item": "P1-WIN-06",
+  "m5": "FAIL",
+  "owner": "W2",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run; worker GUI route carried",
+  "note": ""
+ },
+ {
+  "section": "5.3 Windows and chrome",
+  "item": "P1-WIN-07",
+  "m5": "FAIL",
+  "owner": "W2",
+  "worker": "PARTIAL",
+  "consolidated": "PARTIAL",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.3 Windows and chrome",
+  "item": "P1-WIN-08",
+  "m5": "FAIL",
+  "owner": "W2",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run; worker GUI route carried",
+  "note": ""
+ },
+ {
+  "section": "5.3 Windows and chrome",
+  "item": "P1-WIN-09",
+  "m5": "FAIL",
+  "owner": "W2",
+  "worker": "PARTIAL",
+  "consolidated": "PARTIAL",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.3 Windows and chrome",
+  "item": "P1-WIN-10",
+  "m5": "FAIL",
+  "owner": "W2",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.4 Global window",
+  "item": "P1-GLB-01",
+  "m5": "FAIL",
+  "owner": "M5",
+  "worker": "FAIL",
+  "consolidated": "FAIL",
+  "route": "not owned/still failing",
+  "note": ""
+ },
+ {
+  "section": "5.4 Global window",
+  "item": "P1-GLB-02",
+  "m5": "FAIL",
+  "owner": "M5",
+  "worker": "FAIL",
+  "consolidated": "FAIL",
+  "route": "not owned/still failing",
+  "note": ""
+ },
+ {
+  "section": "5.4 Global window",
+  "item": "P1-GLB-03",
+  "m5": "FAIL",
+  "owner": "M5",
+  "worker": "FAIL",
+  "consolidated": "FAIL",
+  "route": "not owned/still failing",
+  "note": ""
+ },
+ {
+  "section": "5.4 Global window",
+  "item": "P1-GLB-04",
+  "m5": "FAIL",
+  "owner": "M5",
+  "worker": "FAIL",
+  "consolidated": "FAIL",
+  "route": "not owned/still failing",
+  "note": ""
+ },
+ {
+  "section": "5.4 Global window",
+  "item": "P1-GLB-05",
+  "m5": "FAIL",
+  "owner": "M5",
+  "worker": "FAIL",
+  "consolidated": "FAIL",
+  "route": "not owned/still failing",
+  "note": ""
+ },
+ {
+  "section": "5.4 Global window",
+  "item": "P1-GLB-06",
+  "m5": "FAIL",
+  "owner": "M5",
+  "worker": "FAIL",
+  "consolidated": "FAIL",
+  "route": "not owned/still failing",
+  "note": ""
+ },
+ {
+  "section": "5.4 Global window",
+  "item": "P1-GLB-07",
+  "m5": "FAIL",
+  "owner": "M5",
+  "worker": "FAIL",
+  "consolidated": "FAIL",
+  "route": "not owned/still failing",
+  "note": ""
+ },
+ {
+  "section": "5.4 Global window",
+  "item": "P1-GLB-08",
+  "m5": "FAIL",
+  "owner": "M5",
+  "worker": "FAIL",
+  "consolidated": "FAIL",
+  "route": "not owned/still failing",
+  "note": ""
+ },
+ {
+  "section": "5.4 Global window",
+  "item": "P1-GLB-09",
+  "m5": "FAIL",
+  "owner": "M5",
+  "worker": "FAIL",
+  "consolidated": "FAIL",
+  "route": "not owned/still failing",
+  "note": ""
+ },
+ {
+  "section": "5.4 Global window",
+  "item": "P1-GLB-10",
+  "m5": "FAIL",
+  "owner": "M5",
+  "worker": "FAIL",
+  "consolidated": "FAIL",
+  "route": "not owned/still failing",
+  "note": ""
+ },
+ {
+  "section": "5.5 Panes, splits, locks, main pane and focus (P1c)",
+  "item": "P1-PANE-01",
+  "m5": "FAIL",
+  "owner": "W1",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.5 Panes, splits, locks, main pane and focus (P1c)",
+  "item": "P1-PANE-02",
+  "m5": "FAIL",
+  "owner": "W1",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.5 Panes, splits, locks, main pane and focus (P1c)",
+  "item": "P1-PANE-03",
+  "m5": "FAIL",
+  "owner": "W1",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.5 Panes, splits, locks, main pane and focus (P1c)",
+  "item": "P1-PANE-04",
+  "m5": "FAIL",
+  "owner": "W1",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.5 Panes, splits, locks, main pane and focus (P1c)",
+  "item": "P1-PANE-05",
+  "m5": "FAIL",
+  "owner": "W1",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.5 Panes, splits, locks, main pane and focus (P1c)",
+  "item": "P1-PANE-06",
+  "m5": "FAIL",
+  "owner": "W1",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.5 Panes, splits, locks, main pane and focus (P1c)",
+  "item": "P1-PANE-07",
+  "m5": "FAIL",
+  "owner": "W1",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.5 Panes, splits, locks, main pane and focus (P1c)",
+  "item": "P1-PANE-08",
+  "m5": "FAIL",
+  "owner": "W1",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.5 Panes, splits, locks, main pane and focus (P1c)",
+  "item": "P1-PANE-09",
+  "m5": "FAIL",
+  "owner": "W1",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.5 Panes, splits, locks, main pane and focus (P1c)",
+  "item": "P1-PANE-10",
+  "m5": "FAIL",
+  "owner": "W1",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.5 Panes, splits, locks, main pane and focus (P1c)",
+  "item": "P1-PANE-11",
+  "m5": "FAIL",
+  "owner": "W1",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.5 Panes, splits, locks, main pane and focus (P1c)",
+  "item": "P1-PANE-12",
+  "m5": "FAIL",
+  "owner": "W1",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.6 Tabs, strip, menus and the close dialog (P1c, with P1a `Tabs`/`Sessions`)",
+  "item": "P1-TAB-01",
+  "m5": "FAIL",
+  "owner": "W1",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.6 Tabs, strip, menus and the close dialog (P1c, with P1a `Tabs`/`Sessions`)",
+  "item": "P1-TAB-02",
+  "m5": "FAIL",
+  "owner": "W1",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.6 Tabs, strip, menus and the close dialog (P1c, with P1a `Tabs`/`Sessions`)",
+  "item": "P1-TAB-03",
+  "m5": "FAIL",
+  "owner": "W1",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.6 Tabs, strip, menus and the close dialog (P1c, with P1a `Tabs`/`Sessions`)",
+  "item": "P1-TAB-04",
+  "m5": "FAIL",
+  "owner": "W1",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.6 Tabs, strip, menus and the close dialog (P1c, with P1a `Tabs`/`Sessions`)",
+  "item": "P1-TAB-05",
+  "m5": "FAIL",
+  "owner": "W1",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.6 Tabs, strip, menus and the close dialog (P1c, with P1a `Tabs`/`Sessions`)",
+  "item": "P1-STRIP-01",
+  "m5": "FAIL",
+  "owner": "W1",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.6 Tabs, strip, menus and the close dialog (P1c, with P1a `Tabs`/`Sessions`)",
+  "item": "P1-STRIP-02",
+  "m5": "FAIL",
+  "owner": "W1",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run + consolidation fixture",
+  "note": ""
+ },
+ {
+  "section": "5.6 Tabs, strip, menus and the close dialog (P1c, with P1a `Tabs`/`Sessions`)",
+  "item": "P1-STRIP-03",
+  "m5": "FAIL",
+  "owner": "W1",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.6 Tabs, strip, menus and the close dialog (P1c, with P1a `Tabs`/`Sessions`)",
+  "item": "P1-STRIP-04",
+  "m5": "FAIL",
+  "owner": "W1",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.6 Tabs, strip, menus and the close dialog (P1c, with P1a `Tabs`/`Sessions`)",
+  "item": "P1-STRIP-05",
+  "m5": "FAIL",
+  "owner": "W1",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.7 Drag and panel identity (P1c)",
+  "item": "P1-DRAG-01",
+  "m5": "FAIL",
+  "owner": "W1",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.7 Drag and panel identity (P1c)",
+  "item": "P1-DRAG-02",
+  "m5": "FAIL",
+  "owner": "W1",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.7 Drag and panel identity (P1c)",
+  "item": "P1-DRAG-03",
+  "m5": "FAIL",
+  "owner": "W1",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.7 Drag and panel identity (P1c)",
+  "item": "P1-DRAG-04",
+  "m5": "FAIL",
+  "owner": "W1",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.8 Layout persistence, restore and reopening GPUI layouts (P1c)",
+  "item": "P1-LAY-01",
+  "m5": "FAIL",
+  "owner": "W1",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.8 Layout persistence, restore and reopening GPUI layouts (P1c)",
+  "item": "P1-LAY-02",
+  "m5": "FAIL",
+  "owner": "W1",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.8 Layout persistence, restore and reopening GPUI layouts (P1c)",
+  "item": "P1-LAY-03",
+  "m5": "FAIL",
+  "owner": "W1",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.8 Layout persistence, restore and reopening GPUI layouts (P1c)",
+  "item": "P1-LAY-04",
+  "m5": "FAIL",
+  "owner": "W1",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.8 Layout persistence, restore and reopening GPUI layouts (P1c)",
+  "item": "P1-LAY-05",
+  "m5": "FAIL",
+  "owner": "W1",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.8 Layout persistence, restore and reopening GPUI layouts (P1c)",
+  "item": "P1-LAY-06",
+  "m5": "FAIL",
+  "owner": "W1",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.8 Layout persistence, restore and reopening GPUI layouts (P1c)",
+  "item": "P1-LAY-07",
+  "m5": "FAIL",
+  "owner": "W1",
+  "worker": "FAIL",
+  "consolidated": "PARTIAL",
+  "route": "automated re-run",
+  "note": "Host restart now flushes host layouts before launch (W2) and workspace barriers pass; the end-to-end replacement-process route was not executed on the consolidated tree."
+ },
+ {
+  "section": "5.8 Layout persistence, restore and reopening GPUI layouts (P1c)",
+  "item": "P1-LAY-08",
+  "m5": "FAIL",
+  "owner": "W1",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.8 Layout persistence, restore and reopening GPUI layouts (P1c)",
+  "item": "P1-LAY-09",
+  "m5": "FAIL",
+  "owner": "W1",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.8 Layout persistence, restore and reopening GPUI layouts (P1c)",
+  "item": "P1-LAY-10",
+  "m5": "PASS",
+  "owner": "W1",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.9 Menus and keys",
+  "item": "P1-MENU-01",
+  "m5": "PASS",
+  "owner": "W2",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.9 Menus and keys",
+  "item": "P1-MENU-02",
+  "m5": "PASS",
+  "owner": "W2",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.9 Menus and keys",
+  "item": "P1-MENU-03",
+  "m5": "FAIL",
+  "owner": "W2",
+  "worker": "PARTIAL",
+  "consolidated": "PASS",
+  "route": "automated re-run",
+  "note": "Residual closed in consolidation: \u2318T/newTab reaches LayoutSession.newShell through the W2 dispatcher (CloseDialog.test mod+t, Panes tests); creation uses W1's session adapter (documented divergence)."
+ },
+ {
+  "section": "5.9 Menus and keys",
+  "item": "P1-MENU-04",
+  "m5": "FAIL",
+  "owner": "W2",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.9 Menus and keys",
+  "item": "P1-KEYS-01",
+  "m5": "FAIL",
+  "owner": "W2",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.9 Menus and keys",
+  "item": "P1-KEYS-02",
+  "m5": "FAIL",
+  "owner": "W2",
+  "worker": "PARTIAL",
+  "consolidated": "PARTIAL",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.9 Menus and keys",
+  "item": "P1-KEYS-03",
+  "m5": "FAIL",
+  "owner": "W2",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.9 Menus and keys",
+  "item": "P1-KEYS-04",
+  "m5": "FAIL",
+  "owner": "W2",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.9 Menus and keys",
+  "item": "P1-KEYS-05",
+  "m5": "FAIL",
+  "owner": "W2",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.10 Themes, appearance and interface text",
+  "item": "P1-THM-01",
+  "m5": "FAIL",
+  "owner": "W3",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.10 Themes, appearance and interface text",
+  "item": "P1-THM-02",
+  "m5": "FAIL",
+  "owner": "W3",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.10 Themes, appearance and interface text",
+  "item": "P1-THM-03",
+  "m5": "FAIL",
+  "owner": "W3",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.10 Themes, appearance and interface text",
+  "item": "P1-THM-04",
+  "m5": "FAIL",
+  "owner": "W3",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.10 Themes, appearance and interface text",
+  "item": "P1-THM-05",
+  "m5": "FAIL",
+  "owner": "W3",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run; worker GUI route carried",
+  "note": ""
+ },
+ {
+  "section": "5.10 Themes, appearance and interface text",
+  "item": "P1-THM-06",
+  "m5": "PASS",
+  "owner": "W3",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run + consolidation fixture",
+  "note": ""
+ },
+ {
+  "section": "5.10 Themes, appearance and interface text",
+  "item": "P1-THM-07",
+  "m5": "FAIL",
+  "owner": "W3",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.10 Themes, appearance and interface text",
+  "item": "P1-TXT-01",
+  "m5": "FAIL",
+  "owner": "W3",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.10 Themes, appearance and interface text",
+  "item": "P1-TXT-02",
+  "m5": "FAIL",
+  "owner": "W3",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.10 Themes, appearance and interface text",
+  "item": "P1-TXT-03",
+  "m5": "FAIL",
+  "owner": "W3",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.11 Status bar (P1c, with P1a `Settings`)",
+  "item": "P1-STAT-01",
+  "m5": "FAIL",
+  "owner": "W3",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.11 Status bar (P1c, with P1a `Settings`)",
+  "item": "P1-STAT-02",
+  "m5": "FAIL",
+  "owner": "W3",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.11 Status bar (P1c, with P1a `Settings`)",
+  "item": "P1-STAT-03",
+  "m5": "FAIL",
+  "owner": "W3",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.11 Status bar (P1c, with P1a `Settings`)",
+  "item": "P1-STAT-04",
+  "m5": "FAIL",
+  "owner": "W3",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.11 Status bar (P1c, with P1a `Settings`)",
+  "item": "P1-STAT-05",
+  "m5": "FAIL",
+  "owner": "W3",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.12 Polling, idle work and performance",
+  "item": "P1-POLL-01",
+  "m5": "FAIL",
+  "owner": "M5",
+  "worker": "FAIL",
+  "consolidated": "FAIL",
+  "route": "not owned/still failing",
+  "note": ""
+ },
+ {
+  "section": "5.12 Polling, idle work and performance",
+  "item": "P1-POLL-02",
+  "m5": "PASS",
+  "owner": "M5",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.12 Polling, idle work and performance",
+  "item": "P1-POLL-03",
+  "m5": "PASS",
+  "owner": "M5",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.12 Polling, idle work and performance",
+  "item": "P1-PERF-01",
+  "m5": "REPORT_ONLY",
+  "owner": "M5",
+  "worker": "REPORT_ONLY",
+  "consolidated": "REPORT_ONLY",
+  "route": "report-only",
+  "note": ""
+ },
+ {
+  "section": "5.12 Polling, idle work and performance",
+  "item": "P1-PERF-02",
+  "m5": "FAIL",
+  "owner": "M5",
+  "worker": "FAIL",
+  "consolidated": "FAIL",
+  "route": "not owned/still failing",
+  "note": ""
+ },
+ {
+  "section": "5.13 `riwork/native` contract items (P1a)",
+  "item": "P1-NAT-01",
+  "m5": "FAIL",
+  "owner": "W3",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.13 `riwork/native` contract items (P1a)",
+  "item": "P1-NAT-02",
+  "m5": "FAIL",
+  "owner": "W3",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.13 `riwork/native` contract items (P1a)",
+  "item": "P1-NAT-03",
+  "m5": "FAIL",
+  "owner": "W3",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.13 `riwork/native` contract items (P1a)",
+  "item": "P1-NAT-04",
+  "m5": "FAIL",
+  "owner": "W3",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run",
+  "note": ""
+ },
+ {
+  "section": "5.13 `riwork/native` contract items (P1a)",
+  "item": "P1-NAT-05",
+  "m5": "FAIL",
+  "owner": "W3",
+  "worker": "PASS",
+  "consolidated": "PASS",
+  "route": "automated re-run",
+  "note": ""
+ }
+]
