@@ -1,0 +1,45 @@
+{
+  "id": "eabba609-f91f-40de-a070-eb9c107c2729",
+  "pid": 4106,
+  "uid": 501,
+  "started_token": "1793134247.440520",
+  "executable": "/Users/dominik/orca/projects/riWork-nsh-p1-host/target/debug/riwork",
+  "state_home": "/private/tmp/rwnsh-dkounh87/state",
+  "windows": [
+    {
+      "project_id": "022e2fc1-2c02-4e87-840a-2912ef939183",
+      "path": "/private/tmp/rwnsh-dkounh87/project",
+      "bounds": {
+        "x": 1070.0,
+        "y": 304.0,
+        "width": 1220.0,
+        "height": 780.0
+      },
+      "mode": "windowed",
+      "layout": null,
+      "focus_mode": false,
+      "focus_centered": false
+    },
+    {
+      "project_id": null,
+      "path": "/private/tmp/rwnsh-dkounh87/state/global-window",
+      "bounds": {
+        "x": 1092.0,
+        "y": 282.0,
+        "width": 1220.0,
+        "height": 780.0
+      },
+      "mode": "windowed",
+      "layout": null,
+      "focus_mode": false,
+      "focus_centered": false,
+      "kind": "global",
+      "global": {
+        "view": "dashboard",
+        "show_quiet": false,
+        "dashboard_sort": "priority"
+      }
+    }
+  ],
+  "updated_at": 1793134249
+}

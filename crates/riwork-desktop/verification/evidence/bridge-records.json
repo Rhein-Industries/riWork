@@ -1,0 +1,147 @@
+[
+  {
+    "kind": "params",
+    "windowId": "1ceb6944-668e-40fe-8ecf-86fa30e48af7",
+    "params": {
+      "appearance": "system",
+      "build": {
+        "commit": "ea0f2f5",
+        "debug": true,
+        "version": "0.1.0"
+      },
+      "cascade": 0,
+      "kind": "project",
+      "notice": null,
+      "path": "/private/tmp/rwnsh-dkounh87/project",
+      "projectId": "022e2fc1-2c02-4e87-840a-2912ef939183",
+      "schema": 1,
+      "windowId": "1ceb6944-668e-40fe-8ecf-86fa30e48af7"
+    }
+  },
+  {
+    "kind": "opened",
+    "windowId": "1ceb6944-668e-40fe-8ecf-86fa30e48af7",
+    "result": {
+      "created": true,
+      "windowId": "8e6ad77d-d933-4c87-b0ad-271e40f2b545"
+    }
+  },
+  {
+    "kind": "params",
+    "windowId": "8e6ad77d-d933-4c87-b0ad-271e40f2b545",
+    "params": {
+      "appearance": "system",
+      "build": {
+        "commit": "ea0f2f5",
+        "debug": true,
+        "version": "0.1.0"
+      },
+      "cascade": 1,
+      "global": {
+        "start": false,
+        "view": "dashboard"
+      },
+      "kind": "global",
+      "notice": null,
+      "path": "/private/tmp/rwnsh-dkounh87/state/global-window",
+      "projectId": null,
+      "schema": 1,
+      "windowId": "8e6ad77d-d933-4c87-b0ad-271e40f2b545"
+    }
+  },
+  {
+    "kind": "globalShow",
+    "windowId": "8e6ad77d-d933-4c87-b0ad-271e40f2b545",
+    "data": {
+      "start": false,
+      "view": "dashboard"
+    }
+  },
+  {
+    "kind": "singleton",
+    "windowId": "1ceb6944-668e-40fe-8ecf-86fa30e48af7",
+    "result": {
+      "created": false,
+      "windowId": "8e6ad77d-d933-4c87-b0ad-271e40f2b545"
+    }
+  },
+  {
+    "kind": "globalShow",
+    "windowId": "8e6ad77d-d933-4c87-b0ad-271e40f2b545",
+    "data": {
+      "start": false,
+      "view": "dashboard"
+    }
+  },
+  {
+    "kind": "listed",
+    "windowId": "1ceb6944-668e-40fe-8ecf-86fa30e48af7",
+    "windows": [
+      {
+        "key": false,
+        "kind": "project",
+        "mode": "windowed",
+        "projectId": "022e2fc1-2c02-4e87-840a-2912ef939183",
+        "title": "ISOLATED NSH project 1ceb6944-668e-40fe-8ecf-86fa30e48af7",
+        "windowId": "1ceb6944-668e-40fe-8ecf-86fa30e48af7"
+      },
+      {
+        "key": false,
+        "kind": "global",
+        "mode": "windowed",
+        "projectId": null,
+        "title": "RiWork \u2014 Global",
+        "windowId": "8e6ad77d-d933-4c87-b0ad-271e40f2b545"
+      }
+    ]
+  },
+  {
+    "kind": "placement",
+    "windowId": "1ceb6944-668e-40fe-8ecf-86fa30e48af7",
+    "placement": {
+      "frame": {
+        "height": 780,
+        "width": 1220,
+        "x": 1070,
+        "y": 304
+      },
+      "mode": "windowed",
+      "normalFrame": {
+        "height": 780,
+        "width": 1220,
+        "x": 1070,
+        "y": 304
+      },
+      "visibleFrame": {
+        "height": 1388,
+        "width": 3360,
+        "x": 0,
+        "y": 0
+      }
+    }
+  },
+  {
+    "kind": "routeReceived",
+    "windowId": "1ceb6944-668e-40fe-8ecf-86fa30e48af7",
+    "step": {
+      "kind": "projectMemo"
+    }
+  },
+  {
+    "kind": "routed",
+    "windowId": "1ceb6944-668e-40fe-8ecf-86fa30e48af7",
+    "result": {
+      "windowId": "1ceb6944-668e-40fe-8ecf-86fa30e48af7"
+    }
+  },
+  {
+    "kind": "checksPassed",
+    "windowId": "1ceb6944-668e-40fe-8ecf-86fa30e48af7",
+    "projectWindowId": "1ceb6944-668e-40fe-8ecf-86fa30e48af7",
+    "globalWindowId": "8e6ad77d-d933-4c87-b0ad-271e40f2b545"
+  },
+  {
+    "kind": "quitting",
+    "windowId": "1ceb6944-668e-40fe-8ecf-86fa30e48af7"
+  }
+]

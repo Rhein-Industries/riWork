@@ -22,6 +22,32 @@ const SOURCES: [&str; 4] = [
 const INFO_PLIST: &str = "macos/speech/Info.plist";
 
 fn main() {
+    // This value describes the source of the host, not a separately installed CLI.
+    let commit = Command::new("git")
+        .args(["rev-parse", "--short", "HEAD"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .unwrap_or_else(|| "unknown".into());
+    println!("cargo:rustc-env=RIWORK_NSH_BUILD_COMMIT={}", commit.trim());
+    // Worktree HEAD is usually symbolic: track both it and the branch ref.
+    let branch = Command::new("git")
+        .args(["symbolic-ref", "-q", "HEAD"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok());
+    for reference in std::iter::once("HEAD").chain(branch.as_deref().map(str::trim)) {
+        if let Ok(output) = Command::new("git")
+            .args(["rev-parse", "--git-path", reference])
+            .output()
+            && output.status.success()
+            && let Ok(path) = String::from_utf8(output.stdout)
+        {
+            println!("cargo:rerun-if-changed={}", path.trim());
+        }
+    }
     let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let repository = manifest
         .parent()

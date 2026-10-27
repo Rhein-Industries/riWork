@@ -1,0 +1,26 @@
+{
+  "verification_environment": "isolated fixtures only",
+  "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-host",
+  "argv": [
+    "cargo",
+    "test",
+    "-p",
+    "riwork-core",
+    "-p",
+    "riwork-engine",
+    "-p",
+    "riwork-cli",
+    "-p",
+    "riwork-desktop",
+    "--offline"
+  ],
+  "environment": {
+    "HOME": "/Users/dominik/orca/projects/riWork-nsh-p1-host/target/nsh-test-home-1mergk0e",
+    "RIWORK_HOME": "/private/tmp/rwnsh-tests-yd1ouyr4/state",
+    "RIWORK_RUNTIME_DIR": "/private/tmp/rwnsh-tests-yd1ouyr4/runtime",
+    "TMPDIR": "/tmp",
+    "CARGO_HOME": "/Users/dominik/.cargo",
+    "RUSTUP_HOME": "/Users/dominik/.rustup"
+  },
+  "exit_code": 0
+}
