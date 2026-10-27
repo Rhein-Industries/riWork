@@ -198,10 +198,13 @@ pub struct WorktreeDto {
     pub is_primary: bool,
     pub repository_root: Option<String>,
     pub created_at: u64,
+    /// Sampled on the process blocking worker, never by a rendering engine.
+    pub present: bool,
 }
 
 impl From<core::Worktree> for WorktreeDto {
     fn from(value: core::Worktree) -> Self {
+        let present = crate::presence::path_is_present(&value.path);
         Self {
             id: value.id,
             project_id: value.project_id,
@@ -210,6 +213,7 @@ impl From<core::Worktree> for WorktreeDto {
             is_primary: value.is_primary,
             repository_root: value.repository_root.as_deref().map(path_string),
             created_at: value.created_at,
+            present,
         }
     }
 }
@@ -449,6 +453,119 @@ macro_rules! snapshot_js_value {
 
 snapshot_js_value!(StoreState, "StoreEvent");
 snapshot_js_value!(SessionsSnapshot, "SessionsEvent");
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsObject)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectRequest {
+    pub root: String,
+    #[prop(skip_none)]
+    pub name: Option<String>,
+    #[prop(skip_none)]
+    pub init_git: Option<bool>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsObject)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateSessionRequest {
+    pub project_id: String,
+    #[prop(skip_none)]
+    pub worktree_id: Option<String>,
+    pub cwd: String,
+    #[prop(skip_none)]
+    pub command: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsObject)]
+#[serde(rename_all = "camelCase")]
+pub struct TabsSnapshot {
+    pub epoch: String,
+    pub revision: u64,
+    pub entries: Vec<TabEntryDto>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsObject)]
+#[serde(rename_all = "camelCase")]
+pub struct TabEntryDto {
+    pub key: String,
+    pub kind: String,
+    pub title: String,
+    pub status: String,
+    pub hidden: bool,
+    pub worker: bool,
+    pub order: usize,
+    pub parent: Option<String>,
+    pub children: Vec<TabEntryDto>,
+    pub child_count: usize,
+}
+
+impl TryFrom<riwork_engine::project_tabs::Snapshot> for TabsSnapshot {
+    type Error = anyhow::Error;
+
+    fn try_from(value: riwork_engine::project_tabs::Snapshot) -> Result<Self> {
+        // Use the engine's authoritative nesting projection. Persistence-only
+        // fields never enter the bridge and snake_case stays on disk.
+        let mut wire = riwork_engine::project_tabs::wire(&value.entries);
+        fn camelize(nodes: &mut serde_json::Value) {
+            if let Some(nodes) = nodes.as_array_mut() {
+                for node in nodes {
+                    if let Some(object) = node.as_object_mut() {
+                        if let Some(count) = object.remove("child_count") {
+                            object.insert("childCount".into(), count);
+                        }
+                        if let Some(children) = object.get_mut("children") {
+                            camelize(children);
+                        }
+                    }
+                }
+            }
+        }
+        camelize(&mut wire["entries"]);
+        Ok(Self {
+            epoch: value.epoch,
+            revision: value.revision,
+            entries: serde_json::from_value(wire["entries"].take())?,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
+pub enum TabUpdate {
+    Hide { key: String },
+    Unhide { key: String },
+    Move { key: String, before: Option<String> },
+    Rename { key: String, title: String },
+}
+
+impl From<TabUpdate> for riwork_engine::project_tabs::Update {
+    fn from(value: TabUpdate) -> Self {
+        match value {
+            TabUpdate::Hide { key } => Self::Hide { key },
+            TabUpdate::Unhide { key } => Self::Unhide { key },
+            TabUpdate::Move { key, before } => Self::Move { key, before },
+            TabUpdate::Rename { key, title } => Self::Rename { key, title },
+        }
+    }
+}
+
+impl JsValue for TabUpdate {
+    fn ts_type(types: &mut TsTypes) -> String {
+        types.declare("TabUpdate", |_| "export type TabUpdate = { action: 'hide' | 'unhide'; key: string } | { action: 'move'; key: string; before: string | null } | { action: 'rename'; key: string; title: string };".into())
+    }
+
+    fn from_js(value: JsIn<'_>) -> std::result::Result<Self, PropError> {
+        serde_json::from_value(JsonValue::from_js(value)?)
+            .map_err(|error| PropError(error.to_string()))
+    }
+
+    fn to_js<'a>(&self, host: &'a dyn JsHost) -> std::result::Result<JsOwned<'a>, PropError> {
+        serde_json::to_value(self)
+            .map_err(|error| PropError(error.to_string()))?
+            .to_js(host)
+    }
+}
+
+snapshot_js_value!(TabsSnapshot, "TabsEvent");
 
 #[cfg(test)]
 mod tests {

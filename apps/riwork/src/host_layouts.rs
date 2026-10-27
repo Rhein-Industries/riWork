@@ -2,7 +2,7 @@
 //!
 //! The registry is consulted only while opening a session or from the host.
 //! Publishing an edit never takes the registry mutex or waits on a file lock.
-use crate::persistence::LayoutPersistence;
+use crate::persistence::{LayoutPersistence, LoadedLayout};
 use arc_swap::ArcSwap;
 use riwork_core::layouts::ProjectLayout;
 use std::{
@@ -26,11 +26,29 @@ fn registry() -> &'static Mutex<Registry> {
 /// A thread-safe host handle, independent of NSH's engine-owned class instance.
 /// The host may retain it through AppView teardown to flush before terminating.
 pub struct HostLayout {
-    current: ArcSwap<ProjectLayout>,
-    persistence: Option<Arc<LayoutPersistence>>,
+    current: Option<ArcSwap<CurrentLayout>>,
     // Serializes the short publish/enqueue operation against a host close barrier.
     // No filesystem work takes this mutex on the engine thread.
-    closing: Mutex<bool>,
+    admission: Mutex<Admission>,
+}
+
+struct CurrentLayout {
+    project: ProjectLayout,
+    persistence: Arc<LayoutPersistence>,
+}
+
+#[derive(Default)]
+struct Admission {
+    closing: bool,
+    switching: bool,
+}
+
+/// Reserves the window while a replacement is prepared off the engine thread.
+/// Dropping a cancelled switch makes the previous session editable again.
+pub(crate) struct ProjectSwitch {
+    host: Arc<HostLayout>,
+    previous: ProjectLayout,
+    finished: bool,
 }
 
 /// Register after opening persistence on a blocking thread. A second live
@@ -59,9 +77,11 @@ pub fn registration(
         return Err("conflict: a layout session is already registered for this window".into());
     }
     let handle = Arc::new(HostLayout {
-        current: ArcSwap::from_pointee(snapshot),
-        persistence: Some(persistence),
-        closing: Mutex::new(false),
+        current: Some(ArcSwap::from_pointee(CurrentLayout {
+            project: snapshot,
+            persistence,
+        })),
+        admission: Mutex::new(Admission::default()),
     });
     entries
         .sessions
@@ -105,7 +125,12 @@ impl HostLayout {
     /// Publish the storage projection after each committed in-memory edit.
     /// Call before scheduling that edit's persistence snapshot.
     pub fn publish(&self, project: ProjectLayout) {
-        self.current.store(Arc::new(project));
+        let current = self.current.as_ref().expect("live host layout");
+        let persistence = current.load().persistence.clone();
+        current.store(Arc::new(CurrentLayout {
+            project,
+            persistence,
+        }));
     }
 
     /// Publish and enqueue an edited storage projection without waiting for IO.
@@ -121,19 +146,24 @@ impl HostLayout {
         &self,
         operation: impl FnOnce() -> Result<(T, Option<ProjectLayout>), String>,
     ) -> Result<T, String> {
-        let closing = self
-            .closing
+        let admission = self
+            .admission
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        if *closing {
+        if admission.closing {
             return Err("unavailable: window is closing".into());
+        }
+        if admission.switching {
+            return Err("conflict: project switch is in progress".into());
         }
         let (result, project) = operation()?;
         if let Some(project) = project {
             self.publish(project.clone());
-            self.persistence
+            self.current
                 .as_ref()
-                .ok_or_else(|| "unavailable: host layout is closed".to_owned())?
+                .expect("live host layout")
+                .load()
+                .persistence
                 .schedule(project)?;
         }
         Ok(result)
@@ -142,18 +172,18 @@ impl HostLayout {
     /// Stop accepting edits before the host queues its persistence barrier.
     /// An edit already publishing/enqueueing completes before this returns.
     pub fn begin_close(&self) {
-        *self
-            .closing
+        self.admission
             .lock()
-            .unwrap_or_else(|error| error.into_inner()) = true;
+            .unwrap_or_else(|error| error.into_inner())
+            .closing = true;
     }
 
     /// Restore editing when a close/quit flush failed and the window stays open.
     pub fn cancel_close(&self) {
-        *self
-            .closing
+        self.admission
             .lock()
-            .unwrap_or_else(|error| error.into_inner()) = false;
+            .unwrap_or_else(|error| error.into_inner())
+            .closing = false;
     }
 
     /// Frozen P1c → P1b Rust handoff name (acceptance §4.1).
@@ -168,33 +198,150 @@ impl HostLayout {
 
     /// A consistent core snapshot for the host's RuntimeWindow reload payload.
     pub fn snapshot(&self) -> ProjectLayout {
-        self.current.load_full().as_ref().clone()
+        self.current
+            .as_ref()
+            .expect("live host layout")
+            .load()
+            .project
+            .clone()
+    }
+
+    pub fn project_id(&self) -> String {
+        self.current
+            .as_ref()
+            .expect("live host layout")
+            .load()
+            .persistence
+            .project_id()
+            .to_owned()
+    }
+
+    /// Capture identity and layout from one atomic generation for host restore
+    /// snapshots; a concurrent project switch cannot mix the two projects.
+    pub fn project_snapshot(&self) -> (String, ProjectLayout) {
+        let current = self.current.as_ref().expect("live host layout").load();
+        (
+            current.persistence.project_id().to_owned(),
+            current.project.clone(),
+        )
+    }
+
+    pub(crate) fn begin_project_switch(self: &Arc<Self>) -> Result<ProjectSwitch, String> {
+        let mut admission = self
+            .admission
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if admission.closing {
+            return Err("unavailable: window is closing".into());
+        }
+        if admission.switching {
+            return Err("conflict: project switch is in progress".into());
+        }
+        admission.switching = true;
+        Ok(ProjectSwitch {
+            host: Arc::clone(self),
+            previous: self.snapshot(),
+            finished: false,
+        })
     }
 
     /// Wait for already-scheduled saves. The host calls this off the AppKit and
     /// NSH engine threads, after it stops accepting edits and before teardown.
     /// Dropping the handle is deliberately not a synchronous persistence barrier.
     pub fn flush(&self) -> Result<(), String> {
-        self.persistence
+        self.current
             .as_ref()
-            .ok_or_else(|| "unavailable: host layout is closed".to_owned())?
+            .expect("live host layout")
+            .load_full()
+            .persistence
             .flush()
+    }
+}
+
+impl ProjectSwitch {
+    /// Blocking preparation retains the old writer until an admitted commit.
+    pub(crate) fn prepare(&self, project_id: &str) -> Result<LoadedLayout, String> {
+        self.host
+            .current
+            .as_ref()
+            .expect("live host layout")
+            .load_full()
+            .persistence
+            .prepare_project_switch(project_id, &self.previous)
+    }
+
+    /// Commit model, host snapshot and writer under the same short close gate.
+    /// The operation only replaces already-prepared in-memory state.
+    pub(crate) fn commit<T>(
+        &mut self,
+        persistence: Arc<LayoutPersistence>,
+        project: ProjectLayout,
+        save: bool,
+        operation: impl FnOnce() -> T,
+    ) -> Result<T, String> {
+        let mut admission = self
+            .host
+            .admission
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if admission.closing {
+            defer_persistence(persistence);
+            return Err("unavailable: window is closing".into());
+        }
+        if save {
+            if let Err(error) = persistence.schedule(project.clone()) {
+                defer_persistence(persistence);
+                return Err(error);
+            }
+        }
+        let result = operation();
+        let previous = self
+            .host
+            .current
+            .as_ref()
+            .expect("live host layout")
+            .swap(Arc::new(CurrentLayout {
+                project,
+                persistence,
+            }));
+        // A persistence destructor flushes. Never release its final Arc here.
+        defer_persistence(previous.persistence.clone());
+        drop(previous);
+        admission.switching = false;
+        self.finished = true;
+        Ok(result)
+    }
+}
+
+impl Drop for ProjectSwitch {
+    fn drop(&mut self) {
+        if !self.finished {
+            self.host
+                .admission
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .switching = false;
+        }
     }
 }
 
 impl Drop for HostLayout {
     fn drop(&mut self) {
-        let Some(persistence) = self.persistence.take() else {
+        let Some(current) = self.current.take() else {
             return;
         };
-        let deferred = DeferredPersistence(Some(persistence));
-        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-            // If shutdown rejects/cancels this task before it starts, dropping
-            // its capture still defers the last Arc through the guarded fallback.
-            runtime.spawn_blocking(move || deferred.finish());
-        } else {
-            drop(deferred);
-        }
+        let current = current.into_inner();
+        defer_persistence(current.persistence.clone());
+    }
+}
+
+pub(crate) fn defer_persistence(persistence: Arc<LayoutPersistence>) {
+    let deferred = DeferredPersistence(Some(persistence));
+    if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+        // Cancellation drops the capture through the guarded fallback.
+        runtime.spawn_blocking(move || deferred.finish());
+    } else {
+        drop(deferred);
     }
 }
 
@@ -238,6 +385,59 @@ impl Drop for DeferredPersistence {
 mod tests {
     use super::*;
     use crate::persistence::SaveMode;
+
+    #[test]
+    fn close_during_switch_rejects_commit_and_flushes_the_old_project_only() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let _entered = runtime.enter();
+        let home = tempfile::Builder::new()
+            .prefix("riwork-host-switch-close-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let loaded =
+            LayoutPersistence::open(home.path(), "outgoing", None, SaveMode::LegacyChatState)
+                .unwrap();
+        let previous = loaded.project;
+        let host = registration(
+            &home.path().display().to_string(),
+            Arc::new(loaded.persistence),
+            previous.clone(),
+        )
+        .unwrap();
+        let mut switch = host.begin_project_switch().unwrap();
+        assert_eq!(
+            host.schedule(previous.clone()).unwrap_err(),
+            "conflict: project switch is in progress"
+        );
+        let prepared = switch.prepare("destination").unwrap();
+        let mut changed = false;
+        host.begin_close();
+        assert_eq!(
+            switch
+                .commit(
+                    Arc::new(prepared.persistence),
+                    prepared.project,
+                    true,
+                    || changed = true
+                )
+                .unwrap_err(),
+            "unavailable: window is closing"
+        );
+        assert!(
+            !changed,
+            "the engine model must not change after close wins admission"
+        );
+        host.flush_blocking().unwrap();
+        let store = riwork_core::layouts::LayoutStore::open(home.path()).unwrap();
+        assert_eq!(store.load("outgoing").unwrap(), Some(previous.clone()));
+        assert!(store.load("destination").unwrap().is_none());
+        assert_eq!(host.project_id(), "outgoing");
+        assert_eq!(host.snapshot(), previous);
+        drop(switch);
+        host.cancel_close();
+        host.schedule(previous).unwrap();
+        host.flush_blocking().unwrap();
+    }
 
     #[test]
     fn host_lookup_tracks_the_latest_snapshot_without_retaining_the_session() {

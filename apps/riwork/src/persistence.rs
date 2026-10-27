@@ -93,6 +93,29 @@ impl LayoutPersistence {
         &self.project_id
     }
 
+    /// Prepare a replacement without changing this writer. The caller can
+    /// reject the prepared layout if its window closed while disk IO ran.
+    /// All reads, flushes and worker construction happen on a blocking thread.
+    pub fn prepare_project_switch(
+        &self,
+        project_id: &str,
+        previous: &ProjectLayout,
+    ) -> Result<LoadedLayout, String> {
+        if project_id.is_empty() {
+            return Err("invalid: a layout session requires a project ID".into());
+        }
+        self.schedule(previous.clone())?;
+        self.flush()?;
+        let mut loaded = Self::open(&self.dir, project_id, None, self.mode)?;
+        match loaded.project.carry_locked_regions_from(previous) {
+            Ok(project) => loaded.project = project,
+            Err(error) => {
+                loaded.notice = Some(format!("{error}; locked regions were not carried over"));
+            }
+        }
+        Ok(loaded)
+    }
+
     /// No filesystem access or waiting on another thread. The snapshot must use
     /// storage IDs (`LayoutModel::storage_project`), not projected NodeIds. Core
     /// cannot remap its private skipped-tab map; preserving those IDs avoids

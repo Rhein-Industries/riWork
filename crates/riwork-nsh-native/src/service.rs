@@ -1,5 +1,6 @@
 //! One watcher and one sampler for the process, independent of window count.
 use std::{
+    collections::BTreeMap,
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex, OnceLock, PoisonError,
@@ -15,15 +16,21 @@ use notify::{EventKind, RecursiveMode, Watcher};
 
 use crate::{
     backend::{
-        CoreStoreBackend, EngineSessionsBackend, SessionsBackend, StoreBackend, Unavailable,
+        CoreStoreBackend, EngineSessionsBackend, EngineTabsBackend, InvalidInput, SessionsBackend,
+        StoreBackend, TabsBackend, Unavailable,
     },
-    dto::{ProjectInspectionDto, SearchHitDto, SessionsSnapshot, StoreState},
+    dto::{
+        CreateSessionRequest, FolderDto, ProjectDto, ProjectInspectionDto, ProjectRequest,
+        SearchHitDto, SessionsSnapshot, ShellSessionDto, StoreState, TabUpdate, TabsSnapshot,
+        TaskDto, WorktreeDto,
+    },
     hub::{Hub, TopicSubscription},
 };
 
 pub const SESSION_SAMPLE_INTERVAL: Duration = Duration::from_secs(2);
 const STORE: u8 = 1;
 const SESSIONS: u8 = 2;
+const TABS: u8 = 4;
 
 // Kept strongly for the life of the process, never once per AppView. The home's
 // resolution and all setup happen inside initialize's blocking-pool hop.
@@ -83,12 +90,6 @@ fn resolved_home() -> Result<PathBuf, String> {
         .clone()
 }
 
-pub(crate) fn initialized() -> Result<Arc<ProcessService>, String> {
-    PROCESS.get().cloned().ok_or_else(|| {
-        "unavailable: call riwork_nsh_native::initialize().await before creating AppViews".into()
-    })
-}
-
 /// Move every core/engine call, including service setup and hub registration, off
 /// both the AppKit thread and the NSH engine thread.
 pub(crate) async fn blocking<T: Send + 'static>(
@@ -106,6 +107,8 @@ pub(crate) fn io_error(error: impl std::fmt::Display) -> String {
 fn backend_error(error: anyhow::Error) -> String {
     let code = if error.is::<Unavailable>() {
         "unavailable"
+    } else if error.is::<InvalidInput>() {
+        "invalid"
     } else {
         "io"
     };
@@ -118,6 +121,10 @@ pub struct ProcessService {
     pub(crate) sessions: Arc<dyn SessionsBackend>,
     store_hub: Arc<Hub<StoreState>>,
     sessions_hub: Arc<Hub<SessionsSnapshot>>,
+    tabs: Arc<dyn TabsBackend>,
+    tabs_hubs: Arc<Mutex<BTreeMap<String, Arc<Hub<TabsSnapshot>>>>>,
+    store_refresh: Arc<Mutex<()>>,
+    sessions_refresh: Arc<Mutex<()>>,
     stop: Arc<AtomicBool>,
     wake: SyncSender<()>,
     worker: Option<JoinHandle<()>>,
@@ -126,6 +133,259 @@ pub struct ProcessService {
 }
 
 impl ProcessService {
+    async fn store_write<T: Send + 'static>(
+        self: &Arc<Self>,
+        operation: impl FnOnce(&dyn StoreBackend) -> anyhow::Result<T> + Send + 'static,
+    ) -> Result<T, String> {
+        let service = self.clone();
+        blocking(move || {
+            let _guard = service
+                .store_refresh
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let value = operation(service.store.as_ref()).map_err(backend_error)?;
+            // Write and publish are serialized with watcher refreshes, preventing
+            // an older read from overwriting a newer mutation in either window.
+            service
+                .store_hub
+                .publish(service.store.snapshot().map_err(backend_error)?);
+            Ok(value)
+        })
+        .await
+    }
+
+    pub async fn default_project_directory(self: &Arc<Self>) -> Result<String, String> {
+        let backend = self.store.clone();
+        blocking(move || backend.default_project_directory().map_err(backend_error)).await
+    }
+
+    pub async fn create_project(
+        self: &Arc<Self>,
+        request: ProjectRequest,
+    ) -> Result<ProjectDto, String> {
+        self.store_write(move |backend| backend.create_project(request))
+            .await
+    }
+    pub async fn create_new_project(
+        self: &Arc<Self>,
+        request: ProjectRequest,
+    ) -> Result<ProjectDto, String> {
+        self.store_write(move |backend| backend.create_new_project(request))
+            .await
+    }
+    pub async fn add_project(
+        self: &Arc<Self>,
+        request: ProjectRequest,
+    ) -> Result<ProjectDto, String> {
+        self.store_write(move |backend| backend.add_project(request))
+            .await
+    }
+    pub async fn use_project(self: &Arc<Self>, selector: String) -> Result<ProjectDto, String> {
+        self.store_write(move |backend| backend.use_project(&selector))
+            .await
+    }
+    pub async fn rename_project(
+        self: &Arc<Self>,
+        selector: String,
+        name: String,
+    ) -> Result<ProjectDto, String> {
+        self.store_write(move |backend| backend.rename_project(&selector, &name))
+            .await
+    }
+    pub async fn set_project_notifications(
+        self: &Arc<Self>,
+        selector: String,
+        enabled: bool,
+    ) -> Result<ProjectDto, String> {
+        self.store_write(move |backend| backend.set_project_notifications(&selector, enabled))
+            .await
+    }
+    pub async fn set_project_orchestrator_wakes(
+        self: &Arc<Self>,
+        selector: String,
+        enabled: bool,
+    ) -> Result<ProjectDto, String> {
+        self.store_write(move |backend| backend.set_project_orchestrator_wakes(&selector, enabled))
+            .await
+    }
+    pub async fn create_folder(
+        self: &Arc<Self>,
+        name: String,
+        parent: Option<String>,
+    ) -> Result<FolderDto, String> {
+        self.store_write(move |backend| backend.create_folder(&name, parent.as_deref()))
+            .await
+    }
+    pub async fn rename_folder(
+        self: &Arc<Self>,
+        selector: String,
+        name: String,
+    ) -> Result<FolderDto, String> {
+        self.store_write(move |backend| backend.rename_folder(&selector, &name))
+            .await
+    }
+    pub async fn move_folder(
+        self: &Arc<Self>,
+        selector: String,
+        parent: Option<String>,
+    ) -> Result<FolderDto, String> {
+        self.store_write(move |backend| backend.move_folder(&selector, parent.as_deref()))
+            .await
+    }
+    pub async fn remove_folder(self: &Arc<Self>, selector: String) -> Result<(), String> {
+        self.store_write(move |backend| backend.remove_folder(&selector))
+            .await
+    }
+    pub async fn move_project_to_folder(
+        self: &Arc<Self>,
+        selector: String,
+        folder: Option<String>,
+    ) -> Result<ProjectDto, String> {
+        self.store_write(move |backend| {
+            backend.move_project_to_folder(&selector, folder.as_deref())
+        })
+        .await
+    }
+    pub async fn sync_worktrees(
+        self: &Arc<Self>,
+        selector: String,
+    ) -> Result<Vec<WorktreeDto>, String> {
+        self.store_write(move |backend| backend.sync_worktrees(&selector))
+            .await
+    }
+    pub async fn refresh_worktrees(
+        self: &Arc<Self>,
+        selector: String,
+    ) -> Result<Vec<WorktreeDto>, String> {
+        self.store_write(move |backend| backend.refresh_worktrees(&selector))
+            .await
+    }
+    pub async fn add_task(
+        self: &Arc<Self>,
+        project: String,
+        title: String,
+        details: String,
+    ) -> Result<TaskDto, String> {
+        self.store_write(move |backend| backend.add_task(&project, &title, &details))
+            .await
+    }
+    pub async fn assign_tasks(
+        self: &Arc<Self>,
+        worktree: String,
+        tasks: Vec<String>,
+    ) -> Result<Vec<TaskDto>, String> {
+        self.store_write(move |backend| backend.assign_tasks(&worktree, &tasks))
+            .await
+    }
+    pub async fn unassign_tasks(
+        self: &Arc<Self>,
+        tasks: Vec<String>,
+    ) -> Result<Vec<TaskDto>, String> {
+        self.store_write(move |backend| backend.unassign_tasks(&tasks))
+            .await
+    }
+    pub async fn set_task_status(
+        self: &Arc<Self>,
+        selector: String,
+        status: String,
+    ) -> Result<TaskDto, String> {
+        if !matches!(status.as_str(), "todo" | "in_progress" | "done") {
+            return Err("invalid: use todo, in_progress, or done".into());
+        }
+        self.store_write(move |backend| backend.set_task_status(&selector, &status))
+            .await
+    }
+
+    async fn session_write<T: Send + 'static>(
+        self: &Arc<Self>,
+        operation: impl FnOnce(&dyn SessionsBackend) -> anyhow::Result<T> + Send + 'static,
+    ) -> Result<T, String> {
+        let service = self.clone();
+        blocking(move || {
+            let _guard = service
+                .sessions_refresh
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let result = operation(service.sessions.as_ref()).map_err(backend_error)?;
+            service.sessions.invalidate_sample();
+            service
+                .sessions_hub
+                .publish(service.sessions.sample().map_err(backend_error)?);
+            refresh_tabs(&service.tabs, &service.tabs_hubs, &service.last_error);
+            Ok(result)
+        })
+        .await
+    }
+
+    pub async fn create_session(
+        self: &Arc<Self>,
+        request: CreateSessionRequest,
+    ) -> Result<ShellSessionDto, String> {
+        self.session_write(move |backend| backend.create(request))
+            .await
+    }
+    pub async fn close_session(self: &Arc<Self>, id: String) -> Result<(), String> {
+        self.session_write(move |backend| backend.close(&id)).await
+    }
+
+    pub async fn tabs_update(
+        self: &Arc<Self>,
+        project: String,
+        update: TabUpdate,
+    ) -> Result<TabsSnapshot, String> {
+        let service = self.clone();
+        blocking(move || {
+            validate_project_id(&project)?;
+            let mut hubs = service
+                .tabs_hubs
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let result = service
+                .tabs
+                .update(&project, update)
+                .map_err(backend_error)?;
+            if let Some(hub) = hubs.get_mut(&project) {
+                hub.publish(result.clone());
+            }
+            Ok(result)
+        })
+        .await
+    }
+
+    pub async fn subscribe_tabs(
+        self: &Arc<Self>,
+        project: String,
+    ) -> Result<TopicSubscription<TabsSnapshot>, String> {
+        let service = self.clone();
+        blocking(move || {
+            validate_project_id(&project)?;
+            let mut hubs = service
+                .tabs_hubs
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let hub = if let Some(hub) = hubs.get(&project) {
+                hub.clone()
+            } else {
+                let hub = Arc::new(match service.tabs.snapshot(&project) {
+                    Ok(snapshot) => Hub::new(snapshot),
+                    Err(error) => {
+                        *service
+                            .last_error
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner) =
+                            Some(format!("initial tabs snapshot: {error}"));
+                        // Keep the subscription registered through a temporary
+                        // tmux/inventory outage; the process worker retries it.
+                        Hub::pending()
+                    }
+                });
+                hubs.insert(project, hub.clone());
+                hub
+            };
+            Ok(hub.subscribe())
+        })
+        .await
+    }
     pub async fn store_snapshot(self: &Arc<Self>) -> Result<StoreState, String> {
         let backend = self.store.clone();
         blocking(move || backend.snapshot().map_err(backend_error)).await
@@ -165,6 +425,20 @@ impl ProcessService {
         store: Arc<dyn StoreBackend>,
         sessions: Arc<dyn SessionsBackend>,
     ) -> Result<Arc<Self>> {
+        Self::with_all_backends(
+            home.clone(),
+            store,
+            sessions,
+            Arc::new(EngineTabsBackend::new(home)),
+        )
+    }
+
+    pub fn with_all_backends(
+        home: PathBuf,
+        store: Arc<dyn StoreBackend>,
+        sessions: Arc<dyn SessionsBackend>,
+        tabs: Arc<dyn TabsBackend>,
+    ) -> Result<Arc<Self>> {
         riwork_core::paths::create_private_dir(&home)?;
         let home = home.canonicalize()?;
         let (wake, receive) = mpsc::sync_channel(1);
@@ -177,7 +451,7 @@ impl ProcessService {
         let mut watcher =
             notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
                 let flags = match event {
-                    Ok(event) if event.need_rescan() => STORE | SESSIONS,
+                    Ok(event) if event.need_rescan() => STORE | SESSIONS | TABS,
                     Ok(event) if !matches!(event.kind, EventKind::Access(_)) => event
                         .paths
                         .iter()
@@ -186,7 +460,7 @@ impl ProcessService {
                     Err(error) => {
                         *watch_error.lock().unwrap_or_else(PoisonError::into_inner) =
                             Some(format!("home watcher: {error}"));
-                        STORE | SESSIONS
+                        STORE | SESSIONS | TABS
                     }
                 };
                 if flags != 0 {
@@ -209,33 +483,62 @@ impl ProcessService {
             }
         });
         let stop = Arc::new(AtomicBool::new(false));
+        let tabs_hubs = Arc::new(Mutex::new(BTreeMap::new()));
+        let store_refresh = Arc::new(Mutex::new(()));
+        let sessions_refresh = Arc::new(Mutex::new(()));
         let worker_stop = stop.clone();
         let worker_store = store.clone();
         let worker_sessions = sessions.clone();
         let worker_store_hub = store_hub.clone();
         let worker_sessions_hub = sessions_hub.clone();
         let worker_error = last_error.clone();
+        let worker_tabs = tabs.clone();
+        let worker_tabs_hubs = tabs_hubs.clone();
+        let worker_store_refresh = store_refresh.clone();
+        let worker_sessions_refresh = sessions_refresh.clone();
         let worker = thread::Builder::new()
             .name("riwork-native-service".into())
             .spawn(move || {
                 let mut next_sample = Instant::now() + SESSION_SAMPLE_INTERVAL;
+                let mut next_presence = next_sample;
                 while !worker_stop.load(Ordering::Acquire) {
-                    let _ =
-                        receive.recv_timeout(next_sample.saturating_duration_since(Instant::now()));
+                    let _ = receive.recv_timeout(
+                        next_sample
+                            .min(next_presence)
+                            .saturating_duration_since(Instant::now()),
+                    );
                     if worker_stop.load(Ordering::Acquire) {
                         break;
                     }
                     let flags = dirty.swap(0, Ordering::AcqRel);
-                    if flags & STORE != 0 {
-                        match worker_store.snapshot() {
+                    let sample_due = Instant::now() >= next_sample;
+                    let presence_due = Instant::now() >= next_presence;
+                    if flags & STORE != 0 || presence_due {
+                        let _guard = worker_store_refresh
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner);
+                        let snapshot = if presence_due {
+                            worker_store.refresh_presence()
+                        } else {
+                            worker_store.snapshot()
+                        };
+                        match snapshot {
                             Ok(snapshot) => worker_store_hub.publish(snapshot),
                             Err(error) => {
                                 *worker_error.lock().unwrap_or_else(PoisonError::into_inner) =
                                     Some(format!("store snapshot: {error}"))
                             }
                         }
+                        if presence_due {
+                            // Frequent session activity can reset its fallback
+                            // deadline, but must not postpone presence forever.
+                            next_presence = Instant::now() + SESSION_SAMPLE_INTERVAL;
+                        }
                     }
-                    if flags & SESSIONS != 0 || Instant::now() >= next_sample {
+                    if flags & SESSIONS != 0 || sample_due {
+                        let _guard = worker_sessions_refresh
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner);
                         if flags & SESSIONS != 0 {
                             worker_sessions.invalidate_sample();
                         }
@@ -249,6 +552,9 @@ impl ProcessService {
                         // Only this thread performs the two-second tmux fallback.
                         next_sample = Instant::now() + SESSION_SAMPLE_INTERVAL;
                     }
+                    if flags & (TABS | SESSIONS | STORE) != 0 || sample_due || presence_due {
+                        refresh_tabs(&worker_tabs, &worker_tabs_hubs, &worker_error);
+                    }
                 }
             })?;
         Ok(Arc::new(Self {
@@ -257,6 +563,10 @@ impl ProcessService {
             sessions,
             store_hub,
             sessions_hub,
+            tabs,
+            tabs_hubs,
+            store_refresh,
+            sessions_refresh,
             stop,
             wake,
             worker: Some(worker),
@@ -310,7 +620,41 @@ fn relevant(path: &Path, home: &Path) -> u8 {
         || path.starts_with(home.join("agent-activity"))
     {
         SESSIONS
+    } else if path.starts_with(home.join("project-tabs"))
+        && path
+            .extension()
+            .is_some_and(|extension| extension == "json")
+        || path.starts_with(home.join("chats"))
+    {
+        TABS
     } else {
         0
     }
+}
+
+pub(crate) fn validate_project_id(project: &str) -> Result<(), String> {
+    riwork_engine::project_tabs::TabStore::at(PathBuf::new(), project)
+        .map(|_| ())
+        .map_err(|error| format!("invalid: {error}"))
+}
+
+fn refresh_tabs(
+    backend: &Arc<dyn TabsBackend>,
+    hubs: &Mutex<BTreeMap<String, Arc<Hub<TabsSnapshot>>>>,
+    error: &Mutex<Option<String>>,
+) {
+    let mut hubs = hubs.lock().unwrap_or_else(PoisonError::into_inner);
+    hubs.retain(|project, hub| {
+        if !hub.has_subscribers() {
+            return false;
+        }
+        match backend.snapshot(project) {
+            Ok(snapshot) => hub.publish(snapshot),
+            Err(failure) => {
+                *error.lock().unwrap_or_else(PoisonError::into_inner) =
+                    Some(format!("tabs snapshot: {failure}"))
+            }
+        }
+        true
+    });
 }
