@@ -10,6 +10,7 @@ export function DeferredPanel(props: {
   id: string;
   title: string;
   visible: boolean;
+  textSize?: number;
   onPress: () => void;
   theme?: () => InterfaceTheme;
   settings?: () => SettingsDto | null;

@@ -1,0 +1,26 @@
+    Blocking waiting for file lock on build directory
+   Compiling riwork-nsh-native v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p1-fix-host/crates/riwork-nsh-native)
+   Compiling riwork-desktop v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p1-fix-host/crates/riwork-desktop)
+warning: function `missing_folder_request` is never used
+ --> crates/riwork-desktop/tests/../src/nsh_startup.rs:4:15
+  |
+4 | pub(crate) fn missing_folder_request(args: &[String]) -> bool {
+  |               ^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `riwork-desktop` (test "startup_environment") generated 1 warning
+   Compiling riwork-nsh-workspace v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p1-fix-host/apps/riwork)
+    Finished `test` profile [unoptimized] target(s) in 9.49s
+     Running unittests src/nsh_main.rs (/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/deps/riwork-92de6b2bd40abb71)
+     Running tests/appkit_shell.rs (/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/deps/appkit_shell-b6e34f80c345beb2)
+     Running tests/cli_contract.rs (/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/deps/cli_contract-6e57bd856d612880)
+     Running tests/startup_environment.rs (/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/deps/startup_environment-7ff66f560e47496d)
+     Running unittests src/lib.rs (/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/deps/riwork_nsh_native-5040239e1669082b)
+     Running tests/native_headless.rs (/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/deps/native_headless-e69dc6efd1bb8215)
+     Running tests/services.rs (/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/deps/services-b88be62c3729c409)
+     Running unittests src/lib.rs (/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/deps/riwork_nsh_workspace-fc66a66be2f51206)
+     Running tests/layout_roundtrip.rs (/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/deps/layout_roundtrip-f45a2c59177beb16)
+     Running tests/window_size.rs (/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/deps/window_size-eed36fcf488e95be)
+   Doc-tests riwork_nsh_native
+   Doc-tests riwork_nsh_workspace

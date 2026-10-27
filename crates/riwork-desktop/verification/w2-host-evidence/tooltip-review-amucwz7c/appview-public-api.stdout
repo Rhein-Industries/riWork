@@ -1,0 +1,18 @@
+39:pub fn set_ui_sets(sets: Vec<nsh_core::element::Registry>) {
+52:pub fn set_root(root: fn() -> Root) {
+208:    pub fn new(mtm: MainThreadMarker, options: AppOptions) -> Rc<AppView> {
+245:    pub fn view(&self) -> Retained<NSView> {
+255:    pub fn host(&self) -> nsh_engine::HostChannel {
+263:    pub fn set_limits(&self, limits: Limits) {
+270:    pub fn set_cache(&self, cache: nsh_engine::CacheOptions) {
+275:    pub fn load(&self, app: App) {
+311:    pub fn set_asset_base(&self, base: Option<AssetBase>) {
+318:    pub fn register_component(&self, name: &str, factory: crate::native::ComponentFactory) {
+327:    pub fn set_fps_monitor(&self, show: bool) {
+339:    pub fn perf_monitor(&self) -> Option<Arc<nsh_engine::perf::PerfMonitor>> {
+347:    pub fn set_locale(&self, locale: Option<Locale>) {
+361:    pub fn set_font_scale(&self, scale: Option<f32>) {
+376:    pub fn set_theme_overrides(&self, json: Option<&str>) -> Result<(), nsh_base::ThemeError> {
+384:    pub fn stop(&self) {
+497:pub fn quit_app() {
+577:pub fn run_app(source: AppSource, options: AppOptions) -> std::process::ExitCode {

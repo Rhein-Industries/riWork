@@ -1,0 +1,124 @@
+{
+  "theme": "tokyo_night",
+  "list": {
+    "current_space_id": 1,
+    "windows": [
+      {
+        "app_name": "riwork",
+        "bounds": {
+          "height": 780,
+          "width": 1220,
+          "x": 1070,
+          "y": 334
+        },
+        "current_space_id": 1,
+        "is_on_screen": true,
+        "layer": 0,
+        "on_current_space": true,
+        "pid": 24904,
+        "space_ids": [
+          1
+        ],
+        "title": "RiWork · Alpha",
+        "window_id": 6616,
+        "z_index": 287
+      },
+      {
+        "app_name": "riwork",
+        "bounds": {
+          "height": 780,
+          "width": 1220,
+          "x": 1092,
+          "y": 356
+        },
+        "current_space_id": 1,
+        "is_on_screen": true,
+        "layer": 0,
+        "on_current_space": true,
+        "pid": 24904,
+        "space_ids": [
+          1
+        ],
+        "title": "RiWork · Beta",
+        "window_id": 6617,
+        "z_index": 73
+      }
+    ]
+  },
+  "state": {
+    "app_name": "riwork",
+    "capture_id": "capture_03c60697d25544c4a7f37892019a46ae_00000000000000d3",
+    "element_count": 96,
+    "elements": [
+      {
+        "actions": [
+          "AXRaise"
+        ],
+        "depth": 0,
+        "element_index": 0,
+        "element_token": "s0000010d:0",
+        "frame": {
+          "h": 780,
+          "w": 1220,
+          "x": 1070,
+          "y": 334
+        },
+        "label": "RiWork · Alpha",
+        "role": "AXWindow",
+        "screenshot_frame": {
+          "h": 873,
+          "w": 1365,
+          "x": 0,
+          "y": 0
+        }
+      },
+      {
+        "actions": [
+          "AXPress"
+        ],
+        "depth": 1,
+        "element_index": 2,
+        "element_token": "s0000010d:2",
+        "enabled": true,
+        "frame": {
+          "h": 16,
+          "w": 16,
+          "x": 1079,
+          "y": 341
+        },
+        "label": "Close",
+        "parent_index": 0,
+        "role": "AXButton",
+        "screenshot_frame": {
+          "h": 18,
+          "w": 18,
+          "x": 10,
+          "y": 8
+        }
+      }
+    ],
+    "elements_complete": false,
+    "filtered_element_count": 2,
+    "pid": 24904,
+    "returned_element_count": 2,
+    "screenshot_file_path": "/private/tmp/riwork-w2-host/basic-qxirw2fk/win-06-tokyo_night.png",
+    "screenshot_frame_valid": true,
+    "screenshot_height": 873,
+    "screenshot_mime_type": "image/png",
+    "screenshot_scale": 2,
+    "screenshot_width": 1365,
+    "snapshot_id": "s0000010d",
+    "timeout_ms": 1000,
+    "total_element_count": 96,
+    "tree_format": "elements",
+    "truncated": false,
+    "window_bounds": {
+      "height": 780,
+      "width": 1220,
+      "x": 1070,
+      "y": 334
+    },
+    "window_id": 6616,
+    "window_title": "RiWork · Alpha"
+  }
+}

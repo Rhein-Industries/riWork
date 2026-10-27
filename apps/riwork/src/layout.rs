@@ -148,13 +148,34 @@ impl LayoutModel {
         self.extent
     }
 
-    /// Reuse an existing panel in place; a new panel opens in the active pane.
+    /// Reuse an existing panel in place; a new panel opens in the active pane,
+    /// except Files, which follows GPUI into the navigation pane when one exists.
     /// Dashboard is a global-window route and cannot become a project tab.
     pub fn open_panel(&mut self, panel: PanelKind) -> Result<DockAreaLayout, String> {
         if panel == PanelKind::Dashboard {
             return Err("refused: Dashboard belongs to the global window".into());
         }
-        self.open_tab(SavedTab::Panel { panel }, self.project.active_pane)
+        let navigation = (panel == PanelKind::Files)
+            .then(|| {
+                self.project.panes.iter().find_map(|(id, pane)| {
+                    pane.tabs
+                        .iter()
+                        .any(|tab| {
+                            matches!(
+                                tab,
+                                SavedTab::Panel {
+                                    panel: PanelKind::Projects
+                                        | PanelKind::Worktrees
+                                        | PanelKind::Files
+                                }
+                            )
+                        })
+                        .then_some(*id)
+                })
+            })
+            .flatten();
+        let target = navigation.unwrap_or(self.project.active_pane);
+        self.open_tab(SavedTab::Panel { panel }, target)
     }
 
     /// Keep the panel API on the terminal placement path, including remembered
@@ -354,6 +375,54 @@ impl LayoutModel {
         riwork_core::layouts::apply_default_layout(&mut self.project)?;
         self.allocated_pane_ids
             .extend(self.project.layout.pane_ids());
+        Ok(self.dock(self.extent.unwrap_or(DEFAULT_EXTENT)))
+    }
+
+    /// Split only the layout scaffold. Terminal creation is owned by Sessions.
+    pub fn split_active(&mut self, down: bool) -> Result<DockAreaLayout, String> {
+        let id = (1..=MAX_INITIAL_DOCK_PANE_ID)
+            .find(|id| !self.allocated_pane_ids.contains(id))
+            .ok_or("unavailable: no pane identifiers remain")?;
+        let axis = if down {
+            Axis::Stacked
+        } else {
+            Axis::SideBySide
+        };
+        if !self
+            .project
+            .layout
+            .split(self.project.active_pane, axis, id)
+        {
+            return Err("not_found: active pane".into());
+        }
+        self.allocated_pane_ids.insert(id);
+        self.project.panes.insert(id, SavedPane::default());
+        self.project.active_pane = id;
+        self.project.normalize()?;
+        Ok(self.dock(self.extent.unwrap_or(DEFAULT_EXTENT)))
+    }
+
+    /// Remove a placeholder from this window only; never end its session.
+    pub fn close_active(&mut self, whole_pane: bool) -> Result<DockAreaLayout, String> {
+        let id = self.project.active_pane;
+        if self.project.effective_locked_panes().contains(&id) {
+            return Err("refused: unlock the pane before closing its tabs".into());
+        }
+        let pane = self
+            .project
+            .panes
+            .get_mut(&id)
+            .ok_or("not_found: active pane")?;
+        if whole_pane {
+            pane.tabs.clear();
+        } else if let Some(key) = &pane.active_tab_key {
+            pane.tabs.retain(|tab| &tab.key() != key);
+        }
+        pane.shell_ids.clear();
+        pane.active_shell_id = None;
+        pane.active_tab_key = None;
+        remove_emptied(&mut self.project, id, &self.unknown_panes);
+        self.project.normalize()?;
         Ok(self.dock(self.extent.unwrap_or(DEFAULT_EXTENT)))
     }
 
@@ -1389,6 +1458,107 @@ mod tests {
         assert!(model.show_shell("bad:shell").is_err());
         assert!(model.open_panel(PanelKind::Dashboard).is_err());
         assert_eq!(model.project(), &before);
+    }
+
+    #[test]
+    fn window_panel_commands_reuse_identity_and_files_find_the_navigation_pane() {
+        let mut model = LayoutModel::new(fixture(Layout::Pane(1), &[(1, &["first"])])).unwrap();
+        model.open_panel(PanelKind::Projects).unwrap();
+        model.split_active(false).unwrap();
+        let work = model.project().active_pane;
+        assert_ne!(work, 1);
+        model.open_panel(PanelKind::Files).unwrap();
+        assert_eq!(model.project().active_pane, 1);
+        assert_eq!(
+            model.project().panes[&1].active_tab_key.as_deref(),
+            Some("panel:files")
+        );
+        model.select_pane(work).unwrap();
+        model.open_panel(PanelKind::Files).unwrap();
+        assert_eq!(
+            model
+                .project()
+                .panes
+                .values()
+                .flat_map(|pane| &pane.tabs)
+                .filter(|tab| tab.key() == "panel:files")
+                .count(),
+            1
+        );
+        model.open_panel(PanelKind::Settings).unwrap();
+        model.close_active(false).unwrap();
+        assert!(
+            model
+                .project()
+                .panes
+                .values()
+                .flat_map(|pane| &pane.tabs)
+                .any(|tab| tab.key() == "shell:first")
+        );
+        assert!(
+            !model
+                .project()
+                .panes
+                .values()
+                .flat_map(|pane| &pane.tabs)
+                .any(|tab| tab.key() == "panel:settings")
+        );
+        model.toggle_lock(1).unwrap();
+        let before = model.storage_project();
+        assert!(
+            model
+                .close_active(true)
+                .unwrap_err()
+                .starts_with("refused:")
+        );
+        assert_eq!(model.storage_project(), before);
+        assert!(model.open_panel(PanelKind::Dashboard).is_err());
+    }
+
+    #[test]
+    fn default_layout_command_keeps_sessions_selection_and_is_idempotent() {
+        let mut model =
+            LayoutModel::new(fixture(Layout::Pane(7), &[(7, &["first", "second"])])).unwrap();
+        model.open_panel(PanelKind::Settings).unwrap();
+        model.select_panel("shell:second").unwrap();
+        model.default_layout().unwrap();
+        let project = model.storage_project();
+        let navigation = project.layout.first_pane();
+        let main = project.main_pane.unwrap();
+        assert_eq!(main, 7);
+        assert_eq!(project.active_pane, main);
+        assert_eq!(
+            project.panes[&main].active_tab_key.as_deref(),
+            Some("shell:second")
+        );
+        assert_eq!(
+            project.panes[&main]
+                .tabs
+                .iter()
+                .map(SavedTab::key)
+                .collect::<Vec<_>>(),
+            ["shell:first", "shell:second", "panel:settings"]
+        );
+        assert_eq!(
+            project.panes[&navigation]
+                .tabs
+                .iter()
+                .map(SavedTab::key)
+                .collect::<Vec<_>>(),
+            [
+                "panel:projects",
+                "panel:files",
+                "panel:worktrees",
+                "panel:tasks",
+                "panel:shells"
+            ]
+        );
+        assert_eq!(
+            project.effective_locked_panes(),
+            HashSet::from([navigation])
+        );
+        model.default_layout().unwrap();
+        assert_eq!(model.storage_project(), project);
     }
 
     fn split(axis: Axis, ratio: f32, first: Layout, second: Layout) -> Layout {

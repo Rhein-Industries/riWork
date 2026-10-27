@@ -1,0 +1,6 @@
+216:        #[unsafe(method(applicationDidResignActive:))]
+239:        #[unsafe(method(windowDidResignKey:))]
+258:        #[unsafe(method(windowDidMove:))]
+492:                "frame": geometry(w.window.frame()), "appActive": self.app.isActive()});
+1983:            let baseline = json!({"key":false,"visible":true,"occluded":false,"mode":"windowed","backingScale":2.,"frame":{"x":100.,"y":100.,"width":800.,"height":600.},"appActive":true});
+1996:                ("appActive", json!(false)),

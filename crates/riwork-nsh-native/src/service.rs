@@ -61,6 +61,8 @@ pub fn install_process_service(service: Arc<ProcessService>) -> Result<(), Strin
 /// Initialize before the first AppView. Calls from multiple windows also converge
 /// here; RIWORK_HOME is resolved just once and cannot be supplied from JavaScript.
 pub async fn initialize() -> Result<Arc<ProcessService>, String> {
+    #[cfg(feature = "test-support")]
+    crate::host_flush::install_fixture();
     blocking(|| {
         let _start = START.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(service) = PROCESS.get() {
@@ -68,12 +70,27 @@ pub async fn initialize() -> Result<Arc<ProcessService>, String> {
         }
         let home = resolved_home()?;
         let store = Arc::new(CoreStoreBackend::new(home.clone()));
-        let sessions = Arc::new(EngineSessionsBackend::new(home.clone()));
+        let sessions: Arc<dyn SessionsBackend> = session_backend(&home)?;
         let service = ProcessService::with_backends(home, store, sessions).map_err(io_error)?;
         let _ = PROCESS.set(service.clone());
         Ok(service)
     })
     .await
+}
+
+fn session_backend(home: &Path) -> Result<Arc<dyn SessionsBackend>, String> {
+    #[cfg(feature = "test-support")]
+    if let Some(path) = std::env::var_os("RIWORK_NSH_FAKE_SESSIONS") {
+        let path = PathBuf::from(path).canonicalize().map_err(io_error)?;
+        let home = home.canonicalize().map_err(io_error)?;
+        if !path.starts_with(&home) {
+            return Err("invalid: fake sessions must belong to this fixture home".into());
+        }
+        return crate::testing::FakeSessions::from_file(&path)
+            .map(|sessions| Arc::new(sessions) as Arc<dyn SessionsBackend>)
+            .map_err(io_error);
+    }
+    Ok(Arc::new(EngineSessionsBackend::new(home.to_owned())))
 }
 
 /// Shared by layout IO and service startup. Layout-only headless runners do not

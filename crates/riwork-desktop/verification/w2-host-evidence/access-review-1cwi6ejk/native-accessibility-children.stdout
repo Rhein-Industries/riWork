@@ -1,0 +1,18 @@
+
+        // None while VoiceOver must not reach the children
+        // ([`crate::access::hides_children`]), else AppKit's.
+        #[unsafe(method_id(accessibilityChildren))]
+        fn accessibility_children(&self) -> Option<Retained<NSArray>> {
+            let hides = self
+                .ivars()
+                .state
+                .try_borrow()
+                .is_ok_and(|s| crate::access::hides_children(&s));
+            if hides {
+                Some(NSArray::new())
+            } else {
+                // SAFETY: NSView's own children.
+                unsafe { msg_send![super(self), accessibilityChildren] }
+            }
+        }
+

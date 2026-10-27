@@ -1,0 +1,16 @@
+dev = [
+    "js",
+    "dep:nsh-dev",
+    "dep:nsh-testing",
+]
+js = ["nsh-engine/js"]
+
+[lib]
+name = "nsh_platform_macos"
+path = "src/lib.rs"
+
+[dependencies.log]
+version = "0.4"
+
+[target.'cfg(target_os = "macos")'.dependencies.block2]
+version = "0.6.2"

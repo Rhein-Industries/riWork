@@ -1,0 +1,35 @@
+{
+  "status": "passed",
+  "binary": "/private/tmp/riwork-w2-host/fixture-bin/riwork",
+  "sha256": "eb4502a8b7d8170b86f2b7b9c74fc20c1d359aec76e974038de27be2b9400748",
+  "fixture": "/private/tmp/riwork-w2-host/startup-error-ouma1czu",
+  "argv": [
+    "/private/tmp/riwork-w2-host/fixture-bin/riwork",
+    "/private/tmp/riwork-w2-host/startup-error-ouma1czu/project"
+  ],
+  "cwd": "/private/tmp/riwork-w2-host/startup-error-ouma1czu",
+  "environment": {
+    "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+    "HOME": "/private/tmp/riwork-w2-host/startup-error-ouma1czu/user",
+    "TMPDIR": "/private/tmp/riwork-w2-host/startup-error-ouma1czu/tmp",
+    "TMUX_TMPDIR": "/private/tmp/riwork-w2-host/startup-error-ouma1czu/tmux",
+    "XDG_CONFIG_HOME": "/private/tmp/riwork-w2-host/startup-error-ouma1czu/user/.config",
+    "RIWORK_HOME": "/private/tmp/riwork-w2-host/startup-error-ouma1czu/notadir",
+    "RIWORK_RUNTIME_DIR": "/private/tmp/riwork-w2-host/startup-error-ouma1czu/run"
+  },
+  "exit_code": 2,
+  "stdout": "/private/tmp/riwork-w2-host/startup-error-ouma1czu/startup.stdout",
+  "stderr": "/private/tmp/riwork-w2-host/startup-error-ouma1czu/startup.stderr",
+  "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "stderr_sha256": "9bae703deaa8bf99b6670137e0d413ca4c5bca15afee9e69701c4a1734b347a7",
+  "process_check": {
+    "argv": [
+      "/bin/ps",
+      "-axo",
+      "pid=,command="
+    ],
+    "contains_literal": "/private/tmp/riwork-w2-host/startup-error-ouma1czu",
+    "matching_rows": []
+  },
+  "tmux_entries": []
+}

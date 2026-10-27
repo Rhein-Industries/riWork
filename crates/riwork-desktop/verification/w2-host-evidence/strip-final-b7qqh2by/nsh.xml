@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="nsh test" tests="36" failures="0" errors="0" skipped="0" time="18.441">
+  <testsuite name="apps/riwork/App.test.tsx" tests="8" failures="0" errors="0" skipped="0" time="3.072">
+    <testcase classname="apps/riwork/App.test.tsx" name="opens a core-written layout with shell identity, empty unknown pane, and window chrome" time="0.128"/>
+    <testcase classname="apps/riwork/App.test.tsx" name="DockArea selection and keyboard changes go through the session and remain window-local" time="0.544"/>
+    <testcase classname="apps/riwork/App.test.tsx" name="locked pixel geometry survives resize and pane menu edits remain in Rust" time="0.644"/>
+    <testcase classname="apps/riwork/App.test.tsx" name="production entry routes global windows without opening a project DockArea" time="0.118"/>
+    <testcase classname="apps/riwork/App.test.tsx" name="production restore installs its native layout before confirming exactly once" time="0.216"/>
+    <testcase classname="apps/riwork/App.test.tsx" name="a restored global entry confirms without opening a project session" time="0.105"/>
+    <testcase classname="apps/riwork/App.test.tsx" name="clicking an already selected tab and an empty pane changes the active pane" time="0.643"/>
+    <testcase classname="apps/riwork/App.test.tsx" name="a real DockArea drag moves one tab into the opaque empty pane through Rust" time="0.674"/>
+  </testsuite>
+  <testsuite name="apps/riwork/model.test.ts" tests="6" failures="0" errors="0" skipped="0" time="0.000">
+    <testcase classname="apps/riwork/model.test.ts" name="number shortcuts consume drawn order and skip panels only with shared membership" time="0.000"/>
+    <testcase classname="apps/riwork/model.test.ts" name="tab cycling wraps in drawn order and respects a modal" time="0.000"/>
+    <testcase classname="apps/riwork/model.test.ts" name="empty sentinels never participate in tab shortcuts or the main-pane summary" time="0.000"/>
+    <testcase classname="apps/riwork/model.test.ts" name="main-pane summaries preserve active identity and lookup is pane-independent" time="0.000"/>
+    <testcase classname="apps/riwork/model.test.ts" name="window titles name remote projects and update only when changed" time="0.000"/>
+    <testcase classname="apps/riwork/model.test.ts" name="panel labels preserve persisted legacy identities" time="0.000"/>
+  </testsuite>
+  <testsuite name="apps/riwork/tests/Chrome.test.tsx" tests="7" failures="0" errors="0" skipped="0" time="2.195">
+    <testcase classname="apps/riwork/tests/Chrome.test.tsx" name="P1-WIN-06 ghostty: island remains a drag target until fullscreen" time="0.320"/>
+    <testcase classname="apps/riwork/tests/Chrome.test.tsx" name="P1-WIN-06 native: island remains a drag target until fullscreen" time="0.313"/>
+    <testcase classname="apps/riwork/tests/Chrome.test.tsx" name="P1-WIN-06 ri_work: island remains a drag target until fullscreen" time="0.315"/>
+    <testcase classname="apps/riwork/tests/Chrome.test.tsx" name="P1-WIN-06 catppuccin: island remains a drag target until fullscreen" time="0.311"/>
+    <testcase classname="apps/riwork/tests/Chrome.test.tsx" name="P1-WIN-06 tokyo_night: island remains a drag target until fullscreen" time="0.311"/>
+    <testcase classname="apps/riwork/tests/Chrome.test.tsx" name="P1-WIN-06 gruvbox_light: island remains a drag target until fullscreen" time="0.313"/>
+    <testcase classname="apps/riwork/tests/Chrome.test.tsx" name="P1-WIN-06 hermes: island remains a drag target until fullscreen" time="0.311"/>
+  </testsuite>
+  <testsuite name="apps/riwork/tests/EditMenu.test.tsx" tests="1" failures="0" errors="0" skipped="0" time="0.218">
+    <testcase classname="apps/riwork/tests/EditMenu.test.tsx" name="P1-MENU-02: host Copy with no selection leaves the clipboard unchanged" time="0.218"/>
+  </testsuite>
+  <testsuite name="apps/riwork/tests/Idle.test.tsx" tests="1" failures="0" errors="0" skipped="0" time="0.375">
+    <testcase classname="apps/riwork/tests/Idle.test.tsx" name="P1-POLL-02: a settled project sends no host work during 60 seconds of idle time" time="0.375"/>
+  </testsuite>
+  <testsuite name="apps/riwork/tests/Keyboard.test.tsx" tests="5" failures="0" errors="0" skipped="0" time="9.219">
+    <testcase classname="apps/riwork/tests/Keyboard.test.tsx" name="deferred chords retain their context and host-only global keys are absent" time="0.000"/>
+    <testcase classname="apps/riwork/tests/Keyboard.test.tsx" name="P1-MENU-03 P1-KEYS-03 panel chords and host commands select one placeholder and new window routes this project" time="4.268"/>
+    <testcase classname="apps/riwork/tests/Keyboard.test.tsx" name="P1-KEYS-04 close modal blocks window actions and modifier shortcuts dismiss All tabs before selecting" time="0.846"/>
+    <testcase classname="apps/riwork/tests/Keyboard.test.tsx" name="deferred keys are inert and all tab-cycle aliases preserve the selected placeholder" time="2.539"/>
+    <testcase classname="apps/riwork/tests/Keyboard.test.tsx" name="P1-KEYS-04 arrows stay inside All tabs; Escape closes it and restores window shortcuts" time="1.565"/>
+  </testsuite>
+  <testsuite name="apps/riwork/tests/Window.test.tsx" tests="4" failures="0" errors="0" skipped="0" time="0.546">
+    <testcase classname="apps/riwork/tests/Window.test.tsx" name="P1-MENU-04 first Dock post waits for stored name and unchanged metadata never reposts" time="0.000"/>
+    <testcase classname="apps/riwork/tests/Window.test.tsx" name="P1-WIN-05 stored project labels and remote metadata update a title only on change" time="0.000"/>
+    <testcase classname="apps/riwork/tests/Window.test.tsx" name="P1-PROC-04 fallback notice is exposed as an accessible alert" time="0.116"/>
+    <testcase classname="apps/riwork/tests/Window.test.tsx" name="P1-WIN-09 occlusion is consumed without host work; fullscreen updates the native island" time="0.429"/>
+  </testsuite>
+  <testsuite name="apps/riwork/tests/keymap.test.ts" tests="2" failures="0" errors="0" skipped="0" time="0.000">
+    <testcase classname="apps/riwork/tests/keymap.test.ts" name="P1-KEYS-01 no key is bound twice and every GPUI chord is present" time="0.000"/>
+    <testcase classname="apps/riwork/tests/keymap.test.ts" name="P1-KEYS-03 app equivalents are never installed in a TSX window keymap" time="0.000"/>
+  </testsuite>
+  <testsuite name="apps/riwork/tests/metrics.test.ts" tests="2" failures="0" errors="0" skipped="0" time="0.000">
+    <testcase classname="apps/riwork/tests/metrics.test.ts" name="P1-WIN-06 chrome dimensions and top-pane drag regions match P-SHELL" time="0.000"/>
+    <testcase classname="apps/riwork/tests/metrics.test.ts" name="P1-WIN-06 empty strip extends after measured tabs without covering them" time="0.000"/>
+  </testsuite>
+</testsuites>

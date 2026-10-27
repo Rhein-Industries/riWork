@@ -1,0 +1,27 @@
+[
+  {
+    "id": "6ac39618-d1d3-49d9-98df-200ea2fdb4ec",
+    "pid": 62142,
+    "uid": 501,
+    "started_token": "1793138875.738198",
+    "executable": "/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/riwork",
+    "state_home": "/private/tmp/rww2-8ybyzrst/home",
+    "windows": [
+      {
+        "project_id": "9d6b37e3-1a44-420e-af06-432904626310",
+        "path": "/private/tmp/rww2-8ybyzrst/repos/alpha",
+        "bounds": {
+          "x": 1070.0,
+          "y": 334.0,
+          "width": 1220.0,
+          "height": 780.0
+        },
+        "mode": "windowed",
+        "layout": null,
+        "focus_mode": false,
+        "focus_centered": false
+      }
+    ],
+    "updated_at": 1793138875
+  }
+]

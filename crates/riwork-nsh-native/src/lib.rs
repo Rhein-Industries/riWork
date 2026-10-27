@@ -8,11 +8,14 @@ pub mod appearance;
 pub mod backend;
 pub mod dashboard;
 pub mod dto;
+pub mod host_flush;
 pub mod hub;
 mod presence;
 pub mod service;
 pub mod settings;
 pub mod tabs;
+#[cfg(feature = "test-support")]
+pub mod testing;
 
 use futures_util::future::{AbortHandle, Abortable};
 use nsh_core::{element::Cleanup, prelude::*};

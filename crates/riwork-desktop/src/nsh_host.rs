@@ -26,11 +26,14 @@ use nsh_platform_macos::{
 };
 use riwork_core::{
     global_window::GlobalWindowStore,
-    layouts::{WindowFrame, WindowSize},
+    layouts::{LayoutStore, WindowFrame, WindowSize},
     paths,
+    settings::SettingsStore,
     store::Store,
 };
-use riwork_engine::runtime::{RuntimeWindow, WindowGeometry, WindowKind, WindowMode};
+use riwork_engine::runtime::{
+    ReloadLaunch, ReloadRequest, RuntimeWindow, WindowGeometry, WindowKind, WindowMode,
+};
 use riwork_nsh_native as native;
 use riwork_nsh_workspace::host_layouts::{self, HostLayout};
 use serde::Deserialize;
@@ -48,8 +51,6 @@ use uuid::Uuid;
 
 const APP_ID: &str = "dev.riwork.shell";
 const CAPABILITIES: &str = r#"{"host":["window.*","app.*","system.*"]}"#;
-const RESTART_PENDING: &str =
-    "unavailable: NSH restart handoff is not enabled in the Phase 1 integration subset";
 
 fn parse_appearance(value: &str) -> Result<Appearance, String> {
     match value {
@@ -143,6 +144,7 @@ impl OpenOptions {
 struct PreparedWindow {
     options: OpenOptions,
     runtime: RuntimeWindow,
+    opening_size: WindowSize,
     restore: bool,
     notice: Option<String>,
 }
@@ -176,6 +178,11 @@ enum Service {
     Open(OpenOptions, Option<HostCall>, Option<Value>, bool),
     Close(String, ClosingWindows, Option<HostCall>),
     Quit(ClosingWindows),
+    PrepareQuit,
+    QueueRestart(HostCall),
+    Restart(ReloadRequest, ClosingWindows),
+    RestartSkipped,
+    TextSize(&'static str),
     Finished,
     Wake,
 }
@@ -186,8 +193,11 @@ enum Main {
     Close(String),
     Closed(String, Option<HostCall>, Result<(), String>),
     QuitFailed(String),
+    Restart(ReloadRequest),
+    SettingsChanged(f32),
     Menu(MenuAction),
     Quit,
+    QuitPrepared,
     Finish,
     DrainTerminals,
     #[cfg(feature = "terminal-fixture")]
@@ -352,6 +362,7 @@ struct Host {
     focus_serial: u64,
     quitting: bool,
     quit_pending: bool,
+    quit_request_pending: bool,
     background: bool,
     forced_appearance: Option<Appearance>,
 }
@@ -360,7 +371,7 @@ impl Host {
         let id = Uuid::new_v4().to_string();
         let channel = HostChannel::new();
         let appearance = self.forced_appearance.unwrap_or(Appearance::System);
-        let mut params = prepared.params(&id, self.windows.len());
+        let mut params = prepared.params(&id, window_count(&self.windows));
         params["appearance"] = json!(appearance_name(appearance));
         channel.set_params(params.as_object().unwrap().clone());
         for name in [
@@ -405,7 +416,12 @@ impl Host {
                 request.handled();
             }
         });
-        let frame = opening_frame(self.mtm, prepared.runtime.bounds, self.windows.len());
+        let frame = opening_frame(
+            self.mtm,
+            prepared.runtime.bounds,
+            prepared.opening_size,
+            window_count(&self.windows),
+        );
         let view = AppView::new(
             self.mtm,
             AppOptions {
@@ -425,9 +441,9 @@ impl Host {
         );
         let window = create_window(self.mtm, frame);
         window.setTitle(&NSString::from_str(if prepared.runtime.is_global() {
-            "RiWork — Global"
+            "RiWork · Global"
         } else {
-            "RiWork — Project"
+            "RiWork"
         }));
         window.setContentView(Some(&view.view()));
         position_controls(&window);
@@ -492,6 +508,12 @@ impl Host {
                     .unwrap_or(window.normal);
                 runtime.bounds = Some(runtime_geometry(window.normal, screen));
                 runtime.mode = mode(&window.window);
+                if let Some(global) = &mut runtime.global {
+                    global.window_size = WindowSize::new(
+                        window.normal.size.width as f32,
+                        window.normal.size.height as f32,
+                    );
+                }
                 apply_current_layout(id, &mut runtime);
                 (id.clone(), runtime)
             })
@@ -509,14 +531,17 @@ impl Host {
         }
         if let Some(w) = self.windows.get_mut(id) {
             position_controls(&w.window);
-            if mode(&w.window) == WindowMode::Windowed && !w.window.isMiniaturized() {
-                w.normal = w.window.frame();
-            }
+            w.normal = normal_frame(
+                w.normal,
+                w.window.frame(),
+                mode(&w.window),
+                w.window.isMiniaturized(),
+            );
             let state = json!({"key": w.window.isKeyWindow(), "visible": w.window.isVisible(),
                 "occluded": !w.window.occlusionState().contains(NSWindowOcclusionState::Visible),
                 "mode": mode(&w.window), "backingScale": w.window.backingScaleFactor(),
                 "frame": geometry(w.window.frame()), "appActive": self.app.isActive()});
-            if state != w.last_state {
+            if changed_state(&w.last_state, &state) {
                 if w.window.isKeyWindow() && w.last_state["key"] != true {
                     self.focus_serial += 1;
                     w.focus_serial = self.focus_serial;
@@ -556,7 +581,9 @@ impl Host {
             }
             return;
         };
-        if self.quitting || window.closing {
+        // A quit preparation already paused forwarding. Do not introduce a
+        // separate close barrier whose failure could abandon that quit gate.
+        if self.quitting || self.quit_request_pending || window.closing {
             if let Some(call) = call {
                 call.reject("unavailable: window is closing");
             }
@@ -587,6 +614,16 @@ impl Host {
         }
     }
     fn quit(&mut self) {
+        if self.quitting || self.quit_request_pending {
+            return;
+        }
+        self.quit_request_pending = true;
+        if self.service.send(Service::PrepareQuit).is_err() {
+            self.quit_request_pending = false;
+        }
+    }
+    fn finish_quit(&mut self) {
+        self.quit_request_pending = false;
         if self.quitting {
             return;
         }
@@ -609,6 +646,27 @@ impl Host {
             }
             self.quitting = false;
             eprintln!("riwork: unavailable: host service stopped");
+        }
+    }
+    fn restart(&mut self, request: ReloadRequest) {
+        if self.quitting || self.windows.values().any(|w| w.closing) {
+            // The service will retry the pending request after the close turn.
+            let _ = self.service.send(Service::RestartSkipped);
+            return;
+        }
+        self.quitting = true;
+        for window in self.windows.values() {
+            let _ = window
+                .view
+                .host()
+                .send("window.willClose", json!({"reason":"restart"}));
+        }
+        let batch = ClosingWindows::new(self.snapshot());
+        if let Err(error) = self.service.send(Service::Restart(request, batch)) {
+            if let Service::Restart(_, batch) = error.0 {
+                batch.cancel();
+            }
+            self.quitting = false;
         }
     }
     fn handle(&mut self, message: Main) {
@@ -699,7 +757,7 @@ impl Host {
                     }
                     self.teardown(&id);
                     self.publish();
-                    if self.windows.is_empty() || self.quit_pending {
+                    if last_close_quits(window_count(&self.windows)) || self.quit_pending {
                         self.quit();
                     }
                 }
@@ -719,8 +777,18 @@ impl Host {
                 self.quitting = false;
                 eprintln!("riwork: quit cancelled: {error}");
             }
+            Main::Restart(request) => self.restart(request),
+            Main::SettingsChanged(size) => {
+                for window in self.windows.values() {
+                    let _ = window
+                        .view
+                        .host()
+                        .send("settings.changed", json!({"uiTextSize":size}));
+                }
+            }
             Main::Menu(action) => self.menu(action),
             Main::Quit => self.quit(),
+            Main::QuitPrepared => self.finish_quit(),
             Main::Finish => {
                 for id in self.windows.keys().cloned().collect::<Vec<_>>() {
                     self.teardown(&id);
@@ -879,6 +947,9 @@ impl Host {
     }
     fn menu(&mut self, action: MenuAction) {
         match action.command {
+            "biggerText" | "smallerText" | "actualSize" => {
+                let _ = self.service.send(Service::TextSize(action.command));
+            }
             "quit" => self.quit(),
             "focusWindow" => {
                 let id = self
@@ -903,7 +974,7 @@ impl Host {
                 options.start = Some(action.command == "openGlobalChat");
                 let _ = self.service.send(Service::Open(options, None, None, false));
             }
-            "newWindow" | "newProjectWindow" => {
+            "newWindow" => {
                 let mut options = OpenOptions::project(None);
                 options.project_id = self
                     .windows
@@ -914,11 +985,22 @@ impl Host {
                 let _ = self.service.send(Service::Open(options, None, None, false));
             }
             command => {
+                let number = crate::nsh_menus::command_window(
+                    action.window_number,
+                    self.windows
+                        .values()
+                        .find(|w| w.window.isKeyWindow())
+                        .map(|w| w.window.windowNumber()),
+                    &self
+                        .windows
+                        .values()
+                        .map(|w| w.window.windowNumber())
+                        .collect::<Vec<_>>(),
+                );
                 let selected = self
                     .windows
                     .values()
-                    .find(|w| Some(w.window.windowNumber()) == action.window_number)
-                    .or_else(|| self.windows.values().find(|w| w.window.isKeyWindow()));
+                    .find(|w| Some(w.window.windowNumber()) == number);
                 if let Some(w) = selected {
                     let _ = w.view.host().send("command", json!({"id":command}));
                 }
@@ -975,7 +1057,7 @@ impl Host {
                 }
             }
             "app.quit" => { call.resolve(json!({})); self.quit(); }
-            "app.restart" => call.reject(RESTART_PENDING),
+            "app.restart" => { let _ = self.service.send(Service::QueueRestart(call)); }
             "app.setAppearance" => match data["appearance"].as_str().ok_or_else(|| "invalid: appearance is required".to_owned()).and_then(parse_appearance) {
                 Ok(requested) => {
                     let appearance = self.forced_appearance.unwrap_or(requested);
@@ -1096,9 +1178,15 @@ fn appkit_frame(bounds: WindowGeometry, screen: NSRect) -> NSRect {
     )
 }
 fn mode(window: &NSWindow) -> WindowMode {
-    if window.styleMask().contains(NSWindowStyleMask::FullScreen) {
+    window_mode(
+        window.styleMask().contains(NSWindowStyleMask::FullScreen),
+        window.isZoomed(),
+    )
+}
+fn window_mode(fullscreen: bool, zoomed: bool) -> WindowMode {
+    if fullscreen {
         WindowMode::Fullscreen
-    } else if window.isZoomed() {
+    } else if zoomed {
         WindowMode::Maximized
     } else {
         WindowMode::Windowed
@@ -1111,10 +1199,13 @@ fn visible_frame(mtm: MainThreadMarker, window: Option<&NSWindow>) -> NSRect {
         .map(|s| s.visibleFrame())
         .unwrap_or(NSRect::new(NSPoint::new(0., 0.), NSSize::new(1280., 800.)))
 }
-fn opening_frame(mtm: MainThreadMarker, bounds: Option<WindowGeometry>, cascade: usize) -> NSRect {
-    if let Some(mut b) = bounds {
-        b.width = b.width.max(640.);
-        b.height = b.height.max(400.);
+fn opening_frame(
+    mtm: MainThreadMarker,
+    bounds: Option<WindowGeometry>,
+    size: WindowSize,
+    cascade: usize,
+) -> NSRect {
+    if let Some(b) = bounds {
         let screen = NSScreen::mainScreen(mtm)
             .map(|s| s.frame())
             .unwrap_or_else(|| visible_frame(mtm, None));
@@ -1122,10 +1213,7 @@ fn opening_frame(mtm: MainThreadMarker, bounds: Option<WindowGeometry>, cascade:
     }
     let screen = visible_frame(mtm, None);
     let frame = WindowFrame::opening(
-        WindowSize {
-            width: 1220.,
-            height: 780.,
-        },
+        size,
         WindowFrame {
             x: screen.origin.x as f32,
             y: 0.,
@@ -1142,6 +1230,77 @@ fn opening_frame(mtm: MainThreadMarker, bounds: Option<WindowGeometry>, cascade:
         NSSize::new(frame.width as f64, frame.height as f64),
     )
 }
+fn normal_frame(previous: NSRect, frame: NSRect, mode: WindowMode, minimized: bool) -> NSRect {
+    if mode == WindowMode::Windowed && !minimized {
+        frame
+    } else {
+        previous
+    }
+}
+fn changed_state(previous: &Value, next: &Value) -> bool {
+    previous != next
+}
+// The registry only admits the frozen Project and Global kinds. NSH tooltip
+// overlays are elements in an AppView and never entries in this registry.
+fn window_count<T>(windows: &BTreeMap<String, T>) -> usize {
+    windows.len()
+}
+fn last_close_quits(remaining: usize) -> bool {
+    remaining == 0
+}
+
+/// Called on the startup/service worker, never while constructing an AppView.
+fn preferred_opening_size(home: &Path, runtime: &RuntimeWindow) -> WindowSize {
+    if runtime.is_global() {
+        return runtime
+            .global
+            .as_ref()
+            .and_then(|state| state.window_size)
+            .unwrap_or(WindowSize {
+                width: 1100.,
+                height: 760.,
+            });
+    }
+    let remember = SettingsStore::open(home)
+        .and_then(|store| store.load())
+        .map(|settings| settings.remember_window_size)
+        .unwrap_or(true);
+    if remember {
+        if let Some(size) = runtime
+            .project_id
+            .as_deref()
+            .and_then(|id| LayoutStore::open(home).ok()?.window_size(id))
+        {
+            return WindowSize {
+                width: size.width.max(640.),
+                height: size.height.max(400.),
+            };
+        }
+    }
+    WindowSize {
+        width: 1220.,
+        height: 780.,
+    }
+}
+
+fn remember_window_frames(home: &Path, windows: &[(String, RuntimeWindow)]) {
+    let Ok(settings) = SettingsStore::open(home).and_then(|store| store.load()) else {
+        return;
+    };
+    for (id, window) in windows {
+        if let (Some(layout), Some(frame)) = (host_layouts::lookup(id), window.bounds) {
+            // A close gate intentionally rejects late geometry. The flush owns
+            // the last accepted edit and will retain the window if it fails.
+            let _ = layout.observe_window_frame(
+                frame.width,
+                frame.height,
+                window.mode == WindowMode::Windowed,
+                settings.remember_window_size,
+            );
+        }
+    }
+}
+
 fn stop(app: &NSApplication) {
     app.stop(None);
     if let Some(event) = NSEvent::otherEventWithType_location_modifierFlags_timestamp_windowNumber_context_subtype_data1_data2(
@@ -1174,10 +1333,17 @@ fn prepare(home: &Path, options: OpenOptions) -> Result<PreparedWindow, String> 
                 Some(project) => project.clone(),
                 None => store.add_project(root, None)?,
             }
-        } else if let Some(project) = state.active_project() {
+        } else if let Some(project) = state.active_project().filter(|p| p.root.is_dir()) {
             project.clone()
         } else {
-            store.add_project(std::env::current_dir().map_err(|e| e.to_string())?, None)?
+            let root = fallback_directory(
+                std::env::current_dir().ok(),
+                std::env::var_os("HOME").map(PathBuf::from),
+            );
+            match state.projects.iter().find(|p| p.root == root) {
+                Some(project) => project.clone(),
+                None => store.add_project(root, None)?,
+            }
         };
         if !project.root.is_dir() {
             return Err(format!(
@@ -1198,11 +1364,20 @@ fn prepare(home: &Path, options: OpenOptions) -> Result<PreparedWindow, String> 
         }
     };
     Ok(PreparedWindow {
+        opening_size: preferred_opening_size(home, &runtime),
         options,
         runtime,
         restore: false,
         notice: None,
     })
+}
+
+fn fallback_directory(cwd: Option<PathBuf>, home: Option<PathBuf>) -> PathBuf {
+    cwd.into_iter()
+        .chain(home)
+        .chain([PathBuf::from(".")])
+        .find(|p| p.is_dir())
+        .unwrap_or_else(|| PathBuf::from("."))
 }
 
 struct Startup {
@@ -1251,6 +1426,7 @@ fn startup(args: Vec<String>) -> Result<Option<Startup>, String> {
                 } else {
                     OpenOptions::project(Some(runtime.path.clone()))
                 },
+                opening_size: preferred_opening_size(&home, runtime),
                 runtime: runtime.clone(),
                 restore: true,
                 notice: None,
@@ -1299,6 +1475,7 @@ fn apply_current_layout(id: &str, window: &mut RuntimeWindow) {
         let (project_id, project) = layout.project_snapshot();
         window.project_id = Some(project_id);
         window.layout = Some(project);
+        (window.focus_mode, window.focus_centered) = layout.focus_state();
     }
 }
 
@@ -1357,6 +1534,9 @@ impl ClosingWindows {
     /// fails; a failure keeps all corresponding AppViews alive and editable.
     fn flush(&self, home: &Path) -> Result<Vec<RuntimeWindow>, String> {
         let mut errors = Vec::new();
+        if let Err(error) = native::host_flush::flush_blocking() {
+            errors.push(format!("drafts: {error}"));
+        }
         for (id, layout) in &self.layouts {
             if let Err(error) = layout.flush_blocking() {
                 errors.push(format!("window {id}: {error}"));
@@ -1368,6 +1548,7 @@ impl ClosingWindows {
                 let (project_id, project) = layout.project_snapshot();
                 window.project_id = Some(project_id);
                 window.layout = Some(project);
+                (window.focus_mode, window.focus_centered) = layout.focus_state();
             }
             if let Some(global) = &window.global {
                 if let Err(error) = GlobalWindowStore::at(home).save(global) {
@@ -1417,6 +1598,8 @@ fn services(mut startup: Startup, rx: mpsc::Receiver<Service>, tx: mpsc::Sender<
     let mut initial = true;
     let mut confirmed = false;
     let mut runtime_tick = RuntimeTick::new(Instant::now());
+    let mut reload: Option<(ReloadLaunch, ClosingWindows)> = None;
+    let mut restart_queued = false;
     loop {
         match rx.recv_timeout(Duration::from_millis(500)) {
             Ok(Service::Snapshot(windows)) => {
@@ -1432,10 +1615,10 @@ fn services(mut startup: Startup, rx: mpsc::Receiver<Service>, tx: mpsc::Sender<
                 snapshots = windows;
             }
             Ok(Service::Ready(id)) => {
-                match startup
-                    .runtime
-                    .mark_restore_ready(&id, current_layouts(&startup.home, &snapshots))
-                {
+                match startup.runtime.mark_restore_ready(
+                    &id,
+                    current_layouts(&startup.home, &startup.runtime.restore_windows(&snapshots)),
+                ) {
                     Ok(done) => confirmed |= done,
                     Err(e) => send(Main::Error(e)),
                 }
@@ -1465,6 +1648,9 @@ fn services(mut startup: Startup, rx: mpsc::Receiver<Service>, tx: mpsc::Sender<
                     .and_then(|windows| startup.runtime.publish(windows));
                 if let Err(error) = result {
                     batch.cancel();
+                    if let Err(error) = startup.instance.resume_forwarding() {
+                        eprintln!("riwork: {error}");
+                    }
                     send(Main::QuitFailed(error));
                     continue;
                 }
@@ -1478,14 +1664,96 @@ fn services(mut startup: Startup, rx: mpsc::Receiver<Service>, tx: mpsc::Sender<
                 }
                 break;
             }
+            Ok(Service::PrepareQuit) => {
+                startup.instance.stop_forwarding();
+                for open in startup.instance.drain_requests() {
+                    match prepare(&startup.home, OpenOptions::project(open.path)) {
+                        Ok(window) => send(Main::Open(window, None, None, true)),
+                        Err(error) => eprintln!("riwork: forwarded open failed: {error}"),
+                    }
+                }
+                send(Main::QuitPrepared);
+            }
+            Ok(Service::QueueRestart(call)) => match startup.runtime.queue_restart() {
+                Ok(()) => call.resolve(json!({})),
+                Err(error) => call.reject(error),
+            },
+            Ok(Service::Restart(request, batch)) => {
+                restart_queued = false;
+                match batch
+                    .flush(&startup.home)
+                    .and_then(|windows| startup.runtime.launch_reload(&request, windows))
+                {
+                    Ok(launch) => reload = Some((launch, batch)),
+                    Err(error) => {
+                        batch.cancel();
+                        let _ = startup.runtime.fail_reload(&request, &error);
+                        if let Err(error) = startup.instance.resume_forwarding() {
+                            eprintln!("riwork: {error}");
+                        }
+                        send(Main::QuitFailed(format!("restart: {error}")));
+                    }
+                }
+            }
+            Ok(Service::RestartSkipped) => {
+                restart_queued = false;
+                if let Err(error) = startup.instance.resume_forwarding() {
+                    eprintln!("riwork: {error}");
+                }
+            }
+            Ok(Service::TextSize(command)) => match change_text_size(&startup.home, command) {
+                Ok(size) => send(Main::SettingsChanged(size)),
+                Err(error) => eprintln!("riwork: {error}"),
+            },
             Ok(Service::Finished) => break,
             Ok(Service::Wake) | Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
-        for request in startup.instance.drain_requests() {
-            match prepare(&startup.home, OpenOptions::project(request.path)) {
-                Ok(window) => send(Main::Open(window, None, None, true)),
-                Err(e) => eprintln!("riwork: forwarded open failed: {e}"),
+        if reload.is_none() {
+            remember_window_frames(&startup.home, &snapshots);
+        }
+        if reload.is_none() {
+            for request in startup.instance.drain_requests() {
+                match prepare(&startup.home, OpenOptions::project(request.path)) {
+                    Ok(window) => send(Main::Open(window, None, None, true)),
+                    Err(e) => eprintln!("riwork: forwarded open failed: {e}"),
+                }
+            }
+        }
+        if let Err(error) = startup.runtime.check_restore_deadline() {
+            // Do not confirm late. The engine watchdog is the final backstop;
+            // normal host progress closes this failed replacement immediately.
+            eprintln!("riwork: {error}");
+            send(Main::Finish);
+            while let Ok(message) = rx.recv() {
+                if matches!(message, Service::Finished) {
+                    break;
+                }
+            }
+            break;
+        }
+        if let Some((launch, _)) = &reload {
+            match startup.runtime.reload_ready(launch) {
+                Ok(true) => {
+                    startup.instance.stop_forwarding();
+                    send(Main::Finish);
+                    while let Ok(message) = rx.recv() {
+                        if matches!(message, Service::Finished) {
+                            break;
+                        }
+                    }
+                    break;
+                }
+                Err(error) => {
+                    if let Some((_, batch)) = reload.take() {
+                        batch.cancel();
+                    }
+                    if let Err(error) = startup.instance.resume_forwarding() {
+                        eprintln!("riwork: {error}");
+                    }
+                    send(Main::QuitFailed(format!("restart: {error}")));
+                }
+                Ok(false) => {}
             }
         }
         if confirmed && let Err(e) = startup.instance.try_complete_handoff() {
@@ -1500,12 +1768,41 @@ fn services(mut startup: Startup, rx: mpsc::Receiver<Service>, tx: mpsc::Sender<
                 Ok(completed) => runtime_tick.published(now, completed),
                 Err(e) => eprintln!("riwork: {e}"),
             }
-            // Restart handoff remains outside this integration subset.
-            if let Ok(Some(request)) = startup.runtime.pending_reload() {
-                let _ = startup.runtime.fail_reload(&request, RESTART_PENDING);
+            if reload.is_none()
+                && !restart_queued
+                && let Ok(Some(request)) = startup.runtime.pending_reload()
+            {
+                // Stop ACKing opens before capturing the restart snapshot.
+                // Drain every already-acknowledged request ahead of Restart on
+                // the same main queue. New forwarders retry the replacement.
+                startup.instance.stop_forwarding();
+                for open in startup.instance.drain_requests() {
+                    match prepare(&startup.home, OpenOptions::project(open.path)) {
+                        Ok(window) => send(Main::Open(window, None, None, true)),
+                        Err(error) => eprintln!("riwork: forwarded open failed: {error}"),
+                    }
+                }
+                restart_queued = true;
+                send(Main::Restart(request));
             }
         }
     }
+}
+
+fn change_text_size(home: &Path, command: &str) -> Result<f32, String> {
+    use riwork_core::{
+        settings::SettingsStore,
+        ui_text::{GHOSTTY_DEFAULT_FONT_SIZE, SizeChange},
+    };
+    let change = match command {
+        "biggerText" => SizeChange::Bigger,
+        "smallerText" => SizeChange::Smaller,
+        "actualSize" => SizeChange::Reset,
+        _ => return Err("invalid: text size command".into()),
+    };
+    let settings = SettingsStore::open(home)?
+        .update(|settings| change.apply(settings, GHOSTTY_DEFAULT_FONT_SIZE))?;
+    Ok(settings.ui_text_size.points())
 }
 
 pub fn run(args: Vec<String>) -> Result<(), String> {
@@ -1560,6 +1857,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         focus_serial: 0,
         quitting: false,
         quit_pending: false,
+        quit_request_pending: false,
         background,
         forced_appearance,
     };
@@ -1618,6 +1916,34 @@ mod tests {
                 .unwrap_err()
                 .starts_with("invalid:")
         );
+    }
+
+    #[test]
+    fn text_size_commands_persist_without_any_window() {
+        use riwork_core::settings::SettingsStore;
+        let fixture = LayoutFixture::new();
+        let store = SettingsStore::open(&fixture.root).unwrap();
+        let initial = store.load().unwrap().ui_text_size.points();
+        change_text_size(&fixture.root, "biggerText").unwrap();
+        assert_eq!(store.load().unwrap().ui_text_size.points(), initial + 1.);
+        change_text_size(&fixture.root, "smallerText").unwrap();
+        assert_eq!(store.load().unwrap().ui_text_size.points(), initial);
+        change_text_size(&fixture.root, "biggerText").unwrap();
+        change_text_size(&fixture.root, "actualSize").unwrap();
+        assert_eq!(store.load().unwrap().ui_text_size.points(), initial);
+    }
+
+    #[test]
+    fn fallback_directory_uses_home_when_the_cwd_is_gone() {
+        let fixture = LayoutFixture::new();
+        assert_eq!(
+            fallback_directory(
+                Some(fixture.root.join("missing")),
+                Some(fixture.root.clone())
+            ),
+            fixture.root
+        );
+        assert_eq!(fallback_directory(None, None), PathBuf::from("."));
     }
 
     #[test]
@@ -1690,6 +2016,10 @@ mod tests {
         let home = Path::new("/isolated");
         let window = PreparedWindow {
             options: OpenOptions::global(),
+            opening_size: WindowSize {
+                width: 1100.,
+                height: 760.,
+            },
             runtime: RuntimeWindow::global(home, None, WindowMode::Windowed, Default::default()),
             restore: false,
             notice: None,
@@ -1949,5 +2279,121 @@ mod tests {
         assert_eq!(restored[0].path, destination.root);
         assert_eq!(restored[0].layout.as_ref(), Some(&layout.project_layout()));
         closing.cancel();
+    }
+}
+
+#[cfg(test)]
+mod placement {
+    use super::*;
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        #[test]
+        fn the_cascade_counts_open_non_tooltip_windows() {
+            let mut registry = BTreeMap::new();
+            registry.insert("alpha".into(), WindowKind::Project);
+            registry.insert("global".into(), WindowKind::Global);
+            assert_eq!(window_count(&registry), 2);
+            assert!(serde_json::from_value::<OpenOptions>(json!({"kind":"tooltip"})).is_err());
+            let size = WindowSize {
+                width: 1220.,
+                height: 780.,
+            };
+            let display = WindowFrame {
+                x: 0.,
+                y: 0.,
+                width: 1800.,
+                height: 1200.,
+            };
+            let first = WindowFrame::opening(size, display, 0);
+            let second = WindowFrame::opening(size, display, window_count(&registry) - 1);
+            assert_eq!((second.x - first.x, second.y - first.y), (22., 22.));
+            let fifth = WindowFrame::opening(size, display, 5);
+            assert_eq!(first, fifth);
+        }
+        #[test]
+        fn zoomed_counts_as_maximized_and_keeps_its_normal_frame() {
+            let normal = NSRect::new(NSPoint::new(100., 150.), NSSize::new(800., 600.));
+            let zoomed = NSRect::new(NSPoint::new(0., 0.), NSSize::new(1800., 1100.));
+            assert_eq!(window_mode(false, true), WindowMode::Maximized);
+            assert_eq!(
+                normal_frame(normal, zoomed, window_mode(false, true), false),
+                normal
+            );
+            assert_eq!(
+                normal_frame(normal, zoomed, WindowMode::Windowed, true),
+                normal
+            );
+            assert_eq!(
+                normal_frame(normal, zoomed, WindowMode::Windowed, false),
+                zoomed
+            );
+        }
+        #[test]
+        fn fullscreen_counts_as_fullscreen() {
+            assert_eq!(window_mode(true, false), WindowMode::Fullscreen);
+            assert_eq!(window_mode(true, true), WindowMode::Fullscreen);
+            let normal = NSRect::new(NSPoint::new(40., 30.), NSSize::new(640., 400.));
+            let fullscreen = NSRect::new(NSPoint::new(0., 0.), NSSize::new(1800., 1200.));
+            assert_eq!(
+                normal_frame(normal, fullscreen, window_mode(true, true), false),
+                normal
+            );
+        }
+    }
+}
+#[cfg(test)]
+mod window_registry {
+    #[cfg(test)]
+    mod tests {
+        use super::super::*;
+        #[test]
+        fn the_last_close_quits() {
+            let mut registry = BTreeMap::from([
+                ("alpha".into(), WindowKind::Project),
+                ("global".into(), WindowKind::Global),
+            ]);
+            registry.remove("alpha");
+            assert!(!last_close_quits(window_count(&registry)));
+            registry.remove("global");
+            assert!(last_close_quits(window_count(&registry)));
+        }
+        #[test]
+        fn tooltips_do_not_count() {
+            assert!(serde_json::from_value::<OpenOptions>(json!({"kind":"tooltip"})).is_err());
+            let registry = BTreeMap::<String, WindowKind>::new();
+            assert_eq!(window_count(&registry), 0);
+            assert!(last_close_quits(window_count(&registry)));
+        }
+    }
+}
+#[cfg(test)]
+mod window_state {
+    #[cfg(test)]
+    mod tests {
+        use super::super::*;
+        #[test]
+        fn events_only_on_change() {
+            let baseline = json!({"key":false,"visible":true,"occluded":false,"mode":"windowed","backingScale":2.,"frame":{"x":100.,"y":100.,"width":800.,"height":600.},"appActive":true});
+            assert!(changed_state(&Value::Null, &baseline));
+            assert!(!changed_state(&baseline, &baseline.clone()));
+            for (key, value) in [
+                ("key", json!(true)),
+                ("visible", json!(false)),
+                ("occluded", json!(true)),
+                ("mode", json!("fullscreen")),
+                ("backingScale", json!(1.)),
+                (
+                    "frame",
+                    json!({"x":122.,"y":122.,"width":800.,"height":600.}),
+                ),
+                ("appActive", json!(false)),
+            ] {
+                let mut next = baseline.clone();
+                next[key] = value;
+                assert!(changed_state(&baseline, &next), "{key}");
+                assert!(!changed_state(&next, &next));
+            }
+        }
     }
 }

@@ -1,0 +1,24 @@
+1://! `Tooltip`: the hint an element's `tooltip` shows, as GPUI's
+2://! `.tooltip(..)`: a hint overlay of the core (`nsh_core::element::Overlay::hint`)
+11:/// The props of [`Tooltip`].
+13:pub struct TooltipProps {
+15:    /// `onOpenChange`. Without it the tooltip keeps its own state.
+28:    /// The gap between the trigger and the tooltip (default 4).
+38:    /// No tooltip: it neither shows nor asks to.
+41:    /// What it shows: the bubble is the tooltip itself, styled with its
+46:/// The events of a [`Tooltip`].
+48:pub enum TooltipEvent {
+59:/// A hint about an element, given as the element's `tooltip`
+60:/// (`<View tooltip={<Tooltip>…</Tooltip>}>`, Rust
+61:/// `.tooltip(tooltip().child(..))`), as GPUI's `.tooltip(..)`: shown on top
+69:pub fn Tooltip(props: TooltipProps, cx: Scope<TooltipEvent>) -> impl IntoElement {
+75:        if open.request(next) {
+76:            cx.emit(TooltipEvent::OpenChange(next, OpenChangeReason::Hover));
+82:        move || cx.emit(TooltipEvent::Open),
+83:        move || cx.emit(TooltipEvent::Close),
+85:    // The core follows the pointer on the trigger and asks; the tooltip's
+96:        .on_hint_hide(move || change(false))
+100:/// As an element's `tooltip`, it is the hint overlay itself.
+101:impl IntoTooltip for TooltipElement {
+102:    fn apply_tooltip(self, node: &mut nsh_core::element::ElNode) {
+103:        nsh_core::element::__hint_tooltip(node, self.into_element());

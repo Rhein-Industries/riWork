@@ -5,7 +5,7 @@ edition.workspace = true
 publish = false
 
 [dependencies]
-riwork-nsh-native = { path = "../riwork-nsh-native", features = ["test-support"] }
+riwork-nsh-native = { path = "../riwork-nsh-native" }
 riwork-engine = { path = "../riwork-engine" }
 nsh-core = "=0.3.0"
 anyhow = "1"

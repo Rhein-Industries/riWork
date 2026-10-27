@@ -5,7 +5,12 @@ edition.workspace = true
 publish = false
 
 [features]
-test-support = []
+default = []
+test-support = ["riwork-engine/test-support"]
+
+[[example]]
+name = "p1_fixture_home"
+required-features = ["test-support"]
 
 [dependencies]
 riwork-core = { path = "../riwork-core" }

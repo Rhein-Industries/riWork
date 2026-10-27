@@ -35,6 +35,8 @@ interface PanelOptions {
 /** One controller per window. Hidden panel tabs never own independent queries or subscriptions. */
 export function createPanelController(options: PanelOptions) {
   const state = signal<StoreState>(EMPTY_STORE);
+  // True after the first Store delivery; the Dock label waits for stored names.
+  const loaded = signal(false);
   const shells = signal<ShellSessionDto[]>([]);
   const tabs = signal<TabsSnapshot | null>(null);
   const query = signal("");
@@ -67,6 +69,7 @@ export function createPanelController(options: PanelOptions) {
       if (!alive || event.rev < storeRev) return;
       storeRev = event.rev;
       state.set(event.data);
+      if (!loaded()) loaded.set(true);
       if (selectedTask() && !event.data.tasks.some((task) => task.id === selectedTask() && task.projectId === options.projectId())) selectTask(null);
       const trees = visibleWorktrees(event.data, options.projectId());
       if (!trees.some((tree) => tree.id === selectedWorktree())) selectWorktree(trees.find((tree) => tree.isPrimary)?.id ?? null);
@@ -151,7 +154,7 @@ export function createPanelController(options: PanelOptions) {
         onSelect: () => void run(() => projectId ? Store.moveProjectToFolder(projectId, folder.id) : Store.moveFolder(folderId!, folder.id), () => expandFolder(folder.id)) })),
     ]);
   }
-  return { ...options, state, shells, tabs, query, collapsed, selectedWorktree, selectedTask, selectedShell, editor, pending, order, descending, searches,
+  return { ...options, state, loaded, shells, tabs, query, collapsed, selectedWorktree, selectedTask, selectedShell, editor, pending, order, descending, searches,
     selectWorktree, selectTask, resetProject, run, activate, attach, tabForShell, titleForShell, toggleFolder, expandFolder, folderMenu, folderPath, generation: () => generation };
 }
 export type PanelController = ReturnType<typeof createPanelController>;

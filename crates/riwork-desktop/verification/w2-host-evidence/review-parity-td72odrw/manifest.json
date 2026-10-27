@@ -1,0 +1,390 @@
+{
+  "verification_environment": "isolated fixture homes only",
+  "mode": "review-parity",
+  "repo": "/Users/dominik/orca/projects/riWork-nsh-p1-fix-host",
+  "root": "/private/tmp/riwork-w2-host",
+  "target_dir": "/private/tmp/riwork-p1-integration-mkzwamt7/target",
+  "commands": [
+    {
+      "name": "cli-source-diff",
+      "argv": [
+        "git",
+        "diff",
+        "ea0f2f5",
+        "--",
+        "crates/riwork-cli"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-fix-host",
+      "environment": {
+        "HOME": "/Users/dominik/orca/projects/riWork-nsh-p1-fix-host/target/nsh-integration-home-1qzlnuc2",
+        "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+        "RIWORK_HOME": "/private/tmp/riwork-w2-host/review-parity-td72odrw/state",
+        "RIWORK_RUNTIME_DIR": "/private/tmp/riwork-w2-host/review-parity-td72odrw/runtime",
+        "TMPDIR": "/private/tmp/riwork-w2-host/review-parity-td72odrw/tmp",
+        "TMUX_TMPDIR": "/private/tmp/riwork-w2-host/review-parity-td72odrw/tmux",
+        "XDG_CONFIG_HOME": "/Users/dominik/orca/projects/riWork-nsh-p1-fix-host/target/nsh-integration-home-1qzlnuc2/.config"
+      },
+      "stdout": "/private/tmp/riwork-w2-host/review-parity-td72odrw/cli-source-diff.stdout",
+      "stderr": "/private/tmp/riwork-w2-host/review-parity-td72odrw/cli-source-diff.stderr",
+      "exit_code": 0,
+      "duration_seconds": 0.143,
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "parity-seed",
+      "argv": [
+        "/private/tmp/riwork-w2-host/fixture-bin/riwork",
+        "project",
+        "add",
+        "/private/tmp/riwork-w2-host/review-parity-td72odrw/cli-fixture/project",
+        "--name",
+        "Alpha",
+        "--json"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-fix-host",
+      "environment": {
+        "HOME": "/private/tmp/riwork-w2-host/review-parity-td72odrw/cli-fixture/user",
+        "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+        "RIWORK_HOME": "/private/tmp/riwork-w2-host/review-parity-td72odrw/cli-fixture/state",
+        "RIWORK_RUNTIME_DIR": "/private/tmp/riwork-w2-host/review-parity-td72odrw/cli-fixture/runtime",
+        "TMPDIR": "/private/tmp/riwork-w2-host/review-parity-td72odrw/tmp",
+        "TMUX_TMPDIR": "/private/tmp/riwork-w2-host/review-parity-td72odrw/tmux",
+        "XDG_CONFIG_HOME": "/Users/dominik/orca/projects/riWork-nsh-p1-fix-host/target/nsh-integration-home-1qzlnuc2/.config",
+        "RIWORK_NSH_BUNDLE": "/private/tmp/riwork-w2-host/review-parity-td72odrw/cli-fixture/must-not-load.nsh"
+      },
+      "stdout": "/private/tmp/riwork-w2-host/review-parity-td72odrw/parity-seed.stdout",
+      "stderr": "/private/tmp/riwork-w2-host/review-parity-td72odrw/parity-seed.stderr",
+      "exit_code": 0,
+      "duration_seconds": 0.097,
+      "stdout_sha256": "8c6f56ecb795ebd8c945655afa0955b57c94688d5ec976017e5bc5a08c27b8ac",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "parity-project-list-reference",
+      "argv": [
+        "/private/tmp/riwork-p1-m5-f6975181/reference-target/debug/riwork",
+        "project",
+        "list",
+        "--json"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-fix-host",
+      "environment": {
+        "HOME": "/private/tmp/riwork-w2-host/review-parity-td72odrw/cli-fixture/user",
+        "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+        "RIWORK_HOME": "/private/tmp/riwork-w2-host/review-parity-td72odrw/cli-fixture/state",
+        "RIWORK_RUNTIME_DIR": "/private/tmp/riwork-w2-host/review-parity-td72odrw/cli-fixture/runtime",
+        "TMPDIR": "/private/tmp/riwork-w2-host/review-parity-td72odrw/tmp",
+        "TMUX_TMPDIR": "/private/tmp/riwork-w2-host/review-parity-td72odrw/tmux",
+        "XDG_CONFIG_HOME": "/Users/dominik/orca/projects/riWork-nsh-p1-fix-host/target/nsh-integration-home-1qzlnuc2/.config",
+        "RIWORK_NSH_BUNDLE": "/private/tmp/riwork-w2-host/review-parity-td72odrw/cli-fixture/must-not-load.nsh"
+      },
+      "stdout": "/private/tmp/riwork-w2-host/review-parity-td72odrw/parity-project-list-reference.stdout",
+      "stderr": "/private/tmp/riwork-w2-host/review-parity-td72odrw/parity-project-list-reference.stderr",
+      "exit_code": 0,
+      "duration_seconds": 0.04,
+      "stdout_sha256": "056181179ff32e66c1218fba833c2afd1c634a11954baa0edee8c19d33739d3e",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "parity-project-list-new",
+      "argv": [
+        "/private/tmp/riwork-w2-host/fixture-bin/riwork",
+        "project",
+        "list",
+        "--json"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-fix-host",
+      "environment": {
+        "HOME": "/private/tmp/riwork-w2-host/review-parity-td72odrw/cli-fixture/user",
+        "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+        "RIWORK_HOME": "/private/tmp/riwork-w2-host/review-parity-td72odrw/cli-fixture/state",
+        "RIWORK_RUNTIME_DIR": "/private/tmp/riwork-w2-host/review-parity-td72odrw/cli-fixture/runtime",
+        "TMPDIR": "/private/tmp/riwork-w2-host/review-parity-td72odrw/tmp",
+        "TMUX_TMPDIR": "/private/tmp/riwork-w2-host/review-parity-td72odrw/tmux",
+        "XDG_CONFIG_HOME": "/Users/dominik/orca/projects/riWork-nsh-p1-fix-host/target/nsh-integration-home-1qzlnuc2/.config",
+        "RIWORK_NSH_BUNDLE": "/private/tmp/riwork-w2-host/review-parity-td72odrw/cli-fixture/must-not-load.nsh"
+      },
+      "stdout": "/private/tmp/riwork-w2-host/review-parity-td72odrw/parity-project-list-new.stdout",
+      "stderr": "/private/tmp/riwork-w2-host/review-parity-td72odrw/parity-project-list-new.stderr",
+      "exit_code": 0,
+      "duration_seconds": 0.025,
+      "stdout_sha256": "056181179ff32e66c1218fba833c2afd1c634a11954baa0edee8c19d33739d3e",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "parity-settings-list-reference",
+      "argv": [
+        "/private/tmp/riwork-p1-m5-f6975181/reference-target/debug/riwork",
+        "settings",
+        "list",
+        "--json"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-fix-host",
+      "environment": {
+        "HOME": "/private/tmp/riwork-w2-host/review-parity-td72odrw/cli-fixture/user",
+        "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+        "RIWORK_HOME": "/private/tmp/riwork-w2-host/review-parity-td72odrw/cli-fixture/state",
+        "RIWORK_RUNTIME_DIR": "/private/tmp/riwork-w2-host/review-parity-td72odrw/cli-fixture/runtime",
+        "TMPDIR": "/private/tmp/riwork-w2-host/review-parity-td72odrw/tmp",
+        "TMUX_TMPDIR": "/private/tmp/riwork-w2-host/review-parity-td72odrw/tmux",
+        "XDG_CONFIG_HOME": "/Users/dominik/orca/projects/riWork-nsh-p1-fix-host/target/nsh-integration-home-1qzlnuc2/.config",
+        "RIWORK_NSH_BUNDLE": "/private/tmp/riwork-w2-host/review-parity-td72odrw/cli-fixture/must-not-load.nsh"
+      },
+      "stdout": "/private/tmp/riwork-w2-host/review-parity-td72odrw/parity-settings-list-reference.stdout",
+      "stderr": "/private/tmp/riwork-w2-host/review-parity-td72odrw/parity-settings-list-reference.stderr",
+      "exit_code": 0,
+      "duration_seconds": 0.023,
+      "stdout_sha256": "efeb0301665b04955546f8471f4024ac53429fc6215b741a7c4861e518e69ffc",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "parity-settings-list-new",
+      "argv": [
+        "/private/tmp/riwork-w2-host/fixture-bin/riwork",
+        "settings",
+        "list",
+        "--json"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-fix-host",
+      "environment": {
+        "HOME": "/private/tmp/riwork-w2-host/review-parity-td72odrw/cli-fixture/user",
+        "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+        "RIWORK_HOME": "/private/tmp/riwork-w2-host/review-parity-td72odrw/cli-fixture/state",
+        "RIWORK_RUNTIME_DIR": "/private/tmp/riwork-w2-host/review-parity-td72odrw/cli-fixture/runtime",
+        "TMPDIR": "/private/tmp/riwork-w2-host/review-parity-td72odrw/tmp",
+        "TMUX_TMPDIR": "/private/tmp/riwork-w2-host/review-parity-td72odrw/tmux",
+        "XDG_CONFIG_HOME": "/Users/dominik/orca/projects/riWork-nsh-p1-fix-host/target/nsh-integration-home-1qzlnuc2/.config",
+        "RIWORK_NSH_BUNDLE": "/private/tmp/riwork-w2-host/review-parity-td72odrw/cli-fixture/must-not-load.nsh"
+      },
+      "stdout": "/private/tmp/riwork-w2-host/review-parity-td72odrw/parity-settings-list-new.stdout",
+      "stderr": "/private/tmp/riwork-w2-host/review-parity-td72odrw/parity-settings-list-new.stderr",
+      "exit_code": 0,
+      "duration_seconds": 0.024,
+      "stdout_sha256": "efeb0301665b04955546f8471f4024ac53429fc6215b741a7c4861e518e69ffc",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "parity-instances-reference",
+      "argv": [
+        "/private/tmp/riwork-p1-m5-f6975181/reference-target/debug/riwork",
+        "instances",
+        "--json"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-fix-host",
+      "environment": {
+        "HOME": "/private/tmp/riwork-w2-host/review-parity-td72odrw/cli-fixture/user",
+        "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+        "RIWORK_HOME": "/private/tmp/riwork-w2-host/review-parity-td72odrw/cli-fixture/state",
+        "RIWORK_RUNTIME_DIR": "/private/tmp/riwork-w2-host/review-parity-td72odrw/cli-fixture/runtime",
+        "TMPDIR": "/private/tmp/riwork-w2-host/review-parity-td72odrw/tmp",
+        "TMUX_TMPDIR": "/private/tmp/riwork-w2-host/review-parity-td72odrw/tmux",
+        "XDG_CONFIG_HOME": "/Users/dominik/orca/projects/riWork-nsh-p1-fix-host/target/nsh-integration-home-1qzlnuc2/.config",
+        "RIWORK_NSH_BUNDLE": "/private/tmp/riwork-w2-host/review-parity-td72odrw/cli-fixture/must-not-load.nsh"
+      },
+      "stdout": "/private/tmp/riwork-w2-host/review-parity-td72odrw/parity-instances-reference.stdout",
+      "stderr": "/private/tmp/riwork-w2-host/review-parity-td72odrw/parity-instances-reference.stderr",
+      "exit_code": 0,
+      "duration_seconds": 0.022,
+      "stdout_sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "parity-instances-new",
+      "argv": [
+        "/private/tmp/riwork-w2-host/fixture-bin/riwork",
+        "instances",
+        "--json"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-fix-host",
+      "environment": {
+        "HOME": "/private/tmp/riwork-w2-host/review-parity-td72odrw/cli-fixture/user",
+        "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+        "RIWORK_HOME": "/private/tmp/riwork-w2-host/review-parity-td72odrw/cli-fixture/state",
+        "RIWORK_RUNTIME_DIR": "/private/tmp/riwork-w2-host/review-parity-td72odrw/cli-fixture/runtime",
+        "TMPDIR": "/private/tmp/riwork-w2-host/review-parity-td72odrw/tmp",
+        "TMUX_TMPDIR": "/private/tmp/riwork-w2-host/review-parity-td72odrw/tmux",
+        "XDG_CONFIG_HOME": "/Users/dominik/orca/projects/riWork-nsh-p1-fix-host/target/nsh-integration-home-1qzlnuc2/.config",
+        "RIWORK_NSH_BUNDLE": "/private/tmp/riwork-w2-host/review-parity-td72odrw/cli-fixture/must-not-load.nsh"
+      },
+      "stdout": "/private/tmp/riwork-w2-host/review-parity-td72odrw/parity-instances-new.stdout",
+      "stderr": "/private/tmp/riwork-w2-host/review-parity-td72odrw/parity-instances-new.stderr",
+      "exit_code": 0,
+      "duration_seconds": 0.022,
+      "stdout_sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "parity-appearance-reference",
+      "argv": [
+        "/private/tmp/riwork-p1-m5-f6975181/reference-target/debug/riwork",
+        "appearance",
+        "--json"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-fix-host",
+      "environment": {
+        "HOME": "/private/tmp/riwork-w2-host/review-parity-td72odrw/cli-fixture/user",
+        "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+        "RIWORK_HOME": "/private/tmp/riwork-w2-host/review-parity-td72odrw/cli-fixture/state",
+        "RIWORK_RUNTIME_DIR": "/private/tmp/riwork-w2-host/review-parity-td72odrw/cli-fixture/runtime",
+        "TMPDIR": "/private/tmp/riwork-w2-host/review-parity-td72odrw/tmp",
+        "TMUX_TMPDIR": "/private/tmp/riwork-w2-host/review-parity-td72odrw/tmux",
+        "XDG_CONFIG_HOME": "/Users/dominik/orca/projects/riWork-nsh-p1-fix-host/target/nsh-integration-home-1qzlnuc2/.config",
+        "RIWORK_NSH_BUNDLE": "/private/tmp/riwork-w2-host/review-parity-td72odrw/cli-fixture/must-not-load.nsh"
+      },
+      "stdout": "/private/tmp/riwork-w2-host/review-parity-td72odrw/parity-appearance-reference.stdout",
+      "stderr": "/private/tmp/riwork-w2-host/review-parity-td72odrw/parity-appearance-reference.stderr",
+      "exit_code": 2,
+      "duration_seconds": 0.019,
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "0c322c8bad70bb59d1fe2ff846aa6eff3982bf7a9cd71cc5d3c11e18b2bd11de"
+    },
+    {
+      "name": "parity-appearance-new",
+      "argv": [
+        "/private/tmp/riwork-w2-host/fixture-bin/riwork",
+        "appearance",
+        "--json"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-fix-host",
+      "environment": {
+        "HOME": "/private/tmp/riwork-w2-host/review-parity-td72odrw/cli-fixture/user",
+        "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+        "RIWORK_HOME": "/private/tmp/riwork-w2-host/review-parity-td72odrw/cli-fixture/state",
+        "RIWORK_RUNTIME_DIR": "/private/tmp/riwork-w2-host/review-parity-td72odrw/cli-fixture/runtime",
+        "TMPDIR": "/private/tmp/riwork-w2-host/review-parity-td72odrw/tmp",
+        "TMUX_TMPDIR": "/private/tmp/riwork-w2-host/review-parity-td72odrw/tmux",
+        "XDG_CONFIG_HOME": "/Users/dominik/orca/projects/riWork-nsh-p1-fix-host/target/nsh-integration-home-1qzlnuc2/.config",
+        "RIWORK_NSH_BUNDLE": "/private/tmp/riwork-w2-host/review-parity-td72odrw/cli-fixture/must-not-load.nsh"
+      },
+      "stdout": "/private/tmp/riwork-w2-host/review-parity-td72odrw/parity-appearance-new.stdout",
+      "stderr": "/private/tmp/riwork-w2-host/review-parity-td72odrw/parity-appearance-new.stderr",
+      "exit_code": 2,
+      "duration_seconds": 0.017,
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "0c322c8bad70bb59d1fe2ff846aa6eff3982bf7a9cd71cc5d3c11e18b2bd11de"
+    },
+    {
+      "name": "parity-unknown-command-reference",
+      "argv": [
+        "/private/tmp/riwork-p1-m5-f6975181/reference-target/debug/riwork",
+        "nosuchcommand"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-fix-host",
+      "environment": {
+        "HOME": "/private/tmp/riwork-w2-host/review-parity-td72odrw/cli-fixture/user",
+        "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+        "RIWORK_HOME": "/private/tmp/riwork-w2-host/review-parity-td72odrw/cli-fixture/state",
+        "RIWORK_RUNTIME_DIR": "/private/tmp/riwork-w2-host/review-parity-td72odrw/cli-fixture/runtime",
+        "TMPDIR": "/private/tmp/riwork-w2-host/review-parity-td72odrw/tmp",
+        "TMUX_TMPDIR": "/private/tmp/riwork-w2-host/review-parity-td72odrw/tmux",
+        "XDG_CONFIG_HOME": "/Users/dominik/orca/projects/riWork-nsh-p1-fix-host/target/nsh-integration-home-1qzlnuc2/.config",
+        "RIWORK_NSH_BUNDLE": "/private/tmp/riwork-w2-host/review-parity-td72odrw/cli-fixture/must-not-load.nsh"
+      },
+      "stdout": "/private/tmp/riwork-w2-host/review-parity-td72odrw/parity-unknown-command-reference.stdout",
+      "stderr": "/private/tmp/riwork-w2-host/review-parity-td72odrw/parity-unknown-command-reference.stderr",
+      "exit_code": 2,
+      "duration_seconds": 0.021,
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "982dec4842ada54cb50baa6c16fdd815cc5f75575c0f43466faf940d7fa3ed80"
+    },
+    {
+      "name": "parity-unknown-command-new",
+      "argv": [
+        "/private/tmp/riwork-w2-host/fixture-bin/riwork",
+        "nosuchcommand"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-fix-host",
+      "environment": {
+        "HOME": "/private/tmp/riwork-w2-host/review-parity-td72odrw/cli-fixture/user",
+        "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+        "RIWORK_HOME": "/private/tmp/riwork-w2-host/review-parity-td72odrw/cli-fixture/state",
+        "RIWORK_RUNTIME_DIR": "/private/tmp/riwork-w2-host/review-parity-td72odrw/cli-fixture/runtime",
+        "TMPDIR": "/private/tmp/riwork-w2-host/review-parity-td72odrw/tmp",
+        "TMUX_TMPDIR": "/private/tmp/riwork-w2-host/review-parity-td72odrw/tmux",
+        "XDG_CONFIG_HOME": "/Users/dominik/orca/projects/riWork-nsh-p1-fix-host/target/nsh-integration-home-1qzlnuc2/.config",
+        "RIWORK_NSH_BUNDLE": "/private/tmp/riwork-w2-host/review-parity-td72odrw/cli-fixture/must-not-load.nsh"
+      },
+      "stdout": "/private/tmp/riwork-w2-host/review-parity-td72odrw/parity-unknown-command-new.stdout",
+      "stderr": "/private/tmp/riwork-w2-host/review-parity-td72odrw/parity-unknown-command-new.stderr",
+      "exit_code": 2,
+      "duration_seconds": 0.017,
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "982dec4842ada54cb50baa6c16fdd815cc5f75575c0f43466faf940d7fa3ed80"
+    }
+  ],
+  "status": "passed",
+  "new_binary": {
+    "path": "/private/tmp/riwork-w2-host/fixture-bin/riwork",
+    "sha256": "eb4502a8b7d8170b86f2b7b9c74fc20c1d359aec76e974038de27be2b9400748"
+  },
+  "reference_provenance": {
+    "manifest": "/Users/dominik/orca/projects/riWork-nsh-p1-fix-host/crates/riwork-desktop/verification/m5-evidence/parity-zh7mtux5-manifest.json",
+    "recorded_reference": {
+      "binary": "/private/tmp/riwork-p1-m5-f6975181/reference-target/debug/riwork",
+      "sha256": "42b1a9ae0abd7454b0f59928247f9fdb6d5ae8c3f6998b9f684d3903e3c68d5f",
+      "source_baseline": "ea0f2f5",
+      "source_diff_empty": true
+    },
+    "hash_matches_record": true
+  },
+  "cli_reference": {
+    "binary": "/private/tmp/riwork-p1-m5-f6975181/reference-target/debug/riwork",
+    "sha256": "42b1a9ae0abd7454b0f59928247f9fdb6d5ae8c3f6998b9f684d3903e3c68d5f",
+    "source_baseline": "ea0f2f5",
+    "source_diff_empty": true
+  },
+  "cli_parity": [
+    {
+      "argv": [
+        "project",
+        "list",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stdout_bytes": 548,
+      "stderr_bytes": 0,
+      "byte_equal": true
+    },
+    {
+      "argv": [
+        "settings",
+        "list",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stdout_bytes": 2223,
+      "stderr_bytes": 0,
+      "byte_equal": true
+    },
+    {
+      "argv": [
+        "instances",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stdout_bytes": 3,
+      "stderr_bytes": 0,
+      "byte_equal": true
+    },
+    {
+      "argv": [
+        "appearance",
+        "--json"
+      ],
+      "exit_code": 2,
+      "stdout_bytes": 0,
+      "stderr_bytes": 73,
+      "byte_equal": true
+    },
+    {
+      "argv": [
+        "nosuchcommand"
+      ],
+      "exit_code": 2,
+      "stdout_bytes": 0,
+      "stderr_bytes": 172,
+      "byte_equal": true
+    }
+  ]
+}

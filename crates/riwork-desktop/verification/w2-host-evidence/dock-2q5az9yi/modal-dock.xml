@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="nsh test" tests="1" failures="0" errors="0" skipped="0" time="4.194">
+  <testsuite name="apps/riwork/tests/Keyboard.test.tsx" tests="1" failures="0" errors="0" skipped="0" time="0.851">
+    <testcase classname="apps/riwork/tests/Keyboard.test.tsx" name="P1-KEYS-04 close modal blocks window actions and modifier shortcuts dismiss All tabs before selecting" time="0.851"/>
+  </testsuite>
+</testsuites>

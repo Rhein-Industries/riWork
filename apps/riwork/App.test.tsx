@@ -19,7 +19,7 @@ test("opens a core-written layout with shell identity, empty unknown pane, and w
   const app = await open("./tests/Workspace.fixture.tsx", options("fixture-one"));
   try {
     await app.waitFor("id:workspace-dock");
-    expect(app.shows("id:title-bar")).toBe(true);
+    expect(app.shows("id:window-controls-island")).toBe(true);
     expect(app.shows("id:status-bar")).toBe(true);
     expect(app.texts()).toContain("SESSIONS");
     expect(app.texts()).toContain("Empty pane");
@@ -180,8 +180,8 @@ test("local shell content renders and Detach persists before reopening the same 
     await app.waitFor("id:terminal:persistent-local");
     expect(app.shows("id:terminal-panel:persistent-local")).toBe(true);
     await app.press("id:close:shell:persistent-local");
-    expect(app.menu()?.some((item) => item.label === "Detach tab — keep session running")).toBe(true);
-    await app.chooseMenuItem("Detach tab — keep session running");
+    expect(app.shows("label:Detach tab — keep session running")).toBe(true);
+    await app.press("id:close-detach");
     expect(latest(app).snapshot.panes[0].tabs.length).toBe(0);
     expect(app.shows("id:terminal:persistent-local")).toBe(false);
     await app.host.send("app.fixture.flush", {});
@@ -230,7 +230,7 @@ test("terminal native nodes survive selection and resize until an explicit Detac
     await app.setColorScheme("dark");
     expect(mounts().sort()).toEqual(["stable-one", "stable-two"]);
     await app.press("id:close:shell:stable-one");
-    await app.chooseMenuItem("Detach tab — keep session running");
+    await app.press("id:close-detach");
     expect(app.shows("id:terminal:stable-one")).toBe(false);
     expect(mounts().sort()).toEqual(["stable-one", "stable-two"]);
     await app.host.send("route", { step: { kind: "showShell", shellId: "stable-one" } });

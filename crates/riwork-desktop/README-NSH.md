@@ -81,16 +81,28 @@ the AppKit boundary).
 
 The host looks up P1c's native `host_layouts` handles by WindowId. Runtime
 publication reads `project_layout()` from Rust, including heartbeat publications
-when the UI has not moved or resized. Close and quit stop accepting layout edits,
+when the UI has not moved or resized. Close, quit and restart stop accepting layout edits,
 retain handles, and call `flush_blocking()` on the service worker before AppView
 teardown. Failure cancels close/quit and keeps the windows available. Global
-window state uses the existing core store. Drafts remain deferred.
+window state uses the existing core store. Drafts are deferred in Phase 1; the
+native `host_flush` registry supplies a blocking draft-writer barrier and any
+failure cancels teardown or reload before a replacement is launched.
 
 The real app passes `host.params.restore.layout` to `Layouts.openSession` and
 posts `app.restoreReady` once after installing the DockArea projection. Global
 restores confirm immediately; the host verifies project handles exist before
-accepting readiness. Full restart/CLI reload handoff is still explicitly
-unavailable in this integration subset and keeps the old process alive.
+accepting readiness. `riwork restart` and `app.restart` flush, launch and confirm
+the replacement through the existing engine protocol. Confirmation is limited
+to the original window IDs and 20 seconds; the engine's 40-second watchdog is
+the final backstop. Failed launches resume the old host and forwarding socket.
+Forwarding pauses before the snapshot, and every already acknowledged open is
+processed first. Ownership remains held until the old AppViews have stopped.
+
+The W2 fixture runner is `verification/phase1_w2_host.py`. Its build/test and
+real-host modes use disposable homes, record exact commands, and expose only
+fixture PIDs for read-only Cua checkpoints. Test-support-only auto-close/quit
+bundles exercise the production host APIs without desktop input. See
+`docs/nsh-phase1-w2-host-results.md` for executed routes and remaining gaps.
 
 `system.openWith` and `system.revealInFinder` validate terminal link targets and
 open them through the system. Local session mutations, shared shell membership

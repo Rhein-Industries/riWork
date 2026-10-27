@@ -1,0 +1,52 @@
+pub struct AppView {
+    surface: Rc<Surface>,
+    /// Hosts the surface and, in development, the status line and error
+    /// overlay above it.
+    container: Retained<NSView>,
+    options: RefCell<AppOptions>,
+    /// The performance monitor's HUD, while it shows.
+    fps: RefCell<Option<Rc<crate::fps::Hud>>>,
+    #[cfg(feature = "dev")]
+    pub(crate) dev: RefCell<Option<crate::dev::DevSession>>,
+}
+
+impl AppView {
+    /// A view with no app yet; it fills its superview.
+    pub fn new(mtm: MainThreadMarker, options: AppOptions) -> Rc<AppView> {
+        let surface = Surface::new(mtm, initial_environment());
+        surface.appearance.set(options.appearance);
+        let frame = NSRect::new(
+            NSPoint::new(0.0, 0.0),
+            NSSize::new(options.size.0 as f64, options.size.1 as f64),
+        );
+        let container = NSView::initWithFrame(NSView::alloc(mtm), frame);
+        container.setAutoresizingMask(
+            NSAutoresizingMaskOptions::ViewWidthSizable
+                | NSAutoresizingMaskOptions::ViewHeightSizable,
+        );
+        container.setWantsLayer(true);
+        let root = surface.root.ns();
+        root.setFrame(frame);
+        root.setAutoresizingMask(
+            NSAutoresizingMaskOptions::ViewWidthSizable
+                | NSAutoresizingMaskOptions::ViewHeightSizable,
+        );
+        container.addSubview(root);
+        surface.native.set_components(options.components.clone());
+        let view = Rc::new(AppView {
+            surface,
+            container,
+            options: RefCell::new(options),
+            fps: RefCell::new(None),
+            #[cfg(feature = "dev")]
+            dev: RefCell::new(None),
+        });
+        crate::system::watch_environment(&view.surface);
+        if view.options.borrow().fps {
+            view.set_fps_monitor(true);
+        }
+        view
+    }
+
+    /// The view to put in a window.
+    pub fn view(&self) -> Retained<NSView> {

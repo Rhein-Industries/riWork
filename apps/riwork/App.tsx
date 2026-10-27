@@ -10,6 +10,7 @@ function App() {
   const session = signal<LayoutSession | null>(null);
   const notice = signal(params.notice ?? "Loading workspace…");
   const name = params.path?.split("/").filter(Boolean).pop() ?? "Workspace";
+  if (params.kind === "global") host.post("window.setDockInfo", { project: "Global", branch: null });
   let alive = true;
   let restoreReady = false;
   function installed() {

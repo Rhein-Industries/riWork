@@ -816,6 +816,11 @@ resize already match in the common case (one absorber).
 - `LayoutSession.switchProject(projectId)`: loads the destination and applies
   `carry_locked_regions_from(previous)` (`layouts.rs:1149-1296`), as GPUI does when a window
   switches project.
+- W2 window-command adapters: `openPanel(panel)`, `splitActive(down)`,
+  `closeActive(wholePane)` and `defaultLayout()` return the controlled DockArea
+  projection after a Rust-owned model edit. `setFocusMode(focused, centered)`
+  updates the Rust host's runtime-only focus flags; it does not alter storage
+  schema or rewrite the underlying pane layout.
 - Persistence: after each edit the session schedules a save on the blocking pool, trailing
   **250 ms**, through `save_chat_state` or `save_tab_layout` (whichever the GPUI window would
   use, `main.rs:4458-4485`). It flushes synchronously (from Rust, no JS) on `window.close`,
@@ -823,6 +828,9 @@ resize already match in the common case (one absorber).
   rewritten (riwork-core already skips them).
 - The host reads the session's current `ProjectLayout` directly (same process) when it
   publishes `RuntimeWindow`s for reload.
+- The native `host_flush::flush_blocking()` hook is invoked on the host service
+  thread before close/quit/restart teardown. Deferred draft writers can register
+  barriers; failure keeps the old windows and cancels the reload before launch.
 - The window's ordinary size (`ProjectLayout.window_size`) is captured as GPUI does: ordinary,
   non-zoomed, non-fullscreen frames only, debounced 250 ms, gated by `remember_window_size`
   (spec P10); the host reports frames to the session from Rust.
@@ -1000,3 +1008,23 @@ proposal: no Ghostty configuration parsing, the RiWork palette on Follow
 Ghostty, the diagnostic retained, and no `appearance.json` publishing. The
 terminal phase retains ownership of real parsing and publishing. This records
 the assignment’s scope; it does not settle D-PROC-1 or D-COPY-1.
+
+### Phase 1 W2 window chrome (consolidated)
+
+W2 first exposed an interim, read-only `Appearance.get()` window-chrome
+projection while the full appearance service was integrated. Phase 1
+consolidation (task `c12f5e14`) removes that second module: window chrome
+(controls island, drag strip, borders) reads the W3 schema 2 `AppearanceDto`
+palette (`controlsIsland`, `panelActive`, `divider`, `bg`, `panel`, `text`)
+through the window's resolved interface theme, and text size uses W3 Settings.
+Native and Hermes keep their P-SHELL unpainted controls area. Follow Ghostty
+uses the RiWork palette per §8.4; no `appearance.json` is read or published.
+
+Window size is captured directly from host Rust geometry through
+`HostLayout::observe_window_frame(width, height, ordinary, remember)`; it is not
+a JavaScript host method. The existing layout worker applies the trailing 250 ms
+save delay. Model edits retain the latest host size, and a resize that returns to
+the settled size reaches LayoutStore's unchanged-data no-write path. The service
+worker supplies the current `remember_window_size` setting, including capturing
+the current normal frame when the setting becomes enabled. Global windows
+persist their normal size independently of that setting.

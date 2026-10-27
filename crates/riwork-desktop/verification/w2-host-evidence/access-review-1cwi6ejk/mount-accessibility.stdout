@@ -1,0 +1,4 @@
+123:                crate::access::created(&view);
+245:                    crate::access::text_changed(view);
+253:                    crate::access::events_changed(view);
+338:                crate::access::props_changed(view);

@@ -1,0 +1,3 @@
+✓ built the Rust crate riwork-nsh-native (207ms)
+warn riwork/native exports items without a doc comment, which TSX sees in its declarations: Appearance, Appearance.get, Sessions.list, Sessions.subscribe, Store.snapshot, Store.search, Store.inspectProject, Subscription.close
+✓ built apps/riwork/App.tsx into /private/tmp/riwork-w2-host/bundle (30.3 KB js, 100.2 KB bytecode, 5ms)

@@ -369,6 +369,21 @@ impl LayoutSession {
         self.edit(|model| model.select_pane(pane_id).map(|next| (next, true)))
     }
 
+    /// Split the active pane scaffold without creating a terminal process.
+    pub fn split_active(&mut self, down: bool) -> Result<Value, String> {
+        self.edit(|model| model.split_active(down).map(|next| (next, true)))
+    }
+
+    /// Close a placeholder in this layout; shared sessions remain running.
+    pub fn close_active(&mut self, whole_pane: bool) -> Result<Value, String> {
+        self.edit(|model| model.close_active(whole_pane).map(|next| (next, true)))
+    }
+
+    /// Publish runtime-only focus presentation for host restart snapshots.
+    pub fn set_focus_mode(&self, focused: bool, centered: bool) -> Result<(), String> {
+        self.host.set_focus_state(focused, centered)
+    }
+
     /// Toggle the explicit lock set, preserving the difference from automatic locks.
     pub fn toggle_lock(&mut self, pane_id: u64) -> Result<Value, String> {
         self.edit(|model| model.toggle_lock(pane_id).map(|next| (next, true)))
@@ -684,7 +699,14 @@ mod integration_tests {
             notice: None,
         };
         let before = session.project_from_host();
+        session.set_focus_mode(true, true).unwrap();
+        assert_eq!(host.focus_state(), (true, true));
         host.begin_close();
+        assert_eq!(
+            session.set_focus_mode(false, false).unwrap_err(),
+            "unavailable: window is closing"
+        );
+        assert_eq!(host.focus_state(), (true, true));
         assert_eq!(
             session.toggle_lock(before.active_pane).unwrap_err(),
             "unavailable: window is closing"

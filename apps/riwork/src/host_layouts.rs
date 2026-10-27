@@ -4,12 +4,12 @@
 //! Publishing an edit never takes the registry mutex or waits on a file lock.
 use crate::persistence::{LayoutBackend, LoadedLayout};
 use arc_swap::ArcSwap;
-use riwork_core::layouts::ProjectLayout;
+use riwork_core::layouts::{ProjectLayout, WindowSize};
 use std::{
     collections::{HashMap, HashSet},
     sync::{
         Arc, Mutex, OnceLock, Weak,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering},
     },
 };
 
@@ -26,10 +26,28 @@ fn registry() -> &'static Mutex<Registry> {
     REGISTRY.get_or_init(|| Mutex::new(Registry::default()))
 }
 
+fn pack_size(size: Option<WindowSize>) -> u64 {
+    size.map_or(0, |size| {
+        (u64::from(size.width.to_bits()) << 32) | u64::from(size.height.to_bits())
+    })
+}
+
+fn unpack_size(packed: u64) -> Option<WindowSize> {
+    (packed != 0).then(|| WindowSize {
+        width: f32::from_bits((packed >> 32) as u32),
+        height: f32::from_bits(packed as u32),
+    })
+}
+
 /// A thread-safe host handle, independent of NSH's engine-owned class instance.
 /// The host may retain it through AppView teardown to flush before terminating.
 pub struct HostLayout {
     current: Option<ArcSwap<CurrentLayout>>,
+    // One atomic publishes a coherent focus-mode/centering pair for reload.
+    focus: AtomicU8,
+    // Host geometry survives later model edits whose projection predates a
+    // resize. Packed f32 bits (zero is none) keep engine publication lock-free.
+    window_size: AtomicU64,
     closing: AtomicBool,
     switching: AtomicBool,
     editing: AtomicUsize,
@@ -84,6 +102,8 @@ pub fn registration_backend(
         return Err("conflict: a layout session is already registered for this window".into());
     }
     let handle = Arc::new(HostLayout {
+        focus: AtomicU8::new(0),
+        window_size: AtomicU64::new(pack_size(snapshot.window_size)),
         current: Some(ArcSwap::from_pointee(CurrentLayout {
             project: snapshot,
             persistence: OwnedPersistence(Some(persistence)),
@@ -131,9 +151,26 @@ pub fn cancel_window_close(window_id: &str) {
 }
 
 impl HostLayout {
+    /// Runtime-only presentation flags, carried by restart rather than layouts.json.
+    pub fn set_focus_state(&self, focused: bool, centered: bool) -> Result<(), String> {
+        self.edit(|| {
+            self.focus.store(
+                u8::from(focused) | (u8::from(centered) << 1),
+                Ordering::Release,
+            );
+            Ok(((), None))
+        })
+    }
+
+    pub fn focus_state(&self) -> (bool, bool) {
+        let flags = self.focus.load(Ordering::Acquire);
+        (flags & 1 != 0, flags & 2 != 0)
+    }
+
     /// Publish the storage projection after each committed in-memory edit.
     /// Call before scheduling that edit's persistence snapshot.
-    pub fn publish(&self, project: ProjectLayout) {
+    pub fn publish(&self, mut project: ProjectLayout) {
+        project.window_size = self.window_size();
         let current = self.current.as_ref().expect("live host layout");
         let persistence = current.load().persistence.clone();
         current.store(Arc::new(CurrentLayout {
@@ -158,15 +195,51 @@ impl HostLayout {
         let _admission = self.admit(false)?;
         let (result, project) = operation()?;
         if let Some(project) = project {
-            self.publish(project.clone());
+            self.publish(project);
             self.current
                 .as_ref()
                 .expect("live host layout")
                 .load()
                 .persistence
-                .schedule(project)?;
+                .schedule(self.snapshot())?;
         }
         Ok(result)
+    }
+
+    /// Rust host geometry bridge. The service thread supplies the current
+    /// settings value; no IO or filesystem lock runs on the AppKit thread.
+    /// LayoutPersistence owns the trailing 250 ms timer. A return to the saved
+    /// size replaces the pending snapshot; LayoutStore then skips its write.
+    pub fn observe_window_frame(
+        &self,
+        width: f32,
+        height: f32,
+        ordinary: bool,
+        remember: bool,
+    ) -> Result<(), String> {
+        if !ordinary || !remember {
+            return Ok(());
+        }
+        let Some(size) = WindowSize::new(width, height) else {
+            return Ok(());
+        };
+        self.edit(|| {
+            // Only the host service thread writes this value; edits admitted
+            // here are serialized against close by the edit admission.
+            if self.window_size() == Some(size) {
+                return Ok(((), None));
+            }
+            self.window_size
+                .store(pack_size(Some(size)), Ordering::Release);
+            let mut project = self.snapshot();
+            project.window_size = Some(size);
+            Ok(((), Some(project)))
+        })
+    }
+
+    /// The latest ordinary size captured from host geometry or the saved layout.
+    pub fn window_size(&self) -> Option<WindowSize> {
+        unpack_size(self.window_size.load(Ordering::Acquire))
     }
 
     /// Stop accepting edits before the host queues its persistence barrier.
@@ -298,7 +371,7 @@ impl ProjectSwitch {
     pub(crate) fn commit<T>(
         &mut self,
         persistence: Arc<dyn LayoutBackend>,
-        project: ProjectLayout,
+        mut project: ProjectLayout,
         save: bool,
         operation: impl FnOnce() -> T,
     ) -> Result<T, String> {
@@ -309,6 +382,10 @@ impl ProjectSwitch {
                 return Err(error);
             }
         };
+        // The window keeps its captured ordinary size across a project switch.
+        if let Some(size) = self.host.window_size() {
+            project.window_size = Some(size);
+        }
         if save {
             if let Err(error) = persistence.schedule(project.clone()) {
                 defer_persistence(persistence);

@@ -1,0 +1,3 @@
+# Preserve captured stdout/stderr bytes, including intentional terminal spaces.
+*.stdout -text -whitespace
+*.stderr -text -whitespace
