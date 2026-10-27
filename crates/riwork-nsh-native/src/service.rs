@@ -36,6 +36,13 @@ static START: Mutex<()> = Mutex::new(());
 /// It cannot replace an existing process service or change its fixed home.
 pub fn install_process_service(service: Arc<ProcessService>) -> Result<(), String> {
     let _start = START.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(home) = PROCESS_HOME.get() {
+        let home = home.as_ref().map_err(Clone::clone)?;
+        if home.canonicalize().map_err(io_error)? != service.home() {
+            return Err("conflict: native process home is already fixed".into());
+        }
+    }
+    let _ = PROCESS_HOME.set(Ok(service.home().to_owned()));
     PROCESS
         .set(service)
         .map_err(|_| "conflict: native process service is already initialized".into())
@@ -49,10 +56,7 @@ pub async fn initialize() -> Result<Arc<ProcessService>, String> {
         if let Some(service) = PROCESS.get() {
             return Ok(service.clone());
         }
-        let home = PROCESS_HOME
-            .get_or_init(riwork_core::paths::riwork_home)
-            .clone()
-            .map_err(io_error)?;
+        let home = resolved_home()?;
         let store = Arc::new(CoreStoreBackend::new(home.clone()));
         let sessions = Arc::new(EngineSessionsBackend::new(home.clone()));
         let service = ProcessService::with_backends(home, store, sessions).map_err(io_error)?;
@@ -60,6 +64,23 @@ pub async fn initialize() -> Result<Arc<ProcessService>, String> {
         Ok(service)
     })
     .await
+}
+
+/// Shared by layout IO and service startup. Layout-only headless runners do not
+/// need to start the session sampler, but still resolve exactly the same fixed
+/// process home as Store/Sessions and host-supplied fake backends.
+pub(crate) fn process_home() -> Result<PathBuf, String> {
+    let _start = START.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(service) = PROCESS.get() {
+        return Ok(service.home().to_owned());
+    }
+    resolved_home()
+}
+
+fn resolved_home() -> Result<PathBuf, String> {
+    PROCESS_HOME
+        .get_or_init(|| riwork_core::paths::riwork_home().map_err(io_error))
+        .clone()
 }
 
 pub(crate) fn initialized() -> Result<Arc<ProcessService>, String> {

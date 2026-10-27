@@ -1,0 +1,45 @@
+//! Two Store projects with core-written layouts, entirely inside a fresh /tmp root.
+#[path = "../tests/support/mod.rs"]
+mod support;
+
+use riwork_core::{layouts::LayoutStore, store::Store};
+use std::path::PathBuf;
+
+fn main() -> Result<(), String> {
+    let root = PathBuf::from(
+        std::env::args_os()
+            .nth(1)
+            .ok_or("usage: integration_fixture /tmp/fresh-root")?,
+    );
+    let scratch = std::fs::canonicalize("/tmp").map_err(|error| error.to_string())?;
+    if !root.is_absolute()
+        || root
+            .components()
+            .any(|part| part == std::path::Component::ParentDir)
+    {
+        return Err("fixture root must be an absolute /tmp path".into());
+    }
+    std::fs::create_dir_all(&root).map_err(|error| error.to_string())?;
+    let root = root.canonicalize().map_err(|error| error.to_string())?;
+    if !root.starts_with(scratch) || root.join("home").exists() {
+        return Err("fixture root must be inside /tmp with no existing home".into());
+    }
+    let home = root.join("home");
+    let store = Store::open(&home)?;
+    let layouts = LayoutStore::open(&home)?;
+    let mut projects = Vec::new();
+    for name in ["Alpha", "Beta"] {
+        let path = root.join("repos").join(name);
+        std::fs::create_dir_all(&path).map_err(|error| error.to_string())?;
+        let project = store.add_project(&path, Some(name))?;
+        let mut layout = support::fixture();
+        layout.selected_task_id = Some(format!("{name}-fixture-task"));
+        layouts.save_chat_state(&project.id, &layout, &[], None)?;
+        projects.push(project);
+    }
+    println!(
+        "{}",
+        serde_json::json!({"root": root, "home": home, "projects": projects})
+    );
+    Ok(())
+}

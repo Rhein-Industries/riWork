@@ -2,7 +2,6 @@
 //! Disk, runtime registry and project resolution live on the service thread.
 use crate::{
     nsh_menus::{DockWindow, HostMenus, MenuAction},
-    nsh_native_stub as native,
     nsh_runtime::{DesktopInstance, HostRuntime, InstanceStart, OpenRequest},
 };
 use nsh_engine::{HostCall, HostChannel};
@@ -25,11 +24,14 @@ use nsh_platform_macos::{
     set_ui_sets,
 };
 use riwork_core::{
+    global_window::GlobalWindowStore,
     layouts::{WindowFrame, WindowSize},
     paths,
     store::Store,
 };
 use riwork_engine::runtime::{RuntimeWindow, WindowGeometry, WindowKind, WindowMode};
+use riwork_nsh_native as native;
+use riwork_nsh_workspace::host_layouts::{self, HostLayout};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
@@ -46,7 +48,7 @@ use uuid::Uuid;
 const APP_ID: &str = "dev.riwork.shell";
 const CAPABILITIES: &str = r#"{"host":["window.*","app.*","system.*"]}"#;
 const RESTART_PENDING: &str =
-    "unavailable: NSH restart awaits the P1a Rust layout and draft flush hooks";
+    "unavailable: NSH restart handoff is not enabled in the Phase 1 integration subset";
 
 // Domain persistence belongs to riwork/native. In particular, two AppViews
 // must never race to write the same nsh/storage storage.json.
@@ -137,7 +139,8 @@ enum Service {
     Snapshot(Vec<(String, RuntimeWindow)>),
     Ready(String),
     Open(OpenOptions, Option<HostCall>, Option<Value>, bool),
-    Quit,
+    Close(String, ClosingWindows, Option<HostCall>),
+    Quit(ClosingWindows),
     Finished,
     Wake,
 }
@@ -146,6 +149,8 @@ enum Main {
     Open(PreparedWindow, Option<HostCall>, Option<Value>, bool),
     State(String),
     Close(String),
+    Closed(String, Option<HostCall>, Result<(), String>),
+    QuitFailed(String),
     Menu(MenuAction),
     Quit,
     Finish,
@@ -280,6 +285,7 @@ struct Window {
     last_state: Value,
     focus_serial: u64,
     dock_info: Value,
+    closing: bool,
 }
 struct Host {
     mtm: MainThreadMarker,
@@ -294,6 +300,7 @@ struct Host {
     service: mpsc::Sender<Service>,
     focus_serial: u64,
     quitting: bool,
+    quit_pending: bool,
     background: bool,
 }
 impl Host {
@@ -418,6 +425,7 @@ impl Host {
                 last_state: Value::Null,
                 focus_serial: 0,
                 dock_info: Value::Null,
+                closing: false,
             },
         );
         self.state(&id);
@@ -437,6 +445,9 @@ impl Host {
                     .unwrap_or(window.normal);
                 runtime.bounds = Some(runtime_geometry(window.normal, screen));
                 runtime.mode = mode(&window.window);
+                if let Some(layout) = host_layouts::lookup(id) {
+                    runtime.layout = Some(layout.project_layout());
+                }
                 (id.clone(), runtime)
             })
             .collect()
@@ -485,30 +496,74 @@ impl Host {
         }
         Ok(())
     }
-    fn close(&mut self, id: &str, reason: &str) {
-        if let Some(w) = self.windows.remove(id) {
-            let _ = w
-                .view
-                .host()
-                .send("window.willClose", json!({"reason":reason}));
-            // P1a: flush the Rust LayoutSession here, before stopping the engine.
-            w.view.stop();
-            w.window.setDelegate(None);
-            w.window.close();
-            self.publish();
+    fn teardown(&mut self, id: &str) {
+        if let Some(window) = self.windows.remove(id) {
+            window.view.stop();
+            window.window.setDelegate(None);
+            window.window.close();
         }
-        if self.windows.is_empty() && !self.quitting {
-            self.quit();
+    }
+    fn close(&mut self, id: &str, reason: &str, call: Option<HostCall>) {
+        let Some(window) = self.windows.get_mut(id) else {
+            if let Some(call) = call {
+                call.reject("not_found: window");
+            }
+            return;
+        };
+        if self.quitting || window.closing {
+            if let Some(call) = call {
+                call.reject("unavailable: window is closing");
+            }
+            return;
+        }
+        window.closing = true;
+        let _ = window
+            .view
+            .host()
+            .send("window.willClose", json!({"reason":reason}));
+        let batch = ClosingWindows::new(
+            self.snapshot()
+                .into_iter()
+                .filter(|(window_id, _)| window_id == id)
+                .collect(),
+        );
+        if let Err(error) = self
+            .service
+            .send(Service::Close(id.to_owned(), batch, call))
+        {
+            if let Service::Close(_, batch, call) = error.0 {
+                batch.cancel();
+                self.windows.get_mut(id).unwrap().closing = false;
+                if let Some(call) = call {
+                    call.reject("unavailable: host service stopped");
+                }
+            }
         }
     }
     fn quit(&mut self) {
         if self.quitting {
             return;
         }
+        if self.windows.values().any(|window| window.closing) {
+            self.quit_pending = true;
+            return;
+        }
         self.quitting = true;
-        self.publish();
-        // Service acknowledges publication; future Drafts/LayoutSession flushes belong there.
-        let _ = self.service.send(Service::Quit);
+        self.quit_pending = false;
+        for window in self.windows.values() {
+            let _ = window
+                .view
+                .host()
+                .send("window.willClose", json!({"reason":"quit"}));
+        }
+        let batch = ClosingWindows::new(self.snapshot());
+        if let Err(error) = self.service.send(Service::Quit(batch)) {
+            if let Service::Quit(batch) = error.0 {
+                batch.cancel();
+            }
+            self.quitting = false;
+            eprintln!("riwork: unavailable: host service stopped");
+        }
     }
     fn handle(&mut self, message: Main) {
         match message {
@@ -573,12 +628,39 @@ impl Host {
                 }
             }
             Main::State(id) => self.state(&id),
-            Main::Close(id) => self.close(&id, "user"),
+            Main::Close(id) => self.close(&id, "user", None),
+            Main::Closed(id, call, result) => match result {
+                Ok(()) => {
+                    if let Some(call) = call {
+                        call.resolve(json!({}));
+                    }
+                    self.teardown(&id);
+                    self.publish();
+                    if self.windows.is_empty() || self.quit_pending {
+                        self.quit();
+                    }
+                }
+                Err(error) => {
+                    if let Some(window) = self.windows.get_mut(&id) {
+                        window.closing = false;
+                    }
+                    self.quit_pending = false;
+                    if let Some(call) = call {
+                        call.reject(error);
+                    } else {
+                        eprintln!("riwork: close cancelled: {error}");
+                    }
+                }
+            },
+            Main::QuitFailed(error) => {
+                self.quitting = false;
+                eprintln!("riwork: quit cancelled: {error}");
+            }
             Main::Menu(action) => self.menu(action),
             Main::Quit => self.quit(),
             Main::Finish => {
                 for id in self.windows.keys().cloned().collect::<Vec<_>>() {
-                    self.close(&id, "quit");
+                    self.teardown(&id);
                 }
                 stop(&self.app);
             }
@@ -693,12 +775,20 @@ impl Host {
             "window.close" => {
                 let target = data.get("windowId").map(Value::as_str).unwrap_or(Some(&id));
                 match target {
-                    Some(target) if self.windows.contains_key(target) => { let target = target.to_owned(); call.resolve(json!({})); self.close(&target,"user"); }
+                    Some(target) if self.windows.contains_key(target) => { let target = target.to_owned(); self.close(&target,"user",Some(call)); }
                     _ => call.reject("not_found: window"),
                 }
             }
             "window.setDockInfo" => { self.windows.get_mut(&id).unwrap().dock_info = data; call.resolve(json!({})); }
-            "app.restoreReady" => { let _ = self.service.send(Service::Ready(id)); call.resolve(json!({})); }
+            "app.restoreReady" => {
+                if !self.windows[&id].runtime.is_global() && host_layouts::lookup(&id).is_none() {
+                    call.reject("unavailable: project layout is not ready");
+                } else {
+                    self.publish();
+                    let _ = self.service.send(Service::Ready(id));
+                    call.resolve(json!({}));
+                }
+            }
             "app.quit" => { call.resolve(json!({})); self.quit(); }
             "app.restart" => call.reject(RESTART_PENDING),
             "app.setAppearance" => call.reject("unavailable: process appearance service awaits P1a"),
@@ -841,7 +931,12 @@ fn stop(app: &NSApplication) {
 fn prepare(home: &Path, options: OpenOptions) -> Result<PreparedWindow, String> {
     options.validate()?;
     let runtime = if options.kind == WindowKind::Global {
-        RuntimeWindow::global(home, None, WindowMode::Windowed, Default::default())
+        RuntimeWindow::global(
+            home,
+            None,
+            WindowMode::Windowed,
+            GlobalWindowStore::at(home).load(),
+        )
     } else {
         let store = Store::open(home.to_path_buf())?;
         let state = store.snapshot()?;
@@ -914,26 +1009,13 @@ fn startup(args: Vec<String>) -> Result<Option<Startup>, String> {
         InstanceStart::Primary(instance) | InstanceStart::Replacement(instance) => instance,
     };
     paths::ensure_default_projects_directory()?;
-    if restore.is_some() && std::env::var_os("RIWORK_NSH_BUNDLE").is_none() {
-        return Err(
-            "unavailable: restoring layouts requires the NSH application bundle and P1a services"
-                .into(),
-        );
-    }
-    let (bundle, directory) = if let Some(path) = std::env::var_os("RIWORK_NSH_BUNDLE") {
-        let path = PathBuf::from(path)
-            .canonicalize()
-            .map_err(|e| format!("NSH bundle: {e}"))?;
-        (
-            Bundle::read(&path).map_err(|e| format!("NSH bundle: {e}"))?,
-            path.parent().map(Path::to_path_buf),
-        )
-    } else {
-        (
-            Bundle::source(include_str!("nsh_bootstrap.js").into()),
-            None,
-        )
-    };
+    // Initialization and bundle IO stay on this startup worker, before any AppView.
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| format!("Cannot initialize native runtime: {error}"))?;
+    runtime.block_on(native::initialize())?;
+    let (bundle, directory) = crate::nsh_bundle::load()?;
     let bundle = bundle
         .with_app_id(Some(APP_ID))
         .with_capabilities_json(Some(CAPABILITIES))?;
@@ -977,11 +1059,78 @@ fn startup(args: Vec<String>) -> Result<Option<Startup>, String> {
         runtime,
     }))
 }
+/// Refresh layout state at every publish, including heartbeats without a window
+/// geometry event. Rust owns the snapshot; no JS request is part of this path.
+fn current_layouts(windows: &[(String, RuntimeWindow)]) -> Vec<RuntimeWindow> {
+    windows
+        .iter()
+        .map(|(id, window)| {
+            let mut window = window.clone();
+            if let Some(layout) = host_layouts::lookup(id) {
+                window.layout = Some(layout.project_layout());
+            }
+            window
+        })
+        .collect()
+}
+
+/// Retain the in-process handles across the main/service-thread handoff. The
+/// close gate orders the last accepted edit before the blocking flush command.
+struct ClosingWindows {
+    windows: Vec<(String, RuntimeWindow)>,
+    layouts: Vec<(String, Arc<HostLayout>)>,
+}
+impl ClosingWindows {
+    fn new(windows: Vec<(String, RuntimeWindow)>) -> Self {
+        let layouts = windows
+            .iter()
+            .filter_map(|(id, _)| {
+                let layout = host_layouts::begin_window_close(id)?;
+                Some((id.clone(), layout))
+            })
+            .collect();
+        Self { windows, layouts }
+    }
+
+    /// Called only by the service worker. Attempt every barrier even when one
+    /// fails; a failure keeps all corresponding AppViews alive and editable.
+    fn flush(&self, home: &Path) -> Result<Vec<RuntimeWindow>, String> {
+        let mut errors = Vec::new();
+        for (id, layout) in &self.layouts {
+            if let Err(error) = layout.flush_blocking() {
+                errors.push(format!("window {id}: {error}"));
+            }
+        }
+        let mut windows = self.windows.clone();
+        for (id, window) in &mut windows {
+            if let Some((_, layout)) = self.layouts.iter().find(|(candidate, _)| candidate == id) {
+                window.layout = Some(layout.project_layout());
+            }
+            if let Some(global) = &window.global {
+                if let Err(error) = GlobalWindowStore::at(home).save(global) {
+                    errors.push(format!("global window {id}: {error}"));
+                }
+            }
+        }
+        if errors.is_empty() {
+            Ok(windows.into_iter().map(|(_, window)| window).collect())
+        } else {
+            Err(errors.join("; "))
+        }
+    }
+
+    fn cancel(&self) {
+        for (id, _) in &self.windows {
+            host_layouts::cancel_window_close(id);
+        }
+    }
+}
+
 fn services(mut startup: Startup, rx: mpsc::Receiver<Service>, tx: mpsc::Sender<Service>) {
     startup.instance.set_request_waker(move || {
         let _ = tx.send(Service::Wake);
     });
-    let mut snapshots = Vec::new();
+    let mut snapshots: Vec<(String, RuntimeWindow)> = Vec::new();
     let mut initial = true;
     let mut confirmed = false;
     let mut publish_at = Instant::now();
@@ -997,10 +1146,13 @@ fn services(mut startup: Startup, rx: mpsc::Receiver<Service>, tx: mpsc::Sender<
                         send(Main::Error(e));
                     }
                 }
-                snapshots = windows.into_iter().map(|(_, w)| w).collect::<Vec<_>>();
+                snapshots = windows;
             }
             Ok(Service::Ready(id)) => {
-                match startup.runtime.mark_restore_ready(&id, snapshots.clone()) {
+                match startup
+                    .runtime
+                    .mark_restore_ready(&id, current_layouts(&snapshots))
+                {
                     Ok(done) => confirmed |= done,
                     Err(e) => send(Main::Error(e)),
                 }
@@ -1017,9 +1169,21 @@ fn services(mut startup: Startup, rx: mpsc::Receiver<Service>, tx: mpsc::Sender<
                     }
                 }
             }
-            Ok(Service::Quit) => {
-                if let Err(e) = startup.runtime.publish(snapshots.clone()) {
-                    eprintln!("riwork: {e}");
+            Ok(Service::Close(id, batch, call)) => {
+                let result = batch.flush(&startup.home).map(|_| ());
+                if result.is_err() {
+                    batch.cancel();
+                }
+                send(Main::Closed(id, call, result));
+            }
+            Ok(Service::Quit(batch)) => {
+                let result = batch
+                    .flush(&startup.home)
+                    .and_then(|windows| startup.runtime.publish(windows));
+                if let Err(error) = result {
+                    batch.cancel();
+                    send(Main::QuitFailed(error));
+                    continue;
                 }
                 startup.instance.stop_forwarding();
                 send(Main::Finish);
@@ -1046,10 +1210,10 @@ fn services(mut startup: Startup, rx: mpsc::Receiver<Service>, tx: mpsc::Sender<
         }
         if Instant::now() >= publish_at {
             publish_at = Instant::now() + Duration::from_secs(2);
-            if let Err(e) = startup.runtime.try_publish(snapshots.clone()) {
+            if let Err(e) = startup.runtime.try_publish(current_layouts(&snapshots)) {
                 eprintln!("riwork: {e}");
             }
-            // Do not launch a replacement before native persistence is wired.
+            // Restart handoff remains outside this integration subset.
             if let Ok(Some(request)) = startup.runtime.pending_reload() {
                 let _ = startup.runtime.fail_reload(&request, RESTART_PENDING);
             }
@@ -1093,6 +1257,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         service: tx.clone(),
         focus_serial: 0,
         quitting: false,
+        quit_pending: false,
         background,
     };
     // Queue the complete initial snapshot before the worker starts, not one partial set per open.
@@ -1168,5 +1333,169 @@ mod tests {
         let mut global = OpenOptions::global();
         global.project_id = Some("bad".into());
         assert!(global.validate().is_err());
+    }
+    struct LayoutFixture {
+        root: PathBuf,
+    }
+    impl LayoutFixture {
+        fn new() -> Self {
+            let root = PathBuf::from("/tmp")
+                .join(format!("riwork-host-flush-{}", Uuid::new_v4().simple()));
+            std::fs::create_dir_all(&root).unwrap();
+            Self { root }
+        }
+        fn session(&self, id: &str) -> Arc<HostLayout> {
+            use riwork_nsh_workspace::persistence::{LayoutPersistence, SaveMode};
+            let loaded =
+                LayoutPersistence::open(&self.root, id, None, SaveMode::LegacyChatState).unwrap();
+            host_layouts::registration(id, Arc::new(loaded.persistence), loaded.project).unwrap()
+        }
+        fn window(&self, id: &str) -> (String, RuntimeWindow) {
+            (
+                id.into(),
+                RuntimeWindow {
+                    project_id: Some(id.into()),
+                    path: self.root.join(id),
+                    bounds: None,
+                    mode: WindowMode::Windowed,
+                    layout: None,
+                    focus_mode: false,
+                    focus_centered: false,
+                    kind: WindowKind::Project,
+                    global: None,
+                },
+            )
+        }
+    }
+    impl Drop for LayoutFixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    #[test]
+    fn close_flushes_the_last_accepted_edit_before_the_window_goes() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let _entered = runtime.enter();
+        let fixture = LayoutFixture::new();
+        let id = format!("close-{}", Uuid::new_v4());
+        let layout = fixture.session(&id);
+        let mut edited = layout.project_layout();
+        edited.selected_task_id = Some("last-accepted".into());
+        layout.schedule(edited.clone()).unwrap();
+        let closing = ClosingWindows::new(vec![fixture.window(&id)]);
+        let mut rejected = edited.clone();
+        rejected.selected_task_id = Some("after-close".into());
+        assert!(layout.schedule(rejected).is_err());
+        let published = closing.flush(&fixture.root).unwrap();
+        assert_eq!(published[0].layout.as_ref(), Some(&edited));
+        let saved = riwork_core::layouts::LayoutStore::open(&fixture.root)
+            .unwrap()
+            .load(&id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.selected_task_id, edited.selected_task_id);
+    }
+
+    #[test]
+    fn quit_flushes_every_layout_session_and_the_global_state_from_rust() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let _entered = runtime.enter();
+        let fixture = LayoutFixture::new();
+        let ids = [
+            format!("quit-a-{}", Uuid::new_v4()),
+            format!("quit-b-{}", Uuid::new_v4()),
+        ];
+        let sessions = ids.iter().map(|id| fixture.session(id)).collect::<Vec<_>>();
+        for (index, layout) in sessions.iter().enumerate() {
+            let mut edited = layout.project_layout();
+            edited.selected_task_id = Some(format!("edited-{index}"));
+            layout.schedule(edited).unwrap();
+        }
+        let mut windows = ids.iter().map(|id| fixture.window(id)).collect::<Vec<_>>();
+        let mut global = riwork_core::global_window::GlobalWindowState::default();
+        global.window_size = Some(WindowSize {
+            width: 900.,
+            height: 650.,
+        });
+        windows.push((
+            "global".into(),
+            RuntimeWindow::global(&fixture.root, None, WindowMode::Windowed, global.clone()),
+        ));
+        let closing = ClosingWindows::new(windows);
+        let published = closing.flush(&fixture.root).unwrap();
+        assert_eq!(published.len(), 3);
+        let store = riwork_core::layouts::LayoutStore::open(&fixture.root).unwrap();
+        for (index, id) in ids.iter().enumerate() {
+            assert_eq!(
+                store.load(id).unwrap().unwrap().selected_task_id,
+                Some(format!("edited-{index}"))
+            );
+        }
+        assert_eq!(GlobalWindowStore::at(&fixture.root).load(), global);
+    }
+
+    #[test]
+    fn failed_flush_keeps_the_snapshot_and_cancel_restores_editing() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let _entered = runtime.enter();
+        let fixture = LayoutFixture::new();
+        let id = format!("failed-close-{}", Uuid::new_v4());
+        let layout = fixture.session(&id);
+        let mut edited = layout.project_layout();
+        edited.selected_task_id = Some("not-lost".into());
+        let lock = fixture.root.join("layouts.lock");
+        std::fs::remove_file(&lock).unwrap();
+        std::fs::create_dir(&lock).unwrap();
+        layout.schedule(edited.clone()).unwrap();
+        let closing = ClosingWindows::new(vec![fixture.window(&id)]);
+        assert!(closing.flush(&fixture.root).is_err());
+        assert_eq!(layout.project_layout(), edited);
+        closing.cancel();
+        std::fs::remove_dir(&lock).unwrap();
+        layout.schedule(edited.clone()).unwrap();
+        layout.flush_blocking().unwrap();
+        assert_eq!(
+            riwork_core::layouts::LayoutStore::open(&fixture.root)
+                .unwrap()
+                .load(&id)
+                .unwrap()
+                .unwrap()
+                .selected_task_id,
+            edited.selected_task_id
+        );
+    }
+
+    #[test]
+    fn closing_a_loading_window_rejects_late_layout_registration() {
+        use riwork_nsh_workspace::persistence::{LayoutPersistence, SaveMode};
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let _entered = runtime.enter();
+        let fixture = LayoutFixture::new();
+        let id = format!("loading-close-{}", Uuid::new_v4());
+        let loaded =
+            LayoutPersistence::open(&fixture.root, &id, None, SaveMode::LegacyChatState).unwrap();
+        let persistence = Arc::new(loaded.persistence);
+        let closing = ClosingWindows::new(vec![fixture.window(&id)]);
+        assert!(
+            host_layouts::registration(&id, persistence.clone(), loaded.project.clone()).is_err()
+        );
+        closing.flush(&fixture.root).unwrap();
+        closing.cancel();
+        assert!(host_layouts::registration(&id, persistence, loaded.project).is_ok());
+    }
+
+    #[test]
+    fn runtime_publication_reads_current_layout_without_an_appkit_state_event() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let _entered = runtime.enter();
+        let fixture = LayoutFixture::new();
+        let id = format!("snapshot-{}", Uuid::new_v4());
+        let layout = fixture.session(&id);
+        let windows = vec![fixture.window(&id)];
+        let mut edited = layout.project_layout();
+        edited.selected_task_id = Some("newest".into());
+        layout.publish(edited.clone());
+        assert_eq!(current_layouts(&windows)[0].layout.as_ref(), Some(&edited));
     }
 }

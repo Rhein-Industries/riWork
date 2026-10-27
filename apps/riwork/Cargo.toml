@@ -1,11 +1,8 @@
 [package]
 name = "riwork-nsh-workspace"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
 publish = false
-
-# Independently buildable while P1a/P1b are developed in sibling branches.
-[workspace]
 
 [dependencies]
 nsh-core = "=0.3.0"
@@ -19,7 +16,3 @@ tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
 
 [dev-dependencies]
 tempfile = "3"
-
-[profile.dev]
-debug = 0
-incremental = false

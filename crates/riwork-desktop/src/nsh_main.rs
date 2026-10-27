@@ -1,10 +1,10 @@
 //! One executable: the existing headless CLI first, then the AppKit NSH host.
 #[cfg(target_os = "macos")]
+mod nsh_bundle;
+#[cfg(target_os = "macos")]
 mod nsh_host;
 #[cfg(target_os = "macos")]
 mod nsh_menus;
-#[cfg(target_os = "macos")]
-mod nsh_native_stub;
 #[cfg(unix)]
 mod nsh_runtime;
 

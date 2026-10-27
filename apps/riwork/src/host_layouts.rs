@@ -6,15 +6,21 @@ use crate::persistence::LayoutPersistence;
 use arc_swap::ArcSwap;
 use riwork_core::layouts::ProjectLayout;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{Arc, Mutex, OnceLock, Weak},
 };
 
-type Registry = HashMap<String, Weak<HostLayout>>;
+#[derive(Default)]
+struct Registry {
+    sessions: HashMap<String, Weak<HostLayout>>,
+    // Window IDs are unique for the process. Keep a close marker so an async
+    // openSession that finishes after teardown cannot register an orphan writer.
+    closing: HashSet<String>,
+}
 
 fn registry() -> &'static Mutex<Registry> {
     static REGISTRY: OnceLock<Mutex<Registry>> = OnceLock::new();
-    REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+    REGISTRY.get_or_init(|| Mutex::new(Registry::default()))
 }
 
 /// A thread-safe host handle, independent of NSH's engine-owned class instance.
@@ -22,6 +28,9 @@ fn registry() -> &'static Mutex<Registry> {
 pub struct HostLayout {
     current: ArcSwap<ProjectLayout>,
     persistence: Option<Arc<LayoutPersistence>>,
+    // Serializes the short publish/enqueue operation against a host close barrier.
+    // No filesystem work takes this mutex on the engine thread.
+    closing: Mutex<bool>,
 }
 
 /// Register after opening persistence on a blocking thread. A second live
@@ -35,15 +44,28 @@ pub fn registration(
         return Err("invalid: a host layout requires a windowId".into());
     }
     let mut entries = registry().lock().unwrap_or_else(|error| error.into_inner());
-    entries.retain(|_, entry| entry.strong_count() != 0);
-    if entries.get(window_id).and_then(Weak::upgrade).is_some() {
+    if entries.closing.contains(window_id) {
+        return Err("unavailable: window is closing".into());
+    }
+    entries
+        .sessions
+        .retain(|_, entry| entry.strong_count() != 0);
+    if entries
+        .sessions
+        .get(window_id)
+        .and_then(Weak::upgrade)
+        .is_some()
+    {
         return Err("conflict: a layout session is already registered for this window".into());
     }
     let handle = Arc::new(HostLayout {
         current: ArcSwap::from_pointee(snapshot),
         persistence: Some(persistence),
+        closing: Mutex::new(false),
     });
-    entries.insert(window_id.to_owned(), Arc::downgrade(&handle));
+    entries
+        .sessions
+        .insert(window_id.to_owned(), Arc::downgrade(&handle));
     Ok(handle)
 }
 
@@ -51,11 +73,32 @@ pub fn registration(
 /// Expired entries are removed without retaining sessions after their owner dies.
 pub fn lookup(window_id: &str) -> Option<Arc<HostLayout>> {
     let mut entries = registry().lock().unwrap_or_else(|error| error.into_inner());
-    let handle = entries.get(window_id).and_then(Weak::upgrade);
+    let handle = entries.sessions.get(window_id).and_then(Weak::upgrade);
     if handle.is_none() {
-        entries.remove(window_id);
+        entries.sessions.remove(window_id);
     }
     handle
+}
+
+/// Atomically stop new sessions and edits for a closing window, including a
+/// layout open that is still running on a blocking worker.
+pub fn begin_window_close(window_id: &str) -> Option<Arc<HostLayout>> {
+    let mut entries = registry().lock().unwrap_or_else(|error| error.into_inner());
+    entries.closing.insert(window_id.to_owned());
+    let handle = entries.sessions.get(window_id).and_then(Weak::upgrade);
+    if let Some(handle) = &handle {
+        handle.begin_close();
+    }
+    handle
+}
+
+/// A failed persistence barrier leaves the same window available for retry.
+pub fn cancel_window_close(window_id: &str) {
+    let mut entries = registry().lock().unwrap_or_else(|error| error.into_inner());
+    entries.closing.remove(window_id);
+    if let Some(handle) = entries.sessions.get(window_id).and_then(Weak::upgrade) {
+        handle.cancel_close();
+    }
 }
 
 impl HostLayout {
@@ -68,11 +111,59 @@ impl HostLayout {
     /// Publish and enqueue an edited storage projection without waiting for IO.
     /// The host snapshot remains current even if the save worker has failed.
     pub fn schedule(&self, project: ProjectLayout) -> Result<(), String> {
-        self.publish(project.clone());
-        self.persistence
-            .as_ref()
-            .ok_or_else(|| "unavailable: host layout is closed".to_owned())?
-            .schedule(project)
+        self.edit(|| Ok(((), Some(project))))
+    }
+
+    /// Admit a whole in-memory edit and its publication as one short operation.
+    /// Closing cannot reject an edit after its model was already changed.
+    /// The operation must never perform IO or wait on another thread.
+    pub fn edit<T>(
+        &self,
+        operation: impl FnOnce() -> Result<(T, Option<ProjectLayout>), String>,
+    ) -> Result<T, String> {
+        let closing = self
+            .closing
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if *closing {
+            return Err("unavailable: window is closing".into());
+        }
+        let (result, project) = operation()?;
+        if let Some(project) = project {
+            self.publish(project.clone());
+            self.persistence
+                .as_ref()
+                .ok_or_else(|| "unavailable: host layout is closed".to_owned())?
+                .schedule(project)?;
+        }
+        Ok(result)
+    }
+
+    /// Stop accepting edits before the host queues its persistence barrier.
+    /// An edit already publishing/enqueueing completes before this returns.
+    pub fn begin_close(&self) {
+        *self
+            .closing
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = true;
+    }
+
+    /// Restore editing when a close/quit flush failed and the window stays open.
+    pub fn cancel_close(&self) {
+        *self
+            .closing
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = false;
+    }
+
+    /// Frozen P1c → P1b Rust handoff name (acceptance §4.1).
+    pub fn project_layout(&self) -> ProjectLayout {
+        self.snapshot()
+    }
+
+    /// Frozen P1c → P1b persistence barrier; call on the host service thread.
+    pub fn flush_blocking(&self) -> Result<(), String> {
+        self.flush()
     }
 
     /// A consistent core snapshot for the host's RuntimeWindow reload payload.

@@ -1,0 +1,84 @@
+{
+  "before_packages": 1033,
+  "after_packages": 941,
+  "added": [
+    [
+      "defmt",
+      "1.2.0"
+    ],
+    [
+      "defmt-macros",
+      "1.2.0"
+    ],
+    [
+      "defmt-parser",
+      "1.1.0"
+    ],
+    [
+      "env_filter",
+      "2.0.0"
+    ],
+    [
+      "env_logger",
+      "0.11.11"
+    ],
+    [
+      "jiff",
+      "0.2.38"
+    ],
+    [
+      "jiff-core",
+      "0.1.1"
+    ],
+    [
+      "jiff-static",
+      "0.2.38"
+    ],
+    [
+      "nsh-platform-macos",
+      "0.3.0"
+    ],
+    [
+      "objc2",
+      "0.6.5"
+    ],
+    [
+      "objc2-image-io",
+      "0.3.2"
+    ],
+    [
+      "objc2-io-kit",
+      "0.3.2"
+    ],
+    [
+      "riwork-nsh-workspace",
+      "0.1.0"
+    ]
+  ],
+  "removed_count": 105,
+  "forbidden_lock_names": [
+    "gpui-pre",
+    "gpui-pre-apple",
+    "gpui-pre-collections",
+    "gpui-pre-derive-refineable",
+    "gpui-pre-http-client",
+    "gpui-pre-linux",
+    "gpui-pre-macos",
+    "gpui-pre-macros",
+    "gpui-pre-perf",
+    "gpui-pre-platform",
+    "gpui-pre-refineable",
+    "gpui-pre-scheduler",
+    "gpui-pre-shared-string",
+    "gpui-pre-sum-tree",
+    "gpui-pre-util",
+    "gpui-pre-util-macros",
+    "gpui-pre-web",
+    "gpui-pre-wgpu",
+    "gpui-pre-windows",
+    "gpui-pre-zlog",
+    "gpui-pre-ztracing",
+    "gpui-pre-ztracing-macro",
+    "riwork-gpui-preview"
+  ]
+}

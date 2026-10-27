@@ -81,7 +81,8 @@ impl HeadlessApp {
         let host = HostChannel::new();
         let (events, receive) = mpsc::channel();
         for name in [
-            "store", "sessions", "snapshot", "list", "closed", "disposed", "probe", "error",
+            "store", "sessions", "snapshot", "list", "layout", "closed", "disposed", "probe",
+            "error",
         ] {
             let events = events.clone();
             host.handle(name, move |mut call| {
@@ -93,8 +94,8 @@ impl HeadlessApp {
         }
         let source = r#"
             import { mount, host } from "nsh";
-            import { Store, Sessions } from "riwork/native";
-            let storeSubscription, sessionsSubscription, deliveries = 0;
+            import { Store, Sessions, Layouts } from "riwork/native";
+            let storeSubscription, sessionsSubscription, layout, deliveries = 0;
             const listen = event => { deliveries++; host.post("store", event); };
             const dispose = mount(() => {
                 storeSubscription = Store.subscribe(listen);
@@ -105,6 +106,16 @@ impl HeadlessApp {
                 try {
                     host.post("snapshot", await Store.snapshot());
                     host.post("list", await Sessions.list());
+                } catch (error) { host.post("error", String(error)); }
+            });
+            host.on("layout", async request => {
+                try {
+                    layout = await Layouts.openSession(request);
+                    if (request.edit !== false) {
+                        layout.toggleLock(layout.snapshot().activePane);
+                        await layout.flush();
+                    }
+                    host.post("layout", layout.snapshot());
                 } catch (error) { host.post("error", String(error)); }
             });
             host.on("close", () => {
@@ -125,7 +136,7 @@ impl HeadlessApp {
             host.on("probe", () => host.post("probe", deliveries));
         "#;
         let bundle = Bundle::source(source.to_owned()).with_capabilities_json(Some(
-            r#"{"host":["store","sessions","snapshot","list","closed","disposed","probe","error"]}"#,
+            r#"{"host":["store","sessions","snapshot","list","layout","closed","disposed","probe","error"]}"#,
         )).unwrap();
         let mut config = EngineConfig::new(bundle);
         config.ui_sets = vec![nsh_base::registry(), riwork_nsh_native::registry()];
@@ -268,6 +279,57 @@ fn native_pushes_one_service_to_two_engines_and_stops_on_close_owner_and_engine_
         );
     }
 
+    // The same native import exposes the P1c classes as well as P1a services.
+    // No RIWORK_HOME mutation is needed: layouts must use the service's injected
+    // fixture home, even though each AppView owns its own LayoutSession.
+    for (app, id) in [
+        (&mut first, "combined-registry-first"),
+        (&mut second, "combined-registry-second"),
+    ] {
+        app.host
+            .send("layout", json!({"windowId": id, "projectId": id}))
+            .unwrap();
+        let visible = app.receive("layout", |_| true);
+        let host = riwork_nsh_workspace::host_layouts::lookup(id).unwrap();
+        let project = host.snapshot();
+        assert_eq!(visible["activePane"], project.active_pane);
+        assert_eq!(
+            riwork_core::layouts::LayoutStore::open(&home)
+                .unwrap()
+                .load(id)
+                .unwrap(),
+            Some(project),
+            "the sole registry must persist layouts in the process service's home"
+        );
+    }
+
+    // A reload payload wins over disk and must enter the host's flush barrier
+    // on successful open, before any UI mutation or JS flush call.
+    let restored_id = "combined-registry-restored";
+    let layouts = riwork_core::layouts::LayoutStore::open(&home).unwrap();
+    let mut restored = riwork_nsh_workspace::persistence::default_project_layout();
+    layouts
+        .save_chat_state(restored_id, &restored, &[], None)
+        .unwrap();
+    restored.selected_task_id = Some("restored-task-without-an-edit".into());
+    let mut restored_app = HeadlessApp::start();
+    restored_app
+        .host
+        .send(
+            "layout",
+            json!({"windowId": restored_id, "projectId": restored_id,
+                "restore": restored, "edit": false}),
+        )
+        .unwrap();
+    restored_app.receive("layout", |_| true);
+    let restored_host = riwork_nsh_workspace::host_layouts::lookup(restored_id).unwrap();
+    assert_eq!(restored_host.snapshot(), restored);
+    restored_host.flush_blocking().unwrap();
+    assert_eq!(layouts.load(restored_id).unwrap(), Some(restored));
+    drop(restored_host);
+    restored_app.stop();
+    assert!(riwork_nsh_workspace::host_layouts::lookup(restored_id).is_none());
+
     let disk = riwork_core::store::Store::open(home).unwrap();
     disk.create_project_folder("Delivered to both engines")
         .unwrap();
@@ -323,6 +385,8 @@ fn native_pushes_one_service_to_two_engines_and_stops_on_close_owner_and_engine_
     });
     second.stop();
     first.stop();
+    assert!(riwork_nsh_workspace::host_layouts::lookup("combined-registry-first").is_none());
+    assert!(riwork_nsh_workspace::host_layouts::lookup("combined-registry-second").is_none());
     disk.create_project_folder("After engine shutdown").unwrap();
     runtime.block_on(async {
         loop {

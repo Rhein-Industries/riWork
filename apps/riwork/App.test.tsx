@@ -77,6 +77,44 @@ test("production entry routes global windows without opening a project DockArea"
   try {
     expect(app.texts()).toContain("Global workspace");
     expect(app.shows("id:workspace-dock")).toBe(false);
+    expect(app.host.posts().filter((post) => post.name === "app.restoreReady").length).toBe(0);
+  } finally { app.dispose(); }
+});
+
+test("production restore installs its native layout before confirming exactly once", async () => {
+  const app = await open("./App.tsx", {
+    platform: "macos", width: 1280, height: 800,
+    host: {
+      params: {
+        schema: 1, windowId: "production-restore", kind: "project", projectId: "restored-project", path: "/fixture/Restored",
+        restore: { layout: {
+          layout: { pane: 21 }, active_pane: 21, main_pane: 21, panels_initialized: true, locked_panes: [],
+          panes: { "21": { tabs: [{ kind: "shell", shell_id: "restored" }], active_tab_key: "shell:restored" } },
+        } },
+      },
+      handlers: { "app.restoreReady": null },
+    },
+  });
+  try {
+    await app.waitFor("id:tab:shell:restored");
+    expect(app.host.posts().filter((post) => post.name === "app.restoreReady").length).toBe(1);
+    await app.setViewport(1400, 900);
+    expect(app.host.posts().filter((post) => post.name === "app.restoreReady").length).toBe(1);
+  } finally { app.dispose(); }
+});
+
+test("a restored global entry confirms without opening a project session", async () => {
+  const app = await open("./App.tsx", {
+    platform: "macos",
+    host: {
+      params: { schema: 1, windowId: "restored-global", kind: "global", projectId: null, path: "/fixture/global-window", restore: {} },
+      handlers: { "app.restoreReady": null },
+    },
+  });
+  try {
+    expect(app.texts()).toContain("Global workspace");
+    expect(app.shows("id:workspace-dock")).toBe(false);
+    expect(app.host.posts().filter((post) => post.name === "app.restoreReady").length).toBe(1);
   } finally { app.dispose(); }
 });
 
