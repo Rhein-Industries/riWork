@@ -63,9 +63,29 @@ pub struct LayoutPersistence {
 pub trait LayoutBackend: Send + Sync {
     fn schedule(&self, project: ProjectLayout) -> Result<(), String>;
     fn flush(&self) -> Result<(), String>;
+    fn project_id(&self) -> &str {
+        ""
+    }
+    fn prepare_project_switch(
+        &self,
+        _project_id: &str,
+        _previous: &ProjectLayout,
+    ) -> Result<LoadedLayout, String> {
+        Err("unavailable: layout backend does not support project switching".into())
+    }
 }
 
 impl LayoutBackend for LayoutPersistence {
+    fn project_id(&self) -> &str {
+        self.project_id()
+    }
+    fn prepare_project_switch(
+        &self,
+        project_id: &str,
+        previous: &ProjectLayout,
+    ) -> Result<LoadedLayout, String> {
+        self.prepare_project_switch(project_id, previous)
+    }
     fn schedule(&self, project: ProjectLayout) -> Result<(), String> {
         self.schedule(project)
     }
@@ -116,6 +136,30 @@ impl LayoutPersistence {
         &self.project_id
     }
 
+    /// Prepare a replacement without changing this writer. The caller can
+    /// reject the prepared layout if its window closed while disk IO ran.
+    /// All reads, flushes and worker construction happen on a blocking thread.
+    pub fn prepare_project_switch(
+        &self,
+        project_id: &str,
+        previous: &ProjectLayout,
+    ) -> Result<LoadedLayout, String> {
+        if project_id.is_empty() {
+            return Err("invalid: a layout session requires a project ID".into());
+        }
+        self.schedule(previous.clone())?;
+        self.flush()?;
+        let mut loaded = Self::open(&self.dir, project_id, None, self.mode)?;
+        refuse_unknown_destination(&loaded.unknown_panes)?;
+        match loaded.project.carry_locked_regions_from(previous) {
+            Ok(project) => loaded.project = project,
+            Err(error) => {
+                loaded.notice = Some(format!("{error}; locked regions were not carried over"));
+            }
+        }
+        Ok(loaded)
+    }
+
     /// No filesystem access or waiting on another thread. The snapshot must use
     /// storage IDs (`LayoutModel::storage_project`), not projected NodeIds. Core
     /// cannot remap its private skipped-tab map; preserving those IDs avoids
@@ -153,6 +197,7 @@ impl LayoutPersistence {
         self.schedule(previous.clone())?;
         self.flush()?;
         let mut loaded = load_project(&self.dir, &project_id, restore)?;
+        refuse_unknown_destination(&loaded.unknown_panes)?;
         loaded.project = loaded.project.carry_locked_regions_from(previous)?;
         let next = Self::start(self.dir.clone(), project_id, self.mode)?;
         *self = next;
@@ -252,6 +297,16 @@ fn save_pending(
         SaveMode::SharedTabs => store.save_tab_layout(project_id, project),
     }?;
     *pending = None;
+    Ok(())
+}
+
+/// Core retains opaque tabs under their original pane IDs. Locked-region
+/// carry can remove or remap those IDs, so no destination with unknown tabs may
+/// be rewritten by a project switch until core supports migrating opaque tabs.
+fn refuse_unknown_destination(unknown_panes: &BTreeSet<PaneId>) -> Result<(), String> {
+    if !unknown_panes.is_empty() {
+        return Err("refused: the saved destination contains unknown tabs; project switching cannot preserve them".into());
+    }
     Ok(())
 }
 

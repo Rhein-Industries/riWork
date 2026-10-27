@@ -1,0 +1,14 @@
+   Compiling riwork-nsh-workspace v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p1-fix-native/apps/riwork)
+   Compiling riwork-nsh-native v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p1-fix-native/crates/riwork-nsh-native)
+    Finished `test` profile [unoptimized] target(s) in 5.55s
+     Running unittests src/lib.rs (/private/tmp/riwork-w3-c62ea465/target/debug/deps/riwork_nsh_native-5068ff28ce737d60)
+     Running tests/appearance.rs (/private/tmp/riwork-w3-c62ea465/target/debug/deps/appearance-ee484f44fbf95e1c)
+     Running tests/native_headless.rs (/private/tmp/riwork-w3-c62ea465/target/debug/deps/native_headless-0cc418f539fd8a9f)
+     Running tests/panel_crud.rs (/private/tmp/riwork-w3-c62ea465/target/debug/deps/panel_crud-abb1a8474fe4b213)
+     Running tests/services.rs (/private/tmp/riwork-w3-c62ea465/target/debug/deps/services-c064a7214fa8f19d)
+     Running tests/settings.rs (/private/tmp/riwork-w3-c62ea465/target/debug/deps/settings-a741eaad9c066488)
+     Running unittests src/lib.rs (/private/tmp/riwork-w3-c62ea465/target/debug/deps/riwork_nsh_workspace-e740a11da7893ccd)
+     Running tests/layout_backend.rs (/private/tmp/riwork-w3-c62ea465/target/debug/deps/layout_backend-cfbadfa8e5b38de6)
+     Running tests/layout_roundtrip.rs (/private/tmp/riwork-w3-c62ea465/target/debug/deps/layout_roundtrip-e39985c042374a0d)
+   Doc-tests riwork_nsh_native
+   Doc-tests riwork_nsh_workspace

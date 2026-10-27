@@ -92,6 +92,7 @@ impl HeadlessApp {
             "error",
             "folderCreated",
             "preferences",
+            "mutated",
         ] {
             let events = events.clone();
             host.handle(name, move |mut call| {
@@ -132,6 +133,14 @@ impl HeadlessApp {
                     host.post("preferences", {saved, bigger, appearance, unknown});
                 } catch (error) { host.post("error", String(error)); }
             });
+            host.on("mutate", async request => {
+                try {
+                    const value = await Store[request.action](...request.args);
+                    host.post("mutated", { action: request.action, value });
+                } catch (error) {
+                    host.post("mutated", { action: request.action, error: String(error) });
+                }
+            });
             host.on("layout", async request => {
                 try {
                     layout = await Layouts.openSession(request);
@@ -160,7 +169,7 @@ impl HeadlessApp {
             host.on("probe", () => host.post("probe", deliveries));
         "#;
         let bundle = Bundle::source(source.to_owned()).with_capabilities_json(Some(
-            r#"{"host":["store","sessions","snapshot","list","layout","closed","disposed","probe","error","folderCreated","preferences"]}"#,
+            r#"{"host":["store","sessions","snapshot","list","layout","closed","disposed","probe","error","folderCreated","preferences","mutated"]}"#,
         )).unwrap();
         let mut config = EngineConfig::new(bundle);
         config.ui_sets = vec![nsh_base::registry(), riwork_nsh_native::registry()];
@@ -196,7 +205,18 @@ impl HeadlessApp {
         self.host.send(name, Value::Null).unwrap();
     }
 
+    fn mutate(&mut self, action: &str, args: Value) -> Value {
+        self.host
+            .send("mutate", json!({"action": action, "args": args}))
+            .unwrap();
+        let result = self.receive("mutated", |event| event["action"] == action);
+        assert!(result.get("error").is_none(), "{action}: {result}");
+        result["value"].clone()
+    }
+
+    #[track_caller]
     fn receive(&mut self, name: &str, predicate: impl Fn(&Value) -> bool) -> Value {
+        let caller = std::panic::Location::caller();
         if let Some(index) = self
             .pending
             .iter()
@@ -210,7 +230,10 @@ impl HeadlessApp {
                 .events
                 .recv_timeout(until.saturating_duration_since(Instant::now()))
                 .unwrap_or_else(|error| {
-                    panic!("waiting for {name}: {error}; pending {:?}", self.pending)
+                    panic!(
+                        "waiting for {name} at {caller}: {error}; pending {:?}",
+                        self.pending
+                    )
                 });
             assert_ne!(event.name, "error", "headless engine: {}", event.data);
             if event.name == name && predicate(&event.data) {
@@ -366,7 +389,118 @@ fn native_pushes_one_service_to_two_engines_and_stops_on_close_owner_and_engine_
     restored_app.stop();
     assert!(riwork_nsh_workspace::host_layouts::lookup(restored_id).is_none());
 
-    let disk = riwork_core::store::Store::open(home).unwrap();
+    // Exercise actual Promise adapters, with two independent JS windows sharing
+    // one process service. Every mutation below persists through the real core
+    // store; the second window learns about it only through its subscription.
+    let project = first.mutate(
+        "createProject",
+        json!([{
+            "root": home.join("projects/created-through-bridge"),
+            "name": "Bridge-created project", "initGit": false
+        }]),
+    );
+    let project_id = project["id"].as_str().unwrap();
+    second.receive("store", |event| {
+        event["data"]["projects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|project| project["id"] == project_id)
+    });
+    let other_project = first.mutate(
+        "createProject",
+        json!([{
+            "root": home.join("projects/second-bridge-project"),
+            "name": "Second bridge project", "initGit": false
+        }]),
+    );
+    first.mutate("useProject", json!([other_project["id"]]));
+    second.receive("store", |event| {
+        event["data"]["activeProjectId"] == other_project["id"]
+    });
+    first.mutate("useProject", json!([project_id]));
+    let activated = second.receive("store", |event| {
+        event["data"]["activeProjectId"] == project_id
+    });
+    let worktree_id = activated["data"]["worktrees"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tree| tree["projectId"] == project_id)
+        .unwrap()["id"]
+        .as_str()
+        .unwrap();
+    let folder = first.mutate("createFolder", json!(["Bridge folder"]));
+    first.mutate("moveProjectToFolder", json!([project_id, folder["id"]]));
+    let task = first.mutate(
+        "addTask",
+        json!([project_id, "Persisted lifecycle", "Bridge proof details"]),
+    );
+    let task_id = task["id"].as_str().unwrap();
+    first.mutate("assignTasks", json!([worktree_id, [task_id]]));
+    first.mutate("setTaskStatus", json!([task_id, "in_progress"]));
+    second.receive("store", |event| {
+        event["data"]["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|task| {
+                task["id"] == task_id
+                    && task["status"] == "in_progress"
+                    && task["worktreeId"] == worktree_id
+            })
+    });
+    first.mutate("setTaskStatus", json!([task_id, "done"]));
+    first.mutate("unassignTasks", json!([[task_id]]));
+    second.receive("store", |event| {
+        event["data"]["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|task| {
+                task["id"] == task_id && task["status"] == "done" && task["worktreeId"].is_null()
+            })
+    });
+
+    let disk = riwork_core::store::Store::open(&home).unwrap();
+    let persisted = disk.snapshot().unwrap();
+    let saved_project = persisted
+        .projects
+        .iter()
+        .find(|project| project.id == project_id)
+        .unwrap();
+    assert_eq!(saved_project.folder_id.as_deref(), folder["id"].as_str());
+    let saved_task = persisted
+        .tasks
+        .iter()
+        .find(|task| task.id == task_id)
+        .unwrap();
+    assert_eq!(saved_task.status, riwork_core::store::TaskStatus::Done);
+    assert_eq!(saved_task.worktree_id, None);
+    assert_eq!(saved_task.details, "Bridge proof details");
+    assert!(home.join("state.json").is_file());
+    let raw: Value =
+        serde_json::from_slice(&std::fs::read(home.join("state.json")).unwrap()).unwrap();
+    assert_eq!(raw["active_project_id"], project_id);
+    assert!(
+        raw.get("activeProjectId").is_none(),
+        "DTO casing must not alter the durable format"
+    );
+
+    let before_invalid = std::fs::read(home.join("state.json")).unwrap();
+    first
+        .host
+        .send(
+            "mutate",
+            json!({"action": "setTaskStatus", "args": [task_id, "invalid-status"]}),
+        )
+        .unwrap();
+    let refused = first.receive("mutated", |event| event["action"] == "setTaskStatus");
+    assert!(refused["error"].as_str().unwrap().contains("invalid:"));
+    assert_eq!(
+        std::fs::read(home.join("state.json")).unwrap(),
+        before_invalid
+    );
     first
         .host
         .send("createFolder", json!("Delivered to both engines"))
@@ -393,6 +527,10 @@ fn native_pushes_one_service_to_two_engines_and_stops_on_close_owner_and_engine_
     let first_count = first.receive("closed", |_| true);
     second.send("dispose");
     let second_count = second.receive("disposed", |_| true);
+    // Mutation delivery can precede its Promise result. Those already-observed
+    // snapshots are irrelevant to the teardown assertion below.
+    first.pending.retain(|event| event.name != "store");
+    second.pending.retain(|event| event.name != "store");
     let observer = runtime.block_on(service.subscribe_store()).unwrap();
     runtime.block_on(observer.recv()).unwrap();
     disk.create_project_folder("After close and owner disposal")

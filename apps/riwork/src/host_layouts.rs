@@ -2,7 +2,7 @@
 //!
 //! The registry is consulted only while opening a session or from the host.
 //! Publishing an edit never takes the registry mutex or waits on a file lock.
-use crate::persistence::LayoutBackend;
+use crate::persistence::{LayoutBackend, LoadedLayout};
 use arc_swap::ArcSwap;
 use riwork_core::layouts::ProjectLayout;
 use std::{
@@ -29,10 +29,25 @@ fn registry() -> &'static Mutex<Registry> {
 /// A thread-safe host handle, independent of NSH's engine-owned class instance.
 /// The host may retain it through AppView teardown to flush before terminating.
 pub struct HostLayout {
-    current: ArcSwap<ProjectLayout>,
-    persistence: Option<Arc<dyn LayoutBackend>>,
+    current: Option<ArcSwap<CurrentLayout>>,
     closing: AtomicBool,
+    switching: AtomicBool,
     editing: AtomicUsize,
+}
+
+struct CurrentLayout {
+    project: ProjectLayout,
+    // ArcSwap readers can release the final generation on any thread. Its
+    // writer therefore owns the same disposal guard as a cancelled switch.
+    persistence: OwnedPersistence,
+}
+
+/// Reserves the window while a replacement is prepared off the engine thread.
+/// Dropping a cancelled switch makes the previous session editable again.
+pub(crate) struct ProjectSwitch {
+    host: Arc<HostLayout>,
+    previous: ProjectLayout,
+    finished: bool,
 }
 
 /// Register after opening persistence on a blocking thread. A second live
@@ -69,9 +84,12 @@ pub fn registration_backend(
         return Err("conflict: a layout session is already registered for this window".into());
     }
     let handle = Arc::new(HostLayout {
-        current: ArcSwap::from_pointee(snapshot),
-        persistence: Some(persistence),
+        current: Some(ArcSwap::from_pointee(CurrentLayout {
+            project: snapshot,
+            persistence: OwnedPersistence(Some(persistence)),
+        })),
         closing: AtomicBool::new(false),
+        switching: AtomicBool::new(false),
         editing: AtomicUsize::new(0),
     });
     entries
@@ -116,7 +134,12 @@ impl HostLayout {
     /// Publish the storage projection after each committed in-memory edit.
     /// Call before scheduling that edit's persistence snapshot.
     pub fn publish(&self, project: ProjectLayout) {
-        self.current.store(Arc::new(project));
+        let current = self.current.as_ref().expect("live host layout");
+        let persistence = current.load().persistence.clone();
+        current.store(Arc::new(CurrentLayout {
+            project,
+            persistence: OwnedPersistence(Some(persistence)),
+        }));
     }
 
     /// Publish and enqueue an edited storage projection without waiting for IO.
@@ -132,22 +155,15 @@ impl HostLayout {
         &self,
         operation: impl FnOnce() -> Result<(T, Option<ProjectLayout>), String>,
     ) -> Result<T, String> {
-        if self.closing.load(Ordering::SeqCst) {
-            return Err("unavailable: window is closing".into());
-        }
-        self.editing.fetch_add(1, Ordering::SeqCst);
-        let _admission = EditAdmission(&self.editing);
-        // A close may have started between the first check and admission. The
-        // host waits for admitted work; late calls never change the model.
-        if self.closing.load(Ordering::SeqCst) {
-            return Err("unavailable: window is closing".into());
-        }
+        let _admission = self.admit(false)?;
         let (result, project) = operation()?;
         if let Some(project) = project {
             self.publish(project.clone());
-            self.persistence
+            self.current
                 .as_ref()
-                .ok_or_else(|| "unavailable: host layout is closed".to_owned())?
+                .expect("live host layout")
+                .load()
+                .persistence
                 .schedule(project)?;
         }
         Ok(result)
@@ -157,16 +173,31 @@ impl HostLayout {
     /// An edit already publishing/enqueueing completes before this returns.
     pub fn begin_close(&self) {
         self.closing.store(true, Ordering::SeqCst);
-        // Only the host's service thread waits. The JS edit path uses atomics
-        // and never acquires a lock held by the host or persistence worker.
+        // The host service thread waits; the engine never takes a host mutex.
         while self.editing.load(Ordering::SeqCst) != 0 {
             std::thread::yield_now();
         }
     }
 
-    /// Restore editing when a close/quit flush failed and the window stays open.
     pub fn cancel_close(&self) {
         self.closing.store(false, Ordering::SeqCst);
+    }
+
+    fn admit(&self, switching_owner: bool) -> Result<EditAdmission<'_>, String> {
+        let check = || -> Result<(), String> {
+            if self.closing.load(Ordering::SeqCst) {
+                return Err("unavailable: window is closing".into());
+            }
+            if !switching_owner && self.switching.load(Ordering::SeqCst) {
+                return Err("conflict: project switch is in progress".into());
+            }
+            Ok(())
+        };
+        check()?;
+        self.editing.fetch_add(1, Ordering::SeqCst);
+        let admission = EditAdmission(&self.editing);
+        check()?;
+        Ok(admission)
     }
 
     /// Frozen P1c → P1b Rust handoff name (acceptance §4.1).
@@ -181,46 +212,185 @@ impl HostLayout {
 
     /// A consistent core snapshot for the host's RuntimeWindow reload payload.
     pub fn snapshot(&self) -> ProjectLayout {
-        self.current.load_full().as_ref().clone()
+        self.current
+            .as_ref()
+            .expect("live host layout")
+            .load()
+            .project
+            .clone()
+    }
+
+    pub fn project_id(&self) -> String {
+        self.current
+            .as_ref()
+            .expect("live host layout")
+            .load()
+            .persistence
+            .project_id()
+            .to_owned()
+    }
+
+    /// Capture identity and layout from one atomic generation for host restore
+    /// snapshots; a concurrent project switch cannot mix the two projects.
+    pub fn project_snapshot(&self) -> (String, ProjectLayout) {
+        let current = self.current.as_ref().expect("live host layout").load();
+        (
+            current.persistence.project_id().to_owned(),
+            current.project.clone(),
+        )
+    }
+
+    pub(crate) fn begin_project_switch(self: &Arc<Self>) -> Result<ProjectSwitch, String> {
+        if self.closing.load(Ordering::SeqCst) {
+            return Err("unavailable: window is closing".into());
+        }
+        if self
+            .switching
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return Err("conflict: project switch is in progress".into());
+        }
+        if self.closing.load(Ordering::SeqCst) {
+            self.switching.store(false, Ordering::SeqCst);
+            return Err("unavailable: window is closing".into());
+        }
+        // Never wait for an overlapping host edit on the engine thread. Its
+        // admission recheck also rejects an edit racing this reservation.
+        if self.editing.load(Ordering::SeqCst) != 0 {
+            self.switching.store(false, Ordering::SeqCst);
+            return Err("conflict: layout edit is in progress".into());
+        }
+        Ok(ProjectSwitch {
+            host: Arc::clone(self),
+            previous: self.snapshot(),
+            finished: false,
+        })
     }
 
     /// Wait for already-scheduled saves. The host calls this off the AppKit and
     /// NSH engine threads, after it stops accepting edits and before teardown.
     /// Dropping the handle is deliberately not a synchronous persistence barrier.
     pub fn flush(&self) -> Result<(), String> {
-        self.persistence
+        self.current
             .as_ref()
-            .ok_or_else(|| "unavailable: host layout is closed".to_owned())?
+            .expect("live host layout")
+            .load_full()
+            .persistence
             .flush()
+    }
+}
+
+impl ProjectSwitch {
+    /// Blocking preparation retains the old writer until an admitted commit.
+    pub(crate) fn prepare(&self, project_id: &str) -> Result<LoadedLayout, String> {
+        self.host
+            .current
+            .as_ref()
+            .expect("live host layout")
+            .load_full()
+            .persistence
+            .prepare_project_switch(project_id, &self.previous)
+    }
+
+    /// Commit model, host snapshot and writer under the same short close gate.
+    /// The operation only replaces already-prepared in-memory state.
+    pub(crate) fn commit<T>(
+        &mut self,
+        persistence: Arc<dyn LayoutBackend>,
+        project: ProjectLayout,
+        save: bool,
+        operation: impl FnOnce() -> T,
+    ) -> Result<T, String> {
+        let _admission = match self.host.admit(true) {
+            Ok(admission) => admission,
+            Err(error) => {
+                defer_persistence(persistence);
+                return Err(error);
+            }
+        };
+        if save {
+            if let Err(error) = persistence.schedule(project.clone()) {
+                defer_persistence(persistence);
+                return Err(error);
+            }
+        }
+        let result = operation();
+        let previous = self
+            .host
+            .current
+            .as_ref()
+            .expect("live host layout")
+            .swap(Arc::new(CurrentLayout {
+                project,
+                persistence: OwnedPersistence(Some(persistence)),
+            }));
+        // Each generation owns its disposal guard, including any generation
+        // still held by an ArcSwap reader after this replacement.
+        drop(previous);
+        self.host.switching.store(false, Ordering::SeqCst);
+        self.finished = true;
+        Ok(result)
+    }
+}
+
+impl Drop for ProjectSwitch {
+    fn drop(&mut self) {
+        if !self.finished {
+            self.host.switching.store(false, Ordering::SeqCst);
+        }
     }
 }
 
 impl Drop for HostLayout {
     fn drop(&mut self) {
-        let Some(persistence) = self.persistence.take() else {
+        let Some(current) = self.current.take() else {
             return;
         };
-        let deferred = DeferredPersistence(Some(persistence));
-        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-            // If shutdown rejects/cancels this task before it starts, dropping
-            // its capture still defers the last Arc through the guarded fallback.
-            runtime.spawn_blocking(move || deferred.finish());
-        } else {
-            drop(deferred);
-        }
+        drop(current.into_inner());
     }
 }
 
-/// Ensures even cancellation of the blocking task cannot run the persistence
-/// destructor (which flushes) on the thread releasing the host handle.
-struct EditAdmission<'a>(&'a AtomicUsize);
+pub(crate) fn defer_persistence(persistence: Arc<dyn LayoutBackend>) {
+    let deferred = DeferredPersistence(Some(persistence));
+    if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+        // Cancellation drops the capture through the guarded fallback.
+        runtime.spawn_blocking(move || deferred.finish());
+    } else {
+        drop(deferred);
+    }
+}
 
+/// Release an admitted edit without taking a host lock on the engine thread.
+struct EditAdmission<'a>(&'a AtomicUsize);
 impl Drop for EditAdmission<'_> {
     fn drop(&mut self) {
         self.0.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
+/// Every generation transfers its owned Arc, rather than a temporary clone, to
+/// the blocking pool. Ordinary edits reuse the pool instead of spawning threads.
+struct OwnedPersistence(Option<Arc<dyn LayoutBackend>>);
+
+impl std::ops::Deref for OwnedPersistence {
+    type Target = Arc<dyn LayoutBackend>;
+
+    fn deref(&self) -> &Self::Target {
+        self.0.as_ref().expect("owned layout writer")
+    }
+}
+
+impl Drop for OwnedPersistence {
+    fn drop(&mut self) {
+        if let Some(persistence) = self.0.take() {
+            defer_persistence(persistence);
+        }
+    }
+}
+
+/// Cancellation of the blocking task transfers final ownership to a fallback
+/// thread so a persistence destructor can never flush on the engine.
 struct DeferredPersistence(Option<Arc<dyn LayoutBackend>>);
 
 impl DeferredPersistence {
@@ -277,6 +447,56 @@ mod tests {
         }
     }
 
+    struct DisposalProbe(std::sync::mpsc::Sender<std::thread::ThreadId>);
+
+    impl LayoutBackend for DisposalProbe {
+        fn schedule(&self, _: ProjectLayout) -> Result<(), String> {
+            Ok(())
+        }
+        fn flush(&self) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    impl Drop for DisposalProbe {
+        fn drop(&mut self) {
+            self.0.send(std::thread::current().id()).unwrap();
+        }
+    }
+
+    #[test]
+    fn switched_and_closed_generations_release_their_final_writer_off_the_engine() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let _entered = runtime.enter();
+        let engine_thread = std::thread::current().id();
+        let (old_tx, old_rx) = std::sync::mpsc::channel();
+        let (new_tx, new_rx) = std::sync::mpsc::channel();
+        let host = registration(
+            "deferred-generation-test",
+            Arc::new(DisposalProbe(old_tx)),
+            default_project_layout(),
+        )
+        .unwrap();
+        // A host reader may retain the outgoing generation beyond the commit.
+        let reader = host.current.as_ref().unwrap().load_full();
+        let mut switch = host.begin_project_switch().unwrap();
+        switch
+            .commit(
+                Arc::new(DisposalProbe(new_tx)),
+                default_project_layout(),
+                false,
+                || (),
+            )
+            .unwrap();
+        drop(switch);
+        assert!(old_rx.try_recv().is_err());
+        drop(reader);
+        let timeout = std::time::Duration::from_secs(5);
+        assert_ne!(old_rx.recv_timeout(timeout).unwrap(), engine_thread);
+        drop(host);
+        assert_ne!(new_rx.recv_timeout(timeout).unwrap(), engine_thread);
+    }
+
     #[test]
     fn a_host_close_waits_for_an_admitted_edit_and_rejects_late_edits_without_a_lock() {
         let backend = Arc::new(FakeLayoutBackend::default());
@@ -316,6 +536,59 @@ mod tests {
         handle.cancel_close();
         handle.schedule(default_project_layout()).unwrap();
         assert_eq!(backend.scheduled.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn close_during_switch_rejects_commit_and_flushes_the_old_project_only() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let _entered = runtime.enter();
+        let home = tempfile::Builder::new()
+            .prefix("riwork-host-switch-close-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let loaded =
+            LayoutPersistence::open(home.path(), "outgoing", None, SaveMode::LegacyChatState)
+                .unwrap();
+        let previous = loaded.project;
+        let host = registration(
+            &home.path().display().to_string(),
+            Arc::new(loaded.persistence),
+            previous.clone(),
+        )
+        .unwrap();
+        let mut switch = host.begin_project_switch().unwrap();
+        assert_eq!(
+            host.schedule(previous.clone()).unwrap_err(),
+            "conflict: project switch is in progress"
+        );
+        let prepared = switch.prepare("destination").unwrap();
+        let mut changed = false;
+        host.begin_close();
+        assert_eq!(
+            switch
+                .commit(
+                    Arc::new(prepared.persistence),
+                    prepared.project,
+                    true,
+                    || changed = true
+                )
+                .unwrap_err(),
+            "unavailable: window is closing"
+        );
+        assert!(
+            !changed,
+            "the engine model must not change after close wins admission"
+        );
+        host.flush_blocking().unwrap();
+        let store = riwork_core::layouts::LayoutStore::open(home.path()).unwrap();
+        assert_eq!(store.load("outgoing").unwrap(), Some(previous.clone()));
+        assert!(store.load("destination").unwrap().is_none());
+        assert_eq!(host.project_id(), "outgoing");
+        assert_eq!(host.snapshot(), previous);
+        drop(switch);
+        host.cancel_close();
+        host.schedule(previous).unwrap();
+        host.flush_blocking().unwrap();
     }
 
     #[test]

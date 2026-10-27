@@ -1,0 +1,146 @@
+
+running 11 tests
+test backend::tests::default_directory_is_created_only_inside_injected_fixture ... ok
+test backend::tests::creator_resolves_home_requires_absolute_and_rejects_git_metadata ... ok
+test presence::tests::missing_and_reappearing_directories_change_only_after_cache_expiry ... ok
+test hub::tests::first_snapshot_deduplication_overflow_and_close ... ok
+test backend::tests::failed_store_initialization_can_recover_in_the_same_adapter ... ok
+test presence::tests::concurrent_windows_and_snapshot_materialization_share_one_probe_per_path ... ok
+test dto::tests::session_dto_preserves_saved_identity_and_live_sample_fields ... ok
+test dashboard::tests::global_window_module_uses_an_injected_backend_and_validates_before_writing ... ok
+test dto::tests::bridge_camelizes_domain_fields_without_rewriting_persistence_or_opaque_data ... ok
+test tests::native_registry_composes_services_and_layouts_in_one_frozen_module ... ok
+test backend::tests::creator_failure_cleans_only_new_empty_directories ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
+
+
+running 3 tests
+test override_is_an_explicit_field_and_keeps_preset_and_native_preferences ... ok
+test every_preset_token_is_exact ... ok
+test follow_ghostty_without_a_parser_uses_the_riwork_palette_and_keeps_the_error ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 1 test
+test native_pushes_one_service_to_two_engines_and_stops_on_close_owner_and_engine_drop ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.84s
+
+
+running 4 tests
+test session_create_close_adapters_publish_to_all_window_subscribers ... ok
+test tabs_mutations_and_external_writer_reach_both_services_without_live_inventory ... ok
+test project_folder_and_task_lifecycle_round_trip_real_files_and_second_window_subscription ... ok
+test process_sampler_pushes_worktree_presence_without_ui_polling_or_state_write ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.14s
+
+
+running 12 tests
+test async_reads_hop_off_the_callers_thread_and_errors_are_coded ... ok
+test errors_use_only_the_frozen_codes ... ok
+test sessions_create_and_close_wake_the_single_sampler ... ok
+test store_rejects_non_uuid_ids ... ok
+test tabs_update_rejects_invalid_keys ... ok
+test watcher_wakes_sessions_and_unavailable_sessions_do_not_block_store ... ok
+test folder_mutations_publish_once_to_every_subscriber_and_preserve_disk_format ... ok
+test tabs_watcher_and_bridge_updates_share_the_topic_without_idle_sampling ... ok
+test worktree_presence_has_a_deadline_without_restarting_empty_session_fallback ... ok
+test one_sampler_serves_multiple_subscribers_and_emits_only_changes ... ok
+test an_empty_inventory_sleeps_until_a_watcher_event_and_disarms_when_empty_again ... ok
+test a_quiet_home_produces_no_deliveries_for_60_s has been running for over 60 seconds
+test a_quiet_home_produces_no_deliveries_for_60_s ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 60.13s
+
+
+running 7 tests
+test external_settings_writer_fixture ... ok
+test casing_matches_native_and_colorful_legacy_headings ... ok
+test load_errors_keep_a_diagnostic_and_recover_from_a_subscription_invalidation ... ok
+
+running 1 test
+test external_settings_writer_fixture ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.05s
+
+test typed_patch_preserves_unknown_settings_and_validates_before_writing ... ok
+test status_edits_read_under_the_lock_and_keep_other_windows_choices ... ok
+test change_text_size_is_a_read_modify_write_under_the_lock ... ok
+test a_write_by_another_process_reaches_every_subscriber_once ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.00s
+
+
+running 33 tests
+test layout::tests::gather_uses_core_sources_keeps_main_selection_and_locked_geometry ... ok
+test layout::tests::dropping_real_tab_into_an_empty_pane_never_persists_the_sentinel ... ok
+test layout::tests::implicit_navigation_lock_and_explicit_unlocked_state_survive_no_op ... ok
+test layout::tests::flattened_resize_reconstructs_binary_ratios_including_inner_divider ... ok
+test layout::tests::compound_native_edit_uses_logged_right_nested_fallback_without_data_loss ... ok
+test layout::tests::compound_topology_change_is_not_misclassified_as_a_simple_move ... ok
+test layout::tests::headroom_aliases_leave_free_ids_for_new_groups_and_opaque_sentinels ... ok
+test layout::tests::edge_dock_fallback_moves_back_into_center_only ... ok
+test layout::tests::invalid_or_destructive_reports_are_transactional ... ok
+test layout::tests::max_safe_persisted_id_uses_session_alias_without_poisoning_native_allocator ... ok
+test layout::tests::native_active_index_selects_tab_and_pane_only ... ok
+test layout::tests::native_divider_resize_replays_core_ratio_clamp ... ok
+test layout::tests::native_id_matching_an_aliased_disk_id_cannot_overwrite_either_pane_on_save ... ok
+test host_layouts::tests::host_lookup_tracks_the_latest_snapshot_without_retaining_the_session ... ok
+test layout::tests::native_same_group_reorder_preserves_identity_and_changes_selection ... ok
+test layout::tests::native_last_panel_move_keeps_empty_scaffold_beside_locked_pane ... ok
+test layout::tests::native_last_panel_move_removes_ordinary_source_but_restores_main_sentinel ... ok
+test layout::tests::real_nsh_normalization_and_assigned_split_ids_do_not_rewrite_the_core_tree ... ok
+test layout::tests::ordinary_unsafe_ids_persist_the_safe_remap ... ok
+test layout::tests::panel_and_shell_intents_reuse_identity_and_select_their_own_panes ... ok
+test layout::tests::native_move_to_existing_group_keeps_source_selection_and_selects_target ... ok
+test layout::tests::resizing_uses_core_locked_minima_and_returns_to_the_original_geometry ... ok
+test layout::tests::native_edge_move_splits_through_core_in_all_four_directions ... ok
+test layout::tests::unknown_tabs_pin_a_sentinel_even_while_known_tabs_move_out ... ok
+test layout::tests::unchanged_projection_keeps_binary_shape_and_every_project_field_at_three_extents ... ok
+test layout::tests::unsafe_ids_remap_all_references_and_storage_keeps_opaque_tab_identity ... ok
+test integration_tests::disposed_session_rejects_project_switch_without_panicking ... ok
+test host_layouts::tests::a_host_close_waits_for_an_admitted_edit_and_rejects_late_edits_without_a_lock ... ok
+test integration_tests::disposal_while_project_io_is_pending_never_commits_the_prepared_writer ... ok
+test host_layouts::tests::close_during_switch_rejects_commit_and_flushes_the_old_project_only ... ok
+test integration_tests::rejected_close_time_edits_do_not_change_the_session_before_a_cancelled_close ... ok
+test integration_tests::failed_project_preparation_preserves_the_prior_editable_session ... ok
+test integration_tests::project_switch_keeps_the_host_handle_and_flushes_both_project_writers ... ok
+
+test result: ok. 33 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+
+running 1 test
+test layout_module_uses_the_injected_backend_and_sync_calls_do_not_wait_for_it ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+
+running 12 tests
+test default_layout_allocates_navigation_below_the_core_pane_id_ceiling ... ok
+test the_default_layout_closes_nothing_and_preserves_selection_and_navigation_width ... ok
+test corrupt_layout_is_untouched_until_an_edit_then_core_sets_it_aside ... ok
+test newer_schema_and_unreadable_entries_show_notice_and_are_never_overwritten ... ok
+test restore_snapshot_wins_and_missing_projects_do_not_write_before_an_edit ... ok
+test empty_locked_panes_unknown_tabs_and_unknown_top_level_fields_survive_an_actual_save ... ok
+test dragging_the_last_known_tab_out_keeps_its_unknown_tab_and_empty_sentinel ... ok
+test storage_preserves_unknown_tabs_when_projection_remaps_a_js_unsafe_pane_id ... ok
+test switching_flushes_the_outgoing_project_and_uses_core_locked_region_carry ... ok
+test legacy_saves_merge_chat_dismissals_while_shared_membership_saves_its_projection ... ok
+test gpui_written_fixtures_open_identically_and_resave_without_structure_or_metadata_loss ... ok
+test trailing_save_coalesces_edits_and_flush_and_drop_do_not_wait_for_the_deadline ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.40s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

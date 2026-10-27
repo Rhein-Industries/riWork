@@ -77,7 +77,9 @@ fn the_default_layout_closes_nothing_and_preserves_selection_and_navigation_widt
         .open_panel(riwork_core::layouts::PanelKind::Usage)
         .unwrap();
     assert_eq!(
-        model.project().panes[&navigation].active_tab_key.as_deref(),
+        model.project().panes[&model.project().active_pane]
+            .active_tab_key
+            .as_deref(),
         Some("panel:usage")
     );
 }
@@ -470,6 +472,72 @@ fn switching_flushes_the_outgoing_project_and_uses_core_locked_region_carry() {
         Some("destination-worktree")
     );
     assert_eq!(loaded.persistence.project_id(), "destination");
+}
+
+#[test]
+fn project_switch_rejects_unknown_destination_tabs_without_losing_them_or_replacing_the_writer() {
+    let rt = runtime();
+    let _entered = rt.enter();
+    // Exercise both the prepared switch used by LayoutSession and the direct
+    // persistence switch. All outgoing panes are locked: without rejection,
+    // core carry has no destination slots and drops its opaque-tab pane.
+    for prepared in [true, false] {
+        let temp = scratch();
+        seed(temp.path(), false);
+        let store = LayoutStore::open(temp.path()).unwrap();
+        let mut destination = fixture();
+        destination.layout = Layout::Pane(99);
+        destination.panes = std::collections::BTreeMap::from([(99, SavedPane::default())]);
+        destination.active_pane = 99;
+        destination.main_pane = Some(99);
+        destination.locked_panes = Some(HashSet::new());
+        destination.normalize().unwrap();
+        store
+            .save_chat_state("unknown-destination", &destination, &[], None)
+            .unwrap();
+        let mut disk = read(temp.path());
+        disk["projects"]["unknown-destination"]["panes"]["99"]["tabs"] = json!([unknown_tab()]);
+        write(temp.path(), &disk);
+        let destination_before =
+            serde_json::to_vec(&disk["projects"]["unknown-destination"]).unwrap();
+        let mut loaded =
+            LayoutPersistence::open(temp.path(), PROJECT, None, SaveMode::LegacyChatState).unwrap();
+        let mut previous = loaded.project.clone();
+        previous.locked_panes = Some(previous.layout.pane_ids().into_iter().collect());
+        previous.selected_task_id = Some("accepted-before-switch".into());
+        previous.normalize().unwrap();
+        let error = if prepared {
+            loaded
+                .persistence
+                .prepare_project_switch("unknown-destination", &previous)
+                .err()
+                .expect("unknown destination must be refused")
+        } else {
+            loaded
+                .persistence
+                .switch_project("unknown-destination", &previous, None)
+                .err()
+                .expect("unknown destination must be refused")
+        };
+        assert!(error.starts_with("refused:"));
+        assert!(error.contains("unknown tabs"));
+        assert_eq!(loaded.persistence.project_id(), PROJECT);
+        assert_eq!(store.load(PROJECT).unwrap(), Some(previous.clone()));
+        assert_eq!(
+            serde_json::to_vec(&read(temp.path())["projects"]["unknown-destination"]).unwrap(),
+            destination_before
+        );
+        // The rejected switch leaves the original writer available for a
+        // subsequent accepted edit and explicit durability barrier.
+        previous.selected_task_id = Some("accepted-after-rejected-switch".into());
+        loaded.persistence.schedule(previous.clone()).unwrap();
+        loaded.persistence.flush().unwrap();
+        assert_eq!(store.load(PROJECT).unwrap(), Some(previous));
+        assert_eq!(
+            serde_json::to_vec(&read(temp.path())["projects"]["unknown-destination"]).unwrap(),
+            destination_before
+        );
+    }
 }
 
 #[test]

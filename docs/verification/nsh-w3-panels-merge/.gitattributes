@@ -1,0 +1,3 @@
+# Preserve exact captured command output.
+**/*.stdout -whitespace
+**/*.stderr -whitespace

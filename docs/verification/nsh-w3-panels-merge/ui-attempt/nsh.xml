@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="nsh test" tests="43" failures="3" errors="0" skipped="0" time="31.185">
+  <testsuite name="apps/riwork/App.test.tsx" tests="8" failures="0" errors="0" skipped="0" time="3.337">
+    <testcase classname="apps/riwork/App.test.tsx" name="opens a core-written layout with shell identity, empty unknown pane, and window chrome" time="0.151"/>
+    <testcase classname="apps/riwork/App.test.tsx" name="DockArea selection and keyboard changes go through the session and remain window-local" time="0.560"/>
+    <testcase classname="apps/riwork/App.test.tsx" name="locked pixel geometry survives resize and pane menu edits remain in Rust" time="0.644"/>
+    <testcase classname="apps/riwork/App.test.tsx" name="production entry routes global windows without opening a project DockArea" time="0.117"/>
+    <testcase classname="apps/riwork/App.test.tsx" name="production restore installs its native layout before confirming exactly once" time="0.213"/>
+    <testcase classname="apps/riwork/App.test.tsx" name="a restored global entry confirms without opening a project session" time="0.108"/>
+    <testcase classname="apps/riwork/App.test.tsx" name="clicking an already selected tab and an empty pane changes the active pane" time="0.653"/>
+    <testcase classname="apps/riwork/App.test.tsx" name="a real DockArea drag moves one tab into the opaque empty pane through Rust" time="0.888"/>
+  </testsuite>
+  <testsuite name="apps/riwork/Panels.test.tsx" tests="3" failures="3" errors="0" skipped="0" time="8.541">
+    <testcase classname="apps/riwork/Panels.test.tsx" name="panels share search, preserve exact selection, and switch only their own window" time="0.788">
+      <failure message="expected [&quot;projects&quot;,&quot;worktrees&quot;,&quot;tasks&quot;,&quot;shells&quot;,&quot;Projects&quot;,&quot;1 of 2 projects&quot;,&quot;＋ Folder&quot;,&quot;＋ Project&quot;,&quot;↕&quot;,&quot;⌕&quot;,&quot;×&quot;,&quot;Beta-1793139987209-1&quot;,&quot;1 trees · 0/0 tasks · 0 live&quot;,&quot;&quot;] to contain &quot;No matches&quot;">expected [&quot;projects&quot;,&quot;worktrees&quot;,&quot;tasks&quot;,&quot;shells&quot;,&quot;Projects&quot;,&quot;1 of 2 projects&quot;,&quot;＋ Folder&quot;,&quot;＋ Project&quot;,&quot;↕&quot;,&quot;⌕&quot;,&quot;×&quot;,&quot;Beta-1793139987209-1&quot;,&quot;1 trees · 0/0 tasks · 0 live&quot;,&quot;&quot;] to contain &quot;No matches&quot;&#10;    at toContain (native)&#10;    at &lt;anonymous&gt; (apps/riwork/Panels.test.tsx:34:25)&#10;&#10;on screen: &quot;projects&quot;, &quot;worktrees&quot;, &quot;tasks&quot;, &quot;shells&quot;, &quot;Projects&quot;, &quot;2 projects&quot;, &quot;＋ Folder&quot;, &quot;＋ Project&quot;, &quot;↕&quot;, &quot;⌕&quot;, &quot;Alpha-1793139987209-1&quot;, &quot;1 trees · 0/0 tasks · 0 live&quot;, &quot;🔕&quot;, &quot;↻&quot;, &quot;⚙&quot;, &quot;Move to…&quot;, &quot;↗&quot;, &quot;▾ Unfiled  2&quot;, &quot;Beta-1793139987209-1&quot;, &quot;1 trees · 0/0 tasks · 0 live&quot;, &quot;&quot;</failure>
+    </testcase>
+    <testcase classname="apps/riwork/Panels.test.tsx" name="task form, assignment and status changes reach a peer through Store subscriptions" time="0.566">
+      <failure message="no pressable view matches `id:new-task`; on screen: [&quot;projects&quot;, &quot;worktrees&quot;, &quot;tasks&quot;, &quot;shells&quot;, &quot;Projects&quot;, &quot;4 projects&quot;, &quot;＋ Folder&quot;, &quot;＋ Project&quot;, &quot;↕&quot;, &quot;⌕&quot;, &quot;Alpha-1793139987997-2&quot;, &quot;1 trees · 0/0 tasks · 0 live&quot;, &quot;🔕&quot;, &quot;↻&quot;, &quot;⚙&quot;, &quot;Move to…&quot;, &quot;↗&quot;, &quot;▾ Unfiled  4&quot;, &quot;Beta-1793139987997-2&quot;, &quot;1 trees · 0/0 tasks · 0 live&quot;, &quot;Alpha-1793139987209-1&quot;, &quot;1 trees · 0/0 tasks · 0 live&quot;, &quot;Beta-1793139987209-1&quot;, &quot;1 trees · 0/0 tasks · 0 live&quot;, &quot;&quot;]">no pressable view matches `id:new-task`; on screen: [&quot;projects&quot;, &quot;worktrees&quot;, &quot;tasks&quot;, &quot;shells&quot;, &quot;Projects&quot;, &quot;4 projects&quot;, &quot;＋ Folder&quot;, &quot;＋ Project&quot;, &quot;↕&quot;, &quot;⌕&quot;, &quot;Alpha-1793139987997-2&quot;, &quot;1 trees · 0/0 tasks · 0 live&quot;, &quot;🔕&quot;, &quot;↻&quot;, &quot;⚙&quot;, &quot;Move to…&quot;, &quot;↗&quot;, &quot;▾ Unfiled  4&quot;, &quot;Beta-1793139987997-2&quot;, &quot;1 trees · 0/0 tasks · 0 live&quot;, &quot;Alpha-1793139987209-1&quot;, &quot;1 trees · 0/0 tasks · 0 live&quot;, &quot;Beta-1793139987209-1&quot;, &quot;1 trees · 0/0 tasks · 0 live&quot;, &quot;&quot;]&#10;on screen: &quot;projects&quot;, &quot;worktrees&quot;, &quot;tasks&quot;, &quot;shells&quot;, &quot;Projects&quot;, &quot;4 projects&quot;, &quot;＋ Folder&quot;, &quot;＋ Project&quot;, &quot;↕&quot;, &quot;⌕&quot;, &quot;Alpha-1793139987997-2&quot;, &quot;1 trees · 0/0 tasks · 0 live&quot;, &quot;🔕&quot;, &quot;↻&quot;, &quot;⚙&quot;, &quot;Move to…&quot;, &quot;↗&quot;, &quot;▾ Unfiled  4&quot;, &quot;Beta-1793139987997-2&quot;, &quot;1 trees · 0/0 tasks · 0 live&quot;, &quot;Alpha-1793139987209-1&quot;, &quot;1 trees · 0/0 tasks · 0 live&quot;, &quot;Beta-1793139987209-1&quot;, &quot;1 trees · 0/0 tasks · 0 live&quot;, &quot;&quot;</failure>
+    </testcase>
+    <testcase classname="apps/riwork/Panels.test.tsx" name="folder forms and project creation persist and leave terminal attachment gated" time="7.187">
+      <failure message="`id:shell-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa` showing never happened in 5000 ms; on screen: [&quot;projects&quot;, &quot;worktrees&quot;, &quot;tasks&quot;, &quot;shells&quot;, &quot;Projects&quot;, &quot;7 projects&quot;, &quot;＋ Folder&quot;, &quot;＋ Project&quot;, &quot;↕&quot;, &quot;⌕&quot;, &quot;Beta-1793139987209-1&quot;, &quot;1 trees · 0/0 tasks · 0 live&quot;, &quot;Alpha-1793139987209-1&quot;, &quot;1 trees · 0/0 tasks · 0 live&quot;, &quot;Beta-1793139988563-3&quot;, &quot;1 trees · 0/0 tasks · 0 live&quot;, &quot;Beta-1793139987997-2&quot;, &quot;1 trees · 0/0 tasks · 0 live&quot;, &quot;Alpha-1793139988563-3&quot;, &quot;1 trees · 0/0 tasks · 0 live&quot;, &quot;Alpha-1793139987997-2&quot;, &quot;1 trees · 0/0 tasks · 0 live&quot;, &quot;Created-1793139988563-3&quot;, &quot;1 trees · 0/0 tasks · 1 live&quot;, &quot;🔕&quot;, &quot;↻&quot;, &quot;⚙&quot;, &quot;Move to…&quot;, &quot;↗&quot;, &quot;▾ Unfiled  7&quot;, &quot;&quot;]">`id:shell-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa` showing never happened in 5000 ms; on screen: [&quot;projects&quot;, &quot;worktrees&quot;, &quot;tasks&quot;, &quot;shells&quot;, &quot;Projects&quot;, &quot;7 projects&quot;, &quot;＋ Folder&quot;, &quot;＋ Project&quot;, &quot;↕&quot;, &quot;⌕&quot;, &quot;Beta-1793139987209-1&quot;, &quot;1 trees · 0/0 tasks · 0 live&quot;, &quot;Alpha-1793139987209-1&quot;, &quot;1 trees · 0/0 tasks · 0 live&quot;, &quot;Beta-1793139988563-3&quot;, &quot;1 trees · 0/0 tasks · 0 live&quot;, &quot;Beta-1793139987997-2&quot;, &quot;1 trees · 0/0 tasks · 0 live&quot;, &quot;Alpha-1793139988563-3&quot;, &quot;1 trees · 0/0 tasks · 0 live&quot;, &quot;Alpha-1793139987997-2&quot;, &quot;1 trees · 0/0 tasks · 0 live&quot;, &quot;Created-1793139988563-3&quot;, &quot;1 trees · 0/0 tasks · 1 live&quot;, &quot;🔕&quot;, &quot;↻&quot;, &quot;⚙&quot;, &quot;Move to…&quot;, &quot;↗&quot;, &quot;▾ Unfiled  7&quot;, &quot;&quot;]&#10;on screen: &quot;projects&quot;, &quot;worktrees&quot;, &quot;tasks&quot;, &quot;shells&quot;, &quot;Projects&quot;, &quot;7 projects&quot;, &quot;＋ Folder&quot;, &quot;＋ Project&quot;, &quot;↕&quot;, &quot;⌕&quot;, &quot;Beta-1793139987209-1&quot;, &quot;1 trees · 0/0 tasks · 0 live&quot;, &quot;Alpha-1793139987209-1&quot;, &quot;1 trees · 0/0 tasks · 0 live&quot;, &quot;Beta-1793139988563-3&quot;, &quot;1 trees · 0/0 tasks · 0 live&quot;, &quot;Beta-1793139987997-2&quot;, &quot;1 trees · 0/0 tasks · 0 live&quot;, &quot;Alpha-1793139988563-3&quot;, &quot;1 trees · 0/0 tasks · 0 live&quot;, &quot;Alpha-1793139987997-2&quot;, &quot;1 trees · 0/0 tasks · 0 live&quot;, &quot;Created-1793139988563-3&quot;, &quot;1 trees · 0/0 tasks · 1 live&quot;, &quot;🔕&quot;, &quot;↻&quot;, &quot;⚙&quot;, &quot;Move to…&quot;, &quot;↗&quot;, &quot;▾ Unfiled  7&quot;, &quot;&quot;</failure>
+    </testcase>
+  </testsuite>
+  <testsuite name="apps/riwork/model.test.ts" tests="6" failures="0" errors="0" skipped="0" time="0.000">
+    <testcase classname="apps/riwork/model.test.ts" name="number shortcuts consume drawn order and skip panels only with shared membership" time="0.000"/>
+    <testcase classname="apps/riwork/model.test.ts" name="tab cycling wraps in drawn order and respects a modal" time="0.000"/>
+    <testcase classname="apps/riwork/model.test.ts" name="empty sentinels never participate in tab shortcuts or the main-pane summary" time="0.000"/>
+    <testcase classname="apps/riwork/model.test.ts" name="main-pane summaries preserve active identity and lookup is pane-independent" time="0.000"/>
+    <testcase classname="apps/riwork/model.test.ts" name="window titles name remote projects and update only when changed" time="0.000"/>
+    <testcase classname="apps/riwork/model.test.ts" name="panel labels preserve persisted legacy identities" time="0.000"/>
+  </testsuite>
+  <testsuite name="apps/riwork/panel_model.test.ts" tests="6" failures="0" errors="0" skipped="0" time="0.000">
+    <testcase classname="apps/riwork/panel_model.test.ts" name="project browsing preserves nested subtree counts and per-window collapse" time="0.000"/>
+    <testcase classname="apps/riwork/panel_model.test.ts" name="project search is flat, ignores folders and finds hidden projects with names ranked first" time="0.000"/>
+    <testcase classname="apps/riwork/panel_model.test.ts" name="orphan and cyclic folders appear once and empty folders remain navigable" time="0.000"/>
+    <testcase classname="apps/riwork/panel_model.test.ts" name="worktree presence only removes missing linked navigation rows" time="0.000"/>
+    <testcase classname="apps/riwork/panel_model.test.ts" name="task filtering includes exact status and assigned worktree while shell filtering follows deepest cwd" time="0.000"/>
+    <testcase classname="apps/riwork/panel_model.test.ts" name="header counts and trimming are independent of rendered folder rows" time="0.000"/>
+  </testsuite>
+  <testsuite name="apps/riwork/tests/EditMenu.test.tsx" tests="1" failures="0" errors="0" skipped="0" time="0.221">
+    <testcase classname="apps/riwork/tests/EditMenu.test.tsx" name="P1-MENU-02: host Copy with no selection leaves the clipboard unchanged" time="0.221"/>
+  </testsuite>
+  <testsuite name="apps/riwork/tests/Idle.test.tsx" tests="1" failures="0" errors="0" skipped="0" time="0.390">
+    <testcase classname="apps/riwork/tests/Idle.test.tsx" name="P1-POLL-02: a settled project sends no host work during 60 seconds of idle time" time="0.390"/>
+  </testsuite>
+  <testsuite name="apps/riwork/tests/Keyboard.test.tsx" tests="2" failures="0" errors="0" skipped="0" time="2.538">
+    <testcase classname="apps/riwork/tests/Keyboard.test.tsx" name="deferred chords retain their context and host-only global keys are absent" time="0.000"/>
+    <testcase classname="apps/riwork/tests/Keyboard.test.tsx" name="deferred keys are inert and all tab-cycle aliases preserve the selected placeholder" time="2.538"/>
+  </testsuite>
+  <testsuite name="apps/riwork/tests/StatusBar.test.tsx" tests="5" failures="0" errors="0" skipped="0" time="4.908">
+    <testcase classname="apps/riwork/tests/StatusBar.test.tsx" name="P1-STAT-01: default kinds, order, sides and master visibility reach both windows" time="1.125"/>
+    <testcase classname="apps/riwork/tests/StatusBar.test.tsx" name="P1-STAT-02: project and worktree open panels and missing data keeps GPUI forms" time="0.343"/>
+    <testcase classname="apps/riwork/tests/StatusBar.test.tsx" name="P1-STAT-03: layout menu toggles, applies the default and closes when hidden" time="0.786"/>
+    <testcase classname="apps/riwork/tests/StatusBar.test.tsx" name="P1-STAT-04: newer notices replace, stay for a minute and dismiss" time="0.823"/>
+    <testcase classname="apps/riwork/tests/StatusBar.test.tsx" name="P1-STAT-05: global menu routes both views and closes on escape, outside, hidden or modal" time="1.832"/>
+  </testsuite>
+  <testsuite name="apps/riwork/tests/TextSize.test.tsx" tests="4" failures="0" errors="0" skipped="0" time="1.227">
+    <testcase classname="apps/riwork/tests/TextSize.test.tsx" name="P1-TXT-02: View commands resize through the Settings owner and reset" time="0.501"/>
+    <testcase classname="apps/riwork/tests/TextSize.test.tsx" name="P1-TXT-03: Native and Hermes use system text and Native accents fall back to Menlo" time="0.483"/>
+    <testcase classname="apps/riwork/tests/TextSize.test.tsx" name="P1-TXT-03: spacing grows in whole points and never shrinks chrome" time="0.000"/>
+    <testcase classname="apps/riwork/tests/TextSize.test.tsx" name="P1-TXT-03: SF Mono accents are selected when installed and matching suppresses the face offset" time="0.243"/>
+  </testsuite>
+  <testsuite name="apps/riwork/tests/Theme.test.tsx" tests="6" failures="0" errors="0" skipped="0" time="2.482">
+    <testcase classname="apps/riwork/tests/Theme.test.tsx" name="P1-THM-04: Native light first workspace paint uses its resolved palette" time="0.141"/>
+    <testcase classname="apps/riwork/tests/Theme.test.tsx" name="P1-THM-04: a workspace without Appearance uses the RiWork context palette" time="0.131"/>
+    <testcase classname="apps/riwork/tests/Theme.test.tsx" name="P1-THM-05: each window resolves Native on appearance events and both receive settings" time="0.585"/>
+    <testcase classname="apps/riwork/tests/Theme.test.tsx" name="P1-THM-01: Settings offers the seven core-labelled themes and changes selection" time="0.466"/>
+    <testcase classname="apps/riwork/tests/Theme.test.tsx" name="P1-THM-05: theme changes keep panels mounted and install font/casing with their resolved palette" time="0.587"/>
+    <testcase classname="apps/riwork/tests/Theme.test.tsx" name="real project panels and editors use the resolved theme and interface text size" time="0.572"/>
+  </testsuite>
+  <testsuite name="apps/riwork/tests/metrics.test.ts" tests="1" failures="0" errors="0" skipped="0" time="0.577">
+    <testcase classname="apps/riwork/tests/metrics.test.ts" name="P1-STAT-01: rendered status text scales and its right side scrolls at narrow widths" time="0.577"/>
+  </testsuite>
+</testsuites>

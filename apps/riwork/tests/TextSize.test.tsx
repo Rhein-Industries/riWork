@@ -7,11 +7,11 @@ test("P1-TXT-02: View commands resize through the Settings owner and reset", asy
   try {
     await app.waitFor("id:workspace");
     await app.host.send("command", { id: "biggerText" });
-    await app.waitUntil(() => Math.round(app.spanStyle("text:PROJECTS").fontSize) === 12);
+    await app.waitUntil(() => Math.round(app.spanStyle("id:tab:panel:projects >> text:PROJECTS").fontSize) === 12);
     await app.host.send("command", { id: "actualSize" });
-    await app.waitUntil(() => Math.round(app.spanStyle("text:PROJECTS").fontSize) === 11);
+    await app.waitUntil(() => Math.round(app.spanStyle("id:tab:panel:projects >> text:PROJECTS").fontSize) === 11);
     await app.host.send("command", { id: "smallerText" });
-    await app.waitUntil(() => Math.round(app.spanStyle("text:PROJECTS").fontSize) === 10);
+    await app.waitUntil(() => Math.round(app.spanStyle("id:tab:panel:projects >> text:PROJECTS").fontSize) === 10);
   } finally { app.dispose(); }
 });
 
@@ -22,11 +22,11 @@ test("P1-TXT-03: Native and Hermes use system text and Native accents fall back 
   try {
     await app.waitFor("id:workspace");
     expect(app.texts()).toContain("family:system-ui mono:Menlo");
-    expect(Math.round(app.spanStyle("text:Projects").fontSize)).toBe(13);
+    expect(Math.round(app.spanStyle("id:tab:panel:projects >> text:Projects").fontSize)).toBe(13);
     await settings(app, { interfaceFont: "system" });
     await app.waitUntil(() => app.texts().includes("family:system-ui mono:system-ui"));
     await settings(app, { theme: "hermes", uiTextMatchesTerminal: false });
-    await app.waitUntil(() => app.shows("text:PROJECTS") && Math.round(app.spanStyle("text:PROJECTS").fontSize) === 13);
+    await app.waitUntil(() => app.shows("text:PROJECTS") && Math.round(app.spanStyle("id:tab:panel:projects >> text:PROJECTS").fontSize) === 13);
     await settings(app, { theme: "ri_work" });
     await app.waitUntil(() => app.texts().includes("family:Menlo mono:Menlo"));
   } finally { app.dispose(); }
@@ -44,8 +44,8 @@ test("P1-TXT-03: SF Mono accents are selected when installed and matching suppre
   try {
     await app.waitFor("id:workspace");
     expect(app.texts()).toContain("family:system-ui mono:SF Mono");
-    expect(Math.round(app.spanStyle("text:Projects").fontSize)).toBe(20);
+    expect(Math.round(app.spanStyle("id:tab:panel:projects >> text:Projects").fontSize)).toBe(20);
     await settings(app, { uiTextMatchesTerminal: true });
-    await app.waitUntil(() => Math.round(app.spanStyle("text:Projects").fontSize) === 13);
+    await app.waitUntil(() => Math.round(app.spanStyle("id:tab:panel:projects >> text:Projects").fontSize) === 13);
   } finally { app.dispose(); }
 });

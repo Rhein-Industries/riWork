@@ -85,7 +85,7 @@ impl TabsBackend for MemoryTabs {
     fn update(
         &self,
         project: &str,
-        _update: &riwork_engine::project_tabs::Update,
+        _update: riwork_nsh_native::dto::TabUpdate,
     ) -> Result<TabsSnapshot> {
         self.snapshot(project)
     }

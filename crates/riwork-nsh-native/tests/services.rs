@@ -11,8 +11,11 @@ use std::{
 use anyhow::{Result, bail};
 use riwork_nsh_native::{
     ProcessService,
-    backend::{CoreStoreBackend, SessionsBackend, StoreBackend, Unavailable},
-    dto::{ProjectInspectionDto, SearchHitDto, SessionsSnapshot, ShellSessionDto, StoreState},
+    backend::{CoreStoreBackend, SessionsBackend, StoreBackend, TabsBackend, Unavailable},
+    dto::{
+        ProjectInspectionDto, SearchHitDto, SessionsSnapshot, ShellSessionDto, StoreState,
+        TabUpdate, TabsSnapshot,
+    },
     service::SESSION_SAMPLE_INTERVAL,
 };
 
@@ -165,19 +168,103 @@ async fn an_empty_inventory_sleeps_until_a_watcher_event_and_disarms_when_empty_
     );
 }
 
+struct CountedStore {
+    inner: CoreStoreBackend,
+    presence_refreshes: AtomicUsize,
+}
+
+impl StoreBackend for CountedStore {
+    fn snapshot(&self) -> Result<StoreState> {
+        self.inner.snapshot()
+    }
+    fn search(&self, query: &str) -> Result<Vec<SearchHitDto>> {
+        self.inner.search(query)
+    }
+    fn inspect_project(&self, root: &Path) -> Result<ProjectInspectionDto> {
+        self.inner.inspect_project(root)
+    }
+    fn refresh_presence(&self) -> Result<StoreState> {
+        self.presence_refreshes.fetch_add(1, Ordering::SeqCst);
+        self.inner.refresh_presence()
+    }
+}
+
+#[derive(Default)]
+struct CountedTabs(AtomicUsize);
+
+impl TabsBackend for CountedTabs {
+    fn snapshot(&self, _project: &str) -> Result<TabsSnapshot> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Ok(TabsSnapshot {
+            epoch: "fixture".into(),
+            revision: 1,
+            entries: vec![],
+        })
+    }
+    fn update(&self, _project: &str, _update: TabUpdate) -> Result<TabsSnapshot> {
+        bail!("fixture does not mutate tabs")
+    }
+}
+
+#[tokio::test]
+async fn worktree_presence_has_a_deadline_without_restarting_empty_session_fallback() {
+    let fixture = tempfile::tempdir().unwrap();
+    let home = fixture.path().join("RIWORK_HOME");
+    let project = riwork_core::store::Store::open(&home)
+        .unwrap()
+        .create_project(fixture.path().join("project"), None, false)
+        .unwrap();
+    let sessions = Arc::new(FakeSessions::default());
+    let tabs = Arc::new(CountedTabs::default());
+    let store = Arc::new(CountedStore {
+        inner: CoreStoreBackend::new(home.clone()),
+        presence_refreshes: AtomicUsize::new(0),
+    });
+    let service = tokio::task::spawn_blocking({
+        let store = store.clone();
+        let sessions = sessions.clone();
+        let tabs = tabs.clone();
+        move || ProcessService::with_all_backends(home, store, sessions, tabs)
+    })
+    .await
+    .unwrap()
+    .unwrap();
+    let listener = service.subscribe_store().await.unwrap();
+    let tab_listener = service.subscribe_tabs(project.id).await.unwrap();
+    tab_listener.recv().await.unwrap();
+    assert_eq!(listener.recv().await.unwrap().data.worktrees.len(), 1);
+    tokio::time::sleep(SESSION_SAMPLE_INTERVAL + Duration::from_millis(200)).await;
+    assert!(
+        store.presence_refreshes.load(Ordering::SeqCst) >= 1,
+        "worktrees still need their independent presence refresh"
+    );
+    assert_eq!(
+        sessions.samples.load(Ordering::SeqCst),
+        1,
+        "presence refresh must not query the empty session inventory"
+    );
+    assert_eq!(
+        tabs.0.load(Ordering::SeqCst),
+        1,
+        "presence refresh must not indirectly query sessions through tab inventory"
+    );
+}
+
 #[tokio::test]
 async fn a_quiet_home_produces_no_deliveries_for_60_s() {
     let fixture = tempfile::tempdir().unwrap();
     let sessions = Arc::new(FakeSessions::default());
     let home = fixture.path().to_path_buf();
-    let test_sessions = sessions.clone();
-    let service = tokio::task::spawn_blocking(move || {
-        ProcessService::with_tabs_backend(
-            home.clone(),
-            Arc::new(CoreStoreBackend::new(home)),
-            test_sessions,
-            Arc::new(FakeTabs::default()),
-        )
+    let store = Arc::new(CountedStore {
+        inner: CoreStoreBackend::new(home.clone()),
+        presence_refreshes: AtomicUsize::new(0),
+    });
+    let service = tokio::task::spawn_blocking({
+        let store = store.clone();
+        let sessions = sessions.clone();
+        move || {
+            ProcessService::with_all_backends(home, store, sessions, Arc::new(FakeTabs::default()))
+        }
     })
     .await
     .unwrap()
@@ -185,13 +272,14 @@ async fn a_quiet_home_produces_no_deliveries_for_60_s() {
     let stores = service.subscribe_store().await.unwrap();
     let shells = service.subscribe_sessions().await.unwrap();
     let preferences = service.preferences().clone();
-    let tabs = service.tabs().clone();
-    let (settings, appearance, tabs) = tokio::task::spawn_blocking(move || {
+    let tabs = service
+        .subscribe_tabs("00000000-0000-4000-8000-000000000001".into())
+        .await
+        .unwrap();
+    let (settings, appearance) = tokio::task::spawn_blocking(move || {
         (
             preferences.subscribe_settings(),
             preferences.subscribe_appearance(),
-            tabs.subscribe("00000000-0000-4000-8000-000000000001")
-                .unwrap(),
         )
     })
     .await
@@ -210,6 +298,11 @@ async fn a_quiet_home_produces_no_deliveries_for_60_s() {
         event = tabs.recv() => panic!("quiet Tabs delivered {event:?}"),
     }
     assert_eq!(sessions.samples.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        store.presence_refreshes.load(Ordering::SeqCst),
+        0,
+        "an empty home must not arm a presence timer either"
+    );
 }
 
 #[tokio::test]
@@ -329,7 +422,7 @@ impl riwork_nsh_native::tabs::TabsBackend for FakeTabs {
     fn update(
         &self,
         project: &str,
-        _update: &riwork_engine::project_tabs::Update,
+        _update: TabUpdate,
     ) -> Result<riwork_nsh_native::tabs::TabsSnapshot> {
         let mut snapshot = self.snapshot(project)?;
         snapshot.revision += 1;
@@ -341,29 +434,49 @@ impl riwork_nsh_native::tabs::TabsBackend for FakeTabs {
 #[tokio::test]
 async fn tabs_update_rejects_invalid_keys() {
     use serde_json::json;
+    let fixture = tempfile::tempdir().unwrap();
+    let home = fixture.path().to_path_buf();
     let backend = Arc::new(FakeTabs::default());
-    let tabs = riwork_nsh_native::tabs::TabsService::new(backend.clone());
+    let test_tabs = backend.clone();
+    let service = tokio::task::spawn_blocking(move || {
+        ProcessService::with_all_backends(
+            home.clone(),
+            Arc::new(CoreStoreBackend::new(home)),
+            Arc::new(FakeSessions::default()),
+            test_tabs,
+        )
+    })
+    .await
+    .unwrap()
+    .unwrap();
     let project = "00000000-0000-4000-8000-000000000001";
     for update in [
         json!({"action":"hide","key":"shell:../../sessions"}),
         json!({"action":"unhide","key":"chat:NOT-A-UUID"}),
         json!({"action":"move","key":"shell:00000000-0000-4000-8000-000000000001","before":"shell:bad"}),
         json!({"action":"rename","key":"shell:00000000-0000-4000-8000-000000000001","title":"bad\nname"}),
-        json!({"action":"hide","key":"shell:00000000-0000-4000-8000-000000000001","surprise":true}),
     ] {
+        let update: TabUpdate = serde_json::from_value(update).unwrap();
         assert!(
-            tabs.update(project, update)
+            service
+                .tabs_update(project.into(), update)
+                .await
                 .unwrap_err()
                 .starts_with("invalid:")
         );
     }
+    assert!(serde_json::from_value::<TabUpdate>(json!({"action":"hide","key":"shell:00000000-0000-4000-8000-000000000001","surprise":true})).is_err());
     assert!(
-        tabs.update(
-            "not-a-project",
-            json!({"action":"hide","key":"shell:00000000-0000-4000-8000-000000000001"})
-        )
-        .unwrap_err()
-        .starts_with("invalid:")
+        service
+            .tabs_update(
+                "not-a-project".into(),
+                TabUpdate::Hide {
+                    key: "shell:00000000-0000-4000-8000-000000000001".into()
+                }
+            )
+            .await
+            .unwrap_err()
+            .starts_with("invalid:")
     );
     assert_eq!(
         backend.calls.load(Ordering::SeqCst),
@@ -477,17 +590,21 @@ async fn tabs_watcher_and_bridge_updates_share_the_topic_without_idle_sampling()
     .await
     .unwrap()
     .unwrap();
-    let tabs = service.tabs();
     let project = "00000000-0000-4000-8000-000000000001";
-    let first = tabs.subscribe(project).unwrap();
-    let second = tabs.subscribe(project).unwrap();
+    let first = service.subscribe_tabs(project.into()).await.unwrap();
+    let second = service.subscribe_tabs(project.into()).await.unwrap();
     assert_eq!(first.recv().await.unwrap(), second.recv().await.unwrap());
     assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
-    tabs.update(
-        project,
-        json!({"action":"hide","key":"shell:00000000-0000-4000-8000-000000000001"}),
-    )
-    .unwrap();
+    service
+        .tabs_update(
+            project.into(),
+            serde_json::from_value(
+                json!({"action":"hide","key":"shell:00000000-0000-4000-8000-000000000001"}),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
     let event = first.recv().await.unwrap();
     assert_eq!(event.data.revision, 2);
     assert_eq!(event, second.recv().await.unwrap());

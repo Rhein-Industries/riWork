@@ -1,0 +1,34 @@
+
+running 29 tests
+test nsh_host::tests::a_busy_registry_lock_stays_due ... ok
+test nsh_host::tests::forced_appearance_from_env ... ok
+test nsh_bundle::tests::an_explicit_bundle_path_is_absolute_and_never_falls_back_to_source ... ok
+test nsh_bundle::tests::missing_real_bundle_reports_the_build_recipe_without_a_bootstrap_fallback ... ok
+test nsh_host::tests::runtime_frames_keep_the_existing_display_local_top_left_coordinates ... ok
+test nsh_host::tests::url_routing_and_window_arguments_are_bounded ... ok
+test nsh_host::tests::params_follow_frozen_schema_and_omit_restore_on_new_windows ... ok
+test nsh_menus::tests::close_tab_and_font_keys_preserve_their_modifier_boundaries ... ok
+test nsh_menus::tests::deferred_menu_commands_remain_present_disabled_and_keep_their_chords ... ok
+test nsh_menus::tests::frozen_menu_has_only_riwork_edit_and_view_and_no_close_window_action ... ok
+test nsh_menus::tests::command_ids_are_the_v1_set ... ok
+test nsh_menus::tests::dock_labels_are_stable_unique_and_keep_the_last_key_window_marked ... ok
+test nsh_runtime::tests::restore_acknowledgements_are_per_window_and_idempotent ... ok
+test nsh_runtime::tests::dropping_a_lock_releases_inherited_descriptors ... ok
+test nsh_runtime::tests::restore_matches_targets_even_if_window_order_changes ... ok
+test nsh_host::tests::runtime_publication_reads_current_layout_without_an_appkit_state_event ... ok
+test nsh_host::tests::closing_a_loading_window_rejects_late_layout_registration ... ok
+test nsh_runtime::tests::abandoned_replacement_does_not_remove_running_socket ... ok
+test nsh_runtime::tests::replacement_keeps_old_socket_and_prevents_handoff_race ... ok
+test nsh_runtime::tests::forwards_path_and_reopen_without_creating_a_second_primary ... ok
+test nsh_host::tests::close_flushes_the_last_accepted_edit_before_the_window_goes ... ok
+test nsh_host::tests::failed_flush_keeps_the_snapshot_and_cancel_restores_editing ... ok
+test nsh_runtime::tests::reclaims_stale_socket_but_never_deletes_a_regular_file ... ok
+test nsh_runtime::tests::publishes_and_unregisters_only_in_explicit_fixture_registry ... ok
+test nsh_host::tests::quit_flushes_every_layout_session_and_the_global_state_from_rust ... ok
+test nsh_host::tests::folder_arg_reuses_existing_project ... ok
+test nsh_host::tests::a_vanished_project_root_is_an_error_for_the_caller_not_a_panic ... ok
+test nsh_host::tests::switched_layout_identity_drives_routing_publication_and_close_restore_metadata ... ok
+test nsh_host::tests::no_active_project_registers_the_cwd_fallback ... ok
+
+test result: ok. 29 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+

@@ -1,5 +1,6 @@
 //! One watcher and one sampler for the process, independent of window count.
 use std::{
+    collections::BTreeMap,
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex, OnceLock, PoisonError,
@@ -15,15 +16,16 @@ use notify::{EventKind, RecursiveMode, Watcher};
 
 use crate::{
     backend::{
-        CoreStoreBackend, EngineSessionsBackend, SessionsBackend, StoreBackend, Unavailable,
+        CoreStoreBackend, EngineSessionsBackend, EngineTabsBackend, InvalidInput, SessionsBackend,
+        StoreBackend, TabsBackend, Unavailable,
     },
     dto::{
-        CreateSessionRequest, FolderDto, ProjectDto, ProjectInspectionDto, SearchHitDto,
-        SessionsSnapshot, ShellSessionDto, StoreState,
+        CreateSessionRequest, FolderDto, ProjectDto, ProjectInspectionDto, ProjectRequest,
+        SearchHitDto, SessionsSnapshot, ShellSessionDto, StoreState, TabUpdate, TabsSnapshot,
+        TaskDto, WorktreeDto,
     },
     hub::{Hub, TopicSubscription},
     settings::PreferenceService,
-    tabs::{EngineTabsBackend, TabsBackend, TabsService},
 };
 
 pub const SESSION_SAMPLE_INTERVAL: Duration = Duration::from_secs(2);
@@ -107,123 +109,393 @@ pub(crate) fn io_error(error: impl std::fmt::Display) -> String {
 pub(crate) fn backend_error(error: anyhow::Error) -> String {
     let code = if error.is::<Unavailable>() {
         "unavailable"
+    } else if error.is::<InvalidInput>() {
+        "invalid"
     } else {
         "io"
     };
     format!("{code}: {error}")
 }
 
-/// JS identifiers must be canonical UUIDs, just like the CLI's tab/session IDs.
-pub(crate) fn validate_uuid(id: &str) -> Result<(), String> {
+fn validate_input_id(id: &str) -> anyhow::Result<()> {
     if uuid::Uuid::parse_str(id).is_ok_and(|value| value.to_string() == id) {
         Ok(())
     } else {
-        Err("invalid: expected a canonical UUID".into())
+        Err(InvalidInput("expected a canonical UUID".into()).into())
     }
 }
 
-fn validate_optional_uuid(id: Option<&str>) -> Result<(), String> {
-    id.map(validate_uuid).transpose().map(|_| ())
+fn validate_optional_input_id(id: Option<&str>) -> anyhow::Result<()> {
+    id.map(validate_input_id).transpose().map(|_| ())
+}
+
+fn validate_folder_name(name: &str) -> anyhow::Result<()> {
+    if name.trim().is_empty() {
+        Err(InvalidInput("folder name is empty".into()).into())
+    } else {
+        Ok(())
+    }
+}
+
+pub(crate) fn validate_uuid(id: &str) -> Result<(), String> {
+    validate_input_id(id).map_err(backend_error)
 }
 
 pub struct ProcessService {
     home: PathBuf,
     pub(crate) store: Arc<dyn StoreBackend>,
     pub(crate) sessions: Arc<dyn SessionsBackend>,
-    pub(crate) tabs: Arc<TabsService>,
     pub(crate) preferences: Arc<PreferenceService>,
     store_hub: Arc<Hub<StoreState>>,
-    store_updates: Arc<Mutex<()>>,
     sessions_hub: Arc<Hub<SessionsSnapshot>>,
+    tabs: Arc<dyn TabsBackend>,
+    tabs_hubs: Arc<Mutex<BTreeMap<String, Arc<Hub<TabsSnapshot>>>>>,
+    store_refresh: Arc<Mutex<()>>,
+    sessions_refresh: Arc<Mutex<()>>,
+    has_worktrees: Arc<AtomicBool>,
+    has_shells: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
     wake: SyncSender<()>,
-    dirty: Arc<AtomicU8>,
     worker: Option<JoinHandle<()>>,
     _watcher: notify::RecommendedWatcher,
     last_error: Arc<Mutex<Option<String>>>,
 }
 
 impl ProcessService {
-    async fn mutate_store<T: Send + 'static>(
+    async fn store_write<T: Send + 'static>(
         self: &Arc<Self>,
-        mutation: impl FnOnce(&dyn StoreBackend) -> Result<T, String> + Send + 'static,
+        operation: impl FnOnce(&dyn StoreBackend) -> anyhow::Result<T> + Send + 'static,
     ) -> Result<T, String> {
-        let backend = self.store.clone();
-        let hub = self.store_hub.clone();
-        let updates = self.store_updates.clone();
+        let service = self.clone();
         blocking(move || {
-            let _update = updates.lock().unwrap_or_else(PoisonError::into_inner);
-            let result = mutation(backend.as_ref())?;
-            // Publish before resolving. The watcher also observes this write,
-            // but Hub deduplication prevents a second delivery.
-            hub.publish(backend.snapshot().map_err(backend_error)?);
-            Ok(result)
+            let _guard = service
+                .store_refresh
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let value = operation(service.store.as_ref()).map_err(backend_error)?;
+            // Write and publish are serialized with watcher refreshes, preventing
+            // an older read from overwriting a newer mutation in either window.
+            let snapshot = service.store.snapshot().map_err(backend_error)?;
+            let has_worktrees = !snapshot.worktrees.is_empty();
+            service.store_hub.publish(snapshot);
+            if service.has_worktrees.swap(has_worktrees, Ordering::AcqRel) != has_worktrees {
+                let _ = service.wake.try_send(());
+            }
+            Ok(value)
         })
         .await
     }
 
+    pub async fn default_project_directory(self: &Arc<Self>) -> Result<String, String> {
+        let backend = self.store.clone();
+        blocking(move || backend.default_project_directory().map_err(backend_error)).await
+    }
+
+    pub async fn create_project(
+        self: &Arc<Self>,
+        request: ProjectRequest,
+    ) -> Result<ProjectDto, String> {
+        self.store_write(move |backend| backend.create_project(request))
+            .await
+    }
+    pub async fn create_new_project(
+        self: &Arc<Self>,
+        request: ProjectRequest,
+    ) -> Result<ProjectDto, String> {
+        self.store_write(move |backend| backend.create_new_project(request))
+            .await
+    }
+    pub async fn add_project(
+        self: &Arc<Self>,
+        request: ProjectRequest,
+    ) -> Result<ProjectDto, String> {
+        self.store_write(move |backend| backend.add_project(request))
+            .await
+    }
+    pub async fn use_project(self: &Arc<Self>, selector: String) -> Result<ProjectDto, String> {
+        self.store_write(move |backend| {
+            validate_input_id(&selector)?;
+            backend.use_project(&selector)
+        })
+        .await
+    }
+    pub async fn rename_project(
+        self: &Arc<Self>,
+        selector: String,
+        name: String,
+    ) -> Result<ProjectDto, String> {
+        self.store_write(move |backend| {
+            validate_input_id(&selector)?;
+            backend.rename_project(&selector, &name)
+        })
+        .await
+    }
+    pub async fn set_project_notifications(
+        self: &Arc<Self>,
+        selector: String,
+        enabled: bool,
+    ) -> Result<ProjectDto, String> {
+        self.store_write(move |backend| {
+            validate_input_id(&selector)?;
+            backend.set_project_notifications(&selector, enabled)
+        })
+        .await
+    }
+    pub async fn set_project_orchestrator_wakes(
+        self: &Arc<Self>,
+        selector: String,
+        enabled: bool,
+    ) -> Result<ProjectDto, String> {
+        self.store_write(move |backend| {
+            validate_input_id(&selector)?;
+            backend.set_project_orchestrator_wakes(&selector, enabled)
+        })
+        .await
+    }
     pub async fn create_folder(
         self: &Arc<Self>,
         name: String,
-        parent_id: Option<String>,
+        parent: Option<String>,
     ) -> Result<FolderDto, String> {
-        self.mutate_store(move |backend| {
-            validate_optional_uuid(parent_id.as_deref())?;
-            if name.trim().is_empty() {
-                return Err("invalid: folder name is empty".into());
-            }
-            backend
-                .create_folder(&name, parent_id.as_deref())
-                .map_err(backend_error)
+        self.store_write(move |backend| {
+            validate_optional_input_id(parent.as_deref())?;
+            validate_folder_name(&name)?;
+            backend.create_folder(&name, parent.as_deref())
         })
         .await
     }
     pub async fn rename_folder(
         self: &Arc<Self>,
-        id: String,
+        selector: String,
         name: String,
     ) -> Result<FolderDto, String> {
-        self.mutate_store(move |backend| {
-            validate_uuid(&id)?;
-            if name.trim().is_empty() {
-                return Err("invalid: folder name is empty".into());
-            }
-            backend.rename_folder(&id, &name).map_err(backend_error)
+        self.store_write(move |backend| {
+            validate_input_id(&selector)?;
+            validate_folder_name(&name)?;
+            backend.rename_folder(&selector, &name)
         })
         .await
     }
     pub async fn move_folder(
         self: &Arc<Self>,
-        id: String,
-        parent_id: Option<String>,
+        selector: String,
+        parent: Option<String>,
     ) -> Result<FolderDto, String> {
-        self.mutate_store(move |backend| {
-            validate_uuid(&id)?;
-            validate_optional_uuid(parent_id.as_deref())?;
-            backend
-                .move_folder(&id, parent_id.as_deref())
-                .map_err(backend_error)
+        self.store_write(move |backend| {
+            validate_input_id(&selector)?;
+            validate_optional_input_id(parent.as_deref())?;
+            backend.move_folder(&selector, parent.as_deref())
         })
         .await
     }
-    pub async fn remove_folder(self: &Arc<Self>, id: String) -> Result<(), String> {
-        self.mutate_store(move |backend| {
-            validate_uuid(&id)?;
-            backend.remove_folder(&id).map_err(backend_error)
+    pub async fn remove_folder(self: &Arc<Self>, selector: String) -> Result<(), String> {
+        self.store_write(move |backend| {
+            validate_input_id(&selector)?;
+            backend.remove_folder(&selector)
         })
         .await
     }
     pub async fn move_project_to_folder(
         self: &Arc<Self>,
-        project_id: String,
-        folder_id: Option<String>,
+        selector: String,
+        folder: Option<String>,
     ) -> Result<ProjectDto, String> {
-        self.mutate_store(move |backend| {
-            validate_uuid(&project_id)?;
-            validate_optional_uuid(folder_id.as_deref())?;
-            backend
-                .move_project_to_folder(&project_id, folder_id.as_deref())
-                .map_err(backend_error)
+        self.store_write(move |backend| {
+            validate_input_id(&selector)?;
+            validate_optional_input_id(folder.as_deref())?;
+            backend.move_project_to_folder(&selector, folder.as_deref())
+        })
+        .await
+    }
+    pub async fn sync_worktrees(
+        self: &Arc<Self>,
+        selector: String,
+    ) -> Result<Vec<WorktreeDto>, String> {
+        self.store_write(move |backend| {
+            validate_input_id(&selector)?;
+            backend.sync_worktrees(&selector)
+        })
+        .await
+    }
+    pub async fn refresh_worktrees(
+        self: &Arc<Self>,
+        selector: String,
+    ) -> Result<Vec<WorktreeDto>, String> {
+        self.store_write(move |backend| {
+            validate_input_id(&selector)?;
+            backend.refresh_worktrees(&selector)
+        })
+        .await
+    }
+    pub async fn add_task(
+        self: &Arc<Self>,
+        project: String,
+        title: String,
+        details: String,
+    ) -> Result<TaskDto, String> {
+        self.store_write(move |backend| {
+            validate_input_id(&project)?;
+            backend.add_task(&project, &title, &details)
+        })
+        .await
+    }
+    pub async fn assign_tasks(
+        self: &Arc<Self>,
+        worktree: String,
+        tasks: Vec<String>,
+    ) -> Result<Vec<TaskDto>, String> {
+        self.store_write(move |backend| {
+            validate_input_id(&worktree)?;
+            for id in &tasks {
+                validate_input_id(id)?;
+            }
+            backend.assign_tasks(&worktree, &tasks)
+        })
+        .await
+    }
+    pub async fn unassign_tasks(
+        self: &Arc<Self>,
+        tasks: Vec<String>,
+    ) -> Result<Vec<TaskDto>, String> {
+        self.store_write(move |backend| {
+            for id in &tasks {
+                validate_input_id(id)?;
+            }
+            backend.unassign_tasks(&tasks)
+        })
+        .await
+    }
+    pub async fn set_task_status(
+        self: &Arc<Self>,
+        selector: String,
+        status: String,
+    ) -> Result<TaskDto, String> {
+        if !matches!(status.as_str(), "todo" | "in_progress" | "done") {
+            return Err("invalid: use todo, in_progress, or done".into());
+        }
+        self.store_write(move |backend| {
+            validate_input_id(&selector)?;
+            backend.set_task_status(&selector, &status)
+        })
+        .await
+    }
+
+    async fn session_write<T: Send + 'static>(
+        self: &Arc<Self>,
+        operation: impl FnOnce(&dyn SessionsBackend) -> anyhow::Result<T> + Send + 'static,
+    ) -> Result<T, String> {
+        let service = self.clone();
+        blocking(move || {
+            let _guard = service
+                .sessions_refresh
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let result = operation(service.sessions.as_ref()).map_err(backend_error)?;
+            service.sessions.invalidate_sample();
+            let snapshot = service.sessions.sample().map_err(backend_error)?;
+            let has_shells = !snapshot.sessions.is_empty();
+            service.sessions_hub.publish(snapshot);
+            if service.has_shells.swap(has_shells, Ordering::AcqRel) != has_shells {
+                let _ = service.wake.try_send(());
+            }
+            refresh_tabs(&service.tabs, &service.tabs_hubs, &service.last_error);
+            Ok(result)
+        })
+        .await
+    }
+
+    pub async fn create_session(
+        self: &Arc<Self>,
+        request: CreateSessionRequest,
+    ) -> Result<ShellSessionDto, String> {
+        self.session_write(move |backend| {
+            validate_input_id(&request.project_id)?;
+            validate_optional_input_id(request.worktree_id.as_deref())?;
+            if request.cwd.is_empty() {
+                return Err(InvalidInput("session cwd is empty".into()).into());
+            }
+            backend.create(request)
+        })
+        .await
+    }
+    pub async fn close_session(self: &Arc<Self>, id: String) -> Result<(), String> {
+        self.session_write(move |backend| {
+            validate_input_id(&id)?;
+            backend.close(&id)
+        })
+        .await
+    }
+
+    /// Compatibility names retained for P1 bridge callers and fixtures.
+    pub async fn sessions_create(
+        self: &Arc<Self>,
+        request: CreateSessionRequest,
+    ) -> Result<ShellSessionDto, String> {
+        self.create_session(request).await
+    }
+    pub async fn sessions_close(self: &Arc<Self>, id: String) -> Result<(), String> {
+        self.close_session(id).await
+    }
+
+    pub async fn tabs_update(
+        self: &Arc<Self>,
+        project: String,
+        update: TabUpdate,
+    ) -> Result<TabsSnapshot, String> {
+        let service = self.clone();
+        blocking(move || {
+            validate_project_id(&project)?;
+            let engine_update: riwork_engine::project_tabs::Update = update.clone().into();
+            engine_update
+                .validate()
+                .map_err(|error| format!("invalid: {error}"))?;
+            let mut hubs = service
+                .tabs_hubs
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let result = service
+                .tabs
+                .update(&project, update)
+                .map_err(backend_error)?;
+            if let Some(hub) = hubs.get_mut(&project) {
+                hub.publish(result.clone());
+            }
+            Ok(result)
+        })
+        .await
+    }
+
+    pub async fn subscribe_tabs(
+        self: &Arc<Self>,
+        project: String,
+    ) -> Result<TopicSubscription<TabsSnapshot>, String> {
+        let service = self.clone();
+        blocking(move || {
+            validate_project_id(&project)?;
+            let mut hubs = service
+                .tabs_hubs
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let hub = if let Some(hub) = hubs.get(&project) {
+                hub.clone()
+            } else {
+                let hub = Arc::new(match service.tabs.snapshot(&project) {
+                    Ok(snapshot) => Hub::new(snapshot),
+                    Err(error) => {
+                        *service
+                            .last_error
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner) =
+                            Some(format!("initial tabs snapshot: {error}"));
+                        // Keep the subscription registered through a temporary
+                        // tmux/inventory outage; the process worker retries it.
+                        Hub::pending()
+                    }
+                });
+                hubs.insert(project, hub.clone());
+                hub
+            };
+            Ok(hub.subscribe())
         })
         .await
     }
@@ -259,41 +531,6 @@ impl ProcessService {
         blocking(move || backend.list().map_err(backend_error)).await
     }
 
-    pub async fn sessions_create(
-        self: &Arc<Self>,
-        request: CreateSessionRequest,
-    ) -> Result<ShellSessionDto, String> {
-        let backend = self.sessions.clone();
-        let wake = self.wake.clone();
-        let dirty = self.dirty.clone();
-        blocking(move || {
-            validate_uuid(&request.project_id)?;
-            validate_optional_uuid(request.worktree_id.as_deref())?;
-            if request.cwd.is_empty() {
-                return Err("invalid: session cwd is empty".into());
-            }
-            let session = backend.create(request).map_err(backend_error)?;
-            dirty.fetch_or(SESSIONS | TABS, Ordering::Release);
-            let _ = wake.try_send(());
-            Ok(session)
-        })
-        .await
-    }
-
-    pub async fn sessions_close(self: &Arc<Self>, id: String) -> Result<(), String> {
-        let backend = self.sessions.clone();
-        let wake = self.wake.clone();
-        let dirty = self.dirty.clone();
-        blocking(move || {
-            validate_uuid(&id)?;
-            backend.close(&id).map_err(backend_error)?;
-            dirty.fetch_or(SESSIONS | TABS, Ordering::Release);
-            let _ = wake.try_send(());
-            Ok(())
-        })
-        .await
-    }
-
     /// Blocking constructor and test seam. Production uses initialize(), whose
     /// OnceLock guarantees one instance. Tests pass fixed isolated homes and fakes.
     pub fn with_backends(
@@ -301,12 +538,15 @@ impl ProcessService {
         store: Arc<dyn StoreBackend>,
         sessions: Arc<dyn SessionsBackend>,
     ) -> Result<Arc<Self>> {
-        let tabs = Arc::new(EngineTabsBackend::new(home.clone()));
-        Self::with_tabs_backend(home, store, sessions, tabs)
+        Self::with_all_backends(
+            home.clone(),
+            store,
+            sessions,
+            Arc::new(EngineTabsBackend::new(home)),
+        )
     }
 
-    /// Full adapter seam for tests of shared membership without tmux or chats.
-    pub fn with_tabs_backend(
+    pub fn with_all_backends(
         home: PathBuf,
         store: Arc<dyn StoreBackend>,
         sessions: Arc<dyn SessionsBackend>,
@@ -314,7 +554,6 @@ impl ProcessService {
     ) -> Result<Arc<Self>> {
         riwork_core::paths::create_private_dir(&home)?;
         let home = home.canonicalize()?;
-        let tabs = TabsService::new(tabs);
         let (wake, receive) = mpsc::sync_channel(1);
         let dirty = Arc::new(AtomicU8::new(0));
         let watch_dirty = dirty.clone();
@@ -346,9 +585,9 @@ impl ProcessService {
         // between the initial read and installation of the push source.
         watcher.watch(&home, RecursiveMode::Recursive)?;
         let preferences = PreferenceService::new(home.clone())?;
-        let store_hub = Arc::new(Hub::new(
-            store.snapshot().context("initial store snapshot")?,
-        ));
+        let initial_store = store.snapshot().context("initial store snapshot")?;
+        let has_worktrees = Arc::new(AtomicBool::new(!initial_store.worktrees.is_empty()));
+        let store_hub = Arc::new(Hub::new(initial_store));
         let mut has_shells = false;
         let sessions_hub = Arc::new(match sessions.sample() {
             Ok(snapshot) => {
@@ -361,66 +600,102 @@ impl ProcessService {
                 Hub::pending()
             }
         });
+        let has_shells = Arc::new(AtomicBool::new(has_shells));
         let stop = Arc::new(AtomicBool::new(false));
+        let tabs_hubs = Arc::new(Mutex::new(BTreeMap::new()));
+        let store_refresh = Arc::new(Mutex::new(()));
+        let sessions_refresh = Arc::new(Mutex::new(()));
         let worker_stop = stop.clone();
         let worker_store = store.clone();
         let worker_sessions = sessions.clone();
         let worker_store_hub = store_hub.clone();
-        let store_updates = Arc::new(Mutex::new(()));
-        let worker_store_updates = store_updates.clone();
         let worker_sessions_hub = sessions_hub.clone();
         let worker_error = last_error.clone();
         let worker_tabs = tabs.clone();
+        let worker_tabs_hubs = tabs_hubs.clone();
+        let worker_store_refresh = store_refresh.clone();
+        let worker_sessions_refresh = sessions_refresh.clone();
+        let worker_has_worktrees = has_worktrees.clone();
+        let worker_has_shells = has_shells.clone();
         let worker_preferences = preferences.clone();
-        let worker_dirty = dirty.clone();
         let worker = thread::Builder::new()
             .name("riwork-native-service".into())
             .spawn(move || {
-                let mut next_sample = has_shells.then(|| Instant::now() + SESSION_SAMPLE_INTERVAL);
+                let mut next_sample = None;
+                let mut next_presence = None;
                 while !worker_stop.load(Ordering::Acquire) {
-                    if let Some(deadline) = next_sample {
-                        let _ = receive
-                            .recv_timeout(deadline.saturating_duration_since(Instant::now()));
+                    // The last successful inventories arm separate deadlines.
+                    // Explicit CRUD updates these flags and wakes this receive,
+                    // so scheduling does not depend on filesystem event timing.
+                    let now = Instant::now();
+                    if worker_has_shells.load(Ordering::Acquire) {
+                        next_sample.get_or_insert(now + SESSION_SAMPLE_INTERVAL);
                     } else {
-                        // An empty inventory needs no liveness timer. The home
-                        // watcher wakes us when another process creates a shell;
-                        // shutdown also wakes this blocking receive.
+                        next_sample = None;
+                    }
+                    if worker_has_worktrees.load(Ordering::Acquire) {
+                        next_presence.get_or_insert(now + SESSION_SAMPLE_INTERVAL);
+                    } else {
+                        next_presence = None;
+                    }
+                    let deadline = next_sample.into_iter().chain(next_presence).min();
+                    if let Some(deadline) = deadline {
+                        let _ = receive.recv_timeout(deadline.saturating_duration_since(now));
+                    } else {
+                        // An empty home has no periodic liveness or presence
+                        // work. Watcher events, CRUD transitions and shutdown
+                        // still wake this blocking receive.
                         let _ = receive.recv();
                     }
                     if worker_stop.load(Ordering::Acquire) {
                         break;
                     }
-                    let flags = worker_dirty.swap(0, Ordering::AcqRel);
+                    let flags = dirty.swap(0, Ordering::AcqRel);
                     if flags & SETTINGS != 0 {
                         worker_preferences.refresh();
                     }
-                    if flags & STORE != 0 {
-                        let _update = worker_store_updates
+                    let now = Instant::now();
+                    let sample_due = next_sample.is_some_and(|deadline| now >= deadline);
+                    let presence_due = next_presence.is_some_and(|deadline| now >= deadline);
+                    if flags & STORE != 0 || presence_due {
+                        let _guard = worker_store_refresh
                             .lock()
                             .unwrap_or_else(PoisonError::into_inner);
-                        match worker_store.snapshot() {
-                            Ok(snapshot) => worker_store_hub.publish(snapshot),
+                        let snapshot = if presence_due {
+                            worker_store.refresh_presence()
+                        } else {
+                            worker_store.snapshot()
+                        };
+                        match snapshot {
+                            Ok(snapshot) => {
+                                worker_has_worktrees
+                                    .store(!snapshot.worktrees.is_empty(), Ordering::Release);
+                                worker_store_hub.publish(snapshot);
+                            }
                             Err(error) => {
                                 *worker_error.lock().unwrap_or_else(PoisonError::into_inner) =
                                     Some(format!("store snapshot: {error}"))
                             }
                         }
-                    }
-                    if flags & TABS != 0 {
-                        if let Err(error) = worker_tabs.refresh() {
-                            *worker_error.lock().unwrap_or_else(PoisonError::into_inner) =
-                                Some(error);
+                        if presence_due {
+                            // Session watcher wakes may reset their fallback,
+                            // but cannot postpone worktree presence forever.
+                            next_presence = worker_has_worktrees
+                                .load(Ordering::Acquire)
+                                .then(|| Instant::now() + SESSION_SAMPLE_INTERVAL);
                         }
                     }
-                    if flags & SESSIONS != 0
-                        || next_sample.is_some_and(|deadline| Instant::now() >= deadline)
-                    {
+                    if flags & SESSIONS != 0 || sample_due {
+                        let _guard = worker_sessions_refresh
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner);
                         if flags & SESSIONS != 0 {
                             worker_sessions.invalidate_sample();
                         }
                         match worker_sessions.sample() {
                             Ok(snapshot) => {
-                                has_shells = !snapshot.sessions.is_empty();
+                                worker_has_shells
+                                    .store(!snapshot.sessions.is_empty(), Ordering::Release);
                                 worker_sessions_hub.publish(snapshot);
                             }
                             Err(error) => {
@@ -428,10 +703,19 @@ impl ProcessService {
                                     Some(format!("session sample: {error}"))
                             }
                         }
-                        // Only this thread performs the two-second tmux fallback,
-                        // and only while the last successful inventory has shells.
-                        // A transient read failure preserves that last known state.
-                        next_sample = has_shells.then(|| Instant::now() + SESSION_SAMPLE_INTERVAL);
+                        // Only nonempty shell inventories need a liveness
+                        // fallback. A transient failure keeps the last known
+                        // state, as in M5; empty inventories rely on the watcher.
+                        next_sample = worker_has_shells
+                            .load(Ordering::Acquire)
+                            .then(|| Instant::now() + SESSION_SAMPLE_INTERVAL);
+                    }
+                    // Presence alone is not a session inventory trigger. Its
+                    // durable branch/discovery writes raise STORE watcher
+                    // events; a quiet presence check must not query tmux
+                    // indirectly through an empty tab/session inventory.
+                    if flags & (TABS | SESSIONS | STORE) != 0 || sample_due {
+                        refresh_tabs(&worker_tabs, &worker_tabs_hubs, &worker_error);
                     }
                 }
             })?;
@@ -439,18 +723,31 @@ impl ProcessService {
             home,
             store,
             sessions,
-            tabs,
             preferences,
             store_hub,
-            store_updates,
             sessions_hub,
+            tabs,
+            tabs_hubs,
+            store_refresh,
+            sessions_refresh,
+            has_worktrees,
+            has_shells,
             stop,
             wake,
-            dirty,
             worker: Some(worker),
             _watcher: watcher,
             last_error,
         }))
+    }
+
+    /// Compatibility constructor: all versions share the same topic coordinator.
+    pub fn with_tabs_backend(
+        home: PathBuf,
+        store: Arc<dyn StoreBackend>,
+        sessions: Arc<dyn SessionsBackend>,
+        tabs: Arc<dyn TabsBackend>,
+    ) -> Result<Arc<Self>> {
+        Self::with_all_backends(home, store, sessions, tabs)
     }
 
     pub fn home(&self) -> &Path {
@@ -459,10 +756,6 @@ impl ProcessService {
 
     pub fn preferences(&self) -> &Arc<PreferenceService> {
         &self.preferences
-    }
-
-    pub fn tabs(&self) -> &Arc<TabsService> {
-        &self.tabs
     }
 
     /// For host diagnostics, called on a background thread.
@@ -500,21 +793,47 @@ impl Drop for ProcessService {
 
 fn relevant(path: &Path, home: &Path) -> u8 {
     if path == home.join("state.json") {
-        STORE | TABS
+        STORE
     } else if path == home.join("settings.json") {
         SETTINGS
     } else if path == home.join("sessions.json")
         || path == home.join("orchestrator-wakes.json")
         || path.starts_with(home.join("agent-activity"))
     {
-        SESSIONS | TABS
+        SESSIONS
     } else if path.starts_with(home.join("project-tabs"))
-        && path.extension().is_some_and(|ext| ext == "json")
+        && path
+            .extension()
+            .is_some_and(|extension| extension == "json")
         || path.starts_with(home.join("chats"))
-            && path.file_name().is_some_and(|name| name == "info.json")
     {
         TABS
     } else {
         0
     }
+}
+
+pub(crate) fn validate_project_id(project: &str) -> Result<(), String> {
+    validate_uuid(project)
+}
+
+fn refresh_tabs(
+    backend: &Arc<dyn TabsBackend>,
+    hubs: &Mutex<BTreeMap<String, Arc<Hub<TabsSnapshot>>>>,
+    error: &Mutex<Option<String>>,
+) {
+    let mut hubs = hubs.lock().unwrap_or_else(PoisonError::into_inner);
+    hubs.retain(|project, hub| {
+        if !hub.has_subscribers() {
+            return false;
+        }
+        match backend.snapshot(project) {
+            Ok(snapshot) => hub.publish(snapshot),
+            Err(failure) => {
+                *error.lock().unwrap_or_else(PoisonError::into_inner) =
+                    Some(format!("tabs snapshot: {failure}"))
+            }
+        }
+        true
+    });
 }

@@ -1,0 +1,6 @@
+    Blocking waiting for file lock on package cache
+   Compiling riwork-nsh-workspace v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p1-fix-native/apps/riwork)
+   Compiling riwork-desktop v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p1-fix-native/crates/riwork-desktop)
+   Compiling riwork-nsh-native v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p1-fix-native/crates/riwork-nsh-native)
+    Finished `test` profile [unoptimized] target(s) in 5.95s
+     Running unittests src/nsh_main.rs (/private/tmp/riwork-w3-c62ea465/target/debug/deps/riwork-3cf7cf86bc5c2e19)

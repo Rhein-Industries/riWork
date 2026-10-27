@@ -487,9 +487,7 @@ impl Host {
                     .unwrap_or(window.normal);
                 runtime.bounds = Some(runtime_geometry(window.normal, screen));
                 runtime.mode = mode(&window.window);
-                if let Some(layout) = host_layouts::lookup(id) {
-                    runtime.layout = Some(layout.project_layout());
-                }
+                apply_current_layout(id, &mut runtime);
                 (id.clone(), runtime)
             })
             .collect()
@@ -626,7 +624,9 @@ impl Host {
                 } else if route.is_some() || forwarded {
                     self.windows
                         .iter()
-                        .filter(|(_, w)| w.runtime.project_id == prepared.runtime.project_id)
+                        .filter(|(id, w)| {
+                            current_project_id(id, &w.runtime) == prepared.runtime.project_id
+                        })
                         .max_by_key(|(_, w)| w.focus_serial)
                         .map(|(id, _)| id.clone())
                 } else {
@@ -780,10 +780,10 @@ impl Host {
                 let mut options = OpenOptions::project(None);
                 options.project_id = self
                     .windows
-                    .values()
-                    .filter(|w| !w.runtime.is_global())
-                    .max_by_key(|w| w.focus_serial)
-                    .and_then(|w| w.runtime.project_id.clone());
+                    .iter()
+                    .filter(|(_, w)| !w.runtime.is_global())
+                    .max_by_key(|(_, w)| w.focus_serial)
+                    .and_then(|(id, w)| current_project_id(id, &w.runtime));
                 let _ = self.service.send(Service::Open(options, None, None, false));
             }
             command => {
@@ -820,7 +820,7 @@ impl Host {
                 let _ = self.service.send(Service::Open(options, Some(call), Some(data["step"].clone()), false));
             }
             "window.list" => call.resolve(Value::Array(self.windows.iter().map(|(id,w)| json!({
-                "windowId":id,"kind":w.runtime.kind,"projectId":w.runtime.project_id,
+                "windowId":id,"kind":w.runtime.kind,"projectId":current_project_id(id, &w.runtime),
                 "title":w.window.title().to_string(),"key":w.window.isKeyWindow(),"mode":mode(&w.window)})).collect())),
             "window.placement" => {
                 let w = &self.windows[&id];
@@ -1110,19 +1110,58 @@ fn startup(args: Vec<String>) -> Result<Option<Startup>, String> {
         runtime,
     }))
 }
-/// Refresh layout state at every publish, including heartbeats without a window
-/// geometry event. Rust owns the snapshot; no JS request is part of this path.
-fn current_layouts(windows: &[(String, RuntimeWindow)]) -> Vec<RuntimeWindow> {
-    windows
+/// The registered layout follows project switches without an AppKit event or
+/// a second UI-to-host protocol. Loading windows retain their launch identity.
+fn current_project_id(id: &str, window: &RuntimeWindow) -> Option<String> {
+    if window.is_global() {
+        return None;
+    }
+    host_layouts::lookup(id)
+        .map(|layout| layout.project_id())
+        .or_else(|| window.project_id.clone())
+}
+
+fn apply_current_layout(id: &str, window: &mut RuntimeWindow) {
+    if !window.is_global()
+        && let Some(layout) = host_layouts::lookup(id)
+    {
+        let (project_id, project) = layout.project_snapshot();
+        window.project_id = Some(project_id);
+        window.layout = Some(project);
+    }
+}
+
+/// Refresh identity and layout at every publish, including heartbeats without
+/// a geometry event. This capture runs on the service thread.
+fn current_layouts(home: &Path, windows: &[(String, RuntimeWindow)]) -> Vec<RuntimeWindow> {
+    let mut windows: Vec<_> = windows
         .iter()
         .map(|(id, window)| {
             let mut window = window.clone();
-            if let Some(layout) = host_layouts::lookup(id) {
-                window.layout = Some(layout.project_layout());
-            }
+            apply_current_layout(id, &mut window);
             window
         })
-        .collect()
+        .collect();
+    refresh_project_paths(home, &mut windows);
+    windows
+}
+
+/// Runtime snapshots also need the switched project's root for restoration.
+/// This helper is called only by the service worker, never AppKit/engine code.
+fn refresh_project_paths(home: &Path, windows: &mut [RuntimeWindow]) {
+    if let Ok(store) = Store::open(home.to_path_buf())
+        && let Ok(state) = store.snapshot()
+    {
+        for window in windows.iter_mut().filter(|window| !window.is_global()) {
+            if let Some(project) = state
+                .projects
+                .iter()
+                .find(|project| Some(project.id.as_str()) == window.project_id.as_deref())
+            {
+                window.path = project.root.clone();
+            }
+        }
+    }
 }
 
 /// Retain the in-process handles across the main/service-thread handoff. The
@@ -1155,7 +1194,9 @@ impl ClosingWindows {
         let mut windows = self.windows.clone();
         for (id, window) in &mut windows {
             if let Some((_, layout)) = self.layouts.iter().find(|(candidate, _)| candidate == id) {
-                window.layout = Some(layout.project_layout());
+                let (project_id, project) = layout.project_snapshot();
+                window.project_id = Some(project_id);
+                window.layout = Some(project);
             }
             if let Some(global) = &window.global {
                 if let Err(error) = GlobalWindowStore::at(home).save(global) {
@@ -1163,8 +1204,10 @@ impl ClosingWindows {
                 }
             }
         }
+        let mut windows: Vec<_> = windows.into_iter().map(|(_, window)| window).collect();
+        refresh_project_paths(home, &mut windows);
         if errors.is_empty() {
-            Ok(windows.into_iter().map(|(_, window)| window).collect())
+            Ok(windows)
         } else {
             Err(errors.join("; "))
         }
@@ -1220,7 +1263,7 @@ fn services(mut startup: Startup, rx: mpsc::Receiver<Service>, tx: mpsc::Sender<
             Ok(Service::Ready(id)) => {
                 match startup
                     .runtime
-                    .mark_restore_ready(&id, current_layouts(&snapshots))
+                    .mark_restore_ready(&id, current_layouts(&startup.home, &snapshots))
                 {
                     Ok(done) => confirmed |= done,
                     Err(e) => send(Main::Error(e)),
@@ -1279,7 +1322,10 @@ fn services(mut startup: Startup, rx: mpsc::Receiver<Service>, tx: mpsc::Sender<
         }
         let now = Instant::now();
         if runtime_tick.is_due(now) {
-            match startup.runtime.try_publish(current_layouts(&snapshots)) {
+            match startup
+                .runtime
+                .try_publish(current_layouts(&startup.home, &snapshots))
+            {
                 Ok(completed) => runtime_tick.published(now, completed),
                 Err(e) => eprintln!("riwork: {e}"),
             }
@@ -1656,6 +1702,61 @@ mod tests {
         let mut edited = layout.project_layout();
         edited.selected_task_id = Some("newest".into());
         layout.publish(edited.clone());
-        assert_eq!(current_layouts(&windows)[0].layout.as_ref(), Some(&edited));
+        assert_eq!(
+            current_layouts(&fixture.root, &windows)[0].layout.as_ref(),
+            Some(&edited)
+        );
+    }
+
+    #[test]
+    fn switched_layout_identity_drives_routing_publication_and_close_restore_metadata() {
+        use riwork_nsh_workspace::persistence::{LayoutPersistence, SaveMode};
+
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let _entered = runtime.enter();
+        let fixture = LayoutFixture::new();
+        let store = Store::open(fixture.root.clone()).unwrap();
+        let original = store
+            .create_project(fixture.root.join("original"), Some("Original"), false)
+            .unwrap();
+        let destination = store
+            .create_project(fixture.root.join("destination"), Some("Destination"), false)
+            .unwrap();
+        let id = format!("switched-{}", Uuid::new_v4());
+        // Simulate the state after LayoutSession switched its registered writer:
+        // AppKit still holds the original launch RuntimeWindow.
+        let loaded = LayoutPersistence::open(
+            &fixture.root,
+            &destination.id,
+            None,
+            SaveMode::LegacyChatState,
+        )
+        .unwrap();
+        let layout =
+            host_layouts::registration(&id, Arc::new(loaded.persistence), loaded.project).unwrap();
+        let mut launched = fixture.window(&id);
+        launched.1.project_id = Some(original.id.clone());
+        launched.1.path = original.root;
+        assert_eq!(
+            current_project_id(&id, &launched.1),
+            Some(destination.id.clone())
+        );
+        assert_ne!(current_project_id(&id, &launched.1), Some(original.id));
+        let published = current_layouts(&fixture.root, &[launched.clone()]);
+        assert_eq!(
+            published[0].project_id.as_deref(),
+            Some(destination.id.as_str())
+        );
+        assert_eq!(published[0].path, destination.root);
+        assert_eq!(published[0].layout.as_ref(), Some(&layout.project_layout()));
+        let closing = ClosingWindows::new(vec![launched]);
+        let restored = closing.flush(&fixture.root).unwrap();
+        assert_eq!(
+            restored[0].project_id.as_deref(),
+            Some(destination.id.as_str())
+        );
+        assert_eq!(restored[0].path, destination.root);
+        assert_eq!(restored[0].layout.as_ref(), Some(&layout.project_layout()));
+        closing.cancel();
     }
 }

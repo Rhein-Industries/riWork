@@ -12,8 +12,8 @@ export const STATUS_METRICS = { height: 22, text: 9, nativePadding: 12, colorful
 interface Props {
   session: LayoutSession;
   snapshot: () => WorkspaceSnapshot;
-  projectLabel: string;
-  projectId?: string;
+  projectLabel: string | (() => string);
+  projectId?: string | (() => string);
   settings?: () => SettingsDto | null;
   theme?: () => InterfaceTheme;
   action: (run: () => unknown) => void;
@@ -23,6 +23,8 @@ interface Props {
 
 export function StatusBar(props: Props) {
   const theme = props.theme ?? (() => DEFAULT_THEME);
+  const projectId = () => typeof props.projectId === "function" ? props.projectId() : props.projectId ?? props.snapshot().projectId;
+  const projectLabel = () => typeof props.projectLabel === "function" ? props.projectLabel() : props.projectLabel;
   const settings = () => props.settings?.()?.statusBar ?? { enabled: true, items: DEFAULT_STATUS_ITEMS };
   const menu = signal<"layout" | "global" | null>(null);
   const sessions = signal<ShellSessionDto[] | null>(null);
@@ -71,10 +73,10 @@ export function StatusBar(props: Props) {
   function item(kind: string) {
     const key = kind.replaceAll("_", "-");
     const current = sessions()?.find((session) => session.id === selectedSession());
-    const projectName = store()?.projects.find((project) => project.id === props.projectId)?.name ?? props.projectLabel;
+    const projectName = store()?.projects.find((project) => project.id === projectId())?.name ?? projectLabel();
     const worktreeId = props.snapshot().selectedWorktreeId ?? current?.worktreeId;
     const branch = store()?.worktrees.find((worktree) => worktree.id === worktreeId)?.branch ?? "No worktree";
-    const live = sessions()?.filter((session) => session.alive && session.projectId === props.projectId).length ?? "—";
+    const live = sessions()?.filter((session) => session.alive && session.projectId === projectId()).length ?? "—";
     const labels: Record<string, string> = {
       project: projectName, worktree: branch, agent_activity: "Agents · —", live_sessions: `${live} ${theme().native ? "live" : "LIVE"}`,
       resources: "CPU — RAM —", usage: "CODEX · ACCOUNT UNKNOWN", codex_account: "DEFAULT (APP) · Email unknown", session_id: selectedSession()?.slice(0, 8) ?? "",

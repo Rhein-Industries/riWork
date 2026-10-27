@@ -13,6 +13,7 @@ serde_json = "1"
 fs2 = "0.4"
 arc-swap = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
+uuid = "1"
 
 [dev-dependencies]
 tempfile = "3"
