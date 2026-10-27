@@ -5,9 +5,13 @@
 //! service; neither subscription registration nor delivery does domain I/O on an
 //! engine thread. See the crate README for lifecycle and test instructions.
 pub mod backend;
+pub mod chrome;
 pub mod dto;
+pub mod host_flush;
 pub mod hub;
 pub mod service;
+#[cfg(feature = "test-support")]
+pub mod testing;
 
 use futures_util::future::{AbortHandle, Abortable};
 use nsh_core::{element::Cleanup, prelude::*};
@@ -19,6 +23,7 @@ pub use service::{ProcessService, initialize};
 #[native_module("riwork/native")]
 fn native(registry: &mut Registry) {
     registry
+        .module::<chrome::Appearance>()
         .module::<Store>()
         .module::<Sessions>()
         .class::<Subscription>();
@@ -146,7 +151,7 @@ mod tests {
         let modules = registry.module_specs();
         assert_eq!(
             modules.iter().map(|module| module.name).collect::<Vec<_>>(),
-            ["Layouts", "Sessions", "Store"]
+            ["Appearance", "Layouts", "Sessions", "Store"]
         );
         for module in modules {
             for function in &module.functions {

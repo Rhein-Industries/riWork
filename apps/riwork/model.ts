@@ -66,6 +66,18 @@ export function createTitleUpdater(setTitle: (title: string) => void): (title: s
   };
 }
 
+/** Wait for project metadata, then announce only actual Dock-label changes. */
+export function createDockUpdater(post: (info: { project: string; branch: string | null }) => void) {
+  let previous: string | undefined;
+  return (resolved: boolean, project: string, branch: string | null = null) => {
+    if (!resolved) return;
+    const identity = JSON.stringify([project, branch]);
+    if (identity === previous) return;
+    previous = identity;
+    post({ project, branch });
+  };
+}
+
 const PANEL_TITLES: Record<string, string> = {
   projects: "Projects",
   worktrees: "Worktrees",

@@ -1,5 +1,5 @@
 {
   "name": "RiWork headless workspace fixture",
   "id": "dev.riwork.test.workspace",
-  "capabilities": { "host": ["app.fixture.state", "app.fixture.flushed"] }
+  "capabilities": { "host": ["app.fixture.state", "app.fixture.flushed", "window.setDockInfo", "window.open"] }
 }

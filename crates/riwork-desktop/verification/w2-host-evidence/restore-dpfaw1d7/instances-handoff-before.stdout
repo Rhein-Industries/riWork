@@ -1,0 +1,263 @@
+[
+  {
+    "id": "97047540-9c33-45f0-8db2-42f8eed03cd3",
+    "pid": 55232,
+    "uid": 501,
+    "started_token": "1793138830.097172",
+    "executable": "/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/riwork",
+    "state_home": "/private/tmp/rww2-w5fd_qme/home",
+    "windows": [
+      {
+        "project_id": null,
+        "path": "/private/tmp/rww2-w5fd_qme/home/global-window",
+        "bounds": {
+          "x": 180.0,
+          "y": 180.0,
+          "width": 1100.0,
+          "height": 760.0
+        },
+        "mode": "windowed",
+        "layout": null,
+        "focus_mode": false,
+        "focus_centered": false,
+        "kind": "global",
+        "global": {
+          "view": "chat",
+          "show_quiet": false,
+          "dashboard_filter": "needs_you",
+          "dashboard_sort": "priority",
+          "window_size": {
+            "width": 1100.0,
+            "height": 760.0
+          }
+        }
+      },
+      {
+        "project_id": "0968f05d-098b-4cfc-9abc-a0bfabad765d",
+        "path": "/private/tmp/rww2-w5fd_qme/repos/alpha",
+        "bounds": {
+          "x": 100.0,
+          "y": 100.0,
+          "width": 1000.0,
+          "height": 700.0
+        },
+        "mode": "windowed",
+        "layout": {
+          "layout": {
+            "split": {
+              "axis": "side_by_side",
+              "ratio": 0.27,
+              "first": {
+                "pane": 1
+              },
+              "second": {
+                "pane": 2
+              }
+            }
+          },
+          "panes": {
+            "1": {
+              "tabs": [
+                {
+                  "kind": "panel",
+                  "panel": "projects"
+                },
+                {
+                  "kind": "panel",
+                  "panel": "files"
+                },
+                {
+                  "kind": "panel",
+                  "panel": "worktrees"
+                },
+                {
+                  "kind": "panel",
+                  "panel": "tasks"
+                },
+                {
+                  "kind": "panel",
+                  "panel": "shells"
+                }
+              ],
+              "active_tab_key": "panel:projects",
+              "tab_edge": "top",
+              "shell_ids": [],
+              "active_shell_id": null
+            },
+            "2": {
+              "tabs": [
+                {
+                  "kind": "shell",
+                  "shell_id": "00000000-0000-4000-8000-000000000001"
+                },
+                {
+                  "kind": "shell",
+                  "shell_id": "00000000-0000-4000-8000-000000000002"
+                },
+                {
+                  "kind": "chat",
+                  "chat_id": "00000000-0000-4000-8000-000000000101"
+                },
+                {
+                  "kind": "remote_shell",
+                  "desktop_id": "fixture-remote",
+                  "shell_id": "00000000-0000-4000-8000-000000000102"
+                }
+              ],
+              "active_tab_key": "shell:00000000-0000-4000-8000-000000000002",
+              "tab_edge": "top",
+              "shell_ids": [
+                "00000000-0000-4000-8000-000000000001",
+                "00000000-0000-4000-8000-000000000002"
+              ],
+              "active_shell_id": "00000000-0000-4000-8000-000000000002"
+            }
+          },
+          "active_pane": 2,
+          "locked_panes": null,
+          "panels_initialized": true,
+          "detached_shell_ids": [],
+          "selected_worktree_id": null,
+          "selected_task_id": null,
+          "sidebar_visible": true,
+          "window_size": {
+            "width": 1000.0,
+            "height": 700.0
+          },
+          "main_pane": 2
+        },
+        "focus_mode": false,
+        "focus_centered": false
+      },
+      {
+        "project_id": "3d898dec-d1cc-451b-82f3-978a17bdc952",
+        "path": "/private/tmp/rww2-w5fd_qme/repos/beta",
+        "bounds": {
+          "x": 140.0,
+          "y": 140.0,
+          "width": 1000.0,
+          "height": 700.0
+        },
+        "mode": "maximized",
+        "layout": {
+          "layout": {
+            "split": {
+              "axis": "side_by_side",
+              "ratio": 0.3,
+              "first": {
+                "pane": 1
+              },
+              "second": {
+                "split": {
+                  "axis": "stacked",
+                  "ratio": 0.62,
+                  "first": {
+                    "pane": 2
+                  },
+                  "second": {
+                    "split": {
+                      "axis": "stacked",
+                      "ratio": 0.5,
+                      "first": {
+                        "pane": 3
+                      },
+                      "second": {
+                        "pane": 4
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "panes": {
+            "1": {
+              "tabs": [
+                {
+                  "kind": "panel",
+                  "panel": "projects"
+                },
+                {
+                  "kind": "panel",
+                  "panel": "files"
+                },
+                {
+                  "kind": "panel",
+                  "panel": "worktrees"
+                },
+                {
+                  "kind": "panel",
+                  "panel": "tasks"
+                },
+                {
+                  "kind": "panel",
+                  "panel": "shells"
+                }
+              ],
+              "active_tab_key": "panel:projects",
+              "tab_edge": "top",
+              "shell_ids": [],
+              "active_shell_id": null
+            },
+            "2": {
+              "tabs": [
+                {
+                  "kind": "shell",
+                  "shell_id": "00000000-0000-4000-8000-000000000301"
+                }
+              ],
+              "active_tab_key": "shell:00000000-0000-4000-8000-000000000301",
+              "tab_edge": "top",
+              "shell_ids": [
+                "00000000-0000-4000-8000-000000000301"
+              ],
+              "active_shell_id": "00000000-0000-4000-8000-000000000301"
+            },
+            "3": {
+              "tabs": [
+                {
+                  "kind": "shell",
+                  "shell_id": "00000000-0000-4000-8000-000000000302"
+                }
+              ],
+              "active_tab_key": "shell:00000000-0000-4000-8000-000000000302",
+              "tab_edge": "top",
+              "shell_ids": [
+                "00000000-0000-4000-8000-000000000302"
+              ],
+              "active_shell_id": "00000000-0000-4000-8000-000000000302"
+            },
+            "4": {
+              "tabs": [
+                {
+                  "kind": "shell",
+                  "shell_id": "00000000-0000-4000-8000-000000000303"
+                }
+              ],
+              "active_tab_key": "shell:00000000-0000-4000-8000-000000000303",
+              "tab_edge": "top",
+              "shell_ids": [
+                "00000000-0000-4000-8000-000000000303"
+              ],
+              "active_shell_id": "00000000-0000-4000-8000-000000000303"
+            }
+          },
+          "active_pane": 3,
+          "locked_panes": [
+            1
+          ],
+          "panels_initialized": true,
+          "detached_shell_ids": [],
+          "selected_worktree_id": null,
+          "selected_task_id": null,
+          "sidebar_visible": true,
+          "window_size": null,
+          "main_pane": 2
+        },
+        "focus_mode": true,
+        "focus_centered": false
+      }
+    ],
+    "updated_at": 1793138833
+  }
+]

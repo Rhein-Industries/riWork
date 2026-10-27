@@ -16,6 +16,7 @@ fn main() {
     match riwork_cli::cli::run_cli(&args) {
         Ok(true) => return,
         Ok(false) => {}
+        Err(_) if nsh_startup::missing_folder_request(&args) => {}
         Err(error) => exit(error),
     }
     nsh_startup::scrub_gui_child_ids();

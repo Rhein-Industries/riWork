@@ -84,3 +84,34 @@ host snapshots use the injected process home and persist through LayoutStore.
 Fixtures inject session data;
 they never start tmux, launch app windows or touch live RiWork data. Chat and the
 other contract modules are left for their port phases; no chat feed is touched.
+
+Acceptance fixtures are available only with `test-support`. Both scenarios use
+the production Store, LayoutStore, TabStore, settings and global-window writers.
+The deliberately damaged Beta tabs file is the engine's corruption-test literal.
+Session identities and layout shapes are fixed; Store-generated project UUIDs
+and timestamps are reported in `home/fixture-manifest.json` and on stdout.
+
+```sh
+FIX="$(mktemp -d /tmp/riwork-p1-fixture.XXXXXX)"
+cargo run --locked --offline -p riwork-nsh-native --features test-support \
+  --example p1_fixture_home -- --scenario p1-basic --out "$FIX/home"
+```
+
+`p1-restore` additionally creates a production-format private ticket under
+`$FIX/run/restores`, for Alpha windowed, Beta maximized in focus mode, and Global.
+Pass `--executable /absolute/path/to/riwork` to bind it to the host being tested;
+without that option the example selects the sibling host binary in its Cargo
+profile directory. Start the host within five minutes, using the manifest's
+`restore_ticket` as `RIWORK_RESTORE_TICKET` and its `runtime` as
+`RIWORK_RUNTIME_DIR`. This writer neither registers a GUI nor launches one; the
+desktop performs the ordinary executable, expiry and restore-ready checks.
+
+A host built with `--features riwork-nsh-native/test-support` may set
+`RIWORK_NSH_FAKE_SESSIONS="$FIX/home/fake-sessions.json"`. It then reads only the
+fixture session inventory and never opens tmux. The path must resolve inside its
+fixed home. The default build does not compile the fake backend or read this
+variable. `testing::ManualClock` allows tests to advance the delayed session
+without sleeping; fixture apps use elapsed time. Both scenarios refuse an
+existing home, repos or runtime directory and require an explicit temporary
+root. Keep `HOME`, `TMPDIR`, `TMUX_TMPDIR`, and `XDG_CONFIG_HOME` isolated as in
+the acceptance recipe before launching the fixture app.

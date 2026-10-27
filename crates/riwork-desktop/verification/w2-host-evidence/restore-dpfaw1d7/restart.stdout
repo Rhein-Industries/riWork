@@ -1,0 +1,23 @@
+{
+  "reload": {
+    "request_id": "4ed124eb-b932-4079-9aee-6394fbf3d8a3",
+    "replacement_executable": "/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/riwork",
+    "requested": 1,
+    "reloaded": 1,
+    "pending": 0,
+    "failed": 0,
+    "unreadable_registrations": 0,
+    "instances": [
+      {
+        "instance_id": "97047540-9c33-45f0-8db2-42f8eed03cd3",
+        "pid": 55232,
+        "state_home": "/private/tmp/rww2-w5fd_qme/home",
+        "window_count": 3,
+        "state": "reloaded",
+        "new_pid": 57727,
+        "message": "Replacement GUI restored its windows; running shells were preserved."
+      }
+    ]
+  },
+  "session": null
+}

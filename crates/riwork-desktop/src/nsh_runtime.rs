@@ -5,7 +5,7 @@
 
 use fs2::FileExt;
 use riwork_engine::runtime::{
-    ReloadLaunch, ReloadRequest, RestoreSnapshot, RestoreWatchdog, RuntimeManager,
+    ReloadLaunch, ReloadRequest, ReloadState, RestoreSnapshot, RestoreWatchdog, RuntimeManager,
     RuntimeRegistration, RuntimeWindow,
 };
 use serde::{Deserialize, Serialize};
@@ -153,6 +153,19 @@ impl DesktopInstance {
             let _ = fs::remove_file(self.socket_path());
             self.socket_owned = false;
         }
+    }
+
+    pub fn resume_forwarding(&mut self) -> Result<(), String> {
+        if self.lock.is_none() {
+            return Err("Cannot resume forwarding without desktop ownership".into());
+        }
+        // Quit/restart failure notifications can overlap. An already resumed
+        // listener still owns its socket and any acknowledged queued opens.
+        if self.listener_thread.is_some() {
+            return Ok(());
+        }
+        self.stop.store(false, Ordering::Release);
+        self.start_listener()
     }
 
     /// Call only after `mark_restore_ready` has confirmed every restored
@@ -335,6 +348,7 @@ pub struct HostRuntime {
     restore: Option<RestoreSnapshot>,
     barrier: RestoreBarrier,
     watchdog: Option<RestoreWatchdog>,
+    restore_started: Instant,
 }
 
 #[derive(Default)]
@@ -415,6 +429,7 @@ impl HostRuntime {
             restore,
             barrier: RestoreBarrier::default(),
             watchdog,
+            restore_started: Instant::now(),
         })
     }
 
@@ -436,6 +451,16 @@ impl HostRuntime {
         let Some(snapshot) = &self.restore else {
             return Ok(false);
         };
+        confirmation_deadline(self.restore_started, Instant::now())?;
+        // New windows opened during restoration are not part of its barrier.
+        if !self
+            .barrier
+            .expected
+            .as_ref()
+            .is_some_and(|ids| ids.contains(window_id))
+        {
+            return Ok(false);
+        }
         if !self.barrier.mark_ready(window_id)? {
             return Ok(false);
         }
@@ -480,8 +505,48 @@ impl HostRuntime {
         self.registration.pending_reload()
     }
 
+    pub fn check_restore_deadline(&self) -> Result<(), String> {
+        if self.restore.is_some() {
+            confirmation_deadline(self.restore_started, Instant::now())?;
+        }
+        Ok(())
+    }
+
+    pub fn restore_windows(
+        &self,
+        windows: &[(String, RuntimeWindow)],
+    ) -> Vec<(String, RuntimeWindow)> {
+        windows
+            .iter()
+            .filter(|(id, _)| {
+                self.barrier
+                    .expected
+                    .as_ref()
+                    .is_some_and(|ids| ids.contains(id))
+            })
+            .cloned()
+            .collect()
+    }
+
+    pub fn queue_restart(&self) -> Result<(), String> {
+        let executable = std::env::current_exe().map_err(|e| e.to_string())?;
+        let report = self.manager.reload_all(&executable)?;
+        if report.requested == 0 {
+            return Err(if report
+                .instances
+                .iter()
+                .any(|instance| instance.state == ReloadState::Busy)
+            {
+                "conflict: a reload is already in progress"
+            } else {
+                "unavailable: no running GUI accepted the restart request"
+            }
+            .into());
+        }
+        Ok(())
+    }
+
     /// The caller must flush Rust draft/layout services before invoking this.
-    #[allow(dead_code)] // Phase 1b keeps restart unavailable until P1a supplies these flush hooks.
     pub fn launch_reload(
         &self,
         request: &ReloadRequest,
@@ -490,13 +555,20 @@ impl HostRuntime {
         self.registration.launch_reload(request, windows)
     }
 
-    #[allow(dead_code)] // Paired with launch_reload once native persistence is connected.
     pub fn reload_ready(&self, launch: &ReloadLaunch) -> Result<bool, String> {
         self.registration.reload_ready(launch)
     }
 
     pub fn fail_reload(&self, request: &ReloadRequest, message: &str) -> Result<(), String> {
         self.registration.fail_reload(request, message)
+    }
+}
+
+fn confirmation_deadline(started: Instant, now: Instant) -> Result<(), String> {
+    if now.saturating_duration_since(started) >= Duration::from_secs(20) {
+        Err("Restore confirmation timed out after 20 seconds".into())
+    } else {
+        Ok(())
     }
 }
 
@@ -523,6 +595,13 @@ mod tests {
     use super::*;
     use riwork_engine::runtime::{WindowKind, WindowMode};
     use uuid::Uuid;
+
+    #[test]
+    fn confirmation_gives_up_after_20_s() {
+        let start = Instant::now();
+        assert!(confirmation_deadline(start, start + Duration::from_millis(19999)).is_ok());
+        assert!(confirmation_deadline(start, start + Duration::from_secs(20)).is_err());
+    }
 
     struct Fixture {
         root: PathBuf,
@@ -637,6 +716,64 @@ mod tests {
             DesktopInstance::acquire_or_forward(&fixture.home, &request, None).unwrap(),
             InstanceStart::Primary(_)
         ));
+    }
+
+    #[test]
+    fn paused_forwarding_retains_ownership_and_resumes_after_failed_restart() {
+        let fixture = Fixture::new();
+        let mut primary = fixture.primary();
+        let accepted = OpenRequest {
+            path: Some(fixture.root.join("accepted-before-pause")),
+        };
+        let after = OpenRequest {
+            path: Some(fixture.root.join("opened-after-recovery")),
+        };
+        forward(&primary.socket_path(), &accepted).unwrap();
+        primary.stop_forwarding();
+        assert!(forward(&primary.socket_path(), &after).is_err());
+        // Ordinary startup takes this same lock before becoming primary. The
+        // absent socket during a reload must never make the old host ownerless.
+        assert!(
+            try_lock(&fixture.home.join("run/desktop.lock"))
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(primary.drain_requests(), vec![accepted]);
+
+        primary.resume_forwarding().unwrap();
+        assert!(matches!(
+            DesktopInstance::acquire_or_forward(&fixture.home, &after, None).unwrap(),
+            InstanceStart::Forwarded
+        ));
+        // Repeated failure recovery must preserve this already-ACKed request,
+        // not replace the receiver or orphan the current accept thread.
+        primary.resume_forwarding().unwrap();
+        assert_eq!(primary.drain_requests(), vec![after]);
+        // A second retry uses the same socket owner and resets the stop flag.
+        primary.stop_forwarding();
+        assert!(forward(&primary.socket_path(), &OpenRequest::default()).is_err());
+        primary.resume_forwarding().unwrap();
+        forward(&primary.socket_path(), &OpenRequest::default()).unwrap();
+        assert_eq!(primary.drain_requests(), vec![OpenRequest::default()]);
+    }
+
+    #[test]
+    fn restarting_again_reports_busy_without_replacing_the_pending_request() {
+        let fixture = Fixture::new();
+        let manager = RuntimeManager::at(fixture.runtime.clone()).unwrap();
+        let runtime = HostRuntime::register_with_manager(manager, &fixture.home, None).unwrap();
+        runtime.queue_restart().unwrap();
+        let pending = runtime.pending_reload().unwrap().unwrap();
+        assert!(
+            runtime
+                .queue_restart()
+                .unwrap_err()
+                .contains("already in progress")
+        );
+        assert_eq!(
+            runtime.pending_reload().unwrap().unwrap().request_id,
+            pending.request_id
+        );
     }
 
     #[test]

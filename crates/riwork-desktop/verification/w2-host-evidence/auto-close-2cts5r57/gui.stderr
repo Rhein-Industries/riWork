@@ -1,0 +1,6 @@
+[2026-10-27T22:07:58Z INFO  js] [host-lifecycle-fixture] window.close requested for 3cd2b757-1048-4ff2-bc1d-5a472e6a2cc0
+[2026-10-27T22:07:58Z INFO  js] [host-lifecycle-fixture] window.close accepted
+[2026-10-27T22:07:58Z INFO  js] [host-lifecycle-fixture] window.close requested for d8876a6a-66c4-49f3-a473-7e978693f365
+[2026-10-27T22:07:58Z INFO  js] [host-lifecycle-fixture] window.close accepted
+[2026-10-27T22:07:58Z INFO  js] [host-lifecycle-fixture] window.close requested for b699641e-9169-4a80-b53a-4c8bc1f707e9
+[2026-10-27T22:07:58Z INFO  js] [host-lifecycle-fixture] window.close accepted

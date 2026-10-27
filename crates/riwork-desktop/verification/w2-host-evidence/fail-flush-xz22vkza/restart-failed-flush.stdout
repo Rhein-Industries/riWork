@@ -1,0 +1,23 @@
+{
+  "reload": {
+    "request_id": "53f8f67e-9ccb-4c6e-95b2-16610fde9fc6",
+    "replacement_executable": "/private/tmp/riwork-w2-host/fixture-bin/riwork",
+    "requested": 1,
+    "reloaded": 0,
+    "pending": 0,
+    "failed": 1,
+    "unreadable_registrations": 0,
+    "instances": [
+      {
+        "instance_id": "34ae7746-f322-4362-a60c-d85f7f318b9a",
+        "pid": 77222,
+        "state_home": "/private/tmp/rww2-vs746k4c/home",
+        "window_count": 1,
+        "state": "failed",
+        "new_pid": null,
+        "message": "drafts: fixture draft flush failure"
+      }
+    ]
+  },
+  "session": null
+}

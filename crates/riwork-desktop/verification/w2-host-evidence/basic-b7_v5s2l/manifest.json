@@ -1,0 +1,538 @@
+{
+  "verification_environment": "isolated fixture homes only",
+  "mode": "basic",
+  "repo": "/Users/dominik/orca/projects/riWork-nsh-p1-fix-host",
+  "root": "/private/tmp/riwork-w2-host",
+  "target_dir": "/private/tmp/riwork-p1-integration-mkzwamt7/target",
+  "commands": [
+    {
+      "name": "fixture",
+      "argv": [
+        "cargo",
+        "run",
+        "-p",
+        "riwork-nsh-native",
+        "--features",
+        "test-support",
+        "--example",
+        "p1_fixture_home",
+        "--locked",
+        "--offline",
+        "--",
+        "--scenario",
+        "p1-basic",
+        "--out",
+        "/private/tmp/rww2-68ctxz_b/home",
+        "--executable",
+        "/private/tmp/riwork-w2-host/fixture-bin/riwork"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-fix-host",
+      "environment": {
+        "HOME": "/Users/dominik/orca/projects/riWork-nsh-p1-fix-host/target/nsh-integration-home-cx101_28",
+        "PATH": "/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/opt/homebrew/Caskroom/codex/0.162.1/codex-path:/Users/dominik/.okc/bin:/Users/dominik/.grok/bin:/Users/dominik/.bun/bin:/Users/dominik/.bun/bin:/Users/dominik/.opencode/bin:/opt/homebrew/opt/openjdk@17/bin:/Users/dominik/.bun/bin:/Users/dominik/.pyenv/shims:/Users/dominik/.avm/bin:/Users/dominik/.bun/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/System/Cryptexes/App/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin:/opt/pmk/env/global/bin:/Library/Apple/usr/bin:/usr/local/share/dotnet:~/.dotnet/tools:/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/Users/dominik/.codex/tmp/arg0/codex-arg0YIBYhl:/opt/homebrew/Caskroom/codex/0.162.1/codex-path:/Users/dominik/.local/share/riwork/cua/harness-bin:/Users/dominik/.okc/bin:/Users/dominik/Library/pnpm:/Users/dominik/.grok/bin:/Users/dominik/.bun/bin:/Users/dominik/.opencode/bin:/opt/homebrew/opt/openjdk@17/bin:/Users/dominik/.avm/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/Users/dominik/.starkli/bin:/Users/dominik/Library/Application Support/org.dfinity.dfx/bin:/Users/dominik/.cargo/bin:/Users/dominik/.local/bin:/Users/dominik/.docker/bin:/Users/dominik/.cache/lm-studio/bin:/Users/dominik/.nargo/bin:/opt/local/bin:/Users/dominik/.docker/bin:/Users/dominik/.cache/lm-studio/bin:/Users/dominik/.nargo/bin:/Users/dominik/.local/bin",
+        "RIWORK_HOME": "/private/tmp/riwork-w2-host/basic-b7_v5s2l/state",
+        "RIWORK_RUNTIME_DIR": "/private/tmp/riwork-w2-host/basic-b7_v5s2l/runtime",
+        "TMPDIR": "/tmp",
+        "TMUX_TMPDIR": "/private/tmp/riwork-w2-host/basic-b7_v5s2l/tmux",
+        "XDG_CONFIG_HOME": "/Users/dominik/orca/projects/riWork-nsh-p1-fix-host/target/nsh-integration-home-cx101_28/.config",
+        "CARGO_HOME": "/Users/dominik/.cargo",
+        "RUSTUP_HOME": "/Users/dominik/.rustup",
+        "CARGO_TARGET_DIR": "/private/tmp/riwork-p1-integration-mkzwamt7/target",
+        "CARGO_BUILD_JOBS": "2",
+        "CARGO_NET_OFFLINE": "true",
+        "NSH_CACHE": "/private/tmp/riwork-w2-host/nsh-cache",
+        "NSH_TSC": "/Users/dominik/Library/Caches/nsh/typescript-7.0.2-darwin-arm64/package/lib/tsc"
+      },
+      "stdout": "/private/tmp/riwork-w2-host/basic-b7_v5s2l/fixture.stdout",
+      "stderr": "/private/tmp/riwork-w2-host/basic-b7_v5s2l/fixture.stderr",
+      "exit_code": 0,
+      "duration_seconds": 3.683,
+      "stdout_sha256": "c204091f81850ce46f5fe0ad536e634c17ada3ea3e77d972a54401062d7f6da2",
+      "stderr_sha256": "061a878946a8f6a130fcbecec99e734c006707be56c0c72fe73395b0a3bd3830"
+    },
+    {
+      "name": "set-theme",
+      "argv": [
+        "/private/tmp/riwork-w2-host/fixture-bin/riwork",
+        "settings",
+        "set",
+        "theme",
+        "catppuccin",
+        "--json"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-fix-host",
+      "environment": {
+        "HOME": "/private/tmp/rww2-68ctxz_b/user",
+        "PATH": "/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/opt/homebrew/Caskroom/codex/0.162.1/codex-path:/Users/dominik/.okc/bin:/Users/dominik/.grok/bin:/Users/dominik/.bun/bin:/Users/dominik/.bun/bin:/Users/dominik/.opencode/bin:/opt/homebrew/opt/openjdk@17/bin:/Users/dominik/.bun/bin:/Users/dominik/.pyenv/shims:/Users/dominik/.avm/bin:/Users/dominik/.bun/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/System/Cryptexes/App/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin:/opt/pmk/env/global/bin:/Library/Apple/usr/bin:/usr/local/share/dotnet:~/.dotnet/tools:/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/Users/dominik/.codex/tmp/arg0/codex-arg0YIBYhl:/opt/homebrew/Caskroom/codex/0.162.1/codex-path:/Users/dominik/.local/share/riwork/cua/harness-bin:/Users/dominik/.okc/bin:/Users/dominik/Library/pnpm:/Users/dominik/.grok/bin:/Users/dominik/.bun/bin:/Users/dominik/.opencode/bin:/opt/homebrew/opt/openjdk@17/bin:/Users/dominik/.avm/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/Users/dominik/.starkli/bin:/Users/dominik/Library/Application Support/org.dfinity.dfx/bin:/Users/dominik/.cargo/bin:/Users/dominik/.local/bin:/Users/dominik/.docker/bin:/Users/dominik/.cache/lm-studio/bin:/Users/dominik/.nargo/bin:/opt/local/bin:/Users/dominik/.docker/bin:/Users/dominik/.cache/lm-studio/bin:/Users/dominik/.nargo/bin:/Users/dominik/.local/bin",
+        "RIWORK_HOME": "/private/tmp/rww2-68ctxz_b/home",
+        "RIWORK_RUNTIME_DIR": "/private/tmp/rww2-68ctxz_b/run",
+        "TMPDIR": "/private/tmp/rww2-68ctxz_b/tmp",
+        "TMUX_TMPDIR": "/private/tmp/rww2-68ctxz_b/tmux",
+        "XDG_CONFIG_HOME": "/private/tmp/rww2-68ctxz_b/user/.config",
+        "RIWORK_NSH_BUNDLE": "/private/tmp/riwork-w2-host/bundle/bundle.js",
+        "RIWORK_NSH_BACKGROUND": "1"
+      },
+      "stdout": "/private/tmp/riwork-w2-host/basic-b7_v5s2l/set-theme.stdout",
+      "stderr": "/private/tmp/riwork-w2-host/basic-b7_v5s2l/set-theme.stderr",
+      "exit_code": 0,
+      "duration_seconds": 0.021,
+      "stdout_sha256": "ab5f201f4c611192c3ac3d6cdf66d4c46415389edd98d472d83c1d9ef6c63f1a",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "forward-beta",
+      "argv": [
+        "/private/tmp/riwork-w2-host/fixture-bin/riwork",
+        "open",
+        "/private/tmp/rww2-68ctxz_b/repos/beta",
+        "--json"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-fix-host",
+      "environment": {
+        "HOME": "/private/tmp/rww2-68ctxz_b/user",
+        "PATH": "/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/opt/homebrew/Caskroom/codex/0.162.1/codex-path:/Users/dominik/.okc/bin:/Users/dominik/.grok/bin:/Users/dominik/.bun/bin:/Users/dominik/.bun/bin:/Users/dominik/.opencode/bin:/opt/homebrew/opt/openjdk@17/bin:/Users/dominik/.bun/bin:/Users/dominik/.pyenv/shims:/Users/dominik/.avm/bin:/Users/dominik/.bun/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/System/Cryptexes/App/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin:/opt/pmk/env/global/bin:/Library/Apple/usr/bin:/usr/local/share/dotnet:~/.dotnet/tools:/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/Users/dominik/.codex/tmp/arg0/codex-arg0YIBYhl:/opt/homebrew/Caskroom/codex/0.162.1/codex-path:/Users/dominik/.local/share/riwork/cua/harness-bin:/Users/dominik/.okc/bin:/Users/dominik/Library/pnpm:/Users/dominik/.grok/bin:/Users/dominik/.bun/bin:/Users/dominik/.opencode/bin:/opt/homebrew/opt/openjdk@17/bin:/Users/dominik/.avm/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/Users/dominik/.starkli/bin:/Users/dominik/Library/Application Support/org.dfinity.dfx/bin:/Users/dominik/.cargo/bin:/Users/dominik/.local/bin:/Users/dominik/.docker/bin:/Users/dominik/.cache/lm-studio/bin:/Users/dominik/.nargo/bin:/opt/local/bin:/Users/dominik/.docker/bin:/Users/dominik/.cache/lm-studio/bin:/Users/dominik/.nargo/bin:/Users/dominik/.local/bin",
+        "RIWORK_HOME": "/private/tmp/rww2-68ctxz_b/home",
+        "RIWORK_RUNTIME_DIR": "/private/tmp/rww2-68ctxz_b/run",
+        "TMPDIR": "/private/tmp/rww2-68ctxz_b/tmp",
+        "TMUX_TMPDIR": "/private/tmp/rww2-68ctxz_b/tmux",
+        "XDG_CONFIG_HOME": "/private/tmp/rww2-68ctxz_b/user/.config",
+        "RIWORK_NSH_BUNDLE": "/private/tmp/riwork-w2-host/bundle/bundle.js",
+        "RIWORK_NSH_BACKGROUND": "1"
+      },
+      "stdout": "/private/tmp/riwork-w2-host/basic-b7_v5s2l/forward-beta.stdout",
+      "stderr": "/private/tmp/riwork-w2-host/basic-b7_v5s2l/forward-beta.stderr",
+      "exit_code": 0,
+      "duration_seconds": 0.008,
+      "stdout_sha256": "055cae047096a696833e3b14ae28a26370a2c7abde2444aee810497b9fc6ac81",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "instances-before",
+      "argv": [
+        "/private/tmp/riwork-w2-host/fixture-bin/riwork",
+        "instances",
+        "--json"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-fix-host",
+      "environment": {
+        "HOME": "/private/tmp/rww2-68ctxz_b/user",
+        "PATH": "/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/opt/homebrew/Caskroom/codex/0.162.1/codex-path:/Users/dominik/.okc/bin:/Users/dominik/.grok/bin:/Users/dominik/.bun/bin:/Users/dominik/.bun/bin:/Users/dominik/.opencode/bin:/opt/homebrew/opt/openjdk@17/bin:/Users/dominik/.bun/bin:/Users/dominik/.pyenv/shims:/Users/dominik/.avm/bin:/Users/dominik/.bun/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/System/Cryptexes/App/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin:/opt/pmk/env/global/bin:/Library/Apple/usr/bin:/usr/local/share/dotnet:~/.dotnet/tools:/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/Users/dominik/.codex/tmp/arg0/codex-arg0YIBYhl:/opt/homebrew/Caskroom/codex/0.162.1/codex-path:/Users/dominik/.local/share/riwork/cua/harness-bin:/Users/dominik/.okc/bin:/Users/dominik/Library/pnpm:/Users/dominik/.grok/bin:/Users/dominik/.bun/bin:/Users/dominik/.opencode/bin:/opt/homebrew/opt/openjdk@17/bin:/Users/dominik/.avm/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/Users/dominik/.starkli/bin:/Users/dominik/Library/Application Support/org.dfinity.dfx/bin:/Users/dominik/.cargo/bin:/Users/dominik/.local/bin:/Users/dominik/.docker/bin:/Users/dominik/.cache/lm-studio/bin:/Users/dominik/.nargo/bin:/opt/local/bin:/Users/dominik/.docker/bin:/Users/dominik/.cache/lm-studio/bin:/Users/dominik/.nargo/bin:/Users/dominik/.local/bin",
+        "RIWORK_HOME": "/private/tmp/rww2-68ctxz_b/home",
+        "RIWORK_RUNTIME_DIR": "/private/tmp/rww2-68ctxz_b/run",
+        "TMPDIR": "/private/tmp/rww2-68ctxz_b/tmp",
+        "TMUX_TMPDIR": "/private/tmp/rww2-68ctxz_b/tmux",
+        "XDG_CONFIG_HOME": "/private/tmp/rww2-68ctxz_b/user/.config",
+        "RIWORK_NSH_BUNDLE": "/private/tmp/riwork-w2-host/bundle/bundle.js",
+        "RIWORK_NSH_BACKGROUND": "1"
+      },
+      "stdout": "/private/tmp/riwork-w2-host/basic-b7_v5s2l/instances-before.stdout",
+      "stderr": "/private/tmp/riwork-w2-host/basic-b7_v5s2l/instances-before.stderr",
+      "exit_code": 0,
+      "duration_seconds": 0.008,
+      "stdout_sha256": "75efd3fa867de8a0f39f5fac0b910d9cb9c1fe6233e0896b1491564ae918f9f5",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "instances-cleanup",
+      "argv": [
+        "/private/tmp/riwork-w2-host/fixture-bin/riwork",
+        "instances",
+        "--json"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-fix-host",
+      "environment": {
+        "HOME": "/private/tmp/rww2-68ctxz_b/user",
+        "PATH": "/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/opt/homebrew/Caskroom/codex/0.162.1/codex-path:/Users/dominik/.okc/bin:/Users/dominik/.grok/bin:/Users/dominik/.bun/bin:/Users/dominik/.bun/bin:/Users/dominik/.opencode/bin:/opt/homebrew/opt/openjdk@17/bin:/Users/dominik/.bun/bin:/Users/dominik/.pyenv/shims:/Users/dominik/.avm/bin:/Users/dominik/.bun/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/System/Cryptexes/App/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin:/opt/pmk/env/global/bin:/Library/Apple/usr/bin:/usr/local/share/dotnet:~/.dotnet/tools:/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/Users/dominik/.codex/tmp/arg0/codex-arg0YIBYhl:/opt/homebrew/Caskroom/codex/0.162.1/codex-path:/Users/dominik/.local/share/riwork/cua/harness-bin:/Users/dominik/.okc/bin:/Users/dominik/Library/pnpm:/Users/dominik/.grok/bin:/Users/dominik/.bun/bin:/Users/dominik/.opencode/bin:/opt/homebrew/opt/openjdk@17/bin:/Users/dominik/.avm/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/Users/dominik/.starkli/bin:/Users/dominik/Library/Application Support/org.dfinity.dfx/bin:/Users/dominik/.cargo/bin:/Users/dominik/.local/bin:/Users/dominik/.docker/bin:/Users/dominik/.cache/lm-studio/bin:/Users/dominik/.nargo/bin:/opt/local/bin:/Users/dominik/.docker/bin:/Users/dominik/.cache/lm-studio/bin:/Users/dominik/.nargo/bin:/Users/dominik/.local/bin",
+        "RIWORK_HOME": "/private/tmp/rww2-68ctxz_b/home",
+        "RIWORK_RUNTIME_DIR": "/private/tmp/rww2-68ctxz_b/run",
+        "TMPDIR": "/private/tmp/rww2-68ctxz_b/tmp",
+        "TMUX_TMPDIR": "/private/tmp/rww2-68ctxz_b/tmux",
+        "XDG_CONFIG_HOME": "/private/tmp/rww2-68ctxz_b/user/.config",
+        "RIWORK_NSH_BUNDLE": "/private/tmp/riwork-w2-host/bundle/bundle.js",
+        "RIWORK_NSH_BACKGROUND": "1"
+      },
+      "stdout": "/private/tmp/riwork-w2-host/basic-b7_v5s2l/instances-cleanup.stdout",
+      "stderr": "/private/tmp/riwork-w2-host/basic-b7_v5s2l/instances-cleanup.stderr",
+      "exit_code": 0,
+      "duration_seconds": 0.1,
+      "stdout_sha256": "75efd3fa867de8a0f39f5fac0b910d9cb9c1fe6233e0896b1491564ae918f9f5",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "instances-after-cleanup-0",
+      "argv": [
+        "/private/tmp/riwork-w2-host/fixture-bin/riwork",
+        "instances",
+        "--json"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-fix-host",
+      "environment": {
+        "HOME": "/private/tmp/rww2-68ctxz_b/user",
+        "PATH": "/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/opt/homebrew/Caskroom/codex/0.162.1/codex-path:/Users/dominik/.okc/bin:/Users/dominik/.grok/bin:/Users/dominik/.bun/bin:/Users/dominik/.bun/bin:/Users/dominik/.opencode/bin:/opt/homebrew/opt/openjdk@17/bin:/Users/dominik/.bun/bin:/Users/dominik/.pyenv/shims:/Users/dominik/.avm/bin:/Users/dominik/.bun/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/System/Cryptexes/App/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin:/opt/pmk/env/global/bin:/Library/Apple/usr/bin:/usr/local/share/dotnet:~/.dotnet/tools:/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/Users/dominik/.codex/tmp/arg0/codex-arg0YIBYhl:/opt/homebrew/Caskroom/codex/0.162.1/codex-path:/Users/dominik/.local/share/riwork/cua/harness-bin:/Users/dominik/.okc/bin:/Users/dominik/Library/pnpm:/Users/dominik/.grok/bin:/Users/dominik/.bun/bin:/Users/dominik/.opencode/bin:/opt/homebrew/opt/openjdk@17/bin:/Users/dominik/.avm/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/Users/dominik/.starkli/bin:/Users/dominik/Library/Application Support/org.dfinity.dfx/bin:/Users/dominik/.cargo/bin:/Users/dominik/.local/bin:/Users/dominik/.docker/bin:/Users/dominik/.cache/lm-studio/bin:/Users/dominik/.nargo/bin:/opt/local/bin:/Users/dominik/.docker/bin:/Users/dominik/.cache/lm-studio/bin:/Users/dominik/.nargo/bin:/Users/dominik/.local/bin",
+        "RIWORK_HOME": "/private/tmp/rww2-68ctxz_b/home",
+        "RIWORK_RUNTIME_DIR": "/private/tmp/rww2-68ctxz_b/run",
+        "TMPDIR": "/private/tmp/rww2-68ctxz_b/tmp",
+        "TMUX_TMPDIR": "/private/tmp/rww2-68ctxz_b/tmux",
+        "XDG_CONFIG_HOME": "/private/tmp/rww2-68ctxz_b/user/.config",
+        "RIWORK_NSH_BUNDLE": "/private/tmp/riwork-w2-host/bundle/bundle.js",
+        "RIWORK_NSH_BACKGROUND": "1"
+      },
+      "stdout": "/private/tmp/riwork-w2-host/basic-b7_v5s2l/instances-after-cleanup-0.stdout",
+      "stderr": "/private/tmp/riwork-w2-host/basic-b7_v5s2l/instances-after-cleanup-0.stderr",
+      "exit_code": 0,
+      "duration_seconds": 0.078,
+      "stdout_sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "status": "passed",
+  "gui": {
+    "argv": [
+      "/private/tmp/riwork-w2-host/fixture-bin/riwork",
+      "/private/tmp/rww2-68ctxz_b/repos/alpha"
+    ],
+    "environment": {
+      "PATH": "/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/opt/homebrew/Caskroom/codex/0.162.1/codex-path:/Users/dominik/.okc/bin:/Users/dominik/.grok/bin:/Users/dominik/.bun/bin:/Users/dominik/.bun/bin:/Users/dominik/.opencode/bin:/opt/homebrew/opt/openjdk@17/bin:/Users/dominik/.bun/bin:/Users/dominik/.pyenv/shims:/Users/dominik/.avm/bin:/Users/dominik/.bun/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/System/Cryptexes/App/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin:/opt/pmk/env/global/bin:/Library/Apple/usr/bin:/usr/local/share/dotnet:~/.dotnet/tools:/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/Users/dominik/.codex/tmp/arg0/codex-arg0YIBYhl:/opt/homebrew/Caskroom/codex/0.162.1/codex-path:/Users/dominik/.local/share/riwork/cua/harness-bin:/Users/dominik/.okc/bin:/Users/dominik/Library/pnpm:/Users/dominik/.grok/bin:/Users/dominik/.bun/bin:/Users/dominik/.opencode/bin:/opt/homebrew/opt/openjdk@17/bin:/Users/dominik/.avm/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/Users/dominik/.starkli/bin:/Users/dominik/Library/Application Support/org.dfinity.dfx/bin:/Users/dominik/.cargo/bin:/Users/dominik/.local/bin:/Users/dominik/.docker/bin:/Users/dominik/.cache/lm-studio/bin:/Users/dominik/.nargo/bin:/opt/local/bin:/Users/dominik/.docker/bin:/Users/dominik/.cache/lm-studio/bin:/Users/dominik/.nargo/bin:/Users/dominik/.local/bin",
+      "HOME": "/private/tmp/rww2-68ctxz_b/user",
+      "RIWORK_HOME": "/private/tmp/rww2-68ctxz_b/home",
+      "RIWORK_RUNTIME_DIR": "/private/tmp/rww2-68ctxz_b/run",
+      "TMUX_TMPDIR": "/private/tmp/rww2-68ctxz_b/tmux",
+      "XDG_CONFIG_HOME": "/private/tmp/rww2-68ctxz_b/user/.config",
+      "TMPDIR": "/private/tmp/rww2-68ctxz_b/tmp",
+      "RIWORK_NSH_BUNDLE": "/private/tmp/riwork-w2-host/bundle/bundle.js",
+      "RIWORK_NSH_BACKGROUND": "1",
+      "RIWORK_NSH_FAKE_SESSIONS": "/private/tmp/rww2-68ctxz_b/home/fake-sessions.json"
+    },
+    "pid": 21941,
+    "stdout": "/private/tmp/riwork-w2-host/basic-b7_v5s2l/gui.stdout",
+    "stderr": "/private/tmp/riwork-w2-host/basic-b7_v5s2l/gui.stderr",
+    "fixture": {
+      "scenario": "p1-basic",
+      "root": "/private/tmp/rww2-68ctxz_b",
+      "home": "/private/tmp/rww2-68ctxz_b/home",
+      "runtime": "/private/tmp/rww2-68ctxz_b/run",
+      "fake_sessions": "/private/tmp/rww2-68ctxz_b/home/fake-sessions.json",
+      "projects": {
+        "Alpha": {
+          "id": "53145edd-07b2-4fe4-9184-ca75f151c5db",
+          "name": "Alpha",
+          "root": "/private/tmp/rww2-68ctxz_b/repos/alpha",
+          "repository_roots": [],
+          "folder_id": null,
+          "notify_on_agent_done": false,
+          "wake_orchestrators_on_agent_done": false,
+          "codex_account": {
+            "source": "inherit"
+          },
+          "orchestrator": {
+            "mode": "inherit"
+          },
+          "delegation_policy": {},
+          "created_at": 1793139129
+        },
+        "Beta": {
+          "id": "4df74d99-746c-4529-8674-2fe8d2d0ea4c",
+          "name": "Beta",
+          "root": "/private/tmp/rww2-68ctxz_b/repos/beta",
+          "repository_roots": [],
+          "folder_id": null,
+          "notify_on_agent_done": false,
+          "wake_orchestrators_on_agent_done": false,
+          "codex_account": {
+            "source": "inherit"
+          },
+          "orchestrator": {
+            "mode": "inherit"
+          },
+          "delegation_policy": {},
+          "created_at": 1793139129
+        },
+        "Busy": {
+          "id": "e3a1320c-f886-4053-b98b-022f7310a485",
+          "name": "Busy",
+          "root": "/private/tmp/rww2-68ctxz_b/repos/busy",
+          "repository_roots": [],
+          "folder_id": null,
+          "notify_on_agent_done": false,
+          "wake_orchestrators_on_agent_done": false,
+          "codex_account": {
+            "source": "inherit"
+          },
+          "orchestrator": {
+            "mode": "inherit"
+          },
+          "delegation_policy": {},
+          "created_at": 1793139129
+        },
+        "Gamma": {
+          "id": "0ed8a662-52ea-4288-ae7d-107602475055",
+          "name": "Gamma",
+          "root": "/private/tmp/rww2-68ctxz_b/repos/gamma",
+          "repository_roots": [],
+          "folder_id": null,
+          "notify_on_agent_done": false,
+          "wake_orchestrators_on_agent_done": false,
+          "codex_account": {
+            "source": "inherit"
+          },
+          "orchestrator": {
+            "mode": "inherit"
+          },
+          "delegation_policy": {},
+          "created_at": 1793139129
+        }
+      }
+    }
+  },
+  "before": [
+    {
+      "id": "99d73320-4697-4d7e-9338-455d720f25cf",
+      "pid": 21941,
+      "uid": 501,
+      "started_token": "1793139129.668076",
+      "executable": "/private/tmp/riwork-w2-host/fixture-bin/riwork",
+      "state_home": "/private/tmp/rww2-68ctxz_b/home",
+      "windows": [
+        {
+          "project_id": "4df74d99-746c-4529-8674-2fe8d2d0ea4c",
+          "path": "/private/tmp/rww2-68ctxz_b/repos/beta",
+          "bounds": {
+            "x": 1092.0,
+            "y": 356.0,
+            "width": 1220.0,
+            "height": 780.0
+          },
+          "mode": "windowed",
+          "layout": {
+            "layout": {
+              "split": {
+                "axis": "side_by_side",
+                "ratio": 0.3,
+                "first": {
+                  "pane": 1
+                },
+                "second": {
+                  "split": {
+                    "axis": "stacked",
+                    "ratio": 0.62,
+                    "first": {
+                      "pane": 2
+                    },
+                    "second": {
+                      "split": {
+                        "axis": "stacked",
+                        "ratio": 0.5,
+                        "first": {
+                          "pane": 3
+                        },
+                        "second": {
+                          "pane": 4
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "panes": {
+              "1": {
+                "tabs": [
+                  {
+                    "kind": "panel",
+                    "panel": "projects"
+                  },
+                  {
+                    "kind": "panel",
+                    "panel": "files"
+                  },
+                  {
+                    "kind": "panel",
+                    "panel": "worktrees"
+                  },
+                  {
+                    "kind": "panel",
+                    "panel": "tasks"
+                  },
+                  {
+                    "kind": "panel",
+                    "panel": "shells"
+                  }
+                ],
+                "active_tab_key": "panel:projects",
+                "tab_edge": "top",
+                "shell_ids": [],
+                "active_shell_id": null
+              },
+              "2": {
+                "tabs": [
+                  {
+                    "kind": "shell",
+                    "shell_id": "00000000-0000-4000-8000-000000000301"
+                  }
+                ],
+                "active_tab_key": "shell:00000000-0000-4000-8000-000000000301",
+                "tab_edge": "top",
+                "shell_ids": [
+                  "00000000-0000-4000-8000-000000000301"
+                ],
+                "active_shell_id": "00000000-0000-4000-8000-000000000301"
+              },
+              "3": {
+                "tabs": [
+                  {
+                    "kind": "shell",
+                    "shell_id": "00000000-0000-4000-8000-000000000302"
+                  }
+                ],
+                "active_tab_key": "shell:00000000-0000-4000-8000-000000000302",
+                "tab_edge": "top",
+                "shell_ids": [
+                  "00000000-0000-4000-8000-000000000302"
+                ],
+                "active_shell_id": "00000000-0000-4000-8000-000000000302"
+              },
+              "4": {
+                "tabs": [
+                  {
+                    "kind": "shell",
+                    "shell_id": "00000000-0000-4000-8000-000000000303"
+                  }
+                ],
+                "active_tab_key": "shell:00000000-0000-4000-8000-000000000303",
+                "tab_edge": "top",
+                "shell_ids": [
+                  "00000000-0000-4000-8000-000000000303"
+                ],
+                "active_shell_id": "00000000-0000-4000-8000-000000000303"
+              }
+            },
+            "active_pane": 3,
+            "locked_panes": [
+              1
+            ],
+            "panels_initialized": true,
+            "detached_shell_ids": [],
+            "selected_worktree_id": null,
+            "selected_task_id": null,
+            "sidebar_visible": true,
+            "window_size": {
+              "width": 1220.0,
+              "height": 780.0
+            },
+            "main_pane": 2
+          },
+          "focus_mode": false,
+          "focus_centered": false
+        },
+        {
+          "project_id": "53145edd-07b2-4fe4-9184-ca75f151c5db",
+          "path": "/private/tmp/rww2-68ctxz_b/repos/alpha",
+          "bounds": {
+            "x": 1070.0,
+            "y": 334.0,
+            "width": 1220.0,
+            "height": 780.0
+          },
+          "mode": "windowed",
+          "layout": {
+            "layout": {
+              "split": {
+                "axis": "side_by_side",
+                "ratio": 0.27,
+                "first": {
+                  "pane": 1
+                },
+                "second": {
+                  "pane": 2
+                }
+              }
+            },
+            "panes": {
+              "1": {
+                "tabs": [
+                  {
+                    "kind": "panel",
+                    "panel": "projects"
+                  },
+                  {
+                    "kind": "panel",
+                    "panel": "files"
+                  },
+                  {
+                    "kind": "panel",
+                    "panel": "worktrees"
+                  },
+                  {
+                    "kind": "panel",
+                    "panel": "tasks"
+                  },
+                  {
+                    "kind": "panel",
+                    "panel": "shells"
+                  }
+                ],
+                "active_tab_key": "panel:projects",
+                "tab_edge": "top",
+                "shell_ids": [],
+                "active_shell_id": null
+              },
+              "2": {
+                "tabs": [
+                  {
+                    "kind": "shell",
+                    "shell_id": "00000000-0000-4000-8000-000000000001"
+                  },
+                  {
+                    "kind": "shell",
+                    "shell_id": "00000000-0000-4000-8000-000000000002"
+                  },
+                  {
+                    "kind": "chat",
+                    "chat_id": "00000000-0000-4000-8000-000000000101"
+                  },
+                  {
+                    "kind": "remote_shell",
+                    "desktop_id": "fixture-remote",
+                    "shell_id": "00000000-0000-4000-8000-000000000102"
+                  }
+                ],
+                "active_tab_key": "shell:00000000-0000-4000-8000-000000000002",
+                "tab_edge": "top",
+                "shell_ids": [
+                  "00000000-0000-4000-8000-000000000001",
+                  "00000000-0000-4000-8000-000000000002"
+                ],
+                "active_shell_id": "00000000-0000-4000-8000-000000000002"
+              }
+            },
+            "active_pane": 2,
+            "locked_panes": null,
+            "panels_initialized": true,
+            "detached_shell_ids": [],
+            "selected_worktree_id": null,
+            "selected_task_id": null,
+            "sidebar_visible": true,
+            "window_size": {
+              "width": 1220.0,
+              "height": 780.0
+            },
+            "main_pane": 2
+          },
+          "focus_mode": false,
+          "focus_centered": false
+        }
+      ],
+      "updated_at": 1793139131
+    }
+  ],
+  "cleanup": {
+    "method": "SIGTERM fixture PIDs only",
+    "pids": [
+      21941
+    ],
+    "owned_pids": [
+      21941
+    ],
+    "remaining_instances": []
+  }
+}

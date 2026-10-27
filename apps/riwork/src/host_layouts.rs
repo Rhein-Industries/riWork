@@ -4,10 +4,13 @@
 //! Publishing an edit never takes the registry mutex or waits on a file lock.
 use crate::persistence::LayoutPersistence;
 use arc_swap::ArcSwap;
-use riwork_core::layouts::ProjectLayout;
+use riwork_core::layouts::{ProjectLayout, WindowSize};
 use std::{
     collections::{HashMap, HashSet},
-    sync::{Arc, Mutex, OnceLock, Weak},
+    sync::{
+        Arc, Mutex, OnceLock, Weak,
+        atomic::{AtomicU8, Ordering},
+    },
 };
 
 #[derive(Default)]
@@ -27,6 +30,10 @@ fn registry() -> &'static Mutex<Registry> {
 /// The host may retain it through AppView teardown to flush before terminating.
 pub struct HostLayout {
     current: ArcSwap<ProjectLayout>,
+    // One atomic publishes a coherent focus-mode/centering pair for reload.
+    focus: AtomicU8,
+    // Host geometry survives later model edits whose projection predates a resize.
+    window_size: Mutex<Option<WindowSize>>,
     persistence: Option<Arc<LayoutPersistence>>,
     // Serializes the short publish/enqueue operation against a host close barrier.
     // No filesystem work takes this mutex on the engine thread.
@@ -59,6 +66,8 @@ pub fn registration(
         return Err("conflict: a layout session is already registered for this window".into());
     }
     let handle = Arc::new(HostLayout {
+        focus: AtomicU8::new(0),
+        window_size: Mutex::new(snapshot.window_size),
         current: ArcSwap::from_pointee(snapshot),
         persistence: Some(persistence),
         closing: Mutex::new(false),
@@ -102,9 +111,29 @@ pub fn cancel_window_close(window_id: &str) {
 }
 
 impl HostLayout {
+    /// Runtime-only presentation flags, carried by restart rather than layouts.json.
+    pub fn set_focus_state(&self, focused: bool, centered: bool) -> Result<(), String> {
+        self.edit(|| {
+            self.focus.store(
+                u8::from(focused) | (u8::from(centered) << 1),
+                Ordering::Release,
+            );
+            Ok(((), None))
+        })
+    }
+
+    pub fn focus_state(&self) -> (bool, bool) {
+        let flags = self.focus.load(Ordering::Acquire);
+        (flags & 1 != 0, flags & 2 != 0)
+    }
+
     /// Publish the storage projection after each committed in-memory edit.
     /// Call before scheduling that edit's persistence snapshot.
-    pub fn publish(&self, project: ProjectLayout) {
+    pub fn publish(&self, mut project: ProjectLayout) {
+        project.window_size = *self
+            .window_size
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         self.current.store(Arc::new(project));
     }
 
@@ -130,13 +159,45 @@ impl HostLayout {
         }
         let (result, project) = operation()?;
         if let Some(project) = project {
-            self.publish(project.clone());
+            self.publish(project);
             self.persistence
                 .as_ref()
                 .ok_or_else(|| "unavailable: host layout is closed".to_owned())?
-                .schedule(project)?;
+                .schedule(self.snapshot())?;
         }
         Ok(result)
+    }
+
+    /// Rust host geometry bridge. The service thread supplies the current
+    /// settings value; no IO or filesystem lock runs on the AppKit thread.
+    /// LayoutPersistence owns the trailing 250 ms timer. A return to the saved
+    /// size replaces the pending snapshot; LayoutStore then skips its write.
+    pub fn observe_window_frame(
+        &self,
+        width: f32,
+        height: f32,
+        ordinary: bool,
+        remember: bool,
+    ) -> Result<(), String> {
+        if !ordinary || !remember {
+            return Ok(());
+        }
+        let Some(size) = WindowSize::new(width, height) else {
+            return Ok(());
+        };
+        self.edit(|| {
+            let mut captured = self
+                .window_size
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if *captured == Some(size) {
+                return Ok(((), None));
+            }
+            *captured = Some(size);
+            let mut project = self.snapshot();
+            project.window_size = Some(size);
+            Ok(((), Some(project)))
+        })
     }
 
     /// Stop accepting edits before the host queues its persistence barrier.

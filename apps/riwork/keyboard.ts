@@ -37,3 +37,42 @@ export const TAB_CYCLE_KEYS = [
   // NSH requires the unshifted physical key: these are also ⌘} / ⌘{.
   ["mod+shift+]", 1], ["mod+shift+[", -1],
 ] as const;
+
+/** One declaration of the Phase-1 window map, including menu-backed actions.
+ * AppKit consumes menu equivalents before NshView and emits the same command;
+ * headless engines use these bindings directly. Neither path dispatches twice.
+ */
+export const WINDOW_KEYMAP = [
+  ["mod+,", "openSettings"], ["mod+alt+a", "openProjectSettings"],
+  ["mod+shift+s", "openSchedules"], ["mod+shift+e", "openFiles"],
+  ["mod+alt+s", "openSessions"], ["mod+shift+p", "openPreview"],
+  ["mod+shift+m", "gatherTabs"], ["mod+alt+l", "defaultLayout"],
+  ["mod+t", "newTab"], ["mod+d", "splitRight"],
+  ["mod+shift+d", "splitDown"], ["mod+w", "closeTab"],
+  ["mod+shift+w", "closePane"], ["mod+b", "openProjects"],
+  ["mod+shift+f", "toggleFocusMode"], ["mod+shift+n", "newProjectWindow"],
+  ["mod+1", "selectTab1"], ["mod+2", "selectTab2"],
+  ["mod+3", "selectTab3"], ["mod+4", "selectTab4"],
+  ["mod+5", "selectTab5"], ["mod+6", "selectTab6"],
+  ["mod+7", "selectTab7"], ["mod+8", "selectTab8"], ["mod+9", "selectTab9"],
+  ...TAB_CYCLE_KEYS.map(([key, direction]) => [key, direction === 1 ? "nextTab" : "previousTab"] as const),
+] as const;
+
+/** App-owned equivalents never registered in a TSX window keymap. */
+export const HOST_KEYMAP = [
+  ["mod+alt+g", "openGlobalDashboard"], ["mod+shift+o", "openGlobalChat"],
+  ["mod+q", "quit"], ["mod+=", "biggerText"], ["mod+-", "smallerText"],
+  ["mod+0", "actualSize"],
+] as const;
+
+export const PANEL_COMMANDS: Readonly<Record<string, string>> = {
+  openProjects: "projects", openFiles: "files", openPreview: "preview",
+  openSessions: "shells", openSchedules: "schedules", openSettings: "settings",
+  openProjectSettings: "project_settings",
+};
+
+/** A strip menu dismisses before a modifier command. Modal actions stay inert. */
+export function commandAllowed(command: string, modalOpen: boolean, dismissStrip: () => void): boolean {
+  dismissStrip();
+  return !modalOpen && !DEFERRED_COMMANDS.has(command);
+}

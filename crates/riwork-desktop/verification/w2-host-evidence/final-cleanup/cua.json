@@ -1,0 +1,76 @@
+{
+  "fixture_pids_only": true,
+  "ps_preflight": "All seven PIDs absent before read-only Cua reads",
+  "reads": [
+    {
+      "call": {
+        "pid": 36862,
+        "session": "w2-host"
+      },
+      "result": {
+        "current_space_id": 1,
+        "windows": []
+      }
+    },
+    {
+      "call": {
+        "pid": 47825,
+        "session": "w2-host"
+      },
+      "result": {
+        "current_space_id": 1,
+        "windows": []
+      }
+    },
+    {
+      "call": {
+        "pid": 47954,
+        "session": "w2-host"
+      },
+      "result": {
+        "current_space_id": 1,
+        "windows": []
+      }
+    },
+    {
+      "call": {
+        "pid": 48272,
+        "session": "w2-host"
+      },
+      "result": {
+        "current_space_id": 1,
+        "windows": []
+      }
+    },
+    {
+      "call": {
+        "pid": 50480,
+        "session": "w2-host"
+      },
+      "result": {
+        "current_space_id": 1,
+        "windows": []
+      }
+    },
+    {
+      "call": {
+        "pid": 51601,
+        "session": "w2-host"
+      },
+      "result": {
+        "current_space_id": 1,
+        "windows": []
+      }
+    },
+    {
+      "call": {
+        "pid": 52962,
+        "session": "w2-host"
+      },
+      "result": {
+        "current_space_id": 1,
+        "windows": []
+      }
+    }
+  ]
+}

@@ -4,6 +4,14 @@ version.workspace = true
 edition.workspace = true
 publish = false
 
+[features]
+default = []
+test-support = ["riwork-engine/test-support"]
+
+[[example]]
+name = "p1_fixture_home"
+required-features = ["test-support"]
+
 [dependencies]
 riwork-core = { path = "../riwork-core" }
 riwork-engine = { path = "../riwork-engine" }

@@ -19,7 +19,7 @@ test("opens a core-written layout with shell identity, empty unknown pane, and w
   const app = await open("./tests/Workspace.fixture.tsx", options("fixture-one"));
   try {
     await app.waitFor("id:workspace-dock");
-    expect(app.shows("id:title-bar")).toBe(true);
+    expect(app.shows("id:window-controls-island")).toBe(true);
     expect(app.shows("id:status-bar")).toBe(true);
     expect(app.texts()).toContain("Sessions");
     expect(app.texts()).toContain("Empty pane");

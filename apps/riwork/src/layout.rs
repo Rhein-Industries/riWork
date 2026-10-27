@@ -5,7 +5,8 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 pub use riwork_core::layouts::Extent;
 use riwork_core::layouts::{
-    Axis, DIVIDER_THICKNESS, Layout, MIN_PANE_EXTENT, PaneId, ProjectLayout, SavedPane, SavedTab,
+    Axis, DIVIDER_THICKNESS, Layout, MIN_PANE_EXTENT, PaneId, PanelKind, ProjectLayout, SavedPane,
+    SavedTab,
 };
 use serde::{Deserialize, Serialize};
 
@@ -216,6 +217,220 @@ impl LayoutModel {
             .ok_or("not_found: panel is not in this layout")?;
         pane.1.active_tab_key = Some(key.to_owned());
         self.project.active_pane = *pane.0;
+        self.project.normalize()?;
+        Ok(self.dock(self.extent.unwrap_or(DEFAULT_EXTENT)))
+    }
+
+    /// Navigation commands preserve the one-tab-per-panel identity and the
+    /// existing GPUI Files routing rule. Content remains a Phase-1 placeholder.
+    pub fn open_panel(&mut self, panel: PanelKind) -> Result<DockAreaLayout, String> {
+        if panel == PanelKind::Dashboard {
+            return Err("refused: Dashboard belongs to the global window".into());
+        }
+        let key = SavedTab::Panel { panel }.key();
+        if self
+            .project
+            .panes
+            .values()
+            .any(|pane| pane.tabs.iter().any(|tab| tab.key() == key))
+        {
+            return self.select_panel(&key);
+        }
+        let navigation = (panel == PanelKind::Files)
+            .then(|| {
+                self.project.panes.iter().find_map(|(id, pane)| {
+                    pane.tabs
+                        .iter()
+                        .any(|tab| {
+                            matches!(
+                                tab,
+                                SavedTab::Panel {
+                                    panel: PanelKind::Projects
+                                        | PanelKind::Worktrees
+                                        | PanelKind::Files
+                                }
+                            )
+                        })
+                        .then_some(*id)
+                })
+            })
+            .flatten();
+        let id = navigation.unwrap_or(self.project.active_pane);
+        self.project
+            .panes
+            .get_mut(&id)
+            .ok_or("not_found: active pane")?
+            .tabs
+            .push(SavedTab::Panel { panel });
+        self.select_panel(&key)
+    }
+
+    /// Split only the layout scaffold. Terminal creation is owned by Sessions.
+    pub fn split_active(&mut self, down: bool) -> Result<DockAreaLayout, String> {
+        let id = (1..=MAX_INITIAL_DOCK_PANE_ID)
+            .find(|id| !self.allocated_pane_ids.contains(id))
+            .ok_or("unavailable: no pane identifiers remain")?;
+        let axis = if down {
+            Axis::Stacked
+        } else {
+            Axis::SideBySide
+        };
+        if !self
+            .project
+            .layout
+            .split(self.project.active_pane, axis, id)
+        {
+            return Err("not_found: active pane".into());
+        }
+        self.allocated_pane_ids.insert(id);
+        self.project.panes.insert(id, SavedPane::default());
+        self.project.active_pane = id;
+        self.project.normalize()?;
+        Ok(self.dock(self.extent.unwrap_or(DEFAULT_EXTENT)))
+    }
+
+    /// Remove a placeholder from this window only; never end its session.
+    pub fn close_active(&mut self, whole_pane: bool) -> Result<DockAreaLayout, String> {
+        let id = self.project.active_pane;
+        if self.project.effective_locked_panes().contains(&id) {
+            return Err("refused: unlock the pane before closing its tabs".into());
+        }
+        let pane = self
+            .project
+            .panes
+            .get_mut(&id)
+            .ok_or("not_found: active pane")?;
+        if whole_pane {
+            pane.tabs.clear();
+        } else if let Some(key) = &pane.active_tab_key {
+            pane.tabs.retain(|tab| &tab.key() != key);
+        }
+        pane.shell_ids.clear();
+        pane.active_shell_id = None;
+        pane.active_tab_key = None;
+        remove_emptied(&mut self.project, id, &self.unknown_panes);
+        self.project.normalize()?;
+        Ok(self.dock(self.extent.unwrap_or(DEFAULT_EXTENT)))
+    }
+
+    /// GPUI's default layout: five navigation panels, then every other tab in
+    /// drawn order. Keep existing navigation/main IDs and the visible selection.
+    pub fn default_layout(&mut self) -> Result<DockAreaLayout, String> {
+        if !self.unknown_panes.is_empty() {
+            return Err("refused: default layout cannot relocate unknown saved tabs".into());
+        }
+        const NAV: [PanelKind; 5] = [
+            PanelKind::Projects,
+            PanelKind::Files,
+            PanelKind::Worktrees,
+            PanelKind::Tasks,
+            PanelKind::Shells,
+        ];
+        let order = self.project.layout.pane_ids();
+        let old_main = self.project.main_pane;
+        let old_active = self.project.active_pane;
+        let navigation = order.iter().copied().find(|id| {
+            Some(*id) != old_main
+                && self.project.panes[id]
+                    .tabs
+                    .iter()
+                    .any(|tab| matches!(tab, SavedTab::Panel { panel } if NAV.contains(panel)))
+        });
+        let right = old_main
+            .filter(|id| self.project.panes.contains_key(id))
+            .or_else(|| order.iter().copied().find(|id| Some(*id) != navigation));
+        let mut fresh = || {
+            let id = (1..=MAX_INITIAL_DOCK_PANE_ID)
+                .find(|id| !self.allocated_pane_ids.contains(id))
+                .ok_or("unavailable: no pane identifiers remain")?;
+            self.allocated_pane_ids.insert(id);
+            Ok::<_, String>(id)
+        };
+        let navigation = match navigation {
+            Some(id) => id,
+            None => fresh()?,
+        };
+        let right = match right {
+            Some(id) => id,
+            None => fresh()?,
+        };
+        let mut slots: [Option<SavedTab>; 5] = Default::default();
+        let mut others = Vec::new();
+        let (mut nav_shown, mut nav_active, mut other_shown, mut other_main, mut other_active) =
+            (None, None, None, None, None);
+        for id in order {
+            let pane = &self.project.panes[&id];
+            for tab in &pane.tabs {
+                let selected = pane.active_tab_key.as_deref() == Some(tab.key().as_str());
+                let slot = match tab {
+                    SavedTab::Panel { panel } => NAV.iter().position(|kind| kind == panel),
+                    _ => None,
+                }
+                .filter(|index| slots[*index].is_none());
+                if let Some(index) = slot {
+                    if selected {
+                        nav_shown.get_or_insert(index);
+                        if id == old_active {
+                            nav_active = Some(index);
+                        }
+                    }
+                    slots[index] = Some(tab.clone());
+                } else {
+                    if selected {
+                        other_shown.get_or_insert(others.len());
+                        if Some(id) == old_main {
+                            other_main = Some(others.len());
+                        }
+                        if id == old_active {
+                            other_active = Some(others.len());
+                        }
+                    }
+                    others.push(tab.clone());
+                }
+            }
+        }
+        let nav_tabs: Vec<_> = NAV
+            .into_iter()
+            .zip(slots)
+            .map(|(panel, tab)| tab.unwrap_or(SavedTab::Panel { panel }))
+            .collect();
+        let active = if nav_active.is_some() {
+            navigation
+        } else {
+            right
+        };
+        let nav_key = nav_tabs[nav_active.or(nav_shown).unwrap_or(0)].key();
+        let other_index = if nav_active.is_some() {
+            other_main.or(other_shown)
+        } else {
+            other_active.or(other_main).or(other_shown)
+        };
+        let other_key = other_index
+            .and_then(|index| others.get(index))
+            .map(SavedTab::key);
+        self.project.panes = BTreeMap::from([
+            (
+                navigation,
+                SavedPane {
+                    tabs: nav_tabs,
+                    active_tab_key: Some(nav_key),
+                    ..Default::default()
+                },
+            ),
+            (
+                right,
+                SavedPane {
+                    tabs: others,
+                    active_tab_key: other_key,
+                    ..Default::default()
+                },
+            ),
+        ]);
+        self.project.layout = Layout::navigation_beside(navigation, Layout::Pane(right));
+        self.project.main_pane = Some(right);
+        self.project.active_pane = active;
+        self.project.locked_panes = Some(HashSet::from([navigation]));
+        self.project.panels_initialized = true;
         self.project.normalize()?;
         Ok(self.dock(self.extent.unwrap_or(DEFAULT_EXTENT)))
     }
@@ -1196,6 +1411,107 @@ mod tests {
         }
         project.normalize().unwrap();
         project
+    }
+
+    #[test]
+    fn window_panel_commands_reuse_identity_and_files_find_the_navigation_pane() {
+        let mut model = LayoutModel::new(fixture(Layout::Pane(1), &[(1, &["first"])])).unwrap();
+        model.open_panel(PanelKind::Projects).unwrap();
+        model.split_active(false).unwrap();
+        let work = model.project().active_pane;
+        assert_ne!(work, 1);
+        model.open_panel(PanelKind::Files).unwrap();
+        assert_eq!(model.project().active_pane, 1);
+        assert_eq!(
+            model.project().panes[&1].active_tab_key.as_deref(),
+            Some("panel:files")
+        );
+        model.select_pane(work).unwrap();
+        model.open_panel(PanelKind::Files).unwrap();
+        assert_eq!(
+            model
+                .project()
+                .panes
+                .values()
+                .flat_map(|pane| &pane.tabs)
+                .filter(|tab| tab.key() == "panel:files")
+                .count(),
+            1
+        );
+        model.open_panel(PanelKind::Settings).unwrap();
+        model.close_active(false).unwrap();
+        assert!(
+            model
+                .project()
+                .panes
+                .values()
+                .flat_map(|pane| &pane.tabs)
+                .any(|tab| tab.key() == "shell:first")
+        );
+        assert!(
+            !model
+                .project()
+                .panes
+                .values()
+                .flat_map(|pane| &pane.tabs)
+                .any(|tab| tab.key() == "panel:settings")
+        );
+        model.toggle_lock(1).unwrap();
+        let before = model.storage_project();
+        assert!(
+            model
+                .close_active(true)
+                .unwrap_err()
+                .starts_with("refused:")
+        );
+        assert_eq!(model.storage_project(), before);
+        assert!(model.open_panel(PanelKind::Dashboard).is_err());
+    }
+
+    #[test]
+    fn default_layout_command_keeps_sessions_selection_and_is_idempotent() {
+        let mut model =
+            LayoutModel::new(fixture(Layout::Pane(7), &[(7, &["first", "second"])])).unwrap();
+        model.open_panel(PanelKind::Settings).unwrap();
+        model.select_panel("shell:second").unwrap();
+        model.default_layout().unwrap();
+        let project = model.storage_project();
+        let navigation = project.layout.first_pane();
+        let main = project.main_pane.unwrap();
+        assert_eq!(main, 7);
+        assert_eq!(project.active_pane, main);
+        assert_eq!(
+            project.panes[&main].active_tab_key.as_deref(),
+            Some("shell:second")
+        );
+        assert_eq!(
+            project.panes[&main]
+                .tabs
+                .iter()
+                .map(SavedTab::key)
+                .collect::<Vec<_>>(),
+            ["shell:first", "shell:second", "panel:settings"]
+        );
+        assert_eq!(
+            project.panes[&navigation]
+                .tabs
+                .iter()
+                .map(SavedTab::key)
+                .collect::<Vec<_>>(),
+            [
+                "panel:projects",
+                "panel:files",
+                "panel:worktrees",
+                "panel:tasks",
+                "panel:shells"
+            ]
+        );
+        assert_eq!(
+            project.effective_locked_panes(),
+            HashSet::from([navigation])
+        );
+        model.default_layout().unwrap();
+        assert_eq!(model.storage_project(), project);
     }
 
     fn split(axis: Axis, ratio: f32, first: Layout, second: Layout) -> Layout {

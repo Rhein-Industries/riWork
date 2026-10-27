@@ -1,0 +1,5 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Finished `dev` profile [unoptimized] target(s) in 0.67s
+     Running `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/examples/p1_fixture_home --scenario p1-restore --out /private/tmp/rww2-mgw2p1ln/home --executable /private/tmp/riwork-p1-integration-mkzwamt7/target/debug/riwork`

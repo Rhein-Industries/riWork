@@ -1,0 +1,14 @@
+{
+  "elapsed_ms": 2097,
+  "predicates": [
+    {
+      "index": 0,
+      "observed_json": "{\"contains_untrusted_region\":false,\"elements_complete\":false,\"matches\":0}",
+      "status": "unknown",
+      "unknown_reason": "observation_unavailable"
+    }
+  ],
+  "samples": 11,
+  "stable": false,
+  "status": "unknown"
+}
