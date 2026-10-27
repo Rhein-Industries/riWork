@@ -361,6 +361,19 @@ pub struct SessionsSnapshot {
     pub sessions: Vec<ShellSessionDto>,
 }
 
+/// Local shell creation only. Attaching an existing id never calls this API.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsObject)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateSessionRequest {
+    pub project_id: String,
+    #[prop(skip_none)]
+    pub worktree_id: Option<String>,
+    #[prop(skip_none)]
+    pub cwd: Option<String>,
+    #[prop(skip_none)]
+    pub command: Option<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsObject)]
 #[serde(rename_all = "camelCase")]
 pub struct ShellSessionDto {
@@ -449,6 +462,7 @@ macro_rules! snapshot_js_value {
 
 snapshot_js_value!(StoreState, "StoreEvent");
 snapshot_js_value!(SessionsSnapshot, "SessionsEvent");
+snapshot_js_value!(crate::appearance::AppearanceSnapshot, "AppearanceEvent");
 
 #[cfg(test)]
 mod tests {

@@ -1,0 +1,67 @@
+   Compiling riwork-nsh-terminal v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p2-terminals/crates/riwork-nsh-terminal)
+   Compiling riwork-desktop v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p2-terminals/crates/riwork-desktop)
+    Finished `test` profile [unoptimized] target(s) in 8.06s
+     Running unittests src/nsh_main.rs (target/debug/deps/riwork-2e19cbe531d05392)
+
+running 20 tests
+test nsh_host::tests::runtime_frames_keep_the_existing_display_local_top_left_coordinates ... ok
+test nsh_bundle::tests::an_explicit_bundle_path_is_absolute_and_never_falls_back_to_source ... ok
+test nsh_bundle::tests::missing_real_bundle_reports_the_build_recipe_without_a_bootstrap_fallback ... ok
+test nsh_menus::tests::close_tab_and_font_keys_preserve_their_modifier_boundaries ... ok
+test nsh_host::tests::url_routing_and_window_arguments_are_bounded ... ok
+test nsh_menus::tests::frozen_menu_has_only_riwork_edit_and_view_and_no_close_window_action ... ok
+test nsh_host::tests::params_follow_frozen_schema_and_omit_restore_on_new_windows ... ok
+test nsh_menus::tests::dock_labels_are_stable_unique_and_keep_the_last_key_window_marked ... ok
+test nsh_runtime::tests::restore_acknowledgements_are_per_window_and_idempotent ... ok
+test nsh_runtime::tests::restore_matches_targets_even_if_window_order_changes ... ok
+test nsh_host::tests::closing_a_loading_window_rejects_late_layout_registration ... ok
+test nsh_host::tests::runtime_publication_reads_current_layout_without_an_appkit_state_event ... ok
+test nsh_runtime::tests::abandoned_replacement_does_not_remove_running_socket ... ok
+test nsh_runtime::tests::forwards_path_and_reopen_without_creating_a_second_primary ... ok
+test nsh_runtime::tests::replacement_keeps_old_socket_and_prevents_handoff_race ... ok
+test nsh_host::tests::close_flushes_the_last_accepted_edit_before_the_window_goes ... ok
+test nsh_runtime::tests::reclaims_stale_socket_but_never_deletes_a_regular_file ... ok
+test nsh_host::tests::failed_flush_keeps_the_snapshot_and_cancel_restores_editing ... ok
+test nsh_host::tests::quit_flushes_every_layout_session_and_the_global_state_from_rust ... ok
+test nsh_runtime::tests::publishes_and_unregisters_only_in_explicit_fixture_registry ... ok
+
+test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running tests/cli_contract.rs (target/debug/deps/cli_contract-16e4694ba94fb3de)
+
+running 5 tests
+test direct_dispatch_reference ... ok
+test mcp_stdio_keeps_protocol_bytes_without_gui_initialization ... ok
+test project_list_keeps_text_and_json_bytes_for_a_real_isolated_project ... ok
+test help_version_and_errors_keep_the_dispatchers_bytes_and_exit_status ... ok
+test chat_host_serves_in_the_same_executable_and_exits_headlessly ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.79s
+
+     Running unittests src/lib.rs (target/debug/deps/riwork_nsh_terminal-af4a4524afaf2d03)
+
+running 15 tests
+test policy::tests::the_recheck_targets_the_next_terminal_to_come_due ... ok
+test config::tests::colors_reject_configuration_injection_and_incomplete_palettes ... ok
+test policy::tests::a_frozen_screen_releases_nothing ... ok
+test policy::tests::a_frozen_screen_with_nothing_hidden_needs_no_recheck ... ok
+test policy::tests::a_pinned_terminal_alone_is_only_polled_slowly ... ok
+test policy::tests::a_tab_without_a_surface_is_left_alone ... ok
+test policy::tests::a_pinned_terminal_is_kept_and_does_not_take_a_warm_slot ... ok
+test policy::tests::every_panes_active_tab_is_shown_and_only_the_others_are_judged ... ok
+test policy::tests::a_warm_terminal_is_released_after_the_warm_expiry ... ok
+test policy::tests::nothing_hidden_means_nothing_to_recheck ... ok
+test policy::tests::focus_mode_shows_only_the_active_panes_tab ... ok
+test policy::tests::releases_are_spread_over_passes ... ok
+test policy::tests::tabs_hidden_at_the_same_moment_keep_the_newer_tab_warm ... ok
+test policy::tests::the_warm_set_keeps_the_most_recently_visible_hidden_terminals ... ok
+test policy::tests::the_grace_period_ends_exactly_at_thirty_seconds ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests riwork_nsh_terminal
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

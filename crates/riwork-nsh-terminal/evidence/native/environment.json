@@ -1,0 +1,10 @@
+{
+  "platform": "Darwin-25.2.0-arm64-arm-64bit-Mach-O",
+  "machine": "arm64",
+  "worktree": "/Users/dominik/orca/projects/riWork-nsh-p2-terminals",
+  "branch": "nsh-p2-terminals",
+  "sw_vers": "ProductName:\t\tmacOS\nProductVersion:\t\t26.2\nBuildVersion:\t\t25C56\n",
+  "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+  "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+  "tmux": "tmux 3.6a"
+}

@@ -191,3 +191,130 @@ async fn async_reads_hop_off_the_callers_thread_and_errors_are_coded() {
         "io: fixture error"
     );
 }
+
+#[tokio::test]
+async fn one_settings_watcher_pushes_terminal_theme_changes_to_two_windows() {
+    let fixture = tempfile::tempdir().unwrap();
+    let service = start(fixture.path(), Arc::new(FakeSessions::default())).await;
+    let first = service.subscribe_appearance().await.unwrap();
+    let second = service.subscribe_appearance().await.unwrap();
+    assert_eq!(
+        first.recv().await.unwrap().data.terminal_dark["source"],
+        "ghostty"
+    );
+    second.recv().await.unwrap();
+    riwork_core::settings::SettingsStore::open(fixture.path())
+        .unwrap()
+        .update(|settings| {
+            settings.theme = riwork_core::theme::ThemeChoice::Catppuccin;
+            settings.tab_close_behavior = riwork_core::settings::TabCloseBehavior::Detach;
+        })
+        .unwrap();
+    let changed = tokio::time::timeout(Duration::from_secs(3), first.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(changed.data.terminal_dark["background"], "#1e1e2e");
+    assert_eq!(changed.data.tab_close_behavior, "detach");
+    assert_eq!(second.recv().await.unwrap(), changed);
+    // Equal settings never generate a duplicate projection.
+    riwork_core::settings::SettingsStore::open(fixture.path())
+        .unwrap()
+        .update(|_| {})
+        .unwrap();
+    assert!(
+        tokio::time::timeout(Duration::from_millis(150), first.recv())
+            .await
+            .is_err()
+    );
+}
+
+struct WritableSessions {
+    state: Mutex<SessionsSnapshot>,
+    forbidden: ThreadId,
+    fail_close: AtomicBool,
+}
+impl SessionsBackend for WritableSessions {
+    fn list(&self) -> Result<SessionsSnapshot> {
+        assert_ne!(std::thread::current().id(), self.forbidden);
+        Ok(self.state.lock().unwrap().clone())
+    }
+    fn create(
+        &self,
+        request: riwork_nsh_native::dto::CreateSessionRequest,
+    ) -> Result<ShellSessionDto> {
+        assert_ne!(std::thread::current().id(), self.forbidden);
+        let mut value = session();
+        value.project_id = Some(request.project_id);
+        value.alive = true;
+        self.state.lock().unwrap().sessions.push(value.clone());
+        Ok(value)
+    }
+    fn close(&self, id: &str) -> Result<()> {
+        assert_ne!(std::thread::current().id(), self.forbidden);
+        if self.fail_close.load(Ordering::SeqCst) {
+            bail!("fixture close failed");
+        }
+        self.state
+            .lock()
+            .unwrap()
+            .sessions
+            .retain(|session| session.id != id);
+        Ok(())
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn local_mutations_hop_off_thread_publish_immediately_and_do_not_hide_failed_exit() {
+    let fixture = tempfile::tempdir().unwrap();
+    let sessions = Arc::new(WritableSessions {
+        state: Mutex::new(SessionsSnapshot::default()),
+        forbidden: std::thread::current().id(),
+        fail_close: AtomicBool::new(false),
+    });
+    let service = start(fixture.path(), sessions.clone()).await;
+    let subscription = service.subscribe_sessions().await.unwrap();
+    assert!(subscription.recv().await.unwrap().data.sessions.is_empty());
+    let created = service
+        .sessions_create(riwork_nsh_native::dto::CreateSessionRequest {
+            project_id: "project-fixture".into(),
+            worktree_id: None,
+            cwd: None,
+            command: None,
+        })
+        .await
+        .unwrap();
+    let update = tokio::time::timeout(Duration::from_secs(1), subscription.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(update.data.sessions, [created.clone()]);
+    sessions.fail_close.store(true, Ordering::SeqCst);
+    assert!(
+        service
+            .sessions_close(created.id.clone())
+            .await
+            .unwrap_err()
+            .starts_with("io:")
+    );
+    assert_eq!(
+        service.sessions_list().await.unwrap().sessions,
+        [created.clone()]
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(150), subscription.recv())
+            .await
+            .is_err()
+    );
+    sessions.fail_close.store(false, Ordering::SeqCst);
+    service.sessions_close(created.id).await.unwrap();
+    assert!(
+        tokio::time::timeout(Duration::from_secs(1), subscription.recv())
+            .await
+            .unwrap()
+            .unwrap()
+            .data
+            .sessions
+            .is_empty()
+    );
+}

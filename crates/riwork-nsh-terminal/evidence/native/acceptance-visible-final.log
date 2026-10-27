@@ -1,0 +1,23 @@
+{"root": "/private/tmp/rwnsh-p2-upf_p6zi", "manifest": "/private/tmp/rwnsh-p2-upf_p6zi/manifest.json"}
+{"ready": true, "pid": 69604, "root": "/private/tmp/rwnsh-p2-upf_p6zi", "windows": [{"layout": null, "projectId": "ed0772f8-7226-4ba4-9a54-495bb3935b63", "windowId": "6ba3a7c0-194c-4658-b666-63e1e9693dbe", "windowNumber": 6574}, {"layout": {"active_pane": 1, "detached_shell_ids": [], "layout": {"split": {"axis": "stacked", "first": {"pane": 1}, "ratio": 0.5, "second": {"pane": 2}}}, "locked_panes": [], "panels_initialized": true, "panes": {"1": {"active_shell_id": "c60b4a1b-93b5-460e-8c88-9eafaec56b36", "active_tab_key": "shell:c60b4a1b-93b5-460e-8c88-9eafaec56b36", "shell_ids": ["c60b4a1b-93b5-460e-8c88-9eafaec56b36"], "tab_edge": "top", "tabs": [{"kind": "shell", "shell_id": "c60b4a1b-93b5-460e-8c88-9eafaec56b36"}]}, "2": {"active_shell_id": "63794f23-da1d-4624-8650-b2fabd5a8672", "active_tab_key": "shell:63794f23-da1d-4624-8650-b2fabd5a8672", "shell_ids": ["63794f23-da1d-4624-8650-b2fabd5a8672"], "tab_edge": "top", "tabs": [{"kind": "shell", "shell_id": "63794f23-da1d-4624-8650-b2fabd5a8672"}]}}, "selected_task_id": null, "selected_worktree_id": null, "sidebar_visible": false, "window_size": {"height": 720.0, "width": 960.0}}, "projectId": "c63688f7-bc3d-48f2-95b3-3a0db62364a3", "windowId": "dbdb9290-89da-4a2b-8e32-de28362b1040", "windowNumber": 6573}], "cua_policy": "RiWork Cua.ai Driver MCP read-only with explicit fixture PID"}
+{"cycle": 1, "elapsed_ms": 1190.0869999662973, "clients": 4}
+{"cycle": 2, "elapsed_ms": 968.5444160131738, "clients": 4}
+{"cycle": 3, "elapsed_ms": 968.1189580005594, "clients": 4}
+{"cycle": 4, "elapsed_ms": 987.0410419534892, "clients": 4}
+{"cycle": 5, "elapsed_ms": 997.0419160090387, "clients": 4}
+{"cycle": 6, "elapsed_ms": 990.5090830288827, "clients": 4}
+{"cycle": 7, "elapsed_ms": 947.4959169747308, "clients": 4}
+{"cycle": 8, "elapsed_ms": 1005.4315410088748, "clients": 4}
+{"cycle": 9, "elapsed_ms": 967.8971670218743, "clients": 4}
+{"cycle": 10, "elapsed_ms": 1097.8888330282643, "clients": 4}
+{"cycle": 11, "elapsed_ms": 1087.9696250194684, "clients": 4}
+{"cycle": 12, "elapsed_ms": 1091.5250409743749, "clients": 4}
+{"cycle": 13, "elapsed_ms": 973.0033749947324, "clients": 4}
+{"cycle": 14, "elapsed_ms": 1006.5269580227323, "clients": 4}
+{"cycle": 15, "elapsed_ms": 1028.6429999978282, "clients": 4}
+{"cycle": 16, "elapsed_ms": 959.2684580129571, "clients": 4}
+{"cycle": 17, "elapsed_ms": 1007.0527499774471, "clients": 4}
+{"cycle": 18, "elapsed_ms": 1113.7603329843841, "clients": 4}
+{"cycle": 19, "elapsed_ms": 1087.4084170209244, "clients": 4}
+{"cycle": 20, "elapsed_ms": 1168.3461659704335, "clients": 4}
+{"status": "passed", "manifest": "/private/tmp/rwnsh-p2-upf_p6zi/manifest.json"}

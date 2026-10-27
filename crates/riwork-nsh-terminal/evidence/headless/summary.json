@@ -1,0 +1,104 @@
+{
+  "verification_environment": "isolated fixture homes only",
+  "status": "passed",
+  "cargo_totals": {
+    "passed": 1728,
+    "failed": 0,
+    "ignored": 188,
+    "result_lines": 33
+  },
+  "commands": [
+    {
+      "name": "nsh-version",
+      "argv": [
+        "/tmp/riwork-nsh-toolchain-60f8aec4.18l3zV/nsh-cli-0.3.0/bin/nsh",
+        "--version"
+      ],
+      "exit_code": 0,
+      "duration_seconds": 0.021
+    },
+    {
+      "name": "rustc-version",
+      "argv": [
+        "rustc",
+        "--version"
+      ],
+      "exit_code": 0,
+      "duration_seconds": 0.035
+    },
+    {
+      "name": "cargo-version",
+      "argv": [
+        "cargo",
+        "--version"
+      ],
+      "exit_code": 0,
+      "duration_seconds": 0.072
+    },
+    {
+      "name": "cargo-tests",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-core",
+        "-p",
+        "riwork-engine",
+        "-p",
+        "riwork-cli",
+        "-p",
+        "riwork-desktop",
+        "-p",
+        "riwork-nsh-native",
+        "-p",
+        "riwork-nsh-workspace",
+        "--locked",
+        "--offline"
+      ],
+      "exit_code": 0,
+      "duration_seconds": 189.76
+    },
+    {
+      "name": "seed-nsh-fixture",
+      "argv": [
+        "cargo",
+        "run",
+        "-p",
+        "riwork-nsh-workspace",
+        "--example",
+        "seed_fixture",
+        "--locked",
+        "--offline",
+        "--",
+        "/private/tmp/riwork-p2-full-checks/headless-m0jdlk4x/nsh-home"
+      ],
+      "exit_code": 0,
+      "duration_seconds": 1.336
+    },
+    {
+      "name": "nsh-check",
+      "argv": [
+        "/tmp/riwork-nsh-toolchain-60f8aec4.18l3zV/nsh-cli-0.3.0/bin/nsh",
+        "check",
+        "apps/riwork",
+        "--tsc",
+        "/Users/dominik/Library/Caches/nsh/typescript-7.0.2-darwin-arm64/package/lib/tsc"
+      ],
+      "exit_code": 0,
+      "duration_seconds": 3.503
+    },
+    {
+      "name": "nsh-test",
+      "argv": [
+        "/tmp/riwork-nsh-toolchain-60f8aec4.18l3zV/nsh-cli-0.3.0/bin/nsh",
+        "test",
+        "apps/riwork",
+        "--junit",
+        "/private/tmp/riwork-p2-full-checks/headless-m0jdlk4x/nsh.xml"
+      ],
+      "exit_code": 0,
+      "duration_seconds": 4.947
+    }
+  ],
+  "scope_note": "Full headless run precedes final native rendering correction and final 16-test app mount regression; native acceptance is recorded separately."
+}

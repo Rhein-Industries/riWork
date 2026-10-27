@@ -1,0 +1,3 @@
+✓ checked riwork-nsh-native (1.5s)
+✓ built the Rust crate riwork-nsh-native (245ms)
+warn riwork/native exports items without a doc comment, which TSX sees in its declarations: Appearance.snapshot, Appearance.subscribe, Sessions.list, Sessions.create, Sessions.subscribe, Store.snapshot, Store.search, Store.inspectProject, Subscription.close

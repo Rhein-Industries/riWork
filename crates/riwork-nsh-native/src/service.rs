@@ -14,16 +14,22 @@ use anyhow::{Context, Result};
 use notify::{EventKind, RecursiveMode, Watcher};
 
 use crate::{
+    appearance::{self, AppearanceSnapshot},
     backend::{
-        CoreStoreBackend, EngineSessionsBackend, SessionsBackend, StoreBackend, Unavailable,
+        CoreStoreBackend, EngineSessionsBackend, Refused, SessionsBackend, StoreBackend,
+        Unavailable,
     },
-    dto::{ProjectInspectionDto, SearchHitDto, SessionsSnapshot, StoreState},
+    dto::{
+        CreateSessionRequest, ProjectInspectionDto, SearchHitDto, SessionsSnapshot,
+        ShellSessionDto, StoreState,
+    },
     hub::{Hub, TopicSubscription},
 };
 
 pub const SESSION_SAMPLE_INTERVAL: Duration = Duration::from_secs(2);
 const STORE: u8 = 1;
 const SESSIONS: u8 = 2;
+const APPEARANCE: u8 = 4;
 
 // Kept strongly for the life of the process, never once per AppView. The home's
 // resolution and all setup happen inside initialize's blocking-pool hop.
@@ -104,7 +110,9 @@ pub(crate) fn io_error(error: impl std::fmt::Display) -> String {
 }
 
 fn backend_error(error: anyhow::Error) -> String {
-    let code = if error.is::<Unavailable>() {
+    let code = if error.is::<Refused>() {
+        "refused"
+    } else if error.is::<Unavailable>() {
         "unavailable"
     } else {
         "io"
@@ -118,6 +126,7 @@ pub struct ProcessService {
     pub(crate) sessions: Arc<dyn SessionsBackend>,
     store_hub: Arc<Hub<StoreState>>,
     sessions_hub: Arc<Hub<SessionsSnapshot>>,
+    appearance_hub: Arc<Hub<AppearanceSnapshot>>,
     stop: Arc<AtomicBool>,
     wake: SyncSender<()>,
     worker: Option<JoinHandle<()>>,
@@ -158,6 +167,58 @@ impl ProcessService {
         blocking(move || backend.list().map_err(backend_error)).await
     }
 
+    pub async fn sessions_create(
+        self: &Arc<Self>,
+        request: CreateSessionRequest,
+    ) -> Result<ShellSessionDto, String> {
+        let backend = self.sessions.clone();
+        let hub = self.sessions_hub.clone();
+        blocking(move || {
+            if request.project_id.trim().is_empty() {
+                return Err("invalid: projectId is required".into());
+            }
+            let created = backend.create(request).map_err(backend_error)?;
+            backend.invalidate_sample();
+            // Successful mutation is returned even if a following inventory
+            // query fails; the sampler retries without accidentally recreating.
+            if let Ok(snapshot) = backend.list() {
+                hub.publish(snapshot);
+            }
+            Ok(created)
+        })
+        .await
+    }
+
+    pub async fn sessions_close(self: &Arc<Self>, id: String) -> Result<(), String> {
+        let backend = self.sessions.clone();
+        let hub = self.sessions_hub.clone();
+        blocking(move || {
+            backend.close(&id).map_err(backend_error)?;
+            backend.invalidate_sample();
+            if let Ok(snapshot) = backend.list() {
+                hub.publish(snapshot);
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    pub async fn tabs_update(
+        self: &Arc<Self>,
+        project_id: String,
+        update: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        let backend = self.sessions.clone();
+        blocking(move || {
+            let update =
+                serde_json::from_value(update).map_err(|error| format!("invalid: {error}"))?;
+            backend
+                .update_tabs(&project_id, &update)
+                .map_err(backend_error)
+        })
+        .await
+    }
+
     /// Blocking constructor and test seam. Production uses initialize(), whose
     /// OnceLock guarantees one instance. Tests pass fixed isolated homes and fakes.
     pub fn with_backends(
@@ -177,7 +238,7 @@ impl ProcessService {
         let mut watcher =
             notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
                 let flags = match event {
-                    Ok(event) if event.need_rescan() => STORE | SESSIONS,
+                    Ok(event) if event.need_rescan() => STORE | SESSIONS | APPEARANCE,
                     Ok(event) if !matches!(event.kind, EventKind::Access(_)) => event
                         .paths
                         .iter()
@@ -186,7 +247,7 @@ impl ProcessService {
                     Err(error) => {
                         *watch_error.lock().unwrap_or_else(PoisonError::into_inner) =
                             Some(format!("home watcher: {error}"));
-                        STORE | SESSIONS
+                        STORE | SESSIONS | APPEARANCE
                     }
                 };
                 if flags != 0 {
@@ -208,12 +269,21 @@ impl ProcessService {
                 Hub::pending()
             }
         });
+        let appearance_hub = Arc::new(match appearance::load(&home) {
+            Ok(snapshot) => Hub::new(snapshot),
+            Err(error) => {
+                *last_error.lock().unwrap_or_else(PoisonError::into_inner) = Some(error);
+                Hub::pending()
+            }
+        });
         let stop = Arc::new(AtomicBool::new(false));
         let worker_stop = stop.clone();
         let worker_store = store.clone();
         let worker_sessions = sessions.clone();
         let worker_store_hub = store_hub.clone();
         let worker_sessions_hub = sessions_hub.clone();
+        let worker_appearance_hub = appearance_hub.clone();
+        let worker_home = home.clone();
         let worker_error = last_error.clone();
         let worker = thread::Builder::new()
             .name("riwork-native-service".into())
@@ -226,6 +296,15 @@ impl ProcessService {
                         break;
                     }
                     let flags = dirty.swap(0, Ordering::AcqRel);
+                    if flags & APPEARANCE != 0 {
+                        match appearance::load(&worker_home) {
+                            Ok(snapshot) => worker_appearance_hub.publish(snapshot),
+                            Err(error) => {
+                                *worker_error.lock().unwrap_or_else(PoisonError::into_inner) =
+                                    Some(error)
+                            }
+                        }
+                    }
                     if flags & STORE != 0 {
                         match worker_store.snapshot() {
                             Ok(snapshot) => worker_store_hub.publish(snapshot),
@@ -257,6 +336,7 @@ impl ProcessService {
             sessions,
             store_hub,
             sessions_hub,
+            appearance_hub,
             stop,
             wake,
             worker: Some(worker),
@@ -275,6 +355,18 @@ impl ProcessService {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
+    }
+
+    pub async fn appearance_snapshot(self: &Arc<Self>) -> Result<AppearanceSnapshot, String> {
+        let home = self.home.clone();
+        blocking(move || appearance::load(&home).map_err(io_error)).await
+    }
+
+    pub async fn subscribe_appearance(
+        self: &Arc<Self>,
+    ) -> Result<TopicSubscription<AppearanceSnapshot>, String> {
+        let hub = self.appearance_hub.clone();
+        blocking(move || Ok(hub.subscribe())).await
     }
 
     pub async fn subscribe_store(
@@ -305,6 +397,8 @@ impl Drop for ProcessService {
 fn relevant(path: &Path, home: &Path) -> u8 {
     if path == home.join("state.json") {
         STORE
+    } else if path == home.join("settings.json") {
+        APPEARANCE
     } else if path == home.join("sessions.json")
         || path == home.join("orchestrator-wakes.json")
         || path.starts_with(home.join("agent-activity"))

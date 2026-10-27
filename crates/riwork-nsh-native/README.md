@@ -1,6 +1,6 @@
-# riwork/native (Phase 1 integration)
+# riwork/native (Phase 2a local terminals)
 
-NSH 0.3.0 bridge for the read side of the frozen contract in
+NSH 0.3.0 bridge for the service and local-shell parts of the frozen contract in
 [`docs/nsh-contracts.md` §1](../../docs/nsh-contracts.md). The root workspace's
 `crates/*` member pattern includes this crate; `Cargo.lock` pins its dependencies.
 It does not depend on the desktop crate or an AppKit host.
@@ -21,10 +21,22 @@ Implemented JavaScript surface:
   same inventory fields.
 - `Sessions.subscribe(listener)` pushes `SessionsEvent` snapshots from the
   shared session sampler.
+- `Sessions.create({ projectId, worktreeId?, cwd?, command? })` creates an explicit
+  user shell; omitted cwd resolves the worktree/project root. `Sessions.close(id)`
+  is explicit Exit and refuses to proceed unless shared membership hides first.
+- `Tabs.update(projectId, update)` edits existing local shell membership. Detach
+  hides before local removal, and explicit reopen unhides before placement. An
+  unavailable shared store permits legacy local Detach, but never Exit.
+- `Appearance.snapshot()` / `subscribe(listener)` project terminal theme colors
+  and close preference from core settings. The one home watcher pushes live
+  settings changes; the native component owns Ghostty config parsing/watching.
 - `Subscription.close()` is idempotent. JS owner disposal, VM shutdown and
-  garbage collection also cancel delivery and close the listener queue.
+  garbage collection also cancel delivery and close the listener queue. Explicit
+  close unregisters owner cleanup while JS is alive; finalization only aborts,
+  because NSH clears context state before freeing some retained cleanup objects.
 - `Layouts.openSession(request)` and `LayoutSession` expose workspace layout
-  projection, edits and persistence. The host uses the Rust-only
+  projection, edits and persistence, including local `openShell`/`detachShell`.
+  Reopening within a window remembers a surviving unlocked former pane. The host uses the Rust-only
   `riwork_nsh_workspace::host_layouts` handoff for lifecycle barriers.
 
 DTOs and generated declarations use camelCase. Core persistence is unchanged.

@@ -1,0 +1,908 @@
+{
+  "ok": true,
+  "terminalStates": {
+    "pending": 0,
+    "states": [
+      {
+        "active": true,
+        "alive": true,
+        "attaching": false,
+        "closing": false,
+        "id": 1,
+        "shellId": "c60b4a1b-93b5-460e-8c88-9eafaec56b36",
+        "target": "c60b4a1b-93b5-460e-8c88-9eafaec56b36",
+        "visible": true,
+        "windowNumber": 6573
+      },
+      {
+        "active": true,
+        "alive": true,
+        "attaching": false,
+        "closing": false,
+        "id": 2,
+        "shellId": "63794f23-da1d-4624-8650-b2fabd5a8672",
+        "target": "63794f23-da1d-4624-8650-b2fabd5a8672",
+        "visible": true,
+        "windowNumber": 6573
+      },
+      {
+        "active": true,
+        "alive": true,
+        "attaching": false,
+        "closing": false,
+        "id": 3,
+        "shellId": "f629641f-1aa7-4565-ab23-b5dd125a9025",
+        "target": "f629641f-1aa7-4565-ab23-b5dd125a9025",
+        "visible": true,
+        "windowNumber": 6574
+      },
+      {
+        "active": true,
+        "alive": true,
+        "attaching": false,
+        "closing": false,
+        "id": 4,
+        "shellId": "26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c",
+        "target": "26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c",
+        "visible": true,
+        "windowNumber": 6574
+      }
+    ],
+    "trace": [
+      {
+        "data": {
+          "monotonicMs": 290781411.858
+        },
+        "event": "heartbeat",
+        "terminalId": 0
+      },
+      {
+        "data": {
+          "monotonicMs": 290781411.85899997
+        },
+        "event": "heartbeat",
+        "terminalId": 0
+      },
+      {
+        "data": {
+          "monotonicMs": 290781411.87399995
+        },
+        "event": "heartbeat",
+        "terminalId": 0
+      },
+      {
+        "data": {
+          "monotonicMs": 290781411.875
+        },
+        "event": "heartbeat",
+        "terminalId": 0
+      },
+      {
+        "data": {
+          "monotonicMs": 290781411.87700003
+        },
+        "event": "heartbeat",
+        "terminalId": 0
+      },
+      {
+        "data": {
+          "monotonicMs": 290781430.70600003
+        },
+        "event": "heartbeat",
+        "terminalId": 0
+      },
+      {
+        "data": {
+          "monotonicMs": 290781430.73399997
+        },
+        "event": "heartbeat",
+        "terminalId": 0
+      },
+      {
+        "data": {
+          "monotonicMs": 290781436.482
+        },
+        "event": "heartbeat",
+        "terminalId": 0
+      },
+      {
+        "data": {
+          "monotonicMs": 290781452.41999996
+        },
+        "event": "heartbeat",
+        "terminalId": 0
+      },
+      {
+        "data": {
+          "monotonicMs": 290781455.823
+        },
+        "event": "heartbeat",
+        "terminalId": 0
+      },
+      {
+        "data": {
+          "mainThread": true,
+          "monotonicMs": 290781468.871,
+          "phase": "created"
+        },
+        "event": "teardown",
+        "terminalId": 1
+      },
+      {
+        "data": {},
+        "event": "ready",
+        "terminalId": 1
+      },
+      {
+        "data": {
+          "mainThread": true,
+          "monotonicMs": 290781475.84000003,
+          "phase": "created"
+        },
+        "event": "teardown",
+        "terminalId": 2
+      },
+      {
+        "data": {},
+        "event": "ready",
+        "terminalId": 2
+      },
+      {
+        "data": {
+          "monotonicMs": 290781491.61899996
+        },
+        "event": "heartbeat",
+        "terminalId": 0
+      },
+      {
+        "data": {
+          "monotonicMs": 290781497.50200003
+        },
+        "event": "heartbeat",
+        "terminalId": 0
+      },
+      {
+        "data": {
+          "monotonicMs": 290781507.33400005
+        },
+        "event": "heartbeat",
+        "terminalId": 0
+      },
+      {
+        "data": {
+          "monotonicMs": 290781509.677
+        },
+        "event": "heartbeat",
+        "terminalId": 0
+      },
+      {
+        "data": {
+          "monotonicMs": 290781533.12600005
+        },
+        "event": "heartbeat",
+        "terminalId": 0
+      },
+      {
+        "data": {
+          "mainThread": true,
+          "monotonicMs": 290781540.607,
+          "phase": "created"
+        },
+        "event": "teardown",
+        "terminalId": 3
+      },
+      {
+        "data": {},
+        "event": "ready",
+        "terminalId": 3
+      },
+      {
+        "data": {
+          "mainThread": true,
+          "monotonicMs": 290781548.08500004,
+          "phase": "created"
+        },
+        "event": "teardown",
+        "terminalId": 4
+      },
+      {
+        "data": {},
+        "event": "ready",
+        "terminalId": 4
+      },
+      {
+        "data": {
+          "monotonicMs": 290781548.18799996
+        },
+        "event": "heartbeat",
+        "terminalId": 0
+      },
+      {
+        "data": {
+          "monotonicMs": 290781548.19
+        },
+        "event": "heartbeat",
+        "terminalId": 0
+      },
+      {
+        "data": {
+          "monotonicMs": 290781548.578
+        },
+        "event": "heartbeat",
+        "terminalId": 0
+      },
+      {
+        "data": {
+          "monotonicMs": 290781552.647
+        },
+        "event": "heartbeat",
+        "terminalId": 0
+      },
+      {
+        "data": {
+          "monotonicMs": 290781557.707
+        },
+        "event": "heartbeat",
+        "terminalId": 0
+      },
+      {
+        "data": {
+          "monotonicMs": 290781570.46199995
+        },
+        "event": "heartbeat",
+        "terminalId": 0
+      },
+      {
+        "data": {
+          "monotonicMs": 290781581.95199996
+        },
+        "event": "heartbeat",
+        "terminalId": 0
+      },
+      {
+        "data": {
+          "monotonicMs": 290781593.481
+        },
+        "event": "heartbeat",
+        "terminalId": 0
+      },
+      {
+        "data": {
+          "monotonicMs": 290781624.07
+        },
+        "event": "heartbeat",
+        "terminalId": 0
+      },
+      {
+        "data": {
+          "monotonicMs": 290781632.47
+        },
+        "event": "heartbeat",
+        "terminalId": 0
+      },
+      {
+        "data": {
+          "monotonicMs": 290781632.64199996
+        },
+        "event": "heartbeat",
+        "terminalId": 0
+      },
+      {
+        "data": {
+          "monotonicMs": 290781640.181
+        },
+        "event": "heartbeat",
+        "terminalId": 0
+      },
+      {
+        "data": {
+          "appTicks": 3,
+          "background": "#101820",
+          "closing": false,
+          "cols": 186,
+          "drawCalls": 0,
+          "foreground": "#c9d8e6",
+          "frame": "{{0, 0}, {1220, 395}}",
+          "frozen": false,
+          "hasWindow": 1,
+          "heightPx": 790,
+          "lastShown": true,
+          "layerBounds": "{{0, 0}, {1220, 395}}",
+          "layerClass": "IOSurfaceLayer",
+          "layerHasContents": 1,
+          "layerHidden": false,
+          "layerScale": 2,
+          "mainThread": true,
+          "monotonicMs": 290781652.851,
+          "originDetails": {
+            "available": 18,
+            "baseline": 14.5,
+            "cellHeight": 13,
+            "imeY": 381,
+            "left": 4,
+            "reason": "measured",
+            "remainder": 4,
+            "top": 4
+          },
+          "originX": 4,
+          "originY": 4,
+          "phase": "geometry-probe",
+          "renderRequests": 0,
+          "renderer": {
+            "differentPixels": 0,
+            "firstPixel": 4279375903,
+            "height": 790,
+            "iosurface": true,
+            "readable": 1,
+            "samples": 214896,
+            "width": 2440
+          },
+          "resolved": true,
+          "rows": 29,
+          "scale": 2,
+          "superviewClass": "NshView",
+          "viewHeight": 395,
+          "viewWidth": 1220,
+          "viewportText": "https://example.com/ RIWORK alpha-0 OUTPUT PRESSURE ------------------------------------------------\nhttps://example.com/ RIWORK alpha-0 OUTPUT PRESSURE ------------------------------------------------\nhttps://example.com/ RIWORK alpha-0 OUTPUT PRESSURE ------------------------------------------------",
+          "visibilityUpdates": 2,
+          "visible": true,
+          "visibleRect": "{{0, 0}, {1220, 395}}",
+          "wakeCount": 7,
+          "wantsLayer": true,
+          "widthPx": 2440,
+          "windowOcclusion": 8194
+        },
+        "event": "teardown",
+        "terminalId": 1
+      },
+      {
+        "data": {
+          "monotonicMs": 290781652.97499996
+        },
+        "event": "heartbeat",
+        "terminalId": 0
+      },
+      {
+        "data": {
+          "monotonicMs": 290781662.49
+        },
+        "event": "heartbeat",
+        "terminalId": 0
+      },
+      {
+        "data": {
+          "monotonicMs": 290781675.428
+        },
+        "event": "heartbeat",
+        "terminalId": 0
+      },
+      {
+        "data": {
+          "monotonicMs": 290781686.097
+        },
+        "event": "heartbeat",
+        "terminalId": 0
+      },
+      {
+        "data": {
+          "monotonicMs": 290781698.556
+        },
+        "event": "heartbeat",
+        "terminalId": 0
+      },
+      {
+        "data": {
+          "monotonicMs": 290781709.223
+        },
+        "event": "heartbeat",
+        "terminalId": 0
+      },
+      {
+        "data": {
+          "monotonicMs": 290781721.777
+        },
+        "event": "heartbeat",
+        "terminalId": 0
+      },
+      {
+        "data": {
+          "monotonicMs": 290781734.332
+        },
+        "event": "heartbeat",
+        "terminalId": 0
+      },
+      {
+        "data": {
+          "monotonicMs": 290781749.45
+        },
+        "event": "heartbeat",
+        "terminalId": 0
+      },
+      {
+        "data": {
+          "appTicks": 4,
+          "background": "#101820",
+          "closing": false,
+          "cols": 186,
+          "drawCalls": 0,
+          "foreground": "#c9d8e6",
+          "frame": "{{0, 0}, {1220, 395}}",
+          "frozen": false,
+          "hasWindow": 1,
+          "heightPx": 790,
+          "lastShown": true,
+          "layerBounds": "{{0, 0}, {1220, 395}}",
+          "layerClass": "IOSurfaceLayer",
+          "layerHasContents": 1,
+          "layerHidden": false,
+          "layerScale": 2,
+          "mainThread": true,
+          "monotonicMs": 290781757.86999995,
+          "originDetails": {
+            "available": 18,
+            "baseline": 14.5,
+            "cellHeight": 13,
+            "imeY": 381,
+            "left": 4,
+            "reason": "measured",
+            "remainder": 4,
+            "top": 4
+          },
+          "originX": 4,
+          "originY": 4,
+          "phase": "geometry-probe",
+          "renderRequests": 0,
+          "renderer": {
+            "differentPixels": 20337,
+            "firstPixel": 4279375903,
+            "height": 790,
+            "iosurface": true,
+            "readable": 1,
+            "samples": 214896,
+            "width": 2440
+          },
+          "resolved": true,
+          "rows": 29,
+          "scale": 2,
+          "superviewClass": "NshView",
+          "viewHeight": 395,
+          "viewWidth": 1220,
+          "viewportText": "https://example.com/ RIWORK alpha-0 OUTPUT PRESSURE ------------------------------------------------\nhttps://example.com/ RIWORK alpha-0 OUTPUT PRESSURE ------------------------------------------------\nhttps://example.com/ RIWORK alpha-0 OUTPUT PRESSURE ------------------------------------------------",
+          "visibilityUpdates": 2,
+          "visible": true,
+          "visibleRect": "{{0, 0}, {1220, 395}}",
+          "wakeCount": 8,
+          "wantsLayer": true,
+          "widthPx": 2440,
+          "windowOcclusion": 8194
+        },
+        "event": "teardown",
+        "terminalId": 1
+      },
+      {
+        "data": {
+          "monotonicMs": 290781757.96900004
+        },
+        "event": "heartbeat",
+        "terminalId": 0
+      },
+      {
+        "data": {
+          "monotonicMs": 290781769.908
+        },
+        "event": "heartbeat",
+        "terminalId": 0
+      },
+      {
+        "data": {
+          "monotonicMs": 290781782.902
+        },
+        "event": "heartbeat",
+        "terminalId": 0
+      },
+      {
+        "data": {
+          "monotonicMs": 290781795.323
+        },
+        "event": "heartbeat",
+        "terminalId": 0
+      },
+      {
+        "data": {
+          "monotonicMs": 290781805.963
+        },
+        "event": "heartbeat",
+        "terminalId": 0
+      },
+      {
+        "data": {
+          "appTicks": 3,
+          "background": "#101820",
+          "closing": false,
+          "cols": 186,
+          "drawCalls": 0,
+          "foreground": "#c9d8e6",
+          "frame": "{{0, 0}, {1220, 399}}",
+          "frozen": false,
+          "hasWindow": 1,
+          "heightPx": 798,
+          "lastShown": true,
+          "layerBounds": "{{0, 0}, {1220, 399}}",
+          "layerClass": "IOSurfaceLayer",
+          "layerHasContents": 1,
+          "layerHidden": false,
+          "layerScale": 2,
+          "mainThread": true,
+          "monotonicMs": 290781818.40599996,
+          "originDetails": {
+            "available": 9,
+            "baseline": 14.5,
+            "cellHeight": 13,
+            "imeY": 394,
+            "left": 4,
+            "reason": "measured",
+            "remainder": 4,
+            "top": 4
+          },
+          "originX": 4,
+          "originY": 4,
+          "phase": "geometry-probe",
+          "renderRequests": 0,
+          "renderer": {
+            "differentPixels": 20910,
+            "firstPixel": 4279375903,
+            "height": 798,
+            "iosurface": true,
+            "readable": 1,
+            "samples": 216524,
+            "width": 2440
+          },
+          "resolved": true,
+          "rows": 30,
+          "scale": 2,
+          "superviewClass": "NshView",
+          "viewHeight": 399,
+          "viewWidth": 1220,
+          "viewportText": "https://example.com/ RIWORK alpha-1 OUTPUT PRESSURE ------------------------------------------------\nhttps://example.com/ RIWORK alpha-1 OUTPUT PRESSURE ------------------------------------------------\nhttps://example.com/ RIWORK alpha-1 OUTPUT PRESSURE ------------------------------------------------",
+          "visibilityUpdates": 2,
+          "visible": true,
+          "visibleRect": "{{0, 0}, {1220, 399}}",
+          "wakeCount": 7,
+          "wantsLayer": true,
+          "widthPx": 2440,
+          "windowOcclusion": 8194
+        },
+        "event": "teardown",
+        "terminalId": 2
+      },
+      {
+        "data": {
+          "monotonicMs": 290781818.49799997
+        },
+        "event": "heartbeat",
+        "terminalId": 0
+      },
+      {
+        "data": {
+          "monotonicMs": 290781828.024
+        },
+        "event": "heartbeat",
+        "terminalId": 0
+      },
+      {
+        "data": {
+          "monotonicMs": 290781841.061
+        },
+        "event": "heartbeat",
+        "terminalId": 0
+      },
+      {
+        "data": {
+          "monotonicMs": 290781851.531
+        },
+        "event": "heartbeat",
+        "terminalId": 0
+      },
+      {
+        "data": {
+          "appTicks": 5,
+          "background": "#101820",
+          "closing": false,
+          "cols": 186,
+          "drawCalls": 0,
+          "foreground": "#c9d8e6",
+          "frame": "{{0, 0}, {1220, 395}}",
+          "frozen": false,
+          "hasWindow": 1,
+          "heightPx": 790,
+          "lastShown": true,
+          "layerBounds": "{{0, 0}, {1220, 395}}",
+          "layerClass": "IOSurfaceLayer",
+          "layerHasContents": 1,
+          "layerHidden": false,
+          "layerScale": 2,
+          "mainThread": true,
+          "monotonicMs": 290781864.933,
+          "originDetails": {
+            "available": 18,
+            "baseline": 14.5,
+            "cellHeight": 13,
+            "imeY": 381,
+            "left": 4,
+            "reason": "measured",
+            "remainder": 4,
+            "top": 4
+          },
+          "originX": 4,
+          "originY": 4,
+          "phase": "geometry-probe",
+          "renderRequests": 0,
+          "renderer": {
+            "differentPixels": 19994,
+            "firstPixel": 4279375903,
+            "height": 790,
+            "iosurface": true,
+            "readable": 1,
+            "samples": 214896,
+            "width": 2440
+          },
+          "resolved": true,
+          "rows": 29,
+          "scale": 2,
+          "superviewClass": "NshView",
+          "viewHeight": 395,
+          "viewWidth": 1220,
+          "viewportText": "https://example.com/ RIWORK beta-0 OUTPUT PRESSURE ------------------------------------------------\nhttps://example.com/ RIWORK beta-0 OUTPUT PRESSURE ------------------------------------------------\nhttps://example.com/ RIWORK beta-0 OUTPUT PRESSURE ------------------------------------------------",
+          "visibilityUpdates": 2,
+          "visible": true,
+          "visibleRect": "{{0, 0}, {1220, 395}}",
+          "wakeCount": 9,
+          "wantsLayer": true,
+          "widthPx": 2440,
+          "windowOcclusion": 8194
+        },
+        "event": "teardown",
+        "terminalId": 3
+      },
+      {
+        "data": {
+          "monotonicMs": 290781865.03
+        },
+        "event": "heartbeat",
+        "terminalId": 0
+      },
+      {
+        "data": {
+          "monotonicMs": 290781875.683
+        },
+        "event": "heartbeat",
+        "terminalId": 0
+      },
+      {
+        "data": {
+          "monotonicMs": 290781886.986
+        },
+        "event": "heartbeat",
+        "terminalId": 0
+      },
+      {
+        "data": {
+          "monotonicMs": 290781899.492
+        },
+        "event": "heartbeat",
+        "terminalId": 0
+      },
+      {
+        "data": {
+          "appTicks": 6,
+          "background": "#101820",
+          "closing": false,
+          "cols": 186,
+          "drawCalls": 0,
+          "foreground": "#c9d8e6",
+          "frame": "{{0, 0}, {1220, 399}}",
+          "frozen": false,
+          "hasWindow": 1,
+          "heightPx": 798,
+          "lastShown": true,
+          "layerBounds": "{{0, 0}, {1220, 399}}",
+          "layerClass": "IOSurfaceLayer",
+          "layerHasContents": 1,
+          "layerHidden": false,
+          "layerScale": 2,
+          "mainThread": true,
+          "monotonicMs": 290781912.472,
+          "originDetails": {
+            "available": 9,
+            "baseline": 14.5,
+            "cellHeight": 13,
+            "imeY": 394,
+            "left": 4,
+            "reason": "measured",
+            "remainder": 4,
+            "top": 4
+          },
+          "originX": 4,
+          "originY": 4,
+          "phase": "geometry-probe",
+          "renderRequests": 0,
+          "renderer": {
+            "differentPixels": 20512,
+            "firstPixel": 4279375903,
+            "height": 798,
+            "iosurface": true,
+            "readable": 1,
+            "samples": 216524,
+            "width": 2440
+          },
+          "resolved": true,
+          "rows": 30,
+          "scale": 2,
+          "superviewClass": "NshView",
+          "viewHeight": 399,
+          "viewWidth": 1220,
+          "viewportText": "https://example.com/ RIWORK beta-1 OUTPUT PRESSURE ------------------------------------------------\nhttps://example.com/ RIWORK beta-1 OUTPUT PRESSURE ------------------------------------------------\nhttps://example.com/ RIWORK beta-1 OUTPUT PRESSURE ------------------------------------------------",
+          "visibilityUpdates": 2,
+          "visible": true,
+          "visibleRect": "{{0, 0}, {1220, 399}}",
+          "wakeCount": 9,
+          "wantsLayer": true,
+          "widthPx": 2440,
+          "windowOcclusion": 8194
+        },
+        "event": "teardown",
+        "terminalId": 4
+      },
+      {
+        "data": {
+          "monotonicMs": 290781912.564
+        },
+        "event": "heartbeat",
+        "terminalId": 0
+      },
+      {
+        "data": {
+          "monotonicMs": 290781924.52599996
+        },
+        "event": "heartbeat",
+        "terminalId": 0
+      },
+      {
+        "data": {
+          "monotonicMs": 290781937.638
+        },
+        "event": "heartbeat",
+        "terminalId": 0
+      },
+      {
+        "data": {
+          "monotonicMs": 290781949.992
+        },
+        "event": "heartbeat",
+        "terminalId": 0
+      }
+    ]
+  },
+  "windows": [
+    {
+      "layout": {
+        "active_pane": 1,
+        "detached_shell_ids": [],
+        "layout": {
+          "split": {
+            "axis": "stacked",
+            "first": {
+              "pane": 1
+            },
+            "ratio": 0.5,
+            "second": {
+              "pane": 2
+            }
+          }
+        },
+        "locked_panes": [],
+        "panels_initialized": true,
+        "panes": {
+          "1": {
+            "active_shell_id": "f629641f-1aa7-4565-ab23-b5dd125a9025",
+            "active_tab_key": "shell:f629641f-1aa7-4565-ab23-b5dd125a9025",
+            "shell_ids": [
+              "f629641f-1aa7-4565-ab23-b5dd125a9025"
+            ],
+            "tab_edge": "top",
+            "tabs": [
+              {
+                "kind": "shell",
+                "shell_id": "f629641f-1aa7-4565-ab23-b5dd125a9025"
+              }
+            ]
+          },
+          "2": {
+            "active_shell_id": "26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c",
+            "active_tab_key": "shell:26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c",
+            "shell_ids": [
+              "26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c"
+            ],
+            "tab_edge": "top",
+            "tabs": [
+              {
+                "kind": "shell",
+                "shell_id": "26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c"
+              }
+            ]
+          }
+        },
+        "selected_task_id": null,
+        "selected_worktree_id": null,
+        "sidebar_visible": false,
+        "window_size": {
+          "height": 720.0,
+          "width": 960.0
+        }
+      },
+      "projectId": "ed0772f8-7226-4ba4-9a54-495bb3935b63",
+      "windowId": "6ba3a7c0-194c-4658-b666-63e1e9693dbe",
+      "windowNumber": 6574
+    },
+    {
+      "layout": {
+        "active_pane": 1,
+        "detached_shell_ids": [],
+        "layout": {
+          "split": {
+            "axis": "stacked",
+            "first": {
+              "pane": 1
+            },
+            "ratio": 0.5,
+            "second": {
+              "pane": 2
+            }
+          }
+        },
+        "locked_panes": [],
+        "panels_initialized": true,
+        "panes": {
+          "1": {
+            "active_shell_id": "c60b4a1b-93b5-460e-8c88-9eafaec56b36",
+            "active_tab_key": "shell:c60b4a1b-93b5-460e-8c88-9eafaec56b36",
+            "shell_ids": [
+              "c60b4a1b-93b5-460e-8c88-9eafaec56b36"
+            ],
+            "tab_edge": "top",
+            "tabs": [
+              {
+                "kind": "shell",
+                "shell_id": "c60b4a1b-93b5-460e-8c88-9eafaec56b36"
+              }
+            ]
+          },
+          "2": {
+            "active_shell_id": "63794f23-da1d-4624-8650-b2fabd5a8672",
+            "active_tab_key": "shell:63794f23-da1d-4624-8650-b2fabd5a8672",
+            "shell_ids": [
+              "63794f23-da1d-4624-8650-b2fabd5a8672"
+            ],
+            "tab_edge": "top",
+            "tabs": [
+              {
+                "kind": "shell",
+                "shell_id": "63794f23-da1d-4624-8650-b2fabd5a8672"
+              }
+            ]
+          }
+        },
+        "selected_task_id": null,
+        "selected_worktree_id": null,
+        "sidebar_visible": false,
+        "window_size": {
+          "height": 720.0,
+          "width": 960.0
+        }
+      },
+      "projectId": "c63688f7-bc3d-48f2-95b3-3a0db62364a3",
+      "windowId": "dbdb9290-89da-4a2b-8e32-de28362b1040",
+      "windowNumber": 6573
+    }
+  ]
+}

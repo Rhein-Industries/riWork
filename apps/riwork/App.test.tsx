@@ -147,3 +147,78 @@ test("a real DockArea drag moves one tab into the opaque empty pane through Rust
     await app.waitUntil(() => app.host.posts().some((post) => post.name === "app.fixture.flushed"));
   } finally { app.dispose(); }
 });
+
+
+test("local shell content renders and Detach persists before reopening the same identity", async () => {
+  const projectId = "terminal-detach-fixture";
+  const app = await open("./tests/Workspace.fixture.tsx", {
+    ...options("terminal-detach"), host: {
+      params: { windowId: "terminal-detach", projectId, restore: {
+        layout: { pane: 51 }, active_pane: 51, main_pane: 51, panels_initialized: true, locked_panes: [],
+        panes: { "51": { tabs: [{ kind: "shell", shell_id: "persistent-local" }], active_tab_key: "shell:persistent-local" } },
+      } }, handlers: { "app.fixture.state": null, "app.fixture.flushed": null },
+    },
+  });
+  try {
+    await app.waitFor("id:terminal:persistent-local");
+    expect(app.shows("id:terminal-panel:persistent-local")).toBe(true);
+    await app.press("id:close:shell:persistent-local");
+    expect(app.menu()?.some((item) => item.label === "Detach tab — keep session running")).toBe(true);
+    await app.chooseMenuItem("Detach tab — keep session running");
+    expect(latest(app).snapshot.panes[0].tabs.length).toBe(0);
+    expect(app.shows("id:terminal:persistent-local")).toBe(false);
+    await app.host.send("app.fixture.flush", {});
+    await app.waitUntil(() => app.host.posts().some((post) => post.name === "app.fixture.flushed"));
+  } finally { app.dispose(); }
+  const reopened = await open("./tests/Workspace.fixture.tsx", {
+    ...options("terminal-reopen"), host: {
+      params: { windowId: "terminal-reopen", projectId },
+      handlers: { "app.fixture.state": null, "app.fixture.flushed": null },
+    },
+  });
+  try {
+    await reopened.waitFor("id:workspace-dock");
+    expect(latest(reopened).snapshot.panes[0].tabs.length).toBe(0);
+    await reopened.host.send("route", { step: { kind: "showShell", shellId: "persistent-local" } });
+    await reopened.waitFor("id:terminal:persistent-local");
+    expect(latest(reopened).snapshot.panes[0].tabs.map((tab) => tab.id)).toEqual(["shell:persistent-local"]);
+  } finally { reopened.dispose(); }
+});
+
+test("terminal native nodes survive selection and resize until an explicit Detach", async () => {
+  const app = await open("./tests/Workspace.fixture.tsx", {
+    ...options("terminal-stable"), host: {
+      params: { windowId: "terminal-stable", projectId: "terminal-stable-fixture", restore: {
+        layout: { split: { axis: "stacked", ratio: 0.5, first: { pane: 61 }, second: { pane: 62 } } },
+        active_pane: 61, panels_initialized: true, locked_panes: [],
+        panes: {
+          "61": { tabs: [{ kind: "shell", shell_id: "stable-one" }], active_tab_key: "shell:stable-one" },
+          "62": { tabs: [{ kind: "shell", shell_id: "stable-two" }], active_tab_key: "shell:stable-two" },
+        },
+      } }, handlers: { "app.fixture.state": null, "app.fixture.terminalMount": null },
+    },
+  });
+  const mounts = () => app.host.posts().filter((post) => post.name === "app.fixture.terminalMount")
+    .map((post) => (post.data as { shellId: string }).shellId);
+  try {
+    await app.waitFor("id:terminal:stable-one");
+    await app.waitFor("id:terminal:stable-two");
+    expect(mounts().sort()).toEqual(["stable-one", "stable-two"]);
+    // Both routes and native focus selectPanel install a fresh core projection.
+    // They must update the existing DockArea, preserving its keyed native nodes.
+    for (const shellId of ["stable-two", "stable-one", "stable-one"]) {
+      await app.host.send("route", { step: { kind: "showShell", shellId } });
+    }
+    await app.setViewport(1500, 920);
+    await app.setColorScheme("dark");
+    expect(mounts().sort()).toEqual(["stable-one", "stable-two"]);
+    await app.press("id:close:shell:stable-one");
+    await app.chooseMenuItem("Detach tab — keep session running");
+    expect(app.shows("id:terminal:stable-one")).toBe(false);
+    expect(mounts().sort()).toEqual(["stable-one", "stable-two"]);
+    await app.host.send("route", { step: { kind: "showShell", shellId: "stable-one" } });
+    await app.waitFor("id:terminal:stable-one");
+    expect(mounts().filter((id) => id === "stable-one").length).toBe(2);
+    expect(mounts().filter((id) => id === "stable-two").length).toBe(1);
+  } finally { app.dispose(); }
+});

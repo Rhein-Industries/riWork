@@ -4,6 +4,7 @@
 //! `[nsh_base::registry(), registry()]` once. All windows share the same process
 //! service; neither subscription registration nor delivery does domain I/O on an
 //! engine thread. See the crate README for lifecycle and test instructions.
+pub mod appearance;
 pub mod backend;
 pub mod dto;
 pub mod hub;
@@ -12,15 +13,20 @@ pub mod service;
 use futures_util::future::{AbortHandle, Abortable};
 use nsh_core::{element::Cleanup, prelude::*};
 
-use dto::{ProjectInspectionDto, SearchHitDto, SessionsSnapshot, StoreState};
+use dto::{
+    CreateSessionRequest, ProjectInspectionDto, SearchHitDto, SessionsSnapshot, ShellSessionDto,
+    StoreState,
+};
 use hub::{Snapshot, TopicSubscription};
 pub use service::{ProcessService, initialize};
 
 #[native_module("riwork/native")]
 fn native(registry: &mut Registry) {
     registry
+        .module::<Appearance>()
         .module::<Store>()
         .module::<Sessions>()
+        .module::<Tabs>()
         .class::<Subscription>();
     riwork_nsh_workspace::register_layouts(registry, service::process_home);
 }
@@ -68,6 +74,15 @@ impl Sessions {
         initialize().await?.sessions_list().await
     }
 
+    pub async fn create(request: CreateSessionRequest) -> Result<ShellSessionDto, String> {
+        initialize().await?.sessions_create(request).await
+    }
+
+    /// Explicit Exit only. Closing/detaching a tab must never call this method.
+    pub async fn close(id: String) -> Result<(), String> {
+        initialize().await?.sessions_close(id).await
+    }
+
     pub fn subscribe(
         listener: Callback<Snapshot<SessionsSnapshot>>,
         cx: CallCx<'_>,
@@ -75,6 +90,44 @@ impl Sessions {
         let service = service::initialized()?;
         Ok(Subscription::start(cx, async move {
             if let Ok(subscription) = service.subscribe_sessions().await {
+                deliver(subscription, listener).await;
+            }
+        }))
+    }
+}
+
+/// Shared local shell membership. Projection subscriptions remain a later slice.
+#[module]
+pub struct Tabs;
+
+#[module]
+impl Tabs {
+    /// Hide/unhide/order/title edits through the existing engine TabStore.
+    pub async fn update(
+        project_id: String,
+        update: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        initialize().await?.tabs_update(project_id, update).await
+    }
+}
+
+/// Settings-backed terminal theme and close preference, pushed once per process.
+#[module]
+pub struct Appearance;
+
+#[module]
+impl Appearance {
+    pub async fn snapshot() -> Result<appearance::AppearanceSnapshot, String> {
+        initialize().await?.appearance_snapshot().await
+    }
+
+    pub fn subscribe(
+        listener: Callback<Snapshot<appearance::AppearanceSnapshot>>,
+        cx: CallCx<'_>,
+    ) -> Result<Subscription, String> {
+        let service = service::initialized()?;
+        Ok(Subscription::start(cx, async move {
+            if let Ok(subscription) = service.subscribe_appearance().await {
                 deliver(subscription, listener).await;
             }
         }))
@@ -118,7 +171,12 @@ impl Subscription {
 
 impl Drop for Subscription {
     fn drop(&mut self) {
-        self.close();
+        // VM teardown clears NSH's context before finalizing objects retained
+        // by reactive cleanup closures. Cleanup::release reaches that context;
+        // it is valid only for explicit close() while JS is running. Dropping
+        // Cleanup keeps its owner callback registered and safely drops the
+        // unregister closure. Abort independently in either teardown order.
+        self.abort.abort();
     }
 }
 
@@ -146,7 +204,7 @@ mod tests {
         let modules = registry.module_specs();
         assert_eq!(
             modules.iter().map(|module| module.name).collect::<Vec<_>>(),
-            ["Layouts", "Sessions", "Store"]
+            ["Appearance", "Layouts", "Sessions", "Store", "Tabs"]
         );
         for module in modules {
             for function in &module.functions {

@@ -1,0 +1,271 @@
+{
+  "verification_environment": "isolated fixture homes only",
+  "mode": "headless",
+  "repo": "/Users/dominik/orca/projects/riWork-nsh-p2-terminals",
+  "root": "/private/tmp/riwork-p2-full-checks",
+  "target_dir": "/Users/dominik/orca/projects/riWork-nsh-p2-terminals/target",
+  "commands": [
+    {
+      "name": "nsh-version",
+      "argv": [
+        "/tmp/riwork-nsh-toolchain-60f8aec4.18l3zV/nsh-cli-0.3.0/bin/nsh",
+        "--version"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p2-terminals",
+      "environment": {
+        "HOME": "/Users/dominik/orca/projects/riWork-nsh-p2-terminals/target/nsh-integration-home-0415hydc",
+        "RIWORK_HOME": "/private/tmp/riwork-p2-full-checks/headless-m0jdlk4x/state",
+        "RIWORK_RUNTIME_DIR": "/private/tmp/riwork-p2-full-checks/headless-m0jdlk4x/runtime",
+        "TMPDIR": "/tmp",
+        "TMUX_TMPDIR": "/private/tmp/riwork-p2-full-checks/headless-m0jdlk4x/tmux",
+        "XDG_CONFIG_HOME": "/Users/dominik/orca/projects/riWork-nsh-p2-terminals/target/nsh-integration-home-0415hydc/.config",
+        "CARGO_HOME": "/Users/dominik/.cargo",
+        "RUSTUP_HOME": "/Users/dominik/.rustup",
+        "CARGO_TARGET_DIR": "/Users/dominik/orca/projects/riWork-nsh-p2-terminals/target",
+        "CARGO_BUILD_JOBS": "4",
+        "CARGO_NET_OFFLINE": "true",
+        "NSH_CACHE": "/private/tmp/riwork-p2-full-checks/nsh-cache",
+        "NSH_TSC": "/Users/dominik/Library/Caches/nsh/typescript-7.0.2-darwin-arm64/package/lib/tsc",
+        "PATH_SHA256": "eef47ab93cb768497172ceb2061cc44ab6a7074dad1bc7bab1d00f010a91633e",
+        "PATH": "[redacted inherited search path; exact SHA256 retained]"
+      },
+      "stdout": "/private/tmp/riwork-p2-full-checks/headless-m0jdlk4x/nsh-version.stdout",
+      "stderr": "/private/tmp/riwork-p2-full-checks/headless-m0jdlk4x/nsh-version.stderr",
+      "exit_code": 0,
+      "duration_seconds": 0.021,
+      "stdout_sha256": "b84462512c378e1bda24a6997456ae354ea2bf2c6ce9346c291ac5d30e3ee804",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "rustc-version",
+      "argv": [
+        "rustc",
+        "--version"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p2-terminals",
+      "environment": {
+        "HOME": "/Users/dominik/orca/projects/riWork-nsh-p2-terminals/target/nsh-integration-home-0415hydc",
+        "RIWORK_HOME": "/private/tmp/riwork-p2-full-checks/headless-m0jdlk4x/state",
+        "RIWORK_RUNTIME_DIR": "/private/tmp/riwork-p2-full-checks/headless-m0jdlk4x/runtime",
+        "TMPDIR": "/tmp",
+        "TMUX_TMPDIR": "/private/tmp/riwork-p2-full-checks/headless-m0jdlk4x/tmux",
+        "XDG_CONFIG_HOME": "/Users/dominik/orca/projects/riWork-nsh-p2-terminals/target/nsh-integration-home-0415hydc/.config",
+        "CARGO_HOME": "/Users/dominik/.cargo",
+        "RUSTUP_HOME": "/Users/dominik/.rustup",
+        "CARGO_TARGET_DIR": "/Users/dominik/orca/projects/riWork-nsh-p2-terminals/target",
+        "CARGO_BUILD_JOBS": "4",
+        "CARGO_NET_OFFLINE": "true",
+        "NSH_CACHE": "/private/tmp/riwork-p2-full-checks/nsh-cache",
+        "NSH_TSC": "/Users/dominik/Library/Caches/nsh/typescript-7.0.2-darwin-arm64/package/lib/tsc",
+        "PATH_SHA256": "eef47ab93cb768497172ceb2061cc44ab6a7074dad1bc7bab1d00f010a91633e",
+        "PATH": "[redacted inherited search path; exact SHA256 retained]"
+      },
+      "stdout": "/private/tmp/riwork-p2-full-checks/headless-m0jdlk4x/rustc-version.stdout",
+      "stderr": "/private/tmp/riwork-p2-full-checks/headless-m0jdlk4x/rustc-version.stderr",
+      "exit_code": 0,
+      "duration_seconds": 0.035,
+      "stdout_sha256": "55cd0529c005d3f62869ea6e2271bfa9d5196f56dc65a8be00a371af114a4a98",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "cargo-version",
+      "argv": [
+        "cargo",
+        "--version"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p2-terminals",
+      "environment": {
+        "HOME": "/Users/dominik/orca/projects/riWork-nsh-p2-terminals/target/nsh-integration-home-0415hydc",
+        "RIWORK_HOME": "/private/tmp/riwork-p2-full-checks/headless-m0jdlk4x/state",
+        "RIWORK_RUNTIME_DIR": "/private/tmp/riwork-p2-full-checks/headless-m0jdlk4x/runtime",
+        "TMPDIR": "/tmp",
+        "TMUX_TMPDIR": "/private/tmp/riwork-p2-full-checks/headless-m0jdlk4x/tmux",
+        "XDG_CONFIG_HOME": "/Users/dominik/orca/projects/riWork-nsh-p2-terminals/target/nsh-integration-home-0415hydc/.config",
+        "CARGO_HOME": "/Users/dominik/.cargo",
+        "RUSTUP_HOME": "/Users/dominik/.rustup",
+        "CARGO_TARGET_DIR": "/Users/dominik/orca/projects/riWork-nsh-p2-terminals/target",
+        "CARGO_BUILD_JOBS": "4",
+        "CARGO_NET_OFFLINE": "true",
+        "NSH_CACHE": "/private/tmp/riwork-p2-full-checks/nsh-cache",
+        "NSH_TSC": "/Users/dominik/Library/Caches/nsh/typescript-7.0.2-darwin-arm64/package/lib/tsc",
+        "PATH_SHA256": "eef47ab93cb768497172ceb2061cc44ab6a7074dad1bc7bab1d00f010a91633e",
+        "PATH": "[redacted inherited search path; exact SHA256 retained]"
+      },
+      "stdout": "/private/tmp/riwork-p2-full-checks/headless-m0jdlk4x/cargo-version.stdout",
+      "stderr": "/private/tmp/riwork-p2-full-checks/headless-m0jdlk4x/cargo-version.stderr",
+      "exit_code": 0,
+      "duration_seconds": 0.072,
+      "stdout_sha256": "c35608815f43d0b8788a9b826fad2bb17384f49fb328dc4fe64da9db5f5ef4d6",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "cargo-tests",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-core",
+        "-p",
+        "riwork-engine",
+        "-p",
+        "riwork-cli",
+        "-p",
+        "riwork-desktop",
+        "-p",
+        "riwork-nsh-native",
+        "-p",
+        "riwork-nsh-workspace",
+        "--locked",
+        "--offline"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p2-terminals",
+      "environment": {
+        "HOME": "/Users/dominik/orca/projects/riWork-nsh-p2-terminals/target/nsh-integration-home-0415hydc",
+        "RIWORK_HOME": "/private/tmp/riwork-p2-full-checks/headless-m0jdlk4x/state",
+        "RIWORK_RUNTIME_DIR": "/private/tmp/riwork-p2-full-checks/headless-m0jdlk4x/runtime",
+        "TMPDIR": "/tmp",
+        "TMUX_TMPDIR": "/private/tmp/riwork-p2-full-checks/headless-m0jdlk4x/tmux",
+        "XDG_CONFIG_HOME": "/Users/dominik/orca/projects/riWork-nsh-p2-terminals/target/nsh-integration-home-0415hydc/.config",
+        "CARGO_HOME": "/Users/dominik/.cargo",
+        "RUSTUP_HOME": "/Users/dominik/.rustup",
+        "CARGO_TARGET_DIR": "/Users/dominik/orca/projects/riWork-nsh-p2-terminals/target",
+        "CARGO_BUILD_JOBS": "4",
+        "CARGO_NET_OFFLINE": "true",
+        "NSH_CACHE": "/private/tmp/riwork-p2-full-checks/nsh-cache",
+        "NSH_TSC": "/Users/dominik/Library/Caches/nsh/typescript-7.0.2-darwin-arm64/package/lib/tsc",
+        "PATH_SHA256": "eef47ab93cb768497172ceb2061cc44ab6a7074dad1bc7bab1d00f010a91633e",
+        "PATH": "[redacted inherited search path; exact SHA256 retained]"
+      },
+      "stdout": "/private/tmp/riwork-p2-full-checks/headless-m0jdlk4x/cargo-tests.stdout",
+      "stderr": "/private/tmp/riwork-p2-full-checks/headless-m0jdlk4x/cargo-tests.stderr",
+      "exit_code": 0,
+      "duration_seconds": 189.76,
+      "stdout_sha256": "6cc9bf334f914317e6713e6d788fbf5b6873c592d9d794e8f9ed0a5e295aa2c6",
+      "stderr_sha256": "cc2038f55455258a16e64105cb6546b70ad0f339b380c4b43af3ea545c5e8bcb"
+    },
+    {
+      "name": "seed-nsh-fixture",
+      "argv": [
+        "cargo",
+        "run",
+        "-p",
+        "riwork-nsh-workspace",
+        "--example",
+        "seed_fixture",
+        "--locked",
+        "--offline",
+        "--",
+        "/private/tmp/riwork-p2-full-checks/headless-m0jdlk4x/nsh-home"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p2-terminals",
+      "environment": {
+        "HOME": "/Users/dominik/orca/projects/riWork-nsh-p2-terminals/target/nsh-integration-home-0415hydc",
+        "RIWORK_HOME": "/private/tmp/riwork-p2-full-checks/headless-m0jdlk4x/state",
+        "RIWORK_RUNTIME_DIR": "/private/tmp/riwork-p2-full-checks/headless-m0jdlk4x/runtime",
+        "TMPDIR": "/tmp",
+        "TMUX_TMPDIR": "/private/tmp/riwork-p2-full-checks/headless-m0jdlk4x/tmux",
+        "XDG_CONFIG_HOME": "/Users/dominik/orca/projects/riWork-nsh-p2-terminals/target/nsh-integration-home-0415hydc/.config",
+        "CARGO_HOME": "/Users/dominik/.cargo",
+        "RUSTUP_HOME": "/Users/dominik/.rustup",
+        "CARGO_TARGET_DIR": "/Users/dominik/orca/projects/riWork-nsh-p2-terminals/target",
+        "CARGO_BUILD_JOBS": "4",
+        "CARGO_NET_OFFLINE": "true",
+        "NSH_CACHE": "/private/tmp/riwork-p2-full-checks/nsh-cache",
+        "NSH_TSC": "/Users/dominik/Library/Caches/nsh/typescript-7.0.2-darwin-arm64/package/lib/tsc",
+        "PATH_SHA256": "eef47ab93cb768497172ceb2061cc44ab6a7074dad1bc7bab1d00f010a91633e",
+        "PATH": "[redacted inherited search path; exact SHA256 retained]"
+      },
+      "stdout": "/private/tmp/riwork-p2-full-checks/headless-m0jdlk4x/seed-nsh-fixture.stdout",
+      "stderr": "/private/tmp/riwork-p2-full-checks/headless-m0jdlk4x/seed-nsh-fixture.stderr",
+      "exit_code": 0,
+      "duration_seconds": 1.336,
+      "stdout_sha256": "d6d298882e9e91c1fdb2ed39c9a71210ef23a8fbcc0d0a705c3228cb930f40a3",
+      "stderr_sha256": "be7b23556d1c080278756e82b160e8085b9c3207f3dc7098c01f8b9384feb02f"
+    },
+    {
+      "name": "nsh-check",
+      "argv": [
+        "/tmp/riwork-nsh-toolchain-60f8aec4.18l3zV/nsh-cli-0.3.0/bin/nsh",
+        "check",
+        "apps/riwork",
+        "--tsc",
+        "/Users/dominik/Library/Caches/nsh/typescript-7.0.2-darwin-arm64/package/lib/tsc"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p2-terminals",
+      "environment": {
+        "HOME": "/Users/dominik/orca/projects/riWork-nsh-p2-terminals/target/nsh-integration-home-0415hydc",
+        "RIWORK_HOME": "/private/tmp/riwork-p2-full-checks/headless-m0jdlk4x/nsh-home",
+        "RIWORK_RUNTIME_DIR": "/private/tmp/riwork-p2-full-checks/headless-m0jdlk4x/runtime",
+        "TMPDIR": "/tmp",
+        "TMUX_TMPDIR": "/private/tmp/riwork-p2-full-checks/headless-m0jdlk4x/nsh-tmux",
+        "XDG_CONFIG_HOME": "/Users/dominik/orca/projects/riWork-nsh-p2-terminals/target/nsh-integration-home-0415hydc/.config",
+        "CARGO_HOME": "/Users/dominik/.cargo",
+        "RUSTUP_HOME": "/Users/dominik/.rustup",
+        "CARGO_TARGET_DIR": "/Users/dominik/orca/projects/riWork-nsh-p2-terminals/target",
+        "CARGO_BUILD_JOBS": "4",
+        "CARGO_NET_OFFLINE": "true",
+        "NSH_CACHE": "/private/tmp/riwork-p2-full-checks/nsh-cache",
+        "NSH_TSC": "/Users/dominik/Library/Caches/nsh/typescript-7.0.2-darwin-arm64/package/lib/tsc",
+        "PATH_SHA256": "eef47ab93cb768497172ceb2061cc44ab6a7074dad1bc7bab1d00f010a91633e",
+        "PATH": "[redacted inherited search path; exact SHA256 retained]"
+      },
+      "stdout": "/private/tmp/riwork-p2-full-checks/headless-m0jdlk4x/nsh-check.stdout",
+      "stderr": "/private/tmp/riwork-p2-full-checks/headless-m0jdlk4x/nsh-check.stderr",
+      "exit_code": 0,
+      "duration_seconds": 3.503,
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "938059adee4fd7777b124721a39d13c2b0be6c8c754e3656e20c75b04098689f"
+    },
+    {
+      "name": "nsh-test",
+      "argv": [
+        "/tmp/riwork-nsh-toolchain-60f8aec4.18l3zV/nsh-cli-0.3.0/bin/nsh",
+        "test",
+        "apps/riwork",
+        "--junit",
+        "/private/tmp/riwork-p2-full-checks/headless-m0jdlk4x/nsh.xml"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p2-terminals",
+      "environment": {
+        "HOME": "/Users/dominik/orca/projects/riWork-nsh-p2-terminals/target/nsh-integration-home-0415hydc",
+        "RIWORK_HOME": "/private/tmp/riwork-p2-full-checks/headless-m0jdlk4x/nsh-home",
+        "RIWORK_RUNTIME_DIR": "/private/tmp/riwork-p2-full-checks/headless-m0jdlk4x/runtime",
+        "TMPDIR": "/tmp",
+        "TMUX_TMPDIR": "/private/tmp/riwork-p2-full-checks/headless-m0jdlk4x/nsh-tmux",
+        "XDG_CONFIG_HOME": "/Users/dominik/orca/projects/riWork-nsh-p2-terminals/target/nsh-integration-home-0415hydc/.config",
+        "CARGO_HOME": "/Users/dominik/.cargo",
+        "RUSTUP_HOME": "/Users/dominik/.rustup",
+        "CARGO_TARGET_DIR": "/Users/dominik/orca/projects/riWork-nsh-p2-terminals/target",
+        "CARGO_BUILD_JOBS": "4",
+        "CARGO_NET_OFFLINE": "true",
+        "NSH_CACHE": "/private/tmp/riwork-p2-full-checks/nsh-cache",
+        "NSH_TSC": "/Users/dominik/Library/Caches/nsh/typescript-7.0.2-darwin-arm64/package/lib/tsc",
+        "PATH_SHA256": "eef47ab93cb768497172ceb2061cc44ab6a7074dad1bc7bab1d00f010a91633e",
+        "PATH": "[redacted inherited search path; exact SHA256 retained]"
+      },
+      "stdout": "/private/tmp/riwork-p2-full-checks/headless-m0jdlk4x/nsh-test.stdout",
+      "stderr": "/private/tmp/riwork-p2-full-checks/headless-m0jdlk4x/nsh-test.stderr",
+      "exit_code": 0,
+      "duration_seconds": 4.947,
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "5d2bff1349efd1a9294c382cbb37cf9165714f7832adb3d37659dd661e11a0ea"
+    }
+  ],
+  "status": "passed",
+  "nsh_cli": {
+    "path": "/private/tmp/riwork-nsh-toolchain-60f8aec4.18l3zV/nsh-cli-0.3.0/bin/nsh",
+    "sha256": "90b7633c80306407fc97b2051be00af868d4577281f918ff655c650a8a5a2e60"
+  },
+  "tmux_inventory": {
+    "root": "/private/tmp/riwork-p2-full-checks/headless-m0jdlk4x/nsh-tmux",
+    "empty_directories": [],
+    "files_or_sockets": []
+  },
+  "evidence_copy": {
+    "original_manifest_sha256": "c03d6bfc3f9a0cf30af2ee57aa016fc2bda8564ee32779c99396601676f57ab2",
+    "redactions": [
+      "commands[*].environment.PATH: unrelated inherited user tool directories replaced with SHA256"
+    ],
+    "other_fields": "preserved"
+  }
+}

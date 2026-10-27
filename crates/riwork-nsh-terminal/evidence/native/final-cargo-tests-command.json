@@ -1,0 +1,23 @@
+{
+  "verification_environment": "explicit isolated RIWORK_HOME; normal production features",
+  "cwd": "/Users/dominik/orca/projects/riWork-nsh-p2-terminals",
+  "environment": {
+    "RIWORK_HOME": "/tmp/riwork-p2-terminal-verification/final-unit-state",
+    "RIWORK_SKIP_SPEECH_HELPER": "1"
+  },
+  "argv": [
+    "cargo",
+    "test",
+    "-p",
+    "riwork-nsh-terminal",
+    "-p",
+    "riwork-desktop",
+    "--offline"
+  ],
+  "exit_code": 0,
+  "results": {
+    "passed": 42,
+    "failed": 0,
+    "ignored": 0
+  }
+}

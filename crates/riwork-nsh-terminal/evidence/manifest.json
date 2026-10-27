@@ -1,0 +1,472 @@
+{
+  "schema_version": 1,
+  "verification_environment": "isolated RIWORK_HOME fixtures only; final integrated native, Cargo, NSH, private build and dependency evidence",
+  "scope": "Phase 2a local terminals; final accepted native run /private/tmp/rwnsh-p2-upf_p6zi, PID 69604; Cua read-only",
+  "files": [
+    {
+      "path": "README.md",
+      "bytes": 2650,
+      "sha256": "ed2c2b8d78db6fb0b4d545edc7ab3a2a19c3c0200e9aa82dd880734e2fbdd101",
+      "source": "root-generated final evidence index",
+      "transformation": "summary of retained final and historical results"
+    },
+    {
+      "path": "app/FINAL_VALIDATION.md",
+      "bytes": 8728,
+      "sha256": "a1c806794928aba9a337806aa5111a48c973359e5480750711412d1671e927a6",
+      "source": "/tmp/riwork-p2-terminal-bridge/FINAL_VALIDATION.md",
+      "source_sha256": "6c9f1d714bdde55fd6238cd53e193551a70d194edc86980254b07651f2864613",
+      "transformation": "original worker validation with final root clarification of physical input/display coverage limits"
+    },
+    {
+      "path": "app/cargo-headless-owner.log",
+      "bytes": 632,
+      "sha256": "2ad7feb1983772df6bdd1917844bca6e624948ccb6072ada7d2c71a26d04ad85",
+      "source": "/tmp/riwork-p2-terminal-bridge/cargo-headless-owner.log",
+      "source_sha256": "2ad7feb1983772df6bdd1917844bca6e624948ccb6072ada7d2c71a26d04ad85",
+      "transformation": "none"
+    },
+    {
+      "path": "app/cargo-safety.log",
+      "bytes": 6311,
+      "sha256": "e02d67f69cba0de62b69f583aea5445f449c8ec3b2d8524279ccc15c16264ede",
+      "source": "/tmp/riwork-p2-terminal-bridge/cargo-safety.log",
+      "source_sha256": "e02d67f69cba0de62b69f583aea5445f449c8ec3b2d8524279ccc15c16264ede",
+      "transformation": "none"
+    },
+    {
+      "path": "app/nsh-build-mount-fixed.log",
+      "bytes": 419,
+      "sha256": "44b5978c15fa789fb8b5839268e234365b6047097d20f9917f21a8355889fe67",
+      "source": "/tmp/riwork-p2-terminal-bridge/nsh-build-mount-fixed.log",
+      "source_sha256": "44b5978c15fa789fb8b5839268e234365b6047097d20f9917f21a8355889fe67",
+      "transformation": "none"
+    },
+    {
+      "path": "app/nsh-check-mount-fixed.log",
+      "bytes": 347,
+      "sha256": "e4035a334fe39af29f48497f0d9a581764ce57f54410e717a836402f75966096",
+      "source": "/tmp/riwork-p2-terminal-bridge/nsh-check-mount-fixed.log",
+      "source_sha256": "e4035a334fe39af29f48497f0d9a581764ce57f54410e717a836402f75966096",
+      "transformation": "none"
+    },
+    {
+      "path": "app/nsh-check-safety.log",
+      "bytes": 346,
+      "sha256": "66d87746ae9da93630546a7dc54c6d4ea202573f6bc5f47630bec911c14caa9a",
+      "source": "/tmp/riwork-p2-terminal-bridge/nsh-check-safety.log",
+      "source_sha256": "66d87746ae9da93630546a7dc54c6d4ea202573f6bc5f47630bec911c14caa9a",
+      "transformation": "none"
+    },
+    {
+      "path": "app/nsh-local-safety.log",
+      "bytes": 602,
+      "sha256": "c9195549c0bb21e49e78e3085f987cdd2077569adc6334d58d26dc5a17873135",
+      "source": "/tmp/riwork-p2-terminal-bridge/nsh-local-safety.log",
+      "source_sha256": "c9195549c0bb21e49e78e3085f987cdd2077569adc6334d58d26dc5a17873135",
+      "transformation": "none"
+    },
+    {
+      "path": "app/nsh-mount-before.log",
+      "bytes": 965,
+      "sha256": "06f4b7c192e33b67efefa5b381363f1f5ae300b714ddf2b8720ab46df41c5f8b",
+      "source": "/tmp/riwork-p2-terminal-bridge/nsh-mount-before.log",
+      "source_sha256": "06f4b7c192e33b67efefa5b381363f1f5ae300b714ddf2b8720ab46df41c5f8b",
+      "transformation": "none"
+    },
+    {
+      "path": "app/nsh-mount-final.xml",
+      "bytes": 2733,
+      "sha256": "e547d301b24f7e05526fb2cc2614340f55c6033ee88fa146c4de037f273c8e29",
+      "source": "/tmp/riwork-p2-terminal-bridge/nsh-mount-final.xml",
+      "source_sha256": "e547d301b24f7e05526fb2cc2614340f55c6033ee88fa146c4de037f273c8e29",
+      "transformation": "none"
+    },
+    {
+      "path": "app/nsh-mount-fixed.log",
+      "bytes": 595,
+      "sha256": "14a86a99edafafa848c52988158feb6ef59d5c19c97905f2dd6e0c7305af4e84",
+      "source": "/tmp/riwork-p2-terminal-bridge/nsh-mount-fixed.log",
+      "source_sha256": "14a86a99edafafa848c52988158feb6ef59d5c19c97905f2dd6e0c7305af4e84",
+      "transformation": "none"
+    },
+    {
+      "path": "app/nsh-mount-full.log",
+      "bytes": 2358,
+      "sha256": "15c1aeacee653f8a898050392c75c666bc6ab22014065637955d58089b431859",
+      "source": "/tmp/riwork-p2-terminal-bridge/nsh-mount-full.log",
+      "source_sha256": "15c1aeacee653f8a898050392c75c666bc6ab22014065637955d58089b431859",
+      "transformation": "none"
+    },
+    {
+      "path": "app/nsh-restore-fixed.log",
+      "bytes": 574,
+      "sha256": "0f7be5e411cab36e0f2a29e18606c665dfe12b207ce5b5b85350419584b5d5ab",
+      "source": "/tmp/riwork-p2-terminal-bridge/nsh-restore-fixed.log",
+      "source_sha256": "0f7be5e411cab36e0f2a29e18606c665dfe12b207ce5b5b85350419584b5d5ab",
+      "transformation": "none"
+    },
+    {
+      "path": "app/seed-mount.log",
+      "bytes": 272,
+      "sha256": "b1254e887a12fff1e19f08fb4fb44627c82758cd8a0a9325c281f7b734422f17",
+      "source": "/tmp/riwork-p2-terminal-bridge/seed-mount.log",
+      "source_sha256": "b1254e887a12fff1e19f08fb4fb44627c82758cd8a0a9325c281f7b734422f17",
+      "transformation": "none"
+    },
+    {
+      "path": "diagnostics/render-diagnosis.md",
+      "bytes": 6001,
+      "sha256": "f4dd015bae50a8452160bba255357352d591f0e7ad486d20eb18e8cfef90d456",
+      "source": "/tmp/riwork-p2-terminal-verification/render-diagnosis.md",
+      "source_sha256": "f4dd015bae50a8452160bba255357352d591f0e7ad486d20eb18e8cfef90d456",
+      "transformation": "none; source is worker-corrected diagnostic account"
+    },
+    {
+      "path": "headless/cargo-tests.stderr",
+      "bytes": 4220,
+      "sha256": "cc2038f55455258a16e64105cb6546b70ad0f339b380c4b43af3ea545c5e8bcb",
+      "source": "/tmp/riwork-p2-full-checks/headless-m0jdlk4x/cargo-tests.stderr",
+      "source_sha256": "cc2038f55455258a16e64105cb6546b70ad0f339b380c4b43af3ea545c5e8bcb",
+      "transformation": "none"
+    },
+    {
+      "path": "headless/cargo-tests.stdout",
+      "bytes": 193746,
+      "sha256": "6cc9bf334f914317e6713e6d788fbf5b6873c592d9d794e8f9ed0a5e295aa2c6",
+      "source": "/tmp/riwork-p2-full-checks/headless-m0jdlk4x/cargo-tests.stdout",
+      "source_sha256": "6cc9bf334f914317e6713e6d788fbf5b6873c592d9d794e8f9ed0a5e295aa2c6",
+      "transformation": "none"
+    },
+    {
+      "path": "headless/cargo-version.stdout",
+      "bytes": 36,
+      "sha256": "c35608815f43d0b8788a9b826fad2bb17384f49fb328dc4fe64da9db5f5ef4d6",
+      "source": "/tmp/riwork-p2-full-checks/headless-m0jdlk4x/cargo-version.stdout",
+      "source_sha256": "c35608815f43d0b8788a9b826fad2bb17384f49fb328dc4fe64da9db5f5ef4d6",
+      "transformation": "none"
+    },
+    {
+      "path": "headless/manifest.json",
+      "bytes": 14076,
+      "sha256": "6952976f3cbe18b3244b656af320015682fd9b1aca958bdf7faeef54ef054170",
+      "source": "/tmp/riwork-p2-full-checks/headless-m0jdlk4x/manifest.json",
+      "source_sha256": "c03d6bfc3f9a0cf30af2ee57aa016fc2bda8564ee32779c99396601676f57ab2",
+      "transformation": "inherited PATH replaced with its SHA256; all command/isolation/toolchain/results fields preserved"
+    },
+    {
+      "path": "headless/nsh-check.stderr",
+      "bytes": 346,
+      "sha256": "938059adee4fd7777b124721a39d13c2b0be6c8c754e3656e20c75b04098689f",
+      "source": "/tmp/riwork-p2-full-checks/headless-m0jdlk4x/nsh-check.stderr",
+      "source_sha256": "938059adee4fd7777b124721a39d13c2b0be6c8c754e3656e20c75b04098689f",
+      "transformation": "none"
+    },
+    {
+      "path": "headless/nsh-test.stderr",
+      "bytes": 2241,
+      "sha256": "5d2bff1349efd1a9294c382cbb37cf9165714f7832adb3d37659dd661e11a0ea",
+      "source": "/tmp/riwork-p2-full-checks/headless-m0jdlk4x/nsh-test.stderr",
+      "source_sha256": "5d2bff1349efd1a9294c382cbb37cf9165714f7832adb3d37659dd661e11a0ea",
+      "transformation": "none"
+    },
+    {
+      "path": "headless/nsh-version.stdout",
+      "bytes": 20,
+      "sha256": "b84462512c378e1bda24a6997456ae354ea2bf2c6ce9346c291ac5d30e3ee804",
+      "source": "/tmp/riwork-p2-full-checks/headless-m0jdlk4x/nsh-version.stdout",
+      "source_sha256": "b84462512c378e1bda24a6997456ae354ea2bf2c6ce9346c291ac5d30e3ee804",
+      "transformation": "none"
+    },
+    {
+      "path": "headless/nsh.xml",
+      "bytes": 2583,
+      "sha256": "0d2fddbd22d52693fde151ee9383891b7a25d5a9bdbfa21596238c201f7a97e7",
+      "source": "/tmp/riwork-p2-full-checks/headless-m0jdlk4x/nsh.xml",
+      "source_sha256": "0d2fddbd22d52693fde151ee9383891b7a25d5a9bdbfa21596238c201f7a97e7",
+      "transformation": "none"
+    },
+    {
+      "path": "headless/rustc-version.stdout",
+      "bytes": 36,
+      "sha256": "55cd0529c005d3f62869ea6e2271bfa9d5196f56dc65a8be00a371af114a4a98",
+      "source": "/tmp/riwork-p2-full-checks/headless-m0jdlk4x/rustc-version.stdout",
+      "source_sha256": "55cd0529c005d3f62869ea6e2271bfa9d5196f56dc65a8be00a371af114a4a98",
+      "transformation": "none"
+    },
+    {
+      "path": "headless/seed-nsh-fixture.stderr",
+      "bytes": 334,
+      "sha256": "be7b23556d1c080278756e82b160e8085b9c3207f3dc7098c01f8b9384feb02f",
+      "source": "/tmp/riwork-p2-full-checks/headless-m0jdlk4x/seed-nsh-fixture.stderr",
+      "source_sha256": "be7b23556d1c080278756e82b160e8085b9c3207f3dc7098c01f8b9384feb02f",
+      "transformation": "none"
+    },
+    {
+      "path": "headless/seed-nsh-fixture.stdout",
+      "bytes": 114,
+      "sha256": "d6d298882e9e91c1fdb2ed39c9a71210ef23a8fbcc0d0a705c3228cb930f40a3",
+      "source": "/tmp/riwork-p2-full-checks/headless-m0jdlk4x/seed-nsh-fixture.stdout",
+      "source_sha256": "d6d298882e9e91c1fdb2ed39c9a71210ef23a8fbcc0d0a705c3228cb930f40a3",
+      "transformation": "none"
+    },
+    {
+      "path": "headless/summary.json",
+      "bytes": 2384,
+      "sha256": "230efe88cbb1078aae9f228fe78ecff92d93d7f2b6878418694ef5f657dc0386",
+      "source": "worker-generated evidence summary",
+      "transformation": "summary of retained logs or explicitly labeled session observations"
+    },
+    {
+      "path": "native/acceptance-visible-final.log",
+      "bytes": 2761,
+      "sha256": "1c3f0f8e60d532a3e022120a4db4e44af0b43ced4affde8eced448fec948eb9c",
+      "source": "/tmp/riwork-p2-terminal-verification/acceptance-visible-final.log",
+      "source_sha256": "1c3f0f8e60d532a3e022120a4db4e44af0b43ced4affde8eced448fec948eb9c",
+      "transformation": "none"
+    },
+    {
+      "path": "native/before-quit.json",
+      "bytes": 2433,
+      "sha256": "401b3a124df75b4cb6f3d518dc2d051e22fc77b18cc5f6792af8e71078d46737",
+      "source": "/private/tmp/rwnsh-p2-upf_p6zi/before-quit.json",
+      "source_sha256": "401b3a124df75b4cb6f3d518dc2d051e22fc77b18cc5f6792af8e71078d46737",
+      "transformation": "none"
+    },
+    {
+      "path": "native/build-final-visible.log",
+      "bytes": 349,
+      "sha256": "ac16a53d926073f21722452f728c43489f3d4b28f22dba3e2cf2eeda13889642",
+      "source": "/tmp/riwork-p2-terminal-verification/build-final-visible.log",
+      "source_sha256": "ac16a53d926073f21722452f728c43489f3d4b28f22dba3e2cf2eeda13889642",
+      "transformation": "none"
+    },
+    {
+      "path": "native/cua-alpha.png",
+      "bytes": 1010727,
+      "sha256": "104e375a3b649837ff94ad66f316ae78f50e4b0a87bf1f58e686199d44e6484d",
+      "source": "/private/tmp/rwnsh-p2-upf_p6zi/cua-alpha.png",
+      "source_sha256": "104e375a3b649837ff94ad66f316ae78f50e4b0a87bf1f58e686199d44e6484d",
+      "transformation": "none"
+    },
+    {
+      "path": "native/cua-beta.png",
+      "bytes": 994572,
+      "sha256": "89c2e2d34a501c1bce5f3f511988e8e9cc738bdc050ee1cc1a4054ca77c01e09",
+      "source": "/private/tmp/rwnsh-p2-upf_p6zi/cua-beta.png",
+      "source_sha256": "89c2e2d34a501c1bce5f3f511988e8e9cc738bdc050ee1cc1a4054ca77c01e09",
+      "transformation": "none"
+    },
+    {
+      "path": "native/cua.json",
+      "bytes": 8098,
+      "sha256": "20eb9a6baddfaf1ad75c14f2dfbf8a4095d286bb2e8c72410a6293e2587a941e",
+      "source": "root-generated record from tool results and executed command",
+      "transformation": "explicit summary; no fabricated raw tool transcript"
+    },
+    {
+      "path": "native/cycles.json",
+      "bytes": 66423,
+      "sha256": "2e19875bd618fe9dc05cb60268a1265444195425bd661b16b64f8b2fe4ae4456",
+      "source": "/private/tmp/rwnsh-p2-upf_p6zi/cycles.json",
+      "source_sha256": "2e19875bd618fe9dc05cb60268a1265444195425bd661b16b64f8b2fe4ae4456",
+      "transformation": "none"
+    },
+    {
+      "path": "native/environment.json",
+      "bytes": 393,
+      "sha256": "96759fc3a70741458d8bcccfc40562deea988a41e80ebfb95c5b11888c7b5be0",
+      "source": "root-generated record from tool results and executed command",
+      "transformation": "explicit summary; no fabricated raw tool transcript"
+    },
+    {
+      "path": "native/exact-tty-real-final.json",
+      "bytes": 400,
+      "sha256": "b7948f047020849528d0d060716838be8e4eebe51ef3c11f5b383946cda2690e",
+      "source": "/tmp/riwork-p2-terminal-verification/exact-tty-real-final.json",
+      "source_sha256": "b7948f047020849528d0d060716838be8e4eebe51ef3c11f5b383946cda2690e",
+      "transformation": "none"
+    },
+    {
+      "path": "native/exact-tty-real-final.log",
+      "bytes": 444,
+      "sha256": "7006ca96d1384ba200177350305da4e55d07291fe791c635ad9b4b76c1e23480",
+      "source": "/tmp/riwork-p2-terminal-verification/exact-tty-real-final.log",
+      "source_sha256": "7006ca96d1384ba200177350305da4e55d07291fe791c635ad9b4b76c1e23480",
+      "transformation": "none"
+    },
+    {
+      "path": "native/final-cargo-tests-command.json",
+      "bytes": 513,
+      "sha256": "86c920696c2aac37d0648fc5567747cc8a15ff52c7f2e7186bf9fdb98ee85fe0",
+      "source": "root-generated record from tool results and executed command",
+      "transformation": "explicit summary; no fabricated raw tool transcript"
+    },
+    {
+      "path": "native/final-cargo-tests.log",
+      "bytes": 4512,
+      "sha256": "c8dea9d456e34dd0c8095e81288fc3c00b63768c129aa55bbd722c2ff2f20791",
+      "source": "/tmp/riwork-p2-terminal-verification/final-cargo-tests.log",
+      "source_sha256": "c8dea9d456e34dd0c8095e81288fc3c00b63768c129aa55bbd722c2ff2f20791",
+      "transformation": "none"
+    },
+    {
+      "path": "native/final-snapshot.json.gz",
+      "bytes": 34439,
+      "sha256": "3c13278c1df41b7bd600e3da29f4607efbc90d62fd47dca951c5fb6a84bfe77c",
+      "source": "/private/tmp/rwnsh-p2-upf_p6zi/final-snapshot.json",
+      "source_sha256": "e6604d45b6a0c328e5db11b6b9f1b58c5b23a4f685f233b4481e3c1d3452fd9f",
+      "transformation": "deterministic gzip, mtime 0"
+    },
+    {
+      "path": "native/host.log",
+      "bytes": 73056,
+      "sha256": "f17a8eb17e54c876a9557d7e986e245e947a78fb46c366f934a0a45ae0813241",
+      "source": "/private/tmp/rwnsh-p2-upf_p6zi/host.log",
+      "source_sha256": "f17a8eb17e54c876a9557d7e986e245e947a78fb46c366f934a0a45ae0813241",
+      "transformation": "none"
+    },
+    {
+      "path": "native/initial-identity.json",
+      "bytes": 415,
+      "sha256": "cb825fb01acfd78d0ea55f76fa65a7aa53792a847a19a785c316122e2d61fae0",
+      "source": "/private/tmp/rwnsh-p2-upf_p6zi/initial-identity.json",
+      "source_sha256": "cb825fb01acfd78d0ea55f76fa65a7aa53792a847a19a785c316122e2d61fae0",
+      "transformation": "none"
+    },
+    {
+      "path": "native/initial-native-snapshot.json",
+      "bytes": 23590,
+      "sha256": "2f190fcdd631247c01ea6ec9a8b6a0fa48cd9f9487a1424f3f34a57524ad177e",
+      "source": "/private/tmp/rwnsh-p2-upf_p6zi/initial-native-snapshot.json",
+      "source_sha256": "2f190fcdd631247c01ea6ec9a8b6a0fa48cd9f9487a1424f3f34a57524ad177e",
+      "transformation": "none"
+    },
+    {
+      "path": "native/manifest.json",
+      "bytes": 112558,
+      "sha256": "5786e99dd86a62d234e5550dbeffae2a20673433d43d26b15619f16c4522ec03",
+      "source": "/private/tmp/rwnsh-p2-upf_p6zi/manifest.json",
+      "source_sha256": "5786e99dd86a62d234e5550dbeffae2a20673433d43d26b15619f16c4522ec03",
+      "transformation": "none"
+    },
+    {
+      "path": "pinned/cargo-tree-default.stderr.txt",
+      "bytes": 156,
+      "sha256": "11fca5a9ed41b89c9405e220a9fd6b471fdc9e7641b3d830bfafc04e615ae753",
+      "source": "/tmp/riwork-p2-terminal-verification/cargo-tree-default.stderr.txt",
+      "source_sha256": "11fca5a9ed41b89c9405e220a9fd6b471fdc9e7641b3d830bfafc04e615ae753",
+      "transformation": "none"
+    },
+    {
+      "path": "pinned/cargo-tree-default.txt",
+      "bytes": 22572,
+      "sha256": "5fc6cfd4970a5deabaf1f7be14fdb98c3d4c1795a952518a78267cd76c240f6e",
+      "source": "/tmp/riwork-p2-terminal-verification/cargo-tree-default.txt",
+      "source_sha256": "5fc6cfd4970a5deabaf1f7be14fdb98c3d4c1795a952518a78267cd76c240f6e",
+      "transformation": "none"
+    },
+    {
+      "path": "pinned/cargo-tree-terminal-fixture.stderr.txt",
+      "bytes": 104,
+      "sha256": "e237bf68452f394ffe54e018832419d40907390b5a98d44e8939943ca20bf452",
+      "source": "/tmp/riwork-p2-terminal-verification/cargo-tree-terminal-fixture.stderr.txt",
+      "source_sha256": "e237bf68452f394ffe54e018832419d40907390b5a98d44e8939943ca20bf452",
+      "transformation": "none"
+    },
+    {
+      "path": "pinned/cargo-tree-terminal-fixture.txt",
+      "bytes": 22572,
+      "sha256": "5fc6cfd4970a5deabaf1f7be14fdb98c3d4c1795a952518a78267cd76c240f6e",
+      "source": "/tmp/riwork-p2-terminal-verification/cargo-tree-terminal-fixture.txt",
+      "source_sha256": "5fc6cfd4970a5deabaf1f7be14fdb98c3d4c1795a952518a78267cd76c240f6e",
+      "transformation": "none"
+    },
+    {
+      "path": "pinned/fresh-build-provenance.json",
+      "bytes": 2628,
+      "sha256": "4ea1f338a81fddfc2becc418bc27f834f33666aa55b638268e167b23bea365e5",
+      "source": "crates/riwork-nsh-terminal/.runtime/final-build-check/install/provenance.json",
+      "source_sha256": "4ea1f338a81fddfc2becc418bc27f834f33666aa55b638268e167b23bea365e5",
+      "transformation": "none"
+    },
+    {
+      "path": "pinned/fresh-build.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source": "crates/riwork-nsh-terminal/.runtime/final-build-check/build.log",
+      "source_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "transformation": "none"
+    },
+    {
+      "path": "pinned/integrity-tests.md",
+      "bytes": 1174,
+      "sha256": "41f753e9bd2db9ea80335d3d001f8feffc19b03ebbadec7bb2ceb9b8f1de2113",
+      "source": "worker-generated evidence summary",
+      "transformation": "summary of retained logs or explicitly labeled session observations"
+    },
+    {
+      "path": "pinned/linked-go-provenance.json",
+      "bytes": 1015,
+      "sha256": "a83bedf01fd9fa92d1f316a7705919832d9fda07eb9f4dce46ad209bc093c450",
+      "source": "crates/riwork-nsh-terminal/.runtime/pinned/install/provenance.json",
+      "source_sha256": "a83bedf01fd9fa92d1f316a7705919832d9fda07eb9f4dce46ad209bc093c450",
+      "transformation": "none"
+    },
+    {
+      "path": "pinned/pinned-final.json",
+      "bytes": 9554,
+      "sha256": "7d97906f508e22ac08016e67a29190a676c421fcb0d21ae5952c4d91ac7a0202",
+      "source": "/tmp/riwork-p2-terminal-verification/pinned-final.json",
+      "source_sha256": "7d97906f508e22ac08016e67a29190a676c421fcb0d21ae5952c4d91ac7a0202",
+      "transformation": "none"
+    },
+    {
+      "path": "pinned/pinned-final.md",
+      "bytes": 4716,
+      "sha256": "0e138f8c61bc47e22cbf2075f3897f9dac809775825d096b1033b4dc14cde11d",
+      "source": "/tmp/riwork-p2-terminal-verification/pinned-final.md",
+      "source_sha256": "0e138f8c61bc47e22cbf2075f3897f9dac809775825d096b1033b4dc14cde11d",
+      "transformation": "none"
+    },
+    {
+      "path": "pinned/pinned-install-verification.json",
+      "bytes": 1144,
+      "sha256": "dad18b0774eb3d9608d128a3e39a928f06dc51e13dd2388a262b74d2dc68646c",
+      "source": "/tmp/riwork-p2-terminal-verification/pinned-install-verification.json",
+      "source_sha256": "dad18b0774eb3d9608d128a3e39a928f06dc51e13dd2388a262b74d2dc68646c",
+      "transformation": "none"
+    },
+    {
+      "path": "pinned/terminal-link-directives.json",
+      "bytes": 2815,
+      "sha256": "b7b1c1fccaeea5c9b854495c06b1b5dfb9f22f14577d786631d30a5f8c481b04",
+      "source": "/tmp/riwork-p2-terminal-verification/terminal-link-directives.json",
+      "source_sha256": "b7b1c1fccaeea5c9b854495c06b1b5dfb9f22f14577d786631d30a5f8c481b04",
+      "transformation": "none"
+    },
+    {
+      "path": "tests/exact-tty-fake.log",
+      "bytes": 1717,
+      "sha256": "015ad36eff36079926d54d676eae8456547e316d9bfefdb4d5fe4d01b567983d",
+      "source": "/tmp/riwork-p2-terminal-verification/exact-tty-fake.log",
+      "source_sha256": "015ad36eff36079926d54d676eae8456547e316d9bfefdb4d5fe4d01b567983d",
+      "transformation": "none"
+    },
+    {
+      "path": "tests/exact-tty-real-record.md",
+      "bytes": 1584,
+      "sha256": "a21966d0f944c5f303842ee5cb120f02a085a5f9e61511d3f7f043a947e45d64",
+      "source": "worker-generated evidence summary",
+      "transformation": "summary of retained logs or explicitly labeled session observations"
+    },
+    {
+      "path": "tests/terminal-tests.log",
+      "bytes": 4338,
+      "sha256": "dd153b09cfdf3d477386300ea9692010bc22b80374da660046accf4f27df6e24",
+      "source": "/tmp/riwork-p2-terminal-verification/terminal-tests.log",
+      "source_sha256": "dd153b09cfdf3d477386300ea9692010bc22b80374da660046accf4f27df6e24",
+      "transformation": "none"
+    }
+  ]
+}

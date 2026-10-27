@@ -1064,6 +1064,77 @@ impl SessionManager {
         Ok(command)
     }
 
+    /// Detach exactly one desktop surface's tty, never all clients or the session.
+    /// Called by the native terminal's background teardown worker. A successful
+    /// readback proves that tty no longer belongs to this session; the caller
+    /// must additionally observe Ghostty's PTY-child exit before freeing it.
+    pub fn detach_terminal_client(&self, id: &str, tty: &str) -> Result<(), String> {
+        validate_uuid(id)?;
+        if !tty.starts_with("/dev/")
+            || tty.len() > 128
+            || tty
+                .bytes()
+                .any(|c| !(c.is_ascii_alphanumeric() || b"/_-".contains(&c)))
+        {
+            return Err("invalid terminal tty".into());
+        }
+        let clients = || -> Result<Option<String>, String> {
+            let mut command = self.tmux_client();
+            command.args(["list-clients", "-F", "#{client_tty}\t#{session_name}"]);
+            let output = run_bounded(
+                command,
+                None,
+                Duration::from_millis(450),
+                "terminal client readback",
+            )?;
+            if no_tmux_server(&output) {
+                return Ok(None);
+            }
+            if !output.status.success() {
+                return Err(tmux_error(&output));
+            }
+            Ok(Some(String::from_utf8_lossy(&output.stdout).into_owned()))
+        };
+        let owns_tty = |rows: &str| -> Result<bool, String> {
+            let matches = rows
+                .lines()
+                .filter_map(|line| line.split_once('\t'))
+                .filter(|(client_tty, _)| *client_tty == tty)
+                .collect::<Vec<_>>();
+            match matches.as_slice() {
+                [] => Ok(false),
+                [(_, session)] if *session == id => Ok(true),
+                _ => Err("terminal tty belongs to another session; refusing detach".into()),
+            }
+        };
+        let Some(before) = clients()? else {
+            return Ok(());
+        };
+        if !owns_tty(&before)? {
+            return Ok(());
+        }
+        let mut command = self.tmux_client();
+        command.args(["detach-client", "-t", tty]);
+        let output = run_bounded(
+            command,
+            None,
+            Duration::from_millis(450),
+            "terminal exact-tty detach",
+        )?;
+        // A naturally exited client can disappear between the first read and
+        // detach. Only the subsequent readback may accept that race.
+        let after = clients()?;
+        if after.as_deref().map(owns_tty).transpose()?.unwrap_or(false) {
+            return Err(if output.status.success() {
+                "terminal client remained attached".into()
+            } else {
+                tmux_error(&output)
+            });
+        }
+        self.invalidate_sample();
+        Ok(())
+    }
+
     /// Mouse reporting and wheel scrolling for the shell's session, and hyperlinks for the server.
     /// Done on every attach, so servers and sessions made by older builds catch up.
     fn configure_scrolling(&self, id: &str) -> Result<(), String> {

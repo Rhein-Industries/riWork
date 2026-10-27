@@ -107,6 +107,7 @@ pub struct LayoutModel {
     allocated_pane_ids: BTreeSet<PaneId>,
     unknown_panes: BTreeSet<PaneId>,
     diagnostic: Option<String>,
+    detached_shell_panes: BTreeMap<String, PaneId>,
 }
 
 impl LayoutModel {
@@ -134,6 +135,7 @@ impl LayoutModel {
             allocated_pane_ids,
             unknown_panes: BTreeSet::new(),
             diagnostic: None,
+            detached_shell_panes: BTreeMap::new(),
         })
     }
 
@@ -216,6 +218,78 @@ impl LayoutModel {
             .ok_or("not_found: panel is not in this layout")?;
         pane.1.active_tab_key = Some(key.to_owned());
         self.project.active_pane = *pane.0;
+        self.project.normalize()?;
+        Ok(self.dock(self.extent.unwrap_or(DEFAULT_EXTENT)))
+    }
+
+    /// Opening an existing session changes only placement. Engine creation and
+    /// liveness checks belong to Sessions/the native terminal, never this model.
+    pub fn open_shell(&mut self, shell_id: &str) -> Result<DockAreaLayout, String> {
+        if shell_id.trim().is_empty() {
+            return Err("invalid: shellId is required".into());
+        }
+        let key = format!("shell:{shell_id}");
+        if self
+            .project
+            .panes
+            .values()
+            .any(|pane| pane.tabs.iter().any(|tab| tab.key() == key))
+        {
+            return self.select_panel(&key);
+        }
+        let locks = self.project.effective_locked_panes();
+        let destination = self
+            .detached_shell_panes
+            .get(shell_id)
+            .copied()
+            .into_iter()
+            .chain(self.project.main_pane)
+            .chain(std::iter::once(self.project.active_pane))
+            .chain(self.project.layout.pane_ids())
+            .find(|id| self.project.panes.contains_key(id) && !locks.contains(id))
+            .ok_or("refused: unlock a pane before opening a shell")?;
+        let pane = self.project.panes.get_mut(&destination).unwrap();
+        pane.tabs.push(SavedTab::Shell {
+            shell_id: shell_id.to_owned(),
+        });
+        pane.active_tab_key = Some(key);
+        self.project.active_pane = destination;
+        self.project.detached_shell_ids.retain(|id| id != shell_id);
+        self.detached_shell_panes.remove(shell_id);
+        self.project.normalize()?;
+        Ok(self.dock(self.extent.unwrap_or(DEFAULT_EXTENT)))
+    }
+
+    /// Detach removes this window's tab and records its identity for restore.
+    /// It deliberately has no SessionManager, and never kills a tmux session.
+    pub fn detach_shell(&mut self, shell_id: &str) -> Result<DockAreaLayout, String> {
+        let key = format!("shell:{shell_id}");
+        let (pane_id, pane) = self
+            .project
+            .panes
+            .iter_mut()
+            .find(|(_, pane)| pane.tabs.iter().any(|tab| tab.key() == key))
+            .ok_or("not_found: shell tab is not in this layout")?;
+        self.detached_shell_panes
+            .insert(shell_id.to_owned(), *pane_id);
+        pane.tabs.retain(|tab| tab.key() != key);
+        // Clear legacy identity before normalize, which can migrate shell-only
+        // saves into tabs when the final tab was removed.
+        pane.shell_ids.retain(|id| id != shell_id);
+        if pane.active_shell_id.as_deref() == Some(shell_id) {
+            pane.active_shell_id = None;
+        }
+        if pane.active_tab_key.as_deref() == Some(&key) {
+            pane.active_tab_key = pane.tabs.first().map(SavedTab::key);
+        }
+        if !self
+            .project
+            .detached_shell_ids
+            .iter()
+            .any(|id| id == shell_id)
+        {
+            self.project.detached_shell_ids.insert(shell_id.to_owned());
+        }
         self.project.normalize()?;
         Ok(self.dock(self.extent.unwrap_or(DEFAULT_EXTENT)))
     }
@@ -1967,6 +2041,96 @@ mod tests {
         assert_eq!(saved.panes[&original_high].tabs[0].key(), "shell:c");
         assert_eq!(saved.panes[&2].tabs[0].key(), "shell:a");
         assert_eq!(saved.panes[&native_ceiling].tabs[0].key(), "shell:b");
+    }
+
+    #[test]
+    fn local_shell_detach_reopen_preserves_identity_and_does_not_resurrect_legacy_tab() {
+        let mut model =
+            LayoutModel::new(fixture(Layout::Pane(1), &[(1, &["first", "second"])])).unwrap();
+        model.select_panel("shell:first").unwrap();
+        model.detach_shell("first").unwrap();
+        assert!(model.project().detached_shell_ids.contains("first"));
+        assert_eq!(
+            model.project().panes[&1].active_tab_key.as_deref(),
+            Some("shell:second")
+        );
+        model.detach_shell("second").unwrap();
+        assert!(model.project().panes[&1].tabs.is_empty());
+        assert!(model.project().panes[&1].shell_ids.is_empty());
+        let stored = model.storage_project();
+        let mut restored = LayoutModel::new(stored).unwrap();
+        restored.open_shell("first").unwrap();
+        restored.open_shell("first").unwrap();
+        assert_eq!(restored.project().panes[&1].tabs.len(), 1);
+        assert_eq!(restored.project().panes[&1].tabs[0].key(), "shell:first");
+        assert!(!restored.project().detached_shell_ids.contains("first"));
+        assert!(restored.project().detached_shell_ids.contains("second"));
+    }
+
+    #[test]
+    fn explicit_reopen_remembers_surviving_unlocked_pane_and_falls_back_if_locked_or_removed() {
+        let mut project = fixture(
+            split(Axis::SideBySide, 0.5, Layout::Pane(1), Layout::Pane(2)),
+            &[(1, &["main"]), (2, &["other"])],
+        );
+        project.main_pane = Some(1);
+        project.locked_panes = Some(HashSet::new());
+        let mut model = LayoutModel::new(project.clone()).unwrap();
+        model.detach_shell("other").unwrap();
+        model.open_shell("other").unwrap();
+        assert_eq!(model.project().panes[&2].tabs[0].key(), "shell:other");
+        model.detach_shell("other").unwrap();
+        model.toggle_lock(2).unwrap();
+        model.open_shell("other").unwrap();
+        assert_eq!(
+            model.project().panes[&1].tabs.last().unwrap().key(),
+            "shell:other"
+        );
+        let mut model = LayoutModel::new(project).unwrap();
+        model.detach_shell("other").unwrap();
+        // A real controlled DockArea gesture removes the emptied former pane.
+        model
+            .apply_dock(
+                DockAreaLayout::new(DockNode::Tabs {
+                    id: Some(1),
+                    panels: vec!["shell:main".into()],
+                    active_index: 0,
+                }),
+                DEFAULT_EXTENT,
+            )
+            .unwrap();
+        assert!(!model.project().panes.contains_key(&2));
+        model.open_shell("other").unwrap();
+        assert_eq!(
+            model.project().panes[&1].tabs.last().unwrap().key(),
+            "shell:other"
+        );
+    }
+
+    #[test]
+    fn opening_local_shell_uses_unlocked_main_and_refuses_all_locked_transactionally() {
+        let mut project = fixture(
+            split(Axis::SideBySide, 0.27, Layout::Pane(1), Layout::Pane(2)),
+            &[],
+        );
+        project.locked_panes = Some(HashSet::from([1]));
+        project.main_pane = Some(2);
+        project.active_pane = 1;
+        let mut model = LayoutModel::new(project).unwrap();
+        model.open_shell("existing").unwrap();
+        assert_eq!(model.project().active_pane, 2);
+        assert_eq!(model.project().panes[&2].tabs[0].key(), "shell:existing");
+        model.toggle_lock(2).unwrap();
+        let before = model.project().clone();
+        assert!(
+            model
+                .open_shell("another")
+                .unwrap_err()
+                .starts_with("refused:")
+        );
+        assert_eq!(model.project(), &before);
+        // A lock prevents routing new tabs, not selecting an existing one.
+        model.open_shell("existing").unwrap();
     }
 
     #[test]

@@ -7,9 +7,16 @@ use std::{
 
 use anyhow::Result;
 use riwork_core::store::Store;
-use riwork_engine::sessions::SessionManager;
+use riwork_engine::{
+    project_tabs::{TabStore, Update},
+    sessions::{SessionManager, registered_shell},
+};
+use serde_json::Value;
 
-use crate::dto::{ProjectInspectionDto, SearchHitDto, SessionsSnapshot, StoreState};
+use crate::dto::{
+    CreateSessionRequest, ProjectInspectionDto, SearchHitDto, SessionsSnapshot, ShellSessionDto,
+    StoreState,
+};
 
 /// A required backend/tool is unavailable, as distinct from a failed disk read.
 #[derive(Debug)]
@@ -22,6 +29,16 @@ impl std::fmt::Display for Unavailable {
 }
 
 impl std::error::Error for Unavailable {}
+
+/// A safe refusal before any process/session side effect.
+#[derive(Debug)]
+pub struct Refused(pub String);
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+impl std::error::Error for Refused {}
 
 /// The read side of the durable project/worktree/task store.
 ///
@@ -37,6 +54,18 @@ pub trait StoreBackend: Send + Sync + 'static {
 /// Read side of the session inventory, shared by the process service.
 pub trait SessionsBackend: Send + Sync + 'static {
     fn list(&self) -> Result<SessionsSnapshot>;
+
+    fn create(&self, _request: CreateSessionRequest) -> Result<ShellSessionDto> {
+        Err(Unavailable("shell creation is unavailable in this backend".into()).into())
+    }
+
+    fn close(&self, _id: &str) -> Result<()> {
+        Err(Unavailable("shell exit is unavailable in this backend".into()).into())
+    }
+
+    fn update_tabs(&self, _project_id: &str, _update: &Update) -> Result<Value> {
+        Err(Unavailable("shared session membership is unavailable in this backend".into()).into())
+    }
 
     /// Periodic fallback and watcher-triggered inventory, once per process.
     fn sample(&self) -> Result<SessionsSnapshot> {
@@ -142,6 +171,74 @@ impl SessionsBackend for EngineSessionsBackend {
         })
     }
 
+    fn create(&self, request: CreateSessionRequest) -> Result<ShellSessionDto> {
+        let state = Store::open(self.home.clone())
+            .map_err(anyhow::Error::msg)?
+            .snapshot()
+            .map_err(anyhow::Error::msg)?;
+        let project = state
+            .projects
+            .iter()
+            .find(|project| project.id == request.project_id)
+            .ok_or_else(|| anyhow::anyhow!("unknown project {}", request.project_id))?;
+        let root = if let Some(id) = request.worktree_id.as_deref() {
+            state
+                .worktrees
+                .iter()
+                .find(|worktree| worktree.id == id && worktree.project_id == project.id)
+                .map(|worktree| worktree.path.clone())
+                .ok_or_else(|| anyhow::anyhow!("worktree does not belong to project"))?
+        } else {
+            project.root.clone()
+        };
+        let cwd = request.cwd.map(PathBuf::from).unwrap_or(root);
+        if !cwd.is_absolute() || !cwd.is_dir() {
+            anyhow::bail!("shell cwd must be an existing absolute directory");
+        }
+        self.manager()?
+            .for_user()
+            .create(
+                request.project_id,
+                request.worktree_id,
+                cwd,
+                request.command,
+            )
+            .map(Into::into)
+            .map_err(anyhow::Error::msg)
+    }
+
+    fn close(&self, id: &str) -> Result<()> {
+        let session = registered_shell(&self.home, id).map_err(anyhow::Error::msg)?;
+        if let Some(project) = session.project_id {
+            self.update_tabs(
+                &project,
+                &Update::Hide {
+                    key: format!("shell:{id}"),
+                },
+            )
+            .map_err(|error| {
+                Refused(format!(
+                    "cannot hide the shared session; Exit was not performed: {error}"
+                ))
+            })?;
+        }
+        self.manager()?.close(id).map_err(anyhow::Error::msg)
+    }
+
+    fn update_tabs(&self, project_id: &str, update: &Update) -> Result<Value> {
+        update.validate().map_err(anyhow::Error::msg)?;
+        let id = update.key().strip_prefix("shell:").ok_or_else(|| {
+            Refused("only local shell membership is available in this slice".into())
+        })?;
+        let shell = registered_shell(&self.home, id).map_err(anyhow::Error::msg)?;
+        if shell.project_id.as_deref() != Some(project_id) {
+            return Err(Refused("session does not belong to this project".into()).into());
+        }
+        let store = TabStore::at(&self.home, project_id).map_err(anyhow::Error::msg)?;
+        let entries = store.update(update).map_err(Unavailable)?;
+        Ok(Value::Array(entries.iter().map(tab_entry).collect()))
+    }
+
     fn sample(&self) -> Result<SessionsSnapshot> {
         let sample = self.manager()?.sample(false).map_err(anyhow::Error::msg)?;
         Ok(SessionsSnapshot {
@@ -154,6 +251,17 @@ impl SessionsBackend for EngineSessionsBackend {
             manager.invalidate_sample();
         }
     }
+}
+
+/// Only bridge field names change; opaque identities and core files do not.
+fn tab_entry(entry: &riwork_engine::project_tabs::Entry) -> Value {
+    serde_json::json!({ "key": entry.key, "kind": entry.kind, "title": entry.title,
+        "baseTitle": entry.base_title, "titlePriority": entry.title_priority,
+        "status": entry.status, "hidden": entry.hidden, "worker": entry.worker,
+        "legacyUserOpened": entry.legacy_user_opened, "legacyDismissed": entry.legacy_dismissed,
+        "order": entry.order, "parent": entry.parent,
+        "children": entry.children.iter().map(tab_entry).collect::<Vec<_>>(),
+        "childCount": entry.child_count, "rename": entry.rename, "created": entry.created })
 }
 
 #[cfg(test)]
@@ -171,5 +279,46 @@ mod tests {
         let recovered = backend.snapshot().unwrap();
         assert_eq!(recovered.schema_version, 1);
         assert!(recovered.projects.is_empty());
+    }
+
+    #[test]
+    fn unreadable_membership_refuses_exit_before_initializing_tmux_or_changing_registry() {
+        let fixture = tempfile::tempdir().unwrap();
+        let id = "00000000-0000-4000-8000-000000000001";
+        let project = "00000000-0000-4000-8000-000000000002";
+        let registry = serde_json::json!({ "sessions": [{ "id": id, "project_id": project,
+            "kind": "project", "cwd": fixture.path(), "created_at_unix": 1 }] })
+        .to_string();
+        std::fs::write(fixture.path().join("sessions.json"), &registry).unwrap();
+        let tabs_dir = fixture.path().join("project-tabs");
+        std::fs::create_dir(&tabs_dir).unwrap();
+        let tabs_file = tabs_dir.join(format!("{project}.json"));
+        std::fs::write(&tabs_file, "unreadable membership").unwrap();
+        let backend = EngineSessionsBackend::new(fixture.path().to_owned());
+        let error = backend.close(id).unwrap_err();
+        assert!(error.is::<Refused>());
+        assert!(
+            backend.manager.get().is_none(),
+            "no tmux query/kill before successful hide"
+        );
+        assert_eq!(
+            std::fs::read_to_string(fixture.path().join("sessions.json")).unwrap(),
+            registry
+        );
+        assert_eq!(
+            std::fs::read_to_string(tabs_file).unwrap(),
+            "unreadable membership"
+        );
+        assert!(
+            backend
+                .update_tabs(
+                    project,
+                    &Update::Hide {
+                        key: format!("shell:{id}")
+                    }
+                )
+                .unwrap_err()
+                .is::<Unavailable>()
+        );
     }
 }

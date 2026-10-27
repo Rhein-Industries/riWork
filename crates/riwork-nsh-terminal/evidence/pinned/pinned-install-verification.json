@@ -1,0 +1,21 @@
+{
+  "verified_install": "/Users/dominik/orca/projects/riWork-nsh-p2-terminals/crates/riwork-nsh-terminal/.runtime/pinned/install",
+  "schema_version": 1,
+  "action": "import_exact_go_artifacts",
+  "recorded_at_utc": "2026-10-27T21:40:31.156373+00:00",
+  "revision": "9f0e1719dc918368367d368bfe300f59bb68b5a4",
+  "source_distribution_sha256": "2b12d0d271cf0ca99a9073bdc148ce43782713c6d01be33af2a105b00c62ef5d",
+  "source_manifest_sha256": "78f97c2dae6f6717963a8de12a4164c6d20c57bd7f984536878d2b98bc9816de",
+  "zig_version": "0.16.0",
+  "target": "aarch64-apple-darwin",
+  "artifacts": {
+    "lib/libghostty-internal.a": "b51367aa565527eddfa180d5ae6304899d903af6fc094b4531671ffc20fb064f",
+    "include/ghostty.h": "f2c12e1bb02540d79feed6bd29ee37312c4e0d24391442a63e66f06e1f7f2e4a"
+  },
+  "source_install": "/Users/dominik/orca/projects/riWork-nsh-p2-teardown-pinned/spikes/ghostty-nsh/.runtime/pinned/install",
+  "themes": {
+    "distribution_sha256": "ea9878471420ee5b12e7f2ff480099c954ea50e573a1bdf83f43e105c9be63f0",
+    "source_manifest_sha256": "72de45b75c66d97dac20bc58a843b6a2fbb4fb39f99261b977e28aeea30c29fe",
+    "file_count": 602
+  }
+}

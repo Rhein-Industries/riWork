@@ -167,6 +167,16 @@ impl LayoutSession {
         self.edit(|model| model.select_panel(&panel_id).map(|next| (next, true)))
     }
 
+    /// Place or select one existing local shell without creating a session.
+    pub fn open_shell(&mut self, shell_id: String) -> Result<Value, String> {
+        self.edit(|model| model.open_shell(&shell_id).map(|next| (next, true)))
+    }
+
+    /// Remove this window's tab while preserving its persistent tmux session.
+    pub fn detach_shell(&mut self, shell_id: String) -> Result<Value, String> {
+        self.edit(|model| model.detach_shell(&shell_id).map(|next| (next, true)))
+    }
+
     /// Activate a pane without changing its selected tab (including empty panes).
     pub fn select_pane(&mut self, pane_id: u64) -> Result<Value, String> {
         self.edit(|model| model.select_pane(pane_id).map(|next| (next, true)))
