@@ -73,6 +73,17 @@ const COMMANDS: &[&str] = &[
     "actualSize",
 ];
 
+// The View-menu subset of acceptance §8. Keep every row and chord in place,
+// but neither AppKit validation nor direct action delivery may activate it.
+const DEFERRED_MENU_COMMANDS: &[&str] = &[
+    "newChat",
+    "appPreview",
+    "sessions",
+    "toggleTranscriptMode",
+    "expandTranscript",
+    "collapseTranscript",
+];
+
 define_class!(
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
@@ -128,6 +139,9 @@ define_class!(
 
 impl MenuTarget {
     fn emit(&self, command: &'static str) {
+        if DEFERRED_MENU_COMMANDS.contains(&command) {
+            return;
+        }
         let app = NSApplication::sharedApplication(self.mtm());
         (self.ivars())(MenuAction {
             window_number: app.keyWindow().map(|window| window.windowNumber()),
@@ -361,7 +375,7 @@ fn item(label: &str, command: &str, shortcut: Option<&str>) -> MenuItem {
         id,
         label: label.into(),
         shortcut: shortcut.map(|shortcut| Shortcut::parse(shortcut, true).unwrap()),
-        enabled: true,
+        enabled: !DEFERRED_MENU_COMMANDS.contains(&command),
         checked: None,
         role: None,
         when: When::Always,
@@ -462,6 +476,8 @@ fn render_menu(
     target: &MenuTarget,
 ) -> Retained<NSMenu> {
     let menu = NSMenu::initWithTitle(NSMenu::alloc(mtm), &NSString::from_str(title));
+    // R-DEFER is application state, not responder-chain availability.
+    menu.setAutoenablesItems(false);
     for item in items {
         match item {
             MenuItem::Separator => menu.addItem(&NSMenuItem::separatorItem(mtm)),
@@ -480,6 +496,7 @@ fn render_menu(
                 };
                 let ns = make_item(mtm, &action.label, Some(selector), action.shortcut.as_ref());
                 ns.setTag(action.id as isize);
+                ns.setEnabled(action.enabled);
                 // SAFETY: target answers all selectors used here. HostMenus
                 // retains it for as long as the application menu is installed.
                 unsafe { ns.setTarget(Some(target)) };
@@ -535,7 +552,59 @@ fn key_equivalent(shortcut: &Shortcut) -> (String, NSEventModifierFlags) {
 
 #[cfg(test)]
 mod tests {
+    #[allow(unused_imports)] // Included in the harness=false AppKit test target.
     use super::*;
+
+    #[test]
+    fn command_ids_are_the_v1_set() {
+        let mut commands = HashSet::new();
+        MenuItem::each_action(&menu_model(), &mut |action| {
+            if action.role.is_none() {
+                let command = COMMANDS[action.id as usize - 1];
+                assert!(commands.insert(command), "duplicate command: {command}");
+            }
+        });
+        assert_eq!(
+            commands,
+            HashSet::from([
+                "openSettings",
+                "openProjectSettings",
+                "openSchedules",
+                "quit",
+                "openGlobalDashboard",
+                "openGlobalChat",
+                "newChat",
+                "appPreview",
+                "sessions",
+                "defaultLayout",
+                "gatherTabs",
+                "toggleTranscriptMode",
+                "expandTranscript",
+                "collapseTranscript",
+                "biggerText",
+                "smallerText",
+                "actualSize",
+            ])
+        );
+    }
+
+    #[test]
+    fn deferred_menu_commands_remain_present_disabled_and_keep_their_chords() {
+        let model = menu_model();
+        let mut seen = Vec::new();
+        MenuItem::each_action(&model, &mut |action| {
+            if action.role.is_some() {
+                return;
+            }
+            let command = COMMANDS[action.id as usize - 1];
+            assert_eq!(action.enabled, !DEFERRED_MENU_COMMANDS.contains(&command));
+            if !action.enabled {
+                seen.push(command);
+                assert!(action.shortcut.is_some() || command == "appPreview");
+            }
+        });
+        assert_eq!(seen, DEFERRED_MENU_COMMANDS);
+    }
 
     #[test]
     fn frozen_menu_has_only_riwork_edit_and_view_and_no_close_window_action() {

@@ -1,0 +1,1500 @@
+{
+  "verification_environment": "macOS arm64; isolated fixture RIWORK_HOME/HOME/runtime/config/tmux; real headless QuickJS engines and fake Sessions backends; no desktop or Cua use; no live state",
+  "items": [
+    {
+      "id": "P1-THM-01",
+      "status": "FAIL",
+      "route": "core + review",
+      "commands": [
+        "cargo test -p riwork-core --lib --locked --offline hermes_settings_round_trip_preserves_every_existing_theme_name",
+        "rg -n 'ThemeChoice|Follow Ghostty|Catppuccin|Tokyo Night|Gruvbox|Hermes|Settings|Appearance' crates/riwork-core/src/theme.rs apps/riwork/App.tsx crates/riwork-nsh-native/src/lib.rs"
+      ],
+      "command_names": [
+        "hermes_settings_round_trip_preserves_every_existing_theme_name",
+        "themes-label-review"
+      ],
+      "detail": "The named moved test runs zero tests. Core ThemeChoice already has seven snake_case choices, Ghostty default and labels, but Settings is absent from the native registry and no UI theme selection is wired."
+    },
+    {
+      "id": "P1-THM-02",
+      "status": "FAIL",
+      "route": "core + bridge",
+      "commands": [
+        "cargo test -p riwork-core --lib --locked --offline only_native_goes_stale_when_macos_switches_light_and_dark",
+        "cargo test -p riwork-core --lib --locked --offline published_terminal_follows_what_the_desktop_shows_while_following_ghostty",
+        "cargo test -p riwork-nsh-native --features test-support --test appearance --locked --offline -- every_preset_token_is_exact"
+      ],
+      "command_names": [
+        "only_native_goes_stale_when_macos_switches_light_and_dark",
+        "published_terminal_follows_what_the_desktop_shows_while_following_ghostty",
+        "every_preset_token_is_exact"
+      ],
+      "detail": "Moved palette tests are not in riwork-core (zero tests); Appearance module, appearance integration test target and test-support feature are absent. Preserved legacy GPUI theme source has no compiled successor."
+    },
+    {
+      "id": "P1-THM-03",
+      "status": "FAIL",
+      "route": "core",
+      "commands": [
+        "cargo test -p riwork-core --lib --locked --offline terminal_override_is_what_terminals_are_forced_to",
+        "cargo test -p riwork-core --lib --locked --offline native_terminals_match_the_theme_only_while_the_option_is_on",
+        "cargo test -p riwork-core --lib --locked --offline selected_theme_controls_terminals_and_keeps_legacy_preferences"
+      ],
+      "command_names": [
+        "terminal_override_is_what_terminals_are_forced_to",
+        "native_terminals_match_the_theme_only_while_the_option_is_on",
+        "selected_theme_controls_terminals_and_keeps_legacy_preferences"
+      ],
+      "detail": "All three named core successors run zero tests; Settings terminal_colors_forced exists but the required Appearance override field is absent."
+    },
+    {
+      "id": "P1-THM-04",
+      "status": "FAIL",
+      "route": "nsh-test (workspace) + native review",
+      "commands": [
+        "rg -n 'pub (async )?fn|#\\[module\\]|#\\[class\\]' crates/riwork-nsh-native/src/lib.rs apps/riwork/src/lib.rs",
+        "rg -n 'ThemeChoice|Follow Ghostty|Catppuccin|Tokyo Night|Gruvbox|Hermes|Settings|Appearance' crates/riwork-core/src/theme.rs apps/riwork/App.tsx crates/riwork-nsh-native/src/lib.rs",
+        "rg -n 'AppOptions|data_dir|appearance:|app.setAppearance' crates/riwork-desktop/src/nsh_host.rs"
+      ],
+      "command_names": [
+        "native-surface",
+        "themes-label-review",
+        "app-options"
+      ],
+      "detail": "Native review finds no Appearance module or startup resolved palette. Workspace owner supplies the Theme.test.tsx route result; review is not substituted for that route."
+    },
+    {
+      "id": "P1-THM-05",
+      "status": "FAIL",
+      "route": "bridge + host-unit/nsh-test/manual (other owners)",
+      "commands": [
+        "cargo test -p riwork-nsh-native --features test-support --test settings --locked --offline -- a_write_by_another_process_reaches_every_subscriber_once",
+        "rg -n 'AppOptions|data_dir|appearance:|app.setAppearance' crates/riwork-desktop/src/nsh_host.rs"
+      ],
+      "command_names": [
+        "a_write_by_another_process_reaches_every_subscriber_once",
+        "app-options"
+      ],
+      "detail": "The bridge named route exits 101 because test-support is absent; Settings/Appearance subscriptions are unimplemented. Host uses Appearance::System and rejects app.setAppearance. Other owners supply host/TSX/fixture routes."
+    },
+    {
+      "id": "P1-THM-06",
+      "status": "PASS",
+      "route": "review + fixture+cua",
+      "commands": [
+        "rg -n 'appearance_file|publish_appearance|write_appearance|appearance.json' crates/riwork-nsh-native/src apps/riwork/src crates/riwork-desktop/src/nsh_main.rs crates/riwork-desktop/src/nsh_host.rs crates/riwork-desktop/src/nsh_runtime.rs",
+        "cargo run -p riwork-nsh-workspace --example integration_fixture --locked --offline -- /private/tmp/rwm5-u3qi2ooy --appearance",
+        "/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/riwork /private/tmp/rwm5-u3qi2ooy/repos/Alpha"
+      ],
+      "command_names": [
+        "appearance-writer-review"
+      ],
+      "detail": "Review passed (no reachable appearance writer). Root fixture PID 25211 exited -15 after read-only inspection; pre-existing appearance.json hash e28fad78729878a34119070e89efe095dc8e270ab1344d5963723da4a6cc652f and mtime_ns 1793137071953824496 stayed identical. Only nsh/desktop.handoff.lock and run/desktop.lock changed; no removals, disallowed writes, sessions/chats or tmux entries.",
+      "external_manifest": "/private/tmp/riwork-p1-m5-f6975181/fixture-5gf4wtii/manifest.json"
+    },
+    {
+      "id": "P1-THM-07",
+      "status": "FAIL",
+      "route": "bridge",
+      "commands": [
+        "cargo test -p riwork-nsh-native --features test-support --test appearance --locked --offline -- follow_ghostty_without_a_parser_uses_the_riwork_palette_and_keeps_the_error"
+      ],
+      "command_names": [
+        "follow_ghostty_without_a_parser_uses_the_riwork_palette_and_keeps_the_error"
+      ],
+      "detail": "Named bridge route exits 101; no Appearance module/fallback diagnostic. D-THEME-1 remains open in the acceptance decision record; no decision is invented here."
+    },
+    {
+      "id": "P1-TXT-01",
+      "status": "FAIL",
+      "route": "core + bridge",
+      "commands": [
+        "cargo test -p riwork-core --lib --locked --offline saved_sizes_round_to_tenths_clamp_and_write_plain_numbers",
+        "cargo test -p riwork-core --lib --locked --offline a_step_starts_from_the_stored_size_not_the_cached_one",
+        "cargo test -p riwork-core --lib --locked --offline ui_text_size_defaults_to_today_clamps_and_keeps_odd_values_until_changed",
+        "cargo test -p riwork-nsh-native --features test-support --test settings --locked --offline -- change_text_size_is_a_read_modify_write_under_the_lock"
+      ],
+      "command_names": [
+        "saved_sizes_round_to_tenths_clamp_and_write_plain_numbers",
+        "a_step_starts_from_the_stored_size_not_the_cached_one",
+        "ui_text_size_defaults_to_today_clamps_and_keeps_odd_values_until_changed",
+        "change_text_size_is_a_read_modify_write_under_the_lock"
+      ],
+      "detail": "Three named core tests each pass (3 total); native Settings is absent, so two-handle Settings race route exits 101. This is a failed whole acceptance item despite passing core coverage."
+    },
+    {
+      "id": "P1-POLL-01",
+      "status": "FAIL",
+      "route": "bridge",
+      "commands": [
+        "cargo test -p riwork-nsh-native --features test-support --test subscriptions --locked --offline -- the_first_delivery_is_a_snapshot",
+        "cargo test -p riwork-nsh-native --features test-support --test subscriptions --locked --offline -- rev_is_monotonic_per_topic_per_process",
+        "cargo test -p riwork-nsh-native --features test-support --test subscriptions --locked --offline -- overflow_clears_the_queue_and_sends_one_resync_snapshot",
+        "cargo test -p riwork-nsh-native --features test-support --test subscriptions --locked --offline -- one_delivery_per_topic_per_engine_turn",
+        "cargo test -p riwork-nsh-native --features test-support --test subscriptions --locked --offline -- streaming_topics_coalesce_to_16_ms_trailing",
+        "cargo test -p riwork-nsh-native --features test-support --test subscriptions --locked --offline -- closing_or_dropping_the_owner_ends_the_task",
+        "cargo test -p riwork-nsh-native --features test-support --test subscriptions --locked --offline -- a_project_switch_resubscribes_and_drops_late_deliveries",
+        "cargo test -p riwork-nsh-native --features test-support --test hubs --locked --offline -- one_watcher_and_one_sampler_per_home_per_process",
+        "cargo test -p riwork-nsh-native --locked --offline"
+      ],
+      "command_names": [
+        "the_first_delivery_is_a_snapshot",
+        "rev_is_monotonic_per_topic_per_process",
+        "overflow_clears_the_queue_and_sends_one_resync_snapshot",
+        "one_delivery_per_topic_per_engine_turn",
+        "streaming_topics_coalesce_to_16_ms_trailing",
+        "closing_or_dropping_the_owner_ends_the_task",
+        "a_project_switch_resubscribes_and_drops_late_deliveries",
+        "one_watcher_and_one_sampler_per_home_per_process",
+        "native-after-fix"
+      ],
+      "detail": "Every declared test-support route exits 101. Existing native tests prove snapshot/dedup/overflow/close and two real QuickJS engines sharing Store/Sessions; missing Tabs/Settings/Appearance hubs and project-switch/streaming coverage prevent acceptance. Streaming topics remain deferred, without fabricated coverage."
+    },
+    {
+      "id": "P1-POLL-02",
+      "status": "PASS",
+      "route": "bridge + nsh-test",
+      "commands": [
+        "cargo test -p riwork-nsh-native --features test-support --test services --locked --offline -- a_quiet_home_produces_no_deliveries_for_60_s",
+        "cargo test -p riwork-nsh-native --test services --locked --offline -- an_empty_inventory_sleeps_until_a_watcher_event_and_disarms_when_empty_again --exact",
+        "cargo test -p riwork-nsh-native --locked --offline",
+        "/tmp/riwork-nsh-toolchain-60f8aec4.18l3zV/nsh-cli-0.3.0/bin/nsh test apps/riwork --junit /private/tmp/riwork-p1-m5-workspace/nsh-reh5ez2m/nsh.xml"
+      ],
+      "command_names": [
+        "a_quiet_home_produces_no_deliveries_for_60_s",
+        "empty-inventory-before-fix",
+        "native-after-fix",
+        "workspace-final-nsh-test"
+      ],
+      "detail": "Fixed empty-inventory 2s polling. Regression failed before fix (2 reads vs 1); after fix 11 native tests pass, including 60 actual quiet seconds with zero Store/Sessions deliveries and only initial sample, plus watcher-triggered arm/disarm. Explicit bridge successor uses real time instead of missing ManualClock. Final workspace Idle.test.tsx passes its 60,000ms virtual-clock unchanged-host-calls check within a clean NSH suite (nsh-reh5ez2m).",
+      "external_manifest": "/private/tmp/riwork-p1-m5-workspace/nsh-reh5ez2m/manifest.json"
+    },
+    {
+      "id": "P1-NAT-01",
+      "status": "FAIL",
+      "route": "nsh-test/check + review",
+      "commands": [
+        "/tmp/riwork-nsh-toolchain-60f8aec4.18l3zV/nsh-cli-0.3.0/bin/nsh check crates/riwork-nsh-native/tests/app --tsc /Users/dominik/Library/Caches/nsh/typescript-7.0.2-darwin-arm64/package/lib/tsc",
+        "git diff ea0f2f5 -- crates/riwork-core crates/riwork-engine",
+        "rg -n 'pub (async )?fn|#\\[module\\]|#\\[class\\]' crates/riwork-nsh-native/src/lib.rs apps/riwork/src/lib.rs"
+      ],
+      "command_names": [
+        "nat01-declared-probe",
+        "core-engine-format-diff",
+        "native-surface"
+      ],
+      "detail": "Named probe path does not exist (exit 1). The registry and camelCase DTO generation work for Store/Sessions/Layouts only; Tabs/Settings/Appearance/Dashboard are absent. Core/engine diff from ea0f2f5 is empty, so persistence serde formats remain unchanged."
+    },
+    {
+      "id": "P1-NAT-02",
+      "status": "FAIL",
+      "route": "review + bridge",
+      "commands": [
+        "rg -n 'pub (async )?fn|#\\[module\\]|#\\[class\\]' crates/riwork-nsh-native/src/lib.rs apps/riwork/src/lib.rs",
+        "rg -n 'trait |impl .*Backend|spawn_blocking|START.lock|PROCESS|get_or_init' crates/riwork-nsh-native/src/backend.rs crates/riwork-nsh-native/src/service.rs",
+        "sed -n 100,180p apps/riwork/src/host_layouts.rs",
+        "cargo test -p riwork-nsh-native --features test-support --test services --locked --offline -- errors_use_only_the_frozen_codes",
+        "cargo test -p riwork-nsh-native --locked --offline"
+      ],
+      "command_names": [
+        "native-surface",
+        "native-backends",
+        "layout-blocking-review",
+        "errors_use_only_the_frozen_codes",
+        "native-after-fix"
+      ],
+      "detail": "Store/Sessions async work uses spawn_blocking and existing error tests pass. Sync LayoutSession edits take HostLayout.closing/project mutexes shared with the host, violating the frozen no-cross-thread-lock sync rule; <1ms is unmeasured. Named exhaustive frozen-error test route exits 101."
+    },
+    {
+      "id": "P1-NAT-03",
+      "status": "FAIL",
+      "route": "review",
+      "commands": [
+        "rg -n 'trait |impl .*Backend|spawn_blocking|START.lock|PROCESS|get_or_init' crates/riwork-nsh-native/src/backend.rs crates/riwork-nsh-native/src/service.rs",
+        "rg -n 'AppOptions|data_dir|appearance:|app.setAppearance' crates/riwork-desktop/src/nsh_host.rs",
+        "rg -n nsh/storage apps/riwork crates/riwork-nsh-native"
+      ],
+      "command_names": [
+        "native-backends",
+        "app-options",
+        "no-native-storage"
+      ],
+      "detail": "Store/Sessions have production/fake backend traits; host data_dir is home/nsh; storage grep has no hits. Layouts directly uses concrete LayoutPersistence (no backend trait/fake), and the other mandatory P1 modules are absent. Whole item fails."
+    },
+    {
+      "id": "P1-NAT-04",
+      "status": "FAIL",
+      "route": "nsh-test",
+      "commands": [
+        "/tmp/riwork-nsh-toolchain-60f8aec4.18l3zV/nsh-cli-0.3.0/bin/nsh test crates/riwork-nsh-native/tests/app --junit /private/tmp/riwork-p1-m5-f6975181/native/named-routes-a0u78b8b/native-probe.xml",
+        "cargo test -p riwork-nsh-native --locked --offline"
+      ],
+      "command_names": [
+        "nat04-declared-probe",
+        "native-after-fix"
+      ],
+      "detail": "Declared TSX probe does not exist (exit 1); Store.createFolder is not exported. Supplemental Rust test native_pushes_one_service_to_two_engines_and_stops_on_close_owner_and_engine_drop passes, but its folder write is direct core Store, so it does not prove the requested UI write through the bridge."
+    },
+    {
+      "id": "P1-NAT-05",
+      "status": "FAIL",
+      "route": "bridge + review",
+      "commands": [
+        "cargo test -p riwork-nsh-native --features test-support --test services --locked --offline -- tabs_update_rejects_invalid_keys",
+        "cargo test -p riwork-nsh-native --features test-support --test services --locked --offline -- store_rejects_non_uuid_ids",
+        "rg -n 'valid_key|Uuid|uuid|invalid:|create_folder|createFolder' crates/riwork-nsh-native/src"
+      ],
+      "command_names": [
+        "tabs_update_rejects_invalid_keys",
+        "store_rejects_non_uuid_ids",
+        "native-ids-review"
+      ],
+      "detail": "Both named routes exit 101; Tabs.update and Store ID mutation methods do not exist, so the required valid_key/UUID rejection surface is absent. Existing inspectProject only rejects an empty root and is not an ID validator."
+    }
+  ],
+  "runs": [
+    {
+      "verification_environment": "isolated fixture homes only",
+      "mode": "after-fix",
+      "repo": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "root": "/private/tmp/riwork-p1-m5-f6975181/native",
+      "target_dir": "/private/tmp/riwork-p1-integration-mkzwamt7/target",
+      "commands": [
+        {
+          "name": "native-after-fix",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-nsh-native",
+            "--locked",
+            "--offline"
+          ],
+          "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+          "stdout": "/private/tmp/riwork-p1-m5-f6975181/native/after-fix-sdvy2y5v/native-after-fix.stdout",
+          "stderr": "/private/tmp/riwork-p1-m5-f6975181/native/after-fix-sdvy2y5v/native-after-fix.stderr",
+          "exit_code": 0,
+          "duration_seconds": 77.842,
+          "stdout_sha256": "1dcb8de0fc8dec2b41dc3c362d3e02b5bd229ab7cfb3eb9e0223398118b7908c",
+          "stderr_sha256": "55cdd627fa3e2e9f03523b185cb732c7aa8d941448e5c4df275f83d9e554eb02",
+          "command": "cargo test -p riwork-nsh-native --locked --offline",
+          "test_result_lines": [
+            "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+            "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.65s",
+            "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 60.05s",
+            "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+          ],
+          "environment_ref": "after-fix"
+        }
+      ],
+      "status": "completed",
+      "environment": {
+        "HOME": "/Users/dominik/orca/projects/riWork-nsh-p1-m5/target/nsh-integration-home-_c4szlzf",
+        "PATH": "/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/opt/homebrew/Caskroom/codex/0.162.1/codex-path:/Users/dominik/.okc/bin:/Users/dominik/.grok/bin:/Users/dominik/.bun/bin:/Users/dominik/.bun/bin:/Users/dominik/.opencode/bin:/opt/homebrew/opt/openjdk@17/bin:/Users/dominik/.bun/bin:/Users/dominik/.pyenv/shims:/Users/dominik/.avm/bin:/Users/dominik/.bun/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/System/Cryptexes/App/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin:/opt/pmk/env/global/bin:/Library/Apple/usr/bin:/usr/local/share/dotnet:~/.dotnet/tools:/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/Users/dominik/.codex/tmp/arg0/codex-arg03l3W4Z:/opt/homebrew/Caskroom/codex/0.162.1/codex-path:/Users/dominik/.local/share/riwork/cua/harness-bin:/Users/dominik/.okc/bin:/Users/dominik/Library/pnpm:/Users/dominik/.grok/bin:/Users/dominik/.bun/bin:/Users/dominik/.opencode/bin:/opt/homebrew/opt/openjdk@17/bin:/Users/dominik/.avm/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/Users/dominik/.starkli/bin:/Users/dominik/Library/Application Support/org.dfinity.dfx/bin:/Users/dominik/.cargo/bin:/Users/dominik/.local/bin:/Users/dominik/.docker/bin:/Users/dominik/.cache/lm-studio/bin:/Users/dominik/.nargo/bin:/opt/local/bin:/Users/dominik/.docker/bin:/Users/dominik/.cache/lm-studio/bin:/Users/dominik/.nargo/bin:/Users/dominik/.local/bin",
+        "RIWORK_HOME": "/private/tmp/riwork-p1-m5-f6975181/native/after-fix-sdvy2y5v/state",
+        "RIWORK_RUNTIME_DIR": "/private/tmp/riwork-p1-m5-f6975181/native/after-fix-sdvy2y5v/runtime",
+        "TMPDIR": "/tmp",
+        "TMUX_TMPDIR": "/private/tmp/riwork-p1-m5-f6975181/native/after-fix-sdvy2y5v/tmux",
+        "XDG_CONFIG_HOME": "/Users/dominik/orca/projects/riWork-nsh-p1-m5/target/nsh-integration-home-_c4szlzf/.config",
+        "CARGO_HOME": "/Users/dominik/.cargo",
+        "RUSTUP_HOME": "/Users/dominik/.rustup",
+        "CARGO_TARGET_DIR": "/private/tmp/riwork-p1-integration-mkzwamt7/target",
+        "CARGO_BUILD_JOBS": "4",
+        "CARGO_NET_OFFLINE": "true",
+        "NSH_CACHE": "/private/tmp/riwork-p1-m5-f6975181/native/nsh-cache",
+        "NSH_TSC": "/Users/dominik/Library/Caches/nsh/typescript-7.0.2-darwin-arm64/package/lib/tsc"
+      }
+    },
+    {
+      "verification_environment": "isolated fixture homes only",
+      "mode": "before-fix",
+      "repo": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "root": "/private/tmp/riwork-p1-m5-f6975181/native",
+      "target_dir": "/private/tmp/riwork-p1-integration-mkzwamt7/target",
+      "commands": [
+        {
+          "name": "empty-inventory-before-fix",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-nsh-native",
+            "--test",
+            "services",
+            "--locked",
+            "--offline",
+            "--",
+            "an_empty_inventory_sleeps_until_a_watcher_event_and_disarms_when_empty_again",
+            "--exact"
+          ],
+          "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+          "stdout": "/private/tmp/riwork-p1-m5-f6975181/native/before-fix-s_uwji6o/empty-inventory-before-fix.stdout",
+          "stderr": "/private/tmp/riwork-p1-m5-f6975181/native/before-fix-s_uwji6o/empty-inventory-before-fix.stderr",
+          "exit_code": 101,
+          "duration_seconds": 21.633,
+          "stdout_sha256": "53af662c4c90ea823c7cb23562cd04c1fe85b0174a918266d37463f30e885195",
+          "stderr_sha256": "34725dfb22249fb6b1eb37c1f8e51684089b3d81e183f58bccc5be2c838c56ba",
+          "command": "cargo test -p riwork-nsh-native --test services --locked --offline -- an_empty_inventory_sleeps_until_a_watcher_event_and_disarms_when_empty_again --exact",
+          "test_result_lines": [
+            "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 2.19s"
+          ],
+          "failure_excerpt": "    Blocking waiting for file lock on build directory\n   Compiling rustls v0.23.45\n   Compiling url v2.5.8\n   Compiling av-scenechange v0.14.1\n   Compiling av1-grain v0.2.5\n   Compiling rav1e v0.8.1\n   Compiling html5ever v0.27.0\n   Compiling rgb v0.8.53\n   Compiling exr v1.74.2\n   Compiling markup5ever_rcdom v0.3.0\n   Compiling ureq-proto v0.6.4\n   Compiling globset v0.4.20\n   Compiling quickjs-jit-stdlib v0.14.1\n   Compiling tungstenite v0.28.0\n   Compiling tokio-rustls v0.26.6\n   Compiling ravif v0.13.0\n   Compiling ureq v3.4.2\n   Compiling tokio-tungstenite v0.28.0\n   Compiling nsh-core v0.3.0\n   Compiling image v0.25.10\n   Compiling ignore v0.4.33\n   Compiling notify v8.2.0\n   Compiling riwork-engine v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p1-m5/crates/riwork-engine)\n   Compiling nsh-base v0.3.0\n   Compiling nsh-js v0.3.0\n   Compiling nsh-package v0.3.0\n   Compiling nsh-engine v0.3.0\n   Compiling riwork-nsh-workspace v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p1-m5/apps/riwork)\n   Compiling riwork-nsh-native v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p1-m5/crates/riwork-nsh-native)\n    Finished `test` profile [unoptimized] target(s) in 19.03s\n     Running tests/services.rs (/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/deps/services-233e418f5530541f)\nerror: test failed, to rerun pass `-p riwork-nsh-native --test services`\n\nrunning 1 test\ntest an_empty_inventory_sleeps_until_a_watcher_event_and_disarms_when_empty_again ... FAILED\n\nfailures:\n\n---- an_empty_inventory_sleeps_until_a_watcher_event_and_disarms_when_empty_again stdout ----\n\nthread 'an_empty_inventory_sleeps_until_a_watcher_event_and_disarms_when_empty_again' (10583144) panicked at crates/riwork-nsh-native/tests/services.rs:108:5:\nassertion `left == right` failed: an empty inventory must not run the tmux liveness fallback\n  left: 2\n right: 1\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n\nfailures:\n    an_empty_inventory_sleeps_until_a_watcher_event_and_disarms_when_empty_again\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 2.19s\n\n",
+          "environment_ref": "before-fix"
+        }
+      ],
+      "status": "completed",
+      "environment": {
+        "HOME": "/Users/dominik/orca/projects/riWork-nsh-p1-m5/target/nsh-integration-home-qfjehhj4",
+        "PATH": "/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/opt/homebrew/Caskroom/codex/0.162.1/codex-path:/Users/dominik/.okc/bin:/Users/dominik/.grok/bin:/Users/dominik/.bun/bin:/Users/dominik/.bun/bin:/Users/dominik/.opencode/bin:/opt/homebrew/opt/openjdk@17/bin:/Users/dominik/.bun/bin:/Users/dominik/.pyenv/shims:/Users/dominik/.avm/bin:/Users/dominik/.bun/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/System/Cryptexes/App/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin:/opt/pmk/env/global/bin:/Library/Apple/usr/bin:/usr/local/share/dotnet:~/.dotnet/tools:/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/Users/dominik/.codex/tmp/arg0/codex-arg03l3W4Z:/opt/homebrew/Caskroom/codex/0.162.1/codex-path:/Users/dominik/.local/share/riwork/cua/harness-bin:/Users/dominik/.okc/bin:/Users/dominik/Library/pnpm:/Users/dominik/.grok/bin:/Users/dominik/.bun/bin:/Users/dominik/.opencode/bin:/opt/homebrew/opt/openjdk@17/bin:/Users/dominik/.avm/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/Users/dominik/.starkli/bin:/Users/dominik/Library/Application Support/org.dfinity.dfx/bin:/Users/dominik/.cargo/bin:/Users/dominik/.local/bin:/Users/dominik/.docker/bin:/Users/dominik/.cache/lm-studio/bin:/Users/dominik/.nargo/bin:/opt/local/bin:/Users/dominik/.docker/bin:/Users/dominik/.cache/lm-studio/bin:/Users/dominik/.nargo/bin:/Users/dominik/.local/bin",
+        "RIWORK_HOME": "/private/tmp/riwork-p1-m5-f6975181/native/before-fix-s_uwji6o/state",
+        "RIWORK_RUNTIME_DIR": "/private/tmp/riwork-p1-m5-f6975181/native/before-fix-s_uwji6o/runtime",
+        "TMPDIR": "/tmp",
+        "TMUX_TMPDIR": "/private/tmp/riwork-p1-m5-f6975181/native/before-fix-s_uwji6o/tmux",
+        "XDG_CONFIG_HOME": "/Users/dominik/orca/projects/riWork-nsh-p1-m5/target/nsh-integration-home-qfjehhj4/.config",
+        "CARGO_HOME": "/Users/dominik/.cargo",
+        "RUSTUP_HOME": "/Users/dominik/.rustup",
+        "CARGO_TARGET_DIR": "/private/tmp/riwork-p1-integration-mkzwamt7/target",
+        "CARGO_BUILD_JOBS": "4",
+        "CARGO_NET_OFFLINE": "true",
+        "NSH_CACHE": "/private/tmp/riwork-p1-m5-f6975181/native/nsh-cache",
+        "NSH_TSC": "/Users/dominik/Library/Caches/nsh/typescript-7.0.2-darwin-arm64/package/lib/tsc"
+      }
+    },
+    {
+      "verification_environment": "isolated fixture homes only",
+      "mode": "named-routes",
+      "repo": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "root": "/private/tmp/riwork-p1-m5-f6975181/native",
+      "target_dir": "/private/tmp/riwork-p1-integration-mkzwamt7/target",
+      "commands": [
+        {
+          "name": "nsh-version",
+          "argv": [
+            "/tmp/riwork-nsh-toolchain-60f8aec4.18l3zV/nsh-cli-0.3.0/bin/nsh",
+            "--version"
+          ],
+          "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+          "stdout": "/private/tmp/riwork-p1-m5-f6975181/native/named-routes-a0u78b8b/nsh-version.stdout",
+          "stderr": "/private/tmp/riwork-p1-m5-f6975181/native/named-routes-a0u78b8b/nsh-version.stderr",
+          "exit_code": 0,
+          "duration_seconds": 0.006,
+          "stdout_sha256": "b84462512c378e1bda24a6997456ae354ea2bf2c6ce9346c291ac5d30e3ee804",
+          "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "command": "/tmp/riwork-nsh-toolchain-60f8aec4.18l3zV/nsh-cli-0.3.0/bin/nsh --version",
+          "test_result_lines": [],
+          "environment_ref": "named-routes"
+        },
+        {
+          "name": "rustc-version",
+          "argv": [
+            "rustc",
+            "--version"
+          ],
+          "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+          "stdout": "/private/tmp/riwork-p1-m5-f6975181/native/named-routes-a0u78b8b/rustc-version.stdout",
+          "stderr": "/private/tmp/riwork-p1-m5-f6975181/native/named-routes-a0u78b8b/rustc-version.stderr",
+          "exit_code": 0,
+          "duration_seconds": 0.024,
+          "stdout_sha256": "55cd0529c005d3f62869ea6e2271bfa9d5196f56dc65a8be00a371af114a4a98",
+          "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "command": "rustc --version",
+          "test_result_lines": [],
+          "environment_ref": "named-routes"
+        },
+        {
+          "name": "cargo-version",
+          "argv": [
+            "cargo",
+            "--version"
+          ],
+          "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+          "stdout": "/private/tmp/riwork-p1-m5-f6975181/native/named-routes-a0u78b8b/cargo-version.stdout",
+          "stderr": "/private/tmp/riwork-p1-m5-f6975181/native/named-routes-a0u78b8b/cargo-version.stderr",
+          "exit_code": 0,
+          "duration_seconds": 0.019,
+          "stdout_sha256": "c35608815f43d0b8788a9b826fad2bb17384f49fb328dc4fe64da9db5f5ef4d6",
+          "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "command": "cargo --version",
+          "test_result_lines": [],
+          "environment_ref": "named-routes"
+        },
+        {
+          "name": "declared-fixture-generator",
+          "argv": [
+            "cargo",
+            "run",
+            "-p",
+            "riwork-nsh-native",
+            "--features",
+            "test-support",
+            "--example",
+            "p1_fixture_home",
+            "--locked",
+            "--offline",
+            "--",
+            "--scenario",
+            "p1-theme",
+            "--out",
+            "/private/tmp/riwork-p1-m5-f6975181/native/named-routes-a0u78b8b/fixture-home"
+          ],
+          "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+          "stdout": "/private/tmp/riwork-p1-m5-f6975181/native/named-routes-a0u78b8b/declared-fixture-generator.stdout",
+          "stderr": "/private/tmp/riwork-p1-m5-f6975181/native/named-routes-a0u78b8b/declared-fixture-generator.stderr",
+          "exit_code": 101,
+          "duration_seconds": 0.023,
+          "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stderr_sha256": "7e4b54ae46062e66463ad49ea63b395ced5d2c759e6db538cf785c8ee66ce6d6",
+          "command": "cargo run -p riwork-nsh-native --features test-support --example p1_fixture_home --locked --offline -- --scenario p1-theme --out /private/tmp/riwork-p1-m5-f6975181/native/named-routes-a0u78b8b/fixture-home",
+          "test_result_lines": [],
+          "failure_excerpt": "error: the package 'riwork-nsh-native' does not contain this feature: test-support\nhelp: package with the missing feature: riwork-engine\n",
+          "environment_ref": "named-routes"
+        },
+        {
+          "name": "nat01-declared-probe",
+          "argv": [
+            "/tmp/riwork-nsh-toolchain-60f8aec4.18l3zV/nsh-cli-0.3.0/bin/nsh",
+            "check",
+            "crates/riwork-nsh-native/tests/app",
+            "--tsc",
+            "/Users/dominik/Library/Caches/nsh/typescript-7.0.2-darwin-arm64/package/lib/tsc"
+          ],
+          "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+          "stdout": "/private/tmp/riwork-p1-m5-f6975181/native/named-routes-a0u78b8b/nat01-declared-probe.stdout",
+          "stderr": "/private/tmp/riwork-p1-m5-f6975181/native/named-routes-a0u78b8b/nat01-declared-probe.stderr",
+          "exit_code": 1,
+          "duration_seconds": 0.006,
+          "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stderr_sha256": "d8a53ab3a632532931d86be5acb19dff20d65f2addfa1b1829831aecfbd397d8",
+          "command": "/tmp/riwork-nsh-toolchain-60f8aec4.18l3zV/nsh-cli-0.3.0/bin/nsh check crates/riwork-nsh-native/tests/app --tsc /Users/dominik/Library/Caches/nsh/typescript-7.0.2-darwin-arm64/package/lib/tsc",
+          "test_result_lines": [],
+          "failure_excerpt": "error crates/riwork-nsh-native/tests/app does not exist\n",
+          "environment_ref": "named-routes"
+        },
+        {
+          "name": "nat04-declared-probe",
+          "argv": [
+            "/tmp/riwork-nsh-toolchain-60f8aec4.18l3zV/nsh-cli-0.3.0/bin/nsh",
+            "test",
+            "crates/riwork-nsh-native/tests/app",
+            "--junit",
+            "/private/tmp/riwork-p1-m5-f6975181/native/named-routes-a0u78b8b/native-probe.xml"
+          ],
+          "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+          "stdout": "/private/tmp/riwork-p1-m5-f6975181/native/named-routes-a0u78b8b/nat04-declared-probe.stdout",
+          "stderr": "/private/tmp/riwork-p1-m5-f6975181/native/named-routes-a0u78b8b/nat04-declared-probe.stderr",
+          "exit_code": 1,
+          "duration_seconds": 0.006,
+          "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stderr_sha256": "95232c5b9d3165531780c4af908781f9c484e85af6de1ec1579d6de0e48419d3",
+          "command": "/tmp/riwork-nsh-toolchain-60f8aec4.18l3zV/nsh-cli-0.3.0/bin/nsh test crates/riwork-nsh-native/tests/app --junit /private/tmp/riwork-p1-m5-f6975181/native/named-routes-a0u78b8b/native-probe.xml",
+          "test_result_lines": [],
+          "failure_excerpt": "error crates/riwork-nsh-native/tests/app: No such file or directory (os error 2)\n",
+          "environment_ref": "named-routes"
+        },
+        {
+          "name": "every_preset_token_is_exact",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-nsh-native",
+            "--features",
+            "test-support",
+            "--test",
+            "appearance",
+            "--locked",
+            "--offline",
+            "--",
+            "every_preset_token_is_exact"
+          ],
+          "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+          "stdout": "/private/tmp/riwork-p1-m5-f6975181/native/named-routes-a0u78b8b/every_preset_token_is_exact.stdout",
+          "stderr": "/private/tmp/riwork-p1-m5-f6975181/native/named-routes-a0u78b8b/every_preset_token_is_exact.stderr",
+          "exit_code": 101,
+          "duration_seconds": 0.022,
+          "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stderr_sha256": "7e4b54ae46062e66463ad49ea63b395ced5d2c759e6db538cf785c8ee66ce6d6",
+          "command": "cargo test -p riwork-nsh-native --features test-support --test appearance --locked --offline -- every_preset_token_is_exact",
+          "test_result_lines": [],
+          "failure_excerpt": "error: the package 'riwork-nsh-native' does not contain this feature: test-support\nhelp: package with the missing feature: riwork-engine\n",
+          "environment_ref": "named-routes"
+        },
+        {
+          "name": "follow_ghostty_without_a_parser_uses_the_riwork_palette_and_keeps_the_error",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-nsh-native",
+            "--features",
+            "test-support",
+            "--test",
+            "appearance",
+            "--locked",
+            "--offline",
+            "--",
+            "follow_ghostty_without_a_parser_uses_the_riwork_palette_and_keeps_the_error"
+          ],
+          "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+          "stdout": "/private/tmp/riwork-p1-m5-f6975181/native/named-routes-a0u78b8b/follow_ghostty_without_a_parser_uses_the_riwork_palette_and_keeps_the_error.stdout",
+          "stderr": "/private/tmp/riwork-p1-m5-f6975181/native/named-routes-a0u78b8b/follow_ghostty_without_a_parser_uses_the_riwork_palette_and_keeps_the_error.stderr",
+          "exit_code": 101,
+          "duration_seconds": 0.022,
+          "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stderr_sha256": "7e4b54ae46062e66463ad49ea63b395ced5d2c759e6db538cf785c8ee66ce6d6",
+          "command": "cargo test -p riwork-nsh-native --features test-support --test appearance --locked --offline -- follow_ghostty_without_a_parser_uses_the_riwork_palette_and_keeps_the_error",
+          "test_result_lines": [],
+          "failure_excerpt": "error: the package 'riwork-nsh-native' does not contain this feature: test-support\nhelp: package with the missing feature: riwork-engine\n",
+          "environment_ref": "named-routes"
+        },
+        {
+          "name": "a_write_by_another_process_reaches_every_subscriber_once",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-nsh-native",
+            "--features",
+            "test-support",
+            "--test",
+            "settings",
+            "--locked",
+            "--offline",
+            "--",
+            "a_write_by_another_process_reaches_every_subscriber_once"
+          ],
+          "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+          "stdout": "/private/tmp/riwork-p1-m5-f6975181/native/named-routes-a0u78b8b/a_write_by_another_process_reaches_every_subscriber_once.stdout",
+          "stderr": "/private/tmp/riwork-p1-m5-f6975181/native/named-routes-a0u78b8b/a_write_by_another_process_reaches_every_subscriber_once.stderr",
+          "exit_code": 101,
+          "duration_seconds": 0.023,
+          "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stderr_sha256": "7e4b54ae46062e66463ad49ea63b395ced5d2c759e6db538cf785c8ee66ce6d6",
+          "command": "cargo test -p riwork-nsh-native --features test-support --test settings --locked --offline -- a_write_by_another_process_reaches_every_subscriber_once",
+          "test_result_lines": [],
+          "failure_excerpt": "error: the package 'riwork-nsh-native' does not contain this feature: test-support\nhelp: package with the missing feature: riwork-engine\n",
+          "environment_ref": "named-routes"
+        },
+        {
+          "name": "change_text_size_is_a_read_modify_write_under_the_lock",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-nsh-native",
+            "--features",
+            "test-support",
+            "--test",
+            "settings",
+            "--locked",
+            "--offline",
+            "--",
+            "change_text_size_is_a_read_modify_write_under_the_lock"
+          ],
+          "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+          "stdout": "/private/tmp/riwork-p1-m5-f6975181/native/named-routes-a0u78b8b/change_text_size_is_a_read_modify_write_under_the_lock.stdout",
+          "stderr": "/private/tmp/riwork-p1-m5-f6975181/native/named-routes-a0u78b8b/change_text_size_is_a_read_modify_write_under_the_lock.stderr",
+          "exit_code": 101,
+          "duration_seconds": 0.022,
+          "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stderr_sha256": "7e4b54ae46062e66463ad49ea63b395ced5d2c759e6db538cf785c8ee66ce6d6",
+          "command": "cargo test -p riwork-nsh-native --features test-support --test settings --locked --offline -- change_text_size_is_a_read_modify_write_under_the_lock",
+          "test_result_lines": [],
+          "failure_excerpt": "error: the package 'riwork-nsh-native' does not contain this feature: test-support\nhelp: package with the missing feature: riwork-engine\n",
+          "environment_ref": "named-routes"
+        },
+        {
+          "name": "the_first_delivery_is_a_snapshot",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-nsh-native",
+            "--features",
+            "test-support",
+            "--test",
+            "subscriptions",
+            "--locked",
+            "--offline",
+            "--",
+            "the_first_delivery_is_a_snapshot"
+          ],
+          "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+          "stdout": "/private/tmp/riwork-p1-m5-f6975181/native/named-routes-a0u78b8b/the_first_delivery_is_a_snapshot.stdout",
+          "stderr": "/private/tmp/riwork-p1-m5-f6975181/native/named-routes-a0u78b8b/the_first_delivery_is_a_snapshot.stderr",
+          "exit_code": 101,
+          "duration_seconds": 0.022,
+          "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stderr_sha256": "7e4b54ae46062e66463ad49ea63b395ced5d2c759e6db538cf785c8ee66ce6d6",
+          "command": "cargo test -p riwork-nsh-native --features test-support --test subscriptions --locked --offline -- the_first_delivery_is_a_snapshot",
+          "test_result_lines": [],
+          "failure_excerpt": "error: the package 'riwork-nsh-native' does not contain this feature: test-support\nhelp: package with the missing feature: riwork-engine\n",
+          "environment_ref": "named-routes"
+        },
+        {
+          "name": "rev_is_monotonic_per_topic_per_process",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-nsh-native",
+            "--features",
+            "test-support",
+            "--test",
+            "subscriptions",
+            "--locked",
+            "--offline",
+            "--",
+            "rev_is_monotonic_per_topic_per_process"
+          ],
+          "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+          "stdout": "/private/tmp/riwork-p1-m5-f6975181/native/named-routes-a0u78b8b/rev_is_monotonic_per_topic_per_process.stdout",
+          "stderr": "/private/tmp/riwork-p1-m5-f6975181/native/named-routes-a0u78b8b/rev_is_monotonic_per_topic_per_process.stderr",
+          "exit_code": 101,
+          "duration_seconds": 0.021,
+          "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stderr_sha256": "7e4b54ae46062e66463ad49ea63b395ced5d2c759e6db538cf785c8ee66ce6d6",
+          "command": "cargo test -p riwork-nsh-native --features test-support --test subscriptions --locked --offline -- rev_is_monotonic_per_topic_per_process",
+          "test_result_lines": [],
+          "failure_excerpt": "error: the package 'riwork-nsh-native' does not contain this feature: test-support\nhelp: package with the missing feature: riwork-engine\n",
+          "environment_ref": "named-routes"
+        },
+        {
+          "name": "overflow_clears_the_queue_and_sends_one_resync_snapshot",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-nsh-native",
+            "--features",
+            "test-support",
+            "--test",
+            "subscriptions",
+            "--locked",
+            "--offline",
+            "--",
+            "overflow_clears_the_queue_and_sends_one_resync_snapshot"
+          ],
+          "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+          "stdout": "/private/tmp/riwork-p1-m5-f6975181/native/named-routes-a0u78b8b/overflow_clears_the_queue_and_sends_one_resync_snapshot.stdout",
+          "stderr": "/private/tmp/riwork-p1-m5-f6975181/native/named-routes-a0u78b8b/overflow_clears_the_queue_and_sends_one_resync_snapshot.stderr",
+          "exit_code": 101,
+          "duration_seconds": 0.022,
+          "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stderr_sha256": "7e4b54ae46062e66463ad49ea63b395ced5d2c759e6db538cf785c8ee66ce6d6",
+          "command": "cargo test -p riwork-nsh-native --features test-support --test subscriptions --locked --offline -- overflow_clears_the_queue_and_sends_one_resync_snapshot",
+          "test_result_lines": [],
+          "failure_excerpt": "error: the package 'riwork-nsh-native' does not contain this feature: test-support\nhelp: package with the missing feature: riwork-engine\n",
+          "environment_ref": "named-routes"
+        },
+        {
+          "name": "one_delivery_per_topic_per_engine_turn",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-nsh-native",
+            "--features",
+            "test-support",
+            "--test",
+            "subscriptions",
+            "--locked",
+            "--offline",
+            "--",
+            "one_delivery_per_topic_per_engine_turn"
+          ],
+          "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+          "stdout": "/private/tmp/riwork-p1-m5-f6975181/native/named-routes-a0u78b8b/one_delivery_per_topic_per_engine_turn.stdout",
+          "stderr": "/private/tmp/riwork-p1-m5-f6975181/native/named-routes-a0u78b8b/one_delivery_per_topic_per_engine_turn.stderr",
+          "exit_code": 101,
+          "duration_seconds": 0.021,
+          "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stderr_sha256": "7e4b54ae46062e66463ad49ea63b395ced5d2c759e6db538cf785c8ee66ce6d6",
+          "command": "cargo test -p riwork-nsh-native --features test-support --test subscriptions --locked --offline -- one_delivery_per_topic_per_engine_turn",
+          "test_result_lines": [],
+          "failure_excerpt": "error: the package 'riwork-nsh-native' does not contain this feature: test-support\nhelp: package with the missing feature: riwork-engine\n",
+          "environment_ref": "named-routes"
+        },
+        {
+          "name": "streaming_topics_coalesce_to_16_ms_trailing",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-nsh-native",
+            "--features",
+            "test-support",
+            "--test",
+            "subscriptions",
+            "--locked",
+            "--offline",
+            "--",
+            "streaming_topics_coalesce_to_16_ms_trailing"
+          ],
+          "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+          "stdout": "/private/tmp/riwork-p1-m5-f6975181/native/named-routes-a0u78b8b/streaming_topics_coalesce_to_16_ms_trailing.stdout",
+          "stderr": "/private/tmp/riwork-p1-m5-f6975181/native/named-routes-a0u78b8b/streaming_topics_coalesce_to_16_ms_trailing.stderr",
+          "exit_code": 101,
+          "duration_seconds": 0.023,
+          "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stderr_sha256": "7e4b54ae46062e66463ad49ea63b395ced5d2c759e6db538cf785c8ee66ce6d6",
+          "command": "cargo test -p riwork-nsh-native --features test-support --test subscriptions --locked --offline -- streaming_topics_coalesce_to_16_ms_trailing",
+          "test_result_lines": [],
+          "failure_excerpt": "error: the package 'riwork-nsh-native' does not contain this feature: test-support\nhelp: package with the missing feature: riwork-engine\n",
+          "environment_ref": "named-routes"
+        },
+        {
+          "name": "closing_or_dropping_the_owner_ends_the_task",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-nsh-native",
+            "--features",
+            "test-support",
+            "--test",
+            "subscriptions",
+            "--locked",
+            "--offline",
+            "--",
+            "closing_or_dropping_the_owner_ends_the_task"
+          ],
+          "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+          "stdout": "/private/tmp/riwork-p1-m5-f6975181/native/named-routes-a0u78b8b/closing_or_dropping_the_owner_ends_the_task.stdout",
+          "stderr": "/private/tmp/riwork-p1-m5-f6975181/native/named-routes-a0u78b8b/closing_or_dropping_the_owner_ends_the_task.stderr",
+          "exit_code": 101,
+          "duration_seconds": 0.022,
+          "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stderr_sha256": "7e4b54ae46062e66463ad49ea63b395ced5d2c759e6db538cf785c8ee66ce6d6",
+          "command": "cargo test -p riwork-nsh-native --features test-support --test subscriptions --locked --offline -- closing_or_dropping_the_owner_ends_the_task",
+          "test_result_lines": [],
+          "failure_excerpt": "error: the package 'riwork-nsh-native' does not contain this feature: test-support\nhelp: package with the missing feature: riwork-engine\n",
+          "environment_ref": "named-routes"
+        },
+        {
+          "name": "a_project_switch_resubscribes_and_drops_late_deliveries",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-nsh-native",
+            "--features",
+            "test-support",
+            "--test",
+            "subscriptions",
+            "--locked",
+            "--offline",
+            "--",
+            "a_project_switch_resubscribes_and_drops_late_deliveries"
+          ],
+          "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+          "stdout": "/private/tmp/riwork-p1-m5-f6975181/native/named-routes-a0u78b8b/a_project_switch_resubscribes_and_drops_late_deliveries.stdout",
+          "stderr": "/private/tmp/riwork-p1-m5-f6975181/native/named-routes-a0u78b8b/a_project_switch_resubscribes_and_drops_late_deliveries.stderr",
+          "exit_code": 101,
+          "duration_seconds": 0.023,
+          "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stderr_sha256": "7e4b54ae46062e66463ad49ea63b395ced5d2c759e6db538cf785c8ee66ce6d6",
+          "command": "cargo test -p riwork-nsh-native --features test-support --test subscriptions --locked --offline -- a_project_switch_resubscribes_and_drops_late_deliveries",
+          "test_result_lines": [],
+          "failure_excerpt": "error: the package 'riwork-nsh-native' does not contain this feature: test-support\nhelp: package with the missing feature: riwork-engine\n",
+          "environment_ref": "named-routes"
+        },
+        {
+          "name": "one_watcher_and_one_sampler_per_home_per_process",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-nsh-native",
+            "--features",
+            "test-support",
+            "--test",
+            "hubs",
+            "--locked",
+            "--offline",
+            "--",
+            "one_watcher_and_one_sampler_per_home_per_process"
+          ],
+          "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+          "stdout": "/private/tmp/riwork-p1-m5-f6975181/native/named-routes-a0u78b8b/one_watcher_and_one_sampler_per_home_per_process.stdout",
+          "stderr": "/private/tmp/riwork-p1-m5-f6975181/native/named-routes-a0u78b8b/one_watcher_and_one_sampler_per_home_per_process.stderr",
+          "exit_code": 101,
+          "duration_seconds": 0.022,
+          "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stderr_sha256": "7e4b54ae46062e66463ad49ea63b395ced5d2c759e6db538cf785c8ee66ce6d6",
+          "command": "cargo test -p riwork-nsh-native --features test-support --test hubs --locked --offline -- one_watcher_and_one_sampler_per_home_per_process",
+          "test_result_lines": [],
+          "failure_excerpt": "error: the package 'riwork-nsh-native' does not contain this feature: test-support\nhelp: package with the missing feature: riwork-engine\n",
+          "environment_ref": "named-routes"
+        },
+        {
+          "name": "a_quiet_home_produces_no_deliveries_for_60_s",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-nsh-native",
+            "--features",
+            "test-support",
+            "--test",
+            "services",
+            "--locked",
+            "--offline",
+            "--",
+            "a_quiet_home_produces_no_deliveries_for_60_s"
+          ],
+          "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+          "stdout": "/private/tmp/riwork-p1-m5-f6975181/native/named-routes-a0u78b8b/a_quiet_home_produces_no_deliveries_for_60_s.stdout",
+          "stderr": "/private/tmp/riwork-p1-m5-f6975181/native/named-routes-a0u78b8b/a_quiet_home_produces_no_deliveries_for_60_s.stderr",
+          "exit_code": 101,
+          "duration_seconds": 0.026,
+          "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stderr_sha256": "7e4b54ae46062e66463ad49ea63b395ced5d2c759e6db538cf785c8ee66ce6d6",
+          "command": "cargo test -p riwork-nsh-native --features test-support --test services --locked --offline -- a_quiet_home_produces_no_deliveries_for_60_s",
+          "test_result_lines": [],
+          "failure_excerpt": "error: the package 'riwork-nsh-native' does not contain this feature: test-support\nhelp: package with the missing feature: riwork-engine\n",
+          "environment_ref": "named-routes"
+        },
+        {
+          "name": "errors_use_only_the_frozen_codes",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-nsh-native",
+            "--features",
+            "test-support",
+            "--test",
+            "services",
+            "--locked",
+            "--offline",
+            "--",
+            "errors_use_only_the_frozen_codes"
+          ],
+          "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+          "stdout": "/private/tmp/riwork-p1-m5-f6975181/native/named-routes-a0u78b8b/errors_use_only_the_frozen_codes.stdout",
+          "stderr": "/private/tmp/riwork-p1-m5-f6975181/native/named-routes-a0u78b8b/errors_use_only_the_frozen_codes.stderr",
+          "exit_code": 101,
+          "duration_seconds": 0.023,
+          "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stderr_sha256": "7e4b54ae46062e66463ad49ea63b395ced5d2c759e6db538cf785c8ee66ce6d6",
+          "command": "cargo test -p riwork-nsh-native --features test-support --test services --locked --offline -- errors_use_only_the_frozen_codes",
+          "test_result_lines": [],
+          "failure_excerpt": "error: the package 'riwork-nsh-native' does not contain this feature: test-support\nhelp: package with the missing feature: riwork-engine\n",
+          "environment_ref": "named-routes"
+        },
+        {
+          "name": "tabs_update_rejects_invalid_keys",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-nsh-native",
+            "--features",
+            "test-support",
+            "--test",
+            "services",
+            "--locked",
+            "--offline",
+            "--",
+            "tabs_update_rejects_invalid_keys"
+          ],
+          "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+          "stdout": "/private/tmp/riwork-p1-m5-f6975181/native/named-routes-a0u78b8b/tabs_update_rejects_invalid_keys.stdout",
+          "stderr": "/private/tmp/riwork-p1-m5-f6975181/native/named-routes-a0u78b8b/tabs_update_rejects_invalid_keys.stderr",
+          "exit_code": 101,
+          "duration_seconds": 0.021,
+          "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stderr_sha256": "7e4b54ae46062e66463ad49ea63b395ced5d2c759e6db538cf785c8ee66ce6d6",
+          "command": "cargo test -p riwork-nsh-native --features test-support --test services --locked --offline -- tabs_update_rejects_invalid_keys",
+          "test_result_lines": [],
+          "failure_excerpt": "error: the package 'riwork-nsh-native' does not contain this feature: test-support\nhelp: package with the missing feature: riwork-engine\n",
+          "environment_ref": "named-routes"
+        },
+        {
+          "name": "store_rejects_non_uuid_ids",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-nsh-native",
+            "--features",
+            "test-support",
+            "--test",
+            "services",
+            "--locked",
+            "--offline",
+            "--",
+            "store_rejects_non_uuid_ids"
+          ],
+          "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+          "stdout": "/private/tmp/riwork-p1-m5-f6975181/native/named-routes-a0u78b8b/store_rejects_non_uuid_ids.stdout",
+          "stderr": "/private/tmp/riwork-p1-m5-f6975181/native/named-routes-a0u78b8b/store_rejects_non_uuid_ids.stderr",
+          "exit_code": 101,
+          "duration_seconds": 0.022,
+          "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stderr_sha256": "7e4b54ae46062e66463ad49ea63b395ced5d2c759e6db538cf785c8ee66ce6d6",
+          "command": "cargo test -p riwork-nsh-native --features test-support --test services --locked --offline -- store_rejects_non_uuid_ids",
+          "test_result_lines": [],
+          "failure_excerpt": "error: the package 'riwork-nsh-native' does not contain this feature: test-support\nhelp: package with the missing feature: riwork-engine\n",
+          "environment_ref": "named-routes"
+        },
+        {
+          "name": "hermes_settings_round_trip_preserves_every_existing_theme_name",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-core",
+            "--lib",
+            "--locked",
+            "--offline",
+            "hermes_settings_round_trip_preserves_every_existing_theme_name"
+          ],
+          "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+          "stdout": "/private/tmp/riwork-p1-m5-f6975181/native/named-routes-a0u78b8b/hermes_settings_round_trip_preserves_every_existing_theme_name.stdout",
+          "stderr": "/private/tmp/riwork-p1-m5-f6975181/native/named-routes-a0u78b8b/hermes_settings_round_trip_preserves_every_existing_theme_name.stderr",
+          "exit_code": 0,
+          "duration_seconds": 12.426,
+          "stdout_sha256": "adaa5f06895267a8c2d17f5c1c2ec7f51d7a300ea4f9e190a269163e9a359c53",
+          "stderr_sha256": "19c7e101c79193ecbde14f35406343de1aa2f13fb620cf06ca8e9a056b0e8359",
+          "command": "cargo test -p riwork-core --lib --locked --offline hermes_settings_round_trip_preserves_every_existing_theme_name",
+          "test_result_lines": [
+            "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 291 filtered out; finished in 0.00s"
+          ],
+          "environment_ref": "named-routes"
+        },
+        {
+          "name": "only_native_goes_stale_when_macos_switches_light_and_dark",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-core",
+            "--lib",
+            "--locked",
+            "--offline",
+            "only_native_goes_stale_when_macos_switches_light_and_dark"
+          ],
+          "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+          "stdout": "/private/tmp/riwork-p1-m5-f6975181/native/named-routes-a0u78b8b/only_native_goes_stale_when_macos_switches_light_and_dark.stdout",
+          "stderr": "/private/tmp/riwork-p1-m5-f6975181/native/named-routes-a0u78b8b/only_native_goes_stale_when_macos_switches_light_and_dark.stderr",
+          "exit_code": 0,
+          "duration_seconds": 0.116,
+          "stdout_sha256": "adaa5f06895267a8c2d17f5c1c2ec7f51d7a300ea4f9e190a269163e9a359c53",
+          "stderr_sha256": "234e6f3e73b52807a4ce7f1cf12d09a1983e1ea91d7d85123f82b9288ad6642d",
+          "command": "cargo test -p riwork-core --lib --locked --offline only_native_goes_stale_when_macos_switches_light_and_dark",
+          "test_result_lines": [
+            "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 291 filtered out; finished in 0.00s"
+          ],
+          "environment_ref": "named-routes"
+        },
+        {
+          "name": "published_terminal_follows_what_the_desktop_shows_while_following_ghostty",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-core",
+            "--lib",
+            "--locked",
+            "--offline",
+            "published_terminal_follows_what_the_desktop_shows_while_following_ghostty"
+          ],
+          "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+          "stdout": "/private/tmp/riwork-p1-m5-f6975181/native/named-routes-a0u78b8b/published_terminal_follows_what_the_desktop_shows_while_following_ghostty.stdout",
+          "stderr": "/private/tmp/riwork-p1-m5-f6975181/native/named-routes-a0u78b8b/published_terminal_follows_what_the_desktop_shows_while_following_ghostty.stderr",
+          "exit_code": 0,
+          "duration_seconds": 0.11,
+          "stdout_sha256": "adaa5f06895267a8c2d17f5c1c2ec7f51d7a300ea4f9e190a269163e9a359c53",
+          "stderr_sha256": "234e6f3e73b52807a4ce7f1cf12d09a1983e1ea91d7d85123f82b9288ad6642d",
+          "command": "cargo test -p riwork-core --lib --locked --offline published_terminal_follows_what_the_desktop_shows_while_following_ghostty",
+          "test_result_lines": [
+            "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 291 filtered out; finished in 0.00s"
+          ],
+          "environment_ref": "named-routes"
+        },
+        {
+          "name": "terminal_override_is_what_terminals_are_forced_to",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-core",
+            "--lib",
+            "--locked",
+            "--offline",
+            "terminal_override_is_what_terminals_are_forced_to"
+          ],
+          "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+          "stdout": "/private/tmp/riwork-p1-m5-f6975181/native/named-routes-a0u78b8b/terminal_override_is_what_terminals_are_forced_to.stdout",
+          "stderr": "/private/tmp/riwork-p1-m5-f6975181/native/named-routes-a0u78b8b/terminal_override_is_what_terminals_are_forced_to.stderr",
+          "exit_code": 0,
+          "duration_seconds": 0.1,
+          "stdout_sha256": "adaa5f06895267a8c2d17f5c1c2ec7f51d7a300ea4f9e190a269163e9a359c53",
+          "stderr_sha256": "4fe00bd0058cc9d3e3c6f978ffcfff2260d777717f82efcd68fbbb1c42a7f6df",
+          "command": "cargo test -p riwork-core --lib --locked --offline terminal_override_is_what_terminals_are_forced_to",
+          "test_result_lines": [
+            "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 291 filtered out; finished in 0.00s"
+          ],
+          "environment_ref": "named-routes"
+        },
+        {
+          "name": "native_terminals_match_the_theme_only_while_the_option_is_on",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-core",
+            "--lib",
+            "--locked",
+            "--offline",
+            "native_terminals_match_the_theme_only_while_the_option_is_on"
+          ],
+          "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+          "stdout": "/private/tmp/riwork-p1-m5-f6975181/native/named-routes-a0u78b8b/native_terminals_match_the_theme_only_while_the_option_is_on.stdout",
+          "stderr": "/private/tmp/riwork-p1-m5-f6975181/native/named-routes-a0u78b8b/native_terminals_match_the_theme_only_while_the_option_is_on.stderr",
+          "exit_code": 0,
+          "duration_seconds": 0.104,
+          "stdout_sha256": "adaa5f06895267a8c2d17f5c1c2ec7f51d7a300ea4f9e190a269163e9a359c53",
+          "stderr_sha256": "4fe00bd0058cc9d3e3c6f978ffcfff2260d777717f82efcd68fbbb1c42a7f6df",
+          "command": "cargo test -p riwork-core --lib --locked --offline native_terminals_match_the_theme_only_while_the_option_is_on",
+          "test_result_lines": [
+            "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 291 filtered out; finished in 0.00s"
+          ],
+          "environment_ref": "named-routes"
+        },
+        {
+          "name": "selected_theme_controls_terminals_and_keeps_legacy_preferences",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-core",
+            "--lib",
+            "--locked",
+            "--offline",
+            "selected_theme_controls_terminals_and_keeps_legacy_preferences"
+          ],
+          "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+          "stdout": "/private/tmp/riwork-p1-m5-f6975181/native/named-routes-a0u78b8b/selected_theme_controls_terminals_and_keeps_legacy_preferences.stdout",
+          "stderr": "/private/tmp/riwork-p1-m5-f6975181/native/named-routes-a0u78b8b/selected_theme_controls_terminals_and_keeps_legacy_preferences.stderr",
+          "exit_code": 0,
+          "duration_seconds": 0.116,
+          "stdout_sha256": "adaa5f06895267a8c2d17f5c1c2ec7f51d7a300ea4f9e190a269163e9a359c53",
+          "stderr_sha256": "234e6f3e73b52807a4ce7f1cf12d09a1983e1ea91d7d85123f82b9288ad6642d",
+          "command": "cargo test -p riwork-core --lib --locked --offline selected_theme_controls_terminals_and_keeps_legacy_preferences",
+          "test_result_lines": [
+            "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 291 filtered out; finished in 0.00s"
+          ],
+          "environment_ref": "named-routes"
+        },
+        {
+          "name": "saved_sizes_round_to_tenths_clamp_and_write_plain_numbers",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-core",
+            "--lib",
+            "--locked",
+            "--offline",
+            "saved_sizes_round_to_tenths_clamp_and_write_plain_numbers"
+          ],
+          "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+          "stdout": "/private/tmp/riwork-p1-m5-f6975181/native/named-routes-a0u78b8b/saved_sizes_round_to_tenths_clamp_and_write_plain_numbers.stdout",
+          "stderr": "/private/tmp/riwork-p1-m5-f6975181/native/named-routes-a0u78b8b/saved_sizes_round_to_tenths_clamp_and_write_plain_numbers.stderr",
+          "exit_code": 0,
+          "duration_seconds": 0.113,
+          "stdout_sha256": "e1d63dd52700591a431e3dcd2e43cf9b6265448421c26a7e3e62ff2cf5f7d88f",
+          "stderr_sha256": "234e6f3e73b52807a4ce7f1cf12d09a1983e1ea91d7d85123f82b9288ad6642d",
+          "command": "cargo test -p riwork-core --lib --locked --offline saved_sizes_round_to_tenths_clamp_and_write_plain_numbers",
+          "test_result_lines": [
+            "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 290 filtered out; finished in 0.00s"
+          ],
+          "environment_ref": "named-routes"
+        },
+        {
+          "name": "a_step_starts_from_the_stored_size_not_the_cached_one",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-core",
+            "--lib",
+            "--locked",
+            "--offline",
+            "a_step_starts_from_the_stored_size_not_the_cached_one"
+          ],
+          "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+          "stdout": "/private/tmp/riwork-p1-m5-f6975181/native/named-routes-a0u78b8b/a_step_starts_from_the_stored_size_not_the_cached_one.stdout",
+          "stderr": "/private/tmp/riwork-p1-m5-f6975181/native/named-routes-a0u78b8b/a_step_starts_from_the_stored_size_not_the_cached_one.stderr",
+          "exit_code": 0,
+          "duration_seconds": 0.195,
+          "stdout_sha256": "bcd6fdbcb33052bb01d26b0d1ce742faa6820e2e6e48df358eb2ec2724fe9fd7",
+          "stderr_sha256": "afd505604533caeecd3dba9cebc66a9f59abeedcc0cd42a6e09b480dcee3451a",
+          "command": "cargo test -p riwork-core --lib --locked --offline a_step_starts_from_the_stored_size_not_the_cached_one",
+          "test_result_lines": [
+            "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 290 filtered out; finished in 0.08s"
+          ],
+          "environment_ref": "named-routes"
+        },
+        {
+          "name": "ui_text_size_defaults_to_today_clamps_and_keeps_odd_values_until_changed",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-core",
+            "--lib",
+            "--locked",
+            "--offline",
+            "ui_text_size_defaults_to_today_clamps_and_keeps_odd_values_until_changed"
+          ],
+          "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+          "stdout": "/private/tmp/riwork-p1-m5-f6975181/native/named-routes-a0u78b8b/ui_text_size_defaults_to_today_clamps_and_keeps_odd_values_until_changed.stdout",
+          "stderr": "/private/tmp/riwork-p1-m5-f6975181/native/named-routes-a0u78b8b/ui_text_size_defaults_to_today_clamps_and_keeps_odd_values_until_changed.stderr",
+          "exit_code": 0,
+          "duration_seconds": 0.217,
+          "stdout_sha256": "940935357594ccbfe04ae1ffa72f0b2c66f1a307eafaca39de3a07e34ad6411c",
+          "stderr_sha256": "afd505604533caeecd3dba9cebc66a9f59abeedcc0cd42a6e09b480dcee3451a",
+          "command": "cargo test -p riwork-core --lib --locked --offline ui_text_size_defaults_to_today_clamps_and_keeps_odd_values_until_changed",
+          "test_result_lines": [
+            "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 290 filtered out; finished in 0.10s"
+          ],
+          "environment_ref": "named-routes"
+        }
+      ],
+      "status": "completed",
+      "nsh_cli": {
+        "path": "/private/tmp/riwork-nsh-toolchain-60f8aec4.18l3zV/nsh-cli-0.3.0/bin/nsh",
+        "sha256": "90b7633c80306407fc97b2051be00af868d4577281f918ff655c650a8a5a2e60"
+      },
+      "environment": {
+        "HOME": "/Users/dominik/orca/projects/riWork-nsh-p1-m5/target/nsh-integration-home-of550d46",
+        "PATH": "/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/opt/homebrew/Caskroom/codex/0.162.1/codex-path:/Users/dominik/.okc/bin:/Users/dominik/.grok/bin:/Users/dominik/.bun/bin:/Users/dominik/.bun/bin:/Users/dominik/.opencode/bin:/opt/homebrew/opt/openjdk@17/bin:/Users/dominik/.bun/bin:/Users/dominik/.pyenv/shims:/Users/dominik/.avm/bin:/Users/dominik/.bun/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/System/Cryptexes/App/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin:/opt/pmk/env/global/bin:/Library/Apple/usr/bin:/usr/local/share/dotnet:~/.dotnet/tools:/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/Users/dominik/.codex/tmp/arg0/codex-arg03l3W4Z:/opt/homebrew/Caskroom/codex/0.162.1/codex-path:/Users/dominik/.local/share/riwork/cua/harness-bin:/Users/dominik/.okc/bin:/Users/dominik/Library/pnpm:/Users/dominik/.grok/bin:/Users/dominik/.bun/bin:/Users/dominik/.opencode/bin:/opt/homebrew/opt/openjdk@17/bin:/Users/dominik/.avm/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/Users/dominik/.starkli/bin:/Users/dominik/Library/Application Support/org.dfinity.dfx/bin:/Users/dominik/.cargo/bin:/Users/dominik/.local/bin:/Users/dominik/.docker/bin:/Users/dominik/.cache/lm-studio/bin:/Users/dominik/.nargo/bin:/opt/local/bin:/Users/dominik/.docker/bin:/Users/dominik/.cache/lm-studio/bin:/Users/dominik/.nargo/bin:/Users/dominik/.local/bin",
+        "RIWORK_HOME": "/private/tmp/riwork-p1-m5-f6975181/native/named-routes-a0u78b8b/state",
+        "RIWORK_RUNTIME_DIR": "/private/tmp/riwork-p1-m5-f6975181/native/named-routes-a0u78b8b/runtime",
+        "TMPDIR": "/tmp",
+        "TMUX_TMPDIR": "/private/tmp/riwork-p1-m5-f6975181/native/named-routes-a0u78b8b/tmux",
+        "XDG_CONFIG_HOME": "/Users/dominik/orca/projects/riWork-nsh-p1-m5/target/nsh-integration-home-of550d46/.config",
+        "CARGO_HOME": "/Users/dominik/.cargo",
+        "RUSTUP_HOME": "/Users/dominik/.rustup",
+        "CARGO_TARGET_DIR": "/private/tmp/riwork-p1-integration-mkzwamt7/target",
+        "CARGO_BUILD_JOBS": "4",
+        "CARGO_NET_OFFLINE": "true",
+        "NSH_CACHE": "/private/tmp/riwork-p1-m5-f6975181/native/nsh-cache",
+        "NSH_TSC": "/Users/dominik/Library/Caches/nsh/typescript-7.0.2-darwin-arm64/package/lib/tsc"
+      }
+    },
+    {
+      "verification_environment": "isolated fixture homes only",
+      "mode": "review",
+      "repo": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "root": "/private/tmp/riwork-p1-m5-f6975181/native",
+      "target_dir": "/private/tmp/riwork-p1-integration-mkzwamt7/target",
+      "commands": [
+        {
+          "name": "native-surface",
+          "argv": [
+            "rg",
+            "-n",
+            "pub (async )?fn|#\\[module\\]|#\\[class\\]",
+            "crates/riwork-nsh-native/src/lib.rs",
+            "apps/riwork/src/lib.rs"
+          ],
+          "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+          "stdout": "/private/tmp/riwork-p1-m5-f6975181/native/review-q2ffx0ry/native-surface.stdout",
+          "stderr": "/private/tmp/riwork-p1-m5-f6975181/native/review-q2ffx0ry/native-surface.stderr",
+          "exit_code": 0,
+          "duration_seconds": 0.006,
+          "stdout_sha256": "e61c4bd0751243a83f4b645cee6f4bb257151d10bdc827662ed68178e10d20d0",
+          "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "command": "rg -n 'pub (async )?fn|#\\[module\\]|#\\[class\\]' crates/riwork-nsh-native/src/lib.rs apps/riwork/src/lib.rs",
+          "test_result_lines": [],
+          "environment_ref": "review"
+        },
+        {
+          "name": "core-engine-format-diff",
+          "argv": [
+            "git",
+            "diff",
+            "ea0f2f5",
+            "--",
+            "crates/riwork-core",
+            "crates/riwork-engine"
+          ],
+          "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+          "stdout": "/private/tmp/riwork-p1-m5-f6975181/native/review-q2ffx0ry/core-engine-format-diff.stdout",
+          "stderr": "/private/tmp/riwork-p1-m5-f6975181/native/review-q2ffx0ry/core-engine-format-diff.stderr",
+          "exit_code": 0,
+          "duration_seconds": 0.194,
+          "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "command": "git diff ea0f2f5 -- crates/riwork-core crates/riwork-engine",
+          "test_result_lines": [],
+          "environment_ref": "review"
+        },
+        {
+          "name": "no-native-storage",
+          "argv": [
+            "rg",
+            "-n",
+            "nsh/storage",
+            "apps/riwork",
+            "crates/riwork-nsh-native"
+          ],
+          "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+          "stdout": "/private/tmp/riwork-p1-m5-f6975181/native/review-q2ffx0ry/no-native-storage.stdout",
+          "stderr": "/private/tmp/riwork-p1-m5-f6975181/native/review-q2ffx0ry/no-native-storage.stderr",
+          "exit_code": 1,
+          "duration_seconds": 0.007,
+          "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "command": "rg -n nsh/storage apps/riwork crates/riwork-nsh-native",
+          "test_result_lines": [],
+          "failure_excerpt": "",
+          "environment_ref": "review"
+        },
+        {
+          "name": "native-backends",
+          "argv": [
+            "rg",
+            "-n",
+            "trait |impl .*Backend|spawn_blocking|START.lock|PROCESS|get_or_init",
+            "crates/riwork-nsh-native/src/backend.rs",
+            "crates/riwork-nsh-native/src/service.rs"
+          ],
+          "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+          "stdout": "/private/tmp/riwork-p1-m5-f6975181/native/review-q2ffx0ry/native-backends.stdout",
+          "stderr": "/private/tmp/riwork-p1-m5-f6975181/native/review-q2ffx0ry/native-backends.stderr",
+          "exit_code": 0,
+          "duration_seconds": 0.006,
+          "stdout_sha256": "499a20e5370cc1dca58f3359fd64ea4345980755edb2f24a675d087de0b96602",
+          "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "command": "rg -n 'trait |impl .*Backend|spawn_blocking|START.lock|PROCESS|get_or_init' crates/riwork-nsh-native/src/backend.rs crates/riwork-nsh-native/src/service.rs",
+          "test_result_lines": [],
+          "environment_ref": "review"
+        },
+        {
+          "name": "layout-blocking-review",
+          "argv": [
+            "sed",
+            "-n",
+            "100,180p",
+            "apps/riwork/src/host_layouts.rs"
+          ],
+          "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+          "stdout": "/private/tmp/riwork-p1-m5-f6975181/native/review-q2ffx0ry/layout-blocking-review.stdout",
+          "stderr": "/private/tmp/riwork-p1-m5-f6975181/native/review-q2ffx0ry/layout-blocking-review.stderr",
+          "exit_code": 0,
+          "duration_seconds": 0.003,
+          "stdout_sha256": "10a6605606055bc66883c08434c94679e3cc930df3310aaa3b58bf7ea368d4d7",
+          "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "command": "sed -n 100,180p apps/riwork/src/host_layouts.rs",
+          "test_result_lines": [],
+          "environment_ref": "review"
+        },
+        {
+          "name": "appearance-writer-review",
+          "argv": [
+            "rg",
+            "-n",
+            "appearance_file|publish_appearance|write_appearance|appearance.json",
+            "crates/riwork-nsh-native/src",
+            "apps/riwork/src",
+            "crates/riwork-desktop/src/nsh_main.rs",
+            "crates/riwork-desktop/src/nsh_host.rs",
+            "crates/riwork-desktop/src/nsh_runtime.rs"
+          ],
+          "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+          "stdout": "/private/tmp/riwork-p1-m5-f6975181/native/review-q2ffx0ry/appearance-writer-review.stdout",
+          "stderr": "/private/tmp/riwork-p1-m5-f6975181/native/review-q2ffx0ry/appearance-writer-review.stderr",
+          "exit_code": 1,
+          "duration_seconds": 0.006,
+          "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "command": "rg -n 'appearance_file|publish_appearance|write_appearance|appearance.json' crates/riwork-nsh-native/src apps/riwork/src crates/riwork-desktop/src/nsh_main.rs crates/riwork-desktop/src/nsh_host.rs crates/riwork-desktop/src/nsh_runtime.rs",
+          "test_result_lines": [],
+          "failure_excerpt": "",
+          "environment_ref": "review"
+        },
+        {
+          "name": "app-options",
+          "argv": [
+            "rg",
+            "-n",
+            "AppOptions|data_dir|appearance:|app.setAppearance",
+            "crates/riwork-desktop/src/nsh_host.rs"
+          ],
+          "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+          "stdout": "/private/tmp/riwork-p1-m5-f6975181/native/review-q2ffx0ry/app-options.stdout",
+          "stderr": "/private/tmp/riwork-p1-m5-f6975181/native/review-q2ffx0ry/app-options.stderr",
+          "exit_code": 0,
+          "duration_seconds": 0.004,
+          "stdout_sha256": "9b6326cfda8458492b2a81fab1712f4409e92f1718520a53db6a8ab73ef999b8",
+          "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "command": "rg -n 'AppOptions|data_dir|appearance:|app.setAppearance' crates/riwork-desktop/src/nsh_host.rs",
+          "test_result_lines": [],
+          "environment_ref": "review"
+        },
+        {
+          "name": "themes-label-review",
+          "argv": [
+            "rg",
+            "-n",
+            "ThemeChoice|Follow Ghostty|Catppuccin|Tokyo Night|Gruvbox|Hermes|Settings|Appearance",
+            "crates/riwork-core/src/theme.rs",
+            "apps/riwork/App.tsx",
+            "crates/riwork-nsh-native/src/lib.rs"
+          ],
+          "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+          "stdout": "/private/tmp/riwork-p1-m5-f6975181/native/review-q2ffx0ry/themes-label-review.stdout",
+          "stderr": "/private/tmp/riwork-p1-m5-f6975181/native/review-q2ffx0ry/themes-label-review.stderr",
+          "exit_code": 0,
+          "duration_seconds": 0.006,
+          "stdout_sha256": "b5d678d7dc0ff174c8b73359224e032094e6d0f7c776f5d9353472ce0b43039d",
+          "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "command": "rg -n 'ThemeChoice|Follow Ghostty|Catppuccin|Tokyo Night|Gruvbox|Hermes|Settings|Appearance' crates/riwork-core/src/theme.rs apps/riwork/App.tsx crates/riwork-nsh-native/src/lib.rs",
+          "test_result_lines": [],
+          "environment_ref": "review"
+        },
+        {
+          "name": "native-ids-review",
+          "argv": [
+            "rg",
+            "-n",
+            "valid_key|Uuid|uuid|invalid:|create_folder|createFolder",
+            "crates/riwork-nsh-native/src"
+          ],
+          "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+          "stdout": "/private/tmp/riwork-p1-m5-f6975181/native/review-q2ffx0ry/native-ids-review.stdout",
+          "stderr": "/private/tmp/riwork-p1-m5-f6975181/native/review-q2ffx0ry/native-ids-review.stderr",
+          "exit_code": 0,
+          "duration_seconds": 0.007,
+          "stdout_sha256": "f65c938ff8b2763737a52d5e9ddc9d10cd9ad86a0f5d026d7ec43589ff4e9eb5",
+          "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "command": "rg -n 'valid_key|Uuid|uuid|invalid:|create_folder|createFolder' crates/riwork-nsh-native/src",
+          "test_result_lines": [],
+          "environment_ref": "review"
+        },
+        {
+          "name": "cargo-fmt-native",
+          "argv": [
+            "cargo",
+            "fmt",
+            "-p",
+            "riwork-nsh-native",
+            "--check"
+          ],
+          "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+          "stdout": "/private/tmp/riwork-p1-m5-f6975181/native/review-q2ffx0ry/cargo-fmt-native.stdout",
+          "stderr": "/private/tmp/riwork-p1-m5-f6975181/native/review-q2ffx0ry/cargo-fmt-native.stderr",
+          "exit_code": 0,
+          "duration_seconds": 0.064,
+          "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "command": "cargo fmt -p riwork-nsh-native --check",
+          "test_result_lines": [],
+          "environment_ref": "review"
+        }
+      ],
+      "status": "completed",
+      "environment": {
+        "HOME": "/Users/dominik/orca/projects/riWork-nsh-p1-m5/target/nsh-integration-home-ekqvjz63",
+        "PATH": "/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/opt/homebrew/Caskroom/codex/0.162.1/codex-path:/Users/dominik/.okc/bin:/Users/dominik/.grok/bin:/Users/dominik/.bun/bin:/Users/dominik/.bun/bin:/Users/dominik/.opencode/bin:/opt/homebrew/opt/openjdk@17/bin:/Users/dominik/.bun/bin:/Users/dominik/.pyenv/shims:/Users/dominik/.avm/bin:/Users/dominik/.bun/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/System/Cryptexes/App/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin:/opt/pmk/env/global/bin:/Library/Apple/usr/bin:/usr/local/share/dotnet:~/.dotnet/tools:/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/Users/dominik/.codex/tmp/arg0/codex-arg03l3W4Z:/opt/homebrew/Caskroom/codex/0.162.1/codex-path:/Users/dominik/.local/share/riwork/cua/harness-bin:/Users/dominik/.okc/bin:/Users/dominik/Library/pnpm:/Users/dominik/.grok/bin:/Users/dominik/.bun/bin:/Users/dominik/.opencode/bin:/opt/homebrew/opt/openjdk@17/bin:/Users/dominik/.avm/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/Users/dominik/.starkli/bin:/Users/dominik/Library/Application Support/org.dfinity.dfx/bin:/Users/dominik/.cargo/bin:/Users/dominik/.local/bin:/Users/dominik/.docker/bin:/Users/dominik/.cache/lm-studio/bin:/Users/dominik/.nargo/bin:/opt/local/bin:/Users/dominik/.docker/bin:/Users/dominik/.cache/lm-studio/bin:/Users/dominik/.nargo/bin:/Users/dominik/.local/bin",
+        "RIWORK_HOME": "/private/tmp/riwork-p1-m5-f6975181/native/review-q2ffx0ry/state",
+        "RIWORK_RUNTIME_DIR": "/private/tmp/riwork-p1-m5-f6975181/native/review-q2ffx0ry/runtime",
+        "TMPDIR": "/tmp",
+        "TMUX_TMPDIR": "/private/tmp/riwork-p1-m5-f6975181/native/review-q2ffx0ry/tmux",
+        "XDG_CONFIG_HOME": "/Users/dominik/orca/projects/riWork-nsh-p1-m5/target/nsh-integration-home-ekqvjz63/.config",
+        "CARGO_HOME": "/Users/dominik/.cargo",
+        "RUSTUP_HOME": "/Users/dominik/.rustup",
+        "CARGO_TARGET_DIR": "/private/tmp/riwork-p1-integration-mkzwamt7/target",
+        "CARGO_BUILD_JOBS": "4",
+        "CARGO_NET_OFFLINE": "true",
+        "NSH_CACHE": "/private/tmp/riwork-p1-m5-f6975181/native/nsh-cache",
+        "NSH_TSC": "/Users/dominik/Library/Caches/nsh/typescript-7.0.2-darwin-arm64/package/lib/tsc"
+      }
+    }
+  ],
+  "fixture_appearance_evidence": {
+    "status": "complete",
+    "fixture_root": "/private/tmp/rwm5-u3qi2ooy",
+    "pid": 25211,
+    "gui_argv": [
+      "/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/riwork",
+      "/private/tmp/rwm5-u3qi2ooy/repos/Alpha"
+    ],
+    "gui_environment": {
+      "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+      "HOME": "/private/tmp/rwm5-u3qi2ooy/user",
+      "TMPDIR": "/private/tmp/rwm5-u3qi2ooy/tmp",
+      "TMUX_TMPDIR": "/private/tmp/rwm5-u3qi2ooy/tmux",
+      "XDG_CONFIG_HOME": "/private/tmp/rwm5-u3qi2ooy/user/.config",
+      "RIWORK_HOME": "/private/tmp/rwm5-u3qi2ooy/home",
+      "RIWORK_RUNTIME_DIR": "/private/tmp/rwm5-u3qi2ooy/run",
+      "RIWORK_NSH_BACKGROUND": "1",
+      "RIWORK_NSH_BUNDLE": "/private/tmp/riwork-p1-m5-f6975181/bundle/bundle.js"
+    },
+    "appearance_unchanged": true,
+    "written_files": [
+      "nsh/desktop.handoff.lock",
+      "run/desktop.lock"
+    ],
+    "removed_files": [],
+    "disallowed_written_files": [],
+    "tmux_inventory": [],
+    "fixture_exit_code": -15,
+    "before": {
+      "sha256": "e28fad78729878a34119070e89efe095dc8e270ab1344d5963723da4a6cc652f",
+      "mtime_ns": 1793137071953824496
+    },
+    "after": {
+      "sha256": "e28fad78729878a34119070e89efe095dc8e270ab1344d5963723da4a6cc652f",
+      "mtime_ns": 1793137071953824496
+    }
+  },
+  "workspace_idle_evidence": {
+    "manifest": "/private/tmp/riwork-p1-m5-workspace/nsh-reh5ez2m/manifest.json",
+    "junit": "/private/tmp/riwork-p1-m5-workspace/nsh-reh5ez2m/nsh.xml",
+    "case": {
+      "classname": "apps/riwork/tests/Idle.test.tsx",
+      "name": "P1-POLL-02: a settled project sends no host work during 60 seconds of idle time",
+      "time": "0.369"
+    },
+    "command": {
+      "name": "nsh-test",
+      "argv": [
+        "/tmp/riwork-nsh-toolchain-60f8aec4.18l3zV/nsh-cli-0.3.0/bin/nsh",
+        "test",
+        "apps/riwork",
+        "--junit",
+        "/private/tmp/riwork-p1-m5-workspace/nsh-reh5ez2m/nsh.xml"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "environment": {
+        "HOME": "/Users/dominik/orca/projects/riWork-nsh-p1-m5/target/nsh-integration-home-lnudlcme",
+        "PATH": "/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/opt/homebrew/Caskroom/codex/0.162.1/codex-path:/Users/dominik/.okc/bin:/Users/dominik/.grok/bin:/Users/dominik/.bun/bin:/Users/dominik/.bun/bin:/Users/dominik/.opencode/bin:/opt/homebrew/opt/openjdk@17/bin:/Users/dominik/.bun/bin:/Users/dominik/.pyenv/shims:/Users/dominik/.avm/bin:/Users/dominik/.bun/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/System/Cryptexes/App/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin:/opt/pmk/env/global/bin:/Library/Apple/usr/bin:/usr/local/share/dotnet:~/.dotnet/tools:/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/Users/dominik/.codex/tmp/arg0/codex-arg03l3W4Z:/opt/homebrew/Caskroom/codex/0.162.1/codex-path:/Users/dominik/.local/share/riwork/cua/harness-bin:/Users/dominik/.okc/bin:/Users/dominik/Library/pnpm:/Users/dominik/.grok/bin:/Users/dominik/.bun/bin:/Users/dominik/.opencode/bin:/opt/homebrew/opt/openjdk@17/bin:/Users/dominik/.avm/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/Users/dominik/.starkli/bin:/Users/dominik/Library/Application Support/org.dfinity.dfx/bin:/Users/dominik/.cargo/bin:/Users/dominik/.local/bin:/Users/dominik/.docker/bin:/Users/dominik/.cache/lm-studio/bin:/Users/dominik/.nargo/bin:/opt/local/bin:/Users/dominik/.docker/bin:/Users/dominik/.cache/lm-studio/bin:/Users/dominik/.nargo/bin:/Users/dominik/.local/bin",
+        "RIWORK_HOME": "/private/tmp/riwork-p1-m5-workspace/nsh-reh5ez2m/nsh-home",
+        "RIWORK_RUNTIME_DIR": "/private/tmp/riwork-p1-m5-workspace/nsh-reh5ez2m/runtime",
+        "TMPDIR": "/tmp",
+        "TMUX_TMPDIR": "/private/tmp/riwork-p1-m5-workspace/nsh-reh5ez2m/nsh-tmux",
+        "XDG_CONFIG_HOME": "/Users/dominik/orca/projects/riWork-nsh-p1-m5/target/nsh-integration-home-lnudlcme/.config",
+        "CARGO_HOME": "/Users/dominik/.cargo",
+        "RUSTUP_HOME": "/Users/dominik/.rustup",
+        "CARGO_TARGET_DIR": "/private/tmp/riwork-p1-integration-mkzwamt7/target",
+        "CARGO_BUILD_JOBS": "4",
+        "CARGO_NET_OFFLINE": "true",
+        "NSH_CACHE": "/private/tmp/riwork-p1-m5-workspace/nsh-cache",
+        "NSH_TSC": "/Users/dominik/Library/Caches/nsh/typescript-7.0.2-darwin-arm64/package/lib/tsc"
+      },
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/nsh-reh5ez2m/nsh-test.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/nsh-reh5ez2m/nsh-test.stderr",
+      "exit_code": 0,
+      "duration_seconds": 9.885,
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "71d06cd24b97fa108630c6fd71bbb7de086293b2ecfa6663dfa3d4f6d35b21db"
+    }
+  }
+}

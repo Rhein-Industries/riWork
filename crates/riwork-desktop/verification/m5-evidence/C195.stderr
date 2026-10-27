@@ -1,0 +1,15 @@
+   Compiling serde_json v1.0.151
+   Compiling nsh-core v0.3.0
+   Compiling riwork-core v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p1-m5/crates/riwork-core)
+   Compiling oxc_sourcemap v9.0.0
+   Compiling riwork-engine v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p1-m5/crates/riwork-engine)
+   Compiling nsh-base v0.3.0
+   Compiling nsh-package v0.3.0
+   Compiling nsh-js v0.3.0
+   Compiling nsh-engine v0.3.0
+   Compiling riwork-cli v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p1-m5/crates/riwork-cli)
+   Compiling riwork-nsh-workspace v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p1-m5/apps/riwork)
+   Compiling nsh-platform-macos v0.3.0
+   Compiling riwork-nsh-native v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p1-m5/crates/riwork-nsh-native)
+   Compiling riwork-desktop v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p1-m5/crates/riwork-desktop)
+    Finished `dev` profile [unoptimized] target(s) in 19.89s

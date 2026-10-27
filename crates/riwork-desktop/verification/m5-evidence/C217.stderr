@@ -1,0 +1,3 @@
+riwork: '/private/tmp/rwm5-u3qi2ooy/missing' is not a riwork command or an existing project directory
+Usage: riwork [PROJECT_DIR] | riwork COMMAND [ARGS...]
+Run `riwork help` for all commands.

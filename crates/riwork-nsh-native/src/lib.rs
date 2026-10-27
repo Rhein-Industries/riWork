@@ -1,4 +1,4 @@
-//! Phase 1 services and layout classes in the frozen `riwork/native` NSH module.
+//! Shared domain services and layout classes in the frozen `riwork/native` NSH module.
 //!
 //! The host awaits [`initialize`] before constructing AppViews, then registers
 //! `[nsh_base::registry(), registry()]` once. All windows share the same process
@@ -8,14 +8,16 @@ pub mod appearance;
 pub mod backend;
 pub mod dto;
 pub mod hub;
+mod presence;
 pub mod service;
 
 use futures_util::future::{AbortHandle, Abortable};
 use nsh_core::{element::Cleanup, prelude::*};
 
 use dto::{
-    CreateSessionRequest, ProjectInspectionDto, SearchHitDto, SessionsSnapshot, ShellSessionDto,
-    StoreState,
+    CreateSessionRequest, FolderDto, ProjectDto, ProjectInspectionDto, ProjectRequest,
+    SearchHitDto, SessionsSnapshot, ShellSessionDto, StoreState, TabUpdate, TabsSnapshot, TaskDto,
+    WorktreeDto,
 };
 use hub::{Snapshot, TopicSubscription};
 pub use service::{ProcessService, initialize};
@@ -31,12 +33,97 @@ fn native(registry: &mut Registry) {
     riwork_nsh_workspace::register_layouts(registry, service::process_home);
 }
 
-/// Durable project, folder, worktree and task reads.
+/// Durable project, folder, worktree and task operations.
 #[module]
 pub struct Store;
 
 #[module]
 impl Store {
+    pub async fn default_project_directory() -> Result<String, String> {
+        initialize().await?.default_project_directory().await
+    }
+    pub async fn create_project(request: ProjectRequest) -> Result<ProjectDto, String> {
+        initialize().await?.create_project(request).await
+    }
+    pub async fn create_new_project(request: ProjectRequest) -> Result<ProjectDto, String> {
+        initialize().await?.create_new_project(request).await
+    }
+    pub async fn add_project(request: ProjectRequest) -> Result<ProjectDto, String> {
+        initialize().await?.add_project(request).await
+    }
+    pub async fn use_project(selector: String) -> Result<ProjectDto, String> {
+        initialize().await?.use_project(selector).await
+    }
+    pub async fn rename_project(selector: String, name: String) -> Result<ProjectDto, String> {
+        initialize().await?.rename_project(selector, name).await
+    }
+    pub async fn set_project_notifications(
+        selector: String,
+        enabled: bool,
+    ) -> Result<ProjectDto, String> {
+        initialize()
+            .await?
+            .set_project_notifications(selector, enabled)
+            .await
+    }
+    pub async fn set_project_orchestrator_wakes(
+        selector: String,
+        enabled: bool,
+    ) -> Result<ProjectDto, String> {
+        initialize()
+            .await?
+            .set_project_orchestrator_wakes(selector, enabled)
+            .await
+    }
+    pub async fn create_folder(name: String, parent: Option<String>) -> Result<FolderDto, String> {
+        initialize().await?.create_folder(name, parent).await
+    }
+    pub async fn rename_folder(selector: String, name: String) -> Result<FolderDto, String> {
+        initialize().await?.rename_folder(selector, name).await
+    }
+    pub async fn move_folder(
+        selector: String,
+        parent: Option<String>,
+    ) -> Result<FolderDto, String> {
+        initialize().await?.move_folder(selector, parent).await
+    }
+    pub async fn remove_folder(selector: String) -> Result<(), String> {
+        initialize().await?.remove_folder(selector).await
+    }
+    pub async fn move_project_to_folder(
+        selector: String,
+        folder: Option<String>,
+    ) -> Result<ProjectDto, String> {
+        initialize()
+            .await?
+            .move_project_to_folder(selector, folder)
+            .await
+    }
+    pub async fn sync_worktrees(selector: String) -> Result<Vec<WorktreeDto>, String> {
+        initialize().await?.sync_worktrees(selector).await
+    }
+    pub async fn refresh_worktrees(selector: String) -> Result<Vec<WorktreeDto>, String> {
+        initialize().await?.refresh_worktrees(selector).await
+    }
+    pub async fn add_task(
+        project: String,
+        title: String,
+        details: String,
+    ) -> Result<TaskDto, String> {
+        initialize().await?.add_task(project, title, details).await
+    }
+    pub async fn assign_tasks(
+        worktree: String,
+        tasks: Vec<String>,
+    ) -> Result<Vec<TaskDto>, String> {
+        initialize().await?.assign_tasks(worktree, tasks).await
+    }
+    pub async fn unassign_tasks(tasks: Vec<String>) -> Result<Vec<TaskDto>, String> {
+        initialize().await?.unassign_tasks(tasks).await
+    }
+    pub async fn set_task_status(selector: String, status: String) -> Result<TaskDto, String> {
+        initialize().await?.set_task_status(selector, status).await
+    }
     pub async fn snapshot() -> Result<StoreState, String> {
         initialize().await?.store_snapshot().await
     }
@@ -55,10 +142,11 @@ impl Store {
         listener: Callback<Snapshot<StoreState>>,
         cx: CallCx<'_>,
     ) -> Result<Subscription, String> {
-        let service = service::initialized()?;
         Ok(Subscription::start(cx, async move {
-            if let Ok(subscription) = service.subscribe_store().await {
-                deliver(subscription, listener).await;
+            if let Ok(service) = initialize().await {
+                if let Ok(subscription) = service.subscribe_store().await {
+                    deliver(subscription, listener).await;
+                }
             }
         }))
     }
@@ -87,27 +175,39 @@ impl Sessions {
         listener: Callback<Snapshot<SessionsSnapshot>>,
         cx: CallCx<'_>,
     ) -> Result<Subscription, String> {
-        let service = service::initialized()?;
         Ok(Subscription::start(cx, async move {
-            if let Ok(subscription) = service.subscribe_sessions().await {
-                deliver(subscription, listener).await;
+            if let Ok(service) = initialize().await {
+                if let Ok(subscription) = service.subscribe_sessions().await {
+                    deliver(subscription, listener).await;
+                }
             }
         }))
     }
 }
 
-/// Shared local shell membership. Projection subscriptions remain a later slice.
+/// Process-shared tab membership. Window-local selection stays in TSX/layouts.
 #[module]
 pub struct Tabs;
 
 #[module]
 impl Tabs {
-    /// Hide/unhide/order/title edits through the existing engine TabStore.
-    pub async fn update(
-        project_id: String,
-        update: serde_json::Value,
-    ) -> Result<serde_json::Value, String> {
+    pub async fn update(project_id: String, update: TabUpdate) -> Result<TabsSnapshot, String> {
         initialize().await?.tabs_update(project_id, update).await
+    }
+
+    pub fn subscribe(
+        project_id: String,
+        listener: Callback<Snapshot<TabsSnapshot>>,
+        cx: CallCx<'_>,
+    ) -> Result<Subscription, String> {
+        service::validate_project_id(&project_id)?;
+        Ok(Subscription::start(cx, async move {
+            if let Ok(service) = initialize().await {
+                if let Ok(subscription) = service.subscribe_tabs(project_id).await {
+                    deliver(subscription, listener).await;
+                }
+            }
+        }))
     }
 }
 

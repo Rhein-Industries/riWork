@@ -1,0 +1,12 @@
+24:    set_ui_sets,
+50:const RESTART_PENDING: &str =
+332:            "app.restart",
+350:            "system.fonts",
+367:        let view = AppView::new(
+373:                appearance: Appearance::System,
+782:            "app.restart" => call.reject(RESTART_PENDING),
+1122:    let mut runtime_tick = RuntimeTick::new(Instant::now());
+1198:        if runtime_tick.is_due(now) {
+1200:                Ok(completed) => runtime_tick.published(now, completed),
+1205:                let _ = startup.runtime.fail_reload(&request, RESTART_PENDING);
+1231:    set_ui_sets(vec![nsh_base::registry(), native::registry()]);

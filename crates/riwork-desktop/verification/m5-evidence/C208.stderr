@@ -1,0 +1,4 @@
+    Blocking waiting for file lock on build directory
+   Compiling riwork-nsh-workspace v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p1-m5/apps/riwork)
+    Finished `dev` profile [unoptimized] target(s) in 12.87s
+     Running `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/examples/integration_fixture /private/tmp/rwm5-ki8420zw`

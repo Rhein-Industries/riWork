@@ -1,0 +1,6 @@
+
+running 1 test
+test nsh_menus::tests::deferred_menu_commands_remain_present_disabled_and_keep_their_chords ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.00s
+

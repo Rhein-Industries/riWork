@@ -1,0 +1,565 @@
+{
+  "verification_environment": "isolated fixture homes only",
+  "mode": "fixture",
+  "repo": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+  "root": "/private/tmp/riwork-p1-m5-f6975181",
+  "target_dir": "/private/tmp/riwork-p1-integration-mkzwamt7/target",
+  "commands": [
+    {
+      "name": "fixture-generate",
+      "argv": [
+        "cargo",
+        "run",
+        "-p",
+        "riwork-nsh-workspace",
+        "--example",
+        "integration_fixture",
+        "--locked",
+        "--offline",
+        "--",
+        "/private/tmp/rwm5-ki8420zw"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "environment": {
+        "HOME": "/Users/dominik/orca/projects/riWork-nsh-p1-m5/target/nsh-integration-home-r07rftik",
+        "PATH": "/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/opt/homebrew/Caskroom/codex/0.162.1/codex-path:/Users/dominik/.okc/bin:/Users/dominik/.grok/bin:/Users/dominik/.bun/bin:/Users/dominik/.bun/bin:/Users/dominik/.opencode/bin:/opt/homebrew/opt/openjdk@17/bin:/Users/dominik/.bun/bin:/Users/dominik/.pyenv/shims:/Users/dominik/.avm/bin:/Users/dominik/.bun/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/System/Cryptexes/App/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin:/opt/pmk/env/global/bin:/Library/Apple/usr/bin:/usr/local/share/dotnet:~/.dotnet/tools:/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/Users/dominik/.codex/tmp/arg0/codex-arg03l3W4Z:/opt/homebrew/Caskroom/codex/0.162.1/codex-path:/Users/dominik/.local/share/riwork/cua/harness-bin:/Users/dominik/.okc/bin:/Users/dominik/Library/pnpm:/Users/dominik/.grok/bin:/Users/dominik/.bun/bin:/Users/dominik/.opencode/bin:/opt/homebrew/opt/openjdk@17/bin:/Users/dominik/.avm/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/Users/dominik/.starkli/bin:/Users/dominik/Library/Application Support/org.dfinity.dfx/bin:/Users/dominik/.cargo/bin:/Users/dominik/.local/bin:/Users/dominik/.docker/bin:/Users/dominik/.cache/lm-studio/bin:/Users/dominik/.nargo/bin:/opt/local/bin:/Users/dominik/.docker/bin:/Users/dominik/.cache/lm-studio/bin:/Users/dominik/.nargo/bin:/Users/dominik/.local/bin",
+        "RIWORK_HOME": "/private/tmp/riwork-p1-m5-f6975181/fixture-3zh9c11c/state",
+        "RIWORK_RUNTIME_DIR": "/private/tmp/riwork-p1-m5-f6975181/fixture-3zh9c11c/runtime",
+        "TMPDIR": "/tmp",
+        "TMUX_TMPDIR": "/private/tmp/riwork-p1-m5-f6975181/fixture-3zh9c11c/tmux",
+        "XDG_CONFIG_HOME": "/Users/dominik/orca/projects/riWork-nsh-p1-m5/target/nsh-integration-home-r07rftik/.config",
+        "CARGO_HOME": "/Users/dominik/.cargo",
+        "RUSTUP_HOME": "/Users/dominik/.rustup",
+        "CARGO_TARGET_DIR": "/private/tmp/riwork-p1-integration-mkzwamt7/target",
+        "CARGO_BUILD_JOBS": "2",
+        "CARGO_NET_OFFLINE": "true",
+        "NSH_CACHE": "/private/tmp/riwork-p1-m5-f6975181/nsh-cache",
+        "NSH_TSC": "/Users/dominik/Library/Caches/nsh/typescript-7.0.2-darwin-arm64/package/lib/tsc"
+      },
+      "stdout": "/private/tmp/riwork-p1-m5-f6975181/fixture-3zh9c11c/fixture-generate.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-f6975181/fixture-3zh9c11c/fixture-generate.stderr",
+      "exit_code": 0,
+      "duration_seconds": 13.783,
+      "stdout_sha256": "30544d7f94550248582f8027de80c214ee0ffe56a6da56a22353988a29624880",
+      "stderr_sha256": "2342d84a79cffd435532ca0dae98f77f9e47b0983ee0adc42cf536dcfb72ef5a"
+    },
+    {
+      "name": "PROC-03-notadir",
+      "argv": [
+        "/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/riwork",
+        "/private/tmp/rwm5-ki8420zw/repos/Alpha"
+      ],
+      "cwd": "/private/tmp/rwm5-ki8420zw",
+      "environment": {
+        "HOME": "/private/tmp/rwm5-ki8420zw/user",
+        "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+        "RIWORK_HOME": "/private/tmp/rwm5-ki8420zw/notadir",
+        "RIWORK_RUNTIME_DIR": "/private/tmp/rwm5-ki8420zw/run",
+        "TMPDIR": "/private/tmp/rwm5-ki8420zw/tmp",
+        "TMUX_TMPDIR": "/private/tmp/rwm5-ki8420zw/tmux",
+        "XDG_CONFIG_HOME": "/private/tmp/rwm5-ki8420zw/user/.config",
+        "RIWORK_NSH_BUNDLE": "/private/tmp/riwork-p1-m5-f6975181/bundle/bundle.js",
+        "RIWORK_NSH_BACKGROUND": "1"
+      },
+      "stdout": "/private/tmp/riwork-p1-m5-f6975181/fixture-3zh9c11c/PROC-03-notadir.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-f6975181/fixture-3zh9c11c/PROC-03-notadir.stderr",
+      "exit_code": 2,
+      "duration_seconds": 3.157,
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "9bae703deaa8bf99b6670137e0d413ca4c5bca15afee9e69701c4a1734b347a7"
+    },
+    {
+      "name": "PROC-04-missing",
+      "argv": [
+        "/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/riwork",
+        "/private/tmp/rwm5-ki8420zw/missing"
+      ],
+      "cwd": "/private/tmp/rwm5-ki8420zw",
+      "environment": {
+        "HOME": "/private/tmp/rwm5-ki8420zw/user",
+        "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+        "RIWORK_HOME": "/private/tmp/rwm5-ki8420zw/home",
+        "RIWORK_RUNTIME_DIR": "/private/tmp/rwm5-ki8420zw/run",
+        "TMPDIR": "/private/tmp/rwm5-ki8420zw/tmp",
+        "TMUX_TMPDIR": "/private/tmp/rwm5-ki8420zw/tmux",
+        "XDG_CONFIG_HOME": "/private/tmp/rwm5-ki8420zw/user/.config",
+        "RIWORK_NSH_BUNDLE": "/private/tmp/riwork-p1-m5-f6975181/bundle/bundle.js",
+        "RIWORK_NSH_BACKGROUND": "1"
+      },
+      "stdout": "/private/tmp/riwork-p1-m5-f6975181/fixture-3zh9c11c/PROC-04-missing.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-f6975181/fixture-3zh9c11c/PROC-04-missing.stderr",
+      "exit_code": 2,
+      "duration_seconds": 0.012,
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "ff7023a481d8b84009868207c1979c65b76d04c64b0362ed1a2a4681eeca2e07"
+    },
+    {
+      "name": "PROC-05-open",
+      "argv": [
+        "/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/riwork",
+        "open",
+        "/private/tmp/rwm5-ki8420zw/repos/Beta",
+        "--json"
+      ],
+      "cwd": "/private/tmp/rwm5-ki8420zw",
+      "environment": {
+        "HOME": "/private/tmp/rwm5-ki8420zw/user",
+        "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+        "RIWORK_HOME": "/private/tmp/rwm5-ki8420zw/home",
+        "RIWORK_RUNTIME_DIR": "/private/tmp/rwm5-ki8420zw/run",
+        "TMPDIR": "/private/tmp/rwm5-ki8420zw/tmp",
+        "TMUX_TMPDIR": "/private/tmp/rwm5-ki8420zw/tmux",
+        "XDG_CONFIG_HOME": "/private/tmp/rwm5-ki8420zw/user/.config",
+        "RIWORK_NSH_BUNDLE": "/private/tmp/riwork-p1-m5-f6975181/bundle/bundle.js",
+        "RIWORK_NSH_BACKGROUND": "1"
+      },
+      "stdout": "/private/tmp/riwork-p1-m5-f6975181/fixture-3zh9c11c/PROC-05-open.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-f6975181/fixture-3zh9c11c/PROC-05-open.stderr",
+      "exit_code": 0,
+      "duration_seconds": 0.01,
+      "stdout_sha256": "2bcca271cfd6e3d9c542507d6b1023c686f4b1405968a3e1be649bd13e9bb955",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "PROC-06-instances",
+      "argv": [
+        "/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/riwork",
+        "instances",
+        "--json"
+      ],
+      "cwd": "/private/tmp/rwm5-ki8420zw",
+      "environment": {
+        "HOME": "/private/tmp/rwm5-ki8420zw/user",
+        "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+        "RIWORK_HOME": "/private/tmp/rwm5-ki8420zw/home",
+        "RIWORK_RUNTIME_DIR": "/private/tmp/rwm5-ki8420zw/run",
+        "TMPDIR": "/private/tmp/rwm5-ki8420zw/tmp",
+        "TMUX_TMPDIR": "/private/tmp/rwm5-ki8420zw/tmux",
+        "XDG_CONFIG_HOME": "/private/tmp/rwm5-ki8420zw/user/.config",
+        "RIWORK_NSH_BUNDLE": "/private/tmp/riwork-p1-m5-f6975181/bundle/bundle.js",
+        "RIWORK_NSH_BACKGROUND": "1"
+      },
+      "stdout": "/private/tmp/riwork-p1-m5-f6975181/fixture-3zh9c11c/PROC-06-instances.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-f6975181/fixture-3zh9c11c/PROC-06-instances.stderr",
+      "exit_code": 0,
+      "duration_seconds": 0.011,
+      "stdout_sha256": "b6315c200ebef226038c275b0007afb599d982742e4badba8bb42d7e383dc77b",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "RLD-01-restart",
+      "argv": [
+        "/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/riwork",
+        "restart",
+        "--json"
+      ],
+      "cwd": "/private/tmp/rwm5-ki8420zw",
+      "environment": {
+        "HOME": "/private/tmp/rwm5-ki8420zw/user",
+        "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+        "RIWORK_HOME": "/private/tmp/rwm5-ki8420zw/home",
+        "RIWORK_RUNTIME_DIR": "/private/tmp/rwm5-ki8420zw/run",
+        "TMPDIR": "/private/tmp/rwm5-ki8420zw/tmp",
+        "TMUX_TMPDIR": "/private/tmp/rwm5-ki8420zw/tmux",
+        "XDG_CONFIG_HOME": "/private/tmp/rwm5-ki8420zw/user/.config",
+        "RIWORK_NSH_BUNDLE": "/private/tmp/riwork-p1-m5-f6975181/bundle/bundle.js",
+        "RIWORK_NSH_BACKGROUND": "1"
+      },
+      "stdout": "/private/tmp/riwork-p1-m5-f6975181/fixture-3zh9c11c/RLD-01-restart.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-f6975181/fixture-3zh9c11c/RLD-01-restart.stderr",
+      "exit_code": 2,
+      "duration_seconds": 2.013,
+      "stdout_sha256": "77725b2574c34d80feb2a46cdff41354b683d75280aec234039cbaae3abdbb2f",
+      "stderr_sha256": "a3df468f39d1525e65a8af9cbf043ecaaed8d4051a11946b8f78b77386bcdd07"
+    },
+    {
+      "name": "RLD-01-after-instances",
+      "argv": [
+        "/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/riwork",
+        "instances",
+        "--json"
+      ],
+      "cwd": "/private/tmp/rwm5-ki8420zw",
+      "environment": {
+        "HOME": "/private/tmp/rwm5-ki8420zw/user",
+        "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+        "RIWORK_HOME": "/private/tmp/rwm5-ki8420zw/home",
+        "RIWORK_RUNTIME_DIR": "/private/tmp/rwm5-ki8420zw/run",
+        "TMPDIR": "/private/tmp/rwm5-ki8420zw/tmp",
+        "TMUX_TMPDIR": "/private/tmp/rwm5-ki8420zw/tmux",
+        "XDG_CONFIG_HOME": "/private/tmp/rwm5-ki8420zw/user/.config",
+        "RIWORK_NSH_BUNDLE": "/private/tmp/riwork-p1-m5-f6975181/bundle/bundle.js",
+        "RIWORK_NSH_BACKGROUND": "1"
+      },
+      "stdout": "/private/tmp/riwork-p1-m5-f6975181/fixture-3zh9c11c/RLD-01-after-instances.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-f6975181/fixture-3zh9c11c/RLD-01-after-instances.stderr",
+      "exit_code": 0,
+      "duration_seconds": 0.011,
+      "stdout_sha256": "b6315c200ebef226038c275b0007afb599d982742e4badba8bb42d7e383dc77b",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "status": "complete",
+  "PROC-03": {
+    "pass": true,
+    "exit_code": 2
+  },
+  "fixture_root": "/private/tmp/rwm5-ki8420zw",
+  "fixture": {
+    "home": "/private/tmp/rwm5-ki8420zw/home",
+    "projects": [
+      {
+        "codex_account": {
+          "source": "inherit"
+        },
+        "created_at": 1793136872,
+        "delegation_policy": {},
+        "folder_id": null,
+        "id": "5f8ae436-4a41-4010-8ff7-34452a73e3e1",
+        "name": "Alpha",
+        "notify_on_agent_done": false,
+        "orchestrator": {
+          "mode": "inherit"
+        },
+        "repository_roots": [],
+        "root": "/private/tmp/rwm5-ki8420zw/repos/Alpha",
+        "wake_orchestrators_on_agent_done": false
+      },
+      {
+        "codex_account": {
+          "source": "inherit"
+        },
+        "created_at": 1793136872,
+        "delegation_policy": {},
+        "folder_id": null,
+        "id": "92fa13ca-6934-485b-885f-dc5b82b247ba",
+        "name": "Beta",
+        "notify_on_agent_done": false,
+        "orchestrator": {
+          "mode": "inherit"
+        },
+        "repository_roots": [],
+        "root": "/private/tmp/rwm5-ki8420zw/repos/Beta",
+        "wake_orchestrators_on_agent_done": false
+      }
+    ],
+    "root": "/private/tmp/rwm5-ki8420zw"
+  },
+  "gui_environment": {
+    "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+    "HOME": "/private/tmp/rwm5-ki8420zw/user",
+    "TMPDIR": "/private/tmp/rwm5-ki8420zw/tmp",
+    "TMUX_TMPDIR": "/private/tmp/rwm5-ki8420zw/tmux",
+    "XDG_CONFIG_HOME": "/private/tmp/rwm5-ki8420zw/user/.config",
+    "RIWORK_HOME": "/private/tmp/rwm5-ki8420zw/home",
+    "RIWORK_RUNTIME_DIR": "/private/tmp/rwm5-ki8420zw/run",
+    "RIWORK_NSH_BACKGROUND": "1",
+    "RIWORK_NSH_BUNDLE": "/private/tmp/riwork-p1-m5-f6975181/bundle/bundle.js"
+  },
+  "binary": {
+    "path": "/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/riwork",
+    "sha256": "d80f55a020a03f936b76019adbbe098c033efac0020be1b2ac3ffd4203a21323"
+  },
+  "bundle": {
+    "path": "/private/tmp/riwork-p1-m5-f6975181/bundle/bundle.js",
+    "sha256": "7d60e6525e78f54b24693ea7b854d5fa3827292fe0128ab9ed59fac71b9e85a3"
+  },
+  "pid": 97664,
+  "gui_argv": [
+    "/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/riwork",
+    "/private/tmp/rwm5-ki8420zw/repos/Alpha"
+  ],
+  "registry": {
+    "id": "8778c3d1-406b-49ca-a4dd-0eba6d1573b6",
+    "pid": 97664,
+    "uid": 501,
+    "started_token": "1793136875.937290",
+    "executable": "/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/riwork",
+    "state_home": "/private/tmp/rwm5-ki8420zw/home",
+    "windows": [
+      {
+        "project_id": "5f8ae436-4a41-4010-8ff7-34452a73e3e1",
+        "path": "/private/tmp/rwm5-ki8420zw/repos/Alpha",
+        "bounds": {
+          "x": 1070.0,
+          "y": 334.0,
+          "width": 1220.0,
+          "height": 780.0
+        },
+        "mode": "windowed",
+        "layout": {
+          "layout": {
+            "split": {
+              "axis": "side_by_side",
+              "ratio": 0.27,
+              "first": {
+                "pane": 1
+              },
+              "second": {
+                "split": {
+                  "axis": "stacked",
+                  "ratio": 0.64,
+                  "first": {
+                    "pane": 2
+                  },
+                  "second": {
+                    "pane": 3
+                  }
+                }
+              }
+            }
+          },
+          "panes": {
+            "1": {
+              "tabs": [
+                {
+                  "kind": "panel",
+                  "panel": "projects"
+                },
+                {
+                  "kind": "panel",
+                  "panel": "files"
+                },
+                {
+                  "kind": "panel",
+                  "panel": "worktrees"
+                },
+                {
+                  "kind": "panel",
+                  "panel": "tasks"
+                },
+                {
+                  "kind": "panel",
+                  "panel": "shells"
+                }
+              ],
+              "active_tab_key": "panel:files",
+              "tab_edge": "top",
+              "shell_ids": [],
+              "active_shell_id": null
+            },
+            "2": {
+              "tabs": [
+                {
+                  "kind": "shell",
+                  "shell_id": "first"
+                },
+                {
+                  "kind": "shell",
+                  "shell_id": "second"
+                }
+              ],
+              "active_tab_key": "shell:second",
+              "tab_edge": "top",
+              "shell_ids": [
+                "first",
+                "second"
+              ],
+              "active_shell_id": "second"
+            },
+            "3": {
+              "tabs": [],
+              "active_tab_key": null,
+              "tab_edge": "top",
+              "shell_ids": [],
+              "active_shell_id": null
+            }
+          },
+          "active_pane": 2,
+          "locked_panes": [
+            3,
+            1
+          ],
+          "panels_initialized": true,
+          "detached_shell_ids": [
+            "detached-shell"
+          ],
+          "detached_chat_ids": [
+            "dismissed-chat"
+          ],
+          "chat_dismissal_revision": 7,
+          "selected_worktree_id": "selected-worktree",
+          "selected_task_id": "Alpha-fixture-task",
+          "sidebar_visible": false,
+          "window_size": {
+            "width": 1440.0,
+            "height": 900.0
+          },
+          "main_pane": 2
+        },
+        "focus_mode": false,
+        "focus_centered": false
+      },
+      {
+        "project_id": "92fa13ca-6934-485b-885f-dc5b82b247ba",
+        "path": "/private/tmp/rwm5-ki8420zw/repos/Beta",
+        "bounds": {
+          "x": 1092.0,
+          "y": 356.0,
+          "width": 1220.0,
+          "height": 780.0
+        },
+        "mode": "windowed",
+        "layout": {
+          "layout": {
+            "split": {
+              "axis": "side_by_side",
+              "ratio": 0.27,
+              "first": {
+                "pane": 1
+              },
+              "second": {
+                "split": {
+                  "axis": "stacked",
+                  "ratio": 0.64,
+                  "first": {
+                    "pane": 2
+                  },
+                  "second": {
+                    "pane": 3
+                  }
+                }
+              }
+            }
+          },
+          "panes": {
+            "1": {
+              "tabs": [
+                {
+                  "kind": "panel",
+                  "panel": "projects"
+                },
+                {
+                  "kind": "panel",
+                  "panel": "files"
+                },
+                {
+                  "kind": "panel",
+                  "panel": "worktrees"
+                },
+                {
+                  "kind": "panel",
+                  "panel": "tasks"
+                },
+                {
+                  "kind": "panel",
+                  "panel": "shells"
+                }
+              ],
+              "active_tab_key": "panel:files",
+              "tab_edge": "top",
+              "shell_ids": [],
+              "active_shell_id": null
+            },
+            "2": {
+              "tabs": [
+                {
+                  "kind": "shell",
+                  "shell_id": "first"
+                },
+                {
+                  "kind": "shell",
+                  "shell_id": "second"
+                }
+              ],
+              "active_tab_key": "shell:second",
+              "tab_edge": "top",
+              "shell_ids": [
+                "first",
+                "second"
+              ],
+              "active_shell_id": "second"
+            },
+            "3": {
+              "tabs": [],
+              "active_tab_key": null,
+              "tab_edge": "top",
+              "shell_ids": [],
+              "active_shell_id": null
+            }
+          },
+          "active_pane": 2,
+          "locked_panes": [
+            1,
+            3
+          ],
+          "panels_initialized": true,
+          "detached_shell_ids": [
+            "detached-shell"
+          ],
+          "detached_chat_ids": [
+            "dismissed-chat"
+          ],
+          "chat_dismissal_revision": 7,
+          "selected_worktree_id": "selected-worktree",
+          "selected_task_id": "Beta-fixture-task",
+          "sidebar_visible": false,
+          "window_size": {
+            "width": 1440.0,
+            "height": 900.0
+          },
+          "main_pane": 2
+        },
+        "focus_mode": false,
+        "focus_centered": false
+      }
+    ],
+    "updated_at": 1793136880
+  },
+  "fixture_exit_code": -15,
+  "written_files": [
+    "nsh/desktop.handoff.lock",
+    "run/desktop.lock"
+  ],
+  "removed_files": [],
+  "disallowed_written_files": [],
+  "before": {
+    "state.json": {
+      "sha256": "a1a83b4517aa58d63a0e1f137a2aa4e7f157019720849c9a242baf99cc232d09",
+      "mtime_ns": 1793136872665612065
+    },
+    "layouts.lock": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "mtime_ns": 1793136872638481677
+    },
+    "layouts.json": {
+      "sha256": "2bf0fbb92af3017025a6f3cca45b689b55d124b47cbdcd111d07cb3636f74598",
+      "mtime_ns": 1793136872677762418
+    },
+    "state.lock": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "mtime_ns": 1793136872620621920
+    }
+  },
+  "after": {
+    "state.json": {
+      "sha256": "a1a83b4517aa58d63a0e1f137a2aa4e7f157019720849c9a242baf99cc232d09",
+      "mtime_ns": 1793136872665612065
+    },
+    "layouts.lock": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "mtime_ns": 1793136872638481677
+    },
+    "layouts.json": {
+      "sha256": "2bf0fbb92af3017025a6f3cca45b689b55d124b47cbdcd111d07cb3636f74598",
+      "mtime_ns": 1793136872677762418
+    },
+    "state.lock": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "mtime_ns": 1793136872620621920
+    },
+    "nsh/desktop.handoff.lock": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "mtime_ns": 1793136875948254045
+    },
+    "run/desktop.lock": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "mtime_ns": 1793136875948321378
+    }
+  },
+  "tmux_inventory": {
+    "root": "/private/tmp/rwm5-ki8420zw/tmux",
+    "empty_directories": [],
+    "files_or_sockets": []
+  }
+}

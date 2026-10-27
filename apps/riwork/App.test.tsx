@@ -12,7 +12,7 @@ function panelIds(node: DockNode): string[] {
 }
 const options = (windowId: string) => ({
   platform: "macos" as const, width: 1280, height: 800,
-  host: { params: { windowId, projectId: "fixture-project" }, handlers: { "app.fixture.state": null, "app.fixture.flushed": null } },
+  host: { params: { windowId, projectId: "fixture-project" }, handlers: { "app.fixture.state": null, "app.fixture.flushed": null, "app.fixture.geometry": null } },
 });
 
 test("opens a core-written layout with shell identity, empty unknown pane, and window chrome", async () => {
@@ -137,12 +137,29 @@ test("a real DockArea drag moves one tab into the opaque empty pane through Rust
   const app = await open("./tests/Workspace.fixture.tsx", options("fixture-drag"));
   try {
     await app.waitFor("id:workspace-dock");
-    await app.drag("id:tab:shell:first", { x: 400, y: 600 });
+    // Files is still a deferred surface. Its construction/visibility markers
+    // prove DockArea keeps mounted panel identity while the live panels coexist.
+    await app.press("id:tab:panel:files");
+    await app.press("id:tab:shell:first");
+    expect(app.texts()).toContain("mount 1");
+    expect(app.texts()).toContain("visible: true");
+    expect(app.texts().includes("mount 2")).toBe(false);
+    await app.host.send("app.fixture.measure", {});
+    await app.waitUntil(() => app.host.posts().some((post) => post.name === "app.fixture.geometry"));
+    type Measurement = { pagePosition: { x: number; y: number }; bounds: { size: { width: number; height: number } } };
+    const geometry = app.host.posts().find((post) => post.name === "app.fixture.geometry")!.data as { source: Measurement; destination: Measurement };
+    const center = (view: Measurement) => ({ x: view.pagePosition.x + view.bounds.size.width / 2, y: view.pagePosition.y + view.bounds.size.height / 2 });
+    const source = center(geometry.source), destination = center(geometry.destination);
+    await app.drag("id:tab:shell:first", { x: destination.x - source.x, y: destination.y - source.y });
     const snapshot = latest(app).snapshot;
     expect(snapshot.panes.find((pane) => pane.id === 2)?.tabs.map((tab) => tab.id)).toEqual(["shell:second"]);
     expect(snapshot.panes.find((pane) => pane.id === 3)?.tabs.map((tab) => tab.id)).toEqual(["shell:first"]);
     expect(snapshot.activePane).toBe(3);
     expect(panelIds(latest(app).dock.center)).toContain("empty:3");
+    expect(app.texts()).toContain("mount 1");
+    expect(app.texts().includes("mount 2")).toBe(false);
+    await app.setViewport(1400, 900);
+    expect(app.texts().includes("mount 2")).toBe(false);
     await app.host.send("app.fixture.flush", {});
     await app.waitUntil(() => app.host.posts().some((post) => post.name === "app.fixture.flushed"));
   } finally { app.dispose(); }

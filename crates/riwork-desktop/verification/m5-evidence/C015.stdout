@@ -1,0 +1,6 @@
+
+running 1 test
+test ui_text::tests::a_step_starts_from_the_stored_size_not_the_cached_one ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 290 filtered out; finished in 0.08s
+

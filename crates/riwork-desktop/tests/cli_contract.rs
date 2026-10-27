@@ -228,6 +228,22 @@ fn project_list_keeps_text_and_json_bytes_for_a_real_isolated_project() {
 }
 
 #[test]
+fn settings_json_keeps_the_gpui_reference_field_order() {
+    // A dispatcher built in this same graph is insufficient as an oracle:
+    // feature unification changes serde_json::Value order for both binaries.
+    // These exact bytes were captured from the ea0f2f5 GPUI desktop executable.
+    let fixture = Fixture::new();
+    let output = fixture.desktop(&["settings", "list", "--json"], b"");
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    assert_eq!(
+        output.stdout,
+        include_bytes!("fixtures/settings-list-ea0f2f5.json")
+    );
+    fixture.assert_no_gui();
+}
+
+#[test]
 fn mcp_stdio_keeps_protocol_bytes_without_gui_initialization() {
     let fixture = Fixture::new();
     let output = fixture.assert_parity(

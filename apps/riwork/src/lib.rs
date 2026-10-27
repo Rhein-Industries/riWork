@@ -7,7 +7,7 @@ pub mod persistence;
 use layout::{DockAreaLayout, Extent, LayoutModel};
 use nsh_core::prelude::*;
 use persistence::{LayoutPersistence, SaveMode};
-use riwork_core::layouts::{ProjectLayout, SavedTab};
+use riwork_core::layouts::{PanelKind, ProjectLayout, SavedTab};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
@@ -61,6 +61,13 @@ fn process_home() -> Result<PathBuf, String> {
         .ok_or_else(|| "unavailable: native registry is not initialized".to_owned())?()
 }
 
+fn validate_id(id: &str) -> Result<(), String> {
+    if !uuid::Uuid::parse_str(id).is_ok_and(|value| value.to_string() == id) {
+        return Err("invalid: expected a canonical UUID".into());
+    }
+    Ok(())
+}
+
 /// Layout IO runs in Rust's blocking pool. JS never receives a filesystem path.
 #[module]
 pub struct Layouts;
@@ -111,6 +118,23 @@ pub struct LayoutSession {
     model: LayoutModel,
     host: Arc<host_layouts::HostLayout>,
     notice: Option<String>,
+}
+
+/// A cancelled JS promise can release its result on an engine thread. Keep
+/// persistence behind the same deferred-disposal guard as the host handle.
+struct PreparedSwitch {
+    model: Option<LayoutModel>,
+    persistence: Option<Arc<LayoutPersistence>>,
+    notice: Option<String>,
+    dock: DockAreaLayout,
+}
+
+impl Drop for PreparedSwitch {
+    fn drop(&mut self) {
+        if let Some(persistence) = self.persistence.take() {
+            host_layouts::defer_persistence(persistence);
+        }
+    }
 }
 
 impl LayoutSession {
@@ -177,6 +201,108 @@ impl LayoutSession {
         self.edit(|model| model.detach_shell(&shell_id).map(|next| (next, true)))
     }
 
+    /// Open a navigation panel or select its existing stable tab identity.
+    pub fn open_panel(&mut self, panel_id: String) -> Result<Value, String> {
+        let name = panel_id.strip_prefix("panel:").unwrap_or(&panel_id);
+        let panel: PanelKind =
+            serde_json::from_value(json!(name)).map_err(|_| "invalid: unknown panel".to_owned())?;
+        self.edit(|model| model.open_panel(panel).map(|next| (next, true)))
+    }
+
+    /// Place or select a shell chosen by the navigation panels.
+    pub fn show_shell(&mut self, shell_id: String) -> Result<Value, String> {
+        validate_id(&shell_id)?;
+        self.edit(|model| model.show_shell(&shell_id).map(|next| (next, true)))
+    }
+
+    /// Persist window-local navigation selection through LayoutStore.
+    pub fn set_selected_worktree(&mut self, id: Option<String>) -> Result<(), String> {
+        if let Some(id) = &id {
+            validate_id(id)?;
+        }
+        let host = self.host.clone();
+        host.edit(|| {
+            self.model.set_selected_worktree(id);
+            Ok(((), Some(self.model.storage_project())))
+        })
+    }
+
+    pub fn set_selected_task(&mut self, id: Option<String>) -> Result<(), String> {
+        if let Some(id) = &id {
+            validate_id(id)?;
+        }
+        let host = self.host.clone();
+        host.edit(|| {
+            self.model.set_selected_task(id);
+            Ok(((), Some(self.model.storage_project())))
+        })
+    }
+
+    /// Flush the outgoing project and prepare locked-region carry away from the
+    /// engine. A close, disposal or load failure keeps the old session intact.
+    pub async fn switch_project(this: Instance<Self>, project_id: String) -> Result<Value, String> {
+        validate_id(&project_id)?;
+        if this.is_disposed() {
+            return Err("unavailable: layout session is disposed".into());
+        }
+        let host = this.with(|session| session.host.clone());
+        if host.project_id() == project_id {
+            return this.with_mut(|session| {
+                let size = session.model.extent().unwrap_or(Extent {
+                    width: 1220.0,
+                    height: 780.0,
+                });
+                Ok(json!(session.model.dock(size)))
+            });
+        }
+        let size = this.with(|session| session.model.extent());
+        let reservation = host.begin_project_switch()?;
+        let (mut reservation, mut prepared) = tokio::task::spawn_blocking(move || {
+            let loaded = reservation.prepare(&project_id)?;
+            let mut model = LayoutModel::new(loaded.project)?;
+            model.mark_unknown_panes(&loaded.unknown_panes);
+            let dock = model.dock(size.unwrap_or(Extent {
+                width: 1220.0,
+                height: 780.0,
+            }));
+            Ok::<_, String>((
+                reservation,
+                PreparedSwitch {
+                    model: Some(model),
+                    persistence: Some(Arc::new(loaded.persistence)),
+                    notice: loaded.notice,
+                    dock,
+                },
+            ))
+        })
+        .await
+        .map_err(|error| format!("broken: {error}"))??;
+        if this.is_disposed() {
+            return Err("unavailable: layout session is disposed".into());
+        }
+        let project = prepared
+            .model
+            .as_ref()
+            .expect("prepared layout")
+            .storage_project();
+        reservation.commit(
+            prepared
+                .persistence
+                .as_ref()
+                .expect("prepared persistence")
+                .clone(),
+            project,
+            prepared.notice.is_none(),
+            || {
+                this.with_mut(|session| {
+                    session.model = prepared.model.take().expect("prepared layout");
+                    session.notice = prepared.notice.take();
+                    json!(prepared.dock)
+                })
+            },
+        )
+    }
+
     /// Activate a pane without changing its selected tab (including empty panes).
     pub fn select_pane(&mut self, pane_id: u64) -> Result<Value, String> {
         self.edit(|model| model.select_pane(pane_id).map(|next| (next, true)))
@@ -203,6 +329,9 @@ impl LayoutSession {
         let locked = project.effective_locked_panes();
         let ids = project.layout.pane_ids();
         json!({
+            "projectId": self.host.project_id(),
+            "selectedWorktreeId": project.selected_worktree_id,
+            "selectedTaskId": project.selected_task_id,
             "activePane": project.active_pane,
             "notice": self.notice,
             "panes": ids.into_iter().map(|id| {
@@ -254,6 +383,216 @@ fn tab_title(tab: &SavedTab) -> String {
 #[cfg(test)]
 mod integration_tests {
     use super::*;
+
+    const OUTGOING: &str = "10000000-0000-4000-8000-000000000001";
+    const DESTINATION: &str = "10000000-0000-4000-8000-000000000002";
+    const TASK: &str = "10000000-0000-4000-8000-000000000003";
+    const WORKTREE: &str = "10000000-0000-4000-8000-000000000004";
+    const SHELL: &str = "10000000-0000-4000-8000-000000000005";
+
+    fn session(home: &std::path::Path) -> LayoutSession {
+        let loaded =
+            LayoutPersistence::open(home, OUTGOING, None, SaveMode::LegacyChatState).unwrap();
+        let mut model = LayoutModel::new(loaded.project).unwrap();
+        model.dock(Extent {
+            width: 1400.0,
+            height: 900.0,
+        });
+        let host = host_layouts::registration(
+            &home.display().to_string(),
+            Arc::new(loaded.persistence),
+            model.storage_project(),
+        )
+        .unwrap();
+        LayoutSession {
+            model,
+            host,
+            notice: None,
+        }
+    }
+
+    #[test]
+    fn project_switch_keeps_the_host_handle_and_flushes_both_project_writers() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let _entered = runtime.enter();
+        let fixture = tempfile::Builder::new()
+            .prefix("riwork-layout-project-switch-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let store = riwork_core::layouts::LayoutStore::open(fixture.path()).unwrap();
+        let mut destination = persistence::default_project_layout();
+        destination
+            .panes
+            .get_mut(&2)
+            .unwrap()
+            .tabs
+            .push(SavedTab::Shell {
+                shell_id: "destination-saved-shell".into(),
+            });
+        destination.normalize().unwrap();
+        store
+            .save_chat_state(DESTINATION, &destination, &[], None)
+            .unwrap();
+        let mut session = session(fixture.path());
+        session.open_panel("tasks".into()).unwrap();
+        session.set_selected_task(Some(TASK.into())).unwrap();
+        session
+            .set_selected_worktree(Some(WORKTREE.into()))
+            .unwrap();
+        let previous = session.project_from_host();
+        let expected = destination.carry_locked_regions_from(&previous).unwrap();
+        let host = session.host.clone();
+        let instance = Instance::new(session);
+        let dock = runtime
+            .block_on(LayoutSession::switch_project(
+                instance.clone(),
+                DESTINATION.into(),
+            ))
+            .unwrap();
+        assert!(!dock.is_null());
+        assert!(Arc::ptr_eq(
+            &host,
+            &host_layouts::lookup(&fixture.path().display().to_string()).unwrap()
+        ));
+        assert_eq!(host.project_id(), DESTINATION);
+        assert_eq!(host.snapshot(), expected);
+        assert_eq!(store.load(OUTGOING).unwrap(), Some(previous.clone()));
+        instance.with_mut(|session| {
+            assert_eq!(session.snapshot()["projectId"], DESTINATION);
+            session.set_selected_task(Some(TASK.into())).unwrap();
+            session.show_shell(SHELL.into()).unwrap();
+            session.show_shell(SHELL.into()).unwrap();
+        });
+        let committed = host.snapshot();
+        host.begin_close();
+        assert!(
+            instance
+                .with_mut(|session| session.set_selected_task(None))
+                .is_err()
+        );
+        host.flush_blocking().unwrap();
+        assert_eq!(store.load(DESTINATION).unwrap(), Some(committed.clone()));
+        assert_eq!(store.load(OUTGOING).unwrap(), Some(previous));
+        assert_eq!(
+            committed
+                .panes
+                .values()
+                .flat_map(|pane| &pane.tabs)
+                .filter(|tab| tab.key() == format!("shell:{SHELL}"))
+                .count(),
+            1
+        );
+        instance.dispose();
+    }
+
+    #[test]
+    fn failed_project_preparation_preserves_the_prior_editable_session() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let _entered = runtime.enter();
+        let fixture = tempfile::Builder::new()
+            .prefix("riwork-layout-switch-failure-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let session = session(fixture.path());
+        let host = session.host.clone();
+        let previous = session.project_from_host();
+        let instance = Instance::new(session);
+        // This prevents the next load from opening its shared lock without
+        // relying on permissions (the test can also run as an elevated user).
+        std::fs::remove_file(fixture.path().join("layouts.lock")).unwrap();
+        std::fs::create_dir(fixture.path().join("layouts.lock")).unwrap();
+        assert!(
+            runtime
+                .block_on(LayoutSession::switch_project(
+                    instance.clone(),
+                    DESTINATION.into()
+                ))
+                .is_err()
+        );
+        assert_eq!(host.project_id(), OUTGOING);
+        assert_eq!(host.snapshot(), previous);
+        std::fs::remove_dir(fixture.path().join("layouts.lock")).unwrap();
+        instance
+            .with_mut(|session| session.set_selected_task(Some(TASK.into())))
+            .unwrap();
+        host.flush_blocking().unwrap();
+        assert_eq!(
+            riwork_core::layouts::LayoutStore::open(fixture.path())
+                .unwrap()
+                .load(OUTGOING)
+                .unwrap()
+                .unwrap()
+                .selected_task_id
+                .as_deref(),
+            Some(TASK)
+        );
+        instance.dispose();
+    }
+
+    #[test]
+    fn disposed_session_rejects_project_switch_without_panicking() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let _entered = runtime.enter();
+        let fixture = tempfile::Builder::new()
+            .prefix("riwork-layout-switch-disposed-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let instance = Instance::new(session(fixture.path()));
+        instance.dispose();
+        assert_eq!(
+            runtime
+                .block_on(LayoutSession::switch_project(instance, DESTINATION.into()))
+                .unwrap_err(),
+            "unavailable: layout session is disposed"
+        );
+    }
+
+    #[test]
+    fn disposal_while_project_io_is_pending_never_commits_the_prepared_writer() {
+        use std::{future::Future, task::Poll};
+
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let _entered = runtime.enter();
+        let fixture = tempfile::Builder::new()
+            .prefix("riwork-layout-switch-cancelled-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let session = session(fixture.path());
+        let host = session.host.clone();
+        let previous = host.snapshot();
+        let instance = Instance::new(session);
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(fixture.path().join("layouts.lock"))
+            .unwrap();
+        fs2::FileExt::lock_exclusive(&lock).unwrap();
+        let mut switch = Box::pin(LayoutSession::switch_project(
+            instance.clone(),
+            DESTINATION.into(),
+        ));
+        // The real store file lock keeps the blocking IO pending after the
+        // engine has reserved the switch, with no timing-dependent sleeps.
+        runtime.block_on(std::future::poll_fn(|cx| match switch.as_mut().poll(cx) {
+            Poll::Pending => Poll::Ready(()),
+            Poll::Ready(_) => panic!("the store lock must keep preparation pending"),
+        }));
+        instance.dispose();
+        fs2::FileExt::unlock(&lock).unwrap();
+        assert_eq!(
+            runtime.block_on(switch).unwrap_err(),
+            "unavailable: layout session is disposed"
+        );
+        assert_eq!(host.project_id(), OUTGOING);
+        assert_eq!(host.snapshot(), previous.clone());
+        host.flush_blocking().unwrap();
+        let store = riwork_core::layouts::LayoutStore::open(fixture.path()).unwrap();
+        assert_eq!(store.load(OUTGOING).unwrap(), Some(previous));
+        assert!(store.load(DESTINATION).unwrap().is_none());
+        // A cancelled preparation also releases the short edit admission gate.
+        host.schedule(host.snapshot()).unwrap();
+        host.flush_blocking().unwrap();
+    }
 
     #[test]
     fn rejected_close_time_edits_do_not_change_the_session_before_a_cancelled_close() {

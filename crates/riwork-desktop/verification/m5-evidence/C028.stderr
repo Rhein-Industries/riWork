@@ -1,0 +1,32 @@
+    Blocking waiting for file lock on build directory
+   Compiling rustls v0.23.45
+   Compiling url v2.5.8
+   Compiling av-scenechange v0.14.1
+   Compiling av1-grain v0.2.5
+   Compiling rav1e v0.8.1
+   Compiling html5ever v0.27.0
+   Compiling rgb v0.8.53
+   Compiling exr v1.74.2
+   Compiling markup5ever_rcdom v0.3.0
+   Compiling ureq-proto v0.6.4
+   Compiling globset v0.4.20
+   Compiling quickjs-jit-stdlib v0.14.1
+   Compiling tungstenite v0.28.0
+   Compiling tokio-rustls v0.26.6
+   Compiling ravif v0.13.0
+   Compiling ureq v3.4.2
+   Compiling tokio-tungstenite v0.28.0
+   Compiling nsh-core v0.3.0
+   Compiling image v0.25.10
+   Compiling ignore v0.4.33
+   Compiling notify v8.2.0
+   Compiling riwork-engine v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p1-m5/crates/riwork-engine)
+   Compiling nsh-base v0.3.0
+   Compiling nsh-js v0.3.0
+   Compiling nsh-package v0.3.0
+   Compiling nsh-engine v0.3.0
+   Compiling riwork-nsh-workspace v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p1-m5/apps/riwork)
+   Compiling riwork-nsh-native v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p1-m5/crates/riwork-nsh-native)
+    Finished `test` profile [unoptimized] target(s) in 19.03s
+     Running tests/services.rs (/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/deps/services-233e418f5530541f)
+error: test failed, to rerun pass `-p riwork-nsh-native --test services`

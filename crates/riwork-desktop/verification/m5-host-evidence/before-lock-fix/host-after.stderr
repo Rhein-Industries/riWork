@@ -1,0 +1,5 @@
+   Compiling riwork-nsh-native v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p1-m5/crates/riwork-nsh-native)
+   Compiling riwork-desktop v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p1-m5/crates/riwork-desktop)
+    Finished `test` profile [unoptimized] target(s) in 3.97s
+     Running unittests src/nsh_main.rs (/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/deps/riwork-3d887f9791783962)
+error: test failed, to rerun pass `-p riwork-desktop --bin riwork`

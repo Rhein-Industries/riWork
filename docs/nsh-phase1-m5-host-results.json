@@ -1,0 +1,2875 @@
+{
+  "verification_environment": "macOS arm64; isolated fixture HOME/RIWORK_HOME/runtime/config/tmux; pure host/core tests and real main-thread AppKit objects under activation policy Prohibited; no visible windows, Cua calls, live state or desktop input by this agent",
+  "source_freeze": "host sources frozen after final direct windowDidUpdate chrome correction; final combined validation owned by root",
+  "named_route_counts": {
+    "PASS": 36,
+    "FAIL": 19
+  },
+  "manifest": "crates/riwork-desktop/verification/m5-host-evidence/named-routes/manifest.json",
+  "items": [
+    {
+      "id": "P1-PROC-01",
+      "status": "PASS",
+      "scope": "host/core/appkit routes; combine other owners before whole-item acceptance",
+      "route": "core",
+      "commands": [
+        "cargo test -p riwork-cli --lib only_gui_startup_forms_open_the_workspace --locked --offline"
+      ],
+      "detail": "CLI startup parser passes. Review of nsh_main.rs proves run_cli precedes any host/AppKit/NSH initialization. Root owns five-command historical cli-diff.",
+      "checks": [
+        {
+          "item": "P1-PROC-01",
+          "route": "core",
+          "test": "only_gui_startup_forms_open_the_workspace",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-cli",
+            "--lib",
+            "only_gui_startup_forms_open_the_workspace",
+            "--locked",
+            "--offline"
+          ],
+          "exit_code": 0,
+          "passed": 1,
+          "failed": 0,
+          "status": "PASS",
+          "missing_proof": false,
+          "successor": true
+        }
+      ]
+    },
+    {
+      "id": "P1-PROC-06",
+      "status": "PASS",
+      "scope": "host/core/appkit routes; combine other owners before whole-item acceptance",
+      "route": "core",
+      "commands": [
+        "cargo test -p riwork-engine --lib live_gui_pids_lists_running_guis_and_changes_nothing --locked --offline"
+      ],
+      "detail": "Existing runtime registry test passes; root owns the live fixture two-window count.",
+      "checks": [
+        {
+          "item": "P1-PROC-06",
+          "route": "core",
+          "test": "live_gui_pids_lists_running_guis_and_changes_nothing",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-engine",
+            "--lib",
+            "live_gui_pids_lists_running_guis_and_changes_nothing",
+            "--locked",
+            "--offline"
+          ],
+          "exit_code": 0,
+          "passed": 1,
+          "failed": 0,
+          "status": "PASS",
+          "missing_proof": false,
+          "successor": true
+        }
+      ]
+    },
+    {
+      "id": "P1-RLD-02",
+      "status": "FAIL",
+      "scope": "host/core/appkit routes; combine other owners before whole-item acceptance",
+      "route": "core + host-unit",
+      "commands": [
+        "cargo test -p riwork-engine --lib queuing_and_wait_timeout_leave_old_gui_alive_and_do_not_launch_anything --locked --offline",
+        "cargo test -p riwork-engine --lib readiness_requires_correct_child_and_matching_registered_windows --locked --offline",
+        "cargo test -p riwork-engine --lib failed_or_hung_replacement_keeps_old_alive_and_allows_retry --locked --offline",
+        "cargo test -p riwork-engine --lib a_watchdog_that_fired_refuses_to_let_the_restore_confirm --locked --offline",
+        "cargo test -p riwork-desktop --bin riwork nsh_runtime::tests::restore_acknowledgements_are_per_window_and_idempotent --locked --offline",
+        "cargo test -p riwork-desktop --bin riwork nsh_runtime::tests::restore_matches_targets_even_if_window_order_changes --locked --offline",
+        "cargo test -p riwork-desktop --bin riwork restore::tests::confirmation_gives_up_after_20_s --locked --offline"
+      ],
+      "detail": "Four engine choreography tests plus host readiness/idempotence/order checks pass. Required 20-second host confirmation test is absent; production restart is explicitly unavailable and no draft-flush hook is integrated.",
+      "checks": [
+        {
+          "item": "P1-RLD-02",
+          "route": "core",
+          "test": "queuing_and_wait_timeout_leave_old_gui_alive_and_do_not_launch_anything",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-engine",
+            "--lib",
+            "queuing_and_wait_timeout_leave_old_gui_alive_and_do_not_launch_anything",
+            "--locked",
+            "--offline"
+          ],
+          "exit_code": 0,
+          "passed": 1,
+          "failed": 0,
+          "status": "PASS",
+          "missing_proof": false,
+          "successor": true
+        },
+        {
+          "item": "P1-RLD-02",
+          "route": "core",
+          "test": "readiness_requires_correct_child_and_matching_registered_windows",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-engine",
+            "--lib",
+            "readiness_requires_correct_child_and_matching_registered_windows",
+            "--locked",
+            "--offline"
+          ],
+          "exit_code": 0,
+          "passed": 1,
+          "failed": 0,
+          "status": "PASS",
+          "missing_proof": false,
+          "successor": true
+        },
+        {
+          "item": "P1-RLD-02",
+          "route": "core",
+          "test": "failed_or_hung_replacement_keeps_old_alive_and_allows_retry",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-engine",
+            "--lib",
+            "failed_or_hung_replacement_keeps_old_alive_and_allows_retry",
+            "--locked",
+            "--offline"
+          ],
+          "exit_code": 0,
+          "passed": 1,
+          "failed": 0,
+          "status": "PASS",
+          "missing_proof": false,
+          "successor": true
+        },
+        {
+          "item": "P1-RLD-02",
+          "route": "core",
+          "test": "a_watchdog_that_fired_refuses_to_let_the_restore_confirm",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-engine",
+            "--lib",
+            "a_watchdog_that_fired_refuses_to_let_the_restore_confirm",
+            "--locked",
+            "--offline"
+          ],
+          "exit_code": 0,
+          "passed": 1,
+          "failed": 0,
+          "status": "PASS",
+          "missing_proof": false,
+          "successor": true
+        },
+        {
+          "item": "P1-RLD-02",
+          "route": "host-unit",
+          "test": "nsh_runtime::tests::restore_acknowledgements_are_per_window_and_idempotent",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-desktop",
+            "--bin",
+            "riwork",
+            "nsh_runtime::tests::restore_acknowledgements_are_per_window_and_idempotent",
+            "--locked",
+            "--offline"
+          ],
+          "exit_code": 0,
+          "passed": 1,
+          "failed": 0,
+          "status": "PASS",
+          "missing_proof": false,
+          "successor": true
+        },
+        {
+          "item": "P1-RLD-02",
+          "route": "host-unit",
+          "test": "nsh_runtime::tests::restore_matches_targets_even_if_window_order_changes",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-desktop",
+            "--bin",
+            "riwork",
+            "nsh_runtime::tests::restore_matches_targets_even_if_window_order_changes",
+            "--locked",
+            "--offline"
+          ],
+          "exit_code": 0,
+          "passed": 1,
+          "failed": 0,
+          "status": "PASS",
+          "missing_proof": false,
+          "successor": true
+        },
+        {
+          "item": "P1-RLD-02",
+          "route": "host-unit",
+          "test": "restore::tests::confirmation_gives_up_after_20_s",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-desktop",
+            "--bin",
+            "riwork",
+            "restore::tests::confirmation_gives_up_after_20_s",
+            "--locked",
+            "--offline"
+          ],
+          "exit_code": 0,
+          "passed": 0,
+          "failed": 0,
+          "status": "FAIL",
+          "missing_proof": true,
+          "successor": false
+        }
+      ]
+    },
+    {
+      "id": "P1-RLD-03",
+      "status": "PASS",
+      "scope": "host/core/appkit routes; combine other owners before whole-item acceptance",
+      "route": "core + host-unit",
+      "commands": [
+        "cargo test -p riwork-engine --lib publishing_writes_only_changes_and_never_waits_for_the_registry_lock --locked --offline",
+        "cargo test -p riwork-desktop --bin riwork nsh_host::tests::a_busy_registry_lock_stays_due --locked --offline"
+      ],
+      "detail": "Existing nonblocking/change-only engine publishing test and fake-clock host due/retry successor pass. Busy registry skips now leave publication due; successful publication advances by two seconds.",
+      "checks": [
+        {
+          "item": "P1-RLD-03",
+          "route": "core",
+          "test": "publishing_writes_only_changes_and_never_waits_for_the_registry_lock",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-engine",
+            "--lib",
+            "publishing_writes_only_changes_and_never_waits_for_the_registry_lock",
+            "--locked",
+            "--offline"
+          ],
+          "exit_code": 0,
+          "passed": 1,
+          "failed": 0,
+          "status": "PASS",
+          "missing_proof": false,
+          "successor": true
+        },
+        {
+          "item": "P1-RLD-03",
+          "route": "host-unit",
+          "test": "nsh_host::tests::a_busy_registry_lock_stays_due",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-desktop",
+            "--bin",
+            "riwork",
+            "nsh_host::tests::a_busy_registry_lock_stays_due",
+            "--locked",
+            "--offline"
+          ],
+          "exit_code": 0,
+          "passed": 1,
+          "failed": 0,
+          "status": "PASS",
+          "missing_proof": false,
+          "successor": true
+        }
+      ]
+    },
+    {
+      "id": "P1-RLD-04",
+      "status": "PASS",
+      "scope": "host/core/appkit routes; combine other owners before whole-item acceptance",
+      "route": "core + host-unit",
+      "commands": [
+        "cargo test -p riwork-engine --lib identifiers_geometry_and_private_file_read_are_validated --locked --offline",
+        "cargo test -p riwork-desktop --bin riwork nsh_host::tests::runtime_publication_reads_current_layout_without_an_appkit_state_event --locked --offline",
+        "cargo test -p riwork-desktop --bin riwork nsh_host::tests::runtime_frames_keep_the_existing_display_local_top_left_coordinates --locked --offline"
+      ],
+      "detail": "Host successors read current Rust LayoutSession on runtime publication and preserve display-local top-left geometry; engine validation test passes. Workspace owns restore payload precedence/readiness tests.",
+      "checks": [
+        {
+          "item": "P1-RLD-04",
+          "route": "core",
+          "test": "identifiers_geometry_and_private_file_read_are_validated",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-engine",
+            "--lib",
+            "identifiers_geometry_and_private_file_read_are_validated",
+            "--locked",
+            "--offline"
+          ],
+          "exit_code": 0,
+          "passed": 1,
+          "failed": 0,
+          "status": "PASS",
+          "missing_proof": false,
+          "successor": true
+        },
+        {
+          "item": "P1-RLD-04",
+          "route": "host-unit",
+          "test": "nsh_host::tests::runtime_publication_reads_current_layout_without_an_appkit_state_event",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-desktop",
+            "--bin",
+            "riwork",
+            "nsh_host::tests::runtime_publication_reads_current_layout_without_an_appkit_state_event",
+            "--locked",
+            "--offline"
+          ],
+          "exit_code": 0,
+          "passed": 1,
+          "failed": 0,
+          "status": "PASS",
+          "missing_proof": false,
+          "successor": true
+        },
+        {
+          "item": "P1-RLD-04",
+          "route": "host-unit",
+          "test": "nsh_host::tests::runtime_frames_keep_the_existing_display_local_top_left_coordinates",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-desktop",
+            "--bin",
+            "riwork",
+            "nsh_host::tests::runtime_frames_keep_the_existing_display_local_top_left_coordinates",
+            "--locked",
+            "--offline"
+          ],
+          "exit_code": 0,
+          "passed": 1,
+          "failed": 0,
+          "status": "PASS",
+          "missing_proof": false,
+          "successor": true
+        }
+      ]
+    },
+    {
+      "id": "P1-WIN-02",
+      "status": "FAIL",
+      "scope": "host/core/appkit routes; combine other owners before whole-item acceptance",
+      "route": "core + host-unit",
+      "commands": [
+        "cargo test -p riwork-core --lib opening_windows_cascade_inside_the_display_and_clamp_after_cascading --locked --offline",
+        "cargo test -p riwork-desktop --bin riwork placement::tests::the_cascade_counts_open_non_tooltip_windows --locked --offline"
+      ],
+      "detail": "Core opening/cascade test passes. Named host non-tooltip cascade test is absent, and ordinary opening_frame still selects fixed 1220x780 rather than settings-gated remembered size. Root verified only ordinary cascade.",
+      "checks": [
+        {
+          "item": "P1-WIN-02",
+          "route": "core",
+          "test": "opening_windows_cascade_inside_the_display_and_clamp_after_cascading",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-core",
+            "--lib",
+            "opening_windows_cascade_inside_the_display_and_clamp_after_cascading",
+            "--locked",
+            "--offline"
+          ],
+          "exit_code": 0,
+          "passed": 1,
+          "failed": 0,
+          "status": "PASS",
+          "missing_proof": false,
+          "successor": true
+        },
+        {
+          "item": "P1-WIN-02",
+          "route": "host-unit",
+          "test": "placement::tests::the_cascade_counts_open_non_tooltip_windows",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-desktop",
+            "--bin",
+            "riwork",
+            "placement::tests::the_cascade_counts_open_non_tooltip_windows",
+            "--locked",
+            "--offline"
+          ],
+          "exit_code": 0,
+          "passed": 0,
+          "failed": 0,
+          "status": "FAIL",
+          "missing_proof": true,
+          "successor": false
+        }
+      ]
+    },
+    {
+      "id": "P1-WIN-04",
+      "status": "FAIL",
+      "scope": "host/core/appkit routes; combine other owners before whole-item acceptance",
+      "route": "core",
+      "commands": [
+        "cargo test -p riwork-core --lib legacy_and_invalid_window_sizes_do_not_break_layout_restoration --locked --offline"
+      ],
+      "detail": "Existing core legacy/invalid-size test passes; debounce/window-size bridge and settings wiring belong to workspace/native and remain absent.",
+      "checks": [
+        {
+          "item": "P1-WIN-04",
+          "route": "core",
+          "test": "legacy_and_invalid_window_sizes_do_not_break_layout_restoration",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-core",
+            "--lib",
+            "legacy_and_invalid_window_sizes_do_not_break_layout_restoration",
+            "--locked",
+            "--offline"
+          ],
+          "exit_code": 0,
+          "passed": 1,
+          "failed": 0,
+          "status": "PASS",
+          "missing_proof": false,
+          "successor": true
+        }
+      ]
+    },
+    {
+      "id": "P1-GLB-02",
+      "status": "FAIL",
+      "scope": "host/core/appkit routes; combine other owners before whole-item acceptance",
+      "route": "core",
+      "commands": [
+        "cargo test -p riwork-core --lib global_window::tests:: --locked --offline"
+      ],
+      "detail": "All three core global-window persistence/size tests pass. Host still uses generic 1220x780 opening size rather than unconditional global 1100x760/remembered size; no restored global fixture.",
+      "checks": [
+        {
+          "item": "P1-GLB-02",
+          "route": "core",
+          "test": "global_window::tests::",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-core",
+            "--lib",
+            "global_window::tests::",
+            "--locked",
+            "--offline"
+          ],
+          "exit_code": 0,
+          "passed": 3,
+          "failed": 0,
+          "status": "PASS",
+          "missing_proof": false,
+          "successor": true
+        }
+      ]
+    },
+    {
+      "id": "P1-GLB-04",
+      "status": "FAIL",
+      "scope": "host/core/appkit routes; combine other owners before whole-item acceptance",
+      "route": "core + host-unit",
+      "commands": [
+        "cargo test -p riwork-engine --lib the_global_window_restores_as_itself_and_older_snapshots_hold_project_windows --locked --offline",
+        "cargo test -p riwork-desktop --bin riwork runtime_window::tests::the_global_window_is_recorded_as_global --locked --offline"
+      ],
+      "detail": "Existing engine global-kind restore test passes; host runtime-global test is absent and restart unavailable.",
+      "checks": [
+        {
+          "item": "P1-GLB-04",
+          "route": "core",
+          "test": "the_global_window_restores_as_itself_and_older_snapshots_hold_project_windows",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-engine",
+            "--lib",
+            "the_global_window_restores_as_itself_and_older_snapshots_hold_project_windows",
+            "--locked",
+            "--offline"
+          ],
+          "exit_code": 0,
+          "passed": 1,
+          "failed": 0,
+          "status": "PASS",
+          "missing_proof": false,
+          "successor": true
+        },
+        {
+          "item": "P1-GLB-04",
+          "route": "host-unit",
+          "test": "runtime_window::tests::the_global_window_is_recorded_as_global",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-desktop",
+            "--bin",
+            "riwork",
+            "runtime_window::tests::the_global_window_is_recorded_as_global",
+            "--locked",
+            "--offline"
+          ],
+          "exit_code": 0,
+          "passed": 0,
+          "failed": 0,
+          "status": "FAIL",
+          "missing_proof": true,
+          "successor": false
+        }
+      ]
+    },
+    {
+      "id": "P1-PROC-02",
+      "status": "PASS",
+      "scope": "host/core/appkit routes; combine other owners before whole-item acceptance",
+      "route": "host-unit",
+      "commands": [
+        "cargo test -p riwork-desktop --test startup_environment --locked --offline"
+      ],
+      "detail": "Exact production scrub function passes in a dedicated single-thread process, avoiding mutation of the parallel Rust test environment.",
+      "checks": [
+        {
+          "item": "P1-PROC-02",
+          "route": "host-unit",
+          "test": "gui_start_scrubs_child_ids",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-desktop",
+            "--test",
+            "startup_environment",
+            "--locked",
+            "--offline"
+          ],
+          "exit_code": 0,
+          "passed": 1,
+          "failed": 0,
+          "status": "PASS",
+          "missing_proof": false,
+          "successor": true
+        }
+      ]
+    },
+    {
+      "id": "P1-PROC-04",
+      "status": "FAIL",
+      "scope": "host/core/appkit routes; combine other owners before whole-item acceptance",
+      "route": "host-unit",
+      "commands": [
+        "cargo test -p riwork-desktop --bin riwork nsh_host::tests::folder_arg_reuses_existing_project --locked --offline",
+        "cargo test -p riwork-desktop --bin riwork nsh_host::tests::no_active_project_registers_the_cwd_fallback --locked --offline",
+        "cargo test -p riwork-desktop --bin riwork nsh_host::tests::a_vanished_project_root_is_an_error_for_the_caller_not_a_panic --locked --offline"
+      ],
+      "detail": "All three host successors pass (canonical project reuse, vanished root error, cwd fallback). Root fixture proves missing-directory invocation is rejected by CLI, so the required fallback notice is not accepted; HOME/dot fallback is absent.",
+      "checks": [
+        {
+          "item": "P1-PROC-04",
+          "route": "host-unit",
+          "test": "nsh_host::tests::folder_arg_reuses_existing_project",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-desktop",
+            "--bin",
+            "riwork",
+            "nsh_host::tests::folder_arg_reuses_existing_project",
+            "--locked",
+            "--offline"
+          ],
+          "exit_code": 0,
+          "passed": 1,
+          "failed": 0,
+          "status": "PASS",
+          "missing_proof": false,
+          "successor": true
+        },
+        {
+          "item": "P1-PROC-04",
+          "route": "host-unit",
+          "test": "nsh_host::tests::no_active_project_registers_the_cwd_fallback",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-desktop",
+            "--bin",
+            "riwork",
+            "nsh_host::tests::no_active_project_registers_the_cwd_fallback",
+            "--locked",
+            "--offline"
+          ],
+          "exit_code": 0,
+          "passed": 1,
+          "failed": 0,
+          "status": "PASS",
+          "missing_proof": false,
+          "successor": true
+        },
+        {
+          "item": "P1-PROC-04",
+          "route": "host-unit",
+          "test": "nsh_host::tests::a_vanished_project_root_is_an_error_for_the_caller_not_a_panic",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-desktop",
+            "--bin",
+            "riwork",
+            "nsh_host::tests::a_vanished_project_root_is_an_error_for_the_caller_not_a_panic",
+            "--locked",
+            "--offline"
+          ],
+          "exit_code": 0,
+          "passed": 1,
+          "failed": 0,
+          "status": "PASS",
+          "missing_proof": false,
+          "successor": true
+        }
+      ]
+    },
+    {
+      "id": "P1-PROC-05",
+      "status": "PASS",
+      "scope": "host/core/appkit routes; combine other owners before whole-item acceptance",
+      "route": "host-unit",
+      "commands": [
+        "cargo test -p riwork-desktop --bin riwork nsh_runtime::tests::forwards_path_and_reopen_without_creating_a_second_primary --locked --offline",
+        "cargo test -p riwork-desktop --bin riwork nsh_runtime::tests::reclaims_stale_socket_but_never_deletes_a_regular_file --locked --offline",
+        "cargo test -p riwork-desktop --bin riwork nsh_runtime::tests::replacement_keeps_old_socket_and_prevents_handoff_race --locked --offline"
+      ],
+      "detail": "All host ownership/forward/stale-lock/replacement successors pass. Explicit unlock-on-drop guard releases duplicated/inherited file descriptions; root owns real forward/instances proof.",
+      "checks": [
+        {
+          "item": "P1-PROC-05",
+          "route": "host-unit",
+          "test": "nsh_runtime::tests::forwards_path_and_reopen_without_creating_a_second_primary",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-desktop",
+            "--bin",
+            "riwork",
+            "nsh_runtime::tests::forwards_path_and_reopen_without_creating_a_second_primary",
+            "--locked",
+            "--offline"
+          ],
+          "exit_code": 0,
+          "passed": 1,
+          "failed": 0,
+          "status": "PASS",
+          "missing_proof": false,
+          "successor": true
+        },
+        {
+          "item": "P1-PROC-05",
+          "route": "host-unit",
+          "test": "nsh_runtime::tests::reclaims_stale_socket_but_never_deletes_a_regular_file",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-desktop",
+            "--bin",
+            "riwork",
+            "nsh_runtime::tests::reclaims_stale_socket_but_never_deletes_a_regular_file",
+            "--locked",
+            "--offline"
+          ],
+          "exit_code": 0,
+          "passed": 1,
+          "failed": 0,
+          "status": "PASS",
+          "missing_proof": false,
+          "successor": true
+        },
+        {
+          "item": "P1-PROC-05",
+          "route": "host-unit",
+          "test": "nsh_runtime::tests::replacement_keeps_old_socket_and_prevents_handoff_race",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-desktop",
+            "--bin",
+            "riwork",
+            "nsh_runtime::tests::replacement_keeps_old_socket_and_prevents_handoff_race",
+            "--locked",
+            "--offline"
+          ],
+          "exit_code": 0,
+          "passed": 1,
+          "failed": 0,
+          "status": "PASS",
+          "missing_proof": false,
+          "successor": true
+        }
+      ]
+    },
+    {
+      "id": "P1-WIN-03",
+      "status": "FAIL",
+      "scope": "host/core/appkit routes; combine other owners before whole-item acceptance",
+      "route": "host-unit",
+      "commands": [
+        "cargo test -p riwork-desktop --bin riwork placement::tests::zoomed_counts_as_maximized_and_keeps_its_normal_frame --locked --offline",
+        "cargo test -p riwork-desktop --bin riwork placement::tests::fullscreen_counts_as_fullscreen --locked --offline"
+      ],
+      "detail": "Both named zoom/fullscreen host tests are absent; real restored fixture is blocked by unimplemented restart.",
+      "checks": [
+        {
+          "item": "P1-WIN-03",
+          "route": "host-unit",
+          "test": "placement::tests::zoomed_counts_as_maximized_and_keeps_its_normal_frame",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-desktop",
+            "--bin",
+            "riwork",
+            "placement::tests::zoomed_counts_as_maximized_and_keeps_its_normal_frame",
+            "--locked",
+            "--offline"
+          ],
+          "exit_code": 0,
+          "passed": 0,
+          "failed": 0,
+          "status": "FAIL",
+          "missing_proof": true,
+          "successor": false
+        },
+        {
+          "item": "P1-WIN-03",
+          "route": "host-unit",
+          "test": "placement::tests::fullscreen_counts_as_fullscreen",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-desktop",
+            "--bin",
+            "riwork",
+            "placement::tests::fullscreen_counts_as_fullscreen",
+            "--locked",
+            "--offline"
+          ],
+          "exit_code": 0,
+          "passed": 0,
+          "failed": 0,
+          "status": "FAIL",
+          "missing_proof": true,
+          "successor": false
+        }
+      ]
+    },
+    {
+      "id": "P1-WIN-07",
+      "status": "FAIL",
+      "scope": "host/core/appkit routes; combine other owners before whole-item acceptance",
+      "route": "host-unit + appkit",
+      "commands": [
+        "cargo test -p riwork-desktop --bin riwork window_registry::tests::the_last_close_quits --locked --offline",
+        "cargo test -p riwork-desktop --bin riwork window_registry::tests::tooltips_do_not_count --locked --offline",
+        "cargo test -p riwork-desktop --test appkit_shell --locked --offline -- tooltips_create_no_nswindow --test-threads=1"
+      ],
+      "detail": "Named last-close/tooltip host checks and no-NSWindow tooltip AppKit check are absent. No substitute inferred pass is claimed.",
+      "checks": [
+        {
+          "item": "P1-WIN-07",
+          "route": "host-unit",
+          "test": "window_registry::tests::the_last_close_quits",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-desktop",
+            "--bin",
+            "riwork",
+            "window_registry::tests::the_last_close_quits",
+            "--locked",
+            "--offline"
+          ],
+          "exit_code": 0,
+          "passed": 0,
+          "failed": 0,
+          "status": "FAIL",
+          "missing_proof": true,
+          "successor": false
+        },
+        {
+          "item": "P1-WIN-07",
+          "route": "host-unit",
+          "test": "window_registry::tests::tooltips_do_not_count",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-desktop",
+            "--bin",
+            "riwork",
+            "window_registry::tests::tooltips_do_not_count",
+            "--locked",
+            "--offline"
+          ],
+          "exit_code": 0,
+          "passed": 0,
+          "failed": 0,
+          "status": "FAIL",
+          "missing_proof": true,
+          "successor": false
+        },
+        {
+          "item": "P1-WIN-07",
+          "route": "appkit",
+          "test": "tooltips_create_no_nswindow",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-desktop",
+            "--test",
+            "appkit_shell",
+            "--locked",
+            "--offline",
+            "--",
+            "tooltips_create_no_nswindow",
+            "--test-threads=1"
+          ],
+          "exit_code": 101,
+          "passed": 0,
+          "failed": 0,
+          "status": "FAIL",
+          "missing_proof": true,
+          "successor": true
+        }
+      ]
+    },
+    {
+      "id": "P1-WIN-08",
+      "status": "FAIL",
+      "scope": "host/core/appkit routes; combine other owners before whole-item acceptance",
+      "route": "host-unit",
+      "commands": [
+        "cargo test -p riwork-desktop --bin riwork nsh_host::tests::quit_flushes_every_layout_session_and_the_global_state_from_rust --locked --offline",
+        "cargo test -p riwork-desktop --bin riwork nsh_host::tests::close_flushes_the_last_accepted_edit_before_the_window_goes --locked --offline"
+      ],
+      "detail": "Both real Rust close/quit flush successors pass (last accepted edit, every project and global state). Required RLD-01 end-to-end reload remains unavailable.",
+      "checks": [
+        {
+          "item": "P1-WIN-08",
+          "route": "host-unit",
+          "test": "nsh_host::tests::quit_flushes_every_layout_session_and_the_global_state_from_rust",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-desktop",
+            "--bin",
+            "riwork",
+            "nsh_host::tests::quit_flushes_every_layout_session_and_the_global_state_from_rust",
+            "--locked",
+            "--offline"
+          ],
+          "exit_code": 0,
+          "passed": 1,
+          "failed": 0,
+          "status": "PASS",
+          "missing_proof": false,
+          "successor": true
+        },
+        {
+          "item": "P1-WIN-08",
+          "route": "host-unit",
+          "test": "nsh_host::tests::close_flushes_the_last_accepted_edit_before_the_window_goes",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-desktop",
+            "--bin",
+            "riwork",
+            "nsh_host::tests::close_flushes_the_last_accepted_edit_before_the_window_goes",
+            "--locked",
+            "--offline"
+          ],
+          "exit_code": 0,
+          "passed": 1,
+          "failed": 0,
+          "status": "PASS",
+          "missing_proof": false,
+          "successor": true
+        }
+      ]
+    },
+    {
+      "id": "P1-WIN-09",
+      "status": "FAIL",
+      "scope": "host/core/appkit routes; combine other owners before whole-item acceptance",
+      "route": "host-unit",
+      "commands": [
+        "cargo test -p riwork-desktop --bin riwork window_state::tests::events_only_on_change --locked --offline"
+      ],
+      "detail": "Named state-change-only host check is absent. Source has structural state comparison, but review does not replace the host-unit route.",
+      "checks": [
+        {
+          "item": "P1-WIN-09",
+          "route": "host-unit",
+          "test": "window_state::tests::events_only_on_change",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-desktop",
+            "--bin",
+            "riwork",
+            "window_state::tests::events_only_on_change",
+            "--locked",
+            "--offline"
+          ],
+          "exit_code": 0,
+          "passed": 0,
+          "failed": 0,
+          "status": "FAIL",
+          "missing_proof": true,
+          "successor": false
+        }
+      ]
+    },
+    {
+      "id": "P1-GLB-01",
+      "status": "FAIL",
+      "scope": "host/core/appkit routes; combine other owners before whole-item acceptance",
+      "route": "host-unit",
+      "commands": [
+        "cargo test -p riwork-desktop --bin riwork window_registry::tests::the_global_window_is_a_singleton_and_opens_with_no_window --locked --offline"
+      ],
+      "detail": "Named singleton/no-window host test is absent; no substitute pass from source reading.",
+      "checks": [
+        {
+          "item": "P1-GLB-01",
+          "route": "host-unit",
+          "test": "window_registry::tests::the_global_window_is_a_singleton_and_opens_with_no_window",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-desktop",
+            "--bin",
+            "riwork",
+            "window_registry::tests::the_global_window_is_a_singleton_and_opens_with_no_window",
+            "--locked",
+            "--offline"
+          ],
+          "exit_code": 0,
+          "passed": 0,
+          "failed": 0,
+          "status": "FAIL",
+          "missing_proof": true,
+          "successor": false
+        }
+      ]
+    },
+    {
+      "id": "P1-GLB-08",
+      "status": "FAIL",
+      "scope": "host/core/appkit routes; combine other owners before whole-item acceptance",
+      "route": "host-unit",
+      "commands": [
+        "cargo test -p riwork-desktop --bin riwork menu::tests::dock_new_window --locked --offline"
+      ],
+      "detail": "Named Dock New Window host test is absent; project routing/fallback UI remains unverified.",
+      "checks": [
+        {
+          "item": "P1-GLB-08",
+          "route": "host-unit",
+          "test": "menu::tests::dock_new_window",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-desktop",
+            "--bin",
+            "riwork",
+            "menu::tests::dock_new_window",
+            "--locked",
+            "--offline"
+          ],
+          "exit_code": 0,
+          "passed": 0,
+          "failed": 0,
+          "status": "FAIL",
+          "missing_proof": true,
+          "successor": false
+        }
+      ]
+    },
+    {
+      "id": "P1-GLB-09",
+      "status": "FAIL",
+      "scope": "host/core/appkit routes; combine other owners before whole-item acceptance",
+      "route": "host-unit",
+      "commands": [
+        "cargo test -p riwork-desktop --bin riwork window_registry::tests::route_prefers_frontmost_then_minimised_then_opens --locked --offline"
+      ],
+      "detail": "Named frontmost/minimized/open-by-id host route test is absent.",
+      "checks": [
+        {
+          "item": "P1-GLB-09",
+          "route": "host-unit",
+          "test": "window_registry::tests::route_prefers_frontmost_then_minimised_then_opens",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-desktop",
+            "--bin",
+            "riwork",
+            "window_registry::tests::route_prefers_frontmost_then_minimised_then_opens",
+            "--locked",
+            "--offline"
+          ],
+          "exit_code": 0,
+          "passed": 0,
+          "failed": 0,
+          "status": "FAIL",
+          "missing_proof": true,
+          "successor": false
+        }
+      ]
+    },
+    {
+      "id": "P1-DRAG-03",
+      "status": "FAIL",
+      "scope": "host/core/appkit routes; combine other owners before whole-item acceptance",
+      "route": "host-unit",
+      "commands": [
+        "cargo test -p riwork-desktop --bin riwork host_names::tests::tab_transfer_is_refused --locked --offline"
+      ],
+      "detail": "Reserved transfer/receive handler grep has no hits (exit1), but named refusal host-unit filter runs zero tests. Review is retained, not substituted for the route.",
+      "checks": [
+        {
+          "item": "P1-DRAG-03",
+          "route": "host-unit",
+          "test": "host_names::tests::tab_transfer_is_refused",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-desktop",
+            "--bin",
+            "riwork",
+            "host_names::tests::tab_transfer_is_refused",
+            "--locked",
+            "--offline"
+          ],
+          "exit_code": 0,
+          "passed": 0,
+          "failed": 0,
+          "status": "FAIL",
+          "missing_proof": true,
+          "successor": false
+        }
+      ]
+    },
+    {
+      "id": "P1-MENU-01",
+      "status": "PASS",
+      "scope": "host/core/appkit routes; combine other owners before whole-item acceptance",
+      "route": "host-unit + appkit",
+      "commands": [
+        "cargo test -p riwork-desktop --bin riwork nsh_menus::tests::command_ids_are_the_v1_set --locked --offline",
+        "cargo test -p riwork-desktop --test appkit_shell --locked --offline -- app_menu_matches_gpui --test-threads=1"
+      ],
+      "detail": "Real NSMenu application tree, labels, separators, shortcut modifiers and tags pass; frozen v1 command-ID set/uniqueness successor passes.",
+      "checks": [
+        {
+          "item": "P1-MENU-01",
+          "route": "host-unit",
+          "test": "nsh_menus::tests::command_ids_are_the_v1_set",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-desktop",
+            "--bin",
+            "riwork",
+            "nsh_menus::tests::command_ids_are_the_v1_set",
+            "--locked",
+            "--offline"
+          ],
+          "exit_code": 0,
+          "passed": 1,
+          "failed": 0,
+          "status": "PASS",
+          "missing_proof": false,
+          "successor": true
+        },
+        {
+          "item": "P1-MENU-01",
+          "route": "appkit",
+          "test": "app_menu_matches_gpui",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-desktop",
+            "--test",
+            "appkit_shell",
+            "--locked",
+            "--offline",
+            "--",
+            "app_menu_matches_gpui",
+            "--test-threads=1"
+          ],
+          "exit_code": 0,
+          "passed": 1,
+          "failed": 0,
+          "status": "PASS",
+          "missing_proof": false,
+          "successor": true
+        }
+      ]
+    },
+    {
+      "id": "P1-MENU-03",
+      "status": "FAIL",
+      "scope": "host/core/appkit routes; combine other owners before whole-item acceptance",
+      "route": "host-unit + appkit",
+      "commands": [
+        "cargo test -p riwork-desktop --bin riwork menu::tests::window_commands_go_to_the_key_window --locked --offline",
+        "cargo test -p riwork-desktop --bin riwork menu::tests::app_commands_work_with_no_window --locked --offline",
+        "cargo test -p riwork-desktop --bin riwork nsh_menus::tests::deferred_menu_commands_remain_present_disabled_and_keep_their_chords --locked --offline",
+        "cargo test -p riwork-desktop --test appkit_shell --locked --offline -- view_menu_matches_gpui --test-threads=1"
+      ],
+      "detail": "Real View menu passes after fixing deferred rows to remain present and disabled through NSMenu.update; direct deferred dispatch is guarded. Named key-window/no-window host routing tests are absent, and no-window text-size behavior is unimplemented.",
+      "checks": [
+        {
+          "item": "P1-MENU-03",
+          "route": "host-unit",
+          "test": "menu::tests::window_commands_go_to_the_key_window",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-desktop",
+            "--bin",
+            "riwork",
+            "menu::tests::window_commands_go_to_the_key_window",
+            "--locked",
+            "--offline"
+          ],
+          "exit_code": 0,
+          "passed": 0,
+          "failed": 0,
+          "status": "FAIL",
+          "missing_proof": true,
+          "successor": false
+        },
+        {
+          "item": "P1-MENU-03",
+          "route": "host-unit",
+          "test": "menu::tests::app_commands_work_with_no_window",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-desktop",
+            "--bin",
+            "riwork",
+            "menu::tests::app_commands_work_with_no_window",
+            "--locked",
+            "--offline"
+          ],
+          "exit_code": 0,
+          "passed": 0,
+          "failed": 0,
+          "status": "FAIL",
+          "missing_proof": true,
+          "successor": false
+        },
+        {
+          "item": "P1-MENU-03",
+          "route": "host-unit",
+          "test": "nsh_menus::tests::deferred_menu_commands_remain_present_disabled_and_keep_their_chords",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-desktop",
+            "--bin",
+            "riwork",
+            "nsh_menus::tests::deferred_menu_commands_remain_present_disabled_and_keep_their_chords",
+            "--locked",
+            "--offline"
+          ],
+          "exit_code": 0,
+          "passed": 1,
+          "failed": 0,
+          "status": "PASS",
+          "missing_proof": false,
+          "successor": true
+        },
+        {
+          "item": "P1-MENU-03",
+          "route": "appkit",
+          "test": "view_menu_matches_gpui",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-desktop",
+            "--test",
+            "appkit_shell",
+            "--locked",
+            "--offline",
+            "--",
+            "view_menu_matches_gpui",
+            "--test-threads=1"
+          ],
+          "exit_code": 0,
+          "passed": 1,
+          "failed": 0,
+          "status": "PASS",
+          "missing_proof": false,
+          "successor": true
+        }
+      ]
+    },
+    {
+      "id": "P1-MENU-04",
+      "status": "PASS",
+      "scope": "host/core/appkit routes; combine other owners before whole-item acceptance",
+      "route": "host-unit + appkit",
+      "commands": [
+        "cargo test -p riwork-desktop --bin riwork nsh_menus::tests::dock_labels_are_stable_unique_and_keep_the_last_key_window_marked --locked --offline",
+        "cargo test -p riwork-desktop --test appkit_shell --locked --offline -- dock_menu_from_a_fake_registry --test-threads=1"
+      ],
+      "detail": "Pure Dock uniqueness/order/last-key test plus actual fake-registry NSMenu/caching/actions pass. Workspace owns change-only setDockInfo posts.",
+      "checks": [
+        {
+          "item": "P1-MENU-04",
+          "route": "host-unit",
+          "test": "nsh_menus::tests::dock_labels_are_stable_unique_and_keep_the_last_key_window_marked",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-desktop",
+            "--bin",
+            "riwork",
+            "nsh_menus::tests::dock_labels_are_stable_unique_and_keep_the_last_key_window_marked",
+            "--locked",
+            "--offline"
+          ],
+          "exit_code": 0,
+          "passed": 1,
+          "failed": 0,
+          "status": "PASS",
+          "missing_proof": false,
+          "successor": true
+        },
+        {
+          "item": "P1-MENU-04",
+          "route": "appkit",
+          "test": "dock_menu_from_a_fake_registry",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-desktop",
+            "--test",
+            "appkit_shell",
+            "--locked",
+            "--offline",
+            "--",
+            "dock_menu_from_a_fake_registry",
+            "--test-threads=1"
+          ],
+          "exit_code": 0,
+          "passed": 1,
+          "failed": 0,
+          "status": "PASS",
+          "missing_proof": false,
+          "successor": true
+        }
+      ]
+    },
+    {
+      "id": "P1-KEYS-05",
+      "status": "FAIL",
+      "scope": "host/core/appkit routes; combine other owners before whole-item acceptance",
+      "route": "host-unit + appkit",
+      "commands": [
+        "cargo test -p riwork-desktop --bin riwork menu::tests::routing --locked --offline",
+        "cargo test -p riwork-desktop --test appkit_shell --locked --offline -- text_size_key_equivalents_dispatch_without_a_window --test-threads=1"
+      ],
+      "detail": "Required routing host-unit and no-window text-size dispatch AppKit checks are absent; text-size handlers cannot apply settings without a window.",
+      "checks": [
+        {
+          "item": "P1-KEYS-05",
+          "route": "host-unit",
+          "test": "menu::tests::routing",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-desktop",
+            "--bin",
+            "riwork",
+            "menu::tests::routing",
+            "--locked",
+            "--offline"
+          ],
+          "exit_code": 0,
+          "passed": 0,
+          "failed": 0,
+          "status": "FAIL",
+          "missing_proof": true,
+          "successor": false
+        },
+        {
+          "item": "P1-KEYS-05",
+          "route": "appkit",
+          "test": "text_size_key_equivalents_dispatch_without_a_window",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-desktop",
+            "--test",
+            "appkit_shell",
+            "--locked",
+            "--offline",
+            "--",
+            "text_size_key_equivalents_dispatch_without_a_window",
+            "--test-threads=1"
+          ],
+          "exit_code": 101,
+          "passed": 0,
+          "failed": 0,
+          "status": "FAIL",
+          "missing_proof": true,
+          "successor": true
+        }
+      ]
+    },
+    {
+      "id": "P1-THM-05",
+      "status": "FAIL",
+      "scope": "host/core/appkit routes; combine other owners before whole-item acceptance",
+      "route": "host-unit",
+      "commands": [
+        "cargo test -p riwork-desktop --bin riwork startup::tests::forced_appearance_from_env --locked --offline"
+      ],
+      "detail": "Forced-appearance host test is absent and source opens AppView with Appearance::System. Other owners cover Settings/Appearance bridge and TSX/manual routes.",
+      "checks": [
+        {
+          "item": "P1-THM-05",
+          "route": "host-unit",
+          "test": "startup::tests::forced_appearance_from_env",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-desktop",
+            "--bin",
+            "riwork",
+            "startup::tests::forced_appearance_from_env",
+            "--locked",
+            "--offline"
+          ],
+          "exit_code": 0,
+          "passed": 0,
+          "failed": 0,
+          "status": "FAIL",
+          "missing_proof": true,
+          "successor": false
+        }
+      ]
+    },
+    {
+      "id": "P1-WIN-01",
+      "status": "PASS",
+      "scope": "host/core/appkit routes; combine other owners before whole-item acceptance",
+      "route": "appkit",
+      "commands": [
+        "cargo test -p riwork-desktop --test appkit_shell --locked --offline -- window_chrome --test-threads=1"
+      ],
+      "detail": "Real prohibited-activation AppKit objects pass full-size-content/transparent/minimum/chrome checks. Root owns final read-only Cua geometry proof. Standard controls now carry explicit AX labels; chrome coordinates are corrected after native titlebar updates.",
+      "checks": [
+        {
+          "item": "P1-WIN-01",
+          "route": "appkit",
+          "test": "window_chrome",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-desktop",
+            "--test",
+            "appkit_shell",
+            "--locked",
+            "--offline",
+            "--",
+            "window_chrome",
+            "--test-threads=1"
+          ],
+          "exit_code": 0,
+          "passed": 1,
+          "failed": 0,
+          "status": "PASS",
+          "missing_proof": false,
+          "successor": true
+        }
+      ]
+    },
+    {
+      "id": "P1-WIN-06",
+      "status": "FAIL",
+      "scope": "host/core/appkit routes; combine other owners before whole-item acceptance",
+      "route": "appkit",
+      "commands": [
+        "cargo test -p riwork-desktop --test appkit_shell --locked --offline -- titlebar_double_click_reads_the_system_preference --test-threads=1"
+      ],
+      "detail": "AppKit titlebar double-click preference check is absent (the harness refuses zero matching checks). Theme/chrome TSX/manual routes are owned by workspace/root.",
+      "checks": [
+        {
+          "item": "P1-WIN-06",
+          "route": "appkit",
+          "test": "titlebar_double_click_reads_the_system_preference",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-desktop",
+            "--test",
+            "appkit_shell",
+            "--locked",
+            "--offline",
+            "--",
+            "titlebar_double_click_reads_the_system_preference",
+            "--test-threads=1"
+          ],
+          "exit_code": 101,
+          "passed": 0,
+          "failed": 0,
+          "status": "FAIL",
+          "missing_proof": true,
+          "successor": true
+        }
+      ]
+    },
+    {
+      "id": "P1-MENU-02",
+      "status": "PASS",
+      "scope": "host/core/appkit routes; combine other owners before whole-item acceptance",
+      "route": "appkit",
+      "commands": [
+        "cargo test -p riwork-desktop --test appkit_shell --locked --offline -- edit_menu_uses_standard_selectors --test-threads=1"
+      ],
+      "detail": "Actual NSMenu edit labels and standard cut:/copy:/paste:/selectAll: selectors pass. Workspace owns no-selection clipboard command behavior.",
+      "checks": [
+        {
+          "item": "P1-MENU-02",
+          "route": "appkit",
+          "test": "edit_menu_uses_standard_selectors",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-desktop",
+            "--test",
+            "appkit_shell",
+            "--locked",
+            "--offline",
+            "--",
+            "edit_menu_uses_standard_selectors",
+            "--test-threads=1"
+          ],
+          "exit_code": 0,
+          "passed": 1,
+          "failed": 0,
+          "status": "PASS",
+          "missing_proof": false,
+          "successor": true
+        }
+      ]
+    },
+    {
+      "id": "P1-KEYS-03",
+      "status": "PASS",
+      "scope": "host/core/appkit routes; combine other owners before whole-item acceptance",
+      "route": "appkit",
+      "commands": [
+        "cargo test -p riwork-desktop --test appkit_shell --locked --offline -- app_level_key_equivalents --test-threads=1"
+      ],
+      "detail": "Actual native cmd-alt-G/cmd-shift-O/cmd-Q menu equivalents pass. Workspace owns full TSX chord table and routing.",
+      "checks": [
+        {
+          "item": "P1-KEYS-03",
+          "route": "appkit",
+          "test": "app_level_key_equivalents",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-desktop",
+            "--test",
+            "appkit_shell",
+            "--locked",
+            "--offline",
+            "--",
+            "app_level_key_equivalents",
+            "--test-threads=1"
+          ],
+          "exit_code": 0,
+          "passed": 1,
+          "failed": 0,
+          "status": "PASS",
+          "missing_proof": false,
+          "successor": true
+        }
+      ]
+    },
+    {
+      "id": "P1-TXT-02",
+      "status": "PASS",
+      "scope": "host/core/appkit routes; combine other owners before whole-item acceptance",
+      "route": "appkit",
+      "commands": [
+        "cargo test -p riwork-desktop --test appkit_shell --locked --offline -- view_menu_text_size_items --test-threads=1"
+      ],
+      "detail": "Actual View menu Bigger/Smaller/Actual Size shortcut text/modifiers pass. Native/TSX Settings effects are owned by other agents.",
+      "checks": [
+        {
+          "item": "P1-TXT-02",
+          "route": "appkit",
+          "test": "view_menu_text_size_items",
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "riwork-desktop",
+            "--test",
+            "appkit_shell",
+            "--locked",
+            "--offline",
+            "--",
+            "view_menu_text_size_items",
+            "--test-threads=1"
+          ],
+          "exit_code": 0,
+          "passed": 1,
+          "failed": 0,
+          "status": "PASS",
+          "missing_proof": false,
+          "successor": true
+        }
+      ]
+    },
+    {
+      "id": "P1-PROC-07",
+      "status": "PASS",
+      "scope": "host review only; bridge owned by native agent",
+      "route": "review",
+      "commands": [
+        "rg -n 'set_ui_sets|AppView::new|RESTART_PENDING|app.restart|runtime_tick|system.fonts|Appearance::System' crates/riwork-desktop/src/nsh_host.rs"
+      ],
+      "detail": "One process set_ui_sets before opening windows; one service worker. Per-topic native watcher/hub proof is separate."
+    },
+    {
+      "id": "P1-RLD-01",
+      "status": "FAIL",
+      "scope": "host source finding; root owns fixture execution",
+      "route": "review + fixture (root)",
+      "commands": [
+        "rg -n 'set_ui_sets|AppView::new|RESTART_PENDING|app.restart|runtime_tick|system.fonts|Appearance::System' crates/riwork-desktop/src/nsh_host.rs"
+      ],
+      "detail": "RESTART_PENDING explicitly rejects app.restart and fails pending CLI reload requests while retaining the old process."
+    },
+    {
+      "id": "P1-GLB-03",
+      "status": "FAIL",
+      "scope": "core persistence passes; global UI/native integration absent",
+      "route": "core",
+      "commands": [
+        "cargo test -p riwork-core --lib global_window::tests:: --locked --offline"
+      ],
+      "detail": "Three global-window core tests pass, but no Dashboard native state module is registered and required view/filter/sort UI persistence route is absent."
+    }
+  ],
+  "named_routes": [
+    {
+      "item": "P1-PROC-01",
+      "route": "core",
+      "test": "only_gui_startup_forms_open_the_workspace",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-cli",
+        "--lib",
+        "only_gui_startup_forms_open_the_workspace",
+        "--locked",
+        "--offline"
+      ],
+      "exit_code": 0,
+      "passed": 1,
+      "failed": 0,
+      "status": "PASS",
+      "missing_proof": false,
+      "successor": true
+    },
+    {
+      "item": "P1-PROC-06",
+      "route": "core",
+      "test": "live_gui_pids_lists_running_guis_and_changes_nothing",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-engine",
+        "--lib",
+        "live_gui_pids_lists_running_guis_and_changes_nothing",
+        "--locked",
+        "--offline"
+      ],
+      "exit_code": 0,
+      "passed": 1,
+      "failed": 0,
+      "status": "PASS",
+      "missing_proof": false,
+      "successor": true
+    },
+    {
+      "item": "P1-RLD-02",
+      "route": "core",
+      "test": "queuing_and_wait_timeout_leave_old_gui_alive_and_do_not_launch_anything",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-engine",
+        "--lib",
+        "queuing_and_wait_timeout_leave_old_gui_alive_and_do_not_launch_anything",
+        "--locked",
+        "--offline"
+      ],
+      "exit_code": 0,
+      "passed": 1,
+      "failed": 0,
+      "status": "PASS",
+      "missing_proof": false,
+      "successor": true
+    },
+    {
+      "item": "P1-RLD-02",
+      "route": "core",
+      "test": "readiness_requires_correct_child_and_matching_registered_windows",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-engine",
+        "--lib",
+        "readiness_requires_correct_child_and_matching_registered_windows",
+        "--locked",
+        "--offline"
+      ],
+      "exit_code": 0,
+      "passed": 1,
+      "failed": 0,
+      "status": "PASS",
+      "missing_proof": false,
+      "successor": true
+    },
+    {
+      "item": "P1-RLD-02",
+      "route": "core",
+      "test": "failed_or_hung_replacement_keeps_old_alive_and_allows_retry",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-engine",
+        "--lib",
+        "failed_or_hung_replacement_keeps_old_alive_and_allows_retry",
+        "--locked",
+        "--offline"
+      ],
+      "exit_code": 0,
+      "passed": 1,
+      "failed": 0,
+      "status": "PASS",
+      "missing_proof": false,
+      "successor": true
+    },
+    {
+      "item": "P1-RLD-02",
+      "route": "core",
+      "test": "a_watchdog_that_fired_refuses_to_let_the_restore_confirm",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-engine",
+        "--lib",
+        "a_watchdog_that_fired_refuses_to_let_the_restore_confirm",
+        "--locked",
+        "--offline"
+      ],
+      "exit_code": 0,
+      "passed": 1,
+      "failed": 0,
+      "status": "PASS",
+      "missing_proof": false,
+      "successor": true
+    },
+    {
+      "item": "P1-RLD-03",
+      "route": "core",
+      "test": "publishing_writes_only_changes_and_never_waits_for_the_registry_lock",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-engine",
+        "--lib",
+        "publishing_writes_only_changes_and_never_waits_for_the_registry_lock",
+        "--locked",
+        "--offline"
+      ],
+      "exit_code": 0,
+      "passed": 1,
+      "failed": 0,
+      "status": "PASS",
+      "missing_proof": false,
+      "successor": true
+    },
+    {
+      "item": "P1-RLD-04",
+      "route": "core",
+      "test": "identifiers_geometry_and_private_file_read_are_validated",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-engine",
+        "--lib",
+        "identifiers_geometry_and_private_file_read_are_validated",
+        "--locked",
+        "--offline"
+      ],
+      "exit_code": 0,
+      "passed": 1,
+      "failed": 0,
+      "status": "PASS",
+      "missing_proof": false,
+      "successor": true
+    },
+    {
+      "item": "P1-WIN-02",
+      "route": "core",
+      "test": "opening_windows_cascade_inside_the_display_and_clamp_after_cascading",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-core",
+        "--lib",
+        "opening_windows_cascade_inside_the_display_and_clamp_after_cascading",
+        "--locked",
+        "--offline"
+      ],
+      "exit_code": 0,
+      "passed": 1,
+      "failed": 0,
+      "status": "PASS",
+      "missing_proof": false,
+      "successor": true
+    },
+    {
+      "item": "P1-WIN-04",
+      "route": "core",
+      "test": "legacy_and_invalid_window_sizes_do_not_break_layout_restoration",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-core",
+        "--lib",
+        "legacy_and_invalid_window_sizes_do_not_break_layout_restoration",
+        "--locked",
+        "--offline"
+      ],
+      "exit_code": 0,
+      "passed": 1,
+      "failed": 0,
+      "status": "PASS",
+      "missing_proof": false,
+      "successor": true
+    },
+    {
+      "item": "P1-GLB-02",
+      "route": "core",
+      "test": "global_window::tests::",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-core",
+        "--lib",
+        "global_window::tests::",
+        "--locked",
+        "--offline"
+      ],
+      "exit_code": 0,
+      "passed": 3,
+      "failed": 0,
+      "status": "PASS",
+      "missing_proof": false,
+      "successor": true
+    },
+    {
+      "item": "P1-GLB-04",
+      "route": "core",
+      "test": "the_global_window_restores_as_itself_and_older_snapshots_hold_project_windows",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-engine",
+        "--lib",
+        "the_global_window_restores_as_itself_and_older_snapshots_hold_project_windows",
+        "--locked",
+        "--offline"
+      ],
+      "exit_code": 0,
+      "passed": 1,
+      "failed": 0,
+      "status": "PASS",
+      "missing_proof": false,
+      "successor": true
+    },
+    {
+      "item": "P1-PROC-02",
+      "route": "host-unit",
+      "test": "gui_start_scrubs_child_ids",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-desktop",
+        "--test",
+        "startup_environment",
+        "--locked",
+        "--offline"
+      ],
+      "exit_code": 0,
+      "passed": 1,
+      "failed": 0,
+      "status": "PASS",
+      "missing_proof": false,
+      "successor": true
+    },
+    {
+      "item": "P1-PROC-04",
+      "route": "host-unit",
+      "test": "nsh_host::tests::folder_arg_reuses_existing_project",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-desktop",
+        "--bin",
+        "riwork",
+        "nsh_host::tests::folder_arg_reuses_existing_project",
+        "--locked",
+        "--offline"
+      ],
+      "exit_code": 0,
+      "passed": 1,
+      "failed": 0,
+      "status": "PASS",
+      "missing_proof": false,
+      "successor": true
+    },
+    {
+      "item": "P1-PROC-04",
+      "route": "host-unit",
+      "test": "nsh_host::tests::no_active_project_registers_the_cwd_fallback",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-desktop",
+        "--bin",
+        "riwork",
+        "nsh_host::tests::no_active_project_registers_the_cwd_fallback",
+        "--locked",
+        "--offline"
+      ],
+      "exit_code": 0,
+      "passed": 1,
+      "failed": 0,
+      "status": "PASS",
+      "missing_proof": false,
+      "successor": true
+    },
+    {
+      "item": "P1-PROC-04",
+      "route": "host-unit",
+      "test": "nsh_host::tests::a_vanished_project_root_is_an_error_for_the_caller_not_a_panic",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-desktop",
+        "--bin",
+        "riwork",
+        "nsh_host::tests::a_vanished_project_root_is_an_error_for_the_caller_not_a_panic",
+        "--locked",
+        "--offline"
+      ],
+      "exit_code": 0,
+      "passed": 1,
+      "failed": 0,
+      "status": "PASS",
+      "missing_proof": false,
+      "successor": true
+    },
+    {
+      "item": "P1-PROC-05",
+      "route": "host-unit",
+      "test": "nsh_runtime::tests::forwards_path_and_reopen_without_creating_a_second_primary",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-desktop",
+        "--bin",
+        "riwork",
+        "nsh_runtime::tests::forwards_path_and_reopen_without_creating_a_second_primary",
+        "--locked",
+        "--offline"
+      ],
+      "exit_code": 0,
+      "passed": 1,
+      "failed": 0,
+      "status": "PASS",
+      "missing_proof": false,
+      "successor": true
+    },
+    {
+      "item": "P1-PROC-05",
+      "route": "host-unit",
+      "test": "nsh_runtime::tests::reclaims_stale_socket_but_never_deletes_a_regular_file",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-desktop",
+        "--bin",
+        "riwork",
+        "nsh_runtime::tests::reclaims_stale_socket_but_never_deletes_a_regular_file",
+        "--locked",
+        "--offline"
+      ],
+      "exit_code": 0,
+      "passed": 1,
+      "failed": 0,
+      "status": "PASS",
+      "missing_proof": false,
+      "successor": true
+    },
+    {
+      "item": "P1-PROC-05",
+      "route": "host-unit",
+      "test": "nsh_runtime::tests::replacement_keeps_old_socket_and_prevents_handoff_race",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-desktop",
+        "--bin",
+        "riwork",
+        "nsh_runtime::tests::replacement_keeps_old_socket_and_prevents_handoff_race",
+        "--locked",
+        "--offline"
+      ],
+      "exit_code": 0,
+      "passed": 1,
+      "failed": 0,
+      "status": "PASS",
+      "missing_proof": false,
+      "successor": true
+    },
+    {
+      "item": "P1-RLD-02",
+      "route": "host-unit",
+      "test": "nsh_runtime::tests::restore_acknowledgements_are_per_window_and_idempotent",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-desktop",
+        "--bin",
+        "riwork",
+        "nsh_runtime::tests::restore_acknowledgements_are_per_window_and_idempotent",
+        "--locked",
+        "--offline"
+      ],
+      "exit_code": 0,
+      "passed": 1,
+      "failed": 0,
+      "status": "PASS",
+      "missing_proof": false,
+      "successor": true
+    },
+    {
+      "item": "P1-RLD-02",
+      "route": "host-unit",
+      "test": "nsh_runtime::tests::restore_matches_targets_even_if_window_order_changes",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-desktop",
+        "--bin",
+        "riwork",
+        "nsh_runtime::tests::restore_matches_targets_even_if_window_order_changes",
+        "--locked",
+        "--offline"
+      ],
+      "exit_code": 0,
+      "passed": 1,
+      "failed": 0,
+      "status": "PASS",
+      "missing_proof": false,
+      "successor": true
+    },
+    {
+      "item": "P1-RLD-02",
+      "route": "host-unit",
+      "test": "restore::tests::confirmation_gives_up_after_20_s",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-desktop",
+        "--bin",
+        "riwork",
+        "restore::tests::confirmation_gives_up_after_20_s",
+        "--locked",
+        "--offline"
+      ],
+      "exit_code": 0,
+      "passed": 0,
+      "failed": 0,
+      "status": "FAIL",
+      "missing_proof": true,
+      "successor": false
+    },
+    {
+      "item": "P1-RLD-03",
+      "route": "host-unit",
+      "test": "nsh_host::tests::a_busy_registry_lock_stays_due",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-desktop",
+        "--bin",
+        "riwork",
+        "nsh_host::tests::a_busy_registry_lock_stays_due",
+        "--locked",
+        "--offline"
+      ],
+      "exit_code": 0,
+      "passed": 1,
+      "failed": 0,
+      "status": "PASS",
+      "missing_proof": false,
+      "successor": true
+    },
+    {
+      "item": "P1-RLD-04",
+      "route": "host-unit",
+      "test": "nsh_host::tests::runtime_publication_reads_current_layout_without_an_appkit_state_event",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-desktop",
+        "--bin",
+        "riwork",
+        "nsh_host::tests::runtime_publication_reads_current_layout_without_an_appkit_state_event",
+        "--locked",
+        "--offline"
+      ],
+      "exit_code": 0,
+      "passed": 1,
+      "failed": 0,
+      "status": "PASS",
+      "missing_proof": false,
+      "successor": true
+    },
+    {
+      "item": "P1-RLD-04",
+      "route": "host-unit",
+      "test": "nsh_host::tests::runtime_frames_keep_the_existing_display_local_top_left_coordinates",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-desktop",
+        "--bin",
+        "riwork",
+        "nsh_host::tests::runtime_frames_keep_the_existing_display_local_top_left_coordinates",
+        "--locked",
+        "--offline"
+      ],
+      "exit_code": 0,
+      "passed": 1,
+      "failed": 0,
+      "status": "PASS",
+      "missing_proof": false,
+      "successor": true
+    },
+    {
+      "item": "P1-WIN-02",
+      "route": "host-unit",
+      "test": "placement::tests::the_cascade_counts_open_non_tooltip_windows",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-desktop",
+        "--bin",
+        "riwork",
+        "placement::tests::the_cascade_counts_open_non_tooltip_windows",
+        "--locked",
+        "--offline"
+      ],
+      "exit_code": 0,
+      "passed": 0,
+      "failed": 0,
+      "status": "FAIL",
+      "missing_proof": true,
+      "successor": false
+    },
+    {
+      "item": "P1-WIN-03",
+      "route": "host-unit",
+      "test": "placement::tests::zoomed_counts_as_maximized_and_keeps_its_normal_frame",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-desktop",
+        "--bin",
+        "riwork",
+        "placement::tests::zoomed_counts_as_maximized_and_keeps_its_normal_frame",
+        "--locked",
+        "--offline"
+      ],
+      "exit_code": 0,
+      "passed": 0,
+      "failed": 0,
+      "status": "FAIL",
+      "missing_proof": true,
+      "successor": false
+    },
+    {
+      "item": "P1-WIN-03",
+      "route": "host-unit",
+      "test": "placement::tests::fullscreen_counts_as_fullscreen",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-desktop",
+        "--bin",
+        "riwork",
+        "placement::tests::fullscreen_counts_as_fullscreen",
+        "--locked",
+        "--offline"
+      ],
+      "exit_code": 0,
+      "passed": 0,
+      "failed": 0,
+      "status": "FAIL",
+      "missing_proof": true,
+      "successor": false
+    },
+    {
+      "item": "P1-WIN-07",
+      "route": "host-unit",
+      "test": "window_registry::tests::the_last_close_quits",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-desktop",
+        "--bin",
+        "riwork",
+        "window_registry::tests::the_last_close_quits",
+        "--locked",
+        "--offline"
+      ],
+      "exit_code": 0,
+      "passed": 0,
+      "failed": 0,
+      "status": "FAIL",
+      "missing_proof": true,
+      "successor": false
+    },
+    {
+      "item": "P1-WIN-07",
+      "route": "host-unit",
+      "test": "window_registry::tests::tooltips_do_not_count",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-desktop",
+        "--bin",
+        "riwork",
+        "window_registry::tests::tooltips_do_not_count",
+        "--locked",
+        "--offline"
+      ],
+      "exit_code": 0,
+      "passed": 0,
+      "failed": 0,
+      "status": "FAIL",
+      "missing_proof": true,
+      "successor": false
+    },
+    {
+      "item": "P1-WIN-08",
+      "route": "host-unit",
+      "test": "nsh_host::tests::quit_flushes_every_layout_session_and_the_global_state_from_rust",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-desktop",
+        "--bin",
+        "riwork",
+        "nsh_host::tests::quit_flushes_every_layout_session_and_the_global_state_from_rust",
+        "--locked",
+        "--offline"
+      ],
+      "exit_code": 0,
+      "passed": 1,
+      "failed": 0,
+      "status": "PASS",
+      "missing_proof": false,
+      "successor": true
+    },
+    {
+      "item": "P1-WIN-08",
+      "route": "host-unit",
+      "test": "nsh_host::tests::close_flushes_the_last_accepted_edit_before_the_window_goes",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-desktop",
+        "--bin",
+        "riwork",
+        "nsh_host::tests::close_flushes_the_last_accepted_edit_before_the_window_goes",
+        "--locked",
+        "--offline"
+      ],
+      "exit_code": 0,
+      "passed": 1,
+      "failed": 0,
+      "status": "PASS",
+      "missing_proof": false,
+      "successor": true
+    },
+    {
+      "item": "P1-WIN-09",
+      "route": "host-unit",
+      "test": "window_state::tests::events_only_on_change",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-desktop",
+        "--bin",
+        "riwork",
+        "window_state::tests::events_only_on_change",
+        "--locked",
+        "--offline"
+      ],
+      "exit_code": 0,
+      "passed": 0,
+      "failed": 0,
+      "status": "FAIL",
+      "missing_proof": true,
+      "successor": false
+    },
+    {
+      "item": "P1-GLB-01",
+      "route": "host-unit",
+      "test": "window_registry::tests::the_global_window_is_a_singleton_and_opens_with_no_window",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-desktop",
+        "--bin",
+        "riwork",
+        "window_registry::tests::the_global_window_is_a_singleton_and_opens_with_no_window",
+        "--locked",
+        "--offline"
+      ],
+      "exit_code": 0,
+      "passed": 0,
+      "failed": 0,
+      "status": "FAIL",
+      "missing_proof": true,
+      "successor": false
+    },
+    {
+      "item": "P1-GLB-04",
+      "route": "host-unit",
+      "test": "runtime_window::tests::the_global_window_is_recorded_as_global",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-desktop",
+        "--bin",
+        "riwork",
+        "runtime_window::tests::the_global_window_is_recorded_as_global",
+        "--locked",
+        "--offline"
+      ],
+      "exit_code": 0,
+      "passed": 0,
+      "failed": 0,
+      "status": "FAIL",
+      "missing_proof": true,
+      "successor": false
+    },
+    {
+      "item": "P1-GLB-08",
+      "route": "host-unit",
+      "test": "menu::tests::dock_new_window",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-desktop",
+        "--bin",
+        "riwork",
+        "menu::tests::dock_new_window",
+        "--locked",
+        "--offline"
+      ],
+      "exit_code": 0,
+      "passed": 0,
+      "failed": 0,
+      "status": "FAIL",
+      "missing_proof": true,
+      "successor": false
+    },
+    {
+      "item": "P1-GLB-09",
+      "route": "host-unit",
+      "test": "window_registry::tests::route_prefers_frontmost_then_minimised_then_opens",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-desktop",
+        "--bin",
+        "riwork",
+        "window_registry::tests::route_prefers_frontmost_then_minimised_then_opens",
+        "--locked",
+        "--offline"
+      ],
+      "exit_code": 0,
+      "passed": 0,
+      "failed": 0,
+      "status": "FAIL",
+      "missing_proof": true,
+      "successor": false
+    },
+    {
+      "item": "P1-DRAG-03",
+      "route": "host-unit",
+      "test": "host_names::tests::tab_transfer_is_refused",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-desktop",
+        "--bin",
+        "riwork",
+        "host_names::tests::tab_transfer_is_refused",
+        "--locked",
+        "--offline"
+      ],
+      "exit_code": 0,
+      "passed": 0,
+      "failed": 0,
+      "status": "FAIL",
+      "missing_proof": true,
+      "successor": false
+    },
+    {
+      "item": "P1-MENU-01",
+      "route": "host-unit",
+      "test": "nsh_menus::tests::command_ids_are_the_v1_set",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-desktop",
+        "--bin",
+        "riwork",
+        "nsh_menus::tests::command_ids_are_the_v1_set",
+        "--locked",
+        "--offline"
+      ],
+      "exit_code": 0,
+      "passed": 1,
+      "failed": 0,
+      "status": "PASS",
+      "missing_proof": false,
+      "successor": true
+    },
+    {
+      "item": "P1-MENU-03",
+      "route": "host-unit",
+      "test": "menu::tests::window_commands_go_to_the_key_window",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-desktop",
+        "--bin",
+        "riwork",
+        "menu::tests::window_commands_go_to_the_key_window",
+        "--locked",
+        "--offline"
+      ],
+      "exit_code": 0,
+      "passed": 0,
+      "failed": 0,
+      "status": "FAIL",
+      "missing_proof": true,
+      "successor": false
+    },
+    {
+      "item": "P1-MENU-03",
+      "route": "host-unit",
+      "test": "menu::tests::app_commands_work_with_no_window",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-desktop",
+        "--bin",
+        "riwork",
+        "menu::tests::app_commands_work_with_no_window",
+        "--locked",
+        "--offline"
+      ],
+      "exit_code": 0,
+      "passed": 0,
+      "failed": 0,
+      "status": "FAIL",
+      "missing_proof": true,
+      "successor": false
+    },
+    {
+      "item": "P1-MENU-03",
+      "route": "host-unit",
+      "test": "nsh_menus::tests::deferred_menu_commands_remain_present_disabled_and_keep_their_chords",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-desktop",
+        "--bin",
+        "riwork",
+        "nsh_menus::tests::deferred_menu_commands_remain_present_disabled_and_keep_their_chords",
+        "--locked",
+        "--offline"
+      ],
+      "exit_code": 0,
+      "passed": 1,
+      "failed": 0,
+      "status": "PASS",
+      "missing_proof": false,
+      "successor": true
+    },
+    {
+      "item": "P1-MENU-04",
+      "route": "host-unit",
+      "test": "nsh_menus::tests::dock_labels_are_stable_unique_and_keep_the_last_key_window_marked",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-desktop",
+        "--bin",
+        "riwork",
+        "nsh_menus::tests::dock_labels_are_stable_unique_and_keep_the_last_key_window_marked",
+        "--locked",
+        "--offline"
+      ],
+      "exit_code": 0,
+      "passed": 1,
+      "failed": 0,
+      "status": "PASS",
+      "missing_proof": false,
+      "successor": true
+    },
+    {
+      "item": "P1-KEYS-05",
+      "route": "host-unit",
+      "test": "menu::tests::routing",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-desktop",
+        "--bin",
+        "riwork",
+        "menu::tests::routing",
+        "--locked",
+        "--offline"
+      ],
+      "exit_code": 0,
+      "passed": 0,
+      "failed": 0,
+      "status": "FAIL",
+      "missing_proof": true,
+      "successor": false
+    },
+    {
+      "item": "P1-THM-05",
+      "route": "host-unit",
+      "test": "startup::tests::forced_appearance_from_env",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-desktop",
+        "--bin",
+        "riwork",
+        "startup::tests::forced_appearance_from_env",
+        "--locked",
+        "--offline"
+      ],
+      "exit_code": 0,
+      "passed": 0,
+      "failed": 0,
+      "status": "FAIL",
+      "missing_proof": true,
+      "successor": false
+    },
+    {
+      "item": "P1-WIN-01",
+      "route": "appkit",
+      "test": "window_chrome",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-desktop",
+        "--test",
+        "appkit_shell",
+        "--locked",
+        "--offline",
+        "--",
+        "window_chrome",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "passed": 1,
+      "failed": 0,
+      "status": "PASS",
+      "missing_proof": false,
+      "successor": true
+    },
+    {
+      "item": "P1-WIN-06",
+      "route": "appkit",
+      "test": "titlebar_double_click_reads_the_system_preference",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-desktop",
+        "--test",
+        "appkit_shell",
+        "--locked",
+        "--offline",
+        "--",
+        "titlebar_double_click_reads_the_system_preference",
+        "--test-threads=1"
+      ],
+      "exit_code": 101,
+      "passed": 0,
+      "failed": 0,
+      "status": "FAIL",
+      "missing_proof": true,
+      "successor": true
+    },
+    {
+      "item": "P1-WIN-07",
+      "route": "appkit",
+      "test": "tooltips_create_no_nswindow",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-desktop",
+        "--test",
+        "appkit_shell",
+        "--locked",
+        "--offline",
+        "--",
+        "tooltips_create_no_nswindow",
+        "--test-threads=1"
+      ],
+      "exit_code": 101,
+      "passed": 0,
+      "failed": 0,
+      "status": "FAIL",
+      "missing_proof": true,
+      "successor": true
+    },
+    {
+      "item": "P1-MENU-01",
+      "route": "appkit",
+      "test": "app_menu_matches_gpui",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-desktop",
+        "--test",
+        "appkit_shell",
+        "--locked",
+        "--offline",
+        "--",
+        "app_menu_matches_gpui",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "passed": 1,
+      "failed": 0,
+      "status": "PASS",
+      "missing_proof": false,
+      "successor": true
+    },
+    {
+      "item": "P1-MENU-02",
+      "route": "appkit",
+      "test": "edit_menu_uses_standard_selectors",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-desktop",
+        "--test",
+        "appkit_shell",
+        "--locked",
+        "--offline",
+        "--",
+        "edit_menu_uses_standard_selectors",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "passed": 1,
+      "failed": 0,
+      "status": "PASS",
+      "missing_proof": false,
+      "successor": true
+    },
+    {
+      "item": "P1-MENU-03",
+      "route": "appkit",
+      "test": "view_menu_matches_gpui",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-desktop",
+        "--test",
+        "appkit_shell",
+        "--locked",
+        "--offline",
+        "--",
+        "view_menu_matches_gpui",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "passed": 1,
+      "failed": 0,
+      "status": "PASS",
+      "missing_proof": false,
+      "successor": true
+    },
+    {
+      "item": "P1-MENU-04",
+      "route": "appkit",
+      "test": "dock_menu_from_a_fake_registry",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-desktop",
+        "--test",
+        "appkit_shell",
+        "--locked",
+        "--offline",
+        "--",
+        "dock_menu_from_a_fake_registry",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "passed": 1,
+      "failed": 0,
+      "status": "PASS",
+      "missing_proof": false,
+      "successor": true
+    },
+    {
+      "item": "P1-KEYS-03",
+      "route": "appkit",
+      "test": "app_level_key_equivalents",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-desktop",
+        "--test",
+        "appkit_shell",
+        "--locked",
+        "--offline",
+        "--",
+        "app_level_key_equivalents",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "passed": 1,
+      "failed": 0,
+      "status": "PASS",
+      "missing_proof": false,
+      "successor": true
+    },
+    {
+      "item": "P1-KEYS-05",
+      "route": "appkit",
+      "test": "text_size_key_equivalents_dispatch_without_a_window",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-desktop",
+        "--test",
+        "appkit_shell",
+        "--locked",
+        "--offline",
+        "--",
+        "text_size_key_equivalents_dispatch_without_a_window",
+        "--test-threads=1"
+      ],
+      "exit_code": 101,
+      "passed": 0,
+      "failed": 0,
+      "status": "FAIL",
+      "missing_proof": true,
+      "successor": true
+    },
+    {
+      "item": "P1-TXT-02",
+      "route": "appkit",
+      "test": "view_menu_text_size_items",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-desktop",
+        "--test",
+        "appkit_shell",
+        "--locked",
+        "--offline",
+        "--",
+        "view_menu_text_size_items",
+        "--test-threads=1"
+      ],
+      "exit_code": 0,
+      "passed": 1,
+      "failed": 0,
+      "status": "PASS",
+      "missing_proof": false,
+      "successor": true
+    }
+  ],
+  "final_host_suite": {
+    "command": "cargo test -p riwork-desktop --locked --offline",
+    "manifest": "crates/riwork-desktop/verification/m5-host-evidence/final-all/manifest.json",
+    "exit_code": 0,
+    "passed": 40,
+    "failed": 0,
+    "groups": {
+      "host_unit": 27,
+      "appkit": 7,
+      "cli_contract": 5,
+      "startup": 1
+    }
+  }
+}

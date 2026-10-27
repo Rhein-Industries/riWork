@@ -5,7 +5,8 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 pub use riwork_core::layouts::Extent;
 use riwork_core::layouts::{
-    Axis, DIVIDER_THICKNESS, Layout, MIN_PANE_EXTENT, PaneId, ProjectLayout, SavedPane, SavedTab,
+    Axis, DIVIDER_THICKNESS, Layout, MIN_PANE_EXTENT, PaneId, PanelKind, ProjectLayout, SavedPane,
+    SavedTab,
 };
 use serde::{Deserialize, Serialize};
 
@@ -141,6 +142,58 @@ impl LayoutModel {
 
     pub fn project(&self) -> &ProjectLayout {
         &self.project
+    }
+
+    pub fn extent(&self) -> Option<Extent> {
+        self.extent
+    }
+
+    /// Reuse an existing panel in place; a new panel opens in the active pane.
+    /// Dashboard is a global-window route and cannot become a project tab.
+    pub fn open_panel(&mut self, panel: PanelKind) -> Result<DockAreaLayout, String> {
+        if panel == PanelKind::Dashboard {
+            return Err("refused: Dashboard belongs to the global window".into());
+        }
+        self.open_tab(SavedTab::Panel { panel }, self.project.active_pane)
+    }
+
+    /// Keep the panel API on the terminal placement path, including remembered
+    /// detached panes and refusal to add tabs when every pane is locked.
+    pub fn show_shell(&mut self, shell_id: &str) -> Result<DockAreaLayout, String> {
+        if shell_id.is_empty() || shell_id.chars().any(char::is_control) || shell_id.contains(':') {
+            return Err("invalid: shell ID is empty or contains a reserved character".into());
+        }
+        self.open_shell(shell_id)
+    }
+
+    fn open_tab(&mut self, tab: SavedTab, target: PaneId) -> Result<DockAreaLayout, String> {
+        let key = tab.key();
+        if self
+            .project
+            .panes
+            .values()
+            .any(|pane| pane.tabs.iter().any(|tab| tab.key() == key))
+        {
+            return self.select_panel(&key);
+        }
+        let pane = self
+            .project
+            .panes
+            .get_mut(&target)
+            .ok_or("not_found: pane")?;
+        pane.tabs.push(tab);
+        pane.active_tab_key = Some(key);
+        self.project.active_pane = target;
+        self.project.normalize()?;
+        Ok(self.dock(self.extent.unwrap_or(DEFAULT_EXTENT)))
+    }
+
+    pub fn set_selected_worktree(&mut self, id: Option<String>) {
+        self.project.selected_worktree_id = id;
+    }
+
+    pub fn set_selected_task(&mut self, id: Option<String>) {
+        self.project.selected_task_id = id;
     }
 
     pub fn pane_id_remap(&self) -> &BTreeMap<PaneId, PaneId> {
@@ -1272,6 +1325,62 @@ mod tests {
         project
     }
 
+    #[test]
+    fn panel_and_shell_intents_reuse_identity_and_select_their_own_panes() {
+        let project = crate::persistence::default_project_layout();
+        let mut model = LayoutModel::new(project).unwrap();
+        model.open_panel(PanelKind::Tasks).unwrap();
+        assert_eq!(model.project().active_pane, 1);
+        assert_eq!(
+            model.project().panes[&1].active_tab_key.as_deref(),
+            Some("panel:tasks")
+        );
+        model.select_pane(2).unwrap();
+        model.open_panel(PanelKind::Usage).unwrap();
+        assert_eq!(
+            model.project().panes[&2].active_tab_key.as_deref(),
+            Some("panel:usage")
+        );
+        model.select_pane(1).unwrap();
+        model.open_panel(PanelKind::Usage).unwrap();
+        assert_eq!(model.project().active_pane, 2);
+        assert_eq!(
+            model
+                .project()
+                .panes
+                .values()
+                .flat_map(|pane| &pane.tabs)
+                .filter(|tab| tab.key() == "panel:usage")
+                .count(),
+            1
+        );
+        model
+            .project
+            .detached_shell_ids
+            .insert("saved-shell".into());
+        model.select_pane(1).unwrap();
+        model.show_shell("saved-shell").unwrap();
+        model.show_shell("saved-shell").unwrap();
+        assert_eq!(
+            model.project().active_pane,
+            2,
+            "new shell intents use the main pane"
+        );
+        assert!(!model.project().detached_shell_ids.contains("saved-shell"));
+        assert_eq!(
+            model.project().panes[&2]
+                .tabs
+                .iter()
+                .filter(|tab| tab.key() == "shell:saved-shell")
+                .count(),
+            1
+        );
+        let before = model.project().clone();
+        assert!(model.show_shell("bad:shell").is_err());
+        assert!(model.open_panel(PanelKind::Dashboard).is_err());
+        assert_eq!(model.project(), &before);
+    }
+
     fn split(axis: Axis, ratio: f32, first: Layout, second: Layout) -> Layout {
         Layout::Split {
             axis,
@@ -2131,6 +2240,29 @@ mod tests {
         assert_eq!(model.project(), &before);
         // A lock prevents routing new tabs, not selecting an existing one.
         model.open_shell("existing").unwrap();
+    }
+
+    #[test]
+    fn panel_shell_selection_preserves_terminal_reopen_and_lock_policy() {
+        let mut project = fixture(
+            split(Axis::SideBySide, 0.5, Layout::Pane(1), Layout::Pane(2)),
+            &[(1, &["main"]), (2, &["other"])],
+        );
+        project.main_pane = Some(1);
+        project.locked_panes = Some(HashSet::new());
+        let mut model = LayoutModel::new(project).unwrap();
+        model.detach_shell("other").unwrap();
+        model.show_shell("other").unwrap();
+        assert_eq!(model.project().active_pane, 2);
+        model.detach_shell("other").unwrap();
+        model.toggle_lock(2).unwrap();
+        model.show_shell("other").unwrap();
+        assert_eq!(model.project().active_pane, 1);
+        model.toggle_lock(1).unwrap();
+        let before = model.project().clone();
+        assert!(model.show_shell("new").unwrap_err().starts_with("refused:"));
+        assert_eq!(model.project(), &before);
+        model.show_shell("other").unwrap();
     }
 
     #[test]

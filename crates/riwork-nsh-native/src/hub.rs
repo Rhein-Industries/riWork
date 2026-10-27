@@ -55,6 +55,14 @@ impl<T: Clone + PartialEq> Hub<T> {
         }))
     }
 
+    /// The process can stop refreshing a project once every window has closed
+    /// its subscription. Cleanup never performs domain I/O on an engine.
+    pub(crate) fn has_subscribers(&self) -> bool {
+        let mut state = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        state.listeners.retain(|listener| !listener.tx.is_closed());
+        !state.listeners.is_empty()
+    }
+
     /// Called from the blocking pool, so first delivery and registration are atomic
     /// with publication. A change cannot slip between the snapshot and the listener.
     pub(crate) fn subscribe(&self) -> TopicSubscription<T> {

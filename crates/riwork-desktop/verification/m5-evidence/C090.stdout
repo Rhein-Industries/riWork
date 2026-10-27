@@ -1,0 +1,6 @@
+
+running 1 test
+test project_tabs::tests::one_refresh_transaction_ends_where_separate_transactions_did ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1331 filtered out; finished in 8.10s
+

@@ -1,0 +1,8 @@
+test appkit_shell::window_chrome ... ok
+test appkit_shell::app_menu_matches_gpui ... ok
+test appkit_shell::edit_menu_uses_standard_selectors ... ok
+test appkit_shell::view_menu_matches_gpui ... FAILED
+test appkit_shell::view_menu_text_size_items ... ok
+test appkit_shell::app_level_key_equivalents ... ok
+test appkit_shell::dock_menu_from_a_fake_registry ... ok
+test result: FAILED. 6 passed; 1 failed; 0 ignored

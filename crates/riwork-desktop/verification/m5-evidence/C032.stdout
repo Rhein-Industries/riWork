@@ -1,0 +1,81 @@
+        handle.cancel_close();
+    }
+}
+
+impl HostLayout {
+    /// Publish the storage projection after each committed in-memory edit.
+    /// Call before scheduling that edit's persistence snapshot.
+    pub fn publish(&self, project: ProjectLayout) {
+        self.current.store(Arc::new(project));
+    }
+
+    /// Publish and enqueue an edited storage projection without waiting for IO.
+    /// The host snapshot remains current even if the save worker has failed.
+    pub fn schedule(&self, project: ProjectLayout) -> Result<(), String> {
+        self.edit(|| Ok(((), Some(project))))
+    }
+
+    /// Admit a whole in-memory edit and its publication as one short operation.
+    /// Closing cannot reject an edit after its model was already changed.
+    /// The operation must never perform IO or wait on another thread.
+    pub fn edit<T>(
+        &self,
+        operation: impl FnOnce() -> Result<(T, Option<ProjectLayout>), String>,
+    ) -> Result<T, String> {
+        let closing = self
+            .closing
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if *closing {
+            return Err("unavailable: window is closing".into());
+        }
+        let (result, project) = operation()?;
+        if let Some(project) = project {
+            self.publish(project.clone());
+            self.persistence
+                .as_ref()
+                .ok_or_else(|| "unavailable: host layout is closed".to_owned())?
+                .schedule(project)?;
+        }
+        Ok(result)
+    }
+
+    /// Stop accepting edits before the host queues its persistence barrier.
+    /// An edit already publishing/enqueueing completes before this returns.
+    pub fn begin_close(&self) {
+        *self
+            .closing
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = true;
+    }
+
+    /// Restore editing when a close/quit flush failed and the window stays open.
+    pub fn cancel_close(&self) {
+        *self
+            .closing
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = false;
+    }
+
+    /// Frozen P1c → P1b Rust handoff name (acceptance §4.1).
+    pub fn project_layout(&self) -> ProjectLayout {
+        self.snapshot()
+    }
+
+    /// Frozen P1c → P1b persistence barrier; call on the host service thread.
+    pub fn flush_blocking(&self) -> Result<(), String> {
+        self.flush()
+    }
+
+    /// A consistent core snapshot for the host's RuntimeWindow reload payload.
+    pub fn snapshot(&self) -> ProjectLayout {
+        self.current.load_full().as_ref().clone()
+    }
+
+    /// Wait for already-scheduled saves. The host calls this off the AppKit and
+    /// NSH engine threads, after it stops accepting edits and before teardown.
+    /// Dropping the handle is deliberately not a synchronous persistence barrier.
+    pub fn flush(&self) -> Result<(), String> {
+        self.persistence
+            .as_ref()
+            .ok_or_else(|| "unavailable: host layout is closed".to_owned())?

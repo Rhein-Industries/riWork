@@ -1,0 +1,6 @@
+
+running 1 test
+test settings::tests::ui_text_size_defaults_to_today_clamps_and_keeps_odd_values_until_changed ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 290 filtered out; finished in 0.10s
+
