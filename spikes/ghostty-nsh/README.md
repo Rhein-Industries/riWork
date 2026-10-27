@@ -85,6 +85,13 @@ install, merge, push, or mark the assigned task done as part of this spike.
 
 ## Phase 2 detach-before-free reproduction
 
+The current pinned retry's result and exact profiling workflow are in
+[evidence/phase2/pinned/README.md](evidence/phase2/pinned/README.md).
+For that gate, build with the explicit pinned library/header overrides below,
+use `scripts/launch_pinned.py` to record the executed fixture and exit status,
+and verify with `verify_teardown.py RUN_DIRECTORY --profile-gaps`. The original
+closing-only verifier remains available for replaying historical captures.
+
 Run each runtime in a fresh isolated environment, from the repository root:
 
 ```sh

@@ -4,6 +4,8 @@ import { Button } from "nsh/base";
 import { Menu, Window } from "nsh/desktop";
 import type { LayoutSession } from "riwork/native";
 import { PanelContent, PanelEditors, ShellIntent, createPanelController, type PanelController } from "./Panels";
+import { DeferredPanel } from "./DeferredPanel";
+import { DEFERRED_KEYMAP, TAB_CYCLE_KEYS } from "./keyboard";
 import {
   activePane, createTitleUpdater, cycledTab, findPanel, mainPaneSummary, numberedTab,
   windowTitle, type WorkspaceSnapshot,
@@ -31,6 +33,9 @@ export function Workspace(props: WorkspaceProps) {
   const session = props.session;
   const snapshot = signal(session.snapshot() as WorkspaceSnapshot);
   const dock = signal<DockAreaLayout | null>(null);
+  // Keep the DockArea subtree mounted as its controlled layout changes. Using
+  // dock() as the conditional value would reconstruct it for every projection.
+  const dockReady = signal(false);
   const notice = signal([props.startupNotice, snapshot().notice].filter(Boolean).join("\n"));
   const projectId = signal(props.projectId ?? snapshot().projectId ?? "");
   const switching = signal(false);
@@ -64,6 +69,7 @@ export function Workspace(props: WorkspaceProps) {
     // assigned to this signal; all gestures are replayed through riwork-core.
     dock.set(next as DockAreaLayout);
     snapshot.set(session.snapshot() as WorkspaceSnapshot);
+    if (!dockReady()) dockReady.set(true);
     props.onChange?.(snapshot(), dock()!);
   }
 
@@ -114,13 +120,18 @@ export function Workspace(props: WorkspaceProps) {
       if (tab) action(() => session.selectPanel(tab.id));
     }));
   }
-  for (const [key, direction] of [["ctrl+tab", 1], ["ctrl+shift+tab", -1]] as const) {
+  for (const [key, direction] of TAB_CYCLE_KEYS) {
     cleanup(keymap.bind(key, () => {
       if (panelState.editor() || switching()) return;
       const pane = activePane(snapshot());
       const tab = pane && cycledTab(pane, pane.activeTab, direction);
       if (tab) action(() => session.selectPanel(tab.id));
     }));
+  }
+  // Preserve deferred shortcuts until their surfaces ship. Shared panel search
+  // is implemented here, so its binding takes precedence over the placeholder.
+  for (const key of new Set(DEFERRED_KEYMAP.map(([key]) => key))) {
+    if (key !== "mod+f") cleanup(keymap.bind(key, () => {}));
   }
   cleanup(keymap.bind("mod+f", () => {
     if (panelState.editor()) return;
@@ -139,7 +150,7 @@ export function Workspace(props: WorkspaceProps) {
         </Button>)}
       </View>
       <View testID="dock-container" style={{ flex: 1, minHeight: 0 }} onLayout={(bounds) => measure(bounds.size)}>
-        {dock() && (
+        {dockReady() && (
           <DockArea
             testID="workspace-dock"
             style={{ flex: 1 }}
@@ -151,7 +162,7 @@ export function Workspace(props: WorkspaceProps) {
             tabStyle={{ padding: 0, minWidth: 0 }}
             contentStyle={{ flex: 1, backgroundColor: "#17191e" }}
             handleStyle={{ backgroundColor: "#343943" }}
-            handleAccessibilityLabel="Resize panes"
+            handleAccessibilityLabel="Pane divider"
             renderTab={(tab) => tab.panel.startsWith("empty:") ? null : (
               <View testID={`tab:${tab.panel}`} ref={(node) => props.onViewRef?.(`tab:${tab.panel}`, node)} onPress={() => action(() => session.selectPanel(tab.panel))} onContextMenu={() => paneMenu(tab.group)} style={{ height: 28, paddingHorizontal: 10, flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: tab.active ? "#303643" : "#21242b" }}>
                 <Text style={{ fontSize: 11, color: tab.active ? "#eef2f9" : "#aeb5c2" }}>{(tab.panel.startsWith("shell:") ? panelState.tabForShell(tab.panel.slice(6))?.title : undefined) || findPanel(snapshot(), tab.panel)?.title || tab.panel}</Text>
@@ -159,14 +170,18 @@ export function Workspace(props: WorkspaceProps) {
               </View>
             )}
             renderPanel={(panel) => (
-              <View testID={`panel:${panel.id}`} ref={(node) => props.onViewRef?.(`panel:${panel.id}`, node)} onPress={() => action(() => panel.id.startsWith("empty:") ? session.selectPane(Number(panel.id.slice(6))) : session.selectPanel(panel.id))} style={{ flex: 1, minHeight: 0 }}>
+              <View ref={(node) => props.onViewRef?.(`panel:${panel.id}`, node)} style={{ flex: 1, minHeight: 0 }}>
                 {panel.id.startsWith("panel:") && ["projects", "worktrees", "tasks", "shells"].includes(panel.id.slice(6)) ?
-                  <PanelContent controller={panelState} panel={panel.id.slice(6)} surface={panel.id} /> : panel.id.startsWith("shell:") ?
-                  <ShellIntent controller={panelState} shellId={panel.id.slice(6)} /> :
-                  <View style={{ padding: 16, gap: 8 }}>
-                    <Text style={{ fontSize: 13, color: "#eef2f9" }}>{panel.id.startsWith("empty:") ? "Empty pane" : findPanel(snapshot(), panel.id)?.title ?? panel.id}</Text>
-                    <Text style={{ fontSize: 11, color: "#8c95a5" }}>{panel.id.startsWith("empty:") ? "Drag a tab here" : "This view is unavailable."}</Text>
-                  </View>}
+                  <View testID={`panel:${panel.id}`} onPress={() => action(() => session.selectPanel(panel.id))} style={{ flex: 1, minHeight: 0 }}>
+                    <PanelContent controller={panelState} panel={panel.id.slice(6)} surface={panel.id} />
+                  </View> : panel.id.startsWith("shell:") ?
+                  <View testID={`panel:${panel.id}`} onPress={() => action(() => session.selectPanel(panel.id))} style={{ flex: 1, minHeight: 0 }}>
+                    <ShellIntent controller={panelState} shellId={panel.id.slice(6)} />
+                  </View> :
+                  <DeferredPanel id={panel.id}
+                    title={findPanel(snapshot(), panel.id)?.title ?? panel.id}
+                    visible={snapshot().panes.some((pane) => pane.activeTab === panel.id)}
+                    onPress={() => action(() => panel.id.startsWith("empty:") ? session.selectPane(Number(panel.id.slice(6))) : session.selectPanel(panel.id))} />}
               </View>
             )}
           />

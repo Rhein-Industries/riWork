@@ -2,11 +2,14 @@
 #[cfg(target_os = "macos")]
 mod nsh_bundle;
 #[cfg(target_os = "macos")]
+mod nsh_chrome;
+#[cfg(target_os = "macos")]
 mod nsh_host;
 #[cfg(target_os = "macos")]
 mod nsh_menus;
 #[cfg(unix)]
 mod nsh_runtime;
+mod nsh_startup;
 
 fn main() {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
@@ -15,11 +18,7 @@ fn main() {
         Ok(false) => {}
         Err(error) => exit(error),
     }
-    // Only GUI launches detach from the invoking shell/chat identity.
-    unsafe {
-        std::env::remove_var("RIWORK_CHAT_ID");
-        std::env::remove_var("RIWORK_SHELL_ID");
-    }
+    nsh_startup::scrub_gui_child_ids();
     #[cfg(target_os = "macos")]
     if let Err(error) = nsh_host::run(args) {
         exit(error);

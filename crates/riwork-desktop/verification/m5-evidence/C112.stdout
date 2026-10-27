@@ -1,0 +1,9 @@
+
+running 4 tests
+test status_bar::tests::a_bar_saved_before_the_layout_menu_gets_it_last_on_the_right_and_keeps_every_choice ... ok
+test status_bar::tests::partial_preferences_and_unknown_items_preserve_known_choices ... ok
+test status_bar::tests::routing_and_reordering_preserve_other_side_and_round_trip ... ok
+test status_bar::tests::the_usage_mode_defaults_to_the_current_chat_and_a_bad_one_keeps_the_rest_of_the_bar ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 287 filtered out; finished in 0.00s
+

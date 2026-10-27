@@ -1,0 +1,5 @@
+# Captured command output is retained byte-for-byte, including trailing blanks.
+m5-evidence/*.stdout -whitespace
+m5-evidence/*.stderr -whitespace
+m5-host-evidence/**/*.stdout -whitespace
+m5-host-evidence/**/*.stderr -whitespace

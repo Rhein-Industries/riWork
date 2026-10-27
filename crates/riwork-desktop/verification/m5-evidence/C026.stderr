@@ -1,0 +1,7 @@
+    Blocking waiting for file lock on build directory
+   Compiling riwork-nsh-native v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p1-m5/crates/riwork-nsh-native)
+    Finished `test` profile [unoptimized] target(s) in 13.57s
+     Running unittests src/lib.rs (/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/deps/riwork_nsh_native-e2ca825ef08f21b5)
+     Running tests/native_headless.rs (/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/deps/native_headless-845c26884f16ab6e)
+     Running tests/services.rs (/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/deps/services-233e418f5530541f)
+   Doc-tests riwork_nsh_native

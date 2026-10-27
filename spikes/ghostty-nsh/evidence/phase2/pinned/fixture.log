@@ -1,0 +1,1630 @@
+SPIKE fixture pid=63191 RIWORK_HOME=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO
+info: ghostty version=1.3.2-dev
+info: ghostty build optimize=ReleaseFast
+info: runtime=.none
+info: font_backend=.coretext
+info: renderer=renderer.generic.Renderer(renderer.Metal)
+info: libxev default backend=kqueue
+info(os_locale): setlocale from env result=C.UTF-8
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(io_exec): started subcommand path=/usr/bin/login pid=63285
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(generic_renderer): created display link
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=63286
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=63287
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=63288
+SPIKE riwork.terminal created view=0x91a736300
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+SPIKE native prop config=Some(String("/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf"))
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+warning(stream): unimplemented mode: 7727
+SPIKE NativeComponent drop
+info(io_exec): pty fd closed, read thread exiting
+info(io_exec): pty fd closed, read thread exiting
+info(io_exec): pty fd closed, read thread exiting
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=e3a9526fb9b70a49
+info(surface): surface closed id=1d9174d0156403ea
+info(surface): surface closed id=dbe88d143a8ba735
+info(surface): surface closed id=f972bbbed436a5b9
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=64082
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=64084
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=64085
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=64086
+SPIKE riwork.terminal created view=0x919f44f00
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+SPIKE native prop config=Some(String("/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf"))
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+SPIKE NativeComponent drop
+info(io_exec): pty fd closed, read thread exiting
+info(io_exec): pty fd closed, read thread exiting
+info(io_exec): pty fd closed, read thread exiting
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=43333fa78d7487f7
+info(surface): surface closed id=f1ee5e95a87e6e3
+info(surface): surface closed id=1656c36254ca012e
+info(surface): surface closed id=ad8b2dcedea23542
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=64447
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=64448
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=64449
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=64451
+SPIKE riwork.terminal created view=0x919f46a80
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+SPIKE native prop config=Some(String("/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf"))
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+SPIKE NativeComponent drop
+info(io_exec): pty fd closed, read thread exiting
+info(io_exec): pty fd closed, read thread exiting
+info(io_exec): pty fd closed, read thread exiting
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=fd9315518d431611
+info(surface): surface closed id=e9cd9a58b75ca7de
+info(surface): surface closed id=5be34e7e1d22050
+info(surface): surface closed id=728e8aa670af8970
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=64723
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=64724
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=64725
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=64726
+SPIKE riwork.terminal created view=0x919e76080
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+SPIKE native prop config=Some(String("/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf"))
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+SPIKE NativeComponent drop
+info(io_exec): pty fd closed, read thread exiting
+info(io_exec): pty fd closed, read thread exiting
+info(io_exec): pty fd closed, read thread exiting
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=838f36231630fade
+info(surface): surface closed id=c2d7c0c3c01783e
+info(surface): surface closed id=65db2665c5e30b16
+info(surface): surface closed id=c71ffdc3873a381
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=65058
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=65059
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=65060
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=65062
+SPIKE riwork.terminal created view=0x919e74780
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+SPIKE native prop config=Some(String("/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf"))
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+SPIKE NativeComponent drop
+info(io_exec): pty fd closed, read thread exiting
+info(io_exec): pty fd closed, read thread exiting
+info(io_exec): pty fd closed, read thread exiting
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=beaec244bdfc4e44
+info(surface): surface closed id=3b2ce9ec44365008
+info(surface): surface closed id=2a190826d012dec6
+info(surface): surface closed id=733b61fcc3d6c52b
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=65433
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=65434
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=65435
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=65436
+SPIKE riwork.terminal created view=0x919f45b80
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+SPIKE native prop config=Some(String("/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf"))
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+SPIKE NativeComponent drop
+info(io_exec): pty fd closed, read thread exiting
+info(io_exec): pty fd closed, read thread exiting
+info(io_exec): pty fd closed, read thread exiting
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=649717e9cf3f719a
+info(surface): surface closed id=67025fe5ceded5af
+info(surface): surface closed id=aa208892ba2e93a5
+info(surface): surface closed id=59c01e176b6bdbb8
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=65758
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=65759
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=65760
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=65762
+SPIKE riwork.terminal created view=0x919f47980
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+SPIKE native prop config=Some(String("/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf"))
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+SPIKE NativeComponent drop
+info(io_exec): pty fd closed, read thread exiting
+info(io_exec): pty fd closed, read thread exiting
+info(io_exec): pty fd closed, read thread exiting
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=b4aadaeec770def8
+info(surface): surface closed id=fa0d35d3d204c650
+info(surface): surface closed id=1c4f33adef3a5498
+info(surface): surface closed id=b669c741390ca24d
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=66036
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=66037
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=66038
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=66039
+SPIKE riwork.terminal created view=0x919e75400
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+SPIKE native prop config=Some(String("/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf"))
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+SPIKE NativeComponent drop
+info(io_exec): pty fd closed, read thread exiting
+info(io_exec): pty fd closed, read thread exiting
+info(io_exec): pty fd closed, read thread exiting
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=8cb3df5ac728b7c
+info(surface): surface closed id=c35402a79a172b88
+info(surface): surface closed id=95a9d1cb566a46b
+info(surface): surface closed id=4abb85ef5b41ed1b
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=66333
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=66334
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=66335
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=66337
+SPIKE riwork.terminal created view=0x919e76a80
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+SPIKE native prop config=Some(String("/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf"))
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+SPIKE NativeComponent drop
+info(io_exec): pty fd closed, read thread exiting
+info(io_exec): pty fd closed, read thread exiting
+info(io_exec): pty fd closed, read thread exiting
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=8f0a164f40faaa36
+info(surface): surface closed id=8cad53019d0b13a1
+info(surface): surface closed id=4bc3cc08ac40efa8
+info(surface): surface closed id=3744bfbcd41b2138
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=66617
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=66618
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=66619
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=66621
+SPIKE riwork.terminal created view=0x919f46800
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+SPIKE native prop config=Some(String("/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf"))
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+SPIKE NativeComponent drop
+info(io_exec): pty fd closed, read thread exiting
+info(io_exec): pty fd closed, read thread exiting
+info(io_exec): pty fd closed, read thread exiting
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=68adf1f2b33de024
+info(surface): surface closed id=cff71806f317cfe6
+info(surface): surface closed id=9adb304bceeadcac
+info(surface): surface closed id=c16dede8a3fb99d4
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=67194
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(io_exec): started subcommand path=/usr/bin/login pid=67195
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=67196
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=67197
+SPIKE riwork.terminal created view=0x919e75400
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+SPIKE native prop config=Some(String("/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf"))
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+SPIKE NativeComponent drop
+info(io_exec): pty fd closed, read thread exiting
+info(io_exec): pty fd closed, read thread exiting
+info(io_exec): pty fd closed, read thread exiting
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=909894a29002c91d
+info(surface): surface closed id=9d12c63f05229bca
+info(surface): surface closed id=a095de7b1456590c
+info(surface): surface closed id=385b66785c0e7cab
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=67584
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=67585
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=67586
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=67588
+SPIKE riwork.terminal created view=0x919f46580
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+SPIKE native prop config=Some(String("/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf"))
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+SPIKE NativeComponent drop
+info(io_exec): pty fd closed, read thread exiting
+info(io_exec): pty fd closed, read thread exiting
+info(io_exec): pty fd closed, read thread exiting
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=944478c4c6875308
+info(surface): surface closed id=96ba3f814a140b0
+info(surface): surface closed id=10d2afd558bca6c5
+info(surface): surface closed id=64fc1d5a05123ea3
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=67864
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=67865
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=67866
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=67868
+SPIKE riwork.terminal created view=0x919e03480
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+SPIKE native prop config=Some(String("/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf"))
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+SPIKE NativeComponent drop
+info(io_exec): pty fd closed, read thread exiting
+info(io_exec): pty fd closed, read thread exiting
+info(io_exec): pty fd closed, read thread exiting
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=54572d1392fd9abd
+info(surface): surface closed id=1e56ba2ecc523380
+info(surface): surface closed id=db4d0317d8ac6353
+info(surface): surface closed id=a473bd8c73744108
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=68157
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=68158
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=68159
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=68161
+SPIKE riwork.terminal created view=0x919e00000
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+SPIKE native prop config=Some(String("/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf"))
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+SPIKE NativeComponent drop
+info(io_exec): pty fd closed, read thread exiting
+info(io_exec): pty fd closed, read thread exiting
+info(io_exec): pty fd closed, read thread exiting
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=d99eae01a3cbf55b
+info(surface): surface closed id=cc71279297bedc71
+info(surface): surface closed id=437e8ecbec3a7bcb
+info(surface): surface closed id=e6fbd020a8e36ec4
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=68485
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=68486
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(io_exec): started subcommand path=/usr/bin/login pid=68487
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=68489
+SPIKE riwork.terminal created view=0x919e03700
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+SPIKE native prop config=Some(String("/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf"))
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+SPIKE NativeComponent drop
+info(io_exec): pty fd closed, read thread exiting
+info(io_exec): pty fd closed, read thread exiting
+info(io_exec): pty fd closed, read thread exiting
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=13d81519307ae6cb
+info(surface): surface closed id=858f11a80737c439
+info(surface): surface closed id=520e670642ce4809
+info(surface): surface closed id=ea3f36f2bd3ca626
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(io_exec): started subcommand path=/usr/bin/login pid=68962
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=68963
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=68964
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=68966
+SPIKE riwork.terminal created view=0x919e77480
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+SPIKE native prop config=Some(String("/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf"))
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+SPIKE NativeComponent drop
+info(io_exec): pty fd closed, read thread exiting
+info(io_exec): pty fd closed, read thread exiting
+info(io_exec): pty fd closed, read thread exiting
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=e6b69f4c5bdb7224
+info(surface): surface closed id=2bdf1312dca5722f
+info(surface): surface closed id=4a21637b36f06d60
+info(surface): surface closed id=2c0f96d14686fd13
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=69244
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=69245
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=69246
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=69247
+SPIKE riwork.terminal created view=0x919e74c80
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+SPIKE native prop config=Some(String("/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf"))
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+SPIKE NativeComponent drop
+info(io_exec): pty fd closed, read thread exiting
+info(io_exec): pty fd closed, read thread exiting
+info(io_exec): pty fd closed, read thread exiting
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=f34c0006a27bdcb
+info(surface): surface closed id=d6708bd7b82357d8
+info(surface): surface closed id=668101f717e95b4a
+info(surface): surface closed id=a5ef9366c02e3e31
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=69552
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=69553
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=69554
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=69556
+SPIKE riwork.terminal created view=0x919f46800
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+SPIKE native prop config=Some(String("/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf"))
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+SPIKE NativeComponent drop
+info(io_exec): pty fd closed, read thread exiting
+info(io_exec): pty fd closed, read thread exiting
+info(io_exec): pty fd closed, read thread exiting
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=6d9a69b5620764fc
+info(surface): surface closed id=933c2de370048627
+info(surface): surface closed id=f06dd946d7abc40e
+info(surface): surface closed id=f599795bfe840de4
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=69906
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=69907
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=69908
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=69910
+SPIKE riwork.terminal created view=0x919e76d00
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+SPIKE native prop config=Some(String("/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf"))
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+SPIKE NativeComponent drop
+info(io_exec): pty fd closed, read thread exiting
+info(io_exec): pty fd closed, read thread exiting
+info(io_exec): pty fd closed, read thread exiting
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=5e89f0fbd9dd9809
+info(surface): surface closed id=8c8d9083a72df804
+info(surface): surface closed id=df60a571d283d719
+info(surface): surface closed id=6f1d114d7d23b5e4
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=70300
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=70301
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=70302
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=70303
+SPIKE riwork.terminal created view=0x919e76a80
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+SPIKE native prop config=Some(String("/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf"))
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(io_exec): pty fd closed, read thread exiting
+info(io_exec): pty fd closed, read thread exiting
+info(io_exec): pty fd closed, read thread exiting
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=b540bd80e825d044
+info(surface): surface closed id=e4ed5cec2a8ecbb6
+info(surface): surface closed id=9048ebb7908fc6b8
+info(surface): surface closed id=90dcce976b9259a1
+SPIKE NativeComponent drop
+SPIKE host stopped

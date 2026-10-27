@@ -1,0 +1,130 @@
+{
+  "trace_valid": true,
+  "errors": [],
+  "metadata": {
+    "kind": "metadata",
+    "clock": "CLOCK_MONOTONIC",
+    "fixture_pid": 63191,
+    "capacity": 2000000,
+    "recorded": 312175,
+    "dropped": 0
+  },
+  "spans": 66407,
+  "runloop_observation": {
+    "leading_partial_loop": {
+      "exit_seq": 9,
+      "exit_ms": 288294015.215,
+      "entry_observed": false
+    },
+    "observed_entries": 32101,
+    "observed_exits": 32102,
+    "final_nesting_depth": 0
+  },
+  "raw_all_gaps_under_100ms": false,
+  "attribution_gate_passed": true,
+  "surface_timer_samples": 672,
+  "heartbeat_samples": 7520,
+  "gap_count": 1,
+  "surface_gap_count": 0,
+  "heartbeat_gap_count": 1,
+  "max_surface_gap_ms": 18.17900002002716,
+  "max_heartbeat_gap_ms": 215.87999999523163,
+  "attribution_policy": "Every >=100 ms interval must contain >=100 ms of positively instrumented non-teardown main work or run-loop wait, excluding all teardown overlap, AND its main-thread teardown union must remain <100 ms, AND its unattributed remainder must remain <100 ms. Idle time overlapping off-main detach helpers is also excluded because indirect scheduling contention is unproved. Any failed conjunct rejects the causal exception.",
+  "gaps": [
+    {
+      "source": "global-heartbeat",
+      "surface_id": 0,
+      "begin_seq": 0,
+      "end_seq": 17,
+      "begin_name": "profile-start",
+      "end_name": "heartbeat",
+      "start_ms": 288293813.9,
+      "end_ms": 288294029.78,
+      "gap_ms": 215.87999999523163,
+      "classification": "unrelated-run-loop-work-or-wait",
+      "accepted_non_teardown": true,
+      "positive_non_teardown_ms": 190.27499997615814,
+      "teardown_main_union_ms": 0,
+      "offmain_detach_wait_union_ms": 0,
+      "idle_ms_excluded_for_detach_overlap": 0,
+      "unattributed_ms": 25.605000019073486,
+      "rejection_reasons": [],
+      "positive_non_teardown_intervals": [
+        [
+          288293813.91,
+          288293991.3
+        ],
+        [
+          288293991.389,
+          288293995.601
+        ],
+        [
+          288293997.415,
+          288294001.673
+        ],
+        [
+          288294003.011,
+          288294007.426
+        ]
+      ],
+      "overlap_union_ms_by_name": {
+        "create-surface": 190.27499997615814
+      },
+      "overlaps": [
+        {
+          "name": "create-surface",
+          "surface_id": 1,
+          "thread_id": 10506610,
+          "main_thread": true,
+          "start_ms": 288293813.91,
+          "end_ms": 288293991.3,
+          "begin_seq": 1,
+          "end_seq": 2,
+          "overlap_start_ms": 288293813.91,
+          "overlap_end_ms": 288293991.3,
+          "overlap_ms": 177.38999998569489
+        },
+        {
+          "name": "create-surface",
+          "surface_id": 2,
+          "thread_id": 10506610,
+          "main_thread": true,
+          "start_ms": 288293991.389,
+          "end_ms": 288293995.601,
+          "begin_seq": 3,
+          "end_seq": 4,
+          "overlap_start_ms": 288293991.389,
+          "overlap_end_ms": 288293995.601,
+          "overlap_ms": 4.212000012397766
+        },
+        {
+          "name": "create-surface",
+          "surface_id": 3,
+          "thread_id": 10506610,
+          "main_thread": true,
+          "start_ms": 288293997.415,
+          "end_ms": 288294001.673,
+          "begin_seq": 5,
+          "end_seq": 6,
+          "overlap_start_ms": 288293997.415,
+          "overlap_end_ms": 288294001.673,
+          "overlap_ms": 4.257999956607819
+        },
+        {
+          "name": "create-surface",
+          "surface_id": 4,
+          "thread_id": 10506610,
+          "main_thread": true,
+          "start_ms": 288294003.011,
+          "end_ms": 288294007.426,
+          "begin_seq": 7,
+          "end_seq": 8,
+          "overlap_start_ms": 288294003.011,
+          "overlap_end_ms": 288294007.426,
+          "overlap_ms": 4.415000021457672
+        }
+      ]
+    }
+  ],
+  "trace_path": "/Users/dominik/orca/projects/riWork-nsh-p2-teardown-pinned/spikes/ghostty-nsh/evidence/phase2/pinned/main-profile.jsonl.gz"
+}

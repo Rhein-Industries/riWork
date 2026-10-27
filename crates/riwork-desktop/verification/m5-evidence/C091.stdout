@@ -1,0 +1,6 @@
+
+running 1 test
+test project_tabs::tests::titles_come_from_a_rename_then_the_provider_then_the_first_message_then_the_kind ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1331 filtered out; finished in 0.00s
+

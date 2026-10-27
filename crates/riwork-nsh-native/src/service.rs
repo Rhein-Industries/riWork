@@ -125,6 +125,8 @@ pub struct ProcessService {
     tabs_hubs: Arc<Mutex<BTreeMap<String, Arc<Hub<TabsSnapshot>>>>>,
     store_refresh: Arc<Mutex<()>>,
     sessions_refresh: Arc<Mutex<()>>,
+    has_worktrees: Arc<AtomicBool>,
+    has_shells: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
     wake: SyncSender<()>,
     worker: Option<JoinHandle<()>>,
@@ -146,9 +148,12 @@ impl ProcessService {
             let value = operation(service.store.as_ref()).map_err(backend_error)?;
             // Write and publish are serialized with watcher refreshes, preventing
             // an older read from overwriting a newer mutation in either window.
-            service
-                .store_hub
-                .publish(service.store.snapshot().map_err(backend_error)?);
+            let snapshot = service.store.snapshot().map_err(backend_error)?;
+            let has_worktrees = !snapshot.worktrees.is_empty();
+            service.store_hub.publish(snapshot);
+            if service.has_worktrees.swap(has_worktrees, Ordering::AcqRel) != has_worktrees {
+                let _ = service.wake.try_send(());
+            }
             Ok(value)
         })
         .await
@@ -308,9 +313,12 @@ impl ProcessService {
                 .unwrap_or_else(PoisonError::into_inner);
             let result = operation(service.sessions.as_ref()).map_err(backend_error)?;
             service.sessions.invalidate_sample();
-            service
-                .sessions_hub
-                .publish(service.sessions.sample().map_err(backend_error)?);
+            let snapshot = service.sessions.sample().map_err(backend_error)?;
+            let has_shells = !snapshot.sessions.is_empty();
+            service.sessions_hub.publish(snapshot);
+            if service.has_shells.swap(has_shells, Ordering::AcqRel) != has_shells {
+                let _ = service.wake.try_send(());
+            }
             refresh_tabs(&service.tabs, &service.tabs_hubs, &service.last_error);
             Ok(result)
         })
@@ -471,17 +479,22 @@ impl ProcessService {
         // Register before loading snapshots: no external write can fall in a gap
         // between the initial read and installation of the push source.
         watcher.watch(&home, RecursiveMode::Recursive)?;
-        let store_hub = Arc::new(Hub::new(
-            store.snapshot().context("initial store snapshot")?,
-        ));
+        let initial_store = store.snapshot().context("initial store snapshot")?;
+        let has_worktrees = Arc::new(AtomicBool::new(!initial_store.worktrees.is_empty()));
+        let store_hub = Arc::new(Hub::new(initial_store));
+        let mut has_shells = false;
         let sessions_hub = Arc::new(match sessions.sample() {
-            Ok(snapshot) => Hub::new(snapshot),
+            Ok(snapshot) => {
+                has_shells = !snapshot.sessions.is_empty();
+                Hub::new(snapshot)
+            }
             Err(error) => {
                 *last_error.lock().unwrap_or_else(PoisonError::into_inner) =
                     Some(format!("initial session sample: {error}"));
                 Hub::pending()
             }
         });
+        let has_shells = Arc::new(AtomicBool::new(has_shells));
         let stop = Arc::new(AtomicBool::new(false));
         let tabs_hubs = Arc::new(Mutex::new(BTreeMap::new()));
         let store_refresh = Arc::new(Mutex::new(()));
@@ -496,23 +509,44 @@ impl ProcessService {
         let worker_tabs_hubs = tabs_hubs.clone();
         let worker_store_refresh = store_refresh.clone();
         let worker_sessions_refresh = sessions_refresh.clone();
+        let worker_has_worktrees = has_worktrees.clone();
+        let worker_has_shells = has_shells.clone();
         let worker = thread::Builder::new()
             .name("riwork-native-service".into())
             .spawn(move || {
-                let mut next_sample = Instant::now() + SESSION_SAMPLE_INTERVAL;
-                let mut next_presence = next_sample;
+                let mut next_sample = None;
+                let mut next_presence = None;
                 while !worker_stop.load(Ordering::Acquire) {
-                    let _ = receive.recv_timeout(
-                        next_sample
-                            .min(next_presence)
-                            .saturating_duration_since(Instant::now()),
-                    );
+                    // The last successful inventories arm separate deadlines.
+                    // Explicit CRUD updates these flags and wakes this receive,
+                    // so scheduling does not depend on filesystem event timing.
+                    let now = Instant::now();
+                    if worker_has_shells.load(Ordering::Acquire) {
+                        next_sample.get_or_insert(now + SESSION_SAMPLE_INTERVAL);
+                    } else {
+                        next_sample = None;
+                    }
+                    if worker_has_worktrees.load(Ordering::Acquire) {
+                        next_presence.get_or_insert(now + SESSION_SAMPLE_INTERVAL);
+                    } else {
+                        next_presence = None;
+                    }
+                    let deadline = next_sample.into_iter().chain(next_presence).min();
+                    if let Some(deadline) = deadline {
+                        let _ = receive.recv_timeout(deadline.saturating_duration_since(now));
+                    } else {
+                        // An empty home has no periodic liveness or presence
+                        // work. Watcher events, CRUD transitions and shutdown
+                        // still wake this blocking receive.
+                        let _ = receive.recv();
+                    }
                     if worker_stop.load(Ordering::Acquire) {
                         break;
                     }
                     let flags = dirty.swap(0, Ordering::AcqRel);
-                    let sample_due = Instant::now() >= next_sample;
-                    let presence_due = Instant::now() >= next_presence;
+                    let now = Instant::now();
+                    let sample_due = next_sample.is_some_and(|deadline| now >= deadline);
+                    let presence_due = next_presence.is_some_and(|deadline| now >= deadline);
                     if flags & STORE != 0 || presence_due {
                         let _guard = worker_store_refresh
                             .lock()
@@ -523,16 +557,22 @@ impl ProcessService {
                             worker_store.snapshot()
                         };
                         match snapshot {
-                            Ok(snapshot) => worker_store_hub.publish(snapshot),
+                            Ok(snapshot) => {
+                                worker_has_worktrees
+                                    .store(!snapshot.worktrees.is_empty(), Ordering::Release);
+                                worker_store_hub.publish(snapshot);
+                            }
                             Err(error) => {
                                 *worker_error.lock().unwrap_or_else(PoisonError::into_inner) =
                                     Some(format!("store snapshot: {error}"))
                             }
                         }
                         if presence_due {
-                            // Frequent session activity can reset its fallback
-                            // deadline, but must not postpone presence forever.
-                            next_presence = Instant::now() + SESSION_SAMPLE_INTERVAL;
+                            // Session watcher wakes may reset their fallback,
+                            // but cannot postpone worktree presence forever.
+                            next_presence = worker_has_worktrees
+                                .load(Ordering::Acquire)
+                                .then(|| Instant::now() + SESSION_SAMPLE_INTERVAL);
                         }
                     }
                     if flags & SESSIONS != 0 || sample_due {
@@ -543,16 +583,28 @@ impl ProcessService {
                             worker_sessions.invalidate_sample();
                         }
                         match worker_sessions.sample() {
-                            Ok(snapshot) => worker_sessions_hub.publish(snapshot),
+                            Ok(snapshot) => {
+                                worker_has_shells
+                                    .store(!snapshot.sessions.is_empty(), Ordering::Release);
+                                worker_sessions_hub.publish(snapshot);
+                            }
                             Err(error) => {
                                 *worker_error.lock().unwrap_or_else(PoisonError::into_inner) =
                                     Some(format!("session sample: {error}"))
                             }
                         }
-                        // Only this thread performs the two-second tmux fallback.
-                        next_sample = Instant::now() + SESSION_SAMPLE_INTERVAL;
+                        // Only nonempty shell inventories need a liveness
+                        // fallback. A transient failure keeps the last known
+                        // state, as in M5; empty inventories rely on the watcher.
+                        next_sample = worker_has_shells
+                            .load(Ordering::Acquire)
+                            .then(|| Instant::now() + SESSION_SAMPLE_INTERVAL);
                     }
-                    if flags & (TABS | SESSIONS | STORE) != 0 || sample_due || presence_due {
+                    // Presence alone is not a session inventory trigger. Its
+                    // durable branch/discovery writes raise STORE watcher
+                    // events; a quiet presence check must not query tmux
+                    // indirectly through an empty tab/session inventory.
+                    if flags & (TABS | SESSIONS | STORE) != 0 || sample_due {
                         refresh_tabs(&worker_tabs, &worker_tabs_hubs, &worker_error);
                     }
                 }
@@ -567,6 +619,8 @@ impl ProcessService {
             tabs_hubs,
             store_refresh,
             sessions_refresh,
+            has_worktrees,
+            has_shells,
             stop,
             wake,
             worker: Some(worker),

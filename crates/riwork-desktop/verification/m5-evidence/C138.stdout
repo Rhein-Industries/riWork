@@ -1,0 +1,6 @@
+
+running 1 test
+test runtime::tests::queuing_and_wait_timeout_leave_old_gui_alive_and_do_not_launch_anything ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1331 filtered out; finished in 0.01s
+

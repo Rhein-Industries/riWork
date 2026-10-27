@@ -11,8 +11,11 @@ use std::{
 use anyhow::{Result, bail};
 use riwork_nsh_native::{
     ProcessService,
-    backend::{CoreStoreBackend, SessionsBackend, StoreBackend, Unavailable},
-    dto::{ProjectInspectionDto, SearchHitDto, SessionsSnapshot, ShellSessionDto, StoreState},
+    backend::{CoreStoreBackend, SessionsBackend, StoreBackend, TabsBackend, Unavailable},
+    dto::{
+        ProjectInspectionDto, SearchHitDto, SessionsSnapshot, ShellSessionDto, StoreState,
+        TabUpdate, TabsSnapshot,
+    },
     service::SESSION_SAMPLE_INTERVAL,
 };
 
@@ -67,13 +70,16 @@ async fn start(home: &Path, sessions: Arc<dyn SessionsBackend>) -> Arc<ProcessSe
 async fn one_sampler_serves_multiple_subscribers_and_emits_only_changes() {
     let fixture = tempfile::tempdir().unwrap();
     let sessions = Arc::new(FakeSessions::default());
+    // The liveness fallback exists only while an inventory contains shells.
+    // Discovery into an empty inventory is driven by the home watcher.
+    sessions.value.lock().unwrap().sessions.push(session());
     let service = start(fixture.path(), sessions.clone()).await;
     let a = service.subscribe_sessions().await.unwrap();
     let b = service.subscribe_sessions().await.unwrap();
     assert_eq!(a.recv().await.unwrap().rev, 1);
     assert_eq!(b.recv().await.unwrap().rev, 1);
     assert_eq!(sessions.samples.load(Ordering::SeqCst), 1);
-    sessions.value.lock().unwrap().sessions.push(session());
+    sessions.value.lock().unwrap().sessions[0].alive = true;
     let changed = tokio::time::timeout(SESSION_SAMPLE_INTERVAL + Duration::from_secs(1), a.recv())
         .await
         .unwrap()
@@ -92,6 +98,169 @@ async fn one_sampler_serves_multiple_subscribers_and_emits_only_changes() {
         .is_err()
     );
     assert_eq!(sessions.samples.load(Ordering::SeqCst), 3);
+}
+
+#[tokio::test]
+async fn an_empty_inventory_sleeps_until_a_watcher_event_and_disarms_when_empty_again() {
+    let fixture = tempfile::tempdir().unwrap();
+    let sessions = Arc::new(FakeSessions::default());
+    let service = start(fixture.path(), sessions.clone()).await;
+    let listener = service.subscribe_sessions().await.unwrap();
+    assert!(listener.recv().await.unwrap().data.sessions.is_empty());
+    tokio::time::sleep(SESSION_SAMPLE_INTERVAL + Duration::from_millis(150)).await;
+    assert_eq!(
+        sessions.samples.load(Ordering::SeqCst),
+        1,
+        "an empty inventory must not run the tmux liveness fallback"
+    );
+
+    sessions.value.lock().unwrap().sessions.push(session());
+    let path = fixture.path().join("sessions.json");
+    std::fs::write(&path, "a fixture shell appeared").unwrap();
+    let first = tokio::time::timeout(Duration::from_secs(2), listener.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(first.data.sessions.len(), 1);
+    let reads = sessions.samples.load(Ordering::SeqCst);
+    tokio::time::sleep(SESSION_SAMPLE_INTERVAL + Duration::from_millis(150)).await;
+    assert!(
+        sessions.samples.load(Ordering::SeqCst) > reads,
+        "the liveness fallback must run after a watcher discovers a shell"
+    );
+
+    sessions.value.lock().unwrap().sessions.clear();
+    std::fs::write(&path, "the last fixture shell disappeared").unwrap();
+    let empty = tokio::time::timeout(Duration::from_secs(2), listener.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(empty.data.sessions.is_empty());
+    // Let any coalesced filesystem notification settle before counting.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let reads = sessions.samples.load(Ordering::SeqCst);
+    tokio::time::sleep(SESSION_SAMPLE_INTERVAL + Duration::from_millis(150)).await;
+    assert_eq!(
+        sessions.samples.load(Ordering::SeqCst),
+        reads,
+        "removing the last shell must disarm the fallback"
+    );
+}
+
+struct CountedStore {
+    inner: CoreStoreBackend,
+    presence_refreshes: AtomicUsize,
+}
+
+impl StoreBackend for CountedStore {
+    fn snapshot(&self) -> Result<StoreState> {
+        self.inner.snapshot()
+    }
+    fn search(&self, query: &str) -> Result<Vec<SearchHitDto>> {
+        self.inner.search(query)
+    }
+    fn inspect_project(&self, root: &Path) -> Result<ProjectInspectionDto> {
+        self.inner.inspect_project(root)
+    }
+    fn refresh_presence(&self) -> Result<StoreState> {
+        self.presence_refreshes.fetch_add(1, Ordering::SeqCst);
+        self.inner.refresh_presence()
+    }
+}
+
+#[derive(Default)]
+struct CountedTabs(AtomicUsize);
+
+impl TabsBackend for CountedTabs {
+    fn snapshot(&self, _project: &str) -> Result<TabsSnapshot> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Ok(TabsSnapshot {
+            epoch: "fixture".into(),
+            revision: 1,
+            entries: vec![],
+        })
+    }
+    fn update(&self, _project: &str, _update: TabUpdate) -> Result<TabsSnapshot> {
+        bail!("fixture does not mutate tabs")
+    }
+}
+
+#[tokio::test]
+async fn worktree_presence_has_a_deadline_without_restarting_empty_session_fallback() {
+    let fixture = tempfile::tempdir().unwrap();
+    let home = fixture.path().join("RIWORK_HOME");
+    let project = riwork_core::store::Store::open(&home)
+        .unwrap()
+        .create_project(fixture.path().join("project"), None, false)
+        .unwrap();
+    let sessions = Arc::new(FakeSessions::default());
+    let tabs = Arc::new(CountedTabs::default());
+    let store = Arc::new(CountedStore {
+        inner: CoreStoreBackend::new(home.clone()),
+        presence_refreshes: AtomicUsize::new(0),
+    });
+    let service = tokio::task::spawn_blocking({
+        let store = store.clone();
+        let sessions = sessions.clone();
+        let tabs = tabs.clone();
+        move || ProcessService::with_all_backends(home, store, sessions, tabs)
+    })
+    .await
+    .unwrap()
+    .unwrap();
+    let listener = service.subscribe_store().await.unwrap();
+    let tab_listener = service.subscribe_tabs(project.id).await.unwrap();
+    tab_listener.recv().await.unwrap();
+    assert_eq!(listener.recv().await.unwrap().data.worktrees.len(), 1);
+    tokio::time::sleep(SESSION_SAMPLE_INTERVAL + Duration::from_millis(200)).await;
+    assert!(
+        store.presence_refreshes.load(Ordering::SeqCst) >= 1,
+        "worktrees still need their independent presence refresh"
+    );
+    assert_eq!(
+        sessions.samples.load(Ordering::SeqCst),
+        1,
+        "presence refresh must not query the empty session inventory"
+    );
+    assert_eq!(
+        tabs.0.load(Ordering::SeqCst),
+        1,
+        "presence refresh must not indirectly query sessions through tab inventory"
+    );
+}
+
+#[tokio::test]
+async fn a_quiet_home_produces_no_deliveries_for_60_s() {
+    let fixture = tempfile::tempdir().unwrap();
+    let sessions = Arc::new(FakeSessions::default());
+    let home = fixture.path().to_path_buf();
+    let store = Arc::new(CountedStore {
+        inner: CoreStoreBackend::new(home.clone()),
+        presence_refreshes: AtomicUsize::new(0),
+    });
+    let service = tokio::task::spawn_blocking({
+        let store = store.clone();
+        let sessions = sessions.clone();
+        move || ProcessService::with_backends(home, store, sessions)
+    })
+    .await
+    .unwrap()
+    .unwrap();
+    let stores = service.subscribe_store().await.unwrap();
+    let shells = service.subscribe_sessions().await.unwrap();
+    stores.recv().await.unwrap();
+    shells.recv().await.unwrap();
+    tokio::select! {
+        _ = tokio::time::sleep(Duration::from_secs(60)) => {},
+        event = stores.recv() => panic!("quiet Store delivered {event:?}"),
+        event = shells.recv() => panic!("quiet Sessions delivered {event:?}"),
+    }
+    assert_eq!(sessions.samples.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        store.presence_refreshes.load(Ordering::SeqCst),
+        0,
+        "an empty home must not arm a presence timer either"
+    );
 }
 
 #[tokio::test]

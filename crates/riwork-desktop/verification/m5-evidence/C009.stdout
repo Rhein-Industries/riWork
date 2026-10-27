@@ -1,0 +1,32 @@
+apps/riwork/src/lib.rs:24:pub fn register_layouts(registry: &mut Registry, process_home: ProcessHome) {
+apps/riwork/src/lib.rs:65:#[module]
+apps/riwork/src/lib.rs:68:#[module]
+apps/riwork/src/lib.rs:71:    pub async fn open_session(request: Value) -> Result<LayoutSession, String> {
+apps/riwork/src/lib.rs:109:#[class]
+apps/riwork/src/lib.rs:129:    pub fn flush_from_host(&self) -> Result<(), String> {
+apps/riwork/src/lib.rs:134:    pub fn project_from_host(&self) -> ProjectLayout {
+apps/riwork/src/lib.rs:139:#[class]
+apps/riwork/src/lib.rs:142:    pub fn dock(&mut self, size: Value) -> Result<Value, String> {
+apps/riwork/src/lib.rs:148:    pub fn apply_dock(&mut self, next: Value, size: Value) -> Result<Value, String> {
+apps/riwork/src/lib.rs:156:    pub fn set_extent(&mut self, size: Value) -> Result<Value, String> {
+apps/riwork/src/lib.rs:166:    pub fn select_panel(&mut self, panel_id: String) -> Result<Value, String> {
+apps/riwork/src/lib.rs:171:    pub fn select_pane(&mut self, pane_id: u64) -> Result<Value, String> {
+apps/riwork/src/lib.rs:176:    pub fn toggle_lock(&mut self, pane_id: u64) -> Result<Value, String> {
+apps/riwork/src/lib.rs:181:    pub fn toggle_main(&mut self, pane_id: u64) -> Result<Value, String> {
+apps/riwork/src/lib.rs:186:    pub fn gather(&mut self) -> Result<Value, String> {
+apps/riwork/src/lib.rs:191:    pub fn snapshot(&self) -> Value {
+apps/riwork/src/lib.rs:212:    pub fn panel(&self, panel_id: String) -> Value {
+apps/riwork/src/lib.rs:223:    pub async fn flush(this: Instance<Self>) -> Result<(), String> {
+crates/riwork-nsh-native/src/lib.rs:29:#[module]
+crates/riwork-nsh-native/src/lib.rs:32:#[module]
+crates/riwork-nsh-native/src/lib.rs:34:    pub async fn snapshot() -> Result<StoreState, String> {
+crates/riwork-nsh-native/src/lib.rs:38:    pub async fn search(query: String) -> Result<Vec<SearchHitDto>, String> {
+crates/riwork-nsh-native/src/lib.rs:42:    pub async fn inspect_project(root: String) -> Result<ProjectInspectionDto, String> {
+crates/riwork-nsh-native/src/lib.rs:48:    pub fn subscribe(
+crates/riwork-nsh-native/src/lib.rs:62:#[module]
+crates/riwork-nsh-native/src/lib.rs:65:#[module]
+crates/riwork-nsh-native/src/lib.rs:67:    pub async fn list() -> Result<SessionsSnapshot, String> {
+crates/riwork-nsh-native/src/lib.rs:71:    pub fn subscribe(
+crates/riwork-nsh-native/src/lib.rs:86:#[class]
+crates/riwork-nsh-native/src/lib.rs:109:#[class]
+crates/riwork-nsh-native/src/lib.rs:111:    pub fn close(&mut self) {

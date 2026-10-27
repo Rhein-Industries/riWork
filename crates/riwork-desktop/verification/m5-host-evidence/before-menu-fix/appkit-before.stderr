@@ -1,0 +1,23 @@
+    Blocking waiting for file lock on build directory
+   Compiling riwork-desktop v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p1-m5/crates/riwork-desktop)
+warning: unused import: `super::*`
+   --> crates/riwork-desktop/tests/../src/nsh_menus.rs:538:9
+    |
+538 |     use super::*;
+    |         ^^^^^^^^
+    |
+    = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `riwork-desktop` (test "appkit_shell") generated 1 warning (run `cargo fix --test "appkit_shell" -p riwork-desktop` to apply 1 suggestion)
+    Finished `test` profile [unoptimized] target(s) in 15.95s
+     Running tests/appkit_shell.rs (/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/deps/appkit_shell-06c017650e55f81a)
+
+thread 'main' (10584081) panicked at crates/riwork-desktop/tests/appkit_shell.rs:96:9:
+deferred row 3 must stay disabled
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'main' (10584081) panicked at crates/riwork-desktop/tests/appkit_shell.rs:173:5:
+assertion `left == right` failed
+  left: 1
+ right: 0
+error: test failed, to rerun pass `-p riwork-desktop --test appkit_shell`

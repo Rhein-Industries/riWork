@@ -1,0 +1,9 @@
+{
+  "from_cycle": 1,
+  "to_cycle": 20,
+  "bytes_advanced": 389013504,
+  "elapsed_seconds": 124.90346787500381,
+  "mean_mib_per_second": 2.970231281898975,
+  "nominal_mib_per_second": 4,
+  "includes_detached_periods": true
+}

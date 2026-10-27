@@ -1,0 +1,3212 @@
+{
+  "verification_environment": "macOS arm64; isolated RIWORK_HOME/HOME/runtime/tmux/cache fixtures; NSH 0.3.0 headless engines; no desktop interaction or live state",
+  "scope": "Workspace-route assessment; overlapping host/native/Cua portions are combined by the M5 coordinator.",
+  "environment_groups": {
+    "E1": {
+      "HOME": "/Users/dominik/orca/projects/riWork-nsh-p1-m5/target/nsh-integration-home-v9i28oxr",
+      "PATH": "/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/opt/homebrew/Caskroom/codex/0.162.1/codex-path:/Users/dominik/.okc/bin:/Users/dominik/.grok/bin:/Users/dominik/.bun/bin:/Users/dominik/.bun/bin:/Users/dominik/.opencode/bin:/opt/homebrew/opt/openjdk@17/bin:/Users/dominik/.bun/bin:/Users/dominik/.pyenv/shims:/Users/dominik/.avm/bin:/Users/dominik/.bun/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/System/Cryptexes/App/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin:/opt/pmk/env/global/bin:/Library/Apple/usr/bin:/usr/local/share/dotnet:~/.dotnet/tools:/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/Users/dominik/.codex/tmp/arg0/codex-arg03l3W4Z:/opt/homebrew/Caskroom/codex/0.162.1/codex-path:/Users/dominik/.local/share/riwork/cua/harness-bin:/Users/dominik/.okc/bin:/Users/dominik/Library/pnpm:/Users/dominik/.grok/bin:/Users/dominik/.bun/bin:/Users/dominik/.opencode/bin:/opt/homebrew/opt/openjdk@17/bin:/Users/dominik/.avm/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/Users/dominik/.starkli/bin:/Users/dominik/Library/Application Support/org.dfinity.dfx/bin:/Users/dominik/.cargo/bin:/Users/dominik/.local/bin:/Users/dominik/.docker/bin:/Users/dominik/.cache/lm-studio/bin:/Users/dominik/.nargo/bin:/opt/local/bin:/Users/dominik/.docker/bin:/Users/dominik/.cache/lm-studio/bin:/Users/dominik/.nargo/bin:/Users/dominik/.local/bin",
+      "RIWORK_HOME": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/state",
+      "RIWORK_RUNTIME_DIR": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/runtime",
+      "TMPDIR": "/tmp",
+      "TMUX_TMPDIR": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/tmux",
+      "XDG_CONFIG_HOME": "/Users/dominik/orca/projects/riWork-nsh-p1-m5/target/nsh-integration-home-v9i28oxr/.config",
+      "CARGO_HOME": "/Users/dominik/.cargo",
+      "RUSTUP_HOME": "/Users/dominik/.rustup",
+      "CARGO_TARGET_DIR": "/private/tmp/riwork-p1-integration-mkzwamt7/target",
+      "CARGO_BUILD_JOBS": "4",
+      "CARGO_NET_OFFLINE": "true",
+      "NSH_CACHE": "/private/tmp/riwork-p1-m5-workspace/nsh-cache",
+      "NSH_TSC": "/Users/dominik/Library/Caches/nsh/typescript-7.0.2-darwin-arm64/package/lib/tsc"
+    },
+    "E2": {
+      "HOME": "/Users/dominik/orca/projects/riWork-nsh-p1-m5/target/nsh-integration-home-ts8ci963",
+      "PATH": "/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/opt/homebrew/Caskroom/codex/0.162.1/codex-path:/Users/dominik/.okc/bin:/Users/dominik/.grok/bin:/Users/dominik/.bun/bin:/Users/dominik/.bun/bin:/Users/dominik/.opencode/bin:/opt/homebrew/opt/openjdk@17/bin:/Users/dominik/.bun/bin:/Users/dominik/.pyenv/shims:/Users/dominik/.avm/bin:/Users/dominik/.bun/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/System/Cryptexes/App/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin:/opt/pmk/env/global/bin:/Library/Apple/usr/bin:/usr/local/share/dotnet:~/.dotnet/tools:/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/Users/dominik/.codex/tmp/arg0/codex-arg03l3W4Z:/opt/homebrew/Caskroom/codex/0.162.1/codex-path:/Users/dominik/.local/share/riwork/cua/harness-bin:/Users/dominik/.okc/bin:/Users/dominik/Library/pnpm:/Users/dominik/.grok/bin:/Users/dominik/.bun/bin:/Users/dominik/.opencode/bin:/opt/homebrew/opt/openjdk@17/bin:/Users/dominik/.avm/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/Users/dominik/.starkli/bin:/Users/dominik/Library/Application Support/org.dfinity.dfx/bin:/Users/dominik/.cargo/bin:/Users/dominik/.local/bin:/Users/dominik/.docker/bin:/Users/dominik/.cache/lm-studio/bin:/Users/dominik/.nargo/bin:/opt/local/bin:/Users/dominik/.docker/bin:/Users/dominik/.cache/lm-studio/bin:/Users/dominik/.nargo/bin:/Users/dominik/.local/bin",
+      "RIWORK_HOME": "/private/tmp/riwork-p1-m5-workspace/supplement-ofs9mbu_/state",
+      "RIWORK_RUNTIME_DIR": "/private/tmp/riwork-p1-m5-workspace/supplement-ofs9mbu_/runtime",
+      "TMPDIR": "/tmp",
+      "TMUX_TMPDIR": "/private/tmp/riwork-p1-m5-workspace/supplement-ofs9mbu_/tmux",
+      "XDG_CONFIG_HOME": "/Users/dominik/orca/projects/riWork-nsh-p1-m5/target/nsh-integration-home-ts8ci963/.config",
+      "CARGO_HOME": "/Users/dominik/.cargo",
+      "RUSTUP_HOME": "/Users/dominik/.rustup",
+      "CARGO_TARGET_DIR": "/private/tmp/riwork-p1-integration-mkzwamt7/target",
+      "CARGO_BUILD_JOBS": "4",
+      "CARGO_NET_OFFLINE": "true",
+      "NSH_CACHE": "/private/tmp/riwork-p1-m5-workspace/nsh-cache",
+      "NSH_TSC": "/Users/dominik/Library/Caches/nsh/typescript-7.0.2-darwin-arm64/package/lib/tsc"
+    },
+    "E3": {
+      "HOME": "/Users/dominik/orca/projects/riWork-nsh-p1-m5/target/nsh-integration-home-lnudlcme",
+      "PATH": "/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/opt/homebrew/Caskroom/codex/0.162.1/codex-path:/Users/dominik/.okc/bin:/Users/dominik/.grok/bin:/Users/dominik/.bun/bin:/Users/dominik/.bun/bin:/Users/dominik/.opencode/bin:/opt/homebrew/opt/openjdk@17/bin:/Users/dominik/.bun/bin:/Users/dominik/.pyenv/shims:/Users/dominik/.avm/bin:/Users/dominik/.bun/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/System/Cryptexes/App/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin:/opt/pmk/env/global/bin:/Library/Apple/usr/bin:/usr/local/share/dotnet:~/.dotnet/tools:/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/Users/dominik/.codex/tmp/arg0/codex-arg03l3W4Z:/opt/homebrew/Caskroom/codex/0.162.1/codex-path:/Users/dominik/.local/share/riwork/cua/harness-bin:/Users/dominik/.okc/bin:/Users/dominik/Library/pnpm:/Users/dominik/.grok/bin:/Users/dominik/.bun/bin:/Users/dominik/.opencode/bin:/opt/homebrew/opt/openjdk@17/bin:/Users/dominik/.avm/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/Users/dominik/.starkli/bin:/Users/dominik/Library/Application Support/org.dfinity.dfx/bin:/Users/dominik/.cargo/bin:/Users/dominik/.local/bin:/Users/dominik/.docker/bin:/Users/dominik/.cache/lm-studio/bin:/Users/dominik/.nargo/bin:/opt/local/bin:/Users/dominik/.docker/bin:/Users/dominik/.cache/lm-studio/bin:/Users/dominik/.nargo/bin:/Users/dominik/.local/bin",
+      "RIWORK_HOME": "/private/tmp/riwork-p1-m5-workspace/nsh-reh5ez2m/state",
+      "RIWORK_RUNTIME_DIR": "/private/tmp/riwork-p1-m5-workspace/nsh-reh5ez2m/runtime",
+      "TMPDIR": "/tmp",
+      "TMUX_TMPDIR": "/private/tmp/riwork-p1-m5-workspace/nsh-reh5ez2m/tmux",
+      "XDG_CONFIG_HOME": "/Users/dominik/orca/projects/riWork-nsh-p1-m5/target/nsh-integration-home-lnudlcme/.config",
+      "CARGO_HOME": "/Users/dominik/.cargo",
+      "RUSTUP_HOME": "/Users/dominik/.rustup",
+      "CARGO_TARGET_DIR": "/private/tmp/riwork-p1-integration-mkzwamt7/target",
+      "CARGO_BUILD_JOBS": "4",
+      "CARGO_NET_OFFLINE": "true",
+      "NSH_CACHE": "/private/tmp/riwork-p1-m5-workspace/nsh-cache",
+      "NSH_TSC": "/Users/dominik/Library/Caches/nsh/typescript-7.0.2-darwin-arm64/package/lib/tsc"
+    },
+    "E4": {
+      "HOME": "/Users/dominik/orca/projects/riWork-nsh-p1-m5/target/nsh-integration-home-lnudlcme",
+      "PATH": "/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/opt/homebrew/Caskroom/codex/0.162.1/codex-path:/Users/dominik/.okc/bin:/Users/dominik/.grok/bin:/Users/dominik/.bun/bin:/Users/dominik/.bun/bin:/Users/dominik/.opencode/bin:/opt/homebrew/opt/openjdk@17/bin:/Users/dominik/.bun/bin:/Users/dominik/.pyenv/shims:/Users/dominik/.avm/bin:/Users/dominik/.bun/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/System/Cryptexes/App/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin:/opt/pmk/env/global/bin:/Library/Apple/usr/bin:/usr/local/share/dotnet:~/.dotnet/tools:/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/Users/dominik/.codex/tmp/arg0/codex-arg03l3W4Z:/opt/homebrew/Caskroom/codex/0.162.1/codex-path:/Users/dominik/.local/share/riwork/cua/harness-bin:/Users/dominik/.okc/bin:/Users/dominik/Library/pnpm:/Users/dominik/.grok/bin:/Users/dominik/.bun/bin:/Users/dominik/.opencode/bin:/opt/homebrew/opt/openjdk@17/bin:/Users/dominik/.avm/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/Users/dominik/.starkli/bin:/Users/dominik/Library/Application Support/org.dfinity.dfx/bin:/Users/dominik/.cargo/bin:/Users/dominik/.local/bin:/Users/dominik/.docker/bin:/Users/dominik/.cache/lm-studio/bin:/Users/dominik/.nargo/bin:/opt/local/bin:/Users/dominik/.docker/bin:/Users/dominik/.cache/lm-studio/bin:/Users/dominik/.nargo/bin:/Users/dominik/.local/bin",
+      "RIWORK_HOME": "/private/tmp/riwork-p1-m5-workspace/nsh-reh5ez2m/nsh-home",
+      "RIWORK_RUNTIME_DIR": "/private/tmp/riwork-p1-m5-workspace/nsh-reh5ez2m/runtime",
+      "TMPDIR": "/tmp",
+      "TMUX_TMPDIR": "/private/tmp/riwork-p1-m5-workspace/nsh-reh5ez2m/nsh-tmux",
+      "XDG_CONFIG_HOME": "/Users/dominik/orca/projects/riWork-nsh-p1-m5/target/nsh-integration-home-lnudlcme/.config",
+      "CARGO_HOME": "/Users/dominik/.cargo",
+      "RUSTUP_HOME": "/Users/dominik/.rustup",
+      "CARGO_TARGET_DIR": "/private/tmp/riwork-p1-integration-mkzwamt7/target",
+      "CARGO_BUILD_JOBS": "4",
+      "CARGO_NET_OFFLINE": "true",
+      "NSH_CACHE": "/private/tmp/riwork-p1-m5-workspace/nsh-cache",
+      "NSH_TSC": "/Users/dominik/Library/Caches/nsh/typescript-7.0.2-darwin-arm64/package/lib/tsc"
+    }
+  },
+  "commands": {
+    "W001": {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-nsh-workspace",
+        "--locked",
+        "--offline"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 0,
+      "duration_seconds": 2.51,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-001.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-001.stderr",
+      "stdout_sha256": "d7ed485ab6f0296585679c46150eb80b160fe19311d6e531f8ce6c63993276c8",
+      "stderr_sha256": "e1bf02ab4178d95f24c2ea753cfdeeb9ff64249f255cafd3477d90ce5df8c722",
+      "shell": "cargo test -p riwork-nsh-workspace --locked --offline",
+      "environment": "E1",
+      "test_counts": [
+        [
+          26,
+          0,
+          0
+        ],
+        [
+          10,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          0
+        ]
+      ]
+    },
+    "W002": {
+      "argv": [
+        "test",
+        "-f",
+        "apps/riwork/tests/Global.test.tsx"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 1,
+      "duration_seconds": 0.004,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-002.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-002.stderr",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "shell": "test -f apps/riwork/tests/Global.test.tsx",
+      "environment": "E1"
+    },
+    "W003": {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-core",
+        "--lib",
+        "global_window::tests",
+        "--locked",
+        "--offline"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 0,
+      "duration_seconds": 0.189,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-003.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-003.stderr",
+      "stdout_sha256": "3c1968966278ee7d8985a19515f81445b53ada2ccfb3f55fe7cca7c20ad909e4",
+      "stderr_sha256": "db053720289f697eebb6d4365ca965354e88590d8cd59fe18883744b98584b0b",
+      "shell": "cargo test -p riwork-core --lib global_window::tests --locked --offline",
+      "environment": "E1",
+      "test_counts": [
+        [
+          3,
+          0,
+          0
+        ]
+      ]
+    },
+    "W004": {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-core",
+        "--lib",
+        "the_global_window_restores_as_itself_and_older_snapshots_hold_project_windows",
+        "--locked",
+        "--offline"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 0,
+      "duration_seconds": 0.122,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-004.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-004.stderr",
+      "stdout_sha256": "adaa5f06895267a8c2d17f5c1c2ec7f51d7a300ea4f9e190a269163e9a359c53",
+      "stderr_sha256": "afd505604533caeecd3dba9cebc66a9f59abeedcc0cd42a6e09b480dcee3451a",
+      "shell": "cargo test -p riwork-core --lib the_global_window_restores_as_itself_and_older_snapshots_hold_project_windows --locked --offline",
+      "environment": "E1",
+      "test_counts": [
+        [
+          0,
+          0,
+          0
+        ]
+      ]
+    },
+    "W005": {
+      "argv": [
+        "rg",
+        "-n",
+        "P1-GLB-05",
+        "apps/riwork",
+        "-g",
+        "*.test.ts",
+        "-g",
+        "*.test.tsx"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 1,
+      "duration_seconds": 0.007,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-005.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-005.stderr",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "shell": "rg -n P1-GLB-05 apps/riwork -g '*.test.ts' -g '*.test.tsx'",
+      "environment": "E1"
+    },
+    "W006": {
+      "argv": [
+        "rg",
+        "-n",
+        "P1-GLB-06",
+        "apps/riwork",
+        "-g",
+        "*.test.ts",
+        "-g",
+        "*.test.tsx"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 1,
+      "duration_seconds": 0.007,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-006.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-006.stderr",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "shell": "rg -n P1-GLB-06 apps/riwork -g '*.test.ts' -g '*.test.tsx'",
+      "environment": "E1"
+    },
+    "W007": {
+      "argv": [
+        "rg",
+        "-n",
+        "P1-GLB-07",
+        "apps/riwork",
+        "-g",
+        "*.test.ts",
+        "-g",
+        "*.test.tsx"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 1,
+      "duration_seconds": 0.008,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-007.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-007.stderr",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "shell": "rg -n P1-GLB-07 apps/riwork -g '*.test.ts' -g '*.test.tsx'",
+      "environment": "E1"
+    },
+    "W008": {
+      "argv": [
+        "rg",
+        "-n",
+        "P1-GLB-08",
+        "apps/riwork",
+        "-g",
+        "*.test.ts",
+        "-g",
+        "*.test.tsx"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 1,
+      "duration_seconds": 0.005,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-008.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-008.stderr",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "shell": "rg -n P1-GLB-08 apps/riwork -g '*.test.ts' -g '*.test.tsx'",
+      "environment": "E1"
+    },
+    "W009": {
+      "argv": [
+        "rg",
+        "-n",
+        "P1-GLB-09",
+        "apps/riwork",
+        "-g",
+        "*.test.ts",
+        "-g",
+        "*.test.tsx"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 1,
+      "duration_seconds": 0.005,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-009.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-009.stderr",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "shell": "rg -n P1-GLB-09 apps/riwork -g '*.test.ts' -g '*.test.tsx'",
+      "environment": "E1"
+    },
+    "W010": {
+      "argv": [
+        "rg",
+        "-n",
+        "P1-GLB-10",
+        "apps/riwork",
+        "-g",
+        "*.test.ts",
+        "-g",
+        "*.test.tsx"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 1,
+      "duration_seconds": 0.006,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-010.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-010.stderr",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "shell": "rg -n P1-GLB-10 apps/riwork -g '*.test.ts' -g '*.test.tsx'",
+      "environment": "E1"
+    },
+    "W011": {
+      "argv": [
+        "test",
+        "-f",
+        "apps/riwork/tests/Panes.test.tsx"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 1,
+      "duration_seconds": 0.003,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-011.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-011.stderr",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "shell": "test -f apps/riwork/tests/Panes.test.tsx",
+      "environment": "E1"
+    },
+    "W012": {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-nsh-native",
+        "--features",
+        "test-support",
+        "--test",
+        "layout_session",
+        "--locked",
+        "--offline",
+        "--",
+        "--list"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 101,
+      "duration_seconds": 0.023,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-012.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-012.stderr",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "7e4b54ae46062e66463ad49ea63b395ced5d2c759e6db538cf785c8ee66ce6d6",
+      "shell": "cargo test -p riwork-nsh-native --features test-support --test layout_session --locked --offline -- --list",
+      "environment": "E1"
+    },
+    "W013": {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-core",
+        "--lib",
+        "split_ratios_round_trip_and_survive_insertions_and_collapses",
+        "--locked",
+        "--offline"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 0,
+      "duration_seconds": 0.134,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-013.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-013.stderr",
+      "stdout_sha256": "faa11598317bc10dd3da1debe6a88cce58913cc238fba6437beeb975c276c186",
+      "stderr_sha256": "234e6f3e73b52807a4ce7f1cf12d09a1983e1ea91d7d85123f82b9288ad6642d",
+      "shell": "cargo test -p riwork-core --lib split_ratios_round_trip_and_survive_insertions_and_collapses --locked --offline",
+      "environment": "E1",
+      "test_counts": [
+        [
+          1,
+          0,
+          0
+        ]
+      ]
+    },
+    "W014": {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-core",
+        "--lib",
+        "invalid_ratios_are_repaired_before_persistence",
+        "--locked",
+        "--offline"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 0,
+      "duration_seconds": 0.123,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-014.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-014.stderr",
+      "stdout_sha256": "cd992266531ef1feb7be494b82da5852b348b755ae2b884c2002a4c81cf79bff",
+      "stderr_sha256": "234e6f3e73b52807a4ce7f1cf12d09a1983e1ea91d7d85123f82b9288ad6642d",
+      "shell": "cargo test -p riwork-core --lib invalid_ratios_are_repaired_before_persistence --locked --offline",
+      "environment": "E1",
+      "test_counts": [
+        [
+          1,
+          0,
+          0
+        ]
+      ]
+    },
+    "W015": {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-nsh-native",
+        "--features",
+        "test-support",
+        "--test",
+        "layout_gestures",
+        "--locked",
+        "--offline",
+        "--",
+        "--list"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 101,
+      "duration_seconds": 0.022,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-015.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-015.stderr",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "7e4b54ae46062e66463ad49ea63b395ced5d2c759e6db538cf785c8ee66ce6d6",
+      "shell": "cargo test -p riwork-nsh-native --features test-support --test layout_gestures --locked --offline -- --list",
+      "environment": "E1"
+    },
+    "W016": {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-core",
+        "--lib",
+        "preserve_locked",
+        "--locked",
+        "--offline"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 0,
+      "duration_seconds": 0.132,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-016.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-016.stderr",
+      "stdout_sha256": "3751e377c6e0b552a0e82321ee3a758ee8542c1468401660e38b7aa77bd2e5da",
+      "stderr_sha256": "db053720289f697eebb6d4365ca965354e88590d8cd59fe18883744b98584b0b",
+      "shell": "cargo test -p riwork-core --lib preserve_locked --locked --offline",
+      "environment": "E1",
+      "test_counts": [
+        [
+          8,
+          0,
+          0
+        ]
+      ]
+    },
+    "W017": {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-core",
+        "--lib",
+        "lock_state_follows_the_users_choice_and_defaults_to_the_navigation_pane",
+        "--locked",
+        "--offline"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 0,
+      "duration_seconds": 0.12,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-017.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-017.stderr",
+      "stdout_sha256": "adaa5f06895267a8c2d17f5c1c2ec7f51d7a300ea4f9e190a269163e9a359c53",
+      "stderr_sha256": "afd505604533caeecd3dba9cebc66a9f59abeedcc0cd42a6e09b480dcee3451a",
+      "shell": "cargo test -p riwork-core --lib lock_state_follows_the_users_choice_and_defaults_to_the_navigation_pane --locked --offline",
+      "environment": "E1",
+      "test_counts": [
+        [
+          0,
+          0,
+          0
+        ]
+      ]
+    },
+    "W018": {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-core",
+        "--lib",
+        "stale_lock_ids_are_removed_without_reenabling_auto_lock",
+        "--locked",
+        "--offline"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 0,
+      "duration_seconds": 0.125,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-018.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-018.stderr",
+      "stdout_sha256": "5d8b443d988845f87728806a8f1b06165b9700d0c610cd0615213456260a6238",
+      "stderr_sha256": "afd505604533caeecd3dba9cebc66a9f59abeedcc0cd42a6e09b480dcee3451a",
+      "shell": "cargo test -p riwork-core --lib stale_lock_ids_are_removed_without_reenabling_auto_lock --locked --offline",
+      "environment": "E1",
+      "test_counts": [
+        [
+          1,
+          0,
+          0
+        ]
+      ]
+    },
+    "W019": {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-core",
+        "--lib",
+        "only_a_main_pane_that_exists_outside_focus_mode_takes_what_is_opened",
+        "--locked",
+        "--offline"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 0,
+      "duration_seconds": 0.125,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-019.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-019.stderr",
+      "stdout_sha256": "adaa5f06895267a8c2d17f5c1c2ec7f51d7a300ea4f9e190a269163e9a359c53",
+      "stderr_sha256": "afd505604533caeecd3dba9cebc66a9f59abeedcc0cd42a6e09b480dcee3451a",
+      "shell": "cargo test -p riwork-core --lib only_a_main_pane_that_exists_outside_focus_mode_takes_what_is_opened --locked --offline",
+      "environment": "E1",
+      "test_counts": [
+        [
+          0,
+          0,
+          0
+        ]
+      ]
+    },
+    "W020": {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-core",
+        "--lib",
+        "a_new_tab_opens_in_the_main_pane_whichever_pane_is_selected",
+        "--locked",
+        "--offline"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 0,
+      "duration_seconds": 0.129,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-020.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-020.stderr",
+      "stdout_sha256": "adaa5f06895267a8c2d17f5c1c2ec7f51d7a300ea4f9e190a269163e9a359c53",
+      "stderr_sha256": "db053720289f697eebb6d4365ca965354e88590d8cd59fe18883744b98584b0b",
+      "shell": "cargo test -p riwork-core --lib a_new_tab_opens_in_the_main_pane_whichever_pane_is_selected --locked --offline",
+      "environment": "E1",
+      "test_counts": [
+        [
+          0,
+          0,
+          0
+        ]
+      ]
+    },
+    "W021": {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-core",
+        "--lib",
+        "an_open_chat_orchestrator_tab_comes_to_the_front_by_the_main_pane_rules",
+        "--locked",
+        "--offline"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 0,
+      "duration_seconds": 0.124,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-021.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-021.stderr",
+      "stdout_sha256": "adaa5f06895267a8c2d17f5c1c2ec7f51d7a300ea4f9e190a269163e9a359c53",
+      "stderr_sha256": "afd505604533caeecd3dba9cebc66a9f59abeedcc0cd42a6e09b480dcee3451a",
+      "shell": "cargo test -p riwork-core --lib an_open_chat_orchestrator_tab_comes_to_the_front_by_the_main_pane_rules --locked --offline",
+      "environment": "E1",
+      "test_counts": [
+        [
+          0,
+          0,
+          0
+        ]
+      ]
+    },
+    "W022": {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-core",
+        "--lib",
+        "a_main_pane_that_is_not_in_the_layout_is_dropped_and_there_is_never_more_than_one",
+        "--locked",
+        "--offline"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 0,
+      "duration_seconds": 0.126,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-022.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-022.stderr",
+      "stdout_sha256": "c7cf20429ff953bd7d179fefb908278270007421df15fd5d9410abdf1111e683",
+      "stderr_sha256": "afd505604533caeecd3dba9cebc66a9f59abeedcc0cd42a6e09b480dcee3451a",
+      "shell": "cargo test -p riwork-core --lib a_main_pane_that_is_not_in_the_layout_is_dropped_and_there_is_never_more_than_one --locked --offline",
+      "environment": "E1",
+      "test_counts": [
+        [
+          1,
+          0,
+          0
+        ]
+      ]
+    },
+    "W023": {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-core",
+        "--lib",
+        "closing_a_pane_focuses_the_pane_that_takes_its_space",
+        "--locked",
+        "--offline"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 0,
+      "duration_seconds": 0.121,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-023.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-023.stderr",
+      "stdout_sha256": "adaa5f06895267a8c2d17f5c1c2ec7f51d7a300ea4f9e190a269163e9a359c53",
+      "stderr_sha256": "afd505604533caeecd3dba9cebc66a9f59abeedcc0cd42a6e09b480dcee3451a",
+      "shell": "cargo test -p riwork-core --lib closing_a_pane_focuses_the_pane_that_takes_its_space --locked --offline",
+      "environment": "E1",
+      "test_counts": [
+        [
+          0,
+          0,
+          0
+        ]
+      ]
+    },
+    "W024": {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-core",
+        "--lib",
+        "a_closed_pane_hands_its_tabs_to_the_main_pane_after_its_own",
+        "--locked",
+        "--offline"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 0,
+      "duration_seconds": 0.122,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-024.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-024.stderr",
+      "stdout_sha256": "adaa5f06895267a8c2d17f5c1c2ec7f51d7a300ea4f9e190a269163e9a359c53",
+      "stderr_sha256": "afd505604533caeecd3dba9cebc66a9f59abeedcc0cd42a6e09b480dcee3451a",
+      "shell": "cargo test -p riwork-core --lib a_closed_pane_hands_its_tabs_to_the_main_pane_after_its_own --locked --offline",
+      "environment": "E1",
+      "test_counts": [
+        [
+          0,
+          0,
+          0
+        ]
+      ]
+    },
+    "W025": {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-core",
+        "--lib",
+        "closing_the_main_pane_or_a_locked_one_or_having_no_main_pane_closes_the_tabs_as_before",
+        "--locked",
+        "--offline"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 0,
+      "duration_seconds": 0.123,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-025.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-025.stderr",
+      "stdout_sha256": "adaa5f06895267a8c2d17f5c1c2ec7f51d7a300ea4f9e190a269163e9a359c53",
+      "stderr_sha256": "afd505604533caeecd3dba9cebc66a9f59abeedcc0cd42a6e09b480dcee3451a",
+      "shell": "cargo test -p riwork-core --lib closing_the_main_pane_or_a_locked_one_or_having_no_main_pane_closes_the_tabs_as_before --locked --offline",
+      "environment": "E1",
+      "test_counts": [
+        [
+          0,
+          0,
+          0
+        ]
+      ]
+    },
+    "W026": {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-core",
+        "--lib",
+        "a_gather_moves_every_unlocked_tab_into_the_main_pane_and_leaves_the_locked_pane_alone",
+        "--locked",
+        "--offline"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 0,
+      "duration_seconds": 0.115,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-026.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-026.stderr",
+      "stdout_sha256": "adaa5f06895267a8c2d17f5c1c2ec7f51d7a300ea4f9e190a269163e9a359c53",
+      "stderr_sha256": "234e6f3e73b52807a4ce7f1cf12d09a1983e1ea91d7d85123f82b9288ad6642d",
+      "shell": "cargo test -p riwork-core --lib a_gather_moves_every_unlocked_tab_into_the_main_pane_and_leaves_the_locked_pane_alone --locked --offline",
+      "environment": "E1",
+      "test_counts": [
+        [
+          0,
+          0,
+          0
+        ]
+      ]
+    },
+    "W027": {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-core",
+        "--lib",
+        "a_gather_never_touches_any_locked_pane_among_several",
+        "--locked",
+        "--offline"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 0,
+      "duration_seconds": 0.114,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-027.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-027.stderr",
+      "stdout_sha256": "adaa5f06895267a8c2d17f5c1c2ec7f51d7a300ea4f9e190a269163e9a359c53",
+      "stderr_sha256": "234e6f3e73b52807a4ce7f1cf12d09a1983e1ea91d7d85123f82b9288ad6642d",
+      "shell": "cargo test -p riwork-core --lib a_gather_never_touches_any_locked_pane_among_several --locked --offline",
+      "environment": "E1",
+      "test_counts": [
+        [
+          0,
+          0,
+          0
+        ]
+      ]
+    },
+    "W028": {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-core",
+        "--lib",
+        "a_messy_window_becomes_a_locked_navigation_pane_beside_the_main_pane",
+        "--locked",
+        "--offline"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 0,
+      "duration_seconds": 0.114,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-028.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-028.stderr",
+      "stdout_sha256": "adaa5f06895267a8c2d17f5c1c2ec7f51d7a300ea4f9e190a269163e9a359c53",
+      "stderr_sha256": "234e6f3e73b52807a4ce7f1cf12d09a1983e1ea91d7d85123f82b9288ad6642d",
+      "shell": "cargo test -p riwork-core --lib a_messy_window_becomes_a_locked_navigation_pane_beside_the_main_pane --locked --offline",
+      "environment": "E1",
+      "test_counts": [
+        [
+          0,
+          0,
+          0
+        ]
+      ]
+    },
+    "W029": {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-core",
+        "--lib",
+        "the_default_layout_closes_nothing_and_a_locked_panes_tabs_are_moved_not_dropped",
+        "--locked",
+        "--offline"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 0,
+      "duration_seconds": 0.116,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-029.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-029.stderr",
+      "stdout_sha256": "adaa5f06895267a8c2d17f5c1c2ec7f51d7a300ea4f9e190a269163e9a359c53",
+      "stderr_sha256": "234e6f3e73b52807a4ce7f1cf12d09a1983e1ea91d7d85123f82b9288ad6642d",
+      "shell": "cargo test -p riwork-core --lib the_default_layout_closes_nothing_and_a_locked_panes_tabs_are_moved_not_dropped --locked --offline",
+      "environment": "E1",
+      "test_counts": [
+        [
+          0,
+          0,
+          0
+        ]
+      ]
+    },
+    "W030": {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-core",
+        "--lib",
+        "a_window_that_is_laid_out_already_is_left_exactly_as_it_is",
+        "--locked",
+        "--offline"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 0,
+      "duration_seconds": 0.117,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-030.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-030.stderr",
+      "stdout_sha256": "adaa5f06895267a8c2d17f5c1c2ec7f51d7a300ea4f9e190a269163e9a359c53",
+      "stderr_sha256": "234e6f3e73b52807a4ce7f1cf12d09a1983e1ea91d7d85123f82b9288ad6642d",
+      "shell": "cargo test -p riwork-core --lib a_window_that_is_laid_out_already_is_left_exactly_as_it_is --locked --offline",
+      "environment": "E1",
+      "test_counts": [
+        [
+          0,
+          0,
+          0
+        ]
+      ]
+    },
+    "W031": {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-core",
+        "--lib",
+        "panes_keep_their_ids_and_a_new_one_is_made_only_when_there_is_none_to_keep",
+        "--locked",
+        "--offline"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 0,
+      "duration_seconds": 0.119,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-031.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-031.stderr",
+      "stdout_sha256": "adaa5f06895267a8c2d17f5c1c2ec7f51d7a300ea4f9e190a269163e9a359c53",
+      "stderr_sha256": "afd505604533caeecd3dba9cebc66a9f59abeedcc0cd42a6e09b480dcee3451a",
+      "shell": "cargo test -p riwork-core --lib panes_keep_their_ids_and_a_new_one_is_made_only_when_there_is_none_to_keep --locked --offline",
+      "environment": "E1",
+      "test_counts": [
+        [
+          0,
+          0,
+          0
+        ]
+      ]
+    },
+    "W032": {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-core",
+        "--lib",
+        "the_default_layout_is_saved_as_the_projects_layout_and_reads_back_as_it_was",
+        "--locked",
+        "--offline"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 0,
+      "duration_seconds": 0.117,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-032.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-032.stderr",
+      "stdout_sha256": "adaa5f06895267a8c2d17f5c1c2ec7f51d7a300ea4f9e190a269163e9a359c53",
+      "stderr_sha256": "234e6f3e73b52807a4ce7f1cf12d09a1983e1ea91d7d85123f82b9288ad6642d",
+      "shell": "cargo test -p riwork-core --lib the_default_layout_is_saved_as_the_projects_layout_and_reads_back_as_it_was --locked --offline",
+      "environment": "E1",
+      "test_counts": [
+        [
+          0,
+          0,
+          0
+        ]
+      ]
+    },
+    "W033": {
+      "argv": [
+        "rg",
+        "-n",
+        "P1-PANE-11",
+        "apps/riwork",
+        "-g",
+        "*.test.ts",
+        "-g",
+        "*.test.tsx"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 1,
+      "duration_seconds": 0.006,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-033.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-033.stderr",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "shell": "rg -n P1-PANE-11 apps/riwork -g '*.test.ts' -g '*.test.tsx'",
+      "environment": "E1"
+    },
+    "W034": {
+      "argv": [
+        "test",
+        "-f",
+        "apps/riwork/tests/PaneMenu.test.tsx"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 1,
+      "duration_seconds": 0.004,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-034.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-034.stderr",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "shell": "test -f apps/riwork/tests/PaneMenu.test.tsx",
+      "environment": "E1"
+    },
+    "W035": {
+      "argv": [
+        "test",
+        "-f",
+        "apps/riwork/tests/metrics.test.ts"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 1,
+      "duration_seconds": 0.003,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-035.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-035.stderr",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "shell": "test -f apps/riwork/tests/metrics.test.ts",
+      "environment": "E1"
+    },
+    "W036": {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-core",
+        "--lib",
+        "a_remote_shell_tab_has_a_fixed_json_shape_and_key",
+        "--locked",
+        "--offline"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 0,
+      "duration_seconds": 0.117,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-036.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-036.stderr",
+      "stdout_sha256": "34dc68466e6e72ae8108aaaec02f0e362358cd7acb30081525a425524d4f6f21",
+      "stderr_sha256": "234e6f3e73b52807a4ce7f1cf12d09a1983e1ea91d7d85123f82b9288ad6642d",
+      "shell": "cargo test -p riwork-core --lib a_remote_shell_tab_has_a_fixed_json_shape_and_key --locked --offline",
+      "environment": "E1",
+      "test_counts": [
+        [
+          1,
+          0,
+          0
+        ]
+      ]
+    },
+    "W037": {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-core",
+        "--lib",
+        "a_chat_tab_has_a_fixed_json_shape_and_key",
+        "--locked",
+        "--offline"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 0,
+      "duration_seconds": 0.117,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-037.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-037.stderr",
+      "stdout_sha256": "d61335b366448db9480c66c423f9c1f53168762a7a4b178cc945fa2683f88753",
+      "stderr_sha256": "234e6f3e73b52807a4ce7f1cf12d09a1983e1ea91d7d85123f82b9288ad6642d",
+      "shell": "cargo test -p riwork-core --lib a_chat_tab_has_a_fixed_json_shape_and_key --locked --offline",
+      "environment": "E1",
+      "test_counts": [
+        [
+          1,
+          0,
+          0
+        ]
+      ]
+    },
+    "W038": {
+      "argv": [
+        "test",
+        "-f",
+        "apps/riwork/tests/Tabs.test.tsx"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 1,
+      "duration_seconds": 0.004,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-038.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-038.stderr",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "shell": "test -f apps/riwork/tests/Tabs.test.tsx",
+      "environment": "E1"
+    },
+    "W039": {
+      "argv": [
+        "test",
+        "-f",
+        "apps/riwork/tests/CloseDialog.test.tsx"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 1,
+      "duration_seconds": 0.003,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-039.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-039.stderr",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "shell": "test -f apps/riwork/tests/CloseDialog.test.tsx",
+      "environment": "E1"
+    },
+    "W040": {
+      "argv": [
+        "test",
+        "-f",
+        "apps/riwork/tests/Strip.test.tsx"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 1,
+      "duration_seconds": 0.003,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-040.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-040.stderr",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "shell": "test -f apps/riwork/tests/Strip.test.tsx",
+      "environment": "E1"
+    },
+    "W041": {
+      "argv": [
+        "rg",
+        "-n",
+        "P1-STRIP-03",
+        "apps/riwork",
+        "-g",
+        "*.test.ts",
+        "-g",
+        "*.test.tsx"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 1,
+      "duration_seconds": 0.007,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-041.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-041.stderr",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "shell": "rg -n P1-STRIP-03 apps/riwork -g '*.test.ts' -g '*.test.tsx'",
+      "environment": "E1"
+    },
+    "W042": {
+      "argv": [
+        "rg",
+        "-n",
+        "P1-STRIP-04",
+        "apps/riwork",
+        "-g",
+        "*.test.ts",
+        "-g",
+        "*.test.tsx"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 1,
+      "duration_seconds": 0.005,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-042.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-042.stderr",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "shell": "rg -n P1-STRIP-04 apps/riwork -g '*.test.ts' -g '*.test.tsx'",
+      "environment": "E1"
+    },
+    "W043": {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-core",
+        "--lib",
+        "stale_inventory_keeps_hide_and_rename",
+        "--locked",
+        "--offline"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 0,
+      "duration_seconds": 0.118,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-043.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-043.stderr",
+      "stdout_sha256": "adaa5f06895267a8c2d17f5c1c2ec7f51d7a300ea4f9e190a269163e9a359c53",
+      "stderr_sha256": "afd505604533caeecd3dba9cebc66a9f59abeedcc0cd42a6e09b480dcee3451a",
+      "shell": "cargo test -p riwork-core --lib stale_inventory_keeps_hide_and_rename --locked --offline",
+      "environment": "E1",
+      "test_counts": [
+        [
+          0,
+          0,
+          0
+        ]
+      ]
+    },
+    "W044": {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-core",
+        "--lib",
+        "one_refresh_transaction_ends_where_separate_transactions_did",
+        "--locked",
+        "--offline"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 0,
+      "duration_seconds": 0.127,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-044.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-044.stderr",
+      "stdout_sha256": "adaa5f06895267a8c2d17f5c1c2ec7f51d7a300ea4f9e190a269163e9a359c53",
+      "stderr_sha256": "afd505604533caeecd3dba9cebc66a9f59abeedcc0cd42a6e09b480dcee3451a",
+      "shell": "cargo test -p riwork-core --lib one_refresh_transaction_ends_where_separate_transactions_did --locked --offline",
+      "environment": "E1",
+      "test_counts": [
+        [
+          0,
+          0,
+          0
+        ]
+      ]
+    },
+    "W045": {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-core",
+        "--lib",
+        "titles_come_from_a_rename_then_the_provider_then_the_first_message_then_the_kind",
+        "--locked",
+        "--offline"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 0,
+      "duration_seconds": 0.136,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-045.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-045.stderr",
+      "stdout_sha256": "adaa5f06895267a8c2d17f5c1c2ec7f51d7a300ea4f9e190a269163e9a359c53",
+      "stderr_sha256": "db053720289f697eebb6d4365ca965354e88590d8cd59fe18883744b98584b0b",
+      "shell": "cargo test -p riwork-core --lib titles_come_from_a_rename_then_the_provider_then_the_first_message_then_the_kind --locked --offline",
+      "environment": "E1",
+      "test_counts": [
+        [
+          0,
+          0,
+          0
+        ]
+      ]
+    },
+    "W046": {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-core",
+        "--lib",
+        "a_title_is_set_once_and_only_a_higher_source_or_a_new_rename_replaces_it",
+        "--locked",
+        "--offline"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 0,
+      "duration_seconds": 0.124,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-046.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-046.stderr",
+      "stdout_sha256": "adaa5f06895267a8c2d17f5c1c2ec7f51d7a300ea4f9e190a269163e9a359c53",
+      "stderr_sha256": "afd505604533caeecd3dba9cebc66a9f59abeedcc0cd42a6e09b480dcee3451a",
+      "shell": "cargo test -p riwork-core --lib a_title_is_set_once_and_only_a_higher_source_or_a_new_rename_replaces_it --locked --offline",
+      "environment": "E1",
+      "test_counts": [
+        [
+          0,
+          0,
+          0
+        ]
+      ]
+    },
+    "W047": {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-core",
+        "--lib",
+        "new_sessions_append_and_any_tab_hides",
+        "--locked",
+        "--offline"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 0,
+      "duration_seconds": 0.13,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-047.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-047.stderr",
+      "stdout_sha256": "adaa5f06895267a8c2d17f5c1c2ec7f51d7a300ea4f9e190a269163e9a359c53",
+      "stderr_sha256": "db053720289f697eebb6d4365ca965354e88590d8cd59fe18883744b98584b0b",
+      "shell": "cargo test -p riwork-core --lib new_sessions_append_and_any_tab_hides --locked --offline",
+      "environment": "E1",
+      "test_counts": [
+        [
+          0,
+          0,
+          0
+        ]
+      ]
+    },
+    "W048": {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-nsh-native",
+        "--features",
+        "test-support",
+        "--test",
+        "tabs",
+        "--locked",
+        "--offline",
+        "--",
+        "--list"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 101,
+      "duration_seconds": 0.023,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-048.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-048.stderr",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "7e4b54ae46062e66463ad49ea63b395ced5d2c759e6db538cf785c8ee66ce6d6",
+      "shell": "cargo test -p riwork-nsh-native --features test-support --test tabs --locked --offline -- --list",
+      "environment": "E1"
+    },
+    "W049": {
+      "argv": [
+        "test",
+        "-f",
+        "apps/riwork/tests/Drag.test.tsx"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 1,
+      "duration_seconds": 0.003,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-049.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-049.stderr",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "shell": "test -f apps/riwork/tests/Drag.test.tsx",
+      "environment": "E1"
+    },
+    "W050": {
+      "argv": [
+        "rg",
+        "-n",
+        "P1-DRAG-03",
+        "apps/riwork",
+        "-g",
+        "*.test.ts",
+        "-g",
+        "*.test.tsx"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 1,
+      "duration_seconds": 0.007,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-050.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-050.stderr",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "shell": "rg -n P1-DRAG-03 apps/riwork -g '*.test.ts' -g '*.test.tsx'",
+      "environment": "E1"
+    },
+    "W051": {
+      "argv": [
+        "test",
+        "-f",
+        "apps/riwork/tests/Identity.test.tsx"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 1,
+      "duration_seconds": 0.004,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-051.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-051.stderr",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "shell": "test -f apps/riwork/tests/Identity.test.tsx",
+      "environment": "E1"
+    },
+    "W052": {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-nsh-native",
+        "--features",
+        "test-support",
+        "--test",
+        "layout_oracle",
+        "--locked",
+        "--offline",
+        "--",
+        "--list"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 101,
+      "duration_seconds": 0.025,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-052.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-052.stderr",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "7e4b54ae46062e66463ad49ea63b395ced5d2c759e6db538cf785c8ee66ce6d6",
+      "shell": "cargo test -p riwork-nsh-native --features test-support --test layout_oracle --locked --offline -- --list",
+      "environment": "E1"
+    },
+    "W053": {
+      "argv": [
+        "test",
+        "-f",
+        "apps/riwork/tests/Reopen.test.tsx"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 1,
+      "duration_seconds": 0.003,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-053.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-053.stderr",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "shell": "test -f apps/riwork/tests/Reopen.test.tsx",
+      "environment": "E1"
+    },
+    "W054": {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-nsh-native",
+        "--features",
+        "test-support",
+        "--test",
+        "layout_reopen",
+        "--locked",
+        "--offline",
+        "--",
+        "--list"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 101,
+      "duration_seconds": 0.023,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-054.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-054.stderr",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "7e4b54ae46062e66463ad49ea63b395ced5d2c759e6db538cf785c8ee66ce6d6",
+      "shell": "cargo test -p riwork-nsh-native --features test-support --test layout_reopen --locked --offline -- --list",
+      "environment": "E1"
+    },
+    "W055": {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-core",
+        "--lib",
+        "corrupt_file_is_set_aside_on_save_instead_of_crashing_or_being_deleted",
+        "--locked",
+        "--offline"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 0,
+      "duration_seconds": 0.143,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-055.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-055.stderr",
+      "stdout_sha256": "7524259296d104afa6d82abc197050f28f74e62228ec4574594c4d00cd80695c",
+      "stderr_sha256": "afd505604533caeecd3dba9cebc66a9f59abeedcc0cd42a6e09b480dcee3451a",
+      "shell": "cargo test -p riwork-core --lib corrupt_file_is_set_aside_on_save_instead_of_crashing_or_being_deleted --locked --offline",
+      "environment": "E1",
+      "test_counts": [
+        [
+          1,
+          0,
+          0
+        ]
+      ]
+    },
+    "W056": {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-core",
+        "--lib",
+        "newer_schema_is_neither_loaded_nor_overwritten",
+        "--locked",
+        "--offline"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 0,
+      "duration_seconds": 0.133,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-056.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-056.stderr",
+      "stdout_sha256": "2363aaff701ca739e7ed1b236a5af4fa35e7c917e81980993d4b41e0e1268a6a",
+      "stderr_sha256": "db053720289f697eebb6d4365ca965354e88590d8cd59fe18883744b98584b0b",
+      "shell": "cargo test -p riwork-core --lib newer_schema_is_neither_loaded_nor_overwritten --locked --offline",
+      "environment": "E1",
+      "test_counts": [
+        [
+          1,
+          0,
+          0
+        ]
+      ]
+    },
+    "W057": {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-core",
+        "--lib",
+        "legacy_shell_layout_migrates_without_changing_tab_order_or_selection",
+        "--locked",
+        "--offline"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 0,
+      "duration_seconds": 0.134,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-057.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-057.stderr",
+      "stdout_sha256": "9ebdb05d0ccf1234f9c385f7b8ec171959425336e39b1be9f9ea7abca671d049",
+      "stderr_sha256": "db053720289f697eebb6d4365ca965354e88590d8cd59fe18883744b98584b0b",
+      "shell": "cargo test -p riwork-core --lib legacy_shell_layout_migrates_without_changing_tab_order_or_selection --locked --offline",
+      "environment": "E1",
+      "test_counts": [
+        [
+          1,
+          0,
+          0
+        ]
+      ]
+    },
+    "W058": {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-core",
+        "--lib",
+        "mixed_tabs_preserve_order_and_selection_while_migrating_bottom_strips",
+        "--locked",
+        "--offline"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 0,
+      "duration_seconds": 0.131,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-058.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-058.stderr",
+      "stdout_sha256": "6d1db9f1234a3f0c8fc0909724d07b0e58f726b84b06ed90618bd7f6be83ac88",
+      "stderr_sha256": "afd505604533caeecd3dba9cebc66a9f59abeedcc0cd42a6e09b480dcee3451a",
+      "shell": "cargo test -p riwork-core --lib mixed_tabs_preserve_order_and_selection_while_migrating_bottom_strips --locked --offline",
+      "environment": "E1",
+      "test_counts": [
+        [
+          1,
+          0,
+          0
+        ]
+      ]
+    },
+    "W059": {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-core",
+        "--lib",
+        "carry_preserves_locked_tabs_ratios_and_maps_colliding_destination_ids",
+        "--locked",
+        "--offline"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 0,
+      "duration_seconds": 0.124,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-059.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-059.stderr",
+      "stdout_sha256": "6da32396a72b48483bf96a600651264a0664c25c3384c8e7b7150fac9ffcce28",
+      "stderr_sha256": "afd505604533caeecd3dba9cebc66a9f59abeedcc0cd42a6e09b480dcee3451a",
+      "shell": "cargo test -p riwork-core --lib carry_preserves_locked_tabs_ratios_and_maps_colliding_destination_ids --locked --offline",
+      "environment": "E1",
+      "test_counts": [
+        [
+          1,
+          0,
+          0
+        ]
+      ]
+    },
+    "W060": {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-core",
+        "--lib",
+        "destination_locked_pane_sessions_are_recovered_into_unlocked_region",
+        "--locked",
+        "--offline"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 0,
+      "duration_seconds": 0.116,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-060.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-060.stderr",
+      "stdout_sha256": "b072ee864a45a19e919bd83d9d8860f132f9035c9928f35ed0abd0d81dbeb83e",
+      "stderr_sha256": "234e6f3e73b52807a4ce7f1cf12d09a1983e1ea91d7d85123f82b9288ad6642d",
+      "shell": "cargo test -p riwork-core --lib destination_locked_pane_sessions_are_recovered_into_unlocked_region --locked --offline",
+      "environment": "E1",
+      "test_counts": [
+        [
+          1,
+          0,
+          0
+        ]
+      ]
+    },
+    "W061": {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-core",
+        "--lib",
+        "a_locked_main_pane_stays_the_main_pane_when_the_project_changes",
+        "--locked",
+        "--offline"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 0,
+      "duration_seconds": 0.109,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-061.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-061.stderr",
+      "stdout_sha256": "761c2dfbdbc5d30c2fc6a1fbef08337438f16f853142afa3e94c01acf9aefe38",
+      "stderr_sha256": "234e6f3e73b52807a4ce7f1cf12d09a1983e1ea91d7d85123f82b9288ad6642d",
+      "shell": "cargo test -p riwork-core --lib a_locked_main_pane_stays_the_main_pane_when_the_project_changes --locked --offline",
+      "environment": "E1",
+      "test_counts": [
+        [
+          1,
+          0,
+          0
+        ]
+      ]
+    },
+    "W062": {
+      "argv": [
+        "rg",
+        "-n",
+        "layouts\\.json",
+        "crates/riwork-nsh-native",
+        "crates/riwork-desktop/src/nsh_main.rs",
+        "crates/riwork-desktop/src/nsh_host.rs",
+        "apps/riwork",
+        "-g",
+        "!**/target/**",
+        "-g",
+        "!**/.nsh/**"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 0,
+      "duration_seconds": 0.008,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-062.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-062.stderr",
+      "stdout_sha256": "8607845eeb36b8cfbeb653d1dd884f2f8b553d9aad24d8ecdc186fe6d3ec9601",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "shell": "rg -n 'layouts\\.json' crates/riwork-nsh-native crates/riwork-desktop/src/nsh_main.rs crates/riwork-desktop/src/nsh_host.rs apps/riwork -g '!**/target/**' -g '!**/.nsh/**'",
+      "environment": "E1"
+    },
+    "W063": {
+      "argv": [
+        "test",
+        "-f",
+        "apps/riwork/tests/keymap.test.ts"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 1,
+      "duration_seconds": 0.003,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-063.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-063.stderr",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "shell": "test -f apps/riwork/tests/keymap.test.ts",
+      "environment": "E1"
+    },
+    "W064": {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-core",
+        "--lib",
+        "command_numbers_count_session_tabs_and_nine_is_the_last",
+        "--locked",
+        "--offline"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 0,
+      "duration_seconds": 0.109,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-064.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-064.stderr",
+      "stdout_sha256": "adaa5f06895267a8c2d17f5c1c2ec7f51d7a300ea4f9e190a269163e9a359c53",
+      "stderr_sha256": "234e6f3e73b52807a4ce7f1cf12d09a1983e1ea91d7d85123f82b9288ad6642d",
+      "shell": "cargo test -p riwork-core --lib command_numbers_count_session_tabs_and_nine_is_the_last --locked --offline",
+      "environment": "E1",
+      "test_counts": [
+        [
+          0,
+          0,
+          0
+        ]
+      ]
+    },
+    "W065": {
+      "argv": [
+        "rg",
+        "-n",
+        "P1-KEYS-04",
+        "apps/riwork",
+        "-g",
+        "*.test.ts",
+        "-g",
+        "*.test.tsx"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 1,
+      "duration_seconds": 0.007,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-065.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-065.stderr",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "shell": "rg -n P1-KEYS-04 apps/riwork -g '*.test.ts' -g '*.test.tsx'",
+      "environment": "E1"
+    },
+    "W066": {
+      "argv": [
+        "rg",
+        "-n",
+        "P1-KEYS-05",
+        "apps/riwork",
+        "-g",
+        "*.test.ts",
+        "-g",
+        "*.test.tsx"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 1,
+      "duration_seconds": 0.006,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-066.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-066.stderr",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "shell": "rg -n P1-KEYS-05 apps/riwork -g '*.test.ts' -g '*.test.tsx'",
+      "environment": "E1"
+    },
+    "W067": {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-core",
+        "--lib",
+        "status_bar::tests",
+        "--locked",
+        "--offline"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 0,
+      "duration_seconds": 0.134,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-067.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-067.stderr",
+      "stdout_sha256": "e1c61ed91b670f1d1d87b31354836348b2596d3ee77ef30f33ccec5be9a07fb2",
+      "stderr_sha256": "db053720289f697eebb6d4365ca965354e88590d8cd59fe18883744b98584b0b",
+      "shell": "cargo test -p riwork-core --lib status_bar::tests --locked --offline",
+      "environment": "E1",
+      "test_counts": [
+        [
+          4,
+          0,
+          0
+        ]
+      ]
+    },
+    "W068": {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-core",
+        "--lib",
+        "routing_and_reordering_preserve_other_side_and_round_trip",
+        "--locked",
+        "--offline"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 0,
+      "duration_seconds": 0.117,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-068.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-068.stderr",
+      "stdout_sha256": "a2597faffbe408fad420f83508e72b670e1ee8672c03dac741f3e527f6706736",
+      "stderr_sha256": "234e6f3e73b52807a4ce7f1cf12d09a1983e1ea91d7d85123f82b9288ad6642d",
+      "shell": "cargo test -p riwork-core --lib routing_and_reordering_preserve_other_side_and_round_trip --locked --offline",
+      "environment": "E1",
+      "test_counts": [
+        [
+          1,
+          0,
+          0
+        ]
+      ]
+    },
+    "W069": {
+      "argv": [
+        "test",
+        "-f",
+        "apps/riwork/tests/StatusBar.test.tsx"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 1,
+      "duration_seconds": 0.003,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-069.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-069.stderr",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "shell": "test -f apps/riwork/tests/StatusBar.test.tsx",
+      "environment": "E1"
+    },
+    "W070": {
+      "argv": [
+        "rg",
+        "-n",
+        "P1-STAT-02",
+        "apps/riwork",
+        "-g",
+        "*.test.ts",
+        "-g",
+        "*.test.tsx"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 1,
+      "duration_seconds": 0.006,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-070.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-070.stderr",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "shell": "rg -n P1-STAT-02 apps/riwork -g '*.test.ts' -g '*.test.tsx'",
+      "environment": "E1"
+    },
+    "W071": {
+      "argv": [
+        "rg",
+        "-n",
+        "P1-STAT-03",
+        "apps/riwork",
+        "-g",
+        "*.test.ts",
+        "-g",
+        "*.test.tsx"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 1,
+      "duration_seconds": 0.006,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-071.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-071.stderr",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "shell": "rg -n P1-STAT-03 apps/riwork -g '*.test.ts' -g '*.test.tsx'",
+      "environment": "E1"
+    },
+    "W072": {
+      "argv": [
+        "rg",
+        "-n",
+        "P1-STAT-04",
+        "apps/riwork",
+        "-g",
+        "*.test.ts",
+        "-g",
+        "*.test.tsx"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 1,
+      "duration_seconds": 0.007,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-072.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-072.stderr",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "shell": "rg -n P1-STAT-04 apps/riwork -g '*.test.ts' -g '*.test.tsx'",
+      "environment": "E1"
+    },
+    "W073": {
+      "argv": [
+        "rg",
+        "-n",
+        "P1-STAT-05",
+        "apps/riwork",
+        "-g",
+        "*.test.ts",
+        "-g",
+        "*.test.tsx"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 1,
+      "duration_seconds": 0.006,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-073.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-073.stderr",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "shell": "rg -n P1-STAT-05 apps/riwork -g '*.test.ts' -g '*.test.tsx'",
+      "environment": "E1"
+    },
+    "W074": {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-core",
+        "--lib",
+        "legacy_and_invalid_window_sizes_do_not_break_layout_restoration",
+        "--locked",
+        "--offline"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 0,
+      "duration_seconds": 0.12,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-074.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-074.stderr",
+      "stdout_sha256": "e478a40e75aac0c07a033fd2cd158807da33abd5ed0fe056aabec9f4510c6456",
+      "stderr_sha256": "afd505604533caeecd3dba9cebc66a9f59abeedcc0cd42a6e09b480dcee3451a",
+      "shell": "cargo test -p riwork-core --lib legacy_and_invalid_window_sizes_do_not_break_layout_restoration --locked --offline",
+      "environment": "E1",
+      "test_counts": [
+        [
+          1,
+          0,
+          0
+        ]
+      ]
+    },
+    "W075": {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-nsh-native",
+        "--features",
+        "test-support",
+        "--test",
+        "window_size",
+        "--locked",
+        "--offline",
+        "--",
+        "--list"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 101,
+      "duration_seconds": 0.022,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-075.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-075.stderr",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "7e4b54ae46062e66463ad49ea63b395ced5d2c759e6db538cf785c8ee66ce6d6",
+      "shell": "cargo test -p riwork-nsh-native --features test-support --test window_size --locked --offline -- --list",
+      "environment": "E1"
+    },
+    "W076": {
+      "argv": [
+        "test",
+        "-f",
+        "apps/riwork/tests/Window.test.tsx"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 1,
+      "duration_seconds": 0.003,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-076.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-076.stderr",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "shell": "test -f apps/riwork/tests/Window.test.tsx",
+      "environment": "E1"
+    },
+    "W077": {
+      "argv": [
+        "test",
+        "-f",
+        "apps/riwork/tests/Chrome.test.tsx"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 1,
+      "duration_seconds": 0.003,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-077.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-077.stderr",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "shell": "test -f apps/riwork/tests/Chrome.test.tsx",
+      "environment": "E1"
+    },
+    "W078": {
+      "argv": [
+        "rg",
+        "-n",
+        "P1-WIN-09",
+        "apps/riwork",
+        "-g",
+        "*.test.ts",
+        "-g",
+        "*.test.tsx"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 1,
+      "duration_seconds": 0.007,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-078.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-078.stderr",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "shell": "rg -n P1-WIN-09 apps/riwork -g '*.test.ts' -g '*.test.tsx'",
+      "environment": "E1"
+    },
+    "W079": {
+      "argv": [
+        "rg",
+        "-n",
+        "P1-WIN-10",
+        "apps/riwork",
+        "-g",
+        "*.test.ts",
+        "-g",
+        "*.test.tsx"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 1,
+      "duration_seconds": 0.008,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-079.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-079.stderr",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "shell": "rg -n P1-WIN-10 apps/riwork -g '*.test.ts' -g '*.test.tsx'",
+      "environment": "E1"
+    },
+    "W080": {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-core",
+        "--lib",
+        "identifiers_geometry_and_private_file_read_are_validated",
+        "--locked",
+        "--offline"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 0,
+      "duration_seconds": 0.124,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-080.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-080.stderr",
+      "stdout_sha256": "adaa5f06895267a8c2d17f5c1c2ec7f51d7a300ea4f9e190a269163e9a359c53",
+      "stderr_sha256": "afd505604533caeecd3dba9cebc66a9f59abeedcc0cd42a6e09b480dcee3451a",
+      "shell": "cargo test -p riwork-core --lib identifiers_geometry_and_private_file_read_are_validated --locked --offline",
+      "environment": "E1",
+      "test_counts": [
+        [
+          0,
+          0,
+          0
+        ]
+      ]
+    },
+    "W081": {
+      "argv": [
+        "test",
+        "-f",
+        "apps/riwork/tests/Restore.test.tsx"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 1,
+      "duration_seconds": 0.003,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-081.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-081.stderr",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "shell": "test -f apps/riwork/tests/Restore.test.tsx",
+      "environment": "E1"
+    },
+    "W082": {
+      "argv": [
+        "test",
+        "-f",
+        "apps/riwork/tests/Theme.test.tsx"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 1,
+      "duration_seconds": 0.003,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-082.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-082.stderr",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "shell": "test -f apps/riwork/tests/Theme.test.tsx",
+      "environment": "E1"
+    },
+    "W083": {
+      "argv": [
+        "rg",
+        "-n",
+        "P1-THM-05",
+        "apps/riwork",
+        "-g",
+        "*.test.ts",
+        "-g",
+        "*.test.tsx"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 1,
+      "duration_seconds": 0.007,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-083.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-083.stderr",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "shell": "rg -n P1-THM-05 apps/riwork -g '*.test.ts' -g '*.test.tsx'",
+      "environment": "E1"
+    },
+    "W084": {
+      "argv": [
+        "rg",
+        "-n",
+        "P1-TXT-02",
+        "apps/riwork",
+        "-g",
+        "*.test.ts",
+        "-g",
+        "*.test.tsx"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 1,
+      "duration_seconds": 0.007,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-084.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-084.stderr",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "shell": "rg -n P1-TXT-02 apps/riwork -g '*.test.ts' -g '*.test.tsx'",
+      "environment": "E1"
+    },
+    "W085": {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-core",
+        "--lib",
+        "sentence_case_keeps_proper_nouns_and_acronyms",
+        "--locked",
+        "--offline"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 0,
+      "duration_seconds": 0.121,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-085.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-085.stderr",
+      "stdout_sha256": "adaa5f06895267a8c2d17f5c1c2ec7f51d7a300ea4f9e190a269163e9a359c53",
+      "stderr_sha256": "afd505604533caeecd3dba9cebc66a9f59abeedcc0cd42a6e09b480dcee3451a",
+      "shell": "cargo test -p riwork-core --lib sentence_case_keeps_proper_nouns_and_acronyms --locked --offline",
+      "environment": "E1",
+      "test_counts": [
+        [
+          0,
+          0,
+          0
+        ]
+      ]
+    },
+    "W086": {
+      "argv": [
+        "test",
+        "-f",
+        "apps/riwork/tests/TextSize.test.tsx"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 1,
+      "duration_seconds": 0.004,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-086.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-086.stderr",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "shell": "test -f apps/riwork/tests/TextSize.test.tsx",
+      "environment": "E1"
+    },
+    "W087": {
+      "argv": [
+        "test",
+        "-f",
+        "apps/riwork/tests/Idle.test.tsx"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 0,
+      "duration_seconds": 0.004,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-087.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-087.stderr",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "shell": "test -f apps/riwork/tests/Idle.test.tsx",
+      "environment": "E1"
+    },
+    "W088": {
+      "argv": [
+        "rg",
+        "-n",
+        "P1-POLL-03",
+        "apps/riwork",
+        "-g",
+        "*.test.ts",
+        "-g",
+        "*.test.tsx"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 1,
+      "duration_seconds": 0.006,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-088.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-088.stderr",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "shell": "rg -n P1-POLL-03 apps/riwork -g '*.test.ts' -g '*.test.tsx'",
+      "environment": "E1"
+    },
+    "W089": {
+      "argv": [
+        "rg",
+        "-n",
+        "setInterval\\(|requestAnimationFrame\\(|\\.refetch\\(",
+        "apps/riwork",
+        "-g",
+        "!**/*.test.ts*",
+        "-g",
+        "!**/target/**",
+        "-g",
+        "!**/.nsh/**"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 1,
+      "duration_seconds": 0.006,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-089.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/routes-6kmsa8vp/route-089.stderr",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "shell": "rg -n 'setInterval\\(|requestAnimationFrame\\(|\\.refetch\\(' apps/riwork -g '!**/*.test.ts*' -g '!**/target/**' -g '!**/.nsh/**'",
+      "environment": "E1"
+    },
+    "W090": {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-engine",
+        "--lib",
+        "the_global_window_restores_as_itself_and_older_snapshots_hold_project_windows",
+        "--locked",
+        "--offline"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 0,
+      "duration_seconds": 4.242,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/supplement-ofs9mbu_/engine-1.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/supplement-ofs9mbu_/engine-1.stderr",
+      "stdout_sha256": "7a784d9cb3179aaa08c10051c02539bb055028c3fd372b80aaf3ae293900805d",
+      "stderr_sha256": "a9bb2803c0c95bd1edf52e084e3ecb2b29e332cc811e469107be3716aee3f73e",
+      "shell": "cargo test -p riwork-engine --lib the_global_window_restores_as_itself_and_older_snapshots_hold_project_windows --locked --offline",
+      "environment": "E2",
+      "test_counts": [
+        [
+          1,
+          0,
+          0
+        ]
+      ]
+    },
+    "W091": {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-engine",
+        "--lib",
+        "stale_inventory_keeps_hide_and_rename",
+        "--locked",
+        "--offline"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 0,
+      "duration_seconds": 0.271,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/supplement-ofs9mbu_/engine-2.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/supplement-ofs9mbu_/engine-2.stderr",
+      "stdout_sha256": "cd40f94e988fc588cf92684904d956a3c56426bbfff7de7e6a41ab58fc39f270",
+      "stderr_sha256": "401005f67744110457c8a23ceebe78f58529f03955276a5dd79de65b1b9fef0c",
+      "shell": "cargo test -p riwork-engine --lib stale_inventory_keeps_hide_and_rename --locked --offline",
+      "environment": "E2",
+      "test_counts": [
+        [
+          1,
+          0,
+          0
+        ]
+      ]
+    },
+    "W092": {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-engine",
+        "--lib",
+        "one_refresh_transaction_ends_where_separate_transactions_did",
+        "--locked",
+        "--offline"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 0,
+      "duration_seconds": 8.387,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/supplement-ofs9mbu_/engine-3.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/supplement-ofs9mbu_/engine-3.stderr",
+      "stdout_sha256": "51fe6a4e50367384aae0c53726c170f78b961745ca50d2c503618f50c75adc6f",
+      "stderr_sha256": "9a57f8ca8a8cca5b0b09de1ff0d1f6bf30700eeb2a72a675adfdc1ae57a5b25c",
+      "shell": "cargo test -p riwork-engine --lib one_refresh_transaction_ends_where_separate_transactions_did --locked --offline",
+      "environment": "E2",
+      "test_counts": [
+        [
+          1,
+          0,
+          0
+        ]
+      ]
+    },
+    "W093": {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-engine",
+        "--lib",
+        "titles_come_from_a_rename_then_the_provider_then_the_first_message_then_the_kind",
+        "--locked",
+        "--offline"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 0,
+      "duration_seconds": 0.223,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/supplement-ofs9mbu_/engine-4.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/supplement-ofs9mbu_/engine-4.stderr",
+      "stdout_sha256": "65c1f40556b13fa3b5ffc120a2405c9e91123bfd366fc33f0fbb9dda6b48d020",
+      "stderr_sha256": "cb41991ae5a8142186e0258245f2039d136df02162d4ba6dec3f55017701c1e4",
+      "shell": "cargo test -p riwork-engine --lib titles_come_from_a_rename_then_the_provider_then_the_first_message_then_the_kind --locked --offline",
+      "environment": "E2",
+      "test_counts": [
+        [
+          1,
+          0,
+          0
+        ]
+      ]
+    },
+    "W094": {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-engine",
+        "--lib",
+        "a_title_is_set_once_and_only_a_higher_source_or_a_new_rename_replaces_it",
+        "--locked",
+        "--offline"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 0,
+      "duration_seconds": 0.192,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/supplement-ofs9mbu_/engine-5.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/supplement-ofs9mbu_/engine-5.stderr",
+      "stdout_sha256": "0d963a4203b08fbafa95b60d7baf95f820ef90fef334205be1856e2e6232ce42",
+      "stderr_sha256": "c894846fa77521157b5e9fa99fe2180ebff70bfd4ccec83a37b6ada9f343e079",
+      "shell": "cargo test -p riwork-engine --lib a_title_is_set_once_and_only_a_higher_source_or_a_new_rename_replaces_it --locked --offline",
+      "environment": "E2",
+      "test_counts": [
+        [
+          1,
+          0,
+          0
+        ]
+      ]
+    },
+    "W095": {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-engine",
+        "--lib",
+        "new_sessions_append_and_any_tab_hides",
+        "--locked",
+        "--offline"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 0,
+      "duration_seconds": 0.275,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/supplement-ofs9mbu_/engine-6.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/supplement-ofs9mbu_/engine-6.stderr",
+      "stdout_sha256": "280b2165f94af7bebec820f26cc590f5d7caf0ff76995be668f037cc21e307e9",
+      "stderr_sha256": "fec71ccfbf66940adb8242c9bd0e6fe789e2c769711a69f89c1eec54a9e06270",
+      "shell": "cargo test -p riwork-engine --lib new_sessions_append_and_any_tab_hides --locked --offline",
+      "environment": "E2",
+      "test_counts": [
+        [
+          1,
+          0,
+          0
+        ]
+      ]
+    },
+    "W096": {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-engine",
+        "--lib",
+        "identifiers_geometry_and_private_file_read_are_validated",
+        "--locked",
+        "--offline"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 0,
+      "duration_seconds": 0.41,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/supplement-ofs9mbu_/engine-7.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/supplement-ofs9mbu_/engine-7.stderr",
+      "stdout_sha256": "cda71839950339c967557287583e7994c315608aa78ae1df086114099f728e1f",
+      "stderr_sha256": "02061fd5582b67ab14832d4a901674a7ffd2c18fa3d43d03b240a4bf59330bc6",
+      "shell": "cargo test -p riwork-engine --lib identifiers_geometry_and_private_file_read_are_validated --locked --offline",
+      "environment": "E2",
+      "test_counts": [
+        [
+          1,
+          0,
+          0
+        ]
+      ]
+    },
+    "W097": {
+      "argv": [
+        "sh",
+        "apps/riwork/check-polling.sh"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 0,
+      "duration_seconds": 0.019,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/supplement-ofs9mbu_/polling-lint.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/supplement-ofs9mbu_/polling-lint.stderr",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "shell": "sh apps/riwork/check-polling.sh",
+      "environment": "E2"
+    },
+    "W098": {
+      "argv": [
+        "/tmp/riwork-nsh-toolchain-60f8aec4.18l3zV/nsh-cli-0.3.0/bin/nsh",
+        "--version"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 0,
+      "duration_seconds": 0.011,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/nsh-reh5ez2m/nsh-version.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/nsh-reh5ez2m/nsh-version.stderr",
+      "stdout_sha256": "b84462512c378e1bda24a6997456ae354ea2bf2c6ce9346c291ac5d30e3ee804",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "shell": "/tmp/riwork-nsh-toolchain-60f8aec4.18l3zV/nsh-cli-0.3.0/bin/nsh --version",
+      "environment": "E3"
+    },
+    "W099": {
+      "argv": [
+        "rustc",
+        "--version"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 0,
+      "duration_seconds": 0.072,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/nsh-reh5ez2m/rustc-version.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/nsh-reh5ez2m/rustc-version.stderr",
+      "stdout_sha256": "55cd0529c005d3f62869ea6e2271bfa9d5196f56dc65a8be00a371af114a4a98",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "shell": "rustc --version",
+      "environment": "E3"
+    },
+    "W100": {
+      "argv": [
+        "cargo",
+        "--version"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 0,
+      "duration_seconds": 0.059,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/nsh-reh5ez2m/cargo-version.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/nsh-reh5ez2m/cargo-version.stderr",
+      "stdout_sha256": "c35608815f43d0b8788a9b826fad2bb17384f49fb328dc4fe64da9db5f5ef4d6",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "shell": "cargo --version",
+      "environment": "E3"
+    },
+    "W101": {
+      "argv": [
+        "cargo",
+        "run",
+        "-p",
+        "riwork-nsh-workspace",
+        "--example",
+        "seed_fixture",
+        "--locked",
+        "--offline",
+        "--",
+        "/private/tmp/riwork-p1-m5-workspace/nsh-reh5ez2m/nsh-home"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 0,
+      "duration_seconds": 26.868,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/nsh-reh5ez2m/seed-nsh-fixture.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/nsh-reh5ez2m/seed-nsh-fixture.stderr",
+      "stdout_sha256": "1099bd9a179cd283feeb9b4934fb8c82762f649ce4c8293efc87f8e67b3db052",
+      "stderr_sha256": "7b75fcd5bbb12f4afcdd713e8f7ca5748fe6344850cd43ad3e0a6cfd4c296cd7",
+      "shell": "cargo run -p riwork-nsh-workspace --example seed_fixture --locked --offline -- /private/tmp/riwork-p1-m5-workspace/nsh-reh5ez2m/nsh-home",
+      "environment": "E3"
+    },
+    "W102": {
+      "argv": [
+        "/tmp/riwork-nsh-toolchain-60f8aec4.18l3zV/nsh-cli-0.3.0/bin/nsh",
+        "check",
+        "apps/riwork",
+        "--tsc",
+        "/Users/dominik/Library/Caches/nsh/typescript-7.0.2-darwin-arm64/package/lib/tsc"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 0,
+      "duration_seconds": 23.596,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/nsh-reh5ez2m/nsh-check.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/nsh-reh5ez2m/nsh-check.stderr",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "eb4393a2f09cf6ebeed6376c9bd065eb7fbe461fc66aae5b91e7e205a05c2057",
+      "shell": "/tmp/riwork-nsh-toolchain-60f8aec4.18l3zV/nsh-cli-0.3.0/bin/nsh check apps/riwork --tsc /Users/dominik/Library/Caches/nsh/typescript-7.0.2-darwin-arm64/package/lib/tsc",
+      "environment": "E4"
+    },
+    "W103": {
+      "argv": [
+        "/tmp/riwork-nsh-toolchain-60f8aec4.18l3zV/nsh-cli-0.3.0/bin/nsh",
+        "test",
+        "apps/riwork",
+        "--junit",
+        "/private/tmp/riwork-p1-m5-workspace/nsh-reh5ez2m/nsh.xml"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-m5",
+      "exit_code": 0,
+      "duration_seconds": 9.885,
+      "stdout": "/private/tmp/riwork-p1-m5-workspace/nsh-reh5ez2m/nsh-test.stdout",
+      "stderr": "/private/tmp/riwork-p1-m5-workspace/nsh-reh5ez2m/nsh-test.stderr",
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "71d06cd24b97fa108630c6fd71bbb7de086293b2ecfa6663dfa3d4f6d35b21db",
+      "shell": "/tmp/riwork-nsh-toolchain-60f8aec4.18l3zV/nsh-cli-0.3.0/bin/nsh test apps/riwork --junit /private/tmp/riwork-p1-m5-workspace/nsh-reh5ez2m/nsh.xml",
+      "environment": "E4"
+    }
+  },
+  "items": {
+    "P1-GLB-01": {
+      "result": "FAIL",
+      "reason": "Global entry only renders Global workspace; global.show has no subscription or selected chat tab.",
+      "commands": [
+        "W002",
+        "W103"
+      ],
+      "required_route": "host-unit `window_registry::tests::the_global_window_is_a_singleton_and_opens_with_no_window`; nsh-test `Global.test.tsx`: `host.send(\"global.show\", {view: \"chat\", start: false})` \u2192 `id:global-view-chat` selected."
+    },
+    "P1-GLB-02": {
+      "result": "FAIL",
+      "reason": "Core global size validation passes; global TSX never posts window.setDockInfo. Host/Cua title/size delegated.",
+      "commands": [
+        "W003",
+        "W103"
+      ],
+      "required_route": "core global_window tests (size validation at `crates/riwork-core/src/global_window.rs:215-222`); fixture+cua title in RLD-01; nsh-test `window.setDockInfo {project: \"Global\", branch: \"\"}` posted."
+    },
+    "P1-GLB-03": {
+      "result": "FAIL",
+      "reason": "Global state adapter and view/filter/sort controls absent; no Dashboard persistence subscription.",
+      "commands": [
+        "W003",
+        "W103"
+      ],
+      "required_route": "core global_window tests; nsh-test: press `id:global-view-chat`, wait 300 ms, open a second global app \u2192 chat selected."
+    },
+    "P1-GLB-04": {
+      "result": "FAIL",
+      "reason": "Restore readiness exists, but restore.global is ignored and global chat selection is absent.",
+      "commands": [
+        "W004",
+        "W090",
+        "W103"
+      ],
+      "required_route": "core `the_global_window_restores_as_itself_and_older_snapshots_hold_project_windows`; host-unit `runtime_window::tests::the_global_window_is_recorded_as_global`; nsh-test: `params.restore.global.view = \"chat\"`, file says dashboard \u2192 chat selected."
+    },
+    "P1-GLB-05": {
+      "result": "FAIL",
+      "reason": "Production global test proves no DockArea and no project session. Global-only disk audit remains required in coordinator fixture route.",
+      "commands": [
+        "W005",
+        "W103"
+      ],
+      "required_route": "nsh-test with `kind: \"global\", projectId: null`; fixture write allow-list for a global-only run: only `global-window.json`; `state.json` sha256 unchanged."
+    },
+    "P1-GLB-06": {
+      "result": "FAIL",
+      "reason": "Required segmented bar, labels, metrics and persistent switch are absent.",
+      "commands": [
+        "W006",
+        "W103"
+      ],
+      "required_route": "nsh-test texts and `app.press(\"id:global-view-chat\")`; `metrics.test.ts`."
+    },
+    "P1-GLB-07": {
+      "result": "FAIL",
+      "reason": "Global root does not bind Cmd-W or send window.close.",
+      "commands": [
+        "W007",
+        "W103"
+      ],
+      "required_route": "nsh-test `cmd+w` right after open \u2192 `app.host.calls()` has `window.close` (C-C-11 picks this path)."
+    },
+    "P1-GLB-08": {
+      "result": "FAIL",
+      "reason": "Global key routing, window.list lookup and fallback notice absent.",
+      "commands": [
+        "W008",
+        "W103"
+      ],
+      "required_route": "nsh-test with a `window.list` handler \u2192 `window.open {kind: \"project\", projectId}`; empty list and no active project \u2192 notice; `cmd+,` \u2192 `window.route {step: {panel: \"settings\"}}`; host-unit for Dock New Window."
+    },
+    "P1-GLB-09": {
+      "result": "FAIL",
+      "reason": "No TSX route event handler or Settings selection.",
+      "commands": [
+        "W009",
+        "W103"
+      ],
+      "required_route": "host-unit `window_registry::tests::route_prefers_frontmost_then_minimised_then_opens`; nsh-test: `host.send(\"route\", {step: {panel: \"settings\"}})` \u2192 Settings tab selected."
+    },
+    "P1-GLB-10": {
+      "result": "FAIL",
+      "reason": "Global path replaces startup notice with Global workspace; no notice dismiss button.",
+      "commands": [
+        "W010",
+        "W103"
+      ],
+      "required_route": "nsh-test: `params.notice` shown; press `id:global-notice-dismiss` \u2192 gone."
+    },
+    "P1-PANE-01": {
+      "result": "FAIL",
+      "reason": "Default five-panel model exists, but Sessions.create is never called; no-layout shell and panels_initialized reconstruction absent.",
+      "commands": [
+        "W011",
+        "W012",
+        "W103",
+        "W001"
+      ],
+      "required_route": "bridge `layout_session.rs::no_layout_opens_riwork_cores_default` (projection equals `project()` of riwork-core's default); nsh-test `Panes.test.tsx` Gamma: 2 groups; the 5 panel titles in order."
+    },
+    "P1-PANE-02": {
+      "result": "FAIL",
+      "reason": "No split keyboard or create/rollback implementation.",
+      "commands": [
+        "W012",
+        "W103",
+        "W001"
+      ],
+      "required_route": "bridge `split_right_adds_the_new_pane_second_at_one_half`, `a_failed_create_undoes_the_split`; nsh-test Alpha `cmd+d` \u2192 `app.count(\"role:tablist\")` + 1 and the new tab selected; Beta (create fails) \u2192 count unchanged, notice shows the fake's message."
+    },
+    "P1-PANE-03": {
+      "result": "FAIL",
+      "reason": "Core ratio tests and PaneTree clamp pass; actual Headless divider/persist route absent. Divider selector repaired; NSH overlay still 1 pt, not core 5 pt gap.",
+      "commands": [
+        "W013",
+        "W014",
+        "W015",
+        "W103",
+        "W001"
+      ],
+      "required_route": "core `split_ratios_round_trip_and_survive_insertions_and_collapses`, `invalid_ratios_are_repaired_before_persistence`; bridge `gesture_sizes_recomputes_binary_ratios`, `a_dragged_ratio_is_clamped_to_0_1_0_9` (Rust `Headless` DockArea drag); nsh-test `app.drag(\"label:Pane divider\", 200, 0)` \u2192 a second app after 300 ms shows the same groups (no fallback rebuild)."
+    },
+    "P1-PANE-04": {
+      "result": "FAIL",
+      "reason": "Core locked geometry and model resizing pass; 2 s guard and focus-mode invariance absent; named Headless/extents matrix missing.",
+      "commands": [
+        "W016",
+        "W012",
+        "W103",
+        "W001"
+      ],
+      "required_route": "core `preserve_locked` tests (3547\u20133742); bridge `set_extent_matches_preserve_locked_at_three_extents` (1280\u00d7800 \u2192 1920\u00d71080 \u2192 640\u00d7400 and back; `pane_extents` within 0.5 px), `the_projection_gives_null_to_the_single_absorber`, `the_first_2_s_after_first_draw_are_ignored`, `focus_mode_leaves_ratios_alone`."
+    },
+    "P1-PANE-05": {
+      "result": "FAIL",
+      "reason": "Lock toggle exists; close refusal notices and width-dependent lock control absent. Ledger test not moved.",
+      "commands": [
+        "W017",
+        "W018",
+        "W103",
+        "W001"
+      ],
+      "required_route": "moved `lock_state_follows_the_users_choice_and_defaults_to_the_navigation_pane`; core `stale_lock_ids_are_removed_without_reenabling_auto_lock`; nsh-test L-NAV: select a Projects tab, `cmd+w` \u2192 first notice; `cmd+shift+w` \u2192 second; `app.shows(\"id:tab-close-panel:projects\")` false; at a 640-wide viewport the pane menu offers `Unlock pane`."
+    },
+    "P1-PANE-06": {
+      "result": "FAIL",
+      "reason": "Main toggle exists; new-tab routing and focus behavior absent; ledger routing tests not moved.",
+      "commands": [
+        "W019",
+        "W020",
+        "W021",
+        "W022",
+        "W103",
+        "W001"
+      ],
+      "required_route": "moved routing tests (\u00a74.3); core `a_main_pane_that_is_not_in_the_layout_is_dropped_and_there_is_never_more_than_one`; nsh-test L-NESTED: select pane 3, `cmd+t` \u2192 the new tab is in `pane-2` (main); `cmd+shift+f`, `cmd+t` \u2192 lands in the active pane."
+    },
+    "P1-PANE-07": {
+      "result": "FAIL",
+      "reason": "Sentinel retention model tests pass; exact empty copy fixed; close-pane command and inherited-tab flow absent.",
+      "commands": [
+        "W023",
+        "W024",
+        "W025",
+        "W015",
+        "W103",
+        "W001"
+      ],
+      "required_route": "moved close-pane tests (\u00a74.3); bridge `an_empty_main_keeps_its_sentinel_through_every_gesture`; nsh-test L-EMPTY shows the empty text; L-NESTED `cmd+shift+w` on pane 3 \u2192 its tabs follow the main pane's."
+    },
+    "P1-PANE-08": {
+      "result": "FAIL",
+      "reason": "Gather model/menu exists; Cmd-Shift-M, pane-menu entry and required notices absent; ledger tests not moved.",
+      "commands": [
+        "W026",
+        "W027",
+        "W103",
+        "W001"
+      ],
+      "required_route": "moved gather tests; nsh-test L-NESTED `cmd+shift+m` \u2192 `Gathered N tab(s) into the main pane`; L-UNLOCK \u2192 `No main pane. Choose Main pane in a pane's \u2026 menu first`."
+    },
+    "P1-PANE-09": {
+      "result": "FAIL",
+      "reason": "No Default Layout command/menu action or five moved ledger tests.",
+      "commands": [
+        "W028",
+        "W029",
+        "W030",
+        "W031",
+        "W032",
+        "W103",
+        "W001"
+      ],
+      "required_route": "moved default-layout tests (5); nsh-test L-NESTED `cmd+alt+l` \u2192 2 groups and a notice starting `Applied the default layout`; again \u2192 `The default layout is already in place`; `host.send(\"command\", {id: \"defaultLayout\"})` does the same."
+    },
+    "P1-PANE-10": {
+      "result": "FAIL",
+      "reason": "No focus-mode presentation, centered mode, restore button, or state fields.",
+      "commands": [
+        "W012",
+        "W103",
+        "W001"
+      ],
+      "required_route": "bridge `focus_mode_never_changes_the_saved_layout`; nsh-test `cmd+shift+f` \u2192 one tablist and the RESTORE text; `cmd+d` exits; mount counters unchanged (DRAG-04 c); snapshot field in RLD-01."
+    },
+    "P1-PANE-11": {
+      "result": "FAIL",
+      "reason": "Existing click test proves activation but required pane-* selectors and Cmd-T route absent.",
+      "commands": [
+        "W033",
+        "W103",
+        "W001"
+      ],
+      "required_route": "nsh-test L-UNLOCK (no main pane): `app.press(\"id:pane-3\")`, `cmd+t` \u2192 the new tab is in pane 3."
+    },
+    "P1-PANE-12": {
+      "result": "FAIL",
+      "reason": "Pane context menu has only lock/main; required full rows, disabled deferred entries, selectors and metrics absent.",
+      "commands": [
+        "W034",
+        "W035",
+        "W103",
+        "W001"
+      ],
+      "required_route": "nsh-test `PaneMenu.test.tsx`: `app.press(\"id:pane-menu-<id>\")` \u2192 items in order via `app.menu()` (with `Menu.popup`) or `app.texts()` (with a Popover); `app.enabled(\"label:Codex\")` false; `Close pane` absent on a locked pane; `metrics.test.ts`; manual evidence."
+    },
+    "P1-TAB-01": {
+      "result": "FAIL",
+      "reason": "Core persisted remote/chat shape tests pass; pending-chat identity and no-save test/implementation absent.",
+      "commands": [
+        "W036",
+        "W037",
+        "W012",
+        "W103",
+        "W001"
+      ],
+      "required_route": "core `a_remote_shell_tab_has_a_fixed_json_shape_and_key`, `a_chat_tab_has_a_fixed_json_shape_and_key`; bridge `chat_pending_is_never_saved_and_maps_to_chat_id`."
+    },
+    "P1-TAB-02": {
+      "result": "FAIL",
+      "reason": "No shell creation, placeholder panel routing, Dashboard redirect, casing or tooltip route.",
+      "commands": [
+        "W038",
+        "W012",
+        "W103",
+        "W001"
+      ],
+      "required_route": "bridge `new_shell_uses_the_selected_worktree_else_the_root`; nsh-test `Tabs.test.tsx`: `cmd+shift+e` twice \u2192 one Files tab; pane menu Dashboard \u2192 `window.open {kind: \"global\", view: \"dashboard\", start: false}` and no `tab-panel:dashboard`; Native \u2192 `Projects`, RiWork theme \u2192 `PROJECTS`; `app.hover(\"id:tab-panel:projects\")` \u2192 `Projects \u00b7 \u2318B`."
+    },
+    "P1-TAB-03": {
+      "result": "FAIL",
+      "reason": "Mapped native active-index and TSX tab selection/visibility tests execute; named full focus/scroll/persistence route not present.",
+      "commands": [
+        "W015",
+        "W103",
+        "W001"
+      ],
+      "required_route": "bridge `gesture_active_index_sets_the_active_tab_and_pane`; nsh-test: press a tab \u2192 its placeholder is shown and the previous one is hidden."
+    },
+    "P1-TAB-04": {
+      "result": "FAIL",
+      "reason": "No close dialog, Tabs update, session close, lock refusal or close-key flow.",
+      "commands": [
+        "W039",
+        "W103",
+        "W001"
+      ],
+      "required_route": "moved `the_orchestrator_closes_like_any_user_chat_and_workers_only_detach`; nsh-test `CloseDialog.test.tsx`: `cmd+w` on a shell tab \u2192 `Close <title>?` and the body; `escape` \u2192 tab stays; `cmd+w`, press `label:Detach` \u2192 gone in a second app after 300 ms, and the fake session is still live; Exit \u2192 the fake records `close`."
+    },
+    "P1-TAB-05": {
+      "result": "FAIL",
+      "reason": "No session subscription/adoption route, caps or lock filtering.",
+      "commands": [
+        "W012",
+        "W103",
+        "W001"
+      ],
+      "required_route": "moved adoption tests; bridge `adoption_caps_at_16_per_apply`, `all_locked_adopts_nothing`; nsh-test: the fake's `appear_after_ms: 300` shell \u2192 `await app.waitFor(\"id:tab-shell:<id>\")`, and the previously selected placeholder is still shown."
+    },
+    "P1-STRIP-01": {
+      "result": "FAIL",
+      "reason": "Shared membership unavailable; frontend always renders pane tab groups.",
+      "commands": [
+        "W040",
+        "W103"
+      ],
+      "required_route": "moved `panels_lead_then_sessions_in_shared_order`; nsh-test `Strip.test.tsx` (port of `the_strip_draws_panels_then_shared_order_as_named_tabs`): Alpha order via `app.texts()`; Beta (unreadable list) \u2192 one tab list per pane."
+    },
+    "P1-STRIP-02": {
+      "result": "FAIL",
+      "reason": "No shared strip status mapping, status accessibility label, close button or metrics route.",
+      "commands": [
+        "W035",
+        "W103"
+      ],
+      "required_route": "moved `stopped_and_unknown_activity_map_to_the_phones_states`; nsh-test `app.shows(\"label:Chat 2, waiting\")`, `app.count(\"role:tablist\")`; fixture+cua `verify_state` element `label_contains: \", waiting\"`; `metrics.test.ts`; manual evidence per theme."
+    },
+    "P1-STRIP-03": {
+      "result": "FAIL",
+      "reason": "Right-click opens pane lock/main only; rename/move/close shared-tab context menu absent.",
+      "commands": [
+        "W041",
+        "W103"
+      ],
+      "required_route": "port of `keyboard_menu_moves_focus_and_rename_uses_persistent_input`; moved `shared_menu_moves_are_adjacent_and_stay_in_parent_groups`; nsh-test: `app.rightClick(\"id:tab-shell:S1\")` \u2192 `app.menu()` labels in order, `Move left` disabled; Rename \u2192 `app.type`, `app.submit` \u2192 a second app shows the new title."
+    },
+    "P1-STRIP-04": {
+      "result": "FAIL",
+      "reason": "No All tabs overflow menu, selection reveal or keyboard menu focus flow.",
+      "commands": [
+        "W042",
+        "W103"
+      ],
+      "required_route": "moved `all_tabs_appears_only_when_the_scrolling_tabs_do_not_fit`; ports of the two auto-reveal tests and `arrows_stay_inside_an_open_strip_menu_so_escape_closes_it_and_thaws`; nsh-test Busy: `setViewport(800, 780)` \u2192 `id:strip-all-tabs` shown; at 1920 \u2192 hidden; `cmd+9` \u2192 last tab shown."
+    },
+    "P1-STRIP-05": {
+      "result": "FAIL",
+      "reason": "Core inventory tests pass; no Tabs subscription/revision gate or two-window hide delivery.",
+      "commands": [
+        "W043",
+        "W044",
+        "W045",
+        "W046",
+        "W047",
+        "W048",
+        "W091",
+        "W092",
+        "W093",
+        "W094",
+        "W095",
+        "W103"
+      ],
+      "required_route": "core `stale_inventory_keeps_hide_and_rename`, `one_refresh_transaction_ends_where_separate_transactions_did`, `titles_come_from_a_rename_then_the_provider_then_the_first_message_then_the_kind`, `a_title_is_set_once_and_only_a_higher_source_or_a_new_rename_replaces_it`, `new_sessions_append_and_any_tab_hides`; bridge `tabs.rs::stale_revisions_are_dropped`; nsh-test with **two windows**: `open()` Alpha twice; Detach in window 1 \u2192 `await` window 2 `waitFor` the tab gone (shared store + process watcher)."
+    },
+    "P1-DRAG-01": {
+      "result": "FAIL",
+      "reason": "Existing real DockArea move into empty pane passes; shared Move publish, ghost styling and required full L-NESTED/second-open route absent.",
+      "commands": [
+        "W049",
+        "W015",
+        "W103",
+        "W001"
+      ],
+      "required_route": "moved strip-move and drag-mapping tests; bridge `layout_gestures.rs::gesture_reorder_in_group`, `gesture_move_to_group`; nsh-test `Drag.test.tsx` L-NESTED: `app.drag(\"id:tab-shell:S3\", dx, dy)` onto pane 2's tab bar (dx, dy from the golden projection sizes) \u2192 S3 in pane 2 and selected; the source shows its neighbour; a second app shows the same."
+    },
+    "P1-DRAG-02": {
+      "result": "FAIL",
+      "reason": "Four-direction PaneTree move test exists, but no real Headless edge-drop test or measured drop fraction.",
+      "commands": [
+        "W015",
+        "W103",
+        "W001"
+      ],
+      "required_route": "bridge `gesture_move_to_edge_splits_with_split_with_ratio`; nsh-test: drag a tab to pane 1's right edge \u2192 a new group to its right. The branch report records the measured edge-zone fraction and the absence of root/top targets."
+    },
+    "P1-DRAG-03": {
+      "result": "FAIL",
+      "reason": "Host-unit and no-handler review delegated to host report.",
+      "commands": [
+        "W050",
+        "W001"
+      ],
+      "required_route": "host-unit `host_names::tests::tab_transfer_is_refused`; review: no handler registered."
+    },
+    "P1-DRAG-04": {
+      "result": "FAIL",
+      "reason": "Actual mount/visibility diagnostics exposed DockArea remounting on every projection. Replaced dock() JSX gate with one-time dockReady. Regression now retains mount 1 through selection, cross-group drag and resize. Edge/focus/project-switch identity proof remains absent; full item fails.",
+      "commands": [
+        "W051",
+        "W103",
+        "W001"
+      ],
+      "required_route": "nsh-test `Identity.test.tsx`: the placeholder renders `mount <n>` from a module counter keyed by panel id and `visible: <bool>`; after each of (a)\u2013(e) the shown placeholder still reads `mount 1`."
+    },
+    "P1-LAY-01": {
+      "result": "FAIL",
+      "reason": "Existing oracle covers geometry and several fixtures, not one named test per full \u00a74.7 and L-* matrix.",
+      "commands": [
+        "W052",
+        "W103",
+        "W001"
+      ],
+      "required_route": "bridge `layout_oracle.rs`: one test per listed riwork-core test (`oracle_<core test name>`) plus `oracle_<fixture>`."
+    },
+    "P1-LAY-02": {
+      "result": "FAIL",
+      "reason": "Existing PaneTree operations and one UI drag pass; prescribed real Headless output per gesture and counter test absent.",
+      "commands": [
+        "W015",
+        "W103",
+        "W001"
+      ],
+      "required_route": "bridge `layout_gestures.rs::{gesture_active_index, gesture_sizes, gesture_reorder_in_group, gesture_move_to_group, gesture_move_to_edge, gesture_group_disappeared_keeps_main_and_locked_neighbours, gesture_sentinel_next_to_real_panels_is_dropped, gesture_two_changes_fall_back_and_log}`. Each takes DockArea's real `onLayoutChange` output from a Rust `nsh_testing::Headless` drag, not a hand-built layout."
+    },
+    "P1-LAY-03": {
+      "result": "FAIL",
+      "reason": "10 roundtrip tests cover storage subsets; complete named L-* manifest, byte/mtime no-edit and Reopen UI matrix absent.",
+      "commands": [
+        "W053",
+        "W054",
+        "W103",
+        "W001"
+      ],
+      "required_route": "bridge `layout_reopen.rs::{reopen_<fixture>_renders_golden_and_writes_nothing, edit_<fixture>_saves_what_riwork_core_saves}`; nsh-test `Reopen.test.tsx` on `p1-layouts`: for each manifest entry, `open` \u2192 expected titles and selection."
+    },
+    "P1-LAY-04": {
+      "result": "FAIL",
+      "reason": "Mapped damaged/newer recovery Rust tests pass; required default notice suffix frontend test absent.",
+      "commands": [
+        "W055",
+        "W056",
+        "W012",
+        "W103",
+        "W001"
+      ],
+      "required_route": "core `corrupt_file_is_set_aside_on_save_instead_of_crashing_or_being_deleted`, `newer_schema_is_neither_loaded_nor_overwritten`; bridge `open_session_on_{d_newer, d_corrupt, d_entry}`; nsh-test: notice text ends `; using a default layout`."
+    },
+    "P1-LAY-05": {
+      "result": "FAIL",
+      "reason": "Core legacy migration passes; global-tab pruning/MOVED_NOTICE bridge and TSX paths absent.",
+      "commands": [
+        "W057",
+        "W058",
+        "W012",
+        "W103",
+        "W001"
+      ],
+      "required_route": "core `legacy_shell_layout_migrates_without_changing_tab_order_or_selection`, `mixed_tabs_preserve_order_and_selection_while_migrating_bottom_strips`; bridge ports of the two `global_nav` older-layout tests; nsh-test L-GLOBAL-TABS: the exact MOVED_NOTICE text; no `window.open` call."
+    },
+    "P1-LAY-06": {
+      "result": "FAIL",
+      "reason": "No Sessions reconciliation, dead/detached/adoption retry implementation.",
+      "commands": [
+        "W012",
+        "W103",
+        "W001"
+      ],
+      "required_route": "bridge `restore_skips_dead_and_detached_shells`, `restore_adopts_cli_shells_into_main`, `a_failed_restore_retries_on_the_next_sessions_delivery_and_keeps_positions`."
+    },
+    "P1-LAY-07": {
+      "result": "FAIL",
+      "reason": "250 ms worker and flush/drop tests pass; full trigger/ManualClock matrix and restart/project-switch UI missing.",
+      "commands": [
+        "W012",
+        "W103",
+        "W001"
+      ],
+      "required_route": "bridge `layout_session.rs::{each_trigger_saves_once_after_250_ms (table over the trigger list, ManualClock), flush_points_write_synchronously, nothing_is_saved_without_an_edit}`; host-unit (WIN-08); RLD-01 end to end."
+    },
+    "P1-LAY-08": {
+      "result": "FAIL",
+      "reason": "Safe aliases partly pass but unknown-tab aliases intentionally persist original unsafe disk ids; pending-chat mapping absent.",
+      "commands": [
+        "W012",
+        "W103",
+        "W001"
+      ],
+      "required_route": "bridge `big_pane_ids_are_remapped_and_persisted` (L-BIGID), `chat_pending_maps_without_changing_the_panel_id`; nsh-test L-BIGID renders."
+    },
+    "P1-LAY-09": {
+      "result": "FAIL",
+      "reason": "Core carry tests and persistence switch pass; no project.open TSX subscription or carried component identity.",
+      "commands": [
+        "W059",
+        "W060",
+        "W061",
+        "W103",
+        "W001"
+      ],
+      "required_route": "core `carry_preserves_locked_tabs_ratios_and_maps_colliding_destination_ids`, `destination_locked_pane_sessions_are_recovered_into_unlocked_region`, `a_locked_main_pane_stays_the_main_pane_when_the_project_changes`; nsh-test L-CARRY: `app.host.send(\"project.open\", {projectId: <dest>})` \u2192 the carried navigation tabs plus the destination's tabs; carried placeholders still `mount 1`."
+    },
+    "P1-LAY-10": {
+      "result": "PASS",
+      "reason": "Mapped layout_roundtrip oracle persists through LayoutStore and loads equal ProjectLayout; writer review confirms no alternate production layouts.json writer.",
+      "commands": [
+        "W001",
+        "W062",
+        "W103"
+      ],
+      "required_route": "bridge `nsh_saved_layouts_load_identically_through_layout_store`; review: `rg -n 'layouts\\.json' crates/riwork-nsh-native crates/riwork-desktop \"$APP\"` shows no writer outside riwork-core; optional: the reference build launched on an NSH-saved fixture home, `list_windows` title plus manual evidence."
+    },
+    "P1-KEYS-01": {
+      "result": "FAIL",
+      "reason": "Added exact deferred seams and inert chord test; full GPUI active table and cross-host uniqueness successor remain absent.",
+      "commands": [
+        "W063",
+        "W103"
+      ],
+      "required_route": "`$APP/tests/keymap.test.ts` \"no key is bound twice and every GPUI chord is present\" (port of main.rs:17650, including chat chords); review: `DEFERRED_COMMANDS` matches \u00a78."
+    },
+    "P1-KEYS-02": {
+      "result": "FAIL",
+      "reason": "Number/model tests and canonical bracket-cycle aliases pass; shared-order/modal route and manual AppKit Ctrl-Tab check missing.",
+      "commands": [
+        "W064",
+        "W103"
+      ],
+      "required_route": "moved `command_numbers_count_session_tabs_and_nine_is_the_last`; nsh-test `cmd+2`, `cmd+9`, `ctrl+tab`, `ctrl+shift+tab`. Ctrl-Tab under AppKit's key-view loop is a GAP (SHELL-104): **manual** check in the fixture app; the result is recorded."
+    },
+    "P1-KEYS-03": {
+      "result": "FAIL",
+      "reason": "Deferred chords now declared/inert; required panel/new-window active key routes absent.",
+      "commands": [
+        "W063",
+        "W103"
+      ],
+      "required_route": "nsh-test per chord; `keymap.test.ts` asserts \u2318\u2325G / \u2318\u21e7O / \u2318Q are absent from the TSX keymap; appkit: those key equivalents are on the View / RiWork menu items."
+    },
+    "P1-KEYS-04": {
+      "result": "FAIL",
+      "reason": "No modal or strip menu implementation; corresponding focus/escape tests absent.",
+      "commands": [
+        "W065",
+        "W103"
+      ],
+      "required_route": "port of `arrows_stay_inside_an_open_strip_menu_so_escape_closes_it_and_thaws`; nsh-test: with the close dialog open, `cmd+d` \u2192 no split; with the All tabs menu open, `cmd+2` \u2192 menu closes, then the selection changes."
+    },
+    "P1-KEYS-05": {
+      "result": "FAIL",
+      "reason": "Host-unit/appkit-only route delegated to host report; no TSX text-size owner exists.",
+      "commands": [
+        "W066"
+      ],
+      "required_route": "host-unit `menu::tests::routing`; appkit `text_size_key_equivalents_dispatch_without_a_window`."
+    },
+    "P1-STAT-01": {
+      "result": "FAIL",
+      "reason": "Core configuration tests pass; bar hard-coded and not Settings-owned; full defaults/order/metrics missing.",
+      "commands": [
+        "W067",
+        "W068",
+        "W069",
+        "W035",
+        "W103"
+      ],
+      "required_route": "core status_bar tests (`crates/riwork-core/src/status_bar.rs:320,385,438`), moved `routing_and_reordering_preserve_other_side_and_round_trip`; nsh-test `StatusBar.test.tsx`: default order; `status_bar.enabled = false` \u2192 `id:status-bar` hidden; `metrics.test.ts`."
+    },
+    "P1-STAT-02": {
+      "result": "FAIL",
+      "reason": "No Project Alpha selector, worktree/live/session or required no-data items.",
+      "commands": [
+        "W070",
+        "W103"
+      ],
+      "required_route": "nsh-test: texts `Project Alpha`; `app.press(\"id:status-item-project\")` \u2192 the Projects tab is selected."
+    },
+    "P1-STAT-03": {
+      "result": "FAIL",
+      "reason": "Current popup has Gather tabs into main pane, separator and summary; Default layout, toggle/geometry and required selector absent.",
+      "commands": [
+        "W071",
+        "W103"
+      ],
+      "required_route": "nsh-test: press `id:status-item-layout` \u2192 the three rows; press again \u2192 gone; Default layout \u2192 the PANE-09 effect."
+    },
+    "P1-STAT-04": {
+      "result": "FAIL",
+      "reason": "Sticky dismissible bottom notice exists; top-right toast, replacement/focus/Escape proof absent.",
+      "commands": [
+        "W072",
+        "W103"
+      ],
+      "required_route": "nsh-test with `{ clock: {} }`: two different notices \u2192 only the second shows; `app.clock.runFor(60_000)` \u2192 still shown; press `label:Dismiss` \u2192 gone."
+    },
+    "P1-STAT-05": {
+      "result": "FAIL",
+      "reason": "top-orchestrator global menu absent.",
+      "commands": [
+        "W073",
+        "W103"
+      ],
+      "required_route": "port of `the_global_item_opens_a_menu_whose_rows_bring_up_the_global_window`; nsh-test: press `id:top-orchestrator` \u2192 `Global`, `Dashboard`, `\u2318\u2325G`; press `label:Dashboard` \u2192 `window.open {kind: \"global\", view: \"dashboard\", start: false}`."
+    },
+    "P1-WIN-04": {
+      "result": "FAIL",
+      "reason": "Session has no remembered-size API; core invalid-size test passes. Full window_size bridge target absent.",
+      "commands": [
+        "W074",
+        "W075",
+        "W103"
+      ],
+      "required_route": "bridge `window_size.rs::{an_ordinary_resize_is_saved_after_250_ms, zoomed_and_fullscreen_frames_are_ignored, a_move_or_a_return_to_the_settled_size_writes_nothing, out_of_range_sizes_are_rejected, remember_off_writes_nothing, turning_remember_on_captures_the_current_size, the_size_follows_the_window_across_a_project_switch}`; core `legacy_and_invalid_window_sizes_do_not_break_layout_restoration`."
+    },
+    "P1-WIN-05": {
+      "result": "FAIL",
+      "reason": "Mapped model title/dedup test passes; project title derives path basename, lacks Store-name/remote metadata and memoized reactive updates.",
+      "commands": [
+        "W076",
+        "W103"
+      ],
+      "required_route": "nsh-test `Window.test.tsx`: pure `windowTitle()` cases; review: `Window.setTitle` called from one memoised effect; fixture+cua: `list_windows` titles."
+    },
+    "P1-WIN-06": {
+      "result": "FAIL",
+      "reason": "No theme/fullscreen-controlled window-controls-island or metrics tests; separate 28 pt title row.",
+      "commands": [
+        "W077",
+        "W035",
+        "W103"
+      ],
+      "required_route": "nsh-test `Chrome.test.tsx`: `id:window-controls-island` shown in all 7 themes, absent with `window.state {mode: \"fullscreen\"}`; `metrics.test.ts` (island 78\u00d728, inset 92 = 78 + 14); appkit `titlebar_double_click_reads_the_system_preference`; manual evidence `win-06-<theme>.png`."
+    },
+    "P1-WIN-09": {
+      "result": "FAIL",
+      "reason": "No window.state listener. Existing default ignoring is inert, but named TSX event check absent.",
+      "commands": [
+        "W078",
+        "W103"
+      ],
+      "required_route": "host-unit `window_state::tests::events_only_on_change`; nsh-test: `host.send(\"window.state\", {...occluded: true})` \u2192 no error and no host call."
+    },
+    "P1-WIN-10": {
+      "result": "FAIL",
+      "reason": "Cmd-Shift-N is not bound and no window.open is emitted.",
+      "commands": [
+        "W079",
+        "W103"
+      ],
+      "required_route": "nsh-test `cmd+shift+n` \u2192 `app.host.calls()` has `window.open {kind: \"project\", projectId: <Alpha>}`; host-unit cascade (WIN-02)."
+    },
+    "P1-RLD-04": {
+      "result": "PASS",
+      "reason": "Mapped App.test.tsx production restore confirms native payload installation before exactly one app.restoreReady; nonrestore test confirms none. layout_roundtrip verifies saved restore wins. Workspace component PASS; coordinator combines host runtime-window routes.",
+      "commands": [
+        "W080",
+        "W081",
+        "W012",
+        "W096",
+        "W103",
+        "W001"
+      ],
+      "required_route": "core `identifiers_geometry_and_private_file_read_are_validated`; host-unit `runtime_window::tests::built_from_layout_session_and_frame`; bridge `layout_session.rs::restore_payload_wins_over_the_store`; nsh-test `Restore.test.tsx`: open Beta with `restore.layout` = a variant of L-NESTED \u2192 rendered groups match the payload; `app.host.calls()` holds one `app.restoreReady` (posts included); without `restore` \u2192 none."
+    },
+    "P1-THM-04": {
+      "result": "FAIL",
+      "reason": "Frontend hard-codes colors and never subscribes Appearance; first Native light paint fails implementation review.",
+      "commands": [
+        "W082",
+        "W103"
+      ],
+      "required_route": "nsh-test `Theme.test.tsx`: Native theme with `params.appearance: \"light\"` \u2192 the first `app.spanStyle(\"text:Projects\")` colour is #1d1d1f; with no `Appearance` yet \u2192 #d3e1e6."
+    },
+    "P1-THM-05": {
+      "result": "FAIL",
+      "reason": "No Appearance/Settings subscriptions or per-window color-scheme update; native/host portions delegated.",
+      "commands": [
+        "W083",
+        "W103"
+      ],
+      "required_route": "host-unit `startup::tests::forced_appearance_from_env`; bridge `settings.rs::a_write_by_another_process_reaches_every_subscriber_once`; nsh-test two windows: `app.setColorScheme(\"dark\")` on each \u2192 Native colours flip in that window; manual evidence `thm-05-light.png` with `RIWORK_APPEARANCE=light`."
+    },
+    "P1-TXT-02": {
+      "result": "FAIL",
+      "reason": "No command listener or Settings text sizing; hard-coded text sizes.",
+      "commands": [
+        "W084",
+        "W103"
+      ],
+      "required_route": "appkit `view_menu_text_size_items`; nsh-test `host.send(\"command\", {id: \"biggerText\"})` \u2192 `app.spanStyle(...)` size 12; `actualSize` \u2192 11."
+    },
+    "P1-TXT-03": {
+      "result": "FAIL",
+      "reason": "No font choice/offset/space/casing implementation; moved/new sentence-case test absent.",
+      "commands": [
+        "W085",
+        "W086",
+        "W103"
+      ],
+      "required_route": "new core test `sentence_case_keeps_proper_nouns_and_acronyms` lands **before** the port; nsh-test `TextSize.test.tsx`: `spanStyle` family and size per theme; a `system.fonts` handler without SF Mono \u2192 Menlo; pure `space()` test."
+    },
+    "P1-POLL-02": {
+      "result": "PASS",
+      "reason": "Named Idle.test.tsx passes 60,000 ms virtual time with unchanged host calls AND posts. Native agent separately passes the 60 s quiet-home bridge and sampler arm/disarm regression; coordinator combines native/host evidence.",
+      "commands": [
+        "W087",
+        "W103"
+      ],
+      "required_route": "bridge `a_quiet_home_produces_no_deliveries_for_60_s` (ManualClock); nsh-test `Idle.test.tsx`: `open(..., { clock: {} })`, settle, `app.clock.runFor(60_000)` \u2192 `app.host.calls()` length unchanged."
+    },
+    "P1-POLL-03": {
+      "result": "PASS",
+      "reason": "Forbidden polling review command returns no source hits; check included in this recorded acceptance execution.",
+      "commands": [
+        "W089",
+        "W097",
+        "W103"
+      ],
+      "required_route": "\\.refetch\\(' \"$APP\" -g '!**/*.test.ts*'` \u2192 no hits outside code annotated as animation."
+    },
+    "P1-PERF-02": {
+      "result": "FAIL",
+      "reason": "Required per-gesture bridge counters absent. Partial no-fallback model tests do not prove hard structural guards.",
+      "commands": [
+        "W015"
+      ],
+      "required_route": "bridge counters in `layout_gestures.rs`."
+    }
+  },
+  "final_nsh_manifest": "/private/tmp/riwork-p1-m5-workspace/nsh-reh5ez2m/manifest.json",
+  "final_nsh_junit": "/private/tmp/riwork-p1-m5-workspace/nsh-reh5ez2m/nsh.xml",
+  "final_nsh_tests": {
+    "passed": 17,
+    "failed": 0
+  },
+  "workspace_rust_tests": {
+    "passed": 36,
+    "failed": 0
+  },
+  "earlier_nsh_runs": [
+    "/private/tmp/riwork-p1-m5-workspace/nsh-mulsume0/manifest.json",
+    "/private/tmp/riwork-p1-m5-workspace/nsh-r7hw44bu/manifest.json"
+  ]
+}

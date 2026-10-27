@@ -1,0 +1,3 @@
+   Compiling riwork-desktop v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p1-m5/crates/riwork-desktop)
+    Finished `test` profile [unoptimized] target(s) in 4.15s
+     Running tests/startup_environment.rs (/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/deps/startup_environment-e8582c940685e03f)

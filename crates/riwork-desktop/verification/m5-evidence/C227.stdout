@@ -1,0 +1,23 @@
+{
+  "reload": {
+    "request_id": "f595c120-f011-4ff2-a9f6-b3addc1a5dfc",
+    "replacement_executable": "/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/riwork",
+    "requested": 1,
+    "reloaded": 0,
+    "pending": 0,
+    "failed": 1,
+    "unreadable_registrations": 0,
+    "instances": [
+      {
+        "instance_id": "09b8abba-0dc9-4573-9c32-9af83fcf2585",
+        "pid": 81359,
+        "state_home": "/private/tmp/rwm5-ikpfjuzy/home",
+        "window_count": 2,
+        "state": "failed",
+        "new_pid": null,
+        "message": "unavailable: NSH restart handoff is not enabled in the Phase 1 integration subset"
+      }
+    ]
+  },
+  "session": null
+}

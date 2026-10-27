@@ -1,0 +1,4 @@
+crates/riwork-desktop/src/nsh_host.rs:55:// must never race to write the same nsh/storage storage.json.
+crates/riwork-nsh-native/src/service.rs:308:    } else if path == home.join("sessions.json")
+crates/riwork-nsh-native/tests/services.rs:112:    let path = fixture.path().join("sessions.json");
+crates/riwork-nsh-native/tests/services.rs:176:    let path = fixture.path().join("sessions.json");

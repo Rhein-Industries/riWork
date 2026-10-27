@@ -1,0 +1,23 @@
+crates/riwork-nsh-native/src/backend.rs:31:pub trait StoreBackend: Send + Sync + 'static {
+crates/riwork-nsh-native/src/backend.rs:38:pub trait SessionsBackend: Send + Sync + 'static {
+crates/riwork-nsh-native/src/backend.rs:60:impl CoreStoreBackend {
+crates/riwork-nsh-native/src/backend.rs:76:        Ok(self.store.get_or_init(|| store))
+crates/riwork-nsh-native/src/backend.rs:80:impl StoreBackend for CoreStoreBackend {
+crates/riwork-nsh-native/src/backend.rs:113:impl EngineSessionsBackend {
+crates/riwork-nsh-native/src/backend.rs:130:        Ok(self.manager.get_or_init(|| manager))
+crates/riwork-nsh-native/src/backend.rs:134:impl SessionsBackend for EngineSessionsBackend {
+crates/riwork-nsh-native/src/service.rs:30:static PROCESS: OnceLock<Arc<ProcessService>> = OnceLock::new();
+crates/riwork-nsh-native/src/service.rs:31:static PROCESS_HOME: OnceLock<Result<PathBuf, String>> = OnceLock::new();
+crates/riwork-nsh-native/src/service.rs:38:    let _start = START.lock().unwrap_or_else(PoisonError::into_inner);
+crates/riwork-nsh-native/src/service.rs:39:    if let Some(home) = PROCESS_HOME.get() {
+crates/riwork-nsh-native/src/service.rs:45:    let _ = PROCESS_HOME.set(Ok(service.home().to_owned()));
+crates/riwork-nsh-native/src/service.rs:46:    PROCESS
+crates/riwork-nsh-native/src/service.rs:55:        let _start = START.lock().unwrap_or_else(PoisonError::into_inner);
+crates/riwork-nsh-native/src/service.rs:56:        if let Some(service) = PROCESS.get() {
+crates/riwork-nsh-native/src/service.rs:63:        let _ = PROCESS.set(service.clone());
+crates/riwork-nsh-native/src/service.rs:73:    let _start = START.lock().unwrap_or_else(PoisonError::into_inner);
+crates/riwork-nsh-native/src/service.rs:74:    if let Some(service) = PROCESS.get() {
+crates/riwork-nsh-native/src/service.rs:81:    PROCESS_HOME
+crates/riwork-nsh-native/src/service.rs:82:        .get_or_init(|| riwork_core::paths::riwork_home().map_err(io_error))
+crates/riwork-nsh-native/src/service.rs:87:    PROCESS.get().cloned().ok_or_else(|| {
+crates/riwork-nsh-native/src/service.rs:97:    tokio::task::spawn_blocking(operation)

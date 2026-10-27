@@ -1,0 +1,20 @@
+
+running 1 test
+test an_empty_inventory_sleeps_until_a_watcher_event_and_disarms_when_empty_again ... FAILED
+
+failures:
+
+---- an_empty_inventory_sleeps_until_a_watcher_event_and_disarms_when_empty_again stdout ----
+
+thread 'an_empty_inventory_sleeps_until_a_watcher_event_and_disarms_when_empty_again' (10583144) panicked at crates/riwork-nsh-native/tests/services.rs:108:5:
+assertion `left == right` failed: an empty inventory must not run the tmux liveness fallback
+  left: 2
+ right: 1
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    an_empty_inventory_sleeps_until_a_watcher_event_and_disarms_when_empty_again
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 2.19s
+
