@@ -1,4 +1,198 @@
-# libghostty / NSH AppKit spike — NO-GO
+# Phase 2 ENTRY GATE — NO-GO
+
+Task: `b915a54a-3ec6-4491-89b1-428ab28f344a`
+
+Branch: `nsh-p2-teardown`, based on `ea0f2f5`
+
+Date: 2026-10-27
+
+Scope: extend this throwaway spike; no production integration.
+
+**NO-GO for the Phase 2 entry gate.** The detach-before-free protocol completed
+20 four-surface batches under active tmux output without hangs or leaked
+clients/processes. Every surface disposed in less than 339 ms, meeting the
+requested <2 s target. However, observed main-loop gaps reached **156.212 ms**,
+so the stricter **100 ms** responsiveness requirement in
+[`docs/nsh-contracts.md` §3.7](../../docs/nsh-contracts.md#37-teardown-protocol-frozen-from-the-ghostty-spike-no-go)
+is not proved. Runtime experiments stopped at this failure. Thresholds were
+not relaxed, and parked/leaked surfaces were not counted as success.
+
+## Implemented protocol
+
+1. Real NSH `when(mounted, …)` removal invokes `NativeComponent::drop`.
+   Shutdown marks the view closing, removes it from input/rendering, and obtains
+   **that surface's PTY tty** from `ghostty_surface_tty_name`. PTY creation is
+   asynchronous, so tty capture happens at release, not `surface_new`.
+2. A worker runs `detach_client.py` on the explicit fixture socket. It finds
+   exactly one matching tty, records its client PID/login-wrapper PID, validates
+   ancestry to the fixture, and executes `tmux detach-client -t <that tty>`.
+   It confirms the client PID/tty is absent and the session/pane identity is
+   unchanged. There is no detach-all or ambiguous-client fallback.
+3. Pending disposal owns the removed NSView while its normal AppKit timer keeps
+   pumping `ghostty_app_tick`. Only after the helper reports confirmed detach
+   **and** `ghostty_surface_process_exited` returns true does the main thread
+   call `ghostty_surface_free`, then app/config free. All 80 surfaces have those
+   two prerequisite records before `free-begin` and a matching `free-end`.
+4. The worker captures immutable tty/ID values and a raw atomic-result pointer,
+   avoiding a final NSView release on the worker. Explicit pending ownership
+   ends after main-thread disposal. Window close uses the same protocol, then
+   stops/wakes the AppKit event loop after the last surface is freed.
+
+The observed disposal bound is **<2,000 ms per surface and four-surface batch**.
+The worker has a bounded detach attempt, and the fixture exits with failure if
+detach/child exit is not confirmed by 2 s. It never enters free with a possibly
+live child. This is a fail-fast experiment, not the production parking/retry
+policy from §3.7. Synchronous native free is not preemptible: these measurements
+are an observed bound for the captured runtime, not a universal guarantee.
+
+## Final captured result
+
+Authoritative result:
+[cached/verification-summary.json](evidence/phase2/cached/verification-summary.json).
+Its only failed checks are responsive-main-loop checks for surfaces **1–4 and
+52**: seven recorded timer gaps were ≥100 ms. These are 60 Hz main-run-loop
+delivery intervals while closing. They do **not** identify a blocking function
+or establish that `ghostty_surface_free` caused the delay; measured native free
+was much shorter. No causal profiling or further runtime trial followed NO-GO.
+
+| Check | Result |
+| --- | --- |
+| Four simultaneously attached surfaces, 20 batches | PASS: 80 created, 80 freed/disposed exactly once |
+| Actual NSH drop/unmount/remount | PASS: batches 1–19; four surfaces per component |
+| Active native-window close / host quit | PASS: batch 20; process exit 0, zero fixture windows |
+| Detach readback and Ghostty child-exit barrier before free | PASS: 80/80 |
+| Per-surface full disposal, <2,000 ms | PASS: max **338.653 ms** |
+| First request event → last disposed in a batch, <2,000 ms | PASS: max **393.995 ms**; including pre-request prelude, reconstructed <400 ms |
+| Synchronous shutdown dispatch, <100 ms | PASS: max **30.670 ms** |
+| `ghostty_surface_free`, <100 ms | PASS: max **21.135 ms** |
+| Free plus app/config cleanup, <100 ms | PASS: max **25.843 ms** |
+| Final timer callback through disposal, <100 ms | PASS: max **55.661 ms** |
+| Main-loop delivery gaps, <100 ms | **FAIL: max 156.212 ms**; surface 52 also reached 110.247 ms in batch 13 |
+| Hangs / leaked attach clients / leaked child processes | PASS: **0 / 0 / 0**, read back after each close |
+| Same session and pane after every close | PASS: `$0 1793134380 %0 42320` throughout |
+
+[cycles.jsonl](evidence/phase2/cached/cycles.jsonl) records four attached clients
+before every close, then zero clients, zero fixture descendants and no surviving
+old client/wrapper PIDs. The shared server/pane deliberately survive those
+closes, including host quit. Each exact-client handshake has its own
+`detach-<surface_id>.json`. Native ordering/timing is in
+[teardown-events.jsonl](evidence/phase2/cached/teardown-events.jsonl).
+Screenshots show the [initial attached fixture](evidence/phase2/cached/attached.png)
+and [four attached surfaces before final close](evidence/phase2/cached/final-attached.png).
+
+`pressure.py` writes continuously inside the same pane, nominally 4 MiB/s.
+The capture's counters advanced **317,036,544 bytes over 127.031 s**, a measured
+mean of **2.380 MiB/s**, including detached periods; pressure progresses across
+every attached/closed pair. This is real output, not `tmux send-keys` or a
+synthetic surface. See [pressure-summary.json](evidence/phase2/pressure-summary.json).
+
+Native timings use `clock_gettime(CLOCK_MONOTONIC)`; Python capture timings use
+`time.monotonic` (`mach_absolute_time` here). The verifier orders each clock
+domain separately and correlates explicit surface IDs plus captured
+`ready`/`all_disposed` postconditions. It does not apply guessed clock offsets.
+Reported disposal includes tty acquisition before the request log, so it is a
+conservative duration relative to the request-event interval. Analyzer fixes
+for these distinctions preserved the raw observations and the 100 ms failure.
+
+## Exactly which runtime was proved
+
+**Only the cached `1.3.2-dev` archive was executed in the final pressure proof.**
+It proves the bounded local detach/free observations above, **not** the complete
+entry gate. The rebuilt pin is build-verified only and must not inherit these
+runtime results.
+
+| Artifact | SHA-256 / revision | Status |
+| --- | --- | --- |
+| Cached `libghostty-internal.a` | `75443f9cd0b74a0b41f51b214bbc1cc00c10b94d10710302f5eca9971f157b66` | Final 20×4 runtime capture |
+| Final cached fixture | `1c14ab2d8f7e2208d0da3ee3ec9c88f2684ebaf961474d5ff9e3c3b4e53f2e62` | PID 43353, window 6209 |
+| Fresh rebuilt `libghostty-internal.a` | `b51367aa565527eddfa180d5ae6304899d903af6fc094b4531671ffc20fb064f` | Built successfully; **not launched** |
+| Final rebuilt fixture | `1e1bc2da0fe80967fee7619a6c8c890fa6bb5e5a5e8546689e6682f25c90b291` | Compiled/linked successfully; **not launched** |
+| Matching full header | `f2c12e1bb02540d79feed6bd29ee37312c4e0d24391442a63e66f06e1f7f2e4a` | Cache, vendor and rebuilt headers match |
+| Rebuilt source | Ghostty `9f0e1719dc918368367d368bfe300f59bb68b5a4` + declared gpui vendor patches | Zig 0.16.0, ReleaseFast, app-runtime=none |
+
+The cache path is
+`~/Library/Caches/gpui-libghostty/native/b1b8e8c04734504b2bf3bf7553ee247f/lib`.
+Its source/toolchain fingerprint independently recomputes to that key; that is
+not an independent attestation of the cached binary's original build. The
+rebuild used a private copy of the exact vendor tree and private caches under
+`.runtime/pinned`, with the already-installed Zig 0.16 toolchain. No installation
+occurred. The fresh archive differs from the cache, despite matching headers.
+See [runtime.json](evidence/phase2/cached/runtime.json),
+[build provenance](evidence/phase2/runtime/pinned-rebuild-provenance.json),
+[cache audit](evidence/phase2/runtime/native-cache-audit.json), and
+[evaluation.md](evaluation.md#phase-2-runtime-evaluation-2026-10-27).
+Both fixture builds have captured build logs and linker search paths under
+`evidence/phase2/runtime/`.
+
+At the 2026-10-27 check, upstream
+[#14245](https://github.com/ghostty-org/ghostty/issues/14245) remains open and
+[#14444](https://github.com/ghostty-org/ghostty/pull/14444) is open/unmerged with
+changes requested, head `8eb96765685e581963889a85b4340fd6e289bcd6`. The revised
+proposal drains the app mailbox while joining threads. It was **not applied,
+built or tested** here. Neither the old 47 s hang nor these timer gaps are
+independently attributed to that upstream root cause.
+
+## Verification environment, excluded work and cleanup
+
+- Final `RIWORK_HOME`:
+  `/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.fftNYv`.
+  Dedicated `tmux.sock`, `-f /dev/null`, session `ghostty-spike`; no default socket.
+- macOS 26.2 (25C56), arm64; Rust 1.99.1; Xcode 26.0.1 (17A400), tmux 3.6a.
+- **Fixture app only. RiWork Cua Driver MCP only**, explicit fixture PID and
+  window on every input, background delivery. The NSH controls lack AX actions,
+  so grounded fixture pixels were used; native window close used its fresh AX
+  token. [driver-actions.json](evidence/phase2/cached/driver-actions.json) records
+  the 39 input calls and initial read. No live RiWork/orchestrator window was
+  targeted. A stale fixture-window read was refused without input.
+- Startup preflight found early tty capture was empty and was corrected before
+  the counted run. Its dedicated fixture was terminated and isolated session
+  cleaned; it is not success evidence. A four-surface exploratory close was
+  likewise excluded. Their cleanup readbacks are retained.
+- An earlier 20×4 trial freed all surfaces but failed bounded host exit: timer-
+  driven `NSApp stop:` lacked a wake event. Its sample shows AppKit idle in
+  `nextEventMatchingMask`, not a native-free join. The fixture now posts the same
+  application-defined wake event used by NSH `AppView::stop`. That failed trial
+  is preserved unchanged under [host-wakeup-trial](evidence/phase2/host-wakeup-trial/note.json)
+  and excluded from final success counts. The final source was rebuilt and all
+  20 batches repeated after the fix.
+- Final native window close exited 0; after every close the session/pane still
+  matched. Only after collecting that evidence was the exact fixture session
+  killed. [cleanup.json](evidence/phase2/cached/cleanup.json) records fixture,
+  server, pane and **all 160 client/wrapper PIDs absent**, session absent, and
+  zero remaining fixture windows. Excluded fixture homes are also stopped.
+
+## Commands and outcome
+
+```sh
+cargo build --manifest-path spikes/ghostty-nsh/Cargo.toml
+# Cached final fixture: exit 0, native bridge rebuilt; 12 existing unused-parameter warnings.
+GHOSTTY_LIB_DIR="$PWD/spikes/ghostty-nsh/.runtime/pinned/install/lib" \
+GHOSTTY_INCLUDE_DIR="$PWD/spikes/ghostty-nsh/.runtime/pinned/install/include" \
+cargo build --manifest-path spikes/ghostty-nsh/Cargo.toml
+# Rebuilt-archive final fixture: exit 0, 1.61 s; never launched.
+SPIKE_PRESSURE=1 spikes/ghostty-nsh/scripts/prepare.sh
+. /private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.fftNYv/fixture.env
+exec spikes/ghostty-nsh/.runtime/cached/fixture > "$RIWORK_HOME/fixture.log" 2>&1
+# PID 43353; exact driver actions and per-cycle readbacks as recorded.
+python3 spikes/ghostty-nsh/scripts/record_cycle.py "$RIWORK_HOME" 43353 1 attached
+# Driver Close surfaces; record closed; Driver Create surfaces; repeat.
+# Batch 20: active native-window close; record closed --expect-exit.
+python3 spikes/ghostty-nsh/scripts/verify_teardown.py spikes/ghostty-nsh/evidence/phase2/cached
+# EXPECTED exit 1, NO_GO: only five responsive_main_loop checks fail.
+cargo fmt --manifest-path spikes/ghostty-nsh/Cargo.toml --check
+sh -n spikes/ghostty-nsh/scripts/prepare.sh spikes/ghostty-nsh/scripts/snapshot.sh spikes/ghostty-nsh/scripts/cleanup.sh
+# exit 0; all spike Python scripts also parse via ast.parse; git diff --check clean.
+```
+
+The frozen gate is **not cleared**. Pinned-runtime pressure verification,
+strict <100 ms responsiveness, remote bridge teardown and production timeout/
+retry integration remain unproved. No workaround experiments followed this
+NO-GO. No merge, push, install, or task-status update was performed; the
+orchestrator owns task status.
+
+---
+
+# Historical Phase 1 libghostty / NSH AppKit spike — NO-GO
 
 Task: `db4930af-e7a8-455c-8fe7-2de612ae102c`
 

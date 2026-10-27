@@ -1,0 +1,39 @@
+   Compiling riwork-ghostty-nsh-spike v0.0.0 (/Users/dominik/orca/projects/riWork-nsh-p2-teardown/spikes/ghostty-nsh)
+warning: riwork-ghostty-nsh-spike@0.0.0: native/terminal.m:84:34: warning: unused parameter 'app' [-Wunused-parameter]
+warning: riwork-ghostty-nsh-spike@0.0.0:    84 | static bool action(ghostty_app_t app, ghostty_target_s target, ghostty_action_s action) {
+warning: riwork-ghostty-nsh-spike@0.0.0:       |                                  ^
+warning: riwork-ghostty-nsh-spike@0.0.0: native/terminal.m:92:33: warning: unused parameter 'u' [-Wunused-parameter]
+warning: riwork-ghostty-nsh-spike@0.0.0:    92 | static bool readClipboard(void *u, ghostty_clipboard_e c, void *request) { return false; }
+warning: riwork-ghostty-nsh-spike@0.0.0:       |                                 ^
+warning: riwork-ghostty-nsh-spike@0.0.0: native/terminal.m:92:56: warning: unused parameter 'c' [-Wunused-parameter]
+warning: riwork-ghostty-nsh-spike@0.0.0:    92 | static bool readClipboard(void *u, ghostty_clipboard_e c, void *request) { return false; }
+warning: riwork-ghostty-nsh-spike@0.0.0:       |                                                        ^
+warning: riwork-ghostty-nsh-spike@0.0.0: native/terminal.m:92:65: warning: unused parameter 'request' [-Wunused-parameter]
+warning: riwork-ghostty-nsh-spike@0.0.0:    92 | static bool readClipboard(void *u, ghostty_clipboard_e c, void *request) { return false; }
+warning: riwork-ghostty-nsh-spike@0.0.0:       |                                                                 ^
+warning: riwork-ghostty-nsh-spike@0.0.0: native/terminal.m:93:51: warning: unused parameter 'text' [-Wunused-parameter]
+warning: riwork-ghostty-nsh-spike@0.0.0:    93 | static void confirmClipboard(void *u, const char *text, void *request, ghostty_clipboard_request_e kind) {
+warning: riwork-ghostty-nsh-spike@0.0.0:       |                                                   ^
+warning: riwork-ghostty-nsh-spike@0.0.0: native/terminal.m:93:100: warning: unused parameter 'kind' [-Wunused-parameter]
+warning: riwork-ghostty-nsh-spike@0.0.0:    93 | static void confirmClipboard(void *u, const char *text, void *request, ghostty_clipboard_request_e kind) {
+warning: riwork-ghostty-nsh-spike@0.0.0:       |                                                                                                    ^
+warning: riwork-ghostty-nsh-spike@0.0.0: native/terminal.m:97:34: warning: unused parameter 'u' [-Wunused-parameter]
+warning: riwork-ghostty-nsh-spike@0.0.0:    97 | static void writeClipboard(void *u, ghostty_clipboard_e c, const ghostty_clipboard_content_s *content, size_t count, bool confirm) {}
+warning: riwork-ghostty-nsh-spike@0.0.0:       |                                  ^
+warning: riwork-ghostty-nsh-spike@0.0.0: native/terminal.m:97:57: warning: unused parameter 'c' [-Wunused-parameter]
+warning: riwork-ghostty-nsh-spike@0.0.0:    97 | static void writeClipboard(void *u, ghostty_clipboard_e c, const ghostty_clipboard_content_s *content, size_t count, bool confirm) {}
+warning: riwork-ghostty-nsh-spike@0.0.0:       |                                                         ^
+warning: riwork-ghostty-nsh-spike@0.0.0: native/terminal.m:97:95: warning: unused parameter 'content' [-Wunused-parameter]
+warning: riwork-ghostty-nsh-spike@0.0.0:    97 | static void writeClipboard(void *u, ghostty_clipboard_e c, const ghostty_clipboard_content_s *content, size_t count, bool confirm) {}
+warning: riwork-ghostty-nsh-spike@0.0.0:       |                                                                                               ^
+warning: riwork-ghostty-nsh-spike@0.0.0: native/terminal.m:97:111: warning: unused parameter 'count' [-Wunused-parameter]
+warning: riwork-ghostty-nsh-spike@0.0.0:    97 | static void writeClipboard(void *u, ghostty_clipboard_e c, const ghostty_clipboard_content_s *content, size_t count, bool confirm) {}
+warning: riwork-ghostty-nsh-spike@0.0.0:       |                                                                                                               ^
+warning: riwork-ghostty-nsh-spike@0.0.0: native/terminal.m:97:123: warning: unused parameter 'confirm' [-Wunused-parameter]
+warning: riwork-ghostty-nsh-spike@0.0.0:    97 | static void writeClipboard(void *u, ghostty_clipboard_e c, const ghostty_clipboard_content_s *content, size_t count, bool confirm) {}
+warning: riwork-ghostty-nsh-spike@0.0.0:       |                                                                                                                           ^
+warning: riwork-ghostty-nsh-spike@0.0.0: native/terminal.m:98:40: warning: unused parameter 'alive' [-Wunused-parameter]
+warning: riwork-ghostty-nsh-spike@0.0.0:    98 | static void closeSurface(void *u, bool alive) { [(SpikeTerminalInput *)u record:@"process-exit"]; }
+warning: riwork-ghostty-nsh-spike@0.0.0:       |                                        ^
+warning: riwork-ghostty-nsh-spike@0.0.0: 12 warnings generated.
+    Finished `dev` profile [unoptimized] target(s) in 1.36s

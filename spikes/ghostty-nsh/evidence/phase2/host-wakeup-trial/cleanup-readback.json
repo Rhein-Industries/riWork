@@ -1,0 +1,49 @@
+{
+  "checked_at_utc": "2026-10-27T20:55:25.745122+00:00",
+  "read_only": true,
+  "fixture_pid": 88348,
+  "fixture_absent": true,
+  "isolated_socket": "/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.JVc4hi/tmux.sock",
+  "server_stopped": true,
+  "commands": [
+    {
+      "command": [
+        "/bin/ps",
+        "-p",
+        "88348",
+        "-o",
+        "pid=,ppid=,stat=,command="
+      ],
+      "exit_code": 1,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "/opt/homebrew/bin/tmux",
+        "-S",
+        "/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.JVc4hi/tmux.sock",
+        "list-sessions",
+        "-F",
+        "#{session_name}|#{session_id}"
+      ],
+      "exit_code": 1,
+      "stdout": "",
+      "stderr": "no server running on /private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.JVc4hi/tmux.sock\n"
+    },
+    {
+      "command": [
+        "/opt/homebrew/bin/tmux",
+        "-S",
+        "/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.JVc4hi/tmux.sock",
+        "list-clients",
+        "-F",
+        "#{client_pid}|#{client_tty}|#{session_id}"
+      ],
+      "exit_code": 1,
+      "stdout": "",
+      "stderr": "no server running on /private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.JVc4hi/tmux.sock\n"
+    }
+  ],
+  "actions": "Read-only ps and exact-isolated-socket tmux inventories; no signal or cleanup command issued."
+}

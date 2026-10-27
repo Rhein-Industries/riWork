@@ -1,0 +1,32 @@
+[
+  {
+    "home": "/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.pFHuG1",
+    "checked_pids": [
+      65780,
+      59013
+    ],
+    "alive_pids": [],
+    "has_session_exit": 1,
+    "stderr": "no server running on /private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.pFHuG1/tmux.sock"
+  },
+  {
+    "home": "/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.lQDdy3",
+    "checked_pids": [
+      74556,
+      74371
+    ],
+    "alive_pids": [],
+    "has_session_exit": 1,
+    "stderr": "no server running on /private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.lQDdy3/tmux.sock"
+  },
+  {
+    "home": "/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.JVc4hi",
+    "checked_pids": [
+      88348,
+      85924
+    ],
+    "alive_pids": [],
+    "has_session_exit": 1,
+    "stderr": "no server running on /private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.JVc4hi/tmux.sock"
+  }
+]

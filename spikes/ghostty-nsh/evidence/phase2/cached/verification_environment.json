@@ -1,0 +1,9 @@
+{
+  "kind": "isolated fixture app only",
+  "RIWORK_HOME": "/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.fftNYv",
+  "tmux_socket": "/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.fftNYv/tmux.sock",
+  "tmux_session": "ghostty-spike",
+  "initial_session_identity": "$0 1793134380 %0 42320",
+  "default_tmux_socket_used": false,
+  "live_riwork_windows_used": false
+}

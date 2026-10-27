@@ -18,7 +18,8 @@ socket = str(home / 'tmux.sock')
 session = 'ghostty-spike'
 (home / 'GHOSTTY_NSH_SPIKE_FIXTURE').write_text('isolated fixture only\n')
 base = [tmux, '-S', socket, '-f', '/dev/null']
-recorder = shlex.join([python, '-u', str(scripts / 'input_recorder.py'), str(home)])
+program = 'pressure.py' if os.environ.get('SPIKE_PRESSURE') == '1' else 'input_recorder.py'
+recorder = shlex.join([python, '-u', str(scripts / program), str(home)])
 env = os.environ.copy()
 env.pop('TMUX', None)
 env.pop('TMUX_PANE', None)
@@ -49,6 +50,9 @@ values = {
     'SPIKE_TMUX': tmux,
     'SPIKE_TMUX_SOCKET': socket,
     'SPIKE_TMUX_SESSION': session,
+    'SPIKE_PYTHON': python,
+    'SPIKE_DETACH_HELPER': str(scripts / 'detach_client.py'),
+    'SPIKE_SURFACES': '4' if os.environ.get('SPIKE_PRESSURE') == '1' else '1',
     'SPIKE_COMMAND': command,
     'SPIKE_CONFIG': str(dark),
     'SPIKE_LIGHT_CONFIG': str(light),

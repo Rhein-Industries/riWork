@@ -209,3 +209,55 @@ revalidation, including closing while terminal output continues.
 - [Ghostty MIT license](https://github.com/ghostty-org/ghostty/blob/main/LICENSE).
 - [Ghostty teardown issue #14245](https://github.com/ghostty-org/ghostty/issues/14245).
 - [Unmerged proposed teardown fix #14444](https://github.com/ghostty-org/ghostty/pull/14444).
+
+## Phase 2 runtime evaluation (2026-10-27)
+
+Phase 2 compares the cached archive above with a fresh build of the exact
+package-vendored source. The package's
+[pinned VENDOR.md](https://github.com/behzade/gpui-libghostty/blob/2bbde4ae53a8e163cdbe05294bd09934b30c1af3/crates/gpui-ghostty/vendor/ghostty/VENDOR.md)
+identifies upstream Ghostty commit `9f0e1719dc918368367d368bfe300f59bb68b5a4`,
+plus local changes for internal archive installation, the caller-owned OpenGL
+context API, GLAD linkage and SDKROOT handling. Its `1.3.2-dev` label alone is
+therefore insufficient to identify the runtime. The inspected vendored source
+does not include the proposed teardown fix discussed below.
+
+The rebuild succeeded in 134.562 s using the existing Zig 0.16.0 toolchain,
+Apple Clang 17.0.0 and Xcode macOS SDK 26.0, with the package's exact
+`app-runtime=none` / `ReleaseFast` build options. Source, copied dependency
+cache, fresh object caches and output all live under ignored
+`.runtime/pinned/`; no shared source/cache was changed and no installation was
+performed. The full command, source manifest, toolchain hashes and output paths
+are in [build provenance](evidence/phase2/runtime/pinned-rebuild-provenance.json)
+and the [build log](evidence/phase2/runtime/pinned-rebuild.log).
+
+| Artifact | SHA-256 |
+| --- | --- |
+| Cached `libghostty-internal.a` | `75443f9cd0b74a0b41f51b214bbc1cc00c10b94d10710302f5eca9971f157b66` |
+| Fresh pinned `libghostty-internal.a` | `b51367aa565527eddfa180d5ae6304899d903af6fc094b4531671ffc20fb064f` |
+| Cached, vendored and rebuilt `ghostty.h` | `f2c12e1bb02540d79feed6bd29ee37312c4e0d24391442a63e66f06e1f7f2e4a` |
+
+The two archives are not byte-identical. Independently recomputing the package's
+native fingerprint from the current vendor tree, target, Zig 0.16.0, Xcode SDK,
+Clang and build options reproduces cache key
+`b1b8e8c04734504b2bf3bf7553ee247f`. This supports source/toolchain consistency,
+but does not independently attest which source produced the cached binary.
+The [cache audit](evidence/phase2/runtime/native-cache-audit.json) records these
+limits. Rebuilding improves provenance; it does not itself establish safe
+teardown or a behavioral difference between the archives.
+
+As checked through the official GitHub API on 2026-10-27,
+[issue #14245](https://github.com/ghostty-org/ghostty/issues/14245) remains open,
+and [PR #14444](https://github.com/ghostty-org/ghostty/pull/14444) remains open
+and unmerged, with a changes-requested review. Its current head is
+[`8eb96765685e581963889a85b4340fd6e289bcd6`](https://github.com/ghostty-org/ghostty/commit/8eb96765685e581963889a85b4340fd6e289bcd6),
+whose revised approach keeps the app mailbox draining while joining threads.
+That change was not applied, built or tested in this spike. Raw
+[issue](evidence/phase2/runtime/upstream-issues-14245.json),
+[PR](evidence/phase2/runtime/upstream-pulls-14444.json) and
+[review](evidence/phase2/runtime/upstream-pulls-14444-reviews.json) snapshots
+preserve the checked status.
+
+The earlier NO-GO describes the original close path. The Phase 2 disposal
+results, exact runtime exercised and current GO/NO-GO are recorded separately in
+[WORKER_REPORT.md](WORKER_REPORT.md); a successful rebuild is not a disposal
+proof.
