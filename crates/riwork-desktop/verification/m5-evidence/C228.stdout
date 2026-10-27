@@ -1,0 +1,239 @@
+[
+  {
+    "id": "09b8abba-0dc9-4573-9c32-9af83fcf2585",
+    "pid": 81359,
+    "uid": 501,
+    "started_token": "1793137288.211063",
+    "executable": "/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/riwork",
+    "state_home": "/private/tmp/rwm5-ikpfjuzy/home",
+    "windows": [
+      {
+        "project_id": "0e31fead-4159-4fe1-b6b8-22dbfc949c46",
+        "path": "/private/tmp/rwm5-ikpfjuzy/repos/Beta",
+        "bounds": {
+          "x": 1092.0,
+          "y": 356.0,
+          "width": 1220.0,
+          "height": 780.0
+        },
+        "mode": "windowed",
+        "layout": {
+          "layout": {
+            "split": {
+              "axis": "side_by_side",
+              "ratio": 0.27,
+              "first": {
+                "pane": 1
+              },
+              "second": {
+                "split": {
+                  "axis": "stacked",
+                  "ratio": 0.64,
+                  "first": {
+                    "pane": 2
+                  },
+                  "second": {
+                    "pane": 3
+                  }
+                }
+              }
+            }
+          },
+          "panes": {
+            "1": {
+              "tabs": [
+                {
+                  "kind": "panel",
+                  "panel": "projects"
+                },
+                {
+                  "kind": "panel",
+                  "panel": "files"
+                },
+                {
+                  "kind": "panel",
+                  "panel": "worktrees"
+                },
+                {
+                  "kind": "panel",
+                  "panel": "tasks"
+                },
+                {
+                  "kind": "panel",
+                  "panel": "shells"
+                }
+              ],
+              "active_tab_key": "panel:files",
+              "tab_edge": "top",
+              "shell_ids": [],
+              "active_shell_id": null
+            },
+            "2": {
+              "tabs": [
+                {
+                  "kind": "shell",
+                  "shell_id": "first"
+                },
+                {
+                  "kind": "shell",
+                  "shell_id": "second"
+                }
+              ],
+              "active_tab_key": "shell:second",
+              "tab_edge": "top",
+              "shell_ids": [
+                "first",
+                "second"
+              ],
+              "active_shell_id": "second"
+            },
+            "3": {
+              "tabs": [],
+              "active_tab_key": null,
+              "tab_edge": "top",
+              "shell_ids": [],
+              "active_shell_id": null
+            }
+          },
+          "active_pane": 2,
+          "locked_panes": [
+            3,
+            1
+          ],
+          "panels_initialized": true,
+          "detached_shell_ids": [
+            "detached-shell"
+          ],
+          "detached_chat_ids": [
+            "dismissed-chat"
+          ],
+          "chat_dismissal_revision": 7,
+          "selected_worktree_id": "selected-worktree",
+          "selected_task_id": "Beta-fixture-task",
+          "sidebar_visible": false,
+          "window_size": {
+            "width": 1440.0,
+            "height": 900.0
+          },
+          "main_pane": 2
+        },
+        "focus_mode": false,
+        "focus_centered": false
+      },
+      {
+        "project_id": "b1d0ffd4-f93f-4897-bbd9-f3493f721f0b",
+        "path": "/private/tmp/rwm5-ikpfjuzy/repos/Alpha",
+        "bounds": {
+          "x": 1070.0,
+          "y": 334.0,
+          "width": 1220.0,
+          "height": 780.0
+        },
+        "mode": "windowed",
+        "layout": {
+          "layout": {
+            "split": {
+              "axis": "side_by_side",
+              "ratio": 0.27,
+              "first": {
+                "pane": 1
+              },
+              "second": {
+                "split": {
+                  "axis": "stacked",
+                  "ratio": 0.64,
+                  "first": {
+                    "pane": 2
+                  },
+                  "second": {
+                    "pane": 3
+                  }
+                }
+              }
+            }
+          },
+          "panes": {
+            "1": {
+              "tabs": [
+                {
+                  "kind": "panel",
+                  "panel": "projects"
+                },
+                {
+                  "kind": "panel",
+                  "panel": "files"
+                },
+                {
+                  "kind": "panel",
+                  "panel": "worktrees"
+                },
+                {
+                  "kind": "panel",
+                  "panel": "tasks"
+                },
+                {
+                  "kind": "panel",
+                  "panel": "shells"
+                }
+              ],
+              "active_tab_key": "panel:files",
+              "tab_edge": "top",
+              "shell_ids": [],
+              "active_shell_id": null
+            },
+            "2": {
+              "tabs": [
+                {
+                  "kind": "shell",
+                  "shell_id": "first"
+                },
+                {
+                  "kind": "shell",
+                  "shell_id": "second"
+                }
+              ],
+              "active_tab_key": "shell:second",
+              "tab_edge": "top",
+              "shell_ids": [
+                "first",
+                "second"
+              ],
+              "active_shell_id": "second"
+            },
+            "3": {
+              "tabs": [],
+              "active_tab_key": null,
+              "tab_edge": "top",
+              "shell_ids": [],
+              "active_shell_id": null
+            }
+          },
+          "active_pane": 2,
+          "locked_panes": [
+            1,
+            3
+          ],
+          "panels_initialized": true,
+          "detached_shell_ids": [
+            "detached-shell"
+          ],
+          "detached_chat_ids": [
+            "dismissed-chat"
+          ],
+          "chat_dismissal_revision": 7,
+          "selected_worktree_id": "selected-worktree",
+          "selected_task_id": "Alpha-fixture-task",
+          "sidebar_visible": false,
+          "window_size": {
+            "width": 1440.0,
+            "height": 900.0
+          },
+          "main_pane": 2
+        },
+        "focus_mode": false,
+        "focus_centered": false
+      }
+    ],
+    "updated_at": 1793137292
+  }
+]

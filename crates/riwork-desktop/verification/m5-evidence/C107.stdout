@@ -1,0 +1,17 @@
+apps/riwork/src/host_layouts.rs:280:            !home.path().join("layouts.json").exists(),
+apps/riwork/src/host_layouts.rs:281:            "publishing must not write layouts.json"
+apps/riwork/src/lib.rs:283:        assert!(!fixture.path().join("layouts.json").exists());
+apps/riwork/src/persistence.rs:1://! LayoutStore is the only writer of layouts.json. Call `open`, `switch_project`, and
+apps/riwork/src/persistence.rs:260:    let path = dir.join("layouts.json");
+apps/riwork/examples/seed_fixture.rs:28:        !dir.join("layouts.json").exists(),
+apps/riwork/VERIFICATION.md:43:The seed helper refuses overwriting an existing layouts.json. Choose a fresh /tmp home when reproducing.
+apps/riwork/VERIFICATION.md:60:Post-test Python assertions (preservation-check.log) compared all SHA-256 hashes recorded in user-nsh-before.json plus the ~/.local/bin/nsh symlink, and inspected home2/layouts.json after the real UI drag.
+apps/riwork/tests/layout_roundtrip.rs:248:        let bytes = fs::read(temp.path().join("layouts.json")).unwrap();
+apps/riwork/tests/layout_roundtrip.rs:256:        assert_eq!(fs::read(temp.path().join("layouts.json")).unwrap(), bytes);
+apps/riwork/tests/layout_roundtrip.rs:293:    fs::write(temp.path().join("layouts.json"), corrupt).unwrap();
+apps/riwork/tests/layout_roundtrip.rs:304:    assert_eq!(fs::read(temp.path().join("layouts.json")).unwrap(), corrupt);
+apps/riwork/tests/layout_roundtrip.rs:305:    fs::write(temp.path().join("layouts.json"), b"  \n\t").unwrap();
+apps/riwork/tests/layout_roundtrip.rs:318:    fs::write(temp.path().join("layouts.json"), corrupt).unwrap();
+apps/riwork/tests/layout_roundtrip.rs:322:    assert_eq!(fs::read(temp.path().join("layouts.json")).unwrap(), corrupt);
+apps/riwork/tests/support/mod.rs:95:    serde_json::from_slice(&fs::read(dir.join("layouts.json")).unwrap()).unwrap()
+apps/riwork/tests/support/mod.rs:100:        dir.join("layouts.json"),

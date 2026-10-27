@@ -27,6 +27,23 @@ fn main() -> Result<(), String> {
     let home = root.join("home");
     let store = Store::open(&home)?;
     let layouts = LayoutStore::open(&home)?;
+    // Acceptance can seed legacy published state through the production writer,
+    // then prove the Phase 1 host leaves it byte-for-byte and mtime unchanged.
+    if std::env::args_os().skip(2).any(|arg| arg == "--appearance") {
+        use riwork_core::appearance_file::{self, PaletteColors, Published, Rgb};
+        let palette = PaletteColors {
+            bg: Rgb(0x101820),
+            panel: Rgb(0x18232b),
+            panel_active: Rgb(0x253640),
+            divider: Rgb(0x334650),
+            cyan: Rgb(0x75d5e8),
+            magenta: Rgb(0xdb94db),
+            gold: Rgb(0xe4c07a),
+            text: Rgb(0xd3e1e6),
+            muted: Rgb(0x8eabb5),
+        };
+        appearance_file::publish(&home, &Published::new(true, palette, None), 1)?;
+    }
     let mut projects = Vec::new();
     for name in ["Alpha", "Beta"] {
         let path = root.join("repos").join(name);

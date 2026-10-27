@@ -1,0 +1,50 @@
+   Compiling riwork-engine v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p1-m5/crates/riwork-engine)
+   Compiling riwork-nsh-workspace v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p1-m5/apps/riwork)
+   Compiling riwork-core v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p1-m5/crates/riwork-core)
+   Compiling riwork-cli v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p1-m5/crates/riwork-cli)
+   Compiling riwork-nsh-native v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p1-m5/crates/riwork-nsh-native)
+warning: function `without_sgr` is never used
+   --> crates/riwork-engine/src/sessions/tmux_tests.rs:712:4
+    |
+712 | fn without_sgr(text: &str) -> String {
+    |    ^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `numbers` is never used
+   --> crates/riwork-engine/src/sessions/tmux_tests.rs:739:4
+    |
+739 | fn numbers(first: u32, last: u32) -> String {
+    |    ^^^^^^^
+
+warning: function `page` is never used
+   --> crates/riwork-engine/src/sessions/tmux_tests.rs:746:4
+    |
+746 | fn page(
+    |    ^^^^
+
+   Compiling riwork-desktop v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p1-m5/crates/riwork-desktop)
+warning: `riwork-engine` (lib test) generated 3 warnings
+    Finished `test` profile [unoptimized] target(s) in 19.65s
+     Running unittests src/lib.rs (/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/deps/riwork_cli-1eb1646c0f69d028)
+     Running unittests src/main.rs (/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/deps/riwork_cli-9f6d7d53744411c4)
+     Running tests/agent_activity_cli.rs (/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/deps/agent_activity_cli-333883e8bac26476)
+     Running tests/appearance_cli.rs (/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/deps/appearance_cli-0d235edd363a5613)
+     Running tests/chat_host_cli.rs (/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/deps/chat_host_cli-d1649668da05c00d)
+     Running tests/cli_mcp_contract.rs (/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/deps/cli_mcp_contract-2f6d19a5044b1de5)
+     Running tests/codex_shim_accounts.rs (/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/deps/codex_shim_accounts-55322d062491fb1e)
+     Running tests/cua_skills_cli.rs (/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/deps/cua_skills_cli-a7f594207a2ec8eb)
+     Running tests/dashboard_cli.rs (/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/deps/dashboard_cli-16d2188c9044c416)
+     Running tests/preview_cli.rs (/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/deps/preview_cli-bb384237910d4e92)
+     Running tests/project_create_cli.rs (/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/deps/project_create_cli-6b9cff03f305e036)
+     Running tests/project_memo_cli.rs (/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/deps/project_memo_cli-b45c2a235c3c5292)
+     Running tests/schedule_interfaces.rs (/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/deps/schedule_interfaces-08b732490c36a145)
+     Running tests/settings_cli.rs (/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/deps/settings_cli-825483505cd770da)
+     Running tests/shell_attach_exec_cli.rs (/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/deps/shell_attach_exec_cli-e41088a493909eac)
+     Running tests/shell_create_cli.rs (/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/deps/shell_create_cli-8150c5ab0c750b4b)
+     Running tests/shell_paste_cli.rs (/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/deps/shell_paste_cli-c44169346b35a055)
+     Running unittests src/lib.rs (/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/deps/riwork_core-555e93515e119468)
+     Running unittests src/nsh_main.rs (/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/deps/riwork-e73724bcc1a7cb59)
+     Running tests/appkit_shell.rs (/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/deps/appkit_shell-ba1743b059363201)
+     Running tests/cli_contract.rs (/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/deps/cli_contract-3d673199973b0a94)
+error: test failed, to rerun pass `-p riwork-desktop --test cli_contract`

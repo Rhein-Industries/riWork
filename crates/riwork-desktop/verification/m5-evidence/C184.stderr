@@ -1,0 +1,7 @@
+    Finished `test` profile [unoptimized] target(s) in 0.23s
+     Running tests/appkit_shell.rs (/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/deps/appkit_shell-06c017650e55f81a)
+
+thread 'main' (10724027) panicked at crates/riwork-desktop/tests/support/appkit_shell_macos.rs:255:5:
+no AppKit check matched the requested route
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+error: test failed, to rerun pass `-p riwork-desktop --test appkit_shell`

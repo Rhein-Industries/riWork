@@ -1,0 +1,714 @@
+[
+  {
+    "tool": "list_windows",
+    "arguments": {
+      "pid": 97664,
+      "session": "p1-acceptance"
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "Found 2 window(s).\n- riwork (pid 97664) \"RiWork · Beta\" [window_id: 6376]\n- riwork (pid 97664) \"RiWork · Alpha\" [window_id: 6375]"
+        }
+      ],
+      "structuredContent": {
+        "current_space_id": 1,
+        "windows": [
+          {
+            "app_name": "riwork",
+            "bounds": {
+              "height": 780,
+              "width": 1220,
+              "x": 1092,
+              "y": 356
+            },
+            "current_space_id": 1,
+            "is_on_screen": true,
+            "layer": 0,
+            "on_current_space": true,
+            "pid": 97664,
+            "space_ids": [
+              1
+            ],
+            "title": "RiWork · Beta",
+            "window_id": 6376,
+            "z_index": 273
+          },
+          {
+            "app_name": "riwork",
+            "bounds": {
+              "height": 780,
+              "width": 1220,
+              "x": 1070,
+              "y": 334
+            },
+            "current_space_id": 1,
+            "is_on_screen": true,
+            "layer": 0,
+            "on_current_space": true,
+            "pid": 97664,
+            "space_ids": [
+              1
+            ],
+            "title": "RiWork · Alpha",
+            "window_id": 6375,
+            "z_index": 271
+          }
+        ]
+      }
+    }
+  },
+  {
+    "tool": "get_window_state",
+    "arguments": {
+      "pid": 97664,
+      "window_id": 6375,
+      "session": "p1-acceptance",
+      "query": "",
+      "tree_format": "elements",
+      "include_screenshot": false
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "window_id=6375 pid=97664 elements=10 snapshot_id=s000000e7\n\n(tree is in structuredContent.elements; pass tree_format \"markdown\" for the compact text rendering)"
+        }
+      ],
+      "structuredContent": {
+        "app_name": "riwork",
+        "element_count": 10,
+        "elements": [
+          {
+            "actions": [
+              "AXRaise"
+            ],
+            "depth": 0,
+            "element_index": 0,
+            "element_token": "s000000e7:0",
+            "frame": {
+              "h": 780,
+              "w": 1220,
+              "x": 1070,
+              "y": 334
+            },
+            "label": "RiWork · Alpha",
+            "role": "AXWindow"
+          },
+          {
+            "actions": [
+              "AXShowMenu"
+            ],
+            "depth": 1,
+            "element_index": 1,
+            "element_token": "s000000e7:1",
+            "frame": {
+              "h": 40,
+              "w": 1220,
+              "x": 1070,
+              "y": 334
+            },
+            "parent_index": 0,
+            "role": "AXToolbar"
+          },
+          {
+            "actions": [
+              "AXPress"
+            ],
+            "depth": 1,
+            "element_index": 2,
+            "element_token": "s000000e7:2",
+            "enabled": true,
+            "frame": {
+              "h": 16,
+              "w": 16,
+              "x": 1081,
+              "y": 346
+            },
+            "parent_index": 0,
+            "role": "AXButton"
+          },
+          {
+            "actions": [
+              "AXPress",
+              "AXShowMenu"
+            ],
+            "depth": 1,
+            "element_index": 3,
+            "element_token": "s000000e7:3",
+            "enabled": true,
+            "frame": {
+              "h": 16,
+              "w": 16,
+              "x": 1127,
+              "y": 346
+            },
+            "parent_index": 0,
+            "role": "AXButton"
+          },
+          {
+            "actions": [
+              "AXPress"
+            ],
+            "depth": 1,
+            "element_index": 4,
+            "element_token": "s000000e7:4",
+            "enabled": true,
+            "frame": {
+              "h": 16,
+              "w": 16,
+              "x": 1104,
+              "y": 346
+            },
+            "parent_index": 0,
+            "role": "AXButton"
+          },
+          {
+            "actions": [
+              "AXCancel"
+            ],
+            "depth": 0,
+            "element_index": 5,
+            "element_token": "s000000e7:5",
+            "enabled": true,
+            "frame": {
+              "h": 30,
+              "w": 3360,
+              "x": 0,
+              "y": 0
+            },
+            "role": "AXMenuBar",
+            "selected": false
+          },
+          {
+            "actions": [
+              "AXCancel",
+              "AXPress",
+              "AXPick"
+            ],
+            "depth": 1,
+            "element_index": 6,
+            "element_token": "s000000e7:6",
+            "enabled": true,
+            "label": "Apple",
+            "parent_index": 5,
+            "role": "AXMenuBarItem",
+            "selected": false
+          },
+          {
+            "actions": [
+              "AXCancel",
+              "AXPress",
+              "AXPick"
+            ],
+            "depth": 1,
+            "element_index": 7,
+            "element_token": "s000000e7:7",
+            "enabled": true,
+            "label": "riwork",
+            "parent_index": 5,
+            "role": "AXMenuBarItem",
+            "selected": false
+          },
+          {
+            "actions": [
+              "AXCancel",
+              "AXPress",
+              "AXPick"
+            ],
+            "depth": 1,
+            "element_index": 8,
+            "element_token": "s000000e7:8",
+            "enabled": true,
+            "label": "Edit",
+            "parent_index": 5,
+            "role": "AXMenuBarItem",
+            "selected": false
+          },
+          {
+            "actions": [
+              "AXCancel",
+              "AXPress",
+              "AXPick"
+            ],
+            "depth": 1,
+            "element_index": 9,
+            "element_token": "s000000e7:9",
+            "enabled": true,
+            "label": "View",
+            "parent_index": 5,
+            "role": "AXMenuBarItem",
+            "selected": false
+          }
+        ],
+        "elements_complete": false,
+        "filtered_element_count": 10,
+        "pid": 97664,
+        "returned_element_count": 10,
+        "snapshot_id": "s000000e7",
+        "timeout_ms": 1000,
+        "total_element_count": 10,
+        "tree_format": "elements",
+        "truncated": false,
+        "window_id": 6375,
+        "window_title": "RiWork · Alpha"
+      }
+    }
+  },
+  {
+    "tool": "get_window_state",
+    "arguments": {
+      "pid": 97664,
+      "window_id": 6375,
+      "session": "p1-acceptance",
+      "include_accessibility_tree": false,
+      "screenshot_out_file": "/private/tmp/rwm5-ki8420zw/evidence/alpha.png"
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "window_id=6375 pid=97664 size=1365x873"
+        },
+        {
+          "type": "text",
+          "text": "Screenshot only: snapshot s000000e7 keeps its rows, and its element_tokens (s000000e7:N) stay valid."
+        }
+      ],
+      "structuredContent": {
+        "app_name": "riwork",
+        "capture_id": "capture_03c60697d25544c4a7f37892019a46ae_00000000000000ad",
+        "element_count": 0,
+        "elements_complete": false,
+        "pid": 97664,
+        "returned_element_count": 0,
+        "screenshot_file_path": "/private/tmp/rwm5-ki8420zw/evidence/alpha.png",
+        "screenshot_frame_valid": true,
+        "screenshot_height": 873,
+        "screenshot_mime_type": "image/png",
+        "screenshot_scale": 2,
+        "screenshot_width": 1365,
+        "snapshot_id": "s000000e7",
+        "total_element_count": 0,
+        "tree_format": "markdown",
+        "tree_markdown": "",
+        "window_bounds": {
+          "height": 780,
+          "width": 1220,
+          "x": 1070,
+          "y": 334
+        },
+        "window_id": 6375,
+        "window_title": "RiWork · Alpha"
+      }
+    }
+  },
+  {
+    "tool": "get_window_state",
+    "arguments": {
+      "pid": 97664,
+      "window_id": 6376,
+      "session": "p1-acceptance",
+      "query": "",
+      "tree_format": "elements",
+      "include_screenshot": false
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "window_id=6376 pid=97664 elements=10 snapshot_id=s000000e8\n\n(tree is in structuredContent.elements; pass tree_format \"markdown\" for the compact text rendering)"
+        }
+      ],
+      "structuredContent": {
+        "app_name": "riwork",
+        "element_count": 10,
+        "elements": [
+          {
+            "actions": [
+              "AXRaise"
+            ],
+            "depth": 0,
+            "element_index": 0,
+            "element_token": "s000000e8:0",
+            "frame": {
+              "h": 780,
+              "w": 1220,
+              "x": 1092,
+              "y": 356
+            },
+            "label": "RiWork · Beta",
+            "role": "AXWindow"
+          },
+          {
+            "actions": [
+              "AXShowMenu"
+            ],
+            "depth": 1,
+            "element_index": 1,
+            "element_token": "s000000e8:1",
+            "frame": {
+              "h": 40,
+              "w": 1220,
+              "x": 1092,
+              "y": 356
+            },
+            "parent_index": 0,
+            "role": "AXToolbar"
+          },
+          {
+            "actions": [
+              "AXPress"
+            ],
+            "depth": 1,
+            "element_index": 2,
+            "element_token": "s000000e8:2",
+            "enabled": true,
+            "frame": {
+              "h": 16,
+              "w": 16,
+              "x": 1103,
+              "y": 368
+            },
+            "parent_index": 0,
+            "role": "AXButton"
+          },
+          {
+            "actions": [
+              "AXPress",
+              "AXShowMenu"
+            ],
+            "depth": 1,
+            "element_index": 3,
+            "element_token": "s000000e8:3",
+            "enabled": true,
+            "frame": {
+              "h": 16,
+              "w": 16,
+              "x": 1149,
+              "y": 368
+            },
+            "parent_index": 0,
+            "role": "AXButton"
+          },
+          {
+            "actions": [
+              "AXPress"
+            ],
+            "depth": 1,
+            "element_index": 4,
+            "element_token": "s000000e8:4",
+            "enabled": true,
+            "frame": {
+              "h": 16,
+              "w": 16,
+              "x": 1126,
+              "y": 368
+            },
+            "parent_index": 0,
+            "role": "AXButton"
+          },
+          {
+            "actions": [
+              "AXCancel"
+            ],
+            "depth": 0,
+            "element_index": 5,
+            "element_token": "s000000e8:5",
+            "enabled": true,
+            "frame": {
+              "h": 30,
+              "w": 3360,
+              "x": 0,
+              "y": 0
+            },
+            "role": "AXMenuBar",
+            "selected": false
+          },
+          {
+            "actions": [
+              "AXCancel",
+              "AXPress",
+              "AXPick"
+            ],
+            "depth": 1,
+            "element_index": 6,
+            "element_token": "s000000e8:6",
+            "enabled": true,
+            "label": "Apple",
+            "parent_index": 5,
+            "role": "AXMenuBarItem",
+            "selected": false
+          },
+          {
+            "actions": [
+              "AXCancel",
+              "AXPress",
+              "AXPick"
+            ],
+            "depth": 1,
+            "element_index": 7,
+            "element_token": "s000000e8:7",
+            "enabled": true,
+            "label": "riwork",
+            "parent_index": 5,
+            "role": "AXMenuBarItem",
+            "selected": false
+          },
+          {
+            "actions": [
+              "AXCancel",
+              "AXPress",
+              "AXPick"
+            ],
+            "depth": 1,
+            "element_index": 8,
+            "element_token": "s000000e8:8",
+            "enabled": true,
+            "label": "Edit",
+            "parent_index": 5,
+            "role": "AXMenuBarItem",
+            "selected": false
+          },
+          {
+            "actions": [
+              "AXCancel",
+              "AXPress",
+              "AXPick"
+            ],
+            "depth": 1,
+            "element_index": 9,
+            "element_token": "s000000e8:9",
+            "enabled": true,
+            "label": "View",
+            "parent_index": 5,
+            "role": "AXMenuBarItem",
+            "selected": false
+          }
+        ],
+        "elements_complete": false,
+        "filtered_element_count": 10,
+        "pid": 97664,
+        "returned_element_count": 10,
+        "snapshot_id": "s000000e8",
+        "timeout_ms": 1000,
+        "total_element_count": 10,
+        "tree_format": "elements",
+        "truncated": false,
+        "window_id": 6376,
+        "window_title": "RiWork · Beta"
+      }
+    }
+  },
+  {
+    "tool": "get_window_state",
+    "arguments": {
+      "pid": 97664,
+      "window_id": 6376,
+      "session": "p1-acceptance",
+      "include_accessibility_tree": false,
+      "screenshot_out_file": "/private/tmp/rwm5-ki8420zw/evidence/beta.png"
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "window_id=6376 pid=97664 size=1365x873"
+        },
+        {
+          "type": "text",
+          "text": "Screenshot only: snapshot s000000e8 keeps its rows, and its element_tokens (s000000e8:N) stay valid."
+        }
+      ],
+      "structuredContent": {
+        "app_name": "riwork",
+        "capture_id": "capture_03c60697d25544c4a7f37892019a46ae_00000000000000ae",
+        "element_count": 0,
+        "elements_complete": false,
+        "pid": 97664,
+        "returned_element_count": 0,
+        "screenshot_file_path": "/private/tmp/rwm5-ki8420zw/evidence/beta.png",
+        "screenshot_frame_valid": true,
+        "screenshot_height": 873,
+        "screenshot_mime_type": "image/png",
+        "screenshot_scale": 2,
+        "screenshot_width": 1365,
+        "snapshot_id": "s000000e8",
+        "total_element_count": 0,
+        "tree_format": "markdown",
+        "tree_markdown": "",
+        "window_bounds": {
+          "height": 780,
+          "width": 1220,
+          "x": 1092,
+          "y": 356
+        },
+        "window_id": 6376,
+        "window_title": "RiWork · Beta"
+      }
+    }
+  },
+  {
+    "tool": "get_window_state",
+    "arguments": {
+      "pid": 97664,
+      "window_id": 6375,
+      "session": "p1-acceptance",
+      "query": "close",
+      "tree_format": "elements",
+      "include_screenshot": false
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "window_id=6375 pid=97664 elements=101\n\n"
+        },
+        {
+          "type": "text",
+          "text": "Invalidated snapshots s000000e7: their element_tokens are stale."
+        }
+      ],
+      "structuredContent": {
+        "app_name": "riwork",
+        "element_count": 101,
+        "elements": [],
+        "elements_complete": false,
+        "filtered_element_count": 0,
+        "invalidated_snapshot_ids": [
+          "s000000e7"
+        ],
+        "pid": 97664,
+        "returned_element_count": 0,
+        "snapshot_id": "s000000e9",
+        "timeout_ms": 1000,
+        "total_element_count": 101,
+        "tree_format": "elements",
+        "truncated": false,
+        "window_id": 6375,
+        "window_title": "RiWork · Alpha"
+      }
+    }
+  },
+  {
+    "tool": "verify_state",
+    "arguments": {
+      "pid": 97664,
+      "window_id": 6375,
+      "session": "p1-acceptance",
+      "expect": [
+        {
+          "window": {
+            "exists": true,
+            "bounds": {
+              "x": 1070,
+              "y": 334,
+              "width": 1220,
+              "height": 780,
+              "tolerance_px": 1
+            }
+          }
+        },
+        {
+          "element": {
+            "selector": {
+              "label_contains": "RiWork · Alpha"
+            },
+            "exists": true
+          }
+        }
+      ],
+      "timeout_ms": 5000,
+      "stable_samples": 2
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "verify_state: satisfied after 2 sample(s) in 263 ms"
+        }
+      ],
+      "structuredContent": {
+        "elapsed_ms": 263,
+        "predicates": [
+          {
+            "index": 0,
+            "observed_json": "{\"bounds\":{\"height\":780.0,\"width\":1220.0,\"x\":1070.0,\"y\":334.0},\"exists\":true}",
+            "status": "satisfied",
+            "unknown_reason": null
+          },
+          {
+            "index": 1,
+            "observed_json": "{\"element_index\":0,\"frame\":{\"h\":780.0,\"w\":1220.0,\"x\":1070.0,\"y\":334.0},\"label\":\"RiWork · Alpha\",\"role\":\"AXWindow\"}",
+            "status": "satisfied",
+            "unknown_reason": null
+          }
+        ],
+        "samples": 2,
+        "stable": true,
+        "status": "satisfied"
+      }
+    }
+  },
+  {
+    "tool": "verify_state",
+    "arguments": {
+      "pid": 97664,
+      "window_id": 6376,
+      "session": "p1-acceptance",
+      "expect": [
+        {
+          "window": {
+            "exists": true,
+            "bounds": {
+              "x": 1092,
+              "y": 356,
+              "width": 1220,
+              "height": 780,
+              "tolerance_px": 1
+            }
+          }
+        },
+        {
+          "element": {
+            "selector": {
+              "label_contains": "RiWork · Beta"
+            },
+            "exists": true
+          }
+        }
+      ],
+      "timeout_ms": 5000,
+      "stable_samples": 2
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "verify_state: satisfied after 2 sample(s) in 272 ms"
+        }
+      ],
+      "structuredContent": {
+        "elapsed_ms": 272,
+        "predicates": [
+          {
+            "index": 0,
+            "observed_json": "{\"bounds\":{\"height\":780.0,\"width\":1220.0,\"x\":1092.0,\"y\":356.0},\"exists\":true}",
+            "status": "satisfied",
+            "unknown_reason": null
+          },
+          {
+            "index": 1,
+            "observed_json": "{\"element_index\":0,\"frame\":{\"h\":780.0,\"w\":1220.0,\"x\":1092.0,\"y\":356.0},\"label\":\"RiWork · Beta\",\"role\":\"AXWindow\"}",
+            "status": "satisfied",
+            "unknown_reason": null
+          }
+        ],
+        "samples": 2,
+        "stable": true,
+        "status": "satisfied"
+      }
+    }
+  }
+]

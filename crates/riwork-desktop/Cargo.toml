@@ -9,12 +9,24 @@ autobins = false
 name = "riwork"
 path = "src/nsh_main.rs"
 
+[[test]]
+name = "appkit_shell"
+path = "tests/appkit_shell.rs"
+harness = false
+
+[[test]]
+name = "startup_environment"
+path = "tests/startup_environment.rs"
+harness = false
+
 [dependencies]
 riwork-core = { path = "../riwork-core" }
 riwork-engine = { path = "../riwork-engine" }
 riwork-cli = { path = "../riwork-cli" }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# The GPUI dependency graph enabled insertion-ordered JSON maps. Keep the
+# frozen CLI's byte output (notably settings list --json) across the host port.
+serde_json = { version = "1", features = ["preserve_order"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 fs2 = "0.4"
 libc = "0.2"

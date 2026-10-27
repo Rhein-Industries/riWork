@@ -1,0 +1,3 @@
+   Compiling riwork-desktop v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p1-m5/crates/riwork-desktop)
+    Finished `test` profile [unoptimized] target(s) in 0.77s
+     Running tests/appkit_shell.rs (/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/deps/appkit_shell-06c017650e55f81a)

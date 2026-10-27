@@ -1,0 +1,32 @@
+
+running 5 tests
+test dto::tests::session_dto_preserves_saved_identity_and_live_sample_fields ... ok
+test hub::tests::first_snapshot_deduplication_overflow_and_close ... ok
+test backend::tests::failed_store_initialization_can_recover_in_the_same_adapter ... ok
+test dto::tests::bridge_camelizes_domain_fields_without_rewriting_persistence_or_opaque_data ... ok
+test tests::native_registry_composes_services_and_layouts_in_one_frozen_module ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 1 test
+test native_pushes_one_service_to_two_engines_and_stops_on_close_owner_and_engine_drop ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.65s
+
+
+running 5 tests
+test async_reads_hop_off_the_callers_thread_and_errors_are_coded ... ok
+test watcher_wakes_sessions_and_unavailable_sessions_do_not_block_store ... ok
+test one_sampler_serves_multiple_subscribers_and_emits_only_changes ... ok
+test an_empty_inventory_sleeps_until_a_watcher_event_and_disarms_when_empty_again ... ok
+test a_quiet_home_produces_no_deliveries_for_60_s has been running for over 60 seconds
+test a_quiet_home_produces_no_deliveries_for_60_s ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 60.05s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

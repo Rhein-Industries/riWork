@@ -67,13 +67,16 @@ async fn start(home: &Path, sessions: Arc<dyn SessionsBackend>) -> Arc<ProcessSe
 async fn one_sampler_serves_multiple_subscribers_and_emits_only_changes() {
     let fixture = tempfile::tempdir().unwrap();
     let sessions = Arc::new(FakeSessions::default());
+    // The liveness fallback exists only while an inventory contains shells.
+    // Discovery into an empty inventory is driven by the home watcher.
+    sessions.value.lock().unwrap().sessions.push(session());
     let service = start(fixture.path(), sessions.clone()).await;
     let a = service.subscribe_sessions().await.unwrap();
     let b = service.subscribe_sessions().await.unwrap();
     assert_eq!(a.recv().await.unwrap().rev, 1);
     assert_eq!(b.recv().await.unwrap().rev, 1);
     assert_eq!(sessions.samples.load(Ordering::SeqCst), 1);
-    sessions.value.lock().unwrap().sessions.push(session());
+    sessions.value.lock().unwrap().sessions[0].alive = true;
     let changed = tokio::time::timeout(SESSION_SAMPLE_INTERVAL + Duration::from_secs(1), a.recv())
         .await
         .unwrap()
@@ -92,6 +95,70 @@ async fn one_sampler_serves_multiple_subscribers_and_emits_only_changes() {
         .is_err()
     );
     assert_eq!(sessions.samples.load(Ordering::SeqCst), 3);
+}
+
+#[tokio::test]
+async fn an_empty_inventory_sleeps_until_a_watcher_event_and_disarms_when_empty_again() {
+    let fixture = tempfile::tempdir().unwrap();
+    let sessions = Arc::new(FakeSessions::default());
+    let service = start(fixture.path(), sessions.clone()).await;
+    let listener = service.subscribe_sessions().await.unwrap();
+    assert!(listener.recv().await.unwrap().data.sessions.is_empty());
+    tokio::time::sleep(SESSION_SAMPLE_INTERVAL + Duration::from_millis(150)).await;
+    assert_eq!(
+        sessions.samples.load(Ordering::SeqCst),
+        1,
+        "an empty inventory must not run the tmux liveness fallback"
+    );
+
+    sessions.value.lock().unwrap().sessions.push(session());
+    let path = fixture.path().join("sessions.json");
+    std::fs::write(&path, "a fixture shell appeared").unwrap();
+    let first = tokio::time::timeout(Duration::from_secs(2), listener.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(first.data.sessions.len(), 1);
+    let reads = sessions.samples.load(Ordering::SeqCst);
+    tokio::time::sleep(SESSION_SAMPLE_INTERVAL + Duration::from_millis(150)).await;
+    assert!(
+        sessions.samples.load(Ordering::SeqCst) > reads,
+        "the liveness fallback must run after a watcher discovers a shell"
+    );
+
+    sessions.value.lock().unwrap().sessions.clear();
+    std::fs::write(&path, "the last fixture shell disappeared").unwrap();
+    let empty = tokio::time::timeout(Duration::from_secs(2), listener.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(empty.data.sessions.is_empty());
+    // Let any coalesced filesystem notification settle before counting.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let reads = sessions.samples.load(Ordering::SeqCst);
+    tokio::time::sleep(SESSION_SAMPLE_INTERVAL + Duration::from_millis(150)).await;
+    assert_eq!(
+        sessions.samples.load(Ordering::SeqCst),
+        reads,
+        "removing the last shell must disarm the fallback"
+    );
+}
+
+#[tokio::test]
+async fn a_quiet_home_produces_no_deliveries_for_60_s() {
+    let fixture = tempfile::tempdir().unwrap();
+    let sessions = Arc::new(FakeSessions::default());
+    let service = start(fixture.path(), sessions.clone()).await;
+    let stores = service.subscribe_store().await.unwrap();
+    let shells = service.subscribe_sessions().await.unwrap();
+    stores.recv().await.unwrap();
+    shells.recv().await.unwrap();
+    tokio::select! {
+        _ = tokio::time::sleep(Duration::from_secs(60)) => {},
+        event = stores.recv() => panic!("quiet Store delivered {event:?}"),
+        event = shells.recv() => panic!("quiet Sessions delivered {event:?}"),
+    }
+    assert_eq!(sessions.samples.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]

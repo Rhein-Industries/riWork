@@ -1,0 +1,6 @@
+
+running 1 test
+test nsh_host::tests::no_active_project_registers_the_cwd_fallback ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 26 filtered out; finished in 0.09s
+

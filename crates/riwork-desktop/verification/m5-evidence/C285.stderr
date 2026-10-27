@@ -1,0 +1,419 @@
+   Compiling gpui-libghostty v0.3.1
+   Compiling riwork-desktop v0.1.0 (/private/tmp/riwork-p1-m5-f6975181/reference-phz1dufl/reference/crates/riwork-desktop)
+warning: unused import: `ChangeKind`
+  --> crates/riwork-desktop/src/chat_view/feedback.rs:12:19
+   |
+12 |     chat::model::{ChangeKind, FileChange, Item, ItemBody},
+   |                   ^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `ClaudeBilling`
+  --> crates/riwork-desktop/src/chat_view/panels.rs:15:48
+   |
+15 |         ApprovalKind, ApprovalMode, ChatState, ClaudeBilling, ContributorMode, Decision, Provider,
+   |                                                ^^^^^^^^^^^^^
+
+warning: unused macro definition: `impl_input_handler`
+    --> crates/riwork-desktop/src/project_settings.rs:2823:14
+     |
+2823 | macro_rules! impl_input_handler {
+     |              ^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(unused_macros)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused imports: `TextPoints`, `project_sort::ProjectOrder`, and `status_bar::StatusBarSettings`
+  --> crates/riwork-desktop/src/settings.rs:26:5
+   |
+26 |     project_sort::ProjectOrder,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+29 |     status_bar::StatusBarSettings,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+32 |     ui_text::{self, InterfaceFont, SizeChange, TextPoints},
+   |                                                ^^^^^^^^^^
+
+warning: unused import: `claude_chat_billing`
+   --> crates/riwork-desktop/src/settings.rs:131:35
+    |
+131 |     agent_terminals_unrestricted, claude_chat_billing, recommended_model, valid_model_id,
+    |                                   ^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `sessions::HarnessKind`
+  --> crates/riwork-desktop/src/terminal_drop.rs:37:5
+   |
+37 |     sessions::HarnessKind,
+   |     ^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `shell_escape`
+  --> crates/riwork-desktop/src/terminal_drop.rs:43:56
+   |
+43 |     Copied, Program, paste_input, path_input, program, shell_escape,
+   |                                                        ^^^^^^^^^^^^
+
+warning: function `utf16_to_byte` is never used
+    --> crates/riwork-desktop/src/main.rs:1552:4
+     |
+1552 | fn utf16_to_byte(text: &str, offset: usize) -> usize {
+     |    ^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `spec` is never used
+   --> crates/riwork-desktop/src/app_preview.rs:316:12
+    |
+136 | impl AppPreviewView {
+    | ------------------- method in this implementation
+...
+316 |     pub fn spec(&self) -> &PreviewSpec {
+    |            ^^^^
+
+warning: methods `get`, `set`, `set_draft`, and `clear_sent` are never used
+   --> crates/riwork-desktop/src/chat_drafts.rs:228:12
+    |
+172 | impl Drafts {
+    | ----------- methods in this implementation
+...
+228 |     pub fn get(&self, chat_id: &str) -> Option<&str> {
+    |            ^^^
+...
+238 |     pub fn set(&mut self, chat_id: &str, text: &str) -> Result<(), String> {
+    |            ^^^
+...
+250 |     pub(crate) fn set_draft(
+    |                   ^^^^^^^^^
+...
+309 |     pub fn clear_sent(&mut self, chat_id: &str, sent: &str) -> Result<(), String> {
+    |            ^^^^^^^^^^
+
+warning: function `draft` is never used
+   --> crates/riwork-desktop/src/chat_drafts.rs:716:8
+    |
+716 | pub fn draft(chat_id: &str, cx: &App) -> Option<String> {
+    |        ^^^^^
+
+warning: function `clear_sent` is never used
+   --> crates/riwork-desktop/src/chat_drafts.rs:807:8
+    |
+807 | pub fn clear_sent(chat_id: &str, sent: &str, cx: &mut App) {
+    |        ^^^^^^^^^^
+
+warning: function `remember` is never used
+   --> crates/riwork-desktop/src/chat_drafts.rs:826:8
+    |
+826 | pub fn remember(chat_id: &str, text: &str, cx: &mut App) {
+    |        ^^^^^^^^
+
+warning: field `subscriptions` is never read
+   --> crates/riwork-desktop/src/chat_view.rs:322:5
+    |
+261 | pub struct ChatView {
+    |            -------- field in this struct
+...
+322 |     subscriptions: Vec<Subscription>,
+    |     ^^^^^^^^^^^^^
+
+warning: associated function `ready` is never used
+   --> crates/riwork-desktop/src/chat_view/attachment_ui.rs:109:12
+    |
+102 | impl Chip {
+    | --------- associated function in this implementation
+...
+109 |     pub fn ready(attachment: Attachment) -> Self {
+    |            ^^^^^
+
+warning: function `error_ranges` is never used
+   --> crates/riwork-desktop/src/chat_view/cards.rs:425:8
+    |
+425 | pub fn error_ranges(text: &str) -> Vec<std::ops::Range<usize>> {
+    |        ^^^^^^^^^^^^
+
+warning: function `message` is never used
+   --> crates/riwork-desktop/src/chat_view/composer.rs:142:8
+    |
+142 | pub fn message(text: &str) -> Option<String> {
+    |        ^^^^^^^
+
+warning: function `line_start` is never used
+   --> crates/riwork-desktop/src/chat_view/composer.rs:148:8
+    |
+148 | pub fn line_start(text: &str, cursor: usize) -> usize {
+    |        ^^^^^^^^^^
+
+warning: function `line_end` is never used
+   --> crates/riwork-desktop/src/chat_view/composer.rs:153:8
+    |
+153 | pub fn line_end(text: &str, cursor: usize) -> usize {
+    |        ^^^^^^^^
+
+warning: function `vertical` is never used
+   --> crates/riwork-desktop/src/chat_view/composer.rs:162:8
+    |
+162 | pub fn vertical(text: &str, cursor: usize, up: bool) -> Option<usize> {
+    |        ^^^^^^^^
+
+warning: field `0` is never read
+  --> crates/riwork-desktop/src/chat_view/diagram.rs:55:13
+   |
+55 |     Pending(Pending),
+   |     ------- ^^^^^^^
+   |     |
+   |     field in this variant
+   |
+help: consider changing the field to be of unit type to suppress this warning while preserving the field numbering, or remove the field
+   |
+55 -     Pending(Pending),
+55 +     Pending(()),
+   |
+
+warning: field `command` is never read
+  --> crates/riwork-desktop/src/chat_view/feed.rs:37:9
+   |
+36 |     AttachmentSubmission {
+   |     -------------------- field in this variant
+37 |         command: ChatCommand,
+   |         ^^^^^^^
+   |
+   = note: `FeedMsg` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: associated function `start` is never used
+   --> crates/riwork-desktop/src/chat_view/feed.rs:151:12
+    |
+149 | impl Feed {
+    | --------- associated function in this implementation
+150 |     /// Follow `chat_id` from the event after `since`.
+151 |     pub fn start(
+    |            ^^^^^
+
+warning: function `quoted` is never used
+  --> crates/riwork-desktop/src/chat_view/feedback.rs:30:4
+   |
+30 | fn quoted(value: &str) -> String {
+   |    ^^^^^^
+
+warning: function `format_ranges` is never used
+  --> crates/riwork-desktop/src/chat_view/feedback.rs:49:4
+   |
+49 | fn format_ranges(ranges: &[(usize, usize)]) -> String {
+   |    ^^^^^^^^^^^^^
+
+warning: method `draft_context` is never used
+  --> crates/riwork-desktop/src/chat_view/feedback.rs:75:8
+   |
+66 | impl SelectionFeedback {
+   | ---------------------- method in this implementation
+...
+75 |     fn draft_context(&self) -> String {
+   |        ^^^^^^^^^^^^^
+
+warning: function `provider_banners` is never used
+   --> crates/riwork-desktop/src/chat_view/notices.rs:309:15
+    |
+309 | pub(super) fn provider_banners(
+    |               ^^^^^^^^^^^^^^^^
+
+warning: function `symbol_toggle` is never used
+   --> crates/riwork-desktop/src/chat_view/widgets.rs:324:15
+    |
+324 | pub(super) fn symbol_toggle(
+    |               ^^^^^^^^^^^^^
+
+warning: function `round_button` is never used
+   --> crates/riwork-desktop/src/chat_view/widgets.rs:381:15
+    |
+381 | pub(super) fn round_button(
+    |               ^^^^^^^^^^^^
+
+warning: function `segments` is never used
+   --> crates/riwork-desktop/src/controls.rs:153:8
+    |
+153 | pub fn segments(colors: Palette) -> Div {
+    |        ^^^^^^^^
+
+warning: function `toolbar_button` is never used
+   --> crates/riwork-desktop/src/controls.rs:419:8
+    |
+419 | pub fn toolbar_button(
+    |        ^^^^^^^^^^^^^^
+
+warning: function `toolbar_button_on` is never used
+   --> crates/riwork-desktop/src/controls.rs:452:8
+    |
+452 | pub fn toolbar_button_on<E: Styled>(button: E, colors: Palette) -> E {
+    |        ^^^^^^^^^^^^^^^^^
+
+warning: function `field` is never used
+   --> crates/riwork-desktop/src/controls.rs:644:8
+    |
+644 | pub fn field<E: Styled>(element: E, colors: Palette) -> E {
+    |        ^^^^^
+
+warning: methods `show`, `commit`, and `discard` are never used
+   --> crates/riwork-desktop/src/dictation.rs:334:12
+    |
+330 | impl Insertion {
+    | -------------- methods in this implementation
+...
+334 |     pub fn show(&mut self, input: &mut Input, heard: &str, focused: bool) {
+    |            ^^^^
+...
+457 |     pub fn commit(&mut self, input: &mut Input, text: &str, focused: bool) {
+    |            ^^^^^^
+...
+463 |     pub fn discard(&mut self, input: &mut Input) {
+    |            ^^^^^^^
+
+warning: method `label` is never used
+  --> crates/riwork-desktop/src/file_preview.rs:99:12
+   |
+80 | impl PreviewZoom {
+   | ---------------- method in this implementation
+...
+99 |     pub fn label(self) -> String {
+   |            ^^^^^
+
+warning: variant `Power` is never constructed
+  --> crates/riwork-desktop/src/icons.rs:35:5
+   |
+17 | pub enum Icon {
+   |          ---- variant in this enum
+...
+35 |     Power,
+   |     ^^^^^
+   |
+   = note: `Icon` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: variants `Search` and `ToggleProjectSortMenu` are never constructed
+  --> crates/riwork-desktop/src/panels.rs:81:5
+   |
+36 | pub enum PanelAction {
+   |          ----------- variants in this enum
+...
+81 |     Search,
+   |     ^^^^^^
+...
+84 |     ToggleProjectSortMenu,
+   |     ^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `PanelAction` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+
+warning: method `focus_input` is never used
+   --> crates/riwork-desktop/src/project_creator.rs:414:8
+    |
+127 | impl ProjectCreator {
+    | ------------------- method in this implementation
+...
+414 |     fn focus_input(&self, window: &mut Window, cx: &mut Context<Self>) {
+    |        ^^^^^^^^^^^
+
+warning: fields `selection`, `reversed`, and `marked` are never read
+  --> crates/riwork-desktop/src/project_settings.rs:96:16
+   |
+94 | pub(crate) struct Input {
+   |                   ----- fields in this struct
+95 |     pub(crate) text: String,
+96 |     pub(crate) selection: Range<usize>,
+   |                ^^^^^^^^^
+97 |     pub(crate) reversed: bool,
+   |                ^^^^^^^^
+98 |     pub(crate) marked: Option<Range<usize>>,
+   |                ^^^^^^
+
+warning: methods `cursor`, `selected_text`, `replace`, `replace_lines`, `splice`, and `key` are never used
+   --> crates/riwork-desktop/src/project_settings.rs:111:19
+    |
+101 | impl Input {
+    | ---------- methods in this implementation
+...
+111 |     pub(crate) fn cursor(&self) -> usize {
+    |                   ^^^^^^
+...
+119 |     pub(crate) fn selected_text(&self) -> Option<&str> {
+    |                   ^^^^^^^^^^^^^
+...
+123 |     pub(crate) fn replace(&mut self, range: Option<Range<usize>>, text: &str) {
+    |                   ^^^^^^^
+...
+129 |     pub(crate) fn replace_lines(&mut self, range: Option<Range<usize>>, text: &str) {
+    |                   ^^^^^^^^^^^^^
+...
+133 |     fn splice(&mut self, range: Option<Range<usize>>, text: &str) {
+    |        ^^^^^^
+...
+146 |     pub(crate) fn key(&mut self, event: &KeyDownEvent, cx: &mut App) -> bool {
+    |                   ^^^
+
+warning: function `line_breaks_as_newlines` is never used
+   --> crates/riwork-desktop/src/project_settings.rs:233:4
+    |
+233 | fn line_breaks_as_newlines(text: &str) -> String {
+    |    ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `input_content` is never used
+   --> crates/riwork-desktop/src/project_settings.rs:271:15
+    |
+271 | pub(crate) fn input_content<T: EntityInputHandler>(
+    |               ^^^^^^^^^^^^^
+
+warning: methods `accepts_input` and `activate` are never used
+    --> crates/riwork-desktop/src/project_settings.rs:1074:8
+     |
+ 591 | impl ProjectSettingsPanel {
+     | ------------------------- methods in this implementation
+...
+1074 |     fn accepts_input(&self) -> bool {
+     |        ^^^^^^^^^^^^^
+...
+1081 |     fn activate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+     |        ^^^^^^^^
+
+warning: method `accepts_input` is never used
+    --> crates/riwork-desktop/src/project_settings.rs:2620:8
+     |
+2535 | impl FolderEditor {
+     | ----------------- method in this implementation
+...
+2620 |     fn accepts_input(&self) -> bool {
+     |        ^^^^^^^^^^^^^
+
+warning: method `slot_count` is never used
+   --> crates/riwork-desktop/src/remote_prompt.rs:261:8
+    |
+125 | impl RemotePrompt {
+    | ----------------- method in this implementation
+...
+261 |     fn slot_count(&self) -> usize {
+    |        ^^^^^^^^^^
+
+warning: method `accepts_input` is never used
+   --> crates/riwork-desktop/src/schedule_panel.rs:490:8
+    |
+277 | impl SchedulePanel {
+    | ------------------ method in this implementation
+...
+490 |     fn accepts_input(&self) -> bool {
+    |        ^^^^^^^^^^^^^
+
+warning: associated function `open` is never used
+   --> crates/riwork-desktop/src/settings.rs:174:12
+    |
+170 | impl SettingsStore {
+    | ------------------ associated function in this implementation
+...
+174 |     pub fn open(dir: impl Into<PathBuf>) -> Result<Self, String> {
+    |            ^^^^
+
+warning: method `flip` is never used
+   --> crates/riwork-desktop/src/settings.rs:232:8
+    |
+216 | impl Toggle {
+    | ----------- method in this implementation
+...
+232 |     fn flip(self, settings: &mut Settings) {
+    |        ^^^^
+
+warning: `riwork-desktop` (bin "riwork") generated 48 warnings (run `cargo fix --bin "riwork" -p riwork-desktop` to apply 6 suggestions)
+    Finished `dev` profile [unoptimized] target(s) in 2m 42s
+warning: the following packages contain code that will be rejected by a future version of Rust: block v0.1.6
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`

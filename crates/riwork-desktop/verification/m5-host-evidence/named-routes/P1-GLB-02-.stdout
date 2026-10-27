@@ -1,0 +1,8 @@
+
+running 3 tests
+test global_window::tests::the_state_is_saved_in_its_own_file_and_read_back ... ok
+test global_window::tests::anything_unreadable_is_the_dashboard ... ok
+test global_window::tests::the_dashboards_filter_and_order_read_from_files_of_every_build ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 288 filtered out; finished in 0.01s
+

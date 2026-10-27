@@ -1,0 +1,6 @@
+crates/riwork-desktop/src/nsh_host.rs:54:// must never race to write the same nsh/storage storage.json.
+crates/riwork-nsh-native/src/service.rs:326:    } else if path == home.join("sessions.json")
+apps/riwork/examples/integration_fixture.rs:33:        use riwork_core::appearance_file::{self, PaletteColors, Published, Rgb};
+apps/riwork/examples/integration_fixture.rs:45:        appearance_file::publish(&home, &Published::new(true, palette, None), 1)?;
+crates/riwork-nsh-native/tests/services.rs:115:    let path = fixture.path().join("sessions.json");
+crates/riwork-nsh-native/tests/services.rs:188:    let path = fixture.path().join("sessions.json");

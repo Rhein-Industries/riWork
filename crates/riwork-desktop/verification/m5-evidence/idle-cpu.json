@@ -1,0 +1,15 @@
+{
+  "pid": 97664,
+  "command": [
+    "ps",
+    "-o",
+    "time=",
+    "-p",
+    "97664"
+  ],
+  "before": "0:00.50",
+  "after": "0:00.50",
+  "elapsed_seconds": 20.011943708988838,
+  "core_percent": 0.0,
+  "profile": "debug; supplemental report only, concurrent builds; not matched Busy/release benchmark"
+}

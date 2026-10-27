@@ -137,12 +137,20 @@ test("a real DockArea drag moves one tab into the opaque empty pane through Rust
   const app = await open("./tests/Workspace.fixture.tsx", options("fixture-drag"));
   try {
     await app.waitFor("id:workspace-dock");
+    await app.press("id:tab:shell:first");
+    expect(app.texts()).toContain("mount 1");
+    expect(app.texts()).toContain("visible: true");
+    expect(app.texts().includes("mount 2")).toBe(false);
     await app.drag("id:tab:shell:first", { x: 400, y: 600 });
     const snapshot = latest(app).snapshot;
     expect(snapshot.panes.find((pane) => pane.id === 2)?.tabs.map((tab) => tab.id)).toEqual(["shell:second"]);
     expect(snapshot.panes.find((pane) => pane.id === 3)?.tabs.map((tab) => tab.id)).toEqual(["shell:first"]);
     expect(snapshot.activePane).toBe(3);
     expect(panelIds(latest(app).dock.center)).toContain("empty:3");
+    expect(app.texts()).toContain("mount 1");
+    expect(app.texts().includes("mount 2")).toBe(false);
+    await app.setViewport(1400, 900);
+    expect(app.texts().includes("mount 2")).toBe(false);
     await app.host.send("app.fixture.flush", {});
     await app.waitUntil(() => app.host.posts().some((post) => post.name === "app.fixture.flushed"));
   } finally { app.dispose(); }
