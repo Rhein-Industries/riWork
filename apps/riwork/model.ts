@@ -43,6 +43,9 @@ export interface PaneModel {
 export interface WorkspaceSnapshot {
   panes: PaneModel[];
   activePane: number;
+  projectId?: string;
+  selectedWorktreeId?: string | null;
+  selectedTaskId?: string | null;
   notice?: string | null;
 }
 

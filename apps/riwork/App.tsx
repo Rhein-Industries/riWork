@@ -27,7 +27,7 @@ function App() {
     if (params.kind === "global") installed();
   }
   return <View style={{ flex: 1 }}>
-    {session() ? <Workspace session={session()!} title={windowTitle(name)} projectLabel={name} startupNotice={params.notice} onChange={installed} /> :
+    {session() ? <Workspace session={session()!} title={windowTitle(name)} projectLabel={name} projectId={params.projectId ?? undefined} startupNotice={params.notice} onChange={installed} /> :
       <View style={{ flex: 1, padding: 20 }}><Text testID="startup-notice">{notice()}</Text></View>}
   </View>;
 }
