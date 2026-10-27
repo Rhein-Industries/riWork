@@ -1,0 +1,18 @@
+
+running 1 test
+sync dock: median=11us p90=14us max=39us (24 session tabs)
+sync snapshot: median=82us p90=84us max=102us (24 session tabs)
+sync panel: median=1us p90=1us max=5us (24 session tabs)
+sync selectPanel: median=31us p90=38us max=100us (24 session tabs)
+sync openPanel: median=30us p90=35us max=42us (24 session tabs)
+sync setExtent: median=16us p90=19us max=27us (24 session tabs)
+sync selectPane: median=17us p90=19us max=22us (24 session tabs)
+sync toggleLock: median=18us p90=19us max=22us (24 session tabs)
+sync toggleMain: median=32us p90=33us max=102us (24 session tabs)
+sync gather: median=25us p90=32us max=82us (24 session tabs)
+sync defaultLayout: median=19us p90=20us max=54us (24 session tabs)
+sync applyDock: median=53us p90=57us max=91us (24 session tabs)
+test layout_module_uses_the_injected_backend_and_sync_calls_do_not_wait_for_it ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+

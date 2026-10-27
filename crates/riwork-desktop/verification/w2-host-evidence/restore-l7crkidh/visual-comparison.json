@@ -1,0 +1,9 @@
+{
+  "inspection": "Visual inspection of all six before/after screenshots",
+  "windows": {
+    "Alpha": "Same Projects/Files/Worktrees and Shell/Chat tab labels, same selected shell ending0002",
+    "Beta": "Same maximized focused single shell ending0302",
+    "Global": "Same Global workspace placeholder; content is out of scope"
+  },
+  "external_AX_tabs": "No tabs returned. This does not close the prescribed AX route."
+}

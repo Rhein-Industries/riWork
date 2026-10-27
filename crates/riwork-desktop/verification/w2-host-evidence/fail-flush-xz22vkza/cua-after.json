@@ -1,0 +1,45 @@
+{
+  "current_space_id": 1,
+  "windows": [
+    {
+      "app_name": "riwork",
+      "bounds": {
+        "height": 780,
+        "width": 1220,
+        "x": 1092,
+        "y": 356
+      },
+      "current_space_id": 1,
+      "is_on_screen": true,
+      "layer": 0,
+      "on_current_space": true,
+      "pid": 77222,
+      "space_ids": [
+        1
+      ],
+      "title": "RiWork · Beta",
+      "window_id": 6588,
+      "z_index": 258
+    },
+    {
+      "app_name": "riwork",
+      "bounds": {
+        "height": 780,
+        "width": 1220,
+        "x": 1070,
+        "y": 334
+      },
+      "current_space_id": 1,
+      "is_on_screen": true,
+      "layer": 0,
+      "on_current_space": true,
+      "pid": 77222,
+      "space_ids": [
+        1
+      ],
+      "title": "RiWork · Alpha",
+      "window_id": 6587,
+      "z_index": 195
+    }
+  ]
+}

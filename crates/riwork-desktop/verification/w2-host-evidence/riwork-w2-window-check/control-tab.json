@@ -1,0 +1,17 @@
+{
+  "argv": [
+    "/tmp/riwork-p1-integration-mkzwamt7/target/debug/deps/appkit_shell-78da9607405d04fe",
+    "control_tab_reaches_the_nsh_keymap_once",
+    "--test-threads=1"
+  ],
+  "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-fix-host",
+  "environment": {
+    "RIWORK_HOME": "/tmp/riwork-w2-window-check/home",
+    "RIWORK_RUNTIME_DIR": "/tmp/riwork-w2-window-check/run"
+  },
+  "exit_code": 0,
+  "stdout": "/tmp/riwork-w2-window-check/control-tab.stdout",
+  "stderr": "/tmp/riwork-w2-window-check/control-tab.stderr",
+  "stdout_sha256": "271bf05910eaee1c56e5e1514a71a83893e4158d871db0f63e5aa6fcca0d8dff",
+  "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+}

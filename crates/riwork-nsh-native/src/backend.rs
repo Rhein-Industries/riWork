@@ -178,14 +178,11 @@ impl EngineTabsBackend {
 
 impl TabsBackend for EngineTabsBackend {
     fn snapshot(&self, project: &str) -> Result<TabsSnapshot> {
-        // The engine reuses its process-wide SessionSample cache here.
-        riwork_engine::project_tabs::refresh_snapshot_with_activity(
-            &self.home,
-            project,
-            &Default::default(),
-        )
-        .map_err(anyhow::Error::msg)?
-        .try_into()
+        // The engine reuses its process-wide SessionSample cache here. A debug
+        // fixture home shares the layout sessions' fake inventory instead.
+        riwork_nsh_workspace::session_io::tab_snapshot(&self.home, project)
+            .map_err(anyhow::Error::msg)?
+            .try_into()
     }
 
     fn update(&self, project: &str, update: TabUpdate) -> Result<TabsSnapshot> {

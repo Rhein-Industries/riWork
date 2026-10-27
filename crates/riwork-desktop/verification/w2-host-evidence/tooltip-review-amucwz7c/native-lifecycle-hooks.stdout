@@ -1,0 +1,2 @@
+/Users/dominik/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/nsh-platform-macos-0.3.0/src/input.rs:1323:pub(crate) fn cancel_pointer(surface: &Rc<Surface>) {
+/Users/dominik/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/nsh-platform-macos-0.3.0/src/chrome.rs:792:    crate::input::cancel_pointer(surface);

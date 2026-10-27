@@ -1,0 +1,44 @@
+{
+  "source": "docs/nsh-phase1-acceptance.md \u00a78 (D-CHAT includes SHELL-243 Escape)",
+  "command_count": 24,
+  "groups": {
+    "agent_terminals": [
+      "openCodex",
+      "openClaude",
+      "openGrok",
+      "openMuse"
+    ],
+    "new_chat_project_create_search": [
+      "newChat",
+      "openProjectOrchestrator",
+      "createProject",
+      "search"
+    ],
+    "chat_chords_including_SHELL_243_escape": [
+      "interruptChat",
+      "chatEscape",
+      "toggleDictation",
+      "toggleTranscriptMode",
+      "expandTranscript",
+      "collapseTranscript",
+      "findInChat",
+      "findNext",
+      "findPrevious"
+    ],
+    "other_view_items": [
+      "appPreview",
+      "sessions"
+    ],
+    "other_pane_items": [
+      "existingSessions",
+      "existingClaudeChats",
+      "existingMuseChats",
+      "openGlobalOrchestrator",
+      "handOff"
+    ]
+  },
+  "missing": [],
+  "unexpected": [],
+  "shell_newTab_deferred": false,
+  "active_placeholder_openSessions_deferred": false
+}

@@ -28,6 +28,11 @@ export interface PanelModel {
   kind: PanelKind;
   title: string;
   status?: PanelStatus;
+  worker?: boolean;
+  projectId?: string;
+  parent?: string | null;
+  /** False for carried views with no entry in this project's shared list. */
+  shared?: boolean;
 }
 
 export interface PaneModel {
@@ -47,6 +52,32 @@ export interface WorkspaceSnapshot {
   selectedWorktreeId?: string | null;
   selectedTaskId?: string | null;
   notice?: string | null;
+  sharedTabs?: PanelModel[] | null;
+  focusMode?: boolean;
+  focusCentered?: boolean;
+  closeBehavior?: "ask" | "detach" | "exit";
+  remoteProject?: boolean;
+  theme?: string;
+  uiTextSize?: number;
+  panelTabIcons?: boolean;
+}
+
+/** Panels stay first; carried views absent from the shared inventory keep order. */
+export function stripTabs(snapshot: WorkspaceSnapshot): PanelModel[] {
+  const all = snapshot.panes.flatMap(drawnTabs);
+  const byId = new Map(all.map((tab) => [tab.id, tab]));
+  const result = all.filter((tab) => tab.kind === "panel");
+  for (const shared of snapshot.sharedTabs ?? []) {
+    const tab = byId.get(shared.id);
+    if (tab && tab.kind !== "panel") result.push({ ...tab, ...shared });
+  }
+  const listed = new Set(result.map((tab) => tab.id));
+  return result.concat(all.filter((tab) => !listed.has(tab.id)));
+}
+
+export function closeChoice(snapshot: WorkspaceSnapshot, tab: PanelModel): "ask" | "detach" | "exit" {
+  if (tab.worker || snapshot.remoteProject || !["shell", "chat"].includes(tab.kind)) return "detach";
+  return snapshot.closeBehavior ?? "ask";
 }
 
 export function windowTitle(
@@ -66,6 +97,18 @@ export function createTitleUpdater(setTitle: (title: string) => void): (title: s
     if (title === previous) return;
     setTitle(title);
     previous = title;
+  };
+}
+
+/** Wait for project metadata, then announce only actual Dock-label changes. */
+export function createDockUpdater(post: (info: { project: string; branch: string | null }) => void) {
+  let previous: string | undefined;
+  return (resolved: boolean, project: string, branch: string | null = null) => {
+    if (!resolved) return;
+    const identity = JSON.stringify([project, branch]);
+    if (identity === previous) return;
+    previous = identity;
+    post({ project, branch });
   };
 }
 

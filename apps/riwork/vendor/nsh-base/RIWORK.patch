@@ -1,0 +1,220 @@
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -93,6 +93,8 @@
+ version = "1.13"
+ 
+ [dev-dependencies]
++nsh-engine = { version = "=0.3.0", default-features = false }
++nsh-testing = { version = "=0.3.0", default-features = false }
+ 
+ [lints.rust]
+ missing_docs = "warn"
+--- a/src/dock/dock_area.rs
++++ b/src/dock/dock_area.rs
+@@ -262,6 +262,10 @@
+     /// drawers and a sheet) when true, the full one when false; by default
+     /// compact below 600 points of the area's own width.
+     pub compact: Prop<Option<bool>>,
++    /// Space between center split panes in points. Zero preserves the
++    /// upstream overlay-only divider; a positive size reserves a real gap.
++    #[prop(default)]
++    pub divider_size: Prop<Points>,
+     /// What each panel allows (closable, zoomable, visible), by key.
+     #[prop(default)]
+     pub panels: Prop<Vec<DockPanelOptions>>,
+@@ -273,6 +277,9 @@
+     /// the tab, so a row of a title and a close button is a `flex-row` view
+     /// of them.
+     pub render_tab: Prop<Option<Renderer<DockTab>>>,
++    /// Fixed controls after a group's horizontally scrolling tabs. The value
++    /// is its group id; without this renderer the upstream tab bar is unchanged.
++    pub render_tab_bar_suffix: Prop<Option<Renderer<u64>>>,
+     /// What shows where a drag would land, placed over the part of the
+     /// group it would take.
+     pub render_drop_indicator: Prop<Option<Renderer<DockDropIndicator>>>,
+@@ -1019,6 +1026,7 @@
+     group.__element().__props_mut().handle_thumb_style = a.props.handle_thumb_style;
+     let group = group
+         .axis(move || axis.get())
++        .divider_size(a.props.divider_size)
+         .handle_class(a.props.handle_class)
+         .handle_thumb_class(a.props.handle_thumb_class)
+         .handle_accessibility_label(a.props.handle_accessibility_label)
+--- a/src/dock/tab_group.rs
++++ b/src/dock/tab_group.rs
+@@ -102,6 +102,23 @@
+     };
+     a.register(refs.clone());
+     let tab_refs = refs.tabs.clone();
++    let tab_items = move || {
++        let tab_refs = tab_refs.clone();
++        each(
++            move || tabs.get(),
++            |panel: &PanelId| panel.clone(),
++            move |panel, _| {
++                let id = panel.get_untracked();
++                let value = {
++                    let id = id.clone();
++                    computed(move || tab_value(a, &id))
++                };
++                tab(a, id, Some(node), value, tab_refs.clone())
++            },
++        )
++    };
++    let scrolling_tabs = tab_items.clone();
++    let scrolling_refs = refs.tabs.clone();
+     let content = refs.content.expect("a group's content");
+     view()
+         .flex_1()
+@@ -116,18 +133,105 @@
+                 .element_ref(&refs.bar)
+                 .app_class(a.props.tab_bar_class)
+                 .inline_style(a.props.tab_bar_style)
+-                .child(each(
+-                    move || tabs.get(),
+-                    |panel: &PanelId| panel.clone(),
+-                    move |panel, _| {
+-                        let id = panel.get_untracked();
+-                        let value = {
+-                            let id = id.clone();
+-                            computed(move || tab_value(a, &id))
+-                        };
+-                        tab(a, id, Some(node), value, tab_refs.clone())
+-                    },
+-                )),
++                .child(
++                    when(
++                        move || a.props.render_tab_bar_suffix.get().is_some(),
++                        move || {
++                            let scroll_ref = element_ref();
++                            let viewport_size = signal(nsh_core::Size::<Points>::default());
++                            let content_size = signal(nsh_core::Size::<Points>::default());
++                            let offset = Rc::new(Cell::new(Point::<Points>::default()));
++                            let revision = Rc::new(Cell::new(0_u64));
++                            let scroll_offset = offset.clone();
++                            let reveal_refs = scrolling_refs.clone();
++                            effect(move || {
++                                let selected = shown.get();
++                                let ticket = revision.get().wrapping_add(1);
++                                revision.set(ticket);
++                                let _ = tabs.get();
++                                let viewport = viewport_size.get();
++                                let _ = content_size.get();
++                                if viewport.width <= px(0.0) || a.drag.get_untracked().is_some() {
++                                    return;
++                                }
++                                let tab = selected.and_then(|panel| {
++                                    reveal_refs
++                                        .borrow()
++                                        .iter()
++                                        .find(|(id, _)| *id == panel)
++                                        .map(|(_, node)| *node)
++                                });
++                                let Some(tab) = tab else { return };
++                                let offset = offset.clone();
++                                let revision = revision.clone();
++                                spawn(async move {
++                                    let scroll_measure = scroll_ref.measure();
++                                    let tab_measure = tab.measure();
++                                    let (Some(scroll), Some(tab)) =
++                                        (scroll_measure.await, tab_measure.await)
++                                    else {
++                                        return;
++                                    };
++                                    if revision.get() != ticket {
++                                        return;
++                                    }
++                                    let left = tab.page.x - scroll.page.x;
++                                    let right = left + tab.frame.size.width;
++                                    let delta = if left < px(0.0) {
++                                        left
++                                    } else if right > scroll.frame.size.width {
++                                        right - scroll.frame.size.width
++                                    } else {
++                                        px(0.0)
++                                    };
++                                    if delta != px(0.0) {
++                                        let next = Point::new(
++                                            (offset.get().x + delta).max(px(0.0)),
++                                            px(0.0),
++                                        );
++                                        offset.set(next);
++                                        scroll_ref.scroll_to(next, false);
++                                    }
++                                });
++                            });
++                            view()
++                                .flex_row()
++                                .flex_1()
++                                .min_w(px(0.0))
++                                .child(
++                                    scroll()
++                                        .element_ref(&scroll_ref)
++                                        .horizontal()
++                                        .flex_1()
++                                        .min_w(px(0.0))
++                                        .on_layout(move |frame: &Bounds<Points>| {
++                                            viewport_size.set(frame.size)
++                                        })
++                                        .on_scroll(move |event: &nsh_core::element::ScrollEvent| {
++                                            scroll_offset.set(event.offset)
++                                        })
++                                        .child(
++                                            view()
++                                                .flex_row()
++                                                .self_start()
++                                                .flex_none()
++                                                .on_layout(move |frame: &Bounds<Points>| {
++                                                    content_size.set(frame.size)
++                                                })
++                                                .child(scrolling_tabs()),
++                                        ),
++                                )
++                                .child(dynamic(move || {
++                                    a.props.render_tab_bar_suffix.get().map(|render| {
++                                        render
++                                            .render(node.as_u64().to_string(), node.as_u64())
++                                            .flex_none()
++                                    })
++                                }))
++                        },
++                    )
++                    .otherwise(tab_items),
++                ),
+         )
+         .child(
+             view()
+--- a/src/resizable/panel.rs
++++ b/src/resizable/panel.rs
+@@ -30,6 +30,10 @@
+     /// No drags: the handles stay where they are (a locked layout).
+     #[prop(default)]
+     pub disabled: Prop<bool>,
++    /// Reserved gap between visible panels and the indicator's thickness.
++    /// Zero keeps the upstream one-point overlay and consumes no layout space.
++    #[prop(default)]
++    pub divider_size: Prop<Points>,
+     /// The Tailwind classes of each handle's indicator, the part the app
+     /// draws, centered on the boundary between two panels in the handle's
+     /// band, along the whole boundary and 1 point across unless the
+@@ -121,6 +125,7 @@
+     };
+     view()
+         .size_full()
++        .gap(move || props.divider_size.get().max(Points::ZERO))
+         .style_with(move |s| match props.axis.get() {
+             Axis::Horizontal => s.flex_row(),
+             Axis::Vertical => s.flex_col(),
+@@ -190,9 +195,9 @@
+                     // The line by default, so one class draws it on either
+                     // axis (`bg-border`); the app's classes win.
+                     view()
+-                        .map(|v| match axis {
+-                            Axis::Horizontal => v.w(HANDLE_SIZE),
+-                            Axis::Vertical => v.h(HANDLE_SIZE),
++                        .style_with(move |v| match axis {
++                            Axis::Horizontal => v.w(props.divider_size.get().max(HANDLE_SIZE)),
++                            Axis::Vertical => v.h(props.divider_size.get().max(HANDLE_SIZE)),
+                         })
+                         .app_class(props.handle_class)
+                         .inline_style(props.handle_style)

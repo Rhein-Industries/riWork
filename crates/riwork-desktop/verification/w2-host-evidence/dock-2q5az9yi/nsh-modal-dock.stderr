@@ -1,0 +1,6 @@
+✓ built the Rust crate riwork-nsh-native (201ms)
+warn riwork/native exports items without a doc comment, which TSX sees in its declarations: Appearance, Appearance.get, Sessions.list, Sessions.subscribe, Store.snapshot, Store.search, Store.inspectProject, Subscription.close
+✓ built the headless runner of riwork-nsh-native (214ms)
+✓ bundled apps/riwork/App.tsx (29311 B in 3.5 ms)
+✓ apps/riwork/tests/Keyboard.test.tsx › P1-KEYS-04 close modal blocks window actions and modifier shortcuts dismiss All tabs before selecting (851ms)
+✓ 1 test: 1 passed, 0 failed (4.2s)

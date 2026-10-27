@@ -1,0 +1,64 @@
+import { View, cleanup, host, signal } from "nsh";
+import { Window } from "nsh/desktop";
+import type { DockNode } from "nsh/base";
+
+export const CONTROL_WIDTH = 78;
+export const CONTROL_HEIGHT = 28;
+export const CONTROL_INSET = CONTROL_WIDTH + 14;
+export const DRAG_HANDLE_WIDTH = 12;
+export const DRAG_ROOM = 18;
+
+type Palette = { controlsIsland: boolean; panelActive: string; divider: string };
+type WindowState = { mode?: string; key?: boolean; visible?: boolean; occluded?: boolean; appActive?: boolean };
+export type TopPane = { id?: number; x: number; width: number; tabsEnd?: number };
+
+export function dragRegion(pane: TopPane): { left: number; width: number } {
+  const end = Math.max(0, Math.min(pane.tabsEnd ?? pane.width - DRAG_ROOM - DRAG_HANDLE_WIDTH, pane.width - DRAG_ROOM - DRAG_HANDLE_WIDTH));
+  return { left: pane.x + end, width: pane.width - end };
+}
+
+/** Derive only top-edge panes from the Rust-controlled projection. */
+export function topPaneFrames(node: DockNode, size: { width: number; height: number }, x = 0): TopPane[] {
+  if (node.type === "tabs") return [{ id: node.id, x, width: size.width }];
+  const extent = node.axis === "horizontal" ? size.width : size.height;
+  const free = extent - Math.max(0, node.children.length - 1) * 5;
+  const fixed = (node.sizes ?? []).reduce<number>((total, value) => total + (value ?? 0), 0);
+  const flexible = node.children.filter((_, index) => node.sizes?.[index] == null).length;
+  let offset = 0;
+  return node.children.flatMap((child, index) => {
+    const amount = node.sizes?.[index] ?? Math.max(0, free - fixed) / Math.max(1, flexible);
+    const result = node.axis === "horizontal"
+      ? topPaneFrames(child, { width: amount, height: size.height }, x + offset)
+      : index === 0 ? topPaneFrames(child, { width: size.width, height: amount }, x) : [];
+    offset += amount + 5;
+    return result;
+  });
+}
+
+/** Window state for the controls island. Its palette is the window's resolved
+ * interface theme; title and Dock metadata follow the workspace's project. */
+export function useWindowChrome(palette: () => Palette) {
+  const state = signal<WindowState>({ mode: "windowed" });
+  Window.setTitleBar("hidden", CONTROL_HEIGHT);
+  cleanup(host.on("window.state", (next) => state.set(next as WindowState)));
+  return { palette, state, fullscreen: () => state().mode === "fullscreen" };
+}
+
+export function WindowChrome(props: { state: {palette: () => Palette; state: () => WindowState; fullscreen: () => boolean}; panes: TopPane[] }) {
+  const palette = props.state.palette;
+  return <>
+    {!props.state.fullscreen() && <View testID="window-controls-island" desktop={{ windowDrag: true }} style={{
+      position: "absolute", left: 0, top: 0, width: CONTROL_WIDTH, height: CONTROL_HEIGHT,
+      backgroundColor: palette().controlsIsland ? palette().panelActive : "transparent",
+      borderBottomRightRadius: palette().controlsIsland ? 8 : 0,
+      borderRightWidth: palette().controlsIsland ? 1 : 0, borderBottomWidth: palette().controlsIsland ? 1 : 0,
+      borderColor: palette().divider,
+    }} />}
+    {props.panes.filter((pane) => pane.width >= 40).map((pane) => <View testID={`window-drag:${pane.id}`} desktop={{ windowDrag: true }} style={{
+      position: "absolute", top: 0, left: dragRegion(pane).left,
+      width: dragRegion(pane).width, height: CONTROL_HEIGHT,
+    }}>
+      <View testID={`window-drag-handle:${pane.id}`} desktop={{ windowDrag: true }} style={{ position: "absolute", right: 0, top: 0, width: DRAG_HANDLE_WIDTH, height: CONTROL_HEIGHT }} />
+    </View>)}
+  </>;
+}

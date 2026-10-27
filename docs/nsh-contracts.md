@@ -58,8 +58,9 @@ NSH references are to the 0.3.0 crates in
 | A terminal surface | `riwork.terminal` (§3) | libghostty needs an NSView and a PTY; no JS on the input or render path. |
 | This window's own chrome (title, title bar, frame, fullscreen, context menus, keymap, clipboard, file drop) | NSH built-ins (`nsh/desktop` `Window`, `Menu.popup`, `nsh/keymap`, `nsh/clipboard`, `onFileDrop`) | Already provided per AppView. |
 
-- **TSX has no filesystem, process, or socket capabilities.** `nsh.json` grants only
-  `"host": ["window.*", "app.*", "system.*"]` (grant syntax: `nsh-core/src/access.rs:20`).
+- **TSX has no filesystem, process, or socket capabilities.** `nsh.json` grants
+  `"host": ["window.*", "app.*", "system.*"]` and, from W3, the `clipboard`
+  built-in for Edit/session-ID copy (grant syntax: `nsh-core/src/access.rs:20`).
   Everything else is reached through `riwork/native`. This keeps one implementation of every
   file format (riwork-core) and makes the TSX layer testable against fake backends.
 - **One NSH process per RIWORK_HOME.** GPUI already runs N windows in one process but has no
@@ -317,27 +318,61 @@ These follow §1.1-§1.4 unchanged; each port task adds its function table to th
 | `Markdown`, `Diff`, `Diagram`, `CommandLog`, `Media` | Rust-side parsing/highlighting, diff display, diagram rendering, command-output paging, image loading for non-chat surfaces and for `ChatHandle` rows |
 | `ProjectRecency` | Recency scan |
 
-#### Phase 2a Appearance projection (`schema: 1`, first published payload)
+#### Phase 1 W3 payload schema 2: Settings, Appearance and global-window state
 
-This first-use table adds the previously reserved `Appearance` module. It does
-not alter `riwork.terminal` schema 1 or any existing persistence schema.
+Task `c62ea465` adds these tables before their first TSX use. `SettingsDto`,
+`AppearanceDto` and `GlobalWindowDto` carry `schema: 2`. The native producer and
+TSX consumer are introduced and checked together. Host params remain schema 1;
+on-disk core/engine schemas and serde names are unchanged. Subscription envelopes
+remain §1.3 snapshots, with these DTOs in `data`.
 
-| JS | Kind | Returns |
+| JS | Kind | Result / rule |
 |---|---|---|
-| `Appearance.snapshot()` | async | `AppearanceSnapshot` below, read from the fixed process home's SettingsStore on the blocking pool |
-| `Appearance.subscribe(listener)` | event | Snapshot deliveries using §1.3; the existing process home watcher observes `settings.json` and publishes changed projections |
+| `Settings.get()` | async | Typed SettingsDto: selected theme, core-owned `themeChoices` labels/descriptions, terminal-color preferences, interface font/size, computed text face/points/scale, normalized `statusBar`, optional load diagnostic. |
+| `Settings.set(patch)` | async | Typed optional camelCase fields; strict unknown-field rejection. One core store lock applies the patch and preserves unknown saved keys. Explicit choices replace unknown future values. |
+| `Settings.changeTextSize(action)` | async | `bigger`, `smaller`, `reset`; read/modify/write and snapping in core under its lock; returns SettingsDto. |
+| `Settings.moveItem(kind, up)`, `setSide(kind, side)`, `setVisible(kind, visible)`, `setEnabled(enabled)` | async | Core status-bar operations in one locked update, returning SettingsDto. Kinds use snake_case, side is `left` or `right`. |
+| `Settings.subscribe(listener)` | sync handle | Immediate owner-bound Subscription; initialization/registration happen on background workers; shared home watcher invalidates settings. |
+| `Settings.cased(text, native)`, `sentenceCase(text)` | sync | Pure core casing rules. |
+| `Appearance.get()` | async | AppearanceDto for current settings (light Native baseline). |
+| `Appearance.resolve(theme, systemDark)` | async | Resolve for the caller's window; never changes another window's effective appearance. Returns selected theme, palette, dark, diff colors, terminalOverride or null, and retained diagnostic. |
+| `Appearance.subscribe(listener)` | sync handle | Process settings invalidations; each window resolves against its own `colorScheme()` after every snapshot. |
+| `Dashboard.getGlobalWindow()` | async | CamelCase GlobalWindowDto through core GlobalWindowStore. Only P1 global-window preferences. |
+| `Dashboard.saveGlobalWindow(state)` | async | Validate schema/view/filter/sort/size before saving through the same core store. No dashboard activity or chat creation. |
 
-`AppearanceSnapshot = { schema: 1, theme: string, terminalLight: TerminalColors,
-terminalDark: TerminalColors, tabCloseBehavior: "ask" | "detach" | "exit" }`.
-`TerminalColors` is exactly §3.2 `colors`. The app chooses light/dark using NSH's
-reactive system appearance; Native follows it. Ghostty config parsing/watching
-belongs to the native component, so following Ghostty projects `{ source: "ghostty" }`.
-The presets preserve the desktop's sixteen ANSI colors and terminal-color options.
-Appearance-file publication and UI palettes remain the later full Appearance port.
+Appearance does not parse Ghostty configuration or write `appearance.json` in
+P1. Follow Ghostty uses the RiWork palette, keeps a diagnostic and has unknown
+terminal colors unless `useRiworkColors` selects the RiWork override.
+
+W3 also supplies `LayoutSession.openPanel(panel)` and `defaultLayout()` as
+synchronous in-memory edits, scheduling persistence like existing methods.
+Default placement uses the saved-state successor in `riwork_core::layouts` and
+preserves every known tab. A layout containing opaque future tabs refuses this
+reset so their persisted pane identity cannot be lost.
+
+#### Phase 2a terminal projection (consolidated into Appearance schema 2)
+
+Phase 2a first published a terminal-only `Appearance.snapshot()` payload
+(`schema: 1`). Phase 1 consolidation (task `c12f5e14`) keeps exactly one
+`Appearance` module: the W3 schema 2 table below. Every `AppearanceDto` also
+carries the terminal phase's fields:
+
+| Field | Type | Rule |
+|---|---|---|
+| `terminalLight`, `terminalDark` | `TerminalOverrideDto \| null` | Core `terminal_override` resolved for the light/dark window scheme. `null` means the terminal follows Ghostty; §3.2 `colors` is then `{ source: "ghostty" }`. |
+| `tabCloseBehavior` | `"ask" \| "detach" \| "exit"` | Core `tab_close_behavior`. |
+
+The app chooses light/dark using NSH's reactive system appearance; Native
+follows it. Ghostty config parsing/watching belongs to the native terminal
+component. The presets preserve the desktop's sixteen ANSI colors and
+terminal-color options. `riwork.terminal` schema 1 and persistence schemas are
+unchanged.
 
 The already-frozen `Sessions.create(req)` accepts
 `{ projectId, worktreeId?, cwd?, command? }` for this local-shell slice; omitted
-`cwd` resolves the selected worktree/project root in Rust. `Sessions.close(id)`
+`cwd` resolves the selected worktree/project root in Rust. Decoding is strict:
+unknown fields, non-canonical project/worktree UUIDs and an explicit empty
+`cwd` are `invalid` before any backend work. `Sessions.close(id)`
 is explicit Exit only, never ordinary surface destruction. It first hides the
 shared local entry through `TabStore`; a failure refuses Exit before any tmux
 operation. The existing `Tabs.update(projectId, update)` adapter serves local
@@ -781,6 +816,11 @@ resize already match in the common case (one absorber).
 - `LayoutSession.switchProject(projectId)`: loads the destination and applies
   `carry_locked_regions_from(previous)` (`layouts.rs:1149-1296`), as GPUI does when a window
   switches project.
+- W2 window-command adapters: `openPanel(panel)`, `splitActive(down)`,
+  `closeActive(wholePane)` and `defaultLayout()` return the controlled DockArea
+  projection after a Rust-owned model edit. `setFocusMode(focused, centered)`
+  updates the Rust host's runtime-only focus flags; it does not alter storage
+  schema or rewrite the underlying pane layout.
 - Persistence: after each edit the session schedules a save on the blocking pool, trailing
   **250 ms**, through `save_chat_state` or `save_tab_layout` (whichever the GPUI window would
   use, `main.rs:4458-4485`). It flushes synchronously (from Rust, no JS) on `window.close`,
@@ -788,6 +828,9 @@ resize already match in the common case (one absorber).
   rewritten (riwork-core already skips them).
 - The host reads the session's current `ProjectLayout` directly (same process) when it
   publishes `RuntimeWindow`s for reload.
+- The native `host_flush::flush_blocking()` hook is invoked on the host service
+  thread before close/quit/restart teardown. Deferred draft writers can register
+  barriers; failure keeps the old windows and cancels the reload before launch.
 - The window's ordinary size (`ProjectLayout.window_size`) is captured as GPUI does: ordinary,
   non-zoomed, non-fullscreen frames only, debounced 250 ms, gated by `remember_window_size`
   (spec P10); the host reports frames to the session from Rust.
@@ -865,6 +908,17 @@ Decisions the owner has taken since the freeze are recorded, dated, in [§8](#8-
 - 2026-10-27 Phase 2a: Appearance first-use payload promoted to `schema: 1` with
   snapshot/subscribe table in §1.10; local Sessions request and LayoutSession
   placement operations documented. Terminal props/events/commands stay frozen v1.
+- v2, 2026-10-27 W3 (task c62ea465): §1.10 adds Settings/Appearance and P1
+  Dashboard function tables with payload schema 2; DTO producer/consumer and
+  generated-type probes land together. Persistence and host params retain their
+  existing schemas. The W3 assignment explicitly applies the D-THEME-1 proposal.
+- 2026-10-28 Phase 1 consolidation (task c12f5e14): W1 layout members are
+  documented above with the session-write divergence; W2's interim chrome
+  `Appearance.get()` is removed in favour of the W3 module.
+- 2026-10-27 Phase 1 consolidation (task c12f5e14): one `Appearance` module
+  (W3 schema 2) also carries Phase 2a `terminalLight`/`terminalDark`/
+  `tabCloseBehavior`; the schema 1 `Appearance.snapshot()` is removed.
+  `Sessions.create` keeps optional `cwd` with strict decoding.
 - v1, 2026-10-27 addendum (task 8fa16659): §8 records three owner decisions (D-OWN-1, D-PERF-1,
   Phase 2 entry gate). No frozen surface, `schema` field or §3.7 metric changed, so there is no
   version bump.
@@ -949,3 +1003,68 @@ Decision:
 Task e940bd0a's GO criteria, as written in the task: "80/80 freed, zero hangs/leaks, session/pane
 survival, AND (<100ms gaps OR gaps proven non-terminal noise with profiling evidence)". Its stop
 rule, as written: "NO-GO again = stop, no metric relaxation".
+
+### 8.4 W3 P1 appearance fallback (2026-10-27)
+
+Task `c62ea465` explicitly directs the P1 implementation to apply the D-THEME-1
+proposal: no Ghostty configuration parsing, the RiWork palette on Follow
+Ghostty, the diagnostic retained, and no `appearance.json` publishing. The
+terminal phase retains ownership of real parsing and publishing. This records
+the assignment’s scope; it does not settle D-PROC-1 or D-COPY-1.
+
+### Phase 1 W2 window chrome (consolidated)
+
+W2 first exposed an interim, read-only `Appearance.get()` window-chrome
+projection while the full appearance service was integrated. Phase 1
+consolidation (task `c12f5e14`) removes that second module: window chrome
+(controls island, drag strip, borders) reads the W3 schema 2 `AppearanceDto`
+palette (`controlsIsland`, `panelActive`, `divider`, `bg`, `panel`, `text`)
+through the window's resolved interface theme, and text size uses W3 Settings.
+Native and Hermes keep their P-SHELL unpainted controls area. Follow Ghostty
+uses the RiWork palette per §8.4; no `appearance.json` is read or published.
+
+Window size is captured directly from host Rust geometry through
+`HostLayout::observe_window_frame(width, height, ordinary, remember)`; it is not
+a JavaScript host method. The existing layout worker applies the trailing 250 ms
+save delay. Model edits retain the latest host size, and a resize that returns to
+the settled size reaches LayoutStore's unchanged-data no-write path. The service
+worker supplies the current `remember_window_size` setting, including capturing
+the current normal frame when the setting becomes enabled. Global windows
+persist their normal size independently of that setting.
+
+### Phase 1 W1 workspace members (consolidated, task `c12f5e14`)
+
+W1 (task `71ac437e`) added these `riwork/native` layout members without a
+§1.10 table; consolidation records them. All are owned by
+`riwork-nsh-workspace` and composed into the single registry.
+
+| JS | Kind | Rule |
+|---|---|---|
+| `Layouts.fixtureManifest()` | async | Debug builds only; reads `fixtures.json` from an isolated `/tmp` home. |
+| `Layouts.openSession({ windowId, projectId, restore?, focusMode?, focusCentered? })` | async | Adds runtime focus restore. Saved layouts are rewritten on open only for a reload snapshot (P1-LAY-03 unchanged bytes); first-run homes create one initial shell. |
+| `LayoutSession.newShell({ split?, cwd?, worktreeId? })` | async | Creates a local shell and places it (optionally splitting, `right`/`down`); a failed create leaves the tree unchanged. |
+| `closePanel(id, exit)`, `closePane(id)` | async | Hide shared membership first (a failure refuses), Exit only on explicit choice, then place-only removal recording detached identity and its former pane. |
+| `renameTab(id, title)`, `moveTab(id, delta)` | async | Shared-strip membership edits through the owning project's TabStore. |
+| `toggleFocus()`, `toggleCentered()`, `setFocusMode(focused, centered)` | sync | Presentation only; never rewrites the saved layout. Host restart snapshots carry the flags. |
+| `setInteraction(active)`, `subscribe(listener)`, `refreshSessions()`, `refreshTabs()` | sync/event/async | Deliveries queue while menus, drags and dialogs are open; the process watcher wakes subscriptions. |
+| `openPendingChat(id)`, `resolvePendingChat(id, chatId)` | sync | Pending chats are never saved; resolution keeps the mounted identity. |
+
+Consolidation decisions:
+
+- `defaultLayout()` uses W1's core placement, which relocates opaque future
+  tabs with the remapped saves W1 added. This supersedes W3's earlier refusal,
+  which existed only because core could not migrate opaque tabs.
+- New panels follow the GPUI routing rule (main pane, else the active pane);
+  Files joins the navigation pane (W2).
+- **Known divergence, not resolved here:** W1's `newShell`/`closePanel`/
+  `renameTab`/`moveTab` write sessions and TabStore membership through a
+  workspace-private adapter (`session_io`), duplicating the §1.10 Phase 2a rule
+  that session creation and exit go through `Sessions`. Both paths use the same
+  engine `SessionManager`/`TabStore` semantics (hide before exit, refuse on a
+  failed hide), and the TSX uses one path per action. The adapter also samples
+  sessions per layout session on watcher wakes rather than once per process.
+  Routing these writes through `Sessions`/`Tabs` is a follow-up.
+- W1's debug fixture inventory (`fake-sessions.json`) is honoured only in debug
+  or `test-support` builds and only for isolated `/tmp` homes; the process
+  `Tabs` service reads through the same adapter so the two never reconcile one
+  TabStore against different inventories.

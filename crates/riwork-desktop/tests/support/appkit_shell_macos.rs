@@ -181,6 +181,49 @@ fn app_level_key_equivalents(_: MainThreadMarker, menu: &NSMenu, _: &nsh_menus::
     );
 }
 
+fn text_size_key_equivalents_dispatch_without_a_window(
+    mtm: MainThreadMarker,
+    original: &NSMenu,
+    _: &nsh_menus::HostMenus,
+) {
+    use nsh_platform_macos::{
+        objc2_app_kit::{NSEvent, NSEventType},
+        objc2_foundation::NSString,
+    };
+    use std::sync::Mutex;
+    let app = NSApplication::sharedApplication(mtm);
+    assert!(app.keyWindow().is_none());
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let output = captured.clone();
+    let menus = nsh_menus::HostMenus::install(
+        mtm,
+        Arc::new(move |action| output.lock().unwrap().push(action)),
+    );
+    let menu = app.mainMenu().unwrap();
+    for (key, command) in [
+        ("=", "biggerText"),
+        ("-", "smallerText"),
+        ("0", "actualSize"),
+    ] {
+        let text = NSString::from_str(key);
+        let event = NSEvent::keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode(
+            NSEventType::KeyDown, NSPoint::new(0., 0.), NSEventModifierFlags::Command,
+            0., 0, None, &text, &text, false, 0,
+        ).unwrap();
+        assert!(menu.performKeyEquivalent(&event));
+        assert_eq!(
+            captured.lock().unwrap().last(),
+            Some(&nsh_menus::MenuAction {
+                window_number: None,
+                command
+            })
+        );
+    }
+    assert_eq!(captured.lock().unwrap().len(), 3);
+    drop(menus);
+    app.setMainMenu(Some(original));
+}
+
 fn dock_menu_from_a_fake_registry(_: MainThreadMarker, _: &NSMenu, menus: &nsh_menus::HostMenus) {
     let windows = vec![
         nsh_menus::DockWindow {
@@ -224,6 +267,19 @@ pub fn run() {
     type Check = fn(MainThreadMarker, &NSMenu, &nsh_menus::HostMenus);
     let cases: &[(&str, Check)] = &[
         ("window_chrome", window_chrome),
+        (
+            "control_tab_reaches_the_nsh_keymap_once",
+            control_tab_reaches_the_nsh_keymap_once,
+        ),
+        (
+            "titlebar_double_click_reads_the_system_preference",
+            titlebar_double_click_reads_the_system_preference,
+        ),
+        ("tooltips_create_no_nswindow", tooltips_create_no_nswindow),
+        (
+            "text_size_key_equivalents_dispatch_without_a_window",
+            text_size_key_equivalents_dispatch_without_a_window,
+        ),
         ("app_menu_matches_gpui", app_menu_matches_gpui),
         (
             "edit_menu_uses_standard_selectors",
@@ -262,4 +318,255 @@ pub fn run() {
     );
     assert_eq!(failed, 0);
     assert!(app.windows().iter().all(|window| !window.isVisible()));
+}
+
+// Exercise NSH's actual in-content windowDrag handler without ordering a
+// window or sending input to any other application.
+mod chrome_probe {
+    use nsh_base::tooltip;
+    use nsh_core::{element::Root, prelude::*};
+    use nsh_platform_macos::{
+        App, AppOptions, AppView,
+        objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, rc::Retained},
+        objc2_app_kit::{
+            NSBackingStoreType, NSEvent, NSEventModifierFlags, NSEventType, NSView, NSWindow,
+            NSWindowStyleMask,
+        },
+        objc2_foundation::{NSDate, NSPoint, NSRect, NSRunLoop, NSSize},
+    };
+    use std::{cell::Cell, rc::Rc};
+    #[component]
+    fn ChromeProbe() -> impl IntoElement {
+        view()
+            .w(px(500.))
+            .h(px(300.))
+            .window_drag(true)
+            .tooltip(tooltip().open(Some(true)).child(text("Fixture tooltip")))
+            .child(text("Fixture drag area"))
+    }
+    #[derive(Default)]
+    pub struct Actions {
+        pub zoom: Cell<u32>,
+        pub minimize: Cell<u32>,
+    }
+    define_class!(
+        #[unsafe(super(NSWindow))]
+        #[thread_kind = MainThreadOnly]
+        #[ivars = Actions]
+        #[name = "RiWorkNshChromeProbeWindow"]
+        pub struct ProbeWindow;
+        impl ProbeWindow {
+            #[unsafe(method(zoom:))]
+            fn zoom(&self, _: Option<&nsh_platform_macos::objc2_foundation::NSObject>) { self.ivars().zoom.set(self.ivars().zoom.get()+1); }
+            #[unsafe(method(miniaturize:))]
+            fn miniaturize(&self, _: Option<&nsh_platform_macos::objc2_foundation::NSObject>) { self.ivars().minimize.set(self.ivars().minimize.get()+1); }
+        }
+    );
+    pub fn pump() {
+        NSRunLoop::currentRunLoop().runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(0.025));
+    }
+    pub fn open(mtm: MainThreadMarker) -> (Retained<ProbeWindow>, Rc<AppView>) {
+        let allocated = ProbeWindow::alloc(mtm).set_ivars(Actions::default());
+        let window: Retained<ProbeWindow> = unsafe {
+            nsh_platform_macos::objc2::msg_send![
+                super(allocated), initWithContentRect: NSRect::new(NSPoint::new(100.,100.),NSSize::new(800.,600.)),
+                styleMask: NSWindowStyleMask::Titled | NSWindowStyleMask::Resizable,
+                backing: NSBackingStoreType::Buffered, defer: false
+            ]
+        };
+        unsafe {
+            window.setReleasedWhenClosed(false);
+        }
+        let app_view = AppView::new(
+            mtm,
+            AppOptions {
+                app_id: "dev.riwork.acceptance.chrome".into(),
+                size: (800, 600),
+                data_dir: Some(
+                    std::env::temp_dir()
+                        .join(format!("riwork-chrome-probe-{}", std::process::id())),
+                ),
+                ..Default::default()
+            },
+        );
+        window.setContentView(Some(&app_view.view()));
+        app_view.load(App::Rust(Root::new::<ChromeProbe>(|| ())));
+        for _ in 0..40 {
+            pump();
+            if descendants(&app_view.view()) >= 4 {
+                break;
+            }
+        }
+        assert!(
+            descendants(&app_view.view()) >= 4,
+            "tooltip and drag target must both mount"
+        );
+        (window, app_view)
+    }
+    pub fn descendants(view: &NSView) -> usize {
+        1 + view
+            .subviews()
+            .iter()
+            .map(|child| descendants(&child))
+            .sum::<usize>()
+    }
+    pub fn double_click(window: &ProbeWindow, app_view: &AppView) {
+        let event=NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
+            NSEventType::LeftMouseDown,NSPoint::new(100.,500.),NSEventModifierFlags::empty(),0.,window.windowNumber(),None,1,2,1.
+        ).unwrap();
+        let container = app_view.view();
+        let target = container
+            .hitTest(NSPoint::new(100., 100.))
+            .expect("drag target");
+        unsafe { nsh_platform_macos::objc2::msg_send![&*target, mouseDown: &*event] }
+        pump();
+    }
+}
+
+fn titlebar_double_click_reads_the_system_preference(
+    mtm: MainThreadMarker,
+    _: &NSMenu,
+    _: &nsh_menus::HostMenus,
+) {
+    use nsh_platform_macos::{
+        objc2::{DefinedClass, runtime::AnyObject},
+        objc2_foundation::{NSDictionary, NSString, NSUserDefaults},
+    };
+    let defaults = NSUserDefaults::standardUserDefaults();
+    let key = NSString::from_str("AppleActionOnDoubleClick");
+    // The argument domain is volatile and process-local: never change the
+    // user's persisted preference while exercising the real AppKit reader.
+    let domain = NSString::from_str("NSArgumentDomain");
+    let original = defaults.volatileDomainForName(&domain);
+    let (window, view) = chrome_probe::open(mtm);
+    for (action, expected) in [("None", (0, 0)), ("Minimize", (0, 1)), ("Maximize", (1, 1))] {
+        let value = NSString::from_str(action);
+        let values = NSDictionary::<NSString, AnyObject>::from_slices(&[&*key], &[&*value]);
+        unsafe {
+            defaults.setVolatileDomain_forName(&values, &domain);
+        }
+        chrome_probe::double_click(&window, &view);
+        assert_eq!(
+            (window.ivars().zoom.get(), window.ivars().minimize.get()),
+            expected,
+            "{action}"
+        );
+    }
+    unsafe {
+        defaults.setVolatileDomain_forName(&original, &domain);
+    }
+    view.stop();
+    window.close();
+}
+
+fn tooltips_create_no_nswindow(mtm: MainThreadMarker, _: &NSMenu, _: &nsh_menus::HostMenus) {
+    let app = NSApplication::sharedApplication(mtm);
+    let before = app.windows().count();
+    let (window, view) = chrome_probe::open(mtm);
+    assert_eq!(
+        app.windows().count(),
+        before + 1,
+        "the tooltip is an overlay in the fixture's one window"
+    );
+    assert!(!window.isVisible());
+    view.stop();
+    window.close();
+}
+
+fn control_tab_reaches_the_nsh_keymap_once(
+    mtm: MainThreadMarker,
+    _: &NSMenu,
+    _: &nsh_menus::HostMenus,
+) {
+    use nsh_platform_macos::{
+        App, Bundle,
+        objc2_app_kit::{NSEvent, NSEventType},
+        objc2_foundation::NSString,
+    };
+    use std::sync::{
+        Mutex,
+        atomic::{AtomicBool, Ordering},
+    };
+
+    let (window, view) = chrome_probe::open(mtm);
+    let events = Arc::new(Mutex::new(Vec::<String>::new()));
+    let received = events.clone();
+    view.host().handle("app.fixture.key", move |call| {
+        received
+            .lock()
+            .unwrap()
+            .push(call.data()["direction"].as_str().unwrap().to_owned());
+        call.resolve(serde_json::json!({}));
+    });
+    let ready = Arc::new(AtomicBool::new(false));
+    let mounted = ready.clone();
+    view.host().handle("app.fixture.ready", move |call| {
+        mounted.store(true, Ordering::Release);
+        call.resolve(serde_json::json!({}));
+    });
+    let bundle = Bundle::source(r#"
+        import { mount, keymap, host } from "nsh";
+        import { element, prop } from "nsh:rt";
+        mount(() => {
+            const root = element("view");
+            prop(root, "style", { width: 500, height: 300 });
+            keymap.bind("ctrl+tab", () => host.post("app.fixture.key", { direction: "next" }));
+            keymap.bind("ctrl+shift+tab", () => host.post("app.fixture.key", { direction: "previous" }));
+            host.post("app.fixture.ready", {});
+            return root;
+        });
+    "#.to_owned()).with_capabilities_json(Some(r#"{"host":["app.*"]}"#)).unwrap();
+    view.load(App::Js(bundle));
+    for _ in 0..40 {
+        chrome_probe::pump();
+        if ready.load(Ordering::Acquire) {
+            break;
+        }
+    }
+    assert!(
+        ready.load(Ordering::Acquire),
+        "the real JS keymap fixture must mount"
+    );
+    // The callback is produced on the engine thread. Drain its corresponding
+    // native mount batch before sending exactly one event for each chord.
+    for _ in 0..3 {
+        chrome_probe::pump();
+    }
+    assert!(window.makeFirstResponder(None));
+    let app = NSApplication::sharedApplication(mtm);
+    for (index, flags) in [
+        NSEventModifierFlags::Control,
+        NSEventModifierFlags::Control | NSEventModifierFlags::Shift,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let tab = NSString::from_str("\t");
+        let event = NSEvent::keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode(
+            NSEventType::KeyDown, NSPoint::new(0., 0.), flags, 0., window.windowNumber(), None,
+            &tab, &tab, false, 48,
+        ).unwrap();
+        // AppKit's local monitor runs before its responder/key-binding loop.
+        // This dispatch is confined to this prohibited-activation test process
+        // and explicitly names its one unshown fixture window.
+        app.sendEvent(&event);
+        for _ in 0..40 {
+            chrome_probe::pump();
+            if events.lock().unwrap().len() > index {
+                break;
+            }
+        }
+        assert_eq!(
+            events.lock().unwrap().len(),
+            index + 1,
+            "each physical Ctrl-Tab chord must dispatch exactly once"
+        );
+    }
+    for _ in 0..3 {
+        chrome_probe::pump();
+    }
+    assert_eq!(*events.lock().unwrap(), ["next", "previous"]);
+    assert!(!window.isVisible());
+    view.stop();
+    window.close();
 }

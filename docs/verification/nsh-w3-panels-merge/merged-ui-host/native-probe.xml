@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="nsh test" tests="1" failures="0" errors="0" skipped="0" time="6.745">
+  <testsuite name="crates/riwork-nsh-native/tests/app/App.test.tsx" tests="1" failures="0" errors="0" skipped="0" time="0.321">
+    <testcase classname="crates/riwork-nsh-native/tests/app/App.test.tsx" name="P1-NAT-04: a bridge folder mutation reaches two real engines after their first snapshot" time="0.321"/>
+  </testsuite>
+</testsuites>

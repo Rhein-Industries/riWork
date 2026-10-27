@@ -366,16 +366,31 @@ pub struct SessionsSnapshot {
 }
 
 /// Local shell creation only. Attaching an existing id never calls this API.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsObject)]
-#[serde(rename_all = "camelCase")]
+/// Decoding is strict; an omitted cwd selects the worktree or project root.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CreateSessionRequest {
     pub project_id: String,
-    #[prop(skip_none)]
+    #[serde(default)]
     pub worktree_id: Option<String>,
-    #[prop(skip_none)]
+    #[serde(default)]
     pub cwd: Option<String>,
-    #[prop(skip_none)]
+    #[serde(default)]
     pub command: Option<String>,
+}
+impl JsValue for CreateSessionRequest {
+    fn ts_type(types: &mut TsTypes) -> String {
+        types.declare("CreateSessionRequest", |_| "export interface CreateSessionRequest { projectId: string; worktreeId?: string | null; cwd?: string | null; command?: string | null; }".into())
+    }
+    fn from_js(value: JsIn<'_>) -> std::result::Result<Self, PropError> {
+        serde_json::from_value(JsonValue::from_js(value)?)
+            .map_err(|error| PropError(format!("invalid: {error}")))
+    }
+    fn to_js<'a>(&self, host: &'a dyn JsHost) -> std::result::Result<JsOwned<'a>, PropError> {
+        serde_json::to_value(self)
+            .map_err(|error| PropError(error.to_string()))?
+            .to_js(host)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsObject)]
@@ -466,7 +481,6 @@ macro_rules! snapshot_js_value {
 
 snapshot_js_value!(StoreState, "StoreEvent");
 snapshot_js_value!(SessionsSnapshot, "SessionsEvent");
-snapshot_js_value!(crate::appearance::AppearanceSnapshot, "AppearanceEvent");
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsObject)]
 #[serde(rename_all = "camelCase")]
@@ -558,7 +572,7 @@ impl JsValue for TabUpdate {
 
     fn from_js(value: JsIn<'_>) -> std::result::Result<Self, PropError> {
         serde_json::from_value(JsonValue::from_js(value)?)
-            .map_err(|error| PropError(error.to_string()))
+            .map_err(|error| PropError(format!("invalid: {error}")))
     }
 
     fn to_js<'a>(&self, host: &'a dyn JsHost) -> std::result::Result<JsOwned<'a>, PropError> {

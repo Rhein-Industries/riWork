@@ -1,0 +1,11 @@
+   Compiling riwork-core v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p1-fix-native/crates/riwork-core)
+   Compiling riwork-nsh-workspace v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p1-fix-native/apps/riwork)
+   Compiling riwork-engine v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p1-fix-native/crates/riwork-engine)
+   Compiling riwork-nsh-native v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p1-fix-native/crates/riwork-nsh-native)
+    Finished `test` profile [unoptimized] target(s) in 14.07s
+     Running unittests src/lib.rs (/private/tmp/riwork-w3-c62ea465/target/debug/deps/riwork_nsh_native-2cc536814587ef6d)
+     Running tests/appearance.rs (/private/tmp/riwork-w3-c62ea465/target/debug/deps/appearance-75f39fbf0e4ab8c3)
+     Running tests/native_headless.rs (/private/tmp/riwork-w3-c62ea465/target/debug/deps/native_headless-0654c33a5415afd9)
+     Running tests/services.rs (/private/tmp/riwork-w3-c62ea465/target/debug/deps/services-4cfe0028e53289fa)
+     Running tests/settings.rs (/private/tmp/riwork-w3-c62ea465/target/debug/deps/settings-1de0e96bbcc13c6b)
+   Doc-tests riwork_nsh_native

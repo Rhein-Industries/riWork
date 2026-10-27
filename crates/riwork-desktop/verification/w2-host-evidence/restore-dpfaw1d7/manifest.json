@@ -1,0 +1,1356 @@
+{
+  "verification_environment": "isolated fixture homes only",
+  "mode": "restore",
+  "repo": "/Users/dominik/orca/projects/riWork-nsh-p1-fix-host",
+  "root": "/private/tmp/riwork-w2-host",
+  "target_dir": "/private/tmp/riwork-p1-integration-mkzwamt7/target",
+  "commands": [
+    {
+      "name": "fixture",
+      "argv": [
+        "cargo",
+        "run",
+        "-p",
+        "riwork-nsh-native",
+        "--features",
+        "test-support",
+        "--example",
+        "p1_fixture_home",
+        "--locked",
+        "--offline",
+        "--",
+        "--scenario",
+        "p1-restore",
+        "--out",
+        "/private/tmp/rww2-w5fd_qme/home",
+        "--executable",
+        "/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/riwork"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-fix-host",
+      "environment": {
+        "HOME": "/Users/dominik/orca/projects/riWork-nsh-p1-fix-host/target/nsh-integration-home-hsb5cfxs",
+        "PATH": "/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/opt/homebrew/Caskroom/codex/0.162.1/codex-path:/Users/dominik/.okc/bin:/Users/dominik/.grok/bin:/Users/dominik/.bun/bin:/Users/dominik/.bun/bin:/Users/dominik/.opencode/bin:/opt/homebrew/opt/openjdk@17/bin:/Users/dominik/.bun/bin:/Users/dominik/.pyenv/shims:/Users/dominik/.avm/bin:/Users/dominik/.bun/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/System/Cryptexes/App/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin:/opt/pmk/env/global/bin:/Library/Apple/usr/bin:/usr/local/share/dotnet:~/.dotnet/tools:/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/Users/dominik/.codex/tmp/arg0/codex-arg0YIBYhl:/opt/homebrew/Caskroom/codex/0.162.1/codex-path:/Users/dominik/.local/share/riwork/cua/harness-bin:/Users/dominik/.okc/bin:/Users/dominik/Library/pnpm:/Users/dominik/.grok/bin:/Users/dominik/.bun/bin:/Users/dominik/.opencode/bin:/opt/homebrew/opt/openjdk@17/bin:/Users/dominik/.avm/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/Users/dominik/.starkli/bin:/Users/dominik/Library/Application Support/org.dfinity.dfx/bin:/Users/dominik/.cargo/bin:/Users/dominik/.local/bin:/Users/dominik/.docker/bin:/Users/dominik/.cache/lm-studio/bin:/Users/dominik/.nargo/bin:/opt/local/bin:/Users/dominik/.docker/bin:/Users/dominik/.cache/lm-studio/bin:/Users/dominik/.nargo/bin:/Users/dominik/.local/bin",
+        "RIWORK_HOME": "/private/tmp/riwork-w2-host/restore-dpfaw1d7/state",
+        "RIWORK_RUNTIME_DIR": "/private/tmp/riwork-w2-host/restore-dpfaw1d7/runtime",
+        "TMPDIR": "/tmp",
+        "TMUX_TMPDIR": "/private/tmp/riwork-w2-host/restore-dpfaw1d7/tmux",
+        "XDG_CONFIG_HOME": "/Users/dominik/orca/projects/riWork-nsh-p1-fix-host/target/nsh-integration-home-hsb5cfxs/.config",
+        "CARGO_HOME": "/Users/dominik/.cargo",
+        "RUSTUP_HOME": "/Users/dominik/.rustup",
+        "CARGO_TARGET_DIR": "/private/tmp/riwork-p1-integration-mkzwamt7/target",
+        "CARGO_BUILD_JOBS": "2",
+        "CARGO_NET_OFFLINE": "true",
+        "NSH_CACHE": "/private/tmp/riwork-w2-host/nsh-cache",
+        "NSH_TSC": "/Users/dominik/Library/Caches/nsh/typescript-7.0.2-darwin-arm64/package/lib/tsc"
+      },
+      "stdout": "/private/tmp/riwork-w2-host/restore-dpfaw1d7/fixture.stdout",
+      "stderr": "/private/tmp/riwork-w2-host/restore-dpfaw1d7/fixture.stderr",
+      "exit_code": 0,
+      "duration_seconds": 2.904,
+      "stdout_sha256": "0567d39b48246b31784250ce5c1bcf80252e255dd40434deedbbcadc3c7b3707",
+      "stderr_sha256": "58479a42cd4cbafaf9aa3fe4d2ae4cd5a30e582beb59c82146562ac5fa1735ca"
+    },
+    {
+      "name": "instances-before",
+      "argv": [
+        "/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/riwork",
+        "instances",
+        "--json"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-fix-host",
+      "environment": {
+        "HOME": "/private/tmp/rww2-w5fd_qme/user",
+        "PATH": "/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/opt/homebrew/Caskroom/codex/0.162.1/codex-path:/Users/dominik/.okc/bin:/Users/dominik/.grok/bin:/Users/dominik/.bun/bin:/Users/dominik/.bun/bin:/Users/dominik/.opencode/bin:/opt/homebrew/opt/openjdk@17/bin:/Users/dominik/.bun/bin:/Users/dominik/.pyenv/shims:/Users/dominik/.avm/bin:/Users/dominik/.bun/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/System/Cryptexes/App/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin:/opt/pmk/env/global/bin:/Library/Apple/usr/bin:/usr/local/share/dotnet:~/.dotnet/tools:/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/Users/dominik/.codex/tmp/arg0/codex-arg0YIBYhl:/opt/homebrew/Caskroom/codex/0.162.1/codex-path:/Users/dominik/.local/share/riwork/cua/harness-bin:/Users/dominik/.okc/bin:/Users/dominik/Library/pnpm:/Users/dominik/.grok/bin:/Users/dominik/.bun/bin:/Users/dominik/.opencode/bin:/opt/homebrew/opt/openjdk@17/bin:/Users/dominik/.avm/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/Users/dominik/.starkli/bin:/Users/dominik/Library/Application Support/org.dfinity.dfx/bin:/Users/dominik/.cargo/bin:/Users/dominik/.local/bin:/Users/dominik/.docker/bin:/Users/dominik/.cache/lm-studio/bin:/Users/dominik/.nargo/bin:/opt/local/bin:/Users/dominik/.docker/bin:/Users/dominik/.cache/lm-studio/bin:/Users/dominik/.nargo/bin:/Users/dominik/.local/bin",
+        "RIWORK_HOME": "/private/tmp/rww2-w5fd_qme/home",
+        "RIWORK_RUNTIME_DIR": "/private/tmp/rww2-w5fd_qme/run",
+        "TMUX_TMPDIR": "/private/tmp/rww2-w5fd_qme/tmux",
+        "XDG_CONFIG_HOME": "/private/tmp/rww2-w5fd_qme/user/.config",
+        "RIWORK_NSH_BUNDLE": "/private/tmp/riwork-w2-host/bundle/bundle.js",
+        "RIWORK_NSH_BACKGROUND": "1"
+      },
+      "stdout": "/private/tmp/riwork-w2-host/restore-dpfaw1d7/instances-before.stdout",
+      "stderr": "/private/tmp/riwork-w2-host/restore-dpfaw1d7/instances-before.stderr",
+      "exit_code": 0,
+      "duration_seconds": 0.009,
+      "stdout_sha256": "e775d968a374c70d6f1004f8be69564d1765a94e4c9f19f2dd5c3b08ef45da49",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "instances-handoff-before",
+      "argv": [
+        "/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/riwork",
+        "instances",
+        "--json"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-fix-host",
+      "environment": {
+        "HOME": "/private/tmp/rww2-w5fd_qme/user",
+        "PATH": "/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/opt/homebrew/Caskroom/codex/0.162.1/codex-path:/Users/dominik/.okc/bin:/Users/dominik/.grok/bin:/Users/dominik/.bun/bin:/Users/dominik/.bun/bin:/Users/dominik/.opencode/bin:/opt/homebrew/opt/openjdk@17/bin:/Users/dominik/.bun/bin:/Users/dominik/.pyenv/shims:/Users/dominik/.avm/bin:/Users/dominik/.bun/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/System/Cryptexes/App/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin:/opt/pmk/env/global/bin:/Library/Apple/usr/bin:/usr/local/share/dotnet:~/.dotnet/tools:/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/Users/dominik/.codex/tmp/arg0/codex-arg0YIBYhl:/opt/homebrew/Caskroom/codex/0.162.1/codex-path:/Users/dominik/.local/share/riwork/cua/harness-bin:/Users/dominik/.okc/bin:/Users/dominik/Library/pnpm:/Users/dominik/.grok/bin:/Users/dominik/.bun/bin:/Users/dominik/.opencode/bin:/opt/homebrew/opt/openjdk@17/bin:/Users/dominik/.avm/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/Users/dominik/.starkli/bin:/Users/dominik/Library/Application Support/org.dfinity.dfx/bin:/Users/dominik/.cargo/bin:/Users/dominik/.local/bin:/Users/dominik/.docker/bin:/Users/dominik/.cache/lm-studio/bin:/Users/dominik/.nargo/bin:/opt/local/bin:/Users/dominik/.docker/bin:/Users/dominik/.cache/lm-studio/bin:/Users/dominik/.nargo/bin:/Users/dominik/.local/bin",
+        "RIWORK_HOME": "/private/tmp/rww2-w5fd_qme/home",
+        "RIWORK_RUNTIME_DIR": "/private/tmp/rww2-w5fd_qme/run",
+        "TMUX_TMPDIR": "/private/tmp/rww2-w5fd_qme/tmux",
+        "XDG_CONFIG_HOME": "/private/tmp/rww2-w5fd_qme/user/.config",
+        "RIWORK_NSH_BUNDLE": "/private/tmp/riwork-w2-host/bundle/bundle.js",
+        "RIWORK_NSH_BACKGROUND": "1"
+      },
+      "stdout": "/private/tmp/riwork-w2-host/restore-dpfaw1d7/instances-handoff-before.stdout",
+      "stderr": "/private/tmp/riwork-w2-host/restore-dpfaw1d7/instances-handoff-before.stderr",
+      "exit_code": 0,
+      "duration_seconds": 0.008,
+      "stdout_sha256": "e775d968a374c70d6f1004f8be69564d1765a94e4c9f19f2dd5c3b08ef45da49",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "restart",
+      "argv": [
+        "/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/riwork",
+        "restart",
+        "--json"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-fix-host",
+      "environment": {
+        "HOME": "/private/tmp/rww2-w5fd_qme/user",
+        "PATH": "/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/opt/homebrew/Caskroom/codex/0.162.1/codex-path:/Users/dominik/.okc/bin:/Users/dominik/.grok/bin:/Users/dominik/.bun/bin:/Users/dominik/.bun/bin:/Users/dominik/.opencode/bin:/opt/homebrew/opt/openjdk@17/bin:/Users/dominik/.bun/bin:/Users/dominik/.pyenv/shims:/Users/dominik/.avm/bin:/Users/dominik/.bun/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/System/Cryptexes/App/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin:/opt/pmk/env/global/bin:/Library/Apple/usr/bin:/usr/local/share/dotnet:~/.dotnet/tools:/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/Users/dominik/.codex/tmp/arg0/codex-arg0YIBYhl:/opt/homebrew/Caskroom/codex/0.162.1/codex-path:/Users/dominik/.local/share/riwork/cua/harness-bin:/Users/dominik/.okc/bin:/Users/dominik/Library/pnpm:/Users/dominik/.grok/bin:/Users/dominik/.bun/bin:/Users/dominik/.opencode/bin:/opt/homebrew/opt/openjdk@17/bin:/Users/dominik/.avm/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/Users/dominik/.starkli/bin:/Users/dominik/Library/Application Support/org.dfinity.dfx/bin:/Users/dominik/.cargo/bin:/Users/dominik/.local/bin:/Users/dominik/.docker/bin:/Users/dominik/.cache/lm-studio/bin:/Users/dominik/.nargo/bin:/opt/local/bin:/Users/dominik/.docker/bin:/Users/dominik/.cache/lm-studio/bin:/Users/dominik/.nargo/bin:/Users/dominik/.local/bin",
+        "RIWORK_HOME": "/private/tmp/rww2-w5fd_qme/home",
+        "RIWORK_RUNTIME_DIR": "/private/tmp/rww2-w5fd_qme/run",
+        "TMUX_TMPDIR": "/private/tmp/rww2-w5fd_qme/tmux",
+        "XDG_CONFIG_HOME": "/private/tmp/rww2-w5fd_qme/user/.config",
+        "RIWORK_NSH_BUNDLE": "/private/tmp/riwork-w2-host/bundle/bundle.js",
+        "RIWORK_NSH_BACKGROUND": "1"
+      },
+      "stdout": "/private/tmp/riwork-w2-host/restore-dpfaw1d7/restart.stdout",
+      "stderr": "/private/tmp/riwork-w2-host/restore-dpfaw1d7/restart.stderr",
+      "exit_code": 0,
+      "duration_seconds": 1.999,
+      "stdout_sha256": "d8212a6278594bad9a8f95f02c4f612ae02b159b4f9a9f6bfa3a877bd1e7e642",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "instances-after",
+      "argv": [
+        "/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/riwork",
+        "instances",
+        "--json"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-fix-host",
+      "environment": {
+        "HOME": "/private/tmp/rww2-w5fd_qme/user",
+        "PATH": "/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/opt/homebrew/Caskroom/codex/0.162.1/codex-path:/Users/dominik/.okc/bin:/Users/dominik/.grok/bin:/Users/dominik/.bun/bin:/Users/dominik/.bun/bin:/Users/dominik/.opencode/bin:/opt/homebrew/opt/openjdk@17/bin:/Users/dominik/.bun/bin:/Users/dominik/.pyenv/shims:/Users/dominik/.avm/bin:/Users/dominik/.bun/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/System/Cryptexes/App/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin:/opt/pmk/env/global/bin:/Library/Apple/usr/bin:/usr/local/share/dotnet:~/.dotnet/tools:/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/Users/dominik/.codex/tmp/arg0/codex-arg0YIBYhl:/opt/homebrew/Caskroom/codex/0.162.1/codex-path:/Users/dominik/.local/share/riwork/cua/harness-bin:/Users/dominik/.okc/bin:/Users/dominik/Library/pnpm:/Users/dominik/.grok/bin:/Users/dominik/.bun/bin:/Users/dominik/.opencode/bin:/opt/homebrew/opt/openjdk@17/bin:/Users/dominik/.avm/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/Users/dominik/.starkli/bin:/Users/dominik/Library/Application Support/org.dfinity.dfx/bin:/Users/dominik/.cargo/bin:/Users/dominik/.local/bin:/Users/dominik/.docker/bin:/Users/dominik/.cache/lm-studio/bin:/Users/dominik/.nargo/bin:/opt/local/bin:/Users/dominik/.docker/bin:/Users/dominik/.cache/lm-studio/bin:/Users/dominik/.nargo/bin:/Users/dominik/.local/bin",
+        "RIWORK_HOME": "/private/tmp/rww2-w5fd_qme/home",
+        "RIWORK_RUNTIME_DIR": "/private/tmp/rww2-w5fd_qme/run",
+        "TMUX_TMPDIR": "/private/tmp/rww2-w5fd_qme/tmux",
+        "XDG_CONFIG_HOME": "/private/tmp/rww2-w5fd_qme/user/.config",
+        "RIWORK_NSH_BUNDLE": "/private/tmp/riwork-w2-host/bundle/bundle.js",
+        "RIWORK_NSH_BACKGROUND": "1"
+      },
+      "stdout": "/private/tmp/riwork-w2-host/restore-dpfaw1d7/instances-after.stdout",
+      "stderr": "/private/tmp/riwork-w2-host/restore-dpfaw1d7/instances-after.stderr",
+      "exit_code": 0,
+      "duration_seconds": 0.009,
+      "stdout_sha256": "0507ef546562ad3c6f186f6089356e0e2ff7146b8f3b684d4f72d9f908610918",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "instances-cleanup",
+      "argv": [
+        "/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/riwork",
+        "instances",
+        "--json"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-fix-host",
+      "environment": {
+        "HOME": "/private/tmp/rww2-w5fd_qme/user",
+        "PATH": "/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/opt/homebrew/Caskroom/codex/0.162.1/codex-path:/Users/dominik/.okc/bin:/Users/dominik/.grok/bin:/Users/dominik/.bun/bin:/Users/dominik/.bun/bin:/Users/dominik/.opencode/bin:/opt/homebrew/opt/openjdk@17/bin:/Users/dominik/.bun/bin:/Users/dominik/.pyenv/shims:/Users/dominik/.avm/bin:/Users/dominik/.bun/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/System/Cryptexes/App/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin:/opt/pmk/env/global/bin:/Library/Apple/usr/bin:/usr/local/share/dotnet:~/.dotnet/tools:/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/Users/dominik/.codex/tmp/arg0/codex-arg0YIBYhl:/opt/homebrew/Caskroom/codex/0.162.1/codex-path:/Users/dominik/.local/share/riwork/cua/harness-bin:/Users/dominik/.okc/bin:/Users/dominik/Library/pnpm:/Users/dominik/.grok/bin:/Users/dominik/.bun/bin:/Users/dominik/.opencode/bin:/opt/homebrew/opt/openjdk@17/bin:/Users/dominik/.avm/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/Users/dominik/.starkli/bin:/Users/dominik/Library/Application Support/org.dfinity.dfx/bin:/Users/dominik/.cargo/bin:/Users/dominik/.local/bin:/Users/dominik/.docker/bin:/Users/dominik/.cache/lm-studio/bin:/Users/dominik/.nargo/bin:/opt/local/bin:/Users/dominik/.docker/bin:/Users/dominik/.cache/lm-studio/bin:/Users/dominik/.nargo/bin:/Users/dominik/.local/bin",
+        "RIWORK_HOME": "/private/tmp/rww2-w5fd_qme/home",
+        "RIWORK_RUNTIME_DIR": "/private/tmp/rww2-w5fd_qme/run",
+        "TMUX_TMPDIR": "/private/tmp/rww2-w5fd_qme/tmux",
+        "XDG_CONFIG_HOME": "/private/tmp/rww2-w5fd_qme/user/.config",
+        "RIWORK_NSH_BUNDLE": "/private/tmp/riwork-w2-host/bundle/bundle.js",
+        "RIWORK_NSH_BACKGROUND": "1"
+      },
+      "stdout": "/private/tmp/riwork-w2-host/restore-dpfaw1d7/instances-cleanup.stdout",
+      "stderr": "/private/tmp/riwork-w2-host/restore-dpfaw1d7/instances-cleanup.stderr",
+      "exit_code": 0,
+      "duration_seconds": 3.177,
+      "stdout_sha256": "0507ef546562ad3c6f186f6089356e0e2ff7146b8f3b684d4f72d9f908610918",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "status": "passed",
+  "gui": {
+    "argv": [
+      "/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/riwork"
+    ],
+    "environment": {
+      "PATH": "/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/opt/homebrew/Caskroom/codex/0.162.1/codex-path:/Users/dominik/.okc/bin:/Users/dominik/.grok/bin:/Users/dominik/.bun/bin:/Users/dominik/.bun/bin:/Users/dominik/.opencode/bin:/opt/homebrew/opt/openjdk@17/bin:/Users/dominik/.bun/bin:/Users/dominik/.pyenv/shims:/Users/dominik/.avm/bin:/Users/dominik/.bun/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/System/Cryptexes/App/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin:/opt/pmk/env/global/bin:/Library/Apple/usr/bin:/usr/local/share/dotnet:~/.dotnet/tools:/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/Users/dominik/.codex/tmp/arg0/codex-arg0YIBYhl:/opt/homebrew/Caskroom/codex/0.162.1/codex-path:/Users/dominik/.local/share/riwork/cua/harness-bin:/Users/dominik/.okc/bin:/Users/dominik/Library/pnpm:/Users/dominik/.grok/bin:/Users/dominik/.bun/bin:/Users/dominik/.opencode/bin:/opt/homebrew/opt/openjdk@17/bin:/Users/dominik/.avm/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/Users/dominik/.starkli/bin:/Users/dominik/Library/Application Support/org.dfinity.dfx/bin:/Users/dominik/.cargo/bin:/Users/dominik/.local/bin:/Users/dominik/.docker/bin:/Users/dominik/.cache/lm-studio/bin:/Users/dominik/.nargo/bin:/opt/local/bin:/Users/dominik/.docker/bin:/Users/dominik/.cache/lm-studio/bin:/Users/dominik/.nargo/bin:/Users/dominik/.local/bin",
+      "HOME": "/private/tmp/rww2-w5fd_qme/user",
+      "RIWORK_HOME": "/private/tmp/rww2-w5fd_qme/home",
+      "RIWORK_RUNTIME_DIR": "/private/tmp/rww2-w5fd_qme/run",
+      "TMUX_TMPDIR": "/private/tmp/rww2-w5fd_qme/tmux",
+      "XDG_CONFIG_HOME": "/private/tmp/rww2-w5fd_qme/user/.config",
+      "RIWORK_NSH_BUNDLE": "/private/tmp/riwork-w2-host/bundle/bundle.js",
+      "RIWORK_NSH_BACKGROUND": "1",
+      "RIWORK_NSH_FAKE_SESSIONS": "/private/tmp/rww2-w5fd_qme/home/fake-sessions.json",
+      "RIWORK_RESTORE_TICKET": "d3e3f12b-c50b-4c1a-8016-47d08bb61480"
+    },
+    "pid": 55232,
+    "stdout": "/private/tmp/riwork-w2-host/restore-dpfaw1d7/gui.stdout",
+    "stderr": "/private/tmp/riwork-w2-host/restore-dpfaw1d7/gui.stderr",
+    "fixture": {
+      "scenario": "p1-restore",
+      "root": "/private/tmp/rww2-w5fd_qme",
+      "home": "/private/tmp/rww2-w5fd_qme/home",
+      "runtime": "/private/tmp/rww2-w5fd_qme/run",
+      "fake_sessions": "/private/tmp/rww2-w5fd_qme/home/fake-sessions.json",
+      "projects": {
+        "Alpha": {
+          "id": "0968f05d-098b-4cfc-9abc-a0bfabad765d",
+          "name": "Alpha",
+          "root": "/private/tmp/rww2-w5fd_qme/repos/alpha",
+          "repository_roots": [],
+          "folder_id": null,
+          "notify_on_agent_done": false,
+          "wake_orchestrators_on_agent_done": false,
+          "codex_account": {
+            "source": "inherit"
+          },
+          "orchestrator": {
+            "mode": "inherit"
+          },
+          "delegation_policy": {},
+          "created_at": 1793138829
+        },
+        "Beta": {
+          "id": "3d898dec-d1cc-451b-82f3-978a17bdc952",
+          "name": "Beta",
+          "root": "/private/tmp/rww2-w5fd_qme/repos/beta",
+          "repository_roots": [],
+          "folder_id": null,
+          "notify_on_agent_done": false,
+          "wake_orchestrators_on_agent_done": false,
+          "codex_account": {
+            "source": "inherit"
+          },
+          "orchestrator": {
+            "mode": "inherit"
+          },
+          "delegation_policy": {},
+          "created_at": 1793138829
+        },
+        "Busy": {
+          "id": "be4eb62f-3d1e-48fd-80c9-f4d2ea4e37d4",
+          "name": "Busy",
+          "root": "/private/tmp/rww2-w5fd_qme/repos/busy",
+          "repository_roots": [],
+          "folder_id": null,
+          "notify_on_agent_done": false,
+          "wake_orchestrators_on_agent_done": false,
+          "codex_account": {
+            "source": "inherit"
+          },
+          "orchestrator": {
+            "mode": "inherit"
+          },
+          "delegation_policy": {},
+          "created_at": 1793138829
+        },
+        "Gamma": {
+          "id": "ab13659e-c068-4a0c-a335-718f05a16bd6",
+          "name": "Gamma",
+          "root": "/private/tmp/rww2-w5fd_qme/repos/gamma",
+          "repository_roots": [],
+          "folder_id": null,
+          "notify_on_agent_done": false,
+          "wake_orchestrators_on_agent_done": false,
+          "codex_account": {
+            "source": "inherit"
+          },
+          "orchestrator": {
+            "mode": "inherit"
+          },
+          "delegation_policy": {},
+          "created_at": 1793138829
+        }
+      },
+      "restore_ticket": "d3e3f12b-c50b-4c1a-8016-47d08bb61480",
+      "restore": {
+        "ticket_id": "d3e3f12b-c50b-4c1a-8016-47d08bb61480",
+        "request_id": "4fefe339-fee4-4d39-a7fe-4fad01c9d894",
+        "old_instance_id": "c84f9607-f9bb-4684-a57b-d912b5699bc2",
+        "replacement_executable": "/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/riwork",
+        "state_home": "/private/tmp/rww2-w5fd_qme/home",
+        "windows": [
+          {
+            "project_id": "0968f05d-098b-4cfc-9abc-a0bfabad765d",
+            "path": "/private/tmp/rww2-w5fd_qme/repos/alpha",
+            "bounds": {
+              "x": 100.0,
+              "y": 100.0,
+              "width": 1000.0,
+              "height": 700.0
+            },
+            "mode": "windowed",
+            "layout": {
+              "layout": {
+                "split": {
+                  "axis": "side_by_side",
+                  "ratio": 0.27,
+                  "first": {
+                    "pane": 1
+                  },
+                  "second": {
+                    "pane": 2
+                  }
+                }
+              },
+              "panes": {
+                "1": {
+                  "tabs": [
+                    {
+                      "kind": "panel",
+                      "panel": "projects"
+                    },
+                    {
+                      "kind": "panel",
+                      "panel": "files"
+                    },
+                    {
+                      "kind": "panel",
+                      "panel": "worktrees"
+                    },
+                    {
+                      "kind": "panel",
+                      "panel": "tasks"
+                    },
+                    {
+                      "kind": "panel",
+                      "panel": "shells"
+                    }
+                  ],
+                  "active_tab_key": "panel:projects",
+                  "tab_edge": "top",
+                  "shell_ids": [],
+                  "active_shell_id": null
+                },
+                "2": {
+                  "tabs": [
+                    {
+                      "kind": "shell",
+                      "shell_id": "00000000-0000-4000-8000-000000000001"
+                    },
+                    {
+                      "kind": "shell",
+                      "shell_id": "00000000-0000-4000-8000-000000000002"
+                    },
+                    {
+                      "kind": "chat",
+                      "chat_id": "00000000-0000-4000-8000-000000000101"
+                    },
+                    {
+                      "kind": "remote_shell",
+                      "desktop_id": "fixture-remote",
+                      "shell_id": "00000000-0000-4000-8000-000000000102"
+                    }
+                  ],
+                  "active_tab_key": "shell:00000000-0000-4000-8000-000000000002",
+                  "tab_edge": "top",
+                  "shell_ids": [
+                    "00000000-0000-4000-8000-000000000001",
+                    "00000000-0000-4000-8000-000000000002"
+                  ],
+                  "active_shell_id": "00000000-0000-4000-8000-000000000002"
+                }
+              },
+              "active_pane": 2,
+              "locked_panes": null,
+              "panels_initialized": true,
+              "detached_shell_ids": [],
+              "selected_worktree_id": null,
+              "selected_task_id": null,
+              "sidebar_visible": true,
+              "window_size": null,
+              "main_pane": 2
+            },
+            "focus_mode": false,
+            "focus_centered": false
+          },
+          {
+            "project_id": "3d898dec-d1cc-451b-82f3-978a17bdc952",
+            "path": "/private/tmp/rww2-w5fd_qme/repos/beta",
+            "bounds": {
+              "x": 140.0,
+              "y": 140.0,
+              "width": 1000.0,
+              "height": 700.0
+            },
+            "mode": "maximized",
+            "layout": {
+              "layout": {
+                "split": {
+                  "axis": "side_by_side",
+                  "ratio": 0.3,
+                  "first": {
+                    "pane": 1
+                  },
+                  "second": {
+                    "split": {
+                      "axis": "stacked",
+                      "ratio": 0.62,
+                      "first": {
+                        "pane": 2
+                      },
+                      "second": {
+                        "split": {
+                          "axis": "stacked",
+                          "ratio": 0.5,
+                          "first": {
+                            "pane": 3
+                          },
+                          "second": {
+                            "pane": 4
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "panes": {
+                "1": {
+                  "tabs": [
+                    {
+                      "kind": "panel",
+                      "panel": "projects"
+                    },
+                    {
+                      "kind": "panel",
+                      "panel": "files"
+                    },
+                    {
+                      "kind": "panel",
+                      "panel": "worktrees"
+                    },
+                    {
+                      "kind": "panel",
+                      "panel": "tasks"
+                    },
+                    {
+                      "kind": "panel",
+                      "panel": "shells"
+                    }
+                  ],
+                  "active_tab_key": "panel:projects",
+                  "tab_edge": "top",
+                  "shell_ids": [],
+                  "active_shell_id": null
+                },
+                "2": {
+                  "tabs": [
+                    {
+                      "kind": "shell",
+                      "shell_id": "00000000-0000-4000-8000-000000000301"
+                    }
+                  ],
+                  "active_tab_key": "shell:00000000-0000-4000-8000-000000000301",
+                  "tab_edge": "top",
+                  "shell_ids": [
+                    "00000000-0000-4000-8000-000000000301"
+                  ],
+                  "active_shell_id": "00000000-0000-4000-8000-000000000301"
+                },
+                "3": {
+                  "tabs": [
+                    {
+                      "kind": "shell",
+                      "shell_id": "00000000-0000-4000-8000-000000000302"
+                    }
+                  ],
+                  "active_tab_key": "shell:00000000-0000-4000-8000-000000000302",
+                  "tab_edge": "top",
+                  "shell_ids": [
+                    "00000000-0000-4000-8000-000000000302"
+                  ],
+                  "active_shell_id": "00000000-0000-4000-8000-000000000302"
+                },
+                "4": {
+                  "tabs": [
+                    {
+                      "kind": "shell",
+                      "shell_id": "00000000-0000-4000-8000-000000000303"
+                    }
+                  ],
+                  "active_tab_key": "shell:00000000-0000-4000-8000-000000000303",
+                  "tab_edge": "top",
+                  "shell_ids": [
+                    "00000000-0000-4000-8000-000000000303"
+                  ],
+                  "active_shell_id": "00000000-0000-4000-8000-000000000303"
+                }
+              },
+              "active_pane": 3,
+              "locked_panes": [
+                1
+              ],
+              "panels_initialized": true,
+              "detached_shell_ids": [],
+              "selected_worktree_id": null,
+              "selected_task_id": null,
+              "sidebar_visible": true,
+              "window_size": null,
+              "main_pane": 2
+            },
+            "focus_mode": true,
+            "focus_centered": false
+          },
+          {
+            "project_id": null,
+            "path": "/private/tmp/rww2-w5fd_qme/home/global-window",
+            "bounds": {
+              "x": 180.0,
+              "y": 180.0,
+              "width": 1100.0,
+              "height": 760.0
+            },
+            "mode": "windowed",
+            "layout": null,
+            "focus_mode": false,
+            "focus_centered": false,
+            "kind": "global",
+            "global": {
+              "view": "chat",
+              "show_quiet": false,
+              "dashboard_filter": "needs_you",
+              "dashboard_sort": "priority",
+              "window_size": {
+                "width": 1100.0,
+                "height": 760.0
+              }
+            }
+          }
+        ],
+        "created_at": 1793138830
+      }
+    }
+  },
+  "before": [
+    {
+      "id": "97047540-9c33-45f0-8db2-42f8eed03cd3",
+      "pid": 55232,
+      "uid": 501,
+      "started_token": "1793138830.097172",
+      "executable": "/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/riwork",
+      "state_home": "/private/tmp/rww2-w5fd_qme/home",
+      "windows": [
+        {
+          "project_id": null,
+          "path": "/private/tmp/rww2-w5fd_qme/home/global-window",
+          "bounds": {
+            "x": 180.0,
+            "y": 180.0,
+            "width": 1100.0,
+            "height": 760.0
+          },
+          "mode": "windowed",
+          "layout": null,
+          "focus_mode": false,
+          "focus_centered": false,
+          "kind": "global",
+          "global": {
+            "view": "chat",
+            "show_quiet": false,
+            "dashboard_filter": "needs_you",
+            "dashboard_sort": "priority",
+            "window_size": {
+              "width": 1100.0,
+              "height": 760.0
+            }
+          }
+        },
+        {
+          "project_id": "0968f05d-098b-4cfc-9abc-a0bfabad765d",
+          "path": "/private/tmp/rww2-w5fd_qme/repos/alpha",
+          "bounds": {
+            "x": 100.0,
+            "y": 100.0,
+            "width": 1000.0,
+            "height": 700.0
+          },
+          "mode": "windowed",
+          "layout": {
+            "layout": {
+              "split": {
+                "axis": "side_by_side",
+                "ratio": 0.27,
+                "first": {
+                  "pane": 1
+                },
+                "second": {
+                  "pane": 2
+                }
+              }
+            },
+            "panes": {
+              "1": {
+                "tabs": [
+                  {
+                    "kind": "panel",
+                    "panel": "projects"
+                  },
+                  {
+                    "kind": "panel",
+                    "panel": "files"
+                  },
+                  {
+                    "kind": "panel",
+                    "panel": "worktrees"
+                  },
+                  {
+                    "kind": "panel",
+                    "panel": "tasks"
+                  },
+                  {
+                    "kind": "panel",
+                    "panel": "shells"
+                  }
+                ],
+                "active_tab_key": "panel:projects",
+                "tab_edge": "top",
+                "shell_ids": [],
+                "active_shell_id": null
+              },
+              "2": {
+                "tabs": [
+                  {
+                    "kind": "shell",
+                    "shell_id": "00000000-0000-4000-8000-000000000001"
+                  },
+                  {
+                    "kind": "shell",
+                    "shell_id": "00000000-0000-4000-8000-000000000002"
+                  },
+                  {
+                    "kind": "chat",
+                    "chat_id": "00000000-0000-4000-8000-000000000101"
+                  },
+                  {
+                    "kind": "remote_shell",
+                    "desktop_id": "fixture-remote",
+                    "shell_id": "00000000-0000-4000-8000-000000000102"
+                  }
+                ],
+                "active_tab_key": "shell:00000000-0000-4000-8000-000000000002",
+                "tab_edge": "top",
+                "shell_ids": [
+                  "00000000-0000-4000-8000-000000000001",
+                  "00000000-0000-4000-8000-000000000002"
+                ],
+                "active_shell_id": "00000000-0000-4000-8000-000000000002"
+              }
+            },
+            "active_pane": 2,
+            "locked_panes": null,
+            "panels_initialized": true,
+            "detached_shell_ids": [],
+            "selected_worktree_id": null,
+            "selected_task_id": null,
+            "sidebar_visible": true,
+            "window_size": {
+              "width": 1000.0,
+              "height": 700.0
+            },
+            "main_pane": 2
+          },
+          "focus_mode": false,
+          "focus_centered": false
+        },
+        {
+          "project_id": "3d898dec-d1cc-451b-82f3-978a17bdc952",
+          "path": "/private/tmp/rww2-w5fd_qme/repos/beta",
+          "bounds": {
+            "x": 140.0,
+            "y": 140.0,
+            "width": 1000.0,
+            "height": 700.0
+          },
+          "mode": "maximized",
+          "layout": {
+            "layout": {
+              "split": {
+                "axis": "side_by_side",
+                "ratio": 0.3,
+                "first": {
+                  "pane": 1
+                },
+                "second": {
+                  "split": {
+                    "axis": "stacked",
+                    "ratio": 0.62,
+                    "first": {
+                      "pane": 2
+                    },
+                    "second": {
+                      "split": {
+                        "axis": "stacked",
+                        "ratio": 0.5,
+                        "first": {
+                          "pane": 3
+                        },
+                        "second": {
+                          "pane": 4
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "panes": {
+              "1": {
+                "tabs": [
+                  {
+                    "kind": "panel",
+                    "panel": "projects"
+                  },
+                  {
+                    "kind": "panel",
+                    "panel": "files"
+                  },
+                  {
+                    "kind": "panel",
+                    "panel": "worktrees"
+                  },
+                  {
+                    "kind": "panel",
+                    "panel": "tasks"
+                  },
+                  {
+                    "kind": "panel",
+                    "panel": "shells"
+                  }
+                ],
+                "active_tab_key": "panel:projects",
+                "tab_edge": "top",
+                "shell_ids": [],
+                "active_shell_id": null
+              },
+              "2": {
+                "tabs": [
+                  {
+                    "kind": "shell",
+                    "shell_id": "00000000-0000-4000-8000-000000000301"
+                  }
+                ],
+                "active_tab_key": "shell:00000000-0000-4000-8000-000000000301",
+                "tab_edge": "top",
+                "shell_ids": [
+                  "00000000-0000-4000-8000-000000000301"
+                ],
+                "active_shell_id": "00000000-0000-4000-8000-000000000301"
+              },
+              "3": {
+                "tabs": [
+                  {
+                    "kind": "shell",
+                    "shell_id": "00000000-0000-4000-8000-000000000302"
+                  }
+                ],
+                "active_tab_key": "shell:00000000-0000-4000-8000-000000000302",
+                "tab_edge": "top",
+                "shell_ids": [
+                  "00000000-0000-4000-8000-000000000302"
+                ],
+                "active_shell_id": "00000000-0000-4000-8000-000000000302"
+              },
+              "4": {
+                "tabs": [
+                  {
+                    "kind": "shell",
+                    "shell_id": "00000000-0000-4000-8000-000000000303"
+                  }
+                ],
+                "active_tab_key": "shell:00000000-0000-4000-8000-000000000303",
+                "tab_edge": "top",
+                "shell_ids": [
+                  "00000000-0000-4000-8000-000000000303"
+                ],
+                "active_shell_id": "00000000-0000-4000-8000-000000000303"
+              }
+            },
+            "active_pane": 3,
+            "locked_panes": [
+              1
+            ],
+            "panels_initialized": true,
+            "detached_shell_ids": [],
+            "selected_worktree_id": null,
+            "selected_task_id": null,
+            "sidebar_visible": true,
+            "window_size": null,
+            "main_pane": 2
+          },
+          "focus_mode": true,
+          "focus_centered": false
+        }
+      ],
+      "updated_at": 1793138833
+    }
+  ],
+  "handoff_before": [
+    {
+      "id": "97047540-9c33-45f0-8db2-42f8eed03cd3",
+      "pid": 55232,
+      "uid": 501,
+      "started_token": "1793138830.097172",
+      "executable": "/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/riwork",
+      "state_home": "/private/tmp/rww2-w5fd_qme/home",
+      "windows": [
+        {
+          "project_id": null,
+          "path": "/private/tmp/rww2-w5fd_qme/home/global-window",
+          "bounds": {
+            "x": 180.0,
+            "y": 180.0,
+            "width": 1100.0,
+            "height": 760.0
+          },
+          "mode": "windowed",
+          "layout": null,
+          "focus_mode": false,
+          "focus_centered": false,
+          "kind": "global",
+          "global": {
+            "view": "chat",
+            "show_quiet": false,
+            "dashboard_filter": "needs_you",
+            "dashboard_sort": "priority",
+            "window_size": {
+              "width": 1100.0,
+              "height": 760.0
+            }
+          }
+        },
+        {
+          "project_id": "0968f05d-098b-4cfc-9abc-a0bfabad765d",
+          "path": "/private/tmp/rww2-w5fd_qme/repos/alpha",
+          "bounds": {
+            "x": 100.0,
+            "y": 100.0,
+            "width": 1000.0,
+            "height": 700.0
+          },
+          "mode": "windowed",
+          "layout": {
+            "layout": {
+              "split": {
+                "axis": "side_by_side",
+                "ratio": 0.27,
+                "first": {
+                  "pane": 1
+                },
+                "second": {
+                  "pane": 2
+                }
+              }
+            },
+            "panes": {
+              "1": {
+                "tabs": [
+                  {
+                    "kind": "panel",
+                    "panel": "projects"
+                  },
+                  {
+                    "kind": "panel",
+                    "panel": "files"
+                  },
+                  {
+                    "kind": "panel",
+                    "panel": "worktrees"
+                  },
+                  {
+                    "kind": "panel",
+                    "panel": "tasks"
+                  },
+                  {
+                    "kind": "panel",
+                    "panel": "shells"
+                  }
+                ],
+                "active_tab_key": "panel:projects",
+                "tab_edge": "top",
+                "shell_ids": [],
+                "active_shell_id": null
+              },
+              "2": {
+                "tabs": [
+                  {
+                    "kind": "shell",
+                    "shell_id": "00000000-0000-4000-8000-000000000001"
+                  },
+                  {
+                    "kind": "shell",
+                    "shell_id": "00000000-0000-4000-8000-000000000002"
+                  },
+                  {
+                    "kind": "chat",
+                    "chat_id": "00000000-0000-4000-8000-000000000101"
+                  },
+                  {
+                    "kind": "remote_shell",
+                    "desktop_id": "fixture-remote",
+                    "shell_id": "00000000-0000-4000-8000-000000000102"
+                  }
+                ],
+                "active_tab_key": "shell:00000000-0000-4000-8000-000000000002",
+                "tab_edge": "top",
+                "shell_ids": [
+                  "00000000-0000-4000-8000-000000000001",
+                  "00000000-0000-4000-8000-000000000002"
+                ],
+                "active_shell_id": "00000000-0000-4000-8000-000000000002"
+              }
+            },
+            "active_pane": 2,
+            "locked_panes": null,
+            "panels_initialized": true,
+            "detached_shell_ids": [],
+            "selected_worktree_id": null,
+            "selected_task_id": null,
+            "sidebar_visible": true,
+            "window_size": {
+              "width": 1000.0,
+              "height": 700.0
+            },
+            "main_pane": 2
+          },
+          "focus_mode": false,
+          "focus_centered": false
+        },
+        {
+          "project_id": "3d898dec-d1cc-451b-82f3-978a17bdc952",
+          "path": "/private/tmp/rww2-w5fd_qme/repos/beta",
+          "bounds": {
+            "x": 140.0,
+            "y": 140.0,
+            "width": 1000.0,
+            "height": 700.0
+          },
+          "mode": "maximized",
+          "layout": {
+            "layout": {
+              "split": {
+                "axis": "side_by_side",
+                "ratio": 0.3,
+                "first": {
+                  "pane": 1
+                },
+                "second": {
+                  "split": {
+                    "axis": "stacked",
+                    "ratio": 0.62,
+                    "first": {
+                      "pane": 2
+                    },
+                    "second": {
+                      "split": {
+                        "axis": "stacked",
+                        "ratio": 0.5,
+                        "first": {
+                          "pane": 3
+                        },
+                        "second": {
+                          "pane": 4
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "panes": {
+              "1": {
+                "tabs": [
+                  {
+                    "kind": "panel",
+                    "panel": "projects"
+                  },
+                  {
+                    "kind": "panel",
+                    "panel": "files"
+                  },
+                  {
+                    "kind": "panel",
+                    "panel": "worktrees"
+                  },
+                  {
+                    "kind": "panel",
+                    "panel": "tasks"
+                  },
+                  {
+                    "kind": "panel",
+                    "panel": "shells"
+                  }
+                ],
+                "active_tab_key": "panel:projects",
+                "tab_edge": "top",
+                "shell_ids": [],
+                "active_shell_id": null
+              },
+              "2": {
+                "tabs": [
+                  {
+                    "kind": "shell",
+                    "shell_id": "00000000-0000-4000-8000-000000000301"
+                  }
+                ],
+                "active_tab_key": "shell:00000000-0000-4000-8000-000000000301",
+                "tab_edge": "top",
+                "shell_ids": [
+                  "00000000-0000-4000-8000-000000000301"
+                ],
+                "active_shell_id": "00000000-0000-4000-8000-000000000301"
+              },
+              "3": {
+                "tabs": [
+                  {
+                    "kind": "shell",
+                    "shell_id": "00000000-0000-4000-8000-000000000302"
+                  }
+                ],
+                "active_tab_key": "shell:00000000-0000-4000-8000-000000000302",
+                "tab_edge": "top",
+                "shell_ids": [
+                  "00000000-0000-4000-8000-000000000302"
+                ],
+                "active_shell_id": "00000000-0000-4000-8000-000000000302"
+              },
+              "4": {
+                "tabs": [
+                  {
+                    "kind": "shell",
+                    "shell_id": "00000000-0000-4000-8000-000000000303"
+                  }
+                ],
+                "active_tab_key": "shell:00000000-0000-4000-8000-000000000303",
+                "tab_edge": "top",
+                "shell_ids": [
+                  "00000000-0000-4000-8000-000000000303"
+                ],
+                "active_shell_id": "00000000-0000-4000-8000-000000000303"
+              }
+            },
+            "active_pane": 3,
+            "locked_panes": [
+              1
+            ],
+            "panels_initialized": true,
+            "detached_shell_ids": [],
+            "selected_worktree_id": null,
+            "selected_task_id": null,
+            "sidebar_visible": true,
+            "window_size": null,
+            "main_pane": 2
+          },
+          "focus_mode": true,
+          "focus_centered": false
+        }
+      ],
+      "updated_at": 1793138833
+    }
+  ],
+  "reload": {
+    "reload": {
+      "request_id": "4ed124eb-b932-4079-9aee-6394fbf3d8a3",
+      "replacement_executable": "/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/riwork",
+      "requested": 1,
+      "reloaded": 1,
+      "pending": 0,
+      "failed": 0,
+      "unreadable_registrations": 0,
+      "instances": [
+        {
+          "instance_id": "97047540-9c33-45f0-8db2-42f8eed03cd3",
+          "pid": 55232,
+          "state_home": "/private/tmp/rww2-w5fd_qme/home",
+          "window_count": 3,
+          "state": "reloaded",
+          "new_pid": 57727,
+          "message": "Replacement GUI restored its windows; running shells were preserved."
+        }
+      ]
+    },
+    "session": null
+  },
+  "after": [
+    {
+      "id": "5aec30d1-0cb3-4e24-b7d0-c5af4853cf9a",
+      "pid": 57727,
+      "uid": 501,
+      "started_token": "1793138844.317733",
+      "executable": "/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/riwork",
+      "state_home": "/private/tmp/rww2-w5fd_qme/home",
+      "windows": [
+        {
+          "project_id": "0968f05d-098b-4cfc-9abc-a0bfabad765d",
+          "path": "/private/tmp/rww2-w5fd_qme/repos/alpha",
+          "bounds": {
+            "x": 100.0,
+            "y": 100.0,
+            "width": 1000.0,
+            "height": 700.0
+          },
+          "mode": "windowed",
+          "layout": {
+            "layout": {
+              "split": {
+                "axis": "side_by_side",
+                "ratio": 0.27,
+                "first": {
+                  "pane": 1
+                },
+                "second": {
+                  "pane": 2
+                }
+              }
+            },
+            "panes": {
+              "1": {
+                "tabs": [
+                  {
+                    "kind": "panel",
+                    "panel": "projects"
+                  },
+                  {
+                    "kind": "panel",
+                    "panel": "files"
+                  },
+                  {
+                    "kind": "panel",
+                    "panel": "worktrees"
+                  },
+                  {
+                    "kind": "panel",
+                    "panel": "tasks"
+                  },
+                  {
+                    "kind": "panel",
+                    "panel": "shells"
+                  }
+                ],
+                "active_tab_key": "panel:projects",
+                "tab_edge": "top",
+                "shell_ids": [],
+                "active_shell_id": null
+              },
+              "2": {
+                "tabs": [
+                  {
+                    "kind": "shell",
+                    "shell_id": "00000000-0000-4000-8000-000000000001"
+                  },
+                  {
+                    "kind": "shell",
+                    "shell_id": "00000000-0000-4000-8000-000000000002"
+                  },
+                  {
+                    "kind": "chat",
+                    "chat_id": "00000000-0000-4000-8000-000000000101"
+                  },
+                  {
+                    "kind": "remote_shell",
+                    "desktop_id": "fixture-remote",
+                    "shell_id": "00000000-0000-4000-8000-000000000102"
+                  }
+                ],
+                "active_tab_key": "shell:00000000-0000-4000-8000-000000000002",
+                "tab_edge": "top",
+                "shell_ids": [
+                  "00000000-0000-4000-8000-000000000001",
+                  "00000000-0000-4000-8000-000000000002"
+                ],
+                "active_shell_id": "00000000-0000-4000-8000-000000000002"
+              }
+            },
+            "active_pane": 2,
+            "locked_panes": null,
+            "panels_initialized": true,
+            "detached_shell_ids": [],
+            "selected_worktree_id": null,
+            "selected_task_id": null,
+            "sidebar_visible": true,
+            "window_size": {
+              "width": 1000.0,
+              "height": 700.0
+            },
+            "main_pane": 2
+          },
+          "focus_mode": false,
+          "focus_centered": false
+        },
+        {
+          "project_id": "3d898dec-d1cc-451b-82f3-978a17bdc952",
+          "path": "/private/tmp/rww2-w5fd_qme/repos/beta",
+          "bounds": {
+            "x": 140.0,
+            "y": 140.0,
+            "width": 1000.0,
+            "height": 700.0
+          },
+          "mode": "maximized",
+          "layout": {
+            "layout": {
+              "split": {
+                "axis": "side_by_side",
+                "ratio": 0.3,
+                "first": {
+                  "pane": 1
+                },
+                "second": {
+                  "split": {
+                    "axis": "stacked",
+                    "ratio": 0.62,
+                    "first": {
+                      "pane": 2
+                    },
+                    "second": {
+                      "split": {
+                        "axis": "stacked",
+                        "ratio": 0.5,
+                        "first": {
+                          "pane": 3
+                        },
+                        "second": {
+                          "pane": 4
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "panes": {
+              "1": {
+                "tabs": [
+                  {
+                    "kind": "panel",
+                    "panel": "projects"
+                  },
+                  {
+                    "kind": "panel",
+                    "panel": "files"
+                  },
+                  {
+                    "kind": "panel",
+                    "panel": "worktrees"
+                  },
+                  {
+                    "kind": "panel",
+                    "panel": "tasks"
+                  },
+                  {
+                    "kind": "panel",
+                    "panel": "shells"
+                  }
+                ],
+                "active_tab_key": "panel:projects",
+                "tab_edge": "top",
+                "shell_ids": [],
+                "active_shell_id": null
+              },
+              "2": {
+                "tabs": [
+                  {
+                    "kind": "shell",
+                    "shell_id": "00000000-0000-4000-8000-000000000301"
+                  }
+                ],
+                "active_tab_key": "shell:00000000-0000-4000-8000-000000000301",
+                "tab_edge": "top",
+                "shell_ids": [
+                  "00000000-0000-4000-8000-000000000301"
+                ],
+                "active_shell_id": "00000000-0000-4000-8000-000000000301"
+              },
+              "3": {
+                "tabs": [
+                  {
+                    "kind": "shell",
+                    "shell_id": "00000000-0000-4000-8000-000000000302"
+                  }
+                ],
+                "active_tab_key": "shell:00000000-0000-4000-8000-000000000302",
+                "tab_edge": "top",
+                "shell_ids": [
+                  "00000000-0000-4000-8000-000000000302"
+                ],
+                "active_shell_id": "00000000-0000-4000-8000-000000000302"
+              },
+              "4": {
+                "tabs": [
+                  {
+                    "kind": "shell",
+                    "shell_id": "00000000-0000-4000-8000-000000000303"
+                  }
+                ],
+                "active_tab_key": "shell:00000000-0000-4000-8000-000000000303",
+                "tab_edge": "top",
+                "shell_ids": [
+                  "00000000-0000-4000-8000-000000000303"
+                ],
+                "active_shell_id": "00000000-0000-4000-8000-000000000303"
+              }
+            },
+            "active_pane": 3,
+            "locked_panes": [
+              1
+            ],
+            "panels_initialized": true,
+            "detached_shell_ids": [],
+            "selected_worktree_id": null,
+            "selected_task_id": null,
+            "sidebar_visible": true,
+            "window_size": null,
+            "main_pane": 2
+          },
+          "focus_mode": true,
+          "focus_centered": false
+        },
+        {
+          "project_id": null,
+          "path": "/private/tmp/rww2-w5fd_qme/home/global-window",
+          "bounds": {
+            "x": 180.0,
+            "y": 180.0,
+            "width": 1100.0,
+            "height": 760.0
+          },
+          "mode": "windowed",
+          "layout": null,
+          "focus_mode": false,
+          "focus_centered": false,
+          "kind": "global",
+          "global": {
+            "view": "chat",
+            "show_quiet": false,
+            "dashboard_filter": "needs_you",
+            "dashboard_sort": "priority",
+            "window_size": {
+              "width": 1100.0,
+              "height": 760.0
+            }
+          }
+        }
+      ],
+      "updated_at": 1793138844
+    }
+  ],
+  "runtime_windows_equal": true,
+  "old_gui_exit_code": 0,
+  "cleanup": {
+    "method": "SIGTERM fixture PIDs only",
+    "pids": [
+      55232,
+      57727
+    ]
+  }
+}

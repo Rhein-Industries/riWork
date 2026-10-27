@@ -1,0 +1,27 @@
+[
+  {
+    "id": "b069a69d-ba8b-4795-a378-780be2d664b3",
+    "pid": 80059,
+    "uid": 501,
+    "started_token": "1793139040.874455",
+    "executable": "/private/tmp/riwork-w2-host/fixture-bin/riwork",
+    "state_home": "/private/tmp/rww2-jwmd7f65/home",
+    "windows": [
+      {
+        "project_id": "ba295ca0-520a-49da-bc1d-79bad8d4cb2a",
+        "path": "/private/tmp/rww2-jwmd7f65/repos/alpha",
+        "bounds": {
+          "x": 1070.0,
+          "y": 334.0,
+          "width": 1220.0,
+          "height": 780.0
+        },
+        "mode": "windowed",
+        "layout": null,
+        "focus_mode": false,
+        "focus_centered": false
+      }
+    ],
+    "updated_at": 1793139040
+  }
+]

@@ -19,9 +19,9 @@ test("opens a core-written layout with shell identity, empty unknown pane, and w
   const app = await open("./tests/Workspace.fixture.tsx", options("fixture-one"));
   try {
     await app.waitFor("id:workspace-dock");
-    expect(app.shows("id:title-bar")).toBe(true);
+    expect(app.shows("id:window-controls-island")).toBe(true);
     expect(app.shows("id:status-bar")).toBe(true);
-    expect(app.texts()).toContain("Sessions");
+    expect(app.texts()).toContain("SESSIONS");
     expect(app.texts()).toContain("Empty pane");
     const { snapshot, dock } = latest(app);
     expect(snapshot.panes.map((pane) => pane.id)).toEqual([1, 2, 3]);
@@ -56,6 +56,8 @@ test("locked pixel geometry survives resize and pane menu edits remain in Rust",
   const app = await open("./tests/Workspace.fixture.tsx", options("fixture-resize"));
   try {
     await app.waitFor("id:workspace-dock");
+    // P1-PANE-04 ignores first-draw resize noise for the first two seconds.
+    await app.wait(2100);
     const before = latest(app).dock.center;
     await app.setViewport(1600, 900);
     const after = latest(app).dock.center;
@@ -63,12 +65,13 @@ test("locked pixel geometry survives resize and pane menu edits remain in Rust",
     expect(after.type).toBe("split");
     if (before.type === "split" && after.type === "split") expect(after.sizes?.[0]).toBe(before.sizes?.[0]);
     await app.rightClick("id:tab:panel:projects");
-    expect(app.menu()?.some((item) => item.label === "Unlock pane")).toBe(true);
-    await app.chooseMenuItem("Unlock pane");
+    // At this width the header button owns lock; its fallback menu row is omitted.
+    expect(app.menu()?.some((item) => item.label === "Unlock pane")).toBe(false);
+    await app.closeMenu();
+    await app.press("id:pane-lock-1");
     expect(latest(app).snapshot.panes.find((pane) => pane.id === 1)?.locked).toBe(false);
     // Restore fixture before disposal so following tests see its original lock set.
-    await app.rightClick("id:tab:panel:projects");
-    await app.chooseMenuItem("Lock pane");
+    await app.press("id:pane-lock-1");
   } finally { app.dispose(); }
 });
 
@@ -179,9 +182,9 @@ test("local shell content renders and Detach persists before reopening the same 
   try {
     await app.waitFor("id:terminal:persistent-local");
     expect(app.shows("id:terminal-panel:persistent-local")).toBe(true);
-    await app.press("id:close:shell:persistent-local");
-    expect(app.menu()?.some((item) => item.label === "Detach tab — keep session running")).toBe(true);
-    await app.chooseMenuItem("Detach tab — keep session running");
+    await app.press("id:tab-close-shell:persistent-local");
+    expect(app.shows("id:tab-close-dialog")).toBe(true);
+    await app.press("label:Detach");
     expect(latest(app).snapshot.panes[0].tabs.length).toBe(0);
     expect(app.shows("id:terminal:persistent-local")).toBe(false);
     await app.host.send("app.fixture.flush", {});
@@ -229,8 +232,8 @@ test("terminal native nodes survive selection and resize until an explicit Detac
     await app.setViewport(1500, 920);
     await app.setColorScheme("dark");
     expect(mounts().sort()).toEqual(["stable-one", "stable-two"]);
-    await app.press("id:close:shell:stable-one");
-    await app.chooseMenuItem("Detach tab — keep session running");
+    await app.press("id:tab-close-shell:stable-one");
+    await app.press("label:Detach");
     expect(app.shows("id:terminal:stable-one")).toBe(false);
     expect(mounts().sort()).toEqual(["stable-one", "stable-two"]);
     await app.host.send("route", { step: { kind: "showShell", shellId: "stable-one" } });

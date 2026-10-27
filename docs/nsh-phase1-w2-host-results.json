@@ -1,0 +1,324 @@
+{
+  "assignment": "5741d092-f840-4456-a96f-e301357af991",
+  "branch": "nsh-p1-fix-host",
+  "base_commit": "ed1b456",
+  "report": "nsh-phase1-w2-host-results.md",
+  "all_pass_objective_achieved": false,
+  "counts": {
+    "PASS": 23,
+    "PARTIAL": 7
+  },
+  "scope": [
+    "5.1",
+    "5.2",
+    "5.3",
+    "5.9"
+  ],
+  "global_content": "excluded",
+  "desktop_provider": "cua-driver MCP; read-only fixture PIDs only",
+  "live_windows_or_state_touched": false,
+  "merge_push_install": false,
+  "task_status_changed": false,
+  "binary_sha256": "00355577e56ef93b84fba924b2689295277e0fa151d831f4c0c93a1a8200609d",
+  "evidence": {
+    "W2-BUILD": "../crates/riwork-desktop/verification/w2-host-evidence/build-u6ti7cnv/manifest.json",
+    "W2-RUST": "../crates/riwork-desktop/verification/w2-host-evidence/tests-vo4a6b9s/manifest.json",
+    "W2-HOST": "../crates/riwork-desktop/verification/w2-host-evidence/review-host-ivw0x2ik/manifest.json",
+    "W2-RESUME": "../crates/riwork-desktop/verification/w2-host-evidence/review-resume-vsspqlob/manifest.json",
+    "W2-RUNTIME": "../crates/riwork-desktop/verification/w2-host-evidence/tests-vo4a6b9s/manifest.json",
+    "W2-NSH-FINAL": "../crates/riwork-desktop/verification/w2-host-evidence/strip-final-b7qqh2by/manifest.json",
+    "W2-NSH": "../crates/riwork-desktop/verification/w2-host-evidence/strip-final-b7qqh2by/manifest.json",
+    "W2-WATCHDOG": "../crates/riwork-desktop/verification/w2-host-evidence/watchdog-2t1puqmx/manifest.json",
+    "W2-CTRL-TAB": "../crates/riwork-desktop/verification/w2-host-evidence/riwork-w2-window-check/control-tab.json",
+    "W2-PARITY": "../crates/riwork-desktop/verification/w2-host-evidence/final-parity-yf52jnkn/manifest.json",
+    "W2-STARTUP-ERROR": "../crates/riwork-desktop/verification/w2-host-evidence/startup-error-ouma1czu/manifest.json",
+    "W2-RESTORE": "../crates/riwork-desktop/verification/w2-host-evidence/restore-l7crkidh/manifest.json",
+    "W2-CLOSE": "../crates/riwork-desktop/verification/w2-host-evidence/auto-close-ymoo0zv1/manifest.json",
+    "W2-QUIT": "../crates/riwork-desktop/verification/w2-host-evidence/auto-quit-mgtc93ks/manifest.json",
+    "W2-FAIL-FLUSH": "../crates/riwork-desktop/verification/w2-host-evidence/fail-flush-at7__xw8/manifest.json",
+    "W2-BETA": "../crates/riwork-desktop/verification/w2-host-evidence/beta-xb5rbw78/manifest.json",
+    "W2-MISSING": "../crates/riwork-desktop/verification/w2-host-evidence/missing-1qyn7drg/manifest.json",
+    "W2-TOOLTIP": "../crates/riwork-desktop/verification/w2-host-evidence/tooltip-review-amucwz7c/manifest.json",
+    "W2-AX-REVIEW": "../crates/riwork-desktop/verification/w2-host-evidence/access-review-1cwi6ejk/manifest.json",
+    "W2-BASIC-THEMES": "../crates/riwork-desktop/verification/w2-host-evidence/basic-558dn1yi/manifest.json",
+    "W2-DOCK": "../crates/riwork-desktop/verification/w2-host-evidence/dock-2q5az9yi/manifest.json"
+  },
+  "artifact_index": "../crates/riwork-desktop/verification/w2-host-evidence/artifact-index.json",
+  "archived_runs": 37,
+  "archived_artifacts": 450,
+  "items": [
+    {
+      "id": "P1-PROC-01",
+      "baseline": "PASS",
+      "status": "PASS",
+      "evidence_and_remaining_work": "[W2-PARITY] compares all five prescribed commands against the historical ea0f2f5 GPUI executable: stdout, stderr and exit status are byte-equal. [W2-RUST]'s six CLI contract tests also pass, including the independent `settings_json_keeps_the_gpui_reference_field_order` golden. `preserve_order` remains enabled; CLI dispatch precedes AppKit/NSH initialization.",
+      "evidence_ids": [
+        "W2-PARITY",
+        "W2-RUST"
+      ]
+    },
+    {
+      "id": "P1-PROC-02",
+      "baseline": "PASS",
+      "status": "PASS",
+      "evidence_and_remaining_work": "`startup::tests::gui_start_scrubs_child_ids` passes in its dedicated process. No parallel test mutates the shared environment.",
+      "evidence_ids": []
+    },
+    {
+      "id": "P1-PROC-03",
+      "baseline": "PASS",
+      "status": "PASS",
+      "evidence_and_remaining_work": "[W2-STARTUP-ERROR] uses an invalid private RIWORK_HOME: exit 2, `riwork: ` stderr prefix, empty stdout, no fixture process remaining and no tmux entries. CLI error regressions also pass.",
+      "evidence_ids": [
+        "W2-STARTUP-ERROR"
+      ]
+    },
+    {
+      "id": "P1-PROC-04",
+      "baseline": "FAIL",
+      "status": "PARTIAL",
+      "evidence_and_remaining_work": "Host tests pass canonical reuse, vanished-root error, cwd/HOME fallback and explicit-missing-path recovery. [W2-BETA] directly starts Beta (PID 51601, Cua title `RiWork · Beta`). [W2-MISSING] shows Alpha and a visible missing-folder notice; [W2-NSH-FINAL] proves accessible alert props. The required real-app AX notice query still matches 0 and verification returns `unknown` / `observation_unavailable`; the incomplete tree prevents whole-item PASS.",
+      "evidence_ids": [
+        "W2-BETA",
+        "W2-MISSING",
+        "W2-NSH-FINAL"
+      ]
+    },
+    {
+      "id": "P1-PROC-05",
+      "baseline": "FAIL",
+      "status": "PARTIAL",
+      "evidence_and_remaining_work": "Host ownership/forward/replacement/stale-lock tests pass, as in the prior narrower host-owner PASS. [W2-FAIL-FLUSH] demonstrates successful forwarding after a cancelled restart. **D-PROC-1 remains open** in acceptance: no new output decision is inferred. [W2-BASIC-THEMES] provides seven one-PID/two-window/Cua records and successful Beta forwards; the output decision still prevents full acceptance.",
+      "evidence_ids": [
+        "W2-BASIC-THEMES",
+        "W2-FAIL-FLUSH"
+      ]
+    },
+    {
+      "id": "P1-PROC-06",
+      "baseline": "PASS",
+      "status": "PASS",
+      "evidence_and_remaining_work": "Engine registry query test and [W2-RESTORE] three-window registry pass; all seven [W2-BASIC-THEMES] manifests show exactly one PID and two ordinary project windows after Beta forwarding.",
+      "evidence_ids": [
+        "W2-BASIC-THEMES",
+        "W2-RESTORE"
+      ]
+    },
+    {
+      "id": "P1-PROC-07",
+      "baseline": "FAIL",
+      "status": "PASS",
+      "evidence_and_remaining_work": "[W2-RUST] runs `native_pushes_one_service_to_two_engines_and_stops_on_close_owner_and_engine_drop`, `one_sampler_serves_multiple_subscribers_and_emits_only_changes`, watcher and quiet-home tests, plus registry composition. Production uses one process service/watcher and one hub per provided topic; host registers the UI sets before AppViews. These are explicit successors to the absent named `hubs.rs::two_engines_share_one_home_watcher_and_one_hub_per_topic`, not a claim that that file/test now exists.",
+      "evidence_ids": [
+        "W2-RUST"
+      ]
+    },
+    {
+      "id": "P1-RLD-01",
+      "baseline": "FAIL",
+      "status": "PARTIAL",
+      "evidence_and_remaining_work": "[W2-RESTORE] functionally passes: PID 47825 → 50480, restart exit 0, old exit 0, one replacement registration, exact three-window RuntimeWindow equality, matching Cua titles/bounds and visually matching Alpha/Beta tab labels. The mandated AX tab-label comparison returns no tabs; screenshots and Rust payload equality do not replace that missing route.",
+      "evidence_ids": [
+        "W2-RESTORE"
+      ]
+    },
+    {
+      "id": "P1-RLD-02",
+      "baseline": "FAIL",
+      "status": "PASS",
+      "evidence_and_remaining_work": "[W2-HOST]/[W2-RUNTIME] pass per-window/idempotent/matching-target acknowledgements, 20 s confirmation cap, failed/hung replacement retry and fired-watchdog refusal. [W2-FAIL-FLUSH] makes restart exit 2, retains PID 52962 and successfully forwards Beta afterward. [W2-WATCHDOG] executes four formerly ignored cases, including a real wedged child that unregisters, exits 75 and ends its helper. That test uses a 400 ms deadline with the production timeout callback; the production 40 s deadline/configuration is source-checked. Six other ignored engine cases remain unexecuted; no full 40 s wall-clock run is claimed.",
+      "evidence_ids": [
+        "W2-FAIL-FLUSH",
+        "W2-HOST",
+        "W2-RUNTIME",
+        "W2-WATCHDOG"
+      ]
+    },
+    {
+      "id": "P1-RLD-03",
+      "baseline": "PASS",
+      "status": "PASS",
+      "evidence_and_remaining_work": "`publishing_writes_only_changes_and_never_waits_for_the_registry_lock` and `a_busy_registry_lock_stays_due` pass. A skipped busy registry lock keeps publication due; successful publication advances the two-second deadline.",
+      "evidence_ids": []
+    },
+    {
+      "id": "P1-RLD-04",
+      "baseline": "PASS",
+      "status": "PASS",
+      "evidence_and_remaining_work": "[W2-RUST] reads current Rust LayoutSession at publication and preserves normal geometry without a JS round trip. Native two-engine and layout-roundtrip tests cover restore installation/save precedence. [W2-NSH-FINAL] actual production App tests verify layout installation before one ready post and none on ordinary startup; restored Global confirms without opening a project session. [W2-RESTORE] preserves focus flags as well as layouts.",
+      "evidence_ids": [
+        "W2-NSH-FINAL",
+        "W2-RESTORE",
+        "W2-RUST"
+      ]
+    },
+    {
+      "id": "P1-WIN-01",
+      "baseline": "PASS",
+      "status": "PASS",
+      "evidence_and_remaining_work": "Real unshown AppKit `window_chrome` passes full-size-content, transparent titlebar, 640×400 minimum and native close control `(10,8)`. Every [W2-BASIC-THEMES] Cua record measures Close AX offset `(9,7)`, within ±1.",
+      "evidence_ids": [
+        "W2-BASIC-THEMES"
+      ]
+    },
+    {
+      "id": "P1-WIN-02",
+      "baseline": "FAIL",
+      "status": "PASS",
+      "evidence_and_remaining_work": "Production opening size honors remembered project size/settings, otherwise 1220×780; Global uses remembered/default 1100×760 independently. `the_cascade_counts_open_non_tooltip_windows` passes. All seven [W2-BASIC-THEMES] Cua records show ordinary Alpha/Beta size 1220×780 and exact `(22,22)` cascade. Preserved baseline core fit/clamp test remains applicable.",
+      "evidence_ids": [
+        "W2-BASIC-THEMES"
+      ]
+    },
+    {
+      "id": "P1-WIN-03",
+      "baseline": "FAIL",
+      "status": "PASS",
+      "evidence_and_remaining_work": "Named `zoomed_counts_as_maximized_and_keeps_its_normal_frame` and `fullscreen_counts_as_fullscreen` pass. Restore uses exact saved normal frames and keeps ordinary geometry while zoomed/fullscreen. [W2-RESTORE] confirms maximized Beta and equal before/after native bounds.",
+      "evidence_ids": [
+        "W2-RESTORE"
+      ]
+    },
+    {
+      "id": "P1-WIN-04",
+      "baseline": "FAIL",
+      "status": "PASS",
+      "evidence_and_remaining_work": "All seven prescribed `window_size.rs` bridge checks execute and pass: 250 ms ordinary resize, ignore zoom/fullscreen, no writes for move/return to settled, range rejection, remember off, turning on captures current size, carry size across project switch. Tests exercise real persistence and mtime/no-write behavior. Existing core legacy/invalid-size test passed in the baseline; it was not rerun by the runtime-only engine filter.",
+      "evidence_ids": []
+    },
+    {
+      "id": "P1-WIN-05",
+      "baseline": "FAIL",
+      "status": "PASS",
+      "evidence_and_remaining_work": "Stored project name/remote metadata and change-only title cases pass in [W2-NSH-FINAL]; production title is set in one memoized effect after async Store bootstrap. Cua [W2-BASIC-THEMES] shows `RiWork · Alpha`/`RiWork · Beta`; restored Global is `RiWork · Global`.",
+      "evidence_ids": [
+        "W2-BASIC-THEMES",
+        "W2-NSH-FINAL"
+      ]
+    },
+    {
+      "id": "P1-WIN-06",
+      "baseline": "FAIL",
+      "status": "PASS",
+      "evidence_and_remaining_work": "[W2-NSH-FINAL] passes seven themed islands, fullscreen removal, 78×28 island/inset 92 metrics, top-pane-only handles, and empty drag strip measured after tabs. AppKit real NSH drag target double-click tests None/Minimize/Maximize preference routes without changing persisted defaults. Native and Hermes keep an unpainted island; other presets use the chrome palette projection. [W2-BASIC-THEMES] retains `win-06-<theme>.png` for all seven themes (catalog above). Narrow `Appearance.get()` reads existing appearance/settings; this does not implement the full Phase-1 theme service or Ghostty parser/publisher.",
+      "evidence_ids": [
+        "W2-BASIC-THEMES",
+        "W2-NSH-FINAL"
+      ]
+    },
+    {
+      "id": "P1-WIN-07",
+      "baseline": "FAIL",
+      "status": "PARTIAL",
+      "evidence_and_remaining_work": "Named last-close/tooltip-count tests and actual mounted NSH `tooltips_create_no_nswindow` now pass. [W2-CLOSE] exits normally after last close. Existing tests prove overlays do not contribute NSWindows/cascade/quit count. [W2-TOOLTIP] reruns no-NSWindow successfully and records the exact limitation: pinned NSH0.3 exposes no public AppView dismiss/cancel-pointer API or native move/resign hint observer; its cancellation function is crate-private. The RiWork delegate only emits window.state, with no controlled tooltip owner consuming it. The controlled-open probe cannot establish automatic hiding. A runtime cancellation hook or app-controlled tooltip layer is required for move/deactivation/project-switch parity; no full clause PASS is inferred.",
+      "evidence_ids": [
+        "W2-CLOSE",
+        "W2-TOOLTIP"
+      ]
+    },
+    {
+      "id": "P1-WIN-08",
+      "baseline": "FAIL",
+      "status": "PASS",
+      "evidence_and_remaining_work": "Rust close/quit tests save the last accepted edit, every project layout and Global state; failed flush/cancel and late loading-window guards pass in [W2-HOST]. Final [W2-CLOSE]/[W2-QUIT] exit 0 with empty registries; [W2-RESTORE] closes the prior GUI only after confirmation. SIGTERM cleanup is never counted as graceful quit proof.",
+      "evidence_ids": [
+        "W2-CLOSE",
+        "W2-HOST",
+        "W2-QUIT",
+        "W2-RESTORE"
+      ]
+    },
+    {
+      "id": "P1-WIN-09",
+      "baseline": "FAIL",
+      "status": "PARTIAL",
+      "evidence_and_remaining_work": "Host `events_only_on_change` and NSH occlusion/no-host-call/fullscreen-island test pass. State carries key/visible/occluded/mode/backingScale/frame/appActive, and Dock model keeps last key window. Explicit tooltip hiding on deactivation remains unsupported by the current public runtime integration as recorded in [W2-TOOLTIP]/WIN-07.",
+      "evidence_ids": [
+        "W2-TOOLTIP"
+      ]
+    },
+    {
+      "id": "P1-WIN-10",
+      "baseline": "FAIL",
+      "status": "PASS",
+      "evidence_and_remaining_work": "[W2-NSH-FINAL] keyboard test verifies exact `window.open {kind: \"project\", projectId}` from ⌘⇧N; host cascade successor passes.",
+      "evidence_ids": [
+        "W2-NSH-FINAL"
+      ]
+    },
+    {
+      "id": "P1-MENU-01",
+      "baseline": "PASS",
+      "status": "PASS",
+      "evidence_and_remaining_work": "Real NSMenu application tree, labels/order/separator/modifiers/tags and frozen command ID tests pass in [W2-RUST].",
+      "evidence_ids": [
+        "W2-RUST"
+      ]
+    },
+    {
+      "id": "P1-MENU-02",
+      "baseline": "PASS",
+      "status": "PASS",
+      "evidence_and_remaining_work": "AppKit standard cut:/copy:/paste:/selectAll: selectors pass; [W2-NSH-FINAL] actual App Copy with no selection leaves clipboard unchanged.",
+      "evidence_ids": [
+        "W2-NSH-FINAL"
+      ]
+    },
+    {
+      "id": "P1-MENU-03",
+      "baseline": "FAIL",
+      "status": "PARTIAL",
+      "evidence_and_remaining_work": "Real View tree, present+disabled deferred items, inert direct dispatch, key-window/app-global routing, no Close Window action, no-window text-size persistence and native equivalents pass. NSH exercises panel/layout/close routing. **Residual:** `newTab`/⌘T is declared and is not deferred, but has no `Sessions.create` handler; therefore the requirement that every window-level command have its effect is incomplete. Global content behavior is out of this host assignment.",
+      "evidence_ids": []
+    },
+    {
+      "id": "P1-MENU-04",
+      "baseline": "FAIL",
+      "status": "PASS",
+      "evidence_and_remaining_work": "Host uniqueness/order/last-key and actual Dock NSMenu/cache/action tests pass. [W2-DOCK] fixes the initial lowercase path-basename post: stored project resolution precedes the first post; name/branch changes deduplicate. [W2-NSH]/modal follow-up observes one project post, and Global posts its own metadata without opening a project session. No live Dock interaction was used.",
+      "evidence_ids": [
+        "W2-DOCK",
+        "W2-NSH"
+      ]
+    },
+    {
+      "id": "P1-KEYS-01",
+      "baseline": "FAIL",
+      "status": "PASS",
+      "evidence_and_remaining_work": "Full chord/no-duplicate scan and native app-equivalent comparison pass. `DEFERRED_COMMANDS` and contextual deferred chord table cover acceptance §8; all deferred command dispatch is guarded. Declaration coverage does not imply `newTab` works (MENU-03 residual).",
+      "evidence_ids": []
+    },
+    {
+      "id": "P1-KEYS-02",
+      "baseline": "FAIL",
+      "status": "PARTIAL",
+      "evidence_and_remaining_work": "Pure number/cycle rules and actual fallback-pane key aliases/modal behavior pass. [W2-CTRL-TAB] proves native AppKit dispatch reaches a real NSH keymap exactly once in each direction, replacing the previously absent automated successor. It is deliberately **not** the requested manual fixture action because desktop input was prohibited. Production calls `numberedTab(..., false)`: shared strip membership/order is not installed, so Alpha's session-only shared-strip numbering remains incomplete.",
+      "evidence_ids": [
+        "W2-CTRL-TAB"
+      ]
+    },
+    {
+      "id": "P1-KEYS-03",
+      "baseline": "FAIL",
+      "status": "PASS",
+      "evidence_and_remaining_work": "NSH per-panel chord/command routing, navigation-pane reuse and ⌘⇧N pass; host-only Global/Quit chords are absent from TSX and present on real NSMenu items. Deferred keys remain inert. Terminal/chat contents remain deferred.",
+      "evidence_ids": []
+    },
+    {
+      "id": "P1-KEYS-04",
+      "baseline": "FAIL",
+      "status": "PASS",
+      "evidence_and_remaining_work": "[W2-NSH-FINAL] actual App tests cover close-modal shortcut blocking, 60% backdrop/16 pt padding, modifier dismissal before selection, and contextual Up/Down/Left/Right wrapping inside All tabs without changing the selected session. Enter/Space activates; Escape cancels and restores ordinary Ctrl-Tab dispatch. Shared-strip membership remains KEYS-02 residual; this successor concerns the available pane All tabs overlay.",
+      "evidence_ids": [
+        "W2-NSH-FINAL"
+      ]
+    },
+    {
+      "id": "P1-KEYS-05",
+      "baseline": "FAIL",
+      "status": "PASS",
+      "evidence_and_remaining_work": "Host routing tests and real AppKit `text_size_key_equivalents_dispatch_without_a_window` pass for all three keys; settings mutation works with no windows. Terminal-first-responder behavior is explicitly deferred.",
+      "evidence_ids": []
+    }
+  ]
+}

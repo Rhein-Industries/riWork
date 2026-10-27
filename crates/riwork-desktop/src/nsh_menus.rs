@@ -29,7 +29,7 @@ use nsh_platform_macos::{
     objc2_foundation::{NSObject, NSObjectProtocol, NSString},
 };
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct MenuAction {
     /// Captured before the callback is queued, so a later focus change cannot
     /// route an action to a different window.
@@ -83,6 +83,30 @@ const DEFERRED_MENU_COMMANDS: &[&str] = &[
     "expandTranscript",
     "collapseTranscript",
 ];
+
+pub(crate) fn app_command(command: &str) -> bool {
+    matches!(
+        command,
+        "quit"
+            | "openGlobalDashboard"
+            | "openGlobalChat"
+            | "biggerText"
+            | "smallerText"
+            | "actualSize"
+    )
+}
+
+/// A queued menu action stays bound to the key window captured by AppKit.
+/// Closing that window must never redirect the action into another workspace.
+pub(crate) fn command_window(
+    captured: Option<isize>,
+    current_key: Option<isize>,
+    live: &[isize],
+) -> Option<isize> {
+    captured
+        .or(current_key)
+        .filter(|number| live.contains(number))
+}
 
 define_class!(
     #[unsafe(super(NSObject))]
@@ -167,14 +191,29 @@ impl MenuTarget {
 
     fn handle_key_equivalent(&self, event: &NSEvent) -> bool {
         let flags = event.modifierFlags();
+        let key = event
+            .charactersIgnoringModifiers()
+            .map(|text| text.to_string());
+        // NSH 0.3 has no Menu key in its parser. Route the dedicated PC
+        // application key through the same per-window command channel.
+        if dedicated_menu_key(event.keyCode(), key.as_deref(), flags) {
+            let app = NSApplication::sharedApplication(self.mtm());
+            let Some(window) = app.keyWindow() else {
+                return false;
+            };
+            if event.window(self.mtm()).as_deref() != Some(&*window)
+                || !window.firstResponder().is_some_and(|r| is_nsh_view(&r))
+            {
+                return false;
+            }
+            self.emit("tabContextMenu");
+            return true;
+        }
         if !flags.contains(NSEventModifierFlags::Command)
             || flags.intersects(NSEventModifierFlags::Control | NSEventModifierFlags::Option)
         {
             return false;
         }
-        let key = event
-            .charactersIgnoringModifiers()
-            .map(|text| text.to_string());
         let shifted = flags.contains(NSEventModifierFlags::Shift);
         let Some(command) = key
             .as_deref()
@@ -184,6 +223,10 @@ impl MenuTarget {
         };
         let app = NSApplication::sharedApplication(self.mtm());
         let Some(window) = app.keyWindow() else {
+            if app_command(command) {
+                self.emit(command);
+                return true;
+            }
             return false;
         };
         if event.window(self.mtm()).as_deref() != Some(&*window) {
@@ -202,6 +245,15 @@ impl MenuTarget {
         self.emit(command);
         true
     }
+}
+
+fn dedicated_menu_key(code: u16, key: Option<&str>, flags: NSEventModifierFlags) -> bool {
+    !flags.intersects(
+        NSEventModifierFlags::Command
+            | NSEventModifierFlags::Control
+            | NSEventModifierFlags::Option
+            | NSEventModifierFlags::Shift,
+    ) && (code == 0x6e || key == Some("\u{f735}"))
 }
 
 fn is_nsh_view(object: &AnyObject) -> bool {
@@ -556,6 +608,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn dedicated_menu_key_routes_without_intercepting_modified_or_text_keys() {
+        let none = NSEventModifierFlags::empty();
+        assert!(dedicated_menu_key(0x6e, None, none));
+        assert!(dedicated_menu_key(0, Some("\u{f735}"), none));
+        assert!(!dedicated_menu_key(0, Some("m"), none));
+        for modifier in [
+            NSEventModifierFlags::Command,
+            NSEventModifierFlags::Control,
+            NSEventModifierFlags::Option,
+            NSEventModifierFlags::Shift,
+        ] {
+            assert!(!dedicated_menu_key(0x6e, Some("\u{f735}"), modifier));
+        }
+    }
+
+    #[test]
     fn command_ids_are_the_v1_set() {
         let mut commands = HashSet::new();
         MenuItem::each_action(&menu_model(), &mut |action| {
@@ -585,6 +653,68 @@ mod tests {
                 "smallerText",
                 "actualSize",
             ])
+        );
+    }
+
+    #[test]
+    fn window_commands_go_to_the_key_window() {
+        assert_eq!(command_window(Some(7), Some(9), &[7, 9]), Some(7));
+        assert_eq!(command_window(None, Some(9), &[7, 9]), Some(9));
+        assert_eq!(command_window(Some(7), Some(9), &[9]), None);
+        assert_eq!(command_window(None, None, &[7, 9]), None);
+    }
+
+    #[test]
+    fn app_commands_work_with_no_window() {
+        for command in [
+            "quit",
+            "openGlobalDashboard",
+            "openGlobalChat",
+            "biggerText",
+            "smallerText",
+            "actualSize",
+        ] {
+            assert!(app_command(command));
+        }
+        for command in ["closeTab", "openSettings", "gatherTabs", "defaultLayout"] {
+            assert!(!app_command(command));
+        }
+    }
+
+    #[test]
+    fn app_keymap_declaration_matches_native_menu_equivalents() {
+        let source = include_str!("../../../apps/riwork/keyboard.ts");
+        for (chord, command) in [
+            ("alt+g", "openGlobalDashboard"),
+            ("shift+o", "openGlobalChat"),
+            ("q", "quit"),
+            ("=", "biggerText"),
+            ("-", "smallerText"),
+            ("0", "actualSize"),
+        ] {
+            assert!(source.contains(&format!("[\"mod+{chord}\", \"{command}\"]")));
+            let mut matches = 0;
+            MenuItem::each_action(&menu_model(), &mut |action| {
+                if action.role.is_none() && COMMANDS[action.id as usize - 1] == command {
+                    assert_eq!(
+                        action.shortcut,
+                        Some(Shortcut::parse(&format!("cmd+{chord}"), true).unwrap())
+                    );
+                    matches += 1;
+                }
+            });
+            assert_eq!(matches, 1, "{command} has exactly one native owner");
+        }
+    }
+
+    #[test]
+    fn routing() {
+        window_commands_go_to_the_key_window();
+        app_commands_work_with_no_window();
+        assert!(
+            DEFERRED_MENU_COMMANDS
+                .iter()
+                .all(|command| !app_command(command))
         );
     }
 

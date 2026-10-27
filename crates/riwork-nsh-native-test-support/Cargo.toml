@@ -1,0 +1,13 @@
+[package]
+name = "riwork-nsh-native-test-support"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+riwork-nsh-native = { path = "../riwork-nsh-native" }
+riwork-engine = { path = "../riwork-engine" }
+nsh-core = "=0.3.0"
+anyhow = "1"
+tempfile = "3"
+uuid = { version = "1", features = ["v4"] }

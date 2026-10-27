@@ -1,0 +1,26 @@
+{"mode": "parity", "root": "/private/tmp/rw-c12f.rkR6Vz/integ", "manifest": "/private/tmp/rw-c12f.rkR6Vz/integ/parity-vb6sr9pl/manifest.json"}
+{"running": "cli-source-diff", "argv": ["git", "diff", "ea0f2f5", "--", "crates/riwork-cli"]}
+{"finished": "cli-source-diff", "exit_code": 0}
+{"running": "parity-seed", "argv": ["/Users/dominik/orca/projects/riWork-nsh-p1-consolidate/target/debug/riwork", "project", "add", "/private/tmp/rw-c12f.rkR6Vz/integ/parity-vb6sr9pl/cli-fixture/project", "--name", "Alpha", "--json"]}
+{"finished": "parity-seed", "exit_code": 0}
+{"running": "parity-project-list-reference", "argv": ["/Users/dominik/orca/projects/riWork-nsh-p1-consolidate/target/debug/riwork-cli", "project", "list", "--json"]}
+{"finished": "parity-project-list-reference", "exit_code": 0}
+{"running": "parity-project-list-new", "argv": ["/Users/dominik/orca/projects/riWork-nsh-p1-consolidate/target/debug/riwork", "project", "list", "--json"]}
+{"finished": "parity-project-list-new", "exit_code": 0}
+{"running": "parity-settings-list-reference", "argv": ["/Users/dominik/orca/projects/riWork-nsh-p1-consolidate/target/debug/riwork-cli", "settings", "list", "--json"]}
+{"finished": "parity-settings-list-reference", "exit_code": 0}
+{"running": "parity-settings-list-new", "argv": ["/Users/dominik/orca/projects/riWork-nsh-p1-consolidate/target/debug/riwork", "settings", "list", "--json"]}
+{"finished": "parity-settings-list-new", "exit_code": 0}
+{"running": "parity-instances-reference", "argv": ["/Users/dominik/orca/projects/riWork-nsh-p1-consolidate/target/debug/riwork-cli", "instances", "--json"]}
+{"finished": "parity-instances-reference", "exit_code": 0}
+{"running": "parity-instances-new", "argv": ["/Users/dominik/orca/projects/riWork-nsh-p1-consolidate/target/debug/riwork", "instances", "--json"]}
+{"finished": "parity-instances-new", "exit_code": 0}
+{"running": "parity-appearance-reference", "argv": ["/Users/dominik/orca/projects/riWork-nsh-p1-consolidate/target/debug/riwork-cli", "appearance", "--json"]}
+{"finished": "parity-appearance-reference", "exit_code": 2}
+{"running": "parity-appearance-new", "argv": ["/Users/dominik/orca/projects/riWork-nsh-p1-consolidate/target/debug/riwork", "appearance", "--json"]}
+{"finished": "parity-appearance-new", "exit_code": 2}
+{"running": "parity-unknown-command-reference", "argv": ["/Users/dominik/orca/projects/riWork-nsh-p1-consolidate/target/debug/riwork-cli", "nosuchcommand"]}
+{"finished": "parity-unknown-command-reference", "exit_code": 2}
+{"running": "parity-unknown-command-new", "argv": ["/Users/dominik/orca/projects/riWork-nsh-p1-consolidate/target/debug/riwork", "nosuchcommand"]}
+{"finished": "parity-unknown-command-new", "exit_code": 2}
+{"status": "passed", "manifest": "/private/tmp/rw-c12f.rkR6Vz/integ/parity-vb6sr9pl/manifest.json"}

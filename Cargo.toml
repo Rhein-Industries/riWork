@@ -1,7 +1,10 @@
 [workspace]
 resolver = "3"
-members = ["crates/*", "apps/riwork", "remote"]
+members = ["crates/*", "apps/riwork", "apps/riwork/vendor/nsh-base", "remote"]
 default-members = ["crates/riwork-desktop"]
+
+[patch.crates-io]
+nsh-base = { path = "apps/riwork/vendor/nsh-base" }
 
 [workspace.package]
 version = "0.1.0"

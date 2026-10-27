@@ -2,12 +2,15 @@ import { Text, View, cleanup, host, mount, signal } from "nsh";
 import { Store, Layouts, type LayoutSession } from "riwork/native";
 import { Workspace } from "./Workspace";
 import { windowTitle, type HostParams } from "./model";
+import { useAppearance } from "./appearance";
 
 function App() {
   const params = host.params as unknown as HostParams;
+  const ui = useAppearance(params);
   const session = signal<LayoutSession | null>(null);
   const notice = signal(params.notice ?? "Loading workspace…");
   const name = params.path?.split("/").filter(Boolean).pop() ?? "Workspace";
+  if (params.kind === "global") host.post("window.setDockInfo", { project: "Global", branch: null });
   let alive = true;
   let restoreReady = false;
   function installed() {
@@ -19,7 +22,7 @@ function App() {
   cleanup(() => { alive = false; session()?.dispose(); });
 
   if (params.kind === "project" && params.projectId && params.windowId) {
-    void Store.snapshot().then(() => Layouts.openSession({ windowId: params.windowId, projectId: params.projectId, restore: params.restore?.layout }))
+    void Store.snapshot().then(() => Layouts.openSession({ windowId: params.windowId, projectId: params.projectId, restore: params.restore?.layout, focusMode: params.restore?.focusMode ?? false, focusCentered: params.restore?.focusCentered ?? false }))
       .then((loaded) => { if (alive) session.set(loaded); else loaded.dispose(); })
       .catch((error: unknown) => notice.set(String(error)));
   } else {
@@ -27,7 +30,9 @@ function App() {
     if (params.kind === "global") installed();
   }
   return <View style={{ flex: 1 }}>
-    {session() ? <Workspace session={session()!} title={windowTitle(name)} projectLabel={name} projectId={params.projectId ?? undefined} startupNotice={params.notice} onChange={installed} /> :
+    {session() && ui.ready() ? <Workspace session={session()!} title={windowTitle(name)} projectLabel={name}
+      projectId={params.projectId ?? undefined} theme={ui.theme} settings={ui.settings}
+      appearanceNotice={ui.notice} startupNotice={params.notice} onChange={installed} /> :
       <View style={{ flex: 1, padding: 20 }}><Text testID="startup-notice">{notice()}</Text></View>}
   </View>;
 }

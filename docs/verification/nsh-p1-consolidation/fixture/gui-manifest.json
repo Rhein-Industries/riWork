@@ -1,0 +1,395 @@
+{
+  "verification_environment": "isolated fixture homes only",
+  "mode": "gui",
+  "repo": "/Users/dominik/orca/projects/riWork-nsh-p1-consolidate",
+  "root": "/private/tmp/rw-c12f.rkR6Vz/integ",
+  "target_dir": "/Users/dominik/orca/projects/riWork-nsh-p1-consolidate/target",
+  "commands": [
+    {
+      "name": "seed-gui-fixture",
+      "argv": [
+        "cargo",
+        "run",
+        "-p",
+        "riwork-nsh-native",
+        "--features",
+        "test-support",
+        "--example",
+        "p1_workspace_fixture_home",
+        "--locked",
+        "--offline",
+        "--",
+        "--scenario",
+        "p1-basic",
+        "--out",
+        "/private/tmp/rwnshi-gui-jojlj6eh/home",
+        "--theme",
+        "native"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-consolidate",
+      "environment": {
+        "HOME": "/Users/dominik/orca/projects/riWork-nsh-p1-consolidate/target/nsh-integration-home-pptx86qe",
+        "PATH": "/Users/dominik/.local/share/riwork/cua/harness-bin:/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/Users/dominik/.local/share/riwork/cua/harness-bin:/Users/dominik/.okc/bin:/Users/dominik/Library/pnpm:/Users/dominik/.grok/bin:/Users/dominik/.bun/bin:/Users/dominik/.opencode/bin:/opt/homebrew/opt/openjdk@17/bin:/Users/dominik/.pyenv/shims:/Users/dominik/.avm/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/System/Cryptexes/App/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin:/opt/pmk/env/global/bin:/Library/Apple/usr/bin:/usr/local/share/dotnet:/Users/dominik/.starkli/bin:/Users/dominik/Library/Application Support/org.dfinity.dfx/bin:/Users/dominik/.cargo/bin:/Users/dominik/.local/bin:/Users/dominik/.docker/bin:/Users/dominik/.cache/lm-studio/bin:/Users/dominik/.nargo/bin:/opt/local/bin:/Users/dominik/.local/bin",
+        "RIWORK_HOME": "/private/tmp/rw-c12f.rkR6Vz/integ/gui-us690gvl/state",
+        "RIWORK_RUNTIME_DIR": "/private/tmp/rw-c12f.rkR6Vz/integ/gui-us690gvl/runtime",
+        "TMPDIR": "/tmp",
+        "TMUX_TMPDIR": "/private/tmp/rw-c12f.rkR6Vz/integ/gui-us690gvl/tmux",
+        "XDG_CONFIG_HOME": "/Users/dominik/orca/projects/riWork-nsh-p1-consolidate/target/nsh-integration-home-pptx86qe/.config",
+        "CARGO_HOME": "/Users/dominik/.cargo",
+        "RUSTUP_HOME": "/Users/dominik/.rustup",
+        "RUSTUP_TOOLCHAIN": "1.99.1",
+        "CARGO_TARGET_DIR": "/Users/dominik/orca/projects/riWork-nsh-p1-consolidate/target",
+        "CARGO_BUILD_JOBS": "4",
+        "CARGO_NET_OFFLINE": "true",
+        "NSH_CACHE": "/private/tmp/rw-c12f.rkR6Vz/integ/nsh-cache",
+        "NSH_TSC": "/Users/dominik/Library/Caches/nsh/typescript-7.0.2-darwin-arm64/package/lib/tsc"
+      },
+      "stdout": "/private/tmp/rw-c12f.rkR6Vz/integ/gui-us690gvl/seed-gui-fixture.stdout",
+      "stderr": "/private/tmp/rw-c12f.rkR6Vz/integ/gui-us690gvl/seed-gui-fixture.stderr",
+      "exit_code": 0,
+      "duration_seconds": 1.098,
+      "stdout_sha256": "fee7616dba7140f342c4926c587b960eaf8df7ad910bd4da15225955418ef30f",
+      "stderr_sha256": "65b0b5802effda486f545fec3ffcf966f2ed53ae6e25fcc46984cf99299e64f1"
+    },
+    {
+      "name": "forward-second-window",
+      "argv": [
+        "/Users/dominik/orca/projects/riWork-nsh-p1-consolidate/target/debug/riwork",
+        "/private/tmp/rwnshi-gui-jojlj6eh/repos/beta"
+      ],
+      "cwd": "/private/tmp/rwnshi-gui-jojlj6eh",
+      "environment": {
+        "HOME": "/private/tmp/rwnshi-gui-jojlj6eh/user",
+        "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+        "RIWORK_HOME": "/private/tmp/rwnshi-gui-jojlj6eh/home",
+        "RIWORK_RUNTIME_DIR": "/private/tmp/rwnshi-gui-jojlj6eh/run",
+        "TMPDIR": "/private/tmp/rwnshi-gui-jojlj6eh/tmp",
+        "TMUX_TMPDIR": "/private/tmp/rwnshi-gui-jojlj6eh/tmux",
+        "XDG_CONFIG_HOME": "/private/tmp/rwnshi-gui-jojlj6eh/user/.config",
+        "RIWORK_NSH_BUNDLE": "/private/tmp/rw-c12f.rkR6Vz/integ/bundle/bundle.js",
+        "RIWORK_NSH_BACKGROUND": "1",
+        "RIWORK_NSH_FAKE_SESSIONS": "/private/tmp/rwnshi-gui-jojlj6eh/home/fake-sessions.json"
+      },
+      "stdout": "/private/tmp/rw-c12f.rkR6Vz/integ/gui-us690gvl/forward-second-window.stdout",
+      "stderr": "/private/tmp/rw-c12f.rkR6Vz/integ/gui-us690gvl/forward-second-window.stderr",
+      "exit_code": 0,
+      "duration_seconds": 0.01,
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "status": "passed",
+  "fixture_root": "/private/tmp/rwnshi-gui-jojlj6eh",
+  "fixture": {
+    "projects": [
+      {
+        "id": "f1504c15-ddb2-450c-ac52-8d2f7181a7ad",
+        "root": "/private/tmp/rwnshi-gui-jojlj6eh/repos/alpha",
+        "name": "Alpha"
+      },
+      {
+        "id": "ca7a0421-b6f6-4d3c-9273-97b16b9a79fc",
+        "root": "/private/tmp/rwnshi-gui-jojlj6eh/repos/beta",
+        "name": "Beta"
+      }
+    ]
+  },
+  "gui_environment": {
+    "HOME": "/private/tmp/rwnshi-gui-jojlj6eh/user",
+    "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+    "RIWORK_HOME": "/private/tmp/rwnshi-gui-jojlj6eh/home",
+    "RIWORK_RUNTIME_DIR": "/private/tmp/rwnshi-gui-jojlj6eh/run",
+    "TMPDIR": "/private/tmp/rwnshi-gui-jojlj6eh/tmp",
+    "TMUX_TMPDIR": "/private/tmp/rwnshi-gui-jojlj6eh/tmux",
+    "XDG_CONFIG_HOME": "/private/tmp/rwnshi-gui-jojlj6eh/user/.config",
+    "RIWORK_NSH_BUNDLE": "/private/tmp/rw-c12f.rkR6Vz/integ/bundle/bundle.js",
+    "RIWORK_NSH_BACKGROUND": "1",
+    "RIWORK_NSH_FAKE_SESSIONS": "/private/tmp/rwnshi-gui-jojlj6eh/home/fake-sessions.json"
+  },
+  "bundle": {
+    "path": "/private/tmp/rw-c12f.rkR6Vz/integ/bundle/bundle.js",
+    "sha256": "c14c3d958ae944c3a7ad4ad60849af476256b8a426969cb417672b774b0d266e"
+  },
+  "pid": 7875,
+  "gui_argv": [
+    "/Users/dominik/orca/projects/riWork-nsh-p1-consolidate/target/debug/riwork",
+    "/private/tmp/rwnshi-gui-jojlj6eh/repos/alpha"
+  ],
+  "gui_log": "/private/tmp/rwnshi-gui-jojlj6eh/gui.log",
+  "registry": {
+    "id": "29a04651-9541-4607-894d-a2d73c97436e",
+    "pid": 7875,
+    "uid": 501,
+    "started_token": "1793144508.431272",
+    "executable": "/Users/dominik/orca/projects/riWork-nsh-p1-consolidate/target/debug/riwork",
+    "state_home": "/private/tmp/rwnshi-gui-jojlj6eh/home",
+    "windows": [
+      {
+        "project_id": "f1504c15-ddb2-450c-ac52-8d2f7181a7ad",
+        "path": "/private/tmp/rwnshi-gui-jojlj6eh/repos/alpha",
+        "bounds": {
+          "x": 1070.0,
+          "y": 334.0,
+          "width": 1220.0,
+          "height": 780.0
+        },
+        "mode": "windowed",
+        "layout": {
+          "layout": {
+            "split": {
+              "axis": "side_by_side",
+              "ratio": 0.27,
+              "first": {
+                "pane": 1
+              },
+              "second": {
+                "pane": 2
+              }
+            }
+          },
+          "panes": {
+            "1": {
+              "tabs": [
+                {
+                  "kind": "panel",
+                  "panel": "projects"
+                },
+                {
+                  "kind": "panel",
+                  "panel": "files"
+                },
+                {
+                  "kind": "panel",
+                  "panel": "worktrees"
+                },
+                {
+                  "kind": "panel",
+                  "panel": "tasks"
+                },
+                {
+                  "kind": "panel",
+                  "panel": "shells"
+                }
+              ],
+              "active_tab_key": "panel:projects",
+              "tab_edge": "top",
+              "shell_ids": [],
+              "active_shell_id": null
+            },
+            "2": {
+              "tabs": [
+                {
+                  "kind": "shell",
+                  "shell_id": "10000000-0000-4000-8000-0000234f66c6"
+                },
+                {
+                  "kind": "shell",
+                  "shell_id": "10000000-0000-4000-8000-0000224f6533"
+                },
+                {
+                  "kind": "shell",
+                  "shell_id": "10000000-0000-4000-8000-0000214f63a0"
+                },
+                {
+                  "kind": "chat",
+                  "chat_id": "10000000-0000-4000-8000-0000ab3fefec"
+                },
+                {
+                  "kind": "shell",
+                  "shell_id": "10000000-0000-4000-8000-0000cb4b9a1c"
+                },
+                {
+                  "kind": "shell",
+                  "shell_id": "10000000-0000-4000-8000-000039504cc4"
+                }
+              ],
+              "active_tab_key": "shell:10000000-0000-4000-8000-0000234f66c6",
+              "tab_edge": "top",
+              "shell_ids": [
+                "10000000-0000-4000-8000-0000234f66c6",
+                "10000000-0000-4000-8000-0000224f6533",
+                "10000000-0000-4000-8000-0000214f63a0",
+                "10000000-0000-4000-8000-0000cb4b9a1c",
+                "10000000-0000-4000-8000-000039504cc4"
+              ],
+              "active_shell_id": "10000000-0000-4000-8000-0000234f66c6"
+            }
+          },
+          "active_pane": 2,
+          "locked_panes": null,
+          "panels_initialized": true,
+          "detached_shell_ids": [],
+          "selected_worktree_id": "35e09054-d549-4673-91c6-8cf56c7b0f28",
+          "selected_task_id": null,
+          "sidebar_visible": true,
+          "window_size": {
+            "width": 1220.0,
+            "height": 780.0
+          },
+          "main_pane": 2
+        },
+        "focus_mode": false,
+        "focus_centered": false
+      },
+      {
+        "project_id": "ca7a0421-b6f6-4d3c-9273-97b16b9a79fc",
+        "path": "/private/tmp/rwnshi-gui-jojlj6eh/repos/beta",
+        "bounds": {
+          "x": 1092.0,
+          "y": 356.0,
+          "width": 1220.0,
+          "height": 780.0
+        },
+        "mode": "windowed",
+        "layout": {
+          "layout": {
+            "split": {
+              "axis": "side_by_side",
+              "ratio": 0.3,
+              "first": {
+                "pane": 1
+              },
+              "second": {
+                "split": {
+                  "axis": "stacked",
+                  "ratio": 0.62,
+                  "first": {
+                    "pane": 2
+                  },
+                  "second": {
+                    "split": {
+                      "axis": "stacked",
+                      "ratio": 0.5,
+                      "first": {
+                        "pane": 3
+                      },
+                      "second": {
+                        "pane": 4
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "panes": {
+            "1": {
+              "tabs": [
+                {
+                  "kind": "panel",
+                  "panel": "projects"
+                },
+                {
+                  "kind": "panel",
+                  "panel": "files"
+                },
+                {
+                  "kind": "panel",
+                  "panel": "worktrees"
+                },
+                {
+                  "kind": "panel",
+                  "panel": "tasks"
+                },
+                {
+                  "kind": "panel",
+                  "panel": "shells"
+                }
+              ],
+              "active_tab_key": "panel:projects",
+              "tab_edge": "top",
+              "shell_ids": [],
+              "active_shell_id": null
+            },
+            "2": {
+              "tabs": [
+                {
+                  "kind": "shell",
+                  "shell_id": "L-NESTED-S1"
+                },
+                {
+                  "kind": "shell",
+                  "shell_id": "L-NESTED-S2"
+                },
+                {
+                  "kind": "chat",
+                  "chat_id": "L-NESTED-chat"
+                },
+                {
+                  "kind": "remote_shell",
+                  "desktop_id": "desk",
+                  "shell_id": "L-NESTED-remote"
+                }
+              ],
+              "active_tab_key": "remote:desk:L-NESTED-remote",
+              "tab_edge": "top",
+              "shell_ids": [
+                "L-NESTED-S1",
+                "L-NESTED-S2"
+              ],
+              "active_shell_id": null
+            },
+            "3": {
+              "tabs": [
+                {
+                  "kind": "shell",
+                  "shell_id": "L-NESTED-S3"
+                }
+              ],
+              "active_tab_key": "shell:L-NESTED-S3",
+              "tab_edge": "top",
+              "shell_ids": [
+                "L-NESTED-S3"
+              ],
+              "active_shell_id": "L-NESTED-S3"
+            },
+            "4": {
+              "tabs": [
+                {
+                  "kind": "shell",
+                  "shell_id": "L-NESTED-S4"
+                }
+              ],
+              "active_tab_key": "shell:L-NESTED-S4",
+              "tab_edge": "top",
+              "shell_ids": [
+                "L-NESTED-S4"
+              ],
+              "active_shell_id": "L-NESTED-S4"
+            }
+          },
+          "active_pane": 3,
+          "locked_panes": null,
+          "panels_initialized": true,
+          "detached_shell_ids": [],
+          "selected_worktree_id": "ba65b0f9-bcd3-45a9-93a4-f6288e0653a0",
+          "selected_task_id": null,
+          "sidebar_visible": true,
+          "window_size": {
+            "width": 1220.0,
+            "height": 780.0
+          },
+          "main_pane": 2
+        },
+        "focus_mode": false,
+        "focus_centered": false
+      }
+    ],
+    "updated_at": 1793144510
+  },
+  "gui_exit_code": -15,
+  "shutdown_verification": "SIGTERM fixture cleanup; graceful lifecycle covered by Rust tests",
+  "written_files": [
+    "layouts.json",
+    "nsh/desktop.handoff.lock",
+    "project-tabs/ca7a0421-b6f6-4d3c-9273-97b16b9a79fc.lock",
+    "project-tabs/f1504c15-ddb2-450c-ac52-8d2f7181a7ad.json",
+    "run/desktop.lock"
+  ],
+  "disallowed_written_files": [],
+  "tmux_inventory": {
+    "root": "/private/tmp/rwnshi-gui-jojlj6eh/tmux",
+    "empty_directories": [],
+    "files_or_sockets": []
+  }
+}

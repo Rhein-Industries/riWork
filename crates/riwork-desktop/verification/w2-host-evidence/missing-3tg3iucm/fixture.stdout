@@ -1,0 +1,77 @@
+{
+  "scenario": "p1-basic",
+  "root": "/private/tmp/rww2-jwmd7f65",
+  "home": "/private/tmp/rww2-jwmd7f65/home",
+  "runtime": "/private/tmp/rww2-jwmd7f65/run",
+  "fake_sessions": "/private/tmp/rww2-jwmd7f65/home/fake-sessions.json",
+  "projects": {
+    "Alpha": {
+      "id": "ba295ca0-520a-49da-bc1d-79bad8d4cb2a",
+      "name": "Alpha",
+      "root": "/private/tmp/rww2-jwmd7f65/repos/alpha",
+      "repository_roots": [],
+      "folder_id": null,
+      "notify_on_agent_done": false,
+      "wake_orchestrators_on_agent_done": false,
+      "codex_account": {
+        "source": "inherit"
+      },
+      "orchestrator": {
+        "mode": "inherit"
+      },
+      "delegation_policy": {},
+      "created_at": 1793139040
+    },
+    "Beta": {
+      "id": "16208820-ae95-49e6-9ae3-c3d1b6a8b25b",
+      "name": "Beta",
+      "root": "/private/tmp/rww2-jwmd7f65/repos/beta",
+      "repository_roots": [],
+      "folder_id": null,
+      "notify_on_agent_done": false,
+      "wake_orchestrators_on_agent_done": false,
+      "codex_account": {
+        "source": "inherit"
+      },
+      "orchestrator": {
+        "mode": "inherit"
+      },
+      "delegation_policy": {},
+      "created_at": 1793139040
+    },
+    "Busy": {
+      "id": "bc7b9594-44c7-43d2-9757-7f231dedd6ff",
+      "name": "Busy",
+      "root": "/private/tmp/rww2-jwmd7f65/repos/busy",
+      "repository_roots": [],
+      "folder_id": null,
+      "notify_on_agent_done": false,
+      "wake_orchestrators_on_agent_done": false,
+      "codex_account": {
+        "source": "inherit"
+      },
+      "orchestrator": {
+        "mode": "inherit"
+      },
+      "delegation_policy": {},
+      "created_at": 1793139040
+    },
+    "Gamma": {
+      "id": "1653d263-c8cb-48c7-aa19-54fd30907780",
+      "name": "Gamma",
+      "root": "/private/tmp/rww2-jwmd7f65/repos/gamma",
+      "repository_roots": [],
+      "folder_id": null,
+      "notify_on_agent_done": false,
+      "wake_orchestrators_on_agent_done": false,
+      "codex_account": {
+        "source": "inherit"
+      },
+      "orchestrator": {
+        "mode": "inherit"
+      },
+      "delegation_policy": {},
+      "created_at": 1793139040
+    }
+  }
+}

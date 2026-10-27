@@ -1,0 +1,31 @@
+{
+  "call": {
+    "pid": 51601,
+    "session": "w2-host"
+  },
+  "result": {
+    "current_space_id": 1,
+    "windows": [
+      {
+        "app_name": "riwork",
+        "bounds": {
+          "height": 780,
+          "width": 1220,
+          "x": 1070,
+          "y": 334
+        },
+        "current_space_id": 1,
+        "is_on_screen": true,
+        "layer": 0,
+        "on_current_space": true,
+        "pid": 51601,
+        "space_ids": [
+          1
+        ],
+        "title": "RiWork · Beta",
+        "window_id": 6658,
+        "z_index": 289
+      }
+    ]
+  }
+}

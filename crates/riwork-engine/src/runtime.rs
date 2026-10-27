@@ -534,6 +534,46 @@ impl RuntimeManager {
             Err(_) => Err("Invalid RiWork restore ticket".to_owned()),
         }
     }
+
+    /// Seed an isolated acceptance fixture using the production ticket writer.
+    /// This does not register a process, spawn a replacement, or read the user's
+    /// runtime directory. The normal executable, expiry and readiness checks
+    /// still apply when the real desktop consumes the ticket.
+    #[cfg(feature = "test-support")]
+    pub fn write_fixture_restore(
+        &self,
+        state_home: &Path,
+        executable: &Path,
+        windows: Vec<RuntimeWindow>,
+    ) -> Result<RestoreSnapshot, String> {
+        validate_windows(&windows)?;
+        let state_home = state_home
+            .canonicalize()
+            .map_err(|error| error.to_string())?;
+        let root = state_home.parent().ok_or("Fixture home needs a parent")?;
+        let scratch = env::temp_dir()
+            .canonicalize()
+            .map_err(|error| error.to_string())?;
+        let tmp = Path::new("/tmp").canonicalize().ok();
+        if !(root.starts_with(&scratch) || tmp.as_ref().is_some_and(|tmp| root.starts_with(tmp)))
+            || self.directory != root.join("run")
+        {
+            return Err("Fixture home and runtime must share an isolated temporary root".into());
+        }
+        let snapshot = RestoreSnapshot {
+            ticket_id: Uuid::new_v4().to_string(),
+            request_id: Uuid::new_v4().to_string(),
+            old_instance_id: Uuid::new_v4().to_string(),
+            replacement_executable: executable_path(executable)?,
+            state_home,
+            windows,
+            created_at: now(),
+        };
+        let _lock = self.lock()?;
+        write_json(&self.restore_path(&snapshot.ticket_id)?, &snapshot)?;
+        Ok(snapshot)
+    }
+
     fn restore_ticket(&self, ticket: &str) -> Result<RestoreSnapshot, String> {
         let snapshot: RestoreSnapshot = read_json(&self.restore_path(ticket)?)?;
         if snapshot.ticket_id != ticket
@@ -2481,6 +2521,47 @@ pub(crate) fn process_identity(_pid: u32) -> Result<Option<ProcessIdentity>, Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn fixture_ticket_uses_real_restore_validation_and_confirmation() {
+        let fixture = Fixture::new();
+        let home = fixture.path.join("home");
+        fs::create_dir_all(&home).unwrap();
+        let manager = RuntimeManager::at(fixture.path.join("run")).unwrap();
+        let windows = vec![RuntimeWindow::global(
+            &home,
+            None,
+            WindowMode::Windowed,
+            GlobalWindowState::default(),
+        )];
+        let snapshot = manager
+            .write_fixture_restore(&home, &env::current_exe().unwrap(), windows.clone())
+            .unwrap();
+        assert_eq!(
+            manager.restore_ticket(&snapshot.ticket_id).unwrap().windows,
+            windows
+        );
+        assert!(manager.instances().unwrap().is_empty());
+        let mut registration = manager.register(home.clone()).unwrap();
+        assert!(
+            manager
+                .mark_restore_ready(&snapshot, &registration)
+                .is_err()
+        );
+        registration.publish_windows(windows).unwrap();
+        manager
+            .mark_restore_ready(&snapshot, &registration)
+            .unwrap();
+        assert!(!manager.restore_path(&snapshot.ticket_id).unwrap().exists());
+        let wrong_runtime = RuntimeManager::at(fixture.path.join("other-run")).unwrap();
+        assert!(
+            wrong_runtime
+                .write_fixture_restore(&home, &env::current_exe().unwrap(), vec![])
+                .unwrap_err()
+                .contains("isolated temporary root")
+        );
+    }
     use std::process::{Command, Stdio};
     struct Fixture {
         path: PathBuf,

@@ -1,0 +1,24 @@
+[
+  {
+    "id": "98bd1c0b-6716-4033-b279-87997eb3207b",
+    "name": "Alpha",
+    "root": "/private/tmp/riwork-w2-host/review-parity-td72odrw/cli-fixture/project",
+    "repository_roots": [],
+    "folder_id": null,
+    "notify_on_agent_done": false,
+    "wake_orchestrators_on_agent_done": false,
+    "codex_account": {
+      "source": "inherit"
+    },
+    "orchestrator": {
+      "mode": "inherit"
+    },
+    "delegation_policy": {},
+    "created_at": 1793139182,
+    "agents": {
+      "working": 0,
+      "waiting": 0,
+      "done": 0
+    }
+  }
+]

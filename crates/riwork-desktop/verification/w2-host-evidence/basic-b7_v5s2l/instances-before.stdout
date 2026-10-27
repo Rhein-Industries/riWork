@@ -1,0 +1,241 @@
+[
+  {
+    "id": "99d73320-4697-4d7e-9338-455d720f25cf",
+    "pid": 21941,
+    "uid": 501,
+    "started_token": "1793139129.668076",
+    "executable": "/private/tmp/riwork-w2-host/fixture-bin/riwork",
+    "state_home": "/private/tmp/rww2-68ctxz_b/home",
+    "windows": [
+      {
+        "project_id": "4df74d99-746c-4529-8674-2fe8d2d0ea4c",
+        "path": "/private/tmp/rww2-68ctxz_b/repos/beta",
+        "bounds": {
+          "x": 1092.0,
+          "y": 356.0,
+          "width": 1220.0,
+          "height": 780.0
+        },
+        "mode": "windowed",
+        "layout": {
+          "layout": {
+            "split": {
+              "axis": "side_by_side",
+              "ratio": 0.3,
+              "first": {
+                "pane": 1
+              },
+              "second": {
+                "split": {
+                  "axis": "stacked",
+                  "ratio": 0.62,
+                  "first": {
+                    "pane": 2
+                  },
+                  "second": {
+                    "split": {
+                      "axis": "stacked",
+                      "ratio": 0.5,
+                      "first": {
+                        "pane": 3
+                      },
+                      "second": {
+                        "pane": 4
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "panes": {
+            "1": {
+              "tabs": [
+                {
+                  "kind": "panel",
+                  "panel": "projects"
+                },
+                {
+                  "kind": "panel",
+                  "panel": "files"
+                },
+                {
+                  "kind": "panel",
+                  "panel": "worktrees"
+                },
+                {
+                  "kind": "panel",
+                  "panel": "tasks"
+                },
+                {
+                  "kind": "panel",
+                  "panel": "shells"
+                }
+              ],
+              "active_tab_key": "panel:projects",
+              "tab_edge": "top",
+              "shell_ids": [],
+              "active_shell_id": null
+            },
+            "2": {
+              "tabs": [
+                {
+                  "kind": "shell",
+                  "shell_id": "00000000-0000-4000-8000-000000000301"
+                }
+              ],
+              "active_tab_key": "shell:00000000-0000-4000-8000-000000000301",
+              "tab_edge": "top",
+              "shell_ids": [
+                "00000000-0000-4000-8000-000000000301"
+              ],
+              "active_shell_id": "00000000-0000-4000-8000-000000000301"
+            },
+            "3": {
+              "tabs": [
+                {
+                  "kind": "shell",
+                  "shell_id": "00000000-0000-4000-8000-000000000302"
+                }
+              ],
+              "active_tab_key": "shell:00000000-0000-4000-8000-000000000302",
+              "tab_edge": "top",
+              "shell_ids": [
+                "00000000-0000-4000-8000-000000000302"
+              ],
+              "active_shell_id": "00000000-0000-4000-8000-000000000302"
+            },
+            "4": {
+              "tabs": [
+                {
+                  "kind": "shell",
+                  "shell_id": "00000000-0000-4000-8000-000000000303"
+                }
+              ],
+              "active_tab_key": "shell:00000000-0000-4000-8000-000000000303",
+              "tab_edge": "top",
+              "shell_ids": [
+                "00000000-0000-4000-8000-000000000303"
+              ],
+              "active_shell_id": "00000000-0000-4000-8000-000000000303"
+            }
+          },
+          "active_pane": 3,
+          "locked_panes": [
+            1
+          ],
+          "panels_initialized": true,
+          "detached_shell_ids": [],
+          "selected_worktree_id": null,
+          "selected_task_id": null,
+          "sidebar_visible": true,
+          "window_size": {
+            "width": 1220.0,
+            "height": 780.0
+          },
+          "main_pane": 2
+        },
+        "focus_mode": false,
+        "focus_centered": false
+      },
+      {
+        "project_id": "53145edd-07b2-4fe4-9184-ca75f151c5db",
+        "path": "/private/tmp/rww2-68ctxz_b/repos/alpha",
+        "bounds": {
+          "x": 1070.0,
+          "y": 334.0,
+          "width": 1220.0,
+          "height": 780.0
+        },
+        "mode": "windowed",
+        "layout": {
+          "layout": {
+            "split": {
+              "axis": "side_by_side",
+              "ratio": 0.27,
+              "first": {
+                "pane": 1
+              },
+              "second": {
+                "pane": 2
+              }
+            }
+          },
+          "panes": {
+            "1": {
+              "tabs": [
+                {
+                  "kind": "panel",
+                  "panel": "projects"
+                },
+                {
+                  "kind": "panel",
+                  "panel": "files"
+                },
+                {
+                  "kind": "panel",
+                  "panel": "worktrees"
+                },
+                {
+                  "kind": "panel",
+                  "panel": "tasks"
+                },
+                {
+                  "kind": "panel",
+                  "panel": "shells"
+                }
+              ],
+              "active_tab_key": "panel:projects",
+              "tab_edge": "top",
+              "shell_ids": [],
+              "active_shell_id": null
+            },
+            "2": {
+              "tabs": [
+                {
+                  "kind": "shell",
+                  "shell_id": "00000000-0000-4000-8000-000000000001"
+                },
+                {
+                  "kind": "shell",
+                  "shell_id": "00000000-0000-4000-8000-000000000002"
+                },
+                {
+                  "kind": "chat",
+                  "chat_id": "00000000-0000-4000-8000-000000000101"
+                },
+                {
+                  "kind": "remote_shell",
+                  "desktop_id": "fixture-remote",
+                  "shell_id": "00000000-0000-4000-8000-000000000102"
+                }
+              ],
+              "active_tab_key": "shell:00000000-0000-4000-8000-000000000002",
+              "tab_edge": "top",
+              "shell_ids": [
+                "00000000-0000-4000-8000-000000000001",
+                "00000000-0000-4000-8000-000000000002"
+              ],
+              "active_shell_id": "00000000-0000-4000-8000-000000000002"
+            }
+          },
+          "active_pane": 2,
+          "locked_panes": null,
+          "panels_initialized": true,
+          "detached_shell_ids": [],
+          "selected_worktree_id": null,
+          "selected_task_id": null,
+          "sidebar_visible": true,
+          "window_size": {
+            "width": 1220.0,
+            "height": 780.0
+          },
+          "main_pane": 2
+        },
+        "focus_mode": false,
+        "focus_centered": false
+      }
+    ],
+    "updated_at": 1793139131
+  }
+]

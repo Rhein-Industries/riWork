@@ -1,0 +1,5 @@
+{
+  "name": "RiWork native acceptance probe",
+  "id": "dev.riwork.test.native",
+  "rust": "../../../riwork-nsh-native-test-support"
+}

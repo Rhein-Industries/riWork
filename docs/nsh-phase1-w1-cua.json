@@ -1,0 +1,453 @@
+{
+  "provider": "RiWork cua-driver MCP",
+  "session": "w1-workspace",
+  "input_calls": 0,
+  "waiting_verification": {
+    "content": [
+      {
+        "type": "text",
+        "text": "verify_state: satisfied after 1 sample(s) in 128 ms"
+      }
+    ],
+    "structuredContent": {
+      "elapsed_ms": 128,
+      "predicates": [
+        {
+          "index": 0,
+          "observed_json": "{\"matches\":2}",
+          "status": "satisfied",
+          "unknown_reason": null
+        }
+      ],
+      "samples": 1,
+      "stable": true,
+      "status": "satisfied"
+    }
+  },
+  "captures": [
+    {
+      "theme": "native",
+      "args": {
+        "pid": 97290,
+        "window_id": 6688,
+        "session": "w1-workspace",
+        "query": "waiting",
+        "max_elements": 300,
+        "screenshot_out_file": "/tmp/riwork-w1-final/native.png"
+      },
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "window_id=6688 pid=97290 size=1365x873 elements=96 snapshot_id=s0000011a\nelement_token for row [N] = s0000011a:N (row [0] is \"s0000011a:0\")\n\n- [0] AXWindow \"RiWork \u00b7 alpha\" [actions=[raise]]\n  - AXTabGroup (Tabs)\n    - AXRadioButton (Chat 2, waiting)\n    - AXButton (Pane menu)\n      - AXStaticText = \"visible: false\"\n        - AXButton (Chat 2, waiting)\n"
+          }
+        ],
+        "structuredContent": {
+          "app_name": "riwork",
+          "capture_id": "capture_03c60697d25544c4a7f37892019a46ae_00000000000000df",
+          "element_count": 96,
+          "elements_complete": false,
+          "filtered_element_count": 1,
+          "pid": 97290,
+          "returned_element_count": 1,
+          "screenshot_file_path": "/private/tmp/riwork-w1-final/native.png",
+          "screenshot_frame_valid": true,
+          "screenshot_height": 873,
+          "screenshot_mime_type": "image/png",
+          "screenshot_scale": 2,
+          "screenshot_width": 1365,
+          "snapshot_id": "s0000011a",
+          "timeout_ms": 1000,
+          "total_element_count": 96,
+          "tree_format": "markdown",
+          "tree_markdown": "- [0] AXWindow \"RiWork \u00b7 alpha\" [actions=[raise]]\n  - AXTabGroup (Tabs)\n    - AXRadioButton (Chat 2, waiting)\n    - AXButton (Pane menu)\n      - AXStaticText = \"visible: false\"\n        - AXButton (Chat 2, waiting)\n",
+          "truncated": false,
+          "window_bounds": {
+            "height": 780,
+            "width": 1220,
+            "x": 1070,
+            "y": 334
+          },
+          "window_id": 6688,
+          "window_title": "RiWork \u00b7 alpha"
+        }
+      }
+    },
+    {
+      "theme": "ri_work",
+      "args": {
+        "pid": 97331,
+        "window_id": 6687,
+        "session": "w1-workspace",
+        "query": "waiting",
+        "max_elements": 300,
+        "screenshot_out_file": "/tmp/riwork-w1-final/ri_work.png"
+      },
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "window_id=6687 pid=97331 size=1365x873 elements=96 snapshot_id=s0000011b\nelement_token for row [N] = s0000011b:N (row [0] is \"s0000011b:0\")\n\n- [0] AXWindow \"RiWork \u00b7 alpha\" [actions=[raise]]\n  - AXTabGroup (Tabs)\n    - AXRadioButton (Chat 2, waiting)\n    - AXButton (Pane menu)\n      - AXStaticText = \"visible: false\"\n        - AXButton (Chat 2, waiting)\n"
+          }
+        ],
+        "structuredContent": {
+          "app_name": "riwork",
+          "capture_id": "capture_03c60697d25544c4a7f37892019a46ae_00000000000000e0",
+          "element_count": 96,
+          "elements_complete": false,
+          "filtered_element_count": 1,
+          "pid": 97331,
+          "returned_element_count": 1,
+          "screenshot_file_path": "/private/tmp/riwork-w1-final/ri_work.png",
+          "screenshot_frame_valid": true,
+          "screenshot_height": 873,
+          "screenshot_mime_type": "image/png",
+          "screenshot_scale": 2,
+          "screenshot_width": 1365,
+          "snapshot_id": "s0000011b",
+          "timeout_ms": 1000,
+          "total_element_count": 96,
+          "tree_format": "markdown",
+          "tree_markdown": "- [0] AXWindow \"RiWork \u00b7 alpha\" [actions=[raise]]\n  - AXTabGroup (Tabs)\n    - AXRadioButton (Chat 2, waiting)\n    - AXButton (Pane menu)\n      - AXStaticText = \"visible: false\"\n        - AXButton (Chat 2, waiting)\n",
+          "truncated": false,
+          "window_bounds": {
+            "height": 780,
+            "width": 1220,
+            "x": 1070,
+            "y": 334
+          },
+          "window_id": 6687,
+          "window_title": "RiWork \u00b7 alpha"
+        }
+      }
+    },
+    {
+      "theme": "ghostty",
+      "args": {
+        "pid": 97366,
+        "window_id": 6689,
+        "session": "w1-workspace",
+        "query": "waiting",
+        "max_elements": 300,
+        "screenshot_out_file": "/tmp/riwork-w1-final/ghostty.png"
+      },
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "window_id=6689 pid=97366 size=1365x873 elements=96 snapshot_id=s0000011c\nelement_token for row [N] = s0000011c:N (row [0] is \"s0000011c:0\")\n\n- [0] AXWindow \"RiWork \u00b7 alpha\" [actions=[raise]]\n  - AXTabGroup (Tabs)\n    - AXRadioButton (Chat 2, waiting)\n    - AXButton (Pane menu)\n      - AXStaticText = \"visible: false\"\n        - AXButton (Chat 2, waiting)\n"
+          }
+        ],
+        "structuredContent": {
+          "app_name": "riwork",
+          "capture_id": "capture_03c60697d25544c4a7f37892019a46ae_00000000000000e1",
+          "element_count": 96,
+          "elements_complete": false,
+          "filtered_element_count": 1,
+          "pid": 97366,
+          "returned_element_count": 1,
+          "screenshot_file_path": "/private/tmp/riwork-w1-final/ghostty.png",
+          "screenshot_frame_valid": true,
+          "screenshot_height": 873,
+          "screenshot_mime_type": "image/png",
+          "screenshot_scale": 2,
+          "screenshot_width": 1365,
+          "snapshot_id": "s0000011c",
+          "timeout_ms": 1000,
+          "total_element_count": 96,
+          "tree_format": "markdown",
+          "tree_markdown": "- [0] AXWindow \"RiWork \u00b7 alpha\" [actions=[raise]]\n  - AXTabGroup (Tabs)\n    - AXRadioButton (Chat 2, waiting)\n    - AXButton (Pane menu)\n      - AXStaticText = \"visible: false\"\n        - AXButton (Chat 2, waiting)\n",
+          "truncated": false,
+          "window_bounds": {
+            "height": 780,
+            "width": 1220,
+            "x": 1070,
+            "y": 334
+          },
+          "window_id": 6689,
+          "window_title": "RiWork \u00b7 alpha"
+        }
+      }
+    },
+    {
+      "theme": "catppuccin",
+      "args": {
+        "pid": 369,
+        "window_id": 6701,
+        "session": "w1-workspace",
+        "query": "waiting",
+        "max_elements": 300,
+        "screenshot_out_file": "/tmp/riwork-w1-final/catppuccin.png"
+      },
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "window_id=6701 pid=369 size=1365x873 elements=96 snapshot_id=s0000011e\nelement_token for row [N] = s0000011e:N (row [0] is \"s0000011e:0\")\n\n- [0] AXWindow \"RiWork \u00b7 alpha\" [actions=[raise]]\n  - AXTabGroup (Tabs)\n    - AXRadioButton (Chat 2, waiting)\n    - AXButton (Pane menu)\n      - AXStaticText = \"visible: false\"\n        - AXButton (Chat 2, waiting)\n"
+          }
+        ],
+        "structuredContent": {
+          "app_name": "riwork",
+          "capture_id": "capture_03c60697d25544c4a7f37892019a46ae_00000000000000e3",
+          "element_count": 96,
+          "elements_complete": false,
+          "filtered_element_count": 1,
+          "pid": 369,
+          "returned_element_count": 1,
+          "screenshot_file_path": "/private/tmp/riwork-w1-final/catppuccin.png",
+          "screenshot_frame_valid": true,
+          "screenshot_height": 873,
+          "screenshot_mime_type": "image/png",
+          "screenshot_scale": 2,
+          "screenshot_width": 1365,
+          "snapshot_id": "s0000011e",
+          "timeout_ms": 1000,
+          "total_element_count": 96,
+          "tree_format": "markdown",
+          "tree_markdown": "- [0] AXWindow \"RiWork \u00b7 alpha\" [actions=[raise]]\n  - AXTabGroup (Tabs)\n    - AXRadioButton (Chat 2, waiting)\n    - AXButton (Pane menu)\n      - AXStaticText = \"visible: false\"\n        - AXButton (Chat 2, waiting)\n",
+          "truncated": false,
+          "window_bounds": {
+            "height": 780,
+            "width": 1220,
+            "x": 1070,
+            "y": 334
+          },
+          "window_id": 6701,
+          "window_title": "RiWork \u00b7 alpha"
+        }
+      }
+    },
+    {
+      "theme": "tokyo_night",
+      "args": {
+        "pid": 346,
+        "window_id": 6699,
+        "session": "w1-workspace",
+        "query": "waiting",
+        "max_elements": 300,
+        "screenshot_out_file": "/tmp/riwork-w1-final/tokyo_night.png"
+      },
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "window_id=6699 pid=346 size=1365x873 elements=96 snapshot_id=s0000011d\nelement_token for row [N] = s0000011d:N (row [0] is \"s0000011d:0\")\n\n- [0] AXWindow \"RiWork \u00b7 alpha\" [actions=[raise]]\n  - AXTabGroup (Tabs)\n    - AXRadioButton (Chat 2, waiting)\n    - AXButton (Pane menu)\n      - AXStaticText = \"visible: false\"\n        - AXButton (Chat 2, waiting)\n"
+          }
+        ],
+        "structuredContent": {
+          "app_name": "riwork",
+          "capture_id": "capture_03c60697d25544c4a7f37892019a46ae_00000000000000e2",
+          "element_count": 96,
+          "elements_complete": false,
+          "filtered_element_count": 1,
+          "pid": 346,
+          "returned_element_count": 1,
+          "screenshot_file_path": "/private/tmp/riwork-w1-final/tokyo_night.png",
+          "screenshot_frame_valid": true,
+          "screenshot_height": 873,
+          "screenshot_mime_type": "image/png",
+          "screenshot_scale": 2,
+          "screenshot_width": 1365,
+          "snapshot_id": "s0000011d",
+          "timeout_ms": 1000,
+          "total_element_count": 96,
+          "tree_format": "markdown",
+          "tree_markdown": "- [0] AXWindow \"RiWork \u00b7 alpha\" [actions=[raise]]\n  - AXTabGroup (Tabs)\n    - AXRadioButton (Chat 2, waiting)\n    - AXButton (Pane menu)\n      - AXStaticText = \"visible: false\"\n        - AXButton (Chat 2, waiting)\n",
+          "truncated": false,
+          "window_bounds": {
+            "height": 780,
+            "width": 1220,
+            "x": 1070,
+            "y": 334
+          },
+          "window_id": 6699,
+          "window_title": "RiWork \u00b7 alpha"
+        }
+      }
+    },
+    {
+      "theme": "gruvbox_light",
+      "args": {
+        "pid": 364,
+        "window_id": 6700,
+        "session": "w1-workspace",
+        "query": "waiting",
+        "max_elements": 300,
+        "screenshot_out_file": "/tmp/riwork-w1-final/gruvbox_light.png"
+      },
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "window_id=6700 pid=364 size=1365x873 elements=96 snapshot_id=s00000120\nelement_token for row [N] = s00000120:N (row [0] is \"s00000120:0\")\n\n- [0] AXWindow \"RiWork \u00b7 alpha\" [actions=[raise]]\n  - AXTabGroup (Tabs)\n    - AXRadioButton (Chat 2, waiting)\n    - AXButton (Pane menu)\n      - AXStaticText = \"visible: false\"\n        - AXButton (Chat 2, waiting)\n"
+          }
+        ],
+        "structuredContent": {
+          "app_name": "riwork",
+          "capture_id": "capture_03c60697d25544c4a7f37892019a46ae_00000000000000e5",
+          "element_count": 96,
+          "elements_complete": false,
+          "filtered_element_count": 1,
+          "pid": 364,
+          "returned_element_count": 1,
+          "screenshot_file_path": "/private/tmp/riwork-w1-final/gruvbox_light.png",
+          "screenshot_frame_valid": true,
+          "screenshot_height": 873,
+          "screenshot_mime_type": "image/png",
+          "screenshot_scale": 2,
+          "screenshot_width": 1365,
+          "snapshot_id": "s00000120",
+          "timeout_ms": 1000,
+          "total_element_count": 96,
+          "tree_format": "markdown",
+          "tree_markdown": "- [0] AXWindow \"RiWork \u00b7 alpha\" [actions=[raise]]\n  - AXTabGroup (Tabs)\n    - AXRadioButton (Chat 2, waiting)\n    - AXButton (Pane menu)\n      - AXStaticText = \"visible: false\"\n        - AXButton (Chat 2, waiting)\n",
+          "truncated": false,
+          "window_bounds": {
+            "height": 780,
+            "width": 1220,
+            "x": 1070,
+            "y": 334
+          },
+          "window_id": 6700,
+          "window_title": "RiWork \u00b7 alpha"
+        }
+      }
+    },
+    {
+      "theme": "hermes",
+      "args": {
+        "pid": 373,
+        "window_id": 6702,
+        "session": "w1-workspace",
+        "query": "waiting",
+        "max_elements": 300,
+        "screenshot_out_file": "/tmp/riwork-w1-final/hermes.png"
+      },
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "window_id=6702 pid=373 size=1365x873 elements=96 snapshot_id=s0000011f\nelement_token for row [N] = s0000011f:N (row [0] is \"s0000011f:0\")\n\n- [0] AXWindow \"RiWork \u00b7 alpha\" [actions=[raise]]\n  - AXTabGroup (Tabs)\n    - AXRadioButton (Chat 2, waiting)\n    - AXButton (Pane menu)\n      - AXStaticText = \"visible: false\"\n        - AXButton (Chat 2, waiting)\n"
+          }
+        ],
+        "structuredContent": {
+          "app_name": "riwork",
+          "capture_id": "capture_03c60697d25544c4a7f37892019a46ae_00000000000000e4",
+          "element_count": 96,
+          "elements_complete": false,
+          "filtered_element_count": 1,
+          "pid": 373,
+          "returned_element_count": 1,
+          "screenshot_file_path": "/private/tmp/riwork-w1-final/hermes.png",
+          "screenshot_frame_valid": true,
+          "screenshot_height": 873,
+          "screenshot_mime_type": "image/png",
+          "screenshot_scale": 2,
+          "screenshot_width": 1365,
+          "snapshot_id": "s0000011f",
+          "timeout_ms": 1000,
+          "total_element_count": 96,
+          "tree_format": "markdown",
+          "tree_markdown": "- [0] AXWindow \"RiWork \u00b7 alpha\" [actions=[raise]]\n  - AXTabGroup (Tabs)\n    - AXRadioButton (Chat 2, waiting)\n    - AXButton (Pane menu)\n      - AXStaticText = \"visible: false\"\n        - AXButton (Chat 2, waiting)\n",
+          "truncated": false,
+          "window_bounds": {
+            "height": 780,
+            "width": 1220,
+            "x": 1070,
+            "y": 334
+          },
+          "window_id": 6702,
+          "window_title": "RiWork \u00b7 alpha"
+        }
+      }
+    },
+    {
+      "label": "classic-final",
+      "args": {
+        "pid": 6939,
+        "window_id": 6720,
+        "session": "w1-workspace",
+        "include_accessibility_tree": false,
+        "screenshot_out_file": "/tmp/riwork-w1-final/classic-final.png"
+      },
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "window_id=6720 pid=6939 size=1365x873"
+          }
+        ],
+        "structuredContent": {
+          "app_name": "riwork",
+          "capture_id": "capture_03c60697d25544c4a7f37892019a46ae_00000000000000e6",
+          "element_count": 0,
+          "elements_complete": false,
+          "pid": 6939,
+          "returned_element_count": 0,
+          "screenshot_file_path": "/private/tmp/riwork-w1-final/classic-final.png",
+          "screenshot_frame_valid": true,
+          "screenshot_height": 873,
+          "screenshot_mime_type": "image/png",
+          "screenshot_scale": 2,
+          "screenshot_width": 1365,
+          "snapshot_id": "s00000121",
+          "total_element_count": 0,
+          "tree_format": "markdown",
+          "tree_markdown": "",
+          "window_bounds": {
+            "height": 780,
+            "width": 1220,
+            "x": 1092,
+            "y": 356
+          },
+          "window_id": 6720,
+          "window_title": "RiWork \u00b7 beta"
+        }
+      }
+    },
+    {
+      "label": "strip-final",
+      "args": {
+        "pid": 6939,
+        "window_id": 6719,
+        "session": "w1-workspace",
+        "include_accessibility_tree": false,
+        "screenshot_out_file": "/tmp/riwork-w1-final/strip-final.png"
+      },
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "window_id=6719 pid=6939 size=1365x873"
+          }
+        ],
+        "structuredContent": {
+          "app_name": "riwork",
+          "capture_id": "capture_03c60697d25544c4a7f37892019a46ae_00000000000000e7",
+          "element_count": 0,
+          "elements_complete": false,
+          "pid": 6939,
+          "returned_element_count": 0,
+          "screenshot_file_path": "/private/tmp/riwork-w1-final/strip-final.png",
+          "screenshot_frame_valid": true,
+          "screenshot_height": 873,
+          "screenshot_mime_type": "image/png",
+          "screenshot_scale": 2,
+          "screenshot_width": 1365,
+          "snapshot_id": "s00000122",
+          "total_element_count": 0,
+          "tree_format": "markdown",
+          "tree_markdown": "",
+          "window_bounds": {
+            "height": 780,
+            "width": 1220,
+            "x": 1070,
+            "y": 334
+          },
+          "window_id": 6719,
+          "window_title": "RiWork \u00b7 alpha"
+        }
+      }
+    }
+  ]
+}

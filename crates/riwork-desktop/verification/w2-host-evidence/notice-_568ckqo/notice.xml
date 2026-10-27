@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="nsh test" tests="1" failures="0" errors="0" skipped="0" time="2.806">
+  <testsuite name="apps/riwork/tests/Window.test.tsx" tests="1" failures="0" errors="0" skipped="0" time="0.118">
+    <testcase classname="apps/riwork/tests/Window.test.tsx" name="P1-PROC-04 fallback notice is exposed as an accessible alert" time="0.118"/>
+  </testsuite>
+</testsuites>

@@ -64,8 +64,11 @@ test("task form, assignment and status changes reach a peer through Store subscr
     await app.waitUntil(() => app.texts().some((text) => text === `todo · @ ${primary.branch}`));
     await app.press("id:task-status:in_progress");
     await peer.waitUntil(() => peer.texts().includes(`in_progress · @ ${primary.branch}`));
+    // A peer can observe the Store push before this window's own call settles.
+    await app.waitUntil(() => app.enabled("id:task-status:done"));
     await app.press("id:task-status:done");
     await peer.waitUntil(() => peer.texts().includes(`done · @ ${primary.branch}`));
+    await app.waitUntil(() => app.enabled("id:assign-task"));
     await app.press("id:assign-task"); await app.chooseMenuItem("UNASSIGNED");
     await peer.waitUntil(() => peer.texts().includes("done · @ UNASSIGNED"));
     const observed = (await inspect(peer)).state.tasks.find((task) => task.id === taskId)!;

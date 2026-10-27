@@ -1,4 +1,4 @@
-# riwork/native (Phase 2a terminals and Phase 3a panels)
+# riwork/native (Phase 1 services, Phase 2a terminals and Phase 3a panels)
 
 NSH 0.3.0 bridge for the project, task, shell and shared-tab surfaces of the frozen contract in
 [`docs/nsh-contracts.md` §1](../../docs/nsh-contracts.md). The root workspace's
@@ -27,6 +27,8 @@ Implemented JavaScript surface:
   individual project preferences without replacing concurrent metadata.
   Each write publishes the resulting snapshot before resolving. Watcher refreshes
   and writes share a lock so an older read cannot overwrite a newer delivery.
+  Identifier parameters accept canonical UUIDs; tab keys and titles use the
+  engine's CLI validators. Malformed IDs are rejected before backend calls.
 - `Sessions.list()` returns a Promise of `{ sessions }`, using
   `SessionManager::list_with_activity` for the inventory. Activity timestamps are
   reserved for a later port; both reads and subscription payloads contain the
@@ -44,9 +46,16 @@ Implemented JavaScript surface:
   registered project identity check. Detach hides before local removal and
   reopen unhides before placement; an unavailable shared store permits local
   Detach, while Exit still requires a successful hide.
-- `Appearance.snapshot()` / `subscribe(listener)` project terminal theme colors
-  and close preference from core settings. The one home watcher pushes live
-  settings changes; the native component owns Ghostty config parsing/watching.
+- `Settings.get/set/changeTextSize` and status-bar item mutations use the core
+  settings lock. `Settings.subscribe` and `Appearance.subscribe` share the same
+  home watcher. `Appearance.resolve(theme, systemDark)` returns the RiWork
+  palette, terminal override, diff colors and diagnostics. Every Appearance
+  payload also carries the terminal phase's `terminalLight`/`terminalDark`
+  projection (`null` follows Ghostty) and `tabCloseBehavior`. Phase 1 does not
+  parse Ghostty config or publish `appearance.json`; the native terminal
+  component owns Ghostty config parsing/watching.
+- `Dashboard.getGlobalWindow/saveGlobalWindow` adapt durable global-window
+  preferences; activity/dashboard feeds remain deferred.
 - `Subscription.close()` is idempotent. JS owner disposal, VM shutdown and
   garbage collection also cancel delivery and close the listener queue. Explicit
   close unregisters owner cleanup while JS is alive; finalization only aborts,
@@ -81,6 +90,8 @@ presence at the two-second session fallback cadence, using core's scan cache;
 directory presence uses a process-shared two-second cache with serialized
 probes, including explicit snapshot requests. No rendering engine polls. Session metadata changes invalidate and wake the
 shared sampler. Tab inventory reuses the engine's process-wide session cache.
+Empty session inventories and homes without worktrees have no fallback timer.
+Settings and Appearance refresh only after settings writes or watcher events.
 Unchanged values do not wake subscribers. A temporarily unavailable
 session backend does not block Store; session subscriptions wait for their first
 successful snapshot while the shared sampler retries. `Sessions.list()` rejects
@@ -94,12 +105,13 @@ monotonic within a topic. Delivery drains intermediate snapshots and uses
 turn; quiet listeners await the channel without requesting frames. `CallCx`
 binds cancellation to the actual JS owner, even when JS retains a handle.
 
-`StoreBackend`, `SessionsBackend` and `TabsBackend` are injectable synchronous traits. The
+`StoreBackend`, `SessionsBackend`, `TabsBackend`, `SettingsBackend` and
+`DashboardBackend` are injectable synchronous traits. The
 blocking `ProcessService::with_backends` constructor plus
 `service::install_process_service` allow tests to register fakes with the same
 native module specifier. Installing a second process service is rejected.
 `with_all_backends` additionally injects the shared tab inventory for fully
-isolated fixtures.
+isolated fixtures. `with_tabs_backend` retains the P1 spelling of this seam.
 
 Headless verification uses isolated fixtures and actual NSH QuickJS engines:
 
@@ -109,7 +121,7 @@ RIWORK_HOME="$NSH_NATIVE_TEST/home" CARGO_TARGET_DIR="$NSH_NATIVE_TEST/target" \
   cargo test --locked -p riwork-nsh-native --jobs 4
 ```
 
-Tests cover external core store writes pushed to two engines, async read calls,
+Tests cover bridge and external core store writes pushed to two engines, async read calls,
 owner/handle/engine teardown, idle frame behavior, queue overflow/resync,
 process-wide session fallback and watcher wakes, DTO boundaries, unavailable
 session recovery, and blocking-thread boundaries. The two-engine test imports
@@ -117,6 +129,42 @@ Store, Sessions and Layouts from the one module, then verifies layout edits and
 host snapshots use the injected process home and persist through LayoutStore.
 `tests/panel_crud.rs` also reopens real store files after project/folder and task
 lifecycle operations, checks cross-service watcher delivery, and exercises real
-tab files plus create/close session adapters. Fixtures inject session data;
-they never start tmux, launch app windows or touch live RiWork data. Chat and the
+tab files plus create/close session adapters. The CLI probe in `tests/app` uses
+`riwork-nsh-native-test-support` to import all
+seven P1 modules and prove Add folder broadcasts through the real native bridge.
+The 60-second idle guard watches Store, Sessions, Tabs, Settings and Appearance
+and asserts no deliveries, no repeated empty-session sample and no presence poll.
+Fixtures inject session data; they never start tmux, launch app windows or touch
+live RiWork data. Chat and the
 other contract modules are left for their port phases; no chat feed is touched.
+
+Acceptance fixtures are available only with `test-support`. Both scenarios use
+the production Store, LayoutStore, TabStore, settings and global-window writers.
+The deliberately damaged Beta tabs file is the engine's corruption-test literal.
+Session identities and layout shapes are fixed; Store-generated project UUIDs
+and timestamps are reported in `home/fixture-manifest.json` and on stdout.
+
+```sh
+FIX="$(mktemp -d /tmp/riwork-p1-fixture.XXXXXX)"
+cargo run --locked --offline -p riwork-nsh-native --features test-support \
+  --example p1_fixture_home -- --scenario p1-basic --out "$FIX/home"
+```
+
+`p1-restore` additionally creates a production-format private ticket under
+`$FIX/run/restores`, for Alpha windowed, Beta maximized in focus mode, and Global.
+Pass `--executable /absolute/path/to/riwork` to bind it to the host being tested;
+without that option the example selects the sibling host binary in its Cargo
+profile directory. Start the host within five minutes, using the manifest's
+`restore_ticket` as `RIWORK_RESTORE_TICKET` and its `runtime` as
+`RIWORK_RUNTIME_DIR`. This writer neither registers a GUI nor launches one; the
+desktop performs the ordinary executable, expiry and restore-ready checks.
+
+A host built with `--features riwork-nsh-native/test-support` may set
+`RIWORK_NSH_FAKE_SESSIONS="$FIX/home/fake-sessions.json"`. It then reads only the
+fixture session inventory and never opens tmux. The path must resolve inside its
+fixed home. The default build does not compile the fake backend or read this
+variable. `testing::ManualClock` allows tests to advance the delayed session
+without sleeping; fixture apps use elapsed time. Both scenarios refuse an
+existing home, repos or runtime directory and require an explicit temporary
+root. Keep `HOME`, `TMPDIR`, `TMUX_TMPDIR`, and `XDG_CONFIG_HOME` isolated as in
+the acceptance recipe before launching the fixture app.

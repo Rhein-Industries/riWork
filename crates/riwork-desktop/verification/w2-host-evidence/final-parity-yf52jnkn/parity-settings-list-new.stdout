@@ -1,0 +1,94 @@
+{
+  "v": 1,
+  "settings": {
+    "tab_close_behavior": "ask",
+    "chat_display": "normal",
+    "chat_display_modes": {},
+    "schema_version": 1,
+    "theme": "ghostty",
+    "use_riwork_colors": false,
+    "remember_window_size": true,
+    "panel_tab_icons": false,
+    "open_preview_on_select": true,
+    "project_order": {
+      "by": "last_edited",
+      "descending": true
+    },
+    "selected_codex_account": null,
+    "codex_subscription_balancing": false,
+    "dashboard_haiku_summaries": false,
+    "status_bar": {
+      "enabled": true,
+      "items": [
+        {
+          "kind": "project",
+          "enabled": true,
+          "side": "left"
+        },
+        {
+          "kind": "worktree",
+          "enabled": false,
+          "side": "left"
+        },
+        {
+          "kind": "agent_activity",
+          "enabled": false,
+          "side": "left"
+        },
+        {
+          "kind": "live_sessions",
+          "enabled": true,
+          "side": "right"
+        },
+        {
+          "kind": "resources",
+          "enabled": true,
+          "side": "right"
+        },
+        {
+          "kind": "usage",
+          "enabled": true,
+          "side": "right"
+        },
+        {
+          "kind": "codex_account",
+          "enabled": true,
+          "side": "right"
+        },
+        {
+          "kind": "session_id",
+          "enabled": true,
+          "side": "right"
+        },
+        {
+          "kind": "global_orchestrator",
+          "enabled": true,
+          "side": "right"
+        },
+        {
+          "kind": "project_orchestrator",
+          "enabled": true,
+          "side": "right"
+        },
+        {
+          "kind": "layout",
+          "enabled": true,
+          "side": "right"
+        }
+      ],
+      "usage_mode": "current_chat"
+    },
+    "agent_inline_mode": true,
+    "agent_terminals_unrestricted": true,
+    "orchestrator_mode": "automatic",
+    "orchestrator_chat_provider": "codex",
+    "orchestrator_chat_model": null,
+    "delegation_policy": {},
+    "ui_text_size": 11,
+    "ui_text_matches_terminal": false,
+    "native_terminal_colors": true,
+    "interface_font": "system_mono",
+    "dictation_mic": false,
+    "claude_chat_ignores_api_key": false
+  }
+}

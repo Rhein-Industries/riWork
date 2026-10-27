@@ -81,8 +81,18 @@ impl HeadlessApp {
         let host = HostChannel::new();
         let (events, receive) = mpsc::channel();
         for name in [
-            "store", "sessions", "snapshot", "list", "layout", "closed", "disposed", "probe",
-            "error", "mutated",
+            "store",
+            "sessions",
+            "snapshot",
+            "list",
+            "layout",
+            "closed",
+            "disposed",
+            "probe",
+            "error",
+            "folderCreated",
+            "preferences",
+            "mutated",
         ] {
             let events = events.clone();
             host.handle(name, move |mut call| {
@@ -94,7 +104,7 @@ impl HeadlessApp {
         }
         let source = r#"
             import { mount, host, cleanup } from "nsh";
-            import { Store, Sessions, Layouts } from "riwork/native";
+            import { Store, Sessions, Layouts, Settings, Appearance } from "riwork/native";
             let storeSubscription, sessionsSubscription, layout, deliveries = 0;
             const listen = event => { deliveries++; host.post("store", event); };
             const dispose = mount(() => {
@@ -112,6 +122,21 @@ impl HeadlessApp {
                 try {
                     host.post("snapshot", await Store.snapshot());
                     host.post("list", await Sessions.list());
+                } catch (error) { host.post("error", String(error)); }
+            });
+            host.on("createFolder", async name => {
+                try { host.post("folderCreated", await Store.createFolder(name)); }
+                catch (error) { host.post("error", String(error)); }
+            });
+            host.on("preferences", async () => {
+                try {
+                    const saved = await Settings.set({theme: "native"});
+                    const bigger = await Settings.changeTextSize("bigger");
+                    const appearance = await Appearance.resolve("native", true);
+                    let unknown = "accepted";
+                    try { await Settings.set({futureSetting: true}); }
+                    catch (error) { unknown = String(error); }
+                    host.post("preferences", {saved, bigger, appearance, unknown});
                 } catch (error) { host.post("error", String(error)); }
             });
             host.on("mutate", async request => {
@@ -150,7 +175,7 @@ impl HeadlessApp {
             host.on("probe", () => host.post("probe", deliveries));
         "#;
         let bundle = Bundle::source(source.to_owned()).with_capabilities_json(Some(
-            r#"{"host":["store","sessions","snapshot","list","layout","closed","disposed","probe","error","mutated"]}"#,
+            r#"{"host":["store","sessions","snapshot","list","layout","closed","disposed","probe","error","folderCreated","preferences","mutated"]}"#,
         )).unwrap();
         let mut config = EngineConfig::new(bundle);
         config.ui_sets = vec![nsh_base::registry(), riwork_nsh_native::registry()];
@@ -306,6 +331,18 @@ fn native_pushes_one_service_to_two_engines_and_stops_on_close_owner_and_engine_
             "an idle subscription must not request another frame"
         );
     }
+
+    first.send("preferences");
+    let preferences = first.receive("preferences", |_| true);
+    assert_eq!(preferences["saved"]["theme"], "native");
+    assert_eq!(preferences["bigger"]["text"]["points"], 14.0);
+    assert_eq!(preferences["appearance"]["palette"]["bg"], "#000000");
+    assert!(
+        preferences["unknown"]
+            .as_str()
+            .unwrap()
+            .contains("invalid:")
+    );
 
     // The same native import exposes the P1c classes as well as P1a services.
     // No RIWORK_HOME mutation is needed: layouts must use the service's injected
@@ -470,8 +507,14 @@ fn native_pushes_one_service_to_two_engines_and_stops_on_close_owner_and_engine_
         std::fs::read(home.join("state.json")).unwrap(),
         before_invalid
     );
-    disk.create_project_folder("Delivered to both engines")
+    first
+        .host
+        .send("createFolder", json!("Delivered to both engines"))
         .unwrap();
+    assert_eq!(
+        first.receive("folderCreated", |_| true)["name"],
+        "Delivered to both engines"
+    );
     let changed = first.receive("store", |event| {
         has_folder(&event["data"], "Delivered to both engines")
     });
