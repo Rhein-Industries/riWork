@@ -25,6 +25,7 @@ fn main() {
         "Set GHOSTTY_INCLUDE_DIR to the matching Ghostty header directory"
     );
     println!("cargo:rerun-if-changed=native/terminal.m");
+    println!("cargo:rerun-if-changed=native/profile.h");
     println!("cargo:rerun-if-changed=native/terminal.h");
     cc::Build::new()
         .file("native/terminal.m")

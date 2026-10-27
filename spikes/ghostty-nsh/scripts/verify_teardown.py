@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Verify Phase 2 teardown captures without operating an app or tmux server.
 
-Usage: verify_teardown.py RUN_DIRECTORY [--expected-min-cycles 20]
+Usage: verify_teardown.py RUN_DIRECTORY [--expected-min-cycles 20] [--profile-gaps]
 Required captures: runtime.json, teardown-events.jsonl, cycles.jsonl, and one
 detach-SURFACE_ID.json for every created surface. A cycle is a batch of four
 simultaneously attached surfaces followed by their disposal. Missing evidence
@@ -51,7 +51,7 @@ def jsonl(path):
     return rows
 
 
-def verify(root, expected_min_cycles=20):
+def verify(root, expected_min_cycles=20, profile_gaps=False):
     checks = {}
     missing = []
 
@@ -104,12 +104,17 @@ def verify(root, expected_min_cycles=20):
     main_free_durations = []
     loop_gaps = []
     final_callback_durations = []
+    valid_raw_gap_failures = set()
     for sid, rows in sorted(by_surface.items()):
         counts = collections.Counter(row.get('event') for row in rows)
         unique = all(counts[event] == 1 for event in REQUIRED_EVENTS)
         check(f'surface_{sid}_complete', unique, event_counts=dict(counts))
         gap_rows = [row for row in rows if row.get('event') == 'main-loop-gap']
         gaps = [row.get('gap_ms') for row in gap_rows]
+        valid_gaps = (bool(gaps) and all(row.get('main_thread') is True for row in gap_rows)
+                      and all(number(gap) and gap >= 0 for gap in gaps))
+        if valid_gaps and any(gap >= FREE_BOUND_MS for gap in gaps):
+            valid_raw_gap_failures.add(f'surface_{sid}_responsive_main_loop')
         check(f'surface_{sid}_responsive_main_loop', bool(gaps)
               and all(row.get('main_thread') is True for row in gap_rows)
               and all(number(gap) and 0 <= gap < FREE_BOUND_MS for gap in gaps),
@@ -169,8 +174,10 @@ def verify(root, expected_min_cycles=20):
                    and positions['shutdown-requested'] < positions['shutdown-returned'] < positions['free-begin']
                    and positions['shutdown-requested'] < positions['child-exit-confirmed'] < positions['free-begin']
                    < positions['free-end'] < positions['disposed'])
-        check(f'surface_{sid}_detach_and_child_exit_before_free', ordered, monotonic_ms=times)
-        main_events = ('shutdown-requested', 'shutdown-returned', 'free-begin', 'free-end', 'disposed')
+        check(f'surface_{sid}_detach_and_child_exit_before_free', ordered
+              and selected['child-exit-confirmed'].get('process_exited') is True, monotonic_ms=times)
+        main_events = ('shutdown-requested', 'shutdown-returned', 'detach-confirmed',
+                       'child-exit-confirmed', 'free-begin', 'free-end', 'disposed')
         check(f'surface_{sid}_main_thread', all(selected[event].get('main_thread') is True for event in main_events))
         free_ms = selected['free-end'].get('free_ms')
         disposal_ms = selected['disposed'].get('disposal_ms')
@@ -302,7 +309,45 @@ def verify(root, expected_min_cycles=20):
           and all(isinstance(identity, str) and identity.strip() and identity == identities[0] for identity in identities),
           identity=identities[0] if identities else None, observations=len(identities))
 
-    failed = [name for name, result in checks.items() if result['status'] == 'FAIL']
+    profile_result = None
+    accepted_raw_gap_checks = []
+    if profile_gaps:
+        from profile_gaps import analyze
+        check('pinned_exact_twenty_four_surface_batches',
+              cycle_order == [str(index) for index in range(1, 21)]
+              and len(by_surface) == 80 and len(assigned) == 80,
+              cycle_order=cycle_order, surface_count=len(by_surface))
+        for index, key in enumerate(cycle_order):
+            closed_pair = paired[key].get('closed')
+            if closed_pair:
+                closed = closed_pair[1]
+                expected_alive = index < 19
+                check(f'cycle_{key}_host_lifetime', closed.get('fixture_alive') is expected_alive,
+                      expected_alive=expected_alive, observed_alive=closed.get('fixture_alive'))
+        host_exit = read('host-exit.json')
+        if host_exit:
+            check('native_window_close_host_exit', host_exit.get('fixture_pid') == fixture_pid
+                  and isinstance(host_exit.get('exit_code'), int)
+                  and not isinstance(host_exit.get('exit_code'), bool) and host_exit['exit_code'] == 0
+                  and host_exit.get('windows_after_exit') == [], evidence=host_exit)
+        try:
+            profile_result = analyze(root, events, fixture_pid)
+        except FileNotFoundError:
+            missing.append('main-profile.jsonl or main-profile.jsonl.gz')
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            check('gap_profile_complete', False, error=str(error))
+        if profile_result is not None:
+            check('gap_profile_complete', profile_result['trace_valid'], errors=profile_result['errors'])
+            check('gap_profile_causal_gate', profile_result['attribution_gate_passed'],
+                  gap_count=profile_result['gap_count'],
+                  policy=profile_result['attribution_policy'])
+            # Keep every strict responsiveness result unchanged. The assignment
+            # separately permits positive proof that >=100 ms gaps are unrelated
+            # to teardown; malformed/missing timer samples cannot use that path.
+            if profile_result['attribution_gate_passed']:
+                accepted_raw_gap_checks = sorted(valid_raw_gap_failures)
+    raw_failed = [name for name, result in checks.items() if result['status'] == 'FAIL']
+    failed = [name for name in raw_failed if name not in accepted_raw_gap_checks]
     # An incomplete capture can contain actual failures (for example a free
     # entered without a detach barrier). Preserve both categories in the output.
     readiness = 'NO_GO' if failed else 'UNVERIFIED' if missing else 'GO'
@@ -326,6 +371,16 @@ def verify(root, expected_min_cycles=20):
             'batch_disposal': max(batch_durations, default=None),
         },
         'failed_checks': failed,
+        'raw_failed_checks': raw_failed,
+        'responsiveness_gate': {
+            'mode': 'strict-or-profiled-non-teardown' if profile_gaps else 'strict',
+            'strict_all_gaps_under_100ms': (profile_result['raw_all_gaps_under_100ms']
+                                          if profile_result is not None else
+                                          bool(by_surface) and not any(name.endswith('_responsive_main_loop')
+                                                                     for name in raw_failed)),
+            'accepted_non_teardown_raw_gap_checks': accepted_raw_gap_checks,
+            'profile': profile_result,
+        },
         'missing_evidence': sorted(set(missing)),
         'checks': checks,
         'clock_domains': {
@@ -341,11 +396,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('evidence_directory', type=pathlib.Path)
     parser.add_argument('--expected-min-cycles', type=int, default=20)
+    parser.add_argument('--profile-gaps', action='store_true',
+                        help='Require pinned 20x4 profiling and host-exit evidence; accept only positively attributed non-teardown gaps.')
     args = parser.parse_args()
     if args.expected_min_cycles < 20:
         parser.error('--expected-min-cycles must be at least 20 for the Phase 2 gate')
     try:
-        result = verify(args.evidence_directory.resolve(), args.expected_min_cycles)
+        result = verify(args.evidence_directory.resolve(), args.expected_min_cycles, args.profile_gaps)
     except (OSError, ValueError, TypeError, KeyError, IndexError) as error:
         result = {'status': 'EVIDENCE_ERROR', 'overall_readiness': 'UNVERIFIED', 'error': str(error)}
     print(json.dumps(result, indent=2, ensure_ascii=False))

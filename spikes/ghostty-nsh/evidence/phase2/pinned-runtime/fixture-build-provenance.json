@@ -1,0 +1,16 @@
+{
+  "fixture_path": "/Users/dominik/orca/projects/riWork-nsh-p2-teardown-pinned/spikes/ghostty-nsh/.runtime/pinned/fixture",
+  "fixture_sha256": "4b27dc5b78aad9f875992470cdde70008f9f3914944dc01f51d88a104be629b1",
+  "command": "GHOSTTY_LIB_DIR=\"$PWD/spikes/ghostty-nsh/.runtime/pinned/install/lib\" GHOSTTY_INCLUDE_DIR=\"$PWD/spikes/ghostty-nsh/.runtime/pinned/install/include\" cargo build --manifest-path spikes/ghostty-nsh/Cargo.toml",
+  "exit_code": 0,
+  "profile": "debug / dev (native archive ReleaseFast)",
+  "source_sha256": {
+    "Cargo.toml": "567f3732f674b48e55c58249ca81ac98c234e905a0f9fec7e7715b665ba29017",
+    "Cargo.lock": "67a842815ede538d4e00df4151644ea0cd4188e243a7e841b46084db65772246",
+    "build.rs": "0052d1a11e4a92fd40533164f8223730642f28eee0cdbc2cc7b9f44c586490e5",
+    "src/main.rs": "29c04327ba4d2ba69c7bf5be764b1ce25efd800da366ae0364b817a8842f89c5",
+    "native/terminal.m": "b566ee7b9f444412517f7796d066643ad6f1ea19a5aa3b69fb6a80d4f679cc55",
+    "native/profile.h": "9f9f88c88d498e36f8752fd43b98d0edec3abe91480da650ee2eb066abe3662a"
+  },
+  "link_directives_sha256": "116fd1789a40d77f5f36b715f82633a356e1aa4b56d8284576f5b1e247d93e40"
+}

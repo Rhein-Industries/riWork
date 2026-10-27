@@ -1,0 +1,11 @@
+{
+  "runtime_label": "pinned-9f0e171-profiled",
+  "ghostty_upstream_revision": "9f0e1719dc918368367d368bfe300f59bb68b5a4",
+  "archive_path": "/Users/dominik/orca/projects/riWork-nsh-p2-teardown-pinned/spikes/ghostty-nsh/.runtime/pinned/install/lib/libghostty-internal.a",
+  "archive_sha256": "b51367aa565527eddfa180d5ae6304899d903af6fc094b4531671ffc20fb064f",
+  "header_path": "/Users/dominik/orca/projects/riWork-nsh-p2-teardown-pinned/spikes/ghostty-nsh/.runtime/pinned/install/include/ghostty.h",
+  "header_sha256": "f2c12e1bb02540d79feed6bd29ee37312c4e0d24391442a63e66f06e1f7f2e4a",
+  "fixture_path": "/Users/dominik/orca/projects/riWork-nsh-p2-teardown-pinned/spikes/ghostty-nsh/.runtime/pinned/fixture",
+  "fixture_sha256": "4b27dc5b78aad9f875992470cdde70008f9f3914944dc01f51d88a104be629b1",
+  "RIWORK_HOME": "/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO"
+}

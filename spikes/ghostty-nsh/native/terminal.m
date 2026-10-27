@@ -26,6 +26,7 @@ static double monotonicMS(void) {
     struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t);
     return t.tv_sec * 1000.0 + t.tv_nsec / 1000000.0;
 }
+#import "profile.h"
 
 @interface SpikeTerminalInput : NSView <NSTextInputClient> {
 @public
@@ -100,6 +101,8 @@ static void closeSurface(void *u, bool alive) { [(SpikeTerminalInput *)u record:
 @implementation SpikeTerminalInput
 - (BOOL)start:(const char *)command config:(const char *)path {
     NSAssert([NSThread isMainThread], @"AppKit must run on main thread");
+    profileStart();
+    profile("create-surface", 'b', nextSurfaceID + 1);
     static dispatch_once_t once;
     static int initialized = -1;
     dispatch_once(&once, ^{ initialized = ghostty_init(0, NULL); });
@@ -149,6 +152,7 @@ static void closeSurface(void *u, bool alive) { [(SpikeTerminalInput *)u record:
     [self syncGeometry];
     [self record:@"created"];
     [self teardownRecord:@"created" fields:@{}];
+    profile("create-surface", 'e', surfaceID);
     return YES;
 }
 - (BOOL)isFlipped { return YES; }
@@ -166,18 +170,30 @@ static void closeSurface(void *u, bool alive) { [(SpikeTerminalInput *)u record:
 - (NSString *)accessibilityRole { return NSAccessibilityGroupRole; }
 - (NSString *)accessibilityLabel { return @"Direct libghostty terminal"; }
 - (void)tick:(NSTimer *)unused {
+    BOOL closingAtEntry = closing;
+    NSUInteger tickID = surfaceID;
+    const char *tickName = closingAtEntry ? "closing-tick" : "attached-tick";
+    profile(tickName, 'b', tickID);
     double now = monotonicMS();
     if (closing && !stopped && lastTick > 0)
-        [self teardownRecord:@"main-loop-gap" fields:@{@"gap_ms":@(now-lastTick)}];
+        [self teardownRecord:@"main-loop-gap" fields:@{@"gap_ms":@(now-lastTick),
+            @"gap_start_ms":@(lastTick), @"gap_end_ms":@(now)}];
     lastTick = now;
-    if (app && atomic_exchange(&dirty, false)) ghostty_app_tick(app);
-    if (!closing || stopped) return;
+    if (app && atomic_exchange(&dirty, false)) {
+        profile(closing ? "closing-app-tick" : "attached-app-tick", 'b', surfaceID);
+        ghostty_app_tick(app);
+        profile(closing ? "closing-app-tick" : "attached-app-tick", 'e', surfaceID);
+    }
+    if (!closing || stopped) { profile(tickName, 'e', tickID); return; }
     int result = atomic_load(&detachResult);
     if (result == 1 && !detachConfirmed) {
         detachConfirmed = YES;
         [self teardownRecord:@"detach-confirmed" fields:@{}];
     }
-    if (detachConfirmed && ghostty_surface_process_exited(surface)) {
+    profile("child-exit-check", 'b', surfaceID);
+    BOOL childExited = detachConfirmed && ghostty_surface_process_exited(surface);
+    profile("child-exit-check", 'e', surfaceID);
+    if (childExited) {
         [self teardownRecord:@"child-exit-confirmed" fields:@{@"process_exited":@YES}];
         [self finishShutdown];
     } else if (result < 0 || monotonicMS() - shutdownStart >= 2000.0) {
@@ -186,6 +202,7 @@ static void closeSurface(void *u, bool alive) { [(SpikeTerminalInput *)u record:
         [self teardownRecord:@"teardown-failed" fields:@{@"detach_result":@(result)}];
         fflush(NULL); _exit(70);
     }
+    profile(tickName, 'e', tickID);
 }
 - (void)setFrameSize:(NSSize)size { [super setFrameSize:size]; [self syncGeometry]; }
 - (void)viewDidMoveToWindow { [super viewDidMoveToWindow]; [self syncGeometry]; }
@@ -356,6 +373,7 @@ static void closeSurface(void *u, bool alive) { [(SpikeTerminalInput *)u record:
     NSAssert([NSThread isMainThread], @"surface lifecycle is main-thread-only");
     if (stopped || closing) return;
     if (!surface) { [self finishShutdown]; return; }
+    profile("shutdown-dispatch", 'b', surfaceID);
     closing = YES;
     shutdownStart = monotonicMS();
     // PTY spawn is asynchronous: its tty is not populated at surface_new.
@@ -377,6 +395,7 @@ static void closeSurface(void *u, bool alive) { [(SpikeTerminalInput *)u record:
     // The explicit pending-disposal retain protects resultForWorker until the
     // main timer consumes this worker's final (and last) memory access.
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        profile("detach-confirm-wait", 'b', idForWorker);
         int workerResult = -1;
         @autoreleasepool {
             NSTask *task = [[[NSTask alloc] init] autorelease];
@@ -395,10 +414,12 @@ static void closeSurface(void *u, bool alive) { [(SpikeTerminalInput *)u record:
             if (launched) [task waitUntilExit]; // Worker only, never AppKit.
             workerResult = launched && task.terminationStatus == 0 ? 1 : -1;
         }
+        profile("detach-confirm-wait", 'e', idForWorker);
         atomic_store(resultForWorker, workerResult);
     });
     [ttyForWorker release];
     [self teardownRecord:@"shutdown-returned" fields:@{@"main_block_ms":@(monotonicMS()-shutdownStart)}];
+    profile("shutdown-dispatch", 'e', surfaceID);
 }
 - (void)teardownRecord:(NSString *)event fields:(NSDictionary *)fields {
     NSMutableDictionary *entry = [NSMutableDictionary dictionaryWithDictionary:fields];
@@ -419,11 +440,15 @@ static void closeSurface(void *u, bool alive) { [(SpikeTerminalInput *)u record:
     if (surface) {
         NSAssert(detachConfirmed && ghostty_surface_process_exited(surface), @"detach and child exit before free");
         [self teardownRecord:@"free-begin" fields:@{}];
+        profile("surface-free", 'b', surfaceID);
         ghostty_surface_free(surface); surface = NULL;
+        profile("surface-free", 'e', surfaceID);
         [self teardownRecord:@"free-end" fields:@{@"free_ms":@(monotonicMS()-freeStart)}];
     }
+    profile("app-config-free", 'b', surfaceID);
     if (app) { ghostty_app_free(app); app = NULL; }
     if (config) { ghostty_config_free(config); config = NULL; }
+    profile("app-config-free", 'e', surfaceID);
     [self teardownRecord:@"disposed" fields:@{@"disposal_ms":@(monotonicMS()-shutdownStart),
         @"main_free_block_ms":@(monotonicMS()-freeStart)}];
     [liveTerminals removeObjectIdenticalTo:self];
