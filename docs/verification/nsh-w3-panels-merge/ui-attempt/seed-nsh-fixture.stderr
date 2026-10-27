@@ -1,0 +1,3 @@
+   Compiling riwork-nsh-workspace v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p1-fix-native/apps/riwork)
+    Finished `dev` profile [unoptimized] target(s) in 1.75s
+     Running `/private/tmp/riwork-w3-c62ea465/target/debug/examples/seed_fixture /private/tmp/riwork-w3-merge-c62ea465/w3-merge-zm67zglq/nsh-home`

@@ -40,6 +40,67 @@ fn area() -> Extent {
     }
 }
 
+#[test]
+fn the_default_layout_closes_nothing_and_preserves_selection_and_navigation_width() {
+    let mut project = fixture();
+    let original_tabs: HashSet<_> = project
+        .panes
+        .values()
+        .flat_map(|pane| pane.tabs.iter().map(SavedTab::key))
+        .collect();
+    riwork_core::layouts::apply_default_layout(&mut project).unwrap();
+    let (navigation, main) = project.layout.two_panes_side_by_side().unwrap();
+    assert_eq!(project.main_pane, Some(main));
+    assert_eq!(project.active_pane, main);
+    assert_eq!(
+        project.panes[&main].active_tab_key.as_deref(),
+        Some("shell:second")
+    );
+    assert_eq!(
+        project.effective_locked_panes(),
+        HashSet::from([navigation])
+    );
+    let final_tabs: HashSet<_> = project
+        .panes
+        .values()
+        .flat_map(|pane| pane.tabs.iter().map(SavedTab::key))
+        .collect();
+    assert!(original_tabs.is_subset(&final_tabs));
+    if let Layout::Split { ratio, .. } = &mut project.layout {
+        *ratio = 0.36;
+    }
+    let applied = project.clone();
+    riwork_core::layouts::apply_default_layout(&mut project).unwrap();
+    assert_eq!(project, applied);
+    let mut model = LayoutModel::new(project).unwrap();
+    model
+        .open_panel(riwork_core::layouts::PanelKind::Usage)
+        .unwrap();
+    assert_eq!(
+        model.project().panes[&model.project().active_pane]
+            .active_tab_key
+            .as_deref(),
+        Some("panel:usage")
+    );
+}
+
+#[test]
+fn default_layout_allocates_navigation_below_the_core_pane_id_ceiling() {
+    let mut project = fixture();
+    let high = u64::MAX - 257;
+    project.layout = Layout::Pane(high);
+    project.panes = std::collections::BTreeMap::from([(high, SavedPane::default())]);
+    project.active_pane = high;
+    project.main_pane = Some(high);
+    project.locked_panes = Some(HashSet::new());
+    project.normalize().unwrap();
+    riwork_core::layouts::apply_default_layout(&mut project).unwrap();
+    let (navigation, main) = project.layout.two_panes_side_by_side().unwrap();
+    assert_eq!(main, high);
+    assert!(navigation < high);
+    assert_eq!(project.panes[&navigation].tabs.len(), 5);
+}
+
 fn oracle(input: ProjectLayout) {
     let temp = scratch();
     let store = LayoutStore::open(temp.path()).unwrap();
@@ -411,6 +472,72 @@ fn switching_flushes_the_outgoing_project_and_uses_core_locked_region_carry() {
         Some("destination-worktree")
     );
     assert_eq!(loaded.persistence.project_id(), "destination");
+}
+
+#[test]
+fn project_switch_rejects_unknown_destination_tabs_without_losing_them_or_replacing_the_writer() {
+    let rt = runtime();
+    let _entered = rt.enter();
+    // Exercise both the prepared switch used by LayoutSession and the direct
+    // persistence switch. All outgoing panes are locked: without rejection,
+    // core carry has no destination slots and drops its opaque-tab pane.
+    for prepared in [true, false] {
+        let temp = scratch();
+        seed(temp.path(), false);
+        let store = LayoutStore::open(temp.path()).unwrap();
+        let mut destination = fixture();
+        destination.layout = Layout::Pane(99);
+        destination.panes = std::collections::BTreeMap::from([(99, SavedPane::default())]);
+        destination.active_pane = 99;
+        destination.main_pane = Some(99);
+        destination.locked_panes = Some(HashSet::new());
+        destination.normalize().unwrap();
+        store
+            .save_chat_state("unknown-destination", &destination, &[], None)
+            .unwrap();
+        let mut disk = read(temp.path());
+        disk["projects"]["unknown-destination"]["panes"]["99"]["tabs"] = json!([unknown_tab()]);
+        write(temp.path(), &disk);
+        let destination_before =
+            serde_json::to_vec(&disk["projects"]["unknown-destination"]).unwrap();
+        let mut loaded =
+            LayoutPersistence::open(temp.path(), PROJECT, None, SaveMode::LegacyChatState).unwrap();
+        let mut previous = loaded.project.clone();
+        previous.locked_panes = Some(previous.layout.pane_ids().into_iter().collect());
+        previous.selected_task_id = Some("accepted-before-switch".into());
+        previous.normalize().unwrap();
+        let error = if prepared {
+            loaded
+                .persistence
+                .prepare_project_switch("unknown-destination", &previous)
+                .err()
+                .expect("unknown destination must be refused")
+        } else {
+            loaded
+                .persistence
+                .switch_project("unknown-destination", &previous, None)
+                .err()
+                .expect("unknown destination must be refused")
+        };
+        assert!(error.starts_with("refused:"));
+        assert!(error.contains("unknown tabs"));
+        assert_eq!(loaded.persistence.project_id(), PROJECT);
+        assert_eq!(store.load(PROJECT).unwrap(), Some(previous.clone()));
+        assert_eq!(
+            serde_json::to_vec(&read(temp.path())["projects"]["unknown-destination"]).unwrap(),
+            destination_before
+        );
+        // The rejected switch leaves the original writer available for a
+        // subsequent accepted edit and explicit durability barrier.
+        previous.selected_task_id = Some("accepted-after-rejected-switch".into());
+        loaded.persistence.schedule(previous.clone()).unwrap();
+        loaded.persistence.flush().unwrap();
+        assert_eq!(store.load(PROJECT).unwrap(), Some(previous));
+        assert_eq!(
+            serde_json::to_vec(&read(temp.path())["projects"]["unknown-destination"]).unwrap(),
+            destination_before
+        );
+    }
 }
 
 #[test]

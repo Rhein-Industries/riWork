@@ -1,0 +1,85 @@
+   Compiling riwork-nsh-workspace v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p1-fix-native/apps/riwork)
+error[E0283]: type annotations needed
+   --> apps/riwork/src/host_layouts.rs:187:24
+    |
+187 |                 return Err("unavailable: window is closing".into());
+    |                        ^^^                                  ---- type must be known at this point
+    |                        |
+    |                        cannot infer type of the type parameter `E` declared on the enum `Result`
+    |
+    = note: multiple `impl`s satisfying `_: From<&str>` found in the following crates: `bytes`, `nsh_core`:
+            - impl From<&'static str> for SharedString;
+            - impl From<&'static str> for bytes::bytes::Bytes;
+            - impl From<&'static str> for nsh_core::element::Prop<SharedString>;
+            - impl From<&'static str> for nsh_core::element::Prop<std::option::Option<SharedString>>;
+    = note: required for `&str` to implement `Into<_>`
+help: consider specifying the generic arguments
+    |
+187 |                 return Err::<(), E>("unavailable: window is closing".into());
+    |                           +++++++++
+
+error[E0283]: type annotations needed
+   --> apps/riwork/src/host_layouts.rs:187:24
+    |
+187 |                 return Err("unavailable: window is closing".into());
+    |                        ^^^ cannot infer type of the type parameter `E` declared on the enum `Result`
+...
+190 |                 return Err("conflict: project switch is in progress".into());
+    |                                                                      ---- type must be known at this point
+    |
+    = note: multiple `impl`s satisfying `_: From<&str>` found in the following crates: `bytes`, `nsh_core`:
+            - impl From<&'static str> for SharedString;
+            - impl From<&'static str> for bytes::bytes::Bytes;
+            - impl From<&'static str> for nsh_core::element::Prop<SharedString>;
+            - impl From<&'static str> for nsh_core::element::Prop<std::option::Option<SharedString>>;
+    = note: required for `&str` to implement `Into<_>`
+help: consider specifying the generic arguments
+    |
+187 |                 return Err::<(), E>("unavailable: window is closing".into());
+    |                           +++++++++
+
+error[E0283]: type annotations needed
+   --> apps/riwork/src/host_layouts.rs:187:24
+    |
+187 |                 return Err("unavailable: window is closing".into());
+    |                        ^^^                                  ---- type must be known at this point
+    |                        |
+    |                        cannot infer type of the type parameter `E` declared on the enum `Result`
+    |
+    = note: multiple `impl`s satisfying `_: From<&str>` found in the following crates: `bytes`, `nsh_base`, `nsh_core`:
+            - impl From<&'static str> for PanelId;
+            - impl From<&'static str> for SharedString;
+            - impl From<&'static str> for bytes::bytes::Bytes;
+            - impl From<&'static str> for nsh_core::element::Prop<SharedString>;
+            - impl From<&'static str> for nsh_core::element::Prop<std::option::Option<SharedString>>;
+    = note: required for `&str` to implement `Into<_>`
+help: consider specifying the generic arguments
+    |
+187 |                 return Err::<(), E>("unavailable: window is closing".into());
+    |                           +++++++++
+
+error[E0283]: type annotations needed
+   --> apps/riwork/src/host_layouts.rs:187:24
+    |
+187 |                 return Err("unavailable: window is closing".into());
+    |                        ^^^ cannot infer type of the type parameter `E` declared on the enum `Result`
+...
+190 |                 return Err("conflict: project switch is in progress".into());
+    |                                                                      ---- type must be known at this point
+    |
+    = note: multiple `impl`s satisfying `_: From<&str>` found in the following crates: `bytes`, `nsh_base`, `nsh_core`:
+            - impl From<&'static str> for PanelId;
+            - impl From<&'static str> for SharedString;
+            - impl From<&'static str> for bytes::bytes::Bytes;
+            - impl From<&'static str> for nsh_core::element::Prop<SharedString>;
+            - impl From<&'static str> for nsh_core::element::Prop<std::option::Option<SharedString>>;
+    = note: required for `&str` to implement `Into<_>`
+help: consider specifying the generic arguments
+    |
+187 |                 return Err::<(), E>("unavailable: window is closing".into());
+    |                           +++++++++
+
+For more information about this error, try `rustc --explain E0283`.
+error: could not compile `riwork-nsh-workspace` (lib) due to 2 previous errors
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `riwork-nsh-workspace` (lib test) due to 2 previous errors

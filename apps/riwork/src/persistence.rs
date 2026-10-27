@@ -9,8 +9,15 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashSet},
     fs,
     path::{Path, PathBuf},
-    sync::mpsc::{self, Receiver, RecvTimeoutError, Sender},
-    time::{Duration, Instant},
+    sync::{
+        Arc,
+        mpsc::{self, Sender},
+    },
+    time::Duration,
+};
+use tokio::{
+    sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
+    time::Instant,
 };
 
 pub const SAVE_DELAY: Duration = Duration::from_millis(250);
@@ -48,7 +55,43 @@ pub struct LayoutPersistence {
     dir: PathBuf,
     project_id: String,
     mode: SaveMode,
-    commands: Sender<Command>,
+    commands: UnboundedSender<Command>,
+}
+
+/// The layout owner depends on a persistence adapter, allowing an in-memory
+/// fake to exercise the same edit/close handoff without filesystem operations.
+pub trait LayoutBackend: Send + Sync {
+    fn schedule(&self, project: ProjectLayout) -> Result<(), String>;
+    fn flush(&self) -> Result<(), String>;
+    fn project_id(&self) -> &str {
+        ""
+    }
+    fn prepare_project_switch(
+        &self,
+        _project_id: &str,
+        _previous: &ProjectLayout,
+    ) -> Result<LoadedLayout, String> {
+        Err("unavailable: layout backend does not support project switching".into())
+    }
+}
+
+impl LayoutBackend for LayoutPersistence {
+    fn project_id(&self) -> &str {
+        self.project_id()
+    }
+    fn prepare_project_switch(
+        &self,
+        project_id: &str,
+        previous: &ProjectLayout,
+    ) -> Result<LoadedLayout, String> {
+        self.prepare_project_switch(project_id, previous)
+    }
+    fn schedule(&self, project: ProjectLayout) -> Result<(), String> {
+        self.schedule(project)
+    }
+    fn flush(&self) -> Result<(), String> {
+        self.flush()
+    }
 }
 
 impl LayoutPersistence {
@@ -78,9 +121,9 @@ impl LayoutPersistence {
             format!("unavailable: layout worker needs a Tokio runtime: {error}")
         })?;
         let store = LayoutStore::open(&dir)?;
-        let (commands, receiver) = mpsc::channel();
+        let (commands, receiver) = unbounded_channel();
         let worker_project = project_id.clone();
-        runtime.spawn_blocking(move || save_worker(store, worker_project, mode, receiver));
+        runtime.spawn(save_worker(store, worker_project, mode, receiver));
         Ok(Self {
             dir,
             project_id,
@@ -107,6 +150,7 @@ impl LayoutPersistence {
         self.schedule(previous.clone())?;
         self.flush()?;
         let mut loaded = Self::open(&self.dir, project_id, None, self.mode)?;
+        refuse_unknown_destination(&loaded.unknown_panes)?;
         match loaded.project.carry_locked_regions_from(previous) {
             Ok(project) => loaded.project = project,
             Err(error) => {
@@ -153,6 +197,7 @@ impl LayoutPersistence {
         self.schedule(previous.clone())?;
         self.flush()?;
         let mut loaded = load_project(&self.dir, &project_id, restore)?;
+        refuse_unknown_destination(&loaded.unknown_panes)?;
         loaded.project = loaded.project.carry_locked_regions_from(previous)?;
         let next = Self::start(self.dir.clone(), project_id, self.mode)?;
         *self = next;
@@ -171,48 +216,71 @@ impl Drop for LayoutPersistence {
     }
 }
 
-fn save_worker(
+async fn save_worker(
     store: LayoutStore,
     project_id: String,
     mode: SaveMode,
-    commands: Receiver<Command>,
+    mut commands: UnboundedReceiver<Command>,
 ) {
+    let store = Arc::new(store);
     let mut pending = None;
     let mut deadline: Option<Instant> = None;
     loop {
         let command = match deadline {
-            Some(deadline) => {
-                commands.recv_timeout(deadline.saturating_duration_since(Instant::now()))
-            }
-            None => commands.recv().map_err(|_| RecvTimeoutError::Disconnected),
+            Some(deadline) => tokio::time::timeout_at(deadline, commands.recv()).await,
+            None => Ok(commands.recv().await),
         };
         match command {
-            Ok(Command::Schedule(project)) => {
+            Ok(Some(Command::Schedule(project))) => {
                 pending = Some(project);
                 deadline = Some(Instant::now() + SAVE_DELAY);
             }
-            Ok(Command::Flush(reply)) => {
+            Ok(Some(Command::Flush(reply))) => {
                 deadline = None;
-                let _ = reply.send(save_pending(&store, &project_id, mode, &mut pending));
+                let _ =
+                    reply.send(save_pending_async(&store, &project_id, mode, &mut pending).await);
             }
-            Ok(Command::Stop(reply)) => {
-                let _ = reply.send(save_pending(&store, &project_id, mode, &mut pending));
+            Ok(Some(Command::Stop(reply))) => {
+                let _ =
+                    reply.send(save_pending_async(&store, &project_id, mode, &mut pending).await);
                 break;
             }
-            Err(RecvTimeoutError::Timeout) => {
+            Err(_) => {
                 deadline = None;
-                if let Err(error) = save_pending(&store, &project_id, mode, &mut pending) {
+                if let Err(error) =
+                    save_pending_async(&store, &project_id, mode, &mut pending).await
+                {
                     // Keep the snapshot for an explicit flush/retry. A failed
                     // filesystem must not turn into an unbounded retry loop.
                     eprintln!("layout.save: {error}");
                 }
             }
-            Err(RecvTimeoutError::Disconnected) => {
-                let _ = save_pending(&store, &project_id, mode, &mut pending);
+            Ok(None) => {
+                let _ = save_pending_async(&store, &project_id, mode, &mut pending).await;
                 break;
             }
         }
     }
+}
+
+async fn save_pending_async(
+    store: &Arc<LayoutStore>,
+    project_id: &str,
+    mode: SaveMode,
+    pending: &mut Option<Box<ProjectLayout>>,
+) -> Result<(), String> {
+    let Some(project) = pending.clone() else {
+        return Ok(());
+    };
+    let store = Arc::clone(store);
+    let project_id = project_id.to_owned();
+    tokio::task::spawn_blocking(move || {
+        save_pending(&store, &project_id, mode, &mut Some(project))
+    })
+    .await
+    .map_err(|error| format!("broken: {error}"))??;
+    *pending = None;
+    Ok(())
 }
 
 fn save_pending(
@@ -229,6 +297,16 @@ fn save_pending(
         SaveMode::SharedTabs => store.save_tab_layout(project_id, project),
     }?;
     *pending = None;
+    Ok(())
+}
+
+/// Core retains opaque tabs under their original pane IDs. Locked-region
+/// carry can remove or remap those IDs, so no destination with unknown tabs may
+/// be rewritten by a project switch until core supports migrating opaque tabs.
+fn refuse_unknown_destination(unknown_panes: &BTreeSet<PaneId>) -> Result<(), String> {
+    if !unknown_panes.is_empty() {
+        return Err("refused: the saved destination contains unknown tabs; project switching cannot preserve them".into());
+    }
     Ok(())
 }
 

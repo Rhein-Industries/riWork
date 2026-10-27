@@ -4,6 +4,6 @@
   "version": "0.1.0",
   "build": 1,
   "rust": "../../crates/riwork-nsh-native",
-  "capabilities": { "host": ["window.*", "app.*", "system.*"] },
+  "capabilities": { "host": ["window.*", "app.*", "system.*"], "clipboard": true },
   "appearance": "system"
 }

@@ -1,0 +1,7 @@
+    Blocking waiting for file lock on build directory
+   Compiling riwork-nsh-workspace v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p1-fix-native/apps/riwork)
+    Finished `test` profile [unoptimized] target(s) in 4.19s
+     Running unittests src/lib.rs (/private/tmp/riwork-w3-c62ea465/target/debug/deps/riwork_nsh_workspace-5239a4c9b8cd9a60)
+     Running tests/layout_backend.rs (/private/tmp/riwork-w3-c62ea465/target/debug/deps/layout_backend-bee999d58f641c94)
+     Running tests/layout_roundtrip.rs (/private/tmp/riwork-w3-c62ea465/target/debug/deps/layout_roundtrip-e543bee38e875613)
+   Doc-tests riwork_nsh_workspace

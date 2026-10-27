@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="nsh test" tests="43" failures="0" errors="0" skipped="0" time="26.422">
+  <testsuite name="apps/riwork/App.test.tsx" tests="8" failures="0" errors="0" skipped="0" time="3.345">
+    <testcase classname="apps/riwork/App.test.tsx" name="opens a core-written layout with shell identity, empty unknown pane, and window chrome" time="0.144"/>
+    <testcase classname="apps/riwork/App.test.tsx" name="DockArea selection and keyboard changes go through the session and remain window-local" time="0.561"/>
+    <testcase classname="apps/riwork/App.test.tsx" name="locked pixel geometry survives resize and pane menu edits remain in Rust" time="0.647"/>
+    <testcase classname="apps/riwork/App.test.tsx" name="production entry routes global windows without opening a project DockArea" time="0.121"/>
+    <testcase classname="apps/riwork/App.test.tsx" name="production restore installs its native layout before confirming exactly once" time="0.221"/>
+    <testcase classname="apps/riwork/App.test.tsx" name="a restored global entry confirms without opening a project session" time="0.108"/>
+    <testcase classname="apps/riwork/App.test.tsx" name="clicking an already selected tab and an empty pane changes the active pane" time="0.655"/>
+    <testcase classname="apps/riwork/App.test.tsx" name="a real DockArea drag moves one tab into the opaque empty pane through Rust" time="0.888"/>
+  </testsuite>
+  <testsuite name="apps/riwork/Panels.test.tsx" tests="3" failures="0" errors="0" skipped="0" time="5.649">
+    <testcase classname="apps/riwork/Panels.test.tsx" name="panels share search, preserve exact selection, and switch only their own window" time="1.413"/>
+    <testcase classname="apps/riwork/Panels.test.tsx" name="task form, assignment and status changes reach a peer through Store subscriptions" time="1.884"/>
+    <testcase classname="apps/riwork/Panels.test.tsx" name="folder forms and project creation persist and leave terminal attachment gated" time="2.352"/>
+  </testsuite>
+  <testsuite name="apps/riwork/model.test.ts" tests="6" failures="0" errors="0" skipped="0" time="0.000">
+    <testcase classname="apps/riwork/model.test.ts" name="number shortcuts consume drawn order and skip panels only with shared membership" time="0.000"/>
+    <testcase classname="apps/riwork/model.test.ts" name="tab cycling wraps in drawn order and respects a modal" time="0.000"/>
+    <testcase classname="apps/riwork/model.test.ts" name="empty sentinels never participate in tab shortcuts or the main-pane summary" time="0.000"/>
+    <testcase classname="apps/riwork/model.test.ts" name="main-pane summaries preserve active identity and lookup is pane-independent" time="0.000"/>
+    <testcase classname="apps/riwork/model.test.ts" name="window titles name remote projects and update only when changed" time="0.000"/>
+    <testcase classname="apps/riwork/model.test.ts" name="panel labels preserve persisted legacy identities" time="0.000"/>
+  </testsuite>
+  <testsuite name="apps/riwork/panel_model.test.ts" tests="6" failures="0" errors="0" skipped="0" time="0.000">
+    <testcase classname="apps/riwork/panel_model.test.ts" name="project browsing preserves nested subtree counts and per-window collapse" time="0.000"/>
+    <testcase classname="apps/riwork/panel_model.test.ts" name="project search is flat, ignores folders and finds hidden projects with names ranked first" time="0.000"/>
+    <testcase classname="apps/riwork/panel_model.test.ts" name="orphan and cyclic folders appear once and empty folders remain navigable" time="0.000"/>
+    <testcase classname="apps/riwork/panel_model.test.ts" name="worktree presence only removes missing linked navigation rows" time="0.000"/>
+    <testcase classname="apps/riwork/panel_model.test.ts" name="task filtering includes exact status and assigned worktree while shell filtering follows deepest cwd" time="0.000"/>
+    <testcase classname="apps/riwork/panel_model.test.ts" name="header counts and trimming are independent of rendered folder rows" time="0.000"/>
+  </testsuite>
+  <testsuite name="apps/riwork/tests/EditMenu.test.tsx" tests="1" failures="0" errors="0" skipped="0" time="0.225">
+    <testcase classname="apps/riwork/tests/EditMenu.test.tsx" name="P1-MENU-02: host Copy with no selection leaves the clipboard unchanged" time="0.225"/>
+  </testsuite>
+  <testsuite name="apps/riwork/tests/Idle.test.tsx" tests="1" failures="0" errors="0" skipped="0" time="0.387">
+    <testcase classname="apps/riwork/tests/Idle.test.tsx" name="P1-POLL-02: a settled project sends no host work during 60 seconds of idle time" time="0.387"/>
+  </testsuite>
+  <testsuite name="apps/riwork/tests/Keyboard.test.tsx" tests="2" failures="0" errors="0" skipped="0" time="2.534">
+    <testcase classname="apps/riwork/tests/Keyboard.test.tsx" name="deferred chords retain their context and host-only global keys are absent" time="0.000"/>
+    <testcase classname="apps/riwork/tests/Keyboard.test.tsx" name="deferred keys are inert and all tab-cycle aliases preserve the selected placeholder" time="2.534"/>
+  </testsuite>
+  <testsuite name="apps/riwork/tests/StatusBar.test.tsx" tests="5" failures="0" errors="0" skipped="0" time="4.918">
+    <testcase classname="apps/riwork/tests/StatusBar.test.tsx" name="P1-STAT-01: default kinds, order, sides and master visibility reach both windows" time="1.121"/>
+    <testcase classname="apps/riwork/tests/StatusBar.test.tsx" name="P1-STAT-02: project and worktree open panels and missing data keeps GPUI forms" time="0.350"/>
+    <testcase classname="apps/riwork/tests/StatusBar.test.tsx" name="P1-STAT-03: layout menu toggles, applies the default and closes when hidden" time="0.800"/>
+    <testcase classname="apps/riwork/tests/StatusBar.test.tsx" name="P1-STAT-04: newer notices replace, stay for a minute and dismiss" time="0.808"/>
+    <testcase classname="apps/riwork/tests/StatusBar.test.tsx" name="P1-STAT-05: global menu routes both views and closes on escape, outside, hidden or modal" time="1.840"/>
+  </testsuite>
+  <testsuite name="apps/riwork/tests/TextSize.test.tsx" tests="4" failures="0" errors="0" skipped="0" time="1.249">
+    <testcase classname="apps/riwork/tests/TextSize.test.tsx" name="P1-TXT-02: View commands resize through the Settings owner and reset" time="0.488"/>
+    <testcase classname="apps/riwork/tests/TextSize.test.tsx" name="P1-TXT-03: Native and Hermes use system text and Native accents fall back to Menlo" time="0.511"/>
+    <testcase classname="apps/riwork/tests/TextSize.test.tsx" name="P1-TXT-03: spacing grows in whole points and never shrinks chrome" time="0.000"/>
+    <testcase classname="apps/riwork/tests/TextSize.test.tsx" name="P1-TXT-03: SF Mono accents are selected when installed and matching suppresses the face offset" time="0.249"/>
+  </testsuite>
+  <testsuite name="apps/riwork/tests/Theme.test.tsx" tests="6" failures="0" errors="0" skipped="0" time="2.491">
+    <testcase classname="apps/riwork/tests/Theme.test.tsx" name="P1-THM-04: Native light first workspace paint uses its resolved palette" time="0.139"/>
+    <testcase classname="apps/riwork/tests/Theme.test.tsx" name="P1-THM-04: a workspace without Appearance uses the RiWork context palette" time="0.132"/>
+    <testcase classname="apps/riwork/tests/Theme.test.tsx" name="P1-THM-05: each window resolves Native on appearance events and both receive settings" time="0.593"/>
+    <testcase classname="apps/riwork/tests/Theme.test.tsx" name="P1-THM-01: Settings offers the seven core-labelled themes and changes selection" time="0.462"/>
+    <testcase classname="apps/riwork/tests/Theme.test.tsx" name="P1-THM-05: theme changes keep panels mounted and install font/casing with their resolved palette" time="0.592"/>
+    <testcase classname="apps/riwork/tests/Theme.test.tsx" name="real project panels and editors use the resolved theme and interface text size" time="0.573"/>
+  </testsuite>
+  <testsuite name="apps/riwork/tests/metrics.test.ts" tests="1" failures="0" errors="0" skipped="0" time="0.565">
+    <testcase classname="apps/riwork/tests/metrics.test.ts" name="P1-STAT-01: rendered status text scales and its right side scrolls at narrow widths" time="0.565"/>
+  </testsuite>
+</testsuites>

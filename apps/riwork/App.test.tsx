@@ -21,7 +21,7 @@ test("opens a core-written layout with shell identity, empty unknown pane, and w
     await app.waitFor("id:workspace-dock");
     expect(app.shows("id:title-bar")).toBe(true);
     expect(app.shows("id:status-bar")).toBe(true);
-    expect(app.texts()).toContain("Sessions");
+    expect(app.texts()).toContain("SESSIONS");
     expect(app.texts()).toContain("Empty pane");
     const { snapshot, dock } = latest(app);
     expect(snapshot.panes.map((pane) => pane.id)).toEqual([1, 2, 3]);

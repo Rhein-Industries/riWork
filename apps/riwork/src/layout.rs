@@ -347,6 +347,16 @@ impl LayoutModel {
         Ok(self.dock(self.extent.unwrap_or(DEFAULT_EXTENT)))
     }
 
+    pub fn default_layout(&mut self) -> Result<DockAreaLayout, String> {
+        if !self.unknown_panes.is_empty() {
+            return Err("refused: preserve unknown tabs before resetting the layout".into());
+        }
+        riwork_core::layouts::apply_default_layout(&mut self.project)?;
+        self.allocated_pane_ids
+            .extend(self.project.layout.pane_ids());
+        Ok(self.dock(self.extent.unwrap_or(DEFAULT_EXTENT)))
+    }
+
     pub fn select_pane(&mut self, id: PaneId) -> Result<DockAreaLayout, String> {
         if !self.project.panes.contains_key(&id) {
             return Err("not_found: pane".into());

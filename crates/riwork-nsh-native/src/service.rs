@@ -15,7 +15,7 @@ use anyhow::{Context, Result};
 use notify::{EventKind, RecursiveMode, Watcher};
 
 use crate::{
-    appearance::{self, AppearanceSnapshot},
+    appearance::AppearanceDto,
     backend::{
         CoreStoreBackend, EngineSessionsBackend, EngineTabsBackend, InvalidInput, Refused,
         SessionsBackend, StoreBackend, TabsBackend, Unavailable,
@@ -26,13 +26,14 @@ use crate::{
         TaskDto, WorktreeDto,
     },
     hub::{Hub, TopicSubscription},
+    settings::PreferenceService,
 };
 
 pub const SESSION_SAMPLE_INTERVAL: Duration = Duration::from_secs(2);
 const STORE: u8 = 1;
 const SESSIONS: u8 = 2;
-const APPEARANCE: u8 = 4;
-const TABS: u8 = 8;
+const TABS: u8 = 4;
+const SETTINGS: u8 = 8;
 
 // Kept strongly for the life of the process, never once per AppView. The home's
 // resolution and all setup happen inside initialize's blocking-pool hop.
@@ -92,12 +93,6 @@ fn resolved_home() -> Result<PathBuf, String> {
         .clone()
 }
 
-pub(crate) fn initialized() -> Result<Arc<ProcessService>, String> {
-    PROCESS.get().cloned().ok_or_else(|| {
-        "unavailable: call riwork_nsh_native::initialize().await before creating AppViews".into()
-    })
-}
-
 /// Move every core/engine call, including service setup and hub registration, off
 /// both the AppKit thread and the NSH engine thread.
 pub(crate) async fn blocking<T: Send + 'static>(
@@ -112,7 +107,7 @@ pub(crate) fn io_error(error: impl std::fmt::Display) -> String {
     format!("io: {error}")
 }
 
-fn backend_error(error: anyhow::Error) -> String {
+pub(crate) fn backend_error(error: anyhow::Error) -> String {
     let code = if error.is::<Refused>() {
         "refused"
     } else if error.is::<Unavailable>() {
@@ -125,13 +120,37 @@ fn backend_error(error: anyhow::Error) -> String {
     format!("{code}: {error}")
 }
 
+fn validate_input_id(id: &str) -> anyhow::Result<()> {
+    if uuid::Uuid::parse_str(id).is_ok_and(|value| value.to_string() == id) {
+        Ok(())
+    } else {
+        Err(InvalidInput("expected a canonical UUID".into()).into())
+    }
+}
+
+fn validate_optional_input_id(id: Option<&str>) -> anyhow::Result<()> {
+    id.map(validate_input_id).transpose().map(|_| ())
+}
+
+fn validate_folder_name(name: &str) -> anyhow::Result<()> {
+    if name.trim().is_empty() {
+        Err(InvalidInput("folder name is empty".into()).into())
+    } else {
+        Ok(())
+    }
+}
+
+pub(crate) fn validate_uuid(id: &str) -> Result<(), String> {
+    validate_input_id(id).map_err(backend_error)
+}
+
 pub struct ProcessService {
     home: PathBuf,
     pub(crate) store: Arc<dyn StoreBackend>,
     pub(crate) sessions: Arc<dyn SessionsBackend>,
+    pub(crate) preferences: Arc<PreferenceService>,
     store_hub: Arc<Hub<StoreState>>,
     sessions_hub: Arc<Hub<SessionsSnapshot>>,
-    appearance_hub: Arc<Hub<AppearanceSnapshot>>,
     tabs: Arc<dyn TabsBackend>,
     tabs_hubs: Arc<Mutex<BTreeMap<String, Arc<Hub<TabsSnapshot>>>>>,
     store_refresh: Arc<Mutex<()>>,
@@ -197,60 +216,87 @@ impl ProcessService {
             .await
     }
     pub async fn use_project(self: &Arc<Self>, selector: String) -> Result<ProjectDto, String> {
-        self.store_write(move |backend| backend.use_project(&selector))
-            .await
+        self.store_write(move |backend| {
+            validate_input_id(&selector)?;
+            backend.use_project(&selector)
+        })
+        .await
     }
     pub async fn rename_project(
         self: &Arc<Self>,
         selector: String,
         name: String,
     ) -> Result<ProjectDto, String> {
-        self.store_write(move |backend| backend.rename_project(&selector, &name))
-            .await
+        self.store_write(move |backend| {
+            validate_input_id(&selector)?;
+            backend.rename_project(&selector, &name)
+        })
+        .await
     }
     pub async fn set_project_notifications(
         self: &Arc<Self>,
         selector: String,
         enabled: bool,
     ) -> Result<ProjectDto, String> {
-        self.store_write(move |backend| backend.set_project_notifications(&selector, enabled))
-            .await
+        self.store_write(move |backend| {
+            validate_input_id(&selector)?;
+            backend.set_project_notifications(&selector, enabled)
+        })
+        .await
     }
     pub async fn set_project_orchestrator_wakes(
         self: &Arc<Self>,
         selector: String,
         enabled: bool,
     ) -> Result<ProjectDto, String> {
-        self.store_write(move |backend| backend.set_project_orchestrator_wakes(&selector, enabled))
-            .await
+        self.store_write(move |backend| {
+            validate_input_id(&selector)?;
+            backend.set_project_orchestrator_wakes(&selector, enabled)
+        })
+        .await
     }
     pub async fn create_folder(
         self: &Arc<Self>,
         name: String,
         parent: Option<String>,
     ) -> Result<FolderDto, String> {
-        self.store_write(move |backend| backend.create_folder(&name, parent.as_deref()))
-            .await
+        self.store_write(move |backend| {
+            validate_optional_input_id(parent.as_deref())?;
+            validate_folder_name(&name)?;
+            backend.create_folder(&name, parent.as_deref())
+        })
+        .await
     }
     pub async fn rename_folder(
         self: &Arc<Self>,
         selector: String,
         name: String,
     ) -> Result<FolderDto, String> {
-        self.store_write(move |backend| backend.rename_folder(&selector, &name))
-            .await
+        self.store_write(move |backend| {
+            validate_input_id(&selector)?;
+            validate_folder_name(&name)?;
+            backend.rename_folder(&selector, &name)
+        })
+        .await
     }
     pub async fn move_folder(
         self: &Arc<Self>,
         selector: String,
         parent: Option<String>,
     ) -> Result<FolderDto, String> {
-        self.store_write(move |backend| backend.move_folder(&selector, parent.as_deref()))
-            .await
+        self.store_write(move |backend| {
+            validate_input_id(&selector)?;
+            validate_optional_input_id(parent.as_deref())?;
+            backend.move_folder(&selector, parent.as_deref())
+        })
+        .await
     }
     pub async fn remove_folder(self: &Arc<Self>, selector: String) -> Result<(), String> {
-        self.store_write(move |backend| backend.remove_folder(&selector))
-            .await
+        self.store_write(move |backend| {
+            validate_input_id(&selector)?;
+            backend.remove_folder(&selector)
+        })
+        .await
     }
     pub async fn move_project_to_folder(
         self: &Arc<Self>,
@@ -258,6 +304,8 @@ impl ProcessService {
         folder: Option<String>,
     ) -> Result<ProjectDto, String> {
         self.store_write(move |backend| {
+            validate_input_id(&selector)?;
+            validate_optional_input_id(folder.as_deref())?;
             backend.move_project_to_folder(&selector, folder.as_deref())
         })
         .await
@@ -266,15 +314,21 @@ impl ProcessService {
         self: &Arc<Self>,
         selector: String,
     ) -> Result<Vec<WorktreeDto>, String> {
-        self.store_write(move |backend| backend.sync_worktrees(&selector))
-            .await
+        self.store_write(move |backend| {
+            validate_input_id(&selector)?;
+            backend.sync_worktrees(&selector)
+        })
+        .await
     }
     pub async fn refresh_worktrees(
         self: &Arc<Self>,
         selector: String,
     ) -> Result<Vec<WorktreeDto>, String> {
-        self.store_write(move |backend| backend.refresh_worktrees(&selector))
-            .await
+        self.store_write(move |backend| {
+            validate_input_id(&selector)?;
+            backend.refresh_worktrees(&selector)
+        })
+        .await
     }
     pub async fn add_task(
         self: &Arc<Self>,
@@ -282,23 +336,37 @@ impl ProcessService {
         title: String,
         details: String,
     ) -> Result<TaskDto, String> {
-        self.store_write(move |backend| backend.add_task(&project, &title, &details))
-            .await
+        self.store_write(move |backend| {
+            validate_input_id(&project)?;
+            backend.add_task(&project, &title, &details)
+        })
+        .await
     }
     pub async fn assign_tasks(
         self: &Arc<Self>,
         worktree: String,
         tasks: Vec<String>,
     ) -> Result<Vec<TaskDto>, String> {
-        self.store_write(move |backend| backend.assign_tasks(&worktree, &tasks))
-            .await
+        self.store_write(move |backend| {
+            validate_input_id(&worktree)?;
+            for id in &tasks {
+                validate_input_id(id)?;
+            }
+            backend.assign_tasks(&worktree, &tasks)
+        })
+        .await
     }
     pub async fn unassign_tasks(
         self: &Arc<Self>,
         tasks: Vec<String>,
     ) -> Result<Vec<TaskDto>, String> {
-        self.store_write(move |backend| backend.unassign_tasks(&tasks))
-            .await
+        self.store_write(move |backend| {
+            for id in &tasks {
+                validate_input_id(id)?;
+            }
+            backend.unassign_tasks(&tasks)
+        })
+        .await
     }
     pub async fn set_task_status(
         self: &Arc<Self>,
@@ -308,8 +376,11 @@ impl ProcessService {
         if !matches!(status.as_str(), "todo" | "in_progress" | "done") {
             return Err("invalid: use todo, in_progress, or done".into());
         }
-        self.store_write(move |backend| backend.set_task_status(&selector, &status))
-            .await
+        self.store_write(move |backend| {
+            validate_input_id(&selector)?;
+            backend.set_task_status(&selector, &status)
+        })
+        .await
     }
 
     async fn session_write<T: Send + 'static>(
@@ -356,16 +427,27 @@ impl ProcessService {
         self: &Arc<Self>,
         request: CreateSessionRequest,
     ) -> Result<ShellSessionDto, String> {
-        if request.project_id.trim().is_empty() {
-            return Err("invalid: projectId is required".into());
-        }
-        self.session_write(move |backend| backend.create(request))
-            .await
+        self.session_write(move |backend| {
+            validate_input_id(&request.project_id)?;
+            validate_optional_input_id(request.worktree_id.as_deref())?;
+            // An omitted cwd selects the worktree or project root in the
+            // backend; an explicit empty path is malformed input.
+            if request.cwd.as_deref().is_some_and(str::is_empty) {
+                return Err(InvalidInput("session cwd is empty".into()).into());
+            }
+            backend.create(request)
+        })
+        .await
     }
     pub async fn close_session(self: &Arc<Self>, id: String) -> Result<(), String> {
-        self.session_write(move |backend| backend.close(&id)).await
+        self.session_write(move |backend| {
+            validate_input_id(&id)?;
+            backend.close(&id)
+        })
+        .await
     }
 
+    /// Compatibility names retained for P1 bridge callers and fixtures.
     pub async fn tabs_update(
         self: &Arc<Self>,
         project: String,
@@ -374,6 +456,10 @@ impl ProcessService {
         let service = self.clone();
         blocking(move || {
             validate_project_id(&project)?;
+            let engine_update: riwork_engine::project_tabs::Update = update.clone().into();
+            engine_update
+                .validate()
+                .map_err(|error| format!("invalid: {error}"))?;
             let mut hubs = service
                 .tabs_hubs
                 .lock()
@@ -501,7 +587,7 @@ impl ProcessService {
         let mut watcher =
             notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
                 let flags = match event {
-                    Ok(event) if event.need_rescan() => STORE | SESSIONS | TABS | APPEARANCE,
+                    Ok(event) if event.need_rescan() => STORE | SESSIONS | TABS | SETTINGS,
                     Ok(event) if !matches!(event.kind, EventKind::Access(_)) => event
                         .paths
                         .iter()
@@ -510,7 +596,7 @@ impl ProcessService {
                     Err(error) => {
                         *watch_error.lock().unwrap_or_else(PoisonError::into_inner) =
                             Some(format!("home watcher: {error}"));
-                        STORE | SESSIONS | TABS | APPEARANCE
+                        STORE | SESSIONS | TABS | SETTINGS
                     }
                 };
                 if flags != 0 {
@@ -521,6 +607,7 @@ impl ProcessService {
         // Register before loading snapshots: no external write can fall in a gap
         // between the initial read and installation of the push source.
         watcher.watch(&home, RecursiveMode::Recursive)?;
+        let preferences = PreferenceService::new(home.clone())?;
         let initial_store = store.snapshot().context("initial store snapshot")?;
         let has_worktrees = Arc::new(AtomicBool::new(!initial_store.worktrees.is_empty()));
         let store_hub = Arc::new(Hub::new(initial_store));
@@ -536,13 +623,6 @@ impl ProcessService {
                 Hub::pending()
             }
         });
-        let appearance_hub = Arc::new(match appearance::load(&home) {
-            Ok(snapshot) => Hub::new(snapshot),
-            Err(error) => {
-                *last_error.lock().unwrap_or_else(PoisonError::into_inner) = Some(error);
-                Hub::pending()
-            }
-        });
         let has_shells = Arc::new(AtomicBool::new(has_shells));
         let stop = Arc::new(AtomicBool::new(false));
         let tabs_hubs = Arc::new(Mutex::new(BTreeMap::new()));
@@ -553,8 +633,6 @@ impl ProcessService {
         let worker_sessions = sessions.clone();
         let worker_store_hub = store_hub.clone();
         let worker_sessions_hub = sessions_hub.clone();
-        let worker_appearance_hub = appearance_hub.clone();
-        let worker_home = home.clone();
         let worker_error = last_error.clone();
         let worker_tabs = tabs.clone();
         let worker_tabs_hubs = tabs_hubs.clone();
@@ -562,6 +640,7 @@ impl ProcessService {
         let worker_sessions_refresh = sessions_refresh.clone();
         let worker_has_worktrees = has_worktrees.clone();
         let worker_has_shells = has_shells.clone();
+        let worker_preferences = preferences.clone();
         let worker = thread::Builder::new()
             .name("riwork-native-service".into())
             .spawn(move || {
@@ -595,14 +674,8 @@ impl ProcessService {
                         break;
                     }
                     let flags = dirty.swap(0, Ordering::AcqRel);
-                    if flags & APPEARANCE != 0 {
-                        match appearance::load(&worker_home) {
-                            Ok(snapshot) => worker_appearance_hub.publish(snapshot),
-                            Err(error) => {
-                                *worker_error.lock().unwrap_or_else(PoisonError::into_inner) =
-                                    Some(error)
-                            }
-                        }
+                    if flags & SETTINGS != 0 {
+                        worker_preferences.refresh();
                     }
                     let now = Instant::now();
                     let sample_due = next_sample.is_some_and(|deadline| now >= deadline);
@@ -673,9 +746,9 @@ impl ProcessService {
             home,
             store,
             sessions,
+            preferences,
             store_hub,
             sessions_hub,
-            appearance_hub,
             tabs,
             tabs_hubs,
             store_refresh,
@@ -690,8 +763,22 @@ impl ProcessService {
         }))
     }
 
+    /// Compatibility constructor: all versions share the same topic coordinator.
+    pub fn with_tabs_backend(
+        home: PathBuf,
+        store: Arc<dyn StoreBackend>,
+        sessions: Arc<dyn SessionsBackend>,
+        tabs: Arc<dyn TabsBackend>,
+    ) -> Result<Arc<Self>> {
+        Self::with_all_backends(home, store, sessions, tabs)
+    }
+
     pub fn home(&self) -> &Path {
         &self.home
+    }
+
+    pub fn preferences(&self) -> &Arc<PreferenceService> {
+        &self.preferences
     }
 
     /// For host diagnostics, called on a background thread.
@@ -702,16 +789,16 @@ impl ProcessService {
             .clone()
     }
 
-    pub async fn appearance_snapshot(self: &Arc<Self>) -> Result<AppearanceSnapshot, String> {
-        let home = self.home.clone();
-        blocking(move || appearance::load(&home).map_err(io_error)).await
+    pub async fn appearance_snapshot(self: &Arc<Self>) -> Result<AppearanceDto, String> {
+        let preferences = self.preferences.clone();
+        blocking(move || preferences.appearance(None, false)).await
     }
 
     pub async fn subscribe_appearance(
         self: &Arc<Self>,
-    ) -> Result<TopicSubscription<AppearanceSnapshot>, String> {
-        let hub = self.appearance_hub.clone();
-        blocking(move || Ok(hub.subscribe())).await
+    ) -> Result<TopicSubscription<AppearanceDto>, String> {
+        let preferences = self.preferences.clone();
+        blocking(move || Ok(preferences.subscribe_appearance())).await
     }
 
     pub async fn subscribe_store(
@@ -743,7 +830,7 @@ fn relevant(path: &Path, home: &Path) -> u8 {
     if path == home.join("state.json") {
         STORE
     } else if path == home.join("settings.json") {
-        APPEARANCE
+        SETTINGS
     } else if path == home.join("sessions.json")
         || path == home.join("orchestrator-wakes.json")
         || path.starts_with(home.join("agent-activity"))
@@ -762,9 +849,7 @@ fn relevant(path: &Path, home: &Path) -> u8 {
 }
 
 pub(crate) fn validate_project_id(project: &str) -> Result<(), String> {
-    riwork_engine::project_tabs::TabStore::at(PathBuf::new(), project)
-        .map(|_| ())
-        .map_err(|error| format!("invalid: {error}"))
+    validate_uuid(project)
 }
 
 fn refresh_tabs(

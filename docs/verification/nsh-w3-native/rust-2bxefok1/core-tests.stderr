@@ -1,0 +1,4 @@
+    Blocking waiting for file lock on build directory
+   Compiling riwork-core v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p1-fix-native/crates/riwork-core)
+    Finished `test` profile [unoptimized] target(s) in 5.84s
+     Running unittests src/lib.rs (/private/tmp/riwork-w3-c62ea465/target/debug/deps/riwork_core-0fc511e0a536250c)

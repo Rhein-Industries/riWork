@@ -1,13 +1,19 @@
-import { List, Scroll, Text, View, cleanup, host, keymap, signal, type JSX, type YNode } from "nsh";
+import { List, Scroll, Text, View, cleanup, context, host, keymap, signal, type JSX, type YNode } from "nsh";
 import { Button, Dialog, Input, Switch } from "nsh/base";
 import { Menu } from "nsh/desktop";
 import { Sessions, Store, Tabs, type ProjectDto, type ProjectInspectionDto, type ShellSessionDto, type StoreState, type Subscription, type TabEntryDto, type TabsSnapshot, type TaskDto } from "riwork/native";
-import { EMPTY_STORE, countLabel, matches, projectRows, shellLabel, shellMatches, taskColor, taskMark, taskMatches, visibleWorktrees, worktreeLabel, type ListPanel, type ProjectOrder, type ProjectTreeRow } from "./panel_model";
+import { EMPTY_STORE, countLabel, matches, projectRows, shellLabel, shellMatches, taskMark, taskMatches, visibleWorktrees, worktreeLabel, type ListPanel, type ProjectOrder, type ProjectTreeRow } from "./panel_model";
+import { DEFAULT_THEME, space, type InterfaceTheme } from "./appearance";
 
-const ink = "#eef2f9", muted = "#aeb5c2", accent = "#7acddd";
-const button = { paddingHorizontal: 7, paddingVertical: 5, borderRadius: 4, backgroundColor: "#2a303a" };
-const field = { minHeight: 28, paddingHorizontal: 8, paddingVertical: 5, borderRadius: 4, backgroundColor: "#11151b", color: ink, fontSize: 12 };
-const row = { paddingHorizontal: 10, paddingVertical: 8, gap: 4, borderRadius: 4 };
+const defaultTheme = () => DEFAULT_THEME;
+const PanelTheme = context<() => InterfaceTheme>(defaultTheme);
+const theme = () => PanelTheme()();
+const ink = () => theme().palette.text, muted = () => theme().palette.muted, accent = () => theme().palette.cyan;
+const text = (base: number) => base * theme().scale;
+const button = () => ({ paddingHorizontal: space(7, theme().scale), paddingVertical: space(5, theme().scale), borderRadius: 4, backgroundColor: theme().palette.panel });
+const field = () => ({ minHeight: space(28, theme().scale), paddingHorizontal: space(8, theme().scale), paddingVertical: space(5, theme().scale), borderRadius: 4, backgroundColor: theme().palette.bg, color: ink(), fontFamily: theme().family, fontSize: text(12) });
+const row = () => ({ paddingHorizontal: space(10, theme().scale), paddingVertical: space(8, theme().scale), gap: space(4, theme().scale), borderRadius: 4 });
+const statusColor = (status: string) => status === "done" ? accent() : status === "in_progress" ? theme().palette.gold : muted();
 type Editor = { kind: "folder"; parent?: string; id?: string; name: string } | { kind: "project" } | { kind: "task" };
 
 interface PanelOptions {
@@ -23,6 +29,7 @@ interface PanelOptions {
   /** Fixture-only destination; production resolves it through the native Paths adapter. */
   defaultProjectDirectory?: string;
   notice: (message: string) => void;
+  theme?: () => InterfaceTheme;
 }
 
 /** One controller per window. Hidden panel tabs never own independent queries or subscriptions. */
@@ -151,8 +158,8 @@ export type PanelController = ReturnType<typeof createPanelController>;
 
 function Command(props: { id?: string; label: string; disabled?: boolean; selected?: boolean; onPress: () => void; children?: JSX.Element }) {
   return <Button testID={props.id} accessibilityLabel={props.label} disabled={props.disabled} selected={props.selected} onPress={props.onPress}
-    style={button} hoverStyle={{ backgroundColor: "#373e4a" }} focusStyle={{ backgroundColor: "#414958" }} selectedStyle={{ backgroundColor: "#3a505c" }}>
-    <Text style={{ fontSize: 11, color: props.disabled ? "#66707f" : ink }}>{props.children ?? props.label}</Text>
+    style={button()} hoverStyle={{ backgroundColor: theme().palette.panelActive }} focusStyle={{ backgroundColor: theme().palette.divider }} selectedStyle={{ backgroundColor: theme().palette.panelActive }}>
+    <Text style={{ fontFamily: theme().family, fontSize: text(11), color: props.disabled ? muted() : ink() }}>{props.children ?? props.label}</Text>
   </Button>;
 }
 
@@ -162,30 +169,30 @@ function PanelSearch(props: { controller: PanelController; panel: ListPanel; sur
   let input: YNode | undefined;
   cleanup(() => c.searches.delete(props.surface));
   return <View style={{ flexDirection: "row", gap: 6, padding: 8, alignItems: "center", minWidth: 0 }} onPress={() => input?.focus()}>
-    <Text style={{ color: muted, fontSize: 13 }}>⌕</Text>
+    <Text style={{ color: muted(), fontFamily: theme().family, fontSize: text(13) }}>⌕</Text>
     <Input testID={`search:${props.surface}`} accessibilityLabel={`Search ${noun}`} placeholder="Search  ⌘F" value={c.query()}
       onChange={(text) => c.query.set(text)} ref={(node) => { input = node; c.searches.set(props.surface, node); }}
-      style={{ ...field, flex: 1, minWidth: 80 }} />
+      style={{ ...field(), flex: 1, minWidth: 80 }} />
     {c.query() !== "" && <Command id={`clear-search:${props.surface}`} label="Clear the search" onPress={() => { c.query.set(""); input?.focus(); }}>×</Command>}
   </View>;
 }
 
 function Header(props: { title: string; count: number; total: number; noun: string; project?: string; children?: JSX.Element }) {
   return <View style={{ padding: 10, paddingBottom: 5, gap: 7 }}>
-    <Text style={{ fontSize: 13, fontWeight: "600", color: ink }}>{props.title}</Text>
-    <Text testID={`count:${props.noun}`} style={{ fontSize: 10, color: muted }}>{`${countLabel(props.count, props.total, props.noun)}${props.project ? ` · ${props.project}` : ""}`}</Text>
+    <Text style={{ fontFamily: theme().family, fontSize: text(13), fontWeight: "600", color: ink() }}>{props.title}</Text>
+    <Text testID={`count:${props.noun}`} style={{ fontFamily: theme().monoFamily, fontSize: text(10), color: muted() }}>{`${countLabel(props.count, props.total, props.noun)}${props.project ? ` · ${props.project}` : ""}`}</Text>
     {props.children && <View style={{ flexDirection: "row", gap: 5, flexWrap: "wrap" }}>{props.children}</View>}
   </View>;
 }
 function Empty(props: { query: string; noun: string }) {
-  return <View style={{ padding: 16 }}><Text style={{ color: muted, fontSize: 12 }}>{props.query.trim() ? "No matches" : `No ${props.noun}`}</Text></View>;
+  return <View style={{ padding: 16 }}><Text style={{ color: muted(), fontFamily: theme().family, fontSize: text(12) }}>{props.query.trim() ? "No matches" : `No ${props.noun}`}</Text></View>;
 }
 
 function ProjectRow(props: { item: () => ProjectTreeRow; controller: PanelController }) {
   // List recycles a cell across unrelated keys and row kinds. Keep both the
   // branch and every identity reactive instead of capturing the first item.
   return <>{props.item().kind === "empty" ?
-    <View style={{ paddingLeft: 12 + props.item().depth * 12, paddingVertical: 7 }}><Text style={{ fontSize: 10, color: "#7f8999" }}>Drop projects here</Text></View> :
+    <View style={{ paddingLeft: 12 + props.item().depth * 12, paddingVertical: 7 }}><Text style={{ fontFamily: theme().family, fontSize: text(10), color: muted() }}>Drop projects here</Text></View> :
     props.item().kind === "folder" ? <FolderRow item={props.item} controller={props.controller} /> : <ProjectItemRow item={props.item} controller={props.controller} />}</>;
 }
 
@@ -194,8 +201,8 @@ function FolderRow(props: { item: () => ProjectTreeRow; controller: PanelControl
   const current = () => props.item() as Extract<ProjectTreeRow, { kind: "folder" }>;
   const id = () => current().folder?.id ?? "unfiled";
   return <View style={{ paddingLeft: current().depth * 12, flexDirection: "row", alignItems: "center", gap: 3 }} accessibilityState={{ expanded: !c.collapsed().has(id()) }}>
-    <Button testID={current().id} accessibilityLabel={current().name} onPress={() => c.toggleFolder(id())} style={{ flex: 1, padding: 8 }} focusStyle={{ backgroundColor: "#343943" }}>
-      <Text style={{ fontSize: 11, color: muted }}>{`${c.collapsed().has(id()) ? "▸" : "▾"} ${current().name}  ${current().count}`}</Text>
+    <Button testID={current().id} accessibilityLabel={current().name} onPress={() => c.toggleFolder(id())} style={{ flex: 1, padding: 8 }} focusStyle={{ backgroundColor: theme().palette.divider }}>
+      <Text style={{ fontFamily: theme().family, fontSize: text(11), color: muted() }}>{`${c.collapsed().has(id()) ? "▸" : "▾"} ${current().name}  ${current().count}`}</Text>
     </Button>
     {current().folder && <View style={{ flexDirection: "row", gap: 2 }}>
       <Command id={`subfolder:${id()}`} label="Create subfolder" onPress={() => c.editor.set({ kind: "folder", parent: id(), name: "" })}>＋</Command>
@@ -214,9 +221,9 @@ function ProjectItemRow(props: { item: () => ProjectTreeRow; controller: PanelCo
   const live = () => c.shells().filter((shell) => shell.projectId === project().id && shell.alive).length;
   return <View style={{ paddingLeft: props.item().depth * 12, gap: 2 }}>
     <Button testID={`project-${project().id}`} accessibilityLabel={project().name} selected={c.projectId() === project().id} disabled={c.pending()}
-      onPress={() => void c.activate(project())} style={row} hoverStyle={{ backgroundColor: "#272d37" }} focusStyle={{ backgroundColor: "#343943" }} selectedStyle={{ backgroundColor: "#303f4c" }}>
-      <Text numberOfLines={1} style={{ fontSize: 12, color: ink }}>{project().name}</Text>
-      <Text numberOfLines={1} style={{ fontSize: 10, color: muted }}>{`${trees().length} trees · ${tasks().filter((task) => task.status === "done").length}/${tasks().length} tasks · ${live()} live`}</Text>
+      onPress={() => void c.activate(project())} style={row()} hoverStyle={{ backgroundColor: theme().palette.panelActive }} focusStyle={{ backgroundColor: theme().palette.divider }} selectedStyle={{ backgroundColor: theme().palette.panelActive }}>
+      <Text numberOfLines={1} style={{ fontFamily: theme().family, fontSize: text(12), color: ink() }}>{project().name}</Text>
+      <Text numberOfLines={1} style={{ fontFamily: theme().family, fontSize: text(10), color: muted() }}>{`${trees().length} trees · ${tasks().filter((task) => task.status === "done").length}/${tasks().length} tasks · ${live()} live`}</Text>
     </Button>
     {c.projectId() === project().id && <View style={{ flexDirection: "row", paddingLeft: 10, gap: 4, flexWrap: "wrap" }}>
       <Command id={`project-notifications:${project().id}`} label="Agent completion notifications" selected={project().notifyOnAgentDone} disabled={c.pending()} onPress={() => void c.run(() => Store.setProjectNotifications(project().id, !project().notifyOnAgentDone))}>{project().notifyOnAgentDone ? "🔔" : "🔕"}</Command>
@@ -247,7 +254,7 @@ function Projects(props: { controller: PanelController; surface: string }) {
       <Command id="sort-projects" label="Sort projects" onPress={sortMenu}>↕</Command>
     </Header>
     <PanelSearch controller={c} panel="projects" surface={props.surface} />
-    <List each={rows()} keyExtractor={(item) => item.id} estimatedItemSize={58} style={{ flex: 1, minHeight: 0 }} contentStyle={{ paddingHorizontal: 4, paddingBottom: 8 }} empty={<Empty query={c.query()} noun="projects" />}>
+    <List each={rows()} keyExtractor={(item) => item.id} estimatedItemSize={space(58, theme().scale)} style={{ flex: 1, minHeight: 0 }} contentStyle={{ paddingHorizontal: 4, paddingBottom: 8 }} empty={<Empty query={c.query()} noun="projects" />}>
       {(item) => <ProjectRow item={item} controller={c} />}
     </List>
   </View>;
@@ -262,12 +269,12 @@ function Worktrees(props: { controller: PanelController; surface: string }) {
       <Command id="refresh-worktrees" label="Refresh worktrees" disabled={c.pending()} onPress={() => void c.run(() => Store.refreshWorktrees(c.projectId()))}>Refresh</Command>
     </Header>
     <PanelSearch controller={c} panel="worktrees" surface={props.surface} />
-    <List each={rows()} keyExtractor={(tree) => tree.id} estimatedItemSize={72} style={{ flex: 1, minHeight: 0 }} contentStyle={{ paddingHorizontal: 4 }} empty={<Empty query={c.query()} noun="worktrees" />}>
-      {(item) => <Button testID={`worktree-${item().id}`} accessibilityLabel={worktreeLabel(item())} selected={c.selectedWorktree() === item().id} onPress={() => c.selectWorktree(item().id)} style={row} focusStyle={{ backgroundColor: "#343943" }} selectedStyle={{ backgroundColor: "#303f4c" }}>
-        <Text style={{ fontSize: 12, color: ink }}>{`${item().isPrimary ? "▣" : "⑂"} ${worktreeLabel(item())}`}</Text>
-        <Text numberOfLines={1} style={{ fontSize: 10, color: muted }}>{item().path}</Text>
-        {item().present === false && <Text style={{ fontSize: 10, color: "#f1ce85" }}>Missing</Text>}
-        <Text style={{ fontSize: 10, color: muted }}>{`${c.state().tasks.filter((task) => task.worktreeId === item().id && task.status === "done").length}/${c.state().tasks.filter((task) => task.worktreeId === item().id).length} tasks · ${item().id.slice(0, 8)}`}</Text>
+    <List each={rows()} keyExtractor={(tree) => tree.id} estimatedItemSize={space(72, theme().scale)} style={{ flex: 1, minHeight: 0 }} contentStyle={{ paddingHorizontal: 4 }} empty={<Empty query={c.query()} noun="worktrees" />}>
+      {(item) => <Button testID={`worktree-${item().id}`} accessibilityLabel={worktreeLabel(item())} selected={c.selectedWorktree() === item().id} onPress={() => c.selectWorktree(item().id)} style={row()} focusStyle={{ backgroundColor: theme().palette.divider }} selectedStyle={{ backgroundColor: theme().palette.panelActive }}>
+        <Text style={{ fontFamily: theme().family, fontSize: text(12), color: ink() }}>{`${item().isPrimary ? "▣" : "⑂"} ${worktreeLabel(item())}`}</Text>
+        <Text numberOfLines={1} style={{ fontFamily: theme().monoFamily, fontSize: text(10), color: muted() }}>{item().path}</Text>
+        {item().present === false && <Text style={{ fontFamily: theme().family, fontSize: text(10), color: theme().palette.gold }}>Missing</Text>}
+        <Text style={{ fontFamily: theme().family, fontSize: text(10), color: muted() }}>{`${c.state().tasks.filter((task) => task.worktreeId === item().id && task.status === "done").length}/${c.state().tasks.filter((task) => task.worktreeId === item().id).length} tasks · ${item().id.slice(0, 8)}`}</Text>
       </Button>}
     </List>
   </View>;
@@ -282,12 +289,12 @@ function TaskDetail(props: { controller: PanelController; task: TaskDto }) {
         onSelect: () => void c.run(() => Store.assignTasks(tree.id, [props.task.id]), () => c.selectWorktree(tree.id)) })),
     ]);
   }
-  return <Scroll testID="task-detail" style={{ maxHeight: 200, borderTopWidth: 1, borderTopColor: "#343943" }} contentStyle={{ padding: 10, gap: 7 }}>
-    <Text style={{ fontSize: 11, fontWeight: "600", color: ink }}>Task detail</Text>
-    <Text style={{ fontSize: 12, color: ink }}>{props.task.title}</Text>
-    <Text style={{ fontSize: 10, color: taskColor(props.task.status) }}>{`${props.task.status} · @ ${worktreeLabel(c.state().worktrees.find((tree) => tree.id === props.task.worktreeId))}`}</Text>
-    <Text selectable={true} style={{ fontSize: 11, color: muted }}>{props.task.details || "No details"}</Text>
-    <Text selectable={true} style={{ fontSize: 9, color: muted }}>{props.task.id}</Text>
+  return <Scroll testID="task-detail" style={{ maxHeight: 200, borderTopWidth: 1, borderTopColor: theme().palette.divider }} contentStyle={{ padding: 10, gap: 7 }}>
+    <Text style={{ fontFamily: theme().family, fontSize: text(11), fontWeight: "600", color: ink() }}>Task detail</Text>
+    <Text style={{ fontFamily: theme().family, fontSize: text(12), color: ink() }}>{props.task.title}</Text>
+    <Text style={{ fontFamily: theme().family, fontSize: text(10), color: statusColor(props.task.status) }}>{`${props.task.status} · @ ${worktreeLabel(c.state().worktrees.find((tree) => tree.id === props.task.worktreeId))}`}</Text>
+    <Text selectable={true} style={{ fontFamily: theme().family, fontSize: text(11), color: muted() }}>{props.task.details || "No details"}</Text>
+    <Text selectable={true} style={{ fontFamily: theme().monoFamily, fontSize: text(9), color: muted() }}>{props.task.id}</Text>
     <View style={{ flexDirection: "row", gap: 4, flexWrap: "wrap" }}>
       {(["todo", "in_progress", "done"] as const).map((status) => <Command id={`task-status:${status}`} label={status === "in_progress" ? "In progress" : status === "done" ? "Done" : "Todo"}
         selected={props.task.status === status} disabled={c.pending()} onPress={() => void c.run(() => Store.setTaskStatus(props.task.id, status))} />)}
@@ -306,10 +313,10 @@ function Tasks(props: { controller: PanelController; surface: string }) {
       <Command id="new-task" label="Add task" disabled={c.pending()} onPress={() => c.editor.set({ kind: "task" })}>＋ Task</Command>
     </Header>
     <PanelSearch controller={c} panel="tasks" surface={props.surface} />
-    <List each={rows()} keyExtractor={(task) => task.id} estimatedItemSize={58} style={{ flex: 1, minHeight: 0 }} contentStyle={{ paddingHorizontal: 4 }} empty={<Empty query={c.query()} noun="tasks" />}>
-      {(item) => <Button testID={`task-${item().id}`} accessibilityLabel={item().title} selected={c.selectedTask() === item().id} onPress={() => c.selectTask(item().id)} style={row} focusStyle={{ backgroundColor: "#343943" }} selectedStyle={{ backgroundColor: "#303f4c" }}>
-        <Text style={{ fontSize: 12, color: ink }}>{`${taskMark(item().status)} ${item().title}`}</Text>
-        <Text style={{ fontSize: 10, color: taskColor(item().status) }}>{`${item().status} · @ ${worktreeLabel(c.state().worktrees.find((tree) => tree.id === item().worktreeId))}`}</Text>
+    <List each={rows()} keyExtractor={(task) => task.id} estimatedItemSize={space(58, theme().scale)} style={{ flex: 1, minHeight: 0 }} contentStyle={{ paddingHorizontal: 4 }} empty={<Empty query={c.query()} noun="tasks" />}>
+      {(item) => <Button testID={`task-${item().id}`} accessibilityLabel={item().title} selected={c.selectedTask() === item().id} onPress={() => c.selectTask(item().id)} style={row()} focusStyle={{ backgroundColor: theme().palette.divider }} selectedStyle={{ backgroundColor: theme().palette.panelActive }}>
+        <Text style={{ fontFamily: theme().family, fontSize: text(12), color: ink() }}>{`${taskMark(item().status)} ${item().title}`}</Text>
+        <Text style={{ fontFamily: theme().family, fontSize: text(10), color: statusColor(item().status) }}>{`${item().status} · @ ${worktreeLabel(c.state().worktrees.find((tree) => tree.id === item().worktreeId))}`}</Text>
       </Button>}
     </List>
     {selected() && <TaskDetail controller={c} task={selected()!} />}
@@ -332,14 +339,14 @@ function Shells(props: { controller: PanelController; surface: string }) {
       })}>＋ Shell</Command>
     </Header>
     <PanelSearch controller={c} panel="shells" surface={props.surface} />
-    <List each={rows()} keyExtractor={(item) => item.shell.id} estimatedItemSize={78} style={{ flex: 1, minHeight: 0 }} contentStyle={{ paddingHorizontal: 4 }} empty={<Empty query={c.query()} noun="sessions" />}>
+    <List each={rows()} keyExtractor={(item) => item.shell.id} estimatedItemSize={space(78, theme().scale)} style={{ flex: 1, minHeight: 0 }} contentStyle={{ paddingHorizontal: 4 }} empty={<Empty query={c.query()} noun="sessions" />}>
       {(item) => <View style={{ gap: 2 }}>
-        <Button testID={`shell-${item().shell.id}`} accessibilityLabel={c.titleForShell(item().shell)} selected={c.selectedShell() === item().shell.id} onPress={() => c.attach(item().shell, item().projectId, item().token)} style={row} focusStyle={{ backgroundColor: "#343943" }} selectedStyle={{ backgroundColor: "#303f4c" }}>
-          <Text style={{ fontSize: 12, color: ink }}>{c.titleForShell(item().shell)}</Text>
-          <Text style={{ fontSize: 10, color: item().shell.alive ? accent : muted }}>{`${item().shell.alive ? "Live" : "Exited"} · ${item().shell.harness ?? "shell"}`}</Text>
-          <Text numberOfLines={1} style={{ fontSize: 10, color: muted }}>{item().shell.command ?? item().shell.cwd}</Text>
-          <Text style={{ fontSize: 9, color: muted }}>{item().shell.id.slice(0, 8)}</Text>
-          {c.tabForShell(item().shell.id)?.hidden && <Text style={{ fontSize: 9, color: muted }}>Hidden tab · select to reopen</Text>}
+        <Button testID={`shell-${item().shell.id}`} accessibilityLabel={c.titleForShell(item().shell)} selected={c.selectedShell() === item().shell.id} onPress={() => c.attach(item().shell, item().projectId, item().token)} style={row()} focusStyle={{ backgroundColor: theme().palette.divider }} selectedStyle={{ backgroundColor: theme().palette.panelActive }}>
+          <Text style={{ fontFamily: theme().family, fontSize: text(12), color: ink() }}>{c.titleForShell(item().shell)}</Text>
+          <Text style={{ fontFamily: theme().family, fontSize: text(10), color: item().shell.alive ? accent() : muted() }}>{`${item().shell.alive ? "Live" : "Exited"} · ${item().shell.harness ?? "shell"}`}</Text>
+          <Text numberOfLines={1} style={{ fontFamily: theme().monoFamily, fontSize: text(10), color: muted() }}>{item().shell.command ?? item().shell.cwd}</Text>
+          <Text style={{ fontFamily: theme().monoFamily, fontSize: text(9), color: muted() }}>{item().shell.id.slice(0, 8)}</Text>
+          {c.tabForShell(item().shell.id)?.hidden && <Text style={{ fontFamily: theme().family, fontSize: text(9), color: muted() }}>Hidden tab · select to reopen</Text>}
         </Button>
         {c.selectedShell() === item().shell.id && <View style={{ paddingHorizontal: 10 }}><Command id={`close-shell:${item().shell.id}`} label="Close shell" disabled={c.pending()} onPress={() => void c.run(() => Sessions.close(item().shell.id))} /></View>}
       </View>}
@@ -348,19 +355,25 @@ function Shells(props: { controller: PanelController; surface: string }) {
 }
 
 export function PanelContent(props: { controller: PanelController; panel: string; surface: string }) {
-  return <>{props.panel === "projects" ? <Projects controller={props.controller} surface={props.surface} /> :
+  // NSH's context provider reads its children untracked before resolving them.
+  // Keep the changing panel choice in a callable child so its memo tracks it.
+  return <PanelTheme.Provider value={props.controller.theme ?? defaultTheme}>{() => props.panel === "projects" ? <Projects controller={props.controller} surface={props.surface} /> :
     props.panel === "worktrees" ? <Worktrees controller={props.controller} surface={props.surface} /> :
     props.panel === "tasks" ? <Tasks controller={props.controller} surface={props.surface} /> :
-    props.panel === "shells" ? <Shells controller={props.controller} surface={props.surface} /> : null}</>;
+    props.panel === "shells" ? <Shells controller={props.controller} surface={props.surface} /> : null}</PanelTheme.Provider>;
 }
 
 export function ShellIntent(props: { controller: PanelController; shellId: string }) {
+  return <PanelTheme.Provider value={props.controller.theme ?? defaultTheme}><ShellIntentContent {...props} /></PanelTheme.Provider>;
+}
+
+function ShellIntentContent(props: { controller: PanelController; shellId: string }) {
   const shell = () => props.controller.shells().find((shell) => shell.id === props.shellId);
   return <View testID={`shell-intent:${props.shellId}`} style={{ padding: 16, gap: 8 }}>
-    <Text style={{ fontSize: 13, color: ink }}>{shell() ? props.controller.titleForShell(shell()!) : "Shell"}</Text>
-    <Text style={{ fontSize: 11, color: muted }}>Shell selected. Terminal attachment is pending Phase 2.</Text>
-    <Text selectable={true} style={{ fontSize: 11, color: muted }}>{props.shellId}</Text>
-    {shell() && <Text style={{ fontSize: 11, color: muted }}>{`${shell()!.alive ? "Live" : "Exited"} · ${shell()!.cwd}`}</Text>}
+    <Text style={{ fontFamily: theme().family, fontSize: text(13), color: ink() }}>{shell() ? props.controller.titleForShell(shell()!) : "Shell"}</Text>
+    <Text style={{ fontFamily: theme().family, fontSize: text(11), color: muted() }}>Shell selected. Terminal attachment is pending Phase 2.</Text>
+    <Text selectable={true} style={{ fontFamily: theme().monoFamily, fontSize: text(11), color: muted() }}>{props.shellId}</Text>
+    {shell() && <Text style={{ fontFamily: theme().family, fontSize: text(11), color: muted() }}>{`${shell()!.alive ? "Live" : "Exited"} · ${shell()!.cwd}`}</Text>}
   </View>;
 }
 
@@ -375,11 +388,11 @@ function FolderEditor(props: { controller: PanelController; editor: Extract<Edit
     });
   }
   return <View style={{ gap: 10 }}>
-    <Text style={{ fontSize: 15, color: ink }}>{props.editor.id ? "Rename virtual folder" : props.editor.parent ? "New subfolder" : "New virtual folder"}</Text>
-    <Text style={{ fontSize: 11, color: muted }}>Group projects without moving their files.</Text>
-    <Text style={{ fontSize: 10, color: muted }}>{`PARENT / ${c.folderPath(props.editor.parent)}`}</Text>
-    <Input testID="folder-name" accessibilityLabel="Folder name" autoFocus={true} value={name()} onChange={(value) => name.set(value)} onSubmit={save} style={field} />
-    {error() !== "" && <Text style={{ color: "#f1ce85", fontSize: 11 }}>{error()}</Text>}
+    <Text style={{ fontFamily: theme().family, fontSize: text(15), color: ink() }}>{props.editor.id ? "Rename virtual folder" : props.editor.parent ? "New subfolder" : "New virtual folder"}</Text>
+    <Text style={{ fontFamily: theme().family, fontSize: text(11), color: muted() }}>Group projects without moving their files.</Text>
+    <Text style={{ fontFamily: theme().family, fontSize: text(10), color: muted() }}>{`PARENT / ${c.folderPath(props.editor.parent)}`}</Text>
+    <Input testID="folder-name" accessibilityLabel="Folder name" autoFocus={true} value={name()} onChange={(value) => name.set(value)} onSubmit={save} style={field()} />
+    {error() !== "" && <Text style={{ color: theme().palette.gold, fontFamily: theme().family, fontSize: text(11) }}>{error()}</Text>}
     <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: 6 }}>
       <Command label="Cancel" disabled={c.pending()} onPress={() => c.editor.set(null)} />
       <Command id="save-folder" label="Save folder" disabled={c.pending()} onPress={save} />
@@ -398,10 +411,10 @@ function TaskEditor(props: { controller: PanelController }) {
     });
   }
   return <View style={{ gap: 10 }}>
-    <Text style={{ fontSize: 15, color: ink }}>Add task</Text>
-    <Input testID="task-title" accessibilityLabel="Task title" placeholder="Task title" autoFocus={true} value={title()} onChange={(value) => title.set(value)} onSubmit={save} style={field} />
-    <Input testID="task-details" accessibilityLabel="Task details" placeholder="Details (optional)" multiline={true} value={details()} onChange={(value) => details.set(value)} style={{ ...field, minHeight: 90 }} />
-    {error() !== "" && <Text style={{ color: "#f1ce85", fontSize: 11 }}>{error()}</Text>}
+    <Text style={{ fontFamily: theme().family, fontSize: text(15), color: ink() }}>Add task</Text>
+    <Input testID="task-title" accessibilityLabel="Task title" placeholder="Task title" autoFocus={true} value={title()} onChange={(value) => title.set(value)} onSubmit={save} style={field()} />
+    <Input testID="task-details" accessibilityLabel="Task details" placeholder="Details (optional)" multiline={true} value={details()} onChange={(value) => details.set(value)} style={{ ...field(), minHeight: 90 }} />
+    {error() !== "" && <Text style={{ color: theme().palette.gold, fontFamily: theme().family, fontSize: text(11) }}>{error()}</Text>}
     <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: 6 }}>
       <Command label="Cancel" disabled={c.pending()} onPress={() => c.editor.set(null)} />
       <Command id="save-task" label="Add task" disabled={c.pending() || !title().trim()} onPress={save} />
@@ -456,22 +469,22 @@ function ProjectEditor(props: { controller: PanelController }) {
   cleanup(keymap.bind("mod+o", () => void browse()));
   cleanup(keymap.bind("mod+g", () => { if (inspection()?.canInitGit && !c.pending()) initGit.set(!initGit()); }));
   return <View style={{ gap: 10 }}>
-    <Text style={{ fontSize: 15, color: ink }}>New project</Text>
-    <Text style={{ fontSize: 11, color: muted }}>Project name</Text>
-    <Input testID="project-name" accessibilityLabel="Project name" placeholder={followsName() ? "my-project" : "Use folder name"} value={name()} readonly={c.pending()} autoFocus={true} onChange={setName} onSubmit={save} style={field} />
-    <Text style={{ fontSize: 11, color: muted }}>Folder</Text>
+    <Text style={{ fontFamily: theme().family, fontSize: text(15), color: ink() }}>New project</Text>
+    <Text style={{ fontFamily: theme().family, fontSize: text(11), color: muted() }}>Project name</Text>
+    <Input testID="project-name" accessibilityLabel="Project name" placeholder={followsName() ? "my-project" : "Use folder name"} value={name()} readonly={c.pending()} autoFocus={true} onChange={setName} onSubmit={save} style={field()} />
+    <Text style={{ fontFamily: theme().family, fontSize: text(11), color: muted() }}>Folder</Text>
     <View style={{ flexDirection: "row", gap: 6 }}>
-      <Input testID="project-path" accessibilityLabel="Project folder" placeholder="/path/to/project" value={path()} readonly={c.pending()} onChange={(value) => { followsName.set(false); setPath(value); }} onSubmit={save} ref={(node) => { pathInput = node; }} style={{ ...field, flex: 1 }} />
+      <Input testID="project-path" accessibilityLabel="Project folder" placeholder="/path/to/project" value={path()} readonly={c.pending()} onChange={(value) => { followsName.set(false); setPath(value); }} onSubmit={save} ref={(node) => { pathInput = node; }} style={{ ...field(), fontFamily: theme().monoFamily, flex: 1 }} />
       <Command id="browse-project" label="Browse…" disabled={c.pending()} onPress={() => void browse()} />
     </View>
-    <Text testID="project-inspection" style={{ fontSize: 11, color: muted }}>{checking() ? "Checking folder…" : inspection() ? `${inspection()!.exists ? "Folder" : "New folder"} · ${inspection()!.repositoryCount ? `${inspection()!.repositoryCount} Git repositories` : "no repositories"}` : "Enter a project name, or choose an existing folder."}</Text>
-    {inspection() && <Text numberOfLines={2} style={{ fontSize: 10, color: muted }}>{`Folder: ${inspection()!.root}`}</Text>}
-    {!!inspection()?.warning && <Text style={{ fontSize: 11, color: "#f1ce85" }}>{inspection()!.warning}</Text>}
+    <Text testID="project-inspection" style={{ fontFamily: theme().family, fontSize: text(11), color: muted() }}>{checking() ? "Checking folder…" : inspection() ? `${inspection()!.exists ? "Folder" : "New folder"} · ${inspection()!.repositoryCount ? `${inspection()!.repositoryCount} Git repositories` : "no repositories"}` : "Enter a project name, or choose an existing folder."}</Text>
+    {inspection() && <Text numberOfLines={2} style={{ fontFamily: theme().family, fontSize: text(10), color: muted() }}>{`Folder: ${inspection()!.root}`}</Text>}
+    {!!inspection()?.warning && <Text style={{ fontFamily: theme().family, fontSize: text(11), color: theme().palette.gold }}>{inspection()!.warning}</Text>}
     {inspection()?.canInitGit ? <Switch testID="project-init-git" accessibilityLabel="Initialize Git" checked={initGit()} onChange={(value) => initGit.set(value)} disabled={c.pending()} style={{ flexDirection: "row", alignItems: "center", gap: 8 }}
-      trackStyle={{ width: 28, height: 16, borderRadius: 8, padding: 2, alignItems: initGit() ? "flex-end" : "flex-start", backgroundColor: initGit() ? "#3b7a89" : "#4c5360" }} thumbStyle={{ width: 12, height: 12, borderRadius: 6, backgroundColor: ink }}>
-      <Text style={{ fontSize: 11, color: ink }}>Initialize Git</Text>
-    </Switch> : inspection() && <Text style={{ fontSize: 11, color: muted }}>Use existing repositories</Text>}
-    {error() !== "" && <Text testID="project-error" style={{ fontSize: 11, color: "#f1ce85" }}>{error()}</Text>}
+      trackStyle={{ width: 28, height: 16, borderRadius: 8, padding: 2, alignItems: initGit() ? "flex-end" : "flex-start", backgroundColor: initGit() ? accent() : theme().palette.divider }} thumbStyle={{ width: 12, height: 12, borderRadius: 6, backgroundColor: theme().palette.bg }}>
+      <Text style={{ fontFamily: theme().family, fontSize: text(11), color: ink() }}>Initialize Git</Text>
+    </Switch> : inspection() && <Text style={{ fontFamily: theme().family, fontSize: text(11), color: muted() }}>Use existing repositories</Text>}
+    {error() !== "" && <Text testID="project-error" style={{ fontFamily: theme().family, fontSize: text(11), color: theme().palette.gold }}>{error()}</Text>}
     <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: 6 }}>
       <Command label="Cancel" disabled={c.pending()} onPress={() => c.editor.set(null)} />
       <Command id="create-project" label={c.pending() ? "Creating…" : "Create project"} disabled={c.pending() || checking() || !inspection()} onPress={save} />
@@ -480,9 +493,13 @@ function ProjectEditor(props: { controller: PanelController }) {
 }
 
 export function PanelEditors(props: { controller: PanelController }) {
+  return <PanelTheme.Provider value={props.controller.theme ?? defaultTheme}><EditorDialog controller={props.controller} /></PanelTheme.Provider>;
+}
+
+function EditorDialog(props: { controller: PanelController }) {
   const c = props.controller;
   return <>{c.editor() && <Dialog testID="panel-editor" animation="none" closeOnEscape={!c.pending()} closeOnBackdropPress={false} onOpenChange={(open) => { if (!open && !c.pending()) c.editor.set(null); }}
-    style={{ width: 440, maxWidth: "90%", padding: 18, backgroundColor: "#212630", borderRadius: 8 }} backdropStyle={{ backgroundColor: "#00000080" }}>
+    style={{ width: 440, maxWidth: "90%", padding: 18, backgroundColor: theme().palette.panel, borderRadius: 8 }} backdropStyle={{ backgroundColor: "#00000080" }}>
     {c.editor()!.kind === "folder" ? <FolderEditor controller={c} editor={c.editor() as Extract<Editor, { kind: "folder" }>} /> :
       c.editor()!.kind === "task" ? <TaskEditor controller={c} /> : <ProjectEditor controller={c} />}
   </Dialog>}</>;

@@ -6,10 +6,13 @@
 //! engine thread. See the crate README for lifecycle and test instructions.
 pub mod appearance;
 pub mod backend;
+pub mod dashboard;
 pub mod dto;
 pub mod hub;
 mod presence;
 pub mod service;
+pub mod settings;
+pub mod tabs;
 
 use futures_util::future::{AbortHandle, Abortable};
 use nsh_core::{element::Cleanup, prelude::*};
@@ -25,10 +28,12 @@ pub use service::{ProcessService, initialize};
 #[native_module("riwork/native")]
 fn native(registry: &mut Registry) {
     registry
-        .module::<Appearance>()
         .module::<Store>()
         .module::<Sessions>()
         .module::<Tabs>()
+        .module::<settings::Settings>()
+        .module::<appearance::Appearance>()
+        .module::<dashboard::Dashboard>()
         .class::<Subscription>();
     riwork_nsh_workspace::register_layouts(registry, service::process_home);
 }
@@ -211,29 +216,6 @@ impl Tabs {
     }
 }
 
-/// Settings-backed terminal theme and close preference, pushed once per process.
-#[module]
-pub struct Appearance;
-
-#[module]
-impl Appearance {
-    pub async fn snapshot() -> Result<appearance::AppearanceSnapshot, String> {
-        initialize().await?.appearance_snapshot().await
-    }
-
-    pub fn subscribe(
-        listener: Callback<Snapshot<appearance::AppearanceSnapshot>>,
-        cx: CallCx<'_>,
-    ) -> Result<Subscription, String> {
-        let service = service::initialized()?;
-        Ok(Subscription::start(cx, async move {
-            if let Ok(subscription) = service.subscribe_appearance().await {
-                deliver(subscription, listener).await;
-            }
-        }))
-    }
-}
-
 /// A live subscription. Closing, disposal, collection and owner teardown end its
 /// engine task, dropping and closing the bounded topic queue.
 #[class]
@@ -304,11 +286,19 @@ mod tests {
         let modules = registry.module_specs();
         assert_eq!(
             modules.iter().map(|module| module.name).collect::<Vec<_>>(),
-            ["Appearance", "Layouts", "Sessions", "Store", "Tabs"]
+            [
+                "Appearance",
+                "Dashboard",
+                "Layouts",
+                "Sessions",
+                "Settings",
+                "Store",
+                "Tabs"
+            ]
         );
         for module in modules {
             for function in &module.functions {
-                let expected = if function.name == "subscribe" {
+                let expected = if matches!(function.name, "subscribe" | "sentenceCase" | "cased") {
                     FunctionKind::Sync
                 } else {
                     FunctionKind::Async
