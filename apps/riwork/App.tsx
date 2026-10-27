@@ -9,6 +9,13 @@ function App() {
   const notice = signal(params.notice ?? "Loading workspace…");
   const name = params.path?.split("/").filter(Boolean).pop() ?? "Workspace";
   let alive = true;
+  let restoreReady = false;
+  function installed() {
+    if (params.restore && !restoreReady) {
+      restoreReady = true;
+      host.post("app.restoreReady", {});
+    }
+  }
   cleanup(() => { alive = false; session()?.dispose(); });
 
   if (params.kind === "project" && params.projectId && params.windowId) {
@@ -17,9 +24,10 @@ function App() {
       .catch((error: unknown) => notice.set(String(error)));
   } else {
     notice.set(params.kind === "global" ? "Global workspace" : "A project window is required.");
+    if (params.kind === "global") installed();
   }
   return <View style={{ flex: 1 }}>
-    {session() ? <Workspace session={session()!} title={windowTitle(name)} projectLabel={name} startupNotice={params.notice} /> :
+    {session() ? <Workspace session={session()!} title={windowTitle(name)} projectLabel={name} startupNotice={params.notice} onChange={installed} /> :
       <View style={{ flex: 1, padding: 20 }}><Text testID="startup-notice">{notice()}</Text></View>}
   </View>;
 }

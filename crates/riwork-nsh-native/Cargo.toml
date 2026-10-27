@@ -7,6 +7,7 @@ publish = false
 [dependencies]
 riwork-core = { path = "../riwork-core" }
 riwork-engine = { path = "../riwork-engine" }
+riwork-nsh-workspace = { path = "../../apps/riwork" }
 nsh-core = "=0.3.0"
 nsh-base = "=0.3.0"
 anyhow = "1"

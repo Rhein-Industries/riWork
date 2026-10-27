@@ -20,6 +20,9 @@ fs2 = "0.4"
 libc = "0.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
+riwork-nsh-native = { path = "../riwork-nsh-native" }
+riwork-nsh-workspace = { path = "../../apps/riwork" }
+tokio = { version = "1", features = ["rt-multi-thread"] }
 nsh-platform-macos = "=0.3.0"
 nsh-engine = "=0.3.0"
 nsh-core = "=0.3.0"
@@ -27,8 +30,3 @@ nsh-base = "=0.3.0"
 dispatch2 = "0.3"
 block2 = "0.6"
 env_logger = "0.11"
-
-# P1a integration: replace src/nsh_native_stub.rs with
-# riwork-nsh-native = { path = "../riwork-nsh-native" }
-# and `use riwork_nsh_native as native` in nsh_host.rs. The frozen JS name
-# remains `riwork/native`. P1a is not present at the branch base ea0f2f5.

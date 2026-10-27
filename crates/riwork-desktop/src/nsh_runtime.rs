@@ -72,6 +72,12 @@ impl DesktopInstance {
         let run_dir = home.join("run");
         riwork_core::paths::create_private_dir(&run_dir)
             .map_err(|error| format!("Cannot create desktop runtime directory: {error}"))?;
+        // Internal NSH coordination belongs in the Phase 1 nsh/** write area.
+        // Keep the frozen desktop.lock/socket paths in run/ unchanged.
+        let nsh_dir = home.join("nsh");
+        riwork_core::paths::create_private_dir(&nsh_dir)
+            .map_err(|error| format!("Cannot create NSH runtime directory: {error}"))?;
+        let handoff_path = nsh_dir.join("desktop.handoff.lock");
         let mut instance = Self {
             run_dir,
             lock: None,
@@ -87,7 +93,7 @@ impl DesktopInstance {
             if snapshot.state_home != home {
                 return Err("Restore ticket belongs to a different RIWORK_HOME".to_owned());
             }
-            instance.handoff = try_lock(&instance.run_dir.join("desktop.handoff.lock"))?;
+            instance.handoff = try_lock(&handoff_path)?;
             if instance.handoff.is_none() {
                 return Err(
                     "Another RiWork replacement already owns the desktop handoff".to_owned(),
@@ -98,7 +104,7 @@ impl DesktopInstance {
 
         let deadline = Instant::now() + FORWARD_TIMEOUT;
         loop {
-            if let Some(gate) = try_lock(&instance.run_dir.join("desktop.handoff.lock"))? {
+            if let Some(gate) = try_lock(&handoff_path)? {
                 if let Some(lock) = try_lock(&instance.run_dir.join("desktop.lock"))? {
                     instance.lock = Some(lock);
                     instance.start_listener()?;
@@ -608,6 +614,8 @@ mod tests {
     fn replacement_keeps_old_socket_and_prevents_handoff_race() {
         let fixture = Fixture::new();
         let primary = fixture.primary();
+        assert!(fixture.home.join("nsh/desktop.handoff.lock").is_file());
+        assert!(!fixture.home.join("run/desktop.handoff.lock").exists());
         let snapshot = fixture.snapshot();
         let InstanceStart::Replacement(mut replacement) = DesktopInstance::acquire_or_forward(
             &fixture.home,
@@ -619,7 +627,7 @@ mod tests {
         };
         assert!(!replacement.try_complete_handoff().unwrap());
         assert!(
-            try_lock(&fixture.home.join("run/desktop.handoff.lock"))
+            try_lock(&fixture.home.join("nsh/desktop.handoff.lock"))
                 .unwrap()
                 .is_none()
         );
@@ -632,7 +640,7 @@ mod tests {
         drop(primary);
         assert!(replacement.try_complete_handoff().unwrap());
         assert!(
-            try_lock(&fixture.home.join("run/desktop.handoff.lock"))
+            try_lock(&fixture.home.join("nsh/desktop.handoff.lock"))
                 .unwrap()
                 .is_some()
         );

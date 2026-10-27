@@ -1,4 +1,4 @@
-# Phase 1b: AppKit NSH host
+# Phase 1 integration: AppKit NSH host
 
 The single `riwork` executable still calls `riwork_cli::cli::run_cli` before any
 GUI initialization. CLI, MCP and `chat serve` use the unchanged CLI/engine code,
@@ -12,20 +12,34 @@ of this binary. This is the host foundation, not the completed RiWork UI port.
   AppKit/AppView topology proved in `spikes/host-multiwindow`.
 - One `NSWindow`, `AppView`, UUID v4 and `HostChannel` per window. All views load
   the same source bundle, distinguished only by schema-1 `host.params`.
-- `set_ui_sets([nsh_base::registry(), native::registry()])` runs once. **P1a is
-  absent at this branch's base (`ea0f2f5`)**: `nsh_native_stub.rs` registers the
-  frozen `riwork/native` specifier without domain exports. When P1a lands, add
-  `riwork-nsh-native = { path = "../riwork-nsh-native" }` to the macOS dependencies
-  and replace the stub alias with `use riwork_nsh_native as native`.
+- `set_ui_sets([nsh_base::registry(), riwork_nsh_native::registry()])` runs once,
+  before any AppView. The real native crate composes Store, Sessions,
+  Subscription, Layouts and LayoutSession into the sole `riwork/native` module.
+  The native process service initializes on the startup worker; its fixed home
+  also supplies workspace layout persistence.
 - The shared `Components` registry is created once. P1c can register
   `riwork.terminal` there before the first AppView. This host has no Ghostty
   component, terminal attachment or terminal persistence yet.
-- `RIWORK_NSH_BUNDLE=/absolute/path/bundle.js` loads a built NSH source bundle;
-  its directory supplies assets and split chunks. With no override, the embedded
-  small shell renders each window's identity. Both paths declare only
-  `window.*`, `app.*`, `system.*` host capabilities. No filesystem/process/network
-  capabilities are granted. `nsh/storage` is transient per VM; NSH caches stay
-  below `RIWORK_HOME/nsh`.
+- The real `apps/riwork` bundle is required. Source is
+  `apps/riwork/App.tsx`; `apps/riwork/nsh.json` points its Rust side at
+  `crates/riwork-nsh-native`, so NSH type generation, tests and the desktop host
+  all use the same registry. `apps/riwork` is a root Cargo workspace member;
+  the root `Cargo.lock` is its only lockfile.
+- A checkout build defaults to `apps/riwork/.nsh/out/bundle.js`, resolved from
+  the desktop crate's compile-time source path, independently of the launch cwd.
+  Generate it with the pinned NSH **0.3.0** CLI (see `docs/nsh-toolchain.md`):
+  `"$NSH" build apps/riwork --out apps/riwork/.nsh/out`.
+  This is the dev-source workflow: edit TSX, rebuild the bundle, restart the
+  fixture. The host does not compile TSX or provide hot reload.
+- For a built bundle independent of the checkout, run
+  `"$NSH" build apps/riwork --out /absolute/output/riwork`, then set
+  `RIWORK_NSH_BUNDLE=/absolute/output/riwork/bundle.js`. Keep generated assets,
+  source maps and split chunks alongside it. The containing directory supplies
+  asset and chunk resolution. Missing bundles fail with the build recipe;
+  there is no embedded shell fallback. No package/install changes are included.
+- Both bundle paths grant only `window.*`, `app.*`, `system.*` host capabilities.
+  No filesystem/process/network capabilities are granted. `nsh/storage` is
+  transient per VM; NSH caches stay below `RIWORK_HOME/nsh`.
 - Engine-thread host callbacks only queue main-thread messages. Store reads,
   runtime registry writes and forwarding run on the service/socket threads.
   AppKit uses its event loop without a frame-polling loop.
@@ -48,7 +62,7 @@ Window-local title/chrome comes through `nsh/desktop`; the host supplies full-si
 transparent content, minimum 640×400, cascade and traffic-light placement.
 
 A per-home `run/desktop.lock` plus `run/desktop.sock` forwards later GUI launches
-before bundle loading. A restoring replacement has a separate handoff gate so
+before bundle loading. A restoring replacement has a separate `nsh/desktop.handoff.lock` gate so
 ordinary launches cannot take ownership during replacement handoff. Shutdown
 stops forwarding but retains ownership until AppViews stop. Runtime registration,
 window publication, heartbeat, engine restore-ticket validation/watchdog, and a
@@ -58,13 +72,18 @@ the AppKit boundary).
 
 ## Deliberate integration points
 
-P1a must provide Rust LayoutSession/current-window snapshots and draft/layout
-flush hooks before restart can be enabled. `app.restart` and external runtime
-reload requests currently fail explicitly with `unavailable`, preserving the old
-process. The embedded shell refuses restore startup because it cannot restore
-layouts. A supplied real application bundle receives the restore payload and is
-responsible for posting `app.restoreReady` only after its native session restores.
-This is the requested handshake skeleton, not a complete reload implementation.
+The host looks up P1c's native `host_layouts` handles by WindowId. Runtime
+publication reads `project_layout()` from Rust, including heartbeat publications
+when the UI has not moved or resized. Close and quit stop accepting layout edits,
+retain handles, and call `flush_blocking()` on the service worker before AppView
+teardown. Failure cancels close/quit and keeps the windows available. Global
+window state uses the existing core store. Drafts are deferred in Phase 1.
+
+The real app passes `host.params.restore.layout` to `Layouts.openSession` and
+posts `app.restoreReady` once after installing the DockArea projection. Global
+restores confirm immediately; the host verifies project handles exist before
+accepting readiness. Full restart/CLI reload handoff is still explicitly
+unavailable in this integration subset and keeps the old process alive.
 
 System panels, pasteboard, notifications, Quick Look, sharing, fonts/permissions,
 remote project resolution, forced appearance and process domain services are
@@ -93,7 +112,24 @@ that option suppresses AppKit activation and make-key during background tests.
 The fixture prints its PID for **RiWork's cua-driver MCP** inspection. Use only
 that PID; never test in a live RiWork window.
 
-The assignment restricts the commit to this host crate. Cargo resolves the new
-NSH dependencies while testing, but the repository-root Cargo.lock is left to
-the toolchain/integration owner and is not part of this commit. Regenerate that
-lock in the integration branch before using `--locked` builds.
+The integration runner verifies the real bundle (the older GUI runner above is
+only the historical P1b bridge fixture):
+
+```sh
+# Evidence/build root must be inside /tmp; no installed binary is used.
+python3 crates/riwork-desktop/verification/phase1_integration.py headless --root /tmp/riwork-integration
+python3 crates/riwork-desktop/verification/phase1_integration.py build --root /tmp/riwork-integration
+python3 crates/riwork-desktop/verification/phase1_integration.py parity --root /tmp/riwork-integration
+python3 crates/riwork-desktop/verification/phase1_integration.py gui --root /tmp/riwork-integration --linger-seconds 120
+```
+
+The runner defaults to the previously verified isolated NSH 0.3 CLI and TypeScript
+compiler; override `--nsh` and `--tsc` with equivalent existing tools if needed.
+It records exact argv, fixture environment, stdout/stderr and checksums for each
+command. GUI mode prints the only PID authorized for read-only cua-driver MCP
+inspection. It stops its own process via SIGTERM after inspection; close/quit
+barriers are verified in Rust tests, not inferred from that cleanup signal.
+
+The root lockfile is regenerated for integration. GPUI parity source and tests
+remain uncompiled and undeleted under the acceptance §4.3 embargo. Passing this
+subset does not claim M5 or the still-deferred P-SHELL rows.

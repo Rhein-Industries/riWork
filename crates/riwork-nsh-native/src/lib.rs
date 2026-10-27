@@ -1,4 +1,4 @@
-//! Phase 1a read side of the frozen `riwork/native` NSH module.
+//! Phase 1 services and layout classes in the frozen `riwork/native` NSH module.
 //!
 //! The host awaits [`initialize`] before constructing AppViews, then registers
 //! `[nsh_base::registry(), registry()]` once. All windows share the same process
@@ -22,6 +22,7 @@ fn native(registry: &mut Registry) {
         .module::<Store>()
         .module::<Sessions>()
         .class::<Subscription>();
+    riwork_nsh_workspace::register_layouts(registry, service::process_home);
 }
 
 /// Durable project, folder, worktree and task reads.
@@ -139,13 +140,13 @@ mod tests {
     use nsh_core::element::{FunctionKind, declarations};
 
     #[test]
-    fn native_registry_exports_the_frozen_read_surface_and_typed_events() {
+    fn native_registry_composes_services_and_layouts_in_one_frozen_module() {
         let registry = super::registry();
         assert_eq!(registry.specifier(), Some("riwork/native"));
         let modules = registry.module_specs();
         assert_eq!(
             modules.iter().map(|module| module.name).collect::<Vec<_>>(),
-            ["Sessions", "Store"]
+            ["Layouts", "Sessions", "Store"]
         );
         for module in modules {
             for function in &module.functions {
@@ -166,6 +167,9 @@ mod tests {
             "SessionsEvent",
             "resync?: boolean",
             "projectFolders",
+            "openSession(request: unknown): Promise<LayoutSession>",
+            "class LayoutSession",
+            "class Subscription",
         ] {
             assert!(
                 types.contains(declaration),

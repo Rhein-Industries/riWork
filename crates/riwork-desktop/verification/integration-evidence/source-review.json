@@ -1,0 +1,8 @@
+{
+  "source_base": "1d63063",
+  "protected_gpui_files": 142,
+  "changed_or_deleted": [],
+  "native_registries": [
+    "crates/riwork-nsh-native/src/lib.rs:19:#[native_module(\"riwork/native\")]"
+  ]
+}

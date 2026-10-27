@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/*", "remote"]
+members = ["crates/*", "apps/riwork", "remote"]
 default-members = ["crates/riwork-desktop"]
 
 [workspace.package]

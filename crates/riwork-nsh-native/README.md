@@ -1,9 +1,14 @@
-# riwork/native (phase 1a)
+# riwork/native (Phase 1 integration)
 
 NSH 0.3.0 bridge for the read side of the frozen contract in
 [`docs/nsh-contracts.md` §1](../../docs/nsh-contracts.md). The root workspace's
 `crates/*` member pattern includes this crate; `Cargo.lock` pins its dependencies.
 It does not depend on the desktop crate or an AppKit host.
+This crate owns the sole `#[native_module("riwork/native")]` registry. It composes
+`riwork_nsh_workspace::register_layouts` from the root-workspace member
+`apps/riwork`; that crate exports layout classes, never a second UI set.
+`apps/riwork/nsh.json` names this crate in `rust`, so the CLI's generated
+declarations and headless runner use exactly the same registry as the host.
 
 Implemented JavaScript surface:
 
@@ -18,6 +23,9 @@ Implemented JavaScript surface:
   shared session sampler.
 - `Subscription.close()` is idempotent. JS owner disposal, VM shutdown and
   garbage collection also cancel delivery and close the listener queue.
+- `Layouts.openSession(request)` and `LayoutSession` expose workspace layout
+  projection, edits and persistence. The host uses the Rust-only
+  `riwork_nsh_workspace::host_layouts` handoff for lifecycle barriers.
 
 DTOs and generated declarations use camelCase. Core persistence is unchanged.
 Identifier-keyed maps and opaque future configuration retain their data keys.
@@ -34,6 +42,10 @@ set_ui_sets([nsh_base::registry(), riwork_nsh_native::registry()]);
 
 Initialization resolves `RIWORK_HOME` once. Every engine uses one strongly held
 process service, with one recursive home watcher and one background worker.
+The layout registration receives a Rust-only resolver for this same fixed home,
+including a home selected by an injected test service. Resolving it happens on
+the blocking pool. Layout-only headless runners resolve the home without
+starting the session sampler; a later service initialization reuses that home.
 Store reads happen on filesystem changes, including atomic replacements and
 watcher rescan requests. Session metadata changes invalidate and wake the shared
 sampler. Only tmux liveness has a fallback timer, two seconds after the last
@@ -66,6 +78,9 @@ RIWORK_HOME="$NSH_NATIVE_TEST/home" CARGO_TARGET_DIR="$NSH_NATIVE_TEST/target" \
 Tests cover external core store writes pushed to two engines, async read calls,
 owner/handle/engine teardown, idle frame behavior, queue overflow/resync,
 process-wide session fallback and watcher wakes, DTO boundaries, unavailable
-session recovery, and blocking-thread boundaries. Fixtures inject session data;
+session recovery, and blocking-thread boundaries. The two-engine test imports
+Store, Sessions and Layouts from the one module, then verifies layout edits and
+host snapshots use the injected process home and persist through LayoutStore.
+Fixtures inject session data;
 they never start tmux, launch app windows or touch live RiWork data. Chat and the
 other contract modules are left for their port phases; no chat feed is touched.
