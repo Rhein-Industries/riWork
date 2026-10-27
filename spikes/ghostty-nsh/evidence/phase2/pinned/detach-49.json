@@ -1,0 +1,42 @@
+{
+  "tty": "/dev/ttys025",
+  "surface_id": 49,
+  "fixture_pid": 63191,
+  "detached": true,
+  "identity_before": "$0 1793136486 %0 63006",
+  "before": [
+    {
+      "pid": 67867,
+      "tty": "/dev/ttys025",
+      "session": "$0"
+    },
+    {
+      "pid": 67869,
+      "tty": "/dev/ttys026",
+      "session": "$0"
+    },
+    {
+      "pid": 67870,
+      "tty": "/dev/ttys027",
+      "session": "$0"
+    },
+    {
+      "pid": 67871,
+      "tty": "/dev/ttys028",
+      "session": "$0"
+    }
+  ],
+  "client_pid": 67867,
+  "wrapper_pid": 67864,
+  "detach_command": [
+    "/opt/homebrew/bin/tmux",
+    "-S",
+    "/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO/tmux.sock",
+    "detach-client",
+    "-t",
+    "/dev/ttys025"
+  ],
+  "after": [],
+  "identity_after": "$0 1793136486 %0 63006",
+  "monotonic_ms": 288342174.69333297
+}

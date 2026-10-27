@@ -1,4 +1,178 @@
-# Phase 2 ENTRY GATE — NO-GO
+# Phase 2 pinned-runtime ENTRY GATE — GO
+
+Task: `e940bd0a-2981-4d88-8a53-6b2cdd06822c`
+
+Branch: `nsh-p2-teardown-pinned`, based on `1d63063` off `nsh`
+
+Date: 2026-10-27
+
+Scope: the existing isolated spike; no production integration.
+
+**GO for the local pinned-runtime Phase 2 teardown entry gate under the assigned
+causal-profiling criterion.** The same 20 batches × 4 simultaneously attached
+surfaces completed, with 80/80 freed exactly once, all detach and child-exit
+barriers observed before free, zero surviving attach clients/fixture descendants,
+and the same tmux session/pane throughout. The final active native-window close
+exited 0. Closing timer gaps peaked at **18.179 ms**. No threshold was relaxed.
+
+The stricter statement “every interval from first surface startup to process
+exit is <100 ms” is **false**: the independent profiler recorded one **215.880 ms
+startup interval**. Its timing proves it preceded teardown and was occupied by
+surface creation, as detailed below. This is the assignment's explicitly allowed
+non-teardown attribution path, not a claim that startup meets 100 ms.
+
+Authoritative result:
+[pinned/verification-summary.json](evidence/phase2/pinned/verification-summary.json).
+All gate checks pass; there is no missing evidence. The cached-runtime NO-GO
+below remains historical evidence and is not relabeled as a pinned result.
+
+## Counted pinned run
+
+| Check | Result |
+| --- | --- |
+| Same 20×4 proof, active tmux output | PASS: 80 created, 80 freed/disposed exactly once |
+| Actual NSH unmount/drop and remount | PASS: batches 1–19 |
+| Native-window close with four attached surfaces | PASS: batch 20; host exit 0 and zero fixture windows |
+| Exact-tty detach readback plus Ghostty child-exit before free | PASS: 80/80 |
+| Surface disposal, <2,000 ms | PASS: max **150.711 ms** |
+| Batch first request → last disposed, <2,000 ms | PASS: max **151.141 ms** |
+| Synchronous shutdown dispatch, <100 ms | PASS: max **0.902 ms** |
+| Native `ghostty_surface_free`, <100 ms | PASS: max **3.357 ms** |
+| Free plus app/config cleanup, <100 ms | PASS: max **3.443 ms** |
+| Final closing timer callback through disposal, <100 ms | PASS: max **3.572 ms** |
+| Closing timer delivery gaps, <100 ms | PASS: **672 samples**, max **18.179 ms** |
+| Independent consecutive main-loop heartbeats, <100 ms | PASS: **7,520 heartbeats**, max interval **57.014 ms** |
+| Startup boundary → first heartbeat | **215.880 ms**; positively attributed to non-teardown startup |
+| Hangs / outstanding surfaces / leaked clients or descendants | PASS: **0 / 0 / 0** |
+| Session and pane identity after every close | PASS: `$0 1793136486 %0 63006` throughout |
+
+[cycles.jsonl](evidence/phase2/pinned/cycles.jsonl) contains four attached clients
+before every close and zero clients/descendants/old client-or-wrapper PIDs after
+it. Each of the 80 `detach-<id>.json` files contains exact tty/client readback and
+unchanged session/pane identity. [teardown-events.jsonl](evidence/phase2/pinned/teardown-events.jsonl)
+records the main-thread barrier/free ordering. The same pressure generator
+advanced **389,013,504 bytes over 124.903 s** between the first attached and final
+closed readbacks: **2.970 MiB/s** measured, including detached periods, versus
+4 MiB/s nominal. Every cycle advanced its pressure counters.
+
+## Every ≥100 ms interval, timestamp-attributed
+
+There is exactly **one** such interval across the surface-gap records and the
+independent heartbeat trace, including startup and final-exit boundaries:
+
+| Native `CLOCK_MONOTONIC` interval (ms) | Duration | Surface free | Detach-confirm worker wait | Attribution |
+| --- | --- | --- | --- | --- |
+| `288293813.900` → `288294029.780` (trace seq 0 → 17) | **215.880 ms** | **0 ms**, no teardown scope overlaps | **0 ms**, no worker overlaps | Startup surface creation: **190.275 ms** directly timed; first surface alone **177.390 ms** |
+
+The four creation spans are `288293813.910–288293991.300`,
+`288293991.389–288293995.601`, `288293997.415–288294001.673`, and
+`288294003.011–288294007.426` ms. The remaining **25.605 ms** is unattributed
+startup work/delivery time; it is not silently assigned to a function. The first
+shutdown request is at **288307431.396 ms**, **13,401.616 ms after this gap ended**.
+Consequently this interval cannot have been caused by this run's terminal
+teardown. No teardown gap uses a causal exemption.
+
+Raw trace: [main-profile.jsonl.gz](evidence/phase2/pinned/main-profile.jsonl.gz).
+Full attribution: [gap-attribution.json](evidence/phase2/pinned/gap-attribution.json).
+The trace has **312,175 records, zero drops**, balanced native/worker spans and
+validated thread identities. `native/profile.h` records fixed-size events in
+memory without hot-path allocation, serialization or file I/O, then writes them
+at orderly process exit. It times all surfaces' free/cleanup, shutdown dispatch,
+closing callbacks, child-exit checks, app ticks, creation, off-main helper waits,
+and CF run-loop phases. Exact native timer endpoints use the same clock.
+The additional heartbeat only records a timestamp; it does not pump Ghostty.
+This instrumented rerun establishes the captured gate result, not that the
+archive change alone caused the improvement over the cached run.
+
+The CF observer is registered during the first surface's NSH/AppKit source, so
+its first loop boundary is an exit whose entry predates registration. The
+analyzer explicitly reports this single leading partial loop and validates all
+32,101 subsequent entry/exit pairs. It does not infer any idle time from that
+partial loop. An initial analyzer assumption that registration always preceded
+loop entry was corrected against this raw trace, with regression coverage; the
+fixture, raw measurements and thresholds were unchanged.
+
+The opt-in verifier preserves the raw strict metric and requires positive
+non-teardown attribution for every ≥100 ms interval. Aggregate teardown occupancy
+and the unattributed remainder must each also remain <100 ms; a long teardown
+cannot be excused by unrelated work in the same interval. Short frees alone do
+not prove unrelated delay. Off-main detach waits never count as
+main-thread blocking, and idle time overlapping detach-worker activity cannot
+establish the causal exception. Python capture timestamps remain a separate
+clock domain; no guessed offsets connect them to native timestamps.
+
+## Runtime and verification_environment
+
+The prior private pinned rebuild was still present. Its archive/header and all
+copied install files were hash-verified, then copied into this worktree's ignored
+`.runtime/pinned/install`. No rebuild or system installation was necessary.
+The source manifest and Zig/toolchain metadata also matched the prior provenance.
+
+| Artifact | SHA-256 / revision |
+| --- | --- |
+| Executed pinned archive | `b51367aa565527eddfa180d5ae6304899d903af6fc094b4531671ffc20fb064f` |
+| Matching header | `f2c12e1bb02540d79feed6bd29ee37312c4e0d24391442a63e66f06e1f7f2e4a` |
+| Executed instrumented fixture | `4b27dc5b78aad9f875992470cdde70008f9f3914944dc01f51d88a104be629b1` |
+| Ghostty source | `9f0e1719dc918368367d368bfe300f59bb68b5a4` + the previously declared gpui vendor patches |
+
+See [artifact provenance](evidence/phase2/pinned-runtime/artifact-provenance.json),
+[fixture build/source hashes](evidence/phase2/pinned-runtime/fixture-build-provenance.json),
+[link directives](evidence/phase2/pinned-runtime/fixture-link-directives.txt), and
+[runtime.json](evidence/phase2/pinned/runtime.json). The fixture was freshly built
+against the pinned archive; it did not execute the cached archive or the old,
+uninstrumented fixture.
+
+`verification_environment`: **isolated RIWORK_HOME + fixture app only**, macOS
+26.2 (25C56), arm64, Rust 1.99.1, Xcode 26.0.1, tmux 3.6a; archive built with Zig
+0.16.0/ReleaseFast/app-runtime=none. Fixture PID **63191**, window **6288**.
+`RIWORK_HOME=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.XQVaLO`.
+Dedicated `tmux.sock`, `-f /dev/null`, session `ghostty-spike`; no default socket.
+[Full environment](evidence/phase2/pinned/verification_environment.json).
+
+**RiWork Cua.ai Driver MCP only**, explicit fixture PID/window and background
+delivery on all **39 input calls**. The controls lack actionable AX tokens, so
+fixture screenshot coordinates were used; native close used its fresh AX token.
+One final observation requested structured elements and hit a driver output
+schema error after a successful Create action. A fresh normal snapshot and the
+four-client readback confirmed it; the action was not replayed. After native
+close, the stale-window observation was refused and exact-PID window enumeration
+confirmed zero windows. [Driver evidence](evidence/phase2/pinned/driver-actions.json).
+No live RiWork/orchestrator window was targeted.
+
+After proving session/pane survival through host exit, the exact fixture session
+was cleaned. [cleanup.json](evidence/phase2/pinned/cleanup.json) confirms the
+fixture, server, pane, and **all 160 client/wrapper PIDs absent**. The private build
+and evidence remain available. No outstanding surface was parked as success.
+
+## Verification and handoff
+
+```sh
+GHOSTTY_LIB_DIR="$PWD/spikes/ghostty-nsh/.runtime/pinned/install/lib" \
+GHOSTTY_INCLUDE_DIR="$PWD/spikes/ghostty-nsh/.runtime/pinned/install/include" \
+cargo build --manifest-path spikes/ghostty-nsh/Cargo.toml
+# exit 0; new worktree dev build, 33.26 s, 17 unused-parameter warnings
+python3 spikes/ghostty-nsh/scripts/verify_teardown.py spikes/ghostty-nsh/evidence/phase2/pinned --profile-gaps
+# exit 0, GO; raw global startup interval retained
+python3 spikes/ghostty-nsh/scripts/profile_gaps.py spikes/ghostty-nsh/evidence/phase2/pinned
+# exit 0; one positively attributed startup interval
+PYTHONDONTWRITEBYTECODE=1 python3 spikes/ghostty-nsh/scripts/test_profile_gaps.py
+# 16 regression tests pass
+```
+
+The legacy verifier also passes the pinned closing-only metric; replaying the
+cached evidence retains its original five responsiveness failures and NO-GO.
+Formatting, shell syntax, Python parsing and `git diff --check` pass. Reproduction
+steps are in [the pinned evidence README](evidence/phase2/pinned/README.md).
+
+This clears this assignment's local pinned teardown gate. Production timeout/
+retry behavior, remote bridges, startup responsiveness and other Phase 1/2
+acceptance rows are not established by this spike. No production behavior was
+changed. No merge, push, installation or task-status update was performed;
+the orchestrator owns task status.
+
+---
+
+# Historical Phase 2 cached-runtime ENTRY GATE — NO-GO
 
 Task: `b915a54a-3ec6-4491-89b1-428ab28f344a`
 

@@ -1,0 +1,162 @@
+cargo:rerun-if-env-changed=GHOSTTY_LIB_DIR
+cargo:rerun-if-env-changed=GHOSTTY_INCLUDE_DIR
+cargo:rerun-if-changed=native/terminal.m
+cargo:rerun-if-changed=native/profile.h
+cargo:rerun-if-changed=native/terminal.h
+cargo:rerun-if-env-changed=CC_FORCE_DISABLE
+CC_FORCE_DISABLE = None
+cargo:rerun-if-env-changed=CC_aarch64-apple-darwin
+CC_aarch64-apple-darwin = None
+cargo:rerun-if-env-changed=CC_aarch64_apple_darwin
+CC_aarch64_apple_darwin = None
+cargo:rerun-if-env-changed=HOST_CC
+HOST_CC = None
+cargo:rerun-if-env-changed=CC
+CC = None
+cargo:rerun-if-env-changed=CC_ENABLE_DEBUG_OUTPUT
+cargo:rerun-if-env-changed=CPATH
+cargo:rerun-if-env-changed=C_INCLUDE_PATH
+cargo:rerun-if-env-changed=CPLUS_INCLUDE_PATH
+cargo:rerun-if-env-changed=OBJC_INCLUDE_PATH
+cargo:rerun-if-env-changed=OBJCPLUS_INCLUDE_PATH
+cargo:rerun-if-env-changed=COMPILER_PATH
+cargo:rerun-if-env-changed=SOURCE_DATE_EPOCH
+cargo:rerun-if-env-changed=CCC_OVERRIDE_OPTIONS
+cargo:rerun-if-env-changed=CLANG_NO_DEFAULT_CONFIG
+cargo:rerun-if-env-changed=DEVELOPER_DIR
+cargo:rerun-if-env-changed=TOOLCHAINS
+cargo:rerun-if-env-changed=SDKROOT
+cargo:rerun-if-env-changed=RC_DEBUG_OPTIONS
+cargo:rerun-if-env-changed=RC_DEBUG_PREFIX_MAP
+cargo:rerun-if-env-changed=MACOSX_DEPLOYMENT_TARGET
+cargo:rerun-if-env-changed=CRATE_CC_NO_DEFAULTS
+CRATE_CC_NO_DEFAULTS = None
+MACOSX_DEPLOYMENT_TARGET = None
+cargo:rerun-if-env-changed=CFLAGS
+CFLAGS = None
+cargo:rerun-if-env-changed=HOST_CFLAGS
+HOST_CFLAGS = None
+cargo:rerun-if-env-changed=CFLAGS_aarch64_apple_darwin
+CFLAGS_aarch64_apple_darwin = None
+cargo:rerun-if-env-changed=CFLAGS_aarch64-apple-darwin
+CFLAGS_aarch64-apple-darwin = None
+cargo:warning=In file included from native/terminal.m:29:
+cargo:warning=native/profile.h:46:13: warning: enumeration value 'kCFRunLoopAllActivities' not handled in switch [-Wswitch]
+cargo:warning=   46 |     switch (activity) {
+cargo:warning=      |             ^~~~~~~~
+cargo:warning=native/profile.h:46:13: note: add missing switch cases
+cargo:warning=   46 |     switch (activity) {
+cargo:warning=      |             ^
+cargo:warning=   47 |         case kCFRunLoopEntry: name = "runloop-entry"; break;
+cargo:warning=   48 |         case kCFRunLoopBeforeTimers: name = "runloop-before-timers"; break;
+cargo:warning=   49 |         case kCFRunLoopBeforeSources: name = "runloop-before-sources"; break;
+cargo:warning=   50 |         case kCFRunLoopBeforeWaiting: name = "runloop-before-waiting"; break;
+cargo:warning=   51 |         case kCFRunLoopAfterWaiting: name = "runloop-after-waiting"; break;
+cargo:warning=   52 |         case kCFRunLoopExit: name = "runloop-exit"; break;
+cargo:warning=   53 |     }
+cargo:warning=native/profile.h:44:49: warning: unused parameter 'observer' [-Wunused-parameter]
+cargo:warning=   44 | static void profileRunLoop(CFRunLoopObserverRef observer, CFRunLoopActivity activity, void *info) {
+cargo:warning=      |                                                 ^
+cargo:warning=native/profile.h:44:93: warning: unused parameter 'info' [-Wunused-parameter]
+cargo:warning=   44 | static void profileRunLoop(CFRunLoopObserverRef observer, CFRunLoopActivity activity, void *info) {
+cargo:warning=      |                                                                                             ^
+cargo:warning=native/profile.h:56:48: warning: unused parameter 'timer' [-Wunused-parameter]
+cargo:warning=   56 | static void profileHeartbeat(CFRunLoopTimerRef timer, void *info) { profile("heartbeat", 'i', 0); }
+cargo:warning=      |                                                ^
+cargo:warning=native/profile.h:56:61: warning: unused parameter 'info' [-Wunused-parameter]
+cargo:warning=   56 | static void profileHeartbeat(CFRunLoopTimerRef timer, void *info) { profile("heartbeat", 'i', 0); }
+cargo:warning=      |                                                             ^
+cargo:warning=native/terminal.m:85:34: warning: unused parameter 'app' [-Wunused-parameter]
+cargo:warning=   85 | static bool action(ghostty_app_t app, ghostty_target_s target, ghostty_action_s action) {
+cargo:warning=      |                                  ^
+cargo:warning=native/terminal.m:93:33: warning: unused parameter 'u' [-Wunused-parameter]
+cargo:warning=   93 | static bool readClipboard(void *u, ghostty_clipboard_e c, void *request) { return false; }
+cargo:warning=      |                                 ^
+cargo:warning=native/terminal.m:93:56: warning: unused parameter 'c' [-Wunused-parameter]
+cargo:warning=   93 | static bool readClipboard(void *u, ghostty_clipboard_e c, void *request) { return false; }
+cargo:warning=      |                                                        ^
+cargo:warning=native/terminal.m:93:65: warning: unused parameter 'request' [-Wunused-parameter]
+cargo:warning=   93 | static bool readClipboard(void *u, ghostty_clipboard_e c, void *request) { return false; }
+cargo:warning=      |                                                                 ^
+cargo:warning=native/terminal.m:94:51: warning: unused parameter 'text' [-Wunused-parameter]
+cargo:warning=   94 | static void confirmClipboard(void *u, const char *text, void *request, ghostty_clipboard_request_e kind) {
+cargo:warning=      |                                                   ^
+cargo:warning=native/terminal.m:94:100: warning: unused parameter 'kind' [-Wunused-parameter]
+cargo:warning=   94 | static void confirmClipboard(void *u, const char *text, void *request, ghostty_clipboard_request_e kind) {
+cargo:warning=      |                                                                                                    ^
+cargo:warning=native/terminal.m:98:34: warning: unused parameter 'u' [-Wunused-parameter]
+cargo:warning=   98 | static void writeClipboard(void *u, ghostty_clipboard_e c, const ghostty_clipboard_content_s *content, size_t count, bool confirm) {}
+cargo:warning=      |                                  ^
+cargo:warning=native/terminal.m:98:57: warning: unused parameter 'c' [-Wunused-parameter]
+cargo:warning=   98 | static void writeClipboard(void *u, ghostty_clipboard_e c, const ghostty_clipboard_content_s *content, size_t count, bool confirm) {}
+cargo:warning=      |                                                         ^
+cargo:warning=native/terminal.m:98:95: warning: unused parameter 'content' [-Wunused-parameter]
+cargo:warning=   98 | static void writeClipboard(void *u, ghostty_clipboard_e c, const ghostty_clipboard_content_s *content, size_t count, bool confirm) {}
+cargo:warning=      |                                                                                               ^
+cargo:warning=native/terminal.m:98:111: warning: unused parameter 'count' [-Wunused-parameter]
+cargo:warning=   98 | static void writeClipboard(void *u, ghostty_clipboard_e c, const ghostty_clipboard_content_s *content, size_t count, bool confirm) {}
+cargo:warning=      |                                                                                                               ^
+cargo:warning=native/terminal.m:98:123: warning: unused parameter 'confirm' [-Wunused-parameter]
+cargo:warning=   98 | static void writeClipboard(void *u, ghostty_clipboard_e c, const ghostty_clipboard_content_s *content, size_t count, bool confirm) {}
+cargo:warning=      |                                                                                                                           ^
+cargo:warning=native/terminal.m:99:40: warning: unused parameter 'alive' [-Wunused-parameter]
+cargo:warning=   99 | static void closeSurface(void *u, bool alive) { [(SpikeTerminalInput *)u record:@"process-exit"]; }
+cargo:warning=      |                                        ^
+cargo:warning=17 warnings generated.
+CC_FORCE_DISABLE = None
+cargo:rerun-if-env-changed=AR_aarch64-apple-darwin
+AR_aarch64-apple-darwin = None
+cargo:rerun-if-env-changed=AR_aarch64_apple_darwin
+AR_aarch64_apple_darwin = None
+cargo:rerun-if-env-changed=HOST_AR
+HOST_AR = None
+cargo:rerun-if-env-changed=AR
+AR = None
+cargo:rerun-if-env-changed=ARFLAGS
+ARFLAGS = None
+cargo:rerun-if-env-changed=HOST_ARFLAGS
+HOST_ARFLAGS = None
+cargo:rerun-if-env-changed=ARFLAGS_aarch64_apple_darwin
+ARFLAGS_aarch64_apple_darwin = None
+cargo:rerun-if-env-changed=ARFLAGS_aarch64-apple-darwin
+ARFLAGS_aarch64-apple-darwin = None
+AR_aarch64-apple-darwin = None
+AR_aarch64_apple_darwin = None
+HOST_AR = None
+AR = None
+ARFLAGS = None
+HOST_ARFLAGS = None
+ARFLAGS_aarch64_apple_darwin = None
+ARFLAGS_aarch64-apple-darwin = None
+AR_aarch64-apple-darwin = None
+AR_aarch64_apple_darwin = None
+HOST_AR = None
+AR = None
+ARFLAGS = None
+HOST_ARFLAGS = None
+ARFLAGS_aarch64_apple_darwin = None
+ARFLAGS_aarch64-apple-darwin = None
+AR_aarch64-apple-darwin = None
+AR_aarch64_apple_darwin = None
+HOST_AR = None
+AR = None
+ARFLAGS = None
+HOST_ARFLAGS = None
+ARFLAGS_aarch64_apple_darwin = None
+ARFLAGS_aarch64-apple-darwin = None
+cargo:rustc-link-lib=static=riwork_ghostty_nsh_native
+cargo:rustc-link-search=native=/Users/dominik/orca/projects/riWork-nsh-p2-teardown-pinned/spikes/ghostty-nsh/target/debug/build/riwork-ghostty-nsh-spike-04c3f1fc690f009b/out
+cargo:rustc-link-search=native=/Users/dominik/orca/projects/riWork-nsh-p2-teardown-pinned/spikes/ghostty-nsh/.runtime/pinned/install/lib
+cargo:rustc-link-lib=static=ghostty-internal
+cargo:rustc-link-lib=c++
+cargo:rustc-link-lib=objc
+cargo:rustc-link-lib=framework=AppKit
+cargo:rustc-link-lib=framework=Carbon
+cargo:rustc-link-lib=framework=CoreFoundation
+cargo:rustc-link-lib=framework=CoreGraphics
+cargo:rustc-link-lib=framework=CoreText
+cargo:rustc-link-lib=framework=CoreVideo
+cargo:rustc-link-lib=framework=Foundation
+cargo:rustc-link-lib=framework=IOSurface
+cargo:rustc-link-lib=framework=Metal
+cargo:rustc-link-lib=framework=QuartzCore

@@ -1,0 +1,131 @@
+{
+  "checks": [
+    {
+      "check": "pinned_profiled_gate",
+      "command": [
+        "python3",
+        "spikes/ghostty-nsh/scripts/verify_teardown.py",
+        "spikes/ghostty-nsh/evidence/phase2/pinned",
+        "--profile-gaps"
+      ],
+      "exit_code": 0,
+      "expected_exit_code": 0,
+      "passed": true,
+      "stderr": ""
+    },
+    {
+      "check": "gap_attribution",
+      "command": [
+        "python3",
+        "spikes/ghostty-nsh/scripts/profile_gaps.py",
+        "spikes/ghostty-nsh/evidence/phase2/pinned"
+      ],
+      "exit_code": 0,
+      "expected_exit_code": 0,
+      "passed": true,
+      "stderr": ""
+    },
+    {
+      "check": "legacy_pinned_closing_metric",
+      "command": [
+        "python3",
+        "spikes/ghostty-nsh/scripts/verify_teardown.py",
+        "spikes/ghostty-nsh/evidence/phase2/pinned"
+      ],
+      "exit_code": 0,
+      "expected_exit_code": 0,
+      "passed": true,
+      "stderr": ""
+    },
+    {
+      "check": "cached_metric_regression",
+      "command": [
+        "python3",
+        "spikes/ghostty-nsh/scripts/verify_teardown.py",
+        "spikes/ghostty-nsh/evidence/phase2/cached"
+      ],
+      "exit_code": 1,
+      "expected_exit_code": 1,
+      "passed": true,
+      "stderr": "",
+      "failed_checks": [
+        "surface_1_responsive_main_loop",
+        "surface_2_responsive_main_loop",
+        "surface_3_responsive_main_loop",
+        "surface_4_responsive_main_loop",
+        "surface_52_responsive_main_loop"
+      ]
+    },
+    {
+      "check": "causal_regressions",
+      "command": [
+        "python3",
+        "spikes/ghostty-nsh/scripts/test_profile_gaps.py"
+      ],
+      "exit_code": 0,
+      "expected_exit_code": 0,
+      "passed": true,
+      "stderr": "................\n----------------------------------------------------------------------\nRan 16 tests in 0.001s\n\nOK\n"
+    },
+    {
+      "check": "rust_format",
+      "command": [
+        "cargo",
+        "fmt",
+        "--manifest-path",
+        "spikes/ghostty-nsh/Cargo.toml",
+        "--check"
+      ],
+      "exit_code": 0,
+      "expected_exit_code": 0,
+      "passed": true,
+      "stderr": ""
+    },
+    {
+      "check": "shell_syntax",
+      "command": [
+        "sh",
+        "-n",
+        "spikes/ghostty-nsh/scripts/prepare.sh",
+        "spikes/ghostty-nsh/scripts/snapshot.sh",
+        "spikes/ghostty-nsh/scripts/cleanup.sh"
+      ],
+      "exit_code": 0,
+      "expected_exit_code": 0,
+      "passed": true,
+      "stderr": ""
+    },
+    {
+      "check": "all_spike_python_parse",
+      "passed": true
+    },
+    {
+      "check": "diff_whitespace",
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "exit_code": 0,
+      "expected_exit_code": 0,
+      "passed": true,
+      "stderr": ""
+    },
+    {
+      "check": "executed_fixture_and_compiled_sources_unchanged",
+      "passed": true
+    }
+  ],
+  "all_passed": true,
+  "script_sha256": {
+    "launch_pinned.py": "a74415092d0117ad9805988ba0b17d3b1d4afb0aa4a992ea03469c70e0823b07",
+    "pressure.py": "32e3ee98b9786986a32c0b0a2eb1e2bfaaa95d6df3249af667880e3afe1e2ad6",
+    "verify_evidence.py": "1e0d12a4068da291d28884b8abe48ef71aa65ea6186694c9af1d646f487eed9c",
+    "test_profile_gaps.py": "91c12f67ae89b4e75a218cce07c82525108fa9797d385b0647ca62c2e76fd95d",
+    "record_cycle.py": "abc9279171cb078364b5b31e205a22cd28dad4b68114d8b2df81eb8b7ff598d3",
+    "detach_client.py": "60a3d2ceb030d6e0b1cccc50987cb05f4294dc085fba6f228abe8d05760db1a1",
+    "profile_gaps.py": "25b2546d4f17a981c6f5c4fa448de4c7f2b3a3b30c1084f2d50468e972391f80",
+    "verify_teardown.py": "72446ad339df27016a97bfe92f246b10fa5659075c64b62db04cd3adeccf59ff",
+    "input_recorder.py": "76c8de5ceebe44cb9db3b821537e3ae9b7a5b0d6a5dcf07a3d4689b6ed2b5636"
+  }
+}

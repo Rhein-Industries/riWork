@@ -1,0 +1,276 @@
+   Compiling proc-macro2 v1.0.107
+   Compiling quote v1.0.47
+   Compiling unicode-ident v1.0.27
+   Compiling libc v0.2.191
+   Compiling cfg-if v1.0.5
+   Compiling smallvec v1.16.4
+   Compiling siphasher v1.0.4
+   Compiling bitflags v2.13.2
+   Compiling stable_deref_trait v1.2.1
+   Compiling memchr v2.8.3
+   Compiling serde_core v1.0.229
+   Compiling log v0.4.34
+   Compiling version_check v0.9.5
+   Compiling simd-adler32 v0.3.10
+   Compiling serde v1.0.229
+   Compiling objc2 v0.6.5
+   Compiling phf_shared v0.11.3
+   Compiling adler2 v2.0.1
+   Compiling crc32fast v1.5.3
+   Compiling rand_core v0.6.4
+   Compiling zeroize v1.9.1
+   Compiling objc2-encode v4.1.0
+   Compiling typenum v1.20.1
+   Compiling miniz_oxide v0.9.1
+   Compiling generic-array v0.14.7
+   Compiling rustls-pki-types v1.15.1
+   Compiling rand v0.8.8
+   Compiling getrandom v0.3.4
+   Compiling litemap v0.8.3
+   Compiling syn v3.0.9
+   Compiling zerocopy v0.8.63
+   Compiling writeable v0.6.4
+   Compiling utf-8 v0.7.6
+   Compiling phf_generator v0.11.3
+   Compiling utf8_iter v1.0.4
+   Compiling flate2 v1.1.10
+   Compiling thiserror v2.0.21
+   Compiling icu_normalizer_data v2.4.0
+   Compiling synstructure v0.14.0
+   Compiling icu_properties_data v2.4.0
+   Compiling once_cell v1.21.4
+   Compiling parking_lot_core v0.9.12
+   Compiling arrayvec v0.7.8
+   Compiling block-buffer v0.10.4
+   Compiling crypto-common v0.1.7
+   Compiling syn v2.0.119
+   Compiling aho-corasick v1.1.5
+   Compiling regex-syntax v0.8.11
+   Compiling io-lifetimes v3.0.1
+   Compiling bytemuck v1.25.2
+   Compiling rustix v1.1.6
+   Compiling scopeguard v1.2.0
+   Compiling new_debug_unreachable v1.0.6
+   Compiling float-cmp v0.9.0
+   Compiling untrusted v0.9.0
+   Compiling rustls v0.23.46
+   Compiling bytes v1.12.1
+   Compiling zerofrom-derive v0.1.8
+   Compiling yoke-derive v0.8.4
+   Compiling zerovec-derive v0.11.7
+   Compiling displaydoc v0.2.7
+   Compiling serde_derive v1.0.229
+   Compiling thiserror-impl v2.0.21
+   Compiling io-lifetimes v2.0.4
+   Compiling ppv-lite86 v0.2.21
+   Compiling rustls-webpki v0.103.16
+   Compiling strict-num v0.1.1
+   Compiling lock_api v0.4.14
+   Compiling regex-automata v0.4.18
+   Compiling zerofrom v0.1.8
+   Compiling digest v0.10.7
+   Compiling polycool v0.4.0
+   Compiling rand_core v0.9.5
+   Compiling yoke v0.8.4
+   Compiling zerovec v0.11.9
+   Compiling zerotrie v0.2.5
+   Compiling cpufeatures v0.2.17
+   Compiling errno v0.3.14
+   Compiling objc2-core-foundation v0.3.2
+   Compiling tinystr v0.8.5
+   Compiling potential_utf v0.1.6
+   Compiling string_cache_codegen v0.5.4
+   Compiling icu_collections v2.4.0
+   Compiling icu_locale_core v2.4.0
+   Compiling phf_codegen v0.11.3
+   Compiling io-extras v0.19.0
+   Compiling icu_provider v2.4.0
+   Compiling arrayref v0.3.9
+   Compiling subtle v2.6.1
+   Compiling mac v0.1.1
+   Compiling pin-project-lite v0.2.17
+   Compiling itoa v1.0.18
+   Compiling httparse v1.10.1
+   Compiling futf v0.1.5
+   Compiling tiny-skia-path v0.11.4
+   Compiling icu_properties v2.4.0
+   Compiling markup5ever v0.12.1
+   Compiling icu_normalizer v2.4.0
+   Compiling rand_chacha v0.9.0
+   Compiling kurbo v0.13.1
+   Compiling parking_lot v0.12.5
+   Compiling tokio-macros v2.7.2
+   Compiling socket2 v0.6.5
+   Compiling mio v1.2.4
+   Compiling miniz_oxide v0.8.9
+   Compiling fdeflate v0.3.7
+   Compiling zmij v1.0.23
+   Compiling cap-primitives v4.0.3
+   Compiling precomputed-hash v0.1.1
+   Compiling bitflags v1.3.2
+   Compiling png v0.17.16
+   Compiling string_cache v0.8.9
+   Compiling fs-set-times v0.20.3
+   Compiling tokio v1.54.1
+   Compiling svgtypes v0.16.1
+   Compiling rand v0.9.5
+   Compiling idna_adapter v1.2.2
+   Compiling tendril v0.4.3
+   Compiling http v1.5.0
+   Compiling sha1 v0.10.7
+   Compiling futures-macro v0.3.34
+   Compiling webpki-roots v1.0.11
+   Compiling phf v0.11.3
+   Compiling roxmltree v0.21.2
+   Compiling simplecss v0.2.2
+   Compiling maybe-owned v0.3.4
+   Compiling futures-sink v0.3.34
+   Compiling serde_json v1.0.154
+   Compiling ambient-authority v0.0.2
+   Compiling cap-std v4.0.3
+   Compiling xmlwriter v0.1.0
+   Compiling ipnet v2.12.2
+   Compiling slab v0.4.12
+   Compiling percent-encoding v2.3.2
+   Compiling data-url v0.3.2
+   Compiling data-encoding v2.11.1
+   Compiling pico-args v0.5.0
+   Compiling bit-vec v0.8.0
+   Compiling imagesize v0.14.0
+   Compiling base64 v0.22.1
+   Compiling futures-task v0.3.34
+   Compiling futures-core v0.3.34
+   Compiling futures-util v0.3.34
+   Compiling usvg v0.46.0
+   Compiling tungstenite v0.28.0
+   Compiling bit-set v0.8.0
+   Compiling form_urlencoded v1.2.2
+   Compiling tokio-rustls v0.26.6
+   Compiling webpki-roots v0.26.11
+   Compiling idna v1.1.0
+   Compiling tiny-skia v0.11.4
+   Compiling objc2-core-graphics v0.3.2
+   Compiling html5ever v0.27.0
+   Compiling rgb v0.8.53
+   Compiling block2 v0.6.2
+   Compiling ttf-parser v0.25.1
+   Compiling crossbeam-utils v0.8.23
+   Compiling imagesize v0.15.0
+   Compiling same-file v1.0.6
+   Compiling walkdir v2.5.0
+   Compiling resvg v0.46.0
+   Compiling tokio-tungstenite v0.28.0
+   Compiling url v2.5.8
+   Compiling fancy-regex v0.16.2
+   Compiling bincode v1.3.3
+   Compiling regex v1.13.1
+   Compiling sha2 v0.10.9
+   Compiling taffy v0.15.1
+   Compiling foldhash v0.1.5
+   Compiling rustc-hash v2.1.3
+   Compiling unicode-linebreak v0.1.5
+   Compiling httpdate v1.0.3
+   Compiling fnv v1.0.7
+   Compiling syntect v5.3.0
+   Compiling hashbrown v0.15.5
+   Compiling nsh-macros v0.3.0
+   Compiling objc2-foundation v0.3.2
+   Compiling xml5ever v0.18.1
+   Compiling find-msvc-tools v0.1.15
+   Compiling utf8parse v0.2.2
+   Compiling str_indices v0.4.4
+   Compiling unicode-id v0.3.7
+   Compiling shlex v2.0.1
+   Compiling cc v1.10.0
+   Compiling markdown v1.0.0
+   Compiling ropey v1.6.1
+   Compiling markup5ever_rcdom v0.3.0
+   Compiling anstyle-parse v1.0.0
+   Compiling two-face v0.4.5
+   Compiling imara-diff v0.2.0
+   Compiling crossbeam-channel v0.5.17
+   Compiling jiff-core v0.1.1
+   Compiling is_terminal_polyfill v1.70.2
+   Compiling colorchoice v1.0.5
+   Compiling anstyle v1.0.14
+   Compiling objc2-quartz-core v0.3.2
+   Compiling unicode-segmentation v1.13.3
+   Compiling nsh-core v0.3.0
+   Compiling anstyle-query v1.1.5
+   Compiling anstream v1.0.0
+   Compiling objc2-app-kit v0.3.2
+   Compiling riwork-ghostty-nsh-spike v0.0.0 (/Users/dominik/orca/projects/riWork-nsh-p2-teardown-pinned/spikes/ghostty-nsh)
+   Compiling jiff v0.2.38
+   Compiling env_filter v2.0.0
+   Compiling objc2-image-io v0.3.2
+   Compiling objc2-core-text v0.3.2
+   Compiling dispatch2 v0.3.1
+   Compiling objc2-io-kit v0.3.2
+   Compiling env_logger v0.11.11
+warning: riwork-ghostty-nsh-spike@0.0.0: In file included from native/terminal.m:29:
+warning: riwork-ghostty-nsh-spike@0.0.0: native/profile.h:46:13: warning: enumeration value 'kCFRunLoopAllActivities' not handled in switch [-Wswitch]
+warning: riwork-ghostty-nsh-spike@0.0.0:    46 |     switch (activity) {
+warning: riwork-ghostty-nsh-spike@0.0.0:       |             ^~~~~~~~
+warning: riwork-ghostty-nsh-spike@0.0.0: native/profile.h:46:13: note: add missing switch cases
+warning: riwork-ghostty-nsh-spike@0.0.0:    46 |     switch (activity) {
+warning: riwork-ghostty-nsh-spike@0.0.0:       |             ^
+warning: riwork-ghostty-nsh-spike@0.0.0:    47 |         case kCFRunLoopEntry: name = "runloop-entry"; break;
+warning: riwork-ghostty-nsh-spike@0.0.0:    48 |         case kCFRunLoopBeforeTimers: name = "runloop-before-timers"; break;
+warning: riwork-ghostty-nsh-spike@0.0.0:    49 |         case kCFRunLoopBeforeSources: name = "runloop-before-sources"; break;
+warning: riwork-ghostty-nsh-spike@0.0.0:    50 |         case kCFRunLoopBeforeWaiting: name = "runloop-before-waiting"; break;
+warning: riwork-ghostty-nsh-spike@0.0.0:    51 |         case kCFRunLoopAfterWaiting: name = "runloop-after-waiting"; break;
+warning: riwork-ghostty-nsh-spike@0.0.0:    52 |         case kCFRunLoopExit: name = "runloop-exit"; break;
+warning: riwork-ghostty-nsh-spike@0.0.0:    53 |     }
+warning: riwork-ghostty-nsh-spike@0.0.0: native/profile.h:44:49: warning: unused parameter 'observer' [-Wunused-parameter]
+warning: riwork-ghostty-nsh-spike@0.0.0:    44 | static void profileRunLoop(CFRunLoopObserverRef observer, CFRunLoopActivity activity, void *info) {
+warning: riwork-ghostty-nsh-spike@0.0.0:       |                                                 ^
+warning: riwork-ghostty-nsh-spike@0.0.0: native/profile.h:44:93: warning: unused parameter 'info' [-Wunused-parameter]
+warning: riwork-ghostty-nsh-spike@0.0.0:    44 | static void profileRunLoop(CFRunLoopObserverRef observer, CFRunLoopActivity activity, void *info) {
+warning: riwork-ghostty-nsh-spike@0.0.0:       |                                                                                             ^
+warning: riwork-ghostty-nsh-spike@0.0.0: native/profile.h:56:48: warning: unused parameter 'timer' [-Wunused-parameter]
+warning: riwork-ghostty-nsh-spike@0.0.0:    56 | static void profileHeartbeat(CFRunLoopTimerRef timer, void *info) { profile("heartbeat", 'i', 0); }
+warning: riwork-ghostty-nsh-spike@0.0.0:       |                                                ^
+warning: riwork-ghostty-nsh-spike@0.0.0: native/profile.h:56:61: warning: unused parameter 'info' [-Wunused-parameter]
+warning: riwork-ghostty-nsh-spike@0.0.0:    56 | static void profileHeartbeat(CFRunLoopTimerRef timer, void *info) { profile("heartbeat", 'i', 0); }
+warning: riwork-ghostty-nsh-spike@0.0.0:       |                                                             ^
+warning: riwork-ghostty-nsh-spike@0.0.0: native/terminal.m:85:34: warning: unused parameter 'app' [-Wunused-parameter]
+warning: riwork-ghostty-nsh-spike@0.0.0:    85 | static bool action(ghostty_app_t app, ghostty_target_s target, ghostty_action_s action) {
+warning: riwork-ghostty-nsh-spike@0.0.0:       |                                  ^
+warning: riwork-ghostty-nsh-spike@0.0.0: native/terminal.m:93:33: warning: unused parameter 'u' [-Wunused-parameter]
+warning: riwork-ghostty-nsh-spike@0.0.0:    93 | static bool readClipboard(void *u, ghostty_clipboard_e c, void *request) { return false; }
+warning: riwork-ghostty-nsh-spike@0.0.0:       |                                 ^
+warning: riwork-ghostty-nsh-spike@0.0.0: native/terminal.m:93:56: warning: unused parameter 'c' [-Wunused-parameter]
+warning: riwork-ghostty-nsh-spike@0.0.0:    93 | static bool readClipboard(void *u, ghostty_clipboard_e c, void *request) { return false; }
+warning: riwork-ghostty-nsh-spike@0.0.0:       |                                                        ^
+warning: riwork-ghostty-nsh-spike@0.0.0: native/terminal.m:93:65: warning: unused parameter 'request' [-Wunused-parameter]
+warning: riwork-ghostty-nsh-spike@0.0.0:    93 | static bool readClipboard(void *u, ghostty_clipboard_e c, void *request) { return false; }
+warning: riwork-ghostty-nsh-spike@0.0.0:       |                                                                 ^
+warning: riwork-ghostty-nsh-spike@0.0.0: native/terminal.m:94:51: warning: unused parameter 'text' [-Wunused-parameter]
+warning: riwork-ghostty-nsh-spike@0.0.0:    94 | static void confirmClipboard(void *u, const char *text, void *request, ghostty_clipboard_request_e kind) {
+warning: riwork-ghostty-nsh-spike@0.0.0:       |                                                   ^
+warning: riwork-ghostty-nsh-spike@0.0.0: native/terminal.m:94:100: warning: unused parameter 'kind' [-Wunused-parameter]
+warning: riwork-ghostty-nsh-spike@0.0.0:    94 | static void confirmClipboard(void *u, const char *text, void *request, ghostty_clipboard_request_e kind) {
+warning: riwork-ghostty-nsh-spike@0.0.0:       |                                                                                                    ^
+warning: riwork-ghostty-nsh-spike@0.0.0: native/terminal.m:98:34: warning: unused parameter 'u' [-Wunused-parameter]
+warning: riwork-ghostty-nsh-spike@0.0.0:    98 | static void writeClipboard(void *u, ghostty_clipboard_e c, const ghostty_clipboard_content_s *content, size_t count, bool confirm) {}
+warning: riwork-ghostty-nsh-spike@0.0.0:       |                                  ^
+warning: riwork-ghostty-nsh-spike@0.0.0: native/terminal.m:98:57: warning: unused parameter 'c' [-Wunused-parameter]
+warning: riwork-ghostty-nsh-spike@0.0.0:    98 | static void writeClipboard(void *u, ghostty_clipboard_e c, const ghostty_clipboard_content_s *content, size_t count, bool confirm) {}
+warning: riwork-ghostty-nsh-spike@0.0.0:       |                                                         ^
+warning: riwork-ghostty-nsh-spike@0.0.0: native/terminal.m:98:95: warning: unused parameter 'content' [-Wunused-parameter]
+warning: riwork-ghostty-nsh-spike@0.0.0:    98 | static void writeClipboard(void *u, ghostty_clipboard_e c, const ghostty_clipboard_content_s *content, size_t count, bool confirm) {}
+warning: riwork-ghostty-nsh-spike@0.0.0:       |                                                                                               ^
+warning: riwork-ghostty-nsh-spike@0.0.0: native/terminal.m:98:111: warning: unused parameter 'count' [-Wunused-parameter]
+warning: riwork-ghostty-nsh-spike@0.0.0:    98 | static void writeClipboard(void *u, ghostty_clipboard_e c, const ghostty_clipboard_content_s *content, size_t count, bool confirm) {}
+warning: riwork-ghostty-nsh-spike@0.0.0:       |                                                                                                               ^
+warning: riwork-ghostty-nsh-spike@0.0.0: native/terminal.m:98:123: warning: unused parameter 'confirm' [-Wunused-parameter]
+warning: riwork-ghostty-nsh-spike@0.0.0:    98 | static void writeClipboard(void *u, ghostty_clipboard_e c, const ghostty_clipboard_content_s *content, size_t count, bool confirm) {}
+warning: riwork-ghostty-nsh-spike@0.0.0:       |                                                                                                                           ^
+warning: riwork-ghostty-nsh-spike@0.0.0: native/terminal.m:99:40: warning: unused parameter 'alive' [-Wunused-parameter]
+warning: riwork-ghostty-nsh-spike@0.0.0:    99 | static void closeSurface(void *u, bool alive) { [(SpikeTerminalInput *)u record:@"process-exit"]; }
+warning: riwork-ghostty-nsh-spike@0.0.0:       |                                        ^
+warning: riwork-ghostty-nsh-spike@0.0.0: 17 warnings generated.
+   Compiling nsh-engine v0.3.0
+   Compiling nsh-base v0.3.0
+   Compiling nsh-platform-macos v0.3.0
+    Finished `dev` profile [unoptimized] target(s) in 33.26s

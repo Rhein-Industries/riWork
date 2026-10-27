@@ -1,0 +1,331 @@
+{
+  "task_id": "e940bd0a-2981-4d88-8a53-6b2cdd06822c",
+  "recorded_at_utc": "2026-10-27T21:26:48.180389+00:00",
+  "action": "reuse_exact_previously_rebuilt_pinned_artifact",
+  "reason": "Prior private build artifact is present and its archive and header SHA-256 hashes exactly match the recorded pinned rebuild provenance; no rebuild was required.",
+  "prior_provenance_path": "/Users/dominik/orca/projects/riWork-nsh-p2-teardown-pinned/spikes/ghostty-nsh/evidence/phase2/runtime/pinned-rebuild-provenance.json",
+  "prior_provenance_sha256": "f12afb2e7ad4ab94e9aa0dbfbfc36c97ac196cd2b3e59f4bf76e090ecebca82e",
+  "prior_install": "/Users/dominik/orca/projects/riWork-nsh-p2-teardown/spikes/ghostty-nsh/.runtime/pinned/install",
+  "private_install": "/Users/dominik/orca/projects/riWork-nsh-p2-teardown-pinned/spikes/ghostty-nsh/.runtime/pinned/install",
+  "copy_operation": "Python shutil.copytree(prior_install, private_install, symlinks=True), followed by SHA-256 comparison of every regular file and preservation of symlink targets",
+  "install_scope": "Private worktree only; no system-wide installation or shared cache/source writes",
+  "runtime": "rebuilt vendored Ghostty 1.3.2-dev",
+  "gpui_libghostty_version": "0.3.1",
+  "package_vcs_revision": "2bbde4ae53a8e163cdbe05294bd09934b30c1af3",
+  "ghostty_upstream_revision": "9f0e1719dc918368367d368bfe300f59bb68b5a4",
+  "vendor_source": "/Users/dominik/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/gpui-libghostty-0.3.1/vendor/ghostty",
+  "vendor_source_manifest_algorithm": "SHA-256 over sorted relative file paths and contents, each preceded by little-endian u64 length",
+  "vendor_source_manifest_sha256": "78f97c2dae6f6717963a8de12a4164c6d20c57bd7f984536878d2b98bc9816de",
+  "vendor_source_file_count": 1242,
+  "vendor_source_manifest_matches_prior": true,
+  "vendor_patch_document_sha256": "028e01e535156bfed0c7b861d2b7017c4b4aa8db5dc733286c7629e00e66ca2c",
+  "prior_build_command": [
+    "/Users/dominik/.local/share/riwork/toolchains/zig-0.16.0/zig",
+    "build",
+    "--prefix",
+    "/Users/dominik/orca/projects/riWork-nsh-p2-teardown/spikes/ghostty-nsh/.runtime/pinned/install",
+    "-j4",
+    "-Dversion-string=1.3.2-dev",
+    "-Dapp-runtime=none",
+    "-Demit-xcframework=false",
+    "-Demit-macos-app=false",
+    "-Demit-docs=false",
+    "-Demit-terminfo=false",
+    "-Demit-bench=false",
+    "-Demit-webdata=false",
+    "-Di18n=false",
+    "-Dsentry=false",
+    "-Doptimize=ReleaseFast"
+  ],
+  "prior_build_environment": {
+    "DEVELOPER_DIR": "/Applications/Xcode.app/Contents/Developer",
+    "SDKROOT": "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.0.sdk",
+    "CC": "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang",
+    "AR": "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ar",
+    "LD": "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ld",
+    "ZIG_GLOBAL_CACHE_DIR": "/Users/dominik/orca/projects/riWork-nsh-p2-teardown/spikes/ghostty-nsh/.runtime/pinned/zig-global",
+    "ZIG_LOCAL_CACHE_DIR": "/Users/dominik/orca/projects/riWork-nsh-p2-teardown/spikes/ghostty-nsh/.runtime/pinned/zig-local"
+  },
+  "prior_build_started_at_utc": "2026-10-27T20:45:43.223059+00:00",
+  "prior_build_finished_at_utc": "2026-10-27T20:47:57.962408+00:00",
+  "toolchain_verified": {
+    "zig": "/Users/dominik/.local/share/riwork/toolchains/zig-0.16.0/zig",
+    "zig_version": "0.16.0",
+    "zig_sha256": "e6cd688d25664983833aae272f501d4bceeae304875b8f1741209d15fd13a4ec",
+    "developer_dir": "/Applications/Xcode.app/Contents/Developer",
+    "sdk_root": "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.0.sdk",
+    "sdk_version": "26.0",
+    "clang_version": "Apple clang version 17.0.0 (clang-1700.3.19.1)\nTarget: arm64-apple-darwin25.2.0\nThread model: posix\nInstalledDir: /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin"
+  },
+  "host": {
+    "system": "Darwin",
+    "machine": "arm64",
+    "macos_version": "",
+    "uname": "Darwin dgsPro 25.2.0 Darwin Kernel Version 25.2.0: Tue Nov 18 21:09:56 PST 2025; root:xnu-12377.61.12~1/RELEASE_ARM64_T6041 arm64"
+  },
+  "fixture_build_environment": {
+    "GHOSTTY_LIB_DIR": "/Users/dominik/orca/projects/riWork-nsh-p2-teardown-pinned/spikes/ghostty-nsh/.runtime/pinned/install/lib",
+    "GHOSTTY_INCLUDE_DIR": "/Users/dominik/orca/projects/riWork-nsh-p2-teardown-pinned/spikes/ghostty-nsh/.runtime/pinned/install/include"
+  },
+  "artifacts": [
+    {
+      "relative_path": "include/ghostty/vt/allocator.h",
+      "bytes": 10638,
+      "sha256": "7b21d6c62c79c261f9496154d04c82d7a35fc9f661113fa3f1ae437c20e4858b",
+      "matches_source_artifact": true
+    },
+    {
+      "relative_path": "include/ghostty/vt/build_info.h",
+      "bytes": 3354,
+      "sha256": "535e44c29b5fd9c8df172605f58616df735432f7786ca24e3cc58d7cb3ba8361",
+      "matches_source_artifact": true
+    },
+    {
+      "relative_path": "include/ghostty/vt/color.h",
+      "bytes": 14598,
+      "sha256": "73e0db10e4b324122be1a8a46bb6619fe5ab264bf6713543336c3e5deb7035f3",
+      "matches_source_artifact": true
+    },
+    {
+      "relative_path": "include/ghostty/vt/color_scheme.h",
+      "bytes": 2174,
+      "sha256": "eab0dc56e057dfc03334cba109da6e7ae118513cb2be9dc4f3b0bffc7bdad465",
+      "matches_source_artifact": true
+    },
+    {
+      "relative_path": "include/ghostty/vt/device.h",
+      "bytes": 4679,
+      "sha256": "79c61cd5d54fc15c60d0ce87c69adf89c85b7b748b912c41b91230979f4319fe",
+      "matches_source_artifact": true
+    },
+    {
+      "relative_path": "include/ghostty/vt/focus.h",
+      "bytes": 2044,
+      "sha256": "ddc28ead578ca9f683a4140420807ec9988a45f669d719e28cdf840913ea56b4",
+      "matches_source_artifact": true
+    },
+    {
+      "relative_path": "include/ghostty/vt/formatter.h",
+      "bytes": 7415,
+      "sha256": "8e64027d9b11f99f0875ae1753e606c3fe99160f4a1ca82767d0413ac8736172",
+      "matches_source_artifact": true
+    },
+    {
+      "relative_path": "include/ghostty/vt/grid_ref.h",
+      "bytes": 8028,
+      "sha256": "80cc49f02d63025605d605c86f1207638ad9534ce74e9a14766299e0518d4987",
+      "matches_source_artifact": true
+    },
+    {
+      "relative_path": "include/ghostty/vt/grid_ref_tracked.h",
+      "bytes": 4766,
+      "sha256": "78c65cf69c1a6ee439849175221084366ca4392455503cc44e93cfdf9ddbc021",
+      "matches_source_artifact": true
+    },
+    {
+      "relative_path": "include/ghostty/vt/io.h",
+      "bytes": 3213,
+      "sha256": "d2e854e80f21763c32b7e3ca147d293beac28b3e29807f0dc0f2bff4262b4db5",
+      "matches_source_artifact": true
+    },
+    {
+      "relative_path": "include/ghostty/vt/key/encoder.h",
+      "bytes": 9149,
+      "sha256": "6963a275e2ba154a647382c462c416840dcdc2beb6d59aa200d80f37f9a5e196",
+      "matches_source_artifact": true
+    },
+    {
+      "relative_path": "include/ghostty/vt/key/event.h",
+      "bytes": 13432,
+      "sha256": "0eb11bfab67b887f4b409557b396a5da6ea17e9e62d92b97a38e723b46db635d",
+      "matches_source_artifact": true
+    },
+    {
+      "relative_path": "include/ghostty/vt/key.h",
+      "bytes": 2228,
+      "sha256": "2de93a84da8e9c1c1f6ac8d1d281ba054869225858a5d88ec8ec5f0d091b5eac",
+      "matches_source_artifact": true
+    },
+    {
+      "relative_path": "include/ghostty/vt/kitty_graphics.h",
+      "bytes": 31132,
+      "sha256": "a7e1f37191684e66835b54339fe714b14eaa882b5c1d3459fb6fc8b4a32ec8eb",
+      "matches_source_artifact": true
+    },
+    {
+      "relative_path": "include/ghostty/vt/modes.h",
+      "bytes": 8388,
+      "sha256": "bd40aa01f76e4351e09a1825693b27c1e4a53539411968432fc3e59e0f890f66",
+      "matches_source_artifact": true
+    },
+    {
+      "relative_path": "include/ghostty/vt/mouse/encoder.h",
+      "bytes": 6226,
+      "sha256": "2e409c50fcd06806dd1a86cf66751ff35362c65e14ff588e2592e8a09141c017",
+      "matches_source_artifact": true
+    },
+    {
+      "relative_path": "include/ghostty/vt/mouse/event.h",
+      "bytes": 4923,
+      "sha256": "68f14cd03109919cb8da36b17f70670334a3369af5c685496118c913c3049abf",
+      "matches_source_artifact": true
+    },
+    {
+      "relative_path": "include/ghostty/vt/mouse.h",
+      "bytes": 2153,
+      "sha256": "96273f9340608a2694ba56e35d3b1bd108f57882e289b027b5408b19a21ddae7",
+      "matches_source_artifact": true
+    },
+    {
+      "relative_path": "include/ghostty/vt/osc.h",
+      "bytes": 7734,
+      "sha256": "a5021912c111f199d9b7272301a67bcb87335e56af05b15401c0e9f90d4f99c5",
+      "matches_source_artifact": true
+    },
+    {
+      "relative_path": "include/ghostty/vt/paste.h",
+      "bytes": 8456,
+      "sha256": "79753aa80f13f7f0a9519943d0fbffb7a5388b619ba61a1b0d3044e151455eab",
+      "matches_source_artifact": true
+    },
+    {
+      "relative_path": "include/ghostty/vt/point.h",
+      "bytes": 1729,
+      "sha256": "1ed7b2cda14904814727b93d406f39284e8392af706f938cf0fa1dbeaa42e774",
+      "matches_source_artifact": true
+    },
+    {
+      "relative_path": "include/ghostty/vt/render.h",
+      "bytes": 33375,
+      "sha256": "33db708310fe10fb35d1a3cdd54461a773b6f3f781934aa41a277e69397fada5",
+      "matches_source_artifact": true
+    },
+    {
+      "relative_path": "include/ghostty/vt/screen.h",
+      "bytes": 11336,
+      "sha256": "d9a3ab36f8410184fd0af4a20de1c1d3a0f09e8bd28ec2de89cb243dbd008fa3",
+      "matches_source_artifact": true
+    },
+    {
+      "relative_path": "include/ghostty/vt/selection.h",
+      "bytes": 42591,
+      "sha256": "1b51473b977f10cf090b171c767de3d536e8a5f1c3a81f06f5b45bae89854ac0",
+      "matches_source_artifact": true
+    },
+    {
+      "relative_path": "include/ghostty/vt/sgr.h",
+      "bytes": 10743,
+      "sha256": "8292084973e64ce61555c6721591411dba9cf968ea9ae2d9820b4f6c381f1ce5",
+      "matches_source_artifact": true
+    },
+    {
+      "relative_path": "include/ghostty/vt/size_report.h",
+      "bytes": 2994,
+      "sha256": "a86cd1b0e5cf2307411030646285e5f2dcb1e6ca26e938cb6d578b16301e94a7",
+      "matches_source_artifact": true
+    },
+    {
+      "relative_path": "include/ghostty/vt/snapshot.h",
+      "bytes": 22702,
+      "sha256": "6fb8e35fb09f47fa37907eb9e6b6ee1e55816437e280a001559a9c7498149597",
+      "matches_source_artifact": true
+    },
+    {
+      "relative_path": "include/ghostty/vt/style.h",
+      "bytes": 2987,
+      "sha256": "ebb50a1821952dd954dd51d5897f9881c6927abd73b909e2e2f1deb3a52f31a9",
+      "matches_source_artifact": true
+    },
+    {
+      "relative_path": "include/ghostty/vt/sys.h",
+      "bytes": 7856,
+      "sha256": "5ae31311e2d988a0d77dc5d67c242f08378cb8409689ce46ebb44184e307d2bb",
+      "matches_source_artifact": true
+    },
+    {
+      "relative_path": "include/ghostty/vt/terminal.h",
+      "bytes": 83374,
+      "sha256": "affb316d434cda7ea86c27ccfe7a07fefdd62240566d0d2bd27cdc2e93f5061c",
+      "matches_source_artifact": true
+    },
+    {
+      "relative_path": "include/ghostty/vt/types.h",
+      "bytes": 12348,
+      "sha256": "dc44c198f79ad6e108ac845d589086d909d98138b1ec51517666e165697ba002",
+      "matches_source_artifact": true
+    },
+    {
+      "relative_path": "include/ghostty/vt/unicode.h",
+      "bytes": 6358,
+      "sha256": "d5533c9abcebc9284033eb9c6acc0ed707a3a68a98f0d2e3d8c9b28a2beae796",
+      "matches_source_artifact": true
+    },
+    {
+      "relative_path": "include/ghostty/vt/wasm.h",
+      "bytes": 5680,
+      "sha256": "0136093c504af9fb2a33b7e50a70cb6b4cee0c2375beed3d73b579c092195fee",
+      "matches_source_artifact": true
+    },
+    {
+      "relative_path": "include/ghostty/vt.h",
+      "bytes": 6579,
+      "sha256": "df3997ea5f3df0902df8a80a3db176bda7a0e6c4d389be21b90da8c9fb52be44",
+      "matches_source_artifact": true
+    },
+    {
+      "relative_path": "include/ghostty.h",
+      "bytes": 37379,
+      "sha256": "f2c12e1bb02540d79feed6bd29ee37312c4e0d24391442a63e66f06e1f7f2e4a",
+      "matches_source_artifact": true
+    },
+    {
+      "relative_path": "lib/libghostty-internal.a",
+      "bytes": 132563408,
+      "sha256": "b51367aa565527eddfa180d5ae6304899d903af6fc094b4531671ffc20fb064f",
+      "matches_source_artifact": true
+    },
+    {
+      "relative_path": "lib/libghostty-vt.0.1.0.dylib",
+      "bytes": 1818752,
+      "sha256": "592bbf3296d69708580a7f617a8740639ed1ed96cc87a6c70a88917ea4aa7259",
+      "matches_source_artifact": true
+    },
+    {
+      "relative_path": "lib/libghostty-vt.0.dylib",
+      "symlink_target": "libghostty-vt.0.1.0.dylib"
+    },
+    {
+      "relative_path": "lib/libghostty-vt.a",
+      "bytes": 10619720,
+      "sha256": "ac6c0f0682d7322920674ed96639d725f47f7dc36b419fb4402ca05765f3ec1c",
+      "matches_source_artifact": true
+    },
+    {
+      "relative_path": "lib/libghostty-vt.dylib",
+      "symlink_target": "libghostty-vt.0.dylib"
+    },
+    {
+      "relative_path": "share/man/.placeholder",
+      "bytes": 34,
+      "sha256": "be7a69c1376dedf92aef153d2a0901473732c870fd6b01f1db7c12854d13e53b",
+      "matches_source_artifact": true
+    },
+    {
+      "relative_path": "share/pkgconfig/libghostty-vt-static.pc",
+      "bytes": 373,
+      "sha256": "17038bea11da7e9239533f24e913ba3685ce9b113f9d44b9fc587c343991be47",
+      "matches_source_artifact": true
+    },
+    {
+      "relative_path": "share/pkgconfig/libghostty-vt.pc",
+      "bytes": 356,
+      "sha256": "9e064c9d6aa13ff00444d68193f9db0bcea0f77c192177c7e4d57b750c4f6d9c",
+      "matches_source_artifact": true
+    }
+  ],
+  "lib/libghostty-internal.a_sha256": "b51367aa565527eddfa180d5ae6304899d903af6fc094b4531671ffc20fb064f",
+  "include/ghostty.h_sha256": "f2c12e1bb02540d79feed6bd29ee37312c4e0d24391442a63e66f06e1f7f2e4a",
+  "cached_runtime_archive_sha256_for_contrast": "75443f9cd0b74a0b41f51b214bbc1cc00c10b94d10710302f5eca9971f157b66",
+  "archive_differs_from_cached_runtime": true,
+  "fixture_launched_by_runtime_preparation": false
+}
