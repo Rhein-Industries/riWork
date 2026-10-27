@@ -813,6 +813,92 @@ Plus one NSH-side test per gesture row of §4.4 (DockArea driven headless by `ns
 | Pane header inset under the traffic lights, per-group header widths | TSX (`renderTab`/`tabBarStyle` + `titleBar()`) | none |
 | DockNode has no per-child `fixed` flag (ResizablePanel has one, `resizable/panel.rs:235-239`) | upstream NSH request | §4.3 rule 5 covers the one-absorber case; other cases settle one frame later via `setExtent`. |
 
+Decisions the owner has taken since the freeze are recorded, dated, in [§8](#8-decisions-addendum).
+
 ## 7. Change log
 
 - v1 (this document): initial freeze for Step 0.
+- v1, 2026-10-27 addendum (task 8fa16659): §8 records three owner decisions (D-OWN-1, D-PERF-1,
+  Phase 2 entry gate). No frozen surface, `schema` field or §3.7 metric changed, so there is no
+  version bump.
+
+## 8. Decisions addendum
+
+Decisions by the project owner, newest last. Each entry gives its date, where the original
+proposal text lives (kept there unchanged), and what it settles here. None of them changes a frozen
+surface or a `schema` field.
+
+### 8.1 D-OWN-1: `riwork/native` module ownership for Phase 1 (ADOPTED 2026-10-27)
+
+**Adopted as proposed** in [`docs/nsh-phase1-acceptance.md` §1](nsh-phase1-acceptance.md#1-decisions-needed-before-acceptance).
+The orchestrator relayed it to the three Phase 1 branches. Phase 1 ownership of the §1.10 modules
+and the code moves:
+
+- **P1a** (task 5c4cb942, `nsh-p1-native`): crate skeleton, registry, subscription hubs, `Store`,
+  `Sessions` (read side plus `create`/`close` adapters), `Tabs`, `Settings`, `Appearance` (without
+  Ghostty parsing), test support.
+- **P1c** (task 40e6ac8b, `nsh-p1-workspace`): `crates/riwork-nsh-native/src/layouts/` (`Layouts`,
+  `LayoutSession`), the global-window state functions of `Dashboard`, and moving `gather`, the
+  default layout and tab routing out of `crates/riwork-desktop/src/main.rs` into riwork-core.
+- **P1b** (task ddba58a0, `nsh-p1-host`): host-internal modules, plus moving
+  `crates/riwork-desktop/src/dock_menu.rs` logic into the host.
+
+Unchanged: the module names of §1.10. Also unchanged is the §1.10 rule that each module's function
+table is added to this document under a `schema` bump before first use.
+
+### 8.2 D-PERF-1: NSH frame budgets (ADOPTED 2026-10-27)
+
+**Adopted as proposed** in [`docs/nsh-phase1-acceptance.md` §7](nsh-phase1-acceptance.md#7-frame-budget-decision-d-perf-1),
+where the proposal and its alternatives stay as written. §5 "Perf budgets" asks for an explicit NSH
+target for the guard that already fails on GPUI (parity disagreement #10). This is that target.
+Alternatives (A) and (B) of the proposal were not taken. The adopted text, unchanged from the
+proposal:
+
+> **NSH frame budgets.**
+>
+> 1. *Structural guards are hard and machine-independent.* They are asserted in every test build:
+>    fewer than 100 rows or selection bodies materialized per frame for the 2,200-call disclosed
+>    turn; no reprojection for token deltas; under 1.5 ms per streamed event at the bridge;
+>    exactly one projection per layout gesture; zero deliveries while idle.
+> 2. *Wall-clock budgets are asserted only on release builds* of the Rust host, the UI set and the
+>    JS bundle. They are measured with NSH's settled surface-frame monitor, as the median of at
+>    least 5 runs, on a quiet host: no cargo, rustc or nsh process at start, and a 1-minute load
+>    average below half the core count, recorded with the run.
+> 3. *Targets.* For the 2,200-call disclosed turn at 1220×780, Native theme: median ≤ 16.7 ms and
+>    p95 ≤ 25 ms. Each must also be no worse than the matched GPUI release measurement of the same
+>    fixture, viewport and theme on the same host. For the Phase-1 busy workspace (24 tabs,
+>    120 projects): median ≤ 16.7 ms and p90 ≤ 25 ms, with the same matched comparison.
+> 4. *Debug timings are reported, never asserted.*
+> 5. *The GPUI 25 ms Debug guard is retired from the NSH acceptance set.* It stays a GPUI
+>    regression test for as long as the GPUI desktop builds.
+
+Phase 1 perf stays **report-only** until the chat phase. The Phase 1 measurements (P1-PERF-01:
+busy-workspace frame, idle CPU) are recorded against these targets but fail no Phase 1 check. The
+structural guards of rule 1 that exist in Phase 1 (P1-PERF-02, P1-POLL-02) are hard from Phase 1.
+
+### 8.3 Phase 2 entry gate: pinned-runtime teardown proof (ADOPTED 2026-10-27)
+
+The evidence it rests on is the Phase 2 teardown proof (task b915a54a, merged to `nsh` as
+`d50ac3e`; `spikes/ghostty-nsh/WORKER_REPORT.md`,
+`spikes/ghostty-nsh/evidence/phase2/cached/verification-summary.json`). It ran only on the cached
+libghostty `1.3.2-dev` archive:
+
+- **Passed:** 20 batches × 4 surfaces under tmux output pressure, 80/80 freed exactly once,
+  detach and child exit confirmed before every free, `ghostty_surface_free` max 21.135 ms, zero
+  hangs, zero leaked clients or child processes, same session and pane after every close.
+- **Failed:** main-loop delivery gaps. Seven timer gaps of 100 ms or more, on surfaces 1–4 and 52,
+  max **156.212 ms**. That fails §3.7 item 4 ("the main thread never stalls > 100 ms").
+- The rebuilt pinned runtime (Ghostty `9f0e1719dc918368367d368bfe300f59bb68b5a4` plus the
+  declared vendor patches) was built and linked, but **never launched**.
+
+Decision:
+
+1. **Phase 2 does not open** until the pinned-runtime teardown proof (task e940bd0a) passes.
+2. **The cached-runtime result is not accepted.** Its 110–156 ms main-loop gaps remain a §3.7
+   failure.
+3. **§3.7 is not amended.** Item 4's 100 ms limit and the rest of the teardown protocol stand as
+   frozen.
+
+Task e940bd0a's GO criteria, as written in the task: "80/80 freed, zero hangs/leaks, session/pane
+survival, AND (<100ms gaps OR gaps proven non-terminal noise with profiling evidence)". Its stop
+rule, as written: "NO-GO again = stop, no metric relaxation".
