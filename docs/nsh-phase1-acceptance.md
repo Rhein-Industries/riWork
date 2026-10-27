@@ -26,13 +26,25 @@ use. A branch may choose other names, but its report must map them to the IDs he
 
 ## 1. Decisions needed before acceptance
 
-| ID | Question | Why it matters | Proposal (not adopted) |
+| ID · status | Question | Why it matters | Proposal (as originally written) |
 |---|---|---|---|
-| **D-PERF-1** | What frame budget does NSH promise? The GPUI 25 ms large-turn guard already fails on GPUI. | P1 builds the first NSH perf harness and must not inherit a guard that fails on the baseline, or drop it silently. | [§7](#7-frame-budget-decision-d-perf-1). |
-| D-OWN-1 | Who builds which `riwork/native` module? `LayoutSession` is a `riwork/native` class (contracts §4.2), but P1a's task covers only the read side of Store and Sessions, and P1c owns the layout mapping. No task names `Tabs`, `Settings`, `Appearance` or the global-window state functions. | P1a and P1c both edit `crates/riwork-nsh-native`. P1b deletes GPUI code whose logic and tests these modules need. | **P1a:** crate skeleton, registry, subscription hubs, `Store`, `Sessions` (read side + `create`/`close` adapters), `Tabs`, `Settings`, `Appearance` (without Ghostty parsing), test support. **P1c:** `crates/riwork-nsh-native/src/layouts/` (`Layouts`, `LayoutSession`), the global-window state functions of `Dashboard`, and moving `gather` / default layout / tab routing out of `main.rs` into riwork-core. **P1b:** host-internal modules, plus moving `dock_menu.rs` logic into the host. |
-| D-THEME-1 | What does "Follow Ghostty" (the default theme) do in P1? Parsing the user's Ghostty config goes through `gpui_libghostty` (`crates/riwork-desktop/src/theme.rs:6`; the surface-backed init in `mod native`, theme.rs:916-1045), which P1 does not link. | It is the default, so most homes resolve through it. | Use GPUI's own hard-failure path (SHELL-280): RiWork palette, terminal colors unknown, the diagnostic kept. Publish no `appearance.json`. Real parsing comes with the terminal phase that links libghostty (D-GHOSTTY). |
-| D-PROC-1 | What does `riwork open` print under single-instance forwarding (contracts §0)? Today it prints `Opened <root> (PID n)` / JSON `pid` of the process it spawned (SHELL-006). Under forwarding, that process exits after forwarding. | The CLI must stay unchanged (§0). Scripts may read `pid`. | Either keep the output, with `pid` naming the short-lived forwarder, or have the forwarder return the running host's pid over `desktop.sock` and print that. Decide before P1b freezes the forward message. |
-| D-COPY-1 | Tab-close dialog body still says "reopen it from ＋ › Open a worker or shell" (parity disagreement #7). | P1 ports the dialog (P1-TAB-04) and its tests pin the string. | Owner picks the wording before P1c's test freezes it. |
+| **D-PERF-1** · **ADOPTED 2026-10-27** | What frame budget does NSH promise? The GPUI 25 ms large-turn guard already fails on GPUI. | P1 builds the first NSH perf harness and must not inherit a guard that fails on the baseline, or drop it silently. | [§7](#7-frame-budget-decision-d-perf-1). |
+| **D-OWN-1** · **ADOPTED 2026-10-27** | Who builds which `riwork/native` module? `LayoutSession` is a `riwork/native` class (contracts §4.2), but P1a's task covers only the read side of Store and Sessions, and P1c owns the layout mapping. No task names `Tabs`, `Settings`, `Appearance` or the global-window state functions. | P1a and P1c both edit `crates/riwork-nsh-native`. P1b deletes GPUI code whose logic and tests these modules need. | **P1a:** crate skeleton, registry, subscription hubs, `Store`, `Sessions` (read side + `create`/`close` adapters), `Tabs`, `Settings`, `Appearance` (without Ghostty parsing), test support. **P1c:** `crates/riwork-nsh-native/src/layouts/` (`Layouts`, `LayoutSession`), the global-window state functions of `Dashboard`, and moving `gather` / default layout / tab routing out of `main.rs` into riwork-core. **P1b:** host-internal modules, plus moving `dock_menu.rs` logic into the host. |
+| D-THEME-1 · open | What does "Follow Ghostty" (the default theme) do in P1? Parsing the user's Ghostty config goes through `gpui_libghostty` (`crates/riwork-desktop/src/theme.rs:6`; the surface-backed init in `mod native`, theme.rs:916-1045), which P1 does not link. | It is the default, so most homes resolve through it. | Use GPUI's own hard-failure path (SHELL-280): RiWork palette, terminal colors unknown, the diagnostic kept. Publish no `appearance.json`. Real parsing comes with the terminal phase that links libghostty (D-GHOSTTY). |
+| D-PROC-1 · open | What does `riwork open` print under single-instance forwarding (contracts §0)? Today it prints `Opened <root> (PID n)` / JSON `pid` of the process it spawned (SHELL-006). Under forwarding, that process exits after forwarding. | The CLI must stay unchanged (§0). Scripts may read `pid`. | Either keep the output, with `pid` naming the short-lived forwarder, or have the forwarder return the running host's pid over `desktop.sock` and print that. Decide before P1b freezes the forward message. |
+| D-COPY-1 · open | Tab-close dialog body still says "reopen it from ＋ › Open a worker or shell" (parity disagreement #7). | P1 ports the dialog (P1-TAB-04) and its tests pin the string. | Owner picks the wording before P1c's test freezes it. |
+
+### 1.1 Decision record
+
+The proposal cells above are kept exactly as first written. Adopted decisions are recorded,
+dated, in [`docs/nsh-contracts.md` §8](nsh-contracts.md#8-decisions-addendum).
+
+| Date | Decision | Status | Recorded in |
+|---|---|---|---|
+| 2026-10-27 | D-OWN-1, as proposed above (relayed to P1a, P1b and P1c by the orchestrator) | **ADOPTED** | contracts §8.1 |
+| 2026-10-27 | D-PERF-1, as proposed in [§7](#7-frame-budget-decision-d-perf-1); alternatives (A) and (B) not taken; Phase 1 perf stays report-only until the chat phase | **ADOPTED** | contracts §8.2 |
+| 2026-10-27 | Phase 2 entry gate: the pinned-runtime teardown proof (task e940bd0a) must pass before Phase 2 opens. The cached-runtime 110–156 ms main-loop gaps are not accepted. §3.7 is not amended. This is an owner decision, not a proposal of this plan. | **ADOPTED** | contracts §8.3 |
+| — | D-THEME-1, D-PROC-1, D-COPY-1 | open | — |
 
 ---
 
@@ -565,15 +577,26 @@ Host-unit modules are in `crates/riwork-desktop/src/`.
 3. The write allow-list and the "no tmux server" checks pass for every fixture run.
 4. The deviations accepted in P1 are recorded with measurements: DockArea drop zones (P1-DRAG-02),
    the Ctrl-Tab manual result (P1-KEYS-02), and Follow Ghostty per D-THEME-1.
-5. D-PERF-1 is decided, or explicitly carried to the chat phase with P1-PERF-01 published as
-   report-only.
+5. ~~D-PERF-1 is decided, or explicitly carried to the chat phase with P1-PERF-01 published as
+   report-only.~~ **Met 2026-10-27:** D-PERF-1 was adopted as proposed
+   ([§1.1](#11-decision-record), contracts §8.2). P1-PERF-01 is published report-only, and Phase 1
+   perf stays report-only until the chat phase.
 6. §9 checklists are signed off for P1a, P1b and P1c.
+
+Status note (2026-10-27): Phase 1 exit does not by itself open Phase 2. Phase 2's entry gate is the
+pinned-runtime teardown proof (task e940bd0a), which must pass first. The cached-runtime
+110–156 ms main-loop gaps are not accepted, and §3.7 is not amended (contracts §8.3).
 
 ---
 
 ## 7. Frame budget decision (D-PERF-1)
 
-**Status: open, and the owner's decision. This plan adopts no value.**
+**Status: ADOPTED 2026-10-27, as proposed** (task 8fa16659; recorded in
+[`docs/nsh-contracts.md` §8.2](nsh-contracts.md#82-d-perf-1-nsh-frame-budgets-adopted-2026-10-27)).
+The facts, the proposed wording and the alternatives below are kept exactly as first written. The
+original status line was:
+
+~~**Status: open, and the owner's decision. This plan adopts no value.**~~
 
 The facts:
 
@@ -632,6 +655,13 @@ Alternatives, if the owner prefers:
 The recommendation is the wording above (an absolute release target plus the matched comparison),
 because the host spike already saw no retained NSH surface frame above 16.67 ms under streaming
 (`spikes/host-multiwindow/WORKER_REPORT.md`).
+
+**Decision (2026-10-27):** the owner adopted the proposed wording as written, rules 1–5. The
+alternatives (A) and (B) were not taken. Phase 1 perf stays report-only until the chat phase:
+
+- P1-PERF-01 records the busy-workspace frame and idle CPU against the rule 3 targets, and fails
+  no Phase 1 check.
+- The rule 1 structural guards that exist in Phase 1 (P1-PERF-02, P1-POLL-02) are hard.
 
 ---
 
