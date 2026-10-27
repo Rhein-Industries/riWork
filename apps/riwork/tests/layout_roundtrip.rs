@@ -40,6 +40,65 @@ fn area() -> Extent {
     }
 }
 
+#[test]
+fn the_default_layout_closes_nothing_and_preserves_selection_and_navigation_width() {
+    let mut project = fixture();
+    let original_tabs: HashSet<_> = project
+        .panes
+        .values()
+        .flat_map(|pane| pane.tabs.iter().map(SavedTab::key))
+        .collect();
+    riwork_core::layouts::apply_default_layout(&mut project).unwrap();
+    let (navigation, main) = project.layout.two_panes_side_by_side().unwrap();
+    assert_eq!(project.main_pane, Some(main));
+    assert_eq!(project.active_pane, main);
+    assert_eq!(
+        project.panes[&main].active_tab_key.as_deref(),
+        Some("shell:second")
+    );
+    assert_eq!(
+        project.effective_locked_panes(),
+        HashSet::from([navigation])
+    );
+    let final_tabs: HashSet<_> = project
+        .panes
+        .values()
+        .flat_map(|pane| pane.tabs.iter().map(SavedTab::key))
+        .collect();
+    assert!(original_tabs.is_subset(&final_tabs));
+    if let Layout::Split { ratio, .. } = &mut project.layout {
+        *ratio = 0.36;
+    }
+    let applied = project.clone();
+    riwork_core::layouts::apply_default_layout(&mut project).unwrap();
+    assert_eq!(project, applied);
+    let mut model = LayoutModel::new(project).unwrap();
+    model
+        .open_panel(riwork_core::layouts::PanelKind::Usage)
+        .unwrap();
+    assert_eq!(
+        model.project().panes[&navigation].active_tab_key.as_deref(),
+        Some("panel:usage")
+    );
+}
+
+#[test]
+fn default_layout_allocates_navigation_below_the_core_pane_id_ceiling() {
+    let mut project = fixture();
+    let high = u64::MAX - 257;
+    project.layout = Layout::Pane(high);
+    project.panes = std::collections::BTreeMap::from([(high, SavedPane::default())]);
+    project.active_pane = high;
+    project.main_pane = Some(high);
+    project.locked_panes = Some(HashSet::new());
+    project.normalize().unwrap();
+    riwork_core::layouts::apply_default_layout(&mut project).unwrap();
+    let (navigation, main) = project.layout.two_panes_side_by_side().unwrap();
+    assert_eq!(main, high);
+    assert!(navigation < high);
+    assert_eq!(project.panes[&navigation].tabs.len(), 5);
+}
+
 fn oracle(input: ProjectLayout) {
     let temp = scratch();
     let store = LayoutStore::open(temp.path()).unwrap();

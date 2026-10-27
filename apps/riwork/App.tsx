@@ -2,9 +2,11 @@ import { Text, View, cleanup, host, mount, signal } from "nsh";
 import { Layouts, type LayoutSession } from "riwork/native";
 import { Workspace } from "./Workspace";
 import { windowTitle, type HostParams } from "./model";
+import { useAppearance } from "./appearance";
 
 function App() {
   const params = host.params as unknown as HostParams;
+  const ui = useAppearance(params);
   const session = signal<LayoutSession | null>(null);
   const notice = signal(params.notice ?? "Loading workspace…");
   const name = params.path?.split("/").filter(Boolean).pop() ?? "Workspace";
@@ -27,7 +29,9 @@ function App() {
     if (params.kind === "global") installed();
   }
   return <View style={{ flex: 1 }}>
-    {session() ? <Workspace session={session()!} title={windowTitle(name)} projectLabel={name} startupNotice={params.notice} onChange={installed} /> :
+    {session() && ui.ready() ? <Workspace session={session()!} title={windowTitle(name)} projectLabel={name}
+      projectId={params.projectId ?? undefined} theme={ui.theme} settings={ui.settings}
+      appearanceNotice={ui.notice} startupNotice={params.notice} onChange={installed} /> :
       <View style={{ flex: 1, padding: 20 }}><Text testID="startup-notice">{notice()}</Text></View>}
   </View>;
 }

@@ -39,6 +39,7 @@ nsh-platform-macos = "=0.3.0"
 nsh-engine = "=0.3.0"
 nsh-core = "=0.3.0"
 nsh-base = "=0.3.0"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["NSFontManager"] }
 dispatch2 = "0.3"
 block2 = "0.6"
 env_logger = "0.11"

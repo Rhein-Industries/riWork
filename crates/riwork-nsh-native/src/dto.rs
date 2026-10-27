@@ -362,6 +362,15 @@ pub struct SessionsSnapshot {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsObject)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CreateSessionRequest {
+    pub project_id: String,
+    pub worktree_id: Option<String>,
+    pub cwd: String,
+    pub command: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsObject)]
 #[serde(rename_all = "camelCase")]
 pub struct ShellSessionDto {
     pub user_opened: bool,

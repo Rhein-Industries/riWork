@@ -38,6 +38,27 @@ impl SessionsBackend for FakeSessions {
     fn invalidate_sample(&self) {
         self.invalidations.fetch_add(1, Ordering::SeqCst);
     }
+    fn create(
+        &self,
+        request: riwork_nsh_native::dto::CreateSessionRequest,
+    ) -> Result<ShellSessionDto> {
+        assert_ne!(std::thread::current().name(), Some("nsh-engine"));
+        let mut created = session();
+        created.project_id = Some(request.project_id);
+        created.worktree_id = request.worktree_id;
+        created.cwd = request.cwd;
+        created.command = request.command;
+        self.value.lock().unwrap().sessions.push(created.clone());
+        Ok(created)
+    }
+    fn close(&self, id: &str) -> Result<()> {
+        self.value
+            .lock()
+            .unwrap()
+            .sessions
+            .retain(|session| session.id != id);
+        Ok(())
+    }
 }
 
 fn session() -> ShellSessionDto {
@@ -148,15 +169,45 @@ async fn an_empty_inventory_sleeps_until_a_watcher_event_and_disarms_when_empty_
 async fn a_quiet_home_produces_no_deliveries_for_60_s() {
     let fixture = tempfile::tempdir().unwrap();
     let sessions = Arc::new(FakeSessions::default());
-    let service = start(fixture.path(), sessions.clone()).await;
+    let home = fixture.path().to_path_buf();
+    let test_sessions = sessions.clone();
+    let service = tokio::task::spawn_blocking(move || {
+        ProcessService::with_tabs_backend(
+            home.clone(),
+            Arc::new(CoreStoreBackend::new(home)),
+            test_sessions,
+            Arc::new(FakeTabs::default()),
+        )
+    })
+    .await
+    .unwrap()
+    .unwrap();
     let stores = service.subscribe_store().await.unwrap();
     let shells = service.subscribe_sessions().await.unwrap();
+    let preferences = service.preferences().clone();
+    let tabs = service.tabs().clone();
+    let (settings, appearance, tabs) = tokio::task::spawn_blocking(move || {
+        (
+            preferences.subscribe_settings(),
+            preferences.subscribe_appearance(),
+            tabs.subscribe("00000000-0000-4000-8000-000000000001")
+                .unwrap(),
+        )
+    })
+    .await
+    .unwrap();
     stores.recv().await.unwrap();
     shells.recv().await.unwrap();
+    settings.recv().await.unwrap();
+    appearance.recv().await.unwrap();
+    tabs.recv().await.unwrap();
     tokio::select! {
         _ = tokio::time::sleep(Duration::from_secs(60)) => {},
         event = stores.recv() => panic!("quiet Store delivered {event:?}"),
         event = shells.recv() => panic!("quiet Sessions delivered {event:?}"),
+        event = settings.recv() => panic!("quiet Settings delivered {event:?}"),
+        event = appearance.recv() => panic!("quiet Appearance delivered {event:?}"),
+        event = tabs.recv() => panic!("quiet Tabs delivered {event:?}"),
     }
     assert_eq!(sessions.samples.load(Ordering::SeqCst), 1);
 }
@@ -257,4 +308,297 @@ async fn async_reads_hop_off_the_callers_thread_and_errors_are_coded() {
             .unwrap_err(),
         "io: fixture error"
     );
+}
+
+#[derive(Default)]
+struct FakeTabs {
+    calls: AtomicUsize,
+    value: Mutex<Option<riwork_nsh_native::tabs::TabsSnapshot>>,
+}
+impl riwork_nsh_native::tabs::TabsBackend for FakeTabs {
+    fn snapshot(&self, _project: &str) -> Result<riwork_nsh_native::tabs::TabsSnapshot> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(self.value.lock().unwrap().clone().unwrap_or_else(|| {
+            riwork_nsh_native::tabs::TabsSnapshot {
+                epoch: "fixture".into(),
+                revision: 1,
+                entries: Vec::new(),
+            }
+        }))
+    }
+    fn update(
+        &self,
+        project: &str,
+        _update: &riwork_engine::project_tabs::Update,
+    ) -> Result<riwork_nsh_native::tabs::TabsSnapshot> {
+        let mut snapshot = self.snapshot(project)?;
+        snapshot.revision += 1;
+        *self.value.lock().unwrap() = Some(snapshot.clone());
+        Ok(snapshot)
+    }
+}
+
+#[tokio::test]
+async fn tabs_update_rejects_invalid_keys() {
+    use serde_json::json;
+    let backend = Arc::new(FakeTabs::default());
+    let tabs = riwork_nsh_native::tabs::TabsService::new(backend.clone());
+    let project = "00000000-0000-4000-8000-000000000001";
+    for update in [
+        json!({"action":"hide","key":"shell:../../sessions"}),
+        json!({"action":"unhide","key":"chat:NOT-A-UUID"}),
+        json!({"action":"move","key":"shell:00000000-0000-4000-8000-000000000001","before":"shell:bad"}),
+        json!({"action":"rename","key":"shell:00000000-0000-4000-8000-000000000001","title":"bad\nname"}),
+        json!({"action":"hide","key":"shell:00000000-0000-4000-8000-000000000001","surprise":true}),
+    ] {
+        assert!(
+            tabs.update(project, update)
+                .unwrap_err()
+                .starts_with("invalid:")
+        );
+    }
+    assert!(
+        tabs.update(
+            "not-a-project",
+            json!({"action":"hide","key":"shell:00000000-0000-4000-8000-000000000001"})
+        )
+        .unwrap_err()
+        .starts_with("invalid:")
+    );
+    assert_eq!(
+        backend.calls.load(Ordering::SeqCst),
+        0,
+        "validation must precede backend calls"
+    );
+}
+
+#[tokio::test]
+async fn store_rejects_non_uuid_ids() {
+    let fixture = tempfile::tempdir().unwrap();
+    let service = start(fixture.path(), Arc::new(FakeSessions::default())).await;
+    for id in [
+        "../state",
+        "a folder name",
+        "00000000-0000-4000-8000-00000000000A",
+    ] {
+        assert!(
+            service
+                .rename_folder(id.into(), "Name".into())
+                .await
+                .unwrap_err()
+                .starts_with("invalid:")
+        );
+        assert!(
+            service
+                .move_folder(id.into(), None)
+                .await
+                .unwrap_err()
+                .starts_with("invalid:")
+        );
+        assert!(
+            service
+                .remove_folder(id.into())
+                .await
+                .unwrap_err()
+                .starts_with("invalid:")
+        );
+        assert!(
+            service
+                .create_folder("Name".into(), Some(id.into()))
+                .await
+                .unwrap_err()
+                .starts_with("invalid:")
+        );
+        assert!(
+            service
+                .move_project_to_folder(id.into(), None)
+                .await
+                .unwrap_err()
+                .starts_with("invalid:")
+        );
+    }
+    assert!(
+        !fixture.path().join("state.json").exists(),
+        "invalid bridge IDs must not write state"
+    );
+}
+
+#[tokio::test]
+async fn folder_mutations_publish_once_to_every_subscriber_and_preserve_disk_format() {
+    let fixture = tempfile::tempdir().unwrap();
+    let service = start(fixture.path(), Arc::new(FakeSessions::default())).await;
+    let first = service.subscribe_store().await.unwrap();
+    let second = service.subscribe_store().await.unwrap();
+    assert_eq!(first.recv().await.unwrap(), second.recv().await.unwrap());
+    let parent = service.create_folder("Parent".into(), None).await.unwrap();
+    let event = first.recv().await.unwrap();
+    assert_eq!(event, second.recv().await.unwrap());
+    assert_eq!(event.data.project_folders, vec![parent.clone()]);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(150), first.recv())
+            .await
+            .is_err()
+    );
+    let child = service
+        .create_folder("Child".into(), Some(parent.id.clone()))
+        .await
+        .unwrap();
+    assert_eq!(child.parent_id, Some(parent.id.clone()));
+    let renamed = service
+        .rename_folder(child.id.clone(), "Renamed".into())
+        .await
+        .unwrap();
+    assert_eq!(renamed.name, "Renamed");
+    let moved = service.move_folder(child.id.clone(), None).await.unwrap();
+    assert_eq!(moved.parent_id, None);
+    service.remove_folder(parent.id).await.unwrap();
+    let disk: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(fixture.path().join("state.json")).unwrap()).unwrap();
+    assert!(disk.get("project_folders").is_some());
+    assert!(disk.get("projectFolders").is_none());
+    assert_eq!(disk["project_folders"][0]["id"], child.id);
+}
+
+#[tokio::test]
+async fn tabs_watcher_and_bridge_updates_share_the_topic_without_idle_sampling() {
+    use serde_json::json;
+    let fixture = tempfile::tempdir().unwrap();
+    let home = fixture.path().to_path_buf();
+    let backend = Arc::new(FakeTabs::default());
+    let test_tabs = backend.clone();
+    let service = tokio::task::spawn_blocking(move || {
+        ProcessService::with_tabs_backend(
+            home.clone(),
+            Arc::new(CoreStoreBackend::new(home)),
+            Arc::new(FakeSessions::default()),
+            test_tabs,
+        )
+    })
+    .await
+    .unwrap()
+    .unwrap();
+    let tabs = service.tabs();
+    let project = "00000000-0000-4000-8000-000000000001";
+    let first = tabs.subscribe(project).unwrap();
+    let second = tabs.subscribe(project).unwrap();
+    assert_eq!(first.recv().await.unwrap(), second.recv().await.unwrap());
+    assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
+    tabs.update(
+        project,
+        json!({"action":"hide","key":"shell:00000000-0000-4000-8000-000000000001"}),
+    )
+    .unwrap();
+    let event = first.recv().await.unwrap();
+    assert_eq!(event.data.revision, 2);
+    assert_eq!(event, second.recv().await.unwrap());
+    backend.value.lock().unwrap().as_mut().unwrap().revision = 3;
+    std::fs::create_dir_all(fixture.path().join("project-tabs")).unwrap();
+    std::fs::write(
+        fixture
+            .path()
+            .join("project-tabs")
+            .join(format!("{project}.json")),
+        "external fixture tab write",
+    )
+    .unwrap();
+    let event = tokio::time::timeout(Duration::from_secs(2), first.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(event.data.revision, 3);
+    assert_eq!(event, second.recv().await.unwrap());
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), first.recv())
+            .await
+            .is_err()
+    );
+    let reads = backend.calls.load(Ordering::SeqCst);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(backend.calls.load(Ordering::SeqCst), reads);
+}
+
+#[tokio::test]
+async fn errors_use_only_the_frozen_codes() {
+    const CODES: [&str; 7] = [
+        "refused",
+        "broken",
+        "not_found",
+        "invalid",
+        "conflict",
+        "unavailable",
+        "io",
+    ];
+    let fixture = tempfile::tempdir().unwrap();
+    let sessions = Arc::new(FakeSessions::default());
+    sessions.unavailable.store(true, Ordering::SeqCst);
+    let service = start(fixture.path(), sessions).await;
+    let errors = [
+        service.sessions_list().await.unwrap_err(),
+        service.inspect_project("".into()).await.unwrap_err(),
+        service.remove_folder("bad-id".into()).await.unwrap_err(),
+        service
+            .rename_folder(
+                "00000000-0000-4000-8000-000000000001".into(),
+                "Missing".into(),
+            )
+            .await
+            .unwrap_err(),
+        service
+            .sessions_create(riwork_nsh_native::dto::CreateSessionRequest {
+                project_id: "bad-project".into(),
+                worktree_id: None,
+                cwd: "/fixture".into(),
+                command: None,
+            })
+            .await
+            .unwrap_err(),
+    ];
+    for error in errors {
+        assert!(
+            CODES.contains(&error.split_once(": ").expect("coded error").0),
+            "unexpected code in {error}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn sessions_create_and_close_wake_the_single_sampler() {
+    use riwork_nsh_native::dto::CreateSessionRequest;
+    let fixture = tempfile::tempdir().unwrap();
+    let sessions = Arc::new(FakeSessions::default());
+    let service = start(fixture.path(), sessions.clone()).await;
+    let first = service.subscribe_sessions().await.unwrap();
+    let second = service.subscribe_sessions().await.unwrap();
+    assert_eq!(first.recv().await.unwrap(), second.recv().await.unwrap());
+    let created = service
+        .sessions_create(CreateSessionRequest {
+            project_id: "00000000-0000-4000-8000-000000000002".into(),
+            worktree_id: None,
+            cwd: "/isolated/requested".into(),
+            command: Some("echo fixture".into()),
+        })
+        .await
+        .unwrap();
+    assert_eq!(created.cwd, "/isolated/requested");
+    let changed = tokio::time::timeout(Duration::from_secs(1), first.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(changed, second.recv().await.unwrap());
+    assert_eq!(changed.data.sessions, vec![created.clone()]);
+    service.sessions_close(created.id).await.unwrap();
+    let changed = tokio::time::timeout(Duration::from_secs(1), first.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(changed, second.recv().await.unwrap());
+    assert!(changed.data.sessions.is_empty());
+    assert!(
+        service
+            .sessions_close("bad".into())
+            .await
+            .unwrap_err()
+            .starts_with("invalid:")
+    );
+    assert_eq!(sessions.samples.load(Ordering::SeqCst), 3);
 }

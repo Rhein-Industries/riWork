@@ -58,8 +58,9 @@ NSH references are to the 0.3.0 crates in
 | A terminal surface | `riwork.terminal` (§3) | libghostty needs an NSView and a PTY; no JS on the input or render path. |
 | This window's own chrome (title, title bar, frame, fullscreen, context menus, keymap, clipboard, file drop) | NSH built-ins (`nsh/desktop` `Window`, `Menu.popup`, `nsh/keymap`, `nsh/clipboard`, `onFileDrop`) | Already provided per AppView. |
 
-- **TSX has no filesystem, process, or socket capabilities.** `nsh.json` grants only
-  `"host": ["window.*", "app.*", "system.*"]` (grant syntax: `nsh-core/src/access.rs:20`).
+- **TSX has no filesystem, process, or socket capabilities.** `nsh.json` grants
+  `"host": ["window.*", "app.*", "system.*"]` and, from W3, the `clipboard`
+  built-in for Edit/session-ID copy (grant syntax: `nsh-core/src/access.rs:20`).
   Everything else is reached through `riwork/native`. This keeps one implementation of every
   file format (riwork-core) and makes the TSX layer testable against fake backends.
 - **One NSH process per RIWORK_HOME.** GPUI already runs N windows in one process but has no
@@ -316,6 +317,38 @@ These follow §1.1-§1.4 unchanged; each port task adds its function table to th
 | `Dictation` | Dictation state machine over the `riwork-speech` helper |
 | `Markdown`, `Diff`, `Diagram`, `CommandLog`, `Media` | Rust-side parsing/highlighting, diff display, diagram rendering, command-output paging, image loading for non-chat surfaces and for `ChatHandle` rows |
 | `ProjectRecency` | Recency scan |
+
+#### Phase 1 W3 payload schema 2: Settings, Appearance and global-window state
+
+Task `c62ea465` adds these tables before their first TSX use. `SettingsDto`,
+`AppearanceDto` and `GlobalWindowDto` carry `schema: 2`. The native producer and
+TSX consumer are introduced and checked together. Host params remain schema 1;
+on-disk core/engine schemas and serde names are unchanged. Subscription envelopes
+remain §1.3 snapshots, with these DTOs in `data`.
+
+| JS | Kind | Result / rule |
+|---|---|---|
+| `Settings.get()` | async | Typed SettingsDto: selected theme, core-owned `themeChoices` labels/descriptions, terminal-color preferences, interface font/size, computed text face/points/scale, normalized `statusBar`, optional load diagnostic. |
+| `Settings.set(patch)` | async | Typed optional camelCase fields; strict unknown-field rejection. One core store lock applies the patch and preserves unknown saved keys. Explicit choices replace unknown future values. |
+| `Settings.changeTextSize(action)` | async | `bigger`, `smaller`, `reset`; read/modify/write and snapping in core under its lock; returns SettingsDto. |
+| `Settings.moveItem(kind, up)`, `setSide(kind, side)`, `setVisible(kind, visible)`, `setEnabled(enabled)` | async | Core status-bar operations in one locked update, returning SettingsDto. Kinds use snake_case, side is `left` or `right`. |
+| `Settings.subscribe(listener)` | sync handle | Immediate owner-bound Subscription; initialization/registration happen on background workers; shared home watcher invalidates settings. |
+| `Settings.cased(text, native)`, `sentenceCase(text)` | sync | Pure core casing rules. |
+| `Appearance.get()` | async | AppearanceDto for current settings (light Native baseline). |
+| `Appearance.resolve(theme, systemDark)` | async | Resolve for the caller's window; never changes another window's effective appearance. Returns selected theme, palette, dark, diff colors, terminalOverride or null, and retained diagnostic. |
+| `Appearance.subscribe(listener)` | sync handle | Process settings invalidations; each window resolves against its own `colorScheme()` after every snapshot. |
+| `Dashboard.getGlobalWindow()` | async | CamelCase GlobalWindowDto through core GlobalWindowStore. Only P1 global-window preferences. |
+| `Dashboard.saveGlobalWindow(state)` | async | Validate schema/view/filter/sort/size before saving through the same core store. No dashboard activity or chat creation. |
+
+Appearance does not parse Ghostty configuration or write `appearance.json` in
+P1. Follow Ghostty uses the RiWork palette, keeps a diagnostic and has unknown
+terminal colors unless `useRiworkColors` selects the RiWork override.
+
+W3 also supplies `LayoutSession.openPanel(panel)` and `defaultLayout()` as
+synchronous in-memory edits, scheduling persistence like existing methods.
+Default placement uses the saved-state successor in `riwork_core::layouts` and
+preserves every known tab. A layout containing opaque future tabs refuses this
+reset so their persisted pane identity cannot be lost.
 
 Process-wide claims stay in Rust: a local shell is shown by at most one window (native
 `riwork.terminal` registry, §3.5) and a chat tab is owned by one window (`Chat.claimTab` /
@@ -818,6 +851,10 @@ Decisions the owner has taken since the freeze are recorded, dated, in [§8](#8-
 ## 7. Change log
 
 - v1 (this document): initial freeze for Step 0.
+- v2, 2026-10-27 W3 (task c62ea465): §1.10 adds Settings/Appearance and P1
+  Dashboard function tables with payload schema 2; DTO producer/consumer and
+  generated-type probes land together. Persistence and host params retain their
+  existing schemas. The W3 assignment explicitly applies the D-THEME-1 proposal.
 - v1, 2026-10-27 addendum (task 8fa16659): §8 records three owner decisions (D-OWN-1, D-PERF-1,
   Phase 2 entry gate). No frozen surface, `schema` field or §3.7 metric changed, so there is no
   version bump.
@@ -902,3 +939,11 @@ Decision:
 Task e940bd0a's GO criteria, as written in the task: "80/80 freed, zero hangs/leaks, session/pane
 survival, AND (<100ms gaps OR gaps proven non-terminal noise with profiling evidence)". Its stop
 rule, as written: "NO-GO again = stop, no metric relaxation".
+
+### 8.4 W3 P1 appearance fallback (2026-10-27)
+
+Task `c62ea465` explicitly directs the P1 implementation to apply the D-THEME-1
+proposal: no Ghostty configuration parsing, the RiWork palette on Follow
+Ghostty, the diagnostic retained, and no `appearance.json` publishing. The
+terminal phase retains ownership of real parsing and publishing. This records
+the assignment’s scope; it does not settle D-PROC-1 or D-COPY-1.

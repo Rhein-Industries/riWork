@@ -17,13 +17,20 @@ use crate::{
     backend::{
         CoreStoreBackend, EngineSessionsBackend, SessionsBackend, StoreBackend, Unavailable,
     },
-    dto::{ProjectInspectionDto, SearchHitDto, SessionsSnapshot, StoreState},
+    dto::{
+        CreateSessionRequest, FolderDto, ProjectDto, ProjectInspectionDto, SearchHitDto,
+        SessionsSnapshot, ShellSessionDto, StoreState,
+    },
     hub::{Hub, TopicSubscription},
+    settings::PreferenceService,
+    tabs::{EngineTabsBackend, TabsBackend, TabsService},
 };
 
 pub const SESSION_SAMPLE_INTERVAL: Duration = Duration::from_secs(2);
 const STORE: u8 = 1;
 const SESSIONS: u8 = 2;
+const TABS: u8 = 4;
+const SETTINGS: u8 = 8;
 
 // Kept strongly for the life of the process, never once per AppView. The home's
 // resolution and all setup happen inside initialize's blocking-pool hop.
@@ -83,12 +90,6 @@ fn resolved_home() -> Result<PathBuf, String> {
         .clone()
 }
 
-pub(crate) fn initialized() -> Result<Arc<ProcessService>, String> {
-    PROCESS.get().cloned().ok_or_else(|| {
-        "unavailable: call riwork_nsh_native::initialize().await before creating AppViews".into()
-    })
-}
-
 /// Move every core/engine call, including service setup and hub registration, off
 /// both the AppKit thread and the NSH engine thread.
 pub(crate) async fn blocking<T: Send + 'static>(
@@ -103,7 +104,7 @@ pub(crate) fn io_error(error: impl std::fmt::Display) -> String {
     format!("io: {error}")
 }
 
-fn backend_error(error: anyhow::Error) -> String {
+pub(crate) fn backend_error(error: anyhow::Error) -> String {
     let code = if error.is::<Unavailable>() {
         "unavailable"
     } else {
@@ -112,20 +113,120 @@ fn backend_error(error: anyhow::Error) -> String {
     format!("{code}: {error}")
 }
 
+/// JS identifiers must be canonical UUIDs, just like the CLI's tab/session IDs.
+pub(crate) fn validate_uuid(id: &str) -> Result<(), String> {
+    if uuid::Uuid::parse_str(id).is_ok_and(|value| value.to_string() == id) {
+        Ok(())
+    } else {
+        Err("invalid: expected a canonical UUID".into())
+    }
+}
+
+fn validate_optional_uuid(id: Option<&str>) -> Result<(), String> {
+    id.map(validate_uuid).transpose().map(|_| ())
+}
+
 pub struct ProcessService {
     home: PathBuf,
     pub(crate) store: Arc<dyn StoreBackend>,
     pub(crate) sessions: Arc<dyn SessionsBackend>,
+    pub(crate) tabs: Arc<TabsService>,
+    pub(crate) preferences: Arc<PreferenceService>,
     store_hub: Arc<Hub<StoreState>>,
+    store_updates: Arc<Mutex<()>>,
     sessions_hub: Arc<Hub<SessionsSnapshot>>,
     stop: Arc<AtomicBool>,
     wake: SyncSender<()>,
+    dirty: Arc<AtomicU8>,
     worker: Option<JoinHandle<()>>,
     _watcher: notify::RecommendedWatcher,
     last_error: Arc<Mutex<Option<String>>>,
 }
 
 impl ProcessService {
+    async fn mutate_store<T: Send + 'static>(
+        self: &Arc<Self>,
+        mutation: impl FnOnce(&dyn StoreBackend) -> Result<T, String> + Send + 'static,
+    ) -> Result<T, String> {
+        let backend = self.store.clone();
+        let hub = self.store_hub.clone();
+        let updates = self.store_updates.clone();
+        blocking(move || {
+            let _update = updates.lock().unwrap_or_else(PoisonError::into_inner);
+            let result = mutation(backend.as_ref())?;
+            // Publish before resolving. The watcher also observes this write,
+            // but Hub deduplication prevents a second delivery.
+            hub.publish(backend.snapshot().map_err(backend_error)?);
+            Ok(result)
+        })
+        .await
+    }
+
+    pub async fn create_folder(
+        self: &Arc<Self>,
+        name: String,
+        parent_id: Option<String>,
+    ) -> Result<FolderDto, String> {
+        self.mutate_store(move |backend| {
+            validate_optional_uuid(parent_id.as_deref())?;
+            if name.trim().is_empty() {
+                return Err("invalid: folder name is empty".into());
+            }
+            backend
+                .create_folder(&name, parent_id.as_deref())
+                .map_err(backend_error)
+        })
+        .await
+    }
+    pub async fn rename_folder(
+        self: &Arc<Self>,
+        id: String,
+        name: String,
+    ) -> Result<FolderDto, String> {
+        self.mutate_store(move |backend| {
+            validate_uuid(&id)?;
+            if name.trim().is_empty() {
+                return Err("invalid: folder name is empty".into());
+            }
+            backend.rename_folder(&id, &name).map_err(backend_error)
+        })
+        .await
+    }
+    pub async fn move_folder(
+        self: &Arc<Self>,
+        id: String,
+        parent_id: Option<String>,
+    ) -> Result<FolderDto, String> {
+        self.mutate_store(move |backend| {
+            validate_uuid(&id)?;
+            validate_optional_uuid(parent_id.as_deref())?;
+            backend
+                .move_folder(&id, parent_id.as_deref())
+                .map_err(backend_error)
+        })
+        .await
+    }
+    pub async fn remove_folder(self: &Arc<Self>, id: String) -> Result<(), String> {
+        self.mutate_store(move |backend| {
+            validate_uuid(&id)?;
+            backend.remove_folder(&id).map_err(backend_error)
+        })
+        .await
+    }
+    pub async fn move_project_to_folder(
+        self: &Arc<Self>,
+        project_id: String,
+        folder_id: Option<String>,
+    ) -> Result<ProjectDto, String> {
+        self.mutate_store(move |backend| {
+            validate_uuid(&project_id)?;
+            validate_optional_uuid(folder_id.as_deref())?;
+            backend
+                .move_project_to_folder(&project_id, folder_id.as_deref())
+                .map_err(backend_error)
+        })
+        .await
+    }
     pub async fn store_snapshot(self: &Arc<Self>) -> Result<StoreState, String> {
         let backend = self.store.clone();
         blocking(move || backend.snapshot().map_err(backend_error)).await
@@ -158,6 +259,41 @@ impl ProcessService {
         blocking(move || backend.list().map_err(backend_error)).await
     }
 
+    pub async fn sessions_create(
+        self: &Arc<Self>,
+        request: CreateSessionRequest,
+    ) -> Result<ShellSessionDto, String> {
+        let backend = self.sessions.clone();
+        let wake = self.wake.clone();
+        let dirty = self.dirty.clone();
+        blocking(move || {
+            validate_uuid(&request.project_id)?;
+            validate_optional_uuid(request.worktree_id.as_deref())?;
+            if request.cwd.is_empty() {
+                return Err("invalid: session cwd is empty".into());
+            }
+            let session = backend.create(request).map_err(backend_error)?;
+            dirty.fetch_or(SESSIONS | TABS, Ordering::Release);
+            let _ = wake.try_send(());
+            Ok(session)
+        })
+        .await
+    }
+
+    pub async fn sessions_close(self: &Arc<Self>, id: String) -> Result<(), String> {
+        let backend = self.sessions.clone();
+        let wake = self.wake.clone();
+        let dirty = self.dirty.clone();
+        blocking(move || {
+            validate_uuid(&id)?;
+            backend.close(&id).map_err(backend_error)?;
+            dirty.fetch_or(SESSIONS | TABS, Ordering::Release);
+            let _ = wake.try_send(());
+            Ok(())
+        })
+        .await
+    }
+
     /// Blocking constructor and test seam. Production uses initialize(), whose
     /// OnceLock guarantees one instance. Tests pass fixed isolated homes and fakes.
     pub fn with_backends(
@@ -165,8 +301,20 @@ impl ProcessService {
         store: Arc<dyn StoreBackend>,
         sessions: Arc<dyn SessionsBackend>,
     ) -> Result<Arc<Self>> {
+        let tabs = Arc::new(EngineTabsBackend::new(home.clone()));
+        Self::with_tabs_backend(home, store, sessions, tabs)
+    }
+
+    /// Full adapter seam for tests of shared membership without tmux or chats.
+    pub fn with_tabs_backend(
+        home: PathBuf,
+        store: Arc<dyn StoreBackend>,
+        sessions: Arc<dyn SessionsBackend>,
+        tabs: Arc<dyn TabsBackend>,
+    ) -> Result<Arc<Self>> {
         riwork_core::paths::create_private_dir(&home)?;
         let home = home.canonicalize()?;
+        let tabs = TabsService::new(tabs);
         let (wake, receive) = mpsc::sync_channel(1);
         let dirty = Arc::new(AtomicU8::new(0));
         let watch_dirty = dirty.clone();
@@ -177,7 +325,7 @@ impl ProcessService {
         let mut watcher =
             notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
                 let flags = match event {
-                    Ok(event) if event.need_rescan() => STORE | SESSIONS,
+                    Ok(event) if event.need_rescan() => STORE | SESSIONS | TABS | SETTINGS,
                     Ok(event) if !matches!(event.kind, EventKind::Access(_)) => event
                         .paths
                         .iter()
@@ -186,7 +334,7 @@ impl ProcessService {
                     Err(error) => {
                         *watch_error.lock().unwrap_or_else(PoisonError::into_inner) =
                             Some(format!("home watcher: {error}"));
-                        STORE | SESSIONS
+                        STORE | SESSIONS | TABS | SETTINGS
                     }
                 };
                 if flags != 0 {
@@ -197,6 +345,7 @@ impl ProcessService {
         // Register before loading snapshots: no external write can fall in a gap
         // between the initial read and installation of the push source.
         watcher.watch(&home, RecursiveMode::Recursive)?;
+        let preferences = PreferenceService::new(home.clone())?;
         let store_hub = Arc::new(Hub::new(
             store.snapshot().context("initial store snapshot")?,
         ));
@@ -217,8 +366,13 @@ impl ProcessService {
         let worker_store = store.clone();
         let worker_sessions = sessions.clone();
         let worker_store_hub = store_hub.clone();
+        let store_updates = Arc::new(Mutex::new(()));
+        let worker_store_updates = store_updates.clone();
         let worker_sessions_hub = sessions_hub.clone();
         let worker_error = last_error.clone();
+        let worker_tabs = tabs.clone();
+        let worker_preferences = preferences.clone();
+        let worker_dirty = dirty.clone();
         let worker = thread::Builder::new()
             .name("riwork-native-service".into())
             .spawn(move || {
@@ -236,14 +390,26 @@ impl ProcessService {
                     if worker_stop.load(Ordering::Acquire) {
                         break;
                     }
-                    let flags = dirty.swap(0, Ordering::AcqRel);
+                    let flags = worker_dirty.swap(0, Ordering::AcqRel);
+                    if flags & SETTINGS != 0 {
+                        worker_preferences.refresh();
+                    }
                     if flags & STORE != 0 {
+                        let _update = worker_store_updates
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner);
                         match worker_store.snapshot() {
                             Ok(snapshot) => worker_store_hub.publish(snapshot),
                             Err(error) => {
                                 *worker_error.lock().unwrap_or_else(PoisonError::into_inner) =
                                     Some(format!("store snapshot: {error}"))
                             }
+                        }
+                    }
+                    if flags & TABS != 0 {
+                        if let Err(error) = worker_tabs.refresh() {
+                            *worker_error.lock().unwrap_or_else(PoisonError::into_inner) =
+                                Some(error);
                         }
                     }
                     if flags & SESSIONS != 0
@@ -273,10 +439,14 @@ impl ProcessService {
             home,
             store,
             sessions,
+            tabs,
+            preferences,
             store_hub,
+            store_updates,
             sessions_hub,
             stop,
             wake,
+            dirty,
             worker: Some(worker),
             _watcher: watcher,
             last_error,
@@ -285,6 +455,14 @@ impl ProcessService {
 
     pub fn home(&self) -> &Path {
         &self.home
+    }
+
+    pub fn preferences(&self) -> &Arc<PreferenceService> {
+        &self.preferences
+    }
+
+    pub fn tabs(&self) -> &Arc<TabsService> {
+        &self.tabs
     }
 
     /// For host diagnostics, called on a background thread.
@@ -322,12 +500,20 @@ impl Drop for ProcessService {
 
 fn relevant(path: &Path, home: &Path) -> u8 {
     if path == home.join("state.json") {
-        STORE
+        STORE | TABS
+    } else if path == home.join("settings.json") {
+        SETTINGS
     } else if path == home.join("sessions.json")
         || path == home.join("orchestrator-wakes.json")
         || path.starts_with(home.join("agent-activity"))
     {
-        SESSIONS
+        SESSIONS | TABS
+    } else if path.starts_with(home.join("project-tabs"))
+        && path.extension().is_some_and(|ext| ext == "json")
+        || path.starts_with(home.join("chats"))
+            && path.file_name().is_some_and(|name| name == "info.json")
+    {
+        TABS
     } else {
         0
     }

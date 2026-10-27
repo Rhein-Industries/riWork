@@ -725,7 +725,22 @@ impl SettingsStore {
     }
 
     pub fn update(&self, change: impl FnOnce(&mut Settings)) -> Result<Settings, String> {
-        self.update_with(None, |before, _| {
+        self.update_with(&[], |before, _| {
+            let mut settings = before.clone();
+            change(&mut settings);
+            Ok(settings)
+        })
+    }
+
+    /// Apply a typed set of explicit choices under one write lock. Unlike an
+    /// ordinary update, choosing a default replaces an unreadable future value
+    /// that currently reads as that default. Other saved keys remain verbatim.
+    pub fn update_selected(
+        &self,
+        chosen_keys: &[&str],
+        change: impl FnOnce(&mut Settings),
+    ) -> Result<Settings, String> {
+        self.update_with(chosen_keys, |before, _| {
             let mut settings = before.clone();
             change(&mut settings);
             Ok(settings)
@@ -741,7 +756,7 @@ impl SettingsStore {
                 "invalid_request: '{key}' is not a known setting; run riwork settings list"
             ));
         }
-        self.update_with(Some(key), |_, document| {
+        self.update_with(&[key], |_, document| {
             let invalid = |reason: String| format!("invalid_request: Cannot set '{key}': {reason}");
             let mut prospective = document.clone();
             prospective.insert(key.to_owned(), value.clone());
@@ -758,14 +773,14 @@ impl SettingsStore {
 
     fn update_with(
         &self,
-        chosen_key: Option<&str>,
+        chosen_keys: &[&str],
         change: impl FnOnce(&Settings, &Map<String, Value>) -> Result<Settings, String>,
     ) -> Result<Settings, String> {
         let lock = self.lock_file()?;
         FileExt::lock_exclusive(&lock).map_err(|error| format!("Cannot lock settings: {error}"))?;
         let (before, document) = self.read_with_document()?;
         let settings = change(&before, &document)?;
-        let document = merged_document(document, &before, &settings, chosen_key)?;
+        let document = merged_document(document, &before, &settings, chosen_keys)?;
         // What the file says now, including what it keeps that this build cannot
         // read (`orchestrator_unreadable`), is what was saved.
         let settings = Settings::deserialize(Value::Object(document.clone()))
@@ -857,7 +872,7 @@ fn merged_document(
     mut document: Map<String, Value>,
     before: &Settings,
     after: &Settings,
-    chosen_key: Option<&str>,
+    chosen_keys: &[&str],
 ) -> Result<Map<String, Value>, String> {
     const CHOSEN_ONLY: [&str; 4] = [
         "orchestrator_mode",
@@ -875,7 +890,7 @@ fn merged_document(
             continue;
         }
         if unchanged
-            && chosen_key != Some(key.as_str())
+            && !chosen_keys.contains(&key.as_str())
             && (document.contains_key(&key) || CHOSEN_ONLY.contains(&key.as_str()))
         {
             continue;

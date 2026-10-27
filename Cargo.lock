@@ -6490,6 +6490,7 @@ dependencies = [
  "nsh-core",
  "nsh-engine",
  "nsh-platform-macos",
+ "objc2-app-kit 0.3.2",
  "riwork-cli",
  "riwork-core",
  "riwork-engine",
@@ -6555,6 +6556,19 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "riwork-nsh-native-test-support"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "nsh-core",
+ "riwork-engine",
+ "riwork-nsh-native",
+ "tempfile",
+ "uuid",
 ]
 
 [[package]]

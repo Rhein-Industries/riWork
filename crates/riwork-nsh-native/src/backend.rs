@@ -9,7 +9,10 @@ use anyhow::Result;
 use riwork_core::store::Store;
 use riwork_engine::sessions::SessionManager;
 
-use crate::dto::{ProjectInspectionDto, SearchHitDto, SessionsSnapshot, StoreState};
+use crate::dto::{
+    CreateSessionRequest, FolderDto, ProjectDto, ProjectInspectionDto, SearchHitDto,
+    SessionsSnapshot, ShellSessionDto, StoreState,
+};
 
 /// A required backend/tool is unavailable, as distinct from a failed disk read.
 #[derive(Debug)]
@@ -32,6 +35,21 @@ pub trait StoreBackend: Send + Sync + 'static {
     fn snapshot(&self) -> Result<StoreState>;
     fn search(&self, query: &str) -> Result<Vec<SearchHitDto>>;
     fn inspect_project(&self, root: &Path) -> Result<ProjectInspectionDto>;
+    fn create_folder(&self, _name: &str, _parent: Option<&str>) -> Result<FolderDto> {
+        Err(Unavailable("folder creation is unavailable".into()).into())
+    }
+    fn rename_folder(&self, _id: &str, _name: &str) -> Result<FolderDto> {
+        Err(Unavailable("folder rename is unavailable".into()).into())
+    }
+    fn move_folder(&self, _id: &str, _parent: Option<&str>) -> Result<FolderDto> {
+        Err(Unavailable("folder move is unavailable".into()).into())
+    }
+    fn remove_folder(&self, _id: &str) -> Result<()> {
+        Err(Unavailable("folder removal is unavailable".into()).into())
+    }
+    fn move_project_to_folder(&self, _id: &str, _folder: Option<&str>) -> Result<ProjectDto> {
+        Err(Unavailable("project move is unavailable".into()).into())
+    }
 }
 
 /// Read side of the session inventory, shared by the process service.
@@ -45,6 +63,12 @@ pub trait SessionsBackend: Send + Sync + 'static {
 
     /// A home-watcher event invalidates the engine's process-wide sample cache.
     fn invalidate_sample(&self) {}
+    fn create(&self, _request: CreateSessionRequest) -> Result<ShellSessionDto> {
+        Err(Unavailable("session creation is unavailable".into()).into())
+    }
+    fn close(&self, _id: &str) -> Result<()> {
+        Err(Unavailable("session close is unavailable".into()).into())
+    }
 }
 
 /// Production store adapter bound to the home selected by the host once.
@@ -100,6 +124,36 @@ impl StoreBackend for CoreStoreBackend {
             .map(Into::into)
             .map_err(anyhow::Error::msg)
     }
+
+    fn create_folder(&self, name: &str, parent: Option<&str>) -> Result<FolderDto> {
+        self.store()?
+            .create_project_folder_in(name, parent)
+            .map(Into::into)
+            .map_err(anyhow::Error::msg)
+    }
+    fn rename_folder(&self, id: &str, name: &str) -> Result<FolderDto> {
+        self.store()?
+            .rename_project_folder(id, name)
+            .map(Into::into)
+            .map_err(anyhow::Error::msg)
+    }
+    fn move_folder(&self, id: &str, parent: Option<&str>) -> Result<FolderDto> {
+        self.store()?
+            .move_project_folder(id, parent)
+            .map(Into::into)
+            .map_err(anyhow::Error::msg)
+    }
+    fn remove_folder(&self, id: &str) -> Result<()> {
+        self.store()?
+            .remove_project_folder(id)
+            .map_err(anyhow::Error::msg)
+    }
+    fn move_project_to_folder(&self, id: &str, folder: Option<&str>) -> Result<ProjectDto> {
+        self.store()?
+            .move_project_to_folder(id, folder)
+            .map_err(anyhow::Error::msg)?
+            .try_into()
+    }
 }
 
 /// Production session adapter. Its home, and therefore its tmux socket name,
@@ -153,6 +207,21 @@ impl SessionsBackend for EngineSessionsBackend {
         if let Some(manager) = self.manager.get() {
             manager.invalidate_sample();
         }
+    }
+    fn create(&self, request: CreateSessionRequest) -> Result<ShellSessionDto> {
+        self.manager()?
+            .for_user()
+            .create(
+                request.project_id,
+                request.worktree_id,
+                request.cwd.into(),
+                request.command,
+            )
+            .map(Into::into)
+            .map_err(anyhow::Error::msg)
+    }
+    fn close(&self, id: &str) -> Result<()> {
+        self.manager()?.close(id).map_err(anyhow::Error::msg)
     }
 }
 

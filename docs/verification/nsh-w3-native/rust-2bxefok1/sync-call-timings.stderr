@@ -1,0 +1,3 @@
+    Blocking waiting for file lock on build directory
+    Finished `test` profile [unoptimized] target(s) in 10.24s
+     Running tests/layout_backend.rs (/private/tmp/riwork-w3-c62ea465/target/debug/deps/layout_backend-bee999d58f641c94)

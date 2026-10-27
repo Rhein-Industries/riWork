@@ -17,7 +17,7 @@ function Fixture() {
     if (alive) session.set(value); else value.dispose();
   }).catch((reason: unknown) => error.set(String(reason)));
   return <View style={{ flex: 1 }}>
-    {session() ? <Workspace session={session()!} title="RiWork · Fixture" projectLabel="Fixture"
+    {session() ? <Workspace session={session()!} title="RiWork · Fixture" projectLabel="Fixture" diagnostics={true}
       onChange={(snapshot, dock) => { latest = { snapshot, dock }; host.post("app.fixture.state", latest); }} /> : <Text>{error() || "Loading fixture…"}</Text>}
   </View>;
 }

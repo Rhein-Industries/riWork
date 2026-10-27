@@ -7,13 +7,58 @@ pub mod persistence;
 use layout::{DockAreaLayout, Extent, LayoutModel};
 use nsh_core::prelude::*;
 use persistence::{LayoutPersistence, SaveMode};
-use riwork_core::layouts::{ProjectLayout, SavedTab};
+use riwork_core::layouts::{PanelKind, ProjectLayout, SavedTab};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
+    collections::BTreeSet,
     path::PathBuf,
     sync::{Arc, OnceLock},
 };
+
+/// Rust-only backend injection; JavaScript never supplies a storage path or
+/// implementation. The default adapter is the production core LayoutStore.
+pub trait LayoutRepository: Send + Sync {
+    fn open(
+        &self,
+        home: PathBuf,
+        project_id: String,
+        restore: Option<ProjectLayout>,
+    ) -> Result<OpenedLayout, String>;
+}
+
+pub struct OpenedLayout {
+    pub backend: Arc<dyn persistence::LayoutBackend>,
+    pub project: ProjectLayout,
+    pub notice: Option<String>,
+    pub unknown_panes: BTreeSet<u64>,
+}
+
+pub struct CoreLayoutRepository;
+impl LayoutRepository for CoreLayoutRepository {
+    fn open(
+        &self,
+        home: PathBuf,
+        project_id: String,
+        restore: Option<ProjectLayout>,
+    ) -> Result<OpenedLayout, String> {
+        let loaded = LayoutPersistence::open(home, project_id, restore, SaveMode::LegacyChatState)?;
+        Ok(OpenedLayout {
+            backend: Arc::new(loaded.persistence),
+            project: loaded.project,
+            notice: loaded.notice,
+            unknown_panes: loaded.unknown_panes,
+        })
+    }
+}
+
+static LAYOUT_REPOSITORY: OnceLock<Arc<dyn LayoutRepository>> = OnceLock::new();
+
+pub fn install_layout_repository(backend: Arc<dyn LayoutRepository>) -> Result<(), String> {
+    LAYOUT_REPOSITORY
+        .set(backend)
+        .map_err(|_| "conflict: layout repository is already initialized".into())
+}
 
 type ProcessHome = fn() -> Result<PathBuf, String>;
 static PROCESS_HOME: OnceLock<ProcessHome> = OnceLock::new();
@@ -61,6 +106,19 @@ fn process_home() -> Result<PathBuf, String> {
         .ok_or_else(|| "unavailable: native registry is not initialized".to_owned())?()
 }
 
+fn layout_error(error: String) -> String {
+    if error.split_once(": ").is_some_and(|(code, _)| {
+        matches!(
+            code,
+            "refused" | "broken" | "not_found" | "invalid" | "conflict" | "unavailable" | "io"
+        )
+    }) {
+        error
+    } else {
+        format!("io: {error}")
+    }
+}
+
 /// Layout IO runs in Rust's blocking pool. JS never receives a filesystem path.
 #[module]
 pub struct Layouts;
@@ -69,23 +127,20 @@ pub struct Layouts;
 impl Layouts {
     /// Open the project in the process's fixed home, honoring a reload snapshot.
     pub async fn open_session(request: Value) -> Result<LayoutSession, String> {
-        let request: OpenSession =
-            serde_json::from_value(request).map_err(|e| format!("invalid: {e}"))?;
-        if request.window_id.is_empty() || request.project_id.is_empty() {
-            return Err("invalid: windowId and projectId are required".into());
-        }
         tokio::task::spawn_blocking(move || {
-            let loaded = LayoutPersistence::open(
-                process_home()?,
-                request.project_id,
-                request.restore,
-                SaveMode::LegacyChatState,
-            )?;
+            let request: OpenSession =
+                serde_json::from_value(request).map_err(|e| format!("invalid: {e}"))?;
+            if request.window_id.is_empty() || request.project_id.is_empty() {
+                return Err("invalid: windowId and projectId are required".into());
+            }
+            let loaded = LAYOUT_REPOSITORY
+                .get_or_init(|| Arc::new(CoreLayoutRepository))
+                .open(process_home()?, request.project_id, request.restore)?;
             let mut model = LayoutModel::new(loaded.project)?;
             model.mark_unknown_panes(&loaded.unknown_panes);
-            let host = host_layouts::registration(
+            let host = host_layouts::registration_backend(
                 &request.window_id,
-                Arc::new(loaded.persistence),
+                loaded.backend,
                 model.storage_project(),
             )?;
             // Successful loads, including a reload payload that supersedes disk,
@@ -102,6 +157,7 @@ impl Layouts {
         })
         .await
         .map_err(|e| format!("broken: {e}"))?
+        .map_err(layout_error)
     }
 }
 
@@ -123,6 +179,7 @@ impl LayoutSession {
             let (next, persist) = operation(&mut self.model)?;
             Ok((json!(next), persist.then(|| self.model.storage_project())))
         })
+        .map_err(layout_error)
     }
 
     /// P1b's Rust lifecycle hook: flush before publishing/closing/restarting.
@@ -167,6 +224,16 @@ impl LayoutSession {
         self.edit(|model| model.select_panel(&panel_id).map(|next| (next, true)))
     }
 
+    pub fn open_panel(&mut self, panel: String) -> Result<Value, String> {
+        let panel: PanelKind = serde_json::from_value(json!(panel.trim_start_matches("panel:")))
+            .map_err(|error| format!("invalid: {error}"))?;
+        self.edit(|model| model.open_panel(panel).map(|next| (next, true)))
+    }
+
+    pub fn default_layout(&mut self) -> Result<Value, String> {
+        self.edit(|model| model.default_layout().map(|next| (next, true)))
+    }
+
     /// Activate a pane without changing its selected tab (including empty panes).
     pub fn select_pane(&mut self, pane_id: u64) -> Result<Value, String> {
         self.edit(|model| model.select_pane(pane_id).map(|next| (next, true)))
@@ -194,6 +261,7 @@ impl LayoutSession {
         let ids = project.layout.pane_ids();
         json!({
             "activePane": project.active_pane,
+            "selectedWorktreeId": project.selected_worktree_id,
             "notice": self.notice,
             "panes": ids.into_iter().map(|id| {
                 let pane = &project.panes[&id];
@@ -225,6 +293,7 @@ impl LayoutSession {
         tokio::task::spawn_blocking(move || host.flush())
             .await
             .map_err(|e| format!("broken: {e}"))?
+            .map_err(layout_error)
     }
 }
 

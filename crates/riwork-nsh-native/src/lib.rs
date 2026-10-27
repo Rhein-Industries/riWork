@@ -4,15 +4,22 @@
 //! `[nsh_base::registry(), registry()]` once. All windows share the same process
 //! service; neither subscription registration nor delivery does domain I/O on an
 //! engine thread. See the crate README for lifecycle and test instructions.
+pub mod appearance;
 pub mod backend;
+pub mod dashboard;
 pub mod dto;
 pub mod hub;
 pub mod service;
+pub mod settings;
+pub mod tabs;
 
 use futures_util::future::{AbortHandle, Abortable};
 use nsh_core::{element::Cleanup, prelude::*};
 
-use dto::{ProjectInspectionDto, SearchHitDto, SessionsSnapshot, StoreState};
+use dto::{
+    CreateSessionRequest, FolderDto, ProjectDto, ProjectInspectionDto, SearchHitDto,
+    SessionsSnapshot, ShellSessionDto, StoreState,
+};
 use hub::{Snapshot, TopicSubscription};
 pub use service::{ProcessService, initialize};
 
@@ -21,6 +28,10 @@ fn native(registry: &mut Registry) {
     registry
         .module::<Store>()
         .module::<Sessions>()
+        .module::<tabs::Tabs>()
+        .module::<settings::Settings>()
+        .module::<appearance::Appearance>()
+        .module::<dashboard::Dashboard>()
         .class::<Subscription>();
     riwork_nsh_workspace::register_layouts(registry, service::process_home);
 }
@@ -31,6 +42,30 @@ pub struct Store;
 
 #[module]
 impl Store {
+    pub async fn create_folder(
+        name: String,
+        parent_id: Option<String>,
+    ) -> Result<FolderDto, String> {
+        initialize().await?.create_folder(name, parent_id).await
+    }
+    pub async fn rename_folder(id: String, name: String) -> Result<FolderDto, String> {
+        initialize().await?.rename_folder(id, name).await
+    }
+    pub async fn move_folder(id: String, parent_id: Option<String>) -> Result<FolderDto, String> {
+        initialize().await?.move_folder(id, parent_id).await
+    }
+    pub async fn remove_folder(id: String) -> Result<(), String> {
+        initialize().await?.remove_folder(id).await
+    }
+    pub async fn move_project_to_folder(
+        project_id: String,
+        folder_id: Option<String>,
+    ) -> Result<ProjectDto, String> {
+        initialize()
+            .await?
+            .move_project_to_folder(project_id, folder_id)
+            .await
+    }
     pub async fn snapshot() -> Result<StoreState, String> {
         initialize().await?.store_snapshot().await
     }
@@ -49,10 +84,11 @@ impl Store {
         listener: Callback<Snapshot<StoreState>>,
         cx: CallCx<'_>,
     ) -> Result<Subscription, String> {
-        let service = service::initialized()?;
         Ok(Subscription::start(cx, async move {
-            if let Ok(subscription) = service.subscribe_store().await {
-                deliver(subscription, listener).await;
+            if let Ok(service) = initialize().await {
+                if let Ok(subscription) = service.subscribe_store().await {
+                    deliver(subscription, listener).await;
+                }
             }
         }))
     }
@@ -64,6 +100,12 @@ pub struct Sessions;
 
 #[module]
 impl Sessions {
+    pub async fn create(request: CreateSessionRequest) -> Result<ShellSessionDto, String> {
+        initialize().await?.sessions_create(request).await
+    }
+    pub async fn close(id: String) -> Result<(), String> {
+        initialize().await?.sessions_close(id).await
+    }
     pub async fn list() -> Result<SessionsSnapshot, String> {
         initialize().await?.sessions_list().await
     }
@@ -72,10 +114,11 @@ impl Sessions {
         listener: Callback<Snapshot<SessionsSnapshot>>,
         cx: CallCx<'_>,
     ) -> Result<Subscription, String> {
-        let service = service::initialized()?;
         Ok(Subscription::start(cx, async move {
-            if let Ok(subscription) = service.subscribe_sessions().await {
-                deliver(subscription, listener).await;
+            if let Ok(service) = initialize().await {
+                if let Ok(subscription) = service.subscribe_sessions().await {
+                    deliver(subscription, listener).await;
+                }
             }
         }))
     }
@@ -146,11 +189,19 @@ mod tests {
         let modules = registry.module_specs();
         assert_eq!(
             modules.iter().map(|module| module.name).collect::<Vec<_>>(),
-            ["Layouts", "Sessions", "Store"]
+            [
+                "Appearance",
+                "Dashboard",
+                "Layouts",
+                "Sessions",
+                "Settings",
+                "Store",
+                "Tabs"
+            ]
         );
         for module in modules {
             for function in &module.functions {
-                let expected = if function.name == "subscribe" {
+                let expected = if matches!(function.name, "subscribe" | "sentenceCase" | "cased") {
                     FunctionKind::Sync
                 } else {
                     FunctionKind::Async

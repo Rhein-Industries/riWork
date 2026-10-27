@@ -2,12 +2,15 @@
 //!
 //! The registry is consulted only while opening a session or from the host.
 //! Publishing an edit never takes the registry mutex or waits on a file lock.
-use crate::persistence::LayoutPersistence;
+use crate::persistence::LayoutBackend;
 use arc_swap::ArcSwap;
 use riwork_core::layouts::ProjectLayout;
 use std::{
     collections::{HashMap, HashSet},
-    sync::{Arc, Mutex, OnceLock, Weak},
+    sync::{
+        Arc, Mutex, OnceLock, Weak,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
 };
 
 #[derive(Default)]
@@ -27,17 +30,24 @@ fn registry() -> &'static Mutex<Registry> {
 /// The host may retain it through AppView teardown to flush before terminating.
 pub struct HostLayout {
     current: ArcSwap<ProjectLayout>,
-    persistence: Option<Arc<LayoutPersistence>>,
-    // Serializes the short publish/enqueue operation against a host close barrier.
-    // No filesystem work takes this mutex on the engine thread.
-    closing: Mutex<bool>,
+    persistence: Option<Arc<dyn LayoutBackend>>,
+    closing: AtomicBool,
+    editing: AtomicUsize,
 }
 
 /// Register after opening persistence on a blocking thread. A second live
 /// session for the same window is a conflict rather than an implicit takeover.
-pub fn registration(
+pub fn registration<B: LayoutBackend + 'static>(
     window_id: &str,
-    persistence: Arc<LayoutPersistence>,
+    persistence: Arc<B>,
+    snapshot: ProjectLayout,
+) -> Result<Arc<HostLayout>, String> {
+    registration_backend(window_id, persistence, snapshot)
+}
+
+pub fn registration_backend(
+    window_id: &str,
+    persistence: Arc<dyn LayoutBackend>,
     snapshot: ProjectLayout,
 ) -> Result<Arc<HostLayout>, String> {
     if window_id.is_empty() {
@@ -61,7 +71,8 @@ pub fn registration(
     let handle = Arc::new(HostLayout {
         current: ArcSwap::from_pointee(snapshot),
         persistence: Some(persistence),
-        closing: Mutex::new(false),
+        closing: AtomicBool::new(false),
+        editing: AtomicUsize::new(0),
     });
     entries
         .sessions
@@ -121,11 +132,14 @@ impl HostLayout {
         &self,
         operation: impl FnOnce() -> Result<(T, Option<ProjectLayout>), String>,
     ) -> Result<T, String> {
-        let closing = self
-            .closing
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        if *closing {
+        if self.closing.load(Ordering::SeqCst) {
+            return Err("unavailable: window is closing".into());
+        }
+        self.editing.fetch_add(1, Ordering::SeqCst);
+        let _admission = EditAdmission(&self.editing);
+        // A close may have started between the first check and admission. The
+        // host waits for admitted work; late calls never change the model.
+        if self.closing.load(Ordering::SeqCst) {
             return Err("unavailable: window is closing".into());
         }
         let (result, project) = operation()?;
@@ -142,18 +156,17 @@ impl HostLayout {
     /// Stop accepting edits before the host queues its persistence barrier.
     /// An edit already publishing/enqueueing completes before this returns.
     pub fn begin_close(&self) {
-        *self
-            .closing
-            .lock()
-            .unwrap_or_else(|error| error.into_inner()) = true;
+        self.closing.store(true, Ordering::SeqCst);
+        // Only the host's service thread waits. The JS edit path uses atomics
+        // and never acquires a lock held by the host or persistence worker.
+        while self.editing.load(Ordering::SeqCst) != 0 {
+            std::thread::yield_now();
+        }
     }
 
     /// Restore editing when a close/quit flush failed and the window stays open.
     pub fn cancel_close(&self) {
-        *self
-            .closing
-            .lock()
-            .unwrap_or_else(|error| error.into_inner()) = false;
+        self.closing.store(false, Ordering::SeqCst);
     }
 
     /// Frozen P1c → P1b Rust handoff name (acceptance §4.1).
@@ -200,7 +213,15 @@ impl Drop for HostLayout {
 
 /// Ensures even cancellation of the blocking task cannot run the persistence
 /// destructor (which flushes) on the thread releasing the host handle.
-struct DeferredPersistence(Option<Arc<LayoutPersistence>>);
+struct EditAdmission<'a>(&'a AtomicUsize);
+
+impl Drop for EditAdmission<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+struct DeferredPersistence(Option<Arc<dyn LayoutBackend>>);
 
 impl DeferredPersistence {
     fn finish(mut self) {
@@ -237,7 +258,65 @@ impl Drop for DeferredPersistence {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::persistence::SaveMode;
+    use crate::persistence::{LayoutPersistence, SaveMode, default_project_layout};
+
+    #[derive(Default)]
+    struct FakeLayoutBackend {
+        scheduled: AtomicUsize,
+        flushed: AtomicUsize,
+    }
+
+    impl LayoutBackend for FakeLayoutBackend {
+        fn schedule(&self, _: ProjectLayout) -> Result<(), String> {
+            self.scheduled.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+        fn flush(&self) -> Result<(), String> {
+            self.flushed.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_host_close_waits_for_an_admitted_edit_and_rejects_late_edits_without_a_lock() {
+        let backend = Arc::new(FakeLayoutBackend::default());
+        let handle = registration(
+            "atomic-close-test",
+            Arc::clone(&backend),
+            default_project_layout(),
+        )
+        .unwrap();
+        let editor = Arc::clone(&handle);
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let edit = std::thread::spawn(move || {
+            editor.edit(|| {
+                entered_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                Ok(((), Some(default_project_layout())))
+            })
+        });
+        entered_rx.recv().unwrap();
+        let closer = Arc::clone(&handle);
+        let close = std::thread::spawn(move || {
+            closer.begin_close();
+            closer.flush().unwrap();
+        });
+        while !handle.closing.load(Ordering::SeqCst) {
+            std::thread::yield_now();
+        }
+        let rejected = handle.edit::<()>(|| panic!("a late edit must never enter the model"));
+        assert!(rejected.unwrap_err().starts_with("unavailable:"));
+        assert_eq!(backend.flushed.load(Ordering::SeqCst), 0);
+        release_tx.send(()).unwrap();
+        edit.join().unwrap().unwrap();
+        close.join().unwrap();
+        assert_eq!(backend.scheduled.load(Ordering::SeqCst), 1);
+        assert_eq!(backend.flushed.load(Ordering::SeqCst), 1);
+        handle.cancel_close();
+        handle.schedule(default_project_layout()).unwrap();
+        assert_eq!(backend.scheduled.load(Ordering::SeqCst), 2);
+    }
 
     #[test]
     fn host_lookup_tracks_the_latest_snapshot_without_retaining_the_session() {

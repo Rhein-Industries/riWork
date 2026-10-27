@@ -5,7 +5,8 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 pub use riwork_core::layouts::Extent;
 use riwork_core::layouts::{
-    Axis, DIVIDER_THICKNESS, Layout, MIN_PANE_EXTENT, PaneId, ProjectLayout, SavedPane, SavedTab,
+    Axis, DIVIDER_THICKNESS, Layout, MIN_PANE_EXTENT, PaneId, PanelKind, ProjectLayout, SavedPane,
+    SavedTab,
 };
 use serde::{Deserialize, Serialize};
 
@@ -217,6 +218,32 @@ impl LayoutModel {
         pane.1.active_tab_key = Some(key.to_owned());
         self.project.active_pane = *pane.0;
         self.project.normalize()?;
+        Ok(self.dock(self.extent.unwrap_or(DEFAULT_EXTENT)))
+    }
+
+    pub fn open_panel(&mut self, panel: PanelKind) -> Result<DockAreaLayout, String> {
+        let tab = SavedTab::Panel { panel };
+        let key = tab.key();
+        if self
+            .project
+            .panes
+            .values()
+            .any(|pane| pane.tabs.iter().any(|tab| tab.key() == key))
+        {
+            return self.select_panel(&key);
+        }
+        let id = self.project.layout.first_pane();
+        self.project.panes.get_mut(&id).unwrap().tabs.push(tab);
+        self.select_panel(&key)
+    }
+
+    pub fn default_layout(&mut self) -> Result<DockAreaLayout, String> {
+        if !self.unknown_panes.is_empty() {
+            return Err("refused: preserve unknown tabs before resetting the layout".into());
+        }
+        riwork_core::layouts::apply_default_layout(&mut self.project)?;
+        self.allocated_pane_ids
+            .extend(self.project.layout.pane_ids());
         Ok(self.dock(self.extent.unwrap_or(DEFAULT_EXTENT)))
     }
 

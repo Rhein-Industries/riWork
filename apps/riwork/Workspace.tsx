@@ -1,19 +1,28 @@
-import { Scroll, Text, View, cleanup, keymap, signal } from "nsh";
+import { Overlay, Text, View, cleanup, effect, keymap, signal, type YNode } from "nsh";
 import { DockArea, type DockAreaLayout, type DockNode } from "nsh/base";
 import { Menu, Window } from "nsh/desktop";
-import type { LayoutSession } from "riwork/native";
+import { Settings, type LayoutSession, type SettingsDto } from "riwork/native";
 import { DeferredPanel } from "./DeferredPanel";
 import { DEFERRED_KEYMAP, TAB_CYCLE_KEYS } from "./keyboard";
 import {
-  activePane, createTitleUpdater, cycledTab, findPanel, mainPaneSummary, numberedTab,
+  activePane, createTitleUpdater, cycledTab, findPanel, numberedTab,
   type WorkspaceSnapshot,
 } from "./model";
+import { DEFAULT_THEME, space, type InterfaceTheme } from "./appearance";
+import { StatusBar } from "./StatusBar";
 
 type Extent = { width: number; height: number };
 interface WorkspaceProps {
   session: LayoutSession;
   title: string;
   projectLabel: string;
+  projectId?: string;
+  settings?: () => SettingsDto | null;
+  theme?: () => InterfaceTheme;
+  appearanceNotice?: () => string;
+  modalOpen?: () => boolean;
+  /** Headless fixture diagnostics; omitted by production windows. */
+  diagnostics?: boolean;
   startupNotice?: string | null;
   /** In-process observer used by the headless fixture, never a host API. */
   onChange?: (snapshot: WorkspaceSnapshot, dock: DockAreaLayout) => void;
@@ -31,6 +40,12 @@ export function Workspace(props: WorkspaceProps) {
   // dock() as the conditional value would reconstruct it for every projection.
   const dockReady = signal(false);
   const notice = signal([props.startupNotice, snapshot().notice].filter(Boolean).join("\n"));
+  const theme = props.theme ?? (() => DEFAULT_THEME);
+  effect(() => { const next = props.appearanceNotice?.(); if (next) notice.set(next); });
+  const label = (text: string) => Settings.cased(text, theme().native);
+  const textStyle = (base = 11) => ({ fontFamily: theme().family, fontSize: base * theme().scale, color: theme().palette.text });
+  let root: YNode | null = null;
+  function dismissNotice() { notice.set(""); root?.focus(); }
   let size: Extent | undefined;
   createTitleUpdater((title) => Window.setTitle(title))(props.title);
   Window.setTitleBar("hidden", 28);
@@ -71,14 +86,7 @@ export function Workspace(props: WorkspaceProps) {
     void Menu.popup([
       { label: pane.locked ? "Unlock pane" : "Lock pane", onSelect: () => action(() => session.toggleLock(id)) },
       { label: "Main pane", checked: pane.main, onSelect: () => action(() => session.toggleMain(id)) },
-    ]);
-  }
-
-  function layoutMenu() {
-    void Menu.popup([
-      { label: "Gather tabs into main pane", disabled: !snapshot().panes.some((pane) => pane.main), onSelect: () => action(() => session.gather()) },
-      { type: "separator" },
-      { label: `Main pane: ${mainPaneSummary(snapshot())}`, disabled: true },
+      { label: "Settings", onSelect: () => action(() => session.openPanel("settings")) },
     ]);
   }
 
@@ -104,9 +112,9 @@ export function Workspace(props: WorkspaceProps) {
   }
 
   return (
-    <View testID="workspace" style={{ flex: 1, backgroundColor: "#17191e" }}>
-      <View testID="title-bar" desktop={{ windowDrag: true }} style={{ height: 28, flexDirection: "row", alignItems: "center", paddingLeft: 92, paddingRight: 12, backgroundColor: "#21242b" }}>
-        <Text style={{ fontSize: 11, color: "#aeb5c2" }}>{props.title}</Text>
+    <View testID="workspace" ref={(node) => { root = node; }} focusable={true} style={{ flex: 1, backgroundColor: theme().palette.bg }}>
+      <View testID="title-bar" desktop={{ windowDrag: true }} style={{ height: 28, flexDirection: "row", alignItems: "center", paddingLeft: 92, paddingRight: 12, backgroundColor: theme().palette.panel }}>
+        <Text style={textStyle()}>{props.title}</Text>
       </View>
       <View testID="dock-container" style={{ flex: 1, minHeight: 0 }} onLayout={(bounds) => measure(bounds.size)}>
         {dockReady() && (
@@ -117,38 +125,34 @@ export function Workspace(props: WorkspaceProps) {
             compact={false}
             panels={panels(dock()!.center).map((id) => ({ id, closable: false, zoomable: false, visible: true }))}
             onLayoutChange={edit}
-            tabBarStyle={{ height: 28, flexDirection: "row", backgroundColor: "#21242b" }}
+            tabBarStyle={{ height: space(28, theme().scale), flexDirection: "row", backgroundColor: theme().palette.panel }}
             tabStyle={{ padding: 0, minWidth: 0 }}
-            contentStyle={{ flex: 1, backgroundColor: "#17191e" }}
-            handleStyle={{ backgroundColor: "#343943" }}
+            contentStyle={{ flex: 1, backgroundColor: theme().palette.bg }}
+            handleStyle={{ backgroundColor: theme().palette.divider }}
             handleAccessibilityLabel="Pane divider"
             renderTab={(tab) => tab.panel.startsWith("empty:") ? null : (
-              <View testID={`tab:${tab.panel}`} onPress={() => action(() => session.selectPanel(tab.panel))} onContextMenu={() => paneMenu(tab.group)} style={{ height: 28, paddingHorizontal: 10, flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: tab.active ? "#303643" : "#21242b" }}>
-                <Text style={{ fontSize: 11, color: tab.active ? "#eef2f9" : "#aeb5c2" }}>{findPanel(snapshot(), tab.panel)?.title ?? tab.panel}</Text>
-                {snapshot().panes.find((pane) => pane.id === tab.group)?.locked && <Text style={{ fontSize: 9, color: "#7acddd" }}>◆</Text>}
+              <View testID={`tab:${tab.panel}`} onPress={() => action(() => session.selectPanel(tab.panel))} onContextMenu={() => paneMenu(tab.group)} style={{ height: space(28, theme().scale), paddingHorizontal: space(10, theme().scale), flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: tab.active ? theme().palette.panelActive : theme().palette.panel }}>
+                <Text style={textStyle()}>{tab.panel.startsWith("panel:") ? label(findPanel(snapshot(), tab.panel)?.title ?? tab.panel) : findPanel(snapshot(), tab.panel)?.title ?? tab.panel}</Text>
+                {snapshot().panes.find((pane) => pane.id === tab.group)?.locked && <Text style={{ ...textStyle(9), color: theme().palette.cyan }}>◆</Text>}
               </View>
             )}
             renderPanel={(panel) => <DeferredPanel id={panel.id}
               title={findPanel(snapshot(), panel.id)?.title ?? panel.id}
+              theme={theme}
+              settings={props.settings} onError={(error) => notice.set(String(error))}
+              diagnostics={props.diagnostics}
               visible={snapshot().panes.some((pane) => pane.activeTab === panel.id)}
               onPress={() => action(() => panel.id.startsWith("empty:") ? session.selectPane(Number(panel.id.slice(6))) : session.selectPanel(panel.id))} />}
           />
         )}
       </View>
-      {notice() !== "" && <View testID="workspace-notice" style={{ padding: 8, backgroundColor: "#343028", flexDirection: "row", gap: 10 }}>
-        <Text style={{ flex: 1, fontSize: 11, color: "#f1ce85" }}>{notice()}</Text>
-        <View testID="dismiss-notice" accessibilityLabel="Dismiss" onPress={() => notice.set("")}><Text style={{ color: "#f1ce85" }}>×</Text></View>
-      </View>}
-      <View testID="status-bar" style={{ height: 22, flexDirection: "row", alignItems: "center", paddingHorizontal: 8, gap: 10, backgroundColor: "#21242b" }}>
-        <Scroll horizontal={true} style={{ maxWidth: "40%" }}><Text numberOfLines={1} style={{ fontSize: 9, color: "#aeb5c2" }}>{props.projectLabel}</Text></Scroll>
-        <View style={{ flex: 1 }} />
-        <Scroll horizontal={true} contentStyle={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
-        <Text testID="pane-count" style={{ fontSize: 9, color: "#aeb5c2" }}>{`${snapshot().panes.length} panes`}</Text>
-        <View testID="status-layout" accessibilityLabel="Layout" onPress={layoutMenu}>
-          <Text style={{ fontSize: 9, color: "#aeb5c2" }}>{`Main pane: ${mainPaneSummary(snapshot())}`}</Text>
-        </View>
-        </Scroll>
-      </View>
+      <StatusBar session={session} snapshot={snapshot} projectId={props.projectId} projectLabel={props.projectLabel}
+        settings={props.settings} theme={theme} action={action} onError={(error) => notice.set(String(error))} modalOpen={props.modalOpen} />
+      {notice() !== "" && <Overlay testID="workspace-notice" onCancel={dismissNotice} margin={8}
+        style={{ top: 31, right: 8, width: 520, maxWidth: "100%", padding: 8, backgroundColor: theme().palette.panel, borderColor: theme().palette.gold, borderWidth: 1, flexDirection: "row", gap: 10 }}>
+        <Text style={{ ...textStyle(), flex: 1, color: theme().palette.gold }}>{notice()}</Text>
+        <View testID="dismiss-notice" accessibilityLabel="Dismiss" role="button" onPress={dismissNotice}><Text style={{ ...textStyle(), color: theme().palette.gold }}>×</Text></View>
+      </Overlay>}
     </View>
   );
 }

@@ -1,4 +1,6 @@
 //! Durable per-project tabs and split geometry, independent of shell lifetimes.
+mod default_layout;
+pub use default_layout::apply_default_layout;
 
 use std::{
     cmp::Ordering,

@@ -14,9 +14,10 @@ use nsh_platform_macos::{
         runtime::ProtocolObject,
     },
     objc2_app_kit::{
-        NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate,
-        NSApplicationTerminateReply, NSEvent, NSEventModifierFlags, NSEventType, NSMenu, NSScreen,
-        NSWindow, NSWindowDelegate, NSWindowOcclusionState, NSWindowStyleMask,
+        NSAppearance, NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSApplication,
+        NSApplicationActivationPolicy, NSApplicationDelegate, NSApplicationTerminateReply, NSEvent,
+        NSEventModifierFlags, NSEventType, NSFontManager, NSMenu, NSScreen, NSWindow,
+        NSWindowDelegate, NSWindowOcclusionState, NSWindowStyleMask,
     },
     objc2_foundation::{
         NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString,
@@ -49,6 +50,40 @@ const APP_ID: &str = "dev.riwork.shell";
 const CAPABILITIES: &str = r#"{"host":["window.*","app.*","system.*"]}"#;
 const RESTART_PENDING: &str =
     "unavailable: NSH restart handoff is not enabled in the Phase 1 integration subset";
+
+fn parse_appearance(value: &str) -> Result<Appearance, String> {
+    match value {
+        "light" => Ok(Appearance::Light),
+        "dark" => Ok(Appearance::Dark),
+        "system" => Ok(Appearance::System),
+        _ => Err("invalid: appearance must be light, dark or system".into()),
+    }
+}
+
+fn forced_appearance(value: Option<&str>) -> Result<Option<Appearance>, String> {
+    value
+        .filter(|value| !value.is_empty())
+        .map(parse_appearance)
+        .transpose()
+}
+
+fn appearance_name(value: Appearance) -> &'static str {
+    match value {
+        Appearance::Light => "light",
+        Appearance::Dark => "dark",
+        Appearance::System => "system",
+    }
+}
+
+fn pin_application(app: &NSApplication, appearance: Appearance) {
+    let name = match appearance {
+        Appearance::Light => Some(unsafe { NSAppearanceNameAqua }),
+        Appearance::Dark => Some(unsafe { NSAppearanceNameDarkAqua }),
+        Appearance::System => None,
+    };
+    let value = name.and_then(NSAppearance::appearanceNamed);
+    app.setAppearance(value.as_deref());
+}
 
 // Domain persistence belongs to riwork/native. In particular, two AppViews
 // must never race to write the same nsh/storage storage.json.
@@ -313,18 +348,16 @@ struct Host {
     quitting: bool,
     quit_pending: bool,
     background: bool,
+    forced_appearance: Option<Appearance>,
 }
 impl Host {
     fn open(&mut self, prepared: PreparedWindow) -> Result<String, String> {
         let id = Uuid::new_v4().to_string();
         let channel = HostChannel::new();
-        channel.set_params(
-            prepared
-                .params(&id, self.windows.len())
-                .as_object()
-                .unwrap()
-                .clone(),
-        );
+        let appearance = self.forced_appearance.unwrap_or(Appearance::System);
+        let mut params = prepared.params(&id, self.windows.len());
+        params["appearance"] = json!(appearance_name(appearance));
+        channel.set_params(params.as_object().unwrap().clone());
         for name in [
             "window.open",
             "window.route",
@@ -337,6 +370,7 @@ impl Host {
             "app.quit",
             "app.restoreReady",
             "app.setAppearance",
+            "system.fonts",
         ] {
             let id = id.clone();
             channel.handle(name, move |call| send(Main::Call(id.clone(), name, call)));
@@ -351,7 +385,6 @@ impl Host {
             "system.readPasteboard",
             "system.notify",
             "system.share",
-            "system.fonts",
             "system.requestPermission",
         ] {
             channel.handle(name, move |call| {
@@ -374,7 +407,7 @@ impl Host {
                 app_id: APP_ID.into(),
                 title: "RiWork".into(),
                 size: (frame.size.width as i32, frame.size.height as i32),
-                appearance: Appearance::System,
+                appearance,
                 data_dir: Some(self.home.join("nsh")),
                 cache: CacheOptions::at(CacheLocation::Dir(self.home.join("nsh/cache"))),
                 storage: Some(Arc::new(TransientStorage)),
@@ -422,8 +455,24 @@ impl Host {
             },
         );
         self.state(&id);
+        self.publish_global_selection();
         self.publish();
         Ok(id)
+    }
+
+    fn publish_global_selection(&self) {
+        let view = self
+            .windows
+            .values()
+            .find(|window| window.runtime.is_global())
+            .and_then(|window| window.runtime.global.as_ref())
+            .map(|state| state.view.name());
+        for window in self.windows.values() {
+            let _ = window
+                .view
+                .host()
+                .send("global.show", json!({"view": view, "start": false}));
+        }
     }
     fn snapshot(&self) -> Vec<(String, RuntimeWindow)> {
         self.windows
@@ -494,6 +543,7 @@ impl Host {
             window.view.stop();
             window.window.setDelegate(None);
             window.window.close();
+            self.publish_global_selection();
         }
     }
     fn close(&mut self, id: &str, reason: &str, call: Option<HostCall>) {
@@ -591,6 +641,21 @@ impl Host {
                     Ok(id) => {
                         if !created {
                             let _ = self.focus(&id);
+                        }
+                        if global {
+                            if let Some(state) = self
+                                .windows
+                                .get_mut(&id)
+                                .and_then(|window| window.runtime.global.as_mut())
+                            {
+                                state.view = riwork_core::global_window::GlobalView::from(
+                                    show["view"].as_str().unwrap_or("dashboard").to_owned(),
+                                );
+                            }
+                            // Every project status menu follows the shown view;
+                            // only the global window receives the start action.
+                            self.publish_global_selection();
+                            self.publish();
                         }
                         if let Some(w) = self.windows.get(&id) {
                             if global {
@@ -784,7 +849,21 @@ impl Host {
             }
             "app.quit" => { call.resolve(json!({})); self.quit(); }
             "app.restart" => call.reject(RESTART_PENDING),
-            "app.setAppearance" => call.reject("unavailable: process appearance service awaits P1a"),
+            "app.setAppearance" => match data["appearance"].as_str().ok_or_else(|| "invalid: appearance is required".to_owned()).and_then(parse_appearance) {
+                Ok(requested) => {
+                    let appearance = self.forced_appearance.unwrap_or(requested);
+                    pin_application(&self.app, appearance);
+                    for window in self.windows.values() {
+                        let _ = window.view.host().send("appearance", json!({"appearance": appearance_name(appearance)}));
+                    }
+                    call.resolve(json!({}));
+                }
+                Err(error) => call.reject(error),
+            },
+            "system.fonts" => {
+                let families = NSFontManager::sharedFontManager(self.mtm).availableFontFamilies();
+                call.resolve(json!({"families": families.iter().map(|family| family.to_string()).collect::<Vec<_>>()}));
+            },
             _ => call.reject("invalid: unregistered host operation"),
         }
     }
@@ -1223,6 +1302,10 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     };
     let mtm = MainThreadMarker::new().ok_or("AppKit host must run on the main thread")?;
     let app = NSApplication::sharedApplication(mtm);
+    let forced_appearance = forced_appearance(std::env::var("RIWORK_APPEARANCE").ok().as_deref())?;
+    if let Some(appearance) = forced_appearance {
+        pin_application(&app, appearance);
+    }
     let background =
         std::env::var_os("RIWORK_NSH_BACKGROUND").as_deref() == Some(std::ffi::OsStr::new("1"));
     app.setActivationPolicy(if background {
@@ -1250,6 +1333,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         quitting: false,
         quit_pending: false,
         background,
+        forced_appearance,
     };
     // Queue the complete initial snapshot before the worker starts, not one partial set per open.
     let windows = std::mem::take(&mut startup.windows);
@@ -1279,6 +1363,25 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn forced_appearance_from_env() {
+        for (value, expected) in [
+            ("light", Appearance::Light),
+            ("dark", Appearance::Dark),
+            ("system", Appearance::System),
+        ] {
+            assert_eq!(forced_appearance(Some(value)).unwrap(), Some(expected));
+            assert_eq!(appearance_name(expected), value);
+        }
+        assert_eq!(forced_appearance(None).unwrap(), None);
+        assert_eq!(forced_appearance(Some("")).unwrap(), None);
+        assert!(
+            forced_appearance(Some("sepia"))
+                .unwrap_err()
+                .starts_with("invalid:")
+        );
+    }
 
     #[test]
     fn a_busy_registry_lock_stays_due() {

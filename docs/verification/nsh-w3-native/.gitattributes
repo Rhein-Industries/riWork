@@ -1,0 +1,4 @@
+# Captured output and generated declarations retain their exact bytes.
+**/*.stdout -whitespace
+**/*.stderr -whitespace
+native.d.ts.txt -whitespace
