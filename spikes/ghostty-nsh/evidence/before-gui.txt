@@ -1,0 +1,27 @@
+session=$0 created=1793131469 pane=%0 pane_pid=14167 clients=0 size=96x26
+Ghostty / NSH AppKit isolated tmux recorder
+Type, paste, click/drag, resize; events go to input-events.jsonl.
+The recorder PID and tmux pane must survive native-view detach/reattach.
+Recorder PID: 14167 | pane: %0
+
+RESIZE 96x26
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

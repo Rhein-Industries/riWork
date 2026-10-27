@@ -1,0 +1,34 @@
+session=$0 created=1793131469 pane=%0 pane_pid=14167 clients=1 size=108x32
+client=/dev/ttys019 pid=26816 size=108x32
+Ghostty / NSH AppKit isolated tmux recorder
+Type, paste, click/drag, resize; events go to input-events.jsonl.
+The recorder PID and tmux pane must survive native-view detach/reattach.
+Recorder PID: 14167 | pane: %0
+
+RESIZE 96x26
+INPUT "\u001b[I"
+RESIZE 108x32
+INPUT "\u001b[<0;40;12M"
+INPUT "\u001b[<0;40;12m"
+INPUT "N"
+INPUT "S"
+INPUT "H"
+INPUT "-"
+INPUT "k"
+INPUT "e"
+INPUT "y"
+INPUT "b"
+INPUT "o"
+INPUT "a"
+INPUT "r"
+INPUT "d"
+INPUT "-"
+INPUT "1"
+INPUT "2"
+INPUT "3"
+INPUT "\r"
+INPUT "\u001b[D"
+INPUT "\u0003"
+
+
+

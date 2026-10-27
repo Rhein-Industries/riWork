@@ -1,0 +1,38 @@
+{
+  "utc": "2026-10-27T20:11:46.399575+00:00",
+  "correction": "kill-server returned 0 but session persisted; exact kill-session removed it; cleanup.sh now verifies session absence",
+  "checks": [
+    {
+      "command": [
+        "ps",
+        "-p",
+        "26521,26815,26816,14162,14167",
+        "-o",
+        "pid,command"
+      ],
+      "exit_code": 1,
+      "stdout": "  PID COMMAND\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "/opt/homebrew/bin/tmux",
+        "-S",
+        "/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.0znRWa/tmux.sock",
+        "has-session",
+        "-t",
+        "ghostty-spike"
+      ],
+      "exit_code": 1,
+      "stdout": "",
+      "stderr": "no server running on /private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.0znRWa/tmux.sock\n"
+    }
+  ],
+  "driver_list_windows_pid26521": "Found 0 windows",
+  "harness_only_cleanup": {
+    "socket": "/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.K2Vig8/tmux.sock",
+    "kill_session_exit": 0,
+    "has_session_exit": 1,
+    "server_pid8107_and_recorder_pid8110": "absent; ps exit 1"
+  }
+}

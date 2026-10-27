@@ -1,0 +1,4 @@
+  PID  PPID  PGID   SESS ELAPSED STAT COMMAND
+26521 69231 26521      0   02:43 Ss   spikes/ghostty-nsh/target/debug/riwork-ghostty-nsh-spike
+26815 26521 26815      0   02:40 Ss+  /usr/bin/login -q -flp shnidi /bin/bash --noprofile --norc -c exec -l /opt/homebrew/bin/tmux -S /private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.0znRWa/tmux.sock attach-session -t ghostty-spike
+26816 26815 26815      0   02:40 S+   -/opt/homebrew/bin/tmux -S /private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.0znRWa/tmux.sock attach-session -t ghostty-spike

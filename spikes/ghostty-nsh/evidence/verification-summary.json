@@ -1,0 +1,264 @@
+{
+  "status": "NO_GO_LIFECYCLE_BLOCKER",
+  "overall_readiness": "NO_GO",
+  "core_interaction_status": "PASS_WITH_LIMITATIONS",
+  "evidence_directory": "/Users/dominik/orca/projects/riWork-nsh-spike-ghostty/spikes/ghostty-nsh/evidence",
+  "scope": "The 13 checks cover core interaction only. Teardown is a separate required lifecycle gate. No desktop input or tmux commands are sent.",
+  "failed_checks": [],
+  "required_failures": [
+    "teardown_termination"
+  ],
+  "checks": {
+    "terminal_input_markers": {
+      "status": "PASS",
+      "counts": {
+        "keyboard": 1,
+        "reattached": 1,
+        "japanese_probe": 1,
+        "deadkey_composed": 2
+      },
+      "input_bytes": 344
+    },
+    "control_keys": {
+      "status": "PASS",
+      "carriage_return": true,
+      "left_arrow": true,
+      "ctrl_c": true
+    },
+    "mouse_raw_sgr": {
+      "status": "PASS",
+      "counts": {
+        "press": 4,
+        "release": 4,
+        "drag_code_32": 5,
+        "wheel_code_64": 12
+      }
+    },
+    "mouse_decoder_agrees_with_bytes": {
+      "status": "PASS",
+      "raw_count": 25,
+      "decoded_count": 25
+    },
+    "tmux_resize_sequence": {
+      "status": "PASS",
+      "observed": [
+        [
+          96,
+          26
+        ],
+        [
+          108,
+          32
+        ],
+        [
+          91,
+          26
+        ],
+        [
+          88,
+          25
+        ],
+        [
+          88,
+          24
+        ],
+        [
+          88,
+          25
+        ],
+        [
+          88,
+          24
+        ]
+      ],
+      "expected": "96x26 -> 108x32 -> 88x24 or 88x25"
+    },
+    "session_pane_and_recorder_persist": {
+      "status": "PASS",
+      "initial": [
+        "$0",
+        "1793131469",
+        "%0",
+        "14167"
+      ],
+      "recorder_pids": [
+        14167
+      ],
+      "recorder_start_count": 1,
+      "snapshots": {
+        "before-gui.txt": {
+          "session": "$0",
+          "created": "1793131469",
+          "pane": "%0",
+          "pane_pid": 14167,
+          "clients": 0,
+          "columns": 96,
+          "rows": 26,
+          "client_pids": []
+        },
+        "detached.txt": {
+          "session": "$0",
+          "created": "1793131469",
+          "pane": "%0",
+          "pane_pid": 14167,
+          "clients": 1,
+          "columns": 108,
+          "rows": 32,
+          "client_pids": [
+            26816
+          ]
+        },
+        "reattached.txt": {
+          "session": "$0",
+          "created": "1793131469",
+          "pane": "%0",
+          "pane_pid": 14167,
+          "clients": 1,
+          "columns": 108,
+          "rows": 32,
+          "client_pids": [
+            26816
+          ]
+        },
+        "after-gui.txt": {
+          "session": "$0",
+          "created": "1793131469",
+          "pane": "%0",
+          "pane_pid": 14167,
+          "clients": 1,
+          "columns": 88,
+          "rows": 24,
+          "client_pids": [
+            26816
+          ]
+        }
+      }
+    },
+    "tmux_client_survives_view_detach": {
+      "status": "PASS",
+      "client_pids": [
+        [
+          26816
+        ],
+        [
+          26816
+        ],
+        [
+          26816
+        ]
+      ]
+    },
+    "native_surface_persists_through_theme_and_view_lifecycle": {
+      "status": "PASS",
+      "app_pid": 26521,
+      "surfaces": [
+        "0x767558000"
+      ],
+      "event_counts": {
+        "geometry": 22,
+        "created": 1,
+        "backing-properties-changed": 2,
+        "theme-updated": 3,
+        "mouse-down": 4,
+        "mouse-up": 4,
+        "insert-text": 31,
+        "key-down": 35,
+        "detached": 1,
+        "reattached": 1,
+        "set-marked-text": 3,
+        "ime-probe-committed": 1,
+        "scroll": 2,
+        "synthetic-scale-probe": 2,
+        "shutdown": 1
+      },
+      "live_theme_counts": [
+        2,
+        3
+      ]
+    },
+    "native_detach_reattach_flags": {
+      "status": "PASS"
+    },
+    "input_after_native_reattach": {
+      "status": "PASS"
+    },
+    "synthetic_content_scale_dimensions": {
+      "status": "PASS",
+      "observations": [
+        {
+          "forced_scale": 1,
+          "backing_scale": 2,
+          "view_width": 800,
+          "view_height": 441,
+          "width_px": 800,
+          "height_px": 441
+        },
+        {
+          "forced_scale": 2,
+          "backing_scale": 2,
+          "view_width": 800,
+          "view_height": 441,
+          "width_px": 1600,
+          "height_px": 882
+        }
+      ],
+      "classification": "Synthetic setter probe, not physical display migration"
+    },
+    "deadkey_marked_text_and_commit": {
+      "status": "PASS",
+      "composed_utf8": "â",
+      "committed_occurrences": 2,
+      "marked_key_commit_sequences": 2,
+      "classification": "GUI keyboard dead-key composition observed; not a Japanese input-source test"
+    },
+    "synthetic_japanese_marked_text_probe": {
+      "status": "PASS",
+      "committed_utf8": "日本語",
+      "classification": "Synthetic NSTextInputClient callback probe; Japanese input-source GUI UNVERIFIED"
+    }
+  },
+  "teardown_termination": {
+    "status": "FAIL",
+    "reason": "Captured window-close/native-component teardown blocks the main thread in ghostty_surface_free -> pthread_join -> ulock_wait; the matching fixture process remains present in the teardown process capture.",
+    "recovery": "Not inferred by this script; external cleanup cannot establish safe teardown.",
+    "sample_pid": 26521,
+    "exercised_app_pid": 26521,
+    "primary_process_present_in_teardown_capture": true,
+    "matched_main_thread_frames": [
+      "spike_terminal_view_shutdown",
+      "ghostty_surface_free",
+      "_pthread_join",
+      "__ulock_wait"
+    ],
+    "native_shutdown_event_count": 1,
+    "closed_snapshot_client_pids": [
+      26816
+    ],
+    "artifacts": [
+      "teardown-sample.txt",
+      "teardown-processes.txt",
+      "closed.txt"
+    ]
+  },
+  "limitations": {
+    "physical_display_scale_change": {
+      "status": "UNVERIFIED",
+      "reason": "Only one physical display at backing scale 2 was available; 1x/2x setter probes are not display migration.",
+      "observed_displays": [
+        {
+          "scale": 2,
+          "frame": "{{0, 0}, {3360, 1418}}",
+          "display_id": 2
+        }
+      ]
+    },
+    "japanese_input_source_ime_gui": {
+      "status": "UNVERIFIED",
+      "reason": "Japanese bytes came from the synthetic IME callback probe; candidate UI and Japanese input-source routing were not tested."
+    },
+    "theme_pixels": {
+      "status": "MANUAL_SCREENSHOT_REVIEW",
+      "reason": "This script validates theme callbacks and surface identity; screenshots establish the visible colors."
+    }
+  }
+}
