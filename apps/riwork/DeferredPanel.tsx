@@ -58,3 +58,15 @@ export function DeferredPanel(props: {
     {!empty && props.diagnostics && <Text testID={`visibility:${props.id}`} style={{ fontFamily: theme().monoFamily, fontSize: 11 * theme().scale, color: theme().palette.muted }}>{`visible: ${props.visible}`}</Text>}
   </View>;
 }
+
+/** Fixture-only mount/visibility probe for content that is not a DeferredPanel. */
+export function MountProbe(props: { id: string; visible: boolean; theme?: () => InterfaceTheme }) {
+  const mount = (mounts.get(props.id) ?? 0) + 1;
+  mounts.set(props.id, mount);
+  const theme = props.theme ?? (() => DEFAULT_THEME);
+  const style = () => ({ fontFamily: theme().monoFamily, fontSize: 9 * theme().scale, color: theme().palette.muted });
+  return <View style={{ flexDirection: "row", gap: 8, paddingHorizontal: 8 }}>
+    <Text testID={`mount:${props.id}`} style={style()}>{`mount ${mount}`}</Text>
+    <Text testID={`visibility:${props.id}`} style={style()}>{`visible: ${props.visible}`}</Text>
+  </View>;
+}

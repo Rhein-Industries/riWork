@@ -2,6 +2,8 @@
 mod default_layout;
 pub use default_layout::apply_default_layout;
 
+pub mod workspace;
+
 use std::{
     cmp::Ordering,
     collections::{BTreeMap, HashSet, VecDeque},
@@ -1819,7 +1821,7 @@ impl LayoutStore {
         dismiss: &[String],
         known: Option<&HashSet<String>>,
     ) -> Result<ProjectLayout, String> {
-        self.save_chat_state_impl(project_id, layout, dismiss, known, false)
+        self.save_chat_state_impl(project_id, layout, dismiss, known, false, &BTreeMap::new())
     }
 
     /// Downgrade projection of shared membership; never imports legacy dismissals back.
@@ -1828,8 +1830,29 @@ impl LayoutStore {
         project_id: &str,
         layout: &ProjectLayout,
     ) -> Result<ProjectLayout, String> {
-        self.save_chat_state_impl(project_id, layout, &[], None, true)
+        self.save_chat_state_impl(project_id, layout, &[], None, true, &BTreeMap::new())
     }
+    /// Save a JavaScript-safe pane projection while carrying opaque tabs from
+    /// the original storage IDs. This only changes pane identities, never the
+    /// stored format or an unknown tab's payload.
+    pub fn save_chat_state_remapped(
+        &self,
+        project_id: &str,
+        layout: &ProjectLayout,
+        remap: &BTreeMap<PaneId, PaneId>,
+    ) -> Result<ProjectLayout, String> {
+        self.save_chat_state_impl(project_id, layout, &[], None, false, remap)
+    }
+
+    pub fn save_tab_layout_remapped(
+        &self,
+        project_id: &str,
+        layout: &ProjectLayout,
+        remap: &BTreeMap<PaneId, PaneId>,
+    ) -> Result<ProjectLayout, String> {
+        self.save_chat_state_impl(project_id, layout, &[], None, true, remap)
+    }
+
     fn save_chat_state_impl(
         &self,
         project_id: &str,
@@ -1837,6 +1860,7 @@ impl LayoutStore {
         dismiss: &[String],
         known: Option<&HashSet<String>>,
         shared_tabs: bool,
+        remap: &BTreeMap<PaneId, PaneId>,
     ) -> Result<ProjectLayout, String> {
         if project_id.is_empty() {
             return Err("Cannot save a layout without a project UUID".to_owned());
@@ -1880,7 +1904,11 @@ impl LayoutStore {
                 return Err(unreadable_entry_message(reason));
             }
             // Common case: nothing changed, so skip the write and its fsync.
-            Some(existing) if existing.layout().is_ok_and(|existing| existing == layout) => {
+            Some(existing)
+                if existing.layout().is_ok_and(|existing| existing == layout)
+                    && !matches!(existing, SavedEntry::Layout { skipped, .. }
+                        if remap.iter().any(|(old, new)| old != new && skipped.contains_key(old))) =>
+            {
                 return Ok(layout);
             }
             _ => {}
@@ -1890,6 +1918,21 @@ impl LayoutStore {
             Some(SavedEntry::Layout { skipped, .. }) => skipped,
             _ => SkippedTabs::new(),
         };
+        for (old, new) in remap {
+            let mut target = *new;
+            let mut visited = HashSet::from([*old]);
+            while let Some(next) = remap.get(&target).filter(|next| **next != target) {
+                if !visited.insert(target) {
+                    return Err("Cannot save a cyclic pane identity remap".into());
+                }
+                target = *next;
+            }
+            if *old != target
+                && let Some(tabs) = skipped.remove(old)
+            {
+                skipped.entry(target).or_default().extend(tabs);
+            }
+        }
         let panes = layout.layout.pane_ids();
         skipped.retain(|id, _| panes.contains(id));
         layouts.projects.insert(
@@ -2038,8 +2081,15 @@ impl LayoutStore {
         let write = || -> Result<(), String> {
             // Encode first: pretty printing straight into the file is one
             // syscall per token, and this runs on the UI thread.
-            let mut data = serde_json::to_vec_pretty(layouts)
+            let encoded = serde_json::to_value(layouts)
                 .map_err(|error| format!("Cannot encode layouts: {error}"))?;
+            // Keep opaque fields, unknown tabs and unreadable project entries
+            // exactly as written by the newer producer, including whitespace
+            // and escapes. The lock covers this read and the atomic rename.
+            let previous = fs::read(&path).ok().and_then(|bytes| {
+                serde_json::from_slice::<Box<serde_json::value::RawValue>>(&bytes).ok()
+            });
+            let mut data = preserve_raw_json(&encoded, previous.as_deref())?.into_bytes();
             data.push(b'\n');
             let mut file = OpenOptions::new()
                 .write(true)
@@ -2061,6 +2111,104 @@ impl LayoutStore {
         }
         result
     }
+}
+
+/// Reuse an unchanged JSON subtree verbatim. Changed parents are encoded from
+/// their children, so a mutation of one project cannot reformat another entry
+/// or an unknown extension field. This is still the sole LayoutStore writer.
+fn preserve_raw_json(
+    value: &Value,
+    previous: Option<&serde_json::value::RawValue>,
+) -> Result<String, String> {
+    preserve_raw_json_inner(value, previous, previous)
+}
+
+fn preserve_raw_json_inner(
+    value: &Value,
+    previous: Option<&serde_json::value::RawValue>,
+    original: Option<&serde_json::value::RawValue>,
+) -> Result<String, String> {
+    if let Some(previous) = previous
+        && serde_json::from_str::<Value>(previous.get()).is_ok_and(|old| old == *value)
+    {
+        return Ok(previous.get().to_owned());
+    }
+    if value.get("kind").is_some()
+        && SavedTab::deserialize(value).is_err()
+        && let Some(original) = original
+        && let Some(raw) = find_raw_json(original, value)
+    {
+        return Ok(raw);
+    }
+    if previous.is_none() && original.is_none() {
+        return serde_json::to_string_pretty(value).map_err(|error| error.to_string());
+    }
+    let encode = |value: &Value| serde_json::to_string(value).map_err(|error| error.to_string());
+    match value {
+        Value::Object(fields) => {
+            let old = previous
+                .and_then(|raw| {
+                    serde_json::from_str::<BTreeMap<String, Box<serde_json::value::RawValue>>>(
+                        raw.get(),
+                    )
+                    .ok()
+                })
+                .unwrap_or_default();
+            let mut parts = Vec::with_capacity(fields.len());
+            for (key, value) in fields {
+                let key_json = serde_json::to_string(key).map_err(|error| error.to_string())?;
+                parts.push(format!(
+                    "{key_json}: {}",
+                    preserve_raw_json_inner(value, old.get(key).map(Box::as_ref), original)?
+                ));
+            }
+            Ok(format!("{{{}}}", parts.join(", ")))
+        }
+        Value::Array(values) => {
+            let old = previous
+                .and_then(|raw| {
+                    serde_json::from_str::<Vec<Box<serde_json::value::RawValue>>>(raw.get()).ok()
+                })
+                .unwrap_or_default();
+            let mut parts = Vec::with_capacity(values.len());
+            for value in values {
+                // Unknown tabs may move past known tabs during normalization.
+                // Match by value, not the previous array index.
+                let prior = old.iter().find(|raw| {
+                    serde_json::from_str::<Value>(raw.get()).is_ok_and(|old| old == *value)
+                });
+                parts.push(preserve_raw_json_inner(
+                    value,
+                    prior.map(Box::as_ref),
+                    original,
+                )?);
+            }
+            Ok(format!("[{}]", parts.join(", ")))
+        }
+        _ => encode(value),
+    }
+}
+
+/// Locate an opaque tab moved into a different pane, preserving its raw payload
+/// even though there is no matching subtree at the new JSON path.
+fn find_raw_json(raw: &serde_json::value::RawValue, wanted: &Value) -> Option<String> {
+    let parsed: Value = serde_json::from_str(raw.get()).ok()?;
+    if parsed == *wanted {
+        return Some(raw.get().to_owned());
+    }
+    let children: Vec<Box<serde_json::value::RawValue>> = match parsed {
+        Value::Object(_) => {
+            serde_json::from_str::<BTreeMap<String, Box<serde_json::value::RawValue>>>(raw.get())
+                .ok()?
+                .into_values()
+                .collect()
+        }
+        Value::Array(_) => serde_json::from_str(raw.get()).ok()?,
+        _ => return None,
+    };
+    children
+        .iter()
+        .find_map(|child| find_raw_json(child, wanted))
 }
 
 #[cfg(test)]

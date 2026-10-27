@@ -44,9 +44,11 @@ pub struct LoadedLayout {
 }
 
 enum Command {
-    Schedule(Box<ProjectLayout>),
+    Schedule(Box<ProjectLayout>, BTreeMap<PaneId, PaneId>),
     Flush(Sender<Result<(), String>>),
     Stop(Sender<Result<(), String>>),
+    #[cfg(debug_assertions)]
+    Advance(Duration, Sender<Result<(), String>>),
 }
 
 /// One blocking-pool worker per open layout session. It owns the debounce clock
@@ -62,6 +64,14 @@ pub struct LayoutPersistence {
 /// fake to exercise the same edit/close handoff without filesystem operations.
 pub trait LayoutBackend: Send + Sync {
     fn schedule(&self, project: ProjectLayout) -> Result<(), String>;
+    /// Schedule with the original unsafe-ID map for opaque tabs moved by an edit.
+    fn schedule_with_remap(
+        &self,
+        project: ProjectLayout,
+        _remap: BTreeMap<PaneId, PaneId>,
+    ) -> Result<(), String> {
+        self.schedule(project)
+    }
     fn flush(&self) -> Result<(), String>;
     fn project_id(&self) -> &str {
         ""
@@ -89,6 +99,13 @@ impl LayoutBackend for LayoutPersistence {
     fn schedule(&self, project: ProjectLayout) -> Result<(), String> {
         self.schedule(project)
     }
+    fn schedule_with_remap(
+        &self,
+        project: ProjectLayout,
+        remap: BTreeMap<PaneId, PaneId>,
+    ) -> Result<(), String> {
+        self.schedule_with_remap(project, remap)
+    }
     fn flush(&self) -> Result<(), String> {
         self.flush()
     }
@@ -101,13 +118,37 @@ impl LayoutPersistence {
         restore: Option<ProjectLayout>,
         mode: SaveMode,
     ) -> Result<LoadedLayout, String> {
-        let dir = dir.into();
-        let project_id = project_id.into();
+        Self::open_clock(dir.into(), project_id.into(), restore, mode, false)
+    }
+
+    #[cfg(debug_assertions)]
+    pub fn open_with_manual_clock(
+        dir: impl Into<PathBuf>,
+        project_id: impl Into<String>,
+        restore: Option<ProjectLayout>,
+        mode: SaveMode,
+    ) -> Result<LoadedLayout, String> {
+        Self::open_clock(dir.into(), project_id.into(), restore, mode, true)
+    }
+
+    fn open_clock(
+        dir: PathBuf,
+        project_id: String,
+        restore: Option<ProjectLayout>,
+        mode: SaveMode,
+        manual: bool,
+    ) -> Result<LoadedLayout, String> {
         if project_id.is_empty() {
             return Err("invalid: a layout session requires a project ID".into());
         }
         let loaded = load_project(&dir, &project_id, restore)?;
-        let persistence = Self::start(dir, project_id, mode)?;
+        let persistence = Self::start(
+            dir,
+            project_id,
+            mode,
+            storage_id_remap(&loaded.project)?,
+            manual,
+        )?;
         Ok(LoadedLayout {
             persistence,
             project: loaded.project,
@@ -116,14 +157,35 @@ impl LayoutPersistence {
         })
     }
 
-    fn start(dir: PathBuf, project_id: String, mode: SaveMode) -> Result<Self, String> {
+    fn start(
+        dir: PathBuf,
+        project_id: String,
+        mode: SaveMode,
+        remap: BTreeMap<PaneId, PaneId>,
+        manual: bool,
+    ) -> Result<Self, String> {
         let runtime = tokio::runtime::Handle::try_current().map_err(|error| {
             format!("unavailable: layout worker needs a Tokio runtime: {error}")
         })?;
         let store = LayoutStore::open(&dir)?;
+        // A reload snapshot already uses JS-safe identities while the last
+        // no-edit disk generation may still use its original unsafe IDs.
+        let mut remap = remap;
+        if let Ok(Some(saved)) = store.load(&project_id) {
+            for (old, new) in storage_id_remap(&saved)? {
+                remap.entry(old).or_insert(new);
+            }
+        }
         let (commands, receiver) = unbounded_channel();
         let worker_project = project_id.clone();
-        runtime.spawn(save_worker(store, worker_project, mode, receiver));
+        runtime.spawn(save_worker(
+            store,
+            worker_project,
+            mode,
+            remap,
+            receiver,
+            manual,
+        ));
         Ok(Self {
             dir,
             project_id,
@@ -161,13 +223,33 @@ impl LayoutPersistence {
     }
 
     /// No filesystem access or waiting on another thread. The snapshot must use
-    /// storage IDs (`LayoutModel::storage_project`), not projected NodeIds. Core
-    /// cannot remap its private skipped-tab map; preserving those IDs avoids
-    /// erasing unknown tabs when a JS-unsafe ID was projected to a safe one.
+    /// storage IDs (`LayoutModel::storage_project`), not projected NodeIds.
+    /// The worker passes the original unsafe-ID map to LayoutStore so opaque
+    /// tabs migrate together with their pane on the first actual edit.
     pub fn schedule(&self, project: ProjectLayout) -> Result<(), String> {
+        self.schedule_with_remap(project, BTreeMap::new())
+    }
+
+    pub fn schedule_with_remap(
+        &self,
+        project: ProjectLayout,
+        remap: BTreeMap<PaneId, PaneId>,
+    ) -> Result<(), String> {
         self.commands
-            .send(Command::Schedule(Box::new(project)))
+            .send(Command::Schedule(Box::new(project), remap))
             .map_err(|_| "unavailable: layout save worker stopped".into())
+    }
+
+    /// Deterministic acceptance clock; the production worker uses monotonic time.
+    #[cfg(debug_assertions)]
+    pub fn advance_manual_clock(&self, elapsed: Duration) -> Result<(), String> {
+        let (reply, result) = mpsc::channel();
+        self.commands
+            .send(Command::Advance(elapsed, reply))
+            .map_err(|_| "layout worker stopped".to_owned())?;
+        result
+            .recv()
+            .map_err(|_| "layout worker stopped".to_owned())?
     }
 
     /// Synchronous Rust lifecycle hook for close/quit/restart/project-switch.
@@ -194,12 +276,30 @@ impl LayoutPersistence {
         if project_id.is_empty() {
             return Err("invalid: a layout session requires a project ID".into());
         }
+        if project_id == self.project_id {
+            return Ok(ProjectLoad {
+                project: previous.clone(),
+                notice: None,
+                unknown_panes: unknown_tab_panes(&self.dir, &project_id)?,
+            });
+        }
         self.schedule(previous.clone())?;
         self.flush()?;
         let mut loaded = load_project(&self.dir, &project_id, restore)?;
         refuse_unknown_destination(&loaded.unknown_panes)?;
-        loaded.project = loaded.project.carry_locked_regions_from(previous)?;
-        let next = Self::start(self.dir.clone(), project_id, self.mode)?;
+        match loaded.project.carry_locked_regions_from(previous) {
+            Ok(carried) => loaded.project = carried,
+            Err(error) => {
+                loaded.notice = Some(format!("{error}; locked regions were not carried over"));
+            }
+        }
+        let next = Self::start(
+            self.dir.clone(),
+            project_id,
+            self.mode,
+            storage_id_remap(&loaded.project)?,
+            false,
+        )?;
         *self = next;
         Ok(loaded)
     }
@@ -220,35 +320,65 @@ async fn save_worker(
     store: LayoutStore,
     project_id: String,
     mode: SaveMode,
+    mut remap: BTreeMap<PaneId, PaneId>,
     mut commands: UnboundedReceiver<Command>,
+    manual: bool,
 ) {
     let store = Arc::new(store);
+    let started = Instant::now();
+    let mut manual_now = Duration::ZERO;
     let mut pending = None;
-    let mut deadline: Option<Instant> = None;
+    let mut deadline: Option<Duration> = None;
     loop {
         let command = match deadline {
-            Some(deadline) => tokio::time::timeout_at(deadline, commands.recv()).await,
-            None => Ok(commands.recv().await),
+            Some(deadline) if !manual => {
+                tokio::time::timeout_at(started + deadline, commands.recv()).await
+            }
+            _ => Ok(commands.recv().await),
         };
         match command {
-            Ok(Some(Command::Schedule(project))) => {
+            Ok(Some(Command::Schedule(project, moved))) => {
+                remap.extend(moved);
                 pending = Some(project);
-                deadline = Some(Instant::now() + SAVE_DELAY);
+                deadline = Some(
+                    (if manual {
+                        manual_now
+                    } else {
+                        started.elapsed()
+                    }) + SAVE_DELAY,
+                );
+            }
+            #[cfg(debug_assertions)]
+            Ok(Some(Command::Advance(elapsed, reply))) => {
+                if !manual {
+                    let _ = reply.send(Err("manual clock is not enabled".into()));
+                    continue;
+                }
+                manual_now += elapsed;
+                let result = if deadline.is_some_and(|due| manual_now >= due) {
+                    deadline = None;
+                    save_pending_async(&store, &project_id, mode, &remap, &mut pending).await
+                } else {
+                    Ok(())
+                };
+                let _ = reply.send(result);
             }
             Ok(Some(Command::Flush(reply))) => {
                 deadline = None;
-                let _ =
-                    reply.send(save_pending_async(&store, &project_id, mode, &mut pending).await);
+                let _ = reply.send(
+                    save_pending_async(&store, &project_id, mode, &remap, &mut pending).await,
+                );
             }
             Ok(Some(Command::Stop(reply))) => {
-                let _ =
-                    reply.send(save_pending_async(&store, &project_id, mode, &mut pending).await);
+                let _ = reply.send(
+                    save_pending_async(&store, &project_id, mode, &remap, &mut pending).await,
+                );
                 break;
             }
             Err(_) => {
                 deadline = None;
                 if let Err(error) =
-                    save_pending_async(&store, &project_id, mode, &mut pending).await
+                    save_pending_async(&store, &project_id, mode, &remap, &mut pending).await
                 {
                     // Keep the snapshot for an explicit flush/retry. A failed
                     // filesystem must not turn into an unbounded retry loop.
@@ -256,7 +386,7 @@ async fn save_worker(
                 }
             }
             Ok(None) => {
-                let _ = save_pending_async(&store, &project_id, mode, &mut pending).await;
+                let _ = save_pending_async(&store, &project_id, mode, &remap, &mut pending).await;
                 break;
             }
         }
@@ -267,6 +397,7 @@ async fn save_pending_async(
     store: &Arc<LayoutStore>,
     project_id: &str,
     mode: SaveMode,
+    remap: &BTreeMap<PaneId, PaneId>,
     pending: &mut Option<Box<ProjectLayout>>,
 ) -> Result<(), String> {
     let Some(project) = pending.clone() else {
@@ -274,8 +405,9 @@ async fn save_pending_async(
     };
     let store = Arc::clone(store);
     let project_id = project_id.to_owned();
+    let remap = remap.clone();
     tokio::task::spawn_blocking(move || {
-        save_pending(&store, &project_id, mode, &mut Some(project))
+        save_pending(&store, &project_id, mode, &remap, &mut Some(project))
     })
     .await
     .map_err(|error| format!("broken: {error}"))??;
@@ -287,14 +419,15 @@ fn save_pending(
     store: &LayoutStore,
     project_id: &str,
     mode: SaveMode,
+    remap: &BTreeMap<PaneId, PaneId>,
     pending: &mut Option<Box<ProjectLayout>>,
 ) -> Result<(), String> {
     let Some(project) = pending.as_ref() else {
         return Ok(());
     };
     match mode {
-        SaveMode::LegacyChatState => store.save_chat_state(project_id, project, &[], None),
-        SaveMode::SharedTabs => store.save_tab_layout(project_id, project),
+        SaveMode::LegacyChatState => store.save_chat_state_remapped(project_id, project, remap),
+        SaveMode::SharedTabs => store.save_tab_layout_remapped(project_id, project, remap),
     }?;
     *pending = None;
     Ok(())
@@ -331,15 +464,19 @@ fn load_project(
         Some(mut restore) => restore.normalize().map(|_| Some(restore)),
         None => store.load(project_id),
     };
-    let (project, notice) = match loaded {
+    let (mut project, notice) = match loaded {
         Ok(Some(project)) => (project, None),
         Ok(None) => (default_project_layout(), None),
-        Err(error) => (default_project_layout(), Some(error)),
+        Err(error) => (
+            default_project_layout(),
+            Some(format!("{error}; using a default layout")),
+        ),
     };
+    initialize_navigation(&mut project)?;
     // This is metadata inspection only: LayoutStore remains the parser and sole
     // writer. The shared lock covers both reads. No raw tab
     // payload ever crosses into TSX or gets serialized by this crate.
-    let unknown_panes = if notice.is_none() {
+    let mut unknown_panes = if notice.is_none() {
         match unknown_tab_panes(dir, project_id) {
             Ok(panes) => panes,
             // Reload data wins even if the saved file cannot be read. Core will
@@ -350,6 +487,19 @@ fn load_project(
     } else {
         BTreeSet::new()
     };
+    if has_restore && let Ok(Some(saved)) = store.load(project_id) {
+        let remap = storage_id_remap(&saved)?;
+        unknown_panes = unknown_panes
+            .into_iter()
+            .map(|id| {
+                if !project.panes.contains_key(&id) {
+                    remap.get(&id).copied().unwrap_or(id)
+                } else {
+                    id
+                }
+            })
+            .collect();
+    }
     Ok(ProjectLoad {
         project,
         notice,
@@ -434,4 +584,84 @@ pub fn default_project_layout() -> ProjectLayout {
     };
     project.normalize().expect("the default layout is valid");
     project
+}
+
+fn storage_id_remap(project: &ProjectLayout) -> Result<BTreeMap<PaneId, PaneId>, String> {
+    let model = crate::layout::LayoutModel::new(project.clone())?;
+    Ok(model
+        .pane_id_remap()
+        .iter()
+        .filter(|(old, _)| **old > (1_u64 << 53) - 1)
+        .map(|(&old, &new)| (old, new))
+        .collect())
+}
+
+/// The GPUI global-nav migration copy; showing this notice never opens a window.
+pub const MOVED_NOTICE: &str = "The dashboard and the global chat now have their own window: View › Global Dashboard (⌘⌥G) or Global Chat (⌘⇧O).";
+
+/// Leave global-window tabs out of an older project's layout. Unknown/dead
+/// shell IDs are not classified as global: only a live Sessions delivery can
+/// identify a global orchestrator. Remote and preview tabs always remain.
+pub fn prune_global_tabs(
+    project: &mut ProjectLayout,
+    global_chats: &HashSet<String>,
+    live_global_shells: &HashSet<String>,
+) -> bool {
+    let mut changed = false;
+    for pane in project.panes.values_mut() {
+        let old_len = pane.tabs.len();
+        pane.tabs.retain(|tab| !match tab {
+            SavedTab::Panel { panel } => *panel == PanelKind::Dashboard,
+            SavedTab::Chat { chat_id } => global_chats.contains(chat_id),
+            SavedTab::Shell { shell_id } => live_global_shells.contains(shell_id),
+            SavedTab::RemoteShell { .. } | SavedTab::AppPreview { .. } => false,
+        });
+        changed |= old_len != pane.tabs.len();
+        // Prevent normalize from importing a removed legacy shell again.
+        pane.shell_ids.retain(|id| !live_global_shells.contains(id));
+        if pane
+            .active_shell_id
+            .as_ref()
+            .is_some_and(|id| live_global_shells.contains(id))
+        {
+            pane.active_shell_id = None;
+        }
+    }
+    if changed {
+        project
+            .normalize()
+            .expect("removing tabs preserves a valid project layout");
+    }
+    changed
+}
+
+/// Old shell-only saves had no panel initialization flag. Rebuild their visible
+/// navigation region beside the saved tree, retaining shell order and selection.
+/// This is an in-memory migration; opening/closing alone never writes it.
+pub fn initialize_navigation(project: &mut ProjectLayout) -> Result<bool, String> {
+    if project.panels_initialized || !project.sidebar_visible {
+        return Ok(false);
+    }
+    let occupied = project.layout.pane_ids();
+    let next = (1..)
+        .find(|id| !occupied.contains(id))
+        .expect("bounded pane tree");
+    let mut candidate = project.clone();
+    candidate.layout = Layout::navigation_beside(next, candidate.layout.clone());
+    candidate.panes.insert(
+        next,
+        SavedPane {
+            tabs: riwork_core::layouts::NAVIGATION_PANELS
+                .into_iter()
+                .map(|panel| SavedTab::Panel { panel })
+                .collect(),
+            active_tab_key: Some("panel:projects".into()),
+            ..Default::default()
+        },
+    );
+    candidate.panels_initialized = true;
+    // Explicit unlock stays explicit; default navigation lock stays inferred.
+    candidate.normalize()?;
+    *project = candidate;
+    Ok(true)
 }

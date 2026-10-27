@@ -57,13 +57,26 @@ impl LayoutRepository for FakeRepository {
     }
 }
 
+fn fixture_home() -> Result<PathBuf, String> {
+    static HOME: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+    Ok(HOME
+        .get_or_init(|| {
+            tempfile::Builder::new()
+                .prefix("riwork-layout-backend-")
+                .tempdir_in("/tmp")
+                .unwrap()
+        })
+        .path()
+        .to_path_buf())
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn layout_module_uses_the_injected_backend_and_sync_calls_do_not_wait_for_it() {
     let backend = Arc::new(FakeBackend::default());
     install_layout_repository(Arc::new(FakeRepository(backend.clone()))).unwrap();
-    register_layouts(&mut Registry::new(), || {
-        Ok(PathBuf::from("/unused-layout-fixture"))
-    });
+    // Layout state stays in the injected backend; session metadata reads
+    // (Store/settings) use a disposable home rather than a real one.
+    register_layouts(&mut Registry::new(), fixture_home);
     let mut session = Layouts::open_session(
         json!({"windowId":"fake-layout-window", "projectId":"fake-layout-project"}),
     )
@@ -122,7 +135,7 @@ async fn layout_module_uses_the_injected_backend_and_sync_calls_do_not_wait_for_
     let dock = session.dock(json!({"width":1220,"height":780})).unwrap();
     measure!("applyDock", {
         session
-            .apply_dock(dock.clone(), json!({"width":1220,"height":780}))
+            .apply_dock_model(dock.clone(), json!({"width":1220,"height":780}))
             .unwrap();
     });
     assert!(backend.saves.load(Ordering::SeqCst) > 1);

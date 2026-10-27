@@ -1,0 +1,4 @@
+# NSH generates a nested Cargo workspace for its app runners. Keep that
+# workspace on the same pinned divider geometry as the desktop host.
+[patch.crates-io]
+nsh-base = { path = "apps/riwork/vendor/nsh-base" }

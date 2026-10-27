@@ -1,16 +1,18 @@
-import { Overlay, Text, View, cleanup, colorScheme, effect, host, keymap, signal, type YNode } from "nsh";
-import { DockArea, type DockAreaLayout, type DockNode } from "nsh/base";
-import { Button } from "nsh/base";
-import { Menu, Window } from "nsh/desktop";
-import { WindowChrome, useWindowChrome, topPaneFrames, CONTROL_INSET } from "./WindowChrome";
-import { Appearance, Sessions, Settings, Tabs, type AppearanceDto, type LayoutSession, type SettingsDto } from "riwork/native";
+import { Overlay, Scroll, Text, View, cleanup, colorScheme, createAnimatedValue, effect, host, keymap, signal, type Point, type YNode } from "nsh";
+import { Button, Input, Popover, type DockAreaLayout, type DockAreaRef, type DockNode } from "nsh/base";
+import { Menu, Window, type MenuItem } from "nsh/desktop";
+import { Appearance, Settings, Tabs, type AppearanceDto, type LayoutSession, type SettingsDto } from "riwork/native";
+import { DockArea } from "./DockArea";
+import { CloseDialog } from "./CloseDialog";
+import { DeferredPanel, MountProbe } from "./DeferredPanel";
 import { LocalTerminal, type TerminalColors, type TerminalEvents } from "./Terminal";
 import { PanelContent, PanelEditors, createPanelController, type PanelController } from "./Panels";
-import { DeferredPanel } from "./DeferredPanel";
+import { WindowChrome, useWindowChrome, topPaneFrames, CONTROL_INSET } from "./WindowChrome";
 import { workspaceCommands } from "./commands";
+import { STATUS_COLORS, WORKSPACE_METRICS as M, headerHeight, mainMarkerThreshold, revealOffset, sessionCellWidth } from "./metrics";
 import {
-  activePane, createDockUpdater, createTitleUpdater, findPanel,
-  windowTitle, type WorkspaceSnapshot,
+  activePane, closeChoice, createDockUpdater, createTitleUpdater, cycledTab, findPanel, numberedTab,
+  panelTitle, stripTabs, windowTitle, type PanelModel, type PanelStatus, type WorkspaceSnapshot,
 } from "./model";
 import { DEFAULT_THEME, space, type InterfaceTheme } from "./appearance";
 import { StatusBar } from "./StatusBar";
@@ -41,6 +43,20 @@ function panelIds(node: DockNode): string[] {
   return node.type === "tabs" ? node.panels : node.children.flatMap(panelIds);
 }
 
+const NAVIGATION_PANELS = ["projects", "worktrees", "tasks", "shells"];
+const VIEWS = ["projects", "files", "preview", "worktrees", "tasks", "shells", "usage", "schedules", "dashboard", "project_settings", "settings"];
+const VIEW_KEYS: Record<string, string> = { projects: "⌘B", files: "⌘⇧E", preview: "⌘⇧P", shells: "⌘⌥S", schedules: "⌘⇧S", dashboard: "⌘⌥G", project_settings: "⌘⌥A", settings: "⌘," };
+const VIEW_SHORTCUTS: Record<string, string> = { files: "mod+shift+e", preview: "mod+shift+p", schedules: "mod+shift+s", dashboard: "mod+alt+g", settings: "mod+," };
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+function StatusDot(props: { status?: PanelStatus | null }) {
+  const status = () => props.status;
+  return <>{status() && <View style={{ width: M.statusDot, height: M.statusDot, justifyContent: "center", alignItems: "center" }}>
+    <View style={{ width: status() === "idle" ? M.idleDot : M.statusDot, height: status() === "idle" ? M.idleDot : M.statusDot, borderRadius: 4,
+      borderWidth: status() === "stopped" ? 1 : 0, borderColor: STATUS_COLORS[status()!], backgroundColor: status() === "stopped" ? "transparent" : STATUS_COLORS[status()!] }} />
+  </View>}</>;
+}
+
 export function Workspace(props: WorkspaceProps) {
   const session = props.session;
   const snapshot = signal(session.snapshot() as WorkspaceSnapshot);
@@ -53,6 +69,7 @@ export function Workspace(props: WorkspaceProps) {
   effect(() => { const next = props.appearanceNotice?.(); if (next) notice.set(next); });
   const label = (text: string) => Settings.cased(text, theme().native);
   const textStyle = (base = 11) => ({ fontFamily: theme().family, fontSize: base * theme().scale, color: theme().palette.text });
+  const mutedStyle = (base = 11) => ({ ...textStyle(base), color: theme().palette.muted });
   let root: YNode | null = null;
   function dismissNotice() { notice.set(""); root?.focus(); }
   const projectId = signal(props.projectId ?? snapshot().projectId ?? "");
@@ -60,12 +77,36 @@ export function Workspace(props: WorkspaceProps) {
   const appearance = signal<AppearanceDto | null>(null);
   const pendingFocus = signal<string | null>(null);
   const busy = signal(false);
-  const overlay = signal(false);
   const statusMenu = signal(false);
+  // Workspace transient UI: the close dialog, rename, the shared-strip popover,
+  // native menus and drags hold session deliveries and freeze native terminals.
+  const closing = signal<PanelModel | null>(null);
+  const renaming = signal<PanelModel | null>(null);
+  const renameTitle = signal("");
+  const allTabs = signal(false);
+  const allTabsAvailable = signal(false);
+  const allIndex = signal(0);
+  const menuOpen = signal(false);
+  const dragging = signal(false);
+  const stripWidth = signal(0);
+  const width = signal(1280);
+  const containerHeight = signal(0);
+  const hovered = signal<string | null>(null);
+  const tabHint = signal<{ id: string; text: string } | null>(null);
+  const dragTab = signal<PanelModel | null>(null);
+  const dragX = createAnimatedValue(0);
+  const dragY = createAnimatedValue(0);
+  let pressOrigin: Point = { x: 0, y: 0 };
+  const dragOrigin = signal<Point>({ x: 0, y: 0 });
+  let dockRef: DockAreaRef | undefined;
+  let stripRef: YNode | undefined;
+  let renameInput: YNode | undefined;
+  let scrollOffset = 0;
+  const bodyRefs = new Map<string, YNode>();
+  const tabRefs = new Map<string, YNode>();
   let alive = true;
   cleanup(() => { alive = false; });
-  // Panels own the shared session inventory; only appearance needs a separate
-  // observer for terminal colors and close behavior.
+  // Panels own the shared session inventory; appearance supplies terminal colors.
   if (props.projectId) {
     const subscription = Appearance.subscribe((event) => appearance.set(event.data));
     cleanup(() => subscription.close());
@@ -84,37 +125,56 @@ export function Workspace(props: WorkspaceProps) {
     showShell: (id) => { void openShell(id); },
     selectWorktree: (id) => { try { session.setSelectedWorktree(id); snapshot.set(session.snapshot() as WorkspaceSnapshot); } catch (error) { notice.set(String(error)); } },
     selectTask: (id) => { try { session.setSelectedTask(id); snapshot.set(session.snapshot() as WorkspaceSnapshot); } catch (error) { notice.set(String(error)); } },
-    switchProject: async (project) => {
-      if (switching()) throw new Error("conflict: project switch is already in progress");
-      switching.set(true);
-      try {
-        const next = await session.switchProject(project.id);
-        if (!alive) return;
-        install(size ? session.setExtent(size) : next);
-        projectId.set(project.id);
-        pendingFocus.set(null);
-      } finally { switching.set(false); }
-    },
+    switchProject: (project) => switchTo(project.id),
   });
   effect(() => updateTitle(panelState.state().projects.some((project) => project.id === projectId()) ? windowTitle(panelState.projectLabel()) : props.title));
+  // The Dock label waits for stored project names and follows project switches.
+  const updateDock = createDockUpdater((info) => host.post("window.setDockInfo", info));
+  effect(() => updateDock(panelState.loaded(), panelState.state().projects.find((project) => project.id === projectId())?.name ?? props.projectLabel));
+
+  const shared = () => Array.isArray(snapshot().sharedTabs) && !snapshot().remoteProject;
+  const selected = () => activePane(snapshot())?.activeTab;
+  const modal = () => !!closing() || !!renaming();
+  const frozen = () => modal() || menuOpen() || dragging() || allTabs();
+  const ordered = () => stripTabs(snapshot());
+  const sessions = () => ordered().filter((tab) => tab.kind !== "panel");
+  const header = () => headerHeight(11 * theme().scale);
+  const totalWidth = () => ordered().reduce((sum, tab) => sum + (tab.kind === "panel" ? M.panelCell : sessionCellWidth(tab.title)), 0) + 48;
+  const overflow = () => totalWidth() > stripWidth();
+  effect(() => allTabsAvailable.set(overflow() || allTabs()));
+  effect(() => {
+    const id = hovered();
+    const tab = id ? findPanel(snapshot(), id) : undefined;
+    tabHint.set(null);
+    if (!tab) return;
+    const key = tab.kind === "panel" ? VIEW_KEYS[tab.id.slice(6)] : undefined;
+    // Panel tooltips keep their natural titles; shells use their session names.
+    const text = tab.kind === "panel" ? tab.title : displayTitle(tab);
+    const timer = setTimeout(() => tabHint.set({ id: tab.id, text: `${text}${key ? ` · ${key}` : ""}` }), 500);
+    cleanup(() => clearTimeout(timer));
+  });
 
   function terminalColors(): TerminalColors {
     const value = appearance();
     // A null projection follows Ghostty in the native terminal component.
     return ((value ? colorScheme() === "dark" ? value.terminalDark : value.terminalLight : null) ?? { source: "ghostty" }) as TerminalColors;
   }
-  function isVisible(id: string): boolean { return snapshot().panes.some((pane) => pane.activeTab === id); }
-  function title(id: string): string {
-    const shell = id.startsWith("shell:") && panelState.shells().find((shell) => shell.id === id.slice(6));
-    return (id.startsWith("shell:") ? panelState.tabForShell(id.slice(6))?.title : undefined) ||
-      (shell ? panelState.titleForShell(shell) : findPanel(snapshot(), id)?.title ?? id);
+  function isVisible(id: string): boolean {
+    return snapshot().panes.some((pane) => pane.activeTab === id && (!snapshot().focusMode || pane.id === snapshot().activePane));
+  }
+  /** Shell titles prefer shared membership, then the session inventory. */
+  function displayTitle(tab: PanelModel): string {
+    if (tab.kind === "panel") return label(tab.title);
+    if (!tab.id.startsWith("shell:")) return tab.title;
+    const shell = panelState.shells().find((item) => item.id === tab.id.slice(6));
+    return panelState.tabForShell(tab.id.slice(6))?.title || (shell ? panelState.titleForShell(shell) : tab.title);
   }
   function membershipProject(id: string): string | null {
     // Locked panes can carry a shell from the previous project. Its shared
     // membership remains in its owning project, while placement stays local.
     const project = panelState.shells().find((shell) => shell.id === id)?.projectId ?? projectId();
     // Legacy layout fixtures have opaque project keys and no shared membership.
-    return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(project) ? project : null;
+    return UUID.test(project) ? project : null;
   }
   async function openShell(id: string) {
     if (switching()) return;
@@ -126,59 +186,37 @@ export function Workspace(props: WorkspaceProps) {
       if (alive && project === projectId() && token === panelState.generation()) { install(session.openShell(id)); pendingFocus.set(id); }
     } catch (error) { if (alive) notice.set(String(error)); }
   }
-  async function createShell() {
-    if (!projectId() || busy() || switching() || panelState.pending()) return;
-    if (!snapshot().panes.some((pane) => !pane.locked)) { notice.set("Unlock a pane before opening a shell."); return; }
+  /** One local-shell creation path: the layout session creates and places it. */
+  async function createShell(split?: "right" | "down") {
+    if (busy() || switching() || panelState.pending() || modal()) return;
     busy.set(true);
-    const project = projectId(), token = panelState.generation();
+    const before = new Set(snapshot().panes.flatMap((pane) => pane.tabs.map((tab) => tab.id)));
+    const tree = panelState.state().worktrees.find((tree) => tree.id === panelState.selectedWorktree() && tree.projectId === projectId());
     try {
-      const tree = panelState.state().worktrees.find((tree) => tree.id === panelState.selectedWorktree() && tree.projectId === project);
-      const shell = await Sessions.create({ projectId: project, worktreeId: tree?.id, cwd: tree?.path });
-      if (alive && project === projectId() && token === panelState.generation()) {
-        panelState.shells.set([...panelState.shells().filter((item) => item.id !== shell.id), shell]);
-        await openShell(shell.id);
-      }
+      install(await session.newShell({ ...(split ? { split } : {}), ...(tree ? { worktreeId: tree.id, cwd: tree.path } : {}) }));
+      const created = snapshot().panes.flatMap((pane) => pane.tabs).find((tab) => tab.kind === "shell" && !before.has(tab.id));
+      if (created) pendingFocus.set(created.id.slice(6));
     } catch (error) { if (alive) notice.set(String(error)); }
-    finally { if (alive) busy.set(false); }
-  }
-  function removeShell(id: string) { action(() => session.detachShell(id)); }
-  async function detachShell(id: string) {
-    const project = projectId(), token = panelState.generation(), membership = membershipProject(id);
-    try {
-      if (membership) await Tabs.update(membership, { action: "hide", key: `shell:${id}` });
-      if (alive && project === projectId() && token === panelState.generation()) removeShell(id);
-    } catch (error) {
-      if (!alive || project !== projectId() || token !== panelState.generation()) return;
-      // An unavailable shared store permits only local Detach. Preserve its
-      // unreadable bytes and record the core's legacy detached identity.
-      if (String(error).replace(/^Error:\s*/, "").startsWith("unavailable:")) removeShell(id);
-      notice.set(String(error));
-    }
-  }
-  async function exitShell(id: string) {
-    const project = projectId(), token = panelState.generation();
-    try { await Sessions.close(id); if (alive && project === projectId() && token === panelState.generation()) removeShell(id); }
-    catch (error) { if (alive) notice.set(String(error)); }
-  }
-  function closeShell(id: string) {
-    if (switching()) return;
-    const behavior = appearance()?.tabCloseBehavior ?? "ask";
-    if (behavior === "detach") { void detachShell(id); return; }
-    if (behavior === "exit") { void exitShell(id); return; }
-    // Ask uses the window's close modal; it blocks window commands meanwhile.
-    commands.closeDialog.set(`shell:${id}`);
-  }
-  function chooseClose(choice: "detach" | "exit") {
-    const tab = commands.closeDialog();
-    commands.closeDialog.set(null);
-    if (!tab?.startsWith("shell:")) return;
-    if (choice === "detach") void detachShell(tab.slice(6)); else void exitShell(tab.slice(6));
+    finally { if (alive) busy.set(false); thaw(); }
   }
   function openLink(event: TerminalEvents["linkOpen"]) {
     if (event.action === "edit") { notice.set("Opening terminal links in Vim is coming in the next terminal slice."); return; }
     const call = event.kind === "folder" ? "system.revealInFinder" : "system.openWith";
     void host.call(call, { path: event.target }).catch((error: unknown) => notice.set(String(error)));
   }
+  async function switchTo(id: string) {
+    if (switching()) throw new Error("conflict: project switch is already in progress");
+    closing.set(null); renaming.set(null); allTabs.set(false);
+    switching.set(true);
+    try {
+      const next = await session.switchProject(id);
+      if (!alive) return;
+      install(size ? session.setExtent(size) : next);
+      projectId.set(id);
+      pendingFocus.set(null);
+    } finally { switching.set(false); }
+  }
+
   const chrome = useWindowChrome(() => theme().palette);
   const measured = signal<Extent>({ width: 0, height: 0 });
   const tabWidths = signal<Record<string, number>>({});
@@ -188,8 +226,8 @@ export function Workspace(props: WorkspaceProps) {
     tabWidths.set({ ...tabWidths(), [key]: width });
   }
   function chromePanes() {
-    if (!dock()) return [];
-    return topPaneFrames(shownDock().center, measured()).map((pane) => {
+    if (!dock() || shared()) return [];
+    return topPaneFrames(dock()!.center, measured()).map((pane) => {
       const tabs = snapshot().panes.find((candidate) => candidate.id === pane.id)?.tabs ?? [];
       const widths = tabs.filter((tab) => !tab.id.startsWith("empty:")).map((tab) => tabWidths()[`${pane.id}:${tab.id}`]);
       // Until layout measures every tab, expose only the reserved empty area.
@@ -197,33 +235,62 @@ export function Workspace(props: WorkspaceProps) {
       const tabsEnd = widths.every((width) => width !== undefined)
         ? widths.reduce((total, width) => total + width, 0) + (pane.x === 0 && !chrome.fullscreen() ? CONTROL_INSET : 0)
         : undefined;
-      return { ...pane, tabsEnd };
+      // The fixed pane-control suffix stays clickable, outside the drag region.
+      return { ...pane, width: Math.max(0, pane.width - controlsWidth(pane.id ?? 0)), tabsEnd };
     });
   }
 
+  function focusActive() {
+    const id = selected();
+    if (id) bodyRefs.get(id)?.focus();
+  }
+  function reveal() {
+    if (!shared()) return;
+    let x = 48;
+    for (const tab of ordered()) {
+      const cellWidth = tab.kind === "panel" ? M.panelCell : sessionCellWidth(tab.title);
+      if (tab.id === selected()) {
+        scrollOffset = revealOffset(x, cellWidth, Math.max(0, stripWidth() - (overflow() ? 28 : 0)), scrollOffset);
+        stripRef?.scrollTo({ x: scrollOffset, y: 0, animated: false });
+        break;
+      }
+      x += cellWidth;
+    }
+  }
   function install(next: unknown) {
     // Only session results may be installed. The reported DockArea tree is never
     // assigned to this signal; all gestures are replayed through riwork-core.
+    if (!alive || !next) return;
     dock.set(next as DockAreaLayout);
     snapshot.set(session.snapshot() as WorkspaceSnapshot);
+    if (snapshot().notice) notice.set(snapshot().notice!);
     if (!dockReady()) dockReady.set(true);
+    if (snapshot().focusMode || !shared()) allTabs.set(false);
     props.onChange?.(snapshot(), dock()!);
+    reveal();
   }
-
+  function thaw() {
+    if (alive && !frozen() && !switching()) install(session.setInteraction(false));
+    focusActive();
+  }
+  function freeze() { session.setInteraction(true); }
   function action(run: () => unknown) {
     if (switching()) return;
-    try { install(run()); } catch (error) { notice.set(String(error)); }
+    try {
+      const result = run();
+      if (result && typeof (result as Promise<unknown>).then === "function") {
+        void (result as Promise<unknown>).then(install).catch((error) => { if (alive) notice.set(String(error)); });
+      } else install(result);
+    } catch (error) { notice.set(String(error)); }
   }
-
+  function select(id: string) { hovered.set(null); allTabs.set(false); action(() => session.selectPanel(id)); focusActive(); thaw(); }
   function edit(next: DockAreaLayout) {
     if (!size || switching()) return;
+    dragging.set(false);
     try { install(session.applyDock(next, size)); }
-    catch (error) {
-      notice.set(String(error));
-      install(session.dock(size));
-    }
+    catch (error) { notice.set(String(error)); install(session.dock(size)); }
+    thaw();
   }
-
   function measure(next: Extent) {
     if (next.width <= 0 || next.height <= 0) return;
     if (size?.width === next.width && size?.height === next.height) return;
@@ -232,106 +299,306 @@ export function Workspace(props: WorkspaceProps) {
     measured.set(next);
     action(() => first ? session.dock(next) : session.setExtent(next));
   }
-
+  function close(id = selected()) {
+    hovered.set(null);
+    if (!id || switching()) return;
+    const pane = snapshot().panes.find((pane) => pane.tabs.some((tab) => tab.id === id));
+    if (pane?.locked) { notice.set("Unlock the pane to close its tabs"); return; }
+    const tab = findPanel(snapshot(), id);
+    if (!tab) return;
+    allTabs.set(false);
+    commands.stripOpen.set(false);
+    const choice = closeChoice(snapshot(), tab);
+    if (choice === "ask") { closing.set(tab); freeze(); }
+    else action(() => session.closePanel(id, choice === "exit"));
+  }
+  function closePane(id = snapshot().activePane) {
+    allTabs.set(false);
+    if (snapshot().panes.find((pane) => pane.id === id)?.locked) { notice.set("Unlock the pane to close it"); return; }
+    action(() => session.closePane(id));
+  }
+  function popup(items: MenuItem[]) {
+    hovered.set(null);
+    menuOpen.set(true);
+    freeze();
+    void Menu.popup(items).finally(() => { menuOpen.set(false); thaw(); });
+  }
+  function view(panel: string) {
+    if (panel === "dashboard") {
+      void host.call("window.open", { kind: "global", view: "dashboard", start: false }).catch((error) => notice.set(String(error)));
+    } else action(() => session.openPanel(panel));
+  }
+  function paneWidth(id: number) {
+    const nodeWidth = (node: DockNode, available: number): number | undefined => {
+      if (node.type === "tabs") return node.id === id ? available : undefined;
+      const fixed = (node.sizes ?? []).reduce((sum: number, value) => sum + (value ?? 0), 0);
+      const flexible = (node.sizes ?? []).filter((value) => value === null).length;
+      for (let i = 0; i < node.children.length; i++) {
+        const w = node.axis === "horizontal" ? (node.sizes?.[i] ?? Math.max(0, available - fixed - M.divider * Math.max(0, node.children.length - 1)) / Math.max(1, flexible)) : available;
+        const found = nodeWidth(node.children[i], w);
+        if (found !== undefined) return found;
+      }
+    };
+    return dock() ? nodeWidth(dock()!.center, size?.width ?? width()) ?? width() : width();
+  }
+  function headerWidth(id: number) {
+    const pane = paneWidth(id);
+    const inset = id === snapshot().panes[0]?.id ? Math.min(M.trafficLightInset, Math.max(0, pane - M.menuButton)) : 0;
+    return (pane - inset) / (header() / M.header);
+  }
+  function controlsWidth(id: number) {
+    const pane = snapshot().panes.find((pane) => pane.id === id);
+    const width = headerWidth(id);
+    const button = M.nativeButton + M.buttonGap;
+    return M.menuButton + (width >= M.lockAt ? button : 0) + (width >= M.focusAt ? button : 0)
+      + (pane?.main && width >= mainMarkerThreshold(snapshot().theme, snapshot().panelTabIcons) ? button : 0);
+  }
   function paneMenu(id: number) {
     const pane = snapshot().panes.find((pane) => pane.id === id);
     if (!pane) return;
-    overlay.set(true);
-    void Menu.popup([
-      { label: pane.locked ? "Unlock pane" : "Lock pane", onSelect: () => action(() => session.toggleLock(id)) },
-      { label: "Main pane", checked: pane.main, onSelect: () => action(() => session.toggleMain(id)) },
-      { label: "Settings", onSelect: () => action(() => session.openPanel("settings")) },
-    ]).finally(() => overlay.set(false));
+    action(() => session.selectPane(id));
+    const disabled = (label: string, shortcut?: string): MenuItem => ({ label, disabled: true, shortcut });
+    const rows: MenuItem[] = [disabled("Existing sessions", "mod+alt+s"), disabled("Existing Claude chats"), disabled("Existing Muse chats"), { type: "separator" }, disabled("New tab"),
+      { label: "Shell", shortcut: "mod+t", onSelect: () => { void createShell(); } },
+      ...[["Codex", "mod+shift+c"], ["Claude", "mod+shift+l"], ["Grok", "mod+shift+g"], ["Muse", "mod+shift+u"], ["Global orchestrator", "mod+shift+o"], ["Project orchestrator", "mod+alt+o"], ["New chat…"], ["App preview…"]].map(([label, shortcut]) => disabled(label, shortcut)),
+      { type: "separator" }, disabled("Views"),
+      ...VIEWS.map((panel): MenuItem => ({ label: panelTitle(panel), shortcut: VIEW_SHORTCUTS[panel], onSelect: () => view(panel) })),
+      { type: "separator" }, disabled("Pane"),
+      { label: "Split right", shortcut: "mod+d", onSelect: () => { void createShell("right"); } },
+      { label: "Split down", shortcut: "mod+shift+d", onSelect: () => { void createShell("down"); } },
+    ];
+    if (!pane.locked) rows.push({ label: "Close pane", shortcut: "mod+shift+w", onSelect: () => closePane(id) });
+    rows.push({ label: "Main pane", checked: pane.main, onSelect: () => action(() => session.toggleMain(id)) });
+    if (snapshot().panes.some((p) => p.main)) rows.push({ label: "Gather tabs into main pane", shortcut: "mod+shift+m", onSelect: () => action(() => session.gather()) });
+    if (headerWidth(id) < M.lockAt) rows.push({ label: pane.locked ? "Unlock pane" : "Lock pane", onSelect: () => action(() => session.toggleLock(id)) });
+    if (headerWidth(id) < M.focusAt) rows.push({ label: "Focus tab", shortcut: "mod+shift+f", onSelect: () => action(() => session.toggleFocus()) });
+    popup(rows);
   }
+  function tabMenu(id: string) {
+    const tab = findPanel(snapshot(), id);
+    if (!tab || tab.kind === "panel" || tab.shared === false || !(snapshot().sharedTabs ?? []).some((entry) => entry.id === id)) {
+      const pane = snapshot().panes.find((pane) => pane.tabs.some((entry) => entry.id === id));
+      if (pane) paneMenu(pane.id);
+      return;
+    }
+    const tabs = (snapshot().sharedTabs ?? []).filter((entry) => entry.kind !== "panel" && entry.shared !== false && entry.parent === tab.parent);
+    const index = tabs.findIndex((tab) => tab.id === id);
+    popup([
+      { label: "Rename…", onSelect: () => { renameTitle.set(tab.title); renaming.set(tab); freeze(); } },
+      { type: "separator" },
+      { label: "Move left", disabled: index <= 0, onSelect: () => action(() => session.moveTab(id, -1)) },
+      { label: "Move right", disabled: index < 0 || index === tabs.length - 1, onSelect: () => action(() => session.moveTab(id, 1)) },
+      { type: "separator" }, { label: "Close", onSelect: () => close(id) },
+      { type: "separator" }, { label: "Cancel", onSelect: focusActive },
+    ]);
+  }
+  function saveRename() {
+    const tab = renaming();
+    if (!tab) return;
+    const title = renameTitle();
+    renaming.set(null);
+    action(() => session.renameTab(tab.id, title));
+    thaw();
+  }
+
+  const commands = workspaceCommands(session, snapshot, action, {
+    blocked: () => modal() || !!panelState.editor() || switching(),
+    newShell: (split) => { allTabs.set(false); void createShell(split); },
+    closeTab: () => close(),
+    closePane: () => closePane(),
+    toggleFocus: () => { allTabs.set(false); action(() => session.toggleFocus()); thaw(); },
+    toggleCentered: () => { action(() => session.toggleCentered()); thaw(); },
+    tabContextMenu: () => { if (selected()) tabMenu(selected()!); },
+    view: (panel) => { allTabs.set(false); view(panel); },
+    selectNumbered: (n) => {
+      const pane = activePane(snapshot());
+      const tab = shared() ? (n === 9 ? sessions()[sessions().length - 1] : sessions()[n - 1]) : pane && numberedTab(pane, n, false);
+      if (tab) select(tab.id);
+    },
+    cycle: (direction) => {
+      const pane = activePane(snapshot());
+      const tab = pane && cycledTab(pane, pane.activeTab, direction, modal());
+      if (tab) select(tab.id);
+    },
+    escape: () => {
+      if (closing()) closing.set(null);
+      if (renaming()) renaming.set(null);
+      if (allTabs()) allTabs.set(false);
+      thaw();
+    },
+    projectId: () => projectId() || undefined,
+  });
 
   cleanup(host.on("route", (data) => {
     const step = (data as { step?: { kind?: string; type?: string; shellId?: string; panel?: string } }).step;
     if ((step?.kind ?? step?.type) === "showShell" && step?.shellId) void openShell(step.shellId);
     else if ((step?.kind ?? step?.type) === "panel" && step?.panel) action(() => session.openPanel(step.panel!));
   }));
-
-  const commands = workspaceCommands(session, snapshot, action, {
-    blocked: () => !!panelState.editor() || switching(),
-    closeShell,
-    newShell: () => { void createShell(); },
-    projectId: () => projectId() || undefined,
-  });
-  function shownDock(): DockAreaLayout {
-    const full = dock()!;
-    if (!commands.focusMode()) return full;
-    function pane(node: DockNode): DockNode | undefined {
-      return node.type === "tabs" ? node.id === snapshot().activePane ? node : undefined : node.children.map(pane).find(Boolean);
-    }
-    return { center: pane(full.center) ?? full.center };
-  }
+  cleanup(host.on("project.open", (data) => {
+    void switchTo((data as { projectId: string }).projectId).catch((error: unknown) => notice.set(String(error)));
+  }));
+  const subscription = session.subscribe((next) => { if (!frozen()) install(next); });
+  cleanup(() => subscription.close());
   cleanup(keymap.bind("mod+f", () => {
     if (panelState.editor()) return;
     const id = activePane(snapshot())?.activeTab;
     if (id) panelState.searches.get(id)?.focus();
   }));
-  // The Dock label waits for stored project names and follows project switches.
-  const updateDock = createDockUpdater((info) => host.post("window.setDockInfo", info));
-  effect(() => updateDock(panelState.loaded(), panelState.state().projects.find((project) => project.id === projectId())?.name ?? props.projectLabel));
+  cleanup(keymap.bind("shift+f10", () => { if (!modal() && selected()) tabMenu(selected()!); }));
+  effect(() => {
+    if (!allTabs()) return;
+    for (const [key, direction] of [["down", 1], ["up", -1]] as const) cleanup(keymap.bind(key, () => {
+      if (sessions().length) allIndex.set((allIndex() + direction + sessions().length) % sessions().length);
+    }));
+    cleanup(keymap.bind("enter", () => { const tab = sessions()[allIndex()]; if (tab) select(tab.id); }));
+  });
+
+  function paneControls(id: number) {
+    const pane = () => snapshot().panes.find((pane) => pane.id === id);
+    const icon = (on = false) => ({ fontFamily: theme().family, fontSize: 11 * theme().scale, color: on ? theme().palette.cyan : theme().palette.muted });
+    return <View style={{ flexDirection: "row", alignItems: "center", gap: M.buttonGap }}>
+      {pane()?.main && headerWidth(id) >= mainMarkerThreshold(snapshot().theme, snapshot().panelTabIcons) && <View testID={`pane-main-${id}`} accessibilityLabel="Unset main pane" onPress={() => action(() => session.toggleMain(id))} style={{ width: M.nativeButton }}><Text style={icon(true)}>★</Text></View>}
+      {headerWidth(id) >= M.lockAt && <View testID={`pane-lock-${id}`} accessibilityLabel={pane()?.locked ? "Unlock pane" : "Lock pane"} onPress={() => action(() => session.toggleLock(id))} style={{ width: M.nativeButton, height: M.nativeButton, borderRadius: M.buttonRadius, justifyContent: "center" }}><Text style={icon(!!pane()?.locked)}>{pane()?.locked ? "◆" : "◇"}</Text></View>}
+      {headerWidth(id) >= M.focusAt && <View testID={`pane-focus-${id}`} accessibilityLabel="Focus tab" onPress={() => { action(() => session.selectPane(id)); commands.dispatch("toggleFocusMode"); }} style={{ width: M.nativeButton, height: M.nativeButton, justifyContent: "center" }}><Text style={icon()}>↗</Text></View>}
+      <View testID={`pane-menu-${id}`} accessibilityLabel="Pane menu" onPress={() => paneMenu(id)} style={{ width: M.menuButton, height: header(), justifyContent: "center", alignItems: "center" }}><Text style={icon()}>…</Text></View>
+    </View>;
+  }
+  function tabCell(tab: PanelModel, active: boolean, strip: boolean) {
+    const pane = snapshot().panes.find((pane) => pane.tabs.some((panel) => panel.id === tab.id));
+    const shownTitle = displayTitle(tab);
+    return <View ref={(node) => tabRefs.set(`${strip ? "strip" : "pane"}:${tab.id}`, node)} testID={`tab-${tab.id}`} role={strip ? "tab" : undefined} accessibilityLabel={`${tab.title}${tab.kind !== "panel" && tab.status ? `, ${tab.status}` : ""}`}
+      accessibilityState={{ selected: active }} focusable={true}
+      onPress={() => select(tab.id)} onContextMenu={() => tabMenu(tab.id)} onHoverIn={() => hovered.set(tab.id)} onHoverOut={() => hovered.set(null)}
+      onPressDown={(event) => { if (strip && event) pressOrigin = event.pagePosition; }}
+      onTouchStart={(event) => { if (strip) pressOrigin = { x: event.pageX, y: event.pageY }; }}
+      pan={strip ? { x: dragX, y: dragY } : undefined}
+      onPanStart={strip ? () => { hovered.set(null); dragging.set(true); allTabs.set(false); freeze(); dragOrigin.set(pressOrigin); dragTab.set(tab); } : undefined}
+      onPanEnd={strip ? (event) => { void stripDrop(tab.id, event.translationX, event.translationY, event.cancelled); } : undefined}
+      style={{ height: header(), width: strip ? (tab.kind === "panel" ? M.panelCell : sessionCellWidth(tab.title)) : undefined, minWidth: 0, paddingLeft: space(8, theme().scale), paddingRight: 4, flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: active ? theme().palette.panelActive : theme().palette.panel }}>
+      {tab.kind !== "panel" && <StatusDot status={tab.status} />}
+      <Text numberOfLines={1} style={{ fontFamily: theme().family, fontSize: (strip ? M.tabFont : 11) * theme().scale, flexShrink: 1, color: theme().palette.text }}>{strip && tab.kind === "panel" ? shownTitle.slice(0, 1) : shownTitle}</Text>
+      {!pane?.locked && (active || hovered() === tab.id) && <View testID={`tab-close-${tab.id}`} tooltip="Close tab · ⌘W" accessibilityLabel={`Close ${tab.title}`} onPress={() => close(tab.id)} style={{ width: M.tabClose, alignItems: "center" }}><Text style={mutedStyle()}>×</Text></View>}
+      {pane?.locked && !strip && <Text style={{ ...textStyle(9), color: theme().palette.cyan }}>◆</Text>}
+    </View>;
+  }
+  async function stripDrop(id: string, dx: number, dy: number, cancelled: boolean) {
+    const point = { x: pressOrigin.x + dx, y: pressOrigin.y + dy };
+    dragTab.set(null); dragX.set(0); dragY.set(0);
+    if (!cancelled && point.x >= 0 && point.x <= width() && point.y >= 0) {
+      if (point.y < header()) {
+        let x = 48 + (chrome.fullscreen() ? 0 : CONTROL_INSET) - scrollOffset;
+        const target = ordered().find((tab) => { x += tab.kind === "panel" ? M.panelCell : sessionCellWidth(tab.title); return point.x < x; });
+        const group = snapshot().panes.find((pane) => pane.tabs.some((tab) => tab.id === (target?.id ?? id)));
+        if (group && target?.id !== id) {
+          const index = target ? group.tabs.findIndex((tab) => tab.id === target.id) : group.tabs.length;
+          // movePanel removes the source before insertion. The target's original
+          // index therefore means before it moving left and after it moving right.
+          dockRef?.movePanel(id, { group: group.id, index });
+        }
+      } else {
+        // Ask actual mounted pane surfaces for their frames; no cross-window or
+        // cross-project payload is accepted. Edge zones match DockArea (35%).
+        for (const pane of snapshot().panes) {
+          const node = bodyRefs.get(pane.activeTab ?? `empty:${pane.id}`);
+          const measured = await node?.measure();
+          if (!measured) continue;
+          const { pagePosition: origin, bounds: { size: extent } } = measured;
+          const x = point.x - origin.x, y = point.y - origin.y;
+          if (x < 0 || y < 0 || x > extent.width || y > extent.height) continue;
+          const side = x < extent.width * .35 ? "left" : x > extent.width * .65 ? "right" : y < extent.height * .35 ? "top" : y > extent.height * .65 ? "bottom" : undefined;
+          dockRef?.movePanel(id, { group: pane.id, side });
+          break;
+        }
+      }
+    }
+    dragging.set(false);
+    thaw();
+  }
+  // The persistent notice is an overlay that hears Escape before the window
+  // keymap; a dialog, rename or tab menu opened over it takes Escape first.
+  function escapeTopmost() {
+    if (commands.stripOpen()) commands.stripOpen.set(false);
+    else if (closing() || renaming() || allTabs()) { closing.set(null); renaming.set(null); allTabs.set(false); thaw(); }
+    else dismissNotice();
+  }
+  const terminalFrozen = () => frozen() || statusMenu() || commands.stripOpen() || panelState.editor() !== null || switching();
+  const paneOf = (id: string) => snapshot().panes.find((pane) => pane.tabs.some((tab) => tab.id === id) || id === `empty:${pane.id}`);
 
   return (
-    <View testID="workspace" ref={(node) => { root = node; }} focusable={true} style={{ flex: 1, backgroundColor: theme().palette.bg }}>
-      <View testID="dock-container" style={{ flex: 1, minHeight: 0 }} onLayout={(bounds) => measure(bounds.size)}>
-        {dockReady() && (
-          <DockArea
-            testID="workspace-dock"
-            style={{ flex: 1 }}
-            layout={shownDock()}
-            compact={false}
-            panels={panelIds(dock()!.center).map((id) => ({ id, closable: false, zoomable: false, visible: true }))}
-            onLayoutChange={(next) => { if (!commands.focusMode()) edit(next); }}
-            tabBarStyle={{ height: space(28, theme().scale), flexDirection: "row", paddingRight: 30, backgroundColor: theme().palette.panel }}
+    <View testID="workspace" ref={(node) => { root = node; }} focusable={true} onLayout={(bounds) => width.set(bounds.size.width)} style={{ flex: 1, backgroundColor: theme().palette.bg }}>
+      {shared() && !snapshot().focusMode && <View testID="shared-strip" desktop={{ windowDrag: true }} style={{ height: header(), flexDirection: "row", paddingLeft: chrome.fullscreen() ? 0 : CONTROL_INSET, backgroundColor: theme().palette.panel }} onLayout={(bounds) => { stripWidth.set(bounds.size.width); reveal(); }}>
+        <Scroll ref={(node) => { stripRef = node; }} horizontal={true} role="tablist" accessibilityLabel="Tabs" style={{ flex: 1 }} contentStyle={{ flexDirection: "row", alignItems: "center" }}>
+          <Text style={{ ...mutedStyle(9), width: 48 }}>{label("Panels")}</Text>
+          {ordered().map((tab) => tabCell(tab, selected() === tab.id, true))}
+        </Scroll>
+        {allTabsAvailable() && <Popover open={allTabs()} onOpenChange={(open) => { allTabs.set(open); if (open) { hovered.set(null); allIndex.set(Math.max(0, sessions().findIndex((tab) => tab.id === selected()))); freeze(); } else thaw(); }} placement="bottom" align="end"
+          popupStyle={{ width: M.allTabsWidth, maxHeight: M.allTabsMaxHeight, backgroundColor: theme().palette.panelActive, padding: 4 }}
+          trigger={<View testID="strip-all-tabs" accessibilityLabel="All tabs" style={{ width: 28, justifyContent: "center", alignItems: "center" }}><Text style={mutedStyle()}>⌄</Text></View>}>
+          <Scroll style={{ maxHeight: M.allTabsMaxHeight }}>
+            {sessions().map((tab, index) => <View role="menuitem" accessibilityLabel={tab.title} onPress={() => select(tab.id)} style={{ height: 28, paddingHorizontal: 8, gap: 8, flexDirection: "row", alignItems: "center", backgroundColor: allIndex() === index ? theme().palette.divider : theme().palette.panelActive }}>
+              <StatusDot status={tab.status} /><Text style={{ ...textStyle(), flex: 1 }}>{displayTitle(tab)}</Text><Text style={{ ...textStyle(), color: theme().palette.cyan }}>{selected() === tab.id ? "✓" : ""}</Text>
+            </View>)}
+          </Scroll>
+        </Popover>}
+      </View>}
+      <View testID="dock-container" onLayout={(bounds) => containerHeight.set(bounds.size.height)} style={{ flex: 1, minHeight: 0, alignItems: "center", paddingBottom: snapshot().focusMode && snapshot().focusCentered ? containerHeight() * M.focusBottomMargin : 0 }}>
+        <View style={{ flex: 1, width: "100%", maxWidth: snapshot().focusMode && snapshot().focusCentered ? M.focusMaxWidth : undefined }} onLayout={(bounds) => measure(bounds.size)}>
+          {dockReady() && <DockArea ref={(node) => { dockRef = node; }} testID="workspace-dock" style={{ flex: 1 }} layout={dock()!} compact={false} dividerSize={M.divider}
+            panels={panelIds(dock()!.center).map((id) => ({ id, closable: false, zoomable: false, visible: !snapshot().focusMode || !!snapshot().panes.find((pane) => pane.id === snapshot().activePane && (pane.tabs.some((tab) => tab.id === id) || id === `empty:${pane.id}`)) }))}
+            onLayoutChange={edit}
+            tabBarStyle={{ height: shared() && !snapshot().focusMode ? 0 : header(), flexDirection: "row", backgroundColor: theme().palette.panel, overflow: "hidden" }}
             tabStyle={{ padding: 0, minWidth: 0 }}
             contentStyle={{ flex: 1, backgroundColor: theme().palette.bg }}
             handleStyle={{ backgroundColor: theme().palette.divider }}
             handleAccessibilityLabel="Pane divider"
-            renderTab={(tab) => tab.panel.startsWith("empty:") ? null : (
-              <View testID={`tab:${tab.panel}`} ref={(node) => props.onViewRef?.(`tab:${tab.panel}`, node)} onLayout={(bounds) => measureTab(tab.group, tab.panel, bounds.size.width)} onPress={() => action(() => session.selectPanel(tab.panel))} onContextMenu={() => paneMenu(tab.group)} style={{ height: space(28, theme().scale), paddingHorizontal: space(10, theme().scale), marginLeft: tab.index === 0 && !chrome.fullscreen() && topPaneFrames(shownDock().center, measured()).some((pane) => pane.id === tab.group && pane.x === 0) ? CONTROL_INSET : 0, flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: tab.active ? theme().palette.panelActive : theme().palette.panel }}>
-                <Text style={textStyle()}>{tab.panel.startsWith("panel:") ? label(findPanel(snapshot(), tab.panel)?.title ?? tab.panel) : title(tab.panel)}</Text>
-                {tab.panel.startsWith("shell:") && <View testID={`close:${tab.panel}`} accessibilityLabel="Close shell tab" onPress={() => closeShell(tab.panel.slice(6))}><Text style={{ ...textStyle(12), color: theme().palette.muted }}>×</Text></View>}
-                {snapshot().panes.find((pane) => pane.id === tab.group)?.locked && <Text style={{ ...textStyle(9), color: theme().palette.cyan }}>◆</Text>}
-              </View>
-            )}
-            renderPanel={(panel) => (
-              <View ref={(node) => props.onViewRef?.(`panel:${panel.id}`, node)} style={{ flex: 1, minHeight: 0 }}>
-                {panel.id.startsWith("panel:") && ["projects", "worktrees", "tasks", "shells"].includes(panel.id.slice(6)) ?
-                  <View testID={`panel:${panel.id}`} onPress={() => action(() => session.selectPanel(panel.id))} style={{ flex: 1, minHeight: 0 }}>
-                    <PanelContent controller={panelState} panel={panel.id.slice(6)} surface={panel.id} />
-                  </View> : panel.id.startsWith("shell:") ?
-                  <View testID={`panel:${panel.id}`} onPress={() => action(() => session.selectPanel(panel.id))} style={{ flex: 1, minHeight: 0 }}>
-                    <LocalTerminal shellId={panel.id.slice(6)} visible={isVisible(panel.id)}
-                      pinned={membershipProject(panel.id.slice(6)) ? !panelState.shells().find((shell) => shell.id === panel.id.slice(6))?.alive : false}
-                      focusOnAttach={pendingFocus() === panel.id.slice(6)} colors={terminalColors()} frozen={overlay() || statusMenu() || commands.closeDialog() !== null || commands.stripOpen() || panelState.editor() !== null || switching()}
-                      onMount={() => props.onTerminalMount?.(panel.id.slice(6))}
-                      onAttached={() => { if (pendingFocus() === panel.id.slice(6)) pendingFocus.set(null); }}
-                      onFocus={() => action(() => session.selectPanel(panel.id))} onLink={openLink} onNotice={(message) => notice.set(message)} />
-                  </View> :
-                  <DeferredPanel id={panel.id}
-                    title={findPanel(snapshot(), panel.id)?.title ?? panel.id}
-                    theme={theme} settings={props.settings} diagnostics={props.diagnostics} onError={(error) => notice.set(String(error))}
-                    visible={snapshot().panes.some((pane) => pane.activeTab === panel.id)}
-                    onPress={() => action(() => panel.id.startsWith("empty:") ? session.selectPane(Number(panel.id.slice(6))) : session.selectPanel(panel.id))} />}
-              </View>
-            )}
-          />
-        )}
-        <WindowChrome state={chrome} panes={chromePanes()} />
+            renderTabBarSuffix={(id) => paneControls(id)}
+            renderDragPreview={(tab) => <View style={{ paddingHorizontal: 12, paddingVertical: 7, borderWidth: 1, borderColor: theme().palette.cyan, backgroundColor: theme().palette.panel }}><Text style={textStyle()}>{findPanel(snapshot(), tab.panel) ? displayTitle(findPanel(snapshot(), tab.panel)!) : tab.panel}</Text></View>}
+            renderTab={(tab) => <View testID={`tab:${tab.panel}`} ref={(node) => props.onViewRef?.(`tab:${tab.panel}`, node)}
+              onLayout={(bounds) => measureTab(tab.group, tab.panel, bounds.size.width)}
+              onPressDown={() => { hovered.set(null); dragging.set(true); freeze(); }} onPressUp={() => { dragging.set(false); thaw(); }}
+              onPress={() => tab.panel.startsWith("empty:") ? action(() => session.selectPane(tab.group)) : select(tab.panel)} onContextMenu={() => tabMenu(tab.panel)}
+              style={{ flexDirection: "row", alignItems: "center", marginLeft: tab.index === 0 && !chrome.fullscreen() && topPaneFrames(dock()!.center, measured()).some((pane) => pane.id === tab.group && pane.x === 0) ? CONTROL_INSET : 0 }}>
+              {!tab.panel.startsWith("empty:") && tabCell(findPanel(snapshot(), tab.panel) ?? { id: tab.panel, title: tab.panel, kind: "empty" }, tab.active, false)}
+            </View>}
+            renderPanel={(panel) => <View ref={(node) => { bodyRefs.set(panel.id, node); props.onViewRef?.(`panel:${panel.id}`, node); }} focusable={true} testID={`pane-${paneOf(panel.id)?.id}`} style={{ flex: 1, minHeight: 0 }}
+              onPress={() => { action(() => panel.id.startsWith("empty:") ? session.selectPane(Number(panel.id.slice(6))) : session.selectPanel(panel.id)); focusActive(); }}>
+              {shared() && !snapshot().focusMode && <View style={{ height: header(), flexDirection: "row", justifyContent: "flex-end", backgroundColor: theme().palette.panel }}>{paneControls(paneOf(panel.id)?.id ?? snapshot().activePane)}</View>}
+              {panel.id.startsWith("panel:") && NAVIGATION_PANELS.includes(panel.id.slice(6)) ?
+                <View testID={`panel:${panel.id}`} style={{ flex: 1, minHeight: 0 }}>
+                  <PanelContent controller={panelState} panel={panel.id.slice(6)} surface={panel.id} />
+                </View> : panel.id.startsWith("shell:") ?
+                <View testID={`panel:${panel.id}`} style={{ flex: 1, minHeight: 0 }}>
+                  {props.diagnostics && <MountProbe id={panel.id} visible={isVisible(panel.id)} theme={theme} />}
+                  <LocalTerminal shellId={panel.id.slice(6)} visible={isVisible(panel.id)}
+                    pinned={membershipProject(panel.id.slice(6)) ? !panelState.shells().find((shell) => shell.id === panel.id.slice(6))?.alive : false}
+                    focusOnAttach={pendingFocus() === panel.id.slice(6)} colors={terminalColors()} frozen={terminalFrozen()}
+                    onMount={() => props.onTerminalMount?.(panel.id.slice(6))}
+                    onAttached={() => { if (pendingFocus() === panel.id.slice(6)) pendingFocus.set(null); }}
+                    onFocus={() => action(() => session.selectPanel(panel.id))} onLink={openLink} onNotice={(message) => notice.set(message)} />
+                </View> :
+                <DeferredPanel id={panel.id}
+                  title={findPanel(snapshot(), panel.id) ? displayTitle(findPanel(snapshot(), panel.id)!) : panel.id}
+                  theme={theme} settings={props.settings} diagnostics={props.diagnostics} onError={(error) => notice.set(String(error))}
+                  visible={isVisible(panel.id)}
+                  onPress={() => { action(() => panel.id.startsWith("empty:") ? session.selectPane(Number(panel.id.slice(6))) : session.selectPanel(panel.id)); focusActive(); }} />}
+            </View>} />}
+        </View>
       </View>
+      <WindowChrome state={chrome} panes={chromePanes()} />
       <View testID="panel-toolbar" style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: space(8, theme().scale), paddingVertical: space(4, theme().scale), gap: 6, backgroundColor: theme().palette.panel }}>
         {(["projects", "worktrees", "tasks", "shells"] as const).map((id) => <Button testID={`show-panel:${id}`} accessibilityLabel={`Show ${id === "shells" ? "Sessions" : id}`} disabled={switching()} onPress={() => action(() => session.openPanel(id))} style={{ paddingHorizontal: space(8, theme().scale), paddingVertical: space(4, theme().scale), borderRadius: 4 }} hoverStyle={{ backgroundColor: theme().palette.panelActive }} focusStyle={{ backgroundColor: theme().palette.divider }}>
           <Text style={textStyle()}>{label(id === "shells" ? "Sessions" : id.charAt(0).toUpperCase() + id.slice(1))}</Text>
         </Button>)}
         <View style={{ flex: 1 }} />
+        {snapshot().focusMode && <View testID="focus-restore" role="button" accessibilityLabel="Restore layout" onPress={() => commands.dispatch("toggleFocusMode")}><Text style={{ ...textStyle(), color: theme().palette.cyan }}>↙ RESTORE  ⌘⇧F</Text></View>}
         <View testID="all-tabs" role="button" accessibilityLabel="All tabs" onPress={commands.toggleStrip}><Text style={textStyle()}>{label("All tabs")}</Text></View>
       </View>
       <StatusBar session={session} snapshot={snapshot} projectId={projectId} projectLabel={panelState.projectLabel}
-        settings={props.settings} theme={theme} action={action} onError={(error) => notice.set(String(error))} modalOpen={() => !!props.modalOpen?.() || !!panelState.editor() || switching()}
-        newShell={props.projectId ? { busy, create: () => { void createShell(); } } : undefined} onMenu={(open) => statusMenu.set(open)} />
-      {notice() !== "" && <Overlay testID="workspace-notice" onCancel={dismissNotice} margin={8}
+        settings={props.settings} theme={theme} action={action} onError={(error) => notice.set(String(error))} modalOpen={() => !!props.modalOpen?.() || modal() || !!panelState.editor() || switching()}
+        newShell={props.projectId ? { busy, create: () => { void createShell(); } } : undefined} onMenu={(open) => statusMenu.set(open)}
+        focus={{ mode: () => !!snapshot().focusMode, centered: () => !!snapshot().focusCentered,
+          toggle: () => commands.dispatch("toggleFocusMode"), toggleCentered: () => commands.dispatch("focusCentered") }} />
+      {notice() !== "" && <Overlay testID="workspace-notice" onCancel={escapeTopmost} margin={8}
         style={{ top: 31, right: 8, width: 520, maxWidth: "100%", padding: 8, backgroundColor: theme().palette.panel, borderColor: theme().palette.gold, borderWidth: 1, flexDirection: "row", gap: 10 }}>
         <Text testID="workspace-notice-message" accessible={true} role="alert" accessibilityLabel={notice()} style={{ ...textStyle(), flex: 1, color: theme().palette.gold }}>{notice()}</Text>
         <View testID="dismiss-notice" accessibilityLabel="Dismiss" role="button" onPress={dismissNotice}><Text style={{ ...textStyle(), color: theme().palette.gold }}>×</Text></View>
@@ -339,20 +606,16 @@ export function Workspace(props: WorkspaceProps) {
       {commands.stripOpen() && <Overlay onCancel={() => commands.stripOpen.set(false)} onPressOutside={() => commands.stripOpen.set(false)}
         style={{ right: 8, bottom: 24, padding: 8, backgroundColor: theme().palette.panelActive }}>
         <View testID="all-tabs-menu" role="menu" accessibilityLabel="All tabs">
-          {commands.stripItems().map((tab, index) => <View testID={`all-tabs:${tab.id}`} role="menuitem" accessibilityLabel={tab.title} accessibilityState={{ selected: commands.stripIndex() === index }} onPress={() => commands.activateStrip(index)} style={{ padding: 8, backgroundColor: commands.stripIndex() === index ? theme().palette.divider : "transparent" }}><Text style={textStyle()}>{tab.title}</Text></View>)}
+          {commands.stripItems().map((tab, index) => <View testID={`all-tabs:${tab.id}`} role="menuitem" accessibilityLabel={tab.title} accessibilityState={{ selected: commands.stripIndex() === index }} onPress={() => commands.activateStrip(index)} style={{ padding: 8, backgroundColor: commands.stripIndex() === index ? theme().palette.divider : "transparent" }}><Text style={textStyle()}>{displayTitle(tab)}</Text></View>)}
         </View>
       </Overlay>}
-      {commands.closeDialog() !== null && <Overlay testID="close-dialog-backdrop" onCancel={() => commands.closeDialog.set(null)}
-        style={{ top: 0, right: 0, bottom: 0, left: 0, padding: 16, backgroundColor: "#00000099", alignItems: "center", justifyContent: "center" }}>
-        <View testID="close-dialog" accessibilityLabel="Close this tab?" style={{ padding: 16, gap: 12, backgroundColor: theme().palette.panelActive }}>
-          <Text style={textStyle()}>Close this tab?</Text>
-          {commands.closeDialog()!.startsWith("shell:") ? <>
-            <View testID="close-detach" role="button" accessibilityLabel="Detach tab — keep session running" onPress={() => chooseClose("detach")}><Text style={textStyle()}>Detach tab — keep session running</Text></View>
-            <View testID="close-exit" role="button" accessibilityLabel="Exit session" onPress={() => chooseClose("exit")}><Text style={textStyle()}>Exit session</Text></View>
-          </> : <View testID="confirm-close" role="button" onPress={commands.confirmClose}><Text style={textStyle()}>Close tab</Text></View>}
-          <View testID="cancel-close" role="button" onPress={() => commands.closeDialog.set(null)}><Text style={textStyle()}>Cancel</Text></View>
-        </View>
-      </Overlay>}
+      {closing() && <CloseDialog title={displayTitle(closing()!)} theme={theme} onChoice={(choice) => { const tab = closing()!; closing.set(null); if (choice) action(() => session.closePanel(tab.id, choice === "exit")); thaw(); }} />}
+      {tabHint() && !frozen() && <Overlay pointerEvents="none" anchor={tabRefs.get(`${shared() && !snapshot().focusMode ? "strip" : "pane"}:${tabHint()!.id}`)} placement="bottom" align="start" offset={4} style={{ paddingHorizontal: 8, paddingVertical: 5, backgroundColor: theme().palette.panelActive, borderRadius: 4 }}><Text style={textStyle()}>{tabHint()!.text}</Text></Overlay>}
+      {dragTab() && <Overlay pointerEvents="none" style={{ position: "absolute", left: dragOrigin().x, top: dragOrigin().y, transform: [{ translateX: dragX }, { translateY: dragY }], paddingHorizontal: 12, paddingVertical: 7, borderWidth: 1, borderColor: theme().palette.cyan, backgroundColor: theme().palette.panel }}><Text style={textStyle()}>{displayTitle(dragTab()!)}</Text></Overlay>}
+      <Popover open={!!renaming()} onOpenChange={(open) => { if (!open) { renaming.set(null); thaw(); } }} onOpen={() => renameInput?.focus()} popupStyle={{ width: 260, padding: 12, gap: 8, backgroundColor: theme().palette.panelActive }} trigger={<View style={{ position: "absolute", top: 56, left: 120, width: 1, height: 1 }} />}>
+        <Input ref={(node) => { renameInput = node; }} testID="tab-rename-input" placeholder="Tab title" value={renameTitle()} onChange={(value) => renameTitle.set(value)} onSubmit={saveRename} />
+        <View role="button" accessibilityLabel="Save title" onPress={saveRename}><Text style={textStyle()}>Save title</Text></View>
+      </Popover>
       <PanelEditors controller={panelState} />
     </View>
   );

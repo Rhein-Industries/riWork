@@ -374,22 +374,7 @@ impl Host {
         let mut params = prepared.params(&id, window_count(&self.windows));
         params["appearance"] = json!(appearance_name(appearance));
         channel.set_params(params.as_object().unwrap().clone());
-        for name in [
-            "window.open",
-            "window.route",
-            "window.placement",
-            "window.list",
-            "window.focus",
-            "window.close",
-            "window.setDockInfo",
-            "app.restart",
-            "app.quit",
-            "app.restoreReady",
-            "app.setAppearance",
-            "system.openWith",
-            "system.revealInFinder",
-            "system.fonts",
-        ] {
+        for &name in host_names::OPERATIONS {
             let id = id.clone();
             channel.handle(name, move |call| send(Main::Call(id.clone(), name, call)));
         }
@@ -2393,6 +2378,35 @@ mod window_state {
                 next[key] = value;
                 assert!(changed_state(&baseline, &next), "{key}");
                 assert!(!changed_state(&next, &next));
+            }
+        }
+    }
+}
+
+/// The actual registration list deliberately excludes cross-window tab transfer.
+mod host_names {
+    pub(super) const OPERATIONS: &[&str] = &[
+        "window.open",
+        "window.route",
+        "window.placement",
+        "window.list",
+        "window.focus",
+        "window.close",
+        "window.setDockInfo",
+        "app.restart",
+        "app.quit",
+        "app.restoreReady",
+        "app.setAppearance",
+        "system.openWith",
+        "system.revealInFinder",
+        "system.fonts",
+    ];
+    #[cfg(test)]
+    mod tests {
+        #[test]
+        fn tab_transfer_is_refused() {
+            for reserved in ["tab.transfer", "tab.receive"] {
+                assert!(!super::OPERATIONS.contains(&reserved));
             }
         }
     }

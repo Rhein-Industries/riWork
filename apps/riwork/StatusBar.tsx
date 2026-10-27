@@ -23,6 +23,8 @@ interface Props {
   newShell?: { busy: () => boolean; create: () => void };
   /** Anchored menus draw over native terminals, which freeze while one is open. */
   onMenu?: (open: boolean) => void;
+  /** Workspace focus presentation rows for the layout menu. */
+  focus?: { mode: () => boolean; centered: () => boolean; toggle: () => void; toggleCentered: () => void };
 }
 
 export function StatusBar(props: Props) {
@@ -133,6 +135,8 @@ export function StatusBar(props: Props) {
         {row("layout-menu-default", "Default layout", "⌘⌥L", () => { menu.set(null); props.action(() => props.session.defaultLayout()); })}
         {row("layout-menu-gather", "Gather into main pane", "⌘⇧M", props.snapshot().panes.some((pane) => pane.main) ? () => { menu.set(null); props.action(() => props.session.gather()); } : undefined,
           props.snapshot().panes.some((pane) => pane.main) ? undefined : "Choose a main pane from its pane menu first")}
+        {props.focus && row("layout-menu-focus", "Focus tab", `⌘⇧F${props.focus.mode() ? " ✓" : ""}`, () => { menu.set(null); props.focus!.toggle(); })}
+        {props.focus && row("layout-menu-centered", "Center focused tab", props.focus.centered() ? "✓" : "", () => { menu.set(null); props.focus!.toggleCentered(); })}
         {row("layout-menu-summary", `Main pane: ${mainPaneSummary(props.snapshot())}`, "")}
       </> : <>
         {row("global-menu-title", "Global", "")}

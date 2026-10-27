@@ -6,10 +6,15 @@ publish = false
 
 [features]
 default = []
-test-support = ["riwork-engine/test-support"]
+test-support = ["riwork-engine/test-support", "riwork-nsh-workspace/test-support"]
 
 [[example]]
 name = "p1_fixture_home"
+required-features = ["test-support"]
+
+# W1's p1-layouts/p1-basic/p1-restore homes with workspace fake sessions.
+[[example]]
+name = "p1_workspace_fixture_home"
 required-features = ["test-support"]
 
 [dependencies]

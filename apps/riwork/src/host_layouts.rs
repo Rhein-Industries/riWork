@@ -4,9 +4,9 @@
 //! Publishing an edit never takes the registry mutex or waits on a file lock.
 use crate::persistence::{LayoutBackend, LoadedLayout};
 use arc_swap::ArcSwap;
-use riwork_core::layouts::{ProjectLayout, WindowSize};
+use riwork_core::layouts::{PaneId, ProjectLayout, WindowSize};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     sync::{
         Arc, Mutex, OnceLock, Weak,
         atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering},
@@ -162,6 +162,14 @@ impl HostLayout {
         })
     }
 
+    /// Store the presentation flags from inside an already admitted edit.
+    pub fn publish_focus(&self, focused: bool, centered: bool) {
+        self.focus.store(
+            u8::from(focused) | (u8::from(centered) << 1),
+            Ordering::Release,
+        );
+    }
+
     pub fn focus_state(&self) -> (bool, bool) {
         let flags = self.focus.load(Ordering::Acquire);
         (flags & 1 != 0, flags & 2 != 0)
@@ -192,16 +200,28 @@ impl HostLayout {
         &self,
         operation: impl FnOnce() -> Result<(T, Option<ProjectLayout>), String>,
     ) -> Result<T, String> {
+        self.edit_with_remap(|| {
+            operation()
+                .map(|(value, project)| (value, project.map(|project| (project, BTreeMap::new()))))
+        })
+    }
+
+    /// Atomically publish a layout edit together with opaque-tab relocations.
+    pub fn edit_with_remap<T>(
+        &self,
+        operation: impl FnOnce()
+            -> Result<(T, Option<(ProjectLayout, BTreeMap<PaneId, PaneId>)>), String>,
+    ) -> Result<T, String> {
         let _admission = self.admit(false)?;
         let (result, project) = operation()?;
-        if let Some(project) = project {
+        if let Some((project, remap)) = project {
             self.publish(project);
             self.current
                 .as_ref()
                 .expect("live host layout")
                 .load()
                 .persistence
-                .schedule(self.snapshot())?;
+                .schedule_with_remap(self.snapshot(), remap)?;
         }
         Ok(result)
     }

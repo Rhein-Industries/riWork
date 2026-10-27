@@ -912,6 +912,9 @@ Decisions the owner has taken since the freeze are recorded, dated, in [§8](#8-
   Dashboard function tables with payload schema 2; DTO producer/consumer and
   generated-type probes land together. Persistence and host params retain their
   existing schemas. The W3 assignment explicitly applies the D-THEME-1 proposal.
+- 2026-10-28 Phase 1 consolidation (task c12f5e14): W1 layout members are
+  documented above with the session-write divergence; W2's interim chrome
+  `Appearance.get()` is removed in favour of the W3 module.
 - 2026-10-27 Phase 1 consolidation (task c12f5e14): one `Appearance` module
   (W3 schema 2) also carries Phase 2a `terminalLight`/`terminalDark`/
   `tabCloseBehavior`; the schema 1 `Appearance.snapshot()` is removed.
@@ -1028,3 +1031,40 @@ the settled size reaches LayoutStore's unchanged-data no-write path. The service
 worker supplies the current `remember_window_size` setting, including capturing
 the current normal frame when the setting becomes enabled. Global windows
 persist their normal size independently of that setting.
+
+### Phase 1 W1 workspace members (consolidated, task `c12f5e14`)
+
+W1 (task `71ac437e`) added these `riwork/native` layout members without a
+§1.10 table; consolidation records them. All are owned by
+`riwork-nsh-workspace` and composed into the single registry.
+
+| JS | Kind | Rule |
+|---|---|---|
+| `Layouts.fixtureManifest()` | async | Debug builds only; reads `fixtures.json` from an isolated `/tmp` home. |
+| `Layouts.openSession({ windowId, projectId, restore?, focusMode?, focusCentered? })` | async | Adds runtime focus restore. Saved layouts are rewritten on open only for a reload snapshot (P1-LAY-03 unchanged bytes); first-run homes create one initial shell. |
+| `LayoutSession.newShell({ split?, cwd?, worktreeId? })` | async | Creates a local shell and places it (optionally splitting, `right`/`down`); a failed create leaves the tree unchanged. |
+| `closePanel(id, exit)`, `closePane(id)` | async | Hide shared membership first (a failure refuses), Exit only on explicit choice, then place-only removal recording detached identity and its former pane. |
+| `renameTab(id, title)`, `moveTab(id, delta)` | async | Shared-strip membership edits through the owning project's TabStore. |
+| `toggleFocus()`, `toggleCentered()`, `setFocusMode(focused, centered)` | sync | Presentation only; never rewrites the saved layout. Host restart snapshots carry the flags. |
+| `setInteraction(active)`, `subscribe(listener)`, `refreshSessions()`, `refreshTabs()` | sync/event/async | Deliveries queue while menus, drags and dialogs are open; the process watcher wakes subscriptions. |
+| `openPendingChat(id)`, `resolvePendingChat(id, chatId)` | sync | Pending chats are never saved; resolution keeps the mounted identity. |
+
+Consolidation decisions:
+
+- `defaultLayout()` uses W1's core placement, which relocates opaque future
+  tabs with the remapped saves W1 added. This supersedes W3's earlier refusal,
+  which existed only because core could not migrate opaque tabs.
+- New panels follow the GPUI routing rule (main pane, else the active pane);
+  Files joins the navigation pane (W2).
+- **Known divergence, not resolved here:** W1's `newShell`/`closePanel`/
+  `renameTab`/`moveTab` write sessions and TabStore membership through a
+  workspace-private adapter (`session_io`), duplicating the §1.10 Phase 2a rule
+  that session creation and exit go through `Sessions`. Both paths use the same
+  engine `SessionManager`/`TabStore` semantics (hide before exit, refuse on a
+  failed hide), and the TSX uses one path per action. The adapter also samples
+  sessions per layout session on watcher wakes rather than once per process.
+  Routing these writes through `Sessions`/`Tabs` is a follow-up.
+- W1's debug fixture inventory (`fake-sessions.json`) is honoured only in debug
+  or `test-support` builds and only for isolated `/tmp` homes; the process
+  `Tabs` service reads through the same adapter so the two never reconcile one
+  TabStore against different inventories.

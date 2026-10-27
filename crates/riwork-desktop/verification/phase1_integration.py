@@ -32,7 +32,7 @@ ENV_KEYS = ("HOME", "PATH", "RIWORK_HOME", "RIWORK_RUNTIME_DIR", "TMPDIR",
             "TMUX_TMPDIR", "XDG_CONFIG_HOME", "CARGO_HOME", "RUSTUP_HOME",
             "RUSTUP_TOOLCHAIN", "CARGO_TARGET_DIR", "CARGO_BUILD_JOBS",
             "CARGO_NET_OFFLINE", "NSH_CACHE", "NSH_TSC", "RIWORK_NSH_BUNDLE",
-            "RIWORK_NSH_BACKGROUND")
+            "RIWORK_NSH_BACKGROUND", "RIWORK_NSH_FAKE_SESSIONS")
 
 
 def write_json(path, value):
@@ -233,9 +233,17 @@ class Verification:
         # Short sockets are essential on macOS; the shared evidence root can be
         # longer, so allocate this fixture independently and record its location.
         root = Path(tempfile.mkdtemp(prefix="rwnshi-gui-", dir="/tmp")).resolve()
-        _, stdout, _ = self.command(self.cargo("run", "-p", "riwork-nsh-workspace", "--example", "integration_fixture")
-                                   + ["--", root], "seed-gui-fixture")
-        fixture = json.loads(stdout)
+        if self.args.workspace_fixture:
+            theme_args = ["--theme", self.args.theme] if self.args.theme else []
+            self.command(self.cargo("run", "-p", "riwork-nsh-native", "--features", "test-support", "--example", "p1_workspace_fixture_home")
+                         + ["--", "--scenario", "p1-basic", "--out", root / "home", *theme_args], "seed-gui-fixture")
+            source = json.loads((root / "home/fixtures.json").read_text())
+            fixture = {"projects": [{"id": p["projectId"], "root": p["root"], "name": p["name"]}
+                                    for p in source["fixtures"] if p["name"] in ("Alpha", "Beta")]}
+        else:
+            _, stdout, _ = self.command(self.cargo("run", "-p", "riwork-nsh-workspace", "--example", "integration_fixture")
+                                       + ["--", root], "seed-gui-fixture")
+            fixture = json.loads(stdout)
         projects = fixture["projects"]
         if len(projects) != 2:
             raise RuntimeError("integration_fixture must produce exactly two projects")
@@ -245,6 +253,11 @@ class Verification:
         env = dict(PATH="/usr/bin:/bin:/usr/sbin:/sbin", HOME=str(home), RIWORK_HOME=str(state),
                    RIWORK_RUNTIME_DIR=str(runtime), TMPDIR=str(root / "tmp"), TMUX_TMPDIR=str(tmux),
                    XDG_CONFIG_HOME=str(home / ".config"), RIWORK_NSH_BACKGROUND="1", RIWORK_NSH_BUNDLE=str(bundle))
+        if self.args.fake_sessions:
+            fake = state / "fake-sessions.json"
+            if not fake.exists():
+                write_json(fake, {"sessions": []})
+            env["RIWORK_NSH_FAKE_SESSIONS"] = str(fake)
         before = {str(p.relative_to(state)): digest(p) for p in state.rglob("*") if p.is_file()}
         self.manifest.update(fixture_root=str(root), fixture=fixture,
                              gui_environment={key: env[key] for key in ENV_KEYS if key in env},
@@ -294,6 +307,8 @@ class Verification:
         after = {str(p.relative_to(state)): digest(p) for p in state.rglob("*") if p.is_file()}
         changed = sorted(name for name, hash_value in after.items() if before.get(name) != hash_value)
         allowed = {"layouts.json", "layouts.lock", "global-window.json", "settings.json", "state.json", "run/desktop.lock"}
+        if self.args.fake_sessions:
+            allowed.add("fake-sessions.json")
         forbidden = [name for name in changed if name not in allowed
                      and not name.startswith(("layouts.corrupt-", "project-tabs/", "nsh/"))]
         self.manifest.update(written_files=changed, disallowed_written_files=forbidden)
@@ -334,7 +349,12 @@ def main():
     parser.add_argument("--bundle", type=Path)
     parser.add_argument("--jobs", type=int, default=4)
     parser.add_argument("--linger-seconds", type=int, default=120)
+    parser.add_argument("--fake-sessions", action="store_true", help="GUI uses the debug-only isolated fake session adapter")
+    parser.add_argument("--workspace-fixture", action="store_true", help="GUI uses generated p1-basic Alpha/Beta with fake sessions")
+    parser.add_argument("--theme", choices=("ghostty", "native", "ri_work", "catppuccin", "tokyo_night", "gruvbox_light", "hermes"), help="workspace GUI fixture theme")
     args = parser.parse_args()
+    if args.workspace_fixture:
+        args.fake_sessions = True
     if not 5 <= args.linger_seconds <= 600:
         parser.error("--linger-seconds must be between 5 and 600")
     run = Verification(args)
