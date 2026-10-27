@@ -1,0 +1,34 @@
+SPIKE fixture pid=18990 RIWORK_HOME=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.0znRWa
+info: ghostty version=1.3.2-dev
+info: ghostty build optimize=ReleaseFast
+info: runtime=.none
+info: font_backend=.coretext
+info: renderer=renderer.generic.Renderer(renderer.Metal)
+info: libxev default backend=kqueue
+info(os_locale): setlocale from env result=C.UTF-8
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.0znRWa/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+warning(font_shared_grid_set): font-family regular not found: monospace
+warning(font_shared_grid_set): font-family bold not found: monospace
+warning(font_shared_grid_set): font-family italic not found: monospace
+warning(font_shared_grid_set): font-family bold_italic not found: monospace
+warning(io_exec): ghostty terminfo not found, using xterm-256color
+warning(io_exec): the terminfo SHOULD exist on macos, please ensure
+warning(io_exec): you're using a valid app bundle.
+info(io_exec): shell integration disabled by configuration
+SPIKE riwork.terminal created view=0xa7a6b9e00
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+info(generic_renderer): created display link
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(io_exec): started subcommand path=/usr/bin/login pid=19499
+SPIKE native prop config=Some(String("/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.0znRWa/ghostty-dark.conf"))
+info: reading configuration file path=/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.0znRWa/ghostty-dark.conf
+info(config): default shell source=env value=/bin/zsh
+info(generic_renderer): updating display link display id=2
+info(io_exec): pty fd closed, read thread exiting
+warning(surface): abnormal process exit detected, showing error message
+SPIKE NativeComponent drop
+info(surface): surface closed id=9fd861608217b140
+SPIKE host stopped

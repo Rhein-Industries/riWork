@@ -1,0 +1,264 @@
+{
+  "kind": "action ledger reconstructed from tool calls in this session, not a raw driver export",
+  "provider": "mcp__cua_driver",
+  "session": "ghostty-nsh-spike",
+  "pid": 26521,
+  "window_id": 6051,
+  "delivery_mode": "background",
+  "input_dispatch": "run_steps except set_window_frame direct",
+  "screenshots": "coordinates use current1100px-wide screenshot; before resize1100x783, after1100x778",
+  "actions": [
+    {
+      "tool": "click",
+      "args": {
+        "pid": 26521,
+        "window_id": 6051,
+        "x": 400,
+        "y": 350
+      },
+      "observed_postcondition": "terminal focus; SGR press/release"
+    },
+    {
+      "tool": "type_text",
+      "args": {
+        "pid": 26521,
+        "window_id": 6051,
+        "text": "NSH-keyboard-123"
+      },
+      "observed_postcondition": "exact marker in recorder bytes"
+    },
+    {
+      "tool": "press_key",
+      "args": {
+        "pid": 26521,
+        "window_id": 6051,
+        "key": "Return"
+      },
+      "observed_postcondition": "0d"
+    },
+    {
+      "tool": "press_key",
+      "args": {
+        "pid": 26521,
+        "window_id": 6051,
+        "key": "ArrowLeft"
+      },
+      "observed_postcondition": "1b5b44"
+    },
+    {
+      "tool": "press_key",
+      "args": {
+        "pid": 26521,
+        "window_id": 6051,
+        "key": "c",
+        "modifiers": [
+          "ctrl"
+        ]
+      },
+      "observed_postcondition": "03"
+    },
+    {
+      "tool": "click",
+      "args": {
+        "pid": 26521,
+        "window_id": 6051,
+        "x": 45,
+        "y": 94
+      },
+      "observed_postcondition": "Theme -> light; same native surface"
+    },
+    {
+      "tool": "click",
+      "args": {
+        "pid": 26521,
+        "window_id": 6051,
+        "x": 116,
+        "y": 94
+      },
+      "observed_postcondition": "Detach -> no terminal view; client remains"
+    },
+    {
+      "tool": "click",
+      "args": {
+        "pid": 26521,
+        "window_id": 6051,
+        "x": 196,
+        "y": 94
+      },
+      "observed_postcondition": "Reattach -> same terminal/surface/client"
+    },
+    {
+      "tool": "type_text",
+      "args": {
+        "pid": 26521,
+        "window_id": 6051,
+        "text": "REATTACHED"
+      },
+      "observed_postcondition": "exact marker after reattach"
+    },
+    {
+      "tool": "click",
+      "args": {
+        "pid": 26521,
+        "window_id": 6051,
+        "x": 285,
+        "y": 94
+      },
+      "observed_postcondition": "synthetic IME callback -> 日本語 bytes"
+    },
+    {
+      "tool": "click",
+      "args": {
+        "pid": 26521,
+        "window_id": 6051,
+        "x": 600,
+        "y": 300
+      },
+      "observed_postcondition": "terminal focus; SGR mouse"
+    },
+    {
+      "tool": "press_key",
+      "args": {
+        "pid": 26521,
+        "window_id": 6051,
+        "key": "e",
+        "modifiers": [
+          "option"
+        ]
+      },
+      "observed_postcondition": "€; not dead-key proof"
+    },
+    {
+      "tool": "press_key",
+      "args": {
+        "pid": 26521,
+        "window_id": 6051,
+        "key": "e"
+      },
+      "observed_postcondition": "e"
+    },
+    {
+      "tool": "press_key",
+      "args": {
+        "pid": 26521,
+        "window_id": 6051,
+        "key": "="
+      },
+      "observed_postcondition": "marked-text length1; current layout dead circumflex"
+    },
+    {
+      "tool": "press_key",
+      "args": {
+        "pid": 26521,
+        "window_id": 6051,
+        "key": "a"
+      },
+      "observed_postcondition": "â c3a2 once"
+    },
+    {
+      "tool": "drag",
+      "args": {
+        "pid": 26521,
+        "window_id": 6051,
+        "from_x": 550,
+        "from_y": 320,
+        "to_x": 720,
+        "to_y": 350,
+        "steps": 5,
+        "duration_ms": 250
+      },
+      "observed_postcondition": "five SGR drag events"
+    },
+    {
+      "tool": "scroll",
+      "args": {
+        "pid": 26521,
+        "window_id": 6051,
+        "x": 600,
+        "y": 350,
+        "direction": "up",
+        "amount": 2
+      },
+      "observed_postcondition": "SGR wheel events"
+    },
+    {
+      "tool": "set_window_frame",
+      "args": {
+        "pid": 26521,
+        "window_id": 6051,
+        "x": 100,
+        "y": 420,
+        "width": 820,
+        "height": 580
+      },
+      "observed_postcondition": "window confirmed; terminal88x24"
+    },
+    {
+      "tool": "click",
+      "args": {
+        "pid": 26521,
+        "window_id": 6051,
+        "x": 457,
+        "y": 112
+      },
+      "observed_postcondition": "forced content scale1 ->800x441 pixels"
+    },
+    {
+      "tool": "click",
+      "args": {
+        "pid": 26521,
+        "window_id": 6051,
+        "x": 559,
+        "y": 112
+      },
+      "observed_postcondition": "forced content scale2 ->1600x882 pixels"
+    },
+    {
+      "tool": "click",
+      "args": {
+        "pid": 26521,
+        "window_id": 6051,
+        "x": 53,
+        "y": 112
+      },
+      "observed_postcondition": "Theme -> dark"
+    },
+    {
+      "tool": "click",
+      "args": {
+        "pid": 26521,
+        "window_id": 6051,
+        "x": 500,
+        "y": 350
+      },
+      "observed_postcondition": "terminal focus; SGR mouse"
+    },
+    {
+      "tool": "press_key",
+      "args": {
+        "pid": 26521,
+        "window_id": 6051,
+        "key": "="
+      },
+      "observed_postcondition": "visible preedit screenshot; marked-text length1"
+    },
+    {
+      "tool": "press_key",
+      "args": {
+        "pid": 26521,
+        "window_id": 6051,
+        "key": "a"
+      },
+      "observed_postcondition": "second â c3a2 once"
+    },
+    {
+      "tool": "click",
+      "args": {
+        "pid": 26521,
+        "window_id": 6051,
+        "element_token": "s0000005a:1"
+      },
+      "observed_postcondition": "window close -> main thread blocked in ghostty_surface_free"
+    }
+  ]
+}

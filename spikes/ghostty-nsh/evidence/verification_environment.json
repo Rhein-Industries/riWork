@@ -1,0 +1,32 @@
+{
+  "kind": "isolated fixture app only",
+  "RIWORK_HOME": "/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.0znRWa",
+  "tmux_socket": "/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.0znRWa/tmux.sock",
+  "tmux_session": "ghostty-spike",
+  "initial_session_identity": "$0 1793131469 %0 14167",
+  "default_tmux_socket_used": false,
+  "live_riwork_windows_used": false,
+  "task_id": "db4930af-e7a8-455c-8fe7-2de612ae102c",
+  "fixture_binary": "/Users/dominik/orca/projects/riWork-nsh-spike-ghostty/spikes/ghostty-nsh/target/debug/riwork-ghostty-nsh-spike",
+  "fixture_pids": {
+    "failed_command": 18990,
+    "verified": 26521
+  },
+  "fixture_window_ids": [
+    6043,
+    6051
+  ],
+  "macos": "26.2",
+  "arch": "arm64",
+  "desktop_provider": "RiWork cua-driver MCP only; exact fixture PID on every input",
+  "physical_displays": [
+    {
+      "display_id": 2,
+      "backing_scale": 2,
+      "frame": "3360x1418 logical points"
+    }
+  ],
+  "gui_driver_delivery_mode": "background",
+  "physical_scale_transition": "unverified; single 2x display",
+  "default_ghostty_config_loaded": false
+}

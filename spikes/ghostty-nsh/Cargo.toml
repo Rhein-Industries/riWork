@@ -1,0 +1,22 @@
+[package]
+name = "riwork-ghostty-nsh-spike"
+version = "0.0.0"
+edition = "2024"
+publish = false
+build = "build.rs"
+
+# Deliberately separate from the production RiWork workspace.
+[workspace]
+
+[dependencies]
+nsh-core = "=0.3.0"
+nsh-platform-macos = { version = "=0.3.0", default-features = false }
+serde_json = "1"
+env_logger = "0.11"
+
+[build-dependencies]
+cc = "1"
+
+[profile.dev]
+debug = 0
+incremental = false

@@ -1,0 +1,88 @@
+{"seq": 1, "utc": "2026-10-27T20:04:30.465762+00:00", "monotonic_ns": 283241670209333, "kind": "start", "recorder_pid": 14167, "tty": "/dev/ttys018", "tmux": "/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.0znRWa/tmux.sock,14162,0", "pane": "%0"}
+{"seq": 2, "utc": "2026-10-27T20:04:30.466300+00:00", "monotonic_ns": 283241670352041, "kind": "resize", "recorder_pid": 14167, "columns": 96, "rows": 26}
+{"seq": 3, "utc": "2026-10-27T20:05:50.908296+00:00", "monotonic_ns": 283322111946250, "kind": "input", "recorder_pid": 14167, "hex": "1b5b49", "utf8": "\u001b[I", "byte_count": 3}
+{"seq": 4, "utc": "2026-10-27T20:05:50.908927+00:00", "monotonic_ns": 283322112569875, "kind": "resize", "recorder_pid": 14167, "columns": 108, "rows": 32}
+{"seq": 5, "utc": "2026-10-27T20:06:01.980220+00:00", "monotonic_ns": 283333183812666, "kind": "input", "recorder_pid": 14167, "hex": "1b5b3c303b34303b31324d", "utf8": "\u001b[<0;40;12M", "byte_count": 11}
+{"seq": 6, "utc": "2026-10-27T20:06:01.980321+00:00", "monotonic_ns": 283333183903000, "kind": "mouse", "recorder_pid": 14167, "button": 0, "column": 40, "row": 12, "state": "press-or-drag"}
+{"seq": 7, "utc": "2026-10-27T20:06:01.981469+00:00", "monotonic_ns": 283333185064541, "kind": "input", "recorder_pid": 14167, "hex": "1b5b3c303b34303b31326d", "utf8": "\u001b[<0;40;12m", "byte_count": 11}
+{"seq": 8, "utc": "2026-10-27T20:06:01.981559+00:00", "monotonic_ns": 283333185141250, "kind": "mouse", "recorder_pid": 14167, "button": 0, "column": 40, "row": 12, "state": "release"}
+{"seq": 9, "utc": "2026-10-27T20:06:02.422063+00:00", "monotonic_ns": 283333625656500, "kind": "input", "recorder_pid": 14167, "hex": "4e", "utf8": "N", "byte_count": 1}
+{"seq": 10, "utc": "2026-10-27T20:06:02.470279+00:00", "monotonic_ns": 283333673872833, "kind": "input", "recorder_pid": 14167, "hex": "53", "utf8": "S", "byte_count": 1}
+{"seq": 11, "utc": "2026-10-27T20:06:02.511318+00:00", "monotonic_ns": 283333714908125, "kind": "input", "recorder_pid": 14167, "hex": "48", "utf8": "H", "byte_count": 1}
+{"seq": 12, "utc": "2026-10-27T20:06:02.561617+00:00", "monotonic_ns": 283333765212375, "kind": "input", "recorder_pid": 14167, "hex": "2d", "utf8": "-", "byte_count": 1}
+{"seq": 13, "utc": "2026-10-27T20:06:02.601517+00:00", "monotonic_ns": 283333805108791, "kind": "input", "recorder_pid": 14167, "hex": "6b", "utf8": "k", "byte_count": 1}
+{"seq": 14, "utc": "2026-10-27T20:06:02.641563+00:00", "monotonic_ns": 283333845155958, "kind": "input", "recorder_pid": 14167, "hex": "65", "utf8": "e", "byte_count": 1}
+{"seq": 15, "utc": "2026-10-27T20:06:02.689675+00:00", "monotonic_ns": 283333893268083, "kind": "input", "recorder_pid": 14167, "hex": "79", "utf8": "y", "byte_count": 1}
+{"seq": 16, "utc": "2026-10-27T20:06:02.734610+00:00", "monotonic_ns": 283333938200791, "kind": "input", "recorder_pid": 14167, "hex": "62", "utf8": "b", "byte_count": 1}
+{"seq": 17, "utc": "2026-10-27T20:06:02.781539+00:00", "monotonic_ns": 283333985130375, "kind": "input", "recorder_pid": 14167, "hex": "6f", "utf8": "o", "byte_count": 1}
+{"seq": 18, "utc": "2026-10-27T20:06:02.821540+00:00", "monotonic_ns": 283334025129958, "kind": "input", "recorder_pid": 14167, "hex": "61", "utf8": "a", "byte_count": 1}
+{"seq": 19, "utc": "2026-10-27T20:06:02.862678+00:00", "monotonic_ns": 283334066275000, "kind": "input", "recorder_pid": 14167, "hex": "72", "utf8": "r", "byte_count": 1}
+{"seq": 20, "utc": "2026-10-27T20:06:02.901542+00:00", "monotonic_ns": 283334105131250, "kind": "input", "recorder_pid": 14167, "hex": "64", "utf8": "d", "byte_count": 1}
+{"seq": 21, "utc": "2026-10-27T20:06:02.948828+00:00", "monotonic_ns": 283334152415041, "kind": "input", "recorder_pid": 14167, "hex": "2d", "utf8": "-", "byte_count": 1}
+{"seq": 22, "utc": "2026-10-27T20:06:02.989559+00:00", "monotonic_ns": 283334193149708, "kind": "input", "recorder_pid": 14167, "hex": "31", "utf8": "1", "byte_count": 1}
+{"seq": 23, "utc": "2026-10-27T20:06:03.031846+00:00", "monotonic_ns": 283334235435958, "kind": "input", "recorder_pid": 14167, "hex": "32", "utf8": "2", "byte_count": 1}
+{"seq": 24, "utc": "2026-10-27T20:06:03.081544+00:00", "monotonic_ns": 283334285134125, "kind": "input", "recorder_pid": 14167, "hex": "33", "utf8": "3", "byte_count": 1}
+{"seq": 25, "utc": "2026-10-27T20:06:03.585259+00:00", "monotonic_ns": 283334788844500, "kind": "input", "recorder_pid": 14167, "hex": "0d", "utf8": "\r", "byte_count": 1}
+{"seq": 26, "utc": "2026-10-27T20:06:04.051771+00:00", "monotonic_ns": 283335255356208, "kind": "input", "recorder_pid": 14167, "hex": "1b5b44", "utf8": "\u001b[D", "byte_count": 3}
+{"seq": 27, "utc": "2026-10-27T20:06:04.552418+00:00", "monotonic_ns": 283335755998916, "kind": "input", "recorder_pid": 14167, "hex": "03", "utf8": "\u0003", "byte_count": 1}
+{"seq": 28, "utc": "2026-10-27T20:06:28.644234+00:00", "monotonic_ns": 283359847691333, "kind": "input", "recorder_pid": 14167, "hex": "52", "utf8": "R", "byte_count": 1}
+{"seq": 29, "utc": "2026-10-27T20:06:28.690263+00:00", "monotonic_ns": 283359893720708, "kind": "input", "recorder_pid": 14167, "hex": "45", "utf8": "E", "byte_count": 1}
+{"seq": 30, "utc": "2026-10-27T20:06:28.746182+00:00", "monotonic_ns": 283359949639541, "kind": "input", "recorder_pid": 14167, "hex": "41", "utf8": "A", "byte_count": 1}
+{"seq": 31, "utc": "2026-10-27T20:06:28.781938+00:00", "monotonic_ns": 283359985392208, "kind": "input", "recorder_pid": 14167, "hex": "54", "utf8": "T", "byte_count": 1}
+{"seq": 32, "utc": "2026-10-27T20:06:28.823836+00:00", "monotonic_ns": 283360027290708, "kind": "input", "recorder_pid": 14167, "hex": "54", "utf8": "T", "byte_count": 1}
+{"seq": 33, "utc": "2026-10-27T20:06:28.861756+00:00", "monotonic_ns": 283360065211958, "kind": "input", "recorder_pid": 14167, "hex": "41", "utf8": "A", "byte_count": 1}
+{"seq": 34, "utc": "2026-10-27T20:06:28.901794+00:00", "monotonic_ns": 283360105338125, "kind": "input", "recorder_pid": 14167, "hex": "43", "utf8": "C", "byte_count": 1}
+{"seq": 35, "utc": "2026-10-27T20:06:28.948760+00:00", "monotonic_ns": 283360152217333, "kind": "input", "recorder_pid": 14167, "hex": "48", "utf8": "H", "byte_count": 1}
+{"seq": 36, "utc": "2026-10-27T20:06:28.993074+00:00", "monotonic_ns": 283360196532708, "kind": "input", "recorder_pid": 14167, "hex": "45", "utf8": "E", "byte_count": 1}
+{"seq": 37, "utc": "2026-10-27T20:06:29.041705+00:00", "monotonic_ns": 283360245158250, "kind": "input", "recorder_pid": 14167, "hex": "44", "utf8": "D", "byte_count": 1}
+{"seq": 38, "utc": "2026-10-27T20:06:37.782431+00:00", "monotonic_ns": 283368985840708, "kind": "input", "recorder_pid": 14167, "hex": "e697a5e69cace8aa9e", "utf8": "\u65e5\u672c\u8a9e", "byte_count": 9}
+{"seq": 39, "utc": "2026-10-27T20:06:39.151987+00:00", "monotonic_ns": 283370355389166, "kind": "input", "recorder_pid": 14167, "hex": "1b5b3c303b36303b31304d", "utf8": "\u001b[<0;60;10M", "byte_count": 11}
+{"seq": 40, "utc": "2026-10-27T20:06:39.152078+00:00", "monotonic_ns": 283370355470333, "kind": "mouse", "recorder_pid": 14167, "button": 0, "column": 60, "row": 10, "state": "press-or-drag"}
+{"seq": 41, "utc": "2026-10-27T20:06:39.154201+00:00", "monotonic_ns": 283370357602125, "kind": "input", "recorder_pid": 14167, "hex": "1b5b3c303b36303b31306d", "utf8": "\u001b[<0;60;10m", "byte_count": 11}
+{"seq": 42, "utc": "2026-10-27T20:06:39.154294+00:00", "monotonic_ns": 283370357686750, "kind": "mouse", "recorder_pid": 14167, "button": 0, "column": 60, "row": 10, "state": "release"}
+{"seq": 43, "utc": "2026-10-27T20:06:39.599740+00:00", "monotonic_ns": 283370803138416, "kind": "input", "recorder_pid": 14167, "hex": "e282ac", "utf8": "\u20ac", "byte_count": 3}
+{"seq": 44, "utc": "2026-10-27T20:06:40.061794+00:00", "monotonic_ns": 283371265193333, "kind": "input", "recorder_pid": 14167, "hex": "65", "utf8": "e", "byte_count": 1}
+{"seq": 45, "utc": "2026-10-27T20:06:51.221880+00:00", "monotonic_ns": 283382425221166, "kind": "input", "recorder_pid": 14167, "hex": "c3a2", "utf8": "\u00e2", "byte_count": 2}
+{"seq": 46, "utc": "2026-10-27T20:07:00.398365+00:00", "monotonic_ns": 283391601697333, "kind": "input", "recorder_pid": 14167, "hex": "1b5b3c303b35353b31314d", "utf8": "\u001b[<0;55;11M", "byte_count": 11}
+{"seq": 47, "utc": "2026-10-27T20:07:00.398530+00:00", "monotonic_ns": 283391601813791, "kind": "mouse", "recorder_pid": 14167, "button": 0, "column": 55, "row": 11, "state": "press-or-drag"}
+{"seq": 48, "utc": "2026-10-27T20:07:00.432204+00:00", "monotonic_ns": 283391635496458, "kind": "input", "recorder_pid": 14167, "hex": "1b5b3c33323b35383b31314d", "utf8": "\u001b[<32;58;11M", "byte_count": 12}
+{"seq": 49, "utc": "2026-10-27T20:07:00.432277+00:00", "monotonic_ns": 283391635559708, "kind": "mouse", "recorder_pid": 14167, "button": 32, "column": 58, "row": 11, "state": "press-or-drag"}
+{"seq": 50, "utc": "2026-10-27T20:07:00.490155+00:00", "monotonic_ns": 283391693450750, "kind": "input", "recorder_pid": 14167, "hex": "1b5b3c33323b36323b31324d", "utf8": "\u001b[<32;62;12M", "byte_count": 12}
+{"seq": 51, "utc": "2026-10-27T20:07:00.490273+00:00", "monotonic_ns": 283391693555958, "kind": "mouse", "recorder_pid": 14167, "button": 32, "column": 62, "row": 12, "state": "press-or-drag"}
+{"seq": 52, "utc": "2026-10-27T20:07:00.549365+00:00", "monotonic_ns": 283391752656375, "kind": "input", "recorder_pid": 14167, "hex": "1b5b3c33323b36353b31324d", "utf8": "\u001b[<32;65;12M", "byte_count": 12}
+{"seq": 53, "utc": "2026-10-27T20:07:00.549456+00:00", "monotonic_ns": 283391752738791, "kind": "mouse", "recorder_pid": 14167, "button": 32, "column": 65, "row": 12, "state": "press-or-drag"}
+{"seq": 54, "utc": "2026-10-27T20:07:00.623518+00:00", "monotonic_ns": 283391826811333, "kind": "input", "recorder_pid": 14167, "hex": "1b5b3c33323b36383b31324d", "utf8": "\u001b[<32;68;12M", "byte_count": 12}
+{"seq": 55, "utc": "2026-10-27T20:07:00.623614+00:00", "monotonic_ns": 283391826896666, "kind": "mouse", "recorder_pid": 14167, "button": 32, "column": 68, "row": 12, "state": "press-or-drag"}
+{"seq": 56, "utc": "2026-10-27T20:07:00.676657+00:00", "monotonic_ns": 283391879967500, "kind": "input", "recorder_pid": 14167, "hex": "1b5b3c33323b37323b31324d", "utf8": "\u001b[<32;72;12M", "byte_count": 12}
+{"seq": 57, "utc": "2026-10-27T20:07:00.676789+00:00", "monotonic_ns": 283391880073291, "kind": "mouse", "recorder_pid": 14167, "button": 32, "column": 72, "row": 12, "state": "press-or-drag"}
+{"seq": 58, "utc": "2026-10-27T20:07:00.732202+00:00", "monotonic_ns": 283391935496500, "kind": "input", "recorder_pid": 14167, "hex": "1b5b3c303b37323b31326d", "utf8": "\u001b[<0;72;12m", "byte_count": 11}
+{"seq": 59, "utc": "2026-10-27T20:07:00.732365+00:00", "monotonic_ns": 283391935656625, "kind": "mouse", "recorder_pid": 14167, "button": 0, "column": 72, "row": 12, "state": "release"}
+{"seq": 60, "utc": "2026-10-27T20:07:03.061924+00:00", "monotonic_ns": 283394265202833, "kind": "input", "recorder_pid": 14167, "hex": "1b5b3c36343b36303b31324d", "utf8": "\u001b[<64;60;12M", "byte_count": 12}
+{"seq": 61, "utc": "2026-10-27T20:07:03.062008+00:00", "monotonic_ns": 283394265278250, "kind": "mouse", "recorder_pid": 14167, "button": 64, "column": 60, "row": 12, "state": "press-or-drag"}
+{"seq": 62, "utc": "2026-10-27T20:07:03.062252+00:00", "monotonic_ns": 283394265524708, "kind": "input", "recorder_pid": 14167, "hex": "1b5b3c36343b36303b31324d", "utf8": "\u001b[<64;60;12M", "byte_count": 12}
+{"seq": 63, "utc": "2026-10-27T20:07:03.062299+00:00", "monotonic_ns": 283394265568666, "kind": "mouse", "recorder_pid": 14167, "button": 64, "column": 60, "row": 12, "state": "press-or-drag"}
+{"seq": 64, "utc": "2026-10-27T20:07:03.062713+00:00", "monotonic_ns": 283394265991958, "kind": "input", "recorder_pid": 14167, "hex": "1b5b3c36343b36303b31324d", "utf8": "\u001b[<64;60;12M", "byte_count": 12}
+{"seq": 65, "utc": "2026-10-27T20:07:03.062797+00:00", "monotonic_ns": 283394266067458, "kind": "mouse", "recorder_pid": 14167, "button": 64, "column": 60, "row": 12, "state": "press-or-drag"}
+{"seq": 66, "utc": "2026-10-27T20:07:03.062831+00:00", "monotonic_ns": 283394266100666, "kind": "input", "recorder_pid": 14167, "hex": "1b5b3c36343b36303b31324d1b5b3c36343b36303b31324d1b5b3c36343b36303b31324d", "utf8": "\u001b[<64;60;12M\u001b[<64;60;12M\u001b[<64;60;12M", "byte_count": 36}
+{"seq": 67, "utc": "2026-10-27T20:07:03.062877+00:00", "monotonic_ns": 283394266146375, "kind": "mouse", "recorder_pid": 14167, "button": 64, "column": 60, "row": 12, "state": "press-or-drag"}
+{"seq": 68, "utc": "2026-10-27T20:07:03.062895+00:00", "monotonic_ns": 283394266164375, "kind": "mouse", "recorder_pid": 14167, "button": 64, "column": 60, "row": 12, "state": "press-or-drag"}
+{"seq": 69, "utc": "2026-10-27T20:07:03.062910+00:00", "monotonic_ns": 283394266179458, "kind": "mouse", "recorder_pid": 14167, "button": 64, "column": 60, "row": 12, "state": "press-or-drag"}
+{"seq": 70, "utc": "2026-10-27T20:07:03.101786+00:00", "monotonic_ns": 283394305068833, "kind": "input", "recorder_pid": 14167, "hex": "1b5b3c36343b36303b31324d", "utf8": "\u001b[<64;60;12M", "byte_count": 12}
+{"seq": 71, "utc": "2026-10-27T20:07:03.101900+00:00", "monotonic_ns": 283394305169958, "kind": "mouse", "recorder_pid": 14167, "button": 64, "column": 60, "row": 12, "state": "press-or-drag"}
+{"seq": 72, "utc": "2026-10-27T20:07:03.101937+00:00", "monotonic_ns": 283394305205833, "kind": "input", "recorder_pid": 14167, "hex": "1b5b3c36343b36303b31324d1b5b3c36343b36303b31324d1b5b3c36343b36303b31324d1b5b3c36343b36303b31324d1b5b3c36343b36303b31324d", "utf8": "\u001b[<64;60;12M\u001b[<64;60;12M\u001b[<64;60;12M\u001b[<64;60;12M\u001b[<64;60;12M", "byte_count": 60}
+{"seq": 73, "utc": "2026-10-27T20:07:03.101967+00:00", "monotonic_ns": 283394305236666, "kind": "mouse", "recorder_pid": 14167, "button": 64, "column": 60, "row": 12, "state": "press-or-drag"}
+{"seq": 74, "utc": "2026-10-27T20:07:03.101985+00:00", "monotonic_ns": 283394305253708, "kind": "mouse", "recorder_pid": 14167, "button": 64, "column": 60, "row": 12, "state": "press-or-drag"}
+{"seq": 75, "utc": "2026-10-27T20:07:03.102001+00:00", "monotonic_ns": 283394305269583, "kind": "mouse", "recorder_pid": 14167, "button": 64, "column": 60, "row": 12, "state": "press-or-drag"}
+{"seq": 76, "utc": "2026-10-27T20:07:03.102015+00:00", "monotonic_ns": 283394305284291, "kind": "mouse", "recorder_pid": 14167, "button": 64, "column": 60, "row": 12, "state": "press-or-drag"}
+{"seq": 77, "utc": "2026-10-27T20:07:03.102030+00:00", "monotonic_ns": 283394305298708, "kind": "mouse", "recorder_pid": 14167, "button": 64, "column": 60, "row": 12, "state": "press-or-drag"}
+{"seq": 78, "utc": "2026-10-27T20:07:03.910530+00:00", "monotonic_ns": 283395113808666, "kind": "resize", "recorder_pid": 14167, "columns": 91, "rows": 26}
+{"seq": 79, "utc": "2026-10-27T20:07:04.110802+00:00", "monotonic_ns": 283395314080458, "kind": "resize", "recorder_pid": 14167, "columns": 88, "rows": 25}
+{"seq": 80, "utc": "2026-10-27T20:07:04.521358+00:00", "monotonic_ns": 283395724632041, "kind": "resize", "recorder_pid": 14167, "columns": 88, "rows": 24}
+{"seq": 81, "utc": "2026-10-27T20:07:14.184211+00:00", "monotonic_ns": 283405387433041, "kind": "resize", "recorder_pid": 14167, "columns": 88, "rows": 25}
+{"seq": 82, "utc": "2026-10-27T20:07:20.216155+00:00", "monotonic_ns": 283411419344625, "kind": "resize", "recorder_pid": 14167, "columns": 88, "rows": 24}
+{"seq": 83, "utc": "2026-10-27T20:07:35.288981+00:00", "monotonic_ns": 283426492110291, "kind": "input", "recorder_pid": 14167, "hex": "1b5b3c303b34313b394d", "utf8": "\u001b[<0;41;9M", "byte_count": 10}
+{"seq": 84, "utc": "2026-10-27T20:07:35.289136+00:00", "monotonic_ns": 283426492242291, "kind": "mouse", "recorder_pid": 14167, "button": 0, "column": 41, "row": 9, "state": "press-or-drag"}
+{"seq": 85, "utc": "2026-10-27T20:07:35.289276+00:00", "monotonic_ns": 283426492382375, "kind": "input", "recorder_pid": 14167, "hex": "1b5b3c303b34313b396d", "utf8": "\u001b[<0;41;9m", "byte_count": 10}
+{"seq": 86, "utc": "2026-10-27T20:07:35.289311+00:00", "monotonic_ns": 283426492415208, "kind": "mouse", "recorder_pid": 14167, "button": 0, "column": 41, "row": 9, "state": "release"}
+{"seq": 87, "utc": "2026-10-27T20:07:36.796740+00:00", "monotonic_ns": 283427999842916, "kind": "input", "recorder_pid": 14167, "hex": "c3a2", "utf8": "\u00e2", "byte_count": 2}
+{"seq": 88, "utc": "2026-10-27T20:08:50.225498+00:00", "monotonic_ns": 283501428236291, "kind": "input", "recorder_pid": 14167, "hex": "1b5b4f", "utf8": "\u001b[O", "byte_count": 3}

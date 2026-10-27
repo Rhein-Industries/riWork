@@ -1,0 +1,31 @@
+{
+  "utc": "2026-10-27T20:10:46.471257+00:00",
+  "checks": [
+    {
+      "command": [
+        "ps",
+        "-p",
+        "26521,26815,26816",
+        "-o",
+        "pid,command"
+      ],
+      "exit_code": 1,
+      "stdout": "  PID COMMAND\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "/opt/homebrew/bin/tmux",
+        "-S",
+        "/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.0znRWa/tmux.sock",
+        "has-session",
+        "-t",
+        "ghostty-spike"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": ""
+    }
+  ],
+  "driver_list_windows_pid26521": "Found 0 windows"
+}
