@@ -6494,6 +6494,7 @@ dependencies = [
  "riwork-core",
  "riwork-engine",
  "riwork-nsh-native",
+ "riwork-nsh-terminal",
  "riwork-nsh-workspace",
  "serde",
  "serde_json",
@@ -6555,6 +6556,22 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+]
+
+[[package]]
+name = "riwork-nsh-terminal"
+version = "0.1.0"
+dependencies = [
+ "cc",
+ "dispatch2",
+ "nsh-core",
+ "nsh-platform-macos",
+ "riwork-core",
+ "riwork-engine",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "uuid",
 ]
 
 [[package]]

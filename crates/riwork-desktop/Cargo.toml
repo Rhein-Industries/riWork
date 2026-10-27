@@ -5,6 +5,9 @@ edition = "2024"
 # Keep the legacy src/main.rs as an uncompiled parity reference.
 autobins = false
 
+[features]
+terminal-fixture = ["riwork-nsh-terminal/terminal-fixture"]
+
 [[bin]]
 name = "riwork"
 path = "src/nsh_main.rs"
@@ -33,6 +36,7 @@ libc = "0.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 riwork-nsh-native = { path = "../riwork-nsh-native" }
+riwork-nsh-terminal = { path = "../riwork-nsh-terminal" }
 riwork-nsh-workspace = { path = "../../apps/riwork" }
 tokio = { version = "1", features = ["rt-multi-thread"] }
 nsh-platform-macos = "=0.3.0"

@@ -1,4 +1,27 @@
-# Task b915a54a-3ec6-4491-89b1-428ab28f344a — Phase 2 ENTRY GATE: NO-GO
+# Task 24ab1d55-508b-473b-af92-f0aa26503792 — Phase 2a local terminals: PASS
+
+Integrated native `riwork.terminal` on every NSH AppView, using the exact pinned
+Ghostty 9f0e171 GO C archive with no GPUI/Ghostty Rust crates. Local tabs now
+attach, accept input, resize, detach/reopen the same tmux session, update themes
+and resolve links. Teardown confirms exact-tty detach and PTY-child exit before
+main-thread free; normal close/quit drains disposals and preserves sessions.
+
+`verification_environment`: isolated fixtures only. Final fixture
+`/private/tmp/rwnsh-p2-upf_p6zi`, PID `69604`, two windows observed read-only with
+RiWork Cua.ai Driver and explicit PID. **20 cycles, 84 surfaces freed, zero
+leaked clients/attach descendants, all four sessions survived quit.** Maximum
+native free 5.840 ms, total disposal 40.868 ms, teardown heartbeat gap 16.644 ms;
+zero global gaps at or above 100 ms. Broad Cargo check: 1,728 passed; final
+terminal/desktop check: 42 passed; final NSH suite: 16 passed. Counts overlap.
+
+[Full report, exact commands, environment, hashes, screenshots and limits](crates/riwork-nsh-terminal/WORKER_REPORT.md).
+Paste/drop, subshells, remote and Vim tabs remain next slice. No live state or
+windows used, no merge/push/install, and no task-status change. The orchestrator
+owns status. Earlier reports below are preserved as historical evidence.
+
+---
+
+# Historical task b915a54a-3ec6-4491-89b1-428ab28f344a — Phase 2 ENTRY GATE: NO-GO
 
 Implemented off-main-thread exact-client detach, tmux readback, and Ghostty
 PTY-child-exit confirmation before main-thread `ghostty_surface_free`.

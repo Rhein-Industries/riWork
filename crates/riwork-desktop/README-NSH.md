@@ -1,4 +1,4 @@
-# Phase 1 integration: AppKit NSH host
+# Integrated AppKit NSH host
 
 The single `riwork` executable still calls `riwork_cli::cli::run_cli` before any
 GUI initialization. CLI, MCP and `chat serve` use the unchanged CLI/engine code,
@@ -8,18 +8,23 @@ of this binary. This is the host foundation, not the completed RiWork UI port.
 
 ## Frozen seams
 
-- `docs/nsh-contracts.md` §0 and §2 are the source of truth. The host reuses the
+- `docs/nsh-contracts.md` §0, §2 and §3 are the source of truth. The host reuses the
   AppKit/AppView topology proved in `spikes/host-multiwindow`.
 - One `NSWindow`, `AppView`, UUID v4 and `HostChannel` per window. All views load
   the same source bundle, distinguished only by schema-1 `host.params`.
 - `set_ui_sets([nsh_base::registry(), riwork_nsh_native::registry()])` runs once,
-  before any AppView. The real native crate composes Store, Sessions,
-  Subscription, Layouts and LayoutSession into the sole `riwork/native` module.
+  before any AppView. The real native crate composes Store, Sessions, Tabs,
+  Appearance, Subscription, Layouts and LayoutSession into the sole
+  `riwork/native` module.
   The native process service initializes on the startup worker; its fixed home
   also supplies workspace layout persistence.
-- The shared `Components` registry is created once. P1c can register
-  `riwork.terminal` there before the first AppView. This host has no Ghostty
-  component, terminal attachment or terminal persistence yet.
+- The shared `Components` registry registers `riwork.terminal` before the first
+  AppView. Local shell tabs use the pinned Ghostty C library and existing engine
+  sessions. See [terminal integration](../riwork-nsh-terminal/README.md) and its
+  [private build preparation](../riwork-nsh-terminal/BUILD.md).
+  The app supports local New Shell, Detach, guarded Exit and explicit reopen of
+  the same session, with live terminal palettes and URL/file/folder link opening.
+  Paste/drop, subshells, remote tabs and Vim tabs remain next-slice seams.
 - The real `apps/riwork` bundle is required. Source is
   `apps/riwork/App.tsx`; `apps/riwork/nsh.json` points its Rust side at
   `crates/riwork-nsh-native`, so NSH type generation, tests and the desktop host
@@ -50,14 +55,16 @@ of this binary. This is the host foundation, not the completed RiWork UI port.
 project windows and a global singleton; per-window `route`, `project.open`,
 `global.show`, `command`, `window.state`, and `window.willClose` events. A window
 is stopped/released on native or channel close, including NSH's own Window.close.
-The last window closes the process.
+The last window closes the process after all terminal clients detach, their PTY
+children exit and the main thread frees their surfaces. AppKit keeps pumping
+wakeups through that drain; a parked terminal never blocks the main thread.
 
 The host owns RiWork/Edit/View menus and the Dock menu using the public
 `nsh/desktop` Rust model. The menu accelerators dispatch commands to the key
 window. Cmd-W emits `closeTab`, Cmd-Shift-N opens a project window, standard Edit
 selectors offer native responders first, and font keys offer native responder
-key equivalents before UI text commands. The future native terminal must supply
-its Ghostty key-equivalent handler; that path is not claimed as verified here.
+key equivalents before UI text commands. The terminal implements native key
+equivalents and standard responder editing; paste remains deferred.
 Window-local title/chrome comes through `nsh/desktop`; the host supplies full-size
 transparent content, minimum 640×400, cascade and traffic-light placement.
 
@@ -77,7 +84,7 @@ publication reads `project_layout()` from Rust, including heartbeat publications
 when the UI has not moved or resized. Close and quit stop accepting layout edits,
 retain handles, and call `flush_blocking()` on the service worker before AppView
 teardown. Failure cancels close/quit and keeps the windows available. Global
-window state uses the existing core store. Drafts are deferred in Phase 1.
+window state uses the existing core store. Drafts remain deferred.
 
 The real app passes `host.params.restore.layout` to `Layouts.openSession` and
 posts `app.restoreReady` once after installing the DockArea projection. Global
@@ -85,9 +92,12 @@ restores confirm immediately; the host verifies project handles exist before
 accepting readiness. Full restart/CLI reload handoff is still explicitly
 unavailable in this integration subset and keeps the old process alive.
 
+`system.openWith` and `system.revealInFinder` validate terminal link targets and
+open them through the system. Local session mutations, shared shell membership
+and watched terminal appearance are available through `riwork/native`.
 System panels, pasteboard, notifications, Quick Look, sharing, fonts/permissions,
-remote project resolution, forced appearance and process domain services are
-explicit future integration points. Their named host calls reject as unavailable;
+remote project resolution and forced application appearance remain future
+integration points. Their named host calls reject as unavailable;
 unknown/reserved names are not registered. The URL hook only allows the system to
 open http/https/mailto/x-apple.systempreferences schemes. Full workspace shortcuts
 and product UI behavior remain with the TSX port.
@@ -129,7 +139,11 @@ It records exact argv, fixture environment, stdout/stderr and checksums for each
 command. GUI mode prints the only PID authorized for read-only cua-driver MCP
 inspection. It stops its own process via SIGTERM after inspection; close/quit
 barriers are verified in Rust tests, not inferred from that cleanup signal.
+For the current local terminal slice, use the separate
+[Phase 2 terminal runner](../riwork-nsh-terminal/README.md#reproduce-isolated-verification),
+which exercises production tab mount/unmount and host close/quit paths under
+output pressure and records the detach/child-exit/free sequence.
 
 The root lockfile is regenerated for integration. GPUI parity source and tests
 remain uncompiled and undeleted under the acceptance §4.3 embargo. Passing this
-subset does not claim M5 or the still-deferred P-SHELL rows.
+subset does not claim M5 or completion of the remaining terminal slices.

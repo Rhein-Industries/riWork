@@ -1,0 +1,48 @@
+[
+  {
+    "path": "/Users/dominik/orca/projects/riWork-nsh-p2-terminals/target/debug/build/riwork-nsh-terminal-112ca0c15475226e/output",
+    "sha256": "9368ce2f0ebf3523b7c9fbb81bad355c68bb63da30e1e3980b3461b85c7282bf",
+    "directives": [
+      "cargo:rustc-env=RIWORK_GHOSTTY_RESOURCES_DIR=/Users/dominik/orca/projects/riWork-nsh-p2-terminals/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty",
+      "cargo:rustc-link-lib=static=riwork_nsh_terminal_native",
+      "cargo:rustc-link-search=native=/Users/dominik/orca/projects/riWork-nsh-p2-terminals/target/debug/build/riwork-nsh-terminal-112ca0c15475226e/out",
+      "cargo:rustc-link-search=native=/Users/dominik/orca/projects/riWork-nsh-p2-terminals/crates/riwork-nsh-terminal/.runtime/pinned/install/lib",
+      "cargo:rustc-link-lib=static=ghostty-internal",
+      "cargo:rustc-link-lib=c++",
+      "cargo:rustc-link-lib=objc",
+      "cargo:rustc-link-lib=framework=AppKit",
+      "cargo:rustc-link-lib=framework=Carbon",
+      "cargo:rustc-link-lib=framework=CoreFoundation",
+      "cargo:rustc-link-lib=framework=CoreGraphics",
+      "cargo:rustc-link-lib=framework=CoreText",
+      "cargo:rustc-link-lib=framework=CoreVideo",
+      "cargo:rustc-link-lib=framework=Foundation",
+      "cargo:rustc-link-lib=framework=IOSurface",
+      "cargo:rustc-link-lib=framework=Metal",
+      "cargo:rustc-link-lib=framework=QuartzCore"
+    ]
+  },
+  {
+    "path": "/Users/dominik/orca/projects/riWork-nsh-p2-terminals/target/debug/build/riwork-nsh-terminal-e860f6ff3a15b6ee/output",
+    "sha256": "520746a11017afeae556fd3b3c5f43c76fcf49ee76ce03a62882f4c15a494d5d",
+    "directives": [
+      "cargo:rustc-env=RIWORK_GHOSTTY_RESOURCES_DIR=/Users/dominik/orca/projects/riWork-nsh-p2-terminals/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty",
+      "cargo:rustc-link-lib=static=riwork_nsh_terminal_native",
+      "cargo:rustc-link-search=native=/Users/dominik/orca/projects/riWork-nsh-p2-terminals/target/debug/build/riwork-nsh-terminal-e860f6ff3a15b6ee/out",
+      "cargo:rustc-link-search=native=/Users/dominik/orca/projects/riWork-nsh-p2-terminals/crates/riwork-nsh-terminal/.runtime/pinned/install/lib",
+      "cargo:rustc-link-lib=static=ghostty-internal",
+      "cargo:rustc-link-lib=c++",
+      "cargo:rustc-link-lib=objc",
+      "cargo:rustc-link-lib=framework=AppKit",
+      "cargo:rustc-link-lib=framework=Carbon",
+      "cargo:rustc-link-lib=framework=CoreFoundation",
+      "cargo:rustc-link-lib=framework=CoreGraphics",
+      "cargo:rustc-link-lib=framework=CoreText",
+      "cargo:rustc-link-lib=framework=CoreVideo",
+      "cargo:rustc-link-lib=framework=Foundation",
+      "cargo:rustc-link-lib=framework=IOSurface",
+      "cargo:rustc-link-lib=framework=Metal",
+      "cargo:rustc-link-lib=framework=QuartzCore"
+    ]
+  }
+]

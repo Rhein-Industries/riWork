@@ -1,0 +1,92 @@
+{
+  "ok": true,
+  "terminalStates": {
+    "pending": 0,
+    "states": [
+      {
+        "active": true,
+        "alive": true,
+        "attaching": false,
+        "closing": false,
+        "id": 83,
+        "shellId": "f629641f-1aa7-4565-ab23-b5dd125a9025",
+        "target": "f629641f-1aa7-4565-ab23-b5dd125a9025",
+        "visible": true,
+        "windowNumber": 6574
+      },
+      {
+        "active": true,
+        "alive": true,
+        "attaching": false,
+        "closing": false,
+        "id": 84,
+        "shellId": "26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c",
+        "target": "26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c",
+        "visible": true,
+        "windowNumber": 6574
+      }
+    ]
+  },
+  "windows": [
+    {
+      "layout": {
+        "active_pane": 2,
+        "detached_shell_ids": [],
+        "layout": {
+          "split": {
+            "axis": "stacked",
+            "first": {
+              "pane": 1
+            },
+            "ratio": 0.5,
+            "second": {
+              "pane": 2
+            }
+          }
+        },
+        "locked_panes": [],
+        "panels_initialized": true,
+        "panes": {
+          "1": {
+            "active_shell_id": "f629641f-1aa7-4565-ab23-b5dd125a9025",
+            "active_tab_key": "shell:f629641f-1aa7-4565-ab23-b5dd125a9025",
+            "shell_ids": [
+              "f629641f-1aa7-4565-ab23-b5dd125a9025"
+            ],
+            "tab_edge": "top",
+            "tabs": [
+              {
+                "kind": "shell",
+                "shell_id": "f629641f-1aa7-4565-ab23-b5dd125a9025"
+              }
+            ]
+          },
+          "2": {
+            "active_shell_id": "26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c",
+            "active_tab_key": "shell:26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c",
+            "shell_ids": [
+              "26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c"
+            ],
+            "tab_edge": "top",
+            "tabs": [
+              {
+                "kind": "shell",
+                "shell_id": "26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c"
+              }
+            ]
+          }
+        },
+        "selected_task_id": null,
+        "selected_worktree_id": null,
+        "sidebar_visible": false,
+        "window_size": {
+          "height": 720.0,
+          "width": 960.0
+        }
+      },
+      "projectId": "ed0772f8-7226-4ba4-9a54-495bb3935b63",
+      "windowId": "6ba3a7c0-194c-4658-b666-63e1e9693dbe",
+      "windowNumber": 6574
+    }
+  ]
+}

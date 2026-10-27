@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "action": "built_from_verified_pinned_source",
+  "recorded_at_utc": "2026-10-27T21:48:03.675279+00:00",
+  "revision": "9f0e1719dc918368367d368bfe300f59bb68b5a4",
+  "source_distribution_sha256": "2b12d0d271cf0ca99a9073bdc148ce43782713c6d01be33af2a105b00c62ef5d",
+  "source_manifest_sha256": "78f97c2dae6f6717963a8de12a4164c6d20c57bd7f984536878d2b98bc9816de",
+  "zig_version": "0.16.0",
+  "target": "aarch64-apple-darwin",
+  "artifacts": {
+    "lib/libghostty-internal.a": "7a2573b7b934684366b753cb46164c44ae13a55db5ac36aae1a1a590ea62f6c9",
+    "include/ghostty.h": "f2c12e1bb02540d79feed6bd29ee37312c4e0d24391442a63e66f06e1f7f2e4a"
+  },
+  "themes": {
+    "distribution_sha256": "ea9878471420ee5b12e7f2ff480099c954ea50e573a1bdf83f43e105c9be63f0",
+    "source_manifest_sha256": "72de45b75c66d97dac20bc58a843b6a2fbb4fb39f99261b977e28aeea30c29fe",
+    "file_count": 602
+  },
+  "command": [
+    "/Users/dominik/.local/share/riwork/toolchains/zig-0.16.0/zig",
+    "build",
+    "--prefix",
+    "/Users/dominik/orca/projects/riWork-nsh-p2-terminals/crates/riwork-nsh-terminal/.runtime/final-build-check/install",
+    "-j4",
+    "-Dversion-string=1.3.2-dev",
+    "-Dapp-runtime=none",
+    "-Demit-xcframework=false",
+    "-Demit-macos-app=false",
+    "-Demit-docs=false",
+    "-Demit-terminfo=false",
+    "-Demit-bench=false",
+    "-Demit-webdata=false",
+    "-Di18n=false",
+    "-Dsentry=false",
+    "-Doptimize=ReleaseFast"
+  ],
+  "working_directory": "/Users/dominik/orca/projects/riWork-nsh-p2-terminals/crates/riwork-nsh-terminal/.runtime/final-build-check/build-source",
+  "zig_binary_sha256": "e6cd688d25664983833aae272f501d4bceeae304875b8f1741209d15fd13a4ec",
+  "build_environment": {
+    "DEVELOPER_DIR": "/Applications/Xcode.app/Contents/Developer",
+    "SDKROOT": "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.0.sdk",
+    "CC": "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang",
+    "AR": "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ar",
+    "LD": "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ld",
+    "ZIG_GLOBAL_CACHE_DIR": "/Users/dominik/orca/projects/riWork-nsh-p2-terminals/crates/riwork-nsh-terminal/.runtime/final-build-check/zig-global",
+    "ZIG_LOCAL_CACHE_DIR": "/Users/dominik/orca/projects/riWork-nsh-p2-terminals/crates/riwork-nsh-terminal/.runtime/final-build-check/zig-local"
+  },
+  "build_log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "matches_go_archive": false
+}

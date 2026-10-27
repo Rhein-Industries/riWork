@@ -1027,3 +1027,63 @@ fn load_skill_pastes_a_policy_change_into_an_orchestrator_with_the_current_skill
         before.matches("load-buffer").count()
     );
 }
+
+#[test]
+#[cfg(unix)]
+#[ignore = "slow: bounded fake tmux subprocesses"]
+fn terminal_detach_is_exact_tty_scoped_and_requires_readback() {
+    let id = Uuid::new_v4().to_string();
+    let other = Uuid::new_v4().to_string();
+    let fixture = Fixture::new(|root| {
+        let tmux = root.join("tmux");
+        let clients = quote_arg(&root.join("clients").to_string_lossy());
+        let log = quote_arg(&root.join("detach").to_string_lossy());
+        Fixture::script(
+            &tmux,
+            &format!(
+                "case \"$*\" in\n*list-clients*) cat {clients};;\n*detach-client*) printf '%s\\n' \"$*\" >> {log}; : > {clients};;\nesac"
+            ),
+        );
+        tmux
+    });
+    let rows = fixture.root.join("clients");
+    let log = fixture.root.join("detach");
+    fs::write(&rows, format!("/dev/ttys999\t{other}\n")).unwrap();
+    assert!(
+        fixture
+            .manager
+            .detach_terminal_client(&id, "/dev/ttys999")
+            .unwrap_err()
+            .contains("another session")
+    );
+    assert!(!log.exists());
+    for unsafe_tty in ["", "-a", "/dev/ttys999\n-a", "/dev/ttys999;kill-session"] {
+        assert!(
+            fixture
+                .manager
+                .detach_terminal_client(&id, unsafe_tty)
+                .is_err()
+        );
+    }
+    fs::write(
+        &rows,
+        format!("/dev/ttys999\t{id}\n/dev/ttys998\t{other}\n"),
+    )
+    .unwrap();
+    fixture
+        .manager
+        .detach_terminal_client(&id, "/dev/ttys999")
+        .unwrap();
+    let sent = fs::read_to_string(&log).unwrap();
+    assert!(sent.contains("detach-client -t /dev/ttys999"));
+    assert!(!sent.contains(" -a"));
+    fixture
+        .manager
+        .detach_terminal_client(&id, "/dev/ttys999")
+        .unwrap();
+    assert_eq!(
+        fs::read_to_string(log).unwrap(),
+        sent,
+        "already absent must be idempotent"
+    );
+}

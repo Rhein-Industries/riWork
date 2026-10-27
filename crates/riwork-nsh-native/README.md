@@ -1,4 +1,4 @@
-# riwork/native (Phase 3a panels)
+# riwork/native (Phase 2a terminals and Phase 3a panels)
 
 NSH 0.3.0 bridge for the project, task, shell and shared-tab surfaces of the frozen contract in
 [`docs/nsh-contracts.md` §1](../../docs/nsh-contracts.md). The root workspace's
@@ -33,17 +33,27 @@ Implemented JavaScript surface:
   same inventory fields.
 - `Sessions.subscribe(listener)` pushes `SessionsEvent` snapshots from the
   shared session sampler.
-- `Sessions.create(request)` uses `SessionManager::for_user()` (user opened,
-  without an inherited worker parent); `Sessions.close(id)` uses its close flow.
+- `Sessions.create({ projectId, worktreeId?, cwd?, command? })` creates an explicit
+  user shell; omitted cwd resolves the worktree/project root. `Sessions.close(id)`
+  is explicit Exit and refuses to proceed unless shared membership hides first.
 - `Tabs.subscribe(projectId, listener)` and `Tabs.update(projectId, update)` use
   a shared per-project hub and the engine's authoritative tab-store operations.
   Tab events contain `{ kind, rev, data: { epoch, revision, entries } }` and use
   camelCase, including nested `childCount`. Hide/unhide/move/rename writes are
-  serialized with watcher and sampler refreshes.
+  serialized with watcher and sampler refreshes. Local-shell updates retain the
+  registered project identity check. Detach hides before local removal and
+  reopen unhides before placement; an unavailable shared store permits local
+  Detach, while Exit still requires a successful hide.
+- `Appearance.snapshot()` / `subscribe(listener)` project terminal theme colors
+  and close preference from core settings. The one home watcher pushes live
+  settings changes; the native component owns Ghostty config parsing/watching.
 - `Subscription.close()` is idempotent. JS owner disposal, VM shutdown and
-  garbage collection also cancel delivery and close the listener queue.
+  garbage collection also cancel delivery and close the listener queue. Explicit
+  close unregisters owner cleanup while JS is alive; finalization only aborts,
+  because NSH clears context state before freeing some retained cleanup objects.
 - `Layouts.openSession(request)` and `LayoutSession` expose workspace layout
-  projection, edits and persistence. The host uses the Rust-only
+  projection, edits and persistence, including local `openShell`/`detachShell`.
+  Reopening within a window remembers a surviving unlocked former pane. The host uses the Rust-only
   `riwork_nsh_workspace::host_layouts` handoff for lifecycle barriers.
 
 DTOs and generated declarations use camelCase. Core persistence is unchanged.

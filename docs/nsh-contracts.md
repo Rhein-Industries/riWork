@@ -317,6 +317,46 @@ These follow §1.1-§1.4 unchanged; each port task adds its function table to th
 | `Markdown`, `Diff`, `Diagram`, `CommandLog`, `Media` | Rust-side parsing/highlighting, diff display, diagram rendering, command-output paging, image loading for non-chat surfaces and for `ChatHandle` rows |
 | `ProjectRecency` | Recency scan |
 
+#### Phase 2a Appearance projection (`schema: 1`, first published payload)
+
+This first-use table adds the previously reserved `Appearance` module. It does
+not alter `riwork.terminal` schema 1 or any existing persistence schema.
+
+| JS | Kind | Returns |
+|---|---|---|
+| `Appearance.snapshot()` | async | `AppearanceSnapshot` below, read from the fixed process home's SettingsStore on the blocking pool |
+| `Appearance.subscribe(listener)` | event | Snapshot deliveries using §1.3; the existing process home watcher observes `settings.json` and publishes changed projections |
+
+`AppearanceSnapshot = { schema: 1, theme: string, terminalLight: TerminalColors,
+terminalDark: TerminalColors, tabCloseBehavior: "ask" | "detach" | "exit" }`.
+`TerminalColors` is exactly §3.2 `colors`. The app chooses light/dark using NSH's
+reactive system appearance; Native follows it. Ghostty config parsing/watching
+belongs to the native component, so following Ghostty projects `{ source: "ghostty" }`.
+The presets preserve the desktop's sixteen ANSI colors and terminal-color options.
+Appearance-file publication and UI palettes remain the later full Appearance port.
+
+The already-frozen `Sessions.create(req)` accepts
+`{ projectId, worktreeId?, cwd?, command? }` for this local-shell slice; omitted
+`cwd` resolves the selected worktree/project root in Rust. `Sessions.close(id)`
+is explicit Exit only, never ordinary surface destruction. It first hides the
+shared local entry through `TabStore`; a failure refuses Exit before any tmux
+operation. The existing `Tabs.update(projectId, update)` adapter serves local
+shell hide/unhide (and the engine's order/title operations); the full membership
+subscription remains a later port. A normal tab Detach hides membership before
+removal, with legacy local detachment allowed only when the shared store is
+unavailable. Reopening a detached local shell unhides it before placement. Both
+Sessions mutations publish inventory
+after successful mutation and never perform engine-thread I/O.
+
+The workspace's existing `LayoutSession` gains in-memory `openShell(shellId)`
+and `detachShell(shellId)` commands returning its controlled DockArea projection.
+They change placement and durable detached IDs only. Creating or exiting sessions
+requires the separate async `Sessions` calls. Opening an already-placed identity
+selects it, and a detached identity reopens without creating another session.
+An explicit reopen within the same window remembers its former pane while that
+pane exists and is unlocked; otherwise it follows the main/active/unlocked
+routing rule. The hint is in memory only, with no persistence-format change.
+
 Process-wide claims stay in Rust: a local shell is shown by at most one window (native
 `riwork.terminal` registry, §3.5) and a chat tab is owned by one window (`Chat.claimTab` /
 `Chat.releaseTab`, today `crates/riwork-desktop/src/chat_tabs.rs:21-108`). Startup, runtime
@@ -475,6 +515,10 @@ export const Terminal = nativeComponent<TerminalProps, TerminalEvents>("riwork.t
 // <Terminal ref={term} target={{ kind: "local", shellId }} visible … />; term.command("focus")
 ```
 
+- NSH 0.3 toolchain compatibility: its generated declarations export
+  `nativeComponent` from `nsh` (the `nsh/native` runtime alias is marked moved).
+  The production TSX imports it from `nsh`; the component name and frozen
+  props/events/commands above are unchanged.
 - Props arrive as JSON on change, all of them right after creation (`native.rs:104-106`);
   commands arrive through `ref.command(name, args)` (`native.rs:108-111`); events leave with
   `ComponentContext::emit` (`native.rs:145-150`) from any thread.
@@ -818,6 +862,9 @@ Decisions the owner has taken since the freeze are recorded, dated, in [§8](#8-
 ## 7. Change log
 
 - v1 (this document): initial freeze for Step 0.
+- 2026-10-27 Phase 2a: Appearance first-use payload promoted to `schema: 1` with
+  snapshot/subscribe table in §1.10; local Sessions request and LayoutSession
+  placement operations documented. Terminal props/events/commands stay frozen v1.
 - v1, 2026-10-27 addendum (task 8fa16659): §8 records three owner decisions (D-OWN-1, D-PERF-1,
   Phase 2 entry gate). No frozen surface, `schema` field or §3.7 metric changed, so there is no
   version bump.

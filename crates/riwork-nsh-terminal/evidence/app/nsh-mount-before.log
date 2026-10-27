@@ -1,0 +1,9 @@
+✓ built the Rust crate riwork-nsh-native (1.3s)
+warn riwork/native exports items without a doc comment, which TSX sees in its declarations: Appearance.snapshot, Appearance.subscribe, Sessions.list, Sessions.create, Sessions.subscribe, Store.snapshot, Store.search, Store.inspectProject, Subscription.close
+✓ built the headless runner of riwork-nsh-native (230ms)
+✓ bundled apps/riwork/tests/Workspace.fixture.tsx (23313 B in 3.0 ms)
+✗ apps/riwork/App.test.tsx › terminal native nodes survive selection and resize until an explicit Detach (645ms)
+    expected ["stable-one","stable-one","stable-one","stable-one","stable-one","stable-two","stable-two","stable-two","stable-two","stable-two"] to equal ["stable-one","stable-two"]
+    at <anonymous> (apps/riwork/App.test.tsx:214:29)
+    on screen: "RiWork · Fixture", "Shell · stable-one", "×", "Shell · stable-two", "×", "Fixture", "2 panes", "Main pane: none"
+error 1 test: 0 passed, 1 failed (3.2s)

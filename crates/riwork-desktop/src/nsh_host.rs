@@ -154,6 +154,9 @@ enum Main {
     Menu(MenuAction),
     Quit,
     Finish,
+    DrainTerminals,
+    #[cfg(feature = "terminal-fixture")]
+    Fixture(Value),
     Error(String),
 }
 thread_local! { static HOST: RefCell<Option<Host>> = const { RefCell::new(None) }; }
@@ -299,6 +302,8 @@ struct Window {
     closing: bool,
 }
 struct Host {
+    #[cfg(feature = "terminal-fixture")]
+    fixture: Option<crate::nsh_terminal_fixture::Fixture>,
     mtm: MainThreadMarker,
     app: Retained<NSApplication>,
     home: PathBuf,
@@ -337,14 +342,14 @@ impl Host {
             "app.quit",
             "app.restoreReady",
             "app.setAppearance",
+            "system.openWith",
+            "system.revealInFinder",
         ] {
             let id = id.clone();
             channel.handle(name, move |call| send(Main::Call(id.clone(), name, call)));
         }
         // All other v1 operations fail explicitly until their owning feature lands.
         for name in [
-            "system.revealInFinder",
-            "system.openWith",
             "system.quickLook",
             "system.openPanel",
             "system.savePanel",
@@ -655,13 +660,135 @@ impl Host {
                 for id in self.windows.keys().cloned().collect::<Vec<_>>() {
                     self.teardown(&id);
                 }
-                stop(&self.app);
+                // AppView::stop drops the components, but their native views
+                // remain parked until exact-tty detach and child exit complete.
+                // Keep AppKit/Ghostty wakeups alive through the final free.
+                self.handle(Main::DrainTerminals);
+            }
+            Main::DrainTerminals => {
+                if riwork_nsh_terminal::pending_count() == 0 {
+                    stop(&self.app);
+                } else {
+                    thread::spawn(|| {
+                        thread::sleep(Duration::from_millis(20));
+                        send(Main::DrainTerminals);
+                    });
+                }
             }
             Main::Error(error) => {
                 eprintln!("riwork: {error}");
                 self.quit();
             }
+            #[cfg(feature = "terminal-fixture")]
+            Main::Fixture(request) => self.fixture_call(request),
         }
+    }
+    #[cfg(feature = "terminal-fixture")]
+    fn fixture_call(&mut self, request: Value) {
+        if self.fixture.is_none() {
+            return;
+        }
+        if request["op"] == "heartbeat" {
+            riwork_nsh_terminal::fixture_heartbeat();
+            return;
+        }
+        let seq = request["seq"].as_u64().unwrap_or(0);
+        let id = request["windowId"].as_str().unwrap_or_default();
+        let result = match request["op"].as_str() {
+            Some("snapshot") => json!({"ok":true,"windows":self.windows.iter().map(|(id,w)|json!({
+                "windowId":id,"projectId":w.runtime.project_id,"windowNumber":w.window.windowNumber(),
+                "layout":host_layouts::lookup(id).map(|l|l.project_layout())
+            })).collect::<Vec<_>>(),"terminalStates":if request["includeTrace"].as_bool().unwrap_or(false) {riwork_nsh_terminal::fixture_snapshot()} else {riwork_nsh_terminal::fixture_status()}}),
+            Some("route" | "command") => {
+                if let Some(window) = self.windows.get(id) {
+                    let (name, data) = if request["op"] == "route" {
+                        ("route", json!({"step":request["step"]}))
+                    } else {
+                        ("command", json!({"id":request["id"]}))
+                    };
+                    let _ = window.view.host().send(name, data);
+                    json!({"ok":true})
+                } else {
+                    json!({"ok":false,"error":"window not found"})
+                }
+            }
+            Some("closeWindow") => {
+                self.close(id, "user", None);
+                json!({"ok":true})
+            }
+            Some("quit") => {
+                self.quit();
+                json!({"ok":true})
+            }
+            Some("show") => {
+                // Only this marker-guarded fixture transport may arrange its
+                // own windows. Bring both into view without changing the key
+                // app/window, so real occlusion notifications drive Ghostty.
+                let available = visible_frame(self.mtm, None);
+                let count = self.windows.len().max(1) as f64;
+                let gap = 16.;
+                let width = ((available.size.width - gap * (count + 1.)) / count).min(1220.);
+                let height = (available.size.height - 2. * gap).min(900.);
+                if width < 640. || height < 400. {
+                    json!({"ok":false,"error":"screen too small for isolated side-by-side fixture windows"})
+                } else {
+                    let start = available.origin.x
+                        + (available.size.width - count * width - (count - 1.) * gap) / 2.;
+                    let frames = self
+                        .windows
+                        .iter()
+                        .enumerate()
+                        .map(|(index, (id, window))| {
+                            let frame = NSRect::new(
+                                NSPoint::new(
+                                    start + index as f64 * (width + gap),
+                                    available.origin.y + available.size.height - height - gap,
+                                ),
+                                NSSize::new(width, height),
+                            );
+                            window.window.setFrame_display(frame, true);
+                            window.window.orderFrontRegardless();
+                            json!({"windowId":id,"windowNumber":window.window.windowNumber(),
+                            "x":frame.origin.x,"y":frame.origin.y,"width":width,"height":height})
+                        })
+                        .collect::<Vec<_>>();
+                    json!({"ok":true,"frames":frames,"activation":false})
+                }
+            }
+            Some("resize") => {
+                if let Some(window) = self.windows.get(id) {
+                    let mut frame = window.window.frame();
+                    frame.size.width = request["width"]
+                        .as_f64()
+                        .unwrap_or(1000.)
+                        .clamp(640., 2000.);
+                    frame.size.height = request["height"]
+                        .as_f64()
+                        .unwrap_or(700.)
+                        .clamp(400., 1400.);
+                    window.window.setFrame_display(frame, true);
+                    json!({"ok":true})
+                } else {
+                    json!({"ok":false})
+                }
+            }
+            Some("terminalProbe") => match riwork_nsh_terminal::fixture_probe(
+                request["shellId"].as_str().unwrap_or_default(),
+                request["kind"].as_str().unwrap_or_default(),
+            ) {
+                Ok(()) => json!({"ok":true}),
+                Err(e) => json!({"ok":false,"error":e}),
+            },
+            Some("terminalInput") => match riwork_nsh_terminal::fixture_input(
+                request["shellId"].as_str().unwrap_or_default(),
+                request["text"].as_str().unwrap_or_default(),
+            ) {
+                Ok(()) => json!({"ok":true}),
+                Err(e) => json!({"ok":false,"error":e}),
+            },
+            _ => json!({"ok":false,"error":"unknown fixture operation"}),
+        };
+        self.fixture.as_ref().unwrap().reply(seq, result);
     }
     fn dock_menu(&self) -> Retained<NSMenu> {
         let windows = self
@@ -785,8 +912,52 @@ impl Host {
             "app.quit" => { call.resolve(json!({})); self.quit(); }
             "app.restart" => call.reject(RESTART_PENDING),
             "app.setAppearance" => call.reject("unavailable: process appearance service awaits P1a"),
+            "system.openWith" | "system.revealInFinder" => {
+                // The opt-in isolated fixture verifies the complete native ->
+                // TSX -> host event path without opening any external app.
+                #[cfg(feature = "terminal-fixture")]
+                if self.fixture.is_some() { call.resolve(json!({"fixture":true})); return; }
+                let Some(path) = data["path"].as_str().filter(|p| !p.is_empty() && !p.contains('\0')) else { call.reject("invalid: path"); return; };
+                let path = path.to_owned();
+                let app = data.get("app").and_then(Value::as_str).map(str::to_owned);
+                let reveal = name == "system.revealInFinder";
+                thread::spawn(move || {
+                    let result = open_terminal_link(&path, app.as_deref(), reveal);
+                    match result { Ok(()) => call.resolve(json!({})), Err(error) => call.reject(error) }
+                });
+            }
             _ => call.reject("invalid: unregistered host operation"),
         }
+    }
+}
+
+fn open_terminal_link(path: &str, app: Option<&str>, reveal: bool) -> Result<(), String> {
+    if !Path::new(path).is_absolute() && !riwork_engine::terminal_links::is_openable_url(path) {
+        return Err("invalid: expected an absolute path or http/https/mailto URL".into());
+    }
+    if Path::new(path).is_absolute() {
+        if let Some(reason) = riwork_engine::terminal_links::open_refusal(Path::new(path)) {
+            return Err(format!("refused: {reason}"));
+        }
+    } else if reveal {
+        return Err("invalid: Finder requires a local path".into());
+    }
+    let mut command = std::process::Command::new("/usr/bin/open");
+    if reveal {
+        command.arg("-R");
+    }
+    if let Some(app) = app {
+        command.arg("-a").arg(app);
+    }
+    let status = command
+        .arg("--")
+        .arg(path)
+        .status()
+        .map_err(|e| format!("io: {e}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("io: open failed ({status})"))
     }
 }
 
@@ -1281,14 +1452,25 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     set_ui_sets(vec![nsh_base::registry(), native::registry()]);
     let menus = HostMenus::install(mtm, Arc::new(|action| send(Main::Menu(action))));
     let (tx, rx) = mpsc::channel();
+    let components = Components::default();
+    riwork_nsh_terminal::register(&components, startup.home.clone());
     let mut host = Host {
+        #[cfg(feature = "terminal-fixture")]
+        fixture: if std::env::var_os("RIWORK_NSH_TERMINAL_FIXTURE").is_some() {
+            Some(crate::nsh_terminal_fixture::start(
+                startup.home.clone(),
+                |request| send(Main::Fixture(request)),
+            )?)
+        } else {
+            None
+        },
         mtm,
         app: app.clone(),
         home: startup.home.clone(),
         bundle: startup.bundle.clone(),
         asset_base: startup.directory.clone().map(AssetBase::Directory),
         chunks: startup.directory.clone(),
-        components: Components::default(),
+        components,
         menus,
         windows: BTreeMap::new(),
         service: tx.clone(),
@@ -1313,6 +1495,15 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         app.activateIgnoringOtherApps(true);
     }
     app.run();
+    #[cfg(feature = "terminal-fixture")]
+    HOST.with(|state| {
+        if let Some(host) = state.borrow().as_ref() {
+            if let Some(fixture) = &host.fixture {
+                let _ = fixture
+                    .finish(json!({"terminalStates":riwork_nsh_terminal::fixture_snapshot()}));
+            }
+        }
+    });
     let _ = tx.send(Service::Finished);
     HOST.with(|state| {
         state.borrow_mut().take();

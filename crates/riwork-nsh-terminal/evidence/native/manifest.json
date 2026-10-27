@@ -1,0 +1,3149 @@
+{
+  "verification_environment": "isolated RIWORK_HOME; integrated fixture binary and production TSX bundle; read-only Cua only",
+  "root": "/private/tmp/rwnsh-p2-upf_p6zi",
+  "home": "/private/tmp/rwnsh-p2-upf_p6zi/state",
+  "socket": "riwork-b5719c06acdf0acb",
+  "binary": {
+    "path": "/Users/dominik/orca/projects/riWork-nsh-p2-terminals/target/debug/riwork",
+    "sha256": "5f7ac09cfd48e0442df2e585060e9fb6c67b65407d37cf92a9ce366ab8651c02"
+  },
+  "bundle": {
+    "path": "/private/tmp/riwork-p2-terminal-bridge/bundle/bundle.js",
+    "sha256": "e8c7ef467434d37a1006da57e5daa1a5a4c50919112fbca9432f44b656037a98"
+  },
+  "environment": {
+    "PATH": "/opt/homebrew/Cellar/tmux/3.6a/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+    "HOME": "/private/tmp/rwnsh-p2-upf_p6zi/user",
+    "RIWORK_HOME": "/private/tmp/rwnsh-p2-upf_p6zi/state",
+    "RIWORK_RUNTIME_DIR": "/private/tmp/rwnsh-p2-upf_p6zi/runtime",
+    "TMPDIR": "/private/tmp/rwnsh-p2-upf_p6zi/tmp",
+    "XDG_CONFIG_HOME": "/private/tmp/rwnsh-p2-upf_p6zi/user/.config",
+    "RIWORK_NSH_BACKGROUND": "1",
+    "RIWORK_NSH_BUNDLE": "/private/tmp/riwork-p2-terminal-bridge/bundle/bundle.js",
+    "RIWORK_NSH_TERMINAL_FIXTURE": "1",
+    "GHOSTTY_LOG": "stderr,no-macos",
+    "LANG": "en_US.UTF-8",
+    "SHELL": "/bin/zsh"
+  },
+  "commands": [
+    {
+      "argv": [
+        "/Users/dominik/orca/projects/riWork-nsh-p2-terminals/target/debug/riwork",
+        "project",
+        "add",
+        "/private/tmp/rwnsh-p2-upf_p6zi/repos/Alpha",
+        "--name",
+        "Terminal fixture Alpha",
+        "--json"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 1829.0640829945914,
+      "stdout": "{\n  \"id\": \"c63688f7-bc3d-48f2-95b3-3a0db62364a3\",\n  \"name\": \"Terminal fixture Alpha\",\n  \"root\": \"/private/tmp/rwnsh-p2-upf_p6zi/repos/Alpha\",\n  \"repository_roots\": [],\n  \"folder_id\": null,\n  \"notify_on_agent_done\": false,\n  \"wake_orchestrators_on_agent_done\": false,\n  \"codex_account\": {\n    \"source\": \"inherit\"\n  },\n  \"orchestrator\": {\n    \"mode\": \"inherit\"\n  },\n  \"delegation_policy\": {},\n  \"created_at\": 1793138977\n}\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/Users/dominik/orca/projects/riWork-nsh-p2-terminals/target/debug/riwork",
+        "shell",
+        "create",
+        "--project",
+        "c63688f7-bc3d-48f2-95b3-3a0db62364a3",
+        "--command",
+        "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/bin/python3.14 -u /private/tmp/rwnsh-p2-upf_p6zi/pressure.py /private/tmp/rwnsh-p2-upf_p6zi/pressure alpha-0",
+        "--no-parent",
+        "--background",
+        "--json"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 74.85199999064207,
+      "stdout": "{\n  \"user_opened\": false,\n  \"id\": \"c60b4a1b-93b5-460e-8c88-9eafaec56b36\",\n  \"project_id\": \"c63688f7-bc3d-48f2-95b3-3a0db62364a3\",\n  \"worktree_id\": \"ef16de5c-c489-4ab4-91e6-0aa39ed14831\",\n  \"kind\": \"project\",\n  \"cwd\": \"/private/tmp/rwnsh-p2-upf_p6zi/repos/Alpha\",\n  \"command\": \"/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/bin/python3.14 -u /private/tmp/rwnsh-p2-upf_p6zi/pressure.py /private/tmp/rwnsh-p2-upf_p6zi/pressure alpha-0\",\n  \"editor_path\": null,\n  \"harness\": null,\n  \"unrestricted\": false,\n  \"codex_account_id\": null,\n  \"codex_account_label\": null,\n  \"codex_account_email\": null,\n  \"codex_home\": null,\n  \"orchestrator_skill_loaded\": false,\n  \"orchestrator_skill_version\": null,\n  \"orchestrator_delegation_version\": null,\n  \"orchestrator_project_root\": null,\n  \"created_at_unix\": 1793138977,\n  \"alive\": true\n}\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/Users/dominik/orca/projects/riWork-nsh-p2-terminals/target/debug/riwork",
+        "shell",
+        "create",
+        "--project",
+        "c63688f7-bc3d-48f2-95b3-3a0db62364a3",
+        "--command",
+        "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/bin/python3.14 -u /private/tmp/rwnsh-p2-upf_p6zi/pressure.py /private/tmp/rwnsh-p2-upf_p6zi/pressure alpha-1",
+        "--no-parent",
+        "--background",
+        "--json"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 39.39983295276761,
+      "stdout": "{\n  \"user_opened\": false,\n  \"id\": \"63794f23-da1d-4624-8650-b2fabd5a8672\",\n  \"project_id\": \"c63688f7-bc3d-48f2-95b3-3a0db62364a3\",\n  \"worktree_id\": \"ef16de5c-c489-4ab4-91e6-0aa39ed14831\",\n  \"kind\": \"project\",\n  \"cwd\": \"/private/tmp/rwnsh-p2-upf_p6zi/repos/Alpha\",\n  \"command\": \"/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/bin/python3.14 -u /private/tmp/rwnsh-p2-upf_p6zi/pressure.py /private/tmp/rwnsh-p2-upf_p6zi/pressure alpha-1\",\n  \"editor_path\": null,\n  \"harness\": null,\n  \"unrestricted\": false,\n  \"codex_account_id\": null,\n  \"codex_account_label\": null,\n  \"codex_account_email\": null,\n  \"codex_home\": null,\n  \"orchestrator_skill_loaded\": false,\n  \"orchestrator_skill_version\": null,\n  \"orchestrator_delegation_version\": null,\n  \"orchestrator_project_root\": null,\n  \"created_at_unix\": 1793138977,\n  \"alive\": true\n}\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/Users/dominik/orca/projects/riWork-nsh-p2-terminals/target/debug/riwork",
+        "project",
+        "add",
+        "/private/tmp/rwnsh-p2-upf_p6zi/repos/Beta",
+        "--name",
+        "Terminal fixture Beta",
+        "--json"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 29.321375011932105,
+      "stdout": "{\n  \"id\": \"ed0772f8-7226-4ba4-9a54-495bb3935b63\",\n  \"name\": \"Terminal fixture Beta\",\n  \"root\": \"/private/tmp/rwnsh-p2-upf_p6zi/repos/Beta\",\n  \"repository_roots\": [],\n  \"folder_id\": null,\n  \"notify_on_agent_done\": false,\n  \"wake_orchestrators_on_agent_done\": false,\n  \"codex_account\": {\n    \"source\": \"inherit\"\n  },\n  \"orchestrator\": {\n    \"mode\": \"inherit\"\n  },\n  \"delegation_policy\": {},\n  \"created_at\": 1793138977\n}\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/Users/dominik/orca/projects/riWork-nsh-p2-terminals/target/debug/riwork",
+        "shell",
+        "create",
+        "--project",
+        "ed0772f8-7226-4ba4-9a54-495bb3935b63",
+        "--command",
+        "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/bin/python3.14 -u /private/tmp/rwnsh-p2-upf_p6zi/pressure.py /private/tmp/rwnsh-p2-upf_p6zi/pressure beta-0",
+        "--no-parent",
+        "--background",
+        "--json"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 38.634125026874244,
+      "stdout": "{\n  \"user_opened\": false,\n  \"id\": \"f629641f-1aa7-4565-ab23-b5dd125a9025\",\n  \"project_id\": \"ed0772f8-7226-4ba4-9a54-495bb3935b63\",\n  \"worktree_id\": \"2706ca75-f635-4515-a417-ebe817d13467\",\n  \"kind\": \"project\",\n  \"cwd\": \"/private/tmp/rwnsh-p2-upf_p6zi/repos/Beta\",\n  \"command\": \"/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/bin/python3.14 -u /private/tmp/rwnsh-p2-upf_p6zi/pressure.py /private/tmp/rwnsh-p2-upf_p6zi/pressure beta-0\",\n  \"editor_path\": null,\n  \"harness\": null,\n  \"unrestricted\": false,\n  \"codex_account_id\": null,\n  \"codex_account_label\": null,\n  \"codex_account_email\": null,\n  \"codex_home\": null,\n  \"orchestrator_skill_loaded\": false,\n  \"orchestrator_skill_version\": null,\n  \"orchestrator_delegation_version\": null,\n  \"orchestrator_project_root\": null,\n  \"created_at_unix\": 1793138977,\n  \"alive\": true\n}\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/Users/dominik/orca/projects/riWork-nsh-p2-terminals/target/debug/riwork",
+        "shell",
+        "create",
+        "--project",
+        "ed0772f8-7226-4ba4-9a54-495bb3935b63",
+        "--command",
+        "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/bin/python3.14 -u /private/tmp/rwnsh-p2-upf_p6zi/pressure.py /private/tmp/rwnsh-p2-upf_p6zi/pressure beta-1",
+        "--no-parent",
+        "--background",
+        "--json"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 38.62775000743568,
+      "stdout": "{\n  \"user_opened\": false,\n  \"id\": \"26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\",\n  \"project_id\": \"ed0772f8-7226-4ba4-9a54-495bb3935b63\",\n  \"worktree_id\": \"2706ca75-f635-4515-a417-ebe817d13467\",\n  \"kind\": \"project\",\n  \"cwd\": \"/private/tmp/rwnsh-p2-upf_p6zi/repos/Beta\",\n  \"command\": \"/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/bin/python3.14 -u /private/tmp/rwnsh-p2-upf_p6zi/pressure.py /private/tmp/rwnsh-p2-upf_p6zi/pressure beta-1\",\n  \"editor_path\": null,\n  \"harness\": null,\n  \"unrestricted\": false,\n  \"codex_account_id\": null,\n  \"codex_account_label\": null,\n  \"codex_account_email\": null,\n  \"codex_home\": null,\n  \"orchestrator_skill_loaded\": false,\n  \"orchestrator_skill_version\": null,\n  \"orchestrator_delegation_version\": null,\n  \"orchestrator_project_root\": null,\n  \"created_at_unix\": 1793138977,\n  \"alive\": true\n}\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-panes",
+        "-a",
+        "-F",
+        "#{session_name}\t#{session_id}\t#{session_created}\t#{pane_id}\t#{pane_pid}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.292208002880216,
+      "stdout": "26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t$3\t1793138977\t%3\t69598\n63794f23-da1d-4624-8650-b2fabd5a8672\t$1\t1793138977\t%1\t69574\nc60b4a1b-93b5-460e-8c88-9eafaec56b36\t$0\t1793138977\t%0\t69566\nf629641f-1aa7-4565-ab23-b5dd125a9025\t$2\t1793138977\t%2\t69590\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/Users/dominik/orca/projects/riWork-nsh-p2-terminals/target/debug/riwork",
+        "/private/tmp/rwnsh-p2-upf_p6zi/repos/Beta"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 8.539166999980807,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.085291991941631,
+      "stdout": "69691\t/dev/ttys035\t63794f23-da1d-4624-8650-b2fabd5a8672\t186\t25\n69690\t/dev/ttys034\tc60b4a1b-93b5-460e-8c88-9eafaec56b36\t186\t25\n69745\t/dev/ttys036\tf629641f-1aa7-4565-ab23-b5dd125a9025\t186\t25\n69747\t/dev/ttys037\t26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t186\t25\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.095375014003366,
+      "stdout": "69691\t/dev/ttys035\t63794f23-da1d-4624-8650-b2fabd5a8672\t186\t30\n69690\t/dev/ttys034\tc60b4a1b-93b5-460e-8c88-9eafaec56b36\t186\t29\n69745\t/dev/ttys036\tf629641f-1aa7-4565-ab23-b5dd125a9025\t186\t29\n69747\t/dev/ttys037\t26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t186\t30\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.157999996095896,
+      "stdout": "69691\t/dev/ttys035\t63794f23-da1d-4624-8650-b2fabd5a8672\t186\t30\n69690\t/dev/ttys034\tc60b4a1b-93b5-460e-8c88-9eafaec56b36\t186\t29\n69745\t/dev/ttys036\tf629641f-1aa7-4565-ab23-b5dd125a9025\t186\t29\n69747\t/dev/ttys037\t26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t186\t30\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.4289170182310045,
+      "stdout": "69691\t/dev/ttys035\t63794f23-da1d-4624-8650-b2fabd5a8672\t169\t26\n69690\t/dev/ttys034\tc60b4a1b-93b5-460e-8c88-9eafaec56b36\t169\t26\n69745\t/dev/ttys036\tf629641f-1aa7-4565-ab23-b5dd125a9025\t186\t29\n69747\t/dev/ttys037\t26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t186\t30\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.121458972804248,
+      "stdout": "69691\t/dev/ttys035\t63794f23-da1d-4624-8650-b2fabd5a8672\t169\t26\n69690\t/dev/ttys034\tc60b4a1b-93b5-460e-8c88-9eafaec56b36\t169\t26\n69745\t/dev/ttys036\tf629641f-1aa7-4565-ab23-b5dd125a9025\t186\t29\n69747\t/dev/ttys037\t26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t186\t30\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.200250026769936,
+      "stdout": "69691\t/dev/ttys035\t63794f23-da1d-4624-8650-b2fabd5a8672\t169\t26\n69690\t/dev/ttys034\tc60b4a1b-93b5-460e-8c88-9eafaec56b36\t169\t26\n69745\t/dev/ttys036\tf629641f-1aa7-4565-ab23-b5dd125a9025\t186\t29\n69747\t/dev/ttys037\t26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t186\t30\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.606708011124283,
+      "stdout": "69691\t/dev/ttys035\t63794f23-da1d-4624-8650-b2fabd5a8672\t169\t26\n69690\t/dev/ttys034\tc60b4a1b-93b5-460e-8c88-9eafaec56b36\t169\t26\n69745\t/dev/ttys036\tf629641f-1aa7-4565-ab23-b5dd125a9025\t186\t29\n69747\t/dev/ttys037\t26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t186\t30\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 3.8791249971836805,
+      "stdout": "69691\t/dev/ttys035\t63794f23-da1d-4624-8650-b2fabd5a8672\t169\t26\n69690\t/dev/ttys034\tc60b4a1b-93b5-460e-8c88-9eafaec56b36\t169\t26\n69745\t/dev/ttys036\tf629641f-1aa7-4565-ab23-b5dd125a9025\t186\t29\n69747\t/dev/ttys037\t26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t186\t30\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.050832998473197,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-panes",
+        "-a",
+        "-F",
+        "#{session_name}\t#{session_id}\t#{session_created}\t#{pane_id}\t#{pane_pid}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.427040985319763,
+      "stdout": "26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t$3\t1793138977\t%3\t69598\n63794f23-da1d-4624-8650-b2fabd5a8672\t$1\t1793138977\t%1\t69574\nc60b4a1b-93b5-460e-8c88-9eafaec56b36\t$0\t1793138977\t%0\t69566\nf629641f-1aa7-4565-ab23-b5dd125a9025\t$2\t1793138977\t%2\t69590\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.789165977854282,
+      "stdout": "71458\t/dev/ttys034\tc60b4a1b-93b5-460e-8c88-9eafaec56b36\t169\t26\n71467\t/dev/ttys035\t63794f23-da1d-4624-8650-b2fabd5a8672\t169\t26\n71486\t/dev/ttys036\tf629641f-1aa7-4565-ab23-b5dd125a9025\t186\t29\n71487\t/dev/ttys037\t26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t186\t30\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 3.6126250051893294,
+      "stdout": "71458\t/dev/ttys034\tc60b4a1b-93b5-460e-8c88-9eafaec56b36\t169\t26\n71467\t/dev/ttys035\t63794f23-da1d-4624-8650-b2fabd5a8672\t169\t26\n71486\t/dev/ttys036\tf629641f-1aa7-4565-ab23-b5dd125a9025\t186\t29\n71487\t/dev/ttys037\t26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t186\t30\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 3.4047920489683747,
+      "stdout": "71458\t/dev/ttys034\tc60b4a1b-93b5-460e-8c88-9eafaec56b36\t169\t26\n71467\t/dev/ttys035\t63794f23-da1d-4624-8650-b2fabd5a8672\t169\t26\n71486\t/dev/ttys036\tf629641f-1aa7-4565-ab23-b5dd125a9025\t186\t29\n71487\t/dev/ttys037\t26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t186\t30\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 3.9279580232687294,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-panes",
+        "-a",
+        "-F",
+        "#{session_name}\t#{session_id}\t#{session_created}\t#{pane_id}\t#{pane_pid}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 3.9667500532232225,
+      "stdout": "26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t$3\t1793138977\t%3\t69598\n63794f23-da1d-4624-8650-b2fabd5a8672\t$1\t1793138977\t%1\t69574\nc60b4a1b-93b5-460e-8c88-9eafaec56b36\t$0\t1793138977\t%0\t69566\nf629641f-1aa7-4565-ab23-b5dd125a9025\t$2\t1793138977\t%2\t69590\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 32.35216700704768,
+      "stdout": "71533\t/dev/ttys034\tc60b4a1b-93b5-460e-8c88-9eafaec56b36\t169\t26\n71540\t/dev/ttys035\t63794f23-da1d-4624-8650-b2fabd5a8672\t169\t26\n71555\t/dev/ttys036\tf629641f-1aa7-4565-ab23-b5dd125a9025\t186\t29\n71557\t/dev/ttys037\t26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t186\t30\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.301375010982156,
+      "stdout": "71533\t/dev/ttys034\tc60b4a1b-93b5-460e-8c88-9eafaec56b36\t169\t26\n71540\t/dev/ttys035\t63794f23-da1d-4624-8650-b2fabd5a8672\t169\t26\n71555\t/dev/ttys036\tf629641f-1aa7-4565-ab23-b5dd125a9025\t186\t29\n71557\t/dev/ttys037\t26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t186\t30\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.034750047139823,
+      "stdout": "71533\t/dev/ttys034\tc60b4a1b-93b5-460e-8c88-9eafaec56b36\t169\t26\n71540\t/dev/ttys035\t63794f23-da1d-4624-8650-b2fabd5a8672\t169\t26\n71555\t/dev/ttys036\tf629641f-1aa7-4565-ab23-b5dd125a9025\t186\t29\n71557\t/dev/ttys037\t26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t186\t30\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.079999984242022,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-panes",
+        "-a",
+        "-F",
+        "#{session_name}\t#{session_id}\t#{session_created}\t#{pane_id}\t#{pane_pid}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.138874995987862,
+      "stdout": "26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t$3\t1793138977\t%3\t69598\n63794f23-da1d-4624-8650-b2fabd5a8672\t$1\t1793138977\t%1\t69574\nc60b4a1b-93b5-460e-8c88-9eafaec56b36\t$0\t1793138977\t%0\t69566\nf629641f-1aa7-4565-ab23-b5dd125a9025\t$2\t1793138977\t%2\t69590\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 42.201042000669986,
+      "stdout": "71700\t/dev/ttys034\tc60b4a1b-93b5-460e-8c88-9eafaec56b36\t169\t26\n71708\t/dev/ttys035\t63794f23-da1d-4624-8650-b2fabd5a8672\t169\t26\n71727\t/dev/ttys036\tf629641f-1aa7-4565-ab23-b5dd125a9025\t186\t29\n71728\t/dev/ttys037\t26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t186\t30\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.114541981834918,
+      "stdout": "71700\t/dev/ttys034\tc60b4a1b-93b5-460e-8c88-9eafaec56b36\t169\t26\n71708\t/dev/ttys035\t63794f23-da1d-4624-8650-b2fabd5a8672\t169\t26\n71727\t/dev/ttys036\tf629641f-1aa7-4565-ab23-b5dd125a9025\t186\t29\n71728\t/dev/ttys037\t26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t186\t30\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 3.3548340434208512,
+      "stdout": "71700\t/dev/ttys034\tc60b4a1b-93b5-460e-8c88-9eafaec56b36\t169\t26\n71708\t/dev/ttys035\t63794f23-da1d-4624-8650-b2fabd5a8672\t169\t26\n71727\t/dev/ttys036\tf629641f-1aa7-4565-ab23-b5dd125a9025\t186\t29\n71728\t/dev/ttys037\t26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t186\t30\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.004125017672777,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-panes",
+        "-a",
+        "-F",
+        "#{session_name}\t#{session_id}\t#{session_created}\t#{pane_id}\t#{pane_pid}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 5.026334023568779,
+      "stdout": "26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t$3\t1793138977\t%3\t69598\n63794f23-da1d-4624-8650-b2fabd5a8672\t$1\t1793138977\t%1\t69574\nc60b4a1b-93b5-460e-8c88-9eafaec56b36\t$0\t1793138977\t%0\t69566\nf629641f-1aa7-4565-ab23-b5dd125a9025\t$2\t1793138977\t%2\t69590\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 40.46895896317437,
+      "stdout": "71775\t/dev/ttys034\tc60b4a1b-93b5-460e-8c88-9eafaec56b36\t169\t26\n71780\t/dev/ttys035\t63794f23-da1d-4624-8650-b2fabd5a8672\t169\t26\n71800\t/dev/ttys036\tf629641f-1aa7-4565-ab23-b5dd125a9025\t186\t29\n71801\t/dev/ttys037\t26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t186\t30\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.177208000328392,
+      "stdout": "71775\t/dev/ttys034\tc60b4a1b-93b5-460e-8c88-9eafaec56b36\t169\t26\n71780\t/dev/ttys035\t63794f23-da1d-4624-8650-b2fabd5a8672\t169\t26\n71800\t/dev/ttys036\tf629641f-1aa7-4565-ab23-b5dd125a9025\t186\t29\n71801\t/dev/ttys037\t26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t186\t30\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.006375034805387,
+      "stdout": "71775\t/dev/ttys034\tc60b4a1b-93b5-460e-8c88-9eafaec56b36\t169\t26\n71780\t/dev/ttys035\t63794f23-da1d-4624-8650-b2fabd5a8672\t169\t26\n71800\t/dev/ttys036\tf629641f-1aa7-4565-ab23-b5dd125a9025\t186\t29\n71801\t/dev/ttys037\t26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t186\t30\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 3.8850000128149986,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-panes",
+        "-a",
+        "-F",
+        "#{session_name}\t#{session_id}\t#{session_created}\t#{pane_id}\t#{pane_pid}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 5.702707974705845,
+      "stdout": "26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t$3\t1793138977\t%3\t69598\n63794f23-da1d-4624-8650-b2fabd5a8672\t$1\t1793138977\t%1\t69574\nc60b4a1b-93b5-460e-8c88-9eafaec56b36\t$0\t1793138977\t%0\t69566\nf629641f-1aa7-4565-ab23-b5dd125a9025\t$2\t1793138977\t%2\t69590\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 41.40616697259247,
+      "stdout": "72082\t/dev/ttys034\tc60b4a1b-93b5-460e-8c88-9eafaec56b36\t169\t26\n72115\t/dev/ttys035\t63794f23-da1d-4624-8650-b2fabd5a8672\t169\t26\n72126\t/dev/ttys036\tf629641f-1aa7-4565-ab23-b5dd125a9025\t186\t29\n72127\t/dev/ttys037\t26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t186\t30\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.0210000006482005,
+      "stdout": "72082\t/dev/ttys034\tc60b4a1b-93b5-460e-8c88-9eafaec56b36\t169\t26\n72115\t/dev/ttys035\t63794f23-da1d-4624-8650-b2fabd5a8672\t169\t26\n72126\t/dev/ttys036\tf629641f-1aa7-4565-ab23-b5dd125a9025\t186\t29\n72127\t/dev/ttys037\t26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t186\t30\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 3.686124982777983,
+      "stdout": "72082\t/dev/ttys034\tc60b4a1b-93b5-460e-8c88-9eafaec56b36\t169\t26\n72115\t/dev/ttys035\t63794f23-da1d-4624-8650-b2fabd5a8672\t169\t26\n72126\t/dev/ttys036\tf629641f-1aa7-4565-ab23-b5dd125a9025\t186\t29\n72127\t/dev/ttys037\t26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t186\t30\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.394000046886504,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-panes",
+        "-a",
+        "-F",
+        "#{session_name}\t#{session_id}\t#{session_created}\t#{pane_id}\t#{pane_pid}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.15579101536423,
+      "stdout": "26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t$3\t1793138977\t%3\t69598\n63794f23-da1d-4624-8650-b2fabd5a8672\t$1\t1793138977\t%1\t69574\nc60b4a1b-93b5-460e-8c88-9eafaec56b36\t$0\t1793138977\t%0\t69566\nf629641f-1aa7-4565-ab23-b5dd125a9025\t$2\t1793138977\t%2\t69590\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.232959006913006,
+      "stdout": "72304\t/dev/ttys034\tc60b4a1b-93b5-460e-8c88-9eafaec56b36\t169\t26\n72327\t/dev/ttys035\t63794f23-da1d-4624-8650-b2fabd5a8672\t169\t26\n72371\t/dev/ttys036\tf629641f-1aa7-4565-ab23-b5dd125a9025\t186\t29\n72375\t/dev/ttys037\t26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t186\t30\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.048916976898909,
+      "stdout": "72304\t/dev/ttys034\tc60b4a1b-93b5-460e-8c88-9eafaec56b36\t169\t26\n72327\t/dev/ttys035\t63794f23-da1d-4624-8650-b2fabd5a8672\t169\t26\n72371\t/dev/ttys036\tf629641f-1aa7-4565-ab23-b5dd125a9025\t186\t29\n72375\t/dev/ttys037\t26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t186\t30\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 3.72308399528265,
+      "stdout": "72304\t/dev/ttys034\tc60b4a1b-93b5-460e-8c88-9eafaec56b36\t169\t26\n72327\t/dev/ttys035\t63794f23-da1d-4624-8650-b2fabd5a8672\t169\t26\n72371\t/dev/ttys036\tf629641f-1aa7-4565-ab23-b5dd125a9025\t186\t29\n72375\t/dev/ttys037\t26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t186\t30\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 3.8023749948479235,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-panes",
+        "-a",
+        "-F",
+        "#{session_name}\t#{session_id}\t#{session_created}\t#{pane_id}\t#{pane_pid}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.117417032830417,
+      "stdout": "26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t$3\t1793138977\t%3\t69598\n63794f23-da1d-4624-8650-b2fabd5a8672\t$1\t1793138977\t%1\t69574\nc60b4a1b-93b5-460e-8c88-9eafaec56b36\t$0\t1793138977\t%0\t69566\nf629641f-1aa7-4565-ab23-b5dd125a9025\t$2\t1793138977\t%2\t69590\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 14.052084006834775,
+      "stdout": "72714\t/dev/ttys034\tc60b4a1b-93b5-460e-8c88-9eafaec56b36\t169\t26\n72755\t/dev/ttys035\t63794f23-da1d-4624-8650-b2fabd5a8672\t169\t26\n72764\t/dev/ttys036\tf629641f-1aa7-4565-ab23-b5dd125a9025\t186\t29\n72765\t/dev/ttys037\t26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t186\t30\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.212166008073837,
+      "stdout": "72714\t/dev/ttys034\tc60b4a1b-93b5-460e-8c88-9eafaec56b36\t169\t26\n72755\t/dev/ttys035\t63794f23-da1d-4624-8650-b2fabd5a8672\t169\t26\n72764\t/dev/ttys036\tf629641f-1aa7-4565-ab23-b5dd125a9025\t186\t29\n72765\t/dev/ttys037\t26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t186\t30\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 3.684750001411885,
+      "stdout": "72714\t/dev/ttys034\tc60b4a1b-93b5-460e-8c88-9eafaec56b36\t169\t26\n72755\t/dev/ttys035\t63794f23-da1d-4624-8650-b2fabd5a8672\t169\t26\n72764\t/dev/ttys036\tf629641f-1aa7-4565-ab23-b5dd125a9025\t186\t29\n72765\t/dev/ttys037\t26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t186\t30\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.435624985489994,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-panes",
+        "-a",
+        "-F",
+        "#{session_name}\t#{session_id}\t#{session_created}\t#{pane_id}\t#{pane_pid}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.2215830180794,
+      "stdout": "26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t$3\t1793138977\t%3\t69598\n63794f23-da1d-4624-8650-b2fabd5a8672\t$1\t1793138977\t%1\t69574\nc60b4a1b-93b5-460e-8c88-9eafaec56b36\t$0\t1793138977\t%0\t69566\nf629641f-1aa7-4565-ab23-b5dd125a9025\t$2\t1793138977\t%2\t69590\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.193125001620501,
+      "stdout": "73051\t/dev/ttys034\tc60b4a1b-93b5-460e-8c88-9eafaec56b36\t169\t26\n73079\t/dev/ttys035\t63794f23-da1d-4624-8650-b2fabd5a8672\t169\t26\n73108\t/dev/ttys036\tf629641f-1aa7-4565-ab23-b5dd125a9025\t186\t29\n73124\t/dev/ttys037\t26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t186\t30\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 3.63987497985363,
+      "stdout": "73051\t/dev/ttys034\tc60b4a1b-93b5-460e-8c88-9eafaec56b36\t169\t26\n73079\t/dev/ttys035\t63794f23-da1d-4624-8650-b2fabd5a8672\t169\t26\n73108\t/dev/ttys036\tf629641f-1aa7-4565-ab23-b5dd125a9025\t186\t29\n73124\t/dev/ttys037\t26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t186\t30\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.054584016557783,
+      "stdout": "73051\t/dev/ttys034\tc60b4a1b-93b5-460e-8c88-9eafaec56b36\t169\t26\n73079\t/dev/ttys035\t63794f23-da1d-4624-8650-b2fabd5a8672\t169\t26\n73108\t/dev/ttys036\tf629641f-1aa7-4565-ab23-b5dd125a9025\t186\t29\n73124\t/dev/ttys037\t26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t186\t30\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.139958007726818,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-panes",
+        "-a",
+        "-F",
+        "#{session_name}\t#{session_id}\t#{session_created}\t#{pane_id}\t#{pane_pid}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.263375012669712,
+      "stdout": "26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t$3\t1793138977\t%3\t69598\n63794f23-da1d-4624-8650-b2fabd5a8672\t$1\t1793138977\t%1\t69574\nc60b4a1b-93b5-460e-8c88-9eafaec56b36\t$0\t1793138977\t%0\t69566\nf629641f-1aa7-4565-ab23-b5dd125a9025\t$2\t1793138977\t%2\t69590\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 15.557416016235948,
+      "stdout": "73396\t/dev/ttys034\tc60b4a1b-93b5-460e-8c88-9eafaec56b36\t169\t26\n73429\t/dev/ttys035\t63794f23-da1d-4624-8650-b2fabd5a8672\t169\t26\n73431\t/dev/ttys036\tf629641f-1aa7-4565-ab23-b5dd125a9025\t186\t29\n73432\t/dev/ttys037\t26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t186\t30\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.250458034221083,
+      "stdout": "73396\t/dev/ttys034\tc60b4a1b-93b5-460e-8c88-9eafaec56b36\t169\t26\n73429\t/dev/ttys035\t63794f23-da1d-4624-8650-b2fabd5a8672\t169\t26\n73431\t/dev/ttys036\tf629641f-1aa7-4565-ab23-b5dd125a9025\t186\t29\n73432\t/dev/ttys037\t26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t186\t30\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 3.6249159602448344,
+      "stdout": "73396\t/dev/ttys034\tc60b4a1b-93b5-460e-8c88-9eafaec56b36\t169\t26\n73429\t/dev/ttys035\t63794f23-da1d-4624-8650-b2fabd5a8672\t169\t26\n73431\t/dev/ttys036\tf629641f-1aa7-4565-ab23-b5dd125a9025\t186\t29\n73432\t/dev/ttys037\t26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t186\t30\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 5.356417037546635,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-panes",
+        "-a",
+        "-F",
+        "#{session_name}\t#{session_id}\t#{session_created}\t#{pane_id}\t#{pane_pid}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.691417037975043,
+      "stdout": "26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t$3\t1793138977\t%3\t69598\n63794f23-da1d-4624-8650-b2fabd5a8672\t$1\t1793138977\t%1\t69574\nc60b4a1b-93b5-460e-8c88-9eafaec56b36\t$0\t1793138977\t%0\t69566\nf629641f-1aa7-4565-ab23-b5dd125a9025\t$2\t1793138977\t%2\t69590\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 36.10666695749387,
+      "stdout": "73575\t/dev/ttys034\tc60b4a1b-93b5-460e-8c88-9eafaec56b36\t169\t26\n73593\t/dev/ttys035\t63794f23-da1d-4624-8650-b2fabd5a8672\t169\t26\n73621\t/dev/ttys036\tf629641f-1aa7-4565-ab23-b5dd125a9025\t186\t29\n73630\t/dev/ttys037\t26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t186\t30\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.587874980643392,
+      "stdout": "73575\t/dev/ttys034\tc60b4a1b-93b5-460e-8c88-9eafaec56b36\t169\t26\n73593\t/dev/ttys035\t63794f23-da1d-4624-8650-b2fabd5a8672\t169\t26\n73621\t/dev/ttys036\tf629641f-1aa7-4565-ab23-b5dd125a9025\t186\t29\n73630\t/dev/ttys037\t26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t186\t30\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 3.984334005508572,
+      "stdout": "73575\t/dev/ttys034\tc60b4a1b-93b5-460e-8c88-9eafaec56b36\t169\t26\n73593\t/dev/ttys035\t63794f23-da1d-4624-8650-b2fabd5a8672\t169\t26\n73621\t/dev/ttys036\tf629641f-1aa7-4565-ab23-b5dd125a9025\t186\t29\n73630\t/dev/ttys037\t26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t186\t30\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.23654104815796,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-panes",
+        "-a",
+        "-F",
+        "#{session_name}\t#{session_id}\t#{session_created}\t#{pane_id}\t#{pane_pid}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.572917008772492,
+      "stdout": "26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t$3\t1793138977\t%3\t69598\n63794f23-da1d-4624-8650-b2fabd5a8672\t$1\t1793138977\t%1\t69574\nc60b4a1b-93b5-460e-8c88-9eafaec56b36\t$0\t1793138977\t%0\t69566\nf629641f-1aa7-4565-ab23-b5dd125a9025\t$2\t1793138977\t%2\t69590\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 5.5151249980553985,
+      "stdout": "73972\t/dev/ttys034\tc60b4a1b-93b5-460e-8c88-9eafaec56b36\t169\t26\n73977\t/dev/ttys035\t63794f23-da1d-4624-8650-b2fabd5a8672\t169\t26\n74156\t/dev/ttys036\tf629641f-1aa7-4565-ab23-b5dd125a9025\t186\t29\n74163\t/dev/ttys037\t26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t186\t30\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.902165965177119,
+      "stdout": "73972\t/dev/ttys034\tc60b4a1b-93b5-460e-8c88-9eafaec56b36\t169\t26\n73977\t/dev/ttys035\t63794f23-da1d-4624-8650-b2fabd5a8672\t169\t26\n74156\t/dev/ttys036\tf629641f-1aa7-4565-ab23-b5dd125a9025\t186\t29\n74163\t/dev/ttys037\t26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t186\t30\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.914582998026162,
+      "stdout": "73972\t/dev/ttys034\tc60b4a1b-93b5-460e-8c88-9eafaec56b36\t169\t26\n73977\t/dev/ttys035\t63794f23-da1d-4624-8650-b2fabd5a8672\t169\t26\n74156\t/dev/ttys036\tf629641f-1aa7-4565-ab23-b5dd125a9025\t186\t29\n74163\t/dev/ttys037\t26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t186\t30\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.6004579635336995,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-panes",
+        "-a",
+        "-F",
+        "#{session_name}\t#{session_id}\t#{session_created}\t#{pane_id}\t#{pane_pid}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.5200829626992345,
+      "stdout": "26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t$3\t1793138977\t%3\t69598\n63794f23-da1d-4624-8650-b2fabd5a8672\t$1\t1793138977\t%1\t69574\nc60b4a1b-93b5-460e-8c88-9eafaec56b36\t$0\t1793138977\t%0\t69566\nf629641f-1aa7-4565-ab23-b5dd125a9025\t$2\t1793138977\t%2\t69590\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.441708035301417,
+      "stdout": "74418\t/dev/ttys034\tc60b4a1b-93b5-460e-8c88-9eafaec56b36\t169\t26\n74424\t/dev/ttys035\t63794f23-da1d-4624-8650-b2fabd5a8672\t169\t26\n74429\t/dev/ttys036\tf629641f-1aa7-4565-ab23-b5dd125a9025\t186\t29\n74448\t/dev/ttys037\t26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t186\t30\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.236499953549355,
+      "stdout": "74418\t/dev/ttys034\tc60b4a1b-93b5-460e-8c88-9eafaec56b36\t169\t26\n74424\t/dev/ttys035\t63794f23-da1d-4624-8650-b2fabd5a8672\t169\t26\n74429\t/dev/ttys036\tf629641f-1aa7-4565-ab23-b5dd125a9025\t186\t29\n74448\t/dev/ttys037\t26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t186\t30\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.780791001394391,
+      "stdout": "74418\t/dev/ttys034\tc60b4a1b-93b5-460e-8c88-9eafaec56b36\t169\t26\n74424\t/dev/ttys035\t63794f23-da1d-4624-8650-b2fabd5a8672\t169\t26\n74429\t/dev/ttys036\tf629641f-1aa7-4565-ab23-b5dd125a9025\t186\t29\n74448\t/dev/ttys037\t26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t186\t30\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.780124989338219,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-panes",
+        "-a",
+        "-F",
+        "#{session_name}\t#{session_id}\t#{session_created}\t#{pane_id}\t#{pane_pid}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.775208013597876,
+      "stdout": "26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t$3\t1793138977\t%3\t69598\n63794f23-da1d-4624-8650-b2fabd5a8672\t$1\t1793138977\t%1\t69574\nc60b4a1b-93b5-460e-8c88-9eafaec56b36\t$0\t1793138977\t%0\t69566\nf629641f-1aa7-4565-ab23-b5dd125a9025\t$2\t1793138977\t%2\t69590\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.454042005818337,
+      "stdout": "74591\t/dev/ttys034\tc60b4a1b-93b5-460e-8c88-9eafaec56b36\t169\t26\n74601\t/dev/ttys035\t63794f23-da1d-4624-8650-b2fabd5a8672\t169\t26\n74608\t/dev/ttys036\tf629641f-1aa7-4565-ab23-b5dd125a9025\t186\t29\n74610\t/dev/ttys037\t26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t186\t30\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.679207981098443,
+      "stdout": "74591\t/dev/ttys034\tc60b4a1b-93b5-460e-8c88-9eafaec56b36\t169\t26\n74601\t/dev/ttys035\t63794f23-da1d-4624-8650-b2fabd5a8672\t169\t26\n74608\t/dev/ttys036\tf629641f-1aa7-4565-ab23-b5dd125a9025\t186\t29\n74610\t/dev/ttys037\t26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t186\t30\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 5.052333988714963,
+      "stdout": "74591\t/dev/ttys034\tc60b4a1b-93b5-460e-8c88-9eafaec56b36\t169\t26\n74601\t/dev/ttys035\t63794f23-da1d-4624-8650-b2fabd5a8672\t169\t26\n74608\t/dev/ttys036\tf629641f-1aa7-4565-ab23-b5dd125a9025\t186\t29\n74610\t/dev/ttys037\t26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t186\t30\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.608709015883505,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-panes",
+        "-a",
+        "-F",
+        "#{session_name}\t#{session_id}\t#{session_created}\t#{pane_id}\t#{pane_pid}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.278166976291686,
+      "stdout": "26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t$3\t1793138977\t%3\t69598\n63794f23-da1d-4624-8650-b2fabd5a8672\t$1\t1793138977\t%1\t69574\nc60b4a1b-93b5-460e-8c88-9eafaec56b36\t$0\t1793138977\t%0\t69566\nf629641f-1aa7-4565-ab23-b5dd125a9025\t$2\t1793138977\t%2\t69590\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 59.887624986004084,
+      "stdout": "74747\t/dev/ttys034\tc60b4a1b-93b5-460e-8c88-9eafaec56b36\t169\t26\n74771\t/dev/ttys035\t63794f23-da1d-4624-8650-b2fabd5a8672\t169\t26\n74774\t/dev/ttys036\tf629641f-1aa7-4565-ab23-b5dd125a9025\t186\t29\n74776\t/dev/ttys037\t26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t186\t30\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.67691698577255,
+      "stdout": "74747\t/dev/ttys034\tc60b4a1b-93b5-460e-8c88-9eafaec56b36\t169\t26\n74771\t/dev/ttys035\t63794f23-da1d-4624-8650-b2fabd5a8672\t169\t26\n74774\t/dev/ttys036\tf629641f-1aa7-4565-ab23-b5dd125a9025\t186\t29\n74776\t/dev/ttys037\t26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t186\t30\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.466457990929484,
+      "stdout": "74747\t/dev/ttys034\tc60b4a1b-93b5-460e-8c88-9eafaec56b36\t169\t26\n74771\t/dev/ttys035\t63794f23-da1d-4624-8650-b2fabd5a8672\t169\t26\n74774\t/dev/ttys036\tf629641f-1aa7-4565-ab23-b5dd125a9025\t186\t29\n74776\t/dev/ttys037\t26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t186\t30\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.663916013669223,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-panes",
+        "-a",
+        "-F",
+        "#{session_name}\t#{session_id}\t#{session_created}\t#{pane_id}\t#{pane_pid}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.637832986190915,
+      "stdout": "26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t$3\t1793138977\t%3\t69598\n63794f23-da1d-4624-8650-b2fabd5a8672\t$1\t1793138977\t%1\t69574\nc60b4a1b-93b5-460e-8c88-9eafaec56b36\t$0\t1793138977\t%0\t69566\nf629641f-1aa7-4565-ab23-b5dd125a9025\t$2\t1793138977\t%2\t69590\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 42.17266698833555,
+      "stdout": "74945\t/dev/ttys034\tc60b4a1b-93b5-460e-8c88-9eafaec56b36\t169\t26\n74950\t/dev/ttys035\t63794f23-da1d-4624-8650-b2fabd5a8672\t169\t26\n74962\t/dev/ttys036\tf629641f-1aa7-4565-ab23-b5dd125a9025\t186\t29\n74970\t/dev/ttys037\t26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t186\t30\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 5.2643329836428165,
+      "stdout": "74945\t/dev/ttys034\tc60b4a1b-93b5-460e-8c88-9eafaec56b36\t169\t26\n74950\t/dev/ttys035\t63794f23-da1d-4624-8650-b2fabd5a8672\t169\t26\n74962\t/dev/ttys036\tf629641f-1aa7-4565-ab23-b5dd125a9025\t186\t29\n74970\t/dev/ttys037\t26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t186\t30\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.3890830129384995,
+      "stdout": "74945\t/dev/ttys034\tc60b4a1b-93b5-460e-8c88-9eafaec56b36\t169\t26\n74950\t/dev/ttys035\t63794f23-da1d-4624-8650-b2fabd5a8672\t169\t26\n74962\t/dev/ttys036\tf629641f-1aa7-4565-ab23-b5dd125a9025\t186\t29\n74970\t/dev/ttys037\t26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t186\t30\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.467040998861194,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-panes",
+        "-a",
+        "-F",
+        "#{session_name}\t#{session_id}\t#{session_created}\t#{pane_id}\t#{pane_pid}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 6.82016700739041,
+      "stdout": "26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t$3\t1793138977\t%3\t69598\n63794f23-da1d-4624-8650-b2fabd5a8672\t$1\t1793138977\t%1\t69574\nc60b4a1b-93b5-460e-8c88-9eafaec56b36\t$0\t1793138977\t%0\t69566\nf629641f-1aa7-4565-ab23-b5dd125a9025\t$2\t1793138977\t%2\t69590\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.605415975674987,
+      "stdout": "75260\t/dev/ttys034\tc60b4a1b-93b5-460e-8c88-9eafaec56b36\t169\t26\n75269\t/dev/ttys035\t63794f23-da1d-4624-8650-b2fabd5a8672\t169\t26\n75277\t/dev/ttys036\tf629641f-1aa7-4565-ab23-b5dd125a9025\t186\t29\n75283\t/dev/ttys037\t26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t186\t30\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.256624961271882,
+      "stdout": "75260\t/dev/ttys034\tc60b4a1b-93b5-460e-8c88-9eafaec56b36\t169\t26\n75269\t/dev/ttys035\t63794f23-da1d-4624-8650-b2fabd5a8672\t169\t26\n75277\t/dev/ttys036\tf629641f-1aa7-4565-ab23-b5dd125a9025\t186\t29\n75283\t/dev/ttys037\t26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t186\t30\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.803000018000603,
+      "stdout": "75260\t/dev/ttys034\tc60b4a1b-93b5-460e-8c88-9eafaec56b36\t169\t26\n75269\t/dev/ttys035\t63794f23-da1d-4624-8650-b2fabd5a8672\t169\t26\n75277\t/dev/ttys036\tf629641f-1aa7-4565-ab23-b5dd125a9025\t186\t29\n75283\t/dev/ttys037\t26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t186\t30\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 5.622458003927022,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-panes",
+        "-a",
+        "-F",
+        "#{session_name}\t#{session_id}\t#{session_created}\t#{pane_id}\t#{pane_pid}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 5.635499954223633,
+      "stdout": "26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t$3\t1793138977\t%3\t69598\n63794f23-da1d-4624-8650-b2fabd5a8672\t$1\t1793138977\t%1\t69574\nc60b4a1b-93b5-460e-8c88-9eafaec56b36\t$0\t1793138977\t%0\t69566\nf629641f-1aa7-4565-ab23-b5dd125a9025\t$2\t1793138977\t%2\t69590\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 5.131166020873934,
+      "stdout": "75529\t/dev/ttys034\tc60b4a1b-93b5-460e-8c88-9eafaec56b36\t169\t26\n75541\t/dev/ttys035\t63794f23-da1d-4624-8650-b2fabd5a8672\t169\t26\n75550\t/dev/ttys036\tf629641f-1aa7-4565-ab23-b5dd125a9025\t186\t29\n75556\t/dev/ttys037\t26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t186\t30\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.496667010243982,
+      "stdout": "75529\t/dev/ttys034\tc60b4a1b-93b5-460e-8c88-9eafaec56b36\t169\t26\n75541\t/dev/ttys035\t63794f23-da1d-4624-8650-b2fabd5a8672\t169\t26\n75550\t/dev/ttys036\tf629641f-1aa7-4565-ab23-b5dd125a9025\t186\t29\n75556\t/dev/ttys037\t26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t186\t30\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 5.697374988812953,
+      "stdout": "75529\t/dev/ttys034\tc60b4a1b-93b5-460e-8c88-9eafaec56b36\t169\t26\n75541\t/dev/ttys035\t63794f23-da1d-4624-8650-b2fabd5a8672\t169\t26\n75550\t/dev/ttys036\tf629641f-1aa7-4565-ab23-b5dd125a9025\t186\t29\n75556\t/dev/ttys037\t26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t186\t30\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 9.359500021673739,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-panes",
+        "-a",
+        "-F",
+        "#{session_name}\t#{session_id}\t#{session_created}\t#{pane_id}\t#{pane_pid}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 10.217083035968244,
+      "stdout": "26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t$3\t1793138977\t%3\t69598\n63794f23-da1d-4624-8650-b2fabd5a8672\t$1\t1793138977\t%1\t69574\nc60b4a1b-93b5-460e-8c88-9eafaec56b36\t$0\t1793138977\t%0\t69566\nf629641f-1aa7-4565-ab23-b5dd125a9025\t$2\t1793138977\t%2\t69590\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 5.9541669907048345,
+      "stdout": "76093\t/dev/ttys034\tc60b4a1b-93b5-460e-8c88-9eafaec56b36\t169\t26\n76105\t/dev/ttys035\t63794f23-da1d-4624-8650-b2fabd5a8672\t169\t26\n76151\t/dev/ttys036\tf629641f-1aa7-4565-ab23-b5dd125a9025\t186\t29\n76170\t/dev/ttys037\t26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t186\t30\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 8.120874990709126,
+      "stdout": "76093\t/dev/ttys034\tc60b4a1b-93b5-460e-8c88-9eafaec56b36\t169\t26\n76105\t/dev/ttys035\t63794f23-da1d-4624-8650-b2fabd5a8672\t169\t26\n76151\t/dev/ttys036\tf629641f-1aa7-4565-ab23-b5dd125a9025\t186\t29\n76170\t/dev/ttys037\t26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t186\t30\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 8.744957973249257,
+      "stdout": "76093\t/dev/ttys034\tc60b4a1b-93b5-460e-8c88-9eafaec56b36\t169\t26\n76105\t/dev/ttys035\t63794f23-da1d-4624-8650-b2fabd5a8672\t169\t26\n76151\t/dev/ttys036\tf629641f-1aa7-4565-ab23-b5dd125a9025\t186\t29\n76170\t/dev/ttys037\t26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t186\t30\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.955624986905605,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-panes",
+        "-a",
+        "-F",
+        "#{session_name}\t#{session_id}\t#{session_created}\t#{pane_id}\t#{pane_pid}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.646125016734004,
+      "stdout": "26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t$3\t1793138977\t%3\t69598\n63794f23-da1d-4624-8650-b2fabd5a8672\t$1\t1793138977\t%1\t69574\nc60b4a1b-93b5-460e-8c88-9eafaec56b36\t$0\t1793138977\t%0\t69566\nf629641f-1aa7-4565-ab23-b5dd125a9025\t$2\t1793138977\t%2\t69590\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 7.505041954573244,
+      "stdout": "76296\t/dev/ttys034\tc60b4a1b-93b5-460e-8c88-9eafaec56b36\t169\t26\n76308\t/dev/ttys035\t63794f23-da1d-4624-8650-b2fabd5a8672\t169\t26\n76317\t/dev/ttys036\tf629641f-1aa7-4565-ab23-b5dd125a9025\t186\t29\n76320\t/dev/ttys037\t26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t186\t30\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 7.0751659804955125,
+      "stdout": "76296\t/dev/ttys034\tc60b4a1b-93b5-460e-8c88-9eafaec56b36\t169\t26\n76308\t/dev/ttys035\t63794f23-da1d-4624-8650-b2fabd5a8672\t169\t26\n76317\t/dev/ttys036\tf629641f-1aa7-4565-ab23-b5dd125a9025\t186\t29\n76320\t/dev/ttys037\t26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t186\t30\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 7.5623749871738255,
+      "stdout": "76296\t/dev/ttys034\tc60b4a1b-93b5-460e-8c88-9eafaec56b36\t169\t26\n76308\t/dev/ttys035\t63794f23-da1d-4624-8650-b2fabd5a8672\t169\t26\n76317\t/dev/ttys036\tf629641f-1aa7-4565-ab23-b5dd125a9025\t186\t29\n76320\t/dev/ttys037\t26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t186\t30\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 8.81979102268815,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-panes",
+        "-a",
+        "-F",
+        "#{session_name}\t#{session_id}\t#{session_created}\t#{pane_id}\t#{pane_pid}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 7.010708039160818,
+      "stdout": "26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t$3\t1793138977\t%3\t69598\n63794f23-da1d-4624-8650-b2fabd5a8672\t$1\t1793138977\t%1\t69574\nc60b4a1b-93b5-460e-8c88-9eafaec56b36\t$0\t1793138977\t%0\t69566\nf629641f-1aa7-4565-ab23-b5dd125a9025\t$2\t1793138977\t%2\t69590\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 8.59666703036055,
+      "stdout": "76453\t/dev/ttys034\tc60b4a1b-93b5-460e-8c88-9eafaec56b36\t169\t26\n76482\t/dev/ttys035\t63794f23-da1d-4624-8650-b2fabd5a8672\t169\t26\n76488\t/dev/ttys036\tf629641f-1aa7-4565-ab23-b5dd125a9025\t186\t29\n76510\t/dev/ttys037\t26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t186\t30\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 10.284457996021956,
+      "stdout": "76453\t/dev/ttys034\tc60b4a1b-93b5-460e-8c88-9eafaec56b36\t169\t26\n76482\t/dev/ttys035\t63794f23-da1d-4624-8650-b2fabd5a8672\t169\t26\n76488\t/dev/ttys036\tf629641f-1aa7-4565-ab23-b5dd125a9025\t186\t29\n76510\t/dev/ttys037\t26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t186\t30\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 8.61183402594179,
+      "stdout": "76453\t/dev/ttys034\tc60b4a1b-93b5-460e-8c88-9eafaec56b36\t169\t26\n76482\t/dev/ttys035\t63794f23-da1d-4624-8650-b2fabd5a8672\t169\t26\n76488\t/dev/ttys036\tf629641f-1aa7-4565-ab23-b5dd125a9025\t186\t29\n76510\t/dev/ttys037\t26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t186\t30\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 10.493499983567744,
+      "stdout": "76488\t/dev/ttys036\tf629641f-1aa7-4565-ab23-b5dd125a9025\t186\t29\n76510\t/dev/ttys037\t26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t186\t30\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-panes",
+        "-a",
+        "-F",
+        "#{session_name}\t#{session_id}\t#{session_created}\t#{pane_id}\t#{pane_pid}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 9.127707977313548,
+      "stdout": "26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t$3\t1793138977\t%3\t69598\n63794f23-da1d-4624-8650-b2fabd5a8672\t$1\t1793138977\t%1\t69574\nc60b4a1b-93b5-460e-8c88-9eafaec56b36\t$0\t1793138977\t%0\t69566\nf629641f-1aa7-4565-ab23-b5dd125a9025\t$2\t1793138977\t%2\t69590\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 6.519125017803162,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-panes",
+        "-a",
+        "-F",
+        "#{session_name}\t#{session_id}\t#{session_created}\t#{pane_id}\t#{pane_pid}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 5.156625004019588,
+      "stdout": "26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c\t$3\t1793138977\t%3\t69598\n63794f23-da1d-4624-8650-b2fabd5a8672\t$1\t1793138977\t%1\t69574\nc60b4a1b-93b5-460e-8c88-9eafaec56b36\t$0\t1793138977\t%0\t69566\nf629641f-1aa7-4565-ab23-b5dd125a9025\t$2\t1793138977\t%2\t69590\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "kill-session",
+        "-t",
+        "=c60b4a1b-93b5-460e-8c88-9eafaec56b36"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 19.250833021942526,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "kill-session",
+        "-t",
+        "=63794f23-da1d-4624-8650-b2fabd5a8672"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 14.73079196875915,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "kill-session",
+        "-t",
+        "=f629641f-1aa7-4565-ab23-b5dd125a9025"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 29.57754099043086,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "kill-session",
+        "-t",
+        "=26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 23.708832974079996,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-b5719c06acdf0acb",
+        "-f",
+        "/dev/null",
+        "list-sessions"
+      ],
+      "exit_code": 1,
+      "elapsed_ms": 10.792250046506524,
+      "stdout": "",
+      "stderr": "no server running on /private/tmp/tmux-501/riwork-b5719c06acdf0acb\n"
+    }
+  ],
+  "status": "passed",
+  "projects": [
+    {
+      "id": "c63688f7-bc3d-48f2-95b3-3a0db62364a3",
+      "name": "Terminal fixture Alpha",
+      "root": "/private/tmp/rwnsh-p2-upf_p6zi/repos/Alpha",
+      "repository_roots": [],
+      "folder_id": null,
+      "notify_on_agent_done": false,
+      "wake_orchestrators_on_agent_done": false,
+      "codex_account": {
+        "source": "inherit"
+      },
+      "orchestrator": {
+        "mode": "inherit"
+      },
+      "delegation_policy": {},
+      "created_at": 1793138977
+    },
+    {
+      "id": "ed0772f8-7226-4ba4-9a54-495bb3935b63",
+      "name": "Terminal fixture Beta",
+      "root": "/private/tmp/rwnsh-p2-upf_p6zi/repos/Beta",
+      "repository_roots": [],
+      "folder_id": null,
+      "notify_on_agent_done": false,
+      "wake_orchestrators_on_agent_done": false,
+      "codex_account": {
+        "source": "inherit"
+      },
+      "orchestrator": {
+        "mode": "inherit"
+      },
+      "delegation_policy": {},
+      "created_at": 1793138977
+    }
+  ],
+  "sessions": [
+    {
+      "user_opened": false,
+      "id": "c60b4a1b-93b5-460e-8c88-9eafaec56b36",
+      "project_id": "c63688f7-bc3d-48f2-95b3-3a0db62364a3",
+      "worktree_id": "ef16de5c-c489-4ab4-91e6-0aa39ed14831",
+      "kind": "project",
+      "cwd": "/private/tmp/rwnsh-p2-upf_p6zi/repos/Alpha",
+      "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/bin/python3.14 -u /private/tmp/rwnsh-p2-upf_p6zi/pressure.py /private/tmp/rwnsh-p2-upf_p6zi/pressure alpha-0",
+      "editor_path": null,
+      "harness": null,
+      "unrestricted": false,
+      "codex_account_id": null,
+      "codex_account_label": null,
+      "codex_account_email": null,
+      "codex_home": null,
+      "orchestrator_skill_loaded": false,
+      "orchestrator_skill_version": null,
+      "orchestrator_delegation_version": null,
+      "orchestrator_project_root": null,
+      "created_at_unix": 1793138977,
+      "alive": true,
+      "fixtureTag": "alpha-0"
+    },
+    {
+      "user_opened": false,
+      "id": "63794f23-da1d-4624-8650-b2fabd5a8672",
+      "project_id": "c63688f7-bc3d-48f2-95b3-3a0db62364a3",
+      "worktree_id": "ef16de5c-c489-4ab4-91e6-0aa39ed14831",
+      "kind": "project",
+      "cwd": "/private/tmp/rwnsh-p2-upf_p6zi/repos/Alpha",
+      "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/bin/python3.14 -u /private/tmp/rwnsh-p2-upf_p6zi/pressure.py /private/tmp/rwnsh-p2-upf_p6zi/pressure alpha-1",
+      "editor_path": null,
+      "harness": null,
+      "unrestricted": false,
+      "codex_account_id": null,
+      "codex_account_label": null,
+      "codex_account_email": null,
+      "codex_home": null,
+      "orchestrator_skill_loaded": false,
+      "orchestrator_skill_version": null,
+      "orchestrator_delegation_version": null,
+      "orchestrator_project_root": null,
+      "created_at_unix": 1793138977,
+      "alive": true,
+      "fixtureTag": "alpha-1"
+    },
+    {
+      "user_opened": false,
+      "id": "f629641f-1aa7-4565-ab23-b5dd125a9025",
+      "project_id": "ed0772f8-7226-4ba4-9a54-495bb3935b63",
+      "worktree_id": "2706ca75-f635-4515-a417-ebe817d13467",
+      "kind": "project",
+      "cwd": "/private/tmp/rwnsh-p2-upf_p6zi/repos/Beta",
+      "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/bin/python3.14 -u /private/tmp/rwnsh-p2-upf_p6zi/pressure.py /private/tmp/rwnsh-p2-upf_p6zi/pressure beta-0",
+      "editor_path": null,
+      "harness": null,
+      "unrestricted": false,
+      "codex_account_id": null,
+      "codex_account_label": null,
+      "codex_account_email": null,
+      "codex_home": null,
+      "orchestrator_skill_loaded": false,
+      "orchestrator_skill_version": null,
+      "orchestrator_delegation_version": null,
+      "orchestrator_project_root": null,
+      "created_at_unix": 1793138977,
+      "alive": true,
+      "fixtureTag": "beta-0"
+    },
+    {
+      "user_opened": false,
+      "id": "26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c",
+      "project_id": "ed0772f8-7226-4ba4-9a54-495bb3935b63",
+      "worktree_id": "2706ca75-f635-4515-a417-ebe817d13467",
+      "kind": "project",
+      "cwd": "/private/tmp/rwnsh-p2-upf_p6zi/repos/Beta",
+      "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/bin/python3.14 -u /private/tmp/rwnsh-p2-upf_p6zi/pressure.py /private/tmp/rwnsh-p2-upf_p6zi/pressure beta-1",
+      "editor_path": null,
+      "harness": null,
+      "unrestricted": false,
+      "codex_account_id": null,
+      "codex_account_label": null,
+      "codex_account_email": null,
+      "codex_home": null,
+      "orchestrator_skill_loaded": false,
+      "orchestrator_skill_version": null,
+      "orchestrator_delegation_version": null,
+      "orchestrator_project_root": null,
+      "created_at_unix": 1793138977,
+      "alive": true,
+      "fixtureTag": "beta-1"
+    }
+  ],
+  "initial_layouts": {
+    "c63688f7-bc3d-48f2-95b3-3a0db62364a3": {
+      "layout": {
+        "split": {
+          "axis": "stacked",
+          "ratio": 0.5,
+          "first": {
+            "pane": 1
+          },
+          "second": {
+            "pane": 2
+          }
+        }
+      },
+      "panes": {
+        "1": {
+          "tabs": [
+            {
+              "kind": "shell",
+              "shell_id": "c60b4a1b-93b5-460e-8c88-9eafaec56b36"
+            }
+          ],
+          "active_tab_key": "shell:c60b4a1b-93b5-460e-8c88-9eafaec56b36",
+          "shell_ids": [
+            "c60b4a1b-93b5-460e-8c88-9eafaec56b36"
+          ],
+          "active_shell_id": "c60b4a1b-93b5-460e-8c88-9eafaec56b36",
+          "tab_edge": "top"
+        },
+        "2": {
+          "tabs": [
+            {
+              "kind": "shell",
+              "shell_id": "63794f23-da1d-4624-8650-b2fabd5a8672"
+            }
+          ],
+          "active_tab_key": "shell:63794f23-da1d-4624-8650-b2fabd5a8672",
+          "shell_ids": [
+            "63794f23-da1d-4624-8650-b2fabd5a8672"
+          ],
+          "active_shell_id": "63794f23-da1d-4624-8650-b2fabd5a8672",
+          "tab_edge": "top"
+        }
+      },
+      "active_pane": 1,
+      "locked_panes": [],
+      "main_pane": null,
+      "panels_initialized": true,
+      "sidebar_visible": false,
+      "window_size": {
+        "width": 960.0,
+        "height": 720.0
+      }
+    },
+    "ed0772f8-7226-4ba4-9a54-495bb3935b63": {
+      "layout": {
+        "split": {
+          "axis": "stacked",
+          "ratio": 0.5,
+          "first": {
+            "pane": 1
+          },
+          "second": {
+            "pane": 2
+          }
+        }
+      },
+      "panes": {
+        "1": {
+          "tabs": [
+            {
+              "kind": "shell",
+              "shell_id": "f629641f-1aa7-4565-ab23-b5dd125a9025"
+            }
+          ],
+          "active_tab_key": "shell:f629641f-1aa7-4565-ab23-b5dd125a9025",
+          "shell_ids": [
+            "f629641f-1aa7-4565-ab23-b5dd125a9025"
+          ],
+          "active_shell_id": "f629641f-1aa7-4565-ab23-b5dd125a9025",
+          "tab_edge": "top"
+        },
+        "2": {
+          "tabs": [
+            {
+              "kind": "shell",
+              "shell_id": "26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c"
+            }
+          ],
+          "active_tab_key": "shell:26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c",
+          "shell_ids": [
+            "26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c"
+          ],
+          "active_shell_id": "26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c",
+          "tab_edge": "top"
+        }
+      },
+      "active_pane": 1,
+      "locked_panes": [],
+      "main_pane": null,
+      "panels_initialized": true,
+      "sidebar_visible": false,
+      "window_size": {
+        "width": 960.0,
+        "height": 720.0
+      }
+    }
+  },
+  "pid": 69604,
+  "fixture_windows_shown": {
+    "activation": false,
+    "frames": [
+      {
+        "height": 900.0,
+        "width": 1220.0,
+        "windowId": "6ba3a7c0-194c-4658-b666-63e1e9693dbe",
+        "windowNumber": 6574,
+        "x": 452.0,
+        "y": 472.0
+      },
+      {
+        "height": 900.0,
+        "width": 1220.0,
+        "windowId": "dbdb9290-89da-4a2b-8e32-de28362b1040",
+        "windowNumber": 6573,
+        "x": 1688.0,
+        "y": 472.0
+      }
+    ],
+    "ok": true
+  },
+  "rendering_initial": [
+    {
+      "terminalId": 1,
+      "shellId": "c60b4a1b-93b5-460e-8c88-9eafaec56b36",
+      "appTicks": 4,
+      "background": "#101820",
+      "closing": false,
+      "cols": 186,
+      "drawCalls": 0,
+      "foreground": "#c9d8e6",
+      "frame": "{{0, 0}, {1220, 395}}",
+      "frozen": false,
+      "hasWindow": 1,
+      "heightPx": 790,
+      "lastShown": true,
+      "layerBounds": "{{0, 0}, {1220, 395}}",
+      "layerClass": "IOSurfaceLayer",
+      "layerHasContents": 1,
+      "layerHidden": false,
+      "layerScale": 2,
+      "mainThread": true,
+      "monotonicMs": 290781757.86999995,
+      "originDetails": {
+        "available": 18,
+        "baseline": 14.5,
+        "cellHeight": 13,
+        "imeY": 381,
+        "left": 4,
+        "reason": "measured",
+        "remainder": 4,
+        "top": 4
+      },
+      "originX": 4,
+      "originY": 4,
+      "phase": "geometry-probe",
+      "renderRequests": 0,
+      "renderer": {
+        "differentPixels": 20337,
+        "firstPixel": 4279375903,
+        "height": 790,
+        "iosurface": true,
+        "readable": 1,
+        "samples": 214896,
+        "width": 2440
+      },
+      "resolved": true,
+      "rows": 29,
+      "scale": 2,
+      "superviewClass": "NshView",
+      "viewHeight": 395,
+      "viewWidth": 1220,
+      "viewportText": "https://example.com/ RIWORK alpha-0 OUTPUT PRESSURE ------------------------------------------------\nhttps://example.com/ RIWORK alpha-0 OUTPUT PRESSURE ------------------------------------------------\nhttps://example.com/ RIWORK alpha-0 OUTPUT PRESSURE ------------------------------------------------",
+      "visibilityUpdates": 2,
+      "visible": true,
+      "visibleRect": "{{0, 0}, {1220, 395}}",
+      "wakeCount": 8,
+      "wantsLayer": true,
+      "widthPx": 2440,
+      "windowOcclusion": 8194
+    },
+    {
+      "terminalId": 2,
+      "shellId": "63794f23-da1d-4624-8650-b2fabd5a8672",
+      "appTicks": 3,
+      "background": "#101820",
+      "closing": false,
+      "cols": 186,
+      "drawCalls": 0,
+      "foreground": "#c9d8e6",
+      "frame": "{{0, 0}, {1220, 399}}",
+      "frozen": false,
+      "hasWindow": 1,
+      "heightPx": 798,
+      "lastShown": true,
+      "layerBounds": "{{0, 0}, {1220, 399}}",
+      "layerClass": "IOSurfaceLayer",
+      "layerHasContents": 1,
+      "layerHidden": false,
+      "layerScale": 2,
+      "mainThread": true,
+      "monotonicMs": 290781818.40599996,
+      "originDetails": {
+        "available": 9,
+        "baseline": 14.5,
+        "cellHeight": 13,
+        "imeY": 394,
+        "left": 4,
+        "reason": "measured",
+        "remainder": 4,
+        "top": 4
+      },
+      "originX": 4,
+      "originY": 4,
+      "phase": "geometry-probe",
+      "renderRequests": 0,
+      "renderer": {
+        "differentPixels": 20910,
+        "firstPixel": 4279375903,
+        "height": 798,
+        "iosurface": true,
+        "readable": 1,
+        "samples": 216524,
+        "width": 2440
+      },
+      "resolved": true,
+      "rows": 30,
+      "scale": 2,
+      "superviewClass": "NshView",
+      "viewHeight": 399,
+      "viewWidth": 1220,
+      "viewportText": "https://example.com/ RIWORK alpha-1 OUTPUT PRESSURE ------------------------------------------------\nhttps://example.com/ RIWORK alpha-1 OUTPUT PRESSURE ------------------------------------------------\nhttps://example.com/ RIWORK alpha-1 OUTPUT PRESSURE ------------------------------------------------",
+      "visibilityUpdates": 2,
+      "visible": true,
+      "visibleRect": "{{0, 0}, {1220, 399}}",
+      "wakeCount": 7,
+      "wantsLayer": true,
+      "widthPx": 2440,
+      "windowOcclusion": 8194
+    },
+    {
+      "terminalId": 3,
+      "shellId": "f629641f-1aa7-4565-ab23-b5dd125a9025",
+      "appTicks": 5,
+      "background": "#101820",
+      "closing": false,
+      "cols": 186,
+      "drawCalls": 0,
+      "foreground": "#c9d8e6",
+      "frame": "{{0, 0}, {1220, 395}}",
+      "frozen": false,
+      "hasWindow": 1,
+      "heightPx": 790,
+      "lastShown": true,
+      "layerBounds": "{{0, 0}, {1220, 395}}",
+      "layerClass": "IOSurfaceLayer",
+      "layerHasContents": 1,
+      "layerHidden": false,
+      "layerScale": 2,
+      "mainThread": true,
+      "monotonicMs": 290781864.933,
+      "originDetails": {
+        "available": 18,
+        "baseline": 14.5,
+        "cellHeight": 13,
+        "imeY": 381,
+        "left": 4,
+        "reason": "measured",
+        "remainder": 4,
+        "top": 4
+      },
+      "originX": 4,
+      "originY": 4,
+      "phase": "geometry-probe",
+      "renderRequests": 0,
+      "renderer": {
+        "differentPixels": 19994,
+        "firstPixel": 4279375903,
+        "height": 790,
+        "iosurface": true,
+        "readable": 1,
+        "samples": 214896,
+        "width": 2440
+      },
+      "resolved": true,
+      "rows": 29,
+      "scale": 2,
+      "superviewClass": "NshView",
+      "viewHeight": 395,
+      "viewWidth": 1220,
+      "viewportText": "https://example.com/ RIWORK beta-0 OUTPUT PRESSURE ------------------------------------------------\nhttps://example.com/ RIWORK beta-0 OUTPUT PRESSURE ------------------------------------------------\nhttps://example.com/ RIWORK beta-0 OUTPUT PRESSURE ------------------------------------------------",
+      "visibilityUpdates": 2,
+      "visible": true,
+      "visibleRect": "{{0, 0}, {1220, 395}}",
+      "wakeCount": 9,
+      "wantsLayer": true,
+      "widthPx": 2440,
+      "windowOcclusion": 8194
+    },
+    {
+      "terminalId": 4,
+      "shellId": "26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c",
+      "appTicks": 6,
+      "background": "#101820",
+      "closing": false,
+      "cols": 186,
+      "drawCalls": 0,
+      "foreground": "#c9d8e6",
+      "frame": "{{0, 0}, {1220, 399}}",
+      "frozen": false,
+      "hasWindow": 1,
+      "heightPx": 798,
+      "lastShown": true,
+      "layerBounds": "{{0, 0}, {1220, 399}}",
+      "layerClass": "IOSurfaceLayer",
+      "layerHasContents": 1,
+      "layerHidden": false,
+      "layerScale": 2,
+      "mainThread": true,
+      "monotonicMs": 290781912.472,
+      "originDetails": {
+        "available": 9,
+        "baseline": 14.5,
+        "cellHeight": 13,
+        "imeY": 394,
+        "left": 4,
+        "reason": "measured",
+        "remainder": 4,
+        "top": 4
+      },
+      "originX": 4,
+      "originY": 4,
+      "phase": "geometry-probe",
+      "renderRequests": 0,
+      "renderer": {
+        "differentPixels": 20512,
+        "firstPixel": 4279375903,
+        "height": 798,
+        "iosurface": true,
+        "readable": 1,
+        "samples": 216524,
+        "width": 2440
+      },
+      "resolved": true,
+      "rows": 30,
+      "scale": 2,
+      "superviewClass": "NshView",
+      "viewHeight": 399,
+      "viewWidth": 1220,
+      "viewportText": "https://example.com/ RIWORK beta-1 OUTPUT PRESSURE ------------------------------------------------\nhttps://example.com/ RIWORK beta-1 OUTPUT PRESSURE ------------------------------------------------\nhttps://example.com/ RIWORK beta-1 OUTPUT PRESSURE ------------------------------------------------",
+      "visibilityUpdates": 2,
+      "visible": true,
+      "visibleRect": "{{0, 0}, {1220, 399}}",
+      "wakeCount": 9,
+      "wantsLayer": true,
+      "widthPx": 2440,
+      "windowOcclusion": 8194
+    }
+  ],
+  "windows": [
+    {
+      "layout": null,
+      "projectId": "ed0772f8-7226-4ba4-9a54-495bb3935b63",
+      "windowId": "6ba3a7c0-194c-4658-b666-63e1e9693dbe",
+      "windowNumber": 6574
+    },
+    {
+      "layout": {
+        "active_pane": 1,
+        "detached_shell_ids": [],
+        "layout": {
+          "split": {
+            "axis": "stacked",
+            "first": {
+              "pane": 1
+            },
+            "ratio": 0.5,
+            "second": {
+              "pane": 2
+            }
+          }
+        },
+        "locked_panes": [],
+        "panels_initialized": true,
+        "panes": {
+          "1": {
+            "active_shell_id": "c60b4a1b-93b5-460e-8c88-9eafaec56b36",
+            "active_tab_key": "shell:c60b4a1b-93b5-460e-8c88-9eafaec56b36",
+            "shell_ids": [
+              "c60b4a1b-93b5-460e-8c88-9eafaec56b36"
+            ],
+            "tab_edge": "top",
+            "tabs": [
+              {
+                "kind": "shell",
+                "shell_id": "c60b4a1b-93b5-460e-8c88-9eafaec56b36"
+              }
+            ]
+          },
+          "2": {
+            "active_shell_id": "63794f23-da1d-4624-8650-b2fabd5a8672",
+            "active_tab_key": "shell:63794f23-da1d-4624-8650-b2fabd5a8672",
+            "shell_ids": [
+              "63794f23-da1d-4624-8650-b2fabd5a8672"
+            ],
+            "tab_edge": "top",
+            "tabs": [
+              {
+                "kind": "shell",
+                "shell_id": "63794f23-da1d-4624-8650-b2fabd5a8672"
+              }
+            ]
+          }
+        },
+        "selected_task_id": null,
+        "selected_worktree_id": null,
+        "sidebar_visible": false,
+        "window_size": {
+          "height": 720.0,
+          "width": 960.0
+        }
+      },
+      "projectId": "c63688f7-bc3d-48f2-95b3-3a0db62364a3",
+      "windowId": "dbdb9290-89da-4a2b-8e32-de28362b1040",
+      "windowNumber": 6573
+    }
+  ],
+  "links": {
+    "target": "https://example.com/",
+    "capture_resolver": true,
+    "native_hover_click": true,
+    "external_open_intercepted": true
+  },
+  "input_resize": {
+    "input_hex": "5249574f524b5f4e41544956455f494e5055545f32346162316435351b5b440d03e697a5e69cace8aa9e1b5b3c303b39343b31354d1b5b3c33323b39353b31354d1b5b3c33323b39373b31354d1b5b3c303b39373b31356d",
+    "before": [
+      {
+        "pid": 69691,
+        "tty": "/dev/ttys035",
+        "shell": "63794f23-da1d-4624-8650-b2fabd5a8672",
+        "cols": 186,
+        "rows": 30
+      },
+      {
+        "pid": 69690,
+        "tty": "/dev/ttys034",
+        "shell": "c60b4a1b-93b5-460e-8c88-9eafaec56b36",
+        "cols": 186,
+        "rows": 29
+      },
+      {
+        "pid": 69745,
+        "tty": "/dev/ttys036",
+        "shell": "f629641f-1aa7-4565-ab23-b5dd125a9025",
+        "cols": 186,
+        "rows": 29
+      },
+      {
+        "pid": 69747,
+        "tty": "/dev/ttys037",
+        "shell": "26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c",
+        "cols": 186,
+        "rows": 30
+      }
+    ],
+    "after": [
+      {
+        "pid": 69691,
+        "tty": "/dev/ttys035",
+        "shell": "63794f23-da1d-4624-8650-b2fabd5a8672",
+        "cols": 169,
+        "rows": 26
+      },
+      {
+        "pid": 69690,
+        "tty": "/dev/ttys034",
+        "shell": "c60b4a1b-93b5-460e-8c88-9eafaec56b36",
+        "cols": 169,
+        "rows": 26
+      },
+      {
+        "pid": 69745,
+        "tty": "/dev/ttys036",
+        "shell": "f629641f-1aa7-4565-ab23-b5dd125a9025",
+        "cols": 186,
+        "rows": 29
+      },
+      {
+        "pid": 69747,
+        "tty": "/dev/ttys037",
+        "shell": "26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c",
+        "cols": 186,
+        "rows": 30
+      }
+    ],
+    "coverage": "direct production NSTextInputClient/NSResponder callbacks; not OS input-source UI coverage"
+  },
+  "live_theme": [
+    {
+      "theme": "gruvbox_light",
+      "background": "#fbf1c7",
+      "clients_preserved": true
+    },
+    {
+      "theme": "ri_work",
+      "background": "#090d14",
+      "clients_preserved": true
+    }
+  ],
+  "cycles": 20,
+  "rendering_final": [
+    {
+      "terminalId": 81,
+      "shellId": "c60b4a1b-93b5-460e-8c88-9eafaec56b36",
+      "appTicks": 7,
+      "background": "#090d14",
+      "closing": false,
+      "cols": 169,
+      "drawCalls": 0,
+      "foreground": "#d3e1e6",
+      "frame": "{{0, 0}, {1110, 350}}",
+      "frozen": false,
+      "hasWindow": 1,
+      "heightPx": 700,
+      "lastShown": true,
+      "layerBounds": "{{0, 0}, {1110, 350}}",
+      "layerClass": "IOSurfaceLayer",
+      "layerHasContents": 1,
+      "layerHidden": false,
+      "layerScale": 2,
+      "mainThread": true,
+      "monotonicMs": 290820835.54300004,
+      "originDetails": {
+        "available": 12,
+        "baseline": 14.5,
+        "cellHeight": 13,
+        "imeY": 342,
+        "left": 4,
+        "reason": "measured",
+        "remainder": 4,
+        "top": 4
+      },
+      "originX": 4,
+      "originY": 4,
+      "phase": "geometry-probe",
+      "renderRequests": 0,
+      "renderer": {
+        "differentPixels": 18159,
+        "firstPixel": 4278848787,
+        "height": 700,
+        "iosurface": true,
+        "readable": 1,
+        "samples": 173160,
+        "width": 2220
+      },
+      "resolved": true,
+      "rows": 26,
+      "scale": 2,
+      "superviewClass": "NshView",
+      "viewHeight": 350,
+      "viewWidth": 1110,
+      "viewportText": "https://example.com/ RIWORK alpha-0 OUTPUT PRESSURE ------------------------------------------------\nhttps://example.com/ RIWORK alpha-0 OUTPUT PRESSURE ------------------------------------------------\nhttps://example.com/ RIWORK alpha-0 OUTPUT PRESSURE ------------------------------------------------",
+      "visibilityUpdates": 1,
+      "visible": true,
+      "visibleRect": "{{0, 0}, {1110, 350}}",
+      "wakeCount": 11,
+      "wantsLayer": true,
+      "widthPx": 2220,
+      "windowOcclusion": 8194
+    },
+    {
+      "terminalId": 82,
+      "shellId": "63794f23-da1d-4624-8650-b2fabd5a8672",
+      "appTicks": 6,
+      "background": "#090d14",
+      "closing": false,
+      "cols": 169,
+      "drawCalls": 0,
+      "foreground": "#d3e1e6",
+      "frame": "{{0, 0}, {1110, 354}}",
+      "frozen": false,
+      "hasWindow": 1,
+      "heightPx": 708,
+      "lastShown": true,
+      "layerBounds": "{{0, 0}, {1110, 354}}",
+      "layerClass": "IOSurfaceLayer",
+      "layerHasContents": 1,
+      "layerHidden": false,
+      "layerScale": 2,
+      "mainThread": true,
+      "monotonicMs": 290820904.777,
+      "originDetails": {
+        "available": 16,
+        "baseline": 14.5,
+        "cellHeight": 13,
+        "imeY": 342,
+        "left": 4,
+        "reason": "measured",
+        "remainder": 4,
+        "top": 4
+      },
+      "originX": 4,
+      "originY": 4,
+      "phase": "geometry-probe",
+      "renderRequests": 0,
+      "renderer": {
+        "differentPixels": 18025,
+        "firstPixel": 4278848787,
+        "height": 708,
+        "iosurface": true,
+        "readable": 1,
+        "samples": 174640,
+        "width": 2220
+      },
+      "resolved": true,
+      "rows": 26,
+      "scale": 2,
+      "superviewClass": "NshView",
+      "viewHeight": 354,
+      "viewWidth": 1110,
+      "viewportText": "https://example.com/ RIWORK alpha-1 OUTPUT PRESSURE ------------------------------------------------\nhttps://example.com/ RIWORK alpha-1 OUTPUT PRESSURE ------------------------------------------------\nhttps://example.com/ RIWORK alpha-1 OUTPUT PRESSURE ------------------------------------------------",
+      "visibilityUpdates": 1,
+      "visible": true,
+      "visibleRect": "{{0, 0}, {1110, 354}}",
+      "wakeCount": 9,
+      "wantsLayer": true,
+      "widthPx": 2220,
+      "windowOcclusion": 8194
+    },
+    {
+      "terminalId": 83,
+      "shellId": "f629641f-1aa7-4565-ab23-b5dd125a9025",
+      "appTicks": 5,
+      "background": "#090d14",
+      "closing": false,
+      "cols": 186,
+      "drawCalls": 0,
+      "foreground": "#d3e1e6",
+      "frame": "{{0, 0}, {1220, 395}}",
+      "frozen": false,
+      "hasWindow": 1,
+      "heightPx": 790,
+      "lastShown": true,
+      "layerBounds": "{{0, 0}, {1220, 395}}",
+      "layerClass": "IOSurfaceLayer",
+      "layerHasContents": 1,
+      "layerHidden": false,
+      "layerScale": 2,
+      "mainThread": true,
+      "monotonicMs": 290820970.232,
+      "originDetails": {
+        "available": 18,
+        "baseline": 14.5,
+        "cellHeight": 13,
+        "imeY": 381,
+        "left": 4,
+        "reason": "measured",
+        "remainder": 4,
+        "top": 4
+      },
+      "originX": 4,
+      "originY": 4,
+      "phase": "geometry-probe",
+      "renderRequests": 0,
+      "renderer": {
+        "differentPixels": 20419,
+        "firstPixel": 4278848787,
+        "height": 790,
+        "iosurface": true,
+        "readable": 1,
+        "samples": 214896,
+        "width": 2440
+      },
+      "resolved": true,
+      "rows": 29,
+      "scale": 2,
+      "superviewClass": "NshView",
+      "viewHeight": 395,
+      "viewWidth": 1220,
+      "viewportText": "https://example.com/ RIWORK beta-0 OUTPUT PRESSURE ------------------------------------------------\nhttps://example.com/ RIWORK beta-0 OUTPUT PRESSURE ------------------------------------------------\nhttps://example.com/ RIWORK beta-0 OUTPUT PRESSURE ------------------------------------------------",
+      "visibilityUpdates": 1,
+      "visible": true,
+      "visibleRect": "{{0, 0}, {1220, 395}}",
+      "wakeCount": 9,
+      "wantsLayer": true,
+      "widthPx": 2440,
+      "windowOcclusion": 8194
+    },
+    {
+      "terminalId": 84,
+      "shellId": "26ba0fd1-b845-4ffd-b9ee-66794c1c3c0c",
+      "appTicks": 6,
+      "background": "#090d14",
+      "closing": false,
+      "cols": 186,
+      "drawCalls": 0,
+      "foreground": "#d3e1e6",
+      "frame": "{{0, 0}, {1220, 399}}",
+      "frozen": false,
+      "hasWindow": 1,
+      "heightPx": 798,
+      "lastShown": true,
+      "layerBounds": "{{0, 0}, {1220, 399}}",
+      "layerClass": "IOSurfaceLayer",
+      "layerHasContents": 1,
+      "layerHidden": false,
+      "layerScale": 2,
+      "mainThread": true,
+      "monotonicMs": 290821038.985,
+      "originDetails": {
+        "available": 9,
+        "baseline": 14.5,
+        "cellHeight": 13,
+        "imeY": 394,
+        "left": 4,
+        "reason": "measured",
+        "remainder": 4,
+        "top": 4
+      },
+      "originX": 4,
+      "originY": 4,
+      "phase": "geometry-probe",
+      "renderRequests": 0,
+      "renderer": {
+        "differentPixels": 20544,
+        "firstPixel": 4278848787,
+        "height": 798,
+        "iosurface": true,
+        "readable": 1,
+        "samples": 216524,
+        "width": 2440
+      },
+      "resolved": true,
+      "rows": 30,
+      "scale": 2,
+      "superviewClass": "NshView",
+      "viewHeight": 399,
+      "viewWidth": 1220,
+      "viewportText": "https://example.com/ RIWORK beta-1 OUTPUT PRESSURE ------------------------------------------------\nhttps://example.com/ RIWORK beta-1 OUTPUT PRESSURE ------------------------------------------------\nhttps://example.com/ RIWORK beta-1 OUTPUT PRESSURE ------------------------------------------------",
+      "visibilityUpdates": 1,
+      "visible": true,
+      "visibleRect": "{{0, 0}, {1220, 399}}",
+      "wakeCount": 9,
+      "wantsLayer": true,
+      "widthPx": 2440,
+      "windowOcclusion": 8194
+    }
+  ],
+  "graceful_shutdown": {
+    "exit_code": 0,
+    "session_survival": true,
+    "leaked_clients": 0,
+    "leaked_descendants": 0
+  },
+  "native_verification": {
+    "created": 84,
+    "freed": 84,
+    "contexts_released": 84,
+    "pending": 0,
+    "maxima": {
+      "shutdown_ms": 0.15900004655122757,
+      "free_ms": 5.839999997988343,
+      "disposal_ms": 40.86800001095981
+    },
+    "geometry": {
+      "terminalId": 1,
+      "shellId": "c60b4a1b-93b5-460e-8c88-9eafaec56b36",
+      "appTicks": 4,
+      "background": "#101820",
+      "closing": false,
+      "cols": 186,
+      "drawCalls": 0,
+      "foreground": "#c9d8e6",
+      "frame": "{{0, 0}, {1220, 395}}",
+      "frozen": false,
+      "hasWindow": 1,
+      "heightPx": 790,
+      "lastShown": true,
+      "layerBounds": "{{0, 0}, {1220, 395}}",
+      "layerClass": "IOSurfaceLayer",
+      "layerHasContents": 1,
+      "layerHidden": false,
+      "layerScale": 2,
+      "mainThread": true,
+      "monotonicMs": 290781757.86999995,
+      "originDetails": {
+        "available": 18,
+        "baseline": 14.5,
+        "cellHeight": 13,
+        "imeY": 381,
+        "left": 4,
+        "reason": "measured",
+        "remainder": 4,
+        "top": 4
+      },
+      "originX": 4,
+      "originY": 4,
+      "phase": "geometry-probe",
+      "renderRequests": 0,
+      "renderer": {
+        "differentPixels": 20337,
+        "firstPixel": 4279375903,
+        "height": 790,
+        "iosurface": true,
+        "readable": 1,
+        "samples": 214896,
+        "width": 2440
+      },
+      "resolved": true,
+      "rows": 29,
+      "scale": 2,
+      "superviewClass": "NshView",
+      "viewHeight": 395,
+      "viewWidth": 1220,
+      "viewportText": "https://example.com/ RIWORK alpha-0 OUTPUT PRESSURE ------------------------------------------------\nhttps://example.com/ RIWORK alpha-0 OUTPUT PRESSURE ------------------------------------------------\nhttps://example.com/ RIWORK alpha-0 OUTPUT PRESSURE ------------------------------------------------",
+      "visibilityUpdates": 2,
+      "visible": true,
+      "visibleRect": "{{0, 0}, {1220, 395}}",
+      "wakeCount": 8,
+      "wantsLayer": true,
+      "widthPx": 2440,
+      "windowOcclusion": 8194
+    },
+    "rendered_surfaces": 8,
+    "heartbeats": 3312,
+    "max_teardown_heartbeat_gap_ms": 16.643999993801117,
+    "global_gaps_over100ms": []
+  },
+  "cleanup": {
+    "server_absent": true,
+    "fixture_pid_absent": true,
+    "pressure_pids": [
+      69566,
+      69574,
+      69590,
+      69598
+    ],
+    "pressure_pids_remaining": []
+  }
+}

@@ -93,13 +93,19 @@ impl HeadlessApp {
             });
         }
         let source = r#"
-            import { mount, host } from "nsh";
+            import { mount, host, cleanup } from "nsh";
             import { Store, Sessions, Layouts } from "riwork/native";
             let storeSubscription, sessionsSubscription, layout, deliveries = 0;
             const listen = event => { deliveries++; host.post("store", event); };
             const dispose = mount(() => {
+                // Matches a real component: its cleanup retains the handles.
+                // On VM drop this closure can finalize them after NSH cleared
+                // its context but before the native owner cleanup is freed.
+                const retained = [];
+                cleanup(() => retained.forEach(subscription => subscription.close()));
                 storeSubscription = Store.subscribe(listen);
                 sessionsSubscription = Sessions.subscribe(event => host.post("sessions", event));
+                retained.push(storeSubscription, sessionsSubscription);
                 return null;
             });
             host.on("read", async () => {

@@ -15,9 +15,10 @@ use anyhow::{Context, Result};
 use notify::{EventKind, RecursiveMode, Watcher};
 
 use crate::{
+    appearance::{self, AppearanceSnapshot},
     backend::{
-        CoreStoreBackend, EngineSessionsBackend, EngineTabsBackend, InvalidInput, SessionsBackend,
-        StoreBackend, TabsBackend, Unavailable,
+        CoreStoreBackend, EngineSessionsBackend, EngineTabsBackend, InvalidInput, Refused,
+        SessionsBackend, StoreBackend, TabsBackend, Unavailable,
     },
     dto::{
         CreateSessionRequest, FolderDto, ProjectDto, ProjectInspectionDto, ProjectRequest,
@@ -30,7 +31,8 @@ use crate::{
 pub const SESSION_SAMPLE_INTERVAL: Duration = Duration::from_secs(2);
 const STORE: u8 = 1;
 const SESSIONS: u8 = 2;
-const TABS: u8 = 4;
+const APPEARANCE: u8 = 4;
+const TABS: u8 = 8;
 
 // Kept strongly for the life of the process, never once per AppView. The home's
 // resolution and all setup happen inside initialize's blocking-pool hop.
@@ -90,6 +92,12 @@ fn resolved_home() -> Result<PathBuf, String> {
         .clone()
 }
 
+pub(crate) fn initialized() -> Result<Arc<ProcessService>, String> {
+    PROCESS.get().cloned().ok_or_else(|| {
+        "unavailable: call riwork_nsh_native::initialize().await before creating AppViews".into()
+    })
+}
+
 /// Move every core/engine call, including service setup and hub registration, off
 /// both the AppKit thread and the NSH engine thread.
 pub(crate) async fn blocking<T: Send + 'static>(
@@ -105,7 +113,9 @@ pub(crate) fn io_error(error: impl std::fmt::Display) -> String {
 }
 
 fn backend_error(error: anyhow::Error) -> String {
-    let code = if error.is::<Unavailable>() {
+    let code = if error.is::<Refused>() {
+        "refused"
+    } else if error.is::<Unavailable>() {
         "unavailable"
     } else if error.is::<InvalidInput>() {
         "invalid"
@@ -121,6 +131,7 @@ pub struct ProcessService {
     pub(crate) sessions: Arc<dyn SessionsBackend>,
     store_hub: Arc<Hub<StoreState>>,
     sessions_hub: Arc<Hub<SessionsSnapshot>>,
+    appearance_hub: Arc<Hub<AppearanceSnapshot>>,
     tabs: Arc<dyn TabsBackend>,
     tabs_hubs: Arc<Mutex<BTreeMap<String, Arc<Hub<TabsSnapshot>>>>>,
     store_refresh: Arc<Mutex<()>>,
@@ -313,9 +324,25 @@ impl ProcessService {
                 .unwrap_or_else(PoisonError::into_inner);
             let result = operation(service.sessions.as_ref()).map_err(backend_error)?;
             service.sessions.invalidate_sample();
-            let snapshot = service.sessions.sample().map_err(backend_error)?;
-            let has_shells = !snapshot.sessions.is_empty();
-            service.sessions_hub.publish(snapshot);
+            // The mutation already succeeded. A failed follow-up inventory
+            // must not report failure and invite the caller to create again.
+            // Keep the fallback armed until a successful sample can make it
+            // quiet, even if the previous inventory was empty.
+            let has_shells = match service.sessions.sample() {
+                Ok(snapshot) => {
+                    let has_shells = !snapshot.sessions.is_empty();
+                    service.sessions_hub.publish(snapshot);
+                    has_shells
+                }
+                Err(error) => {
+                    *service
+                        .last_error
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner) =
+                        Some(format!("session sample after mutation: {error}"));
+                    true
+                }
+            };
             if service.has_shells.swap(has_shells, Ordering::AcqRel) != has_shells {
                 let _ = service.wake.try_send(());
             }
@@ -329,6 +356,9 @@ impl ProcessService {
         self: &Arc<Self>,
         request: CreateSessionRequest,
     ) -> Result<ShellSessionDto, String> {
+        if request.project_id.trim().is_empty() {
+            return Err("invalid: projectId is required".into());
+        }
         self.session_write(move |backend| backend.create(request))
             .await
     }
@@ -426,6 +456,18 @@ impl ProcessService {
         blocking(move || backend.list().map_err(backend_error)).await
     }
 
+    /// Rust compatibility aliases share the same serialized mutation path.
+    pub async fn sessions_create(
+        self: &Arc<Self>,
+        request: CreateSessionRequest,
+    ) -> Result<ShellSessionDto, String> {
+        self.create_session(request).await
+    }
+
+    pub async fn sessions_close(self: &Arc<Self>, id: String) -> Result<(), String> {
+        self.close_session(id).await
+    }
+
     /// Blocking constructor and test seam. Production uses initialize(), whose
     /// OnceLock guarantees one instance. Tests pass fixed isolated homes and fakes.
     pub fn with_backends(
@@ -459,7 +501,7 @@ impl ProcessService {
         let mut watcher =
             notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
                 let flags = match event {
-                    Ok(event) if event.need_rescan() => STORE | SESSIONS | TABS,
+                    Ok(event) if event.need_rescan() => STORE | SESSIONS | TABS | APPEARANCE,
                     Ok(event) if !matches!(event.kind, EventKind::Access(_)) => event
                         .paths
                         .iter()
@@ -468,7 +510,7 @@ impl ProcessService {
                     Err(error) => {
                         *watch_error.lock().unwrap_or_else(PoisonError::into_inner) =
                             Some(format!("home watcher: {error}"));
-                        STORE | SESSIONS | TABS
+                        STORE | SESSIONS | TABS | APPEARANCE
                     }
                 };
                 if flags != 0 {
@@ -494,6 +536,13 @@ impl ProcessService {
                 Hub::pending()
             }
         });
+        let appearance_hub = Arc::new(match appearance::load(&home) {
+            Ok(snapshot) => Hub::new(snapshot),
+            Err(error) => {
+                *last_error.lock().unwrap_or_else(PoisonError::into_inner) = Some(error);
+                Hub::pending()
+            }
+        });
         let has_shells = Arc::new(AtomicBool::new(has_shells));
         let stop = Arc::new(AtomicBool::new(false));
         let tabs_hubs = Arc::new(Mutex::new(BTreeMap::new()));
@@ -504,6 +553,8 @@ impl ProcessService {
         let worker_sessions = sessions.clone();
         let worker_store_hub = store_hub.clone();
         let worker_sessions_hub = sessions_hub.clone();
+        let worker_appearance_hub = appearance_hub.clone();
+        let worker_home = home.clone();
         let worker_error = last_error.clone();
         let worker_tabs = tabs.clone();
         let worker_tabs_hubs = tabs_hubs.clone();
@@ -544,6 +595,15 @@ impl ProcessService {
                         break;
                     }
                     let flags = dirty.swap(0, Ordering::AcqRel);
+                    if flags & APPEARANCE != 0 {
+                        match appearance::load(&worker_home) {
+                            Ok(snapshot) => worker_appearance_hub.publish(snapshot),
+                            Err(error) => {
+                                *worker_error.lock().unwrap_or_else(PoisonError::into_inner) =
+                                    Some(error)
+                            }
+                        }
+                    }
                     let now = Instant::now();
                     let sample_due = next_sample.is_some_and(|deadline| now >= deadline);
                     let presence_due = next_presence.is_some_and(|deadline| now >= deadline);
@@ -615,6 +675,7 @@ impl ProcessService {
             sessions,
             store_hub,
             sessions_hub,
+            appearance_hub,
             tabs,
             tabs_hubs,
             store_refresh,
@@ -639,6 +700,18 @@ impl ProcessService {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
+    }
+
+    pub async fn appearance_snapshot(self: &Arc<Self>) -> Result<AppearanceSnapshot, String> {
+        let home = self.home.clone();
+        blocking(move || appearance::load(&home).map_err(io_error)).await
+    }
+
+    pub async fn subscribe_appearance(
+        self: &Arc<Self>,
+    ) -> Result<TopicSubscription<AppearanceSnapshot>, String> {
+        let hub = self.appearance_hub.clone();
+        blocking(move || Ok(hub.subscribe())).await
     }
 
     pub async fn subscribe_store(
@@ -669,6 +742,8 @@ impl Drop for ProcessService {
 fn relevant(path: &Path, home: &Path) -> u8 {
     if path == home.join("state.json") {
         STORE
+    } else if path == home.join("settings.json") {
+        APPEARANCE
     } else if path == home.join("sessions.json")
         || path == home.join("orchestrator-wakes.json")
         || path.starts_with(home.join("agent-activity"))

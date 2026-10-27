@@ -315,7 +315,7 @@ async fn session_create_close_adapters_publish_to_all_window_subscribers() {
         .create_session(CreateSessionRequest {
             project_id: "00000000-0000-4000-8000-000000000001".into(),
             worktree_id: None,
-            cwd: fixture.path().to_string_lossy().into_owned(),
+            cwd: Some(fixture.path().to_string_lossy().into_owned()),
             command: None,
         })
         .await

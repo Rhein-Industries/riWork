@@ -1,0 +1,135 @@
+{
+  "provider": "RiWork Cua.ai Driver MCP",
+  "verification_environment": "isolated RIWORK_HOME /private/tmp/rwnsh-p2-upf_p6zi",
+  "pid": 69604,
+  "read_only": true,
+  "inputs": 0,
+  "windows": {
+    "content": [
+      {
+        "type": "text",
+        "text": "Found 2 window(s).\n- riwork (pid 69604) \"RiWork · Beta\" [window_id: 6574]\n- riwork (pid 69604) \"RiWork · Alpha\" [window_id: 6573]"
+      }
+    ],
+    "structuredContent": {
+      "current_space_id": 1,
+      "windows": [
+        {
+          "app_name": "riwork",
+          "bounds": {
+            "height": 900,
+            "width": 1220,
+            "x": 452,
+            "y": 46
+          },
+          "current_space_id": 1,
+          "is_on_screen": true,
+          "layer": 0,
+          "on_current_space": true,
+          "pid": 69604,
+          "space_ids": [
+            1
+          ],
+          "title": "RiWork · Beta",
+          "window_id": 6574,
+          "z_index": 288
+        },
+        {
+          "app_name": "riwork",
+          "bounds": {
+            "height": 900,
+            "width": 1220,
+            "x": 1688,
+            "y": 46
+          },
+          "current_space_id": 1,
+          "is_on_screen": true,
+          "layer": 0,
+          "on_current_space": true,
+          "pid": 69604,
+          "space_ids": [
+            1
+          ],
+          "title": "RiWork · Alpha",
+          "window_id": 6573,
+          "z_index": 188
+        }
+      ]
+    }
+  },
+  "captures": {
+    "alpha": {
+      "content": [
+        {
+          "type": "text",
+          "text": "window_id=6573 pid=69604 size=1366x1008 elements=10 snapshot_id=s00000104\nelement_token for row [N] = s00000104:N (row [1] is \"s00000104:1\")\n\n- [0] AXWindow \"RiWork · Alpha\" [actions=[raise]]\n  - AXStaticText = \"RiWork · Alpha\"\n        - AXStaticText = \"Alpha\"\n        - AXButton (Close shell tab)\n          - AXStaticText = \"×\"\n        - AXStaticText = \"Alpha\"\n        - AXButton (Close shell tab)\n          - AXStaticText = \"×\"\n  - AXSlider (Resize panes)\n  - AXButton (New local shell)\n    - AXStaticText = \"+ Shell\"\n  - AXStaticText = \"2 panes\"\n  - AXButton (Layout)\n    - AXStaticText = \"Main pane: none\"\n  - [1] AXToolbar\n  - [2] AXButton [actions=[press]]\n  - [3] AXButton [actions=[press]]\n  - [4] AXButton [actions=[press]]\n- [5] AXMenuBar [actions=[cancel]] (menus collapsed: run an item with invoke_menu path, or pass query to search menu items)\n  - [6] AXMenuBarItem \"Apple\" [actions=[cancel,press,pick]]\n  - [7] AXMenuBarItem \"riwork\" [actions=[cancel,press,pick]]\n  - [8] AXMenuBarItem \"Edit\" [actions=[cancel,press,pick]]\n  - [9] AXMenuBarItem \"View\" [actions=[cancel,press,pick]]\n"
+        }
+      ],
+      "structuredContent": {
+        "app_name": "riwork",
+        "capture_id": "capture_03c60697d25544c4a7f37892019a46ae_00000000000000ca",
+        "element_count": 10,
+        "elements_complete": false,
+        "pid": 69604,
+        "returned_element_count": 10,
+        "screenshot_file_path": "/private/tmp/rwnsh-p2-upf_p6zi/cua-alpha.png",
+        "screenshot_frame_valid": true,
+        "screenshot_height": 1008,
+        "screenshot_mime_type": "image/png",
+        "screenshot_scale": 2,
+        "screenshot_width": 1366,
+        "snapshot_id": "s00000104",
+        "timeout_ms": 1000,
+        "total_element_count": 10,
+        "tree_format": "markdown",
+        "tree_markdown": "- [0] AXWindow \"RiWork · Alpha\" [actions=[raise]]\n  - AXStaticText = \"RiWork · Alpha\"\n        - AXStaticText = \"Alpha\"\n        - AXButton (Close shell tab)\n          - AXStaticText = \"×\"\n        - AXStaticText = \"Alpha\"\n        - AXButton (Close shell tab)\n          - AXStaticText = \"×\"\n  - AXSlider (Resize panes)\n  - AXButton (New local shell)\n    - AXStaticText = \"+ Shell\"\n  - AXStaticText = \"2 panes\"\n  - AXButton (Layout)\n    - AXStaticText = \"Main pane: none\"\n  - [1] AXToolbar\n  - [2] AXButton [actions=[press]]\n  - [3] AXButton [actions=[press]]\n  - [4] AXButton [actions=[press]]\n- [5] AXMenuBar [actions=[cancel]] (menus collapsed: run an item with invoke_menu path, or pass query to search menu items)\n  - [6] AXMenuBarItem \"Apple\" [actions=[cancel,press,pick]]\n  - [7] AXMenuBarItem \"riwork\" [actions=[cancel,press,pick]]\n  - [8] AXMenuBarItem \"Edit\" [actions=[cancel,press,pick]]\n  - [9] AXMenuBarItem \"View\" [actions=[cancel,press,pick]]\n",
+        "truncated": false,
+        "window_bounds": {
+          "height": 900,
+          "width": 1220,
+          "x": 1688,
+          "y": 46
+        },
+        "window_id": 6573,
+        "window_title": "RiWork · Alpha"
+      }
+    },
+    "beta": {
+      "content": [
+        {
+          "type": "text",
+          "text": "window_id=6574 pid=69604 size=1366x1008 elements=10 snapshot_id=s00000105\nelement_token for row [N] = s00000105:N (row [1] is \"s00000105:1\")\n\n- [0] AXWindow \"RiWork · Beta\" [actions=[raise]]\n  - AXStaticText = \"RiWork · Beta\"\n        - AXStaticText = \"Beta\"\n        - AXButton (Close shell tab)\n          - AXStaticText = \"×\"\n        - AXStaticText = \"Beta\"\n        - AXButton (Close shell tab)\n          - AXStaticText = \"×\"\n  - AXSlider (Resize panes)\n  - AXButton (New local shell)\n    - AXStaticText = \"+ Shell\"\n  - AXStaticText = \"2 panes\"\n  - AXButton (Layout)\n    - AXStaticText = \"Main pane: none\"\n  - [1] AXToolbar\n  - [2] AXButton [actions=[press]]\n  - [3] AXButton [actions=[press]]\n  - [4] AXButton [actions=[press]]\n- [5] AXMenuBar [actions=[cancel]] (menus collapsed: run an item with invoke_menu path, or pass query to search menu items)\n  - [6] AXMenuBarItem \"Apple\" [actions=[cancel,press,pick]]\n  - [7] AXMenuBarItem \"riwork\" [actions=[cancel,press,pick]]\n  - [8] AXMenuBarItem \"Edit\" [actions=[cancel,press,pick]]\n  - [9] AXMenuBarItem \"View\" [actions=[cancel,press,pick]]\n"
+        }
+      ],
+      "structuredContent": {
+        "app_name": "riwork",
+        "capture_id": "capture_03c60697d25544c4a7f37892019a46ae_00000000000000cb",
+        "element_count": 10,
+        "elements_complete": false,
+        "pid": 69604,
+        "returned_element_count": 10,
+        "screenshot_file_path": "/private/tmp/rwnsh-p2-upf_p6zi/cua-beta.png",
+        "screenshot_frame_valid": true,
+        "screenshot_height": 1008,
+        "screenshot_mime_type": "image/png",
+        "screenshot_scale": 2,
+        "screenshot_width": 1366,
+        "snapshot_id": "s00000105",
+        "timeout_ms": 1000,
+        "total_element_count": 10,
+        "tree_format": "markdown",
+        "tree_markdown": "- [0] AXWindow \"RiWork · Beta\" [actions=[raise]]\n  - AXStaticText = \"RiWork · Beta\"\n        - AXStaticText = \"Beta\"\n        - AXButton (Close shell tab)\n          - AXStaticText = \"×\"\n        - AXStaticText = \"Beta\"\n        - AXButton (Close shell tab)\n          - AXStaticText = \"×\"\n  - AXSlider (Resize panes)\n  - AXButton (New local shell)\n    - AXStaticText = \"+ Shell\"\n  - AXStaticText = \"2 panes\"\n  - AXButton (Layout)\n    - AXStaticText = \"Main pane: none\"\n  - [1] AXToolbar\n  - [2] AXButton [actions=[press]]\n  - [3] AXButton [actions=[press]]\n  - [4] AXButton [actions=[press]]\n- [5] AXMenuBar [actions=[cancel]] (menus collapsed: run an item with invoke_menu path, or pass query to search menu items)\n  - [6] AXMenuBarItem \"Apple\" [actions=[cancel,press,pick]]\n  - [7] AXMenuBarItem \"riwork\" [actions=[cancel,press,pick]]\n  - [8] AXMenuBarItem \"Edit\" [actions=[cancel,press,pick]]\n  - [9] AXMenuBarItem \"View\" [actions=[cancel,press,pick]]\n",
+        "truncated": false,
+        "window_bounds": {
+          "height": 900,
+          "width": 1220,
+          "x": 452,
+          "y": 46
+        },
+        "window_id": 6574,
+        "window_title": "RiWork · Beta"
+      }
+    }
+  },
+  "visual_observation": "Both windows show their two distinct pressure streams as legible glyphs with terminal tabs and chrome. Fixture arranged its own windows without activation; Cua performed list/state reads only."
+}

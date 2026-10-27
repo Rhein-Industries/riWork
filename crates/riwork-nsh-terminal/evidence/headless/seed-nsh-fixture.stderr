@@ -1,0 +1,4 @@
+    Blocking waiting for file lock on build directory
+   Compiling riwork-nsh-workspace v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p2-terminals/apps/riwork)
+    Finished `dev` profile [unoptimized] target(s) in 0.99s
+     Running `target/debug/examples/seed_fixture /private/tmp/riwork-p2-full-checks/headless-m0jdlk4x/nsh-home`

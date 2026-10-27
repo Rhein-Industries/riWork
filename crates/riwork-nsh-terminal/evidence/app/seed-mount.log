@@ -1,0 +1,3 @@
+    Finished `dev` profile [unoptimized] target(s) in 0.39s
+     Running `target/debug/examples/seed_fixture /tmp/riwork-p2-terminal-bridge/headless-mount-home`
+GPUI LayoutStore fixture written: /private/tmp/riwork-p2-terminal-bridge/headless-mount-home (fixture-project)

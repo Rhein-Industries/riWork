@@ -1,5 +1,5 @@
 import { Text, View, cleanup, host, mount, signal } from "nsh";
-import { Layouts, type LayoutSession } from "riwork/native";
+import { Store, Layouts, type LayoutSession } from "riwork/native";
 import { Workspace } from "./Workspace";
 import { windowTitle, type HostParams } from "./model";
 
@@ -19,7 +19,7 @@ function App() {
   cleanup(() => { alive = false; session()?.dispose(); });
 
   if (params.kind === "project" && params.projectId && params.windowId) {
-    void Layouts.openSession({ windowId: params.windowId, projectId: params.projectId, restore: params.restore?.layout })
+    void Store.snapshot().then(() => Layouts.openSession({ windowId: params.windowId, projectId: params.projectId, restore: params.restore?.layout }))
       .then((loaded) => { if (alive) session.set(loaded); else loaded.dispose(); })
       .catch((error: unknown) => notice.set(String(error)));
   } else {

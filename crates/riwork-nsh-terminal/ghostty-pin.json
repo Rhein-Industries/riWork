@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "upstream": "https://github.com/ghostty-org/ghostty",
+  "revision": "9f0e1719dc918368367d368bfe300f59bb68b5a4",
+  "version": "1.3.2-dev",
+  "source_distribution": {
+    "url": "https://static.crates.io/crates/gpui-libghostty/gpui-libghostty-0.3.1.crate",
+    "sha256": "2b12d0d271cf0ca99a9073bdc148ce43782713c6d01be33af2a105b00c62ef5d",
+    "vendor_prefix": "gpui-libghostty-0.3.1/vendor/ghostty/",
+    "package_vcs_revision": "2bbde4ae53a8e163cdbe05294bd09934b30c1af3",
+    "role": "Source distribution only. Its Rust package, shim, build.rs and Cargo dependencies are never built or linked."
+  },
+  "source_manifest": {
+    "algorithm": "SHA-256 over sorted relative file paths and contents, each preceded by little-endian u64 length",
+    "sha256": "78f97c2dae6f6717963a8de12a4164c6d20c57bd7f984536878d2b98bc9816de",
+    "file_count": 1242
+  },
+  "vendor_patch_document_sha256": "028e01e535156bfed0c7b861d2b7017c4b4aa8db5dc733286c7629e00e66ca2c",
+  "themes": {
+    "url": "https://deps.files.ghostty.org/ghostty-themes-release-20260810-152212-0173c3c.tgz",
+    "sha256": "ea9878471420ee5b12e7f2ff480099c954ea50e573a1bdf83f43e105c9be63f0",
+    "zig_package_hash": "N-V-__8AAPpcBAD4_75xLBbLiYqdojOwQP74eoWmpL3jPrBl",
+    "archive_prefix": "ghostty/",
+    "source_manifest_sha256": "72de45b75c66d97dac20bc58a843b6a2fbb4fb39f99261b977e28aeea30c29fe",
+    "file_count": 602
+  },
+  "zig": {
+    "version": "0.16.0",
+    "macos_aarch64_binary_sha256": "e6cd688d25664983833aae272f501d4bceeae304875b8f1741209d15fd13a4ec"
+  },
+  "build_options": [
+    "-Dversion-string=1.3.2-dev",
+    "-Dapp-runtime=none",
+    "-Demit-xcframework=false",
+    "-Demit-macos-app=false",
+    "-Demit-docs=false",
+    "-Demit-terminfo=false",
+    "-Demit-bench=false",
+    "-Demit-webdata=false",
+    "-Di18n=false",
+    "-Dsentry=false",
+    "-Doptimize=ReleaseFast"
+  ],
+  "gate_artifacts": {
+    "target": "aarch64-apple-darwin",
+    "lib/libghostty-internal.a": "b51367aa565527eddfa180d5ae6304899d903af6fc094b4531671ffc20fb064f",
+    "include/ghostty.h": "f2c12e1bb02540d79feed6bd29ee37312c4e0d24391442a63e66f06e1f7f2e4a"
+  }
+}

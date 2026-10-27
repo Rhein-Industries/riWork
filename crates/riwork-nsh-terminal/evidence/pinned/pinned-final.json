@@ -1,0 +1,186 @@
+{
+  "environment": {
+    "verification_environment": "Read-only metadata/build-input verification; no application launch, GUI inspection/input, live RiWork state access, build, artifact replacement or system installation.",
+    "recorded_at_utc": "2026-10-27T21:53:58.703611+00:00",
+    "cwd": "/Users/dominik/orca/projects/riWork-nsh-p2-terminals",
+    "os": "ProductName:\t\tmacOS\nProductVersion:\t\t26.2\nBuildVersion:\t\t25C56",
+    "uname": "Darwin dgsPro 25.2.0 Darwin Kernel Version 25.2.0: Tue Nov 18 21:09:56 PST 2025; root:xnu-12377.61.12~1/RELEASE_ARM64_T6041 arm64",
+    "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+    "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+    "xcode": "Xcode 26.0.1\nBuild version 17A400",
+    "RIWORK_GHOSTTY_INSTALL_DIR": null,
+    "zig": "/Users/dominik/.local/share/riwork/toolchains/zig-0.16.0/zig",
+    "zig_version": "0.16.0",
+    "zig_sha256": "e6cd688d25664983833aae272f501d4bceeae304875b8f1741209d15fd13a4ec"
+  },
+  "cargo_trees": [
+    {
+      "variant": "default",
+      "command": [
+        "cargo",
+        "tree",
+        "-p",
+        "riwork-desktop",
+        "--prefix",
+        "none"
+      ],
+      "exit_code": 0,
+      "stdout": "/tmp/riwork-p2-terminal-verification/cargo-tree-default.txt",
+      "stdout_sha256": "5fc6cfd4970a5deabaf1f7be14fdb98c3d4c1795a952518a78267cd76c240f6e",
+      "stderr": "/tmp/riwork-p2-terminal-verification/cargo-tree-default.stderr.txt",
+      "lines": 1119,
+      "unique_package_names": 412,
+      "forbidden_crates": [],
+      "result": "PASS"
+    },
+    {
+      "variant": "terminal-fixture",
+      "command": [
+        "cargo",
+        "tree",
+        "-p",
+        "riwork-desktop",
+        "--features",
+        "terminal-fixture",
+        "--prefix",
+        "none"
+      ],
+      "exit_code": 0,
+      "stdout": "/tmp/riwork-p2-terminal-verification/cargo-tree-terminal-fixture.txt",
+      "stdout_sha256": "5fc6cfd4970a5deabaf1f7be14fdb98c3d4c1795a952518a78267cd76c240f6e",
+      "stderr": "/tmp/riwork-p2-terminal-verification/cargo-tree-terminal-fixture.stderr.txt",
+      "lines": 1119,
+      "unique_package_names": 412,
+      "forbidden_crates": [],
+      "result": "PASS"
+    }
+  ],
+  "linked_install": "/Users/dominik/orca/projects/riWork-nsh-p2-terminals/crates/riwork-nsh-terminal/.runtime/pinned/install",
+  "linked_artifact_hashes": {
+    "lib/libghostty-internal.a": "b51367aa565527eddfa180d5ae6304899d903af6fc094b4531671ffc20fb064f",
+    "include/ghostty.h": "f2c12e1bb02540d79feed6bd29ee37312c4e0d24391442a63e66f06e1f7f2e4a"
+  },
+  "linked_provenance": {
+    "schema_version": 1,
+    "action": "import_exact_go_artifacts",
+    "recorded_at_utc": "2026-10-27T21:40:31.156373+00:00",
+    "revision": "9f0e1719dc918368367d368bfe300f59bb68b5a4",
+    "source_distribution_sha256": "2b12d0d271cf0ca99a9073bdc148ce43782713c6d01be33af2a105b00c62ef5d",
+    "source_manifest_sha256": "78f97c2dae6f6717963a8de12a4164c6d20c57bd7f984536878d2b98bc9816de",
+    "zig_version": "0.16.0",
+    "target": "aarch64-apple-darwin",
+    "artifacts": {
+      "lib/libghostty-internal.a": "b51367aa565527eddfa180d5ae6304899d903af6fc094b4531671ffc20fb064f",
+      "include/ghostty.h": "f2c12e1bb02540d79feed6bd29ee37312c4e0d24391442a63e66f06e1f7f2e4a"
+    },
+    "source_install": "/Users/dominik/orca/projects/riWork-nsh-p2-teardown-pinned/spikes/ghostty-nsh/.runtime/pinned/install",
+    "themes": {
+      "distribution_sha256": "ea9878471420ee5b12e7f2ff480099c954ea50e573a1bdf83f43e105c9be63f0",
+      "source_manifest_sha256": "72de45b75c66d97dac20bc58a843b6a2fbb4fb39f99261b977e28aeea30c29fe",
+      "file_count": 602
+    }
+  },
+  "link_directive_records": [
+    {
+      "path": "/Users/dominik/orca/projects/riWork-nsh-p2-terminals/target/debug/build/riwork-nsh-terminal-112ca0c15475226e/output",
+      "sha256": "9368ce2f0ebf3523b7c9fbb81bad355c68bb63da30e1e3980b3461b85c7282bf",
+      "directives": [
+        "cargo:rustc-env=RIWORK_GHOSTTY_RESOURCES_DIR=/Users/dominik/orca/projects/riWork-nsh-p2-terminals/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty",
+        "cargo:rustc-link-lib=static=riwork_nsh_terminal_native",
+        "cargo:rustc-link-search=native=/Users/dominik/orca/projects/riWork-nsh-p2-terminals/target/debug/build/riwork-nsh-terminal-112ca0c15475226e/out",
+        "cargo:rustc-link-search=native=/Users/dominik/orca/projects/riWork-nsh-p2-terminals/crates/riwork-nsh-terminal/.runtime/pinned/install/lib",
+        "cargo:rustc-link-lib=static=ghostty-internal",
+        "cargo:rustc-link-lib=c++",
+        "cargo:rustc-link-lib=objc",
+        "cargo:rustc-link-lib=framework=AppKit",
+        "cargo:rustc-link-lib=framework=Carbon",
+        "cargo:rustc-link-lib=framework=CoreFoundation",
+        "cargo:rustc-link-lib=framework=CoreGraphics",
+        "cargo:rustc-link-lib=framework=CoreText",
+        "cargo:rustc-link-lib=framework=CoreVideo",
+        "cargo:rustc-link-lib=framework=Foundation",
+        "cargo:rustc-link-lib=framework=IOSurface",
+        "cargo:rustc-link-lib=framework=Metal",
+        "cargo:rustc-link-lib=framework=QuartzCore"
+      ]
+    },
+    {
+      "path": "/Users/dominik/orca/projects/riWork-nsh-p2-terminals/target/debug/build/riwork-nsh-terminal-e860f6ff3a15b6ee/output",
+      "sha256": "520746a11017afeae556fd3b3c5f43c76fcf49ee76ce03a62882f4c15a494d5d",
+      "directives": [
+        "cargo:rustc-env=RIWORK_GHOSTTY_RESOURCES_DIR=/Users/dominik/orca/projects/riWork-nsh-p2-terminals/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty",
+        "cargo:rustc-link-lib=static=riwork_nsh_terminal_native",
+        "cargo:rustc-link-search=native=/Users/dominik/orca/projects/riWork-nsh-p2-terminals/target/debug/build/riwork-nsh-terminal-e860f6ff3a15b6ee/out",
+        "cargo:rustc-link-search=native=/Users/dominik/orca/projects/riWork-nsh-p2-terminals/crates/riwork-nsh-terminal/.runtime/pinned/install/lib",
+        "cargo:rustc-link-lib=static=ghostty-internal",
+        "cargo:rustc-link-lib=c++",
+        "cargo:rustc-link-lib=objc",
+        "cargo:rustc-link-lib=framework=AppKit",
+        "cargo:rustc-link-lib=framework=Carbon",
+        "cargo:rustc-link-lib=framework=CoreFoundation",
+        "cargo:rustc-link-lib=framework=CoreGraphics",
+        "cargo:rustc-link-lib=framework=CoreText",
+        "cargo:rustc-link-lib=framework=CoreVideo",
+        "cargo:rustc-link-lib=framework=Foundation",
+        "cargo:rustc-link-lib=framework=IOSurface",
+        "cargo:rustc-link-lib=framework=Metal",
+        "cargo:rustc-link-lib=framework=QuartzCore"
+      ]
+    }
+  ],
+  "source_build_validation": {
+    "schema_version": 1,
+    "action": "built_from_verified_pinned_source",
+    "recorded_at_utc": "2026-10-27T21:48:03.675279+00:00",
+    "revision": "9f0e1719dc918368367d368bfe300f59bb68b5a4",
+    "source_distribution_sha256": "2b12d0d271cf0ca99a9073bdc148ce43782713c6d01be33af2a105b00c62ef5d",
+    "source_manifest_sha256": "78f97c2dae6f6717963a8de12a4164c6d20c57bd7f984536878d2b98bc9816de",
+    "zig_version": "0.16.0",
+    "target": "aarch64-apple-darwin",
+    "artifacts": {
+      "lib/libghostty-internal.a": "7a2573b7b934684366b753cb46164c44ae13a55db5ac36aae1a1a590ea62f6c9",
+      "include/ghostty.h": "f2c12e1bb02540d79feed6bd29ee37312c4e0d24391442a63e66f06e1f7f2e4a"
+    },
+    "themes": {
+      "distribution_sha256": "ea9878471420ee5b12e7f2ff480099c954ea50e573a1bdf83f43e105c9be63f0",
+      "source_manifest_sha256": "72de45b75c66d97dac20bc58a843b6a2fbb4fb39f99261b977e28aeea30c29fe",
+      "file_count": 602
+    },
+    "command": [
+      "/Users/dominik/.local/share/riwork/toolchains/zig-0.16.0/zig",
+      "build",
+      "--prefix",
+      "/Users/dominik/orca/projects/riWork-nsh-p2-terminals/crates/riwork-nsh-terminal/.runtime/final-build-check/install",
+      "-j4",
+      "-Dversion-string=1.3.2-dev",
+      "-Dapp-runtime=none",
+      "-Demit-xcframework=false",
+      "-Demit-macos-app=false",
+      "-Demit-docs=false",
+      "-Demit-terminfo=false",
+      "-Demit-bench=false",
+      "-Demit-webdata=false",
+      "-Di18n=false",
+      "-Dsentry=false",
+      "-Doptimize=ReleaseFast"
+    ],
+    "working_directory": "/Users/dominik/orca/projects/riWork-nsh-p2-terminals/crates/riwork-nsh-terminal/.runtime/final-build-check/build-source",
+    "zig_binary_sha256": "e6cd688d25664983833aae272f501d4bceeae304875b8f1741209d15fd13a4ec",
+    "build_environment": {
+      "DEVELOPER_DIR": "/Applications/Xcode.app/Contents/Developer",
+      "SDKROOT": "/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.0.sdk",
+      "CC": "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang",
+      "AR": "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ar",
+      "LD": "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ld",
+      "ZIG_GLOBAL_CACHE_DIR": "/Users/dominik/orca/projects/riWork-nsh-p2-terminals/crates/riwork-nsh-terminal/.runtime/final-build-check/zig-global",
+      "ZIG_LOCAL_CACHE_DIR": "/Users/dominik/orca/projects/riWork-nsh-p2-terminals/crates/riwork-nsh-terminal/.runtime/final-build-check/zig-local"
+    },
+    "build_log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "matches_go_archive": false
+  },
+  "current_debug_executable": {
+    "path": "/Users/dominik/orca/projects/riWork-nsh-p2-terminals/target/debug/riwork",
+    "bytes": 208603920,
+    "sha256": "f502c4d5d29a39494cfbc08fe398b543c34a9afa9fba417996d6c6abbeb6d45b"
+  }
+}

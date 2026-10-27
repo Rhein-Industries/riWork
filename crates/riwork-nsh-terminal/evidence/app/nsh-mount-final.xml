@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="nsh test" tests="16" failures="0" errors="0" skipped="0" time="7.687">
+  <testsuite name="apps/riwork/App.test.tsx" tests="10" failures="0" errors="0" skipped="0" time="4.524">
+    <testcase classname="apps/riwork/App.test.tsx" name="opens a core-written layout with shell identity, empty unknown pane, and window chrome" time="0.135"/>
+    <testcase classname="apps/riwork/App.test.tsx" name="DockArea selection and keyboard changes go through the session and remain window-local" time="0.564"/>
+    <testcase classname="apps/riwork/App.test.tsx" name="locked pixel geometry survives resize and pane menu edits remain in Rust" time="0.649"/>
+    <testcase classname="apps/riwork/App.test.tsx" name="production entry routes global windows without opening a project DockArea" time="0.125"/>
+    <testcase classname="apps/riwork/App.test.tsx" name="production restore installs its native layout before confirming exactly once" time="0.232"/>
+    <testcase classname="apps/riwork/App.test.tsx" name="a restored global entry confirms without opening a project session" time="0.111"/>
+    <testcase classname="apps/riwork/App.test.tsx" name="clicking an already selected tab and an empty pane changes the active pane" time="0.636"/>
+    <testcase classname="apps/riwork/App.test.tsx" name="a real DockArea drag moves one tab into the opaque empty pane through Rust" time="0.470"/>
+    <testcase classname="apps/riwork/App.test.tsx" name="local shell content renders and Detach persists before reopening the same identity" time="0.651"/>
+    <testcase classname="apps/riwork/App.test.tsx" name="terminal native nodes survive selection and resize until an explicit Detach" time="0.953"/>
+  </testsuite>
+  <testsuite name="apps/riwork/model.test.ts" tests="6" failures="0" errors="0" skipped="0" time="0.000">
+    <testcase classname="apps/riwork/model.test.ts" name="number shortcuts consume drawn order and skip panels only with shared membership" time="0.000"/>
+    <testcase classname="apps/riwork/model.test.ts" name="tab cycling wraps in drawn order and respects a modal" time="0.000"/>
+    <testcase classname="apps/riwork/model.test.ts" name="empty sentinels never participate in tab shortcuts or the main-pane summary" time="0.000"/>
+    <testcase classname="apps/riwork/model.test.ts" name="main-pane summaries preserve active identity and lookup is pane-independent" time="0.000"/>
+    <testcase classname="apps/riwork/model.test.ts" name="window titles name remote projects and update only when changed" time="0.000"/>
+    <testcase classname="apps/riwork/model.test.ts" name="panel labels preserve persisted legacy identities" time="0.000"/>
+  </testsuite>
+</testsuites>

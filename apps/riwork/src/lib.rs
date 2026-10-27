@@ -191,6 +191,16 @@ impl LayoutSession {
         self.edit(|model| model.select_panel(&panel_id).map(|next| (next, true)))
     }
 
+    /// Place or select one existing local shell without creating a session.
+    pub fn open_shell(&mut self, shell_id: String) -> Result<Value, String> {
+        self.edit(|model| model.open_shell(&shell_id).map(|next| (next, true)))
+    }
+
+    /// Remove this window's tab while preserving its persistent tmux session.
+    pub fn detach_shell(&mut self, shell_id: String) -> Result<Value, String> {
+        self.edit(|model| model.detach_shell(&shell_id).map(|next| (next, true)))
+    }
+
     /// Open a navigation panel or select its existing stable tab identity.
     pub fn open_panel(&mut self, panel_id: String) -> Result<Value, String> {
         let name = panel_id.strip_prefix("panel:").unwrap_or(&panel_id);
@@ -199,7 +209,7 @@ impl LayoutSession {
         self.edit(|model| model.open_panel(panel).map(|next| (next, true)))
     }
 
-    /// Render a saved attach intent; terminal attachment remains gated.
+    /// Place or select a shell chosen by the navigation panels.
     pub fn show_shell(&mut self, shell_id: String) -> Result<Value, String> {
         validate_id(&shell_id)?;
         self.edit(|model| model.show_shell(&shell_id).map(|next| (next, true)))

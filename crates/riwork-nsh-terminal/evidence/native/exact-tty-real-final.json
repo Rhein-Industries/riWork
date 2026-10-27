@@ -1,0 +1,21 @@
+{
+  "verification_environment": "fresh isolated RIWORK_HOME only",
+  "environment": {
+    "RIWORK_HOME": "/tmp/riwork-terminal-detach-6bv8m2c_",
+    "TMPDIR": "/tmp",
+    "RIWORK_SKIP_SPEECH_HELPER": "1"
+  },
+  "argv": [
+    "cargo",
+    "test",
+    "-p",
+    "riwork-engine",
+    "--test",
+    "terminal_detach",
+    "--offline",
+    "--",
+    "--ignored",
+    "--nocapture"
+  ],
+  "exit_code": 0
+}

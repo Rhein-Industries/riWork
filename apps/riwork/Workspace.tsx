@@ -1,9 +1,10 @@
-import { Scroll, Text, View, cleanup, effect, keymap, signal, type YNode } from "nsh";
+import { Scroll, Text, View, cleanup, colorScheme, effect, host, keymap, signal, type YNode } from "nsh";
 import { DockArea, type DockAreaLayout, type DockNode } from "nsh/base";
 import { Button } from "nsh/base";
 import { Menu, Window } from "nsh/desktop";
-import type { LayoutSession } from "riwork/native";
-import { PanelContent, PanelEditors, ShellIntent, createPanelController, type PanelController } from "./Panels";
+import { Appearance, Sessions, Tabs, type AppearanceSnapshot, type LayoutSession } from "riwork/native";
+import { LocalTerminal, type TerminalColors, type TerminalEvents } from "./Terminal";
+import { PanelContent, PanelEditors, createPanelController, type PanelController } from "./Panels";
 import { DeferredPanel } from "./DeferredPanel";
 import { DEFERRED_KEYMAP, TAB_CYCLE_KEYS } from "./keyboard";
 import {
@@ -21,6 +22,8 @@ interface WorkspaceProps {
   startupNotice?: string | null;
   /** In-process observer used by the headless fixture, never a host API. */
   onChange?: (snapshot: WorkspaceSnapshot, dock: DockAreaLayout) => void;
+  /** Observe native-node creation in the headless lifecycle regression. */
+  onTerminalMount?: (shellId: string) => void;
   /** In-process geometry observer for headless gesture fixtures. */
   onViewRef?: (id: string, node: YNode) => void;
 }
@@ -39,6 +42,18 @@ export function Workspace(props: WorkspaceProps) {
   const notice = signal([props.startupNotice, snapshot().notice].filter(Boolean).join("\n"));
   const projectId = signal(props.projectId ?? snapshot().projectId ?? "");
   const switching = signal(false);
+  const appearance = signal<AppearanceSnapshot | null>(null);
+  const pendingFocus = signal<string | null>(null);
+  const busy = signal(false);
+  const overlay = signal(false);
+  let alive = true;
+  cleanup(() => { alive = false; });
+  // Panels own the shared session inventory; only appearance needs a separate
+  // observer for terminal colors and close behavior.
+  if (props.projectId) {
+    const subscription = Appearance.subscribe((event) => appearance.set(event.data));
+    cleanup(() => subscription.close());
+  }
   let size: Extent | undefined;
   const updateTitle = createTitleUpdater((title) => Window.setTitle(title));
   Window.setTitleBar("hidden", 28);
@@ -50,19 +65,101 @@ export function Workspace(props: WorkspaceProps) {
     initialWorktree: snapshot().selectedWorktreeId,
     initialTask: snapshot().selectedTaskId,
     openPanel: (id) => action(() => session.openPanel(id)),
-    showShell: (id) => action(() => session.showShell(id)),
+    showShell: (id) => { void openShell(id); },
     selectWorktree: (id) => { try { session.setSelectedWorktree(id); snapshot.set(session.snapshot() as WorkspaceSnapshot); } catch (error) { notice.set(String(error)); } },
     selectTask: (id) => { try { session.setSelectedTask(id); snapshot.set(session.snapshot() as WorkspaceSnapshot); } catch (error) { notice.set(String(error)); } },
     switchProject: async (project) => {
       if (switching()) throw new Error("conflict: project switch is already in progress");
       switching.set(true);
       try {
-        install(await session.switchProject(project.id));
+        const next = await session.switchProject(project.id);
+        if (!alive) return;
+        install(size ? session.setExtent(size) : next);
         projectId.set(project.id);
+        pendingFocus.set(null);
       } finally { switching.set(false); }
     },
   });
   effect(() => updateTitle(panelState.state().projects.some((project) => project.id === projectId()) ? windowTitle(panelState.projectLabel()) : props.title));
+
+  function terminalColors(): TerminalColors {
+    const value = appearance();
+    return (value ? colorScheme() === "dark" ? value.terminalDark : value.terminalLight : { source: "ghostty" }) as TerminalColors;
+  }
+  function isVisible(id: string): boolean { return snapshot().panes.some((pane) => pane.activeTab === id); }
+  function title(id: string): string {
+    const shell = id.startsWith("shell:") && panelState.shells().find((shell) => shell.id === id.slice(6));
+    return (id.startsWith("shell:") ? panelState.tabForShell(id.slice(6))?.title : undefined) ||
+      (shell ? panelState.titleForShell(shell) : findPanel(snapshot(), id)?.title ?? id);
+  }
+  function membershipProject(id: string): string | null {
+    // Locked panes can carry a shell from the previous project. Its shared
+    // membership remains in its owning project, while placement stays local.
+    const project = panelState.shells().find((shell) => shell.id === id)?.projectId ?? projectId();
+    // Legacy layout fixtures have opaque project keys and no shared membership.
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(project) ? project : null;
+  }
+  async function openShell(id: string) {
+    if (switching()) return;
+    const project = projectId(), token = panelState.generation(), membership = membershipProject(id);
+    try {
+      if (membership && !findPanel(snapshot(), `shell:${id}`)) {
+        await Tabs.update(membership, { action: "unhide", key: `shell:${id}` });
+      }
+      if (alive && project === projectId() && token === panelState.generation()) { install(session.openShell(id)); pendingFocus.set(id); }
+    } catch (error) { if (alive) notice.set(String(error)); }
+  }
+  async function createShell() {
+    if (!projectId() || busy() || switching() || panelState.pending()) return;
+    if (!snapshot().panes.some((pane) => !pane.locked)) { notice.set("Unlock a pane before opening a shell."); return; }
+    busy.set(true);
+    const project = projectId(), token = panelState.generation();
+    try {
+      const tree = panelState.state().worktrees.find((tree) => tree.id === panelState.selectedWorktree() && tree.projectId === project);
+      const shell = await Sessions.create({ projectId: project, worktreeId: tree?.id, cwd: tree?.path });
+      if (alive && project === projectId() && token === panelState.generation()) {
+        panelState.shells.set([...panelState.shells().filter((item) => item.id !== shell.id), shell]);
+        await openShell(shell.id);
+      }
+    } catch (error) { if (alive) notice.set(String(error)); }
+    finally { if (alive) busy.set(false); }
+  }
+  function removeShell(id: string) { action(() => session.detachShell(id)); }
+  async function detachShell(id: string) {
+    const project = projectId(), token = panelState.generation(), membership = membershipProject(id);
+    try {
+      if (membership) await Tabs.update(membership, { action: "hide", key: `shell:${id}` });
+      if (alive && project === projectId() && token === panelState.generation()) removeShell(id);
+    } catch (error) {
+      if (!alive || project !== projectId() || token !== panelState.generation()) return;
+      // An unavailable shared store permits only local Detach. Preserve its
+      // unreadable bytes and record the core's legacy detached identity.
+      if (String(error).replace(/^Error:\s*/, "").startsWith("unavailable:")) removeShell(id);
+      notice.set(String(error));
+    }
+  }
+  async function exitShell(id: string) {
+    const project = projectId(), token = panelState.generation();
+    try { await Sessions.close(id); if (alive && project === projectId() && token === panelState.generation()) removeShell(id); }
+    catch (error) { if (alive) notice.set(String(error)); }
+  }
+  function closeShell(id: string) {
+    if (switching()) return;
+    const behavior = appearance()?.tabCloseBehavior ?? "ask";
+    if (behavior === "detach") { void detachShell(id); return; }
+    if (behavior === "exit") { void exitShell(id); return; }
+    overlay.set(true);
+    void Menu.popup([
+      { label: "Detach tab — keep session running", onSelect: () => { void detachShell(id); } },
+      { label: "Exit session", onSelect: () => { void exitShell(id); } },
+      { type: "separator" }, { label: "Cancel" },
+    ]).finally(() => overlay.set(false));
+  }
+  function openLink(event: TerminalEvents["linkOpen"]) {
+    if (event.action === "edit") { notice.set("Opening terminal links in Vim is coming in the next terminal slice."); return; }
+    const call = event.kind === "folder" ? "system.revealInFinder" : "system.openWith";
+    void host.call(call, { path: event.target }).catch((error: unknown) => notice.set(String(error)));
+  }
 
   function install(next: unknown) {
     // Only session results may be installed. The reported DockArea tree is never
@@ -74,11 +171,12 @@ export function Workspace(props: WorkspaceProps) {
   }
 
   function action(run: () => unknown) {
+    if (switching()) return;
     try { install(run()); } catch (error) { notice.set(String(error)); }
   }
 
   function edit(next: DockAreaLayout) {
-    if (!size) return;
+    if (!size || switching()) return;
     try { install(session.applyDock(next, size)); }
     catch (error) {
       notice.set(String(error));
@@ -97,25 +195,40 @@ export function Workspace(props: WorkspaceProps) {
   function paneMenu(id: number) {
     const pane = snapshot().panes.find((pane) => pane.id === id);
     if (!pane) return;
+    overlay.set(true);
     void Menu.popup([
       { label: pane.locked ? "Unlock pane" : "Lock pane", onSelect: () => action(() => session.toggleLock(id)) },
       { label: "Main pane", checked: pane.main, onSelect: () => action(() => session.toggleMain(id)) },
-    ]);
+    ]).finally(() => overlay.set(false));
   }
 
   function layoutMenu() {
+    overlay.set(true);
     void Menu.popup([
       { label: "Gather tabs into main pane", disabled: !snapshot().panes.some((pane) => pane.main), onSelect: () => action(() => session.gather()) },
       { type: "separator" },
       { label: `Main pane: ${mainPaneSummary(snapshot())}`, disabled: true },
-    ]);
+    ]).finally(() => overlay.set(false));
   }
+
+  cleanup(host.on("route", (data) => {
+    const step = (data as { step?: { kind?: string; type?: string; shellId?: string; panel?: string } }).step;
+    if ((step?.kind ?? step?.type) === "showShell" && step?.shellId) void openShell(step.shellId);
+    else if ((step?.kind ?? step?.type) === "panel" && step?.panel) action(() => session.openPanel(step.panel!));
+  }));
+  cleanup(host.on("command", (data) => {
+    const command = data as { id?: string };
+    if (command.id === "closeTab") {
+      const tab = activePane(snapshot())?.activeTab;
+      if (tab?.startsWith("shell:")) closeShell(tab.slice(6));
+    } else if (command.id === "newShell") { void createShell(); }
+  }));
 
   for (let n = 1; n <= 9; n++) {
     cleanup(keymap.bind(`mod+${n}`, () => {
       if (panelState.editor() || switching()) return;
       const pane = activePane(snapshot());
-      // P1a shared-membership service is pending: pane order is authoritative.
+      // Numbered shortcuts follow the active pane's current tab order.
       const tab = pane && numberedTab(pane, n, false);
       if (tab) action(() => session.selectPanel(tab.id));
     }));
@@ -165,7 +278,8 @@ export function Workspace(props: WorkspaceProps) {
             handleAccessibilityLabel="Pane divider"
             renderTab={(tab) => tab.panel.startsWith("empty:") ? null : (
               <View testID={`tab:${tab.panel}`} ref={(node) => props.onViewRef?.(`tab:${tab.panel}`, node)} onPress={() => action(() => session.selectPanel(tab.panel))} onContextMenu={() => paneMenu(tab.group)} style={{ height: 28, paddingHorizontal: 10, flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: tab.active ? "#303643" : "#21242b" }}>
-                <Text style={{ fontSize: 11, color: tab.active ? "#eef2f9" : "#aeb5c2" }}>{(tab.panel.startsWith("shell:") ? panelState.tabForShell(tab.panel.slice(6))?.title : undefined) || findPanel(snapshot(), tab.panel)?.title || tab.panel}</Text>
+                <Text style={{ fontSize: 11, color: tab.active ? "#eef2f9" : "#aeb5c2" }}>{title(tab.panel)}</Text>
+                {tab.panel.startsWith("shell:") && <View testID={`close:${tab.panel}`} accessibilityLabel="Close shell tab" onPress={() => closeShell(tab.panel.slice(6))}><Text style={{ fontSize: 12, color: "#aeb5c2" }}>×</Text></View>}
                 {snapshot().panes.find((pane) => pane.id === tab.group)?.locked && <Text style={{ fontSize: 9, color: "#7acddd" }}>◆</Text>}
               </View>
             )}
@@ -176,7 +290,12 @@ export function Workspace(props: WorkspaceProps) {
                     <PanelContent controller={panelState} panel={panel.id.slice(6)} surface={panel.id} />
                   </View> : panel.id.startsWith("shell:") ?
                   <View testID={`panel:${panel.id}`} onPress={() => action(() => session.selectPanel(panel.id))} style={{ flex: 1, minHeight: 0 }}>
-                    <ShellIntent controller={panelState} shellId={panel.id.slice(6)} />
+                    <LocalTerminal shellId={panel.id.slice(6)} visible={isVisible(panel.id)}
+                      pinned={membershipProject(panel.id.slice(6)) ? !panelState.shells().find((shell) => shell.id === panel.id.slice(6))?.alive : false}
+                      focusOnAttach={pendingFocus() === panel.id.slice(6)} colors={terminalColors()} frozen={overlay() || panelState.editor() !== null || switching()}
+                      onMount={() => props.onTerminalMount?.(panel.id.slice(6))}
+                      onAttached={() => { if (pendingFocus() === panel.id.slice(6)) pendingFocus.set(null); }}
+                      onFocus={() => action(() => session.selectPanel(panel.id))} onLink={openLink} onNotice={(message) => notice.set(message)} />
                   </View> :
                   <DeferredPanel id={panel.id}
                     title={findPanel(snapshot(), panel.id)?.title ?? panel.id}
@@ -193,6 +312,7 @@ export function Workspace(props: WorkspaceProps) {
       </View>}
       <View testID="status-bar" style={{ height: 22, flexDirection: "row", alignItems: "center", paddingHorizontal: 8, gap: 10, backgroundColor: "#21242b" }}>
         <Scroll horizontal={true} style={{ maxWidth: "40%" }}><Text numberOfLines={1} style={{ fontSize: 9, color: "#aeb5c2" }}>{panelState.projectLabel()}</Text></Scroll>
+        {props.projectId && <View testID="new-shell-status" accessibilityLabel="New local shell" onPress={() => { void createShell(); }}><Text style={{ fontSize: 10, color: "#7acddd" }}>{busy() ? "Starting…" : "+ Shell"}</Text></View>}
         <View style={{ flex: 1 }} />
         <Scroll horizontal={true} contentStyle={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
         <Text testID="pane-count" style={{ fontSize: 9, color: "#aeb5c2" }}>{`${snapshot().panes.length} panes`}</Text>

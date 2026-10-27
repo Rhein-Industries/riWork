@@ -4,6 +4,7 @@
 //! `[nsh_base::registry(), registry()]` once. All windows share the same process
 //! service; neither subscription registration nor delivery does domain I/O on an
 //! engine thread. See the crate README for lifecycle and test instructions.
+pub mod appearance;
 pub mod backend;
 pub mod dto;
 pub mod hub;
@@ -24,6 +25,7 @@ pub use service::{ProcessService, initialize};
 #[native_module("riwork/native")]
 fn native(registry: &mut Registry) {
     registry
+        .module::<Appearance>()
         .module::<Store>()
         .module::<Sessions>()
         .module::<Tabs>()
@@ -156,14 +158,17 @@ pub struct Sessions;
 
 #[module]
 impl Sessions {
-    pub async fn create(request: CreateSessionRequest) -> Result<ShellSessionDto, String> {
-        initialize().await?.create_session(request).await
-    }
-    pub async fn close(id: String) -> Result<(), String> {
-        initialize().await?.close_session(id).await
-    }
     pub async fn list() -> Result<SessionsSnapshot, String> {
         initialize().await?.sessions_list().await
+    }
+
+    pub async fn create(request: CreateSessionRequest) -> Result<ShellSessionDto, String> {
+        initialize().await?.sessions_create(request).await
+    }
+
+    /// Explicit Exit only. Closing/detaching a tab must never call this method.
+    pub async fn close(id: String) -> Result<(), String> {
+        initialize().await?.sessions_close(id).await
     }
 
     pub fn subscribe(
@@ -206,6 +211,29 @@ impl Tabs {
     }
 }
 
+/// Settings-backed terminal theme and close preference, pushed once per process.
+#[module]
+pub struct Appearance;
+
+#[module]
+impl Appearance {
+    pub async fn snapshot() -> Result<appearance::AppearanceSnapshot, String> {
+        initialize().await?.appearance_snapshot().await
+    }
+
+    pub fn subscribe(
+        listener: Callback<Snapshot<appearance::AppearanceSnapshot>>,
+        cx: CallCx<'_>,
+    ) -> Result<Subscription, String> {
+        let service = service::initialized()?;
+        Ok(Subscription::start(cx, async move {
+            if let Ok(subscription) = service.subscribe_appearance().await {
+                deliver(subscription, listener).await;
+            }
+        }))
+    }
+}
+
 /// A live subscription. Closing, disposal, collection and owner teardown end its
 /// engine task, dropping and closing the bounded topic queue.
 #[class]
@@ -243,7 +271,12 @@ impl Subscription {
 
 impl Drop for Subscription {
     fn drop(&mut self) {
-        self.close();
+        // VM teardown clears NSH's context before finalizing objects retained
+        // by reactive cleanup closures. Cleanup::release reaches that context;
+        // it is valid only for explicit close() while JS is running. Dropping
+        // Cleanup keeps its owner callback registered and safely drops the
+        // unregister closure. Abort independently in either teardown order.
+        self.abort.abort();
     }
 }
 
@@ -271,7 +304,7 @@ mod tests {
         let modules = registry.module_specs();
         assert_eq!(
             modules.iter().map(|module| module.name).collect::<Vec<_>>(),
-            ["Layouts", "Sessions", "Store", "Tabs"]
+            ["Appearance", "Layouts", "Sessions", "Store", "Tabs"]
         );
         for module in modules {
             for function in &module.functions {
