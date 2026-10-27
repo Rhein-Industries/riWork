@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "/Users/dominik/orca/projects/riWork-nsh-p1-host/target/debug/riwork",
+    "/private/tmp/rwnsh-dkounh87/project"
+  ],
+  "env_override": {
+    "RIWORK_NSH_BUNDLE": "/this-bundle-must-not-be-read-by-forwarder.js"
+  },
+  "exit_code": 0,
+  "stdout": "",
+  "stderr": ""
+}

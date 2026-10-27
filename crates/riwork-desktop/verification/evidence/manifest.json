@@ -1,0 +1,84 @@
+{
+  "verification_environment": "isolated fixture only",
+  "fixture_root": "/private/tmp/rwnsh-dkounh87",
+  "binary": "/Users/dominik/orca/projects/riWork-nsh-p1-host/target/debug/riwork",
+  "environment": {
+    "HOME": "/private/tmp/rwnsh-dkounh87/user",
+    "RIWORK_HOME": "/private/tmp/rwnsh-dkounh87/state",
+    "RIWORK_RUNTIME_DIR": "/private/tmp/rwnsh-dkounh87/runtime",
+    "RIWORK_NSH_BACKGROUND": "1",
+    "RIWORK_NSH_BUNDLE": "/private/tmp/rwnsh-dkounh87/bundle.js"
+  },
+  "commands": [
+    {
+      "argv": [
+        "/Users/dominik/orca/projects/riWork-nsh-p1-host/target/debug/riwork",
+        "project",
+        "add",
+        "/private/tmp/rwnsh-dkounh87/project",
+        "--name",
+        "NSH isolated fixture",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "7a6ce106314e9e02816356c13a6481464cacd4f45d8f43c256398031349899b6",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "argv": [
+        "/Users/dominik/orca/projects/riWork-nsh-p1-host/target/debug/riwork",
+        "help"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "f18e91cacd76986e63ae551879528e27798857ddd33c8d14cf398f8f544274ce",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "argv": [
+        "/Users/dominik/orca/projects/riWork-nsh-p1-host/target/debug/riwork",
+        "project",
+        "list"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "68cf9f5ae6f5c83ed150fb12379520f3f7c93201773e4cd78d3313e8f24a64f2",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "argv": [
+        "/Users/dominik/orca/projects/riWork-nsh-p1-host/target/debug/riwork",
+        "project",
+        "list",
+        "--json"
+      ],
+      "exit_code": 0,
+      "stdout_sha256": "c8c161e239c9726fee7b9ba90771f63d05da4c2028ace0273ec6531d3d86d3d8",
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "status": "passed",
+  "project": {
+    "id": "022e2fc1-2c02-4e87-840a-2912ef939183",
+    "name": "NSH isolated fixture",
+    "root": "/private/tmp/rwnsh-dkounh87/project",
+    "repository_roots": [],
+    "folder_id": null,
+    "notify_on_agent_done": false,
+    "wake_orchestrators_on_agent_done": false,
+    "codex_account": {
+      "source": "inherit"
+    },
+    "orchestrator": {
+      "mode": "inherit"
+    },
+    "delegation_policy": {},
+    "created_at": 1793134247
+  },
+  "gui_argv": [
+    "/Users/dominik/orca/projects/riWork-nsh-p1-host/target/debug/riwork",
+    "/private/tmp/rwnsh-dkounh87/project"
+  ],
+  "pid": 4106,
+  "assertions": "distinct project/global params; window.open; singleton reuse; window.list; placement; route event; two native runtime windows",
+  "gui_exit_code": 0,
+  "unregistered": true
+}

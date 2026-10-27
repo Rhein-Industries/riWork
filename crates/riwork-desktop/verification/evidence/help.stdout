@@ -1,0 +1,261 @@
+riwork [PROJECT_PATH]                  Open the GPUI workspace
+riwork open [PROJECT_OR_PATH]           Open an independent project window
+riwork restart [--session] [--shell ID]  Restart all RiWork apps and restore their windows
+riwork reload [--all] [--session] [--shell ID]   Alias of restart; optionally resume a Codex session
+riwork update [--source PATH] [--release | --debug] [--no-reload]   Build release by default, install, and reload all windows
+riwork instances                        List running RiWork apps and their windows
+riwork usage [--shell ID]               Read harness usage (Grok: session tokens and cost)
+riwork appearance [--json]              Show the colors RiWork publishes to the phone companion
+riwork settings list [--json]          List global settings and their typed values
+riwork settings get KEY [--json]       Read one known global setting
+riwork settings set KEY VALUE [--json]   Validate, save, and print the effective value
+riwork settings help                   Show settings input rules and reload behavior
+riwork setup                            Install and start Cua.ai Driver; link its skill into each CLI
+riwork cua setup|status|permissions      Manage native computer use (status only reads)
+riwork cua mcp                          Serve Cua.ai Driver over MCP stdio
+riwork cua harness codex|claude|grok|muse -- ARG...   Start a harness with shared Cua
+riwork import orca [--preview]          Import local Orca projects and worktrees once
+riwork project add PATH [--name NAME]   Register a project and its root worktree
+riwork project create [PATH] [--name NAME] [--no-git] [--exclusive]   Create a project (Git by default)
+riwork project inspect PATH            Inspect contained repositories
+riwork project list|show|use [ID]       List, inspect, or switch projects
+riwork project update ID [--name NAME] [--folder ID | --ungrouped]   Edit project display metadata
+riwork project folder create NAME [--parent ID]   Create a virtual folder or subfolder
+riwork project folder move ID (--parent ID | --root)   Move a virtual folder
+riwork project folder list|rename|remove   Manage virtual project folders
+riwork project tasks [ID]              Show tasks for a project
+riwork project memo show|set ID         Print a project's Markdown memo, or replace it from stdin
+riwork worktree create BRANCH [--project ID] [--repo PATH] [--path PATH] [--base REF]   --base only applies to a new branch
+riwork worktree list [--project ID] [--all]
+riwork worktree tasks ID                Show tasks assigned to a worktree
+riwork worktree forget ID               Forget a missing worktree with no tasks or shells
+riwork task add TITLE [--project ID] [--details TEXT]
+riwork task list [--project ID | --worktree ID | --all]
+riwork task assign WORKTREE_ID TASK_ID...    Assign tasks as one batch
+riwork task unassign TASK_ID...         Remove worktree assignment
+riwork task status TASK_ID todo|in_progress|done
+riwork search QUERY                     Search projects, worktrees, and tasks
+riwork dashboard [--json]               The global dashboard: what needs you, what works, every project
+riwork mcp                              Serve workspace tools over MCP stdio
+riwork preview open|list|status|screenshot|input|tap|text|key|close   Control development preview tabs
+riwork preview help                     Show iOS build/stream and agent testing options
+riwork version | --version              Print the RiWork version
+riwork remote pair|revoke|devices|start|relay   Encrypted mobile access (standalone binary)
+riwork remote --help                    Pairing, relay and connector command options
+riwork shell create [--project ID | --worktree ID] [--command CMD] [--no-parent]
+riwork shell create [--worktree ID] --harness codex|claude|grok|muse [--model NAME] [--account LABEL_OR_ID] [--unrestricted | --as-settings]
+                    [--contributor-on]   Muse runs with contributor mode off unless --contributor-on
+riwork shell list [--project ID | --all]
+riwork shell output ID [--lines N] [--styled]   Read current shell output by UUID
+riwork shell output ID --json [--lines N] [--styled] [--if-changed HASH [--wait-ms N]]
+riwork shell history ID --end N --lines M [--styled] [--json]   Read a page of older scrollback
+riwork shell send ID TEXT               Paste a complete line and submit once
+riwork shell keys ID [--json] -- ITEM...   Type text and keys into a shell, no Return added
+riwork shell paste ID [--json] -- FILE...   Paste file paths as a drop on the terminal does
+riwork shell resize ID --columns N --rows N --owner UUID --lease UUID
+riwork shell resize-clear ID --owner UUID --lease UUID   Restore desktop sizing
+riwork shell cwd|metrics|attach|close ID
+riwork shell attach ID --exec [--ignore-size] [--read-only]   Become a tmux client of the shell (for remote terminals)
+riwork chat serve [--idle-seconds N]    Run the chat host in the foreground (exits after 15 idle minutes by default)
+riwork chat ensure                      Start the chat host if it is not running; print its socket
+riwork chat list [--project ID] [--json]   List Codex, Claude and Muse chats, running or not
+riwork chat open CHAT_ID                 Reopen an ordinary chat in its Mac project window
+riwork chat new --provider codex|claude|muse [--project ID | --worktree ID] [--mode supervised|auto-edit|full|plan]
+                [--model NAME] [--effort LEVEL] [--fast] [--contributor-on | --contributor-opt-out]
+                [--title TEXT] [--account LABEL_OR_ID]
+riwork chat models --provider codex|claude|muse [--project ID] [--json]
+                                        The models chats of that provider reported, read from saved chats
+riwork chat suggestions CHAT_ID [--json]   The / commands, @ files and & models a chat's message box offers
+riwork chat send CHAT_ID TEXT           Send a message; a stopped chat is resumed first
+riwork chat events CHAT_ID [--since N] [--wait-ms N] [--max N] [--max-bytes N] [--json]
+                                        Read a chat's events after N, waiting up to M ms for the first
+riwork chat command CHAT_ID (--command-json JSON | -- JSON) [--json]   Send one chat command (JSON)
+riwork chat stop CHAT_ID                Stop a chat's provider process and keep its history
+riwork handoff [--from SHELL_OR_CHAT_ID] --to shell|chat --provider codex|claude|grok|muse
+               [--model NAME] [--effort LEVEL] [--account LABEL_OR_ID]
+               [--mode supervised|auto-edit|full|plan] [--contributor-on]
+               [--context transcript|summary] [--note TEXT]
+                                        Pass a conversation to a new shell or chat
+riwork orchestrator [--project ID]       Show the selected orchestrator status
+riwork orchestrator create [--project ID | --cwd PATH] [--command CMD] [--mode automatic|terminal|chat]
+                [--provider codex|claude|muse] [--model NAME]
+riwork orchestrator list [--project ID]   List global and project orchestrators, terminals and chats
+riwork orchestrator status|output|cwd|metrics|attach|close [--project ID]
+riwork orchestrator send [--project ID] TEXT   Send a line (a chat message) to the selected orchestrator
+riwork orchestrator load-skill [--project ID]   Load its workspace skill
+riwork schedule list [--scope app|project|workspace] [--project UUID] [--worktree UUID]
+riwork schedule show SCHEDULE_UUID
+riwork schedule create --scope SCOPE [--project UUID] [--worktree UUID] --shell UUID --title TITLE --prompt TEXT --at RFC3339 [--every-minutes N]
+riwork schedule update SCHEDULE_UUID --revision N --scope SCOPE [--project UUID] [--worktree UUID] --shell UUID --at RFC3339 [--title TITLE] [--prompt TEXT] [--every-minutes N | --once]
+riwork schedule pause|resume|delete SCHEDULE_UUID --revision N --scope SCOPE [--project UUID] [--worktree UUID] --shell UUID
+riwork schedule help                    Show schedule contract and examples
+
+Add --json to read commands for structured output. Project, worktree, task, and
+chat IDs accept a unique UUID prefix of at least eight characters; shell IDs
+need their full UUID. Project, worktree, and task data lives in RIWORK_HOME
+or ~/.local/share/riwork. Shell processes stay alive independently of the UI.
+Only no arguments or one existing project directory open the workspace; any
+other unknown command or option exits with an error.
+settings addresses top-level settings.json keys in RIWORK_HOME (no project overrides).
+set takes JSON or a bare string; --json selects structured output and can precede VALUE.
+For example: settings set theme tokyo_night, or settings set status_bar --json
+'{"usage_mode":"all_accounts"}'. Object values replace the known object preferences;
+omitted fields use model defaults. Invalid or ignored values are refused without saving.
+Running desktop windows poll settings every two seconds and apply interface preferences;
+launch defaults affect new sessions, and delegation changes reach an orchestrator when
+it starts or loads its skill. Run settings help for details and output shapes.
+The chat host (`chat serve`) owns the Codex, Claude and Muse processes behind chats so
+they outlive app windows; `chat ensure` starts it detached, and it exits after
+15 minutes with no client and no chat at work. Chats are kept in RIWORK_HOME/chats.
+chat new --no-parent explicitly starts a root; otherwise a same-project caller is its parent.
+chat new defaults to the active project, like shell create, and starts the chat's
+provider at once; --mode is how much the agent may do without asking (supervised by
+default). A chat whose provider cannot start is kept as failed; chat send retries.
+chat new --account LABEL_OR_ID pins a Codex subscription (or system-default) for resumes.
+chat new --json prints the chat as `chat list --json` shows it, also when its provider
+did not start (state failed); without --json that is an error. --model, --effort and
+--title (at most 100, 32 and 200 characters, no control characters) take their value
+as it is, also with `=`: --title=--draft. --fast turns on the provider's fast mode for
+a model that has one (Codex's fast tier, Claude's fast mode). A Muse chat runs with Muse's
+contributor mode off, so its content won't be used for product improvement: every start and
+resume of it runs `muse serve --contributor-mode off`, which Muse never saves, whatever your
+Muse settings say. --contributor-on runs it with contributor mode on instead (`muse serve
+--contributor-mode on`) until it is turned off, and is refused for Codex and Claude, which
+have no contributor mode; --contributor-opt-out, the explicit off, is still taken. A chat host
+from before this is not trusted with it: a chat it started otherwise is removed, with an
+error.
+chat events --json prints one line, {"chat_id","events":[{"seq","event"}],"next","more"}:
+the events with seq above --since (default 0), at most --max (500 by default, up to
+2000) and as many as fit --max-bytes (1 MiB by default, up to 2 MiB). With none yet it
+waits up to --wait-ms (up to 25000) for the first, then collects for 50 ms; it
+returns at once for events that are already there. Pass `next` as --since to continue;
+`more` says the page was cut short. An event too big for a page alone has its long
+body strings shortened with a visible note, or becomes an item_elided/control_elided
+placeholder preserving its sequence slot and identity. --complete and --bounded are
+mutually exclusive compatibility flags; all modes keep full payloads when they fit
+and share the same oversized-event recovery. Elided controls are never actionable.
+chat snapshot UUID --json reads current full items and controls directly from disk without
+starting a host. --max is 1–100 (default 50); --max-bytes bounds the complete response.
+Use its cursor and before with --cursor TOKEN --before ORDER to page older full items.
+chat command takes one ChatCommand as JSON (send, interrupt, approve,
+answer, configure, compact, stop, dismiss_notice, switch) and refuses unknown fields; errors that start with
+`invalid_request:` are about the command, anything else about the host or the chat.
+{"command":"switch","provider":"claude"} goes on with the other provider in the same chat
+(optional model, effort, fast); it is refused while a turn runs or waits.
+{"command":"configure","contributor_mode":"on"} turns a Muse chat's contributor mode
+on, and "off" off again ({"contributor_opt_out":true} is still taken for off; false, which
+asked for your Muse settings, is refused). An idle chat's `muse serve` restarts and resumes its
+session; a stopped one keeps it for its next start. Send it on its own: it is refused beside
+other settings, while a turn runs or waits or Muse still starts. A Codex or Claude chat
+refuses on; one that kept on from Muse can turn it off before it goes back to Muse.
+chat models lists what a chat of that provider can be set to, read from saved chats; a
+project selects the Codex account the list is for.
+chat suggestions lists the slash commands a chat offers, the files and folders of its
+folder (at most 5000, without what .gitignore leaves out) and the models & can mention:
+every provider's (the chat's own list first, then what chat models reads for each), with
+how many of your own chats of that provider are set to each now, the most used first. It
+starts no host or provider.
+Its --json is at most 4 MiB: a listing that would print more keeps its first entries and
+says it is truncated.
+capabilities --json has "chat": true, "orchestrator_create": true,
+"chat_provider_switch": true, "chat_models": true, "chat_suggestions": true,
+"dashboard": true and "project_memo": true.
+project memo is the project's own Markdown notes (at most 32 KB), kept in the store beside
+it and never given to an agent. set reads the whole text from stdin and replaces the memo;
+the last save wins. --json prints {"v":1,"project_id","text","updated_at"} or
+{"error":{"code","message"}} (invalid_request, not_found, cli_error).
+dashboard reads what the desktop's global dashboard shows (the store, the shells and
+their agents, the chats of a chat host that runs or else the saved chats, and the
+automations) and starts nothing: no chat host, chat, shell or orchestrator.
+dashboard --json prints one line, the remote connector's dashboard.get reply: lists cut
+to a fixed length with *_total giving the full one, a figure that is not known left out
+(no live_chats while the chats cannot be read). See docs/remote-protocol.md.
+handoff writes the source conversation into RIWORK_HOME/handoffs/ID.md (owner-only) and
+starts the target in the same project, worktree and directory with a first message that
+points at it (a chat gets a short document inline); the source is neither stopped nor
+changed, but --context summary sends it one message. --from
+defaults to the session the command runs in (RIWORK_SHELL_ID or RIWORK_CHAT_ID) and takes
+a shell or chat id or a unique prefix of eight characters or more. --context transcript
+(the default) builds the document from the chat's log, the shell's Codex rollout or Claude
+transcript, or else its scrollback; --context summary first asks an idle Codex or Claude
+source to write a summary (up to five minutes) and falls back to the transcript, saying so,
+if none comes. --account is a Codex account's label or id (only Codex has accounts); without
+it the project's own account is used, as in a new tab. For a shell target --mode supervised
+leaves the CLI's usual permissions. A Muse target, chat or terminal, starts with contributor
+mode off unless --contributor-on (Muse only) asks for on. --json prints {handoff_id,
+document, target:{kind,id}, context} and, if a summary was replaced by the transcript,
+fallback.
+worktree create --base REF only chooses the start point of a new branch. If
+BRANCH already exists, it is checked out as is and --base is ignored.
+shell create --project ID --worktree SELECTOR looks SELECTOR up in that project
+first, so a branch name shared by several projects is not ambiguous.
+shell create --harness H --model NAME starts the CLI on that model (Codex and Grok -m,
+Claude and Muse --model, as handoff does); without it the CLI's own default runs. A Muse
+also says its contributor mode once, off unless --contributor-on, with or without --model.
+shell create --account LABEL_OR_ID pins a Codex subscription (or system-default); needs --harness codex.
+shell create --json prints the new session as `shell list --json` shows it (id,
+project_id, worktree_id, kind, cwd, harness, alive, ...). A running RiWork
+window adds a tab for it behind the current one without taking focus.
+shell keys takes 1 to 64 items after `--`: t:TEXT (literal, 1 to 4096 bytes, no
+control characters) or k:KEY, one of Enter Tab BTab Escape Backspace Delete Up
+Down Left Right Home End PageUp PageDown or C-a to C-z. At most 4096 text bytes
+in all. Items go to the pane in order under the shell's input lock, leaving
+copy mode first; a key directly after text goes 150 ms later, outside Codex's
+paste detection. An error naming input_unavailable means the pane's input is off.
+shell paste pastes the absolute paths of 1 to 16 existing files after `--` the
+way dropping them on the shell's terminal does, chosen by the program in front:
+Codex gets one paste per path, Claude Code, Grok and anything else the paths
+shell-escaped and joined by spaces. No Return is added. Errors that start with
+invalid_request:, not_found:, input_unavailable: or not_sent: happened before
+anything was pasted. The remote connector pastes a phone's uploads this way.
+shell output --json also reports cursor {x,y}, rows, cols and in_mode; the last
+`rows` lines of its output are the visible screen. It reports history_size (the
+scrollback lines above the screen) and alternate (a full-screen program is on
+the alternate screen), and a `hash` of everything the answer says. --styled
+keeps colors and text attributes as SGR sequences
+(ESC [ ... m) and removes every other escape and control sequence. With
+--if-changed HASH (a `hash` from an earlier answer to the same question) the
+shell is captured again whenever tmux reports a change to it (about every 80 ms
+where tmux cannot report changes) for up to --wait-ms (0 to 10000, default 0)
+while the hash stays the same; if it does, the answer is
+{id, unchanged: true, hash, history_size, alternate} and carries no output.
+shell history ID --end N --lines M reads scrollback without the screen: skip the N
+lines directly above it (0 starts at the line just above the screen), then take
+the M (1 to 5000) above those, clamped at the top of the history. --json gives
+{id, output, line_count, history_size, complete}: output is the lines top to
+bottom joined by newlines, unaltered and with no newline after the last one;
+complete is true when the page reaches the first line, and N at or beyond
+history_size gives an empty page. --styled filters like shell output --styled.
+Orchestrator commands without --project use the global session; list shows all
+scopes. For send, place --project before the text; use send -- TEXT to send a
+global literal line beginning with --project.
+An orchestrator runs in a terminal or as a chat (a Codex, Claude or Muse chat of the chat
+host), as was chosen when it was created: by the project's Project Settings for its
+own orchestrator, else by Settings > Agent sessions > Orchestrator runs as. Automatic,
+the default, starts a Muse chat on muse-wonder-full-1.0, or a Codex chat on gpt-6.1-sol
+when Muse cannot start; an explicit chat that cannot start is an error. create --mode
+automatic|terminal|chat overrides both for that creation, and --provider and --model
+choose the chat. Without --provider, --mode chat is the chat that was chosen (Automatic's
+when that is chosen; --model then needs --provider), or Settings' chat provider and model
+when a terminal was chosen. The override changes no setting.
+A scope has one orchestrator in either mode: create returns the one that exists, as it
+runs, and create --json adds "created" (false for one that was there) and, for one
+made now, "source" (settings, project or request), "fallback" when Automatic ran
+Codex because Muse could not start (also a Note line in plain text), and "notes"
+for saved choices that could not be read. list --json and
+status --json give every orchestrator a "mode" ("terminal" or "chat"); a chat
+orchestrator's entry has the usual fields and "chat_id", "provider", "model" (null:
+the provider's default) and "state"
+(starting, idle, running, waiting, stopped or failed), and its "id" is its chat's
+id, which riwork chat events and riwork chat command take as well. For a chat,
+send is a chat message (a stopped chat is resumed), output --lines N is the
+conversation as plain text (messages whole, one line for each command, edit and
+tool call, and what waits for approval last), load-skill sends the whole skill as
+a message to an idle chat, cwd is its folder, and close ends the agent and deletes
+the chat; metrics and attach are for terminals only.
+Without PATH, project create requires --name and uses ~/Documents/riwork/NAME.
+Explicit project paths remain relative to the current directory when needed.
+project create --exclusive only ever makes something new: it fails with
+"already_exists: ..." if the folder is there already or a project has that root or
+that name (ignoring case), where plain project create registers the folder it finds.
+The remote connector creates the phone's projects this way.

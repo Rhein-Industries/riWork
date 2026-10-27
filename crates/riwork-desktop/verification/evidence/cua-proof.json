@@ -1,0 +1,27 @@
+{
+  "provider": "RiWork cua-driver MCP",
+  "fixture_pid": 4106,
+  "live_state_used": false,
+  "input_actions": 0,
+  "windows": [
+    {
+      "window_id": 6187,
+      "snapshot_id": "s00000085",
+      "kind": "project",
+      "image": "project.png",
+      "uuid": "1ceb6944-668e-40fe-8ecf-86fa30e48af7"
+    },
+    {
+      "window_id": 6188,
+      "snapshot_id": "s00000084",
+      "kind": "global",
+      "image": "global.png",
+      "uuid": "8e6ad77d-d933-4c87-b0ad-271e40f2b545"
+    }
+  ],
+  "permission_preflight": {
+    "accessibility": true,
+    "screen_recording": true
+  },
+  "both_images_inspected": true
+}

@@ -2,42 +2,33 @@
 name = "riwork-desktop"
 version = "0.1.0"
 edition = "2024"
-
-[features]
-app-preview-fixture = ["dep:riwork-gpui-preview"]
+# Keep the legacy src/main.rs as an uncompiled parity reference.
+autobins = false
 
 [[bin]]
 name = "riwork"
-path = "src/main.rs"
+path = "src/nsh_main.rs"
 
 [dependencies]
 riwork-core = { path = "../riwork-core" }
 riwork-engine = { path = "../riwork-engine" }
 riwork-cli = { path = "../riwork-cli" }
-riwork-gpui-preview = { path = "../riwork-gpui-preview", optional = true }
-gpui = { package = "gpui-pre", version = "=0.3.8", default-features = false, features = ["font-kit"] }
-gpui_platform = { package = "gpui-pre-platform", version = "=0.3.8", features = ["font-kit", "runtime_shaders"] }
-gpui-kit = { version = "=0.7.1", default-features = false }
-# Keep Kit's otherwise semver-wide Base dependency on the reviewed release.
-gpui-base = "=0.7.1"
-gpui-libghostty = "=0.3.1"
-async-channel = "2.5"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-syntect = { version = "=5.3.0", default-features = false, features = ["default-fancy"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 fs2 = "0.4"
-chrono = "0.4"
-image = "=0.25.10"
-base64 = "0.22"
-sha2 = "0.10"
-ureq = "3"
 libc = "0.2"
-notify = "=8.2.0"
-core-foundation-sys = "0.8"
-objc2 = "0.6"
-raw-window-handle = "0.6"
 
-[dev-dependencies]
-gpui-kit = { version = "=0.7.1", default-features = false, features = ["test-support"] }
-riwork-engine = { path = "../riwork-engine", features = ["test-support"] }
+[target.'cfg(target_os = "macos")'.dependencies]
+nsh-platform-macos = "=0.3.0"
+nsh-engine = "=0.3.0"
+nsh-core = "=0.3.0"
+nsh-base = "=0.3.0"
+dispatch2 = "0.3"
+block2 = "0.6"
+env_logger = "0.11"
+
+# P1a integration: replace src/nsh_native_stub.rs with
+# riwork-nsh-native = { path = "../riwork-nsh-native" }
+# and `use riwork_nsh_native as native` in nsh_host.rs. The frozen JS name
+# remains `riwork/native`. P1a is not present at the branch base ea0f2f5.

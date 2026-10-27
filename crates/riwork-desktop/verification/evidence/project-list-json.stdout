@@ -1,0 +1,24 @@
+[
+  {
+    "id": "022e2fc1-2c02-4e87-840a-2912ef939183",
+    "name": "NSH isolated fixture",
+    "root": "/private/tmp/rwnsh-dkounh87/project",
+    "repository_roots": [],
+    "folder_id": null,
+    "notify_on_agent_done": false,
+    "wake_orchestrators_on_agent_done": false,
+    "codex_account": {
+      "source": "inherit"
+    },
+    "orchestrator": {
+      "mode": "inherit"
+    },
+    "delegation_policy": {},
+    "created_at": 1793134247,
+    "agents": {
+      "working": 0,
+      "waiting": 0,
+      "done": 0
+    }
+  }
+]
