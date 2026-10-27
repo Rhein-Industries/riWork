@@ -1,0 +1,24 @@
+[
+  {
+    "id": "5b234c53-3146-48f6-8fcc-3505c94f4d02",
+    "name": "Alpha",
+    "root": "/private/tmp/riwork-p1-m5-f6975181/parity-zh7mtux5/cli-fixture/project",
+    "repository_roots": [],
+    "folder_id": null,
+    "notify_on_agent_done": false,
+    "wake_orchestrators_on_agent_done": false,
+    "codex_account": {
+      "source": "inherit"
+    },
+    "orchestrator": {
+      "mode": "inherit"
+    },
+    "delegation_policy": {},
+    "created_at": 1793137287,
+    "agents": {
+      "working": 0,
+      "waiting": 0,
+      "done": 0
+    }
+  }
+]

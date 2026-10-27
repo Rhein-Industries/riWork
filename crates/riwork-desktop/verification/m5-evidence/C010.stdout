@@ -1,0 +1,6 @@
+10:    App, AppOptions, AppView, Appearance, AssetBase, Bundle, CacheLocation, CacheOptions,
+328:            "app.setAppearance",
+362:            AppOptions {
+366:                appearance: Appearance::System,
+367:                data_dir: Some(self.home.join("nsh")),
+776:            "app.setAppearance" => call.reject("unavailable: process appearance service awaits P1a"),

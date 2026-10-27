@@ -1,0 +1,6 @@
+
+running 1 test
+test layouts::tests::corrupt_file_is_set_aside_on_save_instead_of_crashing_or_being_deleted ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 290 filtered out; finished in 0.02s
+

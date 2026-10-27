@@ -1,0 +1,94 @@
+{
+  "settings": {
+    "agent_inline_mode": true,
+    "agent_terminals_unrestricted": true,
+    "chat_display": "normal",
+    "chat_display_modes": {},
+    "claude_chat_ignores_api_key": false,
+    "codex_subscription_balancing": false,
+    "dashboard_haiku_summaries": false,
+    "delegation_policy": {},
+    "dictation_mic": false,
+    "interface_font": "system_mono",
+    "native_terminal_colors": true,
+    "open_preview_on_select": true,
+    "orchestrator_chat_model": null,
+    "orchestrator_chat_provider": "codex",
+    "orchestrator_mode": "automatic",
+    "panel_tab_icons": false,
+    "project_order": {
+      "by": "last_edited",
+      "descending": true
+    },
+    "remember_window_size": true,
+    "schema_version": 1,
+    "selected_codex_account": null,
+    "status_bar": {
+      "enabled": true,
+      "items": [
+        {
+          "enabled": true,
+          "kind": "project",
+          "side": "left"
+        },
+        {
+          "enabled": false,
+          "kind": "worktree",
+          "side": "left"
+        },
+        {
+          "enabled": false,
+          "kind": "agent_activity",
+          "side": "left"
+        },
+        {
+          "enabled": true,
+          "kind": "live_sessions",
+          "side": "right"
+        },
+        {
+          "enabled": true,
+          "kind": "resources",
+          "side": "right"
+        },
+        {
+          "enabled": true,
+          "kind": "usage",
+          "side": "right"
+        },
+        {
+          "enabled": true,
+          "kind": "codex_account",
+          "side": "right"
+        },
+        {
+          "enabled": true,
+          "kind": "session_id",
+          "side": "right"
+        },
+        {
+          "enabled": true,
+          "kind": "global_orchestrator",
+          "side": "right"
+        },
+        {
+          "enabled": true,
+          "kind": "project_orchestrator",
+          "side": "right"
+        },
+        {
+          "enabled": true,
+          "kind": "layout",
+          "side": "right"
+        }
+      ],
+      "usage_mode": "current_chat"
+    },
+    "tab_close_behavior": "ask",
+    "theme": "ghostty",
+    "ui_text_matches_terminal": false,
+    "ui_text_size": 11,
+    "use_riwork_colors": false
+  },
+  "v": 1
+}

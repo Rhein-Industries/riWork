@@ -1,0 +1,16 @@
+crates/riwork-core/src/theme.rs:7:pub enum ThemeChoice {
+crates/riwork-core/src/theme.rs:12:    Catppuccin,
+crates/riwork-core/src/theme.rs:14:    GruvboxLight,
+crates/riwork-core/src/theme.rs:15:    Hermes,
+crates/riwork-core/src/theme.rs:18:impl ThemeChoice {
+crates/riwork-core/src/theme.rs:23:        Self::Catppuccin,
+crates/riwork-core/src/theme.rs:25:        Self::GruvboxLight,
+crates/riwork-core/src/theme.rs:26:        Self::Hermes,
+crates/riwork-core/src/theme.rs:31:            Self::Ghostty => "Follow Ghostty",
+crates/riwork-core/src/theme.rs:34:            Self::Catppuccin => "Catppuccin Mocha",
+crates/riwork-core/src/theme.rs:35:            Self::TokyoNight => "Tokyo Night",
+crates/riwork-core/src/theme.rs:36:            Self::GruvboxLight => "Gruvbox Light",
+crates/riwork-core/src/theme.rs:37:            Self::Hermes => "Hermes",
+crates/riwork-core/src/theme.rs:50:            Self::Catppuccin => "A soft dark palette with pastel accents.",
+crates/riwork-core/src/theme.rs:52:            Self::GruvboxLight => "A warm light palette with earthy accents.",
+crates/riwork-core/src/theme.rs:53:            Self::Hermes => "Deep cobalt, navy panels, warm cream prose and gold accents.",

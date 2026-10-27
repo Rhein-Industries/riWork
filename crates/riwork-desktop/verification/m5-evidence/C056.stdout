@@ -1,0 +1,13 @@
+
+running 8 tests
+test layouts::preserve_locked_tests::unusable_sizes_leave_the_layout_alone ... ok
+test layouts::preserve_locked_tests::only_real_changes_are_reported ... ok
+test layouts::preserve_locked_tests::a_window_too_small_for_every_minimum_stays_proportional ... ok
+test layouts::preserve_locked_tests::a_small_window_takes_from_the_locked_pane_only_as_far_as_it_must ... ok
+test layouts::preserve_locked_tests::a_narrow_locked_pane_in_a_wide_window_may_go_below_the_drag_limit ... ok
+test layouts::preserve_locked_tests::a_locked_nav_beside_a_locked_footer_keeps_its_width_and_the_footer_follows ... ok
+test layouts::preserve_locked_tests::a_locked_left_nav_keeps_its_width_and_its_height_follows_the_window ... ok
+test layouts::preserve_locked_tests::resizing_back_and_forth_returns_to_the_same_ratios ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 283 filtered out; finished in 0.00s
+

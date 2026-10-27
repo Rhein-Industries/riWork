@@ -51,8 +51,8 @@ pub enum InstanceStart {
 /// between an old host exiting and its confirmed replacement taking ownership.
 pub struct DesktopInstance {
     run_dir: PathBuf,
-    lock: Option<File>,
-    handoff: Option<File>,
+    lock: Option<LockedFile>,
+    handoff: Option<LockedFile>,
     requests: Option<Receiver<OpenRequest>>,
     waker: RequestWaker,
     stop: Arc<AtomicBool>,
@@ -254,6 +254,18 @@ impl Drop for DesktopInstance {
     }
 }
 
+/// These locks describe this host's ownership, never a subprocess's. A worker
+/// may fork while a lock is open, before O_CLOEXEC takes effect in the child.
+/// Close alone would keep the lock until every inherited descriptor closes.
+/// Release on every path, including failed forwarding and abandoned reloads.
+struct LockedFile(File);
+
+impl Drop for LockedFile {
+    fn drop(&mut self) {
+        let _ = FileExt::unlock(&self.0);
+    }
+}
+
 fn canonical_home(home: &Path) -> Result<PathBuf, String> {
     riwork_core::paths::create_private_dir(home)
         .map_err(|error| format!("Cannot create RIWORK_HOME: {error}"))?;
@@ -261,7 +273,7 @@ fn canonical_home(home: &Path) -> Result<PathBuf, String> {
         .map_err(|error| format!("Cannot resolve RIWORK_HOME: {error}"))
 }
 
-fn try_lock(path: &Path) -> Result<Option<File>, String> {
+fn try_lock(path: &Path) -> Result<Option<LockedFile>, String> {
     let file = OpenOptions::new()
         .create(true)
         .truncate(false)
@@ -272,7 +284,7 @@ fn try_lock(path: &Path) -> Result<Option<File>, String> {
         .open(path)
         .map_err(|error| format!("Cannot open desktop lock {}: {error}", path.display()))?;
     match file.try_lock_exclusive() {
-        Ok(()) => Ok(Some(file)),
+        Ok(()) => Ok(Some(LockedFile(file))),
         Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(None),
         Err(error) => Err(format!("Cannot lock desktop: {error}")),
     }
@@ -569,6 +581,23 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.root);
         }
+    }
+
+    #[test]
+    fn dropping_a_lock_releases_inherited_descriptors() {
+        let fixture = Fixture::new();
+        let path = fixture.home.join("inherited.lock");
+        let gate = try_lock(&path).unwrap().unwrap();
+        // dup, like fork, retains the same open-file description. No child
+        // process or process-global environment mutation is needed here.
+        let inherited = gate.0.try_clone().unwrap();
+        assert!(try_lock(&path).unwrap().is_none());
+        drop(gate);
+        let reacquired = try_lock(&path).unwrap().expect("released host ownership");
+        drop(inherited);
+        assert!(try_lock(&path).unwrap().is_none());
+        drop(reacquired);
+        assert!(try_lock(&path).unwrap().is_some());
     }
 
     #[test]

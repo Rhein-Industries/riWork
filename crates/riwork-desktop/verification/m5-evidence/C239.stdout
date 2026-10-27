@@ -1,0 +1,660 @@
+
+running 127 tests
+test cli::chat_remote_tests::a_wait_ends_with_the_first_event_and_collects_what_follows_within_a_short_window ... ignored, slow: sleeps and asserts wall-clock windows
+test cli::chat_remote_tests::a_page_that_ends_with_the_connection_is_still_a_page_unless_it_is_empty ... ok
+test cli::chat_remote_tests::a_page_is_what_the_source_gave_up_to_the_limits ... ok
+test cli::chat_remote_tests::cli_keeps_its_256_byte_minimum_cut ... ok
+test cli::chat_remote_tests::bounded_body_placeholder_says_full_text_is_on_the_mac_and_keeps_identity ... ok
+test cli::chat_remote_tests::bounded_recovery_represents_bodies_and_never_shortens_or_skips_controls ... ok
+test cli::chat_remote_tests::a_command_that_is_not_strictly_a_command_is_refused_before_a_host_is_asked ... ok
+test cli::chat_remote_tests::complete_event_pages_elide_oversized_events_and_keep_sequence_slots ... ok
+test cli::account_tests::shell_account_flag_rejects_invalid_selections_before_launch ... ok
+test cli::account_tests::chat_account_flag_rejects_invalid_selections_before_starting_a_host ... ok
+test cli::chat_remote_tests::a_full_page_says_whether_there_is_more_and_next_continues_it ... ok
+test cli::chat_remote_tests::a_page_stops_at_the_bytes_it_may_print_and_leaves_the_rest_for_the_next ... ok
+test cli::chat_remote_tests::command_says_what_is_wrong_with_the_chat_or_the_arguments ... ok
+test cli::chat_remote_tests::an_event_too_big_for_a_page_keeps_a_sequence_slot_with_cut_text_or_the_existing_note ... ok
+test cli::chat_remote_tests::a_switch_goes_through_chat_command_and_moves_the_chat_to_the_other_provider ... ok
+test cli::chat_remote_tests::events_that_are_there_come_at_once_whatever_the_wait ... ok
+test cli::chat_remote_tests::events_without_json_print_one_line_per_event ... ok
+test cli::chat_remote_tests::notice_dismiss_command_decodes_and_rejects_invalid_fields ... ok
+test cli::chat_remote_tests::a_send_to_a_stopped_chat_resumes_it ... ok
+test cli::chat_remote_tests::remote_shrink_preserves_small_images_and_marks_large_images_unavailable ... ok
+test cli::chat_remote_tests::strings_are_cut_on_a_character_boundary_and_marked ... ok
+test cli::chat_remote_tests::events_say_what_is_wrong_with_the_chat_or_the_options_they_were_given ... ok
+test cli::chat_remote_tests::models_lists_what_saved_chats_of_a_provider_reported_without_a_host ... ok
+test cli::chat_remote_tests::snapshot_is_read_only_without_a_host_or_an_ensure_call ... ok
+test cli::account_tests::chat_account_flag_refuses_and_removes_a_legacy_hosts_wrong_account ... ok
+test cli::chat_tests::ensure_prints_the_socket_to_connect_to ... ok
+test cli::account_tests::chat_account_flag_uses_the_existing_account_field_on_legacy_hosts ... ok
+test cli::chat_tests::new_refuses_what_it_cannot_understand ... ok
+test cli::chat_remote_tests::suggestions_read_a_saved_chats_commands_and_folder_without_a_host ... ok
+test cli::chat_remote_tests::every_command_reaches_the_driver_in_either_argument_form ... ok
+test cli::chat_remote_tests::snapshot_cli_pages_normal_rows_and_recovers_a_single_payload_under_the_requested_budget ... ok
+test cli::chat_tests::stop_does_not_start_a_host_just_to_find_nothing_running ... ok
+test cli::chat_remote_tests::a_chat_whose_provider_does_not_start_is_printed_as_json_and_is_an_error_as_text ... ok
+test cli::chat_remote_tests::suggestions_offer_the_chats_models_with_how_much_each_is_used ... ok
+test cli::chat_tests::send_and_stop_say_what_is_wrong_with_the_chat_they_were_given ... ok
+test cli::chat_remote_tests::nothing_new_is_an_empty_page_after_the_wait_with_next_unchanged ... ok
+test cli::handoff::tests::free_text_is_taken_as_it_is_even_when_it_looks_like_an_option ... ok
+test cli::chat_remote_tests::new_refuses_settings_that_are_blank_long_or_hold_controls_before_anything_starts ... ok
+test cli::handoff::tests::the_whole_command_line_is_read ... ok
+test cli::handoff::tests::what_cannot_be_understood_is_refused_with_the_usage ... ok
+test cli::chat_remote_tests::contributor_command_resumes_muse_on_the_same_session_and_surfaces_refusals ... ok
+test cli::chat_tests::list_shows_every_chat_on_a_line_and_as_json ... ok
+test cli::handoff::tests::without_a_source_or_with_two_the_command_asks_for_from ... ok
+test cli::chat_tests::new_starts_a_chat_in_the_projects_directory_in_the_chosen_mode ... ok
+test cli::orchestrator_tests::a_project_chat_orchestrator_is_created_for_its_project_and_listed_with_the_terminal_ones ... ignored, slow: starts a real tmux server for the terminal orchestrator
+test cli::open_tests::open_scrubs_only_an_injected_codex_home ... ok
+test cli::orchestrator_tests::close_ends_the_chat_orchestrator_and_the_next_create_follows_the_setting_then ... ignored, slow: starts a real tmux server for the terminal orchestrator
+test cli::handoff::tests::a_chats_own_agent_hands_off_its_chat_by_saying_nothing_of_the_source ... ok
+test cli::chat_tests::send_and_stop_take_a_unique_prefix_and_send_resumes_a_stopped_chat ... ok
+test cli::chat_remote_tests::new_takes_a_model_an_effort_and_a_title_as_they_are ... ok
+test cli::orchestrator_tests::looking_at_orchestrators_never_starts_a_chat_host ... ok
+test cli::handoff::tests::an_account_is_by_label_and_a_claude_target_has_none ... ok
+test cli::orchestrator_tests::shell_create_model_asks_the_launch_for_that_model_and_keeps_the_permission_choice ... ok
+test cli::handoff::tests::from_names_the_source_by_a_prefix_and_beats_the_environment ... ok
+test cli::orchestrator_tests::what_only_a_terminal_has_says_so_for_a_chat_and_the_terminals_commands_are_still_the_shells ... ignored, slow: starts a real tmux server for the terminal orchestrator
+test cli::memo::tests::refusals_carry_codes ... ok
+test cli::chat_tests::new_starts_a_muse_chat_with_contributor_mode_off_unless_asked_on ... ok
+test cli::chat_remote_tests::list_can_be_limited_to_one_project_and_an_unknown_project_starts_nothing ... ok
+test cli::orchestrator_tests::fresh_settings_create_a_muse_chat_on_wonder_full_and_say_who_chose ... ok
+test cli::preview_cli::tests::touch_input_preserves_frame_coordinates_and_rejects_nan_or_extra_arguments ... ok
+test cli::tab_error_tests::tab_cli_classifies_bad_keys_titles_and_unknown_projects ... ok
+test cli::handoff::tests::a_muse_chat_handed_off_to_starts_off_unless_asked_on ... ok
+test cli::tests::a_failed_reload_shows_why_each_app_failed_and_where_it_hung ... ok
+test cli::tests::a_hash_that_looks_like_an_option_stays_a_value_in_the_joined_form ... ok
+test cli::tests::claude_notification_input_failures_always_return_nonblocking_success ... ok
+test cli::preview_cli::tests::ambiguous_or_unknown_launch_arguments_fail_before_enqueue ... ok
+test cli::tests::global_send_scope_like_text_stays_literal_after_text_or_delimiter ... ok
+test cli::tests::keys_arguments_are_an_id_then_items_after_the_separator ... ok
+test cli::tests::keys_json_flag_is_only_taken_before_the_separator ... ok
+test cli::preview_cli::tests::ios_launch_has_owned_device_selection_and_explicit_wait_background_flags ... ok
+test cli::tests::missing_send_scope_value_and_duplicate_read_scopes_fail ... ok
+test cli::tests::legacy_or_relative_shell_home_never_falls_back_to_another_account ... ok
+test cli::memo::tests::show_and_set_speak_the_connectors_json ... ok
+test cli::tests::only_gui_startup_forms_open_the_workspace ... ok
+test cli::tests::chat_open_queues_an_existing_stopped_chat_without_changing_shared_inventory ... ok
+test cli::tests::reload_with_only_unreadable_apps_is_not_reported_as_nothing_open ... ok
+test cli::tests::scoped_send_preserves_flags_in_literal_task_text ... ok
+test cli::tests::schedule_text_output_escapes_control_characters_but_json_stays_exact ... ok
+test cli::tests::shell_history_arguments_need_end_and_lines_and_bound_the_page ... ok
+test cli::preview_cli::tests::project_inference_uses_longest_matching_worktree_path ... ok
+test cli::tests::shell_history_json_names_the_page ... ok
+test cli::tests::project_scope_disambiguates_a_branch_shared_by_many_projects ... ok
+test cli::tests::shell_output_arguments_keep_the_old_forms_and_add_the_new_ones ... ok
+test cli::tests::shell_output_json_always_has_a_hash_and_drops_the_text_when_unchanged ... ok
+test cli::tests::shell_output_arguments_bound_the_wait_and_refuse_nonsense ... ok
+test cli::tests::update_profile_flags_keep_default_and_explicit_builds_separate ... ok
+test cli::tests::two_matches_inside_one_project_stay_ambiguous ... ok
+test cli::tests::shell_usage_reads_only_its_frozen_account_home ... ok
+test mcp::tests::a_batch_answers_with_an_array_of_only_the_responses_that_exist ... ok
+test mcp::tests::empty_and_non_object_messages_are_never_ignored ... ok
+test mcp::tests::declared_arguments_pass_the_gate ... ok
+test mcp::tests::hints_do_not_understate_what_a_tool_can_do ... ok
+test mcp::tests::notifications_stay_silent_but_a_request_without_a_method_does_not ... ok
+test mcp::tests::delegation_tools_have_scoped_inputs_and_bounded_waits ... ok
+test mcp::tests::every_tool_rejects_arguments_its_schema_does_not_declare ... ok
+test mcp::tests::schedule_failures_keep_code_and_conflict_without_structured_content ... ok
+test mcp::tests::schedule_tools_offer_muse_chats ... ok
+test mcp::tests::undecodable_lines_get_a_parse_error ... ok
+test cli::handoff::tests::a_summary_that_does_not_come_is_reported_where_the_caller_reads ... ok
+test update::tests::a_certificate_is_preferred_to_an_ad_hoc_signature ... ok
+test update::tests::an_interrupt_stops_the_running_stage_and_everything_it_started ... ignored, slow: sends SIGTERM to the test process and waits for a real process group
+test cli::orchestrator_tests::without_muse_create_runs_codex_on_sol_and_notes_why ... ok
+test mcp::tests::orchestrator_tools_read_a_chat_orchestrator_the_way_they_read_a_terminal_one ... ok
+test update::tests::failed_or_timed_out_build_stages_keep_diagnostic_logs ... ignored, slow: real build-stage processes and a wall-clock timeout
+test update::tests::atomic_install_preserves_open_inodes_and_rolls_back_bundle_failure ... ok
+test cli::orchestrator_tests::explicit_chat_overrides_terminal_setting_without_changing_it ... ok
+test cli::orchestrator_tests::status_reports_the_state_of_the_chat_as_a_terminal_reports_its_session ... ok
+test cli::tests::failed_claude_completion_queue_never_returns_a_blocking_cli_error ... ok
+test cli::orchestrator_tests::send_is_a_chat_message_and_output_is_the_conversation_as_text ... ok
+test update::tests::a_build_that_does_not_start_is_rejected_before_installation ... ok
+test update::tests::interrupt_handlers_are_restored_and_an_ignored_signal_stays_ignored ... ok
+test update::tests::updates_install_only_builds_that_run_and_keep_the_previous_one ... ignored, slow: runs the whole update pipeline with fake cargo and bundler processes
+test update::tests::the_kept_zig_toolchain_is_found_only_when_complete ... ok
+test update::tests::workspace_builds_share_staged_target_and_bundle_validation_fails_closed ... ok
+test update::tests::bundle_staging_transports_the_bundled_icon_and_validation_requires_it ... ok
+test update::tests::the_replaced_build_is_kept_as_previous_until_the_next_update ... ok
+test update::tests::stale_staging_and_old_logs_are_swept_but_other_files_and_kept_staging_are_not ... ok
+test update::tests::source_validation_rejects_another_package_and_missing_bundle_inputs ... ok
+test update::tests::source_resolution_honors_explicit_and_configured_checkouts ... ok
+test cli::tests::usage_without_a_shell_flag_reports_the_calling_shells_account ... ok
+test cli::tests::rename_keeps_a_folder_moved_after_the_caller_read_its_snapshot ... ok
+test cli::orchestrator_tests::create_follows_the_setting_and_a_second_create_returns_the_orchestrator_it_made ... ok
+test mcp::tests::orchestrator_create_starts_what_settings_and_the_project_choose_and_reuses_the_rest ... ok
+test cli::account_tests::shell_account_flag_records_an_explicit_binding_with_or_without_a_model ... ok
+test cli::account_tests::chat_account_flag_pins_saved_and_system_accounts_across_host_restart ... ok
+test cli::orchestrator_tests::a_project_choice_makes_its_own_orchestrator_and_create_flags_win_for_that_creation ... ok
+test cli::chat_remote_tests::suggestions_cut_a_listing_too_big_for_the_connector_to_read ... ok
+
+test result: ok. 120 passed; 0 failed; 7 ignored; 0 measured; 0 filtered out; finished in 7.26s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 5 tests
+test a_project_was_last_active_when_its_newest_shell_last_printed ... ignored, slow: real tmux sessions and wall-clock activity times
+test lists_report_what_each_agent_is_doing_and_the_projects_count_them ... ignored, slow: real tmux sessions and wall-clock activity times
+test orchestrators_report_activity_too ... ignored, slow: real tmux sessions and wall-clock activity times
+test the_projects_orchestrator_counts_and_the_global_one_does_not ... ignored, slow: real tmux sessions and wall-clock activity times
+test a_corrupt_recency_file_or_missing_tmux_state_never_breaks_the_project_list ... ok
+
+test result: ok. 1 passed; 0 failed; 4 ignored; 0 measured; 0 filtered out; finished in 1.51s
+
+
+running 5 tests
+test a_file_over_sixteen_kib_is_invalid ... ok
+test json_prints_the_validated_document_in_the_contract_shape ... ok
+test unexpected_arguments_are_refused ... ok
+test a_missing_file_fails_with_the_publish_message_and_creates_nothing ... ok
+test an_invalid_file_fails_the_same_way ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.58s
+
+
+running 4 tests
+test a_host_in_the_foreground_exits_by_itself_when_idle ... ignored, slow: waits on the wall clock for a one-second idle exit
+test chat_commands_refuse_what_they_cannot_do_without_starting_a_host ... ok
+test events_and_command_refuse_an_unknown_chat_and_capabilities_announce_chat ... ok
+test ensure_starts_one_detached_host_and_every_later_ensure_finds_it ... ok
+
+test result: ok. 3 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.26s
+
+
+running 12 tests
+test a_named_project_scopes_worktree_selectors_in_the_cli_and_mcp ... ignored, slow: real tmux shells
+test grok_shell_usage_reports_the_session_grok_lists_for_the_panes_process ... ignored, slow: real tmux shells
+test shell_history_pages_the_scrollback_and_output_json_tells_how_long_it_is ... ignored, slow: real tmux shells
+test shell_keys_types_into_a_pane_and_output_json_reports_the_screen ... ignored, slow: real tmux shells
+test mcp_rejects_an_undeclared_argument_before_touching_any_state ... ok
+test mcp_survives_invalid_utf8_and_answers_batches_and_scalars ... ok
+test a_closed_stdout_pipe_ends_output_quietly ... ok
+test grok_shell_usage_is_unknown_not_an_error ... ok
+test version_prints_the_crate_version_and_never_starts_the_gui ... ok
+test unknown_arguments_fail_with_usage_instead_of_opening_the_workspace ... ok
+test renaming_a_project_leaves_its_folder_alone ... ok
+test shell_keys_rejects_bad_invocations_before_reaching_any_shell ... ok
+
+test result: ok. 8 passed; 0 failed; 4 ignored; 0 measured; 0 filtered out; finished in 0.54s
+
+
+running 5 tests
+test credential_and_config_commands_never_reach_an_orca_managed_home ... ok
+test reads_and_the_users_own_profile_still_pass_through ... ok
+test muse_launches_start_with_contributor_mode_off_once_unless_the_user_chose ... ok
+test interactive_claude_launches_leave_the_alternate_screen_unless_the_setting_is_off ... ok
+test interactive_codex_launches_run_inline_unless_the_setting_is_off ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.05s
+
+
+running 4 tests
+test the_installed_clis_find_the_skill_setup_linked ... ignored, live: runs the installed Claude Code, Codex, Grok and Muse against fixture homes
+test an_ordinary_harness_launch_leaves_the_skill_directories_alone ... ok
+test setup_links_the_relocated_homes_riwork_launches_and_leaves_foreign_paths ... ok
+test status_reports_every_cli_without_writing_and_setup_fetches_then_links ... ok
+
+test result: ok. 3 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.79s
+
+
+running 4 tests
+test a_live_terminal_is_counted_and_reading_leaves_the_registry_alone ... ignored, slow: a real tmux session
+test capabilities_say_the_dashboard_is_there ... ok
+test chats_that_cannot_be_read_are_unknown_not_none ... ok
+test the_dashboard_reports_the_store_and_the_saved_chats_and_starts_nothing ... ok
+
+test result: ok. 3 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.40s
+
+
+running 3 tests
+test missing_gui_and_invalid_input_return_machine_readable_errors_without_gui_startup ... ok
+test mcp_advertises_preview_tools_and_reports_missing_hosts_as_tool_errors ... ok
+test an_agent_can_open_wait_reuse_touch_capture_and_close_the_exact_preview ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.34s
+
+
+running 7 tests
+test a_registered_folder_is_never_renamed_by_a_new_project ... ok
+test no_git_makes_a_plain_folder ... ok
+test the_flag_belongs_to_create_and_is_never_read_as_a_path ... ok
+test a_folder_that_is_there_is_refused_untouched ... ok
+test a_project_is_made_in_the_default_folder_with_git_and_printed_as_the_list_shows_it ... ok
+test names_with_spaces_quotes_and_unicode_are_one_folder_each ... ok
+test a_project_of_that_name_is_refused_whatever_the_case_and_a_repeat_is_refused_too ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.43s
+
+
+running 1 test
+test show_prints_the_memo_exactly_and_set_takes_it_back ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.18s
+
+
+running 8 tests
+test cli_and_mcp_share_three_scope_lifecycle_and_stdio_protocol ... ignored, slow: three real tmux fixture shells per test
+test explicit_existing_shell_interfaces_pin_ordinary_project_kind_and_preserve_legacy_defaults ... ignored, slow: three real tmux fixture shells per test
+test fresh_chat_cli_mcp_create_revision_lifecycle_and_invalid_destinations ... ignored, slow: three real tmux fixture shells per test
+test fresh_create_rejects_explicit_shell_presence_even_when_empty ... ignored, slow: three real tmux fixture shells per test
+test grok_sessions_and_control_character_titles_are_refused_by_cli_and_mcp ... ignored, slow: three real tmux fixture shells per test
+test invalid_ids_scope_time_revision_and_target_are_structured_errors ... ignored, slow: three real tmux fixture shells per test
+test new_create_only_fields_are_rejected_on_every_other_mcp_operation_without_mutation ... ignored, slow: three real tmux fixture shells per test
+test two_cli_processes_cannot_apply_the_same_revision ... ignored, slow: three real tmux fixture shells per test
+
+test result: ok. 0 passed; 0 failed; 8 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 13 tests
+test refusals_with_no_existing_file_do_not_create_a_settings_document ... ok
+test unknown_future_keys_and_runtime_diagnostics_are_not_cli_settings ... ok
+test unrelated_sets_preserve_future_fields_and_chat_map_updates_preserve_unknown_modes ... ok
+test invalid_existing_files_follow_store_errors_and_are_never_replaced ... ok
+test model_validation_uses_the_whole_saved_document ... ok
+test help_input_errors_and_literal_option_like_strings ... ok
+test wrong_types_unknown_components_and_lenient_fallbacks_never_write ... ok
+test list_and_get_show_every_known_typed_key_and_sorted_compact_text ... ok
+test concurrent_cli_and_app_store_updates_preserve_each_other ... ok
+test explicitly_choosing_a_default_replaces_an_unreadable_saved_value ... ok
+test set_prints_model_normalization_and_supports_nested_object_values ... ok
+test scalar_enum_nullable_and_billing_values_round_trip ... ok
+test every_persisted_key_can_be_set_back_to_its_typed_value ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.81s
+
+
+running 5 tests
+test a_shell_that_is_not_live_is_refused_before_anything_is_executed_and_so_is_misuse ... ignored, slow: real tmux server
+test exec_becomes_the_tmux_client_the_printed_command_would_start_with_only_the_flags_asked_for ... ignored, slow: real tmux server
+test on_a_terminal_it_draws_the_shell_and_hanging_up_leaves_the_shell_running ... ignored, slow: real tmux server
+test the_terminal_it_announces_is_ghostty_where_its_terminfo_exists_and_a_plain_xterm_where_not ... ignored, slow: real tmux server
+test capabilities_say_the_cli_can_attach_in_place ... ok
+
+test result: ok. 1 passed; 0 failed; 4 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+
+running 9 tests
+test a_command_is_one_argument_and_reaches_the_terminal_as_typed ... ignored, slow: real tmux shells
+test a_muse_terminal_runs_with_contributor_mode_off_unless_asked_on ... ignored, slow: real tmux shells
+test an_agent_asked_for_a_model_starts_on_it_with_the_permissions_it_was_asked_for ... ignored, slow: real tmux shells
+test an_agent_is_restricted_unless_unrestricted_is_asked_for ... ignored, slow: real tmux shells
+test as_settings_follows_the_agent_terminals_setting_and_needs_an_agent ... ignored, slow: real tmux shells
+test create_prints_the_session_that_shell_list_shows_for_a_project_or_a_worktree ... ignored, slow: real tmux shells
+test handoff_shell_respects_chat_shell_and_orchestrator_callers ... ignored, slow: real tmux shells
+test the_look_ups_the_connector_makes_before_creating_say_which_id_they_found ... ok
+test failures_say_what_the_connector_turns_into_error_codes ... ok
+
+test result: ok. 2 passed; 0 failed; 7 ignored; 0 measured; 0 filtered out; finished in 0.81s
+
+
+running 2 tests
+test paths_reach_the_shell_as_a_drop_types_them_and_close_takes_the_inbox ... ignored, slow: real tmux shell
+test refusals_name_their_token_and_paste_nothing ... ignored, slow: real tmux shell
+
+test result: ok. 0 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 291 tests
+test appearance_file::tests::same_colors_ignores_only_the_time ... ok
+test appearance_file::tests::colors_are_lowercase_hash_six_digit_hex ... ok
+test app_preview::tests::protocol_uses_documented_tags_and_round_trips_unicode_input ... ok
+test appearance_file::tests::read_reports_missing_and_unusable_files_as_none ... ok
+test codex_accounts::tests::a_name_that_fits_two_accounts_or_none_is_an_error ... ok
+test appearance_file::tests::a_document_over_sixteen_kib_is_invalid ... ok
+test appearance_file::tests::a_valid_document_is_accepted_and_normalised ... ok
+test appearance_file::tests::an_invalid_file_is_replaced ... ok
+test codex_accounts::tests::a_home_symlink_cannot_select_another_identity ... ok
+test codex_accounts::tests::a_person_names_an_account_by_label_workspace_email_or_id ... ok
+test codex_accounts::tests::cli_failure_never_displays_raw_stderr ... ignored, slow: spawns a real shell script as the Orca CLI
+test appearance_file::tests::publishing_writes_a_private_file_and_leaves_no_temporary ... ok
+test appearance_file::tests::the_document_has_the_contract_shape ... ok
+test appearance_file::tests::unchanged_colors_are_not_rewritten_and_changed_ones_are ... ok
+test codex_accounts::tests::account_command_is_explicitly_local_and_uses_public_list_only ... ok
+test codex_accounts::tests::account_ids_cannot_escape_or_conflict_with_default ... ok
+test codex_accounts::tests::system_default_bindings_and_rows_ignore_the_injected_home ... ignored, slow: re-runs the test binary in a child process with a controlled environment
+test codex_accounts::tests::open_scrubs_pins_and_only_an_injected_codex_home ... ok
+test codex_accounts::tests::only_an_orca_managed_home_counts_as_managed_by_orca ... ok
+test codex_accounts::tests::cache_from_a_newer_build_with_extra_fields_still_parses ... ok
+test appearance_file::tests::an_invalid_document_is_rejected ... ok
+test delegation::tests::chosen_values_round_trip_and_the_soft_target_stays_in_range ... ok
+test delegation::tests::malformed_values_read_as_not_chosen_and_are_kept_until_chosen ... ok
+test codex_accounts::tests::selected_binding_uses_its_home_without_following_orca_active_account ... ok
+test codex_accounts::tests::a_named_account_resolves_to_the_home_a_launch_would_use ... ok
+test codex_accounts::tests::cache_symlinks_are_rejected_before_reading_contents ... ok
+test appearance_file::tests::the_mic_flag_is_written_only_when_set ... ok
+test codex_accounts::tests::keeps_only_unique_host_accounts_and_safe_ids ... ok
+test codex_accounts::tests::parsing_errors_do_not_expose_provider_diagnostics ... ok
+test codex_accounts::tests::homes_are_only_existing_contained_directories ... ok
+test delegation::tests::a_project_choice_wins_over_settings_which_win_over_the_built_in_field_by_field ... ok
+test delegation::tests::a_route_that_would_not_read_back_is_never_chosen ... ok
+test codex_accounts::tests::selected_missing_account_fails_instead_of_using_default ... ok
+test delegation::tests::nothing_chosen_is_the_built_in_policy_of_todays_routing ... ok
+test delegation::tests::routes_read_as_the_cli_takes_them ... ok
+test layouts::main_pane_tests::a_panel_in_another_pane_stays_unless_bringing_it_forward_hides_a_terminal_or_the_tree ... ok
+test layouts::main_pane_tests::a_gather_empties_the_unlocked_panes_but_the_main_one_in_layout_order ... ok
+test layouts::main_pane_tests::a_panel_that_is_on_screen_is_left_wherever_it_is ... ok
+test layouts::main_pane_tests::a_panel_with_no_tab_yet_is_added_to_the_main_pane_and_selected ... ok
+test layouts::main_pane_tests::an_open_shell_is_selected_where_it_is_or_moves_into_the_main_pane ... ok
+test codex_accounts::tests::injected_homes_are_recognized_through_a_symlinked_profile ... ok
+test layouts::preview_placement_tests::a_link_click_reuses_the_existing_tab_and_never_switches_away_from_the_terminal_clicked ... ok
+test layouts::preserve_locked_tests::a_locked_left_nav_keeps_its_width_and_its_height_follows_the_window ... ok
+test layouts::preserve_locked_tests::a_narrow_locked_pane_in_a_wide_window_may_go_below_the_drag_limit ... ok
+test layouts::preserve_locked_tests::a_locked_nav_beside_a_locked_footer_keeps_its_width_and_the_footer_follows ... ok
+test layouts::preserve_locked_tests::a_small_window_takes_from_the_locked_pane_only_as_far_as_it_must ... ok
+test layouts::preserve_locked_tests::a_window_too_small_for_every_minimum_stays_proportional ... ok
+test layouts::preserve_locked_tests::only_real_changes_are_reported ... ok
+test layouts::preserve_locked_tests::unusable_sizes_leave_the_layout_alone ... ok
+test layouts::main_pane_tests::the_main_pane_does_not_cover_the_tree_being_navigated_or_the_terminal_clicked ... ok
+test layouts::preserve_locked_tests::resizing_back_and_forth_returns_to_the_same_ratios ... ok
+test layouts::main_pane_tests::removing_a_pane_resizes_a_locked_one_exactly_when_it_is_in_the_sibling_that_takes_the_space ... ok
+test global_window::tests::the_state_is_saved_in_its_own_file_and_read_back ... ok
+test layouts::preview_placement_tests::a_locked_nav_pane_next_to_a_wide_shell_pane_splits_the_shell_pane_to_the_right ... ok
+test layouts::preview_placement_tests::selecting_a_file_reuses_the_preview_tab_and_brings_it_forward_without_hiding_what_matters ... ok
+test layouts::preview_placement_tests::the_roomiest_pane_that_can_be_split_is_the_one_split_and_locked_ones_never_are ... ok
+test layouts::preview_placement_tests::the_roomiest_unlocked_pane_is_split_whether_or_not_it_is_the_one_clicked ... ok
+test codex_accounts::tests::system_default_ignores_homes_riwork_injected_into_sessions ... ok
+test codex_accounts::tests::cache_is_private_metadata_and_works_without_orca ... ok
+test layouts::preview_placement_tests::the_tab_prefers_an_unlocked_pane_without_a_terminal_and_then_the_roomier_one ... ok
+test layouts::preview_placement_tests::when_nothing_can_be_split_the_preview_is_a_tab_that_never_hides_a_terminal ... ok
+test layouts::preview_placement_tests::with_the_preference_off_selecting_a_file_changes_nothing ... ok
+test layouts::preview_placement_tests::with_nothing_to_split_the_tab_prefers_a_pane_that_is_not_the_one_clicked ... ok
+test layouts::tests::a_chat_tab_has_a_fixed_json_shape_and_key ... ok
+test layouts::tests::a_remote_shell_tab_has_a_fixed_json_shape_and_key ... ok
+test layouts::tests::carry_preserves_locked_tabs_ratios_and_maps_colliding_destination_ids ... ok
+test layouts::tests::closed_chat_tabs_survive_reload_and_older_layouts_default_to_no_closed_chats ... ok
+test layouts::tests::destination_locked_pane_sessions_are_recovered_into_unlocked_region ... ok
+test layouts::tests::duplicate_or_empty_remote_tabs_are_dropped_by_normalization ... ok
+test layouts::tests::a_locked_main_pane_stays_the_main_pane_when_the_project_changes ... ok
+test layouts::tests::duplicate_or_unnamed_chat_tabs_are_dropped_by_normalization ... ok
+test global_window::tests::anything_unreadable_is_the_dashboard ... ok
+test layouts::tests::legacy_and_invalid_window_sizes_do_not_break_layout_restoration ... ok
+test layouts::tests::a_build_that_predates_the_main_pane_still_opens_a_layout_that_has_one ... ok
+test layouts::tests::legacy_shell_layout_migrates_without_changing_tab_order_or_selection ... ok
+test layouts::tests::normalization_repairs_geometry_and_invalid_selections ... ok
+test layouts::tests::opening_windows_cascade_inside_the_display_and_clamp_after_cascading ... ok
+test layouts::tests::multiple_locked_regions_preserve_scaffold_and_destination_active_pane ... ok
+test layouts::tests::a_dashboard_tab_is_saved_by_name_and_comes_back_selected ... ok
+test layouts::tests::sessions_keeps_the_persisted_shells_panel_identity ... ok
+test layouts::tests::app_preview_launch_settings_round_trip_and_deduplicate_by_identity ... ok
+test layouts::tests::a_main_pane_that_is_not_in_the_layout_is_dropped_and_there_is_never_more_than_one ... ok
+test layouts::tests::left_navigation_locks_by_default_but_explicit_unlock_survives_round_trip ... ok
+test layouts::tests::invalid_ratios_are_repaired_before_persistence ... ok
+test layouts::tests::newer_schema_is_neither_loaded_nor_overwritten ... ok
+test layouts::tests::stale_lock_ids_are_removed_without_reenabling_auto_lock ... ok
+test layouts::tests::surplus_unlocked_slots_remain_empty_and_all_locked_keeps_sessions_recoverable ... ok
+test layouts::tests::nested_layout_round_trip_preserves_tabs_selections_and_detachment ... ok
+test layouts::tests::unsafe_pane_ids_are_rejected_and_zero_is_repaired ... ok
+test layouts::tests::ratios_a_resize_leaves_on_narrow_locked_panes_survive_a_restart ... ok
+test layouts::tests::mixed_tabs_preserve_order_and_selection_while_migrating_bottom_strips ... ok
+test layouts::tests::remote_shell_tabs_round_trip_and_are_not_this_macs_shells ... ok
+test orca_import::tests::child_holding_pipes_after_cli_exit_is_bounded ... ignored, slow: forks a real child that holds the pipes for 20 s; wall-clock bound
+test layouts::tests::split_ratios_round_trip_and_survive_insertions_and_collapses ... ok
+test layouts::tests::project_chat_dismissals_merge_across_stale_window_saves ... ok
+test layouts::tests::files_tabs_restore_per_project_with_independent_selected_worktrees ... ok
+test layouts::tests::unreasonable_layout_is_rejected_without_replacing_saved_state ... ok
+test layouts::tests::chat_reopen_and_prune_cannot_be_undone_by_stale_windows ... ok
+test layouts::tests::unchanged_layouts_are_not_rewritten_and_writes_leave_no_temporary_files ... ok
+test layouts::tests::corrupt_file_is_set_aside_on_save_instead_of_crashing_or_being_deleted ... ok
+test layouts::tests::tabs_of_an_unknown_kind_are_skipped_and_the_rest_of_the_layout_still_loads ... ok
+test orca_import::tests::cli_lookup_skips_files_that_are_not_executable ... ok
+test layouts::tests::unparseable_entries_fall_back_per_project_and_are_kept_verbatim_on_save ... ok
+test orca_import::tests::cli_lookup_prefers_the_app_bundle_and_keeps_the_same_fallbacks ... ok
+test orca_import::tests::development_checkouts_use_orca_dev_instead_of_the_installed_bundle ... ok
+test layouts::tests::concurrent_project_saves_merge_without_losing_other_projects ... ok
+test layouts::tests::the_main_pane_is_kept_per_project_and_comes_back_with_its_layout ... ok
+test paths::tests::default_names_are_one_visible_folder_name ... ok
+test paths::tests::empty_home_variables_count_as_unset ... ok
+test paths::tests::private_directories_are_created_once_and_never_tightened_afterwards ... ok
+test global_window::tests::the_dashboards_filter_and_order_read_from_files_of_every_build ... ok
+test project_memo::tests::a_memo_from_json_without_fields_is_empty ... ok
+test project_memo::tests::insert_appends_after_a_blank_line_and_never_replaces ... ok
+test project_memo::tests::normalize_unifies_line_breaks_and_drops_controls_only ... ok
+test project_memo::tests::the_cap_counts_utf8_bytes ... ok
+test project_memo::tests::the_command_is_the_drafts_last_word ... ok
+test project_recency::tests::a_changed_ignore_file_changes_the_file_list ... ok
+test project_recency::tests::a_changed_exclude_file_changes_the_file_list ... ok
+test project_recency::tests::a_file_list_is_trusted_for_half_an_hour_not_five_minutes ... ok
+test orca_import::tests::completion_is_offline_and_repeated_import_does_not_rewrite_state ... ok
+test project_recency::tests::a_folder_inside_another_root_is_walked_once ... ok
+test project_recency::tests::a_file_added_to_the_index_changes_the_file_list ... ok
+test project_recency::tests::a_recent_scan_answers_later_callers_until_a_root_is_new ... ok
+test project_recency::tests::a_root_over_its_budget_does_not_erase_the_completed_roots ... ok
+test orca_import::tests::changed_destination_requires_new_preview_without_partial_additions ... ok
+test project_recency::tests::a_repository_appearing_in_a_plain_directory_is_noticed ... ok
+test project_recency::tests::an_unreadable_directory_in_a_git_repository_is_skipped ... ok
+test project_recency::tests::an_edit_to_a_tracked_file_updates_the_date_without_git ... ok
+test project_recency::tests::an_unreadable_subdirectory_does_not_erase_the_project_date ... ok
+test project_recency::tests::files_dated_before_1970_count_as_the_oldest_edit ... ok
+test orca_import::tests::empty_plan_with_skipped_items_still_records_completion ... ok
+test project_recency::tests::an_unchanged_root_runs_no_git ... ok
+test project_recency::tests::git_uses_tracked_and_nonignored_untracked_files ... ok
+test project_recency::tests::missing_and_empty_roots_remain_unknown ... ok
+test orca_import::tests::changed_source_requires_new_preview ... ok
+test project_recency::tests::concurrent_callers_share_one_scan ... ok
+test project_recency::tests::many_worktree_roots_do_not_share_one_budget ... ok
+test project_recency::tests::plain_parent_respects_nested_repository_ignores ... ok
+test project_recency::tests::rejects_partial_results_when_entry_budget_runs_out ... ok
+test project_recency::tests::adding_a_file_updates_the_file_list ... ok
+test project_recency::tests::scan_cost_of_a_real_registry ... ignored
+test project_recency::tests::includes_registered_repository_roots_and_git_worktrees ... ok
+test project_recency::tests::never_follows_internal_file_or_directory_symlinks ... ok
+test project_recency::tests::stream::a_file_list_can_tell_what_it_lists_in_any_order ... ok
+test project_recency::tests::projects_the_deadline_cuts_off_keep_their_previous_date ... ok
+test project_recency::tests::stream::a_linked_worktree_hears_its_index_outside_the_root ... ignored, slow: real FSEvents stream; waits for the system to report changes
+test project_recency::tests::stream::a_machine_where_nothing_happens_scans_nothing ... ignored, slow: real FSEvents stream; waits for the system to report changes
+test project_recency::tests::roots_never_scanned_go_before_the_ones_already_known ... ok
+test project_recency::tests::project_subdirectory_only_counts_files_inside_its_registered_root ... ok
+test project_recency::tests::stream::a_failed_root_keeps_its_own_schedule_whatever_is_heard ... ok
+test project_recency::tests::stream::a_moved_directory_is_looked_at_again_when_it_held_the_newest_date ... ok
+test project_recency::tests::stream::a_linked_worktree_hears_its_git_directory_outside_the_root ... ok
+test project_recency::tests::stream::a_repository_inside_a_folder_decides_for_the_files_in_it ... ok
+test orca_import::tests::multiple_local_setups_keep_each_clone_and_its_primary_worktree ... ok
+test project_recency::tests::stream::a_stream_holds_its_listener_once_and_lets_it_go ... ignored, slow: real FSEvents stream; waits for the system to report changes
+test project_recency::tests::stream::a_stream_that_cannot_be_remade_leaves_the_one_that_works ... ignored, slow: real FSEvents stream; waits for the system to report changes
+test project_recency::tests::stream::a_stream_that_failed_is_tried_again_later ... ignored, slow: real FSEvents stream; waits for the system to report changes
+test project_recency::tests::stream::a_stream_that_is_replaced_still_delivers_the_changes_it_was_holding_back ... ignored, slow: real FSEvents stream; waits for the system to report changes
+test project_recency::tests::stream::a_root_inside_a_root_hears_what_happens_in_it_for_both ... ok
+test project_recency::tests::stream::a_root_comes_due_for_the_safety_net_at_a_time_of_its_own ... ok
+test project_recency::tests::stream::an_edit_to_a_tracked_file_is_heard_with_no_scan_and_no_git ... ignored, slow: real FSEvents stream; waits for the system to report changes
+test project_recency::tests::stream::changed_ignore_rules_and_index_are_heard ... ignored, slow: real FSEvents stream; waits for the system to report changes
+test project_recency::tests::stream::dropping_the_cache_stops_the_stream ... ignored, slow: real FSEvents stream; waits for the system to report changes
+test project_recency::tests::stream::event_cost ... ignored
+test project_recency::tests::stream::a_root_without_a_file_list_cannot_check_what_it_hears ... ok
+test project_recency::tests::stream::a_root_whose_file_list_was_not_kept_is_scanned_again_at_once ... ok
+test project_recency::tests::stream::idle_cost_of_a_real_registry ... ignored
+test project_recency::tests::stream::an_edit_older_than_the_newest_changes_nothing ... ok
+test project_recency::tests::stream::a_new_file_makes_git_list_again_and_a_changed_old_one_does_not ... ok
+test project_recency::tests::stream::an_edit_raises_the_date_with_no_scan ... ok
+test project_recency::tests::stream::following_too_many_changes_is_worse_than_scanning_again ... ok
+test project_recency::tests::stream::only_the_files_git_reads_make_the_index_matter ... ok
+test project_recency::tests::stream::roots_nobody_asks_about_any_more_stop_being_watched ... ignored, slow: real FSEvents stream; waits for the system to report changes
+test project_recency::tests::stream::stream_cost_of_a_real_registry ... ignored
+test orca_import::tests::empty_warning_free_plan_never_records_a_receipt ... ok
+test project_recency::tests::stream::the_stream_covers_each_tree_once ... ok
+test project_recency::tests::stream::files_behind_a_directory_that_became_a_link_are_not_counted ... ok
+test project_recency::tests::stream::volumes_that_do_not_report_changes_are_polled ... ok
+test project_recency::tests::stream::losing_events_where_nothing_counts_costs_no_scan ... ok
+test project_recency::tests::stream::a_directory_that_must_be_scanned_makes_the_roots_in_it_scan_again ... ok
+test project_recency::tests::stream::windows_asking_while_files_change_end_up_with_the_same_date ... ignored, slow: real FSEvents stream; waits for the system to report changes
+test orca_import::tests::remote_missing_and_mismatched_ownership_are_skipped ... ok
+test project_recency::tests::the_public_scan_is_shared_by_every_window_of_the_process ... ok
+test recency_file::tests::a_project_missing_from_one_scan_keeps_its_date_and_a_removed_one_goes ... ok
+test project_recency::tests::stream::ignore_files_and_the_index_make_git_list_again ... ok
+test project_recency::tests::stream::the_stream_is_the_only_thing_that_says_a_root_may_wait ... ok
+test recency_file::tests::dates_round_trip_through_a_private_atomically_written_file ... ok
+test recency_file::tests::an_unchanged_map_is_not_written_again ... ok
+test recency_file::tests::invalid_files_read_as_nothing ... ok
+test project_recency::tests::uses_file_edits_instead_of_directory_or_registration_times ... ok
+test settings::tests::a_usage_mode_this_build_cannot_read_reads_as_the_current_chat_and_keeps_the_bar ... ok
+test settings::tests::each_toggle_changes_only_its_own_setting ... ok
+test project_recency::tests::stream::names_that_may_be_spelled_either_way_are_looked_at_again ... ok
+test settings::tests::agent_terminals_unrestricted_defaults_on_and_survives_older_odd_and_unreadable_files ... ok
+test settings::tests::load_reuses_the_last_parse_until_the_settings_file_changes ... ok
+test project_recency::tests::stream::what_a_scan_never_looks_at_is_not_remembered_at_all ... ok
+test settings::tests::orchestrator_runs_have_one_shape_on_disk_and_refuse_what_they_do_not_know ... ok
+test settings::tests::newer_values_and_keys_do_not_lock_out_settings_and_stay_until_changed ... ok
+test settings::tests::concurrent_preferences_merge_and_corrupt_data_is_not_overwritten ... ok
+test project_recency::tests::stream::without_a_stream_every_ask_scans_as_before ... ok
+test settings::tests::concurrent_account_status_and_appearance_updates_preserve_each_other ... ok
+test orca_import::tests::modern_local_mapping_imports_atomically_and_preserves_selection ... ok
+test settings::tests::native_options_default_on_and_the_terminal_row_flips_the_selected_themes_option ... ok
+test settings::tests::the_codex_selection_and_schema_fail_closed_while_other_damage_is_ignored ... ok
+test settings::tests::settings_stores_opened_separately_share_the_last_parse_and_see_every_change ... ok
+test orca_import::tests::destination_symlink_retarget_requires_new_preview ... ok
+test status_bar::tests::a_bar_saved_before_the_layout_menu_gets_it_last_on_the_right_and_keeps_every_choice ... ok
+test status_bar::tests::partial_preferences_and_unknown_items_preserve_known_choices ... ok
+test status_bar::tests::routing_and_reordering_preserve_other_side_and_round_trip ... ok
+test status_bar::tests::the_usage_mode_defaults_to_the_current_chat_and_a_bad_one_keeps_the_rest_of_the_bar ... ok
+test settings::tests::saving_chat_modes_preserves_unknown_entries_until_that_chat_changes ... ok
+test settings::tests::settings_saved_before_the_layout_menu_show_it_and_keep_a_later_choice_to_hide_it ... ok
+test settings::tests::the_claude_billing_default_is_the_switch_it_grew_from_in_every_form_a_file_has ... ok
+test settings::tests::optional_dashboard_api_and_subscription_balancing_are_strict_opt_in_settings ... ok
+test settings::tests::the_dictation_mic_is_off_by_default_and_persists_only_its_own_key ... ok
+test store::tests::a_new_project_never_enters_what_is_already_at_its_path ... ok
+test store::tests::a_newer_builds_memo_fields_survive_unrelated_writes ... ok
+test orca_import::tests::canonical_aliases_deduplicate_without_replacing_existing_metadata ... ok
+test store::tests::a_new_project_may_not_take_the_name_or_root_of_a_project ... ok
+test store::tests::a_project_made_through_another_handle_is_in_the_next_snapshot_of_a_running_app ... ok
+test store::tests::a_project_delegation_policy_is_saved_only_as_it_reads_back ... ok
+test store::tests::a_project_memo_over_the_cap_is_refused_and_the_saved_one_kept ... ok
+test store::tests::an_empty_data_directory_is_rejected_instead_of_using_the_working_directory ... ok
+test store::tests::an_unreadable_project_orchestrator_choice_is_kept_shown_and_inherits ... ok
+test store::tests::a_new_project_is_a_folder_that_did_not_exist_with_git_unless_declined ... ok
+test store::tests::a_state_from_before_memos_loads_empty_ones_and_keeps_memos_through_other_writes ... ok
+test orca_import::tests::unrelated_selection_change_is_preserved_without_invalidating_preview ... ok
+test settings::tests::the_delegation_policy_is_written_only_when_chosen_and_keeps_what_it_cannot_read ... ok
+test store::tests::a_project_delegation_policy_is_its_own_field_by_field_and_older_projects_choose_nothing ... ok
+test store::tests::a_new_project_that_cannot_be_written_down_takes_its_folder_back ... ok
+test orca_import::tests::explicit_nested_project_root_wins_and_worktree_dedup_is_per_project ... ok
+test store::tests::concurrent_memo_saves_end_with_one_whole_text ... ok
+test project_recency::tests::stream::the_file_with_the_newest_date_going_back_or_away_is_looked_at_again ... ok
+test store::tests::global_and_project_scoped_worktree_lookups_share_one_selector_rule ... ok
+test settings::tests::ui_text_size_defaults_to_today_clamps_and_keeps_odd_values_until_changed ... ok
+test project_recency::tests::stream::lost_events_make_the_roots_they_may_have_been_in_scan_again ... ok
+test store::tests::discovery_depth_limit_blocks_wrapper_initialization_and_preserves_deep_repository ... ok
+test orca_import::tests::nested_repository_without_registered_child_imports_as_its_own_project ... ok
+test store::tests::invalid_git_metadata_blocks_initialization_without_overwriting_it ... ok
+test store::tests::a_project_memo_round_trips_and_stays_with_its_project ... ok
+test settings::tests::orchestrators_are_automatic_by_default_and_saved_choices_and_odd_values_survive ... ok
+test store::tests::moving_a_project_out_of_a_folder_does_not_resurrect_the_old_assignment ... ok
+test store::tests::newer_store_schemas_are_refused_and_left_untouched ... ok
+test store::tests::nested_folders_resolve_breadcrumbs_and_allow_leaf_names_in_different_parents ... ok
+test store::tests::a_project_orchestrator_choice_is_its_own_and_older_projects_inherit ... ok
+test store::tests::no_git_creation_and_passive_registration_preserve_plain_folders ... ok
+test store::tests::each_memo_save_that_changes_the_text_is_a_later_revision ... ok
+test store::tests::of_several_callers_racing_for_one_name_exactly_one_makes_it ... ok
+test store::tests::completion_notifications_are_project_scoped_and_preserve_workspace_metadata ... ok
+test store::tests::moving_projects_changes_only_assignment_and_preserves_the_latest_name ... ok
+test store::tests::scan_tests::a_change_in_one_repository_reruns_git_for_that_repository_only ... ignored, slow: builds 20 Git repositories to count Git commands
+test store::tests::folder_removal_fails_without_writes_when_promoting_children_would_collide ... ok
+test orca_import::tests::invalid_cli_replies_and_failure_do_not_write_state ... ok
+test store::tests::scan_tests::a_panicking_sync_does_not_block_the_project_forever ... ok
+test store::tests::scan_tests::a_fingerprint_expires_after_the_safety_maximum ... ok
+test store::tests::discovery_does_not_follow_symlink_loops_or_scan_dependency_and_build_directories ... ok
+test store::tests::scan_tests::a_change_during_a_long_read_is_not_trusted_even_when_stamped_after_it ... ok
+test store::tests::project_account_choice_round_trips_without_changing_other_projects_or_metadata ... ok
+test store::tests::moving_folders_preserves_descendants_and_rejects_cycles_or_sibling_collisions_atomically ... ok
+test store::tests::project_registration_preserves_virtual_folder_assignment ... ok
+test store::tests::existing_repository_and_ancestor_repository_are_never_wrapped ... ok
+test store::tests::scan_tests::the_gate_admits_one_run_per_key_at_a_time ... ok
+test store::tests::orchestrator_wakes_are_project_scoped_and_independent_of_alerts ... ok
+test store::tests::linked_gitfiles_deduplicate_repositories_and_preserve_newline_paths ... ok
+test store::tests::snapshot_reuses_the_last_parse_until_the_state_file_changes ... ok
+test store::tests::project_creation_initializes_existing_and_missing_plain_directories ... ok
+test store::tests::scan_tests::the_gate_spaces_out_syncs_of_one_project ... ok
+test store::tests::time_snapshots_of_freshly_opened_stores ... ignored, timing: cargo test -p riwork-core --lib -- --ignored --nocapture snapshots_of_freshly_opened
+test store::tests::scan_tests::a_scan_with_warnings_is_never_reused ... ok
+test store::tests::stores_opened_separately_share_the_last_parse_and_see_every_change ... ok
+test store::tests::scan_tests::a_repository_appearing_above_the_project_is_noticed ... ok
+test store::tests::state_files_are_private_and_new_directories_are_owner_only ... ok
+test store::tests::virtual_folders_extend_schema_one_without_requiring_a_migration ... ok
+test store::tests::container_discovers_multiple_repositories_and_external_worktrees_without_losing_ids ... ok
+test store::tests::unknown_fields_from_a_newer_build_survive_a_transaction ... ok
+test ui_text::tests::saved_sizes_round_to_tenths_clamp_and_write_plain_numbers ... ok
+test store::tests::scan_tests::everyday_git_use_and_edits_do_not_disturb_a_fingerprint ... ok
+test store::tests::virtual_folder_names_and_assignments_validate_before_persisting ... ok
+test store::tests::scan_tests::a_repository_reached_through_a_linked_worktree_is_watched_through_its_main_one ... ok
+test ui_text::tests::a_step_starts_from_the_stored_size_not_the_cached_one ... ok
+test store::tests::unborn_or_invalid_base_fails_before_creating_destination_or_parent ... ok
+test store::tests::removing_nested_folders_promotes_direct_children_and_projects_without_touching_descendants ... ok
+test store::tests::concurrent_notification_and_display_updates_preserve_each_other ... ok
+test store::tests::virtual_folder_rename_and_delete_preserve_projects_worktrees_and_files ... ok
+test store::tests::multi_repository_creation_requires_unambiguous_selection_and_uses_selected_repo ... ok
+test store::tests::scan_tests::a_fingerprint_changes_when_a_nested_repository_appears_or_goes ... ok
+test store::tests::worktree_creation_runs_git_and_its_hooks_outside_the_store_lock ... ok
+test store::tests::scan_tests::worktrees_created_outside_the_app_appear_on_the_next_scan ... ok
+test store::tests::scan_tests::a_refresh_with_nothing_new_runs_no_git_and_writes_nothing ... ok
+test store::tests::scan_tests::concurrent_windows_syncing_one_project_run_one_scan ... ok
+test store::tests::scan_tests::cached_results_always_match_what_git_says_after_each_change ... ok
+
+test result: ok. 271 passed; 0 failed; 20 ignored; 0 measured; 0 filtered out; finished in 8.32s
+
+
+running 27 tests
+test nsh_host::tests::a_busy_registry_lock_stays_due ... ok
+test nsh_bundle::tests::missing_real_bundle_reports_the_build_recipe_without_a_bootstrap_fallback ... ok
+test nsh_bundle::tests::an_explicit_bundle_path_is_absolute_and_never_falls_back_to_source ... ok
+test nsh_host::tests::runtime_frames_keep_the_existing_display_local_top_left_coordinates ... ok
+test nsh_host::tests::url_routing_and_window_arguments_are_bounded ... ok
+test nsh_menus::tests::close_tab_and_font_keys_preserve_their_modifier_boundaries ... ok
+test nsh_host::tests::params_follow_frozen_schema_and_omit_restore_on_new_windows ... ok
+test nsh_menus::tests::deferred_menu_commands_remain_present_disabled_and_keep_their_chords ... ok
+test nsh_menus::tests::command_ids_are_the_v1_set ... ok
+test nsh_menus::tests::frozen_menu_has_only_riwork_edit_and_view_and_no_close_window_action ... ok
+test nsh_menus::tests::dock_labels_are_stable_unique_and_keep_the_last_key_window_marked ... ok
+test nsh_runtime::tests::dropping_a_lock_releases_inherited_descriptors ... ok
+test nsh_runtime::tests::restore_acknowledgements_are_per_window_and_idempotent ... ok
+test nsh_host::tests::closing_a_loading_window_rejects_late_layout_registration ... ok
+test nsh_runtime::tests::restore_matches_targets_even_if_window_order_changes ... ok
+test nsh_host::tests::runtime_publication_reads_current_layout_without_an_appkit_state_event ... ok
+test nsh_runtime::tests::abandoned_replacement_does_not_remove_running_socket ... ok
+test nsh_host::tests::close_flushes_the_last_accepted_edit_before_the_window_goes ... ok
+test nsh_host::tests::failed_flush_keeps_the_snapshot_and_cancel_restores_editing ... ok
+test nsh_runtime::tests::reclaims_stale_socket_but_never_deletes_a_regular_file ... ok
+test nsh_runtime::tests::replacement_keeps_old_socket_and_prevents_handoff_race ... ok
+test nsh_runtime::tests::forwards_path_and_reopen_without_creating_a_second_primary ... ok
+test nsh_host::tests::quit_flushes_every_layout_session_and_the_global_state_from_rust ... ok
+test nsh_host::tests::a_vanished_project_root_is_an_error_for_the_caller_not_a_panic ... ok
+test nsh_host::tests::folder_arg_reuses_existing_project ... ok
+test nsh_runtime::tests::publishes_and_unregisters_only_in_explicit_fixture_registry ... ok
+test nsh_host::tests::no_active_project_registers_the_cwd_fallback ... ok
+
+test result: ok. 27 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+
+chrome native_window=CGRect { origin: CGPoint { x: 100.0, y: 100.0 }, size: CGSize { width: 1000.0, height: 700.0 } } button=CGRect { origin: CGPoint { x: 10.0, y: 10.0 }, size: CGSize { width: 14.0, height: 14.0 } } converted=CGRect { origin: CGPoint { x: 10.0, y: 678.0 }, size: CGSize { width: 14.0, height: 14.0 } } accessibility=CGRect { origin: CGPoint { x: 109.0, y: 777.0 }, size: CGSize { width: 16.0, height: 16.0 } }
+test appkit_shell::window_chrome ... ok
+test appkit_shell::app_menu_matches_gpui ... ok
+test appkit_shell::edit_menu_uses_standard_selectors ... ok
+test appkit_shell::view_menu_matches_gpui ... ok
+test appkit_shell::view_menu_text_size_items ... ok
+test appkit_shell::app_level_key_equivalents ... ok
+test appkit_shell::dock_menu_from_a_fake_registry ... ok
+test result: ok. 7 passed; 0 failed; 0 ignored
+
+running 5 tests
+test direct_dispatch_reference ... ok
+test mcp_stdio_keeps_protocol_bytes_without_gui_initialization ... FAILED
+test project_list_keeps_text_and_json_bytes_for_a_real_isolated_project ... ok
+test help_version_and_errors_keep_the_dispatchers_bytes_and_exit_status ... ok
+test chat_host_serves_in_the_same_executable_and_exits_headlessly ... ok
+
+failures:
+
+---- mcp_stdio_keeps_protocol_bytes_without_gui_initialization stdout ----
+
+thread 'mcp_stdio_keeps_protocol_bytes_without_gui_initialization' (10770174) panicked at crates/riwork-desktop/tests/cli_contract.rs:79:9:
+assertion `left == right` failed: stdout: ["mcp"]
+  left: [123, 34, 106, 115, 111, 110, 114, 112, 99, 34, 58, 34, 50, 46, 48, 34, 44, 34, 105, 100, 34, 58, 49, 44, 34, 114, 101, 115, 117, 108, 116, 34, 58, 123, 125, 125, 10]
+ right: [123, 34, 105, 100, 34, 58, 49, 44, 34, 106, 115, 111, 110, 114, 112, 99, 34, 58, 34, 50, 46, 48, 34, 44, 34, 114, 101, 115, 117, 108, 116, 34, 58, 123, 125, 125, 10]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    mcp_stdio_keeps_protocol_bytes_without_gui_initialization
+
+test result: FAILED. 4 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.27s
+

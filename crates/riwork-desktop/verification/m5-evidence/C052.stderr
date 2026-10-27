@@ -1,0 +1,5 @@
+   Compiling riwork-nsh-workspace v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p1-m5/apps/riwork)
+    Finished `test` profile [unoptimized] target(s) in 1.52s
+     Running unittests src/lib.rs (/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/deps/riwork_nsh_workspace-5239a4c9b8cd9a60)
+     Running tests/layout_roundtrip.rs (/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/deps/layout_roundtrip-e543bee38e875613)
+   Doc-tests riwork_nsh_workspace

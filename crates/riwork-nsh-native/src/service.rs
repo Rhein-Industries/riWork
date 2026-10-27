@@ -200,8 +200,12 @@ impl ProcessService {
         let store_hub = Arc::new(Hub::new(
             store.snapshot().context("initial store snapshot")?,
         ));
+        let mut has_shells = false;
         let sessions_hub = Arc::new(match sessions.sample() {
-            Ok(snapshot) => Hub::new(snapshot),
+            Ok(snapshot) => {
+                has_shells = !snapshot.sessions.is_empty();
+                Hub::new(snapshot)
+            }
             Err(error) => {
                 *last_error.lock().unwrap_or_else(PoisonError::into_inner) =
                     Some(format!("initial session sample: {error}"));
@@ -218,10 +222,17 @@ impl ProcessService {
         let worker = thread::Builder::new()
             .name("riwork-native-service".into())
             .spawn(move || {
-                let mut next_sample = Instant::now() + SESSION_SAMPLE_INTERVAL;
+                let mut next_sample = has_shells.then(|| Instant::now() + SESSION_SAMPLE_INTERVAL);
                 while !worker_stop.load(Ordering::Acquire) {
-                    let _ =
-                        receive.recv_timeout(next_sample.saturating_duration_since(Instant::now()));
+                    if let Some(deadline) = next_sample {
+                        let _ = receive
+                            .recv_timeout(deadline.saturating_duration_since(Instant::now()));
+                    } else {
+                        // An empty inventory needs no liveness timer. The home
+                        // watcher wakes us when another process creates a shell;
+                        // shutdown also wakes this blocking receive.
+                        let _ = receive.recv();
+                    }
                     if worker_stop.load(Ordering::Acquire) {
                         break;
                     }
@@ -235,19 +246,26 @@ impl ProcessService {
                             }
                         }
                     }
-                    if flags & SESSIONS != 0 || Instant::now() >= next_sample {
+                    if flags & SESSIONS != 0
+                        || next_sample.is_some_and(|deadline| Instant::now() >= deadline)
+                    {
                         if flags & SESSIONS != 0 {
                             worker_sessions.invalidate_sample();
                         }
                         match worker_sessions.sample() {
-                            Ok(snapshot) => worker_sessions_hub.publish(snapshot),
+                            Ok(snapshot) => {
+                                has_shells = !snapshot.sessions.is_empty();
+                                worker_sessions_hub.publish(snapshot);
+                            }
                             Err(error) => {
                                 *worker_error.lock().unwrap_or_else(PoisonError::into_inner) =
                                     Some(format!("session sample: {error}"))
                             }
                         }
-                        // Only this thread performs the two-second tmux fallback.
-                        next_sample = Instant::now() + SESSION_SAMPLE_INTERVAL;
+                        // Only this thread performs the two-second tmux fallback,
+                        // and only while the last successful inventory has shells.
+                        // A transient read failure preserves that last known state.
+                        next_sample = has_shells.then(|| Instant::now() + SESSION_SAMPLE_INTERVAL);
                     }
                 }
             })?;

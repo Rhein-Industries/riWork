@@ -1,0 +1,10 @@
+    Blocking waiting for file lock on build directory
+   Compiling proc-macro2 v1.0.107
+   Compiling quote v1.0.47
+   Compiling serde_json v1.0.151
+   Compiling syn v3.0.6
+   Compiling serde_derive v1.0.229
+   Compiling serde v1.0.229
+   Compiling riwork-core v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p1-m5/crates/riwork-core)
+    Finished `test` profile [unoptimized] target(s) in 12.03s
+     Running unittests src/lib.rs (/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/deps/riwork_core-0fc511e0a536250c)
