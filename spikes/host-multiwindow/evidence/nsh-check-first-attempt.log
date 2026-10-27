@@ -1,0 +1,7 @@
+✓ checked riwork-nsh-probe (270ms)
+✓ built the Rust crate riwork-nsh-probe (11.2s)
+warn riwork/native exports items without a doc comment, which TSX sees in its declarations: Probe.identity, new ReplayCounter, ReplayCounter.append, ReplayCounter.chunks, ReplayCounter.bytes
+spikes/host-multiwindow/app/App.tsx(3,22): error TS2307: Cannot find module 'nsh/host' or its corresponding type declarations.
+spikes/host-multiwindow/app/App.tsx(116,22): error TS7006: Parameter 'value' implicitly has an 'any' type.
+spikes/host-multiwindow/app/App.tsx(117,29): error TS7006: Parameter 'value' implicitly has an 'any' type.
+error type check failed (exit status: 1)

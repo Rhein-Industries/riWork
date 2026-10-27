@@ -1,0 +1,8 @@
+✓ built the Rust crate riwork-nsh-probe (330ms)
+✓ built app/App.tsx (8.0 KB js, 32.6 KB bytecode, 3ms)
+→ dev server ws://127.0.0.1:61161/ws
+  devices on this network: ws://192.168.178.175:61161/ws
+warn RiWork isolated two-window fixture: bytecode source-only-fixture != quickjs-ng-0.16.2+0fdea21/bc28/le, sending JS source
+• RiWork isolated two-window fixture connected, build 1
+✓ rebuilt app/App.tsx (11ms), 1 device
+• RiWork isolated two-window fixture disconnected

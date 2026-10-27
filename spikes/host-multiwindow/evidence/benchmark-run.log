@@ -1,0 +1,13 @@
+RUN rows0-interval0-run1
+RUN rows0-interval0-run2
+RUN rows0-interval0-run3
+RUN rows0-interval33-run1
+RUN rows0-interval33-run2
+RUN rows0-interval33-run3
+RUN rows2400-interval0-run1
+RUN rows2400-interval0-run2
+RUN rows2400-interval0-run3
+RUN rows2400-interval33-run1
+RUN rows2400-interval33-run2
+RUN rows2400-interval33-run3
+Verified 24 window streams; summary: evidence/benchmark-summary.json
