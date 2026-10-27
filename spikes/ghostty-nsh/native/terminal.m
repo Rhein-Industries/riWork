@@ -7,6 +7,25 @@
 #import <stdatomic.h>
 #import <stdio.h>
 #import <unistd.h>
+#import <signal.h>
+#import <time.h>
+
+static NSMutableArray *liveTerminals;
+static NSUInteger nextSurfaceID;
+static BOOL quitting;
+static void stopAndWakeHost(void) {
+    [NSApp stop:nil];
+    // stop: from a timer does not wake nextEventMatchingMask. Use the same
+    // application-defined wake event as NSH's AppView::stop implementation.
+    NSEvent *event = [NSEvent otherEventWithType:NSEventTypeApplicationDefined
+        location:NSZeroPoint modifierFlags:0 timestamp:0 windowNumber:0
+        context:nil subtype:0 data1:0 data2:0];
+    [NSApp postEvent:event atStart:YES];
+}
+static double monotonicMS(void) {
+    struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t);
+    return t.tv_sec * 1000.0 + t.tv_nsec / 1000000.0;
+}
 
 @interface SpikeTerminalInput : NSView <NSTextInputClient> {
 @public
@@ -20,6 +39,11 @@
     BOOL interpreting;
     BOOL detached;
     BOOL stopped;
+    BOOL closing, detachConfirmed;
+    NSUInteger surfaceID;
+    double shutdownStart, lastTick;
+    _Atomic int detachResult;
+    NSString *surfaceTTY;
     double forcedScale;
     NSUInteger keyCount, mouseCount, themeCount, detachCount, attachCount;
     NSTrackingArea *tracking;
@@ -28,12 +52,19 @@
 - (void)syncGeometry;
 - (void)shutdown;
 - (void)record:(NSString *)event;
+- (void)teardownRecord:(NSString *)event fields:(NSDictionary *)fields;
+- (void)finishShutdown;
 @end
 
 @interface SpikeTerminalContainer : NSView {
 @public
     SpikeTerminalInput *terminal;
+    NSMutableArray *terminals;
+    NSString *launchCommand, *configPath;
 }
+- (void)createBatch;
+- (void)closeBatch;
+- (void)layoutTerminals;
 @end
 
 static ghostty_input_mods_e mods(NSEventModifierFlags flags) {
@@ -73,7 +104,9 @@ static void closeSurface(void *u, bool alive) { [(SpikeTerminalInput *)u record:
     static int initialized = -1;
     dispatch_once(&once, ^{ initialized = ghostty_init(0, NULL); });
     if (initialized != GHOSTTY_SUCCESS) return NO;
+    surfaceID = ++nextSurfaceID;
     atomic_init(&dirty, true);
+    atomic_init(&detachResult, 0);
     marked = [[NSMutableAttributedString alloc] initWithString:@""];
     committed = [[NSMutableString alloc] init];
     config = ghostty_config_new();
@@ -106,6 +139,8 @@ static void closeSurface(void *u, bool alive) { [(SpikeTerminalInput *)u record:
     opts.env_var_count = sizeof(env) / sizeof(env[0]);
     surface = ghostty_surface_new(app, &opts);
     if (!surface) return NO;
+    if (!liveTerminals) liveTerminals = [[NSMutableArray alloc] init];
+    [liveTerminals addObject:self];
     // Spike-only coalescing pump. A production host should schedule a main-loop
     // wakeup instead of keeping a 60 Hz timer alive. No render polling occurs.
     timer = [[NSTimer scheduledTimerWithTimeInterval:1.0/60.0 target:self
@@ -113,6 +148,7 @@ static void closeSurface(void *u, bool alive) { [(SpikeTerminalInput *)u record:
     [[NSRunLoop mainRunLoop] addTimer:timer forMode:NSRunLoopCommonModes];
     [self syncGeometry];
     [self record:@"created"];
+    [self teardownRecord:@"created" fields:@{}];
     return YES;
 }
 - (BOOL)isFlipped { return YES; }
@@ -130,7 +166,26 @@ static void closeSurface(void *u, bool alive) { [(SpikeTerminalInput *)u record:
 - (NSString *)accessibilityRole { return NSAccessibilityGroupRole; }
 - (NSString *)accessibilityLabel { return @"Direct libghostty terminal"; }
 - (void)tick:(NSTimer *)unused {
+    double now = monotonicMS();
+    if (closing && !stopped && lastTick > 0)
+        [self teardownRecord:@"main-loop-gap" fields:@{@"gap_ms":@(now-lastTick)}];
+    lastTick = now;
     if (app && atomic_exchange(&dirty, false)) ghostty_app_tick(app);
+    if (!closing || stopped) return;
+    int result = atomic_load(&detachResult);
+    if (result == 1 && !detachConfirmed) {
+        detachConfirmed = YES;
+        [self teardownRecord:@"detach-confirmed" fields:@{}];
+    }
+    if (detachConfirmed && ghostty_surface_process_exited(surface)) {
+        [self teardownRecord:@"child-exit-confirmed" fields:@{@"process_exited":@YES}];
+        [self finishShutdown];
+    } else if (result < 0 || monotonicMS() - shutdownStart >= 2000.0) {
+        // Fail the fixture, never claim a parked/leaked surface is a pass, and
+        // never enter native free with a possibly-live PTY child.
+        [self teardownRecord:@"teardown-failed" fields:@{@"detach_result":@(result)}];
+        fflush(NULL); _exit(70);
+    }
 }
 - (void)setFrameSize:(NSSize)size { [super setFrameSize:size]; [self syncGeometry]; }
 - (void)viewDidMoveToWindow { [super viewDidMoveToWindow]; [self syncGeometry]; }
@@ -298,17 +353,87 @@ static void closeSurface(void *u, bool alive) { [(SpikeTerminalInput *)u record:
     if (file) { fwrite(data.bytes, 1, data.length, file); fputc('\n', file); fclose(file); }
 }
 - (void)shutdown {
-    if (stopped) return;
-    stopped = YES;
+    NSAssert([NSThread isMainThread], @"surface lifecycle is main-thread-only");
+    if (stopped || closing) return;
+    if (!surface) { [self finishShutdown]; return; }
+    closing = YES;
+    shutdownStart = monotonicMS();
+    // PTY spawn is asynchronous: its tty is not populated at surface_new.
+    ghostty_string_s tty = ghostty_surface_tty_name(surface);
+    surfaceTTY = [[NSString alloc] initWithBytes:tty.ptr length:tty.len encoding:NSUTF8StringEncoding];
+    ghostty_string_free(tty);
+    [self retain]; // Explicit pending-disposal ownership, released after free.
     [self record:@"shutdown"];
+    [self teardownRecord:@"shutdown-requested" fields:@{@"tty":surfaceTTY ?: @""}];
+    ghostty_surface_set_focus(surface, false);
+    ghostty_surface_set_occlusion(surface, false);
+    [self removeFromSuperview];
+    // Only this worker contacts tmux. The main loop keeps draining Ghostty's
+    // app mailbox until BOTH exact-client detach and PTY-child exit are proved.
+    NSString *ttyForWorker = [surfaceTTY copy];
+    NSUInteger idForWorker = surfaceID;
+    _Atomic int *resultForWorker = &detachResult;
+    // Do not capture self: final NSView release must stay on the main thread.
+    // The explicit pending-disposal retain protects resultForWorker until the
+    // main timer consumes this worker's final (and last) memory access.
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        int workerResult = -1;
+        @autoreleasepool {
+            NSTask *task = [[[NSTask alloc] init] autorelease];
+            task.launchPath = [NSString stringWithUTF8String:getenv("SPIKE_PYTHON")];
+            task.arguments = @[[NSString stringWithUTF8String:getenv("SPIKE_DETACH_HELPER")],
+                [NSString stringWithUTF8String:getenv("RIWORK_HOME")], ttyForWorker,
+                [NSString stringWithFormat:@"%lu", (unsigned long)idForWorker],
+                [NSString stringWithFormat:@"%d", getpid()]];
+            task.standardOutput = [NSFileHandle fileHandleWithNullDevice];
+            task.standardError = [NSFileHandle fileHandleWithNullDevice];
+            NSError *error = nil;
+            BOOL launched = [task launchAndReturnError:&error];
+            double deadline = monotonicMS() + 1800.0;
+            while (launched && task.running && monotonicMS() < deadline) usleep(2000);
+            if (launched && task.running) kill(task.processIdentifier, SIGKILL);
+            if (launched) [task waitUntilExit]; // Worker only, never AppKit.
+            workerResult = launched && task.terminationStatus == 0 ? 1 : -1;
+        }
+        atomic_store(resultForWorker, workerResult);
+    });
+    [ttyForWorker release];
+    [self teardownRecord:@"shutdown-returned" fields:@{@"main_block_ms":@(monotonicMS()-shutdownStart)}];
+}
+- (void)teardownRecord:(NSString *)event fields:(NSDictionary *)fields {
+    NSMutableDictionary *entry = [NSMutableDictionary dictionaryWithDictionary:fields];
+    [entry addEntriesFromDictionary:@{@"event":event, @"surface_id":@(surfaceID),
+        @"fixture_pid":@(getpid()), @"main_thread":@([NSThread isMainThread]),
+        @"monotonic_ms":@(monotonicMS())}];
+    NSData *data = [NSJSONSerialization dataWithJSONObject:entry options:0 error:nil];
+    NSString *path = [[NSString stringWithUTF8String:getenv("RIWORK_HOME")]
+        stringByAppendingPathComponent:@"teardown-events.jsonl"];
+    FILE *file = fopen(path.fileSystemRepresentation, "a");
+    if (file) { fwrite(data.bytes, 1, data.length, file); fputc('\n', file); fclose(file); }
+}
+- (void)finishShutdown {
+    NSAssert([NSThread isMainThread], @"native free stays on main thread");
+    stopped = YES;
     [timer invalidate]; [timer release]; timer = nil;
-    if (surface) { ghostty_surface_free(surface); surface = NULL; }
+    double freeStart = monotonicMS();
+    if (surface) {
+        NSAssert(detachConfirmed && ghostty_surface_process_exited(surface), @"detach and child exit before free");
+        [self teardownRecord:@"free-begin" fields:@{}];
+        ghostty_surface_free(surface); surface = NULL;
+        [self teardownRecord:@"free-end" fields:@{@"free_ms":@(monotonicMS()-freeStart)}];
+    }
     if (app) { ghostty_app_free(app); app = NULL; }
     if (config) { ghostty_config_free(config); config = NULL; }
+    [self teardownRecord:@"disposed" fields:@{@"disposal_ms":@(monotonicMS()-shutdownStart),
+        @"main_free_block_ms":@(monotonicMS()-freeStart)}];
+    [liveTerminals removeObjectIdenticalTo:self];
+    if (quitting && liveTerminals.count == 0) stopAndWakeHost();
+    if (closing) [self release];
 }
 - (void)dealloc {
     [self shutdown];
     [marked release]; [committed release];
+    [surfaceTTY release];
     if (tracking) { [self removeTrackingArea:tracking]; [tracking release]; }
     [super dealloc];
 }
@@ -316,15 +441,44 @@ static void closeSurface(void *u, bool alive) { [(SpikeTerminalInput *)u record:
 
 @implementation SpikeTerminalContainer
 - (BOOL)isFlipped { return YES; }
-- (void)dealloc { [terminal shutdown]; [terminal release]; [super dealloc]; }
+- (void)layoutTerminals {
+    NSUInteger count = terminals.count;
+    NSUInteger columns = count > 1 ? 2 : 1;
+    NSUInteger rows = (count + columns - 1) / columns;
+    for (NSUInteger i = 0; i < count; i++) {
+        NSSize size = NSMakeSize(self.bounds.size.width / columns, self.bounds.size.height / rows);
+        [terminals[i] setFrame:NSMakeRect((i % columns)*size.width, (i / columns)*size.height, size.width, size.height)];
+    }
+}
+- (void)setFrameSize:(NSSize)size { [super setFrameSize:size]; [self layoutTerminals]; }
+- (void)createBatch {
+    for (SpikeTerminalInput *v in terminals) if (!v->stopped) return;
+    for (SpikeTerminalInput *v in terminals) [v removeFromSuperview];
+    [terminals removeAllObjects];
+    NSUInteger count = getenv("SPIKE_SURFACES") ? atoi(getenv("SPIKE_SURFACES")) : 1;
+    NSAssert(count == 1 || count == 4, @"fixture supports one or four surfaces");
+    for (NSUInteger i = 0; i < count; i++) {
+        SpikeTerminalInput *v = [[SpikeTerminalInput alloc] initWithFrame:self.bounds];
+        [terminals addObject:v]; [self addSubview:v];
+        if (![v start:launchCommand.UTF8String config:configPath.UTF8String]) abort();
+        [v release];
+    }
+    terminal = terminals.firstObject;
+    [self layoutTerminals];
+}
+- (void)closeBatch { for (SpikeTerminalInput *v in terminals) [v shutdown]; }
+- (void)dealloc {
+    [self closeBatch]; [terminals release]; [launchCommand release]; [configPath release];
+    [super dealloc];
+}
 @end
 
 void *spike_terminal_view_new(const char *command, const char *config) {
     SpikeTerminalContainer *container = [[SpikeTerminalContainer alloc] initWithFrame:NSMakeRect(0,0,900,500)];
-    container->terminal = [[SpikeTerminalInput alloc] initWithFrame:container.bounds];
-    [container->terminal setAutoresizingMask:NSViewWidthSizable | NSViewHeightSizable];
-    [container addSubview:container->terminal];
-    if (![container->terminal start:command config:config]) { [container release]; return NULL; }
+    container->terminals = [[NSMutableArray alloc] init];
+    container->launchCommand = [[NSString alloc] initWithUTF8String:command];
+    container->configPath = [[NSString alloc] initWithUTF8String:config];
+    [container createBatch];
     return container;
 }
 void spike_terminal_view_theme(void *view, const char *path) {
@@ -376,4 +530,11 @@ void spike_terminal_view_scale_probe(void *view, double scale) {
     [v syncGeometry];
     [v record:@"synthetic-scale-probe"];
 }
-void spike_terminal_view_shutdown(void *view) { [((SpikeTerminalContainer *)view)->terminal shutdown]; }
+void spike_terminal_view_shutdown(void *view) { [(SpikeTerminalContainer *)view closeBatch]; }
+void spike_terminal_view_create(void *view) { [(SpikeTerminalContainer *)view createBatch]; }
+void spike_terminal_prepare_quit(void) {
+    quitting = YES;
+    NSArray *all = [[liveTerminals copy] autorelease];
+    for (SpikeTerminalInput *v in all) [v shutdown];
+    if (liveTerminals.count == 0) stopAndWakeHost();
+}

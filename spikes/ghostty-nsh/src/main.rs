@@ -29,6 +29,8 @@ unsafe extern "C" {
     fn spike_terminal_view_ime_probe(view: *mut c_void);
     fn spike_terminal_view_scale_probe(view: *mut c_void, scale: f64);
     fn spike_terminal_view_shutdown(view: *mut c_void);
+    fn spike_terminal_view_create(view: *mut c_void);
+    fn spike_terminal_prepare_quit();
 }
 
 struct Terminal {
@@ -67,6 +69,8 @@ impl NativeComponent for Terminal {
                 "scale-probe" => {
                     spike_terminal_view_scale_probe(self.ptr(), args.as_f64().unwrap_or(2.0))
                 }
+                "close-surfaces" => spike_terminal_view_shutdown(self.ptr()),
+                "create-surfaces" => spike_terminal_view_create(self.ptr()),
                 _ => eprintln!("SPIKE unknown command {name}"),
             }
         }
@@ -96,6 +100,7 @@ fn control(label: &'static str, action: impl Fn() + 'static) -> impl IntoElement
 #[component]
 fn Fixture() -> impl IntoElement {
     let terminal = element_ref();
+    let mounted = signal(true);
     let light = signal(false);
     let status = signal(String::from(
         "Direct libghostty • isolated fixture • no GPUI",
@@ -118,6 +123,12 @@ fn Fixture() -> impl IntoElement {
                 .flex_row()
                 .gap(px(7.0))
                 .child(control("Theme", move || light.set(!light.get())))
+                .child(control("Close surfaces", move || {
+                    mounted.set(false);
+                }))
+                .child(control("Create surfaces", move || {
+                    mounted.set(true);
+                }))
                 .child(control("Detach", move || {
                     terminal.command("detach", json!(null))
                 }))
@@ -134,7 +145,9 @@ fn Fixture() -> impl IntoElement {
                     terminal.command("scale-probe", json!(2.0))
                 })),
         )
-        .child(
+        .child(when(mounted, move || {
+            let light_config = light_config.clone();
+            let initial_config = initial_config.clone();
             native("riwork.terminal")
                 .element_ref(&terminal)
                 .flex_1()
@@ -147,8 +160,8 @@ fn Fixture() -> impl IntoElement {
                 })
                 .on_native_event(move |event: &NativeEvent| {
                     status.set(format!("{}: {}", event.name, event.data));
-                }),
-        )
+                })
+        }))
         .child(
             text(move || status.get())
                 .text_size(px(11.0))
@@ -165,8 +178,8 @@ define_class!(
     unsafe impl NSWindowDelegate for WindowDelegate {
         #[unsafe(method(windowShouldClose:))]
         fn window_should_close(&self, _window: &NSWindow) -> bool {
-            NSApplication::sharedApplication(self.mtm()).stop(None);
-            true
+            unsafe { spike_terminal_prepare_quit() };
+            false // Keep the AppKit loop pumping until every native free returns.
         }
     }
 );

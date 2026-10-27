@@ -1,0 +1,42 @@
+[
+  {
+    "id": 5351274586,
+    "node_id": "PRR_kwDOHFhdAs8AAAABPvX4Wg",
+    "user": {
+      "login": "mitchellh",
+      "id": 1299,
+      "node_id": "MDQ6VXNlcjEyOTk=",
+      "avatar_url": "https://avatars.githubusercontent.com/u/1299?u=a7c8c7406e5805a546027066d5a5e2aa45ad431d&v=4",
+      "gravatar_id": "",
+      "url": "https://api.github.com/users/mitchellh",
+      "html_url": "https://github.com/mitchellh",
+      "followers_url": "https://api.github.com/users/mitchellh/followers",
+      "following_url": "https://api.github.com/users/mitchellh/following{/other_user}",
+      "gists_url": "https://api.github.com/users/mitchellh/gists{/gist_id}",
+      "starred_url": "https://api.github.com/users/mitchellh/starred{/owner}{/repo}",
+      "subscriptions_url": "https://api.github.com/users/mitchellh/subscriptions",
+      "organizations_url": "https://api.github.com/users/mitchellh/orgs",
+      "repos_url": "https://api.github.com/users/mitchellh/repos",
+      "events_url": "https://api.github.com/users/mitchellh/events{/privacy}",
+      "received_events_url": "https://api.github.com/users/mitchellh/received_events",
+      "type": "User",
+      "user_view_type": "public",
+      "site_admin": false
+    },
+    "body": "I'd prefer to note change blocking queue. I haven't looked at the code recently but I thought originally that during teardown we always drain queues. We should do that. Or spin off a thread to do that until its empty or something.",
+    "state": "CHANGES_REQUESTED",
+    "html_url": "https://github.com/ghostty-org/ghostty/pull/14444#pullrequestreview-5351274586",
+    "pull_request_url": "https://api.github.com/repos/ghostty-org/ghostty/pulls/14444",
+    "author_association": "CONTRIBUTOR",
+    "_links": {
+      "html": {
+        "href": "https://github.com/ghostty-org/ghostty/pull/14444#pullrequestreview-5351274586"
+      },
+      "pull_request": {
+        "href": "https://api.github.com/repos/ghostty-org/ghostty/pulls/14444"
+      }
+    },
+    "submitted_at": "2026-09-29T10:43:09Z",
+    "commit_id": "c777bd1d4aae0b72c876f21780fe13e395546946"
+  }
+]

@@ -1,0 +1,24 @@
+{
+  "python_ast": "PASS",
+  "cached": {
+    "exit_code": 1,
+    "expected_exit_code": 1,
+    "overall_readiness": "NO_GO",
+    "failed_checks": [
+      "surface_1_responsive_main_loop",
+      "surface_2_responsive_main_loop",
+      "surface_3_responsive_main_loop",
+      "surface_4_responsive_main_loop",
+      "surface_52_responsive_main_loop"
+    ]
+  },
+  "host-wakeup-trial": {
+    "exit_code": 1,
+    "expected_exit_code": 1,
+    "overall_readiness": "NO_GO",
+    "failed_checks": [
+      "cycle_20_capture_postconditions"
+    ]
+  },
+  "format_shell_diff": "PASS"
+}

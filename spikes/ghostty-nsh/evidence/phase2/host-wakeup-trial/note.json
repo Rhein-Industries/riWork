@@ -1,0 +1,27 @@
+{
+  "excluded_from_final_success_counts": true,
+  "classification": "NO-GO host-wakeup trial, retained without rewriting raw evidence",
+  "source_directory": "/private/var/folders/bb/kghlxdk94hj1nkcmwsr90r2c0000gn/T/riwork-ghostty-spike.JVc4hi",
+  "copied_raw_files": 89,
+  "fixture_pid": 88348,
+  "created_surfaces": 80,
+  "freed_surfaces": 80,
+  "disposed_surfaces": 80,
+  "final_capture": {
+    "cycle": 20,
+    "phase": "closed",
+    "all_disposed": true,
+    "ready": false,
+    "fixture_alive": true
+  },
+  "observed_failure": "All 80 surfaces freed, but final host stop did not wake the AppKit event loop; final cycle20 closed capture was ready=false with fixture_alive=true.",
+  "sample_evidence": "host-stop-sample.txt shows the main thread idle in NSApplication run / nextEventMatchingMask and the CoreFoundation event wait; it does not show ghostty_surface_free / pthread_join.",
+  "source_correction": "Current fixture uses stopAndWakeHost: NSApp stop plus a posted application-defined event to wake the loop. This trial predates that correction and remains excluded.",
+  "verifier_exit_code": 1,
+  "verifier_overall_readiness": "NO_GO",
+  "failed_checks": [
+    "cycle_20_capture_postconditions"
+  ],
+  "cleanup_readback": "cleanup-readback.json",
+  "raw_copy_manifest": "raw-copy-manifest.json"
+}
