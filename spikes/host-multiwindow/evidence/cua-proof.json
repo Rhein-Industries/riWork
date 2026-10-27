@@ -1,0 +1,129 @@
+{
+  "provider": "RiWork cua-driver MCP",
+  "inputs_sent": 0,
+  "windows": {
+    "current_space_id": 1,
+    "windows": [
+      {
+        "app_name": "riwork-nsh-multiwindow-fixture",
+        "bounds": {
+          "height": 752,
+          "width": 720,
+          "x": 780,
+          "y": 566
+        },
+        "current_space_id": 1,
+        "is_on_screen": true,
+        "layer": 0,
+        "on_current_space": true,
+        "pid": 64175,
+        "space_ids": [
+          1
+        ],
+        "title": "ISOLATED NSH 0.3 fixture — B",
+        "window_id": 6094,
+        "z_index": 138
+      },
+      {
+        "app_name": "riwork-nsh-multiwindow-fixture",
+        "bounds": {
+          "height": 752,
+          "width": 720,
+          "x": 40,
+          "y": 566
+        },
+        "current_space_id": 1,
+        "is_on_screen": true,
+        "layer": 0,
+        "on_current_space": true,
+        "pid": 64175,
+        "space_ids": [
+          1
+        ],
+        "title": "ISOLATED NSH 0.3 fixture — A",
+        "window_id": 6093,
+        "z_index": 135
+      }
+    ]
+  },
+  "A": {
+    "app_name": "riwork-nsh-multiwindow-fixture",
+    "capture_id": "capture_03c60697d25544c4a7f37892019a46ae_0000000000000076",
+    "diff_counts": {
+      "added": 0,
+      "changed": 3,
+      "removed": 0
+    },
+    "element_count": 1,
+    "elements_complete": false,
+    "invalidated_snapshot_ids": [
+      "s0000005d"
+    ],
+    "pid": 64175,
+    "returned_element_count": 1,
+    "screenshot_file_path": "/Users/dominik/orca/projects/riWork-nsh-spike-host/spikes/host-multiwindow/evidence/window-A.png",
+    "screenshot_frame_valid": true,
+    "screenshot_height": 1366,
+    "screenshot_mime_type": "image/png",
+    "screenshot_scale": 2,
+    "screenshot_width": 1308,
+    "since": "s0000005d",
+    "since_status": "diff",
+    "snapshot_id": "s0000005f",
+    "timeout_ms": 1000,
+    "total_element_count": 1,
+    "tree_diff": "since s0000005d: 0 added, 3 changed, 0 removed. Use element_tokens s0000005f:N for + and ~ rows and unchanged rows; - ids are from s0000005d.\n~ AXStaticText = \"Done: 18980 bytes / 475 chunks / 4f4771e9\"\n~ AXStaticText = \"Chunks: 475\"\n~ AXStaticText = \"user\"\n⚠️ PARTIAL TREE: the max_elements node budget ran out after 15 node(s) (767 discovered but not visited). Every element listed is real; elements after the cut are missing. If the element you need is absent, retry with a larger max_elements or narrow with query / max_depth.",
+    "tree_format": "markdown",
+    "truncated": true,
+    "truncation_hint": "Tree truncated at max_elements=15 (767 more node(s) not shown). Pass a larger max_elements, or query/max_depth to reach the rest.",
+    "truncation_reason": "node_budget",
+    "window_bounds": {
+      "height": 752,
+      "width": 720,
+      "x": 40,
+      "y": 566
+    },
+    "window_id": 6093,
+    "window_title": "ISOLATED NSH 0.3 fixture — A"
+  },
+  "B": {
+    "app_name": "riwork-nsh-multiwindow-fixture",
+    "capture_id": "capture_03c60697d25544c4a7f37892019a46ae_0000000000000077",
+    "diff_counts": {
+      "added": 0,
+      "changed": 3,
+      "removed": 0
+    },
+    "element_count": 1,
+    "elements_complete": false,
+    "invalidated_snapshot_ids": [
+      "s0000005e"
+    ],
+    "pid": 64175,
+    "returned_element_count": 1,
+    "screenshot_file_path": "/Users/dominik/orca/projects/riWork-nsh-spike-host/spikes/host-multiwindow/evidence/window-B.png",
+    "screenshot_frame_valid": true,
+    "screenshot_height": 1366,
+    "screenshot_mime_type": "image/png",
+    "screenshot_scale": 2,
+    "screenshot_width": 1308,
+    "since": "s0000005e",
+    "since_status": "diff",
+    "snapshot_id": "s00000060",
+    "timeout_ms": 1000,
+    "total_element_count": 1,
+    "tree_diff": "since s0000005e: 0 added, 3 changed, 0 removed. Use element_tokens s00000060:N for + and ~ rows and unchanged rows; - ids are from s0000005e.\n~ AXStaticText = \"Done: 18980 bytes / 475 chunks / 4f4771e9\"\n~ AXStaticText = \"Chunks: 475\"\n~ AXStaticText = \"user\"\n⚠️ PARTIAL TREE: the max_elements node budget ran out after 15 node(s) (767 discovered but not visited). Every element listed is real; elements after the cut are missing. If the element you need is absent, retry with a larger max_elements or narrow with query / max_depth.",
+    "tree_format": "markdown",
+    "truncated": true,
+    "truncation_hint": "Tree truncated at max_elements=15 (767 more node(s) not shown). Pass a larger max_elements, or query/max_depth to reach the rest.",
+    "truncation_reason": "node_budget",
+    "window_bounds": {
+      "height": 752,
+      "width": 720,
+      "x": 780,
+      "y": 566
+    },
+    "window_id": 6094,
+    "window_title": "ISOLATED NSH 0.3 fixture — B"
+  }
+}

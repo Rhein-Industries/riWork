@@ -1,0 +1,7 @@
+Both windows completed revision-1; editing the isolated module
+Both windows completed revision-2 via nsh dev; waiting for fixture exit
+Traceback (most recent call last):
+  File "/Users/dominik/orca/projects/riWork-nsh-spike-host/spikes/host-multiwindow/verify_hot_reload.py", line 75, in <module>
+    revision.write_text(original.replace('revision-1','revision-2'))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError

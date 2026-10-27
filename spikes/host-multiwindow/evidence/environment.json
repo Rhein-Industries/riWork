@@ -1,0 +1,37 @@
+{
+  "recorded_utc": "2026-10-27T20:07:28.695609+00:00",
+  "verification_environment": "isolated fixtures only",
+  "os": "ProductName:\t\tmacOS\nProductVersion:\t\t26.2\nBuildVersion:\t\t25C56",
+  "architecture": "arm64",
+  "cpu": "Apple M4 Max",
+  "logical_cpu_count": 16,
+  "memory_bytes": 68719476736,
+  "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+  "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)",
+  "cli": "nsh 0.3.0 (76fa8a7)",
+  "baseline_commit": "50b3b412d77b95a0637c7d72bb7e6d475b50e349",
+  "branch": "nsh-spike-host",
+  "host_profile": "release",
+  "host_view_size_points": [
+    720,
+    720
+  ],
+  "simultaneous_streams": 2,
+  "host_poll_deadline_ms": 5,
+  "producer_chunk_bytes": 40,
+  "fixture_bytes": 18980,
+  "fixture_chunks": 475,
+  "fixture_fnv1a": "4f4771e9",
+  "nsh_crates": "0.3.0",
+  "no_gpui_execution": true,
+  "live_user_state_used": false,
+  "benchmark_started_utc": "2026-10-27T20:11:39.847496+00:00",
+  "background_build_process_counts": {
+    "rustc": 0,
+    "cargo": 0,
+    "nsh": 0
+  },
+  "bundle_js_sha256": "a3040f4c65d2ab9e87fbce80a0484b30beaca8716ad68763c7da5c1ad6e45a72",
+  "bundle_js_bytes": 6775,
+  "host_executable_sha256": "8d247e243b30ab228ef57f9132ef4b5370bd0e2427f34c0dfd3a12c07aa2386a"
+}

@@ -1,0 +1,16 @@
+{
+  "name": "RiWork isolated NSH fixture",
+  "id": "dev.riwork.spike.host-multiwindow",
+  "version": "0.1.0",
+  "build": 1,
+  "rust": ".",
+  "capabilities": {
+    "host": [
+      "ready",
+      "progress",
+      "done",
+      "probe"
+    ]
+  },
+  "appearance": "light"
+}

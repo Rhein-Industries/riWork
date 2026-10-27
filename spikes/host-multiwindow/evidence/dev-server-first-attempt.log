@@ -1,0 +1,5 @@
+error: the argument '--server-only' cannot be used with '--target <TARGET>'
+
+Usage: nsh dev --server-only --port <PORT> <ENTRY>
+
+For more information, try '--help'.

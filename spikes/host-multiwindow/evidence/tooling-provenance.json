@@ -1,0 +1,89 @@
+{
+  "source": "crates.io nsh-cli 0.3.0, pre-existing registry source",
+  "source_path": "/Users/dominik/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/nsh-cli-0.3.0",
+  "source_git": {
+    "git": {
+      "sha1": "76fa8a7fed47ea51aea01fa85bb40960be15d984"
+    },
+    "path_in_vcs": "crates/nsh-cli"
+  },
+  "crate_archive_sha256": "6f3f91b669c67cbbeb3014679b149d93401933c7c2776e7d50ecbe8f03ae23c8",
+  "cargo_lock_sha256": "f8203e805e4fc3775ebbc48c3ea766bfd4ea3a3cb7bc7c29cdfe343721b6adc8",
+  "cargo_toml_sha256": "3a724b90d53e839efc4176c380c81af9ea68392418cdda553d18208bb416d340",
+  "locked_gpui_packages": [],
+  "command": [
+    "cargo",
+    "build",
+    "--locked",
+    "--release",
+    "--manifest-path",
+    "/Users/dominik/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/nsh-cli-0.3.0/Cargo.toml",
+    "--target-dir",
+    "/Users/dominik/orca/projects/riWork-nsh-spike-host/spikes/host-multiwindow/.tooling/target",
+    "--bin",
+    "nsh"
+  ],
+  "cwd": "/Users/dominik/orca/projects/riWork-nsh-spike-host",
+  "stdout_stderr": "/Users/dominik/orca/projects/riWork-nsh-spike-host/spikes/host-multiwindow/evidence/tooling-build.log",
+  "build_log_created_utc": "2026-10-27T20:03:34.324869+00:00",
+  "rustc_version": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+  "cargo_version": "cargo 1.99.1 (5f94df478 2026-08-27)",
+  "installed_cli_path": "/Users/dominik/.local/bin/nsh",
+  "installed_cli_sha256_before": "38923fe27ca30fe273f20a4cd792cdc6801d17ef5a0e81d58dd348473787ba45",
+  "installed_cli_version_before": "nsh 0.2.0 (68531fb)",
+  "build_status": "passed",
+  "verification_environment": "isolated build target only; no install, native host launch, GPUI build, or live window interaction",
+  "source_integrity": {
+    "checked_source_files_against_crate_archive": 45,
+    "modified_files": []
+  },
+  "build_exit_code": 0,
+  "cargo_reported_build_elapsed": "3m 45s",
+  "binary_path": "/Users/dominik/orca/projects/riWork-nsh-spike-host/spikes/host-multiwindow/.tooling/target/release/nsh",
+  "binary_sha256": "bad78988ebf7a3de9f1b53228ff5f7e41e032588ecae1acd9f6a443f6e6b59fb",
+  "binary_size_bytes": 61453216,
+  "binary_version": "nsh 0.3.0 (76fa8a7)",
+  "installed_cli_sha256_after": "38923fe27ca30fe273f20a4cd792cdc6801d17ef5a0e81d58dd348473787ba45",
+  "verification_commands": [
+    {
+      "command": [
+        "/Users/dominik/orca/projects/riWork-nsh-spike-host/spikes/host-multiwindow/.tooling/target/release/nsh",
+        "--version"
+      ],
+      "exit_code": 0
+    },
+    {
+      "command": [
+        "/Users/dominik/orca/projects/riWork-nsh-spike-host/spikes/host-multiwindow/.tooling/target/release/nsh",
+        "check",
+        "--help"
+      ],
+      "exit_code": 0
+    },
+    {
+      "command": [
+        "/Users/dominik/orca/projects/riWork-nsh-spike-host/spikes/host-multiwindow/.tooling/target/release/nsh",
+        "test",
+        "--help"
+      ],
+      "exit_code": 0
+    },
+    {
+      "command": [
+        "/Users/dominik/orca/projects/riWork-nsh-spike-host/spikes/host-multiwindow/.tooling/target/release/nsh",
+        "dev",
+        "--help"
+      ],
+      "exit_code": 0
+    },
+    {
+      "command": [
+        "/Users/dominik/orca/projects/riWork-nsh-spike-host/spikes/host-multiwindow/.tooling/target/release/nsh",
+        "build",
+        "--help"
+      ],
+      "exit_code": 0
+    }
+  ],
+  "verified_at_utc": "2026-10-27T20:07:36.536829+00:00"
+}

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="nsh test" tests="2" failures="0" errors="0" skipped="0" time="8.443">
+  <testsuite name="spikes/host-multiwindow/app/App.test.tsx" tests="2" failures="0" errors="0" skipped="0" time="6.227">
+    <testcase classname="spikes/host-multiwindow/app/App.test.tsx" name="uses the same deterministic transcript as the GPUI baseline" time="0.000"/>
+    <testcase classname="spikes/host-multiwindow/app/App.test.tsx" name="isolates host params and native state while replaying all 475 chunks" time="6.227"/>
+  </testsuite>
+</testsuites>

@@ -1,0 +1,6 @@
+.tooling/
+**/target/
+**/.nsh/
+**/.run/
+**/__pycache__/
+evidence/*-data/
