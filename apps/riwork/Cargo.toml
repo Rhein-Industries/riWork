@@ -1,0 +1,25 @@
+[package]
+name = "riwork-nsh-workspace"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Independently buildable while P1a/P1b are developed in sibling branches.
+[workspace]
+
+[dependencies]
+nsh-core = "=0.3.0"
+nsh-base = "=0.3.0"
+riwork-core = { path = "../../crates/riwork-core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+fs2 = "0.4"
+arc-swap = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.dev]
+debug = 0
+incremental = false
