@@ -20,6 +20,8 @@ bool rw_terminal_update_config(void *, const char *config_path);
 void rw_terminal_command(void *, const char *name);
 void rw_terminal_find(void *, const char *query);
 void rw_terminal_set_link(void *, const char *json);
+// Ghostty's paste of plain text (bracketed when asked for), for remote bridges.
+void rw_terminal_paste_text(void *, const char *text);
 void rw_terminal_detach_result(void *, bool confirmed);
 // shutdown leaves an idle reusable view; abandon permanently prevents attach.
 void rw_terminal_shutdown(void *);

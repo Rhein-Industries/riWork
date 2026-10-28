@@ -23,7 +23,7 @@ import { createFilesController, FilesPanel, PreviewPanel } from "./Files";
 import { AutomationsPanel } from "./schedules/Automations";
 import { createRemoteController, RemoteProjects, RemoteProjectPanel, RemotePrompt, RemoteSettings, RemoteUnavailable, type RemoteApi } from "./remote/Remote";
 import { RemoteTerminal } from "./remote/RemoteTerminal";
-import { remoteHostLabel, remoteLocalOnly, remotePanelUnavailable, remoteProjectKey, remoteTitle } from "./remote/model";
+import { remoteHostLabel, remoteLocalOnly, remotePanelUnavailable, remoteProjectKey, remoteTabTitle, remoteTitle, splitRemoteTitle } from "./remote/model";
 import { workspaceRemote, type WorkspaceRemoteApi } from "./remote/workspace";
 import { AppSettings } from "./settings/AppSettings";
 import { ProjectSettingsPanel } from "./settings/ProjectSettings";
@@ -150,13 +150,16 @@ export function Workspace(props: WorkspaceProps) {
     notice: (message) => notice.set(message), modalBlocked: () => modal() || !!panelState.editor() || switching(),
     beforePrompt: () => { allTabs.set(false); commands.stripOpen.set(false); freeze(); },
     afterPrompt: () => thaw(),
-    onProjectCreated: (key) => { void switchTo(key).catch((error) => notice.set(String(error))); },
-    wants: () => ({ folders: isVisible("panel:projects"), settings: isVisible("panel:settings"),
+    wants: () => ({ order: panelState.order(), descending: panelState.descending(), folders: isVisible("panel:projects"), settings: isVisible("panel:settings"),
       collapsed: [...panelState.collapsed()], projectKey: remoteProjectKey(projectId()) ? projectId() : null,
       worktrees: isVisible("panel:worktrees"), tasks: isVisible("panel:tasks"), shells: isVisible("panel:shells"),
       tabHosts: [...new Set(snapshot().panes.flatMap((pane) => pane.tabs.filter((tab) => tab.kind === "remote_shell" && isVisible(tab.id)).map((tab) => tab.id.split(":")[1])))],
+      tabs: snapshot().panes.flatMap((pane) => pane.tabs.filter((tab) => tab.kind === "remote_shell").map((tab) => tab.id)),
     }),
   });
+  // As GPUI: a window opened (or restored) on another Mac's project records it
+  // for the next plain launch.
+  if (remoteProjectKey(props.projectId)) void Remote.select(props.projectId!).catch(() => {});
   const remoteActions = workspaceRemote({ api: Remote as unknown as WorkspaceRemoteApi, session, projectId, snapshot,
     data: remote.data, selectedWorktree: panelState.selectedWorktree, alive: () => alive, generation: panelState.generation,
     install, focus: (key) => pendingFocus.set(key), notice: (message) => notice.set(message) });
@@ -175,8 +178,9 @@ export function Workspace(props: WorkspaceProps) {
     if (!status.installed) action(() => session.openCuaSetup());
   });
   function newAppPreview() {
+    if (localOnly()) return;
     const cwd = filesRoot();
-    if (!cwd || snapshot().remoteProject) { notice.set("App previews require a local project folder."); return; }
+    if (!cwd) { notice.set("App previews require a local project folder."); return; }
     action(() => session.openAppPreview({ command: "", cwd, mode: "cooperative" }));
   }
   function filesRoot() {
@@ -258,14 +262,15 @@ export function Workspace(props: WorkspaceProps) {
   /** Shell titles prefer shared membership, then the session inventory. */
   function displayTitle(tab: PanelModel): string {
     if (tab.kind === "panel") return label(tab.title);
-    if (tab.kind === "remote_shell") {
-      const [, hostId, shellId] = tab.id.split(":");
-      const shell = remote.data().projects.flatMap((project) => project.host === hostId ? project.shells : []).find((shell) => shell.id === shellId);
-      return `⇄ ${remoteHostLabel(remote.data(), hostId)} · ${shell?.display ?? shellId.slice(0, 8)}`;
-    }
+    if (tab.kind === "remote_shell") return remoteTabTitle(remote.data(), tab.id);
     if (!tab.id.startsWith("shell:")) return tab.title;
     const shell = panelState.shells().find((item) => item.id === tab.id.slice(6));
     return panelState.tabForShell(tab.id.slice(6))?.title || (shell ? panelState.titleForShell(shell) : tab.title);
+  }
+  /** Another Mac's tabs wear its name in the remote accent. */
+  function remoteMark(tab: PanelModel, title: string) {
+    const parts = tab.kind === "remote_shell" ? splitRemoteTitle(title) : null;
+    return parts ? [<Text style={{ color: theme().palette.magenta }}>{parts[0]}</Text>, parts[1]] : title;
   }
   function membershipProject(id: string): string | null {
     // Locked panes can carry a shell from the previous project. Its shared
@@ -289,7 +294,7 @@ export function Workspace(props: WorkspaceProps) {
   const orchestratorBusy = signal(false);
   async function openProjectOrchestrator() {
     const project = projectId();
-    if (remoteProjectKey(project)) { if (!orchestratorBusy() && !switching() && !modal()) { orchestratorBusy.set(true); try { await remoteActions.orchestrator(); } catch (error) { notice.set(String(error)); } finally { orchestratorBusy.set(false); } } return; }
+    if (remoteProjectKey(project)) { if (!orchestratorBusy() && !switching() && !modal()) { orchestratorBusy.set(true); try { await remoteActions.orchestrator(); } catch (error) { if (alive) notice.set(String(error).replace(/^(?:Error: )?(?:invalid|io|refused|broken|unavailable): /u, "")); } finally { orchestratorBusy.set(false); } } return; }
     if (orchestratorBusy() || switching() || modal() || !UUID.test(project)) return;
     orchestratorBusy.set(true);
     try {
@@ -388,12 +393,17 @@ export function Workspace(props: WorkspaceProps) {
     if (switching()) throw new Error("conflict: project switch is already in progress");
     closing.set(null); renaming.set(null); vimDialog.set(false); allTabs.set(false);
     switching.set(true);
+    const from = projectId();
     try {
       const next = await session.switchProject(id);
       if (!alive) return;
       install(size ? session.setExtent(size) : next);
       panelState.resetProject({ worktree: snapshot().selectedWorktreeId ?? null, task: snapshot().selectedTaskId ?? null });
-      void Remote.select(remoteProjectKey(id) ? id : null).catch((error) => { if (alive) notice.set(String(error)); });
+      // As GPUI: another Mac's project is recorded for the next plain launch; back
+      // on this Mac's projects the record is cleared, by the window that left it.
+      if (id !== from && (remoteProjectKey(id) || remoteProjectKey(from))) {
+        void Remote.select(remoteProjectKey(id) ? id : null).catch((error) => { if (alive) notice.set(String(error)); });
+      }
       pendingFocus.set(null);
     } finally { switching.set(false); }
   }
@@ -582,8 +592,8 @@ export function Workspace(props: WorkspaceProps) {
       ...[["Codex", "mod+shift+c"], ["Claude", "mod+shift+l"], ["Grok", "mod+shift+g"], ["Muse", "mod+shift+u"]].map(([label, shortcut]) => ({ label, shortcut, disabled: !remoteProjectKey(projectId()), onSelect: () => { void createShell(undefined, label.toLowerCase()); } })),
       { label: "Global orchestrator", shortcut: "mod+shift+o", onSelect: openGlobalOrchestrator },
       { label: "Project orchestrator", shortcut: "mod+alt+o", disabled: !UUID.test(projectId()) && !remoteProjectKey(projectId()), onSelect: () => { void openProjectOrchestrator(); } },
-      disabled("New chat…"),
-      { label: "App preview…", disabled: !filesRoot() || !!snapshot().remoteProject, onSelect: newAppPreview },
+      { label: "New chat…", disabled: !remoteProjectKey(projectId()), onSelect: () => { commands.dispatch("newChat"); } },
+      { label: "App preview…", disabled: !filesRoot() && !snapshot().remoteProject, onSelect: newAppPreview },
       { type: "separator" }, disabled("Views"),
       ...VIEWS.map((panel): MenuItem => ({ label: panelTitle(panel), shortcut: VIEW_SHORTCUTS[panel], onSelect: () => view(panel) })),
       { type: "separator" }, disabled("Pane"),
@@ -629,6 +639,11 @@ export function Workspace(props: WorkspaceProps) {
     newShell: (split) => { allTabs.set(false); void createShell(split); },
     newSubshell: () => { allTabs.set(false); void createSubshell(); },
     remoteAgent: (kind) => { if (!remoteProjectKey(projectId())) return false; void createShell(undefined, kind); return true; },
+    remoteRefusal: (id) => {
+      if (!remoteProjectKey(projectId())) return false;
+      notice.set(id === "handOff" ? remoteLocalOnly(remote.data(), projectId(), "handoff")! : "Chats run on this Mac. Open a project here to start one.");
+      return true;
+    },
     openVim: showVimDialog,
     appPreview: newAppPreview,
     find,
@@ -719,7 +734,7 @@ export function Workspace(props: WorkspaceProps) {
   function tabCell(tab: PanelModel, active: boolean, strip: boolean) {
     const pane = snapshot().panes.find((pane) => pane.tabs.some((panel) => panel.id === tab.id));
     const shownTitle = displayTitle(tab);
-    return <View ref={(node) => tabRefs.set(`${strip ? "strip" : "pane"}:${tab.id}`, node)} testID={`tab-${tab.id}`} role={strip ? "tab" : undefined} accessibilityLabel={`${tab.title}${tab.kind !== "panel" && tab.status ? `, ${tab.status}` : ""}`}
+    return <View ref={(node) => tabRefs.set(`${strip ? "strip" : "pane"}:${tab.id}`, node)} testID={`tab-${tab.id}`} role={strip ? "tab" : undefined} accessibilityLabel={`${tab.kind === "remote_shell" ? shownTitle : tab.title}${tab.kind !== "panel" && tab.status ? `, ${tab.status}` : ""}`}
       accessibilityState={{ selected: active }} focusable={true}
       onPress={() => select(tab.id)} onContextMenu={() => tabMenu(tab.id)} onHoverIn={() => hovered.set(tab.id)} onHoverOut={() => hovered.set(null)}
       onPressDown={(event) => { if (strip && event) pressOrigin = event.pagePosition; }}
@@ -729,7 +744,7 @@ export function Workspace(props: WorkspaceProps) {
       onPanEnd={strip ? (event) => { void stripDrop(tab.id, event.translationX, event.translationY, event.cancelled); } : undefined}
       style={{ height: header(), width: strip ? (tab.kind === "panel" ? M.panelCell : sessionCellWidth(tab.title)) : undefined, minWidth: 0, paddingLeft: space(8, theme().scale), paddingRight: 4, flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: active ? theme().palette.panelActive : theme().palette.panel }}>
       {tab.kind !== "panel" && <StatusDot status={tab.status} />}
-      <Text numberOfLines={1} style={{ fontFamily: theme().family, fontSize: (strip ? M.tabFont : 11) * theme().scale, flexShrink: 1, color: theme().palette.text }}>{strip && tab.kind === "panel" ? shownTitle.slice(0, 1) : shownTitle}</Text>
+      <Text numberOfLines={1} style={{ fontFamily: theme().family, fontSize: (strip ? M.tabFont : 11) * theme().scale, flexShrink: 1, color: theme().palette.text }}>{strip && tab.kind === "panel" ? shownTitle.slice(0, 1) : remoteMark(tab, shownTitle)}</Text>
       {!pane?.locked && (active || hovered() === tab.id) && <View testID={`tab-close-${tab.id}`} tooltip="Close tab · ⌘W" accessibilityLabel={`Close ${tab.title}`} onPress={() => close(tab.id)} style={{ width: M.tabClose, alignItems: "center" }}><Text style={mutedStyle()}>×</Text></View>}
       {pane?.locked && !strip && <Text style={{ ...textStyle(9), color: theme().palette.cyan }}>◆</Text>}
     </View>;
@@ -828,7 +843,7 @@ export function Workspace(props: WorkspaceProps) {
                       onShell={(hostId, shell) => remoteActions.open(hostId, shell)} />
                   </Scroll> : <PanelContent controller={panelState} panel={panel.id.slice(6)} surface={panel.id} />}
                   {panel.id === "panel:projects" && <Scroll testID="remote-projects-scroll" style={{ maxHeight: Math.min(260 * theme().scale, (containerHeight() || 600) * 0.4), flexShrink: 1 }}>
-                    <RemoteProjects controller={remote} query={panelState.query} selected={projectId} collapsed={panelState.collapsed} onToggleFolder={panelState.toggleFolder}
+                    <RemoteProjects controller={remote} query={panelState.query} selected={projectId} order={() => ({ order: panelState.order(), descending: panelState.descending() })} collapsed={panelState.collapsed} onToggleFolder={panelState.toggleFolder}
                       onSelectProject={(key) => { void switchTo(key).catch((error) => notice.set(String(error))); }} />
                   </Scroll>}
                 </View> : panel.id === "panel:files" || panel.id === "panel:preview" || panel.id === "panel:project_settings" || panel.id === "panel:settings" ?
@@ -895,6 +910,8 @@ export function Workspace(props: WorkspaceProps) {
         settings={props.settings} theme={theme} action={action} onError={(error) => notice.set(String(error))} modalOpen={() => !!props.modalOpen?.() || modal() || !!panelState.editor() || switching()}
         newShell={props.projectId ? { busy, create: () => { void createShell(); } } : undefined} onMenu={(open) => statusMenu.set(open)}
         openProjectOrchestrator={UUID.test(projectId()) || remoteProjectKey(projectId()) ? () => commands.dispatch("openProjectOrchestrator") : undefined}
+        remote={() => { const lists = remote.data().projects.find((row) => row.key === projectId()); const tree = panelState.selectedWorktree();
+          return { branch: lists?.worktrees.find((row) => row.id === tree)?.branch ?? null, live: lists?.live ?? null }; }}
         focus={{ mode: () => !!snapshot().focusMode, centered: () => !!snapshot().focusCentered,
           toggle: () => commands.dispatch("toggleFocusMode"), toggleCentered: () => commands.dispatch("focusCentered") }} />
       {notice() !== "" && <Overlay testID="workspace-notice" onCancel={escapeTopmost} margin={8}

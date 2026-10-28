@@ -31,6 +31,9 @@ interface Props {
   focus?: { mode: () => boolean; centered: () => boolean; toggle: () => void; toggleCentered: () => void };
   /** Opens this project's orchestrator; the item is disabled without it. */
   openProjectOrchestrator?: () => void;
+  /** A project on another Mac: its worktree branch and live shells as its host last
+   * listed them (null before a list arrives). This Mac's sessions never stand in. */
+  remote?: () => { branch: string | null; live: number | null } | null;
 }
 
 type Menu = "layout" | "global" | "account";
@@ -80,8 +83,8 @@ export function StatusBar(props: Props) {
   });
   cleanup(() => { sessionSubscription.close(); storeSubscription.close(); usageSubscription.close(); accountsSubscription.close(); });
   cleanup(host.on("global.show", (event) => globalView.set((event as { view: "dashboard" | "chat" | null }).view)));
-  // A remote project's bar draws no account item.
-  const shown = (kind: string) => !(kind === "codex_account" && props.snapshot().remoteProject);
+  // A remote project's bar draws no usage or account item.
+  const shown = (kind: string) => !((kind === "codex_account" || kind === "usage") && props.snapshot().remoteProject);
   const items = (side: string) => settings().items.filter((item) => item.enabled && item.side === side && shown(item.kind));
   effect(() => {
     const open = menu();
@@ -109,7 +112,7 @@ export function StatusBar(props: Props) {
   const selectedSession = () => {
     const pane = activePane(props.snapshot());
     const id = pane?.activeTab;
-    return id?.startsWith("shell:") ? id.slice(6) : undefined;
+    return id?.startsWith("shell:") ? id.slice(6) : id?.startsWith("remote:") ? id.split(":")[2] || undefined : undefined;
   };
   const textStyle = () => ({ fontFamily: theme().monoFamily, fontSize: 9 * theme().scale, color: theme().palette.muted });
   const accountList = (): AccountListLike => accounts() ?? NO_ACCOUNTS;
@@ -135,8 +138,9 @@ export function StatusBar(props: Props) {
     const current = sessions()?.find((session) => session.id === selectedSession());
     const projectName = store()?.projects.find((project) => project.id === projectId())?.name ?? projectLabel();
     const worktreeId = props.snapshot().selectedWorktreeId ?? current?.worktreeId;
-    const branch = store()?.worktrees.find((worktree) => worktree.id === worktreeId)?.branch ?? "No worktree";
-    const live = sessions()?.filter((session) => session.alive && session.projectId === projectId()).length ?? "—";
+    const remote = props.snapshot().remoteProject ? props.remote?.() ?? { branch: null, live: null } : null;
+    const branch = (remote ? remote.branch : store()?.worktrees.find((worktree) => worktree.id === worktreeId)?.branch) ?? "No worktree";
+    const live = (remote ? remote.live : sessions()?.filter((session) => session.alive && session.projectId === projectId()).length) ?? "—";
     const readouts = kind === "usage" ? segments() : null;
     const mode = (props.settings?.()?.statusBar.usageMode ?? "current_chat") as UsageMode;
     const labels: Record<string, string> = {

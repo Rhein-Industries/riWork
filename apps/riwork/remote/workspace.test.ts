@@ -11,7 +11,7 @@ function fixture(overrides: Partial<WorkspaceRemoteApi> = {}) {
   const api: WorkspaceRemoteApi = {
     createShell: async (request) => { calls.push(request); return shell; },
     clickWorktree: async () => ({ action: "unknown", shellId: null, shell: null }),
-    orchestrators: async () => [], ...overrides,
+    orchestrator: async () => ({ shell: null, notice: null }), ...overrides,
   };
   const actions = workspaceRemote({ api,
     session: { openRemoteShell: (host, id) => { calls.push(["open", host, id]); return {}; }, selectPane: (id) => { calls.push(["pane", id]); return {}; }, selectPanel: (id) => { calls.push(["tab", id]); return {}; } },
@@ -42,15 +42,38 @@ test("P6B-REMOTE-WORKSPACE-02 a result settles but cannot open after switch away
 });
 test("P6B-REMOTE-WORKSPACE-03 failure is never automatically retried and dead/chat shells are refused", async () => {
   let count = 0;
-  const f = fixture({ createShell: async () => { count++; throw new Error("broken: outcome unknown"); } });
-  let error = ""; try { await f.actions.create(); } catch (reason) { error = String(reason); }
-  expect(error).toContain("outcome unknown"); expect(count).toBe(1);
+  const f = fixture({ createShell: async () => { count++; throw new Error("broken: No answer in time"); } });
+  await f.actions.create();
+  expect(f.notices).toEqual(["No answer in time"]); expect(count).toBe(1);
   f.actions.open("host", { ...shell, alive: false }); f.actions.open("host", { ...shell, chat: true });
-  expect(f.calls.length).toBe(0); expect(f.notices.length).toBe(2);
+  expect(f.calls.length).toBe(0);
+  expect(f.notices.slice(1)).toEqual(["Shell has ended on the host", "Shell runs as a chat on the host; chats run on that Mac. Open it there, or in the iOS app."]);
 });
 test("P6B-REMOTE-WORKSPACE-04 worktree selects the exact host tab before starting anything", async () => {
   const f = fixture({ clickWorktree: async () => ({ action: "tab", shellId: "shell", shell: null }) });
   await f.actions.worktree("tree");
   expect(f.calls).toEqual([["tab", "remote:host:shell"]]);
   f.switch("local"); await f.actions.create(); expect(f.calls.length).toBe(1);
+});
+test("2CB-REMOTE-WORKSPACE-05 an open tab is brought up even if its shell ended; a running creation elsewhere is silent", async () => {
+  const f = fixture({ createShell: async () => { throw new Error("conflict: this Mac is unpaired or a terminal is already starting"); } });
+  f.snapshot({ activePane: 7, panes: [{ id: 7, main: false, locked: false, active: true, tabs: [{ id: "remote:host:shell", kind: "remote_shell", title: "" }] }] });
+  f.actions.open("host", { ...shell, alive: false });
+  expect(f.calls).toEqual([["open", "host", "shell"], ["focus", "remote:host:shell"]]);
+  expect(f.notices).toEqual([]);
+  await f.actions.create();
+  expect(f.notices).toEqual([]);
+});
+test("2CB-REMOTE-WORKSPACE-06 the orchestrator opens what the native lookup found, else says why", async () => {
+  const live = { ...shell, id: "orchestrator", orchestrator: true };
+  const found = fixture({ orchestrator: async () => ({ shell: live, notice: null }) });
+  await found.actions.orchestrator();
+  expect(found.calls).toEqual([["open", "host", "orchestrator"], ["focus", "remote:host:orchestrator"]]);
+  const missing = fixture({ orchestrator: async () => ({ shell: null, notice: "Fixture Mac has no project orchestrator running" }) });
+  await missing.actions.orchestrator();
+  expect(missing.notices).toEqual(["Fixture Mac has no project orchestrator running"]);
+  let finish!: (value: { shell: null; notice: string }) => void;
+  const stale = fixture({ orchestrator: () => new Promise((resolve) => { finish = resolve; }) });
+  const asked = stale.actions.orchestrator(); stale.switch("local"); finish({ shell: null, notice: "Cannot reach Fixture Mac" }); await asked;
+  expect(stale.notices).toEqual([]);
 });

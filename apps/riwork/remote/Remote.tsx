@@ -4,9 +4,8 @@ import { Button, Input, View } from "../SettingsFocus";
 import { DEFAULT_THEME, type InterfaceTheme } from "../appearance";
 import {
   EMPTY_REMOTE, REMOTE_HISTORY_NOTE, checkPairingLink, filteredFolders, linkPresentation,
-  maskedPairingLink, projectConnectionNote, projectNameError, remoteHostLabel, remoteProjectKey,
-  remoteStrip, shellOpenRefusal,
-  type PairingLink, type PairRequest, type RemoteDefaults, type RemoteLists, type RemotePromptKind,
+  maskedPairingLink, projectConnectionNote, projectNameError, remoteProjectKey, remoteStrip,
+  type PairingLink, type PairRequest, type RemoteDefaults, type RemoteLists, type RemoteOrder, type RemotePromptKind,
   type RemoteShell, type RemoteSnapshot, type RemoteWants,
 } from "./model";
 
@@ -29,7 +28,6 @@ export function createRemoteController(options: {
   modalBlocked?: () => boolean;
   beforePrompt?: () => void;
   afterPrompt?: () => void;
-  onProjectCreated?: (key: string) => void;
   copyText: (text: string) => Promise<void> | void;
 }) {
   const data = signal<RemoteSnapshot>(EMPTY_REMOTE), pending = signal(false), prompt = signal<RemotePromptKind | null>(null);
@@ -47,7 +45,8 @@ export function createRemoteController(options: {
     const value = options.wants();
     const signature = JSON.stringify({ folders: value.folders, settings: value.settings,
       collapsed: [...new Set(value.collapsed)].sort(), tabHosts: [...new Set(value.tabHosts)].sort(),
-      projectKey: value.projectKey, worktrees: value.worktrees, tasks: value.tasks, shells: value.shells });
+      projectKey: value.projectKey, worktrees: value.worktrees, tasks: value.tasks, shells: value.shells,
+      tabs: [...new Set(value.tabs ?? [])].sort(), order: value.order ?? "", descending: !!value.descending });
     if (signature !== previousWants) { previousWants = signature; wantsSignature.set(signature); }
   });
   effect(() => {
@@ -95,6 +94,14 @@ export function createRemoteController(options: {
     const validation = current.kind === "add" ? checkPairingLink(link()) : current.kind === "project" ? projectNameError(name()) :
       (!name().trim() || !relay().trim() || !routes().trim() ? "Fill in the name, the relay and the routes file." : null);
     if (validation) { error.set(validation); return; }
+    if (current.kind === "project") {
+      // As GPUI: the prompt closes at once; the folder shows "creating…" and any
+      // failure with its Dismiss; only success says so. The window stays put.
+      const host = current.host, project = name().trim();
+      generation++; clearSecret(); finishPrompt(); error.set(null);
+      void options.api.createProject(host, project).then((result) => options.notice?.(`Created ${result.name}`), () => {});
+      return;
+    }
     const asked = generation;
     pending.set(true); error.set(null);
     try {
@@ -102,15 +109,12 @@ export function createRemoteController(options: {
         const label = name().trim(), secret = link().trim();
         await options.api.addHost(secret, label);
         if (asked === generation) { clearSecret(); options.notice?.(label ? `Added host ${label}` : "Host added"); finishPrompt(); }
-      } else if (current.kind === "pair") {
+      } else {
         const request = { name: name().trim(), relay: relay().trim(), routes: routes().trim() };
         const result = await options.api.pairDesktop(request);
         if (asked === generation) {
           defaults.set(request); paired.set({ link: result.link, masked: maskedPairingLink(result.link) });
         }
-      } else {
-        const result = await options.api.createProject(current.host, name().trim());
-        if (asked === generation) { options.notice?.(`Created ${result.name}`); finishPrompt(); options.onProjectCreated?.(result.key); }
       }
     } catch (value) {
       if (asked === generation) {
@@ -136,10 +140,8 @@ export function createRemoteController(options: {
     catch { error.set("Cannot copy the pairing link."); }
     finally { pending.set(false); }
   }
-  function openShell(host: string, shell: RemoteShell, action: (host: string, shell: RemoteShell) => void) {
-    const refusal = shellOpenRefusal(shell, remoteHostLabel(data(), host));
-    if (refusal) options.notice?.(refusal); else action(host, shell);
-  }
+  // The opener brings up an open tab before refusing a chat or an ended shell.
+  function openShell(host: string, shell: RemoteShell, action: (host: string, shell: RemoteShell) => void) { action(host, shell); }
   function dismiss(host: string, project: string | null) { void options.api.dismissFailure(host, project).catch((value) => report(message(value))); }
   return { data, theme, pending, prompt, confirmation, error, copied, name, link, relay, routes, paired, close, open, submit, remove, copy, openShell, dismiss };
 }
@@ -181,12 +183,12 @@ export function RemoteSettings(props: { controller: RemoteController }) {
 
 /** Append after local folders. Search expands matches without changing saved collapse state. */
 export function RemoteProjects(props: {
-  controller: RemoteController; query?: () => string; selected?: () => string | null;
+  controller: RemoteController; query?: () => string; selected?: () => string | null; order?: () => RemoteOrder;
   collapsed?: () => ReadonlySet<string>; onToggleFolder?: (key: string) => void; onSelectProject: (key: string) => void;
 }) {
   const c = props.controller;
   return <View testID="remote-projects" style={{ gap: 6 }}>
-    {filteredFolders(c.data(), props.query?.() ?? "").map((folder) => {
+    {filteredFolders(c.data(), props.query?.() ?? "", props.order?.()).map((folder) => {
       const key = `remote:${folder.host}`;
       const collapsed = !props.query?.().trim() && props.collapsed?.().has(key);
       return <View testID={`remote-folder-${folder.host}`} style={{ gap: 4 }}>
@@ -209,11 +211,17 @@ export function RemoteProjects(props: {
   </View>;
 }
 
-/** A real remote namespace must be gated before constructing any local controller. */
+const UNAVAILABLE_WHAT: Record<string, string> = {
+  files: "Files", preview: "Preview", memo: "Preview", project_settings: "Project settings", projectSettings: "Project settings", schedules: "Schedules", usage: "Usage",
+};
+/** A real remote namespace must be gated before constructing any local controller.
+ * As GPUI's panels::unavailable: what is missing, and why, centered. */
 export function RemoteUnavailable(props: { hostLabel: string; panel: string; theme?: () => InterfaceTheme }) {
   const theme = props.theme ?? (() => DEFAULT_THEME);
-  return <View testID={`remote-unavailable-${props.panel}`} style={{ flex: 1, padding: 16, gap: 6 }}>
-    <Text style={{ fontFamily: theme().family, fontSize: 11 * theme().scale, color: theme().palette.muted }}>{`Not available for a project on ${props.hostLabel}`}</Text>
+  const text = (size: number, color: string) => ({ fontFamily: theme().family, fontSize: size * theme().scale, color });
+  return <View testID={`remote-unavailable-${props.panel}`} style={{ flex: 1, alignItems: "center", justifyContent: "center", padding: 16 * theme().scale, gap: 6 * theme().scale, backgroundColor: theme().palette.panel }}>
+    <Text style={text(11, theme().palette.text)}>{`Not available for a project on ${props.hostLabel}`}</Text>
+    <Text style={{ ...text(10, theme().palette.muted), maxWidth: 360 * theme().scale }}>{`${UNAVAILABLE_WHAT[props.panel] ?? "This panel"} works with this Mac's own projects. Select one of them to use it.`}</Text>
   </View>;
 }
 
@@ -257,52 +265,86 @@ export function RemoteProjectPanel(props: {
   </View>;
 }
 
-/** Render above normal content, alongside the workspace's modal lifecycle. */
+const PROMPT_DESCRIPTION = {
+  add: "On the other Mac, open Settings → Remote → Pair another Mac, and paste the link it shows.",
+  pair: "Makes a one-time link. Whoever has it can control this Mac's terminals once it is redeemed.",
+  paired: "Paste it on the other Mac under Settings → Remote → Add host. It works once, for about ten minutes, and is not saved here. Add the new route to your relay's routes file and restart the relay before using it.",
+  project: "The project is made in the host's default projects folder.",
+} as const;
+
+/** Render above normal content, alongside the workspace's modal lifecycle.
+ * Texts, fields and buttons as GPUI's RemotePrompt; the busy line is separate. */
 export function RemotePrompt(props: { controller: RemoteController }) {
   const c = props.controller;
-  let first: YNode | undefined;
-  const title = () => c.prompt()?.kind === "add" ? "Add host" : c.prompt()?.kind === "pair" ? "Pair another Mac" : `New project on ${(c.prompt() as { label?: string } | null)?.label ?? "this Mac"}`;
+  const fields: (YNode | undefined)[] = [];
+  const kind = () => c.prompt()!.kind;
+  const title = () => kind() === "add" ? "Add host" : kind() === "pair" ? "Pair another Mac" : `New project on ${(c.prompt() as { label?: string } | null)?.label ?? "this Mac"}`;
+  const space = (value: number) => value * c.theme().scale;
   const inputStyle = () => ({ ...font(c), padding: 8, borderWidth: 1, borderColor: c.theme().palette.divider, borderRadius: 5 });
-  return <>{c.prompt() && <Dialog testID="remote-prompt" animation="none" closeOnBackdropPress={false} closeOnEscape={!c.pending()} onOpen={() => first?.focus()}
+  // A pairing starts on the first field that is still empty.
+  function focusFirst() {
+    const values = kind() === "add" ? [c.link(), c.name()] : kind() === "pair" ? [c.name(), c.relay(), c.routes()] : [c.name()];
+    fields[Math.max(0, values.findIndex((value) => !value))]?.focus();
+  }
+  const label = (text: string) => <Text style={font(c, 9, c.theme().palette.muted)}>{text}</Text>;
+  function field(index: number, id: string, name: string, placeholder: string, value: () => string, change: (value: string) => void, masked = false) {
+    return <View style={{ gap: space(4) }}>
+      {label(name)}
+      <Input testID={id} accessibilityLabel={name} placeholder={placeholder} masked={masked} value={value()} readonly={c.pending()}
+        ref={(node) => { fields[index] = node; }} onChange={change} onSubmit={() => void c.submit()} style={inputStyle()} />
+    </View>;
+  }
+  function button(id: string, text: string, primary: boolean, press: (() => void) | undefined, focus = false) {
+    const disabled = c.pending() || !press;
+    return <Button testID={id} accessibilityLabel={text.replace(/\s+↵$/u, "")} disabled={disabled} onPress={press} ref={focus ? (node) => { node.focus(); } : undefined}
+      style={{ paddingHorizontal: space(12), paddingVertical: space(8), borderWidth: 1, borderColor: primary ? c.theme().palette.cyan : c.theme().palette.panel,
+        backgroundColor: primary ? c.theme().palette.panelActive : c.theme().palette.panel }} focusStyle={{ borderColor: c.theme().palette.focus }}>
+      <Text style={font(c, 11, disabled ? c.theme().palette.muted : primary ? c.theme().palette.cyan : c.theme().palette.muted)}>{text}</Text>
+    </Button>;
+  }
+  return <>{c.prompt() && <Dialog testID="remote-prompt" animation="none" closeOnBackdropPress={false} closeOnEscape={!c.pending()} onOpen={focusFirst}
     onOpenChange={(open) => { if (!open) c.close(); }} backdropStyle={{ backgroundColor: "#00000070" }}
-    style={{ width: 480, maxWidth: "95%", padding: 18, gap: 10, backgroundColor: c.theme().palette.panel, borderRadius: 10 }}>
-    <Text style={font(c, 14)}>{title()}</Text>
-    {c.paired() ? <>
-      <Text testID="remote-pairing-mask" style={font(c, 11, c.theme().palette.cyan)}>{c.paired()!.masked}</Text>
-      <Text style={font(c, 10, c.theme().palette.muted)}>Paste it on the other Mac under Settings → Remote → Add host. It works once, for about ten minutes, and is not saved here. Add the new route to your relay's routes file and restart the relay before using it.</Text>
-      <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: 8 }}>
-        <Button testID="remote-copy-link" ref={(node) => { node.focus(); }} disabled={c.pending()} onPress={() => void c.copy()}><Text style={font(c)}>{c.copied() ? "Copied" : "Copy link"}</Text></Button>
-        {action(c, "remote-done", "Done  ↵", c.pending() ? undefined : c.close)}
-      </View>
-    </> : <>
-      {c.prompt()!.kind === "add" && <>
-        <Text style={font(c, 10, c.theme().palette.muted)}>Pairing link</Text>
-        <Input testID="remote-pairing-link" accessibilityLabel="Pairing link" masked={true} autoFocus={true} value={c.link()} readonly={c.pending()} placeholder="Paste the link (⌘V)" ref={(node) => { first = node; }} onChange={(value) => c.link.set(value)} onSubmit={() => void c.submit()} style={inputStyle()} />
+    style={{ width: space(480), maxWidth: "95%", padding: space(18), gap: space(14), backgroundColor: c.theme().palette.panel, borderWidth: 1, borderColor: c.theme().palette.magenta }}>
+    <Text style={font(c, 11, c.theme().palette.cyan)}>{title()}</Text>
+    <Text style={font(c, 10, c.theme().palette.muted)}>{PROMPT_DESCRIPTION[c.paired() ? "paired" : kind()]}</Text>
+    {c.paired() ? <Text testID="remote-pairing-mask" numberOfLines={1} style={{ ...font(c, 11, c.theme().palette.cyan), padding: space(10), backgroundColor: c.theme().palette.bg, borderWidth: 1, borderColor: c.theme().palette.divider }}>{c.paired()!.masked}</Text> : <>
+      {kind() === "add" && <>
+        {field(0, "remote-pairing-link", "Pairing link", "Paste the link (⌘V)", c.link, (value) => c.link.set(value), true)}
+        {field(1, "remote-prompt-name", "Name (optional)", "How this Mac is shown here", c.name, (value) => c.name.set(value))}
       </>}
-      <Text style={font(c, 10, c.theme().palette.muted)}>{c.prompt()!.kind === "add" ? "Name (optional)" : c.prompt()!.kind === "pair" ? "Name of the other Mac" : "Project name"}</Text>
-      <Input testID="remote-prompt-name" accessibilityLabel={c.prompt()!.kind === "add" ? "Name (optional)" : c.prompt()!.kind === "pair" ? "Name of the other Mac" : "Project name"} value={c.name()} readonly={c.pending()}
-        autoFocus={c.prompt()!.kind !== "add"} ref={(node) => { if (c.prompt()?.kind !== "add") first = node; }} onChange={(value) => c.name.set(value)} onSubmit={() => void c.submit()} style={inputStyle()} />
-      {c.prompt()!.kind === "pair" && <>
-        <Text style={font(c, 10, c.theme().palette.muted)}>Relay</Text>
-        <Input testID="remote-prompt-relay" accessibilityLabel="Relay" placeholder="wss://relay.example.com/v1/ws" value={c.relay()} readonly={c.pending()} onChange={(value) => c.relay.set(value)} onSubmit={() => void c.submit()} style={inputStyle()} />
-        <Text style={font(c, 10, c.theme().palette.muted)}>Routes file</Text>
-        <Input testID="remote-prompt-routes" accessibilityLabel="Routes file" value={c.routes()} readonly={c.pending()} onChange={(value) => c.routes.set(value)} onSubmit={() => void c.submit()} style={inputStyle()} />
+      {kind() === "pair" && <>
+        {field(0, "remote-prompt-name", "Name of the other Mac", "MacBook", c.name, (value) => c.name.set(value))}
+        {field(1, "remote-prompt-relay", "Relay", "wss://relay.example.com/v1/ws", c.relay, (value) => c.relay.set(value))}
+        {field(2, "remote-prompt-routes", "Relay routes file", "relay-routes.json", c.routes, (value) => c.routes.set(value))}
       </>}
-      {c.error() && <Text testID="remote-prompt-error" style={font(c, 10, c.theme().palette.gold)}>{c.error()}</Text>}
-      <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: 8 }}>
-        {action(c, "remote-cancel", "Cancel", c.pending() ? undefined : c.close)}
-        {action(c, "remote-submit", c.pending() ? c.prompt()!.kind === "pair" ? "Making a pairing link…" : c.prompt()!.kind === "add" ? "Pairing…" : "Creating…" : c.prompt()!.kind === "pair" ? "Make link" : c.prompt()!.kind === "add" ? "Add host" : "Create project", c.pending() ? undefined : () => void c.submit())}
-      </View>
+      {kind() === "project" && field(0, "remote-prompt-name", "Project name", "My App", c.name, (value) => c.name.set(value))}
     </>}
+    {c.pending() && !c.paired() && <Text testID="remote-prompt-busy" style={font(c, 11, c.theme().palette.cyan)}>{kind() === "pair" ? "Making a pairing link…" : "Pairing…"}</Text>}
+    {c.error() && <Text testID="remote-prompt-error" style={font(c, 11, c.theme().palette.gold)}>{c.error()}</Text>}
+    <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: space(10) }}>
+      {c.paired() ? <>
+        {button("remote-copy-link", c.copied() ? "Copied" : "Copy link", false, () => void c.copy(), true)}
+        {button("remote-done", "Done  ↵", true, c.close)}
+      </> : <>
+        {button("remote-cancel", "Cancel", false, c.close)}
+        {button("remote-submit", kind() === "pair" ? "Make link  ↵" : kind() === "add" ? "Add host  ↵" : "Create  ↵", true, () => void c.submit())}
+      </>}
+    </View>
   </Dialog>}</>;
 }
 
-/** Optional remote terminal chrome; native reattach is injected by its owner. */
+/** Optional remote terminal chrome; native reattach is injected by its owner.
+ * Above (never over) the terminal, as GPUI's remote_strip draws it. */
 export function RemoteStrip(props: { label: string; link: RemoteHostLink; ended: boolean; onReconnect: () => void; theme?: () => InterfaceTheme }) {
   const theme = props.theme ?? (() => DEFAULT_THEME), strip = () => remoteStrip(props.label, props.link, props.ended);
-  return <>{strip() && <View testID="remote-terminal-strip" style={{ height: 24 * theme().scale, flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 10 * theme().scale }}>
-    <Text style={{ fontFamily: theme().family, fontSize: 10 * theme().scale, color: theme().palette[strip()!.tone] }}>{strip()!.text}</Text>
-    {strip()!.reconnect && <Button testID="remote-reconnect" accessibilityLabel="Reconnect remote session" onPress={props.onReconnect}><Text style={{ fontSize: 10 * theme().scale, color: theme().palette.magenta }}>Reconnect</Text></Button>}
+  const space = (value: number) => value * theme().scale, tone = () => theme().palette[strip()!.tone];
+  return <>{strip() && <View testID="remote-terminal-strip" style={{ flexShrink: 0, height: space(24), flexDirection: "row", alignItems: "center", gap: space(10), paddingHorizontal: space(10),
+    backgroundColor: theme().palette.panelActive, borderBottomWidth: 1, borderColor: tone() }}>
+    <Text numberOfLines={1} style={{ flex: 1, minWidth: 0, fontFamily: theme().family, fontSize: space(10), color: tone() }}>{strip()!.text}</Text>
+    {strip()!.reconnect && <Button testID="remote-reconnect" accessibilityLabel="Reconnect remote session" onPress={props.onReconnect}
+      style={{ paddingHorizontal: space(8), paddingVertical: space(2), borderWidth: 1, borderColor: theme().palette.divider }} hoverStyle={{ backgroundColor: theme().palette.divider }}>
+      <Text style={{ fontFamily: theme().family, fontSize: space(10), color: theme().palette.text }}>Reconnect</Text>
+    </Button>}
   </View>}</>;
 }
 

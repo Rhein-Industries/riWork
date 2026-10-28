@@ -7,6 +7,7 @@ use nsh_platform_macos::{
     ComponentContext, Components, NativeComponent, objc2::rc::Retained, objc2_app_kit::NSView,
 };
 use riwork_engine::{
+    remote_hosts::{self, RemoteCli},
     session_input::Input,
     sessions::{AttachOptions, SessionManager, quote_arg},
     terminal_drop,
@@ -17,7 +18,8 @@ use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
     ffi::{CStr, CString, c_char, c_void},
-    path::PathBuf,
+    path::{Path, PathBuf},
+    process::Command,
     rc::Rc,
     sync::{
         Arc, Mutex, OnceLock, Weak,
@@ -48,6 +50,7 @@ unsafe extern "C" {
     fn rw_terminal_abandon(view: *mut c_void);
     fn rw_terminal_detach_result(view: *mut c_void, confirmed: bool);
     fn rw_terminal_set_link(view: *mut c_void, json: *const c_char);
+    fn rw_terminal_paste_text(view: *mut c_void, text: *const c_char);
     fn rw_terminal_pending_count() -> usize;
     #[cfg(feature = "terminal-fixture")]
     fn rw_terminal_monotonic_ms() -> f64;
@@ -75,6 +78,37 @@ impl Target {
             None
         }
     }
+    fn valid(&self) -> bool {
+        match self {
+            Self::Local { shell_id } => uuid::Uuid::parse_str(shell_id).is_ok(),
+            Self::Remote {
+                desktop_id,
+                shell_id,
+            } => remote_id(desktop_id) && remote_id(shell_id),
+        }
+    }
+    /// What `active` holds while attached: a local shell id (a UUID), or
+    /// `remote:{desktop}:{shell}`, the key a remote tab saves under.
+    fn key(&self) -> String {
+        match self {
+            Self::Local { shell_id } => shell_id.clone(),
+            Self::Remote {
+                desktop_id,
+                shell_id,
+            } => format!("{REMOTE}{desktop_id}:{shell_id}"),
+        }
+    }
+}
+const REMOTE: &str = "remote:";
+fn remote_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 256
+        && !id
+            .chars()
+            .any(|c| c.is_control() || c.is_whitespace() || c == ':')
+}
+fn is_remote(active: &str) -> bool {
+    active.starts_with(REMOTE)
 }
 struct Model {
     target: Option<Target>,
@@ -131,6 +165,8 @@ struct State {
     link_busy: AtomicBool,
     link_cache: Mutex<Option<(u64, u64, Value)>>,
     link_pending: Mutex<Option<Value>>,
+    // When teardown first hung up a remote bridge; it is killed if it outlives 2 s.
+    hangup: Mutex<Option<Instant>>,
     images: Mutex<crate::images::Images>,
     model: Mutex<Model>,
 }
@@ -195,6 +231,7 @@ pub fn register(components: &Components, home: PathBuf) {
                 link_busy: AtomicBool::new(false),
                 link_cache: Mutex::new(None),
                 link_pending: Mutex::new(None),
+                hangup: Mutex::new(None),
                 model: Mutex::new(Model::default()),
             });
             let raw_context = Box::into_raw(Box::new(state.clone())).cast();
@@ -222,11 +259,7 @@ impl NativeComponent for Terminal {
             let mut m = self.state.model.lock().unwrap();
             match name {
                 "target" => match serde_json::from_value::<Target>(value) {
-                    Ok(target)
-                        if target
-                            .local()
-                            .is_none_or(|id| uuid::Uuid::parse_str(id).is_ok()) =>
-                    {
+                    Ok(target) if target.valid() => {
                         if m.target.as_ref() != Some(&target) {
                             if m.active.is_none() {
                                 release_claim(&self.state);
@@ -333,7 +366,10 @@ impl NativeComponent for Terminal {
                 m.exit_check_pending = false;
                 m.child_failures = 0;
                 m.retry_at = None;
-                let check_exit = m.child_exited && m.active.is_some();
+                // A remote bridge that exited is replaced by a new one; a local
+                // client's exit is first checked against its tmux session.
+                let remote = m.active.as_deref().is_some_and(is_remote);
+                let check_exit = m.child_exited && m.active.is_some() && !remote;
                 m.recreate = m.active.is_some() && !check_exit;
                 drop(m);
                 if check_exit {
@@ -418,6 +454,26 @@ fn request_input(state: Arc<State>, payload: Value) {
             emit(&state, "inputRefused", json!({"reason":reason}));
             return;
         }
+    }
+    let remote = {
+        let m = state.model.lock().unwrap();
+        m.active.as_deref().is_some_and(is_remote)
+            && state.alive.load(Ordering::Acquire)
+            && m.visible
+            && !m.frozen
+            && !m.closing
+            && !m.ended
+    };
+    if remote {
+        // As in the GPUI desktop: text goes to Ghostty's paste, which the bridge
+        // forwards to the host; dropped or copied files and pictures have no
+        // local shell to be given to, so nothing is pasted.
+        if let Pasted::Text { text } = input {
+            if let Ok(text) = cstr(text) {
+                unsafe { rw_terminal_paste_text(ptr(&state), text.as_ptr()) };
+            }
+        }
+        return;
     }
     let shell = {
         let m = state.model.lock().unwrap();
@@ -524,7 +580,7 @@ fn reconcile(state: Arc<State>) {
     if !state.alive.load(Ordering::Acquire) {
         return;
     }
-    let (shell, colors, generation, config_epoch) = {
+    let (target, shell, colors, generation, config_epoch) = {
         let mut m = state.model.lock().unwrap();
         if m.closing {
             return;
@@ -543,30 +599,24 @@ fn reconcile(state: Arc<State>) {
         let Some(target) = m.target.clone() else {
             return;
         };
-        let Some(shell) = target.local().map(str::to_owned) else {
-            m.failed = true;
-            drop(m);
-            status(
-                &state,
-                "failed",
-                Some("Remote terminals are deferred to the next slice.".into()),
-                None,
-            );
-            return;
-        };
-        let key = (state.home.clone(), shell.clone());
-        let mut owners = claims().lock().unwrap();
-        if owners.get(&key).is_some_and(|id| *id != state.id) {
-            drop(owners);
-            drop(m);
-            status(&state, "claimed", None, None);
-            return;
+        let shell = target.key();
+        // A local tmux session is shown by one surface at a time. Remote tabs
+        // each run their own bridge, as every GPUI window did.
+        if target.local().is_some() {
+            let key = (state.home.clone(), shell.clone());
+            let mut owners = claims().lock().unwrap();
+            if owners.get(&key).is_some_and(|id| *id != state.id) {
+                drop(owners);
+                drop(m);
+                status(&state, "claimed", None, None);
+                return;
+            }
+            owners.insert(key, state.id);
         }
-        owners.insert(key, state.id);
-        drop(owners);
         m.attaching = true;
         m.recreate = false;
         (
+            target,
             shell,
             m.colors.clone(),
             state.generation.load(Ordering::Acquire),
@@ -582,7 +632,13 @@ fn reconcile(state: Arc<State>) {
             {
                 return;
             }
-            result = prepare(&state, &shell, &colors);
+            result = match &target {
+                Target::Local { .. } => prepare(&state, &shell, &colors),
+                Target::Remote {
+                    desktop_id,
+                    shell_id,
+                } => prepare_remote(&state, desktop_id, shell_id, &colors),
+            };
             if result.is_ok() || result.as_ref().is_err_and(|e| e.starts_with("gone:")) {
                 break;
             }
@@ -735,6 +791,68 @@ fn prepare(
         config,
     ))
 }
+/// The command a remote tab's terminal runs: the bridge to one shell of one
+/// host, each argument shell-quoted. The bridge is the Ghostty child; the
+/// host's tmux client travels through it.
+fn remote_attach_command(binary: &Path, desktop_id: &str, shell_id: &str) -> String {
+    std::iter::once(binary.to_string_lossy().into_owned())
+        .chain(remote_hosts::attach_args(desktop_id, shell_id))
+        .map(|argument| quote_arg(&argument))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+/// Located again for every attach, so installing the companion while RiWork
+/// runs is enough. The bridge only needs a local directory that exists.
+fn prepare_remote(
+    state: &State,
+    desktop_id: &str,
+    shell_id: &str,
+    colors: &Colors,
+) -> Result<(CString, CString, ConfigFile), String> {
+    let cli = RemoteCli::locate()?;
+    let cwd = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|home| home.is_dir())
+        .unwrap_or_else(|| PathBuf::from("/"));
+    let config = ConfigFile::new(state, colors)?;
+    Ok((
+        cstr(remote_attach_command(cli.binary(), desktop_id, shell_id))?,
+        cstr(cwd.to_string_lossy())?,
+        config,
+    ))
+}
+/// Teardown of a remote tab: hang up the bridge on the surface's tty (it exits
+/// 129), never the shell on the host. One that outlives 2 s is killed.
+fn hang_up_bridge(state: &State, tty: &str) -> Result<(), String> {
+    let name = tty
+        .strip_prefix("/dev/")
+        .filter(|name| {
+            !name.is_empty()
+                && name.len() <= 64
+                && name
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || b"_-".contains(&c))
+        })
+        .ok_or("invalid terminal tty")?;
+    let signal = {
+        let mut first = state.hangup.lock().unwrap();
+        let started = *first.get_or_insert_with(Instant::now);
+        if started.elapsed() >= Duration::from_secs(2) {
+            "-KILL"
+        } else {
+            "-HUP"
+        }
+    };
+    let status = Command::new("/usr/bin/pkill")
+        .args([signal, "-t", name])
+        .status()
+        .map_err(|error| format!("cannot signal the remote bridge: {error}"))?;
+    // 1: nothing on that tty any more, which is what teardown waits for.
+    match status.code() {
+        Some(0 | 1) => Ok(()),
+        _ => Err(format!("cannot signal the remote bridge: {status}")),
+    }
+}
 fn update_config(state: Arc<State>) {
     let (colors, recreate) = {
         let m = state.model.lock().unwrap();
@@ -776,7 +894,11 @@ extern "C" fn on_detach(context: *mut c_void, view: *mut c_void, tty: *const c_c
         let result = shell
             .ok_or("missing terminal shell".to_owned())
             .and_then(|shell| {
-                SessionManager::at(state.home.clone())?.detach_terminal_client(&shell, &tty)
+                if is_remote(&shell) {
+                    hang_up_bridge(&state, &tty)
+                } else {
+                    SessionManager::at(state.home.clone())?.detach_terminal_client(&shell, &tty)
+                }
             });
         if let Err(error) = &result {
             eprintln!("riwork terminal parked: {error}");
@@ -794,8 +916,22 @@ extern "C" fn on_event(context: *mut c_void, name: *const c_char, data: *const c
     trace(&state, &name, value.clone());
     match name.as_ref() {
         "ready" => status(&state, "attached", None, None),
-        "ended" => check_child_exit(state),
+        "ended" => {
+            let remote = state
+                .model
+                .lock()
+                .unwrap()
+                .active
+                .as_deref()
+                .is_some_and(is_remote);
+            if remote {
+                remote_bridge_exit(&state);
+            } else {
+                check_child_exit(state);
+            }
+        }
         "disposed" => {
+            *state.hangup.lock().unwrap() = None;
             let mut m = state.model.lock().unwrap();
             m.active = None;
             m.closing = false;
@@ -820,6 +956,23 @@ extern "C" fn on_event(context: *mut c_void, name: *const c_char, data: *const c
         "linkHit" => resolve_link(state, value),
         _ => {}
     }
+}
+
+/// A remote tab ends when its bridge exits, whatever the reason: the shell
+/// ended on the host, the stream closed, or the client daemon never answered.
+/// The last screen stays under the strip until Reconnect replaces the bridge.
+fn remote_bridge_exit(state: &State) {
+    let mut m = state.model.lock().unwrap();
+    if m.closing || m.ended || m.active.is_none() {
+        return;
+    }
+    m.child_exited = true;
+    m.ended = true;
+    m.failed = false;
+    m.recreate = false;
+    m.retry_at = None;
+    drop(m);
+    status(state, "ended", None, None);
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -944,6 +1097,52 @@ fn check_child_exit(state: Arc<State>) {
             status(&state, phase, message, attempts);
         });
     });
+}
+
+#[cfg(test)]
+mod remote_tests {
+    use super::{Target, remote_attach_command};
+    use std::path::Path;
+
+    #[test]
+    fn the_bridge_command_is_quoted_and_names_the_host_and_shell() {
+        assert_eq!(
+            remote_attach_command(
+                Path::new("/Applications/My App/riwork-remote"),
+                "h-1",
+                "s-1"
+            ),
+            "'/Applications/My App/riwork-remote' attach --desktop h-1 --shell s-1"
+        );
+        assert_eq!(
+            remote_attach_command(Path::new("/opt/riwork-remote"), "h", "it's"),
+            "/opt/riwork-remote attach --desktop h --shell 'it'\\''s'"
+        );
+    }
+
+    #[test]
+    fn remote_targets_are_keyed_like_their_saved_tab_and_validated() {
+        let target = Target::Remote {
+            desktop_id: "host-1".into(),
+            shell_id: "shell-9".into(),
+        };
+        assert!(target.valid());
+        assert_eq!(target.key(), "remote:host-1:shell-9");
+        assert_eq!(target.local(), None);
+        for (desktop_id, shell_id) in [("", "s"), ("h:x", "s"), ("h", "s 1"), ("h", "s\n")] {
+            let target = Target::Remote {
+                desktop_id: desktop_id.into(),
+                shell_id: shell_id.into(),
+            };
+            assert!(!target.valid(), "{desktop_id:?} {shell_id:?}");
+        }
+        assert!(
+            !Target::Local {
+                shell_id: "remote:h:s".into()
+            }
+            .valid()
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1191,7 +1390,7 @@ fn fixture_snapshot_inner(include_trace: bool) -> Value {
     let list=states().lock().unwrap().iter().filter_map(Weak::upgrade).map(|s| {
         let m=s.model.lock().unwrap();
         let window=if s.alive.load(Ordering::Acquire) {unsafe {&*(ptr(&s).cast::<NSView>())}.window().map(|w|w.windowNumber())} else {None};
-        json!({"id":s.id,"shellId":m.active,"target":m.target.as_ref().and_then(Target::local),"active":m.active.is_some(),"closing":m.closing,"attaching":m.attaching,"visible":m.visible,"pinned":m.pinned,"frozen":m.frozen,"ended":m.ended,"childExited":m.child_exited,"hiddenForMs":m.hidden.elapsed().as_millis() as u64,"alive":s.alive.load(Ordering::Acquire),"windowNumber":window})
+        json!({"id":s.id,"shellId":m.active,"target":m.target.as_ref().map(Target::key),"active":m.active.is_some(),"closing":m.closing,"attaching":m.attaching,"visible":m.visible,"pinned":m.pinned,"frozen":m.frozen,"ended":m.ended,"childExited":m.child_exited,"hiddenForMs":m.hidden.elapsed().as_millis() as u64,"alive":s.alive.load(Ordering::Acquire),"windowNumber":window})
     }).collect::<Vec<_>>();
     {
         let mut result = json!({"states":list,"pending":pending_count()});

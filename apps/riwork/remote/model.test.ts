@@ -2,7 +2,7 @@ import { expect, test } from "nsh/test";
 import {
   EMPTY_REMOTE, checkPairingLink, filteredFolders, linkPresentation, maskedPairingLink,
   projectConnectionNote, projectNameError, remoteLocalOnly, remotePanelUnavailable,
-  remoteProjectKey, remoteStrip, remoteTitle, removalConfirmation, shellOpenRefusal, singleFlight,
+  remoteProjectKey, remoteStrip, remoteTabTitle, remoteTitle, removalConfirmation, shellOpenRefusal, singleFlight, splitRemoteTitle,
   type RemoteLists, type RemoteShell, type RemoteSnapshot,
 } from "./model";
 
@@ -93,4 +93,15 @@ test("P6B-REMOTE-MODEL-08 delayed and failed mutations are single-flight and nev
   release!(); expect(await first).toEqual({ accepted: true, value: "first" });
   try { await gate.run(async () => { calls++; throw new Error("fixture timeout; outcome unknown"); }); } catch {}
   expect(calls).toBe(2); expect(gate.pending()).toBe(false);
+});
+
+test("2CB-REMOTE-TITLE-01 tab titles come from the native tree and split back into the host mark", () => {
+  const key = "remote:fake-mac:0123456789abcdef";
+  expect(remoteTabTitle(data, key)).toBe("⇄ Fixture Mac · 01234567");
+  expect(remoteTabTitle({ ...data, hosts: [], folders: [] }, key)).toBe("⇄ fake-mac · 01234567");
+  const titled = { ...data, titles: [{ key, title: "⇄ Fixture Mac · orchestrator (codex) · 01234567" }] };
+  expect(remoteTabTitle(titled, key)).toBe("⇄ Fixture Mac · orchestrator (codex) · 01234567");
+  expect(splitRemoteTitle(remoteTabTitle(titled, key))).toEqual(["⇄ Fixture Mac · ", "orchestrator (codex) · 01234567"]);
+  expect(splitRemoteTitle("Shell 1")).toBe(null);
+  expect(splitRemoteTitle("⇄ no separator")).toBe(null);
 });

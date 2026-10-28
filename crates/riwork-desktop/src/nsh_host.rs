@@ -1603,6 +1603,16 @@ fn recorded_runtime(
     runtime
 }
 
+/// The first window of an ordinary (not restored) launch: the folder asked
+/// for, else the remote project the last window selected, else the default.
+fn ordinary_start(path: Option<PathBuf>, remote: Option<String>) -> OpenOptions {
+    let mut options = OpenOptions::project(path);
+    if options.path.is_none() {
+        options.project_id = remote.filter(|key| riwork_nsh_workspace::remote::is_project(key));
+    }
+    options
+}
+
 /// A window a reload hands over. The global window reopens as itself and
 /// shows the handed-over view.
 fn restored_window(home: &Path, runtime: &RuntimeWindow) -> PreparedWindow {
@@ -1848,13 +1858,18 @@ fn startup(args: Vec<String>) -> Result<Option<Startup>, String> {
             .map(|runtime| restored_window(&home, runtime))
             .collect()
     } else {
-        let first = match prepare(&home, OpenOptions::project(path.clone())) {
+        // As GPUI's open_startup_window: a folder argument chooses this Mac and
+        // clears the remote record; a plain launch reopens the remote project the
+        // last window selected, if any.
+        let remote = native::remote::launch_selection(path.is_some());
+        let first = match prepare(&home, ordinary_start(path.clone(), remote.clone())) {
             Ok(window) => window,
             Err(error) if path.is_some() => {
                 let mut window = prepare(&home, OpenOptions::project(None))?;
                 window.notice = Some(error);
                 window
             }
+            Err(_) if remote.is_some() => prepare(&home, OpenOptions::project(None))?,
             Err(error) => return Err(error),
         };
         vec![first]

@@ -933,6 +933,11 @@ void rw_terminal_set_link(void *raw, const char *json) {
     [view diagnostic:@"link-resolved" fields:@{@"requestId":@(view->hoverRequest), @"spans":@(rows.count)}];
     [(rows.count && linkGesture(view->lastModifiers) ? NSCursor.pointingHandCursor : view->terminalCursor) set];
 }
+void rw_terminal_paste_text(void *raw, const char *text) {
+    assertMainThread(); RWTerminalView *view = raw;
+    if (!text || ![view allowsInput]) return;
+    ghostty_surface_text(view->surface, text, strlen(text));
+}
 void rw_terminal_detach_result(void *raw, bool confirmed) {
     assertMainThread(); RWTerminalView *view = raw;
     if (!view->closing || !view->detachInFlight) return;

@@ -106,3 +106,35 @@ test("P6B-REMOTE-UI-05 an unrelated layout delivery does not close/reopen the re
     expect(after.closed).toBe(before.closed);
   } finally { app.dispose(); }
 });
+
+test("2CB-REMOTE-UI-06 a new remote project closes the prompt at once, is made in the background and never switches", async () => {
+  const app = await open("./Remote.fixture.tsx", options);
+  try {
+    await app.waitFor("id:remote-new-project-disposable-mac");
+    await app.press("id:remote-new-project-disposable-mac");
+    await app.waitFor("id:remote-prompt-name");
+    expect(app.texts()).toContain("The project is made in the host's default projects folder.");
+    expect(app.texts()).toContain("Create  ↵");
+    await app.host.send("app.fixture.remote.hold", {});
+    await app.type("id:remote-prompt-name", "Fixture app");
+    await app.submit("id:remote-prompt-name");
+    await app.waitUntil(() => !app.shows("id:remote-prompt"));
+    const before = await inspect(app);
+    expect(before.calls).toEqual(["project:Fixture app"]);
+    expect(before.frozen).toBe(false);
+    expect(before.notices).toEqual([]);
+    await app.host.send("app.fixture.remote.release", {});
+    for (let turn = 0; turn < 40 && !(await inspect(app)).notices.includes("Created Fixture app"); turn++) await app.wait(25);
+    expect((await inspect(app)).notices).toEqual(["Created Fixture app"]);
+    expect((await inspect(app)).actions.some((action) => action.startsWith("select:"))).toBe(false);
+  } finally { app.dispose(); }
+});
+
+test("2CB-REMOTE-UI-07 unavailable panels say what and why, centered, as GPUI", async () => {
+  const app = await open("./Remote.fixture.tsx", options);
+  try {
+    await app.waitFor("id:remote-unavailable-files");
+    expect(app.texts()).toContain("Not available for a project on Disposable Mac");
+    expect(app.texts()).toContain("Files works with this Mac's own projects. Select one of them to use it.");
+  } finally { app.dispose(); }
+});

@@ -4,10 +4,13 @@ import { remoteProjectKey, shellOpenRefusal, type RemoteShell, type RemoteSnapsh
 
 /** Only existing engine operations. No transport, local shell API or retry lives here. */
 export interface WorkspaceRemoteApi {
+  /** `unrestricted` is decided natively from this Mac's setting, read at request time. */
   createShell(request: { projectKey: string; worktreeId: string | null; kind: string; unrestricted: boolean }): Promise<RemoteShell>;
   clickWorktree(key: string, worktree: string, openTabs: string[]): Promise<{ action: string; shellId: string | null; shell: RemoteShell | null }>;
-  orchestrators(host: string): Promise<RemoteShell[]>;
+  /** The live project orchestrator if listed, else the host is asked once. */
+  orchestrator(key: string): Promise<{ shell: RemoteShell | null; notice: string | null }>;
 }
+const reason = (error: unknown) => String(error).replace(/^(?:Error: )?(?:invalid|io|refused|broken|unavailable|conflict): /u, "");
 export function workspaceRemote(options: {
   api: WorkspaceRemoteApi;
   session: Pick<LayoutSession, "openRemoteShell" | "selectPane" | "selectPanel">;
@@ -25,12 +28,15 @@ export function workspaceRemote(options: {
   const lists = () => options.data().projects.find((project) => project.key === options.projectId());
   const current = (project: string, generation: number) => options.alive() && options.projectId() === project && options.generation() === generation;
   const creating = new Set<string>();
+  // An open tab is brought up before anything else, even if its shell has ended
+  // or is a chat on the host since; only a new tab is refused for those.
   function open(host: string, shell: RemoteShell) {
-    const label = options.data().hosts.find((row) => row.id === host)?.label ?? host.slice(0, 8);
-    const refusal = shellOpenRefusal(shell, label);
+    const key = `remote:${host}:${shell.id}`;
+    const label = options.data().hosts.find((row) => row.id === host)?.label ?? "the host";
+    const refusal = options.snapshot().panes.some((pane) => pane.tabs.some((tab) => tab.id === key)) ? null : shellOpenRefusal(shell, label);
     if (refusal) { options.notice(refusal); return; }
     options.install(options.session.openRemoteShell(host, shell.id));
-    options.focus(`remote:${host}:${shell.id}`);
+    options.focus(key);
   }
   // Record the destination pane before dispatch. If it closed, core chooses the
   // ordinary new-tab pane. The engine settles every result even after a switch.
@@ -43,6 +49,10 @@ export function workspaceRemote(options: {
       if (!current(project, generation)) return;
       if (options.snapshot().panes.some((entry) => entry.id === pane)) options.install(options.session.selectPane(pane));
       open(remote.host, shell);
+    } catch (error) {
+      // Another window's creation for this project is running: nothing is sent
+      // and nothing is said, as GPUI. Otherwise the notice is the error's message.
+      if (!String(error).includes("conflict:") && current(project, generation)) options.notice(reason(error));
     } finally { creating.delete(project); }
   }
   async function worktree(id: string) {
@@ -57,13 +67,10 @@ export function workspaceRemote(options: {
   }
   async function orchestrator() {
     const project = options.projectId(), generation = options.generation(), remote = parts(); if (!remote) return;
-    const known = lists()?.shells.find((shell) => shell.orchestrator && shell.projectId === remote.project);
-    if (known) { open(remote.host, known); return; }
-    const rows = await options.api.orchestrators(remote.host);
+    const found = await options.api.orchestrator(project);
     if (!current(project, generation)) return;
-    const found = rows.find((shell) => shell.orchestrator && shell.projectId === remote.project);
-    if (found) open(remote.host, found);
-    else options.notice(`${lists()?.hostLabel ?? remote.host.slice(0, 8)} has no project orchestrator running`);
+    if (found.shell) open(remote.host, found.shell);
+    else if (found.notice) options.notice(found.notice);
   }
   return { open, create, worktree, orchestrator };
 }
