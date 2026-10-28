@@ -17,6 +17,7 @@ import {
 import { DEFAULT_THEME, space, type InterfaceTheme } from "./appearance";
 import { StatusBar } from "./StatusBar";
 import { ChatTab } from "./chat/ChatTab";
+import { createFilesController, FilesPanel, PreviewPanel, MemoEditor } from "./Files";
 
 type Extent = { width: number; height: number };
 interface WorkspaceProps {
@@ -132,6 +133,34 @@ export function Workspace(props: WorkspaceProps) {
     selectTask: (id) => { try { session.setSelectedTask(id); snapshot.set(session.snapshot() as WorkspaceSnapshot); } catch (error) { notice.set(String(error)); } },
     switchProject: (project) => switchTo(project.id),
   });
+  function filesRoot() {
+    if (snapshot().remoteProject || !panelState.loaded()) return null;
+    const treeId = panelState.selectedWorktree();
+    if (treeId) {
+      const tree = panelState.state().worktrees.find((tree) => tree.id === treeId && tree.projectId === projectId());
+      return tree?.present ? tree.path : null;
+    }
+    return panelState.state().projects.find((project) => project.id === projectId())?.root ?? null;
+  }
+  const fileState = createFilesController({
+    root: filesRoot,
+    label: () => {
+      const tree = panelState.state().worktrees.find((tree) => tree.id === panelState.selectedWorktree() && tree.projectId === projectId());
+      return tree ? `${panelState.projectLabel()} · ${tree.branch}` : panelState.projectLabel();
+    },
+    theme,
+    visible: () => isVisible("panel:files") || isVisible("panel:preview"),
+    active: () => {
+      if (closing() || renaming() || vimDialog() || switching() || panelState.editor()) return null;
+      const id = activePane(snapshot())?.activeTab;
+      return id === "panel:files" ? "files" : id === "panel:preview" ? "preview" : null;
+    },
+    previewRequested: (asked) => action(() => session.revealPanel("preview", !!asked, !!asked || (props.settings?.()?.openPreviewOnSelect ?? true))),
+    edit: (entry, line) => openEditor(entry.path, line, undefined, entry.identity),
+    open: async (entry) => { await host.call("system.openWith", { path: entry.path }); },
+    reveal: async (path) => { await host.call("system.revealInFinder", { path }); },
+    closePreview: () => action(() => session.closePanel("panel:preview", false)),
+  });
   effect(() => updateTitle(panelState.state().projects.some((project) => project.id === projectId()) ? windowTitle(panelState.projectLabel()) : props.title));
   // The Dock label waits for stored project names and follows project switches.
   const updateDock = createDockUpdater((info) => host.post("window.setDockInfo", info));
@@ -139,6 +168,19 @@ export function Workspace(props: WorkspaceProps) {
 
   const shared = () => Array.isArray(snapshot().sharedTabs) && !snapshot().remoteProject;
   const selected = () => activePane(snapshot())?.activeTab;
+  let followedShell: string | undefined;
+  effect(() => {
+    const id = selected();
+    const shell = id?.startsWith("shell:") ? panelState.shells().find((shell) => shell.id === id.slice(6) && shell.projectId === projectId()) : undefined;
+    const key = shell ? `${projectId()}:${shell.id}:${shell.cwd}` : undefined;
+    if (key === followedShell) return;
+    followedShell = key;
+    if (!shell) return;
+    const tree = panelState.state().worktrees.filter((tree) => tree.projectId === projectId() &&
+      (shell.cwd === tree.path || shell.cwd.startsWith(`${tree.path}/`))).sort((a, b) => b.path.length - a.path.length)[0];
+    const next = tree?.id ?? shell.worktreeId;
+    if (next && next !== panelState.selectedWorktree()) panelState.selectWorktree(next);
+  });
   const modal = () => !!closing() || !!renaming() || vimDialog();
   const frozen = () => modal() || menuOpen() || dragging() || allTabs();
   const ordered = () => stripTabs(snapshot());
@@ -235,14 +277,14 @@ export function Workspace(props: WorkspaceProps) {
     } catch (error) { if (alive) notice.set(String(error)); }
     finally { if (alive) busy.set(false); thaw(); }
   }
-  async function openEditor(path: string, line?: number, worktreeId?: string) {
+  async function openEditor(path: string, line?: number, worktreeId?: string, identity?: string) {
     if (busy() || switching() || modal()) return;
     busy.set(true);
     const project = projectId(), generation = panelState.generation();
     const selectedTree = panelState.selectedWorktree();
     const tree = worktreeId ?? selectedTree ?? undefined;
     try {
-      const shell = await Sessions.openEditor({ projectId: project, worktreeId: tree, path, line });
+      const shell = await Sessions.openEditor({ projectId: project, worktreeId: tree, path, line, identity });
       if (alive && projectId() === project && generation === panelState.generation() && selectedTree === panelState.selectedWorktree()) {
         install(session.openEditorShell(shell.id)); pendingFocus.set(shell.id);
       } else if (alive && projectId() === project) {
@@ -268,11 +310,22 @@ export function Workspace(props: WorkspaceProps) {
       else if (id === "findClose") terminal.findClose();
       return true;
     }
-    if (id === "find" && active) { panelState.searches.get(active)?.focus(); return true; }
+    if (id === "find" && active) {
+      if (active === "panel:files" || active === "panel:preview") fileState.searches.get("panel:files")?.focus();
+      else panelState.searches.get(active)?.focus();
+      return true;
+    }
     return false;
   }
   function openLink(event: TerminalEvents["linkOpen"]) {
     if (event.action === "edit" && event.kind === "file") { void openEditor(event.target, event.line); return; }
+    const root = filesRoot();
+    if (root && (event.target === root || event.target.startsWith(`${root}/`))) {
+      if (event.kind === "folder") action(() => session.revealPanel("files", true, true));
+      else action(() => session.revealPanel("preview", true, true));
+      void fileState.reveal(event.target, event.line);
+      return;
+    }
     const call = event.kind === "folder" ? "system.revealInFinder" : "system.openWith";
     void host.call(call, { path: event.target }).catch((error: unknown) => notice.set(String(error)));
   }
@@ -535,6 +588,7 @@ export function Workspace(props: WorkspaceProps) {
     },
     escape: () => {
       if (modal()) { closing.set(null); renaming.set(null); vimDialog.set(false); thaw(); return; }
+      if (selected() === "panel:preview") { fileState.clearPreview(); fileState.closePreview?.(); return; }
       const terminal = selected() ? terminalControls.get(selected()!) : undefined;
       if (terminal?.finding()) { terminal.findClose(); return; }
       if (allTabs()) allTabs.set(false);
@@ -558,6 +612,7 @@ export function Workspace(props: WorkspaceProps) {
     }
     else if ((step?.kind ?? step?.type) === "newSubshell") void createSubshell(step?.parentShellId);
     else if ((step?.kind ?? step?.type) === "openEditor" && step?.path) void openEditor(step.path, step.line, step.worktreeId);
+    else if ((step?.kind ?? step?.type) === "projectMemo") action(() => session.openPanel("project_settings"));
   }));
   cleanup(host.on("project.open", (data) => {
     void switchTo((data as { projectId: string }).projectId).catch((error: unknown) => notice.set(String(error)));
@@ -692,6 +747,12 @@ export function Workspace(props: WorkspaceProps) {
               {panel.id.startsWith("panel:") && NAVIGATION_PANELS.includes(panel.id.slice(6)) ?
                 <View testID={`panel:${panel.id}`} style={{ flex: 1, minHeight: 0 }}>
                   <PanelContent controller={panelState} panel={panel.id.slice(6)} surface={panel.id} />
+                </View> : panel.id === "panel:files" || panel.id === "panel:preview" || panel.id === "panel:project_settings" ?
+                <View testID={`panel:${panel.id}`} style={{ flex: 1, minHeight: 0 }}>
+                  {props.diagnostics && <MountProbe id={panel.id} visible={isVisible(panel.id)} theme={theme} />}
+                  {panel.id === "panel:files" ? <FilesPanel controller={fileState} surface={panel.id} /> :
+                    panel.id === "panel:preview" ? <PreviewPanel controller={fileState} /> :
+                    <MemoEditor projectId={projectId} theme={theme} visible={() => isVisible(panel.id)} />}
                 </View> : panel.id.startsWith("shell:") ?
                 <View testID={`panel:${panel.id}`} style={{ flex: 1, minHeight: 0 }}>
                   {props.diagnostics && <MountProbe id={panel.id} visible={isVisible(panel.id)} theme={theme} />}
@@ -719,7 +780,7 @@ export function Workspace(props: WorkspaceProps) {
       </View>
       <WindowChrome state={chrome} panes={chromePanes()} />
       <View testID="panel-toolbar" style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: space(8, theme().scale), paddingVertical: space(4, theme().scale), gap: 6, backgroundColor: theme().palette.panel }}>
-        {(["projects", "worktrees", "tasks", "shells"] as const).map((id) => <Button testID={`show-panel:${id}`} accessibilityLabel={`Show ${id === "shells" ? "Sessions" : id}`} disabled={switching()} onPress={() => action(() => session.openPanel(id))} style={{ paddingHorizontal: space(8, theme().scale), paddingVertical: space(4, theme().scale), borderRadius: 4 }} hoverStyle={{ backgroundColor: theme().palette.panelActive }} focusStyle={{ backgroundColor: theme().palette.divider }}>
+        {(["projects", "files", "worktrees", "tasks", "shells"] as const).map((id) => <Button testID={`show-panel:${id}`} accessibilityLabel={`Show ${id === "shells" ? "Sessions" : id}`} disabled={switching()} onPress={() => action(() => session.openPanel(id))} style={{ paddingHorizontal: space(8, theme().scale), paddingVertical: space(4, theme().scale), borderRadius: 4 }} hoverStyle={{ backgroundColor: theme().palette.panelActive }} focusStyle={{ backgroundColor: theme().palette.divider }}>
           <Text style={textStyle()}>{label(id === "shells" ? "Sessions" : id.charAt(0).toUpperCase() + id.slice(1))}</Text>
         </Button>)}
         <View style={{ flex: 1 }} />

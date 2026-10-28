@@ -6,6 +6,7 @@ p1-basic/p1-restore generator. Commands, environment, output and hashes are kept
 in phase1_integration.Verification manifests. No installation or live state.
 """
 import argparse
+import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -138,7 +139,10 @@ def fixture(v):
         after = inventory()
         changed = sorted(p for p in after if before.get(p) != after[p])
         allowed = {"layouts.json", "layouts.lock", "global-window.json", "settings.json", "state.json", "run/desktop.lock"}
-        bad = [p for p in changed if p not in allowed
+        # Phase 5 (GLB-05, accepted): a dashboard/global read takes the engine's schedule
+        # ledger lock as `riwork dashboard` does; only an empty schedules.lock is allowed.
+        empty_lock = lambda p: p == "schedules.lock" and after[p]["sha256"] == hashlib.sha256(b"").hexdigest()
+        bad = [p for p in changed if p not in allowed and not empty_lock(p)
                and not p.startswith(("project-tabs/", "nsh/"))
                and not (p.startswith("layouts.corrupt-") and p.endswith(".json") and "/" not in p)]
         removed = sorted(set(before) - set(after))

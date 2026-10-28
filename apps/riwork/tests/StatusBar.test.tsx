@@ -13,16 +13,20 @@ test("P1-STAT-01: default kinds, order, sides and master visibility reach both w
       expect(app.shows(`id:status-right >> id:status-item-${kind}`)).toBe(true);
     }
     expect(app.shows("id:status-right >> id:top-orchestrator")).toBe(true);
+    // Files now also names the project. Assert each status label in its own
+    // surface, then compare the final status-bar sequence after panel content.
     // P5: the fixture backend's system default (no saved list, no figures).
-    const shown = ["Project Alpha", "0 LIVE", "CPU — RAM —", "CODEX · System default · UNAVAILABLE", "DEFAULT (APP) · System default · email unknown", "Global", "P·ORCH", "Layout"];
-    expect(app.texts().filter((text) => shown.includes(text))).toEqual(shown);
+    const labels = ["Project Alpha", "0 LIVE", "CPU — RAM —", "CODEX · System default · UNAVAILABLE", "DEFAULT (APP) · System default · email unknown", "Global", "P·ORCH", "Layout"];
+    for (const text of labels) expect(app.count(`id:status-bar >> text:${text}`)).toBe(1);
+    const defaults = app.texts().filter((text) => labels.includes(text)).slice(-labels.length);
+    expect(defaults).toEqual(labels);
     await statusEdit(app, { action: "visible", kind: "worktree", value: true });
     await statusEdit(app, { action: "side", kind: "layout", side: "left" });
     for (let step = 0; step < 3; step++) await statusEdit(app, { action: "move", kind: "layout", value: true });
     await peer.waitFor("id:status-left >> id:status-item-layout");
     expect(app.shows("id:status-left >> id:status-item-worktree")).toBe(true);
     expect(peer.shows("id:status-item-worktree")).toBe(true);
-    expect(app.texts().filter((text) => ["Layout", "Project Alpha", "No worktree"].includes(text))).toEqual(["Layout", "Project Alpha", "No worktree"]);
+    expect(app.texts().filter((text) => ["Layout", "Project Alpha", "No worktree"].includes(text)).slice(-3)).toEqual(["Layout", "Project Alpha", "No worktree"]);
     await statusEdit(app, { action: "enabled", value: false });
     await peer.waitUntil(() => !peer.shows("id:status-bar"));
     expect(app.shows("id:status-bar")).toBe(false);

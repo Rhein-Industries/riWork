@@ -953,7 +953,8 @@ async fn subshell_and_vim_mutations_validate_before_backend_and_publish_inventor
                 project_id: project.into(),
                 worktree_id: None,
                 path: String::new(),
-                line: None
+                line: None,
+                identity: None,
             })
             .await
             .unwrap_err()
@@ -980,6 +981,7 @@ async fn subshell_and_vim_mutations_validate_before_backend_and_publish_inventor
             worktree_id: None,
             path: "/fixture/a spaced 🦀 file.txt".into(),
             line: Some(4),
+            identity: None,
         })
         .await
         .unwrap();

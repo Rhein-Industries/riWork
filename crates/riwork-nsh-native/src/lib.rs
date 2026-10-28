@@ -9,8 +9,10 @@ pub mod backend;
 pub mod chat;
 pub mod dashboard;
 pub mod dto;
+pub mod files;
 pub mod host_flush;
 pub mod hub;
+mod memo;
 pub mod orchestrators;
 pub mod overview;
 mod presence;
@@ -26,8 +28,8 @@ use nsh_core::{element::Cleanup, prelude::*};
 
 use dto::{
     CreateSessionRequest, CreateSubshellRequest, FolderDto, OpenEditorRequest, ProjectDto,
-    ProjectInspectionDto, ProjectRequest, SearchHitDto, SessionsSnapshot, ShellSessionDto,
-    StoreState, TabUpdate, TabsSnapshot, TaskDto, WorktreeDto,
+    ProjectInspectionDto, ProjectMemoDto, ProjectRequest, SearchHitDto, SessionsSnapshot,
+    ShellSessionDto, StoreState, TabUpdate, TabsSnapshot, TaskDto, WorktreeDto,
 };
 use hub::{Snapshot, TopicSubscription};
 pub use service::{ProcessService, initialize};
@@ -38,6 +40,7 @@ fn native(registry: &mut Registry) {
         .module::<Store>()
         .module::<Sessions>()
         .module::<Tabs>()
+        .module::<files::Files>()
         .module::<settings::Settings>()
         .module::<appearance::Appearance>()
         .module::<dashboard::Dashboard>()
@@ -73,6 +76,19 @@ impl Store {
     }
     pub async fn rename_project(selector: String, name: String) -> Result<ProjectDto, String> {
         initialize().await?.rename_project(selector, name).await
+    }
+    pub fn stage_project_memo(project: String, text: String) -> Result<u32, String> {
+        memo::stage(&project, &text)
+    }
+    pub async fn set_project_memo(
+        project: String,
+        text: String,
+        revision: Option<u32>,
+    ) -> Result<ProjectMemoDto, String> {
+        initialize()
+            .await?
+            .set_project_memo(project, text, revision)
+            .await
     }
     pub async fn set_project_notifications(
         selector: String,
@@ -313,6 +329,7 @@ mod tests {
                 "Appearance",
                 "Chat",
                 "Dashboard",
+                "Files",
                 "Layouts",
                 "Orchestrators",
                 "Sessions",
@@ -326,7 +343,7 @@ mod tests {
             for function in &module.functions {
                 let expected = if matches!(
                     function.name,
-                    "subscribe" | "sentenceCase" | "cased" | "open"
+                    "subscribe" | "sentenceCase" | "cased" | "open" | "stageProjectMemo"
                 ) {
                     FunctionKind::Sync
                 } else {

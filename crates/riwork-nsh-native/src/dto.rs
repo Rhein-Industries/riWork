@@ -412,6 +412,9 @@ pub struct OpenEditorRequest {
     pub path: String,
     #[prop(skip_none)]
     pub line: Option<u32>,
+    /// Opaque listing identity; checked again by the engine before a new launch.
+    #[prop(skip_none)]
+    pub identity: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsObject)]

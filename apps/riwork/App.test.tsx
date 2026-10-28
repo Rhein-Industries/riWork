@@ -141,8 +141,8 @@ test("a real DockArea drag moves one tab into the opaque empty pane through Rust
   const app = await open("./tests/Workspace.fixture.tsx", options("fixture-drag"));
   try {
     await app.waitFor("id:workspace-dock");
-    // Files is still a deferred surface. Its construction/visibility markers
-    // prove DockArea keeps mounted panel identity while the live panels coexist.
+    // Files' construction/visibility markers prove DockArea keeps its mounted
+    // panel identity while the live panels coexist.
     await app.press("id:tab:panel:files");
     await app.press("id:tab:shell:first");
     expect(app.texts()).toContain("mount 1");

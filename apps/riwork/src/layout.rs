@@ -6,8 +6,8 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 pub use riwork_core::layouts::Extent;
 use riwork_core::layouts::workspace;
 use riwork_core::layouts::{
-    Axis, DIVIDER_THICKNESS, Layout, MIN_PANE_EXTENT, PaneId, PanelKind, ProjectLayout, SavedPane,
-    SavedTab,
+    Axis, DIVIDER_THICKNESS, Layout, MIN_PANE_EXTENT, PaneFacts, PaneId, PanelKind,
+    PreviewPlacement, PreviewReveal, PreviewTab, ProjectLayout, SavedPane, SavedTab,
 };
 use serde::{Deserialize, Serialize};
 
@@ -200,6 +200,131 @@ impl LayoutModel {
             Some(target) => self.open_tab_in(SavedTab::Panel { panel }, target),
             None => self.open_tab(SavedTab::Panel { panel }),
         }
+    }
+
+    /// File selection and terminal links reveal panels without moving keyboard
+    /// focus. Core owns the main-pane, locked-pane and terminal visibility rules.
+    pub fn reveal_panel(
+        &mut self,
+        panel: PanelKind,
+        asked: bool,
+        enabled: bool,
+    ) -> Result<DockAreaLayout, String> {
+        if !matches!(panel, PanelKind::Files | PanelKind::Preview) {
+            return Err("invalid: only Files and Preview support reveal".into());
+        }
+        if self.focus_mode || (!asked && !enabled) {
+            return Ok(self.dock(self.extent.unwrap_or(DEFAULT_EXTENT)));
+        }
+        let key = SavedTab::Panel { panel }.key();
+        let shows_shell = |id| {
+            self.project.panes.get(&id).is_some_and(|pane| {
+                pane.tabs.iter().any(|tab| {
+                    Some(tab.key()) == pane.active_tab_key
+                        && matches!(tab, SavedTab::Shell { .. } | SavedTab::RemoteShell { .. })
+                })
+            })
+        };
+        let existing = self.project.panes.iter().find_map(|(&id, pane)| {
+            pane.tabs
+                .iter()
+                .any(|tab| tab.key() == key)
+                .then_some(PreviewTab {
+                    pane: id,
+                    shown: pane.active_tab_key.as_deref() == Some(key.as_str()),
+                    behind_shell: shows_shell(id),
+                })
+        });
+        let clicked = self.project.active_pane;
+        let explorer = self
+            .project
+            .panes
+            .iter()
+            .find_map(|(&id, pane)| {
+                (pane.active_tab_key.as_deref() == Some("panel:files")).then_some(id)
+            })
+            .filter(|id| !asked || *id != clicked);
+        let locks = self.project.effective_locked_panes();
+        let locked = |id| locks.contains(&id);
+        let facts = PaneFacts {
+            locked: &locked,
+            shows_shell: &shows_shell,
+        };
+        let reveal = if let Some(main) = self.project.main_pane {
+            let keep: Vec<_> = asked
+                .then_some(clicked)
+                .into_iter()
+                .chain((panel == PanelKind::Preview).then_some(explorer).flatten())
+                .collect();
+            riwork_core::layouts::plan_main_reveal(main, existing, &keep)
+        } else if panel == PanelKind::Preview && explorer.is_some() {
+            self.project.layout.plan_preview_reveal(
+                true,
+                existing,
+                self.extent,
+                explorer.unwrap(),
+                &facts,
+            )
+        } else if asked {
+            self.project
+                .layout
+                .plan_beside_reveal(existing, self.extent, clicked, &facts)
+        } else {
+            PreviewReveal::Leave
+        };
+        match reveal {
+            PreviewReveal::Leave => {}
+            PreviewReveal::Activate(id) => {
+                self.project
+                    .panes
+                    .get_mut(&id)
+                    .ok_or("not_found: pane")?
+                    .active_tab_key = Some(key.clone())
+            }
+            PreviewReveal::Move { from, to, activate } => {
+                let source = self.project.panes.get_mut(&from).ok_or("not_found: pane")?;
+                source.tabs.retain(|tab| tab.key() != key);
+                if source.active_tab_key.as_deref() == Some(key.as_str()) {
+                    source.active_tab_key = source.tabs.first().map(SavedTab::key);
+                }
+                let target = self.project.panes.get_mut(&to).ok_or("not_found: pane")?;
+                target.tabs.push(SavedTab::Panel { panel });
+                if activate {
+                    target.active_tab_key = Some(key.clone());
+                }
+            }
+            PreviewReveal::Open(placement) => {
+                let (id, activate) = match placement {
+                    PreviewPlacement::Tab { pane, activate } => (pane, activate),
+                    PreviewPlacement::Split {
+                        target,
+                        axis,
+                        ratio,
+                    } => {
+                        let id = (1..=MAX_INITIAL_DOCK_PANE_ID)
+                            .find(|id| !self.allocated_pane_ids.contains(id))
+                            .ok_or("unavailable: no pane identifiers remain")?;
+                        if !self
+                            .project
+                            .layout
+                            .split_with_ratio(target, axis, id, false, ratio)
+                        {
+                            return Err("not_found: split target".into());
+                        }
+                        self.allocated_pane_ids.insert(id);
+                        self.project.panes.insert(id, SavedPane::default());
+                        (id, true)
+                    }
+                };
+                let target = self.project.panes.get_mut(&id).ok_or("not_found: pane")?;
+                target.tabs.push(SavedTab::Panel { panel });
+                if activate {
+                    target.active_tab_key = Some(key);
+                }
+            }
+        }
+        self.project.normalize()?;
+        Ok(self.dock(self.extent.unwrap_or(DEFAULT_EXTENT)))
     }
 
     /// Keep the panel API on the terminal placement path, including remembered
@@ -1975,6 +2100,89 @@ mod tests {
         }
         project.normalize().unwrap();
         project
+    }
+
+    #[test]
+    fn files_preview_reveal_uses_main_without_moving_focus_or_splitting() {
+        let mut model = LayoutModel::new(crate::persistence::default_project_layout()).unwrap();
+        model.open_panel(PanelKind::Files).unwrap();
+        model
+            .set_extent(Extent {
+                width: 1220.0,
+                height: 780.0,
+            })
+            .unwrap();
+        let before = model.project().clone();
+        model.reveal_panel(PanelKind::Preview, false, true).unwrap();
+        assert_eq!(model.project().layout, before.layout);
+        assert_eq!(model.project().active_pane, before.active_pane);
+        assert_eq!(
+            model.project().panes[&1].active_tab_key.as_deref(),
+            Some("panel:files")
+        );
+        assert_eq!(
+            model.project().panes[&2].active_tab_key.as_deref(),
+            Some("panel:preview")
+        );
+        model.reveal_panel(PanelKind::Preview, false, true).unwrap();
+        assert_eq!(
+            model.project().panes[&2]
+                .tabs
+                .iter()
+                .filter(|tab| tab.key() == "panel:preview")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn file_link_reveal_keeps_the_clicked_terminal_and_keys() {
+        let mut project = fixture(Layout::Pane(7), &[(7, &["work"])]);
+        project.main_pane = Some(7);
+        let mut model = LayoutModel::new(project).unwrap();
+        model.reveal_panel(PanelKind::Preview, true, false).unwrap();
+        assert_eq!(model.project().active_pane, 7);
+        assert_eq!(
+            model.project().panes[&7].active_tab_key.as_deref(),
+            Some("shell:work")
+        );
+        assert!(
+            model.project().panes[&7]
+                .tabs
+                .iter()
+                .any(|tab| tab.key() == "panel:preview")
+        );
+    }
+
+    #[test]
+    fn preview_without_main_splits_beside_tree_and_obeys_preference() {
+        let mut project = fixture(Layout::Pane(1), &[(1, &[])]);
+        project.panes.get_mut(&1).unwrap().tabs = vec![SavedTab::Panel {
+            panel: PanelKind::Files,
+        }];
+        project.panes.get_mut(&1).unwrap().active_tab_key = Some("panel:files".into());
+        project.locked_panes = Some(HashSet::new());
+        let mut model = LayoutModel::new(project).unwrap();
+        model
+            .set_extent(Extent {
+                width: 1000.0,
+                height: 800.0,
+            })
+            .unwrap();
+        model
+            .reveal_panel(PanelKind::Preview, false, false)
+            .unwrap();
+        assert_eq!(model.project().layout.pane_ids(), vec![1]);
+        model.reveal_panel(PanelKind::Preview, false, true).unwrap();
+        assert_eq!(model.project().layout.pane_ids().len(), 2);
+        assert_eq!(model.project().active_pane, 1);
+        match &model.project().layout {
+            Layout::Split { ratio, axis, .. } => {
+                assert_eq!(*ratio, riwork_core::layouts::PREVIEW_SIDE_BY_SIDE_RATIO);
+                assert_eq!(*axis, Axis::SideBySide);
+            }
+            _ => panic!("expected split"),
+        }
     }
 
     #[test]

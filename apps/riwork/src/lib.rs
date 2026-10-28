@@ -672,6 +672,22 @@ impl LayoutSession {
         self.edit(|model| model.open_panel(panel).map(|next| (next, true)))
     }
 
+    /// Reveal Files or Preview using core placement while retaining keyboard focus.
+    pub fn reveal_panel(
+        &mut self,
+        panel_id: String,
+        asked: bool,
+        enabled: bool,
+    ) -> Result<Value, String> {
+        let panel: PanelKind = serde_json::from_value(json!(panel_id))
+            .map_err(|_| "invalid: unknown panel".to_owned())?;
+        self.edit(|model| {
+            model
+                .reveal_panel(panel, asked, enabled)
+                .map(|next| (next, true))
+        })
+    }
+
     /// Place or select a shell chosen by the navigation panels.
     pub fn show_shell(&mut self, shell_id: String) -> Result<Value, String> {
         validate_id(&shell_id)?;

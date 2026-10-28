@@ -24,6 +24,7 @@ riwork-nsh-workspace = { path = "../../apps/riwork" }
 nsh-core = "=0.3.0"
 nsh-base = "=0.3.0"
 anyhow = "1"
+base64 = "0.22"
 async-channel = "2.5"
 futures-util = "0.3"
 libc = "0.2"

@@ -388,6 +388,55 @@ Default placement uses the saved-state successor in `riwork_core::layouts` and
 preserves every known tab. A layout containing opaque future tabs refuses this
 reset so their persisted pane identity cannot be lost.
 
+#### Phase 3b Files and previews (payload schema 3)
+
+The Files native module owns disk access; TSX receives display values and
+bounded preview data. Every disk read, watcher setup and Git process runs on a
+blocking worker. No window timer polls Files. The wire additions are:
+
+| Function | Return / behavior |
+|---|---|
+| `Files.listDirectory(root, path, showHidden)` | async `DirectoryListingDto`; one level, folders first, natural case-insensitive ordering, 5,000 displayed / 50,000 scanned maximum. |
+| `Files.subscribe(root, path, showHidden, listener)` | sync `Subscription`; schema-3 directory snapshots in the standard `{kind, rev, data, resync?}` envelope. A recursive native watcher is shared by root; only subscribed listings refresh. Linked-worktree Git index changes also wake it. Last-owner disposal releases the watcher. Setup/read failures deliver an error snapshot. |
+| `Files.preview(root, path, identity?, pdfRequested?, page?)` | async `PreviewDto`; text/code, Markdown, PNG bitmap, explicitly requested PDF page, or a safe message. |
+| `Files.readText(root, path, identity)` | async exact UTF-8 content, limited to 1 MiB; no preview clipping or newline conversion. |
+| `Files.validateEdit(root, path, identity)` | async contained regular-file target; the selected identity must still match. |
+| `Files.validateOpen(root, path, identity?)` | async contained file/folder target, refusing symbolic links, executables and launcher/bundle extensions before the system host call. |
+| `Store.stageProjectMemo(projectId, text)` | sync memory-only staging, returning a revision. Host close/quit/reload flushes accepted drafts even after the JavaScript owner is destroyed. |
+| `Store.setProjectMemo(projectId, text, revision?)` | async saved `ProjectMemoDto`, using the core normalized 32 KiB memo writer and Store snapshot publication. A staged write must still have the current revision, preventing late writes from overwriting a newer close save. |
+| `LayoutSession.revealPanel(panelId, asked, enabled)` | sync controlled layout projection; only `files`/`preview`. Uses core main-pane and preview placement plans, preserves active pane/keyboard focus, and keeps a terminal clicked for a link visible. |
+
+`DirectoryListingDto` contains `{schema:3, root, path, entries, omitted,
+scanLimited, error?}`. Each entry contains `{name, path, relativePath, kind,
+identity?, gitStatus?}`. Kinds are `directory`, `file`, `symlink`, `other`.
+Identity is an opaque string encoding the engine's device/inode/length/mtime
+tuple; JavaScript never rounds those integers. `gitStatus` retains Git's two
+porcelain status columns, including spaces, and directories inherit a changed
+descendant's decoration. Symlinks have no identity and are never expanded.
+
+`PreviewDto` contains `{schema:3, kind, text?, lines?, truncated, markdown,
+dataUrl?, mime?, width?, height?, page?, pages?, message?}`. Text is bounded to
+1 MiB / 10,000 lines with 4,000-character line clipping. Images are magic-checked,
+dimension/decode bounded, oriented and downscaled before PNG transport. PDF
+parsing occurs only for an explicit request; the engine renders bounded bytes
+into a PNG page with page count. Invalid UTF-8, binary, malformed media and
+unsupported items produce messages. Markdown defaults to rendered TextView with
+a source toggle; image references are placeholders and links are reported,
+preventing filesystem/network reads from document content.
+
+All Files access starts at a verified directory descriptor and walks descendants
+with `openat`/`O_NOFOLLOW`; listings use descriptor-relative metadata. Relative
+roots, root symlinks, parent traversal, sibling-prefix escapes, symbolic-link
+ancestors and non-regular preview targets fail closed. Identity is checked
+before and after reading. `Sessions.openEditor` additionally accepts optional
+`identity`, which is enforced for a new Vim launch against the trusted
+project/worktree root. A live editor for the same validated path is reused after
+its own saves. Files changes use subscriptions; hidden surfaces release them.
+
+`Files.fixtureDirectory(name)` is a debug/test-support acceptance seam, requiring
+`RIWORK_NSH_FILES_FIXTURE=1` and an isolated temporary process home; it seeds
+disposable fixtures and is refused in production release builds without test support.
+
 #### Phase 2a terminal projection (consolidated into Appearance schema 2)
 
 Phase 2a first published a terminal-only `Appearance.snapshot()` payload
@@ -1114,6 +1163,17 @@ proposal: no Ghostty configuration parsing, the RiWork palette on Follow
 Ghostty, the diagnostic retained, and no `appearance.json` publishing. The
 terminal phase retains ownership of real parsing and publishing. This records
 the assignment’s scope; it does not settle D-PROC-1 or D-COPY-1.
+
+### 8.5 P1-GLB-05 dashboard write allow-list (ACCEPTED 2026-10-28)
+
+Settled by the orchestrator during Phase 5 (task `9a9d3423`). Phase 1 acceptance R-DEFER 5
+listed the files a P1 build may write, while the global window was still a placeholder. The
+Phase 5 dashboard read makes the engine's `riwork dashboard` read, and that creates an empty
+`schedules.lock`: `ScheduleStore::list` takes the schedule-ledger lock, as the CLI's own test
+`crates/riwork-cli/tests/dashboard_cli.rs` already allows. An empty `schedules.lock` is
+therefore an allowed write on dashboard and global-window paths. Nothing else is: `state.json`
+stays byte-identical, and `schedules.json`, `sessions.json`, `chats/` and tmux stay untouched.
+No frozen surface or `schema` changes.
 
 ### Phase 1 W2 window chrome (consolidated)
 

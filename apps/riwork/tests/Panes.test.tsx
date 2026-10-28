@@ -111,8 +111,15 @@ test("P1-PANE-10 focus hides other groups without changing the saved tree", asyn
 test("P1-PANE-11 pane body activation routes a shell to that pane when main is unset", async () => {
   const app = await namedWorkspace("Alpha", "body-route");
   try {
+    // Alpha is shared by earlier shell/split fixtures. Restore this test's
+    // starting geometry before exercising pane-body routing without a main.
+    await app.host.send("command", { id: "defaultLayout" });
+    if (app.shows("id:dismiss-notice")) await app.press("id:dismiss-notice");
     const main = latest(app).snapshot.panes.find((pane) => pane.main)!;
-    await app.press(`id:pane-menu-${main.id}`); await app.chooseMenuItem("Main pane");
+    await app.press(`id:pane-menu-${main.id}`);
+    expect(app.menu()?.some((item) => item.label === "Main pane")).toBe(true);
+    await app.chooseMenuItem("Main pane");
+    expect(latest(app).snapshot.panes.some((pane) => pane.main)).toBe(false);
     const target = latest(app).snapshot.panes.find((pane) => !pane.locked)!;
     await app.press("id:tab-panel:projects");
     await app.press(`id:pane-${target.id}`);
@@ -120,6 +127,8 @@ test("P1-PANE-11 pane body activation routes a shell to that pane when main is u
     await app.keyboard.press("mod+t");
     await app.waitUntil(() => latest(app).snapshot.panes.find((pane) => pane.id === target.id)!.tabs.length > before);
     expect(latest(app).snapshot.activePane).toBe(target.id);
-    await app.press(`id:pane-menu-${main.id}`); await app.chooseMenuItem("Main pane");
+    await app.press(`id:pane-menu-${main.id}`);
+    expect(app.menu()?.some((item) => item.label === "Main pane")).toBe(true);
+    await app.chooseMenuItem("Main pane");
   } finally { app.dispose(); }
 });

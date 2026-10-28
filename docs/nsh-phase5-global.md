@@ -2,7 +2,7 @@
 
 ```yaml
 assignment: 9a9d3423-c34a-4244-ae9d-8aa41448f6b8
-branch: nsh-p5-global (off nsh 7718e60)
+branch: nsh-p5-global (off nsh 7718e60; nsh fd58edc merged in)
 verification_environment: isolated_tmp_homes_headless_and_rust_tests_only
 live_targets_touched: none
 app_windows_launched: none
@@ -62,7 +62,7 @@ Route commands are recorded under [Runs](#runs). Every `nsh test` ran on a fresh
 | P1-GLB-02 | FAIL | **PASS** | core `global_window::tests` (C041: 3 passed); host-unit `the_global_window_opens_at_its_own_size` (1100×760, the saved size, an impossible size dropped, title `RiWork · Global`); nsh-test `P1-GLB-02`: exactly one `window.setDockInfo {project:"Global", branch:""}`. |
 | P1-GLB-03 | FAIL | **PASS** | core C041; host-unit `a_view_tsx_saved_survives_a_host_flush_and_the_runtime_publish`; nsh-test `P1-GLB-03` (press Chat, wait 300 ms, a second global app opens on Chat, and its search is empty) and `P5-GLOBAL-02` (filter and order survive a reopen). |
 | P1-GLB-04 | FAIL | **PASS** | engine `the_global_window_restores_as_itself_and_older_snapshots_hold_project_windows` (C043: 1 passed); host-unit `runtime_window::tests::the_global_window_is_recorded_as_global` (C155: 1 passed); nsh-test `P1-GLB-04`: `restore.global.view = "chat"` wins over the file, and `app.restoreReady` is posted once. The `p1-restore` generator (C276, exit 101 in M5) now exits 0 and records the global window. |
-| P1-GLB-05 | FAIL | **PASS** (see note) | nsh-test `P1-GLB-05`: no DockArea, no `window.route`/`open`/`close`, no `app.restoreReady`. A global-only run on its own fresh home: `state.json` sha256 unchanged (`528250ff…63b8` before and after), no tmux files. The only file written is the empty `schedules.lock`, which the engine's `ScheduleStore::list` takes during the dashboard read, as `riwork dashboard` does. Note: P1's allow-list (R-DEFER 5) was written for a placeholder window. A dashboard read can also write the engine's private `dashboard-observations/` cache when chats exist. |
+| P1-GLB-05 | FAIL | **PASS** | nsh-test `P1-GLB-05`: no DockArea, no `window.route`/`open`/`close`, no `app.restoreReady`. A global-only run on its own fresh home: `state.json` sha256 unchanged (before and after), no tmux files. The only file written is the empty `schedules.lock`, which the engine's `ScheduleStore::list` takes during the dashboard read, as `riwork dashboard` does. **Accepted 2026-10-28** (acceptance §1.1, contracts §8.5): R-DEFER 5 was written for the Phase 1 placeholder; an empty `schedules.lock` is now an allowed write on dashboard and global paths, and the fixture scripts apply that rule. A dashboard read can also write the engine's private `dashboard-observations/` cache when chats exist; that is not part of this acceptance and did not occur in the global-only run. |
 | P1-GLB-06 | FAIL | **PASS** | nsh-test `P1-GLB-06`: `Global` (cased per theme), `This Mac · every project`, both segment ids, drag region `global-drag`, `GLOBAL_BAR = {height 34, insetWithControls 92, inset 10}`; switching saves (GLB-03). |
 | P1-GLB-07 | FAIL | **PASS** | nsh-test `P1-GLB-07`: ⌘W right after open → `window.close {}`. The menu's `command closeTab` takes the same path. |
 | P1-GLB-08 | FAIL | **PASS** | host-unit `menu::tests::dock_new_window` (C172: 1 passed); nsh-test `P1-GLB-08`: ⌘⇧N and `command newWindow` open the window with the highest `focusSerial`'s project, ⌘, and ⌘⇧S → `window.route {step:{kind:"panel", panel:"settings"/"schedules"}}`, and with no project window the store's active project. The no-project notice is covered by the pure `commandProject([], null) === null` and the exact notice constant. |
@@ -128,6 +128,48 @@ Environment: Rust 1.99.1, `--locked --offline`; pinned NSH CLI 0.3.0 (`76fa8a7`)
 launched, Cua was not used, and no live RiWork home, window, chat, orchestrator or notification
 center was read or written. Fixture runs read the machine's provider CLIs on `PATH` only as the
 Backends section does (paths and versions, nothing executed).
+
+### After merging nsh fd58edc (P3b Files)
+
+The merge conflicted in two files only:
+
+- `crates/riwork-nsh-native/src/lib.rs` now has one registry: P3b's `memo` and `Files`, plus
+  Phase 5's `Accounts`, `Orchestrators` and `Usage`, for 12 modules. The registry test lists all 12.
+- `apps/riwork/tests/StatusBar.test.tsx` keeps P3b's check that labels are scoped to the status
+  bar, using the Phase 5 labels.
+
+P3b's Files tests need `RIWORK_NSH_FILES_FIXTURE=1`, so `nsh-run.sh` now exports it.
+
+```sh
+cargo fmt --all --check                                                          # clean
+cargo test --locked --offline -p riwork-nsh-native --features test-support      # lib 108 + 1 ignored; files_bridge 3; dashboard_bridge 4; services 17; usage_bridge 9; chat_bridge 11; layout_session 18; panel_crud 4; appearance 3; native_headless 1; settings 1 + 7
+cargo test --locked --offline -p riwork-nsh-workspace                           # 47, 1, 13, 82, 18, 7: all pass
+cargo test --locked --offline -p riwork-desktop                                 # bin 60, appkit_shell 11, cli_contract 6, startup_environment 1
+PATH=<ripgrep 15.2.0>:$PATH sh apps/riwork/check-polling.sh                     # exit 0
+nsh-run.sh merge2                     # 146 passed, 0 failed; no tmux files
+"$NSH_CLI" check apps/riwork --tsc "$NSH_TSC"                                    # exit 0
+cargo test -p riwork-engine --lib the_global_window_restores_as_itself_and_older_snapshots_hold_project_windows --locked --offline   # C043: exit 0, 1 passed
+nsh-run.sh fglb --filter P1-GLB       # 10 passed, 0 failed; no tmux files
+nsh-run.sh fglb05 --filter P1-GLB-05  # 1 passed; home audit below
+```
+
+GLB-05 home audit, a global-only run on a fresh home:
+
+- The only file written is `schedules.lock`, at 0 bytes.
+- `state.json` has sha256 `fe56e0b0…d2f0` before and after.
+- Nothing was removed.
+- No `schedules.json`, `sessions.json`, `chats/` or `appearance.json` was created, and there are
+  no tmux files.
+
+C043 had exited 101 on the first post-merge attempt (03:08), while compiling `riwork-engine`. Only
+the first line of its output was kept. The cause is disk exhaustion:
+
+- The system log (`deleted`, `CD_VERYLOWDISK_EVENT`) shows the data volume at 190 MB free at 03:08:00.
+- The engine test binary had to be rebuilt, and it alone is 86 MB.
+- No engine source has changed since then, and the same command on the same tree now exits 0.
+
+`nsh check` and the two filtered `nsh test` runs also failed in that minute, and their output was
+not kept either. All three pass now, on the same tree.
 
 ## Known gaps and divergences
 
