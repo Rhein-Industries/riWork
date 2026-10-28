@@ -1,0 +1,2982 @@
+[
+  {
+    "cycle": 1,
+    "elapsed_ms": 944.9932079878636,
+    "before": [
+      {
+        "pid": 80904,
+        "tty": "/dev/ttys038",
+        "shell": "b3754f31-aec0-4f5d-8be2-e63d8714a2aa",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 80907,
+        "tty": "/dev/ttys039",
+        "shell": "9db3e9c8-e4a6-4227-9f3a-393e5d487a97",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 80919,
+        "tty": "/dev/ttys040",
+        "shell": "bcb0d5d9-1d68-46cc-af96-491faf2ed53a",
+        "cols": 186,
+        "rows": 28
+      },
+      {
+        "pid": 80920,
+        "tty": "/dev/ttys041",
+        "shell": "a499cae4-6620-4dda-b7cf-32f42c1dd8be",
+        "cols": 186,
+        "rows": 28
+      }
+    ],
+    "closed_clients": [],
+    "old_descendants": [
+      80901,
+      80903,
+      80904,
+      80907,
+      80917,
+      80918,
+      80919,
+      80920
+    ],
+    "after": [
+      {
+        "pid": 81599,
+        "tty": "/dev/ttys038",
+        "shell": "9db3e9c8-e4a6-4227-9f3a-393e5d487a97",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 81628,
+        "tty": "/dev/ttys039",
+        "shell": "b3754f31-aec0-4f5d-8be2-e63d8714a2aa",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 81631,
+        "tty": "/dev/ttys040",
+        "shell": "bcb0d5d9-1d68-46cc-af96-491faf2ed53a",
+        "cols": 186,
+        "rows": 28
+      },
+      {
+        "pid": 81637,
+        "tty": "/dev/ttys041",
+        "shell": "a499cae4-6620-4dda-b7cf-32f42c1dd8be",
+        "cols": 186,
+        "rows": 28
+      }
+    ],
+    "identity": [
+      [
+        "9db3e9c8-e4a6-4227-9f3a-393e5d487a97",
+        "$0",
+        "1793147656",
+        "%0",
+        "80845"
+      ],
+      [
+        "a499cae4-6620-4dda-b7cf-32f42c1dd8be",
+        "$3",
+        "1793147656",
+        "%3",
+        "80878"
+      ],
+      [
+        "b3754f31-aec0-4f5d-8be2-e63d8714a2aa",
+        "$1",
+        "1793147656",
+        "%1",
+        "80855"
+      ],
+      [
+        "bcb0d5d9-1d68-46cc-af96-491faf2ed53a",
+        "$2",
+        "1793147656",
+        "%2",
+        "80868"
+      ]
+    ],
+    "pressure_before": {
+      "9db3e9c8-e4a6-4227-9f3a-393e5d487a97": {
+        "pid": 80845,
+        "bytes": 12974400,
+        "time": 299443.339326791
+      },
+      "b3754f31-aec0-4f5d-8be2-e63d8714a2aa": {
+        "pid": 80855,
+        "bytes": 12837312,
+        "time": 299443.3266
+      },
+      "bcb0d5d9-1d68-46cc-af96-491faf2ed53a": {
+        "pid": 80868,
+        "bytes": 12633888,
+        "time": 299443.260822083
+      },
+      "a499cae4-6620-4dda-b7cf-32f42c1dd8be": {
+        "pid": 80878,
+        "bytes": 12633888,
+        "time": 299443.269883166
+      }
+    },
+    "pressure_after": {
+      "9db3e9c8-e4a6-4227-9f3a-393e5d487a97": {
+        "pid": 80845,
+        "bytes": 13610880,
+        "time": 299444.312965833
+      },
+      "b3754f31-aec0-4f5d-8be2-e63d8714a2aa": {
+        "pid": 80855,
+        "bytes": 13464000,
+        "time": 299444.313568166
+      },
+      "bcb0d5d9-1d68-46cc-af96-491faf2ed53a": {
+        "pid": 80868,
+        "bytes": 13302912,
+        "time": 299444.313610375
+      },
+      "a499cae4-6620-4dda-b7cf-32f42c1dd8be": {
+        "pid": 80878,
+        "bytes": 13302912,
+        "time": 299444.313731041
+      }
+    }
+  },
+  {
+    "cycle": 2,
+    "elapsed_ms": 860.4582090047188,
+    "before": [
+      {
+        "pid": 81599,
+        "tty": "/dev/ttys038",
+        "shell": "9db3e9c8-e4a6-4227-9f3a-393e5d487a97",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 81628,
+        "tty": "/dev/ttys039",
+        "shell": "b3754f31-aec0-4f5d-8be2-e63d8714a2aa",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 81631,
+        "tty": "/dev/ttys040",
+        "shell": "bcb0d5d9-1d68-46cc-af96-491faf2ed53a",
+        "cols": 186,
+        "rows": 28
+      },
+      {
+        "pid": 81637,
+        "tty": "/dev/ttys041",
+        "shell": "a499cae4-6620-4dda-b7cf-32f42c1dd8be",
+        "cols": 186,
+        "rows": 28
+      }
+    ],
+    "closed_clients": [],
+    "old_descendants": [
+      81592,
+      81599,
+      81627,
+      81628,
+      81629,
+      81631,
+      81636,
+      81637
+    ],
+    "after": [
+      {
+        "pid": 81738,
+        "tty": "/dev/ttys038",
+        "shell": "9db3e9c8-e4a6-4227-9f3a-393e5d487a97",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 81783,
+        "tty": "/dev/ttys039",
+        "shell": "b3754f31-aec0-4f5d-8be2-e63d8714a2aa",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 81794,
+        "tty": "/dev/ttys040",
+        "shell": "bcb0d5d9-1d68-46cc-af96-491faf2ed53a",
+        "cols": 186,
+        "rows": 28
+      },
+      {
+        "pid": 81795,
+        "tty": "/dev/ttys041",
+        "shell": "a499cae4-6620-4dda-b7cf-32f42c1dd8be",
+        "cols": 186,
+        "rows": 28
+      }
+    ],
+    "identity": [
+      [
+        "9db3e9c8-e4a6-4227-9f3a-393e5d487a97",
+        "$0",
+        "1793147656",
+        "%0",
+        "80845"
+      ],
+      [
+        "a499cae4-6620-4dda-b7cf-32f42c1dd8be",
+        "$3",
+        "1793147656",
+        "%3",
+        "80878"
+      ],
+      [
+        "b3754f31-aec0-4f5d-8be2-e63d8714a2aa",
+        "$1",
+        "1793147656",
+        "%1",
+        "80855"
+      ],
+      [
+        "bcb0d5d9-1d68-46cc-af96-491faf2ed53a",
+        "$2",
+        "1793147656",
+        "%2",
+        "80868"
+      ]
+    ],
+    "pressure_before": {
+      "9db3e9c8-e4a6-4227-9f3a-393e5d487a97": {
+        "pid": 80845,
+        "bytes": 13610880,
+        "time": 299444.312965833
+      },
+      "b3754f31-aec0-4f5d-8be2-e63d8714a2aa": {
+        "pid": 80855,
+        "bytes": 13464000,
+        "time": 299444.313568166
+      },
+      "bcb0d5d9-1d68-46cc-af96-491faf2ed53a": {
+        "pid": 80868,
+        "bytes": 13302912,
+        "time": 299444.313610375
+      },
+      "a499cae4-6620-4dda-b7cf-32f42c1dd8be": {
+        "pid": 80878,
+        "bytes": 13302912,
+        "time": 299444.313731041
+      }
+    },
+    "pressure_after": {
+      "9db3e9c8-e4a6-4227-9f3a-393e5d487a97": {
+        "pid": 80845,
+        "bytes": 14276736,
+        "time": 299445.26733575
+      },
+      "b3754f31-aec0-4f5d-8be2-e63d8714a2aa": {
+        "pid": 80855,
+        "bytes": 14120064,
+        "time": 299445.267360208
+      },
+      "bcb0d5d9-1d68-46cc-af96-491faf2ed53a": {
+        "pid": 80868,
+        "bytes": 13942848,
+        "time": 299445.267635916
+      },
+      "a499cae4-6620-4dda-b7cf-32f42c1dd8be": {
+        "pid": 80878,
+        "bytes": 13933152,
+        "time": 299445.26740075
+      }
+    }
+  },
+  {
+    "cycle": 3,
+    "elapsed_ms": 770.240499987267,
+    "before": [
+      {
+        "pid": 81738,
+        "tty": "/dev/ttys038",
+        "shell": "9db3e9c8-e4a6-4227-9f3a-393e5d487a97",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 81783,
+        "tty": "/dev/ttys039",
+        "shell": "b3754f31-aec0-4f5d-8be2-e63d8714a2aa",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 81794,
+        "tty": "/dev/ttys040",
+        "shell": "bcb0d5d9-1d68-46cc-af96-491faf2ed53a",
+        "cols": 186,
+        "rows": 28
+      },
+      {
+        "pid": 81795,
+        "tty": "/dev/ttys041",
+        "shell": "a499cae4-6620-4dda-b7cf-32f42c1dd8be",
+        "cols": 186,
+        "rows": 28
+      }
+    ],
+    "closed_clients": [],
+    "old_descendants": [
+      81731,
+      81738,
+      81778,
+      81783,
+      81791,
+      81792,
+      81794,
+      81795
+    ],
+    "after": [
+      {
+        "pid": 81897,
+        "tty": "/dev/ttys038",
+        "shell": "9db3e9c8-e4a6-4227-9f3a-393e5d487a97",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 81944,
+        "tty": "/dev/ttys039",
+        "shell": "b3754f31-aec0-4f5d-8be2-e63d8714a2aa",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 81947,
+        "tty": "/dev/ttys040",
+        "shell": "bcb0d5d9-1d68-46cc-af96-491faf2ed53a",
+        "cols": 186,
+        "rows": 28
+      },
+      {
+        "pid": 81949,
+        "tty": "/dev/ttys041",
+        "shell": "a499cae4-6620-4dda-b7cf-32f42c1dd8be",
+        "cols": 186,
+        "rows": 28
+      }
+    ],
+    "identity": [
+      [
+        "9db3e9c8-e4a6-4227-9f3a-393e5d487a97",
+        "$0",
+        "1793147656",
+        "%0",
+        "80845"
+      ],
+      [
+        "a499cae4-6620-4dda-b7cf-32f42c1dd8be",
+        "$3",
+        "1793147656",
+        "%3",
+        "80878"
+      ],
+      [
+        "b3754f31-aec0-4f5d-8be2-e63d8714a2aa",
+        "$1",
+        "1793147656",
+        "%1",
+        "80855"
+      ],
+      [
+        "bcb0d5d9-1d68-46cc-af96-491faf2ed53a",
+        "$2",
+        "1793147656",
+        "%2",
+        "80868"
+      ]
+    ],
+    "pressure_before": {
+      "9db3e9c8-e4a6-4227-9f3a-393e5d487a97": {
+        "pid": 80845,
+        "bytes": 14276736,
+        "time": 299445.26733575
+      },
+      "b3754f31-aec0-4f5d-8be2-e63d8714a2aa": {
+        "pid": 80855,
+        "bytes": 14120064,
+        "time": 299445.267360208
+      },
+      "bcb0d5d9-1d68-46cc-af96-491faf2ed53a": {
+        "pid": 80868,
+        "bytes": 13942848,
+        "time": 299445.267635916
+      },
+      "a499cae4-6620-4dda-b7cf-32f42c1dd8be": {
+        "pid": 80878,
+        "bytes": 13933152,
+        "time": 299445.26740075
+      }
+    },
+    "pressure_after": {
+      "9db3e9c8-e4a6-4227-9f3a-393e5d487a97": {
+        "pid": 80845,
+        "bytes": 14854464,
+        "time": 299446.071527958
+      },
+      "b3754f31-aec0-4f5d-8be2-e63d8714a2aa": {
+        "pid": 80855,
+        "bytes": 14707584,
+        "time": 299446.127210291
+      },
+      "bcb0d5d9-1d68-46cc-af96-491faf2ed53a": {
+        "pid": 80868,
+        "bytes": 14505216,
+        "time": 299446.071575541
+      },
+      "a499cae4-6620-4dda-b7cf-32f42c1dd8be": {
+        "pid": 80878,
+        "bytes": 14495520,
+        "time": 299446.071595083
+      }
+    }
+  },
+  {
+    "cycle": 4,
+    "elapsed_ms": 771.0875830380246,
+    "before": [
+      {
+        "pid": 81897,
+        "tty": "/dev/ttys038",
+        "shell": "9db3e9c8-e4a6-4227-9f3a-393e5d487a97",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 81944,
+        "tty": "/dev/ttys039",
+        "shell": "b3754f31-aec0-4f5d-8be2-e63d8714a2aa",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 81947,
+        "tty": "/dev/ttys040",
+        "shell": "bcb0d5d9-1d68-46cc-af96-491faf2ed53a",
+        "cols": 186,
+        "rows": 28
+      },
+      {
+        "pid": 81949,
+        "tty": "/dev/ttys041",
+        "shell": "a499cae4-6620-4dda-b7cf-32f42c1dd8be",
+        "cols": 186,
+        "rows": 28
+      }
+    ],
+    "closed_clients": [],
+    "old_descendants": [
+      81896,
+      81897,
+      81931,
+      81944,
+      81945,
+      81946,
+      81947,
+      81949
+    ],
+    "after": [
+      {
+        "pid": 82063,
+        "tty": "/dev/ttys038",
+        "shell": "9db3e9c8-e4a6-4227-9f3a-393e5d487a97",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 82109,
+        "tty": "/dev/ttys039",
+        "shell": "b3754f31-aec0-4f5d-8be2-e63d8714a2aa",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 82112,
+        "tty": "/dev/ttys040",
+        "shell": "a499cae4-6620-4dda-b7cf-32f42c1dd8be",
+        "cols": 186,
+        "rows": 28
+      },
+      {
+        "pid": 82113,
+        "tty": "/dev/ttys041",
+        "shell": "bcb0d5d9-1d68-46cc-af96-491faf2ed53a",
+        "cols": 186,
+        "rows": 28
+      }
+    ],
+    "identity": [
+      [
+        "9db3e9c8-e4a6-4227-9f3a-393e5d487a97",
+        "$0",
+        "1793147656",
+        "%0",
+        "80845"
+      ],
+      [
+        "a499cae4-6620-4dda-b7cf-32f42c1dd8be",
+        "$3",
+        "1793147656",
+        "%3",
+        "80878"
+      ],
+      [
+        "b3754f31-aec0-4f5d-8be2-e63d8714a2aa",
+        "$1",
+        "1793147656",
+        "%1",
+        "80855"
+      ],
+      [
+        "bcb0d5d9-1d68-46cc-af96-491faf2ed53a",
+        "$2",
+        "1793147656",
+        "%2",
+        "80868"
+      ]
+    ],
+    "pressure_before": {
+      "9db3e9c8-e4a6-4227-9f3a-393e5d487a97": {
+        "pid": 80845,
+        "bytes": 14903424,
+        "time": 299446.17981775
+      },
+      "b3754f31-aec0-4f5d-8be2-e63d8714a2aa": {
+        "pid": 80855,
+        "bytes": 14707584,
+        "time": 299446.127210291
+      },
+      "bcb0d5d9-1d68-46cc-af96-491faf2ed53a": {
+        "pid": 80868,
+        "bytes": 14553696,
+        "time": 299446.176375333
+      },
+      "a499cae4-6620-4dda-b7cf-32f42c1dd8be": {
+        "pid": 80878,
+        "bytes": 14553696,
+        "time": 299446.179838791
+      }
+    },
+    "pressure_after": {
+      "9db3e9c8-e4a6-4227-9f3a-393e5d487a97": {
+        "pid": 80845,
+        "bytes": 15490944,
+        "time": 299446.934416625
+      },
+      "b3754f31-aec0-4f5d-8be2-e63d8714a2aa": {
+        "pid": 80855,
+        "bytes": 15344064,
+        "time": 299446.994486416
+      },
+      "bcb0d5d9-1d68-46cc-af96-491faf2ed53a": {
+        "pid": 80868,
+        "bytes": 15125760,
+        "time": 299446.994120375
+      },
+      "a499cae4-6620-4dda-b7cf-32f42c1dd8be": {
+        "pid": 80878,
+        "bytes": 15096672,
+        "time": 299446.9228585
+      }
+    }
+  },
+  {
+    "cycle": 5,
+    "elapsed_ms": 738.3112910320051,
+    "before": [
+      {
+        "pid": 82063,
+        "tty": "/dev/ttys038",
+        "shell": "9db3e9c8-e4a6-4227-9f3a-393e5d487a97",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 82109,
+        "tty": "/dev/ttys039",
+        "shell": "b3754f31-aec0-4f5d-8be2-e63d8714a2aa",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 82112,
+        "tty": "/dev/ttys040",
+        "shell": "a499cae4-6620-4dda-b7cf-32f42c1dd8be",
+        "cols": 186,
+        "rows": 28
+      },
+      {
+        "pid": 82113,
+        "tty": "/dev/ttys041",
+        "shell": "bcb0d5d9-1d68-46cc-af96-491faf2ed53a",
+        "cols": 186,
+        "rows": 28
+      }
+    ],
+    "closed_clients": [],
+    "old_descendants": [
+      82062,
+      82063,
+      82098,
+      82109,
+      82110,
+      82111,
+      82112,
+      82113
+    ],
+    "after": [
+      {
+        "pid": 82222,
+        "tty": "/dev/ttys038",
+        "shell": "9db3e9c8-e4a6-4227-9f3a-393e5d487a97",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 82271,
+        "tty": "/dev/ttys039",
+        "shell": "b3754f31-aec0-4f5d-8be2-e63d8714a2aa",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 82274,
+        "tty": "/dev/ttys040",
+        "shell": "a499cae4-6620-4dda-b7cf-32f42c1dd8be",
+        "cols": 186,
+        "rows": 28
+      },
+      {
+        "pid": 82275,
+        "tty": "/dev/ttys041",
+        "shell": "bcb0d5d9-1d68-46cc-af96-491faf2ed53a",
+        "cols": 186,
+        "rows": 28
+      }
+    ],
+    "identity": [
+      [
+        "9db3e9c8-e4a6-4227-9f3a-393e5d487a97",
+        "$0",
+        "1793147656",
+        "%0",
+        "80845"
+      ],
+      [
+        "a499cae4-6620-4dda-b7cf-32f42c1dd8be",
+        "$3",
+        "1793147656",
+        "%3",
+        "80878"
+      ],
+      [
+        "b3754f31-aec0-4f5d-8be2-e63d8714a2aa",
+        "$1",
+        "1793147656",
+        "%1",
+        "80855"
+      ],
+      [
+        "bcb0d5d9-1d68-46cc-af96-491faf2ed53a",
+        "$2",
+        "1793147656",
+        "%2",
+        "80868"
+      ]
+    ],
+    "pressure_before": {
+      "9db3e9c8-e4a6-4227-9f3a-393e5d487a97": {
+        "pid": 80845,
+        "bytes": 15539904,
+        "time": 299447.041575166
+      },
+      "b3754f31-aec0-4f5d-8be2-e63d8714a2aa": {
+        "pid": 80855,
+        "bytes": 15344064,
+        "time": 299446.994486416
+      },
+      "bcb0d5d9-1d68-46cc-af96-491faf2ed53a": {
+        "pid": 80868,
+        "bytes": 15125760,
+        "time": 299446.994120375
+      },
+      "a499cae4-6620-4dda-b7cf-32f42c1dd8be": {
+        "pid": 80878,
+        "bytes": 15145152,
+        "time": 299447.030003916
+      }
+    },
+    "pressure_after": {
+      "9db3e9c8-e4a6-4227-9f3a-393e5d487a97": {
+        "pid": 80845,
+        "bytes": 16078464,
+        "time": 299447.789623625
+      },
+      "b3754f31-aec0-4f5d-8be2-e63d8714a2aa": {
+        "pid": 80855,
+        "bytes": 15902208,
+        "time": 299447.77712075
+      },
+      "bcb0d5d9-1d68-46cc-af96-491faf2ed53a": {
+        "pid": 80868,
+        "bytes": 15668736,
+        "time": 299447.776668541
+      },
+      "a499cae4-6620-4dda-b7cf-32f42c1dd8be": {
+        "pid": 80878,
+        "bytes": 15659040,
+        "time": 299447.776689958
+      }
+    }
+  },
+  {
+    "cycle": 6,
+    "elapsed_ms": 870.1023749890737,
+    "before": [
+      {
+        "pid": 82222,
+        "tty": "/dev/ttys038",
+        "shell": "9db3e9c8-e4a6-4227-9f3a-393e5d487a97",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 82271,
+        "tty": "/dev/ttys039",
+        "shell": "b3754f31-aec0-4f5d-8be2-e63d8714a2aa",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 82274,
+        "tty": "/dev/ttys040",
+        "shell": "a499cae4-6620-4dda-b7cf-32f42c1dd8be",
+        "cols": 186,
+        "rows": 28
+      },
+      {
+        "pid": 82275,
+        "tty": "/dev/ttys041",
+        "shell": "bcb0d5d9-1d68-46cc-af96-491faf2ed53a",
+        "cols": 186,
+        "rows": 28
+      }
+    ],
+    "closed_clients": [],
+    "old_descendants": [
+      82215,
+      82222,
+      82260,
+      82271,
+      82272,
+      82273,
+      82274,
+      82275
+    ],
+    "after": [
+      {
+        "pid": 82383,
+        "tty": "/dev/ttys038",
+        "shell": "9db3e9c8-e4a6-4227-9f3a-393e5d487a97",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 82397,
+        "tty": "/dev/ttys039",
+        "shell": "b3754f31-aec0-4f5d-8be2-e63d8714a2aa",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 82427,
+        "tty": "/dev/ttys040",
+        "shell": "a499cae4-6620-4dda-b7cf-32f42c1dd8be",
+        "cols": 186,
+        "rows": 28
+      },
+      {
+        "pid": 82428,
+        "tty": "/dev/ttys041",
+        "shell": "bcb0d5d9-1d68-46cc-af96-491faf2ed53a",
+        "cols": 186,
+        "rows": 28
+      }
+    ],
+    "identity": [
+      [
+        "9db3e9c8-e4a6-4227-9f3a-393e5d487a97",
+        "$0",
+        "1793147656",
+        "%0",
+        "80845"
+      ],
+      [
+        "a499cae4-6620-4dda-b7cf-32f42c1dd8be",
+        "$3",
+        "1793147656",
+        "%3",
+        "80878"
+      ],
+      [
+        "b3754f31-aec0-4f5d-8be2-e63d8714a2aa",
+        "$1",
+        "1793147656",
+        "%1",
+        "80855"
+      ],
+      [
+        "bcb0d5d9-1d68-46cc-af96-491faf2ed53a",
+        "$2",
+        "1793147656",
+        "%2",
+        "80868"
+      ]
+    ],
+    "pressure_before": {
+      "9db3e9c8-e4a6-4227-9f3a-393e5d487a97": {
+        "pid": 80845,
+        "bytes": 16166592,
+        "time": 299447.899455416
+      },
+      "b3754f31-aec0-4f5d-8be2-e63d8714a2aa": {
+        "pid": 80855,
+        "bytes": 15980544,
+        "time": 299447.877964916
+      },
+      "bcb0d5d9-1d68-46cc-af96-491faf2ed53a": {
+        "pid": 80868,
+        "bytes": 15756000,
+        "time": 299447.881720791
+      },
+      "a499cae4-6620-4dda-b7cf-32f42c1dd8be": {
+        "pid": 80878,
+        "bytes": 15746304,
+        "time": 299447.889094791
+      }
+    },
+    "pressure_after": {
+      "9db3e9c8-e4a6-4227-9f3a-393e5d487a97": {
+        "pid": 80845,
+        "bytes": 16783488,
+        "time": 299448.789450833
+      },
+      "b3754f31-aec0-4f5d-8be2-e63d8714a2aa": {
+        "pid": 80855,
+        "bytes": 16626816,
+        "time": 299448.789497833
+      },
+      "bcb0d5d9-1d68-46cc-af96-491faf2ed53a": {
+        "pid": 80868,
+        "bytes": 16366848,
+        "time": 299448.789568208
+      },
+      "a499cae4-6620-4dda-b7cf-32f42c1dd8be": {
+        "pid": 80878,
+        "bytes": 16357152,
+        "time": 299448.789874291
+      }
+    }
+  },
+  {
+    "cycle": 7,
+    "elapsed_ms": 845.8782919915393,
+    "before": [
+      {
+        "pid": 82383,
+        "tty": "/dev/ttys038",
+        "shell": "9db3e9c8-e4a6-4227-9f3a-393e5d487a97",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 82397,
+        "tty": "/dev/ttys039",
+        "shell": "b3754f31-aec0-4f5d-8be2-e63d8714a2aa",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 82427,
+        "tty": "/dev/ttys040",
+        "shell": "a499cae4-6620-4dda-b7cf-32f42c1dd8be",
+        "cols": 186,
+        "rows": 28
+      },
+      {
+        "pid": 82428,
+        "tty": "/dev/ttys041",
+        "shell": "bcb0d5d9-1d68-46cc-af96-491faf2ed53a",
+        "cols": 186,
+        "rows": 28
+      }
+    ],
+    "closed_clients": [],
+    "old_descendants": [
+      82374,
+      82383,
+      82395,
+      82397,
+      82425,
+      82426,
+      82427,
+      82428
+    ],
+    "after": [
+      {
+        "pid": 82530,
+        "tty": "/dev/ttys038",
+        "shell": "9db3e9c8-e4a6-4227-9f3a-393e5d487a97",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 82571,
+        "tty": "/dev/ttys039",
+        "shell": "b3754f31-aec0-4f5d-8be2-e63d8714a2aa",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 82574,
+        "tty": "/dev/ttys040",
+        "shell": "bcb0d5d9-1d68-46cc-af96-491faf2ed53a",
+        "cols": 186,
+        "rows": 28
+      },
+      {
+        "pid": 82580,
+        "tty": "/dev/ttys041",
+        "shell": "a499cae4-6620-4dda-b7cf-32f42c1dd8be",
+        "cols": 186,
+        "rows": 28
+      }
+    ],
+    "identity": [
+      [
+        "9db3e9c8-e4a6-4227-9f3a-393e5d487a97",
+        "$0",
+        "1793147656",
+        "%0",
+        "80845"
+      ],
+      [
+        "a499cae4-6620-4dda-b7cf-32f42c1dd8be",
+        "$3",
+        "1793147656",
+        "%3",
+        "80878"
+      ],
+      [
+        "b3754f31-aec0-4f5d-8be2-e63d8714a2aa",
+        "$1",
+        "1793147656",
+        "%1",
+        "80855"
+      ],
+      [
+        "bcb0d5d9-1d68-46cc-af96-491faf2ed53a",
+        "$2",
+        "1793147656",
+        "%2",
+        "80868"
+      ]
+    ],
+    "pressure_before": {
+      "9db3e9c8-e4a6-4227-9f3a-393e5d487a97": {
+        "pid": 80845,
+        "bytes": 16783488,
+        "time": 299448.789450833
+      },
+      "b3754f31-aec0-4f5d-8be2-e63d8714a2aa": {
+        "pid": 80855,
+        "bytes": 16626816,
+        "time": 299448.789497833
+      },
+      "bcb0d5d9-1d68-46cc-af96-491faf2ed53a": {
+        "pid": 80868,
+        "bytes": 16366848,
+        "time": 299448.789568208
+      },
+      "a499cae4-6620-4dda-b7cf-32f42c1dd8be": {
+        "pid": 80878,
+        "bytes": 16357152,
+        "time": 299448.789874291
+      }
+    },
+    "pressure_after": {
+      "9db3e9c8-e4a6-4227-9f3a-393e5d487a97": {
+        "pid": 80845,
+        "bytes": 17410176,
+        "time": 299449.647337416
+      },
+      "b3754f31-aec0-4f5d-8be2-e63d8714a2aa": {
+        "pid": 80855,
+        "bytes": 17243712,
+        "time": 299449.634527541
+      },
+      "bcb0d5d9-1d68-46cc-af96-491faf2ed53a": {
+        "pid": 80868,
+        "bytes": 16977696,
+        "time": 299449.64604875
+      },
+      "a499cae4-6620-4dda-b7cf-32f42c1dd8be": {
+        "pid": 80878,
+        "bytes": 16968000,
+        "time": 299449.634432333
+      }
+    }
+  },
+  {
+    "cycle": 8,
+    "elapsed_ms": 879.1916670161299,
+    "before": [
+      {
+        "pid": 82530,
+        "tty": "/dev/ttys038",
+        "shell": "9db3e9c8-e4a6-4227-9f3a-393e5d487a97",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 82571,
+        "tty": "/dev/ttys039",
+        "shell": "b3754f31-aec0-4f5d-8be2-e63d8714a2aa",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 82574,
+        "tty": "/dev/ttys040",
+        "shell": "bcb0d5d9-1d68-46cc-af96-491faf2ed53a",
+        "cols": 186,
+        "rows": 28
+      },
+      {
+        "pid": 82580,
+        "tty": "/dev/ttys041",
+        "shell": "a499cae4-6620-4dda-b7cf-32f42c1dd8be",
+        "cols": 186,
+        "rows": 28
+      }
+    ],
+    "closed_clients": [],
+    "old_descendants": [
+      82528,
+      82530,
+      82567,
+      82571,
+      82573,
+      82574,
+      82579,
+      82580
+    ],
+    "after": [
+      {
+        "pid": 82702,
+        "tty": "/dev/ttys038",
+        "shell": "9db3e9c8-e4a6-4227-9f3a-393e5d487a97",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 82731,
+        "tty": "/dev/ttys039",
+        "shell": "b3754f31-aec0-4f5d-8be2-e63d8714a2aa",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 82734,
+        "tty": "/dev/ttys040",
+        "shell": "bcb0d5d9-1d68-46cc-af96-491faf2ed53a",
+        "cols": 186,
+        "rows": 28
+      },
+      {
+        "pid": 82740,
+        "tty": "/dev/ttys041",
+        "shell": "a499cae4-6620-4dda-b7cf-32f42c1dd8be",
+        "cols": 186,
+        "rows": 28
+      }
+    ],
+    "identity": [
+      [
+        "9db3e9c8-e4a6-4227-9f3a-393e5d487a97",
+        "$0",
+        "1793147656",
+        "%0",
+        "80845"
+      ],
+      [
+        "a499cae4-6620-4dda-b7cf-32f42c1dd8be",
+        "$3",
+        "1793147656",
+        "%3",
+        "80878"
+      ],
+      [
+        "b3754f31-aec0-4f5d-8be2-e63d8714a2aa",
+        "$1",
+        "1793147656",
+        "%1",
+        "80855"
+      ],
+      [
+        "bcb0d5d9-1d68-46cc-af96-491faf2ed53a",
+        "$2",
+        "1793147656",
+        "%2",
+        "80868"
+      ]
+    ],
+    "pressure_before": {
+      "9db3e9c8-e4a6-4227-9f3a-393e5d487a97": {
+        "pid": 80845,
+        "bytes": 17459136,
+        "time": 299449.751202166
+      },
+      "b3754f31-aec0-4f5d-8be2-e63d8714a2aa": {
+        "pid": 80855,
+        "bytes": 17292672,
+        "time": 299449.742222791
+      },
+      "bcb0d5d9-1d68-46cc-af96-491faf2ed53a": {
+        "pid": 80868,
+        "bytes": 17026176,
+        "time": 299449.754307458
+      },
+      "a499cae4-6620-4dda-b7cf-32f42c1dd8be": {
+        "pid": 80878,
+        "bytes": 17026176,
+        "time": 299449.742353291
+      }
+    },
+    "pressure_after": {
+      "9db3e9c8-e4a6-4227-9f3a-393e5d487a97": {
+        "pid": 80845,
+        "bytes": 18085824,
+        "time": 299450.615165416
+      },
+      "b3754f31-aec0-4f5d-8be2-e63d8714a2aa": {
+        "pid": 80855,
+        "bytes": 17929152,
+        "time": 299450.616286583
+      },
+      "bcb0d5d9-1d68-46cc-af96-491faf2ed53a": {
+        "pid": 80868,
+        "bytes": 17646720,
+        "time": 299450.617453375
+      },
+      "a499cae4-6620-4dda-b7cf-32f42c1dd8be": {
+        "pid": 80878,
+        "bytes": 17656416,
+        "time": 299450.617479583
+      }
+    }
+  },
+  {
+    "cycle": 9,
+    "elapsed_ms": 879.6367920003831,
+    "before": [
+      {
+        "pid": 82702,
+        "tty": "/dev/ttys038",
+        "shell": "9db3e9c8-e4a6-4227-9f3a-393e5d487a97",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 82731,
+        "tty": "/dev/ttys039",
+        "shell": "b3754f31-aec0-4f5d-8be2-e63d8714a2aa",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 82734,
+        "tty": "/dev/ttys040",
+        "shell": "bcb0d5d9-1d68-46cc-af96-491faf2ed53a",
+        "cols": 186,
+        "rows": 28
+      },
+      {
+        "pid": 82740,
+        "tty": "/dev/ttys041",
+        "shell": "a499cae4-6620-4dda-b7cf-32f42c1dd8be",
+        "cols": 186,
+        "rows": 28
+      }
+    ],
+    "closed_clients": [],
+    "old_descendants": [
+      82696,
+      82702,
+      82729,
+      82731,
+      82732,
+      82734,
+      82739,
+      82740
+    ],
+    "after": [
+      {
+        "pid": 82842,
+        "tty": "/dev/ttys038",
+        "shell": "9db3e9c8-e4a6-4227-9f3a-393e5d487a97",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 82875,
+        "tty": "/dev/ttys039",
+        "shell": "b3754f31-aec0-4f5d-8be2-e63d8714a2aa",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 82894,
+        "tty": "/dev/ttys040",
+        "shell": "bcb0d5d9-1d68-46cc-af96-491faf2ed53a",
+        "cols": 186,
+        "rows": 28
+      },
+      {
+        "pid": 82896,
+        "tty": "/dev/ttys041",
+        "shell": "a499cae4-6620-4dda-b7cf-32f42c1dd8be",
+        "cols": 186,
+        "rows": 28
+      }
+    ],
+    "identity": [
+      [
+        "9db3e9c8-e4a6-4227-9f3a-393e5d487a97",
+        "$0",
+        "1793147656",
+        "%0",
+        "80845"
+      ],
+      [
+        "a499cae4-6620-4dda-b7cf-32f42c1dd8be",
+        "$3",
+        "1793147656",
+        "%3",
+        "80878"
+      ],
+      [
+        "b3754f31-aec0-4f5d-8be2-e63d8714a2aa",
+        "$1",
+        "1793147656",
+        "%1",
+        "80855"
+      ],
+      [
+        "bcb0d5d9-1d68-46cc-af96-491faf2ed53a",
+        "$2",
+        "1793147656",
+        "%2",
+        "80868"
+      ]
+    ],
+    "pressure_before": {
+      "9db3e9c8-e4a6-4227-9f3a-393e5d487a97": {
+        "pid": 80845,
+        "bytes": 18134784,
+        "time": 299450.72676125
+      },
+      "b3754f31-aec0-4f5d-8be2-e63d8714a2aa": {
+        "pid": 80855,
+        "bytes": 17978112,
+        "time": 299450.727135125
+      },
+      "bcb0d5d9-1d68-46cc-af96-491faf2ed53a": {
+        "pid": 80868,
+        "bytes": 17695200,
+        "time": 299450.726031083
+      },
+      "a499cae4-6620-4dda-b7cf-32f42c1dd8be": {
+        "pid": 80878,
+        "bytes": 17714592,
+        "time": 299450.727156875
+      }
+    },
+    "pressure_after": {
+      "9db3e9c8-e4a6-4227-9f3a-393e5d487a97": {
+        "pid": 80845,
+        "bytes": 18790848,
+        "time": 299451.67748275
+      },
+      "b3754f31-aec0-4f5d-8be2-e63d8714a2aa": {
+        "pid": 80855,
+        "bytes": 18604800,
+        "time": 299451.586118958
+      },
+      "bcb0d5d9-1d68-46cc-af96-491faf2ed53a": {
+        "pid": 80868,
+        "bytes": 18306048,
+        "time": 299451.586134583
+      },
+      "a499cae4-6620-4dda-b7cf-32f42c1dd8be": {
+        "pid": 80878,
+        "bytes": 18335136,
+        "time": 299451.58565175
+      }
+    }
+  },
+  {
+    "cycle": 10,
+    "elapsed_ms": 826.7888330155984,
+    "before": [
+      {
+        "pid": 82842,
+        "tty": "/dev/ttys038",
+        "shell": "9db3e9c8-e4a6-4227-9f3a-393e5d487a97",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 82875,
+        "tty": "/dev/ttys039",
+        "shell": "b3754f31-aec0-4f5d-8be2-e63d8714a2aa",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 82894,
+        "tty": "/dev/ttys040",
+        "shell": "bcb0d5d9-1d68-46cc-af96-491faf2ed53a",
+        "cols": 186,
+        "rows": 28
+      },
+      {
+        "pid": 82896,
+        "tty": "/dev/ttys041",
+        "shell": "a499cae4-6620-4dda-b7cf-32f42c1dd8be",
+        "cols": 186,
+        "rows": 28
+      }
+    ],
+    "closed_clients": [],
+    "old_descendants": [
+      82841,
+      82842,
+      82864,
+      82875,
+      82889,
+      82892,
+      82894,
+      82896
+    ],
+    "after": [
+      {
+        "pid": 83037,
+        "tty": "/dev/ttys038",
+        "shell": "9db3e9c8-e4a6-4227-9f3a-393e5d487a97",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 83077,
+        "tty": "/dev/ttys039",
+        "shell": "b3754f31-aec0-4f5d-8be2-e63d8714a2aa",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 83079,
+        "tty": "/dev/ttys040",
+        "shell": "bcb0d5d9-1d68-46cc-af96-491faf2ed53a",
+        "cols": 186,
+        "rows": 28
+      },
+      {
+        "pid": 83080,
+        "tty": "/dev/ttys041",
+        "shell": "a499cae4-6620-4dda-b7cf-32f42c1dd8be",
+        "cols": 186,
+        "rows": 28
+      }
+    ],
+    "identity": [
+      [
+        "9db3e9c8-e4a6-4227-9f3a-393e5d487a97",
+        "$0",
+        "1793147656",
+        "%0",
+        "80845"
+      ],
+      [
+        "a499cae4-6620-4dda-b7cf-32f42c1dd8be",
+        "$3",
+        "1793147656",
+        "%3",
+        "80878"
+      ],
+      [
+        "b3754f31-aec0-4f5d-8be2-e63d8714a2aa",
+        "$1",
+        "1793147656",
+        "%1",
+        "80855"
+      ],
+      [
+        "bcb0d5d9-1d68-46cc-af96-491faf2ed53a",
+        "$2",
+        "1793147656",
+        "%2",
+        "80868"
+      ]
+    ],
+    "pressure_before": {
+      "9db3e9c8-e4a6-4227-9f3a-393e5d487a97": {
+        "pid": 80845,
+        "bytes": 18790848,
+        "time": 299451.67748275
+      },
+      "b3754f31-aec0-4f5d-8be2-e63d8714a2aa": {
+        "pid": 80855,
+        "bytes": 18634176,
+        "time": 299451.690248458
+      },
+      "bcb0d5d9-1d68-46cc-af96-491faf2ed53a": {
+        "pid": 80868,
+        "bytes": 18344832,
+        "time": 299451.690632333
+      },
+      "a499cae4-6620-4dda-b7cf-32f42c1dd8be": {
+        "pid": 80878,
+        "bytes": 18364224,
+        "time": 299451.689392041
+      }
+    },
+    "pressure_after": {
+      "9db3e9c8-e4a6-4227-9f3a-393e5d487a97": {
+        "pid": 80845,
+        "bytes": 19437120,
+        "time": 299452.599009333
+      },
+      "b3754f31-aec0-4f5d-8be2-e63d8714a2aa": {
+        "pid": 80855,
+        "bytes": 19260864,
+        "time": 299452.531203791
+      },
+      "bcb0d5d9-1d68-46cc-af96-491faf2ed53a": {
+        "pid": 80868,
+        "bytes": 18965376,
+        "time": 299452.599054083
+      },
+      "a499cae4-6620-4dda-b7cf-32f42c1dd8be": {
+        "pid": 80878,
+        "bytes": 18975072,
+        "time": 299452.533947125
+      }
+    }
+  },
+  {
+    "cycle": 11,
+    "elapsed_ms": 874.6798749780282,
+    "before": [
+      {
+        "pid": 83037,
+        "tty": "/dev/ttys038",
+        "shell": "9db3e9c8-e4a6-4227-9f3a-393e5d487a97",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 83077,
+        "tty": "/dev/ttys039",
+        "shell": "b3754f31-aec0-4f5d-8be2-e63d8714a2aa",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 83079,
+        "tty": "/dev/ttys040",
+        "shell": "bcb0d5d9-1d68-46cc-af96-491faf2ed53a",
+        "cols": 186,
+        "rows": 28
+      },
+      {
+        "pid": 83080,
+        "tty": "/dev/ttys041",
+        "shell": "a499cae4-6620-4dda-b7cf-32f42c1dd8be",
+        "cols": 186,
+        "rows": 28
+      }
+    ],
+    "closed_clients": [],
+    "old_descendants": [
+      83025,
+      83037,
+      83069,
+      83076,
+      83077,
+      83078,
+      83079,
+      83080
+    ],
+    "after": [
+      {
+        "pid": 83195,
+        "tty": "/dev/ttys038",
+        "shell": "9db3e9c8-e4a6-4227-9f3a-393e5d487a97",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 83229,
+        "tty": "/dev/ttys039",
+        "shell": "b3754f31-aec0-4f5d-8be2-e63d8714a2aa",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 83233,
+        "tty": "/dev/ttys040",
+        "shell": "bcb0d5d9-1d68-46cc-af96-491faf2ed53a",
+        "cols": 186,
+        "rows": 28
+      },
+      {
+        "pid": 83236,
+        "tty": "/dev/ttys041",
+        "shell": "a499cae4-6620-4dda-b7cf-32f42c1dd8be",
+        "cols": 186,
+        "rows": 28
+      }
+    ],
+    "identity": [
+      [
+        "9db3e9c8-e4a6-4227-9f3a-393e5d487a97",
+        "$0",
+        "1793147656",
+        "%0",
+        "80845"
+      ],
+      [
+        "a499cae4-6620-4dda-b7cf-32f42c1dd8be",
+        "$3",
+        "1793147656",
+        "%3",
+        "80878"
+      ],
+      [
+        "b3754f31-aec0-4f5d-8be2-e63d8714a2aa",
+        "$1",
+        "1793147656",
+        "%1",
+        "80855"
+      ],
+      [
+        "bcb0d5d9-1d68-46cc-af96-491faf2ed53a",
+        "$2",
+        "1793147656",
+        "%2",
+        "80868"
+      ]
+    ],
+    "pressure_before": {
+      "9db3e9c8-e4a6-4227-9f3a-393e5d487a97": {
+        "pid": 80845,
+        "bytes": 19437120,
+        "time": 299452.599009333
+      },
+      "b3754f31-aec0-4f5d-8be2-e63d8714a2aa": {
+        "pid": 80855,
+        "bytes": 19319616,
+        "time": 299452.6363185
+      },
+      "bcb0d5d9-1d68-46cc-af96-491faf2ed53a": {
+        "pid": 80868,
+        "bytes": 18965376,
+        "time": 299452.599054083
+      },
+      "a499cae4-6620-4dda-b7cf-32f42c1dd8be": {
+        "pid": 80878,
+        "bytes": 19023552,
+        "time": 299452.645414583
+      }
+    },
+    "pressure_after": {
+      "9db3e9c8-e4a6-4227-9f3a-393e5d487a97": {
+        "pid": 80845,
+        "bytes": 20073600,
+        "time": 299453.477756208
+      },
+      "b3754f31-aec0-4f5d-8be2-e63d8714a2aa": {
+        "pid": 80855,
+        "bytes": 19936512,
+        "time": 299453.490902166
+      },
+      "bcb0d5d9-1d68-46cc-af96-491faf2ed53a": {
+        "pid": 80868,
+        "bytes": 19595616,
+        "time": 299453.477685125
+      },
+      "a499cae4-6620-4dda-b7cf-32f42c1dd8be": {
+        "pid": 80878,
+        "bytes": 19634400,
+        "time": 299453.53846425
+      }
+    }
+  },
+  {
+    "cycle": 12,
+    "elapsed_ms": 690.7237080158666,
+    "before": [
+      {
+        "pid": 83195,
+        "tty": "/dev/ttys038",
+        "shell": "9db3e9c8-e4a6-4227-9f3a-393e5d487a97",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 83229,
+        "tty": "/dev/ttys039",
+        "shell": "b3754f31-aec0-4f5d-8be2-e63d8714a2aa",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 83233,
+        "tty": "/dev/ttys040",
+        "shell": "bcb0d5d9-1d68-46cc-af96-491faf2ed53a",
+        "cols": 186,
+        "rows": 28
+      },
+      {
+        "pid": 83236,
+        "tty": "/dev/ttys041",
+        "shell": "a499cae4-6620-4dda-b7cf-32f42c1dd8be",
+        "cols": 186,
+        "rows": 28
+      }
+    ],
+    "closed_clients": [],
+    "old_descendants": [
+      83182,
+      83195,
+      83225,
+      83226,
+      83229,
+      83233,
+      83235,
+      83236
+    ],
+    "after": [
+      {
+        "pid": 83335,
+        "tty": "/dev/ttys038",
+        "shell": "9db3e9c8-e4a6-4227-9f3a-393e5d487a97",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 83381,
+        "tty": "/dev/ttys039",
+        "shell": "b3754f31-aec0-4f5d-8be2-e63d8714a2aa",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 83384,
+        "tty": "/dev/ttys040",
+        "shell": "bcb0d5d9-1d68-46cc-af96-491faf2ed53a",
+        "cols": 186,
+        "rows": 28
+      },
+      {
+        "pid": 83385,
+        "tty": "/dev/ttys041",
+        "shell": "a499cae4-6620-4dda-b7cf-32f42c1dd8be",
+        "cols": 186,
+        "rows": 28
+      }
+    ],
+    "identity": [
+      [
+        "9db3e9c8-e4a6-4227-9f3a-393e5d487a97",
+        "$0",
+        "1793147656",
+        "%0",
+        "80845"
+      ],
+      [
+        "a499cae4-6620-4dda-b7cf-32f42c1dd8be",
+        "$3",
+        "1793147656",
+        "%3",
+        "80878"
+      ],
+      [
+        "b3754f31-aec0-4f5d-8be2-e63d8714a2aa",
+        "$1",
+        "1793147656",
+        "%1",
+        "80855"
+      ],
+      [
+        "bcb0d5d9-1d68-46cc-af96-491faf2ed53a",
+        "$2",
+        "1793147656",
+        "%2",
+        "80868"
+      ]
+    ],
+    "pressure_before": {
+      "9db3e9c8-e4a6-4227-9f3a-393e5d487a97": {
+        "pid": 80845,
+        "bytes": 20112768,
+        "time": 299453.578498416
+      },
+      "b3754f31-aec0-4f5d-8be2-e63d8714a2aa": {
+        "pid": 80855,
+        "bytes": 19975680,
+        "time": 299453.5930385
+      },
+      "bcb0d5d9-1d68-46cc-af96-491faf2ed53a": {
+        "pid": 80868,
+        "bytes": 19634400,
+        "time": 299453.58068725
+      },
+      "a499cae4-6620-4dda-b7cf-32f42c1dd8be": {
+        "pid": 80878,
+        "bytes": 19702272,
+        "time": 299453.642902708
+      }
+    },
+    "pressure_after": {
+      "9db3e9c8-e4a6-4227-9f3a-393e5d487a97": {
+        "pid": 80845,
+        "bytes": 20670912,
+        "time": 299454.349327041
+      },
+      "b3754f31-aec0-4f5d-8be2-e63d8714a2aa": {
+        "pid": 80855,
+        "bytes": 20475072,
+        "time": 299454.250757791
+      },
+      "bcb0d5d9-1d68-46cc-af96-491faf2ed53a": {
+        "pid": 80868,
+        "bytes": 20187072,
+        "time": 299454.349380166
+      },
+      "a499cae4-6620-4dda-b7cf-32f42c1dd8be": {
+        "pid": 80878,
+        "bytes": 20187072,
+        "time": 299454.284609291
+      }
+    }
+  },
+  {
+    "cycle": 13,
+    "elapsed_ms": 899.0258330013603,
+    "before": [
+      {
+        "pid": 83335,
+        "tty": "/dev/ttys038",
+        "shell": "9db3e9c8-e4a6-4227-9f3a-393e5d487a97",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 83381,
+        "tty": "/dev/ttys039",
+        "shell": "b3754f31-aec0-4f5d-8be2-e63d8714a2aa",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 83384,
+        "tty": "/dev/ttys040",
+        "shell": "bcb0d5d9-1d68-46cc-af96-491faf2ed53a",
+        "cols": 186,
+        "rows": 28
+      },
+      {
+        "pid": 83385,
+        "tty": "/dev/ttys041",
+        "shell": "a499cae4-6620-4dda-b7cf-32f42c1dd8be",
+        "cols": 186,
+        "rows": 28
+      }
+    ],
+    "closed_clients": [],
+    "old_descendants": [
+      83333,
+      83335,
+      83370,
+      83381,
+      83382,
+      83383,
+      83384,
+      83385
+    ],
+    "after": [
+      {
+        "pid": 83498,
+        "tty": "/dev/ttys038",
+        "shell": "9db3e9c8-e4a6-4227-9f3a-393e5d487a97",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 83559,
+        "tty": "/dev/ttys039",
+        "shell": "b3754f31-aec0-4f5d-8be2-e63d8714a2aa",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 83566,
+        "tty": "/dev/ttys040",
+        "shell": "bcb0d5d9-1d68-46cc-af96-491faf2ed53a",
+        "cols": 186,
+        "rows": 28
+      },
+      {
+        "pid": 83583,
+        "tty": "/dev/ttys041",
+        "shell": "a499cae4-6620-4dda-b7cf-32f42c1dd8be",
+        "cols": 186,
+        "rows": 28
+      }
+    ],
+    "identity": [
+      [
+        "9db3e9c8-e4a6-4227-9f3a-393e5d487a97",
+        "$0",
+        "1793147656",
+        "%0",
+        "80845"
+      ],
+      [
+        "a499cae4-6620-4dda-b7cf-32f42c1dd8be",
+        "$3",
+        "1793147656",
+        "%3",
+        "80878"
+      ],
+      [
+        "b3754f31-aec0-4f5d-8be2-e63d8714a2aa",
+        "$1",
+        "1793147656",
+        "%1",
+        "80855"
+      ],
+      [
+        "bcb0d5d9-1d68-46cc-af96-491faf2ed53a",
+        "$2",
+        "1793147656",
+        "%2",
+        "80868"
+      ]
+    ],
+    "pressure_before": {
+      "9db3e9c8-e4a6-4227-9f3a-393e5d487a97": {
+        "pid": 80845,
+        "bytes": 20670912,
+        "time": 299454.349327041
+      },
+      "b3754f31-aec0-4f5d-8be2-e63d8714a2aa": {
+        "pid": 80855,
+        "bytes": 20533824,
+        "time": 299454.362719
+      },
+      "bcb0d5d9-1d68-46cc-af96-491faf2ed53a": {
+        "pid": 80868,
+        "bytes": 20187072,
+        "time": 299454.349380166
+      },
+      "a499cae4-6620-4dda-b7cf-32f42c1dd8be": {
+        "pid": 80878,
+        "bytes": 20225856,
+        "time": 299454.387580458
+      }
+    },
+    "pressure_after": {
+      "9db3e9c8-e4a6-4227-9f3a-393e5d487a97": {
+        "pid": 80845,
+        "bytes": 21326976,
+        "time": 299455.251370625
+      },
+      "b3754f31-aec0-4f5d-8be2-e63d8714a2aa": {
+        "pid": 80855,
+        "bytes": 21229056,
+        "time": 299455.345194958
+      },
+      "bcb0d5d9-1d68-46cc-af96-491faf2ed53a": {
+        "pid": 80868,
+        "bytes": 20817312,
+        "time": 299455.251414333
+      },
+      "a499cae4-6620-4dda-b7cf-32f42c1dd8be": {
+        "pid": 80878,
+        "bytes": 20846400,
+        "time": 299455.251426791
+      }
+    }
+  },
+  {
+    "cycle": 14,
+    "elapsed_ms": 799.148874997627,
+    "before": [
+      {
+        "pid": 83498,
+        "tty": "/dev/ttys038",
+        "shell": "9db3e9c8-e4a6-4227-9f3a-393e5d487a97",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 83559,
+        "tty": "/dev/ttys039",
+        "shell": "b3754f31-aec0-4f5d-8be2-e63d8714a2aa",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 83566,
+        "tty": "/dev/ttys040",
+        "shell": "bcb0d5d9-1d68-46cc-af96-491faf2ed53a",
+        "cols": 186,
+        "rows": 28
+      },
+      {
+        "pid": 83583,
+        "tty": "/dev/ttys041",
+        "shell": "a499cae4-6620-4dda-b7cf-32f42c1dd8be",
+        "cols": 186,
+        "rows": 28
+      }
+    ],
+    "closed_clients": [],
+    "old_descendants": [
+      83493,
+      83498,
+      83551,
+      83559,
+      83563,
+      83566,
+      83580,
+      83583
+    ],
+    "after": [
+      {
+        "pid": 83804,
+        "tty": "/dev/ttys038",
+        "shell": "9db3e9c8-e4a6-4227-9f3a-393e5d487a97",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 83822,
+        "tty": "/dev/ttys039",
+        "shell": "b3754f31-aec0-4f5d-8be2-e63d8714a2aa",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 83855,
+        "tty": "/dev/ttys040",
+        "shell": "bcb0d5d9-1d68-46cc-af96-491faf2ed53a",
+        "cols": 186,
+        "rows": 28
+      },
+      {
+        "pid": 83879,
+        "tty": "/dev/ttys041",
+        "shell": "a499cae4-6620-4dda-b7cf-32f42c1dd8be",
+        "cols": 186,
+        "rows": 28
+      }
+    ],
+    "identity": [
+      [
+        "9db3e9c8-e4a6-4227-9f3a-393e5d487a97",
+        "$0",
+        "1793147656",
+        "%0",
+        "80845"
+      ],
+      [
+        "a499cae4-6620-4dda-b7cf-32f42c1dd8be",
+        "$3",
+        "1793147656",
+        "%3",
+        "80878"
+      ],
+      [
+        "b3754f31-aec0-4f5d-8be2-e63d8714a2aa",
+        "$1",
+        "1793147656",
+        "%1",
+        "80855"
+      ],
+      [
+        "bcb0d5d9-1d68-46cc-af96-491faf2ed53a",
+        "$2",
+        "1793147656",
+        "%2",
+        "80868"
+      ]
+    ],
+    "pressure_before": {
+      "9db3e9c8-e4a6-4227-9f3a-393e5d487a97": {
+        "pid": 80845,
+        "bytes": 21375936,
+        "time": 299455.357605
+      },
+      "b3754f31-aec0-4f5d-8be2-e63d8714a2aa": {
+        "pid": 80855,
+        "bytes": 21229056,
+        "time": 299455.345194958
+      },
+      "bcb0d5d9-1d68-46cc-af96-491faf2ed53a": {
+        "pid": 80868,
+        "bytes": 20865792,
+        "time": 299455.3580175
+      },
+      "a499cae4-6620-4dda-b7cf-32f42c1dd8be": {
+        "pid": 80878,
+        "bytes": 20904576,
+        "time": 299455.358202
+      }
+    },
+    "pressure_after": {
+      "9db3e9c8-e4a6-4227-9f3a-393e5d487a97": {
+        "pid": 80845,
+        "bytes": 21983040,
+        "time": 299456.192075541
+      },
+      "b3754f31-aec0-4f5d-8be2-e63d8714a2aa": {
+        "pid": 80855,
+        "bytes": 21836160,
+        "time": 299456.192116958
+      },
+      "bcb0d5d9-1d68-46cc-af96-491faf2ed53a": {
+        "pid": 80868,
+        "bytes": 21466944,
+        "time": 299456.202656208
+      },
+      "a499cae4-6620-4dda-b7cf-32f42c1dd8be": {
+        "pid": 80878,
+        "bytes": 21496032,
+        "time": 299456.204887875
+      }
+    }
+  },
+  {
+    "cycle": 15,
+    "elapsed_ms": 786.9794580037706,
+    "before": [
+      {
+        "pid": 83804,
+        "tty": "/dev/ttys038",
+        "shell": "9db3e9c8-e4a6-4227-9f3a-393e5d487a97",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 83822,
+        "tty": "/dev/ttys039",
+        "shell": "b3754f31-aec0-4f5d-8be2-e63d8714a2aa",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 83855,
+        "tty": "/dev/ttys040",
+        "shell": "bcb0d5d9-1d68-46cc-af96-491faf2ed53a",
+        "cols": 186,
+        "rows": 28
+      },
+      {
+        "pid": 83879,
+        "tty": "/dev/ttys041",
+        "shell": "a499cae4-6620-4dda-b7cf-32f42c1dd8be",
+        "cols": 186,
+        "rows": 28
+      }
+    ],
+    "closed_clients": [],
+    "old_descendants": [
+      83789,
+      83804,
+      83818,
+      83822,
+      83850,
+      83855,
+      83872,
+      83879
+    ],
+    "after": [
+      {
+        "pid": 84008,
+        "tty": "/dev/ttys038",
+        "shell": "9db3e9c8-e4a6-4227-9f3a-393e5d487a97",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 84052,
+        "tty": "/dev/ttys039",
+        "shell": "b3754f31-aec0-4f5d-8be2-e63d8714a2aa",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 84055,
+        "tty": "/dev/ttys040",
+        "shell": "bcb0d5d9-1d68-46cc-af96-491faf2ed53a",
+        "cols": 186,
+        "rows": 28
+      },
+      {
+        "pid": 84061,
+        "tty": "/dev/ttys041",
+        "shell": "a499cae4-6620-4dda-b7cf-32f42c1dd8be",
+        "cols": 186,
+        "rows": 28
+      }
+    ],
+    "identity": [
+      [
+        "9db3e9c8-e4a6-4227-9f3a-393e5d487a97",
+        "$0",
+        "1793147656",
+        "%0",
+        "80845"
+      ],
+      [
+        "a499cae4-6620-4dda-b7cf-32f42c1dd8be",
+        "$3",
+        "1793147656",
+        "%3",
+        "80878"
+      ],
+      [
+        "b3754f31-aec0-4f5d-8be2-e63d8714a2aa",
+        "$1",
+        "1793147656",
+        "%1",
+        "80855"
+      ],
+      [
+        "bcb0d5d9-1d68-46cc-af96-491faf2ed53a",
+        "$2",
+        "1793147656",
+        "%2",
+        "80868"
+      ]
+    ],
+    "pressure_before": {
+      "9db3e9c8-e4a6-4227-9f3a-393e5d487a97": {
+        "pid": 80845,
+        "bytes": 22071168,
+        "time": 299456.299198666
+      },
+      "b3754f31-aec0-4f5d-8be2-e63d8714a2aa": {
+        "pid": 80855,
+        "bytes": 21924288,
+        "time": 299456.299217958
+      },
+      "bcb0d5d9-1d68-46cc-af96-491faf2ed53a": {
+        "pid": 80868,
+        "bytes": 21554208,
+        "time": 299456.31115425
+      },
+      "a499cae4-6620-4dda-b7cf-32f42c1dd8be": {
+        "pid": 80878,
+        "bytes": 21583296,
+        "time": 299456.309714458
+      }
+    },
+    "pressure_after": {
+      "9db3e9c8-e4a6-4227-9f3a-393e5d487a97": {
+        "pid": 80845,
+        "bytes": 22609728,
+        "time": 299457.057746458
+      },
+      "b3754f31-aec0-4f5d-8be2-e63d8714a2aa": {
+        "pid": 80855,
+        "bytes": 22433472,
+        "time": 299457.031615
+      },
+      "bcb0d5d9-1d68-46cc-af96-491faf2ed53a": {
+        "pid": 80868,
+        "bytes": 22068096,
+        "time": 299457.044708666
+      },
+      "a499cae4-6620-4dda-b7cf-32f42c1dd8be": {
+        "pid": 80878,
+        "bytes": 22068096,
+        "time": 299457.018267458
+      }
+    }
+  },
+  {
+    "cycle": 16,
+    "elapsed_ms": 690.9052499686368,
+    "before": [
+      {
+        "pid": 84008,
+        "tty": "/dev/ttys038",
+        "shell": "9db3e9c8-e4a6-4227-9f3a-393e5d487a97",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 84052,
+        "tty": "/dev/ttys039",
+        "shell": "b3754f31-aec0-4f5d-8be2-e63d8714a2aa",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 84055,
+        "tty": "/dev/ttys040",
+        "shell": "bcb0d5d9-1d68-46cc-af96-491faf2ed53a",
+        "cols": 186,
+        "rows": 28
+      },
+      {
+        "pid": 84061,
+        "tty": "/dev/ttys041",
+        "shell": "a499cae4-6620-4dda-b7cf-32f42c1dd8be",
+        "cols": 186,
+        "rows": 28
+      }
+    ],
+    "closed_clients": [],
+    "old_descendants": [
+      84006,
+      84008,
+      84046,
+      84052,
+      84054,
+      84055,
+      84060,
+      84061
+    ],
+    "after": [
+      {
+        "pid": 84176,
+        "tty": "/dev/ttys038",
+        "shell": "9db3e9c8-e4a6-4227-9f3a-393e5d487a97",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 84228,
+        "tty": "/dev/ttys039",
+        "shell": "b3754f31-aec0-4f5d-8be2-e63d8714a2aa",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 84231,
+        "tty": "/dev/ttys040",
+        "shell": "a499cae4-6620-4dda-b7cf-32f42c1dd8be",
+        "cols": 186,
+        "rows": 28
+      },
+      {
+        "pid": 84232,
+        "tty": "/dev/ttys041",
+        "shell": "bcb0d5d9-1d68-46cc-af96-491faf2ed53a",
+        "cols": 186,
+        "rows": 28
+      }
+    ],
+    "identity": [
+      [
+        "9db3e9c8-e4a6-4227-9f3a-393e5d487a97",
+        "$0",
+        "1793147656",
+        "%0",
+        "80845"
+      ],
+      [
+        "a499cae4-6620-4dda-b7cf-32f42c1dd8be",
+        "$3",
+        "1793147656",
+        "%3",
+        "80878"
+      ],
+      [
+        "b3754f31-aec0-4f5d-8be2-e63d8714a2aa",
+        "$1",
+        "1793147656",
+        "%1",
+        "80855"
+      ],
+      [
+        "bcb0d5d9-1d68-46cc-af96-491faf2ed53a",
+        "$2",
+        "1793147656",
+        "%2",
+        "80868"
+      ]
+    ],
+    "pressure_before": {
+      "9db3e9c8-e4a6-4227-9f3a-393e5d487a97": {
+        "pid": 80845,
+        "bytes": 22658688,
+        "time": 299457.164644166
+      },
+      "b3754f31-aec0-4f5d-8be2-e63d8714a2aa": {
+        "pid": 80855,
+        "bytes": 22482432,
+        "time": 299457.140719375
+      },
+      "bcb0d5d9-1d68-46cc-af96-491faf2ed53a": {
+        "pid": 80868,
+        "bytes": 22116576,
+        "time": 299457.151528083
+      },
+      "a499cae4-6620-4dda-b7cf-32f42c1dd8be": {
+        "pid": 80878,
+        "bytes": 22126272,
+        "time": 299457.128763458
+      }
+    },
+    "pressure_after": {
+      "9db3e9c8-e4a6-4227-9f3a-393e5d487a97": {
+        "pid": 80845,
+        "bytes": 23138496,
+        "time": 299457.801146
+      },
+      "b3754f31-aec0-4f5d-8be2-e63d8714a2aa": {
+        "pid": 80855,
+        "bytes": 23020992,
+        "time": 299457.898331458
+      },
+      "bcb0d5d9-1d68-46cc-af96-491faf2ed53a": {
+        "pid": 80868,
+        "bytes": 22591680,
+        "time": 299457.8004355
+      },
+      "a499cae4-6620-4dda-b7cf-32f42c1dd8be": {
+        "pid": 80878,
+        "bytes": 22659552,
+        "time": 299457.898076708
+      }
+    }
+  },
+  {
+    "cycle": 17,
+    "elapsed_ms": 682.6077080331743,
+    "before": [
+      {
+        "pid": 84176,
+        "tty": "/dev/ttys038",
+        "shell": "9db3e9c8-e4a6-4227-9f3a-393e5d487a97",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 84228,
+        "tty": "/dev/ttys039",
+        "shell": "b3754f31-aec0-4f5d-8be2-e63d8714a2aa",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 84231,
+        "tty": "/dev/ttys040",
+        "shell": "a499cae4-6620-4dda-b7cf-32f42c1dd8be",
+        "cols": 186,
+        "rows": 28
+      },
+      {
+        "pid": 84232,
+        "tty": "/dev/ttys041",
+        "shell": "bcb0d5d9-1d68-46cc-af96-491faf2ed53a",
+        "cols": 186,
+        "rows": 28
+      }
+    ],
+    "closed_clients": [],
+    "old_descendants": [
+      84160,
+      84176,
+      84221,
+      84228,
+      84229,
+      84230,
+      84231,
+      84232
+    ],
+    "after": [
+      {
+        "pid": 84337,
+        "tty": "/dev/ttys038",
+        "shell": "9db3e9c8-e4a6-4227-9f3a-393e5d487a97",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 84379,
+        "tty": "/dev/ttys039",
+        "shell": "b3754f31-aec0-4f5d-8be2-e63d8714a2aa",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 84382,
+        "tty": "/dev/ttys040",
+        "shell": "a499cae4-6620-4dda-b7cf-32f42c1dd8be",
+        "cols": 186,
+        "rows": 28
+      },
+      {
+        "pid": 84383,
+        "tty": "/dev/ttys041",
+        "shell": "bcb0d5d9-1d68-46cc-af96-491faf2ed53a",
+        "cols": 186,
+        "rows": 28
+      }
+    ],
+    "identity": [
+      [
+        "9db3e9c8-e4a6-4227-9f3a-393e5d487a97",
+        "$0",
+        "1793147656",
+        "%0",
+        "80845"
+      ],
+      [
+        "a499cae4-6620-4dda-b7cf-32f42c1dd8be",
+        "$3",
+        "1793147656",
+        "%3",
+        "80878"
+      ],
+      [
+        "b3754f31-aec0-4f5d-8be2-e63d8714a2aa",
+        "$1",
+        "1793147656",
+        "%1",
+        "80855"
+      ],
+      [
+        "bcb0d5d9-1d68-46cc-af96-491faf2ed53a",
+        "$2",
+        "1793147656",
+        "%2",
+        "80868"
+      ]
+    ],
+    "pressure_before": {
+      "9db3e9c8-e4a6-4227-9f3a-393e5d487a97": {
+        "pid": 80845,
+        "bytes": 23187456,
+        "time": 299457.911023375
+      },
+      "b3754f31-aec0-4f5d-8be2-e63d8714a2aa": {
+        "pid": 80855,
+        "bytes": 23020992,
+        "time": 299457.898331458
+      },
+      "bcb0d5d9-1d68-46cc-af96-491faf2ed53a": {
+        "pid": 80868,
+        "bytes": 22640160,
+        "time": 299457.911124041
+      },
+      "a499cae4-6620-4dda-b7cf-32f42c1dd8be": {
+        "pid": 80878,
+        "bytes": 22659552,
+        "time": 299457.898076708
+      }
+    },
+    "pressure_after": {
+      "9db3e9c8-e4a6-4227-9f3a-393e5d487a97": {
+        "pid": 80845,
+        "bytes": 23726016,
+        "time": 299458.673117125
+      },
+      "b3754f31-aec0-4f5d-8be2-e63d8714a2aa": {
+        "pid": 80855,
+        "bytes": 23569344,
+        "time": 299458.673552875
+      },
+      "bcb0d5d9-1d68-46cc-af96-491faf2ed53a": {
+        "pid": 80868,
+        "bytes": 23173440,
+        "time": 299458.673169833
+      },
+      "a499cae4-6620-4dda-b7cf-32f42c1dd8be": {
+        "pid": 80878,
+        "bytes": 23192832,
+        "time": 299458.673185458
+      }
+    }
+  },
+  {
+    "cycle": 18,
+    "elapsed_ms": 764.9676660075784,
+    "before": [
+      {
+        "pid": 84337,
+        "tty": "/dev/ttys038",
+        "shell": "9db3e9c8-e4a6-4227-9f3a-393e5d487a97",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 84379,
+        "tty": "/dev/ttys039",
+        "shell": "b3754f31-aec0-4f5d-8be2-e63d8714a2aa",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 84382,
+        "tty": "/dev/ttys040",
+        "shell": "a499cae4-6620-4dda-b7cf-32f42c1dd8be",
+        "cols": 186,
+        "rows": 28
+      },
+      {
+        "pid": 84383,
+        "tty": "/dev/ttys041",
+        "shell": "bcb0d5d9-1d68-46cc-af96-491faf2ed53a",
+        "cols": 186,
+        "rows": 28
+      }
+    ],
+    "closed_clients": [],
+    "old_descendants": [
+      84327,
+      84337,
+      84372,
+      84379,
+      84380,
+      84381,
+      84382,
+      84383
+    ],
+    "after": [
+      {
+        "pid": 84505,
+        "tty": "/dev/ttys038",
+        "shell": "9db3e9c8-e4a6-4227-9f3a-393e5d487a97",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 84519,
+        "tty": "/dev/ttys039",
+        "shell": "b3754f31-aec0-4f5d-8be2-e63d8714a2aa",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 84547,
+        "tty": "/dev/ttys040",
+        "shell": "bcb0d5d9-1d68-46cc-af96-491faf2ed53a",
+        "cols": 186,
+        "rows": 28
+      },
+      {
+        "pid": 84549,
+        "tty": "/dev/ttys041",
+        "shell": "a499cae4-6620-4dda-b7cf-32f42c1dd8be",
+        "cols": 186,
+        "rows": 28
+      }
+    ],
+    "identity": [
+      [
+        "9db3e9c8-e4a6-4227-9f3a-393e5d487a97",
+        "$0",
+        "1793147656",
+        "%0",
+        "80845"
+      ],
+      [
+        "a499cae4-6620-4dda-b7cf-32f42c1dd8be",
+        "$3",
+        "1793147656",
+        "%3",
+        "80878"
+      ],
+      [
+        "b3754f31-aec0-4f5d-8be2-e63d8714a2aa",
+        "$1",
+        "1793147656",
+        "%1",
+        "80855"
+      ],
+      [
+        "bcb0d5d9-1d68-46cc-af96-491faf2ed53a",
+        "$2",
+        "1793147656",
+        "%2",
+        "80868"
+      ]
+    ],
+    "pressure_before": {
+      "9db3e9c8-e4a6-4227-9f3a-393e5d487a97": {
+        "pid": 80845,
+        "bytes": 23726016,
+        "time": 299458.673117125
+      },
+      "b3754f31-aec0-4f5d-8be2-e63d8714a2aa": {
+        "pid": 80855,
+        "bytes": 23569344,
+        "time": 299458.673552875
+      },
+      "bcb0d5d9-1d68-46cc-af96-491faf2ed53a": {
+        "pid": 80868,
+        "bytes": 23173440,
+        "time": 299458.673169833
+      },
+      "a499cae4-6620-4dda-b7cf-32f42c1dd8be": {
+        "pid": 80878,
+        "bytes": 23192832,
+        "time": 299458.673185458
+      }
+    },
+    "pressure_after": {
+      "9db3e9c8-e4a6-4227-9f3a-393e5d487a97": {
+        "pid": 80845,
+        "bytes": 24333120,
+        "time": 299459.530059
+      },
+      "b3754f31-aec0-4f5d-8be2-e63d8714a2aa": {
+        "pid": 80855,
+        "bytes": 24166656,
+        "time": 299459.5300625
+      },
+      "bcb0d5d9-1d68-46cc-af96-491faf2ed53a": {
+        "pid": 80868,
+        "bytes": 23764896,
+        "time": 299459.5302965
+      },
+      "a499cae4-6620-4dda-b7cf-32f42c1dd8be": {
+        "pid": 80878,
+        "bytes": 23774592,
+        "time": 299459.530104208
+      }
+    }
+  },
+  {
+    "cycle": 19,
+    "elapsed_ms": 752.4580419994891,
+    "before": [
+      {
+        "pid": 84505,
+        "tty": "/dev/ttys038",
+        "shell": "9db3e9c8-e4a6-4227-9f3a-393e5d487a97",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 84519,
+        "tty": "/dev/ttys039",
+        "shell": "b3754f31-aec0-4f5d-8be2-e63d8714a2aa",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 84547,
+        "tty": "/dev/ttys040",
+        "shell": "bcb0d5d9-1d68-46cc-af96-491faf2ed53a",
+        "cols": 186,
+        "rows": 28
+      },
+      {
+        "pid": 84549,
+        "tty": "/dev/ttys041",
+        "shell": "a499cae4-6620-4dda-b7cf-32f42c1dd8be",
+        "cols": 186,
+        "rows": 28
+      }
+    ],
+    "closed_clients": [],
+    "old_descendants": [
+      84495,
+      84505,
+      84518,
+      84519,
+      84544,
+      84547,
+      84548,
+      84549
+    ],
+    "after": [
+      {
+        "pid": 84661,
+        "tty": "/dev/ttys038",
+        "shell": "9db3e9c8-e4a6-4227-9f3a-393e5d487a97",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 84707,
+        "tty": "/dev/ttys039",
+        "shell": "b3754f31-aec0-4f5d-8be2-e63d8714a2aa",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 84710,
+        "tty": "/dev/ttys040",
+        "shell": "bcb0d5d9-1d68-46cc-af96-491faf2ed53a",
+        "cols": 186,
+        "rows": 28
+      },
+      {
+        "pid": 84712,
+        "tty": "/dev/ttys041",
+        "shell": "a499cae4-6620-4dda-b7cf-32f42c1dd8be",
+        "cols": 186,
+        "rows": 28
+      }
+    ],
+    "identity": [
+      [
+        "9db3e9c8-e4a6-4227-9f3a-393e5d487a97",
+        "$0",
+        "1793147656",
+        "%0",
+        "80845"
+      ],
+      [
+        "a499cae4-6620-4dda-b7cf-32f42c1dd8be",
+        "$3",
+        "1793147656",
+        "%3",
+        "80878"
+      ],
+      [
+        "b3754f31-aec0-4f5d-8be2-e63d8714a2aa",
+        "$1",
+        "1793147656",
+        "%1",
+        "80855"
+      ],
+      [
+        "bcb0d5d9-1d68-46cc-af96-491faf2ed53a",
+        "$2",
+        "1793147656",
+        "%2",
+        "80868"
+      ]
+    ],
+    "pressure_before": {
+      "9db3e9c8-e4a6-4227-9f3a-393e5d487a97": {
+        "pid": 80845,
+        "bytes": 24333120,
+        "time": 299459.530059
+      },
+      "b3754f31-aec0-4f5d-8be2-e63d8714a2aa": {
+        "pid": 80855,
+        "bytes": 24166656,
+        "time": 299459.5300625
+      },
+      "bcb0d5d9-1d68-46cc-af96-491faf2ed53a": {
+        "pid": 80868,
+        "bytes": 23764896,
+        "time": 299459.5302965
+      },
+      "a499cae4-6620-4dda-b7cf-32f42c1dd8be": {
+        "pid": 80878,
+        "bytes": 23774592,
+        "time": 299459.530104208
+      }
+    },
+    "pressure_after": {
+      "9db3e9c8-e4a6-4227-9f3a-393e5d487a97": {
+        "pid": 80845,
+        "bytes": 24891264,
+        "time": 299460.313218666
+      },
+      "b3754f31-aec0-4f5d-8be2-e63d8714a2aa": {
+        "pid": 80855,
+        "bytes": 24724800,
+        "time": 299460.313426875
+      },
+      "bcb0d5d9-1d68-46cc-af96-491faf2ed53a": {
+        "pid": 80868,
+        "bytes": 24317568,
+        "time": 299460.313440375
+      },
+      "a499cae4-6620-4dda-b7cf-32f42c1dd8be": {
+        "pid": 80878,
+        "bytes": 24327264,
+        "time": 299460.313456875
+      }
+    }
+  },
+  {
+    "cycle": 20,
+    "elapsed_ms": 730.4933330160566,
+    "before": [
+      {
+        "pid": 84661,
+        "tty": "/dev/ttys038",
+        "shell": "9db3e9c8-e4a6-4227-9f3a-393e5d487a97",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 84707,
+        "tty": "/dev/ttys039",
+        "shell": "b3754f31-aec0-4f5d-8be2-e63d8714a2aa",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 84710,
+        "tty": "/dev/ttys040",
+        "shell": "bcb0d5d9-1d68-46cc-af96-491faf2ed53a",
+        "cols": 186,
+        "rows": 28
+      },
+      {
+        "pid": 84712,
+        "tty": "/dev/ttys041",
+        "shell": "a499cae4-6620-4dda-b7cf-32f42c1dd8be",
+        "cols": 186,
+        "rows": 28
+      }
+    ],
+    "closed_clients": [],
+    "old_descendants": [
+      84659,
+      84661,
+      84692,
+      84707,
+      84708,
+      84709,
+      84710,
+      84712
+    ],
+    "after": [
+      {
+        "pid": 84828,
+        "tty": "/dev/ttys038",
+        "shell": "9db3e9c8-e4a6-4227-9f3a-393e5d487a97",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 84873,
+        "tty": "/dev/ttys039",
+        "shell": "b3754f31-aec0-4f5d-8be2-e63d8714a2aa",
+        "cols": 169,
+        "rows": 25
+      },
+      {
+        "pid": 84877,
+        "tty": "/dev/ttys040",
+        "shell": "a499cae4-6620-4dda-b7cf-32f42c1dd8be",
+        "cols": 186,
+        "rows": 28
+      },
+      {
+        "pid": 84878,
+        "tty": "/dev/ttys041",
+        "shell": "bcb0d5d9-1d68-46cc-af96-491faf2ed53a",
+        "cols": 186,
+        "rows": 28
+      }
+    ],
+    "identity": [
+      [
+        "9db3e9c8-e4a6-4227-9f3a-393e5d487a97",
+        "$0",
+        "1793147656",
+        "%0",
+        "80845"
+      ],
+      [
+        "a499cae4-6620-4dda-b7cf-32f42c1dd8be",
+        "$3",
+        "1793147656",
+        "%3",
+        "80878"
+      ],
+      [
+        "b3754f31-aec0-4f5d-8be2-e63d8714a2aa",
+        "$1",
+        "1793147656",
+        "%1",
+        "80855"
+      ],
+      [
+        "bcb0d5d9-1d68-46cc-af96-491faf2ed53a",
+        "$2",
+        "1793147656",
+        "%2",
+        "80868"
+      ]
+    ],
+    "pressure_before": {
+      "9db3e9c8-e4a6-4227-9f3a-393e5d487a97": {
+        "pid": 80845,
+        "bytes": 24930432,
+        "time": 299460.413303458
+      },
+      "b3754f31-aec0-4f5d-8be2-e63d8714a2aa": {
+        "pid": 80855,
+        "bytes": 24773760,
+        "time": 299460.421820041
+      },
+      "bcb0d5d9-1d68-46cc-af96-491faf2ed53a": {
+        "pid": 80868,
+        "bytes": 24366048,
+        "time": 299460.425942541
+      },
+      "a499cae4-6620-4dda-b7cf-32f42c1dd8be": {
+        "pid": 80878,
+        "bytes": 24385440,
+        "time": 299460.425397416
+      }
+    },
+    "pressure_after": {
+      "9db3e9c8-e4a6-4227-9f3a-393e5d487a97": {
+        "pid": 80845,
+        "bytes": 25488576,
+        "time": 299461.185512333
+      },
+      "b3754f31-aec0-4f5d-8be2-e63d8714a2aa": {
+        "pid": 80855,
+        "bytes": 25322112,
+        "time": 299461.185704083
+      },
+      "bcb0d5d9-1d68-46cc-af96-491faf2ed53a": {
+        "pid": 80868,
+        "bytes": 24899328,
+        "time": 299461.185549916
+      },
+      "a499cae4-6620-4dda-b7cf-32f42c1dd8be": {
+        "pid": 80878,
+        "bytes": 24918720,
+        "time": 299461.185566416
+      }
+    }
+  }
+]

@@ -221,7 +221,16 @@ pub fn list(home: &Path) -> Result<Vec<Shell>, String> {
             alive: s.alive,
             user_opened: s.user_opened,
             parent_id: s.parent_id,
-            title: s.command.unwrap_or_else(|| "Shell".into()),
+            title: s
+                .editor_path
+                .as_deref()
+                .map(|path| {
+                    format!(
+                        "VIM · {}",
+                        path.file_name().unwrap_or_default().to_string_lossy()
+                    )
+                })
+                .unwrap_or_else(|| s.command.unwrap_or_else(|| "Shell".into())),
             status: None,
             appear_after_ms: 0,
         })

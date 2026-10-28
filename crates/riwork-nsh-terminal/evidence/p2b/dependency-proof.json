@@ -1,0 +1,12 @@
+{
+  "production": {
+    "packages": 449,
+    "forbidden_gpui_or_ghostty_crates": [],
+    "sha256": "026a117e99cb5ff0c518cc66b5eb704acef591ad4f896bb4752a6377d97dc1b5"
+  },
+  "fixture": {
+    "packages": 449,
+    "forbidden_gpui_or_ghostty_crates": [],
+    "sha256": "026a117e99cb5ff0c518cc66b5eb704acef591ad4f896bb4752a6377d97dc1b5"
+  }
+}

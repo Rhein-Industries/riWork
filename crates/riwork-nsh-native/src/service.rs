@@ -21,9 +21,9 @@ use crate::{
         SessionsBackend, StoreBackend, TabsBackend, Unavailable,
     },
     dto::{
-        CreateSessionRequest, FolderDto, ProjectDto, ProjectInspectionDto, ProjectRequest,
-        SearchHitDto, SessionsSnapshot, ShellSessionDto, StoreState, TabUpdate, TabsSnapshot,
-        TaskDto, WorktreeDto,
+        CreateSessionRequest, CreateSubshellRequest, FolderDto, OpenEditorRequest, ProjectDto,
+        ProjectInspectionDto, ProjectRequest, SearchHitDto, SessionsSnapshot, ShellSessionDto,
+        StoreState, TabUpdate, TabsSnapshot, TaskDto, WorktreeDto,
     },
     hub::{Hub, TopicSubscription},
     settings::PreferenceService,
@@ -461,6 +461,33 @@ impl ProcessService {
         self.session_write(move |backend| {
             validate_input_id(&id)?;
             backend.close(&id)
+        })
+        .await
+    }
+
+    pub async fn create_subshell(
+        self: &Arc<Self>,
+        request: CreateSubshellRequest,
+    ) -> Result<ShellSessionDto, String> {
+        self.session_write(move |backend| {
+            validate_input_id(&request.project_id)?;
+            validate_input_id(&request.parent_shell_id)?;
+            backend.create_subshell(request)
+        })
+        .await
+    }
+
+    pub async fn open_editor(
+        self: &Arc<Self>,
+        request: OpenEditorRequest,
+    ) -> Result<ShellSessionDto, String> {
+        self.session_write(move |backend| {
+            validate_input_id(&request.project_id)?;
+            validate_optional_input_id(request.worktree_id.as_deref())?;
+            if request.path.is_empty() {
+                return Err(InvalidInput("editor path is empty".into()).into());
+            }
+            backend.open_editor(request)
         })
         .await
     }

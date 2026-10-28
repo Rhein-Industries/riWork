@@ -21,9 +21,9 @@ use futures_util::future::{AbortHandle, Abortable};
 use nsh_core::{element::Cleanup, prelude::*};
 
 use dto::{
-    CreateSessionRequest, FolderDto, ProjectDto, ProjectInspectionDto, ProjectRequest,
-    SearchHitDto, SessionsSnapshot, ShellSessionDto, StoreState, TabUpdate, TabsSnapshot, TaskDto,
-    WorktreeDto,
+    CreateSessionRequest, CreateSubshellRequest, FolderDto, OpenEditorRequest, ProjectDto,
+    ProjectInspectionDto, ProjectRequest, SearchHitDto, SessionsSnapshot, ShellSessionDto,
+    StoreState, TabUpdate, TabsSnapshot, TaskDto, WorktreeDto,
 };
 use hub::{Snapshot, TopicSubscription};
 pub use service::{ProcessService, initialize};
@@ -174,6 +174,16 @@ impl Sessions {
         initialize().await?.sessions_create(request).await
     }
 
+    pub async fn create_subshell(
+        request: CreateSubshellRequest,
+    ) -> Result<ShellSessionDto, String> {
+        initialize().await?.create_subshell(request).await
+    }
+
+    pub async fn open_editor(request: OpenEditorRequest) -> Result<ShellSessionDto, String> {
+        initialize().await?.open_editor(request).await
+    }
+
     /// Explicit Exit only. Closing/detaching a tab must never call this method.
     pub async fn close(id: String) -> Result<(), String> {
         initialize().await?.sessions_close(id).await
@@ -313,6 +323,8 @@ mod tests {
         let types = declarations(&registry, &[]);
         for declaration in [
             "snapshot(): Promise<StoreState>",
+            "createSubshell(request: CreateSubshellRequest): Promise<ShellSessionDto>",
+            "openEditor(request: OpenEditorRequest): Promise<ShellSessionDto>",
             "inspectProject(root: string): Promise<ProjectInspectionDto>",
             "StoreEvent",
             "SessionsEvent",

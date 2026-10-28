@@ -67,6 +67,8 @@ static NSDictionary *fixtureRendererContents(CALayer *layer) {
     NSRange markedSelection;
     NSTrackingArea *tracking;
     CAShapeLayer *linkLayer;
+    CAShapeLayer *dropLayer;
+    NSInteger findTotal, findCurrent;
     NSArray *linkRows;
     NSCursor *terminalCursor;
     uint64_t hoverRequest;
@@ -94,6 +96,9 @@ static NSDictionary *fixtureRendererContents(CALayer *layer) {
 - (void)clearLink;
 - (void)drawLink;
 - (void)keyboardChanged:(NSNotification *)notification;
+- (BOOL)pasteBoard:(NSPasteboard *)board drop:(BOOL)drop;
+- (void)showDropOutline:(BOOL)show;
+- (void)findResult;
 @end
 
 static ghostty_input_mods_e mods(NSEventModifierFlags flags) {
@@ -139,6 +144,17 @@ static bool action(ghostty_app_t app, ghostty_target_s target, ghostty_action_s 
         return true;
     }
     if (action.tag == GHOSTTY_ACTION_CELL_SIZE) { view->gridOriginValid = NO; [view clearLink]; return true; }
+    if (action.tag == GHOSTTY_ACTION_START_SEARCH) {
+        NSString *query = action.action.start_search.needle ? [NSString stringWithUTF8String:action.action.start_search.needle] : @"";
+        [view emit:@"findOpen" fields:@{@"query":query ?: @""}]; return true;
+    }
+    if (action.tag == GHOSTTY_ACTION_SEARCH_TOTAL) {
+        view->findTotal = action.action.search_total.total; [view findResult]; return true;
+    }
+    if (action.tag == GHOSTTY_ACTION_SEARCH_SELECTED) {
+        view->findCurrent = action.action.search_selected.selected; [view findResult]; return true;
+    }
+    if (action.tag == GHOSTTY_ACTION_END_SEARCH) return true;
     if (action.tag == GHOSTTY_ACTION_SHOW_CHILD_EXITED) {
         if (!view->closing && !view->endedReported) {
             view->endedReported = YES;
@@ -162,8 +178,8 @@ static bool action(ghostty_app_t app, ghostty_target_s target, ghostty_action_s 
     if (action.tag == GHOSTTY_ACTION_OPEN_URL) return true;
     return false;
 }
-// Clipboard reads (including OSC52) and confirm-required writes are refused.
-// Paste/drop routing is deliberately a seam for the following slice.
+// Unsolicited clipboard reads (including OSC52) and confirm-required writes are
+// refused. Explicit Paste reads below are routed through the shell input lock.
 static bool readClipboard(void *userdata, ghostty_clipboard_e clipboard, void *request) {
     (void)userdata; (void)clipboard; (void)request; return false;
 }
@@ -231,6 +247,8 @@ static ghostty_config_t loadConfig(const char *path) {
     marked = [[NSMutableAttributedString alloc] initWithString:@""];
     committed = [[NSMutableString alloc] init];
     markedSelection = NSMakeRange(0, 0);
+    findTotal = findCurrent = -1;
+    [self registerForDraggedTypes:@[NSPasteboardTypeFileURL, NSPasteboardTypePNG, NSPasteboardTypeTIFF]];
     hoverRow = hoverColumn = -1;
     terminalCursor = [NSCursor.IBeamCursor retain];
     atomic_init(&dirty, false); atomic_init(&wakeCount, 0);
@@ -308,6 +326,7 @@ static ghostty_config_t loadConfig(const char *path) {
 - (NSView *)hitTest:(NSPoint)point { return frozen || !visible || closing ? nil : [super hitTest:point]; }
 - (BOOL)becomeFirstResponder {
     if (![self acceptsFirstResponder]) return NO;
+    focusOnAttach = NO;
     if (surface) {
         lastAppFocus = self.window.isKeyWindow; lastSurfaceFocus = YES; focusKnown = YES;
         ghostty_app_set_focus(app, lastAppFocus); ghostty_surface_set_focus(surface, true);
@@ -364,6 +383,7 @@ static ghostty_config_t loadConfig(const char *path) {
 }
 - (void)viewDidChangeEffectiveAppearance { [super viewDidChangeEffectiveAppearance]; [self syncAppearance]; }
 - (void)syncVisibility {
+    if (![self allowsInput]) [self showDropOutline:NO];
     if (!surface) return;
     BOOL shown = visible && !frozen && !closing && self.window &&
         (self.window.occlusionState & NSWindowOcclusionStateVisible) != 0;
@@ -434,6 +454,7 @@ static ghostty_config_t loadConfig(const char *path) {
 }
 - (void)shutdown {
     assertMainThread();
+    [self showDropOutline:NO];
     if (closing || !surface) return;
     closing = YES; detachConfirmed = NO; detachInFlight = NO; parked = NO;
     shutdownStart = monotonicSeconds(); lastDetachAttempt = 0;
@@ -588,7 +609,71 @@ static ghostty_config_t loadConfig(const char *path) {
 }
 - (void)paste:(id)sender {
     (void)sender;
-    [self emit:@"inputRefused" fields:@{@"reason":@"Paste and drop routing will be available in the next terminal slice."}];
+    [self pasteBoard:NSPasteboard.generalPasteboard drop:NO];
+}
+- (void)findResult {
+    [self emit:@"findResult" fields:@{@"total":@(MAX(0, findTotal)), @"current":@(findCurrent < 0 ? 0 : findCurrent+1)}];
+}
+- (BOOL)pasteBoard:(NSPasteboard *)board drop:(BOOL)drop {
+    if (![self allowsInput]) {
+        [self emit:@"inputRefused" fields:@{@"reason":@"Terminal is not available for input"}]; return NO;
+    }
+    NSArray *urls = [board readObjectsForClasses:@[NSURL.class] options:@{NSPasteboardURLReadingFileURLsOnlyKey:@YES}];
+    NSMutableArray *paths = [NSMutableArray array];
+    for (NSURL *url in urls) if (url.isFileURL && url.path) [paths addObject:url.path];
+    if (paths.count) {
+        NSMutableCharacterSet *unsafe = [[[NSCharacterSet controlCharacterSet] mutableCopy] autorelease];
+        [unsafe addCharactersInString:@"\u2028\u2029"];
+        for (NSString *path in paths) if ([path rangeOfCharacterFromSet:unsafe].location != NSNotFound) {
+            [self emit:@"inputRefused" fields:@{@"reason":@"File paths containing control characters or line separators cannot be pasted into a terminal."}]; return NO;
+        }
+        [self emit:@"input" fields:@{@"kind":@"files", @"paths":paths}]; return YES;
+    }
+    NSString *text = [board stringForType:NSPasteboardTypeString];
+    if (!drop && text.length) {
+        [self emit:@"input" fields:@{@"kind":@"text", @"text":text}]; return YES;
+    }
+    NSData *png = [board dataForType:NSPasteboardTypePNG];
+    if (!png) {
+        NSData *tiff = [board dataForType:NSPasteboardTypeTIFF];
+        if (tiff.length > 24*1024*1024) {
+            [self emit:@"inputRefused" fields:@{@"reason":@"Clipboard image exceeds 24 MiB"}]; return NO;
+        }
+        NSBitmapImageRep *bitmap = tiff ? [NSBitmapImageRep imageRepWithData:tiff] : nil;
+        if (bitmap) png = [bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
+    }
+    if (png.length) {
+        if (png.length > 24*1024*1024) {
+            [self emit:@"inputRefused" fields:@{@"reason":@"Clipboard image exceeds 24 MiB"}]; return NO;
+        }
+        [self emit:@"input" fields:@{@"kind":@"image", @"pngBase64":[png base64EncodedStringWithOptions:0]}]; return YES;
+    }
+    return !drop; // Empty clipboard is a handled no-op.
+}
+- (void)showDropOutline:(BOOL)show {
+    if (dropLayer) { [dropLayer removeFromSuperlayer]; [dropLayer release]; dropLayer = nil; }
+    if (!show || ![self allowsInput] || NSApp.modalWindow || self.window.attachedSheet || !self.layer) return;
+    dropLayer = [[CAShapeLayer alloc] init];
+    CGPathRef path = CGPathCreateWithRect(NSInsetRect(self.bounds, 1, 1), NULL);
+    dropLayer.path = path; CGPathRelease(path);
+    dropLayer.strokeColor = NSColor.cyanColor.CGColor; dropLayer.fillColor = nil;
+    dropLayer.lineWidth = 2; dropLayer.frame = self.bounds; dropLayer.zPosition = 101;
+    [self.layer addSublayer:dropLayer];
+}
+- (NSDragOperation)draggingEntered:(id<NSDraggingInfo>)sender { return [self draggingUpdated:sender]; }
+- (NSDragOperation)draggingUpdated:(id<NSDraggingInfo>)sender {
+    NSPasteboard *board = sender.draggingPasteboard;
+    BOOL accepts = [self allowsInput] && !NSApp.modalWindow && !self.window.attachedSheet &&
+        [board availableTypeFromArray:@[NSPasteboardTypeFileURL, NSPasteboardTypePNG, NSPasteboardTypeTIFF]];
+    [self showDropOutline:accepts]; return accepts ? NSDragOperationCopy : NSDragOperationNone;
+}
+- (void)draggingExited:(id<NSDraggingInfo>)sender { (void)sender; [self showDropOutline:NO]; }
+- (void)draggingEnded:(id<NSDraggingInfo>)sender { (void)sender; [self showDropOutline:NO]; }
+- (BOOL)prepareForDragOperation:(id<NSDraggingInfo>)sender { return [self draggingUpdated:sender] != NSDragOperationNone; }
+- (BOOL)performDragOperation:(id<NSDraggingInfo>)sender {
+    [self showDropOutline:NO];
+    if (NSApp.modalWindow || self.window.attachedSheet) return NO;
+    return [self pasteBoard:sender.draggingPasteboard drop:YES];
 }
 - (void)selectAll:(id)sender {
     (void)sender;
@@ -768,6 +853,7 @@ static ghostty_config_t loadConfig(const char *path) {
     [[NSDistributedNotificationCenter defaultCenter] removeObserver:self];
     dispatch_source_cancel(wakeSource); dispatch_release(wakeSource);
     [marked release]; [committed release]; [terminalCursor release]; [gridOriginDetails release];
+    [self showDropOutline:NO];
     [self clearLink];
     if (tracking) { [self removeTrackingArea:tracking]; [tracking release]; }
     if (contextRelease) contextRelease(context);
@@ -807,11 +893,26 @@ bool rw_terminal_update_config(void *raw, const char *path) {
 void rw_terminal_command(void *raw, const char *name) {
     assertMainThread(); RWTerminalView *view = raw;
     if (!name) return;
-    if (strcmp(name, "focus") == 0) { if ([view allowsInput]) [view.window makeFirstResponder:view]; }
+    if (strcmp(name, "focus") == 0) {
+        if ([view allowsInput]) { view->focusOnAttach = NO; [view.window makeFirstResponder:view]; }
+    }
     else if (strcmp(name, "blur") == 0) { if (view.window.firstResponder == view) [view.window makeFirstResponder:nil]; }
     else if (strcmp(name, "copy") == 0) [view copy:nil];
     else if (strcmp(name, "paste") == 0) [view paste:nil];
     else if (strcmp(name, "selectAll") == 0) [view selectAll:nil];
+    else if ([view allowsInput] && strcmp(name, "findNext") == 0) ghostty_surface_binding_action(view->surface, "navigate_search:next", strlen("navigate_search:next"));
+    else if ([view allowsInput] && strcmp(name, "findPrevious") == 0) ghostty_surface_binding_action(view->surface, "navigate_search:previous", strlen("navigate_search:previous"));
+    else if ([view allowsInput] && strcmp(name, "findClose") == 0) {
+        ghostty_surface_binding_action(view->surface, "end_search", strlen("end_search"));
+        view->findTotal = view->findCurrent = -1; [view findResult];
+    }
+}
+void rw_terminal_find(void *raw, const char *query) {
+    assertMainThread(); RWTerminalView *view = raw;
+    if (![view allowsInput] || !query) return;
+    NSString *binding = [@"search:" stringByAppendingString:[NSString stringWithUTF8String:query] ?: @""];
+    NSData *bytes = [binding dataUsingEncoding:NSUTF8StringEncoding];
+    ghostty_surface_binding_action(view->surface, bytes.bytes, bytes.length);
 }
 void rw_terminal_set_link(void *raw, const char *json) {
     assertMainThread(); RWTerminalView *view = raw;
@@ -851,11 +952,40 @@ size_t rw_terminal_pending_count(void) { assertMainThread(); return pendingDispo
 double rw_terminal_monotonic_ms(void) { return monotonicSeconds() * 1000; }
 
 #ifdef RIWORK_TERMINAL_FIXTURE
+// Exercise the production priority/conversion path without reading or replacing
+// the person's general pasteboard, and without publishing desktop input.
+bool rw_terminal_fixture_pasteboard(void *raw, const char *json) {
+    assertMainThread(); RWTerminalView *view = raw;
+    if (!json) return false;
+    NSData *data = [[NSString stringWithUTF8String:json] dataUsingEncoding:NSUTF8StringEncoding];
+    NSDictionary *value = [NSJSONSerialization JSONObjectWithData:data options:0 error:NULL];
+    if (![value isKindOfClass:NSDictionary.class]) return false;
+    NSPasteboard *board = [NSPasteboard pasteboardWithUniqueName];
+    [board clearContents];
+    if ([value[@"paths"] isKindOfClass:NSArray.class]) {
+        NSMutableArray *urls = [NSMutableArray array];
+        for (id path in value[@"paths"]) if ([path isKindOfClass:NSString.class]) [urls addObject:[NSURL fileURLWithPath:path]];
+        [board writeObjects:urls];
+    }
+    if ([value[@"text"] isKindOfClass:NSString.class]) [board setString:value[@"text"] forType:NSPasteboardTypeString];
+    if ([value[@"pngBase64"] isKindOfClass:NSString.class]) {
+        NSData *png = [[[NSData alloc] initWithBase64EncodedString:value[@"pngBase64"] options:0] autorelease];
+        if (png) [board setData:png forType:NSPasteboardTypePNG];
+    }
+    BOOL result = [view pasteBoard:board drop:[value[@"drop"] boolValue]];
+    [board releaseGlobally]; return result;
+}
 // Protocol-level fixture delivery: these events are never posted to AppKit's
 // global event stream. The production NSResponder/NSTextInputClient methods are
 // called directly on the already-identified isolated fixture surface.
 bool rw_terminal_fixture_probe(void *raw, const char *kind) {
     assertMainThread(); RWTerminalView *view = raw;
+    // Simulate delivery of a previously queued focus notification after a tab
+    // became hidden. This never changes an AppKit responder or posts input.
+    if (kind && strcmp(kind, "stale-focus") == 0) {
+        if (!view->surface || view->abandoned || view->closing) return false;
+        [view emit:@"focusChange" fields:@{@"focused":@YES}]; return true;
+    }
     if (![view allowsInput] || !kind) return false;
     if (strcmp(kind, "keys") == 0) {
         unichar arrow = NSLeftArrowFunctionKey;

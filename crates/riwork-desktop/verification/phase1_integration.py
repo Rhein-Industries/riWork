@@ -143,14 +143,17 @@ class Verification:
     def nsh(self):
         if self.args.mode == "nsh":
             self.toolchain()
-        # Existing TSX fixtures use the stable fixture-project ID and this exact
-        # production LayoutStore writer. Keep their mutable state separate.
+        # The full suite needs both the legacy stable fixture-project layout
+        # and W1's named layouts/projects/session membership. The workspace
+        # generator writes both through the production stores.
         nsh_home = self.logdir / "nsh-home"
         nsh_tmux = self.logdir / "nsh-tmux"
         nsh_tmux.mkdir()
-        self.command(self.cargo("run", "-p", "riwork-nsh-workspace", "--example", "seed_fixture")
-                     + ["--", nsh_home], "seed-nsh-fixture")
-        env = dict(self.env, RIWORK_HOME=str(nsh_home), TMUX_TMPDIR=str(nsh_tmux))
+        self.command(self.cargo("run", "-p", "riwork-nsh-native", "--features", "test-support",
+                                "--example", "p1_workspace_fixture_home")
+                     + ["--", "--scenario", "p1-layouts", "--out", nsh_home], "seed-nsh-fixture")
+        env = dict(self.env, RIWORK_HOME=str(nsh_home), TMUX_TMPDIR=str(nsh_tmux),
+                   RIWORK_NSH_FAKE_SESSIONS=str(nsh_home / "fake-sessions.json"))
         self.command([self.args.nsh, "check", "apps/riwork", "--tsc", self.args.tsc],
                      "nsh-check", env=env)
         self.command([self.args.nsh, "test", "apps/riwork", "--junit", self.logdir / "nsh.xml"],

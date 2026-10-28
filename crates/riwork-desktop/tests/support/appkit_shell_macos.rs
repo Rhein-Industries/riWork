@@ -99,7 +99,20 @@ fn app_menu_matches_gpui(_: MainThreadMarker, menu: &NSMenu, _: &nsh_menus::Host
 
 fn edit_menu_uses_standard_selectors(_: MainThreadMarker, menu: &NSMenu, _: &nsh_menus::HostMenus) {
     let edit = submenu(menu, 1);
-    assert_eq!(labels(&edit), ["Cut", "Copy", "Paste", "---", "Select All"]);
+    assert_eq!(
+        labels(&edit),
+        [
+            "Cut",
+            "Copy",
+            "Paste",
+            "---",
+            "Select All",
+            "---",
+            "Find…",
+            "Find Next",
+            "Find Previous"
+        ]
+    );
     for (index, selector, text) in [
         (0, sel!(cut:), "x"),
         (1, sel!(copy:), "c"),
@@ -110,6 +123,21 @@ fn edit_menu_uses_standard_selectors(_: MainThreadMarker, menu: &NSMenu, _: &nsh
         assert_eq!(item.action(), Some(selector));
         key(&item, text, NSEventModifierFlags::Command);
     }
+    key(
+        &edit.itemAtIndex(6).unwrap(),
+        "f",
+        NSEventModifierFlags::Command,
+    );
+    key(
+        &edit.itemAtIndex(7).unwrap(),
+        "g",
+        NSEventModifierFlags::Command,
+    );
+    key(
+        &edit.itemAtIndex(8).unwrap(),
+        "g",
+        NSEventModifierFlags::Command | NSEventModifierFlags::Shift,
+    );
 }
 
 fn view_menu_matches_gpui(_: MainThreadMarker, menu: &NSMenu, _: &nsh_menus::HostMenus) {
@@ -123,6 +151,8 @@ fn view_menu_matches_gpui(_: MainThreadMarker, menu: &NSMenu, _: &nsh_menus::Hos
             "New chat…",
             "App preview…",
             "Sessions",
+            "New Subshell",
+            "Open File in Vim…",
             "Default Layout",
             "Gather Tabs into Main Pane",
             "---",
@@ -135,25 +165,25 @@ fn view_menu_matches_gpui(_: MainThreadMarker, menu: &NSMenu, _: &nsh_menus::Hos
             "Actual Size"
         ]
     );
-    for index in [3, 4, 5, 9, 10, 11] {
+    for index in [3, 4, 5, 11, 12, 13] {
         assert!(
             !view.itemAtIndex(index).unwrap().isEnabled(),
             "deferred row {index} must stay disabled"
         );
     }
-    for index in [0, 1, 6, 7, 13, 14, 15] {
+    for index in [0, 1, 6, 7, 8, 9, 15, 16, 17] {
         assert!(view.itemAtIndex(index).unwrap().isEnabled());
     }
     // AppKit must not silently re-enable deferred commands during validation.
     view.update();
-    for index in [3, 4, 5, 9, 10, 11] {
+    for index in [3, 4, 5, 11, 12, 13] {
         assert!(!view.itemAtIndex(index).unwrap().isEnabled());
     }
 }
 
 fn view_menu_text_size_items(_: MainThreadMarker, menu: &NSMenu, _: &nsh_menus::HostMenus) {
     let view = submenu(menu, 2);
-    for (index, text) in [(13, "="), (14, "-"), (15, "0")] {
+    for (index, text) in [(15, "="), (16, "-"), (17, "0")] {
         key(
             &view.itemAtIndex(index).unwrap(),
             text,

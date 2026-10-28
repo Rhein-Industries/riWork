@@ -1,0 +1,27 @@
+{"root": "/private/tmp/rwnsh-p2-l5tprdfm", "manifest": "/private/tmp/rwnsh-p2-l5tprdfm/manifest.json"}
+{"ready": true, "pid": 79642, "root": "/private/tmp/rwnsh-p2-l5tprdfm", "windows": [{"windowId": "a9c7eb51-1108-49f5-b360-ccaab226c6ba", "projectId": "715a995b-5bac-4336-9809-c81bd69c97ee", "windowNumber": 6898, "layout": {"layout": {"split": {"axis": "stacked", "ratio": 0.5, "first": {"pane": 1}, "second": {"pane": 2}}}, "panes": {"1": {"tabs": [{"kind": "panel", "panel": "files"}, {"kind": "shell", "shell_id": "fcbfeccf-8546-4170-b9dd-88136a747905"}], "active_tab_key": "shell:fcbfeccf-8546-4170-b9dd-88136a747905", "tab_edge": "top", "shell_ids": ["fcbfeccf-8546-4170-b9dd-88136a747905"], "active_shell_id": "fcbfeccf-8546-4170-b9dd-88136a747905"}, "2": {"tabs": [{"kind": "panel", "panel": "preview"}, {"kind": "shell", "shell_id": "c6ec41c6-1583-496c-9edf-96512325020c"}], "active_tab_key": "shell:c6ec41c6-1583-496c-9edf-96512325020c", "tab_edge": "top", "shell_ids": ["c6ec41c6-1583-496c-9edf-96512325020c"], "active_shell_id": "c6ec41c6-1583-496c-9edf-96512325020c"}}, "active_pane": 1, "locked_panes": [], "panels_initialized": true, "detached_shell_ids": [], "selected_worktree_id": "b5efeec6-2294-4ce8-b2c8-4d010760e9cb", "selected_task_id": null, "sidebar_visible": false, "window_size": {"width": 960.0, "height": 720.0}}}, {"windowId": "faed6d08-1627-4e20-ac5b-9ff8373f2bd8", "projectId": "3a5b45b7-8f20-41eb-b435-0ca81827a5f9", "windowNumber": 6899, "layout": null}], "cua_policy": "RiWork Cua.ai Driver MCP read-only with explicit fixture PID"}
+{"status": "passed", "manifest": "/private/tmp/rwnsh-p2-l5tprdfm/manifest.json"}
+{"root": "/private/tmp/rwnsh-p2-gy5qtpq2", "manifest": "/private/tmp/rwnsh-p2-gy5qtpq2/manifest.json"}
+{"ready": true, "pid": 80886, "root": "/private/tmp/rwnsh-p2-gy5qtpq2", "windows": [{"windowId": "4711ea1b-e944-4868-bcdf-1a9f60726151", "projectId": "1076a6ab-9a8d-4dd1-addb-33262d390de2", "windowNumber": 6905, "layout": {"layout": {"split": {"axis": "stacked", "ratio": 0.5, "first": {"pane": 1}, "second": {"pane": 2}}}, "panes": {"1": {"tabs": [{"kind": "panel", "panel": "files"}, {"kind": "shell", "shell_id": "9db3e9c8-e4a6-4227-9f3a-393e5d487a97"}], "active_tab_key": "shell:9db3e9c8-e4a6-4227-9f3a-393e5d487a97", "tab_edge": "top", "shell_ids": ["9db3e9c8-e4a6-4227-9f3a-393e5d487a97"], "active_shell_id": "9db3e9c8-e4a6-4227-9f3a-393e5d487a97"}, "2": {"tabs": [{"kind": "panel", "panel": "preview"}, {"kind": "shell", "shell_id": "b3754f31-aec0-4f5d-8be2-e63d8714a2aa"}], "active_tab_key": "shell:b3754f31-aec0-4f5d-8be2-e63d8714a2aa", "tab_edge": "top", "shell_ids": ["b3754f31-aec0-4f5d-8be2-e63d8714a2aa"], "active_shell_id": "b3754f31-aec0-4f5d-8be2-e63d8714a2aa"}}, "active_pane": 1, "locked_panes": [], "panels_initialized": true, "detached_shell_ids": [], "selected_worktree_id": "3c7383ca-da37-4ec2-a7a3-87d2738e459b", "selected_task_id": null, "sidebar_visible": false, "window_size": {"width": 960.0, "height": 720.0}}}, {"windowId": "d8f8709a-d338-4190-9f25-7a667a9f3c0d", "projectId": "f5a0156f-0dde-4aec-8681-f5a551b5ce24", "windowNumber": 6906, "layout": null}], "cua_policy": "RiWork Cua.ai Driver MCP read-only with explicit fixture PID"}
+{"cycle": 1, "elapsed_ms": 944.9932079878636, "clients": 4}
+{"cycle": 2, "elapsed_ms": 860.4582090047188, "clients": 4}
+{"cycle": 3, "elapsed_ms": 770.240499987267, "clients": 4}
+{"cycle": 4, "elapsed_ms": 771.0875830380246, "clients": 4}
+{"cycle": 5, "elapsed_ms": 738.3112910320051, "clients": 4}
+{"cycle": 6, "elapsed_ms": 870.1023749890737, "clients": 4}
+{"cycle": 7, "elapsed_ms": 845.8782919915393, "clients": 4}
+{"cycle": 8, "elapsed_ms": 879.1916670161299, "clients": 4}
+{"cycle": 9, "elapsed_ms": 879.6367920003831, "clients": 4}
+{"cycle": 10, "elapsed_ms": 826.7888330155984, "clients": 4}
+{"cycle": 11, "elapsed_ms": 874.6798749780282, "clients": 4}
+{"cycle": 12, "elapsed_ms": 690.7237080158666, "clients": 4}
+{"cycle": 13, "elapsed_ms": 899.0258330013603, "clients": 4}
+{"cycle": 14, "elapsed_ms": 799.148874997627, "clients": 4}
+{"cycle": 15, "elapsed_ms": 786.9794580037706, "clients": 4}
+{"cycle": 16, "elapsed_ms": 690.9052499686368, "clients": 4}
+{"cycle": 17, "elapsed_ms": 682.6077080331743, "clients": 4}
+{"cycle": 18, "elapsed_ms": 764.9676660075784, "clients": 4}
+{"cycle": 19, "elapsed_ms": 752.4580419994891, "clients": 4}
+{"cycle": 20, "elapsed_ms": 730.4933330160566, "clients": 4}
+{"status": "passed", "manifest": "/private/tmp/rwnsh-p2-gy5qtpq2/manifest.json"}
+{"status": "passed", "verification_environment": "isolated RIWORK_HOME; integrated fixture binary and production TSX bundle; read-only Cua only", "extras_manifest": "/private/tmp/rwnsh-p2-l5tprdfm/manifest.json", "disposal_manifest": "/private/tmp/rwnsh-p2-gy5qtpq2/manifest.json"}

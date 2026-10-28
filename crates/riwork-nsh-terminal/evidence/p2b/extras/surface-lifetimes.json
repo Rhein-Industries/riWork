@@ -1,0 +1,202 @@
+[
+  {
+    "terminal_id": 1,
+    "generation": 0,
+    "phases": [
+      "created",
+      "geometry-probe",
+      "geometry-probe",
+      "shutdown-requested",
+      "detach-requested",
+      "shutdown-returned",
+      "detach-confirmed",
+      "child-exit-confirmed",
+      "free-begin",
+      "free-end",
+      "disposed"
+    ]
+  },
+  {
+    "terminal_id": 2,
+    "generation": 0,
+    "phases": [
+      "created",
+      "geometry-probe",
+      "shutdown-requested",
+      "detach-requested",
+      "shutdown-returned",
+      "detach-confirmed",
+      "child-exit-confirmed",
+      "free-begin",
+      "free-end",
+      "disposed"
+    ]
+  },
+  {
+    "terminal_id": 3,
+    "generation": 0,
+    "phases": [
+      "created",
+      "geometry-probe",
+      "shutdown-requested",
+      "detach-requested",
+      "shutdown-returned",
+      "detach-confirmed",
+      "child-exit-confirmed",
+      "free-begin",
+      "free-end",
+      "disposed"
+    ]
+  },
+  {
+    "terminal_id": 4,
+    "generation": 0,
+    "phases": [
+      "created",
+      "geometry-probe",
+      "shutdown-requested",
+      "detach-requested",
+      "shutdown-returned",
+      "detach-confirmed",
+      "child-exit-confirmed",
+      "free-begin",
+      "free-end",
+      "disposed"
+    ]
+  },
+  {
+    "terminal_id": 5,
+    "generation": 0,
+    "phases": [
+      "created",
+      "shutdown-requested",
+      "detach-requested",
+      "shutdown-returned",
+      "detach-confirmed",
+      "child-exit-confirmed",
+      "free-begin",
+      "free-end",
+      "disposed"
+    ]
+  },
+  {
+    "terminal_id": 5,
+    "generation": 1,
+    "phases": [
+      "created",
+      "shutdown-requested",
+      "detach-requested",
+      "shutdown-returned",
+      "detach-confirmed",
+      "child-exit-confirmed",
+      "free-begin",
+      "free-end",
+      "disposed"
+    ]
+  },
+  {
+    "terminal_id": 6,
+    "generation": 0,
+    "phases": [
+      "created",
+      "shutdown-requested",
+      "detach-requested",
+      "shutdown-returned",
+      "detach-confirmed",
+      "child-exit-confirmed",
+      "free-begin",
+      "free-end",
+      "disposed"
+    ]
+  },
+  {
+    "terminal_id": 7,
+    "generation": 0,
+    "phases": [
+      "created",
+      "shutdown-requested",
+      "detach-requested",
+      "shutdown-returned",
+      "detach-confirmed",
+      "child-exit-confirmed",
+      "free-begin",
+      "free-end",
+      "disposed"
+    ]
+  },
+  {
+    "terminal_id": 8,
+    "generation": 0,
+    "phases": [
+      "created",
+      "shutdown-requested",
+      "detach-requested",
+      "shutdown-returned",
+      "detach-confirmed",
+      "child-exit-confirmed",
+      "free-begin",
+      "free-end",
+      "disposed"
+    ]
+  },
+  {
+    "terminal_id": 9,
+    "generation": 0,
+    "phases": [
+      "created",
+      "shutdown-requested",
+      "detach-requested",
+      "shutdown-returned",
+      "detach-confirmed",
+      "child-exit-confirmed",
+      "free-begin",
+      "free-end",
+      "disposed"
+    ]
+  },
+  {
+    "terminal_id": 10,
+    "generation": 0,
+    "phases": [
+      "created",
+      "shutdown-requested",
+      "detach-requested",
+      "shutdown-returned",
+      "detach-confirmed",
+      "child-exit-confirmed",
+      "free-begin",
+      "free-end",
+      "disposed"
+    ]
+  },
+  {
+    "terminal_id": 11,
+    "generation": 0,
+    "phases": [
+      "created",
+      "shutdown-requested",
+      "detach-requested",
+      "shutdown-returned",
+      "detach-confirmed",
+      "child-exit-confirmed",
+      "free-begin",
+      "free-end",
+      "disposed"
+    ]
+  },
+  {
+    "terminal_id": 12,
+    "generation": 0,
+    "phases": [
+      "created",
+      "shutdown-requested",
+      "detach-requested",
+      "shutdown-returned",
+      "detach-confirmed",
+      "child-exit-confirmed",
+      "free-begin",
+      "free-end",
+      "disposed"
+    ]
+  }
+]

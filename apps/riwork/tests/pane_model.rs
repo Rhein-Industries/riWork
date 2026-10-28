@@ -394,3 +394,52 @@ fn same_project_updates_preserve_focus_and_opaque_aliases_across_default_layout(
     assert_eq!(model.storage_id_remap()[&safe], main);
     assert!(!model.storage_project().panes.contains_key(&UNSAFE));
 }
+
+#[test]
+fn editor_tabs_reuse_existing_placement_and_make_room_when_every_pane_is_locked() {
+    let mut model = fixture();
+    model.open_editor_shell("vim").unwrap();
+    assert_eq!(model.project().active_pane, 2, "main receives a new editor");
+    model.select_pane(3).unwrap();
+    model.open_editor_shell("vim").unwrap();
+    assert_eq!(
+        model.project().active_pane,
+        2,
+        "reopening selects the existing editor"
+    );
+    assert_eq!(
+        model
+            .project()
+            .panes
+            .values()
+            .flat_map(|pane| &pane.tabs)
+            .filter(|tab| tab.key() == "shell:vim")
+            .count(),
+        1
+    );
+
+    let mut project = model.project().clone();
+    project.main_pane = None;
+    project.locked_panes = Some(HashSet::from([1, 2, 3]));
+    model.replace_project(project).unwrap();
+    model.open_editor_shell("vim-other").unwrap();
+    let added = model.project().active_pane;
+    assert!(!model.project().effective_locked_panes().contains(&added));
+    assert_eq!(
+        model.project().panes[&added].active_tab_key.as_deref(),
+        Some("shell:vim-other")
+    );
+    assert_eq!(model.project().panes.len(), 4);
+}
+
+#[test]
+fn focused_editor_routing_uses_unlocked_terminal_pane_instead_of_main() {
+    let mut model = fixture();
+    let mut project = model.project().clone();
+    project.locked_panes = Some(HashSet::from([1, 2]));
+    model.replace_project(project).unwrap();
+    model.toggle_focus(false).unwrap();
+    model.open_editor_shell("focused-vim").unwrap();
+    assert_eq!(model.project().active_pane, 3);
+    assert!(model.focus_mode());
+}

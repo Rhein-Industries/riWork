@@ -393,6 +393,27 @@ impl JsValue for CreateSessionRequest {
     }
 }
 
+/// Explicit parent binding; never inferred from the desktop process environment.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsObject)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CreateSubshellRequest {
+    pub project_id: String,
+    pub parent_shell_id: String,
+}
+
+/// The backend resolves the trusted project/worktree root, validates the regular
+/// file without following links, and launches (or reuses) a dedicated Vim shell.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsObject)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OpenEditorRequest {
+    pub project_id: String,
+    #[prop(skip_none)]
+    pub worktree_id: Option<String>,
+    pub path: String,
+    #[prop(skip_none)]
+    pub line: Option<u32>,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsObject)]
 #[serde(rename_all = "camelCase")]
 pub struct ShellSessionDto {

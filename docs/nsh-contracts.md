@@ -258,6 +258,8 @@ Attaching, resizing and input of a visible terminal are **not** bridge calls: th
 | `Sessions.list()` | async | `list_with_activity` `sessions.rs:701` |
 | `Sessions.subscribe(listener)` | event | `SessionSampler`: `sample` / `invalidate_sample` `sessions.rs:2060,2066`, woken by the home watcher (`subshells.rs:240-300`) |
 | `Sessions.create(req)`, `createEditor(req)`, `createHarness(req)` | async | `sessions.rs:235,261,291,317` |
+| `Sessions.createSubshell({projectId, parentShellId})` | async, Phase 2b | Explicit same-project live parent; creates a separate plain tmux session with parent provenance, independent process/scrollback, deriving worktree/cwd from the parent. Never types a shell command into the parent. |
+| `Sessions.openEditor({projectId, worktreeId?, path, line?})` | async, Phase 2b | Resolves the trusted project/worktree root and validates a no-follow regular file inside it. Reuses a live editor by project/canonical path after saves; otherwise captures identity and calls engine `create_editor` (V1–V3). Optional positive line jumps use engine `send_keys`, never JS terminal input. Returns `ShellSessionDto`. |
 | `Sessions.close(id)` | async | `sessions.rs:2071` |
 | `Sessions.send(id, text)`, `sendKeys(id, items)`, `paste(id, text)`, `pasteFiles(id, paths)` | async | `sessions.rs:1853,1400,1860,1879` (for sessions not shown in a terminal view, e.g. scheduling or CLI-like actions) |
 | `Sessions.capture(id, lines)`, `readOutput(id, query)`, `readHistory(...)` | async | `sessions.rs:1210,1330,1362` |
@@ -545,7 +547,7 @@ commit `a3bc62d`); `TERM-*` rows are in `docs/nsh-parity.md`.
 import { nativeComponent } from "nsh/native";
 export const Terminal = nativeComponent<TerminalProps, TerminalEvents>("riwork.terminal", {
   props: ["target", "visible", "pinned", "focusOnAttach", "colors", "frozen"],
-  events: ["state", "focusChange", "linkOpen", "drop", "inputRefused"],
+  events: ["state", "focusChange", "linkOpen", "drop", "inputRefused", "findOpen", "findResult"],
 });
 // <Terminal ref={term} target={{ kind: "local", shellId }} visible … />; term.command("focus")
 ```
@@ -562,8 +564,9 @@ export const Terminal = nativeComponent<TerminalProps, TerminalEvents>("riwork.t
   riwork-engine directly (same process). JS sees only the props, commands and events below.
 - v1 freezes what GPUI parity needs. GPUI handles only Ghostty's render action today
   (title, working directory and activity come from tmux sampling through `Sessions.subscribe`;
-  there is no bell, OSC 9/777 notification, terminal find or scroll command). Those names are
-  **reserved** (§3.3, §3.4) so a later schema can add them without renaming.
+  there is no bell, OSC 9/777 notification or scroll command). Those names remain
+  **reserved** (§3.3, §3.4). Phase 2b adds native terminal Find below; it does not
+  send scrollback text, search matches or per-frame rendering through JavaScript.
 
 ### 3.2 Props (frozen, `schema: 1`)
 
@@ -592,6 +595,8 @@ while another client holds one (Z1-Z3).
 | `linkOpen` | `{ action: "open" \| "edit", kind: "url" \| "file" \| "folder", target, line?, column? }` | Local shells only (remote tabs have no link layer). A resolved ⌘-click (`open`) or ⌘⇧-click (`edit`) (K1). The native side detects, underlines and resolves links from tmux captures with riwork-engine's `terminal_links` (K2-K6, `SessionManager::capture_link_view`, `sessions.rs:1114`) and consumes the click; the **app** decides where it opens (Files, Preview, Vim, Finder, browser: K7-K10). |
 | `drop` | `{ paths, images, accepted, reason? }` | Files or an image were dropped, or pasted with ⌘V, onto a local shell. The native side already applied the clipboard priority, unsafe-path refusal, escaping and routing by foreground program through tmux (I2-I7: `SessionManager::paste` / `paste_files`, `sessions.rs:1860,1879`, under the per-shell input lock). `accepted` tells the app to select this pane (I3). |
 | `inputRefused` | `{ reason }` | Input was refused (tmux input off, copy-mode rules, I7) so the app can show its notice. |
+| `findOpen` | `{ query }` | Phase 2b: a Ghostty search binding requests the app's Find bar. Show/focus the bar without starting a second search. |
+| `findResult` | `{ total, current }` | Phase 2b: Ghostty search match count and 1-based selected match; zero current means none selected. No captured terminal text crosses the bridge. |
 
 Reserved, not emitted in v1: `resize`, `title`, `cwd`, `bell`, `notify`, `selectionChange`.
 
@@ -602,17 +607,40 @@ Reserved, not emitted in v1: `resize`, `title`, `cwd`, `bell`, `notify`, `select
 | `focus` / `blur` | — | First responder. `focus` attaches a missing client first (T5). |
 | `reattach` | — | Drop the current attach client or remote bridge surface and attach the same target again: remote Reconnect (R2) and Retry after `failed` (T5). Never creates a session. |
 | `copy`, `paste`, `selectAll` | — | Programmatic equivalents of the view's own `copy:`, `paste:` and `selectAll:` responder actions, for context menus. |
+| `find` | `{ query: string }` | Phase 2b: search through Ghostty's native search action; updates the current query in the same surface. Empty query clears results. |
+| `findNext`, `findPrevious` | — | Phase 2b: advance the selected native match. |
+| `findClose` | — | Phase 2b: end the native search and restore terminal focus. |
 
-Reserved, not accepted in v1: `find`, `findClose`, `scroll`, `reset`, `sendText`, `sendKeys`,
+Reserved, not accepted in v1: `scroll`, `reset`, `sendText`, `sendKeys`,
 `snapshot`. Typing into a session from app logic (Vim jump to line, chat “send to terminal”,
 upload-inbox pastes) goes through `Sessions.send*`/`paste*` (§1.7), as it does today.
 
 Key handling: the view receives keys as first responder. The host menu's Edit items use the
-standard responder selectors, which the view implements (⌘V: files/images go to RiWork's paste,
-text falls through to Ghostty, I1); ⌘=, ⌘-, ⌘0 reach Ghostty's font-size bindings and are not
-also dispatched as RiWork text-size commands (§2.4); ⌘F stays RiWork's sidebar search.
+standard responder selectors, which the view implements (Phase 2b ⌘V routes files,
+images and text through the engine's locked paste path); ⌘=, ⌘-, ⌘0 reach Ghostty's font-size bindings and are not
+also dispatched as RiWork text-size commands (§2.4). Phase 2b routes ⌘F to terminal
+Find when a local terminal tab is active and to its panel's search otherwise;
+⌘G / ⌘⇧G advance terminal matches. Nested input editors keep normal edit-action priority.
 OSC 52: writes of plain text to the pasteboard are allowed; clipboard reads and any write that
 asks for confirmation are denied (today's shim policy).
+
+Phase 2b app routes are `route.step {kind: "newSubshell", parentShellId?}`
+(omitted parent uses the selected local shell), and `route.step {kind: "openEditor",
+path, line?, worktreeId?}`. Window commands `newSubshell` and `openVim` expose the
+same paths in menus; `openVim` opens the file-path dialog. `LayoutSession.openEditorShell(id)`
+places the returned existing Vim session using V4 routing: existing tab, main
+outside focus, unlocked terminal pane, any unlocked pane, or a new side-by-side
+unlocked pane when all are locked. Vim's own write/save behavior remains engine-owned.
+Remote-Mac tabs remain Phase 6 and are excluded from these Phase 2b routes.
+
+Phase 2b image paste/drop extends the earlier I6 clipboard behavior: a lone
+picture becomes a private PNG below `RIWORK_HOME/tmp/terminal-images` and its
+escaped path uses the same foreground-program routing as file attachments.
+The tab owns this file across hidden-surface release; failed delivery, final
+tab disposal and proven dead-owner startup cleanup remove it. Native Cocoa
+file URLs use decomposed filesystem Unicode spelling; the escaped path still
+addresses the original file. Ordinary text keeps the engine's tmux newline
+and bracketed-paste semantics, without an added Return.
 
 ### 3.5 Lifecycle invariants (frozen)
 

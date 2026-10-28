@@ -1,0 +1,1137 @@
+info: ghostty version=1.3.2-dev
+info: ghostty build optimize=ReleaseFast
+info: runtime=.none
+info: font_backend=.coretext
+info: renderer=renderer.generic.Renderer(renderer.Metal)
+info: libxev default backend=kqueue
+info(os_locale): setlocale from env result=en_US.UTF-8
+info: reading configuration file path=/private/tmp/rwnsh-p2-gy5qtpq2/state/nsh/terminal-config/80886-2-e502216e-be50-46ad-80dc-4f31fe15e1f2.conf
+info: reading configuration file path=/private/tmp/rwnsh-p2-gy5qtpq2/user/.config/ghostty/config
+info(config): default shell src=passwd value=/bin/zsh
+info(config): default working directory src=passwd value=/Users/dominik
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(io_exec): started subcommand path=/usr/bin/login pid=80901
+info(generic_renderer): created display link
+info(generic_renderer): updating display link display id=2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(io_exec): started subcommand path=/usr/bin/login pid=80903
+info(generic_renderer): created display link
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+warning(stream): unimplemented mode: 7727
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(io_exec): started subcommand path=/usr/bin/login pid=80917
+info(generic_renderer): created display link
+info(generic_renderer): updating display link display id=2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=80918
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(font_codepoint_resolver): found codepoint 0x306B in fallback face=Arial Unicode MS
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info: reading configuration file path=/private/tmp/rwnsh-p2-gy5qtpq2/state/nsh/terminal-config/80886-1-58fd9992-cf43-43fa-84a2-be314b7f89a5.conf
+info: reading configuration file path=/private/tmp/rwnsh-p2-gy5qtpq2/user/.config/ghostty/config
+info: reading configuration file path=/private/tmp/rwnsh-p2-gy5qtpq2/state/nsh/terminal-config/80886-1-58fd9992-cf43-43fa-84a2-be314b7f89a5.override.conf
+info(config): default shell src=passwd value=/bin/zsh
+info(config): default working directory src=passwd value=/Users/dominik
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info: reading configuration file path=/private/tmp/rwnsh-p2-gy5qtpq2/state/nsh/terminal-config/80886-3-319575a3-6fbf-4132-b411-93df8e90f7b2.conf
+info: reading configuration file path=/private/tmp/rwnsh-p2-gy5qtpq2/user/.config/ghostty/config
+info: reading configuration file path=/private/tmp/rwnsh-p2-gy5qtpq2/state/nsh/terminal-config/80886-3-319575a3-6fbf-4132-b411-93df8e90f7b2.override.conf
+info(config): default shell src=passwd value=/bin/zsh
+info(config): default working directory src=passwd value=/Users/dominik
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=294564d08c6798cc
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=40aebe1fa1a9beba
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=961d79193d6d003d
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=fcca179c72689098
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=81592
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=81627
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=81629
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=81636
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=dafe54e46bc7135d
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=63fc76d7eafeacb2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=524252d8fd13655e
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=163e62a07bcf9ca9
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=81731
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=81778
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=81791
+info(generic_renderer): updating display link display id=2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=81792
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=665fa5df7d81541f
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=c6973a13cada94a4
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=aee7622e6728f1ad
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=2906c817c84576fe
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=81896
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=81931
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=81945
+info(generic_renderer): updating display link display id=2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=81946
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=dbccbc40d2274502
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=e54a565070b9512c
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=8695c1cbc03b5f43
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=be109c87f5f3ee32
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=82062
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=82098
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=82110
+info(generic_renderer): updating display link display id=2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=82111
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=e7770aa62a735186
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=a9660302ee7aa0db
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=1e37ddbf8d309aaf
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=bedc030d05f3bb1a
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=82215
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=82260
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=82272
+info(generic_renderer): updating display link display id=2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=82273
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=fac9018a0f18bbc0
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=7feb17eb8fda3f88
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=a661b37595c20cfe
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=d9bf31a82a01b6d2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=82374
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=82395
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=82425
+info(generic_renderer): updating display link display id=2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=82426
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=57f5fbfdf40ad169
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=ad2c3b5d7683b12f
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=ae9d0ef412d9efe3
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=1adf32d354545e3b
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=82528
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=82567
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=82573
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=82579
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=615ec42e985e1081
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=4ff5b9c82cfc6f8
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=c5881fea8e2ffab8
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=fd9c0109b19af7df
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=82696
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=82729
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=82732
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=82739
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=c5d24ccafe18d6e8
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=fb946e9baea084e
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=9361f43abd1955a7
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=c161f9faaad1d51b
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=82841
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=82864
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=82889
+info(generic_renderer): updating display link display id=2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=82892
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=a93a719737d69a65
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=8b51101327aa65c8
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=7071eaead58b6206
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=3042b2b539fd9d08
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=83025
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=83069
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=83076
+info(generic_renderer): updating display link display id=2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=83078
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=e734ddd1f2589ff
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=a1363253cd65ec71
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=59ed8aacbef303fb
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=c918ba3ee2799460
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=83182
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=83225
+info(generic_renderer): updating display link display id=2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=83226
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=83235
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=1d1d1333e8f7eb05
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=5a330fb651060a58
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=1aa357326e3aa9bc
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=6349105807e09716
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=83333
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=83370
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=83382
+info(generic_renderer): updating display link display id=2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=83383
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=144dcbcc1edc0a75
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=8850824fea77cab3
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=e0870cbe16607080
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=1d5030ec39ba4811
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=83493
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=83551
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=83563
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=83580
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=e737d092dd3c8e8c
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=eaf226b3c5bd8f74
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=c90d7d4f6fd231cc
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=5b6b3b3055f9b8e9
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=83789
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=83818
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=83850
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=83872
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=c837076d0e5be3b7
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=c936c7bb229fe8e5
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=5f92792e5272c1d0
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=f9b3d05fa2a5e80
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=84006
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=84046
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=84054
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=84060
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=a39854c5928d013e
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=a5ebf266c73d20c9
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=c4ab422a861dc64d
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=a32f641e28863125
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=84160
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=84221
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=84229
+info(generic_renderer): updating display link display id=2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=84230
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=fd84f021d06a7fdf
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=38a94371cefaa9fe
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=76e6c70803138716
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=4cb84ca848100a9c
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=84327
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=84372
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=84380
+info(generic_renderer): updating display link display id=2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=84381
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=dac2c67ef2e6fc7c
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=f1d2b3aa97d78262
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=b386ae5614092bc5
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=dcb77a6d6603d8e1
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=84495
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=84518
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=84544
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=84548
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=3fc9f4be1f7e7a98
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=e996417c4de2cb67
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=c21383f2cf02430d
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=b48d9af9b4c1ffba
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=84659
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=84692
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=84708
+info(generic_renderer): updating display link display id=2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=84709
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=bc0069351cba23cc
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=dd3830ad7ef56350
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=68019459a9a57f9b
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=65cb1a9aa781bffe
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=84821
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=84862
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=84874
+info(generic_renderer): updating display link display id=2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=84876
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(io_exec): pty fd closed, read thread exiting
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=75c4790878eb9644
+info(surface): surface closed id=87a0c3c037268c49
+info(io_exec): pty fd closed, read thread exiting
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=1f85f25c3103647b
+info(surface): surface closed id=16b9f23fe0f8ff7c

@@ -839,6 +839,61 @@ impl LayoutModel {
         Ok(self.dock(self.extent.unwrap_or(DEFAULT_EXTENT)))
     }
 
+    /// Vim reuses its existing tab. A new editor goes to main outside focus;
+    /// otherwise prefer an unlocked terminal pane, then any unlocked pane. If
+    /// all panes are locked, make an unlocked pane rather than rejecting Edit.
+    pub fn open_editor_shell(&mut self, shell_id: &str) -> Result<DockAreaLayout, String> {
+        if shell_id.trim().is_empty() {
+            return Err("invalid: shellId is required".into());
+        }
+        let key = format!("shell:{shell_id}");
+        if self.panel(&key).is_some() {
+            return self.select_panel(&key);
+        }
+        let locks = self.project.effective_locked_panes();
+        let target = self
+            .project
+            .main_pane
+            .filter(|_| !self.focus_mode)
+            .or_else(|| {
+                self.project
+                    .panes
+                    .iter()
+                    .find(|(id, pane)| {
+                        !locks.contains(id)
+                            && pane.tabs.iter().any(|tab| {
+                                matches!(tab, SavedTab::Shell { .. } | SavedTab::RemoteShell { .. })
+                            })
+                    })
+                    .map(|(id, _)| *id)
+            })
+            .or_else(|| {
+                self.project
+                    .layout
+                    .pane_ids()
+                    .into_iter()
+                    .find(|id| !locks.contains(id))
+            });
+        if let Some(id) = target {
+            self.project.active_pane = id;
+        } else {
+            self.split_active(false)?;
+        }
+        let pane = self
+            .project
+            .panes
+            .get_mut(&self.project.active_pane)
+            .unwrap();
+        pane.tabs.push(SavedTab::Shell {
+            shell_id: shell_id.to_owned(),
+        });
+        pane.active_tab_key = Some(key);
+        self.project.detached_shell_ids.retain(|id| id != shell_id);
+        self.detached_shell_panes.remove(shell_id);
+        self.project.normalize()?;
+        Ok(self.dock(self.extent.unwrap_or(DEFAULT_EXTENT)))
+    }
+
     /// Detach removes this window's tab and records its identity for restore.
     /// It deliberately has no SessionManager, and never kills a tmux session.
     pub fn detach_shell(&mut self, shell_id: &str) -> Result<DockAreaLayout, String> {

@@ -1,0 +1,33 @@
+   Compiling riwork-nsh-workspace v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/apps/riwork)
+   Compiling riwork-desktop v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-desktop)
+   Compiling riwork-nsh-terminal v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal)
+   Compiling riwork-nsh-native v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-native)
+warning: function `missing_folder_request` is never used
+ --> crates/riwork-desktop/tests/../src/nsh_startup.rs:4:15
+  |
+4 | pub(crate) fn missing_folder_request(args: &[String]) -> bool {
+  |               ^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `riwork-desktop` (test "startup_environment") generated 1 warning
+    Finished `test` profile [unoptimized] target(s) in 10.16s
+     Running unittests src/nsh_main.rs (target/debug/deps/riwork-7d0eba8894236bf5)
+     Running tests/appkit_shell.rs (target/debug/deps/appkit_shell-200b826cc2399ff6)
+     Running tests/cli_contract.rs (target/debug/deps/cli_contract-1f4b5a5e041619db)
+     Running tests/startup_environment.rs (target/debug/deps/startup_environment-9c97f9a6a0c76cab)
+     Running unittests src/lib.rs (target/debug/deps/riwork_nsh_native-5a510b9080dfe72e)
+     Running tests/appearance.rs (target/debug/deps/appearance-0cc746868c609a85)
+     Running tests/layout_session.rs (target/debug/deps/layout_session-1c4e689d50429016)
+     Running tests/native_headless.rs (target/debug/deps/native_headless-ad3ae1421ec31b72)
+     Running tests/panel_crud.rs (target/debug/deps/panel_crud-8aa3489ddf41fa60)
+     Running tests/services.rs (target/debug/deps/services-f60addcf67d95975)
+     Running tests/settings.rs (target/debug/deps/settings-8ea2009d8189d462)
+     Running unittests src/lib.rs (target/debug/deps/riwork_nsh_workspace-7f806f4a1da93553)
+     Running tests/layout_backend.rs (target/debug/deps/layout_backend-4017fd72dc2159f6)
+     Running tests/layout_gestures.rs (target/debug/deps/layout_gestures-5fe88cfb1bff8c4c)
+     Running tests/layout_roundtrip.rs (target/debug/deps/layout_roundtrip-ab46c4564decc308)
+     Running tests/pane_model.rs (target/debug/deps/pane_model-8d2b79bb6ac0bdc9)
+     Running tests/window_size.rs (target/debug/deps/window_size-07434c0bbf7d1354)
+   Doc-tests riwork_nsh_native
+   Doc-tests riwork_nsh_workspace

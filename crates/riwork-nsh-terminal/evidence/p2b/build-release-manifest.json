@@ -1,0 +1,22 @@
+{
+  "verification_environment": "isolated HOME/RIWORK_HOME, standard release profile",
+  "argv": [
+    "cargo",
+    "build",
+    "-p",
+    "riwork-desktop",
+    "--features",
+    "terminal-fixture",
+    "--release",
+    "--locked",
+    "--offline",
+    "-j4"
+  ],
+  "environment": {
+    "HOME": "/tmp/riwork-p2b-checks/build-release-final/user",
+    "RIWORK_HOME": "/tmp/riwork-p2b-checks/build-release-final/state",
+    "CARGO_HOME": "/Users/dominik/.cargo",
+    "RUSTUP_HOME": "/Users/dominik/.rustup"
+  },
+  "exit_code": 0
+}

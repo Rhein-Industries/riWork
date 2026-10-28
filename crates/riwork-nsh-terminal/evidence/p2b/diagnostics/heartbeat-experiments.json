@@ -1,0 +1,228 @@
+{
+  "debug-20": {
+    "root": "/private/tmp/rwnsh-p2-_2rwkn2v",
+    "status": "failed",
+    "error": "main-loop stalled100ms during teardown",
+    "cycles": 20,
+    "native_lifetimes": 84,
+    "maxima": {
+      "shutdown_ms": 0.14900002861395478,
+      "free_ms": 4.016999970190227,
+      "disposal_ms": 465.11999994982034
+    },
+    "max_teardown_heartbeat_gap_ms": 496.0260000228882,
+    "graceful_shutdown": {
+      "exit_code": 0,
+      "session_survival": true,
+      "leaked_clients": 0,
+      "leaked_descendants": 0
+    },
+    "cleanup": {
+      "server_absent": true,
+      "fixture_pid_absent": true,
+      "pressure_pids": [
+        47222,
+        47232,
+        47245,
+        47255
+      ],
+      "pressure_pids_remaining": []
+    },
+    "binary": {
+      "path": "/private/tmp/riwork-p2b-checks/bin/riwork-terminal-fixture",
+      "sha256": "bda055133e5d2931f152dec546cb5ca27e9f89de69e3c3c3a09db040e6b07ee3"
+    },
+    "bundle": {
+      "path": "/private/tmp/riwork-p2b-checks/bundle/bundle.js",
+      "sha256": "27b146193fb9db2ed169f2075ca30ea56c284aa6b2ca283745f2b739dbd79f02"
+    }
+  },
+  "debug-inert-2": {
+    "root": "/private/tmp/rwnsh-p2-wq6q_cv1",
+    "status": "failed",
+    "error": "main-loop stalled100ms during teardown",
+    "cycles": 2,
+    "native_lifetimes": 12,
+    "maxima": {
+      "shutdown_ms": 0.14000001829117537,
+      "free_ms": 3.2270000083371997,
+      "disposal_ms": 374.79699996765703
+    },
+    "max_teardown_heartbeat_gap_ms": 413.2849999666214,
+    "graceful_shutdown": {
+      "exit_code": 0,
+      "session_survival": true,
+      "leaked_clients": 0,
+      "leaked_descendants": 0
+    },
+    "cleanup": {
+      "server_absent": true,
+      "fixture_pid_absent": true,
+      "pressure_pids": [
+        57272,
+        57282,
+        57297,
+        57307
+      ],
+      "pressure_pids_remaining": []
+    },
+    "binary": {
+      "path": "/private/tmp/riwork-p2b-checks/bin/riwork-terminal-fixture",
+      "sha256": "bda055133e5d2931f152dec546cb5ca27e9f89de69e3c3c3a09db040e6b07ee3"
+    },
+    "bundle": {
+      "path": "/private/tmp/riwork-p2b-checks/bundle/bundle.js",
+      "sha256": "27b146193fb9db2ed169f2075ca30ea56c284aa6b2ca283745f2b739dbd79f02"
+    }
+  },
+  "framework-opt2-2": {
+    "root": "/private/tmp/rwnsh-p2-b_wkf6kp",
+    "status": "failed",
+    "error": "main-loop stalled100ms during teardown",
+    "cycles": 2,
+    "native_lifetimes": 12,
+    "maxima": {
+      "shutdown_ms": 0.14299998292699456,
+      "free_ms": 5.403999995905906,
+      "disposal_ms": 417.9369999910705
+    },
+    "max_teardown_heartbeat_gap_ms": 448.7109999656677,
+    "graceful_shutdown": {
+      "exit_code": 0,
+      "session_survival": true,
+      "leaked_clients": 0,
+      "leaked_descendants": 0
+    },
+    "cleanup": {
+      "server_absent": true,
+      "fixture_pid_absent": true,
+      "pressure_pids": [
+        61793,
+        61803,
+        61816,
+        61826
+      ],
+      "pressure_pids_remaining": []
+    },
+    "binary": {
+      "path": "/private/tmp/riwork-p2b-checks/bin/riwork-native-optimized",
+      "sha256": "a82964ffea8bc958264299bd5437ea2a7b3fd4d1b917390274f5b21ab6351716"
+    },
+    "bundle": {
+      "path": "/private/tmp/riwork-p2b-checks/bundle/bundle.js",
+      "sha256": "27b146193fb9db2ed169f2075ca30ea56c284aa6b2ca283745f2b739dbd79f02"
+    }
+  },
+  "analysis": {
+    "sample_root": "/private/tmp/rwnsh-p2-3f_pzdwe",
+    "main_thread_samples": 6686,
+    "objective_c_signature_verification_inclusive_samples": 3727,
+    "inference": "Repeated NSH hit-testing invokes Objective-C debug signature verification during native commit batches. Standard release disables these debug checks; its acceptance result must be measured independently.",
+    "runtime_source_changes_from_experiments": false,
+    "acceptance_thresholds_unchanged": true
+  },
+  "release-2": {
+    "root": "/private/tmp/rwnsh-p2-2pnswr6a",
+    "status": "passed",
+    "cycles": 2,
+    "native_verification": {
+      "created": 12,
+      "freed": 12,
+      "contexts_released": 12,
+      "pending": 0,
+      "maxima": {
+        "shutdown_ms": 0.08200004231184721,
+        "free_ms": 2.9039999935775995,
+        "disposal_ms": 30.30199999921024
+      },
+      "geometry": {
+        "terminalId": 1,
+        "shellId": "2b9a0683-ea9d-4c05-a6b6-58966f12bffd",
+        "layerScale": 2,
+        "renderer": {
+          "height": 760,
+          "samples": 206756,
+          "width": 2440,
+          "firstPixel": 4279375903,
+          "readable": 1,
+          "iosurface": true,
+          "differentPixels": 19606
+        },
+        "layerBounds": "{{0, 0}, {1220, 380}}",
+        "viewportText": "https://example.com/ RIWORK alpha-0 OUTPUT PRESSURE ------------------------------------------------\nhttps://example.com/ RIWORK alpha-0 OUTPUT PRESSURE ------------------------------------------------\nhttps://example.com/ RIWORK alpha-0 OUTPUT PRESSURE ------------------------------------------------",
+        "background": "#101820",
+        "superviewClass": "NshView",
+        "closing": false,
+        "cols": 186,
+        "wakeCount": 7,
+        "viewWidth": 1220,
+        "monotonicMs": 299360346.03499997,
+        "visibilityUpdates": 2,
+        "viewHeight": 380,
+        "layerHasContents": 1,
+        "mainThread": true,
+        "wantsLayer": true,
+        "phase": "geometry-probe",
+        "resolved": true,
+        "lastShown": true,
+        "rows": 28,
+        "frame": "{{0, 0}, {1220, 380}}",
+        "visibleRect": "{{0, 0}, {1220, 380}}",
+        "originY": 4,
+        "originDetails": {
+          "reason": "measured",
+          "baseline": 14.5,
+          "cellHeight": 13,
+          "available": 16,
+          "imeY": 277,
+          "remainder": 4,
+          "left": 4,
+          "top": 4
+        },
+        "windowOcclusion": 8194,
+        "renderRequests": 0,
+        "visible": true,
+        "widthPx": 2440,
+        "originX": 4,
+        "hasWindow": 1,
+        "layerClass": "IOSurfaceLayer",
+        "frozen": false,
+        "appTicks": 4,
+        "heightPx": 760,
+        "drawCalls": 0,
+        "scale": 2,
+        "layerHidden": false,
+        "foreground": "#c9d8e6"
+      },
+      "rendered_surfaces": 8,
+      "heartbeats": 276,
+      "max_teardown_heartbeat_gap_ms": 25.152999997138977,
+      "global_gaps_over100ms": []
+    },
+    "graceful_shutdown": {
+      "exit_code": 0,
+      "session_survival": true,
+      "leaked_clients": 0,
+      "leaked_descendants": 0
+    },
+    "cleanup": {
+      "server_absent": true,
+      "fixture_pid_absent": true,
+      "pressure_pids": [
+        76042,
+        76183,
+        76387,
+        76451
+      ],
+      "pressure_pids_remaining": []
+    },
+    "binary": {
+      "path": "/private/tmp/riwork-p2b-checks/bin/riwork-terminal-release-fixture",
+      "sha256": "08a67f0f10c9dfee0b25953cf1decf79b09cb3c0b3f1c06b319a18cb63890c13"
+    },
+    "bundle": {
+      "path": "/private/tmp/riwork-p2b-checks/bundle/bundle.js",
+      "sha256": "27b146193fb9db2ed169f2075ca30ea56c284aa6b2ca283745f2b739dbd79f02"
+    }
+  }
+}

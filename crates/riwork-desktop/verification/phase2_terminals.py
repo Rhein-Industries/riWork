@@ -181,13 +181,23 @@ class Run:
                 tag = f'{name.lower()}-{local}'
                 command = f'{self.python} -u {pressure} {self.root / "pressure"} {tag}'
                 shell = json.loads(self.cmd([self.binary, 'shell', 'create', '--project', project['id'], '--command', command, '--no-parent', '--background', '--json']).stdout)
+                # Background CLI creation deliberately begins as hidden worker
+                # membership. Explicitly open this fixture's own sessions before
+                # restoring their pane placement; inventory must not unhide them.
+                membership = json.loads(self.cmd([self.binary, 'tabs', 'open', '--project', project['id'], '--key', f'shell:{shell["id"]}']).stdout)
+                if 'error' in membership:
+                    raise RuntimeError(f'cannot open isolated fixture membership: {membership["error"]}')
                 shell['fixtureTag'] = tag
                 self.sessions.append(shell)
                 shells.append(shell)
             panes = {}
             for local, shell in enumerate(shells):
                 pane = str(local+1)
-                panes[pane] = dict(tabs=[dict(kind='shell',shell_id=shell['id'])], active_tab_key=f'shell:{shell["id"]}',
+                # Keep pane scaffolding while its shell is detached. A last
+                # tab close intentionally collapses an empty pane; a real panel
+                # sibling lets reopen exercise the remembered original pane.
+                anchor = dict(kind='panel', panel='files' if local==0 else 'preview')
+                panes[pane] = dict(tabs=[anchor, dict(kind='shell',shell_id=shell['id'])], active_tab_key=f'shell:{shell["id"]}',
                                    shell_ids=[shell['id']], active_shell_id=shell['id'], tab_edge='top')
             layouts[project['id']] = dict(layout={'split':dict(axis='stacked',ratio=.5,first={'pane':1},second={'pane':2})},
                                            panes=panes, active_pane=1, locked_panes=[], main_pane=None,
