@@ -7,7 +7,9 @@ use nsh_platform_macos::{
     ComponentContext, Components, NativeComponent, objc2::rc::Retained, objc2_app_kit::NSView,
 };
 use riwork_engine::{
+    session_input::Input,
     sessions::{AttachOptions, SessionManager, quote_arg},
+    terminal_drop,
     terminal_links::{Bases, Link, PaneView},
 };
 use serde::Deserialize;
@@ -41,6 +43,7 @@ unsafe extern "C" {
     fn rw_terminal_set_state(view: *mut c_void, visible: bool, frozen: bool, focus: bool);
     fn rw_terminal_update_config(view: *mut c_void, path: *const c_char) -> bool;
     fn rw_terminal_command(view: *mut c_void, name: *const c_char);
+    fn rw_terminal_find(view: *mut c_void, query: *const c_char);
     fn rw_terminal_shutdown(view: *mut c_void);
     fn rw_terminal_abandon(view: *mut c_void);
     fn rw_terminal_detach_result(view: *mut c_void, confirmed: bool);
@@ -128,6 +131,7 @@ struct State {
     link_busy: AtomicBool,
     link_cache: Mutex<Option<(u64, u64, Value)>>,
     link_pending: Mutex<Option<Value>>,
+    images: Mutex<crate::images::Images>,
     model: Mutex<Model>,
 }
 static NEXT: AtomicU64 = AtomicU64::new(1);
@@ -174,12 +178,15 @@ pub fn pending_count() -> usize {
 /// Called once on the shared registry, before the first AppView is constructed.
 pub fn register(components: &Components, home: PathBuf) {
     start_maintenance();
+    let image_home = home.clone();
+    thread::spawn(move || crate::images::cleanup_stale(&image_home));
     components.register(
         "riwork.terminal",
         Rc::new(move |context| {
             let state = Arc::new(State {
                 id: NEXT.fetch_add(1, Ordering::Relaxed),
                 home: home.clone(),
+                images: Mutex::new(crate::images::Images::new(&home)),
                 context,
                 view: AtomicUsize::new(0),
                 alive: AtomicBool::new(true),
@@ -294,18 +301,21 @@ impl NativeComponent for Terminal {
         }
         reconcile(self.state.clone());
     }
-    fn command(&mut self, name: &str, _args: &JsonValue) {
+    fn command(&mut self, name: &str, args: &JsonValue) {
         match name {
             "focus" => {
                 let mut m = self.state.model.lock().unwrap();
                 m.failed = false;
                 m.child_failures = 0;
-                m.focus = true;
+                // An attached view receives the command immediately. Only a
+                // pending/recreated surface needs a deferred focus request.
+                m.focus = m.active.is_none() || m.closing || m.recreate;
                 let check_exit = m.child_exited && !m.ended;
                 if check_exit {
                     m.retry_at = None;
                 }
                 drop(m);
+                sync_state(&self.state);
                 if check_exit {
                     check_child_exit(self.state.clone());
                 }
@@ -332,15 +342,16 @@ impl NativeComponent for Terminal {
                 reconcile(self.state.clone());
                 return;
             }
-            "paste" => {
-                emit(
-                    &self.state,
-                    "inputRefused",
-                    json!({"reason":"Paste and file drop are deferred to the next terminal slice."}),
-                );
+            "find" => {
+                if let Some(query) = args.get("query").and_then(Value::as_str) {
+                    if let Ok(query) = cstr(query) {
+                        unsafe { rw_terminal_find(ptr(&self.state), query.as_ptr()) };
+                    }
+                }
                 return;
             }
-            "blur" | "copy" | "selectAll" => {}
+            "blur" | "copy" | "selectAll" | "paste" | "findNext" | "findPrevious" | "findClose" => {
+            }
             _ => return, // Reserved commands are deliberately not accepted.
         }
         if let Ok(name) = cstr(name) {
@@ -364,6 +375,150 @@ fn sync_state(state: &State) {
         (m.visible, m.frozen, m.focus)
     };
     unsafe { rw_terminal_set_state(ptr(state), v, f, focus) };
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+enum Pasted {
+    Text {
+        text: String,
+    },
+    Files {
+        paths: Vec<PathBuf>,
+    },
+    Image {
+        #[serde(rename = "pngBase64")]
+        png_base64: String,
+    },
+}
+// All input from pasteboards, drops and component commands enters the same
+// per-shell engine lock. In particular, text is never replayed after refusal.
+fn request_input(state: Arc<State>, payload: Value) {
+    let input = match serde_json::from_value::<Pasted>(payload) {
+        Ok(Pasted::Files { paths }) if paths.is_empty() => {
+            emit(
+                &state,
+                "inputRefused",
+                json!({"reason":"No files were supplied"}),
+            );
+            return;
+        }
+        Ok(input) => input,
+        Err(_) => {
+            emit(
+                &state,
+                "inputRefused",
+                json!({"reason":"Invalid terminal paste payload"}),
+            );
+            return;
+        }
+    };
+    if let Pasted::Files { paths } = &input {
+        if let Err(reason) = terminal_drop::validate_paths(paths) {
+            emit(&state, "inputRefused", json!({"reason":reason}));
+            return;
+        }
+    }
+    let shell = {
+        let m = state.model.lock().unwrap();
+        if !state.alive.load(Ordering::Acquire) || !m.visible || m.frozen || m.closing || m.ended {
+            None
+        } else {
+            m.active
+                .clone()
+                .filter(|shell| m.target.as_ref().and_then(Target::local) == Some(shell.as_str()))
+        }
+    };
+    let Some(shell) = shell else {
+        emit(
+            &state,
+            "inputRefused",
+            json!({"reason":"Terminal is not available for input"}),
+        );
+        return;
+    };
+    if matches!(&input, Pasted::Files { .. }) {
+        if let Ok(focus) = cstr("focus") {
+            unsafe { rw_terminal_command(ptr(&state), focus.as_ptr()) };
+        }
+    }
+    let generation = state.generation.load(Ordering::Acquire);
+    thread::spawn(move || {
+        let mut staged = None;
+        let mut attachments = None;
+        let result = (|| {
+            let input = match input {
+                Pasted::Image { png_base64 } => {
+                    let path = state.images.lock().unwrap().stage(&png_base64)?;
+                    staged = Some(path.clone());
+                    Pasted::Files { paths: vec![path] }
+                }
+                input => input,
+            };
+            if let Pasted::Files { paths } = &input {
+                terminal_drop::validate_paths(paths)?;
+                attachments =
+                    Some(json!({"paths":paths,"images":staged.iter().collect::<Vec<_>>() }));
+            }
+            let manager = SessionManager::at(state.home.clone())?;
+            let mut stale = false;
+            manager.paste(&shell, |harness, command, tty| {
+                let m = state.model.lock().unwrap();
+                if !state.alive.load(Ordering::Acquire)
+                    || state.generation.load(Ordering::Acquire) != generation
+                    || m.active.as_deref() != Some(&shell)
+                    || m.closing
+                    || m.frozen
+                    || !m.visible
+                {
+                    stale = true;
+                    return Vec::new();
+                }
+                drop(m);
+                match input {
+                    Pasted::Text { text } => vec![Input::Paste(text)],
+                    Pasted::Files { paths } => {
+                        let program = terminal_drop::program(harness, command, || {
+                            terminal_drop::foreground_names(tty)
+                        });
+                        terminal_drop::path_input(program, &paths)
+                    }
+                    Pasted::Image { .. } => unreachable!(),
+                }
+            })?;
+            if stale {
+                return Err("Terminal changed before input could be delivered".to_owned());
+            }
+            Ok::<_, String>(())
+        })();
+        if result.is_err() {
+            if let Some(path) = staged {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+        dispatch2::DispatchQueue::main().exec_async(move || {
+            trace(
+                &state,
+                "input-result",
+                json!({"ok":result.is_ok(),"shellId":shell}),
+            );
+            if let Some(mut attachment) = attachments {
+                attachment["accepted"] = json!(result.is_ok());
+                if let Err(reason) = &result {
+                    attachment["reason"] = json!(reason);
+                }
+                if result.is_ok() && state.generation.load(Ordering::Acquire) == generation {
+                    if let Ok(focus) = cstr("focus") {
+                        unsafe { rw_terminal_command(ptr(&state), focus.as_ptr()) };
+                    }
+                }
+                emit(&state, "drop", attachment);
+            }
+            if let Err(reason) = result {
+                emit(&state, "inputRefused", json!({"reason":reason}));
+            }
+        });
+    });
 }
 fn reconcile(state: Arc<State>) {
     if !state.alive.load(Ordering::Acquire) {
@@ -654,7 +809,14 @@ extern "C" fn on_event(context: *mut c_void, name: *const c_char, data: *const c
             // Never create a new surface recursively from inside native free.
             dispatch2::DispatchQueue::main().exec_async(move || reconcile(state));
         }
-        "focusChange" | "inputRefused" => emit(&state, &name, value),
+        "focusChange" => {
+            if value["focused"].as_bool() == Some(true) {
+                state.model.lock().unwrap().focus = false;
+            }
+            emit(&state, &name, value);
+        }
+        "inputRefused" | "findResult" | "findOpen" => emit(&state, &name, value),
+        "input" => request_input(state, value),
         "linkHit" => resolve_link(state, value),
         _ => {}
     }
@@ -915,6 +1077,10 @@ fn start_maintenance() {
         });
     });
 }
+static RELEASE_SCHEDULES: OnceLock<Mutex<BTreeMap<isize, policy::PlanSchedule>>> = OnceLock::new();
+fn release_schedules() -> &'static Mutex<BTreeMap<isize, policy::PlanSchedule>> {
+    RELEASE_SCHEDULES.get_or_init(Default::default)
+}
 fn maintain(states: Vec<Arc<State>>, config_changed: bool) {
     let mut windows: BTreeMap<isize, Vec<Arc<State>>> = BTreeMap::new();
     for state in states {
@@ -948,7 +1114,9 @@ fn maintain(states: Vec<Arc<State>>, config_changed: bool) {
         let window = view.window().map(|w| w.windowNumber()).unwrap_or(0);
         windows.entry(window).or_default().push(state);
     }
-    for states in windows.values() {
+    let mut schedules = release_schedules().lock().unwrap();
+    schedules.retain(|window, _| windows.contains_key(window));
+    for (window, states) in &windows {
         let frozen = states.iter().any(|s| s.model.lock().unwrap().frozen);
         let panes = states
             .iter()
@@ -966,14 +1134,29 @@ fn maintain(states: Vec<Arc<State>>, config_changed: bool) {
                 }
             })
             .collect::<Vec<_>>();
-        let plan = policy::plan(&policy::Screen {
-            panes: &panes,
-            active_pane: 0,
-            focus_mode: false,
-            frozen,
-        });
+        let plan = schedules.entry(*window).or_default().check(
+            &policy::Screen {
+                panes: &panes,
+                active_pane: 0,
+                focus_mode: false,
+                frozen,
+            },
+            Instant::now(),
+        );
+        if let Some(plan) = &plan {
+            if let Some(state) = states.first() {
+                trace(
+                    state,
+                    "release-policy",
+                    json!({"windowNumber":window,"release":plan.release,"recheckMs":plan.recheck.map(|wait|wait.as_millis() as u64),"frozen":frozen}),
+                );
+            }
+        }
         for state in states {
-            if plan.release.contains(&state.id) {
+            if plan
+                .as_ref()
+                .is_some_and(|plan| plan.release.contains(&state.id))
+            {
                 state.model.lock().unwrap().closing = true;
                 unsafe { rw_terminal_shutdown(ptr(state)) };
             } else {
@@ -1008,7 +1191,7 @@ fn fixture_snapshot_inner(include_trace: bool) -> Value {
     let list=states().lock().unwrap().iter().filter_map(Weak::upgrade).map(|s| {
         let m=s.model.lock().unwrap();
         let window=if s.alive.load(Ordering::Acquire) {unsafe {&*(ptr(&s).cast::<NSView>())}.window().map(|w|w.windowNumber())} else {None};
-        json!({"id":s.id,"shellId":m.active,"target":m.target.as_ref().and_then(Target::local),"active":m.active.is_some(),"closing":m.closing,"attaching":m.attaching,"visible":m.visible,"alive":s.alive.load(Ordering::Acquire),"windowNumber":window})
+        json!({"id":s.id,"shellId":m.active,"target":m.target.as_ref().and_then(Target::local),"active":m.active.is_some(),"closing":m.closing,"attaching":m.attaching,"visible":m.visible,"pinned":m.pinned,"frozen":m.frozen,"ended":m.ended,"childExited":m.child_exited,"hiddenForMs":m.hidden.elapsed().as_millis() as u64,"alive":s.alive.load(Ordering::Acquire),"windowNumber":window})
     }).collect::<Vec<_>>();
     {
         let mut result = json!({"states":list,"pending":pending_count()});
@@ -1018,6 +1201,53 @@ fn fixture_snapshot_inner(include_trace: bool) -> Value {
         result
     }
 }
+/// Accelerate only the hidden-age clock of a marker-guarded isolated fixture.
+/// Visibility still comes from the production NSH layout and native component.
+#[cfg(feature = "terminal-fixture")]
+pub fn fixture_policy(shell: &str, args: &Value) -> Result<Value, String> {
+    let list = states()
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(Weak::upgrade)
+        .filter(|s| s.alive.load(Ordering::Acquire))
+        .collect::<Vec<_>>();
+    let state = list
+        .iter()
+        .find(|s| {
+            s.model
+                .lock()
+                .unwrap()
+                .target
+                .as_ref()
+                .and_then(Target::local)
+                == Some(shell)
+        })
+        .ok_or("no fixture terminal target")?;
+    {
+        let mut m = state.model.lock().unwrap();
+        if let Some(age) = args["hiddenForMs"].as_u64() {
+            m.hidden = Instant::now()
+                .checked_sub(Duration::from_millis(age))
+                .ok_or("invalid fixture hidden age")?;
+        }
+        if let Some(pinned) = args["pinned"].as_bool() {
+            m.pinned = pinned;
+        }
+        if let Some(frozen) = args["frozen"].as_bool() {
+            m.frozen = frozen;
+        }
+    }
+    sync_state(state);
+    release_schedules().lock().unwrap().clear();
+    // Batch age changes before one real policy pass, so tests can exercise the
+    // two-release cap without the main-loop timer racing fixture preparation.
+    if !args["defer"].as_bool().unwrap_or(false) {
+        maintain(list, false);
+    }
+    Ok(fixture_snapshot())
+}
+
 #[cfg(feature = "terminal-fixture")]
 pub fn fixture_input(shell: &str, text: &str) -> Result<(), String> {
     use nsh_platform_macos::{
@@ -1048,6 +1278,46 @@ pub fn fixture_input(shell: &str, text: &str) -> Result<(), String> {
 }
 
 #[cfg(feature = "terminal-fixture")]
+pub fn fixture_command(shell: &str, name: &str, args: Value) -> Result<(), String> {
+    let state = states()
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(Weak::upgrade)
+        .find(|s| {
+            s.alive.load(Ordering::Acquire)
+                && s.model.lock().unwrap().active.as_deref() == Some(shell)
+        })
+        .ok_or("no attached fixture terminal")?;
+    match name {
+        "pasteboard" => {
+            unsafe extern "C" {
+                fn rw_terminal_fixture_pasteboard(view: *mut c_void, json: *const c_char) -> bool;
+            }
+            let payload = cstr(args.to_string())?;
+            if !unsafe { rw_terminal_fixture_pasteboard(ptr(&state), payload.as_ptr()) } {
+                return Err("native pasteboard input refused".into());
+            }
+        }
+        "paste" if args.get("text").is_some() => {
+            request_input(state, json!({"kind":"text","text":args["text"]}))
+        }
+        "dropPaths" => request_input(state, json!({"kind":"files","paths":args["paths"]})),
+        "pasteImage" => request_input(state, json!({"kind":"image","pngBase64":args["pngBase64"]})),
+        "find" => {
+            let query = cstr(args["query"].as_str().ok_or("missing find query")?)?;
+            unsafe { rw_terminal_find(ptr(&state), query.as_ptr()) };
+        }
+        "paste" | "copy" | "selectAll" | "findNext" | "findPrevious" | "findClose" => {
+            let command = cstr(name)?;
+            unsafe { rw_terminal_command(ptr(&state), command.as_ptr()) };
+        }
+        _ => return Err("unsupported fixture terminal command".into()),
+    }
+    Ok(())
+}
+
+#[cfg(feature = "terminal-fixture")]
 pub fn fixture_heartbeat() {
     TRACE.lock().unwrap().push(json!({"terminalId":0,"event":"heartbeat","data":{"monotonicMs":unsafe{rw_terminal_monotonic_ms()}}}));
 }
@@ -1070,6 +1340,14 @@ pub fn fixture_probe(shell: &str, kind: &str) -> Result<(), String> {
                 && s.model.lock().unwrap().active.as_deref() == Some(shell)
         })
         .ok_or("no attached fixture terminal")?;
+    if kind == "stale-drop" {
+        // Model an accepted async input completion queued before this view
+        // became hidden. This does not read a pasteboard or publish OS input.
+        let payload = json!({"accepted":true,"paths":[],"images":[]});
+        trace(&state, "drop", payload.clone());
+        emit(&state, "drop", payload);
+        return Ok(());
+    }
     let kind = cstr(kind)?;
     if unsafe { rw_terminal_fixture_probe(ptr(&state), kind.as_ptr()) } {
         Ok(())

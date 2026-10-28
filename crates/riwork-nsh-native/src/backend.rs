@@ -16,9 +16,9 @@ use riwork_engine::{
 use serde_json::Value;
 
 use crate::dto::{
-    CreateSessionRequest, FolderDto, ProjectDto, ProjectInspectionDto, ProjectRequest,
-    SearchHitDto, SessionsSnapshot, ShellSessionDto, StoreState, TabUpdate, TabsSnapshot, TaskDto,
-    WorktreeDto,
+    CreateSessionRequest, CreateSubshellRequest, FolderDto, OpenEditorRequest, ProjectDto,
+    ProjectInspectionDto, ProjectRequest, SearchHitDto, SessionsSnapshot, ShellSessionDto,
+    StoreState, TabUpdate, TabsSnapshot, TaskDto, WorktreeDto,
 };
 
 macro_rules! unsupported {
@@ -140,6 +140,14 @@ pub trait SessionsBackend: Send + Sync + 'static {
 
     fn create(&self, _request: CreateSessionRequest) -> Result<ShellSessionDto> {
         Err(Unavailable("shell creation is unavailable in this backend".into()).into())
+    }
+
+    fn create_subshell(&self, _request: CreateSubshellRequest) -> Result<ShellSessionDto> {
+        unsupported!()
+    }
+
+    fn open_editor(&self, _request: OpenEditorRequest) -> Result<ShellSessionDto> {
+        unsupported!()
     }
 
     fn close(&self, _id: &str) -> Result<()> {
@@ -455,6 +463,28 @@ impl EngineSessionsBackend {
         let manager = SessionManager::at(self.home.clone()).map_err(Unavailable)?;
         Ok(self.manager.get_or_init(|| manager))
     }
+
+    fn project_root(&self, project_id: &str, worktree_id: Option<&str>) -> Result<PathBuf> {
+        let state = Store::open(self.home.clone())
+            .map_err(anyhow::Error::msg)?
+            .snapshot()
+            .map_err(anyhow::Error::msg)?;
+        let project = state
+            .projects
+            .iter()
+            .find(|project| project.id == project_id)
+            .ok_or_else(|| Refused("unknown project".into()))?;
+        if let Some(id) = worktree_id {
+            state
+                .worktrees
+                .iter()
+                .find(|tree| tree.id == id && tree.project_id == project_id)
+                .map(|tree| tree.path.clone())
+                .ok_or_else(|| Refused("worktree does not belong to project".into()).into())
+        } else {
+            Ok(project.root.clone())
+        }
+    }
 }
 
 impl SessionsBackend for EngineSessionsBackend {
@@ -520,6 +550,74 @@ impl SessionsBackend for EngineSessionsBackend {
             })?;
         }
         self.manager()?.close(id).map_err(anyhow::Error::msg)
+    }
+
+    fn create_subshell(&self, request: CreateSubshellRequest) -> Result<ShellSessionDto> {
+        let parent =
+            registered_shell(&self.home, &request.parent_shell_id).map_err(anyhow::Error::msg)?;
+        if parent.project_id.as_deref() != Some(&request.project_id) {
+            return Err(Refused("parent shell does not belong to this project".into()).into());
+        }
+        self.project_root(&request.project_id, parent.worktree_id.as_deref())?;
+        self.manager()?
+            .create_subshell(request.project_id, &request.parent_shell_id)
+            .map(Into::into)
+            .map_err(anyhow::Error::msg)
+    }
+
+    fn open_editor(&self, request: OpenEditorRequest) -> Result<ShellSessionDto> {
+        use riwork_engine::{
+            file_preview::{self, FileIdentity},
+            session_keys::{Item, Key},
+        };
+        let root = self.project_root(&request.project_id, request.worktree_id.as_deref())?;
+        let requested = Path::new(&request.path);
+        let requested = if requested.is_absolute() {
+            requested.to_owned()
+        } else {
+            root.join(requested)
+        };
+        let path = file_preview::validated_live_editor_path(&root, &requested)
+            .map_err(|error| Refused(error))?;
+        let manager = self.manager()?.for_user();
+        if let Some(editor) = manager
+            .list()
+            .map_err(anyhow::Error::msg)?
+            .into_iter()
+            .find(|shell| {
+                shell.alive
+                    && shell.project_id.as_deref() == Some(&request.project_id)
+                    && shell.editor_path.as_deref() == Some(path.as_path())
+            })
+        {
+            if let Some(line) = request.line.filter(|line| *line > 0) {
+                manager
+                    .send_keys(
+                        &editor.id,
+                        &[
+                            Item::Key(Key::Escape),
+                            Item::Text(format!(":{line}")),
+                            Item::Key(Key::Enter),
+                        ],
+                    )
+                    .map_err(anyhow::Error::msg)?;
+            }
+            return Ok(editor.into());
+        }
+        // Capture identity at selection/open time and revalidate inside the
+        // engine launch. A replacement between validation and launch is refused.
+        let expected = FileIdentity::of(&fs::symlink_metadata(&path)?);
+        manager
+            .create_editor(
+                request.project_id,
+                request.worktree_id,
+                root,
+                path,
+                expected,
+                request.line,
+            )
+            .map(Into::into)
+            .map_err(anyhow::Error::msg)
     }
 
     fn update_tabs(&self, project_id: &str, update: &Update) -> Result<Value> {
@@ -615,6 +713,42 @@ mod tests {
         let recovered = backend.snapshot().unwrap();
         assert_eq!(recovered.schema_version, 1);
         assert!(recovered.projects.is_empty());
+    }
+
+    #[test]
+    fn vim_refuses_outside_and_symlink_files_before_initializing_tmux() {
+        let isolated = tempfile::tempdir().unwrap();
+        let home = isolated.path().join("home");
+        let root = isolated.path().join("project");
+        fs::create_dir_all(&root).unwrap();
+        let store = CoreStoreBackend::new(home.clone());
+        let project = store
+            .create_project(ProjectRequest {
+                root: root.to_string_lossy().into_owned(),
+                name: None,
+                init_git: Some(false),
+            })
+            .unwrap();
+        let outside = isolated.path().join("outside.txt");
+        fs::write(&outside, "outside").unwrap();
+        let link = root.join("linked.txt");
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+        let backend = EngineSessionsBackend::new(home);
+        for path in [outside, link, root.join("missing.txt")] {
+            let error = backend
+                .open_editor(OpenEditorRequest {
+                    project_id: project.id.clone(),
+                    worktree_id: None,
+                    path: path.to_string_lossy().into_owned(),
+                    line: None,
+                })
+                .unwrap_err();
+            assert!(error.is::<Refused>(), "{error}");
+            assert!(
+                backend.manager.get().is_none(),
+                "invalid files must not launch/query tmux"
+            );
+        }
     }
 
     #[test]

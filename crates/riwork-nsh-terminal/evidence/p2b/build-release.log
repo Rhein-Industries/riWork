@@ -1,0 +1,15 @@
+['cargo', 'build', '-p', 'riwork-desktop', '--features', 'terminal-fixture', '--release', '--locked', '--offline', '-j4']
+warning: variable does not need to be mutable
+   --> apps/riwork/src/persistence.rs:329:9
+    |
+329 |     let mut manual_now = Duration::ZERO;
+    |         ----^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: `riwork-nsh-workspace` (lib) generated 1 warning (run `cargo fix --lib -p riwork-nsh-workspace` to apply 1 suggestion)
+   Compiling riwork-nsh-terminal v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal)
+   Compiling riwork-desktop v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-desktop)
+    Finished `release` profile [optimized] target(s) in 7.84s

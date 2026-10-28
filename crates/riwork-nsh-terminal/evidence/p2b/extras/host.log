@@ -1,0 +1,381 @@
+info: ghostty version=1.3.2-dev
+info: ghostty build optimize=ReleaseFast
+info: runtime=.none
+info: font_backend=.coretext
+info: renderer=renderer.generic.Renderer(renderer.Metal)
+info: libxev default backend=kqueue
+info(os_locale): setlocale from env result=en_US.UTF-8
+info: reading configuration file path=/private/tmp/rwnsh-p2-l5tprdfm/state/nsh/terminal-config/79642-1-61945157-cb8a-4a1f-a7c4-57718f038a1b.conf
+info: reading configuration file path=/private/tmp/rwnsh-p2-l5tprdfm/user/.config/ghostty/config
+info(config): default shell src=passwd value=/bin/zsh
+info(config): default working directory src=passwd value=/Users/dominik
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(io_exec): started subcommand path=/usr/bin/login pid=79707
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(generic_renderer): created display link
+info(generic_renderer): updating display link display id=2
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=79710
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+warning(stream): unimplemented mode: 7727
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=79731
+info(generic_renderer): updating display link display id=2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=79734
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+info(generic_renderer): updating display link display id=2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=80132
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(font_codepoint_resolver): found codepoint 0x65E5 in fallback face=PingFang SC Regular
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+info(generic_renderer): updating display link display id=2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=80247
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+info(generic_renderer): updating display link display id=2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=80299
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(io_exec): pty fd closed, read thread exiting
+warning(surface): abnormal process exit detected, showing error message
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+info(generic_renderer): updating display link display id=2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=80357
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(font_codepoint_resolver): found codepoint 0x65E5 in fallback face=PingFang SC Regular
+info(io_exec): pty fd closed, read thread exiting
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(surface): surface closed id=de29dabe31cce6d
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+info(generic_renderer): updating display link display id=2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=80437
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+info(generic_renderer): updating display link display id=2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=80495
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+info(generic_renderer): updating display link display id=2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=80569
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+info(generic_renderer): updating display link display id=2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=80658
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+info(generic_renderer): updating display link display id=2
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=4abf13f64526b682
+info(io_exec): pty fd closed, read thread exiting
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=6307e22e80227245
+info(surface): surface closed id=2f97a8806e0efb74
+info(io_exec): pty fd closed, read thread exiting
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=20fad7831d30822f
+info(surface): surface closed id=f5a0b8d0db7d29d8
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+warning(surface): WARNING: very small terminal grid detected with padding set. Is your padding reasonable?
+info(generic_renderer): updating display link display id=2
+info(font_shared_grid_set): font regular: Menlo Regular
+info(font_shared_grid_set): font bold: Menlo Bold
+info(font_shared_grid_set): font italic: Menlo Italic
+info(font_shared_grid_set): font bold_italic: Menlo Bold Italic
+info(io_exec): found Ghostty resources dir: /Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal/.runtime/pinned/install/share/ghostty
+info(io_exec): shell integration disabled by configuration
+info(generic_renderer): created display link
+info(io_exec): started subcommand path=/usr/bin/login pid=80784
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(font_codepoint_resolver): found codepoint 0x65E5 in fallback face=PingFang SC Regular
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(generic_renderer): updating display link display id=2
+info(io_exec): pty fd closed, read thread exiting
+warning(surface): abnormal process exit detected, showing error message
+info(surface): surface closed id=17548f9b18fb2517
+info(io_exec): pty fd closed, read thread exiting
+info(io_exec): pty fd closed, read thread exiting
+info(io_exec): pty fd closed, read thread exiting
+info(io_exec): pty fd closed, read thread exiting
+info(io_exec): pty fd closed, read thread exiting
+info(surface): surface closed id=97c3b796164b2bc6
+info(surface): surface closed id=61d4b7a0271018b7
+info(surface): surface closed id=3a521b3ad78519bb
+info(surface): surface closed id=1a9e52d5cb29a4a0
+info(surface): surface closed id=6ec27829e2393704
+info(surface): surface closed id=9af740abfa2f87a9

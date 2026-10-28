@@ -1,0 +1,57 @@
+{
+  "task_id": "9033f7c1-e271-41e1-8da6-e24c01e5a537",
+  "verification_environment": {
+    "host": "macOS 26.2 arm64",
+    "native_profile": "standard Cargo release with terminal-fixture feature",
+    "state": "isolated RIWORK_HOME fixtures only",
+    "live_state_touched": false,
+    "desktop_provider": "RiWork Cua.ai Driver MCP, read-only explicit fixture PIDs"
+  },
+  "native": {
+    "status": "passed",
+    "binary": {
+      "path": "/private/tmp/riwork-p2b-checks/bin/riwork-terminal-release-fixture",
+      "sha256": "49ca2142e4495d9e9b541646e0656a1035f8bffa729ed7ef8c715352a525ccbc"
+    },
+    "bundle": {
+      "path": "/private/tmp/riwork-p2b-checks/bundle/bundle.js",
+      "sha256": "c16be73148018782e9f2754810534787dcfa85418abc86cad8653646ec32d5bc"
+    },
+    "extras_manifest": "extras/manifest.json",
+    "disposal_manifest": "disposal/manifest.json",
+    "cycles": 20,
+    "created": 84,
+    "freed": 84,
+    "contexts_released": 84,
+    "pending": 0,
+    "max_teardown_heartbeat_gap_ms": 31.962999999523163
+  },
+  "tests": {
+    "cargo_broad": {
+      "passed": 1965,
+      "failed": 0,
+      "ignored": 189
+    },
+    "cargo_affected": {
+      "passed": 295,
+      "failed": 0
+    },
+    "terminal_unit": {
+      "passed": 24,
+      "failed": 0
+    },
+    "nsh": {
+      "passed": 93,
+      "failed": 0
+    },
+    "counts_overlap": true
+  },
+  "gpui_crates": 0,
+  "limitations": [
+    "Debug native timing failed; see diagnostics/heartbeat-experiments.json",
+    "Find searches current Ghostty buffer/scrollback",
+    "Physical Finder drag and external-agent image ingestion not certified",
+    "Files/Preview row Vim actions deferred with file browser",
+    "Remote-Mac tabs are Phase 6"
+  ]
+}

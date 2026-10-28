@@ -1,0 +1,262 @@
+   Compiling indexmap v2.14.2
+   Compiling ring v0.17.14
+   Compiling serde_json v1.0.151
+   Compiling rustls v0.23.45
+   Compiling fdeflate v0.3.7
+   Compiling crossbeam-epoch v0.9.21
+   Compiling httparse v1.10.1
+   Compiling http v1.5.0
+   Compiling rustls-webpki v0.103.15
+   Compiling crossbeam-deque v0.8.8
+   Compiling webpki-roots v1.0.9
+   Compiling half v2.7.1
+   Compiling sha2 v0.10.9
+   Compiling equator-macro v0.4.2
+   Compiling rayon-core v1.13.0
+   Compiling num-integer v0.1.47
+   Compiling equator v0.4.2
+   Compiling num-bigint v0.4.8
+   Compiling rayon v1.12.0
+   Compiling aligned-vec v0.6.4
+   Compiling v_frame v0.3.9
+   Compiling num-rational v0.4.2
+   Compiling profiling-procmacros v1.0.18
+   Compiling arg_enum_proc_macro v0.3.4
+   Compiling profiling v1.0.18
+   Compiling maybe-rayon v0.1.1
+   Compiling av-scenechange v0.14.1
+   Compiling av1-grain v0.2.5
+   Compiling uuid v1.26.1
+   Compiling num-complex v0.4.6
+   Compiling num-derive v0.4.2
+   Compiling imgref v1.12.3
+   Compiling pulp v0.22.3
+   Compiling avif-serialize v0.8.9
+   Compiling byteorder-lite v0.1.0
+   Compiling moxcms v0.8.1
+   Compiling tiff v0.11.3
+   Compiling rav1e v0.8.1
+   Compiling ureq-proto v0.6.4
+   Compiling riwork-core v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-core)
+   Compiling exr v1.74.2
+   Compiling png v0.18.1
+   Compiling winnow v0.7.15
+   Compiling ureq v3.4.2
+   Compiling toml_edit v0.22.27
+   Compiling chrono v0.4.45
+   Compiling ravif v0.13.0
+   Compiling ignore v0.4.33
+   Compiling image v0.25.10
+   Compiling icu_normalizer_data v2.3.0
+   Compiling icu_properties_data v2.3.0
+   Compiling getrandom v0.3.4
+   Compiling rand_core v0.6.4
+   Compiling rand v0.8.8
+   Compiling itertools v0.13.0
+   Compiling clang-sys v1.9.1
+   Compiling rand_core v0.9.5
+   Compiling icu_properties v2.3.0
+   Compiling icu_normalizer v2.3.0
+   Compiling riwork-engine v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-engine)
+   Compiling cipher v0.5.2
+   Compiling prettyplease v0.2.37
+   Compiling hmac v0.13.0
+   Compiling ppv-lite86 v0.2.21
+   Compiling polycool v0.4.0
+   Compiling tokio-macros v2.7.2
+   Compiling arrayref v0.3.9
+   Compiling log v0.4.34
+   Compiling bitflags v2.13.2
+   Compiling shlex v1.3.0
+   Compiling tokio v1.53.1
+   Compiling bindgen v0.72.1
+   Compiling kurbo v0.13.1
+   Compiling rand_chacha v0.9.0
+   Compiling idna_adapter v1.2.2
+   Compiling phf_generator v0.11.3
+   Compiling group v0.14.0
+   Compiling png v0.17.16
+   Compiling sec1 v0.8.1
+   Compiling idna v1.1.0
+   Compiling rand v0.9.5
+   Compiling quickjs-jit-sys v0.14.1
+   Compiling svgtypes v0.16.1
+   Compiling hkdf v0.13.0
+   Compiling sha1 v0.10.7
+   Compiling futures-macro v0.3.34
+   Compiling usvg v0.46.0
+   Compiling futures-util v0.3.34
+   Compiling tungstenite v0.28.0
+   Compiling url v2.5.8
+   Compiling elliptic-curve v0.14.3
+   Compiling tokio-rustls v0.26.6
+   Compiling tiny-skia v0.11.4
+   Compiling string_cache_codegen v0.5.4
+   Compiling phf_codegen v0.11.3
+   Compiling primefield v0.14.0
+   Compiling webpki-roots v0.26.11
+   Compiling ttf-parser v0.25.1
+   Compiling resvg v0.46.0
+   Compiling futf v0.1.5
+   Compiling tokio-tungstenite v0.28.0
+   Compiling wnaf v0.14.1
+   Compiling markup5ever v0.12.1
+   Compiling zstd-sys v2.1.2+zstd.1.5.7
+   Compiling rfc6979 v0.6.0
+   Compiling curve25519-dalek v5.0.0
+   Compiling nsh-macros v0.3.0
+   Compiling toml_edit v0.25.15+spec-1.1.0
+   Compiling string_cache v0.8.9
+   Compiling ecdsa v0.17.0
+   Compiling nsh-core v0.3.0
+   Compiling primeorder v0.14.0
+   Compiling tendril v0.4.3
+   Compiling phf v0.11.3
+   Compiling phf_shared v0.14.0
+   Compiling bit-vec v0.8.0
+   Compiling quickjs-jit-core v0.14.1
+   Compiling phf_generator v0.14.0
+   Compiling proc-macro-crate v3.5.0
+   Compiling polyval v0.7.3
+   Compiling chacha20 v0.10.2
+   Compiling aead v0.6.1
+   Compiling curve25519-dalek v4.1.3
+   Compiling crc32c v0.6.8
+   Compiling float-cmp v0.10.0
+   Compiling html5ever v0.27.0
+   Compiling value-trait v0.12.3
+   Compiling quickjs-jit-macro v0.14.1
+   Compiling fancy-regex v0.16.2
+   Compiling phf_macros v0.14.0
+   Compiling ed25519 v3.0.0
+   Compiling aes v0.9.3
+   Compiling ctr v0.10.1
+   Compiling crypto-primes v0.7.2
+   Compiling pkcs1 v0.8.0-rc.5
+   Compiling bincode v1.3.3
+   Compiling simd-json v0.18.1
+   Compiling syntect v5.3.0
+   Compiling quickjs-jit v0.14.1
+   Compiling rsa v0.10.0-rc.19
+   Compiling aes-kw v0.3.1
+   Compiling aes-gcm v0.11.1
+   Compiling phf v0.14.0
+   Compiling ed25519-dalek v3.0.0
+   Compiling chacha20poly1305 v0.11.0
+   Compiling rand v0.10.3
+   Compiling x25519-dalek v3.0.0
+   Compiling xml5ever v0.18.1
+   Compiling p384 v0.14.0
+   Compiling p521 v0.14.0
+   Compiling p256 v0.14.0
+   Compiling cbc v0.2.1
+   Compiling markup5ever_rcdom v0.3.0
+   Compiling ed25519-dalek v2.2.0
+   Compiling two-face v0.4.5
+   Compiling nsh-package v0.3.0
+   Compiling nsh-base v0.3.0 (/Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/apps/riwork/vendor/nsh-base)
+   Compiling oxc_sourcemap v9.0.0
+   Compiling crossbeam-channel v0.5.17
+   Compiling riwork-cli v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-cli)
+   Compiling objc2-encode v4.1.0
+   Compiling tempfile v3.27.0
+   Compiling quickjs-jit-stdlib v0.14.1
+   Compiling objc2 v0.6.5
+   Compiling concurrent-queue v2.5.0
+   Compiling async-channel v2.5.0
+   Compiling objc2-core-foundation v0.3.2
+   Compiling generic-array v0.14.7
+   Compiling block2 v0.6.2
+   Compiling objc2-core-graphics v0.3.2
+   Compiling objc2-foundation v0.3.2
+   Compiling riwork-nsh-terminal v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-terminal)
+   Compiling objc2-core-text v0.3.2
+   Compiling objc2-image-io v0.3.2
+   Compiling dispatch2 v0.3.1
+   Compiling objc2-io-kit v0.3.2
+   Compiling nsh-js v0.3.0
+   Compiling objc2-quartz-core v0.3.2
+   Compiling objc2-app-kit v0.3.2
+   Compiling nsh-engine v0.3.0
+   Compiling riwork-nsh-workspace v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/apps/riwork)
+   Compiling nsh-testing v0.3.0
+   Compiling riwork-nsh-native v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-nsh-native)
+   Compiling nsh-platform-macos v0.3.0
+   Compiling riwork-desktop v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p2b-terminal-extras/crates/riwork-desktop)
+warning: function `missing_folder_request` is never used
+ --> crates/riwork-desktop/tests/../src/nsh_startup.rs:4:15
+  |
+4 | pub(crate) fn missing_folder_request(args: &[String]) -> bool {
+  |               ^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `riwork-desktop` (test "startup_environment") generated 1 warning
+warning: function `without_sgr` is never used
+   --> crates/riwork-engine/src/sessions/tmux_tests.rs:712:4
+    |
+712 | fn without_sgr(text: &str) -> String {
+    |    ^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `numbers` is never used
+   --> crates/riwork-engine/src/sessions/tmux_tests.rs:739:4
+    |
+739 | fn numbers(first: u32, last: u32) -> String {
+    |    ^^^^^^^
+
+warning: function `page` is never used
+   --> crates/riwork-engine/src/sessions/tmux_tests.rs:746:4
+    |
+746 | fn page(
+    |    ^^^^
+
+warning: `riwork-engine` (lib test) generated 3 warnings
+    Finished `test` profile [unoptimized] target(s) in 1m 08s
+     Running unittests src/lib.rs (target/debug/deps/riwork_cli-0f13ea61b7792dac)
+     Running unittests src/main.rs (target/debug/deps/riwork_cli-f9b863bc0a412461)
+     Running tests/agent_activity_cli.rs (target/debug/deps/agent_activity_cli-099d07ab18b8801e)
+     Running tests/appearance_cli.rs (target/debug/deps/appearance_cli-555e70602dbbcb12)
+     Running tests/chat_host_cli.rs (target/debug/deps/chat_host_cli-041293b124900e33)
+     Running tests/cli_mcp_contract.rs (target/debug/deps/cli_mcp_contract-2ba7a0a6d4b22315)
+     Running tests/codex_shim_accounts.rs (target/debug/deps/codex_shim_accounts-f4748e95439673fe)
+     Running tests/cua_skills_cli.rs (target/debug/deps/cua_skills_cli-58234c2a1bd3d7ac)
+     Running tests/dashboard_cli.rs (target/debug/deps/dashboard_cli-234ba03f031b44ee)
+     Running tests/preview_cli.rs (target/debug/deps/preview_cli-6f42feb318adb920)
+     Running tests/project_create_cli.rs (target/debug/deps/project_create_cli-d81ae74f4d1b3675)
+     Running tests/project_memo_cli.rs (target/debug/deps/project_memo_cli-5f6f5cc19c4e08b0)
+     Running tests/schedule_interfaces.rs (target/debug/deps/schedule_interfaces-293a5274e23ef736)
+     Running tests/settings_cli.rs (target/debug/deps/settings_cli-1f2d9c874058e828)
+     Running tests/shell_attach_exec_cli.rs (target/debug/deps/shell_attach_exec_cli-dd79fd60b34bddd5)
+     Running tests/shell_create_cli.rs (target/debug/deps/shell_create_cli-793fe065e5b2d056)
+     Running tests/shell_paste_cli.rs (target/debug/deps/shell_paste_cli-663894a9dcd1271f)
+     Running unittests src/lib.rs (target/debug/deps/riwork_core-cbdd049d4d2c72ec)
+     Running unittests src/nsh_main.rs (target/debug/deps/riwork-3ad64c269ab30a90)
+     Running tests/appkit_shell.rs (target/debug/deps/appkit_shell-302d2ca0dfce8754)
+     Running tests/cli_contract.rs (target/debug/deps/cli_contract-3bc9dd614aec831f)
+     Running tests/startup_environment.rs (target/debug/deps/startup_environment-a44c35f067517594)
+     Running unittests src/lib.rs (target/debug/deps/riwork_engine-ed6159554396b097)
+boom: cannot bind
+no cua driver
+     Running tests/app_preview_smoke.rs (target/debug/deps/app_preview_smoke-fecf84a80f46d69e)
+     Running tests/ios_preview_smoke.rs (target/debug/deps/ios_preview_smoke-399b6fcb3fe56501)
+     Running tests/terminal_detach.rs (target/debug/deps/terminal_detach-f652930f2336bcc4)
+     Running unittests src/lib.rs (target/debug/deps/riwork_nsh_native-cef9aef25b8255f6)
+     Running tests/appearance.rs (target/debug/deps/appearance-3c58e33c21cc0597)
+     Running tests/layout_session.rs (target/debug/deps/layout_session-936434dcf7abe0a9)
+     Running tests/native_headless.rs (target/debug/deps/native_headless-96a5b4501d2789b7)
+     Running tests/panel_crud.rs (target/debug/deps/panel_crud-8f528d9d9ccb7eb0)
+     Running tests/services.rs (target/debug/deps/services-0c532f110040bd68)
+     Running tests/settings.rs (target/debug/deps/settings-d5f45647cf332a68)
+     Running unittests src/lib.rs (target/debug/deps/riwork_nsh_workspace-ed3d56ebb0dd3e2b)
+     Running tests/layout_backend.rs (target/debug/deps/layout_backend-5e5d4e173d889520)
+     Running tests/layout_gestures.rs (target/debug/deps/layout_gestures-75404ef9fa9444f1)
+     Running tests/layout_roundtrip.rs (target/debug/deps/layout_roundtrip-5c1e828174d2a075)
+     Running tests/pane_model.rs (target/debug/deps/pane_model-03af2f81ae7c532e)
+     Running tests/window_size.rs (target/debug/deps/window_size-55f682de4266f0f9)
+   Doc-tests riwork_cli
+   Doc-tests riwork_core
+   Doc-tests riwork_engine
+   Doc-tests riwork_nsh_native
+   Doc-tests riwork_nsh_workspace

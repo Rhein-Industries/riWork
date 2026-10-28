@@ -1,6 +1,7 @@
 //! The frozen `riwork.terminal` component. Ghostty is a pinned C library;
 //! session identity and all tmux semantics remain in riwork-engine.
 mod config;
+mod images;
 #[cfg(target_os = "macos")]
 mod macos;
 mod policy;
@@ -15,5 +16,6 @@ pub fn resources_dir() -> &'static str {
 }
 #[cfg(all(target_os = "macos", feature = "terminal-fixture"))]
 pub use macos::{
-    fixture_heartbeat, fixture_input, fixture_probe, fixture_snapshot, fixture_status,
+    fixture_command, fixture_heartbeat, fixture_input, fixture_policy, fixture_probe,
+    fixture_snapshot, fixture_status,
 };

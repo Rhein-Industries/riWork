@@ -37,7 +37,12 @@ function Fixture() {
     {session() ? <Workspace session={session()!} title="RiWork · Fixture" projectLabel="Fixture" diagnostics={true}
       onTerminalMount={(shellId) => host.post("app.fixture.terminalMount", { shellId })}
       onViewRef={(id, node) => nodes.set(id, node)}
-      onChange={(snapshot, dock) => { latest = { snapshot, dock, manifest, fixture }; host.post("app.fixture.state", latest); }} /> : <Text>{error() || "Loading fixture…"}</Text>}
+      onChange={(snapshot, dock) => {
+        // Geometry probes must not keep removed YNode subtrees alive either.
+        const present = new Set(snapshot.panes.flatMap((pane) => [...pane.tabs.map((tab) => tab.id), `empty:${pane.id}`]));
+        for (const key of nodes.keys()) if (!present.has(key.slice(key.indexOf(":") + 1))) nodes.delete(key);
+        latest = { snapshot, dock, manifest, fixture }; host.post("app.fixture.state", latest);
+      }} /> : <Text>{error() || "Loading fixture…"}</Text>}
   </View>;
 }
 mount(Fixture);

@@ -1,0 +1,1985 @@
+{
+  "verification_environment": "isolated RIWORK_HOME; integrated fixture binary and production TSX bundle; read-only Cua only",
+  "root": "/private/tmp/rwnsh-p2-l5tprdfm",
+  "home": "/private/tmp/rwnsh-p2-l5tprdfm/state",
+  "socket": "riwork-cc643d155791399e",
+  "binary": {
+    "path": "/private/tmp/riwork-p2b-checks/bin/riwork-terminal-release-fixture",
+    "sha256": "49ca2142e4495d9e9b541646e0656a1035f8bffa729ed7ef8c715352a525ccbc"
+  },
+  "bundle": {
+    "path": "/private/tmp/riwork-p2b-checks/bundle/bundle.js",
+    "sha256": "c16be73148018782e9f2754810534787dcfa85418abc86cad8653646ec32d5bc"
+  },
+  "environment": {
+    "PATH": "/opt/homebrew/Cellar/tmux/3.6a/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+    "HOME": "/private/tmp/rwnsh-p2-l5tprdfm/user",
+    "RIWORK_HOME": "/private/tmp/rwnsh-p2-l5tprdfm/state",
+    "RIWORK_RUNTIME_DIR": "/private/tmp/rwnsh-p2-l5tprdfm/runtime",
+    "TMPDIR": "/private/tmp/rwnsh-p2-l5tprdfm/tmp",
+    "XDG_CONFIG_HOME": "/private/tmp/rwnsh-p2-l5tprdfm/user/.config",
+    "RIWORK_NSH_BACKGROUND": "1",
+    "RIWORK_NSH_BUNDLE": "/private/tmp/riwork-p2b-checks/bundle/bundle.js",
+    "RIWORK_NSH_TERMINAL_FIXTURE": "1",
+    "GHOSTTY_LOG": "stderr,no-macos",
+    "LANG": "en_US.UTF-8",
+    "SHELL": "/bin/zsh"
+  },
+  "commands": [
+    {
+      "argv": [
+        "/private/tmp/riwork-p2b-checks/bin/riwork-terminal-release-fixture",
+        "project",
+        "add",
+        "/private/tmp/rwnsh-p2-l5tprdfm/repos/Alpha",
+        "--name",
+        "Terminal fixture Alpha",
+        "--json"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 781.1863330425695,
+      "stdout": "{\n  \"id\": \"715a995b-5bac-4336-9809-c81bd69c97ee\",\n  \"name\": \"Terminal fixture Alpha\",\n  \"root\": \"/private/tmp/rwnsh-p2-l5tprdfm/repos/Alpha\",\n  \"repository_roots\": [],\n  \"folder_id\": null,\n  \"notify_on_agent_done\": false,\n  \"wake_orchestrators_on_agent_done\": false,\n  \"codex_account\": {\n    \"source\": \"inherit\"\n  },\n  \"orchestrator\": {\n    \"mode\": \"inherit\"\n  },\n  \"delegation_policy\": {},\n  \"created_at\": 1793147640\n}\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/private/tmp/riwork-p2b-checks/bin/riwork-terminal-release-fixture",
+        "shell",
+        "create",
+        "--project",
+        "715a995b-5bac-4336-9809-c81bd69c97ee",
+        "--command",
+        "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/bin/python3.14 -u /private/tmp/rwnsh-p2-l5tprdfm/pressure.py /private/tmp/rwnsh-p2-l5tprdfm/pressure alpha-0",
+        "--no-parent",
+        "--background",
+        "--json"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 65.94120903173462,
+      "stdout": "{\n  \"user_opened\": false,\n  \"id\": \"fcbfeccf-8546-4170-b9dd-88136a747905\",\n  \"project_id\": \"715a995b-5bac-4336-9809-c81bd69c97ee\",\n  \"worktree_id\": \"b5efeec6-2294-4ce8-b2c8-4d010760e9cb\",\n  \"kind\": \"project\",\n  \"cwd\": \"/private/tmp/rwnsh-p2-l5tprdfm/repos/Alpha\",\n  \"command\": \"/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/bin/python3.14 -u /private/tmp/rwnsh-p2-l5tprdfm/pressure.py /private/tmp/rwnsh-p2-l5tprdfm/pressure alpha-0\",\n  \"editor_path\": null,\n  \"harness\": null,\n  \"unrestricted\": false,\n  \"codex_account_id\": null,\n  \"codex_account_label\": null,\n  \"codex_account_email\": null,\n  \"codex_home\": null,\n  \"orchestrator_skill_loaded\": false,\n  \"orchestrator_skill_version\": null,\n  \"orchestrator_delegation_version\": null,\n  \"orchestrator_project_root\": null,\n  \"created_at_unix\": 1793147640,\n  \"alive\": true\n}\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/private/tmp/riwork-p2b-checks/bin/riwork-terminal-release-fixture",
+        "tabs",
+        "open",
+        "--project",
+        "715a995b-5bac-4336-9809-c81bd69c97ee",
+        "--key",
+        "shell:fcbfeccf-8546-4170-b9dd-88136a747905"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 16.65062498068437,
+      "stdout": "{\n  \"entries\": [\n    {\n      \"key\": \"shell:fcbfeccf-8546-4170-b9dd-88136a747905\",\n      \"kind\": \"shell\",\n      \"title\": \"Shell \u00b7 root\",\n      \"status\": \"idle\",\n      \"hidden\": false,\n      \"worker\": true,\n      \"order\": 0,\n      \"parent\": null,\n      \"child_count\": 0,\n      \"children\": []\n    }\n  ],\n  \"epoch\": \"f80972f9-ac15-4190-8da6-8b24381f2c8c\",\n  \"revision\": 2\n}\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/private/tmp/riwork-p2b-checks/bin/riwork-terminal-release-fixture",
+        "shell",
+        "create",
+        "--project",
+        "715a995b-5bac-4336-9809-c81bd69c97ee",
+        "--command",
+        "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/bin/python3.14 -u /private/tmp/rwnsh-p2-l5tprdfm/pressure.py /private/tmp/rwnsh-p2-l5tprdfm/pressure alpha-1",
+        "--no-parent",
+        "--background",
+        "--json"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 36.416875023860484,
+      "stdout": "{\n  \"user_opened\": false,\n  \"id\": \"c6ec41c6-1583-496c-9edf-96512325020c\",\n  \"project_id\": \"715a995b-5bac-4336-9809-c81bd69c97ee\",\n  \"worktree_id\": \"b5efeec6-2294-4ce8-b2c8-4d010760e9cb\",\n  \"kind\": \"project\",\n  \"cwd\": \"/private/tmp/rwnsh-p2-l5tprdfm/repos/Alpha\",\n  \"command\": \"/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/bin/python3.14 -u /private/tmp/rwnsh-p2-l5tprdfm/pressure.py /private/tmp/rwnsh-p2-l5tprdfm/pressure alpha-1\",\n  \"editor_path\": null,\n  \"harness\": null,\n  \"unrestricted\": false,\n  \"codex_account_id\": null,\n  \"codex_account_label\": null,\n  \"codex_account_email\": null,\n  \"codex_home\": null,\n  \"orchestrator_skill_loaded\": false,\n  \"orchestrator_skill_version\": null,\n  \"orchestrator_delegation_version\": null,\n  \"orchestrator_project_root\": null,\n  \"created_at_unix\": 1793147640,\n  \"alive\": true\n}\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/private/tmp/riwork-p2b-checks/bin/riwork-terminal-release-fixture",
+        "tabs",
+        "open",
+        "--project",
+        "715a995b-5bac-4336-9809-c81bd69c97ee",
+        "--key",
+        "shell:c6ec41c6-1583-496c-9edf-96512325020c"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 16.52233296772465,
+      "stdout": "{\n  \"entries\": [\n    {\n      \"key\": \"shell:fcbfeccf-8546-4170-b9dd-88136a747905\",\n      \"kind\": \"shell\",\n      \"title\": \"Shell \u00b7 root \u00b7 2\",\n      \"status\": \"idle\",\n      \"hidden\": false,\n      \"worker\": true,\n      \"order\": 0,\n      \"parent\": null,\n      \"child_count\": 0,\n      \"children\": []\n    },\n    {\n      \"key\": \"shell:c6ec41c6-1583-496c-9edf-96512325020c\",\n      \"kind\": \"shell\",\n      \"title\": \"Shell \u00b7 root \u00b7 1\",\n      \"status\": \"idle\",\n      \"hidden\": false,\n      \"worker\": true,\n      \"order\": 1,\n      \"parent\": null,\n      \"child_count\": 0,\n      \"children\": []\n    }\n  ],\n  \"epoch\": \"f80972f9-ac15-4190-8da6-8b24381f2c8c\",\n  \"revision\": 4\n}\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/private/tmp/riwork-p2b-checks/bin/riwork-terminal-release-fixture",
+        "project",
+        "add",
+        "/private/tmp/rwnsh-p2-l5tprdfm/repos/Beta",
+        "--name",
+        "Terminal fixture Beta",
+        "--json"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 26.474874990526587,
+      "stdout": "{\n  \"id\": \"3a5b45b7-8f20-41eb-b435-0ca81827a5f9\",\n  \"name\": \"Terminal fixture Beta\",\n  \"root\": \"/private/tmp/rwnsh-p2-l5tprdfm/repos/Beta\",\n  \"repository_roots\": [],\n  \"folder_id\": null,\n  \"notify_on_agent_done\": false,\n  \"wake_orchestrators_on_agent_done\": false,\n  \"codex_account\": {\n    \"source\": \"inherit\"\n  },\n  \"orchestrator\": {\n    \"mode\": \"inherit\"\n  },\n  \"delegation_policy\": {},\n  \"created_at\": 1793147640\n}\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/private/tmp/riwork-p2b-checks/bin/riwork-terminal-release-fixture",
+        "shell",
+        "create",
+        "--project",
+        "3a5b45b7-8f20-41eb-b435-0ca81827a5f9",
+        "--command",
+        "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/bin/python3.14 -u /private/tmp/rwnsh-p2-l5tprdfm/pressure.py /private/tmp/rwnsh-p2-l5tprdfm/pressure beta-0",
+        "--no-parent",
+        "--background",
+        "--json"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 36.59933299059048,
+      "stdout": "{\n  \"user_opened\": false,\n  \"id\": \"34ddb1da-38e0-4dc9-a570-417cd3944d8f\",\n  \"project_id\": \"3a5b45b7-8f20-41eb-b435-0ca81827a5f9\",\n  \"worktree_id\": \"27fb1a73-7b96-4826-b350-51696103ddf9\",\n  \"kind\": \"project\",\n  \"cwd\": \"/private/tmp/rwnsh-p2-l5tprdfm/repos/Beta\",\n  \"command\": \"/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/bin/python3.14 -u /private/tmp/rwnsh-p2-l5tprdfm/pressure.py /private/tmp/rwnsh-p2-l5tprdfm/pressure beta-0\",\n  \"editor_path\": null,\n  \"harness\": null,\n  \"unrestricted\": false,\n  \"codex_account_id\": null,\n  \"codex_account_label\": null,\n  \"codex_account_email\": null,\n  \"codex_home\": null,\n  \"orchestrator_skill_loaded\": false,\n  \"orchestrator_skill_version\": null,\n  \"orchestrator_delegation_version\": null,\n  \"orchestrator_project_root\": null,\n  \"created_at_unix\": 1793147640,\n  \"alive\": true\n}\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/private/tmp/riwork-p2b-checks/bin/riwork-terminal-release-fixture",
+        "tabs",
+        "open",
+        "--project",
+        "3a5b45b7-8f20-41eb-b435-0ca81827a5f9",
+        "--key",
+        "shell:34ddb1da-38e0-4dc9-a570-417cd3944d8f"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 16.414874990005046,
+      "stdout": "{\n  \"entries\": [\n    {\n      \"key\": \"shell:34ddb1da-38e0-4dc9-a570-417cd3944d8f\",\n      \"kind\": \"shell\",\n      \"title\": \"Shell \u00b7 root\",\n      \"status\": \"idle\",\n      \"hidden\": false,\n      \"worker\": true,\n      \"order\": 0,\n      \"parent\": null,\n      \"child_count\": 0,\n      \"children\": []\n    }\n  ],\n  \"epoch\": \"d4ac88ac-b390-4fe1-aa7d-00cb25bbda9b\",\n  \"revision\": 2\n}\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/private/tmp/riwork-p2b-checks/bin/riwork-terminal-release-fixture",
+        "shell",
+        "create",
+        "--project",
+        "3a5b45b7-8f20-41eb-b435-0ca81827a5f9",
+        "--command",
+        "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/bin/python3.14 -u /private/tmp/rwnsh-p2-l5tprdfm/pressure.py /private/tmp/rwnsh-p2-l5tprdfm/pressure beta-1",
+        "--no-parent",
+        "--background",
+        "--json"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 36.161166965030134,
+      "stdout": "{\n  \"user_opened\": false,\n  \"id\": \"b581d5cf-d87f-4edf-8c44-e4b46afd6c69\",\n  \"project_id\": \"3a5b45b7-8f20-41eb-b435-0ca81827a5f9\",\n  \"worktree_id\": \"27fb1a73-7b96-4826-b350-51696103ddf9\",\n  \"kind\": \"project\",\n  \"cwd\": \"/private/tmp/rwnsh-p2-l5tprdfm/repos/Beta\",\n  \"command\": \"/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/bin/python3.14 -u /private/tmp/rwnsh-p2-l5tprdfm/pressure.py /private/tmp/rwnsh-p2-l5tprdfm/pressure beta-1\",\n  \"editor_path\": null,\n  \"harness\": null,\n  \"unrestricted\": false,\n  \"codex_account_id\": null,\n  \"codex_account_label\": null,\n  \"codex_account_email\": null,\n  \"codex_home\": null,\n  \"orchestrator_skill_loaded\": false,\n  \"orchestrator_skill_version\": null,\n  \"orchestrator_delegation_version\": null,\n  \"orchestrator_project_root\": null,\n  \"created_at_unix\": 1793147640,\n  \"alive\": true\n}\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/private/tmp/riwork-p2b-checks/bin/riwork-terminal-release-fixture",
+        "tabs",
+        "open",
+        "--project",
+        "3a5b45b7-8f20-41eb-b435-0ca81827a5f9",
+        "--key",
+        "shell:b581d5cf-d87f-4edf-8c44-e4b46afd6c69"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 16.33066701469943,
+      "stdout": "{\n  \"entries\": [\n    {\n      \"key\": \"shell:34ddb1da-38e0-4dc9-a570-417cd3944d8f\",\n      \"kind\": \"shell\",\n      \"title\": \"Shell \u00b7 root \u00b7 1\",\n      \"status\": \"idle\",\n      \"hidden\": false,\n      \"worker\": true,\n      \"order\": 0,\n      \"parent\": null,\n      \"child_count\": 0,\n      \"children\": []\n    },\n    {\n      \"key\": \"shell:b581d5cf-d87f-4edf-8c44-e4b46afd6c69\",\n      \"kind\": \"shell\",\n      \"title\": \"Shell \u00b7 root \u00b7 2\",\n      \"status\": \"idle\",\n      \"hidden\": false,\n      \"worker\": true,\n      \"order\": 1,\n      \"parent\": null,\n      \"child_count\": 0,\n      \"children\": []\n    }\n  ],\n  \"epoch\": \"d4ac88ac-b390-4fe1-aa7d-00cb25bbda9b\",\n  \"revision\": 4\n}\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-cc643d155791399e",
+        "-f",
+        "/dev/null",
+        "list-panes",
+        "-a",
+        "-F",
+        "#{session_name}\t#{session_id}\t#{session_created}\t#{pane_id}\t#{pane_pid}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 3.8157919771037996,
+      "stdout": "34ddb1da-38e0-4dc9-a570-417cd3944d8f\t$2\t1793147640\t%2\t79612\nb581d5cf-d87f-4edf-8c44-e4b46afd6c69\t$3\t1793147640\t%3\t79631\nc6ec41c6-1583-496c-9edf-96512325020c\t$1\t1793147640\t%1\t79589\nfcbfeccf-8546-4170-b9dd-88136a747905\t$0\t1793147640\t%0\t79554\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/private/tmp/riwork-p2b-checks/bin/riwork-terminal-release-fixture",
+        "/private/tmp/rwnsh-p2-l5tprdfm/repos/Beta"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 7.383125019259751,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-cc643d155791399e",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.223499970976263,
+      "stdout": "79720\t/dev/ttys039\tc6ec41c6-1583-496c-9edf-96512325020c\t146\t21\n79719\t/dev/ttys038\tfcbfeccf-8546-4170-b9dd-88136a747905\t146\t21\n79735\t/dev/ttys040\t34ddb1da-38e0-4dc9-a570-417cd3944d8f\t146\t21\n79736\t/dev/ttys041\tb581d5cf-d87f-4edf-8c44-e4b46afd6c69\t146\t21\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/private/tmp/riwork-p2b-checks/bin/riwork-terminal-release-fixture",
+        "shell",
+        "create",
+        "--project",
+        "715a995b-5bac-4336-9809-c81bd69c97ee",
+        "--command",
+        "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/bin/python3.14 -u /private/tmp/rwnsh-p2-l5tprdfm/recorder.py /private/tmp/rwnsh-p2-l5tprdfm/recorder-0.input",
+        "--no-parent",
+        "--background",
+        "--json"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 58.22162498952821,
+      "stdout": "{\n  \"user_opened\": false,\n  \"id\": \"b130d65e-f622-4c5d-880b-a6b077b7279d\",\n  \"project_id\": \"715a995b-5bac-4336-9809-c81bd69c97ee\",\n  \"worktree_id\": \"b5efeec6-2294-4ce8-b2c8-4d010760e9cb\",\n  \"kind\": \"project\",\n  \"cwd\": \"/private/tmp/rwnsh-p2-l5tprdfm/repos/Alpha\",\n  \"command\": \"/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/bin/python3.14 -u /private/tmp/rwnsh-p2-l5tprdfm/recorder.py /private/tmp/rwnsh-p2-l5tprdfm/recorder-0.input\",\n  \"editor_path\": null,\n  \"harness\": null,\n  \"unrestricted\": false,\n  \"codex_account_id\": null,\n  \"codex_account_label\": null,\n  \"codex_account_email\": null,\n  \"codex_home\": null,\n  \"orchestrator_skill_loaded\": false,\n  \"orchestrator_skill_version\": null,\n  \"orchestrator_delegation_version\": null,\n  \"orchestrator_project_root\": null,\n  \"created_at_unix\": 1793147648,\n  \"alive\": true\n}\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-cc643d155791399e",
+        "-f",
+        "/dev/null",
+        "capture-pane",
+        "-p",
+        "-J",
+        "-S",
+        "-",
+        "-t",
+        "=b130d65e-f622-4c5d-880b-a6b077b7279d:0.0"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 1620.8610419998877,
+      "stdout": "RECORDER_READY\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-cc643d155791399e",
+        "-f",
+        "/dev/null",
+        "capture-pane",
+        "-p",
+        "-J",
+        "-S",
+        "-",
+        "-t",
+        "=b130d65e-f622-4c5d-880b-a6b077b7279d:0.0"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.1889590211212635,
+      "stdout": "RECORDER_READY\nINPUT_HEX:1b5b3230307e50415354455fc3bc5fe697a5e69cace8aa9e20737061636564202724646f6c6c6172270d7365636f6e64206c696e651b5b3230317e\nPASTED:PASTE_\u00fc_\u65e5\u672c\u8a9e spaced '$dollar'\nsecond line\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-cc643d155791399e",
+        "-f",
+        "/dev/null",
+        "capture-pane",
+        "-p",
+        "-J",
+        "-S",
+        "-",
+        "-t",
+        "=b130d65e-f622-4c5d-880b-a6b077b7279d:0.0"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.227707977406681,
+      "stdout": "RECORDER_READY\nINPUT_HEX:1b5b3230307e50415354455fc3bc5fe697a5e69cace8aa9e20737061636564202724646f6c6c6172270d7365636f6e64206c696e651b5b3230317e\nPASTED:PASTE_\u00fc_\u65e5\u672c\u8a9e spaced '$dollar'\nsecond line\nINPUT_HEX:1b5b3230307e2f707269766174652f746d702f72776e73682d70322d6c3574707264666d2f7265706f732f416c7068612f73706163655c2075cc88e697a5e69cace8aa9e2e747874202f707269766174652f746d702f72776e73682d70322d6c3574707264666d2f7265706f732f416c7068612f71756f74655c205c275c205c245c286c69746572616c5c292e706e671b5b3230317e\nPASTED:/private/tmp/rwnsh-p2-l5tprdfm/repos/Alpha/space\\ u\u0308\u65e5\u672c\u8a9e.txt /private/tmp/rwnsh-p2-l5tprdfm/repos/Alpha/quote\\ \\'\\ \\$\\(literal\\).png\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/bin/zsh",
+        "-c",
+        "printf \"%s\\0\" /private/tmp/rwnsh-p2-l5tprdfm/repos/Alpha/space\\ u\u0308\u65e5\u672c\u8a9e.txt /private/tmp/rwnsh-p2-l5tprdfm/repos/Alpha/quote\\ \\'\\ \\$\\(literal\\).png"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 3.6909999907948077,
+      "stdout": "/private/tmp/rwnsh-p2-l5tprdfm/repos/Alpha/space u\u0308\u65e5\u672c\u8a9e.txt\u0000/private/tmp/rwnsh-p2-l5tprdfm/repos/Alpha/quote ' $(literal).png\u0000",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-cc643d155791399e",
+        "-f",
+        "/dev/null",
+        "capture-pane",
+        "-p",
+        "-J",
+        "-S",
+        "-",
+        "-t",
+        "=b130d65e-f622-4c5d-880b-a6b077b7279d:0.0"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.1151249897666276,
+      "stdout": "RECORDER_READY\nINPUT_HEX:1b5b3230307e50415354455fc3bc5fe697a5e69cace8aa9e20737061636564202724646f6c6c6172270d7365636f6e64206c696e651b5b3230317e\nPASTED:PASTE_\u00fc_\u65e5\u672c\u8a9e spaced '$dollar'\nsecond line\nINPUT_HEX:1b5b3230307e2f707269766174652f746d702f72776e73682d70322d6c3574707264666d2f7265706f732f416c7068612f73706163655c2075cc88e697a5e69cace8aa9e2e747874202f707269766174652f746d702f72776e73682d70322d6c3574707264666d2f7265706f732f416c7068612f71756f74655c205c275c205c245c286c69746572616c5c292e706e671b5b3230317e\nPASTED:/private/tmp/rwnsh-p2-l5tprdfm/repos/Alpha/space\\ u\u0308\u65e5\u672c\u8a9e.txt /private/tmp/rwnsh-p2-l5tprdfm/repos/Alpha/quote\\ \\'\\ \\$\\(literal\\).png\nINPUT_HEX:1b5b3230307e2f707269766174652f746d702f72776e73682d70322d6c3574707264666d2f7265706f732f416c7068612f73706163655c2075cc88e697a5e69cace8aa9e2e747874202f707269766174652f746d702f72776e73682d70322d6c3574707264666d2f7265706f732f416c7068612f71756f74655c205c275c205c245c286c69746572616c5c292e706e671b5b3230317e\nPASTED:/private/tmp/rwnsh-p2-l5tprdfm/repos/Alpha/space\\ u\u0308\u65e5\u672c\u8a9e.txt /private/tmp/rwnsh-p2-l5tprdfm/repos/Alpha/quote\\ \\'\\ \\$\\(literal\\).png\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-cc643d155791399e",
+        "-f",
+        "/dev/null",
+        "capture-pane",
+        "-p",
+        "-J",
+        "-S",
+        "-",
+        "-t",
+        "=b130d65e-f622-4c5d-880b-a6b077b7279d:0.0"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.809958976693451,
+      "stdout": "RECORDER_READY\nINPUT_HEX:1b5b3230307e50415354455fc3bc5fe697a5e69cace8aa9e20737061636564202724646f6c6c6172270d7365636f6e64206c696e651b5b3230317e\nPASTED:PASTE_\u00fc_\u65e5\u672c\u8a9e spaced '$dollar'\nsecond line\nINPUT_HEX:1b5b3230307e2f707269766174652f746d702f72776e73682d70322d6c3574707264666d2f7265706f732f416c7068612f73706163655c2075cc88e697a5e69cace8aa9e2e747874202f707269766174652f746d702f72776e73682d70322d6c3574707264666d2f7265706f732f416c7068612f71756f74655c205c275c205c245c286c69746572616c5c292e706e671b5b3230317e\nPASTED:/private/tmp/rwnsh-p2-l5tprdfm/repos/Alpha/space\\ u\u0308\u65e5\u672c\u8a9e.txt /private/tmp/rwnsh-p2-l5tprdfm/repos/Alpha/quote\\ \\'\\ \\$\\(literal\\).png\nINPUT_HEX:1b5b3230307e2f707269766174652f746d702f72776e73682d70322d6c3574707264666d2f7265706f732f416c7068612f73706163655c2075cc88e697a5e69cace8aa9e2e747874202f707269766174652f746d702f72776e73682d70322d6c3574707264666d2f7265706f732f416c7068612f71756f74655c205c275c205c245c286c69746572616c5c292e706e671b5b3230317e\nPASTED:/private/tmp/rwnsh-p2-l5tprdfm/repos/Alpha/space\\ u\u0308\u65e5\u672c\u8a9e.txt /private/tmp/rwnsh-p2-l5tprdfm/repos/Alpha/quote\\ \\'\\ \\$\\(literal\\).png\nINPUT_HEX:1b5b3230307e63617074696f6e20c3bc2074616b6573207072696f72697479206f76657220706963747572651b5b3230317e\nPASTED:caption \u00fc takes priority over picture\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-cc643d155791399e",
+        "-f",
+        "/dev/null",
+        "capture-pane",
+        "-p",
+        "-J",
+        "-S",
+        "-",
+        "-t",
+        "=b130d65e-f622-4c5d-880b-a6b077b7279d:0.0"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 3.961582959163934,
+      "stdout": "RECORDER_READY\nINPUT_HEX:1b5b3230307e50415354455fc3bc5fe697a5e69cace8aa9e20737061636564202724646f6c6c6172270d7365636f6e64206c696e651b5b3230317e\nPASTED:PASTE_\u00fc_\u65e5\u672c\u8a9e spaced '$dollar'\nsecond line\nINPUT_HEX:1b5b3230307e2f707269766174652f746d702f72776e73682d70322d6c3574707264666d2f7265706f732f416c7068612f73706163655c2075cc88e697a5e69cace8aa9e2e747874202f707269766174652f746d702f72776e73682d70322d6c3574707264666d2f7265706f732f416c7068612f71756f74655c205c275c205c245c286c69746572616c5c292e706e671b5b3230317e\nPASTED:/private/tmp/rwnsh-p2-l5tprdfm/repos/Alpha/space\\ u\u0308\u65e5\u672c\u8a9e.txt /private/tmp/rwnsh-p2-l5tprdfm/repos/Alpha/quote\\ \\'\\ \\$\\(literal\\).png\nINPUT_HEX:1b5b3230307e2f707269766174652f746d702f72776e73682d70322d6c3574707264666d2f7265706f732f416c7068612f73706163655c2075cc88e697a5e69cace8aa9e2e747874202f707269766174652f746d702f72776e73682d70322d6c3574707264666d2f7265706f732f416c7068612f71756f74655c205c275c205c245c286c69746572616c5c292e706e671b5b3230317e\nPASTED:/private/tmp/rwnsh-p2-l5tprdfm/repos/Alpha/space\\ u\u0308\u65e5\u672c\u8a9e.txt /private/tmp/rwnsh-p2-l5tprdfm/repos/Alpha/quote\\ \\'\\ \\$\\(literal\\).png\nINPUT_HEX:1b5b3230307e63617074696f6e20c3bc2074616b6573207072696f72697479206f76657220706963747572651b5b3230317e\nPASTED:caption \u00fc takes priority over picture\nINPUT_HEX:1b5b3230307e2f707269766174652f746d702f72776e73682d70322d6c3574707264666d2f73746174652f746d702f7465726d696e616c2d696d616765732f37393634322d38383638613364322d663834392d343930302d383835342d3238353832343535643963342f636c6970626f6172642d31353137373265342d623166382d343535612d623030312d3739386636643164613136632e706e671b5b3230317e\nPASTED:/private/tmp/rwnsh-p2-l5tprdfm/state/tmp/terminal-images/79642-8868a3d2-f849-4900-8854-28582455d9c4/clipboard-151772e4-b1f8-455a-b001-798f6d1da16c.png\n\n\n\n\n\n\n\n\n\n\n\n\n\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-cc643d155791399e",
+        "-f",
+        "/dev/null",
+        "capture-pane",
+        "-p",
+        "-J",
+        "-S",
+        "-",
+        "-t",
+        "=b130d65e-f622-4c5d-880b-a6b077b7279d:0.0"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.144416016060859,
+      "stdout": "RECORDER_READY\nINPUT_HEX:1b5b3230307e50415354455fc3bc5fe697a5e69cace8aa9e20737061636564202724646f6c6c6172270d7365636f6e64206c696e651b5b3230317e\nPASTED:PASTE_\u00fc_\u65e5\u672c\u8a9e spaced '$dollar'\nsecond line\nINPUT_HEX:1b5b3230307e2f707269766174652f746d702f72776e73682d70322d6c3574707264666d2f7265706f732f416c7068612f73706163655c2075cc88e697a5e69cace8aa9e2e747874202f707269766174652f746d702f72776e73682d70322d6c3574707264666d2f7265706f732f416c7068612f71756f74655c205c275c205c245c286c69746572616c5c292e706e671b5b3230317e\nPASTED:/private/tmp/rwnsh-p2-l5tprdfm/repos/Alpha/space\\ u\u0308\u65e5\u672c\u8a9e.txt /private/tmp/rwnsh-p2-l5tprdfm/repos/Alpha/quote\\ \\'\\ \\$\\(literal\\).png\nINPUT_HEX:1b5b3230307e2f707269766174652f746d702f72776e73682d70322d6c3574707264666d2f7265706f732f416c7068612f73706163655c2075cc88e697a5e69cace8aa9e2e747874202f707269766174652f746d702f72776e73682d70322d6c3574707264666d2f7265706f732f416c7068612f71756f74655c205c275c205c245c286c69746572616c5c292e706e671b5b3230317e\nPASTED:/private/tmp/rwnsh-p2-l5tprdfm/repos/Alpha/space\\ u\u0308\u65e5\u672c\u8a9e.txt /private/tmp/rwnsh-p2-l5tprdfm/repos/Alpha/quote\\ \\'\\ \\$\\(literal\\).png\nINPUT_HEX:1b5b3230307e63617074696f6e20c3bc2074616b6573207072696f72697479206f76657220706963747572651b5b3230317e\nPASTED:caption \u00fc takes priority over picture\nINPUT_HEX:1b5b3230307e2f707269766174652f746d702f72776e73682d70322d6c3574707264666d2f73746174652f746d702f7465726d696e616c2d696d616765732f37393634322d38383638613364322d663834392d343930302d383835342d3238353832343535643963342f636c6970626f6172642d31353137373265342d623166382d343535612d623030312d3739386636643164613136632e706e671b5b3230317e\nPASTED:/private/tmp/rwnsh-p2-l5tprdfm/state/tmp/terminal-images/79642-8868a3d2-f849-4900-8854-28582455d9c4/clipboard-151772e4-b1f8-455a-b001-798f6d1da16c.png\nINPUT_HEX:1b5b3230307e2f707269766174652f746d702f72776e73682d70322d6c3574707264666d2f73746174652f746d702f7465726d696e616c2d696d616765732f37393634322d38383638613364322d663834392d343930302d383835342d3238353832343535643963342f636c6970626f6172642d37363837346664342d653236392d346264322d613031392d3736623434653966346138642e706e671b5b3230317e\nPASTED:/private/tmp/rwnsh-p2-l5tprdfm/state/tmp/terminal-images/79642-8868a3d2-f849-4900-8854-28582455d9c4/clipboard-76874fd4-e269-4bd2-a019-76b44e9f4a8d.png\n\n\n\n\n\n\n\n\n\n\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-cc643d155791399e",
+        "-f",
+        "/dev/null",
+        "send-keys",
+        "-t",
+        "=34aa48f6-fc64-4e72-9401-181c16ea387f:0.0",
+        "-l",
+        "printf 'CHILD_SCROLLBACK_1246\\n'"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.435917013324797,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-cc643d155791399e",
+        "-f",
+        "/dev/null",
+        "send-keys",
+        "-t",
+        "=34aa48f6-fc64-4e72-9401-181c16ea387f:0.0",
+        "Enter"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 3.633208980318159,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-cc643d155791399e",
+        "-f",
+        "/dev/null",
+        "capture-pane",
+        "-p",
+        "-J",
+        "-S",
+        "-",
+        "-t",
+        "=34aa48f6-fc64-4e72-9401-181c16ea387f:0.0"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.012332996353507,
+      "stdout": "                                                                                                    \nshnidi@dgsPro Alpha % \nshnidi@dgsPro Alpha % printf 'CHILD_SCROLLBACK_1246\\n'\nCHILD_SCROLLBACK_1246\n%                                                           \nshnidi@dgsPro Alpha % \n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-cc643d155791399e",
+        "-f",
+        "/dev/null",
+        "send-keys",
+        "-t",
+        "=3a5c0503-1478-4411-86e2-a789f5c11db1:0.0",
+        "-l",
+        "printf 'NESTED_SCROLLBACK_2738\\n'"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.038041981402785,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-cc643d155791399e",
+        "-f",
+        "/dev/null",
+        "send-keys",
+        "-t",
+        "=3a5c0503-1478-4411-86e2-a789f5c11db1:0.0",
+        "Enter"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.58174996310845,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-cc643d155791399e",
+        "-f",
+        "/dev/null",
+        "capture-pane",
+        "-p",
+        "-J",
+        "-S",
+        "-",
+        "-t",
+        "=3a5c0503-1478-4411-86e2-a789f5c11db1:0.0"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.1338749579153955,
+      "stdout": "                                                                                                    \nshnidi@dgsPro Alpha % \nshnidi@dgsPro Alpha % printf 'NESTED_SCROLLBACK_2738\\n'\nNESTED_SCROLLBACK_2738\nshnidi@dgsPro Alpha % \n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-cc643d155791399e",
+        "-f",
+        "/dev/null",
+        "capture-pane",
+        "-p",
+        "-J",
+        "-S",
+        "-",
+        "-t",
+        "=34aa48f6-fc64-4e72-9401-181c16ea387f:0.0"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 3.3101250301115215,
+      "stdout": "                                                                                                    \nshnidi@dgsPro Alpha % \nshnidi@dgsPro Alpha % printf 'CHILD_SCROLLBACK_1246\\n'\nCHILD_SCROLLBACK_1246\n%                                                           \nshnidi@dgsPro Alpha % \n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-cc643d155791399e",
+        "-f",
+        "/dev/null",
+        "capture-pane",
+        "-p",
+        "-J",
+        "-S",
+        "-",
+        "-t",
+        "=3a5c0503-1478-4411-86e2-a789f5c11db1:0.0"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 3.670124977361411,
+      "stdout": "                                                                                                    \nshnidi@dgsPro Alpha % \nshnidi@dgsPro Alpha % printf 'NESTED_SCROLLBACK_2738\\n'\nNESTED_SCROLLBACK_2738\nshnidi@dgsPro Alpha % \n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-cc643d155791399e",
+        "-f",
+        "/dev/null",
+        "list-panes",
+        "-a",
+        "-F",
+        "#{session_name}\t#{session_id}\t#{session_created}\t#{pane_id}\t#{pane_pid}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 3.8017500191926956,
+      "stdout": "34aa48f6-fc64-4e72-9401-181c16ea387f\t$5\t1793147651\t%5\t80205\n34ddb1da-38e0-4dc9-a570-417cd3944d8f\t$2\t1793147640\t%2\t79612\n3a5c0503-1478-4411-86e2-a789f5c11db1\t$6\t1793147651\t%6\t80253\nb130d65e-f622-4c5d-880b-a6b077b7279d\t$4\t1793147648\t%4\t80056\nb581d5cf-d87f-4edf-8c44-e4b46afd6c69\t$3\t1793147640\t%3\t79631\nc6ec41c6-1583-496c-9edf-96512325020c\t$1\t1793147640\t%1\t79589\nfcbfeccf-8546-4170-b9dd-88136a747905\t$0\t1793147640\t%0\t79554\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-cc643d155791399e",
+        "-f",
+        "/dev/null",
+        "send-keys",
+        "-t",
+        "=3a5c0503-1478-4411-86e2-a789f5c11db1:0.0",
+        "-l",
+        "exit"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 3.5708750365301967,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-cc643d155791399e",
+        "-f",
+        "/dev/null",
+        "send-keys",
+        "-t",
+        "=3a5c0503-1478-4411-86e2-a789f5c11db1:0.0",
+        "Enter"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 3.6901659914292395,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-cc643d155791399e",
+        "-f",
+        "/dev/null",
+        "has-session",
+        "-t",
+        "=3a5c0503-1478-4411-86e2-a789f5c11db1"
+      ],
+      "exit_code": 1,
+      "elapsed_ms": 3.569208027329296,
+      "stdout": "",
+      "stderr": "can't find session: 3a5c0503-1478-4411-86e2-a789f5c11db1\n"
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-cc643d155791399e",
+        "-f",
+        "/dev/null",
+        "list-panes",
+        "-a",
+        "-F",
+        "#{session_name}\t#{session_id}\t#{session_created}\t#{pane_id}\t#{pane_pid}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 3.5880839568562806,
+      "stdout": "34aa48f6-fc64-4e72-9401-181c16ea387f\t$5\t1793147651\t%5\t80205\n34ddb1da-38e0-4dc9-a570-417cd3944d8f\t$2\t1793147640\t%2\t79612\nb130d65e-f622-4c5d-880b-a6b077b7279d\t$4\t1793147648\t%4\t80056\nb581d5cf-d87f-4edf-8c44-e4b46afd6c69\t$3\t1793147640\t%3\t79631\nc6ec41c6-1583-496c-9edf-96512325020c\t$1\t1793147640\t%1\t79589\nfcbfeccf-8546-4170-b9dd-88136a747905\t$0\t1793147640\t%0\t79554\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-cc643d155791399e",
+        "-f",
+        "/dev/null",
+        "display-message",
+        "-p",
+        "-t",
+        "=4156fe6b-eb9d-4af8-a556-14b71d85084d:0.0",
+        "#{pane_current_command}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 5.139208980835974,
+      "stdout": "vim\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-cc643d155791399e",
+        "-f",
+        "/dev/null",
+        "display-message",
+        "-p",
+        "-t",
+        "=4156fe6b-eb9d-4af8-a556-14b71d85084d:0.0",
+        "#{cursor_y}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.744917037896812,
+      "stdout": "21\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-cc643d155791399e",
+        "-f",
+        "/dev/null",
+        "display-message",
+        "-p",
+        "-t",
+        "=4156fe6b-eb9d-4af8-a556-14b71d85084d:0.0",
+        "#{cursor_y}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.479499999433756,
+      "stdout": "21\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-cc643d155791399e",
+        "-f",
+        "/dev/null",
+        "display-message",
+        "-p",
+        "-t",
+        "=4156fe6b-eb9d-4af8-a556-14b71d85084d:0.0",
+        "#{cursor_y}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.692624963354319,
+      "stdout": "21\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-cc643d155791399e",
+        "-f",
+        "/dev/null",
+        "display-message",
+        "-p",
+        "-t",
+        "=4156fe6b-eb9d-4af8-a556-14b71d85084d:0.0",
+        "#{cursor_y}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.350875038653612,
+      "stdout": "1\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-cc643d155791399e",
+        "-f",
+        "/dev/null",
+        "has-session",
+        "-t",
+        "=4156fe6b-eb9d-4af8-a556-14b71d85084d"
+      ],
+      "exit_code": 1,
+      "elapsed_ms": 4.088624962605536,
+      "stdout": "",
+      "stderr": "can't find session: 4156fe6b-eb9d-4af8-a556-14b71d85084d\n"
+    },
+    {
+      "argv": [
+        "/private/tmp/riwork-p2b-checks/bin/riwork-terminal-release-fixture",
+        "shell",
+        "create",
+        "--project",
+        "715a995b-5bac-4336-9809-c81bd69c97ee",
+        "--command",
+        "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/bin/python3.14 -u /private/tmp/rwnsh-p2-l5tprdfm/recorder.py /private/tmp/rwnsh-p2-l5tprdfm/recorder-1.input",
+        "--no-parent",
+        "--background",
+        "--json"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 47.39695799071342,
+      "stdout": "{\n  \"user_opened\": false,\n  \"id\": \"23b3230f-ff57-4234-a389-9b4b2ef13d10\",\n  \"project_id\": \"715a995b-5bac-4336-9809-c81bd69c97ee\",\n  \"worktree_id\": \"b5efeec6-2294-4ce8-b2c8-4d010760e9cb\",\n  \"kind\": \"project\",\n  \"cwd\": \"/private/tmp/rwnsh-p2-l5tprdfm/repos/Alpha\",\n  \"command\": \"/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/bin/python3.14 -u /private/tmp/rwnsh-p2-l5tprdfm/recorder.py /private/tmp/rwnsh-p2-l5tprdfm/recorder-1.input\",\n  \"editor_path\": null,\n  \"harness\": null,\n  \"unrestricted\": false,\n  \"codex_account_id\": null,\n  \"codex_account_label\": null,\n  \"codex_account_email\": null,\n  \"codex_home\": null,\n  \"orchestrator_skill_loaded\": false,\n  \"orchestrator_skill_version\": null,\n  \"orchestrator_delegation_version\": null,\n  \"orchestrator_project_root\": null,\n  \"created_at_unix\": 1793147653,\n  \"alive\": true\n}\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-cc643d155791399e",
+        "-f",
+        "/dev/null",
+        "capture-pane",
+        "-p",
+        "-J",
+        "-S",
+        "-",
+        "-t",
+        "=23b3230f-ff57-4234-a389-9b4b2ef13d10:0.0"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.821167036425322,
+      "stdout": "RECORDER_READY\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/private/tmp/riwork-p2b-checks/bin/riwork-terminal-release-fixture",
+        "shell",
+        "create",
+        "--project",
+        "715a995b-5bac-4336-9809-c81bd69c97ee",
+        "--command",
+        "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/bin/python3.14 -u /private/tmp/rwnsh-p2-l5tprdfm/recorder.py /private/tmp/rwnsh-p2-l5tprdfm/recorder-2.input",
+        "--no-parent",
+        "--background",
+        "--json"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 46.45695898216218,
+      "stdout": "{\n  \"user_opened\": false,\n  \"id\": \"341450cd-0a99-463e-a26f-73c085d53c65\",\n  \"project_id\": \"715a995b-5bac-4336-9809-c81bd69c97ee\",\n  \"worktree_id\": \"b5efeec6-2294-4ce8-b2c8-4d010760e9cb\",\n  \"kind\": \"project\",\n  \"cwd\": \"/private/tmp/rwnsh-p2-l5tprdfm/repos/Alpha\",\n  \"command\": \"/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/bin/python3.14 -u /private/tmp/rwnsh-p2-l5tprdfm/recorder.py /private/tmp/rwnsh-p2-l5tprdfm/recorder-2.input\",\n  \"editor_path\": null,\n  \"harness\": null,\n  \"unrestricted\": false,\n  \"codex_account_id\": null,\n  \"codex_account_label\": null,\n  \"codex_account_email\": null,\n  \"codex_home\": null,\n  \"orchestrator_skill_loaded\": false,\n  \"orchestrator_skill_version\": null,\n  \"orchestrator_delegation_version\": null,\n  \"orchestrator_project_root\": null,\n  \"created_at_unix\": 1793147653,\n  \"alive\": true\n}\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-cc643d155791399e",
+        "-f",
+        "/dev/null",
+        "capture-pane",
+        "-p",
+        "-J",
+        "-S",
+        "-",
+        "-t",
+        "=341450cd-0a99-463e-a26f-73c085d53c65:0.0"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.418209020514041,
+      "stdout": "RECORDER_READY\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/private/tmp/riwork-p2b-checks/bin/riwork-terminal-release-fixture",
+        "shell",
+        "create",
+        "--project",
+        "715a995b-5bac-4336-9809-c81bd69c97ee",
+        "--command",
+        "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/bin/python3.14 -u /private/tmp/rwnsh-p2-l5tprdfm/recorder.py /private/tmp/rwnsh-p2-l5tprdfm/recorder-3.input",
+        "--no-parent",
+        "--background",
+        "--json"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 47.882665996439755,
+      "stdout": "{\n  \"user_opened\": false,\n  \"id\": \"997bc8b2-e014-454f-952d-64815b1bc06e\",\n  \"project_id\": \"715a995b-5bac-4336-9809-c81bd69c97ee\",\n  \"worktree_id\": \"b5efeec6-2294-4ce8-b2c8-4d010760e9cb\",\n  \"kind\": \"project\",\n  \"cwd\": \"/private/tmp/rwnsh-p2-l5tprdfm/repos/Alpha\",\n  \"command\": \"/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/bin/python3.14 -u /private/tmp/rwnsh-p2-l5tprdfm/recorder.py /private/tmp/rwnsh-p2-l5tprdfm/recorder-3.input\",\n  \"editor_path\": null,\n  \"harness\": null,\n  \"unrestricted\": false,\n  \"codex_account_id\": null,\n  \"codex_account_label\": null,\n  \"codex_account_email\": null,\n  \"codex_home\": null,\n  \"orchestrator_skill_loaded\": false,\n  \"orchestrator_skill_version\": null,\n  \"orchestrator_delegation_version\": null,\n  \"orchestrator_project_root\": null,\n  \"created_at_unix\": 1793147653,\n  \"alive\": true\n}\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-cc643d155791399e",
+        "-f",
+        "/dev/null",
+        "capture-pane",
+        "-p",
+        "-J",
+        "-S",
+        "-",
+        "-t",
+        "=997bc8b2-e014-454f-952d-64815b1bc06e:0.0"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 3.876583999954164,
+      "stdout": "RECORDER_READY\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/private/tmp/riwork-p2b-checks/bin/riwork-terminal-release-fixture",
+        "shell",
+        "create",
+        "--project",
+        "715a995b-5bac-4336-9809-c81bd69c97ee",
+        "--command",
+        "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/bin/python3.14 -u /private/tmp/rwnsh-p2-l5tprdfm/recorder.py /private/tmp/rwnsh-p2-l5tprdfm/recorder-4.input",
+        "--no-parent",
+        "--background",
+        "--json"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 48.04295802023262,
+      "stdout": "{\n  \"user_opened\": false,\n  \"id\": \"f909356e-9847-4088-a849-72b3dd5ca608\",\n  \"project_id\": \"715a995b-5bac-4336-9809-c81bd69c97ee\",\n  \"worktree_id\": \"b5efeec6-2294-4ce8-b2c8-4d010760e9cb\",\n  \"kind\": \"project\",\n  \"cwd\": \"/private/tmp/rwnsh-p2-l5tprdfm/repos/Alpha\",\n  \"command\": \"/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/bin/python3.14 -u /private/tmp/rwnsh-p2-l5tprdfm/recorder.py /private/tmp/rwnsh-p2-l5tprdfm/recorder-4.input\",\n  \"editor_path\": null,\n  \"harness\": null,\n  \"unrestricted\": false,\n  \"codex_account_id\": null,\n  \"codex_account_label\": null,\n  \"codex_account_email\": null,\n  \"codex_home\": null,\n  \"orchestrator_skill_loaded\": false,\n  \"orchestrator_skill_version\": null,\n  \"orchestrator_delegation_version\": null,\n  \"orchestrator_project_root\": null,\n  \"created_at_unix\": 1793147653,\n  \"alive\": true\n}\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-cc643d155791399e",
+        "-f",
+        "/dev/null",
+        "capture-pane",
+        "-p",
+        "-J",
+        "-S",
+        "-",
+        "-t",
+        "=f909356e-9847-4088-a849-72b3dd5ca608:0.0"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.444499965757132,
+      "stdout": "RECORDER_READY\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-cc643d155791399e",
+        "-f",
+        "/dev/null",
+        "list-panes",
+        "-a",
+        "-F",
+        "#{session_name}\t#{session_id}\t#{session_created}\t#{pane_id}\t#{pane_pid}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.20045800274238,
+      "stdout": "23b3230f-ff57-4234-a389-9b4b2ef13d10\t$8\t1793147653\t%8\t80397\n341450cd-0a99-463e-a26f-73c085d53c65\t$9\t1793147653\t%9\t80443\n34aa48f6-fc64-4e72-9401-181c16ea387f\t$5\t1793147651\t%5\t80205\n34ddb1da-38e0-4dc9-a570-417cd3944d8f\t$2\t1793147640\t%2\t79612\n997bc8b2-e014-454f-952d-64815b1bc06e\t$10\t1793147653\t%10\t80515\nb130d65e-f622-4c5d-880b-a6b077b7279d\t$4\t1793147648\t%4\t80056\nb581d5cf-d87f-4edf-8c44-e4b46afd6c69\t$3\t1793147640\t%3\t79631\nc6ec41c6-1583-496c-9edf-96512325020c\t$1\t1793147640\t%1\t79589\nf909356e-9847-4088-a849-72b3dd5ca608\t$11\t1793147653\t%11\t80599\nfcbfeccf-8546-4170-b9dd-88136a747905\t$0\t1793147640\t%0\t79554\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-cc643d155791399e",
+        "-f",
+        "/dev/null",
+        "list-panes",
+        "-a",
+        "-F",
+        "#{session_name}\t#{session_id}\t#{session_created}\t#{pane_id}\t#{pane_pid}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 31.035249994602054,
+      "stdout": "23b3230f-ff57-4234-a389-9b4b2ef13d10\t$8\t1793147653\t%8\t80397\n341450cd-0a99-463e-a26f-73c085d53c65\t$9\t1793147653\t%9\t80443\n34aa48f6-fc64-4e72-9401-181c16ea387f\t$5\t1793147651\t%5\t80205\n34ddb1da-38e0-4dc9-a570-417cd3944d8f\t$2\t1793147640\t%2\t79612\n997bc8b2-e014-454f-952d-64815b1bc06e\t$10\t1793147653\t%10\t80515\nb130d65e-f622-4c5d-880b-a6b077b7279d\t$4\t1793147648\t%4\t80056\nb581d5cf-d87f-4edf-8c44-e4b46afd6c69\t$3\t1793147640\t%3\t79631\nc6ec41c6-1583-496c-9edf-96512325020c\t$1\t1793147640\t%1\t79589\nf909356e-9847-4088-a849-72b3dd5ca608\t$11\t1793147653\t%11\t80599\nfcbfeccf-8546-4170-b9dd-88136a747905\t$0\t1793147640\t%0\t79554\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-cc643d155791399e",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.252958984579891,
+      "stdout": "79720\t/dev/ttys039\tc6ec41c6-1583-496c-9edf-96512325020c\t186\t28\n79719\t/dev/ttys038\tfcbfeccf-8546-4170-b9dd-88136a747905\t1\t1\n79735\t/dev/ttys040\t34ddb1da-38e0-4dc9-a570-417cd3944d8f\t186\t28\n79736\t/dev/ttys041\tb581d5cf-d87f-4edf-8c44-e4b46afd6c69\t186\t28\n80248\t/dev/ttys045\t34aa48f6-fc64-4e72-9401-181c16ea387f\t1\t1\n80785\t/dev/ttys043\tb130d65e-f622-4c5d-880b-a6b077b7279d\t186\t28\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-cc643d155791399e",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.409292014315724,
+      "stdout": "79720\t/dev/ttys039\tc6ec41c6-1583-496c-9edf-96512325020c\t186\t28\n79719\t/dev/ttys038\tfcbfeccf-8546-4170-b9dd-88136a747905\t1\t1\n79735\t/dev/ttys040\t34ddb1da-38e0-4dc9-a570-417cd3944d8f\t186\t28\n79736\t/dev/ttys041\tb581d5cf-d87f-4edf-8c44-e4b46afd6c69\t186\t28\n80248\t/dev/ttys045\t34aa48f6-fc64-4e72-9401-181c16ea387f\t186\t28\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-cc643d155791399e",
+        "-f",
+        "/dev/null",
+        "list-clients",
+        "-F",
+        "#{client_pid}\t#{client_tty}\t#{session_name}\t#{client_width}\t#{client_height}"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.340084036812186,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-cc643d155791399e",
+        "-f",
+        "/dev/null",
+        "kill-session",
+        "-t",
+        "=b130d65e-f622-4c5d-880b-a6b077b7279d"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.506000026594847,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-cc643d155791399e",
+        "-f",
+        "/dev/null",
+        "kill-session",
+        "-t",
+        "=34aa48f6-fc64-4e72-9401-181c16ea387f"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.333916993346065,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-cc643d155791399e",
+        "-f",
+        "/dev/null",
+        "kill-session",
+        "-t",
+        "=3a5c0503-1478-4411-86e2-a789f5c11db1"
+      ],
+      "exit_code": 1,
+      "elapsed_ms": 3.6502499715425074,
+      "stdout": "",
+      "stderr": "can't find session: 3a5c0503-1478-4411-86e2-a789f5c11db1\n"
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-cc643d155791399e",
+        "-f",
+        "/dev/null",
+        "kill-session",
+        "-t",
+        "=4156fe6b-eb9d-4af8-a556-14b71d85084d"
+      ],
+      "exit_code": 1,
+      "elapsed_ms": 3.4252910409122705,
+      "stdout": "",
+      "stderr": "can't find session: 4156fe6b-eb9d-4af8-a556-14b71d85084d\n"
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-cc643d155791399e",
+        "-f",
+        "/dev/null",
+        "kill-session",
+        "-t",
+        "=23b3230f-ff57-4234-a389-9b4b2ef13d10"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 3.774166980292648,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-cc643d155791399e",
+        "-f",
+        "/dev/null",
+        "kill-session",
+        "-t",
+        "=341450cd-0a99-463e-a26f-73c085d53c65"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 3.91279102768749,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-cc643d155791399e",
+        "-f",
+        "/dev/null",
+        "kill-session",
+        "-t",
+        "=997bc8b2-e014-454f-952d-64815b1bc06e"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 3.501333005260676,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-cc643d155791399e",
+        "-f",
+        "/dev/null",
+        "kill-session",
+        "-t",
+        "=f909356e-9847-4088-a849-72b3dd5ca608"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 3.6733340239152312,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-cc643d155791399e",
+        "-f",
+        "/dev/null",
+        "kill-session",
+        "-t",
+        "=fcbfeccf-8546-4170-b9dd-88136a747905"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 4.873666970524937,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-cc643d155791399e",
+        "-f",
+        "/dev/null",
+        "kill-session",
+        "-t",
+        "=c6ec41c6-1583-496c-9edf-96512325020c"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 14.914416999090463,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-cc643d155791399e",
+        "-f",
+        "/dev/null",
+        "kill-session",
+        "-t",
+        "=34ddb1da-38e0-4dc9-a570-417cd3944d8f"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 18.77737499307841,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-cc643d155791399e",
+        "-f",
+        "/dev/null",
+        "kill-session",
+        "-t",
+        "=b581d5cf-d87f-4edf-8c44-e4b46afd6c69"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 10.988917027134448,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "/opt/homebrew/Cellar/tmux/3.6a/bin/tmux",
+        "-u",
+        "-L",
+        "riwork-cc643d155791399e",
+        "-f",
+        "/dev/null",
+        "list-sessions"
+      ],
+      "exit_code": 1,
+      "elapsed_ms": 4.679541976656765,
+      "stdout": "",
+      "stderr": "server exited unexpectedly\n"
+    }
+  ],
+  "status": "passed",
+  "phase": "2b terminal extras",
+  "projects": [
+    {
+      "id": "715a995b-5bac-4336-9809-c81bd69c97ee",
+      "name": "Terminal fixture Alpha",
+      "root": "/private/tmp/rwnsh-p2-l5tprdfm/repos/Alpha",
+      "repository_roots": [],
+      "folder_id": null,
+      "notify_on_agent_done": false,
+      "wake_orchestrators_on_agent_done": false,
+      "codex_account": {
+        "source": "inherit"
+      },
+      "orchestrator": {
+        "mode": "inherit"
+      },
+      "delegation_policy": {},
+      "created_at": 1793147640
+    },
+    {
+      "id": "3a5b45b7-8f20-41eb-b435-0ca81827a5f9",
+      "name": "Terminal fixture Beta",
+      "root": "/private/tmp/rwnsh-p2-l5tprdfm/repos/Beta",
+      "repository_roots": [],
+      "folder_id": null,
+      "notify_on_agent_done": false,
+      "wake_orchestrators_on_agent_done": false,
+      "codex_account": {
+        "source": "inherit"
+      },
+      "orchestrator": {
+        "mode": "inherit"
+      },
+      "delegation_policy": {},
+      "created_at": 1793147640
+    }
+  ],
+  "sessions": [
+    {
+      "user_opened": false,
+      "id": "fcbfeccf-8546-4170-b9dd-88136a747905",
+      "project_id": "715a995b-5bac-4336-9809-c81bd69c97ee",
+      "worktree_id": "b5efeec6-2294-4ce8-b2c8-4d010760e9cb",
+      "kind": "project",
+      "cwd": "/private/tmp/rwnsh-p2-l5tprdfm/repos/Alpha",
+      "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/bin/python3.14 -u /private/tmp/rwnsh-p2-l5tprdfm/pressure.py /private/tmp/rwnsh-p2-l5tprdfm/pressure alpha-0",
+      "editor_path": null,
+      "harness": null,
+      "unrestricted": false,
+      "codex_account_id": null,
+      "codex_account_label": null,
+      "codex_account_email": null,
+      "codex_home": null,
+      "orchestrator_skill_loaded": false,
+      "orchestrator_skill_version": null,
+      "orchestrator_delegation_version": null,
+      "orchestrator_project_root": null,
+      "created_at_unix": 1793147640,
+      "alive": true,
+      "fixtureTag": "alpha-0"
+    },
+    {
+      "user_opened": false,
+      "id": "c6ec41c6-1583-496c-9edf-96512325020c",
+      "project_id": "715a995b-5bac-4336-9809-c81bd69c97ee",
+      "worktree_id": "b5efeec6-2294-4ce8-b2c8-4d010760e9cb",
+      "kind": "project",
+      "cwd": "/private/tmp/rwnsh-p2-l5tprdfm/repos/Alpha",
+      "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/bin/python3.14 -u /private/tmp/rwnsh-p2-l5tprdfm/pressure.py /private/tmp/rwnsh-p2-l5tprdfm/pressure alpha-1",
+      "editor_path": null,
+      "harness": null,
+      "unrestricted": false,
+      "codex_account_id": null,
+      "codex_account_label": null,
+      "codex_account_email": null,
+      "codex_home": null,
+      "orchestrator_skill_loaded": false,
+      "orchestrator_skill_version": null,
+      "orchestrator_delegation_version": null,
+      "orchestrator_project_root": null,
+      "created_at_unix": 1793147640,
+      "alive": true,
+      "fixtureTag": "alpha-1"
+    },
+    {
+      "user_opened": false,
+      "id": "34ddb1da-38e0-4dc9-a570-417cd3944d8f",
+      "project_id": "3a5b45b7-8f20-41eb-b435-0ca81827a5f9",
+      "worktree_id": "27fb1a73-7b96-4826-b350-51696103ddf9",
+      "kind": "project",
+      "cwd": "/private/tmp/rwnsh-p2-l5tprdfm/repos/Beta",
+      "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/bin/python3.14 -u /private/tmp/rwnsh-p2-l5tprdfm/pressure.py /private/tmp/rwnsh-p2-l5tprdfm/pressure beta-0",
+      "editor_path": null,
+      "harness": null,
+      "unrestricted": false,
+      "codex_account_id": null,
+      "codex_account_label": null,
+      "codex_account_email": null,
+      "codex_home": null,
+      "orchestrator_skill_loaded": false,
+      "orchestrator_skill_version": null,
+      "orchestrator_delegation_version": null,
+      "orchestrator_project_root": null,
+      "created_at_unix": 1793147640,
+      "alive": true,
+      "fixtureTag": "beta-0"
+    },
+    {
+      "user_opened": false,
+      "id": "b581d5cf-d87f-4edf-8c44-e4b46afd6c69",
+      "project_id": "3a5b45b7-8f20-41eb-b435-0ca81827a5f9",
+      "worktree_id": "27fb1a73-7b96-4826-b350-51696103ddf9",
+      "kind": "project",
+      "cwd": "/private/tmp/rwnsh-p2-l5tprdfm/repos/Beta",
+      "command": "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/bin/python3.14 -u /private/tmp/rwnsh-p2-l5tprdfm/pressure.py /private/tmp/rwnsh-p2-l5tprdfm/pressure beta-1",
+      "editor_path": null,
+      "harness": null,
+      "unrestricted": false,
+      "codex_account_id": null,
+      "codex_account_label": null,
+      "codex_account_email": null,
+      "codex_home": null,
+      "orchestrator_skill_loaded": false,
+      "orchestrator_skill_version": null,
+      "orchestrator_delegation_version": null,
+      "orchestrator_project_root": null,
+      "created_at_unix": 1793147640,
+      "alive": true,
+      "fixtureTag": "beta-1"
+    }
+  ],
+  "initial_layouts": {
+    "715a995b-5bac-4336-9809-c81bd69c97ee": {
+      "layout": {
+        "split": {
+          "axis": "stacked",
+          "ratio": 0.5,
+          "first": {
+            "pane": 1
+          },
+          "second": {
+            "pane": 2
+          }
+        }
+      },
+      "panes": {
+        "1": {
+          "tabs": [
+            {
+              "kind": "panel",
+              "panel": "files"
+            },
+            {
+              "kind": "shell",
+              "shell_id": "fcbfeccf-8546-4170-b9dd-88136a747905"
+            }
+          ],
+          "active_tab_key": "shell:fcbfeccf-8546-4170-b9dd-88136a747905",
+          "shell_ids": [
+            "fcbfeccf-8546-4170-b9dd-88136a747905"
+          ],
+          "active_shell_id": "fcbfeccf-8546-4170-b9dd-88136a747905",
+          "tab_edge": "top"
+        },
+        "2": {
+          "tabs": [
+            {
+              "kind": "panel",
+              "panel": "preview"
+            },
+            {
+              "kind": "shell",
+              "shell_id": "c6ec41c6-1583-496c-9edf-96512325020c"
+            }
+          ],
+          "active_tab_key": "shell:c6ec41c6-1583-496c-9edf-96512325020c",
+          "shell_ids": [
+            "c6ec41c6-1583-496c-9edf-96512325020c"
+          ],
+          "active_shell_id": "c6ec41c6-1583-496c-9edf-96512325020c",
+          "tab_edge": "top"
+        }
+      },
+      "active_pane": 1,
+      "locked_panes": [],
+      "main_pane": null,
+      "panels_initialized": true,
+      "sidebar_visible": false,
+      "window_size": {
+        "width": 960.0,
+        "height": 720.0
+      }
+    },
+    "3a5b45b7-8f20-41eb-b435-0ca81827a5f9": {
+      "layout": {
+        "split": {
+          "axis": "stacked",
+          "ratio": 0.5,
+          "first": {
+            "pane": 1
+          },
+          "second": {
+            "pane": 2
+          }
+        }
+      },
+      "panes": {
+        "1": {
+          "tabs": [
+            {
+              "kind": "panel",
+              "panel": "files"
+            },
+            {
+              "kind": "shell",
+              "shell_id": "34ddb1da-38e0-4dc9-a570-417cd3944d8f"
+            }
+          ],
+          "active_tab_key": "shell:34ddb1da-38e0-4dc9-a570-417cd3944d8f",
+          "shell_ids": [
+            "34ddb1da-38e0-4dc9-a570-417cd3944d8f"
+          ],
+          "active_shell_id": "34ddb1da-38e0-4dc9-a570-417cd3944d8f",
+          "tab_edge": "top"
+        },
+        "2": {
+          "tabs": [
+            {
+              "kind": "panel",
+              "panel": "preview"
+            },
+            {
+              "kind": "shell",
+              "shell_id": "b581d5cf-d87f-4edf-8c44-e4b46afd6c69"
+            }
+          ],
+          "active_tab_key": "shell:b581d5cf-d87f-4edf-8c44-e4b46afd6c69",
+          "shell_ids": [
+            "b581d5cf-d87f-4edf-8c44-e4b46afd6c69"
+          ],
+          "active_shell_id": "b581d5cf-d87f-4edf-8c44-e4b46afd6c69",
+          "tab_edge": "top"
+        }
+      },
+      "active_pane": 1,
+      "locked_panes": [],
+      "main_pane": null,
+      "panels_initialized": true,
+      "sidebar_visible": false,
+      "window_size": {
+        "width": 960.0,
+        "height": 720.0
+      }
+    }
+  },
+  "pid": 79642,
+  "fixture_windows_shown": {
+    "ok": true,
+    "frames": [
+      {
+        "windowId": "a9c7eb51-1108-49f5-b360-ccaab226c6ba",
+        "windowNumber": 6898,
+        "x": 452.0,
+        "y": 472.0,
+        "width": 1220.0,
+        "height": 900.0
+      },
+      {
+        "windowId": "faed6d08-1627-4e20-ac5b-9ff8373f2bd8",
+        "windowNumber": 6899,
+        "x": 1688.0,
+        "y": 472.0,
+        "width": 1220.0,
+        "height": 900.0
+      }
+    ],
+    "activation": false
+  },
+  "rendering_initial": [
+    {
+      "terminalId": 1,
+      "shellId": "fcbfeccf-8546-4170-b9dd-88136a747905",
+      "layerScale": 2,
+      "renderer": {
+        "height": 760,
+        "samples": 206756,
+        "width": 2440,
+        "firstPixel": 4279375903,
+        "readable": 1,
+        "iosurface": true,
+        "differentPixels": 19606
+      },
+      "layerBounds": "{{0, 0}, {1220, 380}}",
+      "viewportText": "https://example.com/ RIWORK alpha-0 OUTPUT PRESSURE ------------------------------------------------\nhttps://example.com/ RIWORK alpha-0 OUTPUT PRESSURE ------------------------------------------------\nhttps://example.com/ RIWORK alpha-0 OUTPUT PRESSURE ------------------------------------------------",
+      "background": "#101820",
+      "superviewClass": "NshView",
+      "closing": false,
+      "cols": 186,
+      "wakeCount": 6,
+      "viewWidth": 1220,
+      "monotonicMs": 299444818.13600004,
+      "visibilityUpdates": 2,
+      "viewHeight": 380,
+      "layerHasContents": 1,
+      "mainThread": true,
+      "wantsLayer": true,
+      "phase": "geometry-probe",
+      "resolved": true,
+      "lastShown": true,
+      "rows": 28,
+      "frame": "{{0, 0}, {1220, 380}}",
+      "visibleRect": "{{0, 0}, {1220, 380}}",
+      "originY": 4,
+      "originDetails": {
+        "reason": "measured",
+        "baseline": 14.5,
+        "cellHeight": 13,
+        "available": 16,
+        "imeY": 368,
+        "remainder": 4,
+        "left": 4,
+        "top": 4
+      },
+      "windowOcclusion": 8194,
+      "renderRequests": 0,
+      "visible": true,
+      "widthPx": 2440,
+      "originX": 4,
+      "hasWindow": 1,
+      "layerClass": "IOSurfaceLayer",
+      "frozen": false,
+      "appTicks": 4,
+      "heightPx": 760,
+      "drawCalls": 0,
+      "scale": 2,
+      "layerHidden": false,
+      "foreground": "#c9d8e6"
+    },
+    {
+      "terminalId": 2,
+      "shellId": "c6ec41c6-1583-496c-9edf-96512325020c",
+      "layerScale": 2,
+      "renderer": {
+        "height": 760,
+        "samples": 206756,
+        "width": 2440,
+        "firstPixel": 4279375903,
+        "readable": 1,
+        "iosurface": true,
+        "differentPixels": 19426
+      },
+      "layerBounds": "{{0, 0}, {1220, 380}}",
+      "viewportText": "https://example.com/ RIWORK alpha-1 OUTPUT PRESSURE ------------------------------------------------\nhttps://example.com/ RIWORK alpha-1 OUTPUT PRESSURE ------------------------------------------------\nhttps://example.com/ RIWORK alpha-1 OUTPUT PRESSURE ------------------------------------------------",
+      "background": "#101820",
+      "superviewClass": "NshView",
+      "closing": false,
+      "cols": 186,
+      "wakeCount": 7,
+      "viewWidth": 1220,
+      "monotonicMs": 299444869.90500003,
+      "visibilityUpdates": 2,
+      "viewHeight": 380,
+      "layerHasContents": 1,
+      "mainThread": true,
+      "wantsLayer": true,
+      "phase": "geometry-probe",
+      "resolved": true,
+      "lastShown": true,
+      "rows": 28,
+      "frame": "{{0, 0}, {1220, 380}}",
+      "visibleRect": "{{0, 0}, {1220, 380}}",
+      "originY": 4,
+      "originDetails": {
+        "reason": "measured",
+        "baseline": 14.5,
+        "cellHeight": 13,
+        "available": 16,
+        "imeY": 355,
+        "remainder": 4,
+        "left": 4,
+        "top": 4
+      },
+      "windowOcclusion": 8194,
+      "renderRequests": 0,
+      "visible": true,
+      "widthPx": 2440,
+      "originX": 4,
+      "hasWindow": 1,
+      "layerClass": "IOSurfaceLayer",
+      "frozen": false,
+      "appTicks": 4,
+      "heightPx": 760,
+      "drawCalls": 0,
+      "scale": 2,
+      "layerHidden": false,
+      "foreground": "#c9d8e6"
+    },
+    {
+      "terminalId": 3,
+      "shellId": "34ddb1da-38e0-4dc9-a570-417cd3944d8f",
+      "layerScale": 2,
+      "renderer": {
+        "height": 760,
+        "samples": 206756,
+        "width": 2440,
+        "firstPixel": 4279375903,
+        "readable": 1,
+        "iosurface": true,
+        "differentPixels": 19273
+      },
+      "layerBounds": "{{0, 0}, {1220, 380}}",
+      "viewportText": "https://example.com/ RIWORK beta-0 OUTPUT PRESSURE ------------------------------------------------\nhttps://example.com/ RIWORK beta-0 OUTPUT PRESSURE ------------------------------------------------\nhttps://example.com/ RIWORK beta-0 OUTPUT PRESSURE ------------------------------------------------",
+      "background": "#101820",
+      "superviewClass": "NshView",
+      "closing": false,
+      "cols": 186,
+      "wakeCount": 9,
+      "viewWidth": 1220,
+      "monotonicMs": 299444920.61700004,
+      "visibilityUpdates": 2,
+      "viewHeight": 380,
+      "layerHasContents": 1,
+      "mainThread": true,
+      "wantsLayer": true,
+      "phase": "geometry-probe",
+      "resolved": true,
+      "lastShown": true,
+      "rows": 28,
+      "frame": "{{0, 0}, {1220, 380}}",
+      "visibleRect": "{{0, 0}, {1220, 380}}",
+      "originY": 4,
+      "originDetails": {
+        "reason": "measured",
+        "baseline": 14.5,
+        "cellHeight": 13,
+        "available": 16,
+        "imeY": 368,
+        "remainder": 4,
+        "left": 4,
+        "top": 4
+      },
+      "windowOcclusion": 8194,
+      "renderRequests": 0,
+      "visible": true,
+      "widthPx": 2440,
+      "originX": 4,
+      "hasWindow": 1,
+      "layerClass": "IOSurfaceLayer",
+      "frozen": false,
+      "appTicks": 7,
+      "heightPx": 760,
+      "drawCalls": 0,
+      "scale": 2,
+      "layerHidden": false,
+      "foreground": "#c9d8e6"
+    },
+    {
+      "terminalId": 4,
+      "shellId": "b581d5cf-d87f-4edf-8c44-e4b46afd6c69",
+      "layerScale": 2,
+      "renderer": {
+        "height": 760,
+        "samples": 206756,
+        "width": 2440,
+        "firstPixel": 4279375903,
+        "readable": 1,
+        "iosurface": true,
+        "differentPixels": 19057
+      },
+      "layerBounds": "{{0, 0}, {1220, 380}}",
+      "viewportText": "https://example.com/ RIWORK beta-1 OUTPUT PRESSURE ------------------------------------------------\nhttps://example.com/ RIWORK beta-1 OUTPUT PRESSURE ------------------------------------------------\nhttps://example.com/ RIWORK beta-1 OUTPUT PRESSURE ------------------------------------------------",
+      "background": "#101820",
+      "superviewClass": "NshView",
+      "closing": false,
+      "cols": 186,
+      "wakeCount": 11,
+      "viewWidth": 1220,
+      "monotonicMs": 299444970.29700005,
+      "visibilityUpdates": 2,
+      "viewHeight": 380,
+      "layerHasContents": 1,
+      "mainThread": true,
+      "wantsLayer": true,
+      "phase": "geometry-probe",
+      "resolved": true,
+      "lastShown": true,
+      "rows": 28,
+      "frame": "{{0, 0}, {1220, 380}}",
+      "visibleRect": "{{0, 0}, {1220, 380}}",
+      "originY": 4,
+      "originDetails": {
+        "reason": "measured",
+        "baseline": 14.5,
+        "cellHeight": 13,
+        "available": 16,
+        "imeY": 368,
+        "remainder": 4,
+        "left": 4,
+        "top": 4
+      },
+      "windowOcclusion": 8194,
+      "renderRequests": 0,
+      "visible": true,
+      "widthPx": 2440,
+      "originX": 4,
+      "hasWindow": 1,
+      "layerClass": "IOSurfaceLayer",
+      "frozen": false,
+      "appTicks": 8,
+      "heightPx": 760,
+      "drawCalls": 0,
+      "scale": 2,
+      "layerHidden": false,
+      "foreground": "#c9d8e6"
+    }
+  ],
+  "windows": [
+    {
+      "windowId": "a9c7eb51-1108-49f5-b360-ccaab226c6ba",
+      "projectId": "715a995b-5bac-4336-9809-c81bd69c97ee",
+      "windowNumber": 6898,
+      "layout": {
+        "layout": {
+          "split": {
+            "axis": "stacked",
+            "ratio": 0.5,
+            "first": {
+              "pane": 1
+            },
+            "second": {
+              "pane": 2
+            }
+          }
+        },
+        "panes": {
+          "1": {
+            "tabs": [
+              {
+                "kind": "panel",
+                "panel": "files"
+              },
+              {
+                "kind": "shell",
+                "shell_id": "fcbfeccf-8546-4170-b9dd-88136a747905"
+              }
+            ],
+            "active_tab_key": "shell:fcbfeccf-8546-4170-b9dd-88136a747905",
+            "tab_edge": "top",
+            "shell_ids": [
+              "fcbfeccf-8546-4170-b9dd-88136a747905"
+            ],
+            "active_shell_id": "fcbfeccf-8546-4170-b9dd-88136a747905"
+          },
+          "2": {
+            "tabs": [
+              {
+                "kind": "panel",
+                "panel": "preview"
+              },
+              {
+                "kind": "shell",
+                "shell_id": "c6ec41c6-1583-496c-9edf-96512325020c"
+              }
+            ],
+            "active_tab_key": "shell:c6ec41c6-1583-496c-9edf-96512325020c",
+            "tab_edge": "top",
+            "shell_ids": [
+              "c6ec41c6-1583-496c-9edf-96512325020c"
+            ],
+            "active_shell_id": "c6ec41c6-1583-496c-9edf-96512325020c"
+          }
+        },
+        "active_pane": 1,
+        "locked_panes": [],
+        "panels_initialized": true,
+        "detached_shell_ids": [],
+        "selected_worktree_id": "b5efeec6-2294-4ce8-b2c8-4d010760e9cb",
+        "selected_task_id": null,
+        "sidebar_visible": false,
+        "window_size": {
+          "width": 960.0,
+          "height": 720.0
+        }
+      }
+    },
+    {
+      "windowId": "faed6d08-1627-4e20-ac5b-9ff8373f2bd8",
+      "projectId": "3a5b45b7-8f20-41eb-b435-0ca81827a5f9",
+      "windowNumber": 6899,
+      "layout": null
+    }
+  ],
+  "extras": {
+    "bracketed_paste": {
+      "raw_hex": "1b5b3230307e50415354455fc3bc5fe697a5e69cace8aa9e20737061636564202724646f6c6c6172270d7365636f6e64206c696e651b5b3230317e",
+      "capture_hex": "5245434f524445525f52454144590a494e5055545f4845583a316235623332333033303765353034313533353434353566633362633566653639376135653639636163653861613965323037333730363136333635363432303237323436343666366336633631373232373064373336353633366636653634323036633639366536353162356233323330333137650a5041535445443a50415354455fc3bc5fe697a5e69cace8aa9e20737061636564202724646f6c6c6172270a7365636f6e64206c696e650a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+      "bytes": 59
+    },
+    "file_drop": {
+      "paths": [
+        "/private/tmp/rwnsh-p2-l5tprdfm/repos/Alpha/space \u00fc\u65e5\u672c\u8a9e.txt",
+        "/private/tmp/rwnsh-p2-l5tprdfm/repos/Alpha/quote ' $(literal).png"
+      ],
+      "cocoa_url_paths": [
+        "/private/tmp/rwnsh-p2-l5tprdfm/repos/Alpha/space u\u0308\u65e5\u672c\u8a9e.txt",
+        "/private/tmp/rwnsh-p2-l5tprdfm/repos/Alpha/quote ' $(literal).png"
+      ],
+      "raw_hex": "1b5b3230307e2f707269766174652f746d702f72776e73682d70322d6c3574707264666d2f7265706f732f416c7068612f73706163655c2075cc88e697a5e69cace8aa9e2e747874202f707269766174652f746d702f72776e73682d70322d6c3574707264666d2f7265706f732f416c7068612f71756f74655c205c275c205c245c286c69746572616c5c292e706e671b5b3230317e",
+      "capture_hex": "5245434f524445525f52454144590a494e5055545f4845583a316235623332333033303765353034313533353434353566633362633566653639376135653639636163653861613965323037333730363136333635363432303237323436343666366336633631373232373064373336353633366636653634323036633639366536353162356233323330333137650a5041535445443a50415354455fc3bc5fe697a5e69cace8aa9e20737061636564202724646f6c6c6172270a7365636f6e64206c696e650a494e5055545f4845583a3162356233323330333037653266373037323639373636313734363532663734366437303266373237373665373336383264373033323264366333353734373037323634363636643266373236353730366637333266343136633730363836313266373337303631363336353563323037356363383865363937613565363963616365386161396532653734373837343230326637303732363937363631373436353266373436643730326637323737366537333638326437303332326436633335373437303732363436363664326637323635373036663733326634313663373036383631326637313735366637343635356332303563323735633230356332343563323836633639373436353732363136633563323932653730366536373162356233323330333137650a5041535445443a2f707269766174652f746d702f72776e73682d70322d6c3574707264666d2f7265706f732f416c7068612f73706163655c2075cc88e697a5e69cace8aa9e2e747874202f707269766174652f746d702f72776e73682d70322d6c3574707264666d2f7265706f732f416c7068612f71756f74655c205c275c205c245c286c69746572616c5c292e706e670a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+      "bytes": 150,
+      "same_file_identity_after_cocoa_normalization": true,
+      "unsafe_batch_atomic": true
+    },
+    "file_paste": {
+      "raw_hex": "1b5b3230307e2f707269766174652f746d702f72776e73682d70322d6c3574707264666d2f7265706f732f416c7068612f73706163655c2075cc88e697a5e69cace8aa9e2e747874202f707269766174652f746d702f72776e73682d70322d6c3574707264666d2f7265706f732f416c7068612f71756f74655c205c275c205c245c286c69746572616c5c292e706e671b5b3230317e",
+      "capture_hex": "5245434f524445525f52454144590a494e5055545f4845583a316235623332333033303765353034313533353434353566633362633566653639376135653639636163653861613965323037333730363136333635363432303237323436343666366336633631373232373064373336353633366636653634323036633639366536353162356233323330333137650a5041535445443a50415354455fc3bc5fe697a5e69cace8aa9e20737061636564202724646f6c6c6172270a7365636f6e64206c696e650a494e5055545f4845583a3162356233323330333037653266373037323639373636313734363532663734366437303266373237373665373336383264373033323264366333353734373037323634363636643266373236353730366637333266343136633730363836313266373337303631363336353563323037356363383865363937613565363963616365386161396532653734373837343230326637303732363937363631373436353266373436643730326637323737366537333638326437303332326436633335373437303732363436363664326637323635373036663733326634313663373036383631326637313735366637343635356332303563323735633230356332343563323836633639373436353732363136633563323932653730366536373162356233323330333137650a5041535445443a2f707269766174652f746d702f72776e73682d70322d6c3574707264666d2f7265706f732f416c7068612f73706163655c2075cc88e697a5e69cace8aa9e2e747874202f707269766174652f746d702f72776e73682d70322d6c3574707264666d2f7265706f732f416c7068612f71756f74655c205c275c205c245c286c69746572616c5c292e706e670a494e5055545f4845583a3162356233323330333037653266373037323639373636313734363532663734366437303266373237373665373336383264373033323264366333353734373037323634363636643266373236353730366637333266343136633730363836313266373337303631363336353563323037356363383865363937613565363963616365386161396532653734373837343230326637303732363937363631373436353266373436643730326637323737366537333638326437303332326436633335373437303732363436363664326637323635373036663733326634313663373036383631326637313735366637343635356332303563323735633230356332343563323836633639373436353732363136633563323932653730366536373162356233323330333137650a5041535445443a2f707269766174652f746d702f72776e73682d70322d6c3574707264666d2f7265706f732f416c7068612f73706163655c2075cc88e697a5e69cace8aa9e2e747874202f707269766174652f746d702f72776e73682d70322d6c3574707264666d2f7265706f732f416c7068612f71756f74655c205c275c205c245c286c69746572616c5c292e706e670a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+      "bytes": 150
+    },
+    "captioned_image_paste": {
+      "raw_hex": "1b5b3230307e63617074696f6e20c3bc2074616b6573207072696f72697479206f76657220706963747572651b5b3230317e",
+      "capture_hex": "5245434f524445525f52454144590a494e5055545f4845583a316235623332333033303765353034313533353434353566633362633566653639376135653639636163653861613965323037333730363136333635363432303237323436343666366336633631373232373064373336353633366636653634323036633639366536353162356233323330333137650a5041535445443a50415354455fc3bc5fe697a5e69cace8aa9e20737061636564202724646f6c6c6172270a7365636f6e64206c696e650a494e5055545f4845583a3162356233323330333037653266373037323639373636313734363532663734366437303266373237373665373336383264373033323264366333353734373037323634363636643266373236353730366637333266343136633730363836313266373337303631363336353563323037356363383865363937613565363963616365386161396532653734373837343230326637303732363937363631373436353266373436643730326637323737366537333638326437303332326436633335373437303732363436363664326637323635373036663733326634313663373036383631326637313735366637343635356332303563323735633230356332343563323836633639373436353732363136633563323932653730366536373162356233323330333137650a5041535445443a2f707269766174652f746d702f72776e73682d70322d6c3574707264666d2f7265706f732f416c7068612f73706163655c2075cc88e697a5e69cace8aa9e2e747874202f707269766174652f746d702f72776e73682d70322d6c3574707264666d2f7265706f732f416c7068612f71756f74655c205c275c205c245c286c69746572616c5c292e706e670a494e5055545f4845583a3162356233323330333037653266373037323639373636313734363532663734366437303266373237373665373336383264373033323264366333353734373037323634363636643266373236353730366637333266343136633730363836313266373337303631363336353563323037356363383865363937613565363963616365386161396532653734373837343230326637303732363937363631373436353266373436643730326637323737366537333638326437303332326436633335373437303732363436363664326637323635373036663733326634313663373036383631326637313735366637343635356332303563323735633230356332343563323836633639373436353732363136633563323932653730366536373162356233323330333137650a5041535445443a2f707269766174652f746d702f72776e73682d70322d6c3574707264666d2f7265706f732f416c7068612f73706163655c2075cc88e697a5e69cace8aa9e2e747874202f707269766174652f746d702f72776e73682d70322d6c3574707264666d2f7265706f732f416c7068612f71756f74655c205c275c205c245c286c69746572616c5c292e706e670a494e5055545f4845583a316235623332333033303765363336313730373436393666366532306333626332303734363136623635373332303730373236393666373236393734373932303666373636353732323037303639363337343735373236353162356233323330333137650a5041535445443a63617074696f6e20c3bc2074616b6573207072696f72697479206f76657220706963747572650a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+      "bytes": 50
+    },
+    "clipboard_image": {
+      "path": "/private/tmp/rwnsh-p2-l5tprdfm/state/tmp/terminal-images/79642-8868a3d2-f849-4900-8854-28582455d9c4/clipboard-151772e4-b1f8-455a-b001-798f6d1da16c.png",
+      "sha256": "a38a4ff7320a3d8764ac959b264f15e335360d7c1e23a0627dee7f366c95c58f",
+      "raw_hex": "1b5b3230307e2f707269766174652f746d702f72776e73682d70322d6c3574707264666d2f73746174652f746d702f7465726d696e616c2d696d616765732f37393634322d38383638613364322d663834392d343930302d383835342d3238353832343535643963342f636c6970626f6172642d31353137373265342d623166382d343535612d623030312d3739386636643164613136632e706e671b5b3230317e",
+      "capture_hex": "5245434f524445525f52454144590a494e5055545f4845583a316235623332333033303765353034313533353434353566633362633566653639376135653639636163653861613965323037333730363136333635363432303237323436343666366336633631373232373064373336353633366636653634323036633639366536353162356233323330333137650a5041535445443a50415354455fc3bc5fe697a5e69cace8aa9e20737061636564202724646f6c6c6172270a7365636f6e64206c696e650a494e5055545f4845583a3162356233323330333037653266373037323639373636313734363532663734366437303266373237373665373336383264373033323264366333353734373037323634363636643266373236353730366637333266343136633730363836313266373337303631363336353563323037356363383865363937613565363963616365386161396532653734373837343230326637303732363937363631373436353266373436643730326637323737366537333638326437303332326436633335373437303732363436363664326637323635373036663733326634313663373036383631326637313735366637343635356332303563323735633230356332343563323836633639373436353732363136633563323932653730366536373162356233323330333137650a5041535445443a2f707269766174652f746d702f72776e73682d70322d6c3574707264666d2f7265706f732f416c7068612f73706163655c2075cc88e697a5e69cace8aa9e2e747874202f707269766174652f746d702f72776e73682d70322d6c3574707264666d2f7265706f732f416c7068612f71756f74655c205c275c205c245c286c69746572616c5c292e706e670a494e5055545f4845583a3162356233323330333037653266373037323639373636313734363532663734366437303266373237373665373336383264373033323264366333353734373037323634363636643266373236353730366637333266343136633730363836313266373337303631363336353563323037356363383865363937613565363963616365386161396532653734373837343230326637303732363937363631373436353266373436643730326637323737366537333638326437303332326436633335373437303732363436363664326637323635373036663733326634313663373036383631326637313735366637343635356332303563323735633230356332343563323836633639373436353732363136633563323932653730366536373162356233323330333137650a5041535445443a2f707269766174652f746d702f72776e73682d70322d6c3574707264666d2f7265706f732f416c7068612f73706163655c2075cc88e697a5e69cace8aa9e2e747874202f707269766174652f746d702f72776e73682d70322d6c3574707264666d2f7265706f732f416c7068612f71756f74655c205c275c205c245c286c69746572616c5c292e706e670a494e5055545f4845583a316235623332333033303765363336313730373436393666366532306333626332303734363136623635373332303730373236393666373236393734373932303666373636353732323037303639363337343735373236353162356233323330333137650a5041535445443a63617074696f6e20c3bc2074616b6573207072696f72697479206f76657220706963747572650a494e5055545f4845583a3162356233323330333037653266373037323639373636313734363532663734366437303266373237373665373336383264373033323264366333353734373037323634363636643266373337343631373436353266373436643730326637343635373236643639366536313663326436393664363136373635373332663337333933363334333232643338333833363338363133333634333232643636333833343339326433343339333033303264333833383335333432643332333833353338333233343335333536343339363333343266363336633639373036323666363137323634326433313335333133373337333236353334326436323331363633383264333433353335363132643632333033303331326433373339333836363336363433313634363133313336363332653730366536373162356233323330333137650a5041535445443a2f707269766174652f746d702f72776e73682d70322d6c3574707264666d2f73746174652f746d702f7465726d696e616c2d696d616765732f37393634322d38383638613364322d663834392d343930302d383835342d3238353832343535643963342f636c6970626f6172642d31353137373265342d623166382d343535612d623030312d3739386636643164613136632e706e670a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+      "bytes": 162
+    },
+    "image_drop": {
+      "path": "/private/tmp/rwnsh-p2-l5tprdfm/state/tmp/terminal-images/79642-8868a3d2-f849-4900-8854-28582455d9c4/clipboard-76874fd4-e269-4bd2-a019-76b44e9f4a8d.png",
+      "raw_hex": "1b5b3230307e2f707269766174652f746d702f72776e73682d70322d6c3574707264666d2f73746174652f746d702f7465726d696e616c2d696d616765732f37393634322d38383638613364322d663834392d343930302d383835342d3238353832343535643963342f636c6970626f6172642d37363837346664342d653236392d346264322d613031392d3736623434653966346138642e706e671b5b3230317e",
+      "capture_hex": "5245434f524445525f52454144590a494e5055545f4845583a316235623332333033303765353034313533353434353566633362633566653639376135653639636163653861613965323037333730363136333635363432303237323436343666366336633631373232373064373336353633366636653634323036633639366536353162356233323330333137650a5041535445443a50415354455fc3bc5fe697a5e69cace8aa9e20737061636564202724646f6c6c6172270a7365636f6e64206c696e650a494e5055545f4845583a3162356233323330333037653266373037323639373636313734363532663734366437303266373237373665373336383264373033323264366333353734373037323634363636643266373236353730366637333266343136633730363836313266373337303631363336353563323037356363383865363937613565363963616365386161396532653734373837343230326637303732363937363631373436353266373436643730326637323737366537333638326437303332326436633335373437303732363436363664326637323635373036663733326634313663373036383631326637313735366637343635356332303563323735633230356332343563323836633639373436353732363136633563323932653730366536373162356233323330333137650a5041535445443a2f707269766174652f746d702f72776e73682d70322d6c3574707264666d2f7265706f732f416c7068612f73706163655c2075cc88e697a5e69cace8aa9e2e747874202f707269766174652f746d702f72776e73682d70322d6c3574707264666d2f7265706f732f416c7068612f71756f74655c205c275c205c245c286c69746572616c5c292e706e670a494e5055545f4845583a3162356233323330333037653266373037323639373636313734363532663734366437303266373237373665373336383264373033323264366333353734373037323634363636643266373236353730366637333266343136633730363836313266373337303631363336353563323037356363383865363937613565363963616365386161396532653734373837343230326637303732363937363631373436353266373436643730326637323737366537333638326437303332326436633335373437303732363436363664326637323635373036663733326634313663373036383631326637313735366637343635356332303563323735633230356332343563323836633639373436353732363136633563323932653730366536373162356233323330333137650a5041535445443a2f707269766174652f746d702f72776e73682d70322d6c3574707264666d2f7265706f732f416c7068612f73706163655c2075cc88e697a5e69cace8aa9e2e747874202f707269766174652f746d702f72776e73682d70322d6c3574707264666d2f7265706f732f416c7068612f71756f74655c205c275c205c245c286c69746572616c5c292e706e670a494e5055545f4845583a316235623332333033303765363336313730373436393666366532306333626332303734363136623635373332303730373236393666373236393734373932303666373636353732323037303639363337343735373236353162356233323330333137650a5041535445443a63617074696f6e20c3bc2074616b6573207072696f72697479206f76657220706963747572650a494e5055545f4845583a3162356233323330333037653266373037323639373636313734363532663734366437303266373237373665373336383264373033323264366333353734373037323634363636643266373337343631373436353266373436643730326637343635373236643639366536313663326436393664363136373635373332663337333933363334333232643338333833363338363133333634333232643636333833343339326433343339333033303264333833383335333432643332333833353338333233343335333536343339363333343266363336633639373036323666363137323634326433313335333133373337333236353334326436323331363633383264333433353335363132643632333033303331326433373339333836363336363433313634363133313336363332653730366536373162356233323330333137650a5041535445443a2f707269766174652f746d702f72776e73682d70322d6c3574707264666d2f73746174652f746d702f7465726d696e616c2d696d616765732f37393634322d38383638613364322d663834392d343930302d383835342d3238353832343535643963342f636c6970626f6172642d31353137373265342d623166382d343535612d623030312d3739386636643164613136632e706e670a494e5055545f4845583a3162356233323330333037653266373037323639373636313734363532663734366437303266373237373665373336383264373033323264366333353734373037323634363636643266373337343631373436353266373436643730326637343635373236643639366536313663326436393664363136373635373332663337333933363334333232643338333833363338363133333634333232643636333833343339326433343339333033303264333833383335333432643332333833353338333233343335333536343339363333343266363336633639373036323666363137323634326433373336333833373334363636343334326436353332333633393264333436323634333232643631333033313339326433373336363233343334363533393636333436313338363432653730366536373162356233323330333137650a5041535445443a2f707269766174652f746d702f72776e73682d70322d6c3574707264666d2f73746174652f746d702f7465726d696e616c2d696d616765732f37393634322d38383638613364322d663834392d343930302d383835342d3238353832343535643963342f636c6970626f6172642d37363837346664342d653236392d346264322d613031392d3736623434653966346138642e706e670a0a0a0a0a0a0a0a0a0a0a",
+      "bytes": 162
+    },
+    "find": {
+      "result": {
+        "total": 6,
+        "current": 0
+      },
+      "following": {
+        "total": 6,
+        "current": 1
+      },
+      "previous": {
+        "total": 6,
+        "current": 6
+      },
+      "closed": {
+        "total": 0,
+        "current": 0
+      },
+      "commands": [
+        "find",
+        "findNext",
+        "findPrevious",
+        "findClose"
+      ]
+    },
+    "subshells": {
+      "parent": "b130d65e-f622-4c5d-880b-a6b077b7279d",
+      "child": "34aa48f6-fc64-4e72-9401-181c16ea387f",
+      "nested": "3a5c0503-1478-4411-86e2-a789f5c11db1",
+      "independent_scrollback": true,
+      "nested_exit_isolated": true
+    },
+    "stale_hidden_focus_ignored": {
+      "hidden_shell": "34aa48f6-fc64-4e72-9401-181c16ea387f",
+      "selected_shell": "b130d65e-f622-4c5d-880b-a6b077b7279d",
+      "observation_ms": 250,
+      "readbacks": [
+        "shell:b130d65e-f622-4c5d-880b-a6b077b7279d",
+        "shell:b130d65e-f622-4c5d-880b-a6b077b7279d",
+        "shell:b130d65e-f622-4c5d-880b-a6b077b7279d",
+        "shell:b130d65e-f622-4c5d-880b-a6b077b7279d",
+        "shell:b130d65e-f622-4c5d-880b-a6b077b7279d"
+      ]
+    },
+    "stale_hidden_drop_ignored": {
+      "hidden_shell": "34aa48f6-fc64-4e72-9401-181c16ea387f",
+      "selected_shell": "b130d65e-f622-4c5d-880b-a6b077b7279d",
+      "observation_ms": 250,
+      "readbacks": [
+        "shell:b130d65e-f622-4c5d-880b-a6b077b7279d",
+        "shell:b130d65e-f622-4c5d-880b-a6b077b7279d",
+        "shell:b130d65e-f622-4c5d-880b-a6b077b7279d",
+        "shell:b130d65e-f622-4c5d-880b-a6b077b7279d",
+        "shell:b130d65e-f622-4c5d-880b-a6b077b7279d"
+      ]
+    },
+    "vim": {
+      "shell_id": "4156fe6b-eb9d-4af8-a556-14b71d85084d",
+      "path": "/private/tmp/rwnsh-p2-l5tprdfm/repos/Alpha/Vim \u00fc_\u65e5\u672c\u8a9e ' $.txt",
+      "content": "after \u00fc_\u65e5\u672c\u8a9e fixture\nsecond line\n",
+      "dedicated_session": true,
+      "reopen_reused_session": true,
+      "reopen_line": 2
+    },
+    "single_tab_disposal": {
+      "terminal_id": 5,
+      "context_released": true,
+      "closed_attach_client_absent": true,
+      "sibling_clients_preserved": {
+        "c6ec41c6-1583-496c-9edf-96512325020c": 79720,
+        "fcbfeccf-8546-4170-b9dd-88136a747905": 79719,
+        "34ddb1da-38e0-4dc9-a570-417cd3944d8f": 79735,
+        "b581d5cf-d87f-4edf-8c44-e4b46afd6c69": 79736,
+        "34aa48f6-fc64-4e72-9401-181c16ea387f": 80248
+      }
+    },
+    "release_policy": {
+      "warm_hidden": 3,
+      "grace_ms": 30000,
+      "warm_expiry_ms": 600000,
+      "frozen_recheck_ms": 5000,
+      "max_releases": 2,
+      "capped_recheck_ms": 250,
+      "pinned_retained": true,
+      "shown_retained": true,
+      "ended_retained": true,
+      "image_survived_release": true,
+      "image_removed_on_tab_close": true,
+      "same_tmux_identity_after_reattach": true
+    }
+  },
+  "graceful_shutdown": {
+    "exit_code": 0,
+    "leaked_clients": 0,
+    "native_views": 12,
+    "terminal_lifetimes": 13,
+    "detach_before_free": true,
+    "maxima": {
+      "shutdown_ms": 0.11399999493733048,
+      "free_ms": 3.143999958410859,
+      "disposal_ms": 60.47299999045208
+    }
+  },
+  "cleanup": {
+    "server_absent": true,
+    "fixture_pid_absent": true,
+    "pressure_pids": [
+      79554,
+      79589,
+      79612,
+      79631
+    ],
+    "pressure_pids_remaining": []
+  }
+}

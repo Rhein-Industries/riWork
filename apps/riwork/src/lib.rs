@@ -11,7 +11,7 @@ use nsh_core::element::Cleanup;
 use nsh_core::prelude::*;
 use persistence::{LayoutPersistence, SaveMode};
 use riwork_core::layouts::{Axis, PanelKind, ProjectLayout, SavedTab};
-use riwork_engine::project_tabs::{Status, Update};
+use riwork_engine::project_tabs::{Kind, Status, Update};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
@@ -238,6 +238,7 @@ fn open_at(home: PathBuf, request: OpenSession) -> Result<LayoutSession, String>
         session_notice: None,
         home,
         data,
+        inventory_initialized: false,
         first_draw: None,
         last_extent: Extent {
             width: 1220.0,
@@ -317,6 +318,9 @@ pub struct LayoutSession {
     session_notice: Option<String>,
     home: PathBuf,
     data: session_io::Data,
+    /// Initial restore filters dead saved tabs; later inventories retain an
+    /// already-open ended shell's last surface until explicit Hide/removal.
+    inventory_initialized: bool,
     first_draw: Option<Instant>,
     last_extent: Extent,
     interaction: bool,
@@ -414,14 +418,17 @@ impl LayoutSession {
             hidden.extend(
                 tabs.entries
                     .iter()
-                    .filter(|e| e.hidden || e.status == Status::Stopped)
+                    .filter(|e| e.hidden || (e.kind != Kind::Shell && e.status == Status::Stopped))
                     .map(|e| e.key.clone()),
             );
         }
         if let Some(shells) = &self.data.shells {
-            let live = shells
+            // An ended registered shell retains its tab and last surface. The
+            // engine prunes exited Vim rows, so missing editor rows still leave
+            // the layout. Only live sessions are eligible for new adoption.
+            let retained = shells
                 .iter()
-                .filter(|s| s.alive)
+                .filter(|s| s.alive || self.inventory_initialized)
                 .map(|s| s.id.clone())
                 .collect::<Vec<_>>();
             let adoptable = shells
@@ -434,7 +441,8 @@ impl LayoutSession {
                 })
                 .map(|s| s.id.clone())
                 .collect::<Vec<_>>();
-            self.model.reconcile_shells(&live, &adoptable, &hidden)?;
+            self.model
+                .reconcile_shells(&retained, &adoptable, &hidden)?;
         }
         if let Some(tabs) = &self.data.tabs {
             let mut project = self.model.project().clone();
@@ -463,6 +471,7 @@ impl LayoutSession {
         if persist && before != self.model.storage_project() {
             self.host.schedule(self.model.storage_project())?;
         }
+        self.inventory_initialized = true;
         Ok(self.current_dock())
     }
     fn accept_data(&mut self, data: session_io::Data) -> Result<Value, String> {
@@ -645,6 +654,11 @@ impl LayoutSession {
         self.edit(|model| model.open_shell(&shell_id).map(|next| (next, true)))
     }
 
+    /// Place an existing dedicated Vim session using the editor routing policy.
+    pub fn open_editor_shell(&mut self, shell_id: String) -> Result<Value, String> {
+        self.edit(|model| model.open_editor_shell(&shell_id).map(|next| (next, true)))
+    }
+
     /// Remove this window's tab while preserving its persistent tmux session.
     pub fn detach_shell(&mut self, shell_id: String) -> Result<Value, String> {
         self.edit(|model| model.detach_shell(&shell_id).map(|next| (next, true)))
@@ -759,6 +773,7 @@ impl LayoutSession {
                         session.notice = prepared.notice.take();
                         session.host.publish_focus(false, false);
                         session.data = data;
+                        session.inventory_initialized = false;
                         session.initial_shell_pending = false;
                         session.session_notice = None;
                         session.queued = None;
@@ -1538,6 +1553,71 @@ mod integration_tests {
     }
 
     #[test]
+    fn ended_registered_shells_keep_their_tabs_until_explicit_hide_or_registry_pruning() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let _entered = runtime.enter();
+        let (_home, mut session) = isolated_session();
+        session.open_shell(SHELL.into()).unwrap();
+        let ended_data = |session: &LayoutSession, revision, alive, hidden| {
+            let mut data = snapshot_data(session, "ended", revision);
+            data.shells = Some(vec![session_io::Shell {
+                id: SHELL.into(),
+                project_id: Some("delivery-project".into()),
+                worktree_id: None,
+                kind: "project".into(),
+                cwd: session.home.clone(),
+                alive,
+                user_opened: true,
+                parent_id: Some(OUTGOING.into()),
+                title: "Nested shell".into(),
+                status: Some(Status::Stopped),
+                appear_after_ms: 0,
+            }]);
+            data.tabs.as_mut().unwrap().entries = vec![serde_json::from_value(json!({
+                "key":format!("shell:{SHELL}"),"kind":"shell","title":"Nested shell", "status":if alive { "idle" } else { "stopped" },
+                "hidden":hidden,"worker":true,"order":0,"parent":null,"children":[],"child_count":0
+            })).unwrap()];
+            data
+        };
+        session
+            .accept_data(ended_data(&session, 1, true, false))
+            .unwrap();
+        session
+            .accept_data(ended_data(&session, 2, false, false))
+            .unwrap();
+        assert!(
+            session.model.panel(&format!("shell:{SHELL}")).is_some(),
+            "a live-to-ended nested tab keeps its last surface"
+        );
+        session
+            .accept_data(ended_data(&session, 3, false, true))
+            .unwrap();
+        assert!(
+            session.model.panel(&format!("shell:{SHELL}")).is_none(),
+            "explicit Hide still removes the tab"
+        );
+        session.open_shell(SHELL.into()).unwrap();
+        let mut pruned = snapshot_data(&session, "ended", 4);
+        pruned.shells = Some(Vec::new());
+        session.accept_data(pruned).unwrap();
+        assert!(
+            session.model.panel(&format!("shell:{SHELL}")).is_none(),
+            "a pruned editor registry row leaves the layout"
+        );
+
+        let (_other_home, mut restoring) = isolated_session();
+        restoring.open_shell(SHELL.into()).unwrap();
+        restoring.inventory_initialized = false;
+        restoring
+            .accept_data(ended_data(&restoring, 1, false, false))
+            .unwrap();
+        assert!(
+            restoring.model.panel(&format!("shell:{SHELL}")).is_none(),
+            "initial restore still prunes already-dead saved tabs"
+        );
+    }
+
+    #[test]
     fn frozen_delivery_keeps_the_latest_revision_until_interaction_ends() {
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let _entered = runtime.enter();
@@ -1599,6 +1679,7 @@ mod integration_tests {
                 global_chats: Default::default(),
                 owners: Default::default(),
             },
+            inventory_initialized: false,
             first_draw: None,
             last_extent: Extent {
                 width: 1220.0,

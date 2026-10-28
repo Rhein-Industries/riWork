@@ -96,6 +96,7 @@ export function taskMatches(task: TaskDto, state: StoreState, query: string): bo
 }
 
 export function shellLabel(shell: ShellSessionDto, state: StoreState): string {
+  if (shell.editorPath) return `VIM · ${shell.editorPath.split("/").pop() ?? shell.editorPath}`;
   const trees = state.worktrees.filter((tree) => tree.projectId === shell.projectId && (shell.cwd === tree.path || shell.cwd.startsWith(`${tree.path}/`)));
   trees.sort((a, b) => b.path.length - a.path.length);
   return trees[0]?.branch ?? state.worktrees.find((tree) => tree.id === shell.worktreeId)?.branch ?? shell.harness ?? "Shell";

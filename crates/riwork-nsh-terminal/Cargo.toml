@@ -7,6 +7,7 @@ edition.workspace = true
 terminal-fixture = []
 
 [dependencies]
+base64 = "0.22"
 riwork-core = { path = "../riwork-core" }
 riwork-engine = { path = "../riwork-engine" }
 serde = { version = "1", features = ["derive"] }

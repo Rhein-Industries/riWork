@@ -8,7 +8,7 @@
 //! about GPUI: the workspace describes its panes, applies the answer and re-asks
 //! at `Plan::recheck`.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use riwork_core::layouts::PaneId;
 
@@ -151,6 +151,56 @@ pub fn plan(screen: &Screen<'_>) -> Plan {
     Plan {
         release: due,
         recheck: wait.map(|wait| wait.max(MIN_RECHECK)),
+    }
+}
+
+/// A window's release policy is re-evaluated at the deadline it requested, or
+/// immediately after its visibility, attachment, pinning or freeze state changes.
+/// Hidden ages advance with time and deliberately do not invalidate that deadline.
+#[derive(Default)]
+pub struct PlanSchedule {
+    identity: Option<ScreenIdentity>,
+    next: Option<Instant>,
+}
+
+#[derive(PartialEq, Eq)]
+struct ScreenIdentity {
+    panes: Vec<(PaneId, usize, Vec<(TabId, bool, bool)>)>,
+    active_pane: PaneId,
+    focus_mode: bool,
+    frozen: bool,
+}
+
+impl PlanSchedule {
+    pub fn check(&mut self, screen: &Screen<'_>, now: Instant) -> Option<Plan> {
+        let identity = ScreenIdentity {
+            panes: screen
+                .panes
+                .iter()
+                .map(|pane| {
+                    (
+                        pane.id,
+                        pane.active,
+                        pane.tabs
+                            .iter()
+                            .map(|tab| (tab.id, tab.attached, tab.pinned))
+                            .collect(),
+                    )
+                })
+                .collect(),
+            active_pane: screen.active_pane,
+            focus_mode: screen.focus_mode,
+            frozen: screen.frozen,
+        };
+        if self.identity.as_ref() == Some(&identity)
+            && self.next.is_none_or(|deadline| now < deadline)
+        {
+            return None;
+        }
+        let plan = plan(screen);
+        self.identity = Some(identity);
+        self.next = plan.recheck.map(|wait| now + wait);
+        Some(plan)
     }
 }
 
@@ -353,6 +403,146 @@ mod tests {
         // hidden longer, comes due first.
         assert!(plan.release.is_empty());
         assert_eq!(plan.recheck, Some(RELEASE_GRACE - secs(10)));
+    }
+
+    #[test]
+    fn scheduled_passes_honor_pinned_and_frozen_poll_intervals() {
+        let now = Instant::now();
+        let panes = single(vec![tab(1, secs(0)), pinned(2, secs(3600))]);
+        let mut screen = Screen {
+            panes: &panes,
+            active_pane: 1,
+            focus_mode: false,
+            frozen: false,
+        };
+        let mut schedule = PlanSchedule::default();
+        assert_eq!(
+            schedule.check(&screen, now).unwrap().recheck,
+            Some(PINNED_RECHECK)
+        );
+        assert!(schedule.check(&screen, now + MIN_RECHECK).is_none());
+        assert!(schedule.check(&screen, now + PINNED_RECHECK).is_some());
+        screen.frozen = true;
+        assert_eq!(
+            schedule
+                .check(&screen, now + PINNED_RECHECK)
+                .unwrap()
+                .recheck,
+            Some(FROZEN_RECHECK)
+        );
+        assert!(
+            schedule
+                .check(&screen, now + PINNED_RECHECK + MIN_RECHECK)
+                .is_none()
+        );
+        assert!(
+            schedule
+                .check(&screen, now + PINNED_RECHECK + FROZEN_RECHECK)
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn idle_schedules_stay_idle_until_the_screen_changes() {
+        let now = Instant::now();
+        let panes = single(vec![tab(1, secs(0))]);
+        let screen = Screen {
+            panes: &panes,
+            active_pane: 1,
+            focus_mode: false,
+            frozen: false,
+        };
+        let mut schedule = PlanSchedule::default();
+        assert_eq!(schedule.check(&screen, now), Some(Plan::default()));
+        assert!(schedule.check(&screen, now + secs(3600)).is_none());
+        let changed = single(vec![tab(1, secs(0)), tab(2, secs(0))]);
+        assert_eq!(
+            schedule
+                .check(
+                    &Screen {
+                        panes: &changed,
+                        ..screen
+                    },
+                    now
+                )
+                .unwrap()
+                .recheck,
+            Some(WARM_EXPIRY)
+        );
+    }
+
+    #[test]
+    fn hidden_age_updates_do_not_postpone_a_scheduled_deadline() {
+        let now = Instant::now();
+        let panes = single(vec![tab(1, secs(0)), tab(2, secs(0))]);
+        let mut schedule = PlanSchedule::default();
+        let screen = Screen {
+            panes: &panes,
+            active_pane: 1,
+            focus_mode: false,
+            frozen: false,
+        };
+        assert_eq!(
+            schedule.check(&screen, now).unwrap().recheck,
+            Some(WARM_EXPIRY)
+        );
+        let aged = single(vec![tab(1, secs(0)), tab(2, WARM_EXPIRY)]);
+        let aged = Screen {
+            panes: &aged,
+            ..screen
+        };
+        assert!(
+            schedule
+                .check(&aged, now + WARM_EXPIRY - MIN_RECHECK)
+                .is_none()
+        );
+        assert_eq!(
+            schedule.check(&aged, now + WARM_EXPIRY).unwrap().release,
+            vec![2]
+        );
+    }
+
+    #[test]
+    fn attachment_and_pinning_changes_invalidate_a_future_deadline() {
+        let now = Instant::now();
+        let panes = single(vec![tab(1, secs(0)), tab(2, secs(3600))]);
+        let mut schedule = PlanSchedule::default();
+        let screen = Screen {
+            panes: &panes,
+            active_pane: 1,
+            focus_mode: false,
+            frozen: true,
+        };
+        assert!(schedule.check(&screen, now).unwrap().release.is_empty());
+        let pinned = single(vec![tab(1, secs(0)), pinned(2, secs(3600))]);
+        assert!(
+            schedule
+                .check(
+                    &Screen {
+                        panes: &pinned,
+                        ..screen
+                    },
+                    now
+                )
+                .is_some()
+        );
+        let detached = single(vec![
+            tab(1, secs(0)),
+            TabState {
+                attached: false,
+                ..tab(2, secs(3600))
+            },
+        ]);
+        assert_eq!(
+            schedule.check(
+                &Screen {
+                    panes: &detached,
+                    ..screen
+                },
+                now
+            ),
+            Some(Plan::default())
+        );
     }
 
     #[test]

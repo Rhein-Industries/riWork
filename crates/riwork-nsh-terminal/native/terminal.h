@@ -18,6 +18,7 @@ bool rw_terminal_attach(void *, const char *command, const char *cwd, const char
 void rw_terminal_set_state(void *, bool visible, bool frozen, bool focus_on_attach);
 bool rw_terminal_update_config(void *, const char *config_path);
 void rw_terminal_command(void *, const char *name);
+void rw_terminal_find(void *, const char *query);
 void rw_terminal_set_link(void *, const char *json);
 void rw_terminal_detach_result(void *, bool confirmed);
 // shutdown leaves an idle reusable view; abandon permanently prevents attach.
@@ -27,6 +28,7 @@ size_t rw_terminal_pending_count(void);
 double rw_terminal_monotonic_ms(void);
 #ifdef RIWORK_TERMINAL_FIXTURE
 bool rw_terminal_fixture_probe(void *, const char *kind);
+bool rw_terminal_fixture_pasteboard(void *, const char *json);
 #endif
 
 #endif

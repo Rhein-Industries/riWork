@@ -64,6 +64,29 @@ impl SessionsBackend for FakeSessions {
             .retain(|session| session.id != id);
         Ok(())
     }
+    fn create_subshell(
+        &self,
+        request: riwork_nsh_native::dto::CreateSubshellRequest,
+    ) -> Result<ShellSessionDto> {
+        assert_ne!(std::thread::current().name(), Some("nsh-engine"));
+        let mut created = session();
+        created.project_id = Some(request.project_id);
+        created.parent_id = Some(request.parent_shell_id);
+        self.value.lock().unwrap().sessions.push(created.clone());
+        Ok(created)
+    }
+    fn open_editor(
+        &self,
+        request: riwork_nsh_native::dto::OpenEditorRequest,
+    ) -> Result<ShellSessionDto> {
+        assert_ne!(std::thread::current().name(), Some("nsh-engine"));
+        let mut created = session();
+        created.project_id = Some(request.project_id);
+        created.worktree_id = request.worktree_id;
+        created.editor_path = Some(request.path);
+        self.value.lock().unwrap().sessions.push(created.clone());
+        Ok(created)
+    }
 }
 
 fn session() -> ShellSessionDto {
@@ -903,4 +926,70 @@ async fn sessions_create_and_close_wake_the_single_sampler() {
             .starts_with("invalid:")
     );
     assert_eq!(sessions.samples.load(Ordering::SeqCst), 3);
+}
+
+#[tokio::test]
+async fn subshell_and_vim_mutations_validate_before_backend_and_publish_inventory() {
+    use riwork_nsh_native::dto::{CreateSubshellRequest, OpenEditorRequest};
+    let fixture = tempfile::tempdir().unwrap();
+    let sessions = Arc::new(FakeSessions::default());
+    let service = start(fixture.path(), sessions.clone()).await;
+    let updates = service.subscribe_sessions().await.unwrap();
+    assert!(updates.recv().await.unwrap().data.sessions.is_empty());
+    let project = "00000000-0000-4000-8000-000000000002";
+    assert!(
+        service
+            .create_subshell(CreateSubshellRequest {
+                project_id: project.into(),
+                parent_shell_id: "bad".into()
+            })
+            .await
+            .unwrap_err()
+            .starts_with("invalid:")
+    );
+    assert!(
+        service
+            .open_editor(OpenEditorRequest {
+                project_id: project.into(),
+                worktree_id: None,
+                path: String::new(),
+                line: None
+            })
+            .await
+            .unwrap_err()
+            .starts_with("invalid:")
+    );
+    assert!(sessions.value.lock().unwrap().sessions.is_empty());
+    let parent = "00000000-0000-4000-8000-000000000003";
+    let child = service
+        .create_subshell(CreateSubshellRequest {
+            project_id: project.into(),
+            parent_shell_id: parent.into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(child.parent_id.as_deref(), Some(parent));
+    let first = tokio::time::timeout(Duration::from_secs(1), updates.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(first.data.sessions, [child]);
+    let editor = service
+        .open_editor(OpenEditorRequest {
+            project_id: project.into(),
+            worktree_id: None,
+            path: "/fixture/a spaced 🦀 file.txt".into(),
+            line: Some(4),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        editor.editor_path.as_deref(),
+        Some("/fixture/a spaced 🦀 file.txt")
+    );
+    let second = tokio::time::timeout(Duration::from_secs(1), updates.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(second.data.sessions.len(), 2);
 }

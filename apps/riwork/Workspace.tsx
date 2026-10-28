@@ -1,11 +1,11 @@
 import { Overlay, Scroll, Text, View, cleanup, colorScheme, createAnimatedValue, effect, host, keymap, signal, type Point, type YNode } from "nsh";
-import { Button, Input, Popover, type DockAreaLayout, type DockAreaRef, type DockNode } from "nsh/base";
+import { Button, Dialog, Input, Popover, type DockAreaLayout, type DockAreaRef, type DockNode } from "nsh/base";
 import { Menu, Window, type MenuItem } from "nsh/desktop";
-import { Appearance, Settings, Tabs, type AppearanceDto, type LayoutSession, type SettingsDto } from "riwork/native";
+import { Appearance, Sessions, Settings, Tabs, type AppearanceDto, type LayoutSession, type SettingsDto } from "riwork/native";
 import { DockArea } from "./DockArea";
 import { CloseDialog } from "./CloseDialog";
 import { DeferredPanel, MountProbe } from "./DeferredPanel";
-import { LocalTerminal, type TerminalColors, type TerminalEvents } from "./Terminal";
+import { LocalTerminal, type TerminalColors, type TerminalController, type TerminalEvents } from "./Terminal";
 import { PanelContent, PanelEditors, createPanelController, type PanelController } from "./Panels";
 import { WindowChrome, useWindowChrome, topPaneFrames, CONTROL_INSET } from "./WindowChrome";
 import { workspaceCommands } from "./commands";
@@ -83,6 +83,9 @@ export function Workspace(props: WorkspaceProps) {
   const closing = signal<PanelModel | null>(null);
   const renaming = signal<PanelModel | null>(null);
   const renameTitle = signal("");
+  const vimDialog = signal(false);
+  const vimPath = signal("");
+  let vimInput: YNode | undefined;
   const allTabs = signal(false);
   const allTabsAvailable = signal(false);
   const allIndex = signal(0);
@@ -103,9 +106,10 @@ export function Workspace(props: WorkspaceProps) {
   let renameInput: YNode | undefined;
   let scrollOffset = 0;
   const bodyRefs = new Map<string, YNode>();
+  const terminalControls = new Map<string, TerminalController>();
   const tabRefs = new Map<string, YNode>();
   let alive = true;
-  cleanup(() => { alive = false; });
+  cleanup(() => { alive = false; bodyRefs.clear(); terminalControls.clear(); tabRefs.clear(); });
   // Panels own the shared session inventory; appearance supplies terminal colors.
   if (props.projectId) {
     const subscription = Appearance.subscribe((event) => appearance.set(event.data));
@@ -134,7 +138,7 @@ export function Workspace(props: WorkspaceProps) {
 
   const shared = () => Array.isArray(snapshot().sharedTabs) && !snapshot().remoteProject;
   const selected = () => activePane(snapshot())?.activeTab;
-  const modal = () => !!closing() || !!renaming();
+  const modal = () => !!closing() || !!renaming() || vimDialog();
   const frozen = () => modal() || menuOpen() || dragging() || allTabs();
   const ordered = () => stripTabs(snapshot());
   const sessions = () => ordered().filter((tab) => tab.kind !== "panel");
@@ -199,14 +203,62 @@ export function Workspace(props: WorkspaceProps) {
     } catch (error) { if (alive) notice.set(String(error)); }
     finally { if (alive) busy.set(false); thaw(); }
   }
+  async function createSubshell(parentShellId = selected()?.startsWith("shell:") ? selected()!.slice(6) : undefined) {
+    if (!parentShellId || busy() || switching() || modal()) return;
+    busy.set(true);
+    const project = projectId(), generation = panelState.generation();
+    try {
+      const shell = await Sessions.createSubshell({ projectId: project, parentShellId });
+      if (alive && projectId() === project && generation === panelState.generation()) {
+        await openShell(shell.id);
+      }
+    } catch (error) { if (alive) notice.set(String(error)); }
+    finally { if (alive) busy.set(false); thaw(); }
+  }
+  async function openEditor(path: string, line?: number, worktreeId?: string) {
+    if (busy() || switching() || modal()) return;
+    busy.set(true);
+    const project = projectId(), generation = panelState.generation();
+    const selectedTree = panelState.selectedWorktree();
+    const tree = worktreeId ?? selectedTree ?? undefined;
+    try {
+      const shell = await Sessions.openEditor({ projectId: project, worktreeId: tree, path, line });
+      if (alive && projectId() === project && generation === panelState.generation() && selectedTree === panelState.selectedWorktree()) {
+        install(session.openEditorShell(shell.id)); pendingFocus.set(shell.id);
+      } else if (alive && projectId() === project) {
+        notice.set("The selected worktree changed. Select the file again.");
+      }
+    } catch (error) { if (alive) notice.set(String(error)); }
+    finally { if (alive) busy.set(false); thaw(); }
+  }
+  function showVimDialog() { vimDialog.set(true); freeze(); }
+  function submitVim() {
+    const path = vimPath();
+    if (!path) return;
+    vimDialog.set(false);
+    void openEditor(path);
+  }
+  function find(id: string, args?: { query?: string }): boolean {
+    const active = selected();
+    const terminal = active ? terminalControls.get(active) : undefined;
+    if (terminal) {
+      if (id === "find") terminal.find(args?.query);
+      else if (id === "findNext") terminal.findNext();
+      else if (id === "findPrevious") terminal.findPrevious();
+      else if (id === "findClose") terminal.findClose();
+      return true;
+    }
+    if (id === "find" && active) { panelState.searches.get(active)?.focus(); return true; }
+    return false;
+  }
   function openLink(event: TerminalEvents["linkOpen"]) {
-    if (event.action === "edit") { notice.set("Opening terminal links in Vim is coming in the next terminal slice."); return; }
+    if (event.action === "edit" && event.kind === "file") { void openEditor(event.target, event.line); return; }
     const call = event.kind === "folder" ? "system.revealInFinder" : "system.openWith";
     void host.call(call, { path: event.target }).catch((error: unknown) => notice.set(String(error)));
   }
   async function switchTo(id: string) {
     if (switching()) throw new Error("conflict: project switch is already in progress");
-    closing.set(null); renaming.set(null); allTabs.set(false);
+    closing.set(null); renaming.set(null); vimDialog.set(false); allTabs.set(false);
     switching.set(true);
     try {
       const next = await session.switchProject(id);
@@ -263,6 +315,13 @@ export function Workspace(props: WorkspaceProps) {
     if (!alive || !next) return;
     dock.set(next as DockAreaLayout);
     snapshot.set(session.snapshot() as WorkspaceSnapshot);
+    // YNode refs own their subtree in NSH. Keep refs for every placed panel,
+    // including hidden tabs and moves, but release removed panels promptly so
+    // their native component can be collected while siblings remain mounted.
+    const placed = new Set(panelIds(dock()!.center));
+    for (const id of bodyRefs.keys()) if (!placed.has(id)) bodyRefs.delete(id);
+    for (const id of terminalControls.keys()) if (!placed.has(id)) terminalControls.delete(id);
+    for (const key of tabRefs.keys()) if (!placed.has(key.slice(key.indexOf(":") + 1))) tabRefs.delete(key);
     if (snapshot().notice) notice.set(snapshot().notice!);
     if (!dockReady()) dockReady.set(true);
     if (snapshot().focusMode || !shared()) allTabs.set(false);
@@ -360,6 +419,8 @@ export function Workspace(props: WorkspaceProps) {
     const disabled = (label: string, shortcut?: string): MenuItem => ({ label, disabled: true, shortcut });
     const rows: MenuItem[] = [disabled("Existing sessions", "mod+alt+s"), disabled("Existing Claude chats"), disabled("Existing Muse chats"), { type: "separator" }, disabled("New tab"),
       { label: "Shell", shortcut: "mod+t", onSelect: () => { void createShell(); } },
+      { label: "Subshell", disabled: !selected()?.startsWith("shell:"), onSelect: () => { void createSubshell(); } },
+      { label: "Open file in Vim…", onSelect: showVimDialog },
       ...[["Codex", "mod+shift+c"], ["Claude", "mod+shift+l"], ["Grok", "mod+shift+g"], ["Muse", "mod+shift+u"], ["Global orchestrator", "mod+shift+o"], ["Project orchestrator", "mod+alt+o"], ["New chat…"], ["App preview…"]].map(([label, shortcut]) => disabled(label, shortcut)),
       { type: "separator" }, disabled("Views"),
       ...VIEWS.map((panel): MenuItem => ({ label: panelTitle(panel), shortcut: VIEW_SHORTCUTS[panel], onSelect: () => view(panel) })),
@@ -404,6 +465,9 @@ export function Workspace(props: WorkspaceProps) {
   const commands = workspaceCommands(session, snapshot, action, {
     blocked: () => modal() || !!panelState.editor() || switching(),
     newShell: (split) => { allTabs.set(false); void createShell(split); },
+    newSubshell: () => { allTabs.set(false); void createSubshell(); },
+    openVim: showVimDialog,
+    find,
     closeTab: () => close(),
     closePane: () => closePane(),
     toggleFocus: () => { allTabs.set(false); action(() => session.toggleFocus()); thaw(); },
@@ -421,8 +485,9 @@ export function Workspace(props: WorkspaceProps) {
       if (tab) select(tab.id);
     },
     escape: () => {
-      if (closing()) closing.set(null);
-      if (renaming()) renaming.set(null);
+      if (modal()) { closing.set(null); renaming.set(null); vimDialog.set(false); thaw(); return; }
+      const terminal = selected() ? terminalControls.get(selected()!) : undefined;
+      if (terminal?.finding()) { terminal.findClose(); return; }
       if (allTabs()) allTabs.set(false);
       thaw();
     },
@@ -430,9 +495,11 @@ export function Workspace(props: WorkspaceProps) {
   });
 
   cleanup(host.on("route", (data) => {
-    const step = (data as { step?: { kind?: string; type?: string; shellId?: string; panel?: string } }).step;
+    const step = (data as { step?: { kind?: string; type?: string; shellId?: string; panel?: string; parentShellId?: string; path?: string; line?: number; worktreeId?: string } }).step;
     if ((step?.kind ?? step?.type) === "showShell" && step?.shellId) void openShell(step.shellId);
     else if ((step?.kind ?? step?.type) === "panel" && step?.panel) action(() => session.openPanel(step.panel!));
+    else if ((step?.kind ?? step?.type) === "newSubshell") void createSubshell(step?.parentShellId);
+    else if ((step?.kind ?? step?.type) === "openEditor" && step?.path) void openEditor(step.path, step.line, step.worktreeId);
   }));
   cleanup(host.on("project.open", (data) => {
     void switchTo((data as { projectId: string }).projectId).catch((error: unknown) => notice.set(String(error)));
@@ -440,10 +507,11 @@ export function Workspace(props: WorkspaceProps) {
   const subscription = session.subscribe((next) => { if (!frozen()) install(next); });
   cleanup(() => subscription.close());
   cleanup(keymap.bind("mod+f", () => {
-    if (panelState.editor()) return;
-    const id = activePane(snapshot())?.activeTab;
-    if (id) panelState.searches.get(id)?.focus();
+    if (panelState.editor() || modal() || switching()) return;
+    find("find");
   }));
+  cleanup(keymap.bind("mod+g", () => { if (!modal() && !panelState.editor()) find("findNext"); }));
+  cleanup(keymap.bind("mod+shift+g", () => { if (!modal() && !panelState.editor()) find("findPrevious"); }));
   cleanup(keymap.bind("shift+f10", () => { if (!modal() && selected()) tabMenu(selected()!); }));
   effect(() => {
     if (!allTabs()) return;
@@ -518,7 +586,7 @@ export function Workspace(props: WorkspaceProps) {
   // keymap; a dialog, rename or tab menu opened over it takes Escape first.
   function escapeTopmost() {
     if (commands.stripOpen()) commands.stripOpen.set(false);
-    else if (closing() || renaming() || allTabs()) { closing.set(null); renaming.set(null); allTabs.set(false); thaw(); }
+    else if (modal() || allTabs()) { closing.set(null); renaming.set(null); vimDialog.set(false); allTabs.set(false); thaw(); }
     else dismissNotice();
   }
   const terminalFrozen = () => frozen() || statusMenu() || commands.stripOpen() || panelState.editor() !== null || switching();
@@ -573,6 +641,12 @@ export function Workspace(props: WorkspaceProps) {
                     pinned={membershipProject(panel.id.slice(6)) ? !panelState.shells().find((shell) => shell.id === panel.id.slice(6))?.alive : false}
                     focusOnAttach={pendingFocus() === panel.id.slice(6)} colors={terminalColors()} frozen={terminalFrozen()}
                     onMount={() => props.onTerminalMount?.(panel.id.slice(6))}
+                    onControl={(control) => {
+                      terminalControls.set(panel.id, control);
+                      return () => {
+                        if (terminalControls.get(panel.id) === control) terminalControls.delete(panel.id);
+                      };
+                    }}
                     onAttached={() => { if (pendingFocus() === panel.id.slice(6)) pendingFocus.set(null); }}
                     onFocus={() => action(() => session.selectPanel(panel.id))} onLink={openLink} onNotice={(message) => notice.set(message)} />
                 </View> :
@@ -610,6 +684,17 @@ export function Workspace(props: WorkspaceProps) {
         </View>
       </Overlay>}
       {closing() && <CloseDialog title={displayTitle(closing()!)} theme={theme} onChoice={(choice) => { const tab = closing()!; closing.set(null); if (choice) action(() => session.closePanel(tab.id, choice === "exit")); thaw(); }} />}
+      {vimDialog() && <Dialog testID="vim-open-dialog" animation="none" closeOnEscape={true} closeOnBackdropPress={false}
+        onOpen={() => vimInput?.focus()} onOpenChange={() => { vimDialog.set(false); thaw(); }}
+        style={{ width: 480, maxWidth: "100%", padding: 18, gap: 10, borderRadius: 12, backgroundColor: theme().palette.panel }}>
+        <Text style={textStyle(13)}>Open file in Vim</Text>
+        <Input testID="vim-open-path" accessibilityLabel="File path" placeholder="File path in the selected project or worktree" value={vimPath()}
+          ref={(node) => { vimInput = node; }} onChange={(value) => vimPath.set(value)} onSubmit={submitVim} />
+        <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: 8 }}>
+          <Button testID="vim-open-cancel" onPress={() => { vimDialog.set(false); thaw(); }}><Text style={textStyle()}>Cancel</Text></Button>
+          <Button testID="vim-open-submit" disabled={!vimPath()} onPress={submitVim}><Text style={textStyle()}>Open</Text></Button>
+        </View>
+      </Dialog>}
       {tabHint() && !frozen() && <Overlay pointerEvents="none" anchor={tabRefs.get(`${shared() && !snapshot().focusMode ? "strip" : "pane"}:${tabHint()!.id}`)} placement="bottom" align="start" offset={4} style={{ paddingHorizontal: 8, paddingVertical: 5, backgroundColor: theme().palette.panelActive, borderRadius: 4 }}><Text style={textStyle()}>{tabHint()!.text}</Text></Overlay>}
       {dragTab() && <Overlay pointerEvents="none" style={{ position: "absolute", left: dragOrigin().x, top: dragOrigin().y, transform: [{ translateX: dragX }, { translateY: dragY }], paddingHorizontal: 12, paddingVertical: 7, borderWidth: 1, borderColor: theme().palette.cyan, backgroundColor: theme().palette.panel }}><Text style={textStyle()}>{displayTitle(dragTab()!)}</Text></Overlay>}
       <Popover open={!!renaming()} onOpenChange={(open) => { if (!open) { renaming.set(null); thaw(); } }} onOpen={() => renameInput?.focus()} popupStyle={{ width: 260, padding: 12, gap: 8, backgroundColor: theme().palette.panelActive }} trigger={<View style={{ position: "absolute", top: 56, left: 120, width: 1, height: 1 }} />}>

@@ -6589,6 +6589,7 @@ dependencies = [
 name = "riwork-nsh-terminal"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "cc",
  "dispatch2",
  "nsh-core",

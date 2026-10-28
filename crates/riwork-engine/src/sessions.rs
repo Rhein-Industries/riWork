@@ -255,6 +255,53 @@ impl SessionManager {
         )
     }
 
+    /// Open a nested terminal in its own tmux session. The explicit parent is
+    /// validated and recorded before publication; the desktop process's own
+    /// session environment must never decide which tab owns this child.
+    pub fn create_subshell(
+        &self,
+        project_id: String,
+        parent_id: &str,
+    ) -> Result<ShellSession, String> {
+        validate_uuid(&project_id)?;
+        validate_uuid(parent_id)?;
+        let _lock = self.lock_registry()?;
+        let mut registry = self.read_registry()?;
+        let parent = registry
+            .sessions
+            .iter()
+            .find(|session| session.id == parent_id)
+            .ok_or_else(|| format!("unknown parent shell {parent_id}"))?;
+        if parent.project_id.as_deref() != Some(&project_id) {
+            return Err("parent shell does not belong to this project".into());
+        }
+        let cwd = self.current_directory(parent_id)?;
+        let mut session = self.for_user().new_tmux_session(
+            Uuid::new_v4().to_string(),
+            Some(project_id),
+            parent.worktree_id.clone(),
+            ShellKind::Project,
+            cwd,
+            None,
+            None,
+            false,
+            None,
+        )?;
+        session.parent_id = Some(parent_id.to_owned());
+        registry.sessions.push(session.clone());
+        if let Err(error) = self.write_registry(&registry) {
+            let _ = self.kill_tmux_session(&session.id);
+            return Err(error);
+        }
+        drop(_lock);
+        if let Some(project) = &session.project_id {
+            if let Err(error) = crate::project_tabs::register_shell(&self.home, &session, project) {
+                eprintln!("riwork tabs: {error}");
+            }
+        }
+        Ok(session)
+    }
+
     /// Open one selected regular worktree file in its own persistent tmux
     /// session. The file name is a single quoted shell argument after `--`;
     /// no input is sent to an existing agent terminal.
@@ -2969,6 +3016,30 @@ mod compat_tests {
             "id": id, "project_id": null, "worktree_id": null, "kind": "project",
             "cwd": "/work", "command": null, "created_at_unix": 1
         })
+    }
+
+    #[test]
+    fn explicit_subshell_parent_is_validated_before_any_tmux_side_effect() {
+        let home = Home::new();
+        let manager = home.manager(); // The tmux path deliberately cannot run.
+        let project = Uuid::new_v4().to_string();
+        let parent = Uuid::new_v4().to_string();
+        let mut saved = session(&parent);
+        saved["project_id"] = json!(Uuid::new_v4().to_string());
+        let original = json!({"sessions":[saved],"future_field":true});
+        fs::write(home.registry_path(), serde_json::to_vec(&original).unwrap()).unwrap();
+        let error = manager
+            .create_subshell(project.clone(), &parent)
+            .unwrap_err();
+        assert_eq!(error, "parent shell does not belong to this project");
+        assert!(
+            manager
+                .create_subshell(project.clone(), &Uuid::new_v4().to_string())
+                .unwrap_err()
+                .starts_with("unknown parent shell")
+        );
+        assert!(manager.create_subshell(project, "not-a-uuid").is_err());
+        assert_eq!(home.saved(), original);
     }
 
     #[test]

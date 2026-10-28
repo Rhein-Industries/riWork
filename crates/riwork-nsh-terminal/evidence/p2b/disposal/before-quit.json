@@ -1,0 +1,110 @@
+{
+  "ok": true,
+  "windows": [
+    {
+      "windowId": "d8f8709a-d338-4190-9f25-7a667a9f3c0d",
+      "projectId": "f5a0156f-0dde-4aec-8681-f5a551b5ce24",
+      "windowNumber": 6906,
+      "layout": {
+        "layout": {
+          "split": {
+            "axis": "stacked",
+            "ratio": 0.5,
+            "first": {
+              "pane": 1
+            },
+            "second": {
+              "pane": 2
+            }
+          }
+        },
+        "panes": {
+          "1": {
+            "tabs": [
+              {
+                "kind": "panel",
+                "panel": "files"
+              },
+              {
+                "kind": "shell",
+                "shell_id": "bcb0d5d9-1d68-46cc-af96-491faf2ed53a"
+              }
+            ],
+            "active_tab_key": "shell:bcb0d5d9-1d68-46cc-af96-491faf2ed53a",
+            "tab_edge": "top",
+            "shell_ids": [
+              "bcb0d5d9-1d68-46cc-af96-491faf2ed53a"
+            ],
+            "active_shell_id": "bcb0d5d9-1d68-46cc-af96-491faf2ed53a"
+          },
+          "2": {
+            "tabs": [
+              {
+                "kind": "panel",
+                "panel": "preview"
+              },
+              {
+                "kind": "shell",
+                "shell_id": "a499cae4-6620-4dda-b7cf-32f42c1dd8be"
+              }
+            ],
+            "active_tab_key": "shell:a499cae4-6620-4dda-b7cf-32f42c1dd8be",
+            "tab_edge": "top",
+            "shell_ids": [
+              "a499cae4-6620-4dda-b7cf-32f42c1dd8be"
+            ],
+            "active_shell_id": "a499cae4-6620-4dda-b7cf-32f42c1dd8be"
+          }
+        },
+        "active_pane": 2,
+        "locked_panes": [],
+        "panels_initialized": true,
+        "detached_shell_ids": [],
+        "selected_worktree_id": "6ded4d2e-d1c4-4038-870c-4f34271076de",
+        "selected_task_id": null,
+        "sidebar_visible": false,
+        "window_size": {
+          "width": 1220.0,
+          "height": 900.0
+        }
+      }
+    }
+  ],
+  "terminalStates": {
+    "states": [
+      {
+        "id": 83,
+        "shellId": "bcb0d5d9-1d68-46cc-af96-491faf2ed53a",
+        "target": "bcb0d5d9-1d68-46cc-af96-491faf2ed53a",
+        "active": true,
+        "closing": false,
+        "attaching": false,
+        "visible": true,
+        "pinned": false,
+        "frozen": false,
+        "ended": false,
+        "childExited": false,
+        "hiddenForMs": 549,
+        "alive": true,
+        "windowNumber": 6906
+      },
+      {
+        "id": 84,
+        "shellId": "a499cae4-6620-4dda-b7cf-32f42c1dd8be",
+        "target": "a499cae4-6620-4dda-b7cf-32f42c1dd8be",
+        "active": true,
+        "closing": false,
+        "attaching": false,
+        "visible": true,
+        "pinned": false,
+        "frozen": false,
+        "ended": false,
+        "childExited": false,
+        "hiddenForMs": 513,
+        "alive": true,
+        "windowNumber": 6906
+      }
+    ],
+    "pending": 0
+  }
+}

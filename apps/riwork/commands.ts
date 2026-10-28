@@ -9,6 +9,10 @@ export interface CommandHooks {
   blocked: () => boolean;
   /** Create a local shell, optionally splitting the active pane first. */
   newShell: (split?: "right" | "down") => void;
+  newSubshell?: () => void;
+  openVim?: () => void;
+  /** Terminal owns Find; panels keep their own search input. */
+  find?: (id: string, args?: { query?: string }) => boolean;
   closeTab: () => void;
   closePane: () => void;
   toggleFocus: () => void;
@@ -65,7 +69,9 @@ export function workspaceCommands(
     for (const key of ["enter", "space"]) bindings.push(keymap.bind(key, () => activateStrip(), { when: "always" }));
     return () => { for (const unbind of bindings) unbind(); };
   });
-  function dispatch(id: string) {
+  function dispatch(id: string, args?: { query?: string }) {
+    if (!hooks.blocked() && ["find", "search", "findNext", "findPrevious", "findClose"].includes(id)
+      && hooks.find?.(id === "search" ? "find" : id, args)) { stripOpen.set(false); return; }
     if (!commandAllowed(id, hooks.blocked(), () => stripOpen.set(false))) return;
     const panel = PANEL_COMMANDS[id] ?? (id.startsWith("panel:") ? id.slice(6) : undefined);
     if (panel) { hooks.view(panel); return; }
@@ -74,6 +80,8 @@ export function workspaceCommands(
     else if (id === "gatherTabs" || id === "gather") action(() => session.gather());
     else if (id === "defaultLayout") action(() => session.defaultLayout());
     else if (id === "newTab" || id === "newShell") hooks.newShell();
+    else if (id === "newSubshell") hooks.newSubshell?.();
+    else if (id === "openVim") hooks.openVim?.();
     else if (id === "splitRight" || id === "splitDown") hooks.newShell(id === "splitDown" ? "down" : "right");
     else if (id === "closePane") hooks.closePane();
     else if (id === "closeTab") hooks.closeTab();
@@ -84,7 +92,8 @@ export function workspaceCommands(
       void host.call("window.open", { kind: "project", projectId: hooks.projectId() ?? params.projectId }).catch(() => {});
     }
   }
-  for (const [key, id] of WINDOW_KEYMAP) cleanup(keymap.bind(key, () => dispatch(id)));
+  for (const [key, id] of WINDOW_KEYMAP) cleanup(keymap.bind(key, () => dispatch(id),
+    id === "nextTab" || id === "previousTab" ? { when: "always" } : undefined));
   // Panel search owns ⌘F; the remaining deferred chords stay inert.
   for (const key of new Set(DEFERRED_KEYMAP.map(([key]) => key))) {
     if (key !== "escape" && key !== "mod+f") cleanup(keymap.bind(key, () => { stripOpen.set(false); }));
@@ -92,10 +101,10 @@ export function workspaceCommands(
   cleanup(keymap.bind("escape", () => {
     if (stripOpen()) stripOpen.set(false);
     hooks.escape();
-  }));
+  }, { when: "always" }));
   cleanup(host.on("command", (data) => {
-    const id = (data as { id?: unknown }).id;
-    if (typeof id === "string") dispatch(id);
+    const { id, args } = data as { id?: unknown; args?: { query?: string } };
+    if (typeof id === "string") dispatch(id, args);
   }));
   return { dispatch, stripOpen, stripIndex, stripItems, toggleStrip, activateStrip };
 }

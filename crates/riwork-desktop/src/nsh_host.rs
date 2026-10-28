@@ -822,7 +822,10 @@ impl Host {
                     let (name, data) = if request["op"] == "route" {
                         ("route", json!({"step":request["step"]}))
                     } else {
-                        ("command", json!({"id":request["id"]}))
+                        (
+                            "command",
+                            json!({"id":request["id"],"args":request["args"]}),
+                        )
                     };
                     let _ = window.view.host().send(name, data);
                     json!({"ok":true})
@@ -902,6 +905,21 @@ impl Host {
                 request["text"].as_str().unwrap_or_default(),
             ) {
                 Ok(()) => json!({"ok":true}),
+                Err(e) => json!({"ok":false,"error":e}),
+            },
+            Some("terminalCommand") => match riwork_nsh_terminal::fixture_command(
+                request["shellId"].as_str().unwrap_or_default(),
+                request["name"].as_str().unwrap_or_default(),
+                request["args"].clone(),
+            ) {
+                Ok(()) => json!({"ok":true}),
+                Err(e) => json!({"ok":false,"error":e}),
+            },
+            Some("terminalPolicy") => match riwork_nsh_terminal::fixture_policy(
+                request["shellId"].as_str().unwrap_or_default(),
+                &request["args"],
+            ) {
+                Ok(value) => json!({"ok":true,"policy":value}),
                 Err(e) => json!({"ok":false,"error":e}),
             },
             _ => json!({"ok":false,"error":"unknown fixture operation"}),
@@ -1131,6 +1149,17 @@ fn valid_route(step: &Value) -> bool {
             .as_str()
             .is_some_and(|id| Uuid::parse_str(id).is_ok()),
         Some("panel") => step["panel"].as_str().is_some_and(|s| !s.is_empty()),
+        Some("openEditor") => {
+            step["path"]
+                .as_str()
+                .is_some_and(|s| Path::new(s).is_absolute())
+                && step
+                    .get("line")
+                    .is_none_or(|n| n.as_u64().is_some_and(|n| n <= u32::MAX as u64))
+        }
+        Some("newSubshell") => step
+            .get("parentShellId")
+            .is_none_or(|id| id.as_str().is_some_and(|id| Uuid::parse_str(id).is_ok())),
         Some("apiKeySettings" | "projectMemo") => true,
         _ => false,
     }

@@ -71,6 +71,11 @@ const COMMANDS: &[&str] = &[
     "biggerText",
     "smallerText",
     "actualSize",
+    "find",
+    "findNext",
+    "findPrevious",
+    "newSubshell",
+    "openVim",
 ];
 
 // The View-menu subset of acceptance §8. Keep every row and chord in place,
@@ -479,6 +484,10 @@ fn menu_model() -> Vec<MenuItem> {
                 edit_item("Paste", MenuRole::Paste),
                 Separator,
                 edit_item("Select All", MenuRole::SelectAll),
+                Separator,
+                item("Find…", "find", Some("cmd+f")),
+                item("Find Next", "findNext", Some("cmd+g")),
+                item("Find Previous", "findPrevious", Some("cmd+shift+g")),
             ],
         ),
         submenu(
@@ -490,6 +499,8 @@ fn menu_model() -> Vec<MenuItem> {
                 item("New chat…", "newChat", Some("cmd+alt+shift+c")),
                 item("App preview…", "appPreview", None),
                 item("Sessions", "sessions", Some("cmd+alt+s")),
+                item("New Subshell", "newSubshell", None),
+                item("Open File in Vim…", "openVim", None),
                 item("Default Layout", "defaultLayout", Some("cmd+alt+l")),
                 item(
                     "Gather Tabs into Main Pane",
@@ -624,7 +635,7 @@ mod tests {
     }
 
     #[test]
-    fn command_ids_are_the_v1_set() {
+    fn command_ids_include_the_phase2b_terminal_actions() {
         let mut commands = HashSet::new();
         MenuItem::each_action(&menu_model(), &mut |action| {
             if action.role.is_none() {
@@ -652,6 +663,11 @@ mod tests {
                 "biggerText",
                 "smallerText",
                 "actualSize",
+                "find",
+                "findNext",
+                "findPrevious",
+                "newSubshell",
+                "openVim",
             ])
         );
     }
