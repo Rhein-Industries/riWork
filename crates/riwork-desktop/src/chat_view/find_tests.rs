@@ -749,11 +749,10 @@ fn each_chat_keeps_its_own_bar_and_matches(cx: &mut TestAppContext) {
     let (handle, tabs) = cx.update(|cx| {
         cx.set_global(crate::settings::Settings::default());
         cx.set_global(crate::theme::Appearance {
-            selected: crate::theme::ThemeChoice::RiWork,
-            palette: crate::theme::Palette::RIWORK,
+            selected: crate::theme::ThemeChoice::Native,
+            palette: crate::theme::Palette::NATIVE_LIGHT,
             terminal: None,
             ghostty: None,
-            error: None,
         });
         text_input::init(cx);
         let mut tabs = None;

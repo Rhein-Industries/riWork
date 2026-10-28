@@ -72,11 +72,10 @@ pub(super) fn mount_sized(
     let (handle, view, recording) = cx.update(|cx| {
         cx.set_global(crate::settings::Settings::default());
         cx.set_global(crate::theme::Appearance {
-            selected: crate::theme::ThemeChoice::RiWork,
-            palette: crate::theme::Palette::RIWORK,
+            selected: crate::theme::ThemeChoice::Native,
+            palette: crate::theme::Palette::NATIVE_LIGHT,
             terminal: None,
             ghostty: None,
-            error: None,
         });
         text_input::init(cx);
         let (recording_feed, recording) = Feed::recording();

@@ -311,19 +311,14 @@ fn a_banner_is_one_line_as_tall_as_the_buttons_and_a_long_one_opens(cx: &mut Tes
     ];
     let start = 1_800_000_000;
     notices::TEST_NOW.with(|now| now.set(Some(start)));
-    for native in [false, true] {
+    for dark in [false, true] {
         let (handle, view, _recording) = mount(cx);
         cx.update(|cx| {
             cx.set_global(crate::theme::Appearance {
-                selected: crate::theme::ThemeChoice::RiWork,
-                palette: if native {
-                    crate::theme::Palette::native(true)
-                } else {
-                    crate::theme::Palette::RIWORK
-                },
+                selected: crate::theme::ThemeChoice::Native,
+                palette: crate::theme::Palette::native(dark),
                 terminal: None,
                 ghostty: None,
-                error: None,
             })
         });
         push(&view, cx, "u", ItemBody::UserMessage { text: "hi".into() });
@@ -356,7 +351,7 @@ fn a_banner_is_one_line_as_tall_as_the_buttons_and_a_long_one_opens(cx: &mut Tes
                 window.render_frame(cx);
                 let line = ui_text::text(notice_ui::LINE);
                 for (n, (_, text, kind, opens)) in cases.iter().enumerate() {
-                    let what = format!("native {native}, pressed {pressed}, {kind:?}");
+                    let what = format!("dark {dark}, pressed {pressed}, {kind:?}");
                     let open = *opens || (pressed && n == 1);
                     let banner = find(window, "", n).unwrap();
                     let body = find(window, "-text", n).unwrap();
@@ -579,15 +574,10 @@ struct Header {
 }
 
 fn header_at(cx: &mut TestAppContext, width: f32) -> Header {
-    header_with(cx, width, crate::theme::ThemeChoice::RiWork, false)
+    header_with(cx, width, false)
 }
 
-fn header_with(
-    cx: &mut TestAppContext,
-    width: f32,
-    theme: crate::theme::ThemeChoice,
-    billing: bool,
-) -> Header {
+fn header_with(cx: &mut TestAppContext, width: f32, billing: bool) -> Header {
     let (handle, view, _recording) = super::editor_tests::mount_sized(
         cx,
         HostConfig {
@@ -595,9 +585,6 @@ fn header_with(
         },
         width,
     );
-    cx.update(|cx| {
-        cx.global_mut::<crate::theme::Appearance>().selected = theme;
-    });
     view.update(cx, |view, cx| {
         view.model.link = state::Link::Live;
         let mut info = super::testing::info("chat");
@@ -806,18 +793,13 @@ fn the_billing_badge_is_measured_and_the_two_row_contract_holds_in_every_design(
     cx: &mut TestAppContext,
 ) {
     let middle = |b: gpui::Bounds<gpui::Pixels>| b.top() + b.size.height / 2.;
-    for theme in crate::theme::ThemeChoice::ALL {
-        let face = match theme {
-            crate::theme::ThemeChoice::Native => ui_text::Face::SystemMono,
-            crate::theme::ThemeChoice::Hermes => ui_text::Face::Hermes,
-            _ => ui_text::Face::Menlo,
-        };
+    for face in [ui_text::Face::Menlo, ui_text::Face::SystemMono] {
         let before = ui_text::set_for_tests(1., face);
         for width in [900., 520., 330.] {
-            let h = header_with(cx, width, theme, true);
+            let h = header_with(cx, width, true);
             let badge = h.billing.expect("API billing badge is visible");
             let what = format!(
-                "{theme:?} at {width}: badge {badge:?}, ring {:?}, more {:?}",
+                "{face:?} at {width}: badge {badge:?}, ring {:?}, more {:?}",
                 h.usage, h.more
             );
             assert!((middle(h.more) - middle(h.first)).abs() <= px(1.), "{what}");

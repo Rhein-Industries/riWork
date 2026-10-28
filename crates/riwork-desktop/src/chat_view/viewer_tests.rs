@@ -226,7 +226,6 @@ fn native_viewer_routes_zoom_paging_and_escape_without_touching_the_composer(
             palette: crate::theme::Palette::NATIVE_LIGHT,
             terminal: None,
             ghostty: None,
-            error: None,
         });
     });
     chat.update(cx, |chat, cx| {
@@ -259,7 +258,6 @@ fn native_viewer_routes_zoom_paging_and_escape_without_touching_the_composer(
             palette: crate::theme::Palette::NATIVE_LIGHT,
             terminal: None,
             ghostty: None,
-            error: None,
         });
         let explorer = cx.new(|cx| FileExplorer::new(window, cx));
         explorer.update(cx, |view, cx| {
