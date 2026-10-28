@@ -1,0 +1,185 @@
+{
+  "artifacts": {
+    "ordering-akd3ufaz/app-fixture-build.stderr": {
+      "archive_sha256": "e4bba59123dedc0a0d649a9d0b46c26a25da47ad70e6b3e1f5cb4ae72e11b6b4",
+      "bytes": 1884,
+      "source": "/private/tmp/riwork-pending-open-a6de9001/ordering-akd3ufaz/app-fixture-build.stderr",
+      "source_sha256": "e4bba59123dedc0a0d649a9d0b46c26a25da47ad70e6b3e1f5cb4ae72e11b6b4"
+    },
+    "ordering-akd3ufaz/app-fixture-build.stdout": {
+      "archive_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "source": "/private/tmp/riwork-pending-open-a6de9001/ordering-akd3ufaz/app-fixture-build.stdout",
+      "source_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "ordering-akd3ufaz/app-recovery.stderr": {
+      "archive_sha256": "0c75b55bb76a8955e986b29e76c20928bf62663da6ed75227c222d35c136f0d2",
+      "bytes": 4387,
+      "source": "/private/tmp/riwork-pending-open-a6de9001/ordering-akd3ufaz/app-recovery.stderr",
+      "source_sha256": "0c75b55bb76a8955e986b29e76c20928bf62663da6ed75227c222d35c136f0d2"
+    },
+    "ordering-akd3ufaz/app-recovery.stdout": {
+      "archive_sha256": "95ebe005ab92031fad64f8ee73efa489c0df5f986368abf32a8127580091fa1d",
+      "bytes": 1358,
+      "source": "/private/tmp/riwork-pending-open-a6de9001/ordering-akd3ufaz/app-recovery.stdout",
+      "source_sha256": "95ebe005ab92031fad64f8ee73efa489c0df5f986368abf32a8127580091fa1d"
+    },
+    "ordering-akd3ufaz/manifest.json": {
+      "archive_sha256": "8f2f1318484e79ad7354116e2b878c1ca01d6f510be0186f7ea65101199ce78e",
+      "bytes": 9044,
+      "source": "/private/tmp/riwork-pending-open-a6de9001/ordering-akd3ufaz/manifest.json",
+      "source_sha256": "8f2f1318484e79ad7354116e2b878c1ca01d6f510be0186f7ea65101199ce78e"
+    },
+    "ordering-ubvi41iy/app-fixture-build.stderr": {
+      "archive_sha256": "655b626450a782fb85dbdc1f141fc5b70c29ace42e6aa86f8498dadc69818af7",
+      "bytes": 1883,
+      "source": "/private/tmp/riwork-pending-open-a6de9001/ordering-ubvi41iy/app-fixture-build.stderr",
+      "source_sha256": "655b626450a782fb85dbdc1f141fc5b70c29ace42e6aa86f8498dadc69818af7"
+    },
+    "ordering-ubvi41iy/app-fixture-build.stdout": {
+      "archive_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "source": "/private/tmp/riwork-pending-open-a6de9001/ordering-ubvi41iy/app-fixture-build.stdout",
+      "source_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "ordering-ubvi41iy/app-recovery.stderr": {
+      "archive_sha256": "d2770c3acaf0630bfc561c05dcb8c25dbd3f5bcd9448f54c4698f7320b94b29b",
+      "bytes": 583,
+      "source": "/private/tmp/riwork-pending-open-a6de9001/ordering-ubvi41iy/app-recovery.stderr",
+      "source_sha256": "d2770c3acaf0630bfc561c05dcb8c25dbd3f5bcd9448f54c4698f7320b94b29b"
+    },
+    "ordering-ubvi41iy/app-recovery.stdout": {
+      "archive_sha256": "7be7fe7af46066b11055e8218b81b3d49f41e5d96fce4d3a1774f8a175138119",
+      "bytes": 1393,
+      "source": "/private/tmp/riwork-pending-open-a6de9001/ordering-ubvi41iy/app-recovery.stdout",
+      "source_sha256": "7be7fe7af46066b11055e8218b81b3d49f41e5d96fce4d3a1774f8a175138119"
+    },
+    "ordering-ubvi41iy/manifest.json": {
+      "archive_sha256": "b0d36b6f68e44db0b0057d8a8ab0f11669fd79c17e3c357e572c1e778ac5f463",
+      "bytes": 9015,
+      "source": "/private/tmp/riwork-pending-open-a6de9001/ordering-ubvi41iy/manifest.json",
+      "source_sha256": "b0d36b6f68e44db0b0057d8a8ab0f11669fd79c17e3c357e572c1e778ac5f463"
+    },
+    "source-review/source-review.json": {
+      "archive_sha256": "b24a83d52d34db21d27d4911bb53f66ae771ee3b1d3fdebe01625d596de48686",
+      "bytes": 5409,
+      "source": "/private/tmp/riwork-pending-open-a6de9001/source-review/source-review.json",
+      "source_sha256": "b24a83d52d34db21d27d4911bb53f66ae771ee3b1d3fdebe01625d596de48686"
+    },
+    "suites-6c4743q1/format.stderr": {
+      "archive_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "source": "/private/tmp/riwork-pending-open-a6de9001/suites-6c4743q1/format.stderr",
+      "source_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "suites-6c4743q1/format.stdout": {
+      "archive_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "source": "/private/tmp/riwork-pending-open-a6de9001/suites-6c4743q1/format.stdout",
+      "source_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "suites-6c4743q1/host-suite.stderr": {
+      "archive_sha256": "f8030675725ec4867458ea094d392d06c82ff7bea7ac9554c90f2d93409ad85a",
+      "bytes": 144,
+      "source": "/private/tmp/riwork-pending-open-a6de9001/suites-6c4743q1/host-suite.stderr",
+      "source_sha256": "f8030675725ec4867458ea094d392d06c82ff7bea7ac9554c90f2d93409ad85a"
+    },
+    "suites-6c4743q1/host-suite.stdout": {
+      "archive_sha256": "87a14f4a05868e6b81970bacf3f8a9d46b0749b41a2ad70f5a061618e2b7f853",
+      "bytes": 4218,
+      "source": "/private/tmp/riwork-pending-open-a6de9001/suites-6c4743q1/host-suite.stdout",
+      "source_sha256": "87a14f4a05868e6b81970bacf3f8a9d46b0749b41a2ad70f5a061618e2b7f853"
+    },
+    "suites-6c4743q1/layout-suites.stderr": {
+      "archive_sha256": "486bed3d88f5b742ae7859db6ed878835196da16b280d9aa7b1508b39251e70b",
+      "bytes": 2169,
+      "source": "/private/tmp/riwork-pending-open-a6de9001/suites-6c4743q1/layout-suites.stderr",
+      "source_sha256": "486bed3d88f5b742ae7859db6ed878835196da16b280d9aa7b1508b39251e70b"
+    },
+    "suites-6c4743q1/layout-suites.stdout": {
+      "archive_sha256": "2804c1e7cdcd08a5c0a608790cb930b27b5b0b3a0f504dc9bd1f197daebf77db",
+      "bytes": 12977,
+      "source": "/private/tmp/riwork-pending-open-a6de9001/suites-6c4743q1/layout-suites.stdout",
+      "source_sha256": "2804c1e7cdcd08a5c0a608790cb930b27b5b0b3a0f504dc9bd1f197daebf77db"
+    },
+    "suites-6c4743q1/manifest.json": {
+      "archive_sha256": "c79f02b95db406e53d8b052ed8a53a44fe3bcb9844f0ccebadaf869d6f829cc8",
+      "bytes": 19694,
+      "source": "/private/tmp/riwork-pending-open-a6de9001/suites-6c4743q1/manifest.json",
+      "source_sha256": "c79f02b95db406e53d8b052ed8a53a44fe3bcb9844f0ccebadaf869d6f829cc8"
+    },
+    "suites-6c4743q1/nsh-check.stderr": {
+      "archive_sha256": "18c70c4ffb07bc40f98abaf6c474e9460976e80f29636df1c436e94bcc62fec3",
+      "bytes": 1766,
+      "source": "/private/tmp/riwork-pending-open-a6de9001/suites-6c4743q1/nsh-check.stderr",
+      "source_sha256": "18c70c4ffb07bc40f98abaf6c474e9460976e80f29636df1c436e94bcc62fec3"
+    },
+    "suites-6c4743q1/nsh-check.stdout": {
+      "archive_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "source": "/private/tmp/riwork-pending-open-a6de9001/suites-6c4743q1/nsh-check.stdout",
+      "source_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "suites-6c4743q1/whitespace.stderr": {
+      "archive_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "source": "/private/tmp/riwork-pending-open-a6de9001/suites-6c4743q1/whitespace.stderr",
+      "source_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "suites-6c4743q1/whitespace.stdout": {
+      "archive_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "source": "/private/tmp/riwork-pending-open-a6de9001/suites-6c4743q1/whitespace.stdout",
+      "source_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  },
+  "runs": {
+    "ordering-akd3ufaz": {
+      "artifacts": [
+        "ordering-akd3ufaz/app-fixture-build.stderr",
+        "ordering-akd3ufaz/app-fixture-build.stdout",
+        "ordering-akd3ufaz/app-recovery.stderr",
+        "ordering-akd3ufaz/app-recovery.stdout",
+        "ordering-akd3ufaz/manifest.json"
+      ],
+      "disposition": "selected",
+      "source_directory": "/private/tmp/riwork-pending-open-a6de9001/ordering-akd3ufaz"
+    },
+    "ordering-ubvi41iy": {
+      "artifacts": [
+        "ordering-ubvi41iy/app-fixture-build.stderr",
+        "ordering-ubvi41iy/app-fixture-build.stdout",
+        "ordering-ubvi41iy/app-recovery.stderr",
+        "ordering-ubvi41iy/app-recovery.stdout",
+        "ordering-ubvi41iy/manifest.json"
+      ],
+      "disposition": "selected",
+      "source_directory": "/private/tmp/riwork-pending-open-a6de9001/ordering-ubvi41iy"
+    },
+    "source-review": {
+      "artifacts": [
+        "source-review/source-review.json"
+      ],
+      "disposition": "selected",
+      "source_directory": "/private/tmp/riwork-pending-open-a6de9001/source-review"
+    },
+    "suites-6c4743q1": {
+      "artifacts": [
+        "suites-6c4743q1/format.stderr",
+        "suites-6c4743q1/format.stdout",
+        "suites-6c4743q1/host-suite.stderr",
+        "suites-6c4743q1/host-suite.stdout",
+        "suites-6c4743q1/layout-suites.stderr",
+        "suites-6c4743q1/layout-suites.stdout",
+        "suites-6c4743q1/manifest.json",
+        "suites-6c4743q1/nsh-check.stderr",
+        "suites-6c4743q1/nsh-check.stdout",
+        "suites-6c4743q1/whitespace.stderr",
+        "suites-6c4743q1/whitespace.stdout"
+      ],
+      "disposition": "selected",
+      "source_directory": "/private/tmp/riwork-pending-open-a6de9001/suites-6c4743q1"
+    }
+  },
+  "schema_version": 1
+}

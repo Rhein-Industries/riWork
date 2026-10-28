@@ -1,0 +1,2 @@
+# Preserve Cargo's raw trailing blank line in archived test output.
+*.stdout whitespace=-blank-at-eof

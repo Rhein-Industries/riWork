@@ -139,6 +139,14 @@ struct AppProbe {
 }
 impl AppProbe {
     fn start(bundle: &Path, id: &str, layout: &riwork_core::layouts::ProjectLayout) -> Self {
+        Self::start_with_queue(bundle, id, layout, None)
+    }
+    fn start_with_queue(
+        bundle: &Path,
+        id: &str,
+        layout: &riwork_core::layouts::ProjectLayout,
+        queue: Option<mpsc::Sender<Main>>,
+    ) -> Self {
         let host = HostChannel::new();
         host.set_params(json!({"schema":1,"windowId":id,"projectId":id,"kind":"project","path":"/fixture/Recovery","restore":{"layout":layout}}).as_object().unwrap().clone());
         let (events, receive) = mpsc::channel();
@@ -146,7 +154,19 @@ impl AppProbe {
         for name in ["app.restoreReady", "window.setDockInfo", "app.fixture.pong"] {
             let events = events.clone();
             let ready = ready.clone();
+            let queue = queue.clone();
+            let id = id.to_owned();
             host.handle(name, move |call| {
+                if name != "app.fixture.pong" {
+                    if let Some(queue) = &queue {
+                        queue.send(Main::Call(id.clone(), name, call)).unwrap();
+                        return;
+                    }
+                    if let Err(error) = admit_host_call(Some(&window(&id).1), false, &id, name) {
+                        call.reject(error);
+                        return;
+                    }
+                }
                 if name == "app.restoreReady" {
                     ready.fetch_add(1, Ordering::SeqCst);
                 }
@@ -154,7 +174,16 @@ impl AppProbe {
                 call.resolve(json!({}));
             });
         }
-        host.handle("system.fonts", |call| call.resolve(json!({"families":[]})));
+        let id = id.to_owned();
+        host.handle("system.fonts", move |call| {
+            if let Some(queue) = &queue {
+                queue
+                    .send(Main::Call(id.clone(), "system.fonts", call))
+                    .unwrap();
+            } else {
+                call.resolve(json!({"families":[]}));
+            }
+        });
         let mut config = EngineConfig::new(Bundle::read(bundle).unwrap());
         config.ui_sets = vec![nsh_base::registry(), native::registry()];
         config.host = host.clone();
@@ -338,4 +367,211 @@ fn production_app_recovers_pending_open_after_failed_quit_and_restart() {
             "PASS successful {reason} with pending open: no resurrection, write or ready acknowledgement"
         );
     }
+    ordered_failure_completion(&bundle, &home, &repo, &layout);
+}
+
+/// The queue replaces only AppKit's exec_async scheduling and window lookup.
+/// Admission and recovery dispatch are the production functions used by Host.
+struct QueuedHost {
+    quitting: bool,
+    window: (String, RuntimeWindow),
+    channel: HostChannel,
+    ready_attempts: usize,
+    ready_accepted: usize,
+    ready_rejected: usize,
+    failure_completed: bool,
+    cancellations: usize,
+}
+impl QueuedHost {
+    fn handle(&mut self, message: Main) {
+        match message {
+            Main::Recovery(recovery) => {
+                if matches!(&recovery, Recovery::QuitFailed(..)) {
+                    self.failure_completed = true;
+                }
+                recovery.handle(&mut self.quitting, |id| {
+                    if id == self.window.0 {
+                        self.cancellations += 1;
+                        self.channel
+                            .send("window.closeCancelled", json!({}))
+                            .unwrap();
+                    }
+                });
+            }
+            Main::Call(id, name, call) => {
+                let ready = name == "app.restoreReady";
+                self.ready_attempts += usize::from(ready);
+                let window = (id == self.window.0).then_some(&self.window.1);
+                if let Err(error) = admit_host_call(window, self.quitting, &id, name) {
+                    if ready {
+                        self.ready_rejected += 1;
+                        println!(
+                            "READY REJECTED: {error}; failure_completed={}",
+                            self.failure_completed
+                        );
+                    }
+                    call.reject(error);
+                    return;
+                }
+                if ready {
+                    self.ready_accepted += 1;
+                    println!(
+                        "READY ACCEPTED: failure_completed={}",
+                        self.failure_completed
+                    );
+                }
+                call.resolve(if name == "system.fonts" {
+                    json!({"families":[]})
+                } else {
+                    json!({})
+                });
+            }
+            _ => panic!("unexpected fixture main message"),
+        }
+    }
+    fn drain(&mut self, queue: &mpsc::Receiver<Main>) {
+        while let Ok(message) = queue.try_recv() {
+            self.handle(message);
+        }
+    }
+    fn until(&mut self, queue: &mpsc::Receiver<Main>, done: impl Fn(&Self) -> bool) {
+        let deadline = Instant::now() + WAIT;
+        while !done(self) {
+            self.handle(
+                queue
+                    .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                    .expect("queued host progress"),
+            );
+        }
+    }
+}
+
+fn ordered_failure_completion(
+    bundle: &Path,
+    home: &Path,
+    repo: &Repository,
+    layout: &riwork_core::layouts::ProjectLayout,
+) {
+    let mut failures = Vec::new();
+    // All three real service failure sites use complete_failed_quit. The last
+    // case fails replacement readiness after a successful persistence barrier.
+    for reason in ["quit", "restart-launch", "restart-ready"] {
+        let id = format!("ordered-{reason}-{}", Uuid::new_v4());
+        let other_id = format!("other-{id}");
+        let attempt = Arc::new(Attempt::default());
+        repo.0.lock().unwrap().insert(id.clone(), attempt.clone());
+        let other_writer = Arc::new(OtherWriter {
+            fail: AtomicBool::new(reason != "restart-ready"),
+        });
+        let other =
+            host_layouts::registration(&other_id, other_writer.clone(), layout.clone()).unwrap();
+        let (queue, messages) = mpsc::channel();
+        let mut app = AppProbe::start_with_queue(bundle, &id, layout, Some(queue.clone()));
+        let mut main = QueuedHost {
+            quitting: false,
+            window: window(&id),
+            channel: app.host.clone(),
+            ready_attempts: 0,
+            ready_accepted: 0,
+            ready_rejected: 0,
+            failure_completed: false,
+            cancellations: 0,
+        };
+        attempt.entered.wait();
+        app.ping();
+        main.drain(&messages);
+        main.quitting = true;
+        app.host
+            .send(
+                "window.willClose",
+                json!({"reason": if reason == "quit" { "quit" } else { "restart" }}),
+            )
+            .unwrap();
+        let batch = ClosingWindows::new(vec![window(&id), window(&other_id)]);
+        attempt.release_rejection.release();
+        attempt.release_open.release();
+        app.wait("closing-error");
+        let error = if reason == "restart-ready" {
+            batch.flush(home).unwrap();
+            "fixture: replacement readiness failed".to_owned()
+        } else {
+            batch.flush(home).unwrap_err()
+        };
+        let completing = Arc::new(Gate::default());
+        let finish = Arc::new(Gate::default());
+        let worker = {
+            let completing = completing.clone();
+            let finish = finish.clone();
+            std::thread::spawn(move || {
+                complete_failed_quit(
+                    batch,
+                    error,
+                    || {
+                        completing.release();
+                        finish.wait();
+                    },
+                    |message| queue.send(message).unwrap(),
+                )
+            })
+        };
+        completing.wait();
+        // The service is deliberately held inside fail_reload/resume_forwarding.
+        // Old ordering already queued cancellation. Let App fully retry and post
+        // readiness now, before releasing completion, to expose the lost ack.
+        main.drain(&messages);
+        if main.cancellations != 0 {
+            main.until(&messages, |host| host.ready_attempts == 1);
+            assert_eq!(
+                main.ready_rejected, 1,
+                "old ordering must expose the closed admission gate"
+            );
+            println!("{reason}: readiness lost while failure completion is deliberately blocked");
+        } else {
+            assert_eq!(attempt.calls.load(Ordering::SeqCst), 1);
+            assert!(main.quitting);
+            println!("{reason}: recovery correctly withheld during delayed failure completion");
+        }
+        finish.release();
+        worker.join().unwrap();
+        main.until(&messages, |host| {
+            host.failure_completed && host.ready_attempts == 1
+        });
+        app.ping();
+        main.drain(&messages);
+        assert!(!main.quitting);
+        assert_eq!(main.cancellations, 1);
+        assert_eq!(attempt.calls.load(Ordering::SeqCst), 2);
+        if (
+            main.ready_attempts,
+            main.ready_accepted,
+            main.ready_rejected,
+        ) != (1, 1, 0)
+        {
+            failures.push(format!(
+                "{reason}: attempts={}, accepted={}, rejected={}",
+                main.ready_attempts, main.ready_accepted, main.ready_rejected
+            ));
+        } else {
+            println!(
+                "PASS ordered {reason}: app.restoreReady accepted exactly once after failure completion"
+            );
+        }
+        // A later successful teardown still keeps the native closing marker and
+        // releases the recovered writer. No live desktop lifecycle is involved.
+        other_writer.fail.store(false, Ordering::SeqCst);
+        let successful = ClosingWindows::new(vec![window(&id), window(&other_id)]);
+        successful.flush(home).unwrap();
+        app.stop();
+        drop(successful);
+        drop(other);
+        eventually("ordered case left an orphan writer", || {
+            attempt.writers.load(Ordering::SeqCst) == 0
+        });
+        assert!(host_layouts::lookup(&id).is_none());
+    }
+    assert!(
+        failures.is_empty(),
+        "lost ready acknowledgement: {}",
+        failures.join("; ")
+    );
 }
