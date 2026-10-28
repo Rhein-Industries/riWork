@@ -908,9 +908,7 @@ impl ChatView {
                 if look.native {
                     field.rounded_full().bg(rgb(colors.panel_active))
                 } else {
-                    field
-                        .rounded(ui_text::space(if look.hermes() { 5. } else { 3. }))
-                        .bg(rgb(colors.bg))
+                    field.rounded(ui_text::space(3.)).bg(rgb(colors.bg))
                 }
             })
             .text_color(rgb(if focused { colors.text } else { colors.muted }))

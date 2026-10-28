@@ -3,7 +3,7 @@ import { CuaSetup, useCua, type CuaSetupControl } from "./CuaSetup";
 import { Clipboard, Overlay, Scroll, Text, View, cleanup, colorScheme, computed, createAnimatedValue, effect, host, keymap, signal, type Point, type YNode } from "nsh";
 import { Button, Dialog, Input, Popover, type DockAreaLayout, type DockAreaRef, type DockNode } from "nsh/base";
 import { Menu, Window, type MenuItem } from "nsh/desktop";
-import { Appearance, Orchestrators, Remote, Sessions, Settings, Tabs, type AppearanceDto, type LayoutSession, type SettingsDto } from "riwork/native";
+import { Appearance, Orchestrators, Remote, Sessions, Tabs, type AppearanceDto, type LayoutSession, type SettingsDto } from "riwork/native";
 import { DockArea } from "./DockArea";
 import { CloseDialog } from "./CloseDialog";
 import { DeferredPanel, MountProbe } from "./DeferredPanel";
@@ -78,7 +78,6 @@ export function Workspace(props: WorkspaceProps) {
   const notice = signal([props.startupNotice, snapshot().notice].filter(Boolean).join("\n"));
   const theme = props.theme ?? (() => DEFAULT_THEME);
   effect(() => { const next = props.appearanceNotice?.(); if (next) notice.set(next); });
-  const label = (text: string) => Settings.cased(text, theme().native);
   const textStyle = (base = 11) => ({ fontFamily: theme().family, fontSize: base * theme().scale, color: theme().palette.text });
   const mutedStyle = (base = 11) => ({ ...textStyle(base), color: theme().palette.muted });
   let root: YNode | null = null;
@@ -262,7 +261,7 @@ export function Workspace(props: WorkspaceProps) {
   }
   /** Shell titles prefer shared membership, then the session inventory. */
   function displayTitle(tab: PanelModel): string {
-    if (tab.kind === "panel") return label(tab.title);
+    if (tab.kind === "panel") return tab.title;
     if (tab.kind === "remote_shell") return remoteTabTitle(remote.data(), tab.id);
     if (!tab.id.startsWith("shell:")) return tab.title;
     const shell = panelState.shells().find((item) => item.id === tab.id.slice(6));
@@ -409,7 +408,7 @@ export function Workspace(props: WorkspaceProps) {
     } finally { switching.set(false); }
   }
 
-  const chrome = useWindowChrome(() => theme().palette);
+  const chrome = useWindowChrome();
   const measured = signal<Extent>({ width: 0, height: 0 });
   const tabWidths = signal<Record<string, number>>({});
   function measureTab(group: number, panel: string, width: number) {
@@ -799,7 +798,7 @@ export function Workspace(props: WorkspaceProps) {
     <View testID="workspace" ref={(node) => { root = node; }} focusable={true} onLayout={(bounds) => width.set(bounds.size.width)} style={{ flex: 1, backgroundColor: theme().palette.bg }}>
       {shared() && !snapshot().focusMode && <View testID="shared-strip" desktop={{ windowDrag: true }} style={{ height: header(), flexDirection: "row", paddingLeft: chrome.fullscreen() ? 0 : CONTROL_INSET, backgroundColor: theme().palette.panel }} onLayout={(bounds) => { stripWidth.set(bounds.size.width); reveal(); }}>
         <Scroll ref={(node) => { stripRef = node; }} horizontal={true} role="tablist" accessibilityLabel="Tabs" style={{ flex: 1 }} contentStyle={{ flexDirection: "row", alignItems: "center" }}>
-          <Text style={{ ...mutedStyle(9), width: 48 }}>{label("Panels")}</Text>
+          <Text style={{ ...mutedStyle(9), width: 48 }}>Panels</Text>
           {ordered().map((tab) => tabCell(tab, selected() === tab.id, true))}
         </Scroll>
         {allTabsAvailable() && <Popover open={allTabs()} onOpenChange={(open) => { allTabs.set(open); if (open) { hovered.set(null); allIndex.set(Math.max(0, sessions().findIndex((tab) => tab.id === selected()))); freeze(); } else thaw(); }} placement="bottom" align="end"
@@ -907,11 +906,11 @@ export function Workspace(props: WorkspaceProps) {
       <WindowChrome state={chrome} panes={chromePanes()} />
       <View testID="panel-toolbar" style={{ flexDirection: "row", alignItems: "center", paddingHorizontal: space(8, theme().scale), paddingVertical: space(4, theme().scale), gap: 6, backgroundColor: theme().palette.panel }}>
         {(["projects", "files", "worktrees", "tasks", "shells"] as const).map((id) => <Button testID={`show-panel:${id}`} accessibilityLabel={`Show ${id === "shells" ? "Sessions" : id}`} disabled={switching()} onPress={() => action(() => session.openPanel(id))} style={{ paddingHorizontal: space(8, theme().scale), paddingVertical: space(4, theme().scale), borderRadius: 4 }} hoverStyle={{ backgroundColor: theme().palette.panelActive }} focusStyle={{ backgroundColor: theme().palette.divider }}>
-          <Text style={textStyle()}>{label(id === "shells" ? "Sessions" : id.charAt(0).toUpperCase() + id.slice(1))}</Text>
+          <Text style={textStyle()}>{id === "shells" ? "Sessions" : id.charAt(0).toUpperCase() + id.slice(1)}</Text>
         </Button>)}
         <View style={{ flex: 1 }} />
         {snapshot().focusMode && <View testID="focus-restore" role="button" accessibilityLabel="Restore layout" onPress={() => commands.dispatch("toggleFocusMode")}><Text style={{ ...textStyle(), color: theme().palette.cyan }}>↙ RESTORE  ⌘⇧F</Text></View>}
-        <View testID="all-tabs" role="button" accessibilityLabel="All tabs" onPress={commands.toggleStrip}><Text style={textStyle()}>{label("All tabs")}</Text></View>
+        <View testID="all-tabs" role="button" accessibilityLabel="All tabs" onPress={commands.toggleStrip}><Text style={textStyle()}>All tabs</Text></View>
       </View>
       <StatusBar session={session} snapshot={snapshot} projectId={projectId} projectLabel={() => remoteTitle(remote.data(), projectId()) ?? panelState.projectLabel()}
         settings={props.settings} theme={theme} action={action} onError={(error) => notice.set(String(error))} modalOpen={() => !!props.modalOpen?.() || modal() || !!panelState.editor() || switching()}

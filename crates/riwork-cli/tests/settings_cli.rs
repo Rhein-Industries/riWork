@@ -148,7 +148,8 @@ fn scalar_enum_nullable_and_billing_values_round_trip() {
         ("dictation_mic", "true", json!(true)),
         ("codex_subscription_balancing", "true", json!(true)),
         ("dashboard_haiku_summaries", "true", json!(true)),
-        ("theme", "tokyo_night", json!("tokyo_night")),
+        ("theme", "native", json!("native")),
+        ("tab_close_behavior", "detach", json!("detach")),
         ("orchestrator_mode", "chat", json!("chat")),
         ("orchestrator_chat_provider", "claude", json!("claude")),
         ("orchestrator_chat_model", "opus", json!("opus")),
@@ -243,6 +244,7 @@ fn wrong_types_unknown_components_and_lenient_fallbacks_never_write() {
         ("remember_window_size", "null"),
         ("theme", "3"),
         ("theme", "future_theme"),
+        ("theme", "tokyo_night"),
         ("chat_display", "loud"),
         ("tab_close_behavior", "close"),
         ("agent_inline_mode", "[]"),
@@ -362,7 +364,7 @@ fn unrelated_sets_preserve_future_fields_and_chat_map_updates_preserve_unknown_m
     ] {
         assert_eq!(sandbox.document()[key], saved[key], "{key}");
     }
-    assert_eq!(sandbox.ok(&["settings", "get", "theme"]), "\"ghostty\"\n");
+    assert_eq!(sandbox.ok(&["settings", "get", "theme"]), "\"native\"\n");
     sandbox.ok(&[
         "settings",
         "set",
@@ -380,12 +382,12 @@ fn unrelated_sets_preserve_future_fields_and_chat_map_updates_preserve_unknown_m
 fn explicitly_choosing_a_default_replaces_an_unreadable_saved_value() {
     let sandbox = Sandbox::new();
     sandbox.write(json!({
-        "theme":"future_theme", "remember_window_size":"future", "orchestrator_mode":"hologram",
+        "theme":"catppuccin", "remember_window_size":"future", "orchestrator_mode":"hologram",
         "orchestrator_chat_provider":"future", "orchestrator_chat_model":42,
         "delegation_policy":"future", "future_field":true
     }));
     for (key, raw, expected) in [
-        ("theme", "ghostty", json!("ghostty")),
+        ("theme", "native", json!("native")),
         ("remember_window_size", "true", json!(true)),
         ("orchestrator_mode", "automatic", json!("automatic")),
         ("orchestrator_chat_provider", "codex", json!("codex")),
@@ -477,7 +479,7 @@ fn concurrent_cli_and_app_store_updates_preserve_each_other() {
         ("dictation_mic", "true", json!(true)),
         ("panel_tab_icons", "true", json!(true)),
         ("agent_inline_mode", "false", json!(false)),
-        ("theme", "tokyo_night", json!("tokyo_night")),
+        ("theme", "native", json!("native")),
         ("ui_text_size", "13", json!(13)),
     ];
     let start = Arc::new(Barrier::new(choices.len() + 1));
@@ -528,7 +530,7 @@ fn help_input_errors_and_literal_option_like_strings() {
         vec!["settings", "get", "--json"],
         vec!["settings", "set", "theme", "--json"],
         vec!["settings", "list", "extra", "--json"],
-        vec!["settings", "set", "theme", "tokyo_night", "extra", "--json"],
+        vec!["settings", "set", "theme", "native", "extra", "--json"],
         vec!["settings", "set", "status_bar", "{broken", "--json"],
         vec![
             "settings",
@@ -536,7 +538,7 @@ fn help_input_errors_and_literal_option_like_strings() {
             "theme",
             "--json",
             "--json",
-            "tokyo_night",
+            "native",
         ],
     ] {
         sandbox.refused(&args, "invalid_request");

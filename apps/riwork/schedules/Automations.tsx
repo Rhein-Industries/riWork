@@ -106,7 +106,7 @@ export function AutomationsPanel(props: {
 
   function button(id: string, label: string, onPress: () => void, selected = false, disabled = pending()) {
     return <Button testID={id} accessibilityLabel={label} disabled={disabled} selected={selected} onPress={onPress}
-      style={{ paddingHorizontal: 9, paddingVertical: 5, borderWidth: 1, borderColor: selected ? palette().cyan : palette().divider, borderRadius: theme().native ? 12 : 4, backgroundColor: selected ? palette().panelActive : palette().panel }}>
+      style={{ paddingHorizontal: 9, paddingVertical: 5, borderWidth: 1, borderColor: selected ? palette().cyan : palette().divider, borderRadius: 12, backgroundColor: selected ? palette().panelActive : palette().panel }}>
       <Text style={text(10, selected ? palette().cyan : disabled ? palette().muted : palette().text)}>{label}</Text>
     </Button>;
   }

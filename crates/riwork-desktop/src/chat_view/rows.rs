@@ -881,8 +881,8 @@ impl ChatView {
         }
         match &item.body {
             // What you sent is a block across the reading column, in every design; Native's
-            // is plain grey with its rounded corners, Hermes's a bordered panel, the colorful
-            // themes' tinted in their accent.
+            // is plain grey with its rounded corners, the colorful themes' tinted in their
+            // accent.
             ItemBody::UserMessage { text } => {
                 let sent = self.sent_attachments(item, look, cx);
                 let text = super::attachment_ui::shown_text(item, text);
@@ -901,14 +901,7 @@ impl ChatView {
                                     .rounded(controls::radius(BUBBLE_RADIUS))
                                     .bg(rgb(colors.panel_active))
                             })
-                            .when(look.hermes(), |block| {
-                                block
-                                    .rounded(px(4.0))
-                                    .border_1()
-                                    .border_color(rgb(colors.divider))
-                                    .bg(rgb(colors.panel))
-                            })
-                            .when(!look.native && !look.hermes(), |block| {
+                            .when(!look.native, |block| {
                                 block
                                     .rounded(px(6.0))
                                     .border_1()

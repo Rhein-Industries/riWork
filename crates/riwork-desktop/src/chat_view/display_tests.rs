@@ -27,11 +27,10 @@ fn start(cx: &mut TestAppContext, home: &Path) {
     cx.update(|cx| {
         cx.set_global(settings);
         cx.set_global(crate::theme::Appearance {
-            selected: crate::theme::ThemeChoice::RiWork,
-            palette: crate::theme::Palette::RIWORK,
+            selected: crate::theme::ThemeChoice::Native,
+            palette: crate::theme::Palette::NATIVE_LIGHT,
             terminal: None,
             ghostty: None,
-            error: None,
         });
         text_input::init(cx);
         crate::chat_drafts::init(home, cx);

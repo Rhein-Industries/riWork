@@ -422,7 +422,6 @@ mod tests {
                     "subscribe"
                         | "subscribeMetrics"
                         | "sentenceCase"
-                        | "cased"
                         | "open"
                         | "stageProjectMemo"
                         | "newEditor"

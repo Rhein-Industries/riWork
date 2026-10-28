@@ -2,57 +2,14 @@
 
 use serde::{Deserialize, Serialize};
 
+/// RiWork's one theme. Kept as a serialized choice so `settings.json` keeps its
+/// `theme` key: a value an older build wrote (a theme since removed) reads as
+/// Native, like any other value this build does not know.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ThemeChoice {
     #[default]
-    Ghostty,
     Native,
-    RiWork,
-    Catppuccin,
-    TokyoNight,
-    GruvboxLight,
-    Hermes,
-}
-
-impl ThemeChoice {
-    pub const ALL: [Self; 7] = [
-        Self::Ghostty,
-        Self::Native,
-        Self::RiWork,
-        Self::Catppuccin,
-        Self::TokyoNight,
-        Self::GruvboxLight,
-        Self::Hermes,
-    ];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Ghostty => "Follow Ghostty",
-            Self::Native => "Native",
-            Self::RiWork => "RiWork",
-            Self::Catppuccin => "Catppuccin Mocha",
-            Self::TokyoNight => "Tokyo Night",
-            Self::GruvboxLight => "Gruvbox Light",
-            Self::Hermes => "Hermes",
-        }
-    }
-
-    pub fn description(self) -> &'static str {
-        match self {
-            Self::Ghostty => {
-                "Use your Ghostty colors throughout RiWork. Configuration changes sync automatically."
-            }
-            Self::Native => {
-                "Black on white, or white on black when macOS is dark. Follows the system appearance."
-            }
-            Self::RiWork => "RiWork's original dark palette with cyan and purple accents.",
-            Self::Catppuccin => "A soft dark palette with pastel accents.",
-            Self::TokyoNight => "A cool dark palette inspired by Tokyo at night.",
-            Self::GruvboxLight => "A warm light palette with earthy accents.",
-            Self::Hermes => "Deep cobalt, navy panels, warm cream prose and gold accents.",
-        }
-    }
 }
 
 /// Pure packed RGB terminal colors. This type has no Ghostty or GUI dependency.
@@ -82,57 +39,14 @@ pub struct Palette {
     pub gold: u32,
     pub text: u32,
     pub muted: u32,
-    /// The keyboard focus ring of a control. Not one of the published colors:
-    /// it is `gold` in the colorful themes and the primary color in Native,
-    /// whose one signal color is kept for state that must stand out.
+    /// The keyboard focus ring of a control: the primary color, since the one
+    /// signal color is kept for state that must stand out. Not published.
     pub focus: u32,
-    /// What says an agent is working. `cyan` in the colorful themes, the signal
-    /// color (`gold`) in Native. Not published either.
+    /// What says an agent is working: the signal color (`gold`). Not published.
     pub working: u32,
-    /// How a pane's tabs show which one is selected: the colorful themes draw
-    /// terminal-style cells with a primary underline; Native fills the selected
-    /// full-height cell with the content's own background, like a macOS tab bar.
-    pub plain_tabs: bool,
-    /// Whether the window controls sit on a filled island. Native leaves them on
-    /// the window's own surface, as a Mac app does; the space stays reserved.
-    pub controls_island: bool,
 }
 
 impl Palette {
-    /// Hermes keeps the canvas distinct from its navy controls and user messages.
-    /// Primary actions use warm gold; metadata stays subdued and readable.
-    pub const HERMES: Self = Self {
-        bg: 0x162564,
-        panel: 0x192248,
-        panel_active: 0x243364,
-        divider: 0x2b4070,
-        cyan: 0xf5dbb8,
-        magenta: 0xb7bfd7,
-        gold: 0xf5dbb8,
-        text: 0xecdcc7,
-        muted: 0xa1a7bb,
-        focus: 0xf5dbb8,
-        working: 0xf5dbb8,
-        plain_tabs: false,
-        controls_island: false,
-    };
-
-    pub const RIWORK: Self = Self {
-        bg: 0x090d14,
-        panel: 0x101720,
-        panel_active: 0x14212a,
-        divider: 0x253c45,
-        cyan: 0x55e6dc,
-        magenta: 0xce78ef,
-        gold: 0xf4bf75,
-        text: 0xd3e1e6,
-        muted: 0x708993,
-        focus: 0xf4bf75,
-        working: 0x55e6dc,
-        plain_tabs: false,
-        controls_island: true,
-    };
-
     /// Native in light mode, on the published tokens: `cyan`, the primary and
     /// selection color, is black; `magenta`, the secondary accent, a dark grey;
     /// `gold` is the one signal color, a deep orange for working agents, errors
@@ -149,8 +63,6 @@ impl Palette {
         muted: 0x636366,
         focus: 0x000000,
         working: 0xb34000,
-        plain_tabs: true,
-        controls_island: false,
     };
 
     /// Native in dark mode: the same roles inverted, white on black, with the
@@ -167,8 +79,6 @@ impl Palette {
         muted: 0x98989d,
         focus: 0xffffff,
         working: 0xff9f0a,
-        plain_tabs: true,
-        controls_island: false,
     };
 
     pub const fn native(dark: bool) -> Self {
@@ -178,72 +88,32 @@ impl Palette {
             Self::NATIVE_LIGHT
         }
     }
-
-    pub fn from_terminal(theme: &TerminalTheme) -> Self {
-        let bg = theme.background;
-        let text = readable(theme.foreground, bg);
-        let panel = mix(bg, text, 0.035);
-        let panel_active = mix(bg, text, 0.075);
-        let cyan = readable(theme.palette[6], panel_active);
-        let gold = readable(theme.palette[3], panel_active);
-        Self {
-            bg,
-            panel,
-            panel_active,
-            divider: mix(bg, text, 0.20),
-            cyan,
-            magenta: readable(theme.palette[5], panel_active),
-            gold,
-            text: readable(text, panel_active),
-            muted: readable(mix(bg, text, 0.58), panel_active),
-            focus: gold,
-            working: cyan,
-            plain_tabs: false,
-            controls_island: true,
-        }
-    }
 }
-
-/// Phase 1 resolver: Ghostty configuration parsing and publishing are deferred.
-pub const GHOSTTY_UNAVAILABLE: &str =
-    "Following Ghostty is unavailable in this build; using the RiWork palette";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Appearance {
     pub selected: ThemeChoice,
     pub palette: Palette,
-    pub terminal: Option<TerminalTheme>,
+    /// Native's terminal colors for the resolved system appearance.
+    pub terminal: TerminalTheme,
+    /// The terminals' own Ghostty colors, where a caller knows them.
     pub ghostty: Option<TerminalTheme>,
-    pub error: Option<String>,
 }
 
 impl Appearance {
     pub fn resolve(choice: ThemeChoice, system_dark: bool) -> Self {
-        let terminal = match choice {
-            ThemeChoice::Ghostty => None,
-            ThemeChoice::Native => Some(native_terminal_theme(system_dark)),
-            _ => Some(preset(choice)),
-        };
-        let palette = match choice {
-            ThemeChoice::Ghostty | ThemeChoice::RiWork => Palette::RIWORK,
-            ThemeChoice::Native => Palette::native(system_dark),
-            ThemeChoice::Hermes => Palette::HERMES,
-            _ => Palette::from_terminal(&terminal.expect("presets have terminal colors")),
-        };
         Self {
             selected: choice,
-            palette,
-            terminal,
+            palette: Palette::native(system_dark),
+            terminal: native_terminal_theme(system_dark),
             ghostty: None,
-            error: (choice == ThemeChoice::Ghostty).then(|| GHOSTTY_UNAVAILABLE.to_owned()),
         }
     }
 
+    /// What terminals are forced to: Native's colors while "Terminals match
+    /// the theme" is on, nothing (Ghostty's own colors) while it is off.
     pub fn terminal_override(&self, force: bool) -> Option<TerminalTheme> {
-        if self.selected == ThemeChoice::Native {
-            return self.terminal.filter(|_| force);
-        }
-        self.terminal.or_else(|| force.then(riwork_terminal_theme))
+        force.then_some(self.terminal)
     }
 
     pub fn shown_terminal(&self, force: bool) -> Option<TerminalTheme> {
@@ -251,14 +121,12 @@ impl Appearance {
     }
 
     pub fn is_stale_for(&self, system_dark: bool) -> bool {
-        self.selected == ThemeChoice::Native && self.palette != Palette::native(system_dark)
+        self.palette != Palette::native(system_dark)
     }
 
     pub fn diff_colors(&self, force: bool) -> DiffColors {
         DiffColors::from_terminal(
-            &self
-                .shown_terminal(force)
-                .unwrap_or_else(riwork_terminal_theme),
+            &self.shown_terminal(force).unwrap_or(self.terminal),
             self.palette.panel_active,
         )
     }
@@ -276,17 +144,6 @@ impl DiffColors {
             removed: readable(theme.palette[1], background),
         }
     }
-}
-
-pub fn riwork_terminal_theme() -> TerminalTheme {
-    terminal_theme(
-        0x090d14,
-        0xd3e1e6,
-        [
-            0x131b25, 0xf0738b, 0x61d5ae, 0xf4bf75, 0x78a9ff, 0xce78ef, 0x55e6dc, 0xd3e1e6,
-            0x58707b, 0xff8ba0, 0x83ebc3, 0xffd191, 0x9bc0ff, 0xdfa3f7, 0x84f3ea, 0xffffff,
-        ],
-    )
 }
 
 /// Native's terminal colors: the skin's own white or black background and a
@@ -312,45 +169,6 @@ pub fn native_terminal_theme(dark: bool) -> TerminalTheme {
                 0x8e8e93, 0xd93a2b, 0x2a8f46, 0xa66d00, 0x2f74d9, 0xa24fd6, 0x168596, 0x3a3a3c,
             ],
         )
-    }
-}
-
-fn preset(choice: ThemeChoice) -> TerminalTheme {
-    match choice {
-        ThemeChoice::Ghostty | ThemeChoice::RiWork => riwork_terminal_theme(),
-        ThemeChoice::Native => native_terminal_theme(false),
-        ThemeChoice::Hermes => terminal_theme(
-            Palette::HERMES.bg,
-            Palette::HERMES.text,
-            [
-                0x192248, 0xf29b9f, 0x9bc9ad, 0xf5dbb8, 0x9ebcf5, 0xc4b4df, 0xa8c8da, 0xecdcc7,
-                0xa1a7bb, 0xffb7b8, 0xb4dfc1, 0xffe6c9, 0xb7ceff, 0xdfcaf2, 0xc2dfed, 0xfff1df,
-            ],
-        ),
-        ThemeChoice::Catppuccin => terminal_theme(
-            0x1e1e2e,
-            0xcdd6f4,
-            [
-                0x45475a, 0xf38ba8, 0xa6e3a1, 0xf9e2af, 0x89b4fa, 0xf5c2e7, 0x94e2d5, 0xa6adc8,
-                0x585b70, 0xf37799, 0x89d88b, 0xebd391, 0x74a8fc, 0xf2aede, 0x6bd7ca, 0xbac2de,
-            ],
-        ),
-        ThemeChoice::TokyoNight => terminal_theme(
-            0x1a1b26,
-            0xc0caf5,
-            [
-                0x15161e, 0xf7768e, 0x9ece6a, 0xe0af68, 0x7aa2f7, 0xbb9af7, 0x7dcfff, 0xa9b1d6,
-                0x414868, 0xf7768e, 0x9ece6a, 0xe0af68, 0x7aa2f7, 0xbb9af7, 0x7dcfff, 0xc0caf5,
-            ],
-        ),
-        ThemeChoice::GruvboxLight => terminal_theme(
-            0xfbf1c7,
-            0x3c3836,
-            [
-                0xfbf1c7, 0xcc241d, 0x98971a, 0xd79921, 0x458588, 0xb16286, 0x689d6a, 0x7c6f64,
-                0x928374, 0x9d0006, 0x79740e, 0xb57614, 0x076678, 0x8f3f71, 0x427b58, 0x3c3836,
-            ],
-        ),
     }
 }
 
@@ -413,50 +231,27 @@ mod tests {
     use crate::settings::Settings;
 
     #[test]
-    fn hermes_settings_round_trip_preserves_every_existing_theme_name() {
-        for (name, choice) in [
-            ("ghostty", ThemeChoice::Ghostty),
-            ("native", ThemeChoice::Native),
-            ("ri_work", ThemeChoice::RiWork),
-            ("catppuccin", ThemeChoice::Catppuccin),
-            ("tokyo_night", ThemeChoice::TokyoNight),
-            ("gruvbox_light", ThemeChoice::GruvboxLight),
-            ("hermes", ThemeChoice::Hermes),
+    fn every_removed_theme_name_reads_as_native_and_round_trips_untouched() {
+        for name in [
+            "native",
+            "ghostty",
+            "ri_work",
+            "catppuccin",
+            "tokyo_night",
+            "gruvbox_light",
+            "hermes",
+            "future_theme",
         ] {
-            let mut settings: Settings = serde_json::from_value(serde_json::json!({
+            let settings: Settings = serde_json::from_value(serde_json::json!({
                 "theme": name, "chat_display_modes": {"saved-chat": "verbose"}
             }))
             .unwrap();
-            assert_eq!(settings.theme, choice);
-            settings.theme = ThemeChoice::Hermes;
+            assert_eq!(settings.theme, ThemeChoice::Native);
             let saved = serde_json::to_value(&settings).unwrap();
-            assert_eq!(saved["theme"], "hermes");
+            assert_eq!(saved["theme"], "native");
             assert_eq!(saved["chat_display_modes"]["saved-chat"], "verbose");
-            settings.theme = choice;
-            assert_eq!(serde_json::to_value(settings).unwrap()["theme"], name);
         }
-        assert_eq!(ThemeChoice::default(), ThemeChoice::Ghostty);
-    }
-
-    #[test]
-    fn terminal_override_is_what_terminals_are_forced_to() {
-        let following = Appearance::resolve(ThemeChoice::Ghostty, false);
-        assert_eq!(following.terminal_override(false), None);
-        assert_eq!(
-            following.terminal_override(true),
-            Some(riwork_terminal_theme())
-        );
-        for theme in [
-            ThemeChoice::RiWork,
-            ThemeChoice::Catppuccin,
-            ThemeChoice::TokyoNight,
-            ThemeChoice::GruvboxLight,
-            ThemeChoice::Hermes,
-        ] {
-            let selected = Appearance::resolve(theme, false);
-            assert_eq!(selected.terminal_override(false), selected.terminal);
-            assert_eq!(selected.terminal_override(true), selected.terminal);
-        }
+        assert_eq!(ThemeChoice::default(), ThemeChoice::Native);
     }
 
     #[test]
@@ -470,103 +265,59 @@ mod tests {
             assert_eq!(appearance.terminal_override(false), None);
             assert_eq!(appearance.palette, Palette::native(dark));
         }
-    }
-
-    #[test]
-    fn selected_theme_controls_terminals_and_keeps_legacy_preferences() {
         let mut settings = Settings::default();
-        assert!(!settings.use_riwork_colors);
         assert!(settings.native_terminal_colors);
-        for theme in ThemeChoice::ALL {
-            settings.theme = theme;
-            let appearance = Appearance::resolve(theme, true);
-            assert_eq!(
-                appearance
-                    .terminal_override(settings.terminal_colors_forced())
-                    .is_some(),
-                theme != ThemeChoice::Ghostty
-            );
-        }
-        settings.theme = ThemeChoice::Ghostty;
-        settings.use_riwork_colors = true;
-        assert_eq!(
-            Appearance::resolve(settings.theme, false)
-                .terminal_override(settings.terminal_colors_forced()),
-            Some(riwork_terminal_theme())
-        );
-        settings.theme = ThemeChoice::Native;
+        assert!(settings.terminal_colors_forced());
         settings.native_terminal_colors = false;
         assert_eq!(
             Appearance::resolve(settings.theme, false)
                 .terminal_override(settings.terminal_colors_forced()),
             None
         );
-        assert!(settings.use_riwork_colors);
     }
 
     #[test]
-    fn only_native_goes_stale_when_macos_switches_light_and_dark() {
-        for choice in ThemeChoice::ALL {
-            let light = Appearance::resolve(choice, false);
-            let dark = Appearance::resolve(choice, true);
-            assert!(!light.is_stale_for(false));
-            assert!(!dark.is_stale_for(true));
-            assert_eq!(light.is_stale_for(true), choice == ThemeChoice::Native);
-            assert_eq!(dark.is_stale_for(false), choice == ThemeChoice::Native);
-            if choice != ThemeChoice::Native {
-                assert_eq!(light, dark);
-            }
-        }
+    fn native_goes_stale_when_macos_switches_light_and_dark() {
+        let light = Appearance::resolve(ThemeChoice::Native, false);
+        let dark = Appearance::resolve(ThemeChoice::Native, true);
+        assert!(!light.is_stale_for(false));
+        assert!(!dark.is_stale_for(true));
+        assert!(light.is_stale_for(true));
+        assert!(dark.is_stale_for(false));
     }
 
     /// The P1 successor inspects effective colors without an appearance file writer.
     #[test]
-    fn published_terminal_follows_what_the_desktop_shows_while_following_ghostty() {
-        let mut appearance = Appearance::resolve(ThemeChoice::Ghostty, false);
+    fn shown_terminal_is_ghosttys_own_while_terminals_do_not_match_the_theme() {
+        let mut appearance = Appearance::resolve(ThemeChoice::Native, false);
+        assert_eq!(appearance.shown_terminal(false), None);
         let ghostty = terminal_theme(0x282c34, 0xabb2bf, [0x101010; 16]);
         appearance.ghostty = Some(ghostty);
         assert_eq!(appearance.shown_terminal(false), Some(ghostty));
         assert_eq!(
             appearance.shown_terminal(true),
-            Some(riwork_terminal_theme())
+            Some(native_terminal_theme(false))
         );
-        let unknown = Appearance::resolve(ThemeChoice::Ghostty, false);
-        assert_eq!(unknown.shown_terminal(false), None);
-        assert_eq!(unknown.palette, Palette::RIWORK);
-        assert!(unknown.error.is_some());
     }
 
     #[test]
-    fn derived_palettes_nudge_text_to_wcag_contrast_and_diff_uses_ansi() {
-        for choice in ThemeChoice::ALL {
-            let appearance = Appearance::resolve(choice, false);
-            for color in [
-                appearance.palette.text,
-                appearance.palette.muted,
-                appearance.palette.cyan,
-                appearance.palette.gold,
-                appearance.palette.magenta,
-            ] {
-                if matches!(
-                    choice,
-                    ThemeChoice::Catppuccin | ThemeChoice::TokyoNight | ThemeChoice::GruvboxLight
-                ) {
-                    assert!(
-                        contrast(color, appearance.palette.panel_active) >= 4.5,
-                        "{choice:?}: {color:x}"
-                    );
-                }
+    fn diff_colors_use_the_shown_ansi_colors_at_wcag_contrast() {
+        for dark in [false, true] {
+            for force in [false, true] {
+                let appearance = Appearance::resolve(ThemeChoice::Native, dark);
+                let terminal = appearance.shown_terminal(force).unwrap_or(appearance.terminal);
+                let diff = appearance.diff_colors(force);
+                assert_eq!(
+                    diff.added,
+                    readable(terminal.palette[2], appearance.palette.panel_active)
+                );
+                assert_eq!(
+                    diff.removed,
+                    readable(terminal.palette[1], appearance.palette.panel_active)
+                );
+                assert!(contrast(diff.added, appearance.palette.panel_active) >= 4.5);
+                assert!(contrast(diff.removed, appearance.palette.panel_active) >= 4.5);
             }
-            let terminal = appearance.shown_terminal(true).unwrap();
-            let diff = appearance.diff_colors(true);
-            assert_eq!(
-                diff.added,
-                readable(terminal.palette[2], appearance.palette.panel_active)
-            );
-            assert_eq!(
-                diff.removed,
-                readable(terminal.palette[1], appearance.palette.panel_active)
-            );
         }
         assert!(is_dark(0));
         assert!(!is_dark(0xffffff));

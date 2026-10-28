@@ -1,6 +1,5 @@
 import { Text, cleanup, effect, keymap, signal, type JSX, type YNode } from "nsh";
 import { Button, Switch, View } from "../SettingsFocus";
-import { Settings } from "riwork/native";
 import { DEFAULT_THEME, space, type InterfaceTheme } from "../appearance";
 
 export type Theme = () => InterfaceTheme;
@@ -10,18 +9,18 @@ export const buttonStyle = (theme: Theme) => ({ paddingHorizontal: space(9, them
 
 export function Section(props: { number: string; title: string; description?: string; theme?: Theme; padding?: number; children?: JSX.Element }) {
   const theme = props.theme ?? defaultTheme;
-  return <View testID={`settings-section-${props.number}`} style={{ padding: props.padding ?? space(14, theme().scale), gap: space(10, theme().scale), borderWidth: theme().native ? 0 : 1, borderBottomWidth: 1, borderColor: theme().palette.divider, borderRadius: theme().native ? 0 : 8, backgroundColor: theme().palette.panel }}>
+  return <View testID={`settings-section-${props.number}`} style={{ padding: props.padding ?? space(14, theme().scale), gap: space(10, theme().scale), borderWidth: 0, borderBottomWidth: 1, borderColor: theme().palette.divider, borderRadius: 0, backgroundColor: theme().palette.panel }}>
     <View style={{ gap: 4 }}>
-      <Text role="header" style={{ ...textStyle(theme, 13), fontWeight: "600" }}>{`${theme().native ? "" : `${props.number}  `}${Settings.cased(props.title, theme().native)}`}</Text>
+      <Text role="header" style={{ ...textStyle(theme, 13), fontWeight: "600" }}>{props.title}</Text>
       {props.description && <Text style={{ ...textStyle(theme, 10, true), maxWidth: 560 }}>{props.description}</Text>}
     </View>
     {props.children}
   </View>;
 }
 
-export function ToggleRow(props: { id: string; label: string; description?: string; checked: boolean; disabled?: boolean; onChange: (value: boolean) => void; theme?: Theme }) {
+export function ToggleRow(props: { id: string; label: string; description?: string; checked: boolean; disabled?: boolean; onChange: (value: boolean) => void; theme?: Theme; onRef?: (node: YNode) => void }) {
   const theme = props.theme ?? defaultTheme;
-  return <Switch testID={props.id} accessibilityLabel={props.label} checked={props.checked} disabled={props.disabled} onChange={props.onChange}
+  return <Switch testID={props.id} ref={(node) => props.onRef?.(node)} accessibilityLabel={props.label} checked={props.checked} disabled={props.disabled} onChange={props.onChange}
     style={{ paddingVertical: space(8, theme().scale), gap: space(12, theme().scale), alignItems: "flex-start" }}
     trackStyle={{ width: 28, height: 16, borderRadius: 8, backgroundColor: props.checked ? theme().palette.cyan : theme().palette.divider }} thumbStyle={{ width: 12, height: 12, margin: 2, borderRadius: 6, backgroundColor: theme().palette.bg, transform: [{ translateX: props.checked ? 12 : 0 }] }}>
     <View style={{ flex: 1, gap: 4 }}><Text style={textStyle(theme)}>{props.label}</Text>{props.description && <Text style={{ ...textStyle(theme, 10, true), maxWidth: 560 }}>{props.description}</Text>}</View>

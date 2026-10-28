@@ -11,7 +11,7 @@ import {
 export const DEFAULT_STATUS_ITEMS = [
   "project", "worktree", "agent_activity", "live_sessions", "resources", "usage", "codex_account", "session_id", "global_orchestrator", "project_orchestrator", "layout",
 ].map((kind) => ({ kind, enabled: kind !== "worktree" && kind !== "agent_activity", side: ["project", "worktree", "agent_activity"].includes(kind) ? "left" : "right" }));
-export const STATUS_METRICS = { height: 22, text: 9, nativePadding: 12, colorfulPadding: 8, nativeGap: 16, colorfulGap: 10, layoutWidth: 296, globalWidth: 300, edgeMargin: 6 };
+export const STATUS_METRICS = { height: 22, text: 9, padding: 12, gap: 16, layoutWidth: 296, globalWidth: 300, edgeMargin: 6 };
 
 interface Props {
   session: LayoutSession;
@@ -159,7 +159,7 @@ export function StatusBar(props: Props) {
     const readouts = kind === "usage" ? segments() : null;
     const mode = (props.settings?.()?.statusBar.usageMode ?? "current_chat") as UsageMode;
     const labels: Record<string, string> = {
-      project: projectName, worktree: branch, agent_activity: "Agents · —", live_sessions: `${live} ${theme().native ? "live" : "LIVE"}`,
+      project: projectName, worktree: branch, agent_activity: "Agents · —", live_sessions: `${live} live`,
       resources: props.snapshot().remoteProject ? "CPU — RAM —" : resourcesText(sessions() ?? [], metrics(), projectId()), usage: readouts ? usageItemText(mode, readouts) : "CODEX · LOADING", codex_account: accountLabel(), session_id: selectedSession()?.slice(0, 8) ?? "",
       global_orchestrator: "Global", project_orchestrator: "P·ORCH", layout: "Layout",
     };
@@ -184,7 +184,7 @@ export function StatusBar(props: Props) {
         else if (kind === "project_orchestrator") props.openProjectOrchestrator?.();
         else if (kind === "session_id" && selectedSession()) void Clipboard.writeText(selectedSession()!);
       }}>
-      <Text numberOfLines={1} style={kind === "usage" || kind === "codex_account" ? { ...textStyle(), color: theme().native || menu() === "account" && kind === "codex_account" ? textStyle().color : theme().palette.cyan } : textStyle()}>{theme().native ? Settings.sentenceCase(labels[kind]) : labels[kind]}</Text>
+      <Text numberOfLines={1} style={textStyle()}>{Settings.sentenceCase(labels[kind])}</Text>
     </View>;
   }
   function row(id: string, label: string, shortcut: string, action?: () => void, detail?: string) {
@@ -221,15 +221,15 @@ export function StatusBar(props: Props) {
     </>;
   }
   return <>
-    {settings().enabled && <View testID="status-bar" style={{ height: space(STATUS_METRICS.height, theme().scale), flexDirection: "row", alignItems: "center", paddingHorizontal: space(theme().native ? STATUS_METRICS.nativePadding : STATUS_METRICS.colorfulPadding, theme().scale), gap: 8, backgroundColor: theme().palette.panel }}>
-      <Scroll testID="status-left" horizontal={true} style={{ flexShrink: 0, maxWidth: items("right").length ? "40%" : "100%" }} contentStyle={{ flexDirection: "row", alignItems: "center", gap: space(theme().native ? 16 : 10, theme().scale) }}>
+    {settings().enabled && <View testID="status-bar" style={{ height: space(STATUS_METRICS.height, theme().scale), flexDirection: "row", alignItems: "center", paddingHorizontal: space(STATUS_METRICS.padding, theme().scale), gap: 8, backgroundColor: theme().palette.panel }}>
+      <Scroll testID="status-left" horizontal={true} style={{ flexShrink: 0, maxWidth: items("right").length ? "40%" : "100%" }} contentStyle={{ flexDirection: "row", alignItems: "center", gap: space(STATUS_METRICS.gap, theme().scale) }}>
         {items("left").map((entry) => item(entry.kind))}
         {props.newShell && <View testID="new-shell-status" accessibilityLabel="New local shell" role="button" onPress={props.newShell.create}>
           <Text numberOfLines={1} style={{ ...textStyle(), color: theme().palette.cyan }}>{props.newShell.busy() ? "Starting…" : "+ Shell"}</Text>
         </View>}
       </Scroll>
       <View style={{ flex: 1, minWidth: 4 }} />
-      <Scroll testID="status-right" horizontal={true} style={{ flexShrink: 1, minWidth: 0 }} contentStyle={{ flexDirection: "row", alignItems: "center", gap: space(theme().native ? 16 : 10, theme().scale) }}>
+      <Scroll testID="status-right" horizontal={true} style={{ flexShrink: 1, minWidth: 0 }} contentStyle={{ flexDirection: "row", alignItems: "center", gap: space(STATUS_METRICS.gap, theme().scale) }}>
         {items("right").map((entry) => item(entry.kind))}
       </Scroll>
     </View>}

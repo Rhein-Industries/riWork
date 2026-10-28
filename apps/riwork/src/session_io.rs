@@ -269,11 +269,7 @@ pub fn load(home: &Path, project: &str) -> Result<Data, String> {
     let settings = SettingsStore::open(home)?.load()?;
     let close_behavior = settings.tab_close_behavior;
     let panel_tab_icons = root.is_some() && settings.panel_tab_icons;
-    let theme = if root.is_some() {
-        settings.theme
-    } else {
-        riwork_core::theme::ThemeChoice::Native
-    };
+    let theme = settings.theme;
     let mut data = Data {
         project_id: project.into(),
         root,

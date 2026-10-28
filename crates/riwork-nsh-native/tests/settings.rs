@@ -47,7 +47,7 @@ fn external_settings_writer_fixture() {
     };
     SettingsStore::open(std::path::PathBuf::from(home))
         .unwrap()
-        .set_value("theme", serde_json::json!("hermes"))
+        .set_value("native_terminal_colors", serde_json::json!(false))
         .unwrap();
 }
 
@@ -78,12 +78,17 @@ async fn a_write_by_another_process_reaches_every_subscriber_once() {
         .unwrap()
         .unwrap();
     assert_eq!(changed.rev, 2);
-    assert_eq!(changed.data.theme, "hermes");
+    assert_eq!(changed.data.theme, "native");
+    assert!(!changed.data.native_terminal_colors);
     assert_eq!(b.recv().await.unwrap(), changed);
     let appearance = appearances.recv().await.unwrap();
     assert_eq!(appearance.rev, 2);
-    assert_eq!(appearance.data.selected, "hermes");
-    assert_eq!(appearance.data.palette.bg, "#162564");
+    assert_eq!(appearance.data.selected, "native");
+    assert!(appearance.data.terminal_override.is_none());
+    // The removed theme stays in the file as written.
+    let file: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&settings_path).unwrap()).unwrap();
+    assert_eq!(file["theme"], "ri_work");
     assert!(
         tokio::time::timeout(Duration::from_millis(300), a.recv())
             .await
@@ -214,20 +219,15 @@ fn typed_patch_preserves_unknown_settings_and_validates_before_writing() {
     // lenient reader currently exposes the same default to this build.
     backend
         .set(SettingsPatch {
-            theme: Some("ghostty".into()),
+            theme: Some("native".into()),
             ..SettingsPatch::default()
         })
         .unwrap();
     let selected: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-    assert_eq!(selected["theme"], "ghostty");
+    assert_eq!(selected["theme"], "native");
     assert_eq!(selected["future_key"]["x"], 1);
     let service = PreferenceService::new(isolated.path().to_owned()).unwrap();
-    assert_eq!(service.get().theme_choices.len(), 7);
-    assert_eq!(
-        service.get().theme_choices[0].label,
-        ThemeChoice::Ghostty.label()
-    );
     let saved = service
         .set(SettingsPatch {
             theme: Some("native".into()),
@@ -296,10 +296,8 @@ async fn load_errors_keep_a_diagnostic_and_recover_from_a_subscription_invalidat
 }
 
 #[test]
-fn casing_matches_native_and_colorful_legacy_headings() {
+fn sentence_case_keeps_proper_nouns_and_acronyms() {
     use riwork_nsh_native::settings::Settings as NativeSettings;
-    assert_eq!(NativeSettings::cased("Projects".into(), false), "PROJECTS");
-    assert_eq!(NativeSettings::cased("Projects".into(), true), "Projects");
     assert_eq!(
         NativeSettings::sentence_case("OPEN CODEX / CPU AND RAM".into()),
         "Open Codex / CPU and RAM"

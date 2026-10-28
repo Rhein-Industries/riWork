@@ -28,8 +28,6 @@ pub struct PaletteDto {
     pub muted: String,
     pub focus: String,
     pub working: String,
-    pub plain_tabs: bool,
-    pub controls_island: bool,
 }
 
 fn hex(color: u32) -> String {
@@ -49,8 +47,6 @@ impl From<Palette> for PaletteDto {
             muted: hex(p.muted),
             focus: hex(p.focus),
             working: hex(p.working),
-            plain_tabs: p.plain_tabs,
-            controls_island: p.controls_island,
         }
     }
 }
@@ -107,17 +103,13 @@ impl AppearanceDto {
         let appearance = theme::Appearance::resolve(settings.theme, system_dark);
         let force = settings.terminal_colors_forced();
         let diff = appearance.diff_colors(force);
-        let error = match (settings_error, appearance.error.clone()) {
-            (Some(settings), Some(theme)) => Some(format!("{settings}; {theme}")),
-            (settings, theme) => settings.or(theme),
-        };
         Self {
             schema: 2,
             selected: theme_id(settings.theme),
             dark: theme::is_dark(appearance.palette.bg),
             palette: appearance.palette.into(),
             terminal_override: appearance.terminal_override(force).map(Into::into),
-            error,
+            error: settings_error,
             diff: DiffColorsDto {
                 added: hex(diff.added),
                 removed: hex(diff.removed),
@@ -200,37 +192,21 @@ snapshot_js_value!(AppearanceDto, "AppearanceEvent");
 #[cfg(test)]
 mod tests {
     use super::*;
-    use riwork_core::theme::ThemeChoice;
 
     #[test]
-    fn every_preset_preserves_sixteen_colors_and_ghostty_switching() {
-        for theme in ThemeChoice::ALL {
-            let mut settings = CoreSettings {
-                theme,
-                ..CoreSettings::default()
-            };
-            let projected = AppearanceDto::from_settings(&settings, false, None);
-            if theme != ThemeChoice::Ghostty && theme != ThemeChoice::Native {
-                let dark = projected.terminal_dark.as_ref().unwrap();
-                assert_eq!(dark.source, "override");
-                assert_eq!(dark.palette.len(), 16);
-                assert_eq!(projected.terminal_light, projected.terminal_dark);
-            }
-            if theme == ThemeChoice::Native {
-                settings.native_terminal_colors = true;
-                let forced = AppearanceDto::from_settings(&settings, false, None);
-                assert_eq!(forced.terminal_dark.unwrap().background, "#000000");
-                assert_eq!(forced.terminal_light.unwrap().background, "#ffffff");
-                settings.native_terminal_colors = false;
-                let following = AppearanceDto::from_settings(&settings, false, None);
-                assert!(following.terminal_dark.is_none());
-            }
-            if theme == ThemeChoice::Ghostty {
-                assert!(projected.terminal_dark.is_none());
-                settings.use_riwork_colors = true;
-                let forced = AppearanceDto::from_settings(&settings, false, None);
-                assert_eq!(forced.terminal_dark.unwrap().background, "#090d14");
-            }
-        }
+    fn native_terminals_take_the_theme_or_follow_ghostty() {
+        let mut settings = CoreSettings::default();
+        assert!(settings.native_terminal_colors);
+        let forced = AppearanceDto::from_settings(&settings, false, None);
+        let dark = forced.terminal_dark.unwrap();
+        assert_eq!(dark.source, "override");
+        assert_eq!(dark.background, "#000000");
+        assert_eq!(dark.palette.len(), 16);
+        assert_eq!(forced.terminal_light.unwrap().background, "#ffffff");
+        settings.native_terminal_colors = false;
+        let following = AppearanceDto::from_settings(&settings, false, None);
+        assert!(following.terminal_override.is_none());
+        assert!(following.terminal_dark.is_none());
+        assert!(following.terminal_light.is_none());
     }
 }

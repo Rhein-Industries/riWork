@@ -2,23 +2,22 @@ import { cleanup, colorScheme, effect, host, setColorScheme, signal } from "nsh"
 import { Appearance, Settings, type AppearanceDto, type SettingsDto } from "riwork/native";
 import type { HostParams } from "./model";
 
-/** The context before the native owner's first delivery. Never a preset resolver. */
-export const RIWORK_PALETTE = {
-  bg: "#090d14", panel: "#101720", panelActive: "#14212a", divider: "#253c45",
-  cyan: "#55e6dc", magenta: "#ce78ef", gold: "#f4bf75", text: "#d3e1e6",
-  muted: "#708993", focus: "#f4bf75", working: "#55e6dc", plainTabs: false, controlsIsland: true,
+/** Native light, the context before the native owner's first delivery. Never a resolver. */
+export const NATIVE_PALETTE = {
+  bg: "#ffffff", panel: "#f5f5f7", panelActive: "#e8e8ed", divider: "#d2d2d7",
+  cyan: "#000000", magenta: "#3a3a3c", gold: "#b34000", text: "#1d1d1f",
+  muted: "#636366", focus: "#000000", working: "#b34000",
 };
 
 export interface InterfaceTheme {
-  palette: typeof RIWORK_PALETTE;
-  native: boolean;
+  palette: typeof NATIVE_PALETTE;
   scale: number;
   family: string;
   monoFamily: string;
 }
 
 export const DEFAULT_THEME: InterfaceTheme = {
-  palette: RIWORK_PALETTE, native: false, scale: 1, family: "Menlo", monoFamily: "Menlo",
+  palette: NATIVE_PALETTE, scale: 1, family: "system-ui", monoFamily: "Menlo",
 };
 
 export function space(base: number, scale: number): number {
@@ -29,10 +28,9 @@ export function interfaceTheme(settings: SettingsDto, appearance: AppearanceDto,
   const face = settings.text.face;
   return {
     palette: appearance.palette,
-    native: settings.theme === "native",
     scale: settings.text.scale,
-    family: face === "menlo" ? "Menlo" : "system-ui",
-    monoFamily: face === "menlo" ? "Menlo" : face === "system" ? "system-ui" : families.includes("SF Mono") ? "SF Mono" : "Menlo",
+    family: "system-ui",
+    monoFamily: face === "system" ? "system-ui" : families.includes("SF Mono") ? "SF Mono" : "Menlo",
   };
 }
 

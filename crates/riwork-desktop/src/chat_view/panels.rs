@@ -140,21 +140,13 @@ fn composer_path(path: &mut PathBuilder, bounds: gpui::Bounds<gpui::Pixels>, rad
     path.close();
 }
 
-/// The message box's card as the design draws it: Hermes's panel with a hairline edge and
-/// small corners; every other design keeps the message field it had, the window's background
-/// in a continuous-corner outline. The edge takes the focus color while the box has focus
-/// (the colorful themes' cyan). The geometry is the same in every design: a one-pixel edge
-/// around the card's padding.
+/// The message box's card as the design draws it: the message field it had, the window's
+/// background in a continuous-corner outline. The edge takes the focus color while the box
+/// has focus (the colorful themes' cyan). The geometry is the same in every design: a
+/// one-pixel edge around the card's padding.
 fn composer_card(card: Stateful<gpui::Div>, look: Look, active: bool) -> Stateful<gpui::Div> {
     let colors = look.colors;
     let radius = look.card_radius();
-    if look.hermes() {
-        return card
-            .rounded(radius)
-            .border_1()
-            .border_color(rgb(if active { colors.focus } else { colors.divider }))
-            .bg(rgb(colors.panel));
-    }
     let outline = match (active, look.native) {
         (false, _) => colors.divider,
         (true, true) => colors.focus,
@@ -747,13 +739,7 @@ impl ChatView {
             use std::hash::{Hash, Hasher};
             let key = |shows: &str| {
                 let mut hasher = std::collections::hash_map::DefaultHasher::new();
-                (
-                    shows,
-                    ui_text::scale().to_bits(),
-                    look.native,
-                    look.hermes(),
-                )
-                    .hash(&mut hasher);
+                (shows, ui_text::scale().to_bits(), look.native).hash(&mut hasher);
                 hasher.finish()
             };
             [
@@ -1374,15 +1360,13 @@ impl ChatView {
                 .p(ui_text::space(CHOICE_MENU_PADDING))
                 .rounded(look.card_radius())
                 .border_1()
-                .border_color(rgb(if look.native || look.hermes() {
+                .border_color(rgb(if look.native {
                     colors.divider
                 } else {
                     colors.magenta
                 }))
                 .bg(rgb(if look.native {
                     controls::raised(colors)
-                } else if look.hermes() {
-                    colors.panel
                 } else {
                     colors.panel_active
                 }))
@@ -1393,16 +1377,8 @@ impl ChatView {
                     .py(ui_text::space(4.0))
                     .rounded(px(4.0))
                     .border_1()
-                    .border_color(rgb(if look.hermes() {
-                        colors.divider
-                    } else {
-                        colors.magenta
-                    }))
-                    .bg(rgb(if look.hermes() {
-                        colors.panel
-                    } else {
-                        colors.panel_active
-                    })),
+                    .border_color(rgb(colors.magenta))
+                    .bg(rgb(colors.panel_active)),
                 |menu| controls::menu(menu, colors),
             )
         };
@@ -1876,14 +1852,10 @@ impl ChatView {
                 )
             }))
             .children(toolbar::fast_available(models, model).then(|| {
-                let toggle = if look.native || look.hermes() {
+                let toggle = if look.native {
                     // On, it takes the design's signal for a mode that is on: Native's working
-                    // color, Hermes's cyan, as a tint under the label.
-                    let on = if look.native {
-                        colors.working
-                    } else {
-                        colors.cyan
-                    };
+                    // color, as a tint under the label.
+                    let on = colors.working;
                     let content = div()
                         .flex()
                         .items_center()
@@ -1974,7 +1946,7 @@ impl ChatView {
                 colors.cyan
             })
         };
-        let toggle = if look.native || look.hermes() {
+        let toggle = if look.native {
             let content = div()
                 .flex()
                 .items_center()
@@ -2059,12 +2031,8 @@ impl ChatView {
             }
             None => (toolbar::CONTRIBUTOR_SETTINGS_LABEL, "Contributor: Muse"),
         };
-        let toggle = if look.native || look.hermes() {
-            let tint = if look.native {
-                colors.working
-            } else {
-                colors.cyan
-            };
+        let toggle = if look.native {
+            let tint = colors.working;
             let content = div()
                 .flex()
                 .items_center()
@@ -2176,10 +2144,9 @@ impl ChatView {
         .min_w_0()
         .max_w(relative(1.0))
         .aria_expanded(open)
-        // The header's pop-up chevron: Native's and Hermes's chevron.down at the label's
-        // x-height, the colorful themes' ▾, muted and centered on the label, the control's
-        // gap after it.
-        .child(if look.native || look.hermes() {
+        // The header's pop-up chevron: Native's chevron.down at the label's x-height, the
+        // colorful themes' ▾, muted and centered on the label, the control's gap after it.
+        .child(if look.native {
             icons::symbol_in_box(
                 "chevron.down",
                 9.5,
@@ -2545,7 +2512,7 @@ impl ChatView {
                 } else {
                     row.label.clone()
                 };
-                let check = if look.native || look.hermes() {
+                let check = if look.native {
                     div().children(
                         row.current
                             .then(|| icons::text_icon(Icon::Check, 11.0, colors.cyan)),
@@ -2656,7 +2623,7 @@ impl ChatView {
         let trigger_bounds = std::rc::Rc::new(std::cell::Cell::new(gpui::Bounds::default()));
         let positioned = trigger_bounds.clone();
         let tip = "Attach files or paste an image · UTF-8 text, PNG or JPEG · or drop them";
-        let trigger = if look.native || look.hermes() {
+        let trigger = if look.native {
             pressable(
                 widgets::symbol_button_sized("chat-attach", "plus", tip, look, side),
                 look,
@@ -2742,8 +2709,8 @@ impl ChatView {
     }
 
     /// Send, drawn as the design draws a message field's send button: Native's filled round
-    /// symbol, Hermes's filled disc, the colorful themes' bordered mark. It waits until there
-    /// is something to send, taking no click or key meanwhile.
+    /// symbol, the colorful themes' bordered mark. It waits until there is something to send,
+    /// taking no click or key meanwhile.
     fn composer_send(&self, look: Look, side: gpui::Pixels, cx: &mut Context<Self>) -> AnyElement {
         let colors = look.colors;
         let empty = (self.draft_empty(cx) && !self.dictation.phase().is_active())
@@ -2766,30 +2733,6 @@ impl ChatView {
                 look,
                 side,
             )
-        } else if look.hermes() {
-            crate::behavior_controls::button_content(
-                "chat-send",
-                tip,
-                icons::symbol_in_box("arrow.up", 14.0, None, (side - px(4.0)).max(px(1.0))),
-            )
-            .disabled(empty)
-            .size(side)
-            .flex_none()
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded_full()
-            .bg(rgb(colors.text))
-            .text_color(rgb(colors.bg))
-            .border_1()
-            .border_color(transparent_black())
-            .focus_visible(move |style| style.border_color(rgb(colors.focus)))
-            .when(!empty, |button| {
-                button
-                    .cursor_pointer()
-                    .hover(move |style| style.bg(rgb(colors.cyan)))
-            })
-            .child(tooltip::anchor(tip, TipLook::Control))
         } else {
             mark_button("chat-send", "↑", tip, Some(colors.cyan), side, look).disabled(empty)
         };
@@ -2797,12 +2740,12 @@ impl ChatView {
             .into_any_element()
     }
 
-    /// Stop, in Send's slot while a turn runs and there is nothing to send: Native and Hermes
-    /// draw it as the box's other quiet round buttons, its symbol and a tint in the warning
-    /// color; the colorful themes their mark in the terminal's red.
+    /// Stop, in Send's slot while a turn runs and there is nothing to send: Native draws it
+    /// as the box's other quiet round buttons, its symbol and a tint in the warning color;
+    /// the colorful themes their mark in the terminal's red.
     fn composer_stop(&self, look: Look, side: gpui::Pixels, cx: &mut Context<Self>) -> AnyElement {
         let tip = "Interrupt · ⌘.";
-        if look.native || look.hermes() {
+        if look.native {
             let warning = look.tone(cards::Tone::Warning);
             let colors = look.colors;
             pressable(
@@ -2862,7 +2805,7 @@ impl ChatView {
         let mic = dictate::mic_shown(cx);
         // The text starts where the ＋ glyph does: inset in its button by half the room the
         // symbol leaves (the colorful themes' bordered mark starts at its edge).
-        let glyph_inset = if look.native || look.hermes() {
+        let glyph_inset = if look.native {
             ((side - ui_text::space(controls::TOOLBAR_SYMBOL)) / 2.).max(px(0.))
         } else {
             px(0.)
@@ -3084,7 +3027,7 @@ impl ChatView {
             .map_or_else(|| tooltip.clone(), |status| format!("{status}. {tooltip}"));
         let busy = matches!(phase, Phase::Preparing { .. } | Phase::Finishing { .. });
         let listening = matches!(phase, Phase::Listening { .. });
-        let mic = if look.native || look.hermes() {
+        let mic = if look.native {
             let symbol = match phase {
                 Phase::Listening { .. } | Phase::Preparing { .. } | Phase::Finishing { .. } => {
                     "mic.fill"
@@ -3207,29 +3150,18 @@ mod tests {
     use crate::chat::model::{QuestionOption, QuestionPrompt};
     use gpui_kit::test::TestWindowExt;
 
-    fn hermes_fixture(
-        cx: &mut gpui::TestAppContext,
-        width: f32,
-    ) -> (
-        gpui::WindowHandle<gpui_kit::base::Root>,
-        gpui::Entity<ChatView>,
-    ) {
-        design_fixture(cx, width, theme::ThemeChoice::Hermes)
-    }
-
-    /// Recording-only fixture in `design`, at the scale the test set: no provider, host
+    /// Recording-only fixture in Native, at the scale the test set: no provider, host
     /// staging, clipboard or socket access.
-    fn design_fixture(
+    fn chat_fixture(
         cx: &mut gpui::TestAppContext,
         width: f32,
-        design: theme::ThemeChoice,
     ) -> (
         gpui::WindowHandle<gpui_kit::base::Root>,
         gpui::Entity<ChatView>,
     ) {
         cx.update(|cx| {
             let mut settings = crate::settings::Settings(riwork_core::settings::Settings {
-                theme: design,
+                theme: theme::ThemeChoice::Native,
                 ui_text_matches_terminal: false,
                 dictation_mic: true,
                 ..Default::default()
@@ -3240,16 +3172,10 @@ mod tests {
             );
             cx.set_global(settings);
             cx.set_global(theme::Appearance {
-                selected: design,
-                palette: match design {
-                    theme::ThemeChoice::Native => theme::Palette::native(false),
-                    theme::ThemeChoice::RiWork => theme::Palette::RIWORK,
-                    theme::ThemeChoice::Hermes => theme::Palette::HERMES,
-                    _ => panic!("the chat layout fixture draws Native, RiWork and Hermes"),
-                },
+                selected: theme::ThemeChoice::Native,
+                palette: theme::Palette::native(false),
                 terminal: None,
                 ghostty: None,
-                error: None,
             });
             text_input::init(cx);
             ui_text::init(cx);
@@ -3299,10 +3225,7 @@ mod tests {
         })
     }
 
-    fn draw_hermes(
-        cx: &mut gpui::TestAppContext,
-        handle: gpui::WindowHandle<gpui_kit::base::Root>,
-    ) {
+    fn draw(cx: &mut gpui::TestAppContext, handle: gpui::WindowHandle<gpui_kit::base::Root>) {
         for _ in 0..3 {
             cx.update_window(handle.into(), |_, window, cx| window.render_frame(cx))
                 .unwrap();
@@ -3318,9 +3241,9 @@ mod tests {
             catalog::Catalog,
             model::{ChatCommand, ChatInfo, ModelOption},
         };
-        let previous = ui_text::set_for_tests(1.0, ui_text::Face::Hermes);
+        let previous = ui_text::set_for_tests(1.0, ui_text::Face::SystemMono);
         for state in [ChatState::Running, ChatState::Idle] {
-            let (handle, view) = hermes_fixture(cx, 720.0);
+            let (handle, view) = chat_fixture(cx, 720.0);
             let (feed, recording) = super::super::feed::Feed::recording();
             let info = ChatInfo {
                 parent_id: None,
@@ -3369,7 +3292,7 @@ mod tests {
                 })
             })
             .unwrap();
-            draw_hermes(cx, handle);
+            draw(cx, handle);
             cx.update_window(handle.into(), |_, window, cx| {
                 view.update(cx, |view, cx| {
                     view.menu = Some(super::super::Menu::Model);
@@ -3378,7 +3301,7 @@ mod tests {
                 let _ = window;
             })
             .unwrap();
-            draw_hermes(cx, handle);
+            draw(cx, handle);
             cx.update_window(handle.into(), |_, window, cx| {
                 for (id, label) in [
                     ("switch-claude-default", "Claude default"),
@@ -3390,7 +3313,7 @@ mod tests {
                 window.click("switch-claude-opus", cx);
             })
             .unwrap();
-            draw_hermes(cx, handle);
+            draw(cx, handle);
             match state {
                 // Nothing moves while a turn runs; the row says why.
                 ChatState::Running => assert!(matches!(
@@ -3443,18 +3366,17 @@ mod tests {
         }
     }
 
-    /// The fixture in `design` with a chat in `state`, drawn; and what its feed records.
+    /// The fixture with a chat in `state`, drawn; and what its feed records.
     fn composer_fixture(
         cx: &mut gpui::TestAppContext,
         width: f32,
-        design: theme::ThemeChoice,
         state: ChatState,
     ) -> (
         gpui::WindowHandle<gpui_kit::base::Root>,
         gpui::Entity<ChatView>,
         std::sync::mpsc::Receiver<super::super::feed::Delivery>,
     ) {
-        let (handle, view) = design_fixture(cx, width, design);
+        let (handle, view) = chat_fixture(cx, width);
         let (feed, recording) = super::super::feed::Feed::recording();
         cx.update_window(handle.into(), |_, _, cx| {
             view.update(cx, |view, cx| {
@@ -3467,7 +3389,7 @@ mod tests {
             })
         })
         .unwrap();
-        draw_hermes(cx, handle);
+        draw(cx, handle);
         (handle, view, recording)
     }
 
@@ -3485,7 +3407,7 @@ mod tests {
             })
         })
         .unwrap();
-        draw_hermes(cx, handle);
+        draw(cx, handle);
     }
 
     fn set_search(
@@ -3502,7 +3424,7 @@ mod tests {
             })
         })
         .unwrap();
-        draw_hermes(cx, handle);
+        draw(cx, handle);
     }
 
     fn update_info(
@@ -3518,7 +3440,7 @@ mod tests {
             })
         })
         .unwrap();
-        draw_hermes(cx, handle);
+        draw(cx, handle);
     }
 
     /// Where each control of the message box is, relative to the bottom of the field: what
@@ -3562,82 +3484,74 @@ mod tests {
         cx: &mut gpui::TestAppContext,
     ) {
         use crate::dictation::Event;
-        for (face, design) in [
-            (ui_text::Face::System, theme::ThemeChoice::Native),
-            (ui_text::Face::Hermes, theme::ThemeChoice::Hermes),
-            (ui_text::Face::Menlo, theme::ThemeChoice::RiWork),
-        ] {
-            let previous = ui_text::set_for_tests(1.0, face);
-            for width in [300., 760.] {
-                for draft in ["typed ", "typed\nseveral\nlines "] {
-                    let (handle, view, _) = composer_fixture(cx, width, design, ChatState::Idle);
-                    set_draft(cx, handle, &view, draft);
-                    let bounds = |cx: &mut gpui::TestAppContext| {
-                        cx.update_window(handle.into(), |_, window, _| {
-                            [
-                                "chat-composer-bar",
-                                "chat-composer-shell",
-                                "chat-dictate",
-                                "chat-send",
-                            ]
-                            .map(|id| window.find(id).bounds())
-                        })
-                        .unwrap()
-                    };
-                    let before = bounds(cx);
-                    let long = "streaming words that wrap on narrow panes\n".repeat(30);
-                    for event in [
-                        Event::Start,
-                        Event::Note("Preparing the speech model…".into()),
-                        Event::Ready,
-                        Event::Heard("first words".into()),
-                        Event::Heard(long.clone()),
-                        Event::Stop,
-                        Event::Heard(format!("{long}last words.")),
-                    ] {
-                        cx.update_window(handle.into(), |_, window, cx| {
-                            view.update(cx, |v, cx| v.dictation_fixture(event.clone(), window, cx));
-                        })
-                        .unwrap();
-                        draw_hermes(cx, handle);
-                        assert_eq!(bounds(cx), before, "{design:?} {width} {draft:?} {event:?}");
-                        cx.update_window(handle.into(), |_, window, cx| {
-                            let status =
-                                composer::speech_status(view.read(cx).dictation.phase()).unwrap();
-                            assert_eq!(
-                                window.find("chat-dictation-status").label(),
-                                Some(status.as_str())
-                            );
-                            assert!(
-                                window
-                                    .find("chat-dictate")
-                                    .label()
-                                    .unwrap()
-                                    .contains(&status)
-                            );
-                        })
-                        .unwrap();
-                    }
+        let previous = ui_text::set_for_tests(1.0, ui_text::Face::System);
+        for width in [300., 760.] {
+            for draft in ["typed ", "typed\nseveral\nlines "] {
+                let (handle, view, _) = composer_fixture(cx, width, ChatState::Idle);
+                set_draft(cx, handle, &view, draft);
+                let bounds = |cx: &mut gpui::TestAppContext| {
+                    cx.update_window(handle.into(), |_, window, _| {
+                        [
+                            "chat-composer-bar",
+                            "chat-composer-shell",
+                            "chat-dictate",
+                            "chat-send",
+                        ]
+                        .map(|id| window.find(id).bounds())
+                    })
+                    .unwrap()
+                };
+                let before = bounds(cx);
+                let long = "streaming words that wrap on narrow panes\n".repeat(30);
+                for event in [
+                    Event::Start,
+                    Event::Note("Preparing the speech model…".into()),
+                    Event::Ready,
+                    Event::Heard("first words".into()),
+                    Event::Heard(long.clone()),
+                    Event::Stop,
+                    Event::Heard(format!("{long}last words.")),
+                ] {
                     cx.update_window(handle.into(), |_, window, cx| {
-                        view.update(cx, |v, cx| {
-                            v.dictation_fixture(
-                                Event::Finished(format!("{long}last words.")),
-                                window,
-                                cx,
-                            )
-                        });
+                        view.update(cx, |v, cx| v.dictation_fixture(event.clone(), window, cx));
                     })
                     .unwrap();
-                    // Finalisation changes no bounds in the stop turn. Normal growth resumes next frame.
-                    assert_eq!(bounds(cx), before);
-                    draw_hermes(cx, handle);
-                    assert!(
-                        view.read_with(cx, |v, cx| v.composer_text(cx).ends_with("last words."))
-                    );
+                    draw(cx, handle);
+                    assert_eq!(bounds(cx), before, "{width} {draft:?} {event:?}");
+                    cx.update_window(handle.into(), |_, window, cx| {
+                        let status =
+                            composer::speech_status(view.read(cx).dictation.phase()).unwrap();
+                        assert_eq!(
+                            window.find("chat-dictation-status").label(),
+                            Some(status.as_str())
+                        );
+                        assert!(
+                            window
+                                .find("chat-dictate")
+                                .label()
+                                .unwrap()
+                                .contains(&status)
+                        );
+                    })
+                    .unwrap();
                 }
+                cx.update_window(handle.into(), |_, window, cx| {
+                    view.update(cx, |v, cx| {
+                        v.dictation_fixture(
+                            Event::Finished(format!("{long}last words.")),
+                            window,
+                            cx,
+                        )
+                    });
+                })
+                .unwrap();
+                // Finalisation changes no bounds in the stop turn. Normal growth resumes next frame.
+                assert_eq!(bounds(cx), before);
+                draw(cx, handle);
+                assert!(view.read_with(cx, |v, cx| v.composer_text(cx).ends_with("last words.")));
             }
-            ui_text::set_for_tests(previous.0, previous.1);
         }
+        ui_text::set_for_tests(previous.0, previous.1);
     }
 
     #[gpui::test]
@@ -3646,8 +3560,7 @@ mod tests {
     ) {
         use crate::dictation::Event;
         for gesture in ["escape", "enter", "cmd-enter", "send"] {
-            let (handle, view, recording) =
-                composer_fixture(cx, 520., theme::ThemeChoice::Native, ChatState::Idle);
+            let (handle, view, recording) = composer_fixture(cx, 520., ChatState::Idle);
             let field_bounds = |cx: &mut gpui::TestAppContext| {
                 cx.update_window(handle.into(), |_, window, _| {
                     (
@@ -3667,7 +3580,7 @@ mod tests {
                 });
             })
             .unwrap();
-            draw_hermes(cx, handle);
+            draw(cx, handle);
             let before = field_bounds(cx);
             let words = "many streaming words\n".repeat(20);
             cx.update_window(handle.into(), |_, window, cx| {
@@ -3676,7 +3589,7 @@ mod tests {
                 });
             })
             .unwrap();
-            draw_hermes(cx, handle);
+            draw(cx, handle);
             assert_eq!(field_bounds(cx), before);
             cx.update_window(handle.into(), |_, window, cx| {
                 if gesture == "send" {
@@ -3686,7 +3599,7 @@ mod tests {
                 }
             })
             .unwrap();
-            draw_hermes(cx, handle);
+            draw(cx, handle);
             assert_eq!(
                 field_bounds(cx),
                 before,
@@ -3724,7 +3637,7 @@ mod tests {
                 })
                 .unwrap();
             }
-            draw_hermes(cx, handle);
+            draw(cx, handle);
             assert_eq!(
                 field_bounds(cx),
                 empty,
@@ -3732,7 +3645,7 @@ mod tests {
             );
             cx.update_window(handle.into(), |_, window, cx| window.input("x", cx))
                 .unwrap();
-            draw_hermes(cx, handle);
+            draw(cx, handle);
             assert_eq!(
                 field_bounds(cx).1.size.height,
                 empty.1.size.height,
@@ -3746,151 +3659,142 @@ mod tests {
     fn the_composer_controls_hold_still_while_the_draft_grows_and_shrinks(
         cx: &mut gpui::TestAppContext,
     ) {
-        for (face, design) in [
-            (ui_text::Face::System, theme::ThemeChoice::Native),
-            (ui_text::Face::Hermes, theme::ThemeChoice::Hermes),
-        ] {
-            let previous = ui_text::set_for_tests(1.0, face);
-            for width in [760.0, 520.0, 300.0] {
-                let (handle, view, _) = composer_fixture(cx, width, design, ChatState::Idle);
-                let at_rest = composer_frames(cx, handle, "chat-send");
-                let (_, frames) = &at_rest;
-                // One family: every control as tall as Send, centered on one line, one gap
-                // between each.
-                let slot = frames.last().unwrap().1;
-                let mut row: Vec<_> = frames[1..].iter().map(|(_, bounds)| *bounds).collect();
-                row.sort_by(|a, b| a.left().partial_cmp(&b.left()).unwrap());
-                let gap = row[1].left() - row[0].right();
-                for (id, bounds) in frames {
-                    assert!(
-                        (bounds.size.height - slot.size.height).abs() < px(0.5),
-                        "{design:?} {width}: {id} is {:?} tall, Send {:?}",
-                        bounds.size.height,
-                        slot.size.height
-                    );
-                    assert!(
-                        (bounds.center().y - slot.center().y).abs() < px(0.5),
-                        "{design:?} {width}: {id} is off the controls' line"
-                    );
-                }
-                for pair in row.windows(2) {
-                    assert!(
-                        (pair[1].left() - pair[0].right() - gap).abs() < px(0.5),
-                        "{design:?} {width}: uneven gaps {row:?}"
-                    );
-                }
-                assert!(gap > px(0.0));
-                cx.update_window(handle.into(), |_, window, _| {
-                    let attach = window.find("chat-attach").bounds();
-                    let field = window.find("chat-composer-shell").bounds();
-                    // Attach sits at the card's padding (the card is inset from the pane,
-                    // which spans the window, and edged by a hairline), the text column
-                    // starts with it, and the control row is one gap under the text.
-                    let inset = if width < composer::NARROW_PANE {
-                        px(composer::NARROW_SPACE)
-                    } else {
-                        ui_text::space(composer::CARD_INSET)
-                    };
-                    let padding = inset + px(1.0) + ui_text::space(composer::CARD_PADDING);
-                    assert!(
-                        (attach.left() - padding).abs() < px(0.5),
-                        "{design:?} {width}: Attach is at {:?}, not the card's padding",
-                        attach.left()
-                    );
-                    assert!(
-                        (field.left() - attach.left()).abs() < px(0.5),
-                        "{design:?} {width}: the text column starts at {:?}, Attach at {:?}",
-                        field.left(),
-                        attach.left()
-                    );
-                    assert!(
-                        (attach.top() - field.bottom() - gap).abs() < px(0.5),
-                        "{design:?} {width}: the control row is {:?} under the text",
-                        attach.top() - field.bottom()
-                    );
-                    // The card's padding under the control row, at the window's bottom.
-                    let send = window.find("chat-send").bounds();
-                    // One row in the card at every width.
-                    assert!(
-                        send.right() <= px(width) - padding + px(0.5),
-                        "{design:?} {width}: Send ends at {:?}, past the card's padding",
-                        send.right()
-                    );
-                    assert!(
-                        (send.bottom() - (px(900.0) - padding)).abs() < px(0.5),
-                        "{design:?} {width}: {:?} under the control row",
-                        px(900.0) - send.bottom()
-                    );
-                })
-                .unwrap();
-                // One line of text at least, over the control row: empty and one line are
-                // the same box, and it grows upward from two lines.
-                let field = |cx: &mut gpui::TestAppContext| {
-                    cx.update_window(handle.into(), |_, window, _| {
-                        window.find("chat-composer-shell").bounds()
-                    })
-                    .unwrap()
+        let previous = ui_text::set_for_tests(1.0, ui_text::Face::System);
+        for width in [760.0, 520.0, 300.0] {
+            let (handle, view, _) = composer_fixture(cx, width, ChatState::Idle);
+            let at_rest = composer_frames(cx, handle, "chat-send");
+            let (_, frames) = &at_rest;
+            // One family: every control as tall as Send, centered on one line, one gap
+            // between each.
+            let slot = frames.last().unwrap().1;
+            let mut row: Vec<_> = frames[1..].iter().map(|(_, bounds)| *bounds).collect();
+            row.sort_by(|a, b| a.left().partial_cmp(&b.left()).unwrap());
+            let gap = row[1].left() - row[0].right();
+            for (id, bounds) in frames {
+                assert!(
+                    (bounds.size.height - slot.size.height).abs() < px(0.5),
+                    "{width}: {id} is {:?} tall, Send {:?}",
+                    bounds.size.height,
+                    slot.size.height
+                );
+                assert!(
+                    (bounds.center().y - slot.center().y).abs() < px(0.5),
+                    "{width}: {id} is off the controls' line"
+                );
+            }
+            for pair in row.windows(2) {
+                assert!(
+                    (pair[1].left() - pair[0].right() - gap).abs() < px(0.5),
+                    "{width}: uneven gaps {row:?}"
+                );
+            }
+            assert!(gap > px(0.0));
+            cx.update_window(handle.into(), |_, window, _| {
+                let attach = window.find("chat-attach").bounds();
+                let field = window.find("chat-composer-shell").bounds();
+                // Attach sits at the card's padding (the card is inset from the pane,
+                // which spans the window, and edged by a hairline), the text column
+                // starts with it, and the control row is one gap under the text.
+                let inset = if width < composer::NARROW_PANE {
+                    px(composer::NARROW_SPACE)
+                } else {
+                    ui_text::space(composer::CARD_INSET)
                 };
-                let empty = field(cx);
+                let padding = inset + px(1.0) + ui_text::space(composer::CARD_PADDING);
                 assert!(
-                    (empty.size.height - widgets::field_line()).abs() < px(0.5),
-                    "{design:?} {width}: the empty box is {:?} tall, not one line",
-                    empty.size.height
+                    (attach.left() - padding).abs() < px(0.5),
+                    "{width}: Attach is at {:?}, not the card's padding",
+                    attach.left()
                 );
-                set_draft(cx, handle, &view, "one line");
-                assert_eq!(
-                    field(cx),
-                    empty,
-                    "{design:?} {width}: one line resized the box"
-                );
-                set_draft(cx, handle, &view, "one\ntwo");
                 assert!(
-                    field(cx).size.height > empty.size.height + widgets::field_line() / 2.,
-                    "{design:?} {width}: two lines do not grow the box"
+                    (field.left() - attach.left()).abs() < px(0.5),
+                    "{width}: the text column starts at {:?}, Attach at {:?}",
+                    field.left(),
+                    attach.left()
                 );
-                for draft in [
-                    "one line",
-                    "one\ntwo",
-                    "one\ntwo\nthree\nfour",
-                    &"a long pasted line that wraps ".repeat(20),
-                    "",
-                ] {
-                    set_draft(cx, handle, &view, draft);
-                    assert_eq!(
-                        composer_frames(cx, handle, "chat-send"),
-                        at_rest,
-                        "{design:?} {width}: the controls moved for {draft:?}"
-                    );
-                }
-                update_info(cx, handle, &view, |view| {
-                    if let Some(info) = view.model.transcript.info.as_mut() {
-                        info.fast = true;
-                    }
-                });
+                assert!(
+                    (attach.top() - field.bottom() - gap).abs() < px(0.5),
+                    "{width}: the control row is {:?} under the text",
+                    attach.top() - field.bottom()
+                );
+                // The card's padding under the control row, at the window's bottom.
+                let send = window.find("chat-send").bounds();
+                // One row in the card at every width.
+                assert!(
+                    send.right() <= px(width) - padding + px(0.5),
+                    "{width}: Send ends at {:?}, past the card's padding",
+                    send.right()
+                );
+                assert!(
+                    (send.bottom() - (px(900.0) - padding)).abs() < px(0.5),
+                    "{width}: {:?} under the control row",
+                    px(900.0) - send.bottom()
+                );
+            })
+            .unwrap();
+            // One line of text at least, over the control row: empty and one line are
+            // the same box, and it grows upward from two lines.
+            let field = |cx: &mut gpui::TestAppContext| {
+                cx.update_window(handle.into(), |_, window, _| {
+                    window.find("chat-composer-shell").bounds()
+                })
+                .unwrap()
+            };
+            let empty = field(cx);
+            assert!(
+                (empty.size.height - widgets::field_line()).abs() < px(0.5),
+                "{width}: the empty box is {:?} tall, not one line",
+                empty.size.height
+            );
+            set_draft(cx, handle, &view, "one line");
+            assert_eq!(field(cx), empty, "{width}: one line resized the box");
+            set_draft(cx, handle, &view, "one\ntwo");
+            assert!(
+                field(cx).size.height > empty.size.height + widgets::field_line() / 2.,
+                "{width}: two lines do not grow the box"
+            );
+            for draft in [
+                "one line",
+                "one\ntwo",
+                "one\ntwo\nthree\nfour",
+                &"a long pasted line that wraps ".repeat(20),
+                "",
+            ] {
+                set_draft(cx, handle, &view, draft);
                 assert_eq!(
                     composer_frames(cx, handle, "chat-send"),
                     at_rest,
-                    "{design:?} {width}: Fast moved the controls"
+                    "{width}: the controls moved for {draft:?}"
                 );
-                // While a turn runs Stop takes Send's slot, and Send takes it back for a
-                // draft that steers the turn.
-                update_info(cx, handle, &view, |view| {
-                    view.model.transcript.state = ChatState::Running;
-                });
-                assert_eq!(
-                    composer_frames(cx, handle, "chat-interrupt"),
-                    at_rest,
-                    "{design:?} {width}: Stop is not in Send's slot"
-                );
-                set_draft(cx, handle, &view, "steer");
-                assert_eq!(composer_frames(cx, handle, "chat-send"), at_rest);
-                cx.update_window(handle.into(), |_, window, _| {
-                    assert!(window.try_find("chat-interrupt").is_none());
-                })
-                .unwrap();
             }
-            ui_text::set_for_tests(previous.0, previous.1);
+            update_info(cx, handle, &view, |view| {
+                if let Some(info) = view.model.transcript.info.as_mut() {
+                    info.fast = true;
+                }
+            });
+            assert_eq!(
+                composer_frames(cx, handle, "chat-send"),
+                at_rest,
+                "{width}: Fast moved the controls"
+            );
+            // While a turn runs Stop takes Send's slot, and Send takes it back for a
+            // draft that steers the turn.
+            update_info(cx, handle, &view, |view| {
+                view.model.transcript.state = ChatState::Running;
+            });
+            assert_eq!(
+                composer_frames(cx, handle, "chat-interrupt"),
+                at_rest,
+                "{width}: Stop is not in Send's slot"
+            );
+            set_draft(cx, handle, &view, "steer");
+            assert_eq!(composer_frames(cx, handle, "chat-send"), at_rest);
+            cx.update_window(handle.into(), |_, window, _| {
+                assert!(window.try_find("chat-interrupt").is_none());
+            })
+            .unwrap();
         }
+        ui_text::set_for_tests(previous.0, previous.1);
     }
 
     /// The contributor states a Muse chat's info can report: off as this host settles it, on,
@@ -3914,39 +3818,77 @@ mod tests {
                 Ok(super::super::feed::Delivery::Command(command)) => Some(command),
                 _ => None,
             };
-        for (face, design) in [
-            (ui_text::Face::System, theme::ThemeChoice::Native),
-            (ui_text::Face::Hermes, theme::ThemeChoice::Hermes),
-            (ui_text::Face::System, theme::ThemeChoice::RiWork),
-        ] {
-            let previous = ui_text::set_for_tests(1.0, face);
-            let (handle, view, recording) = composer_fixture(cx, 760.0, design, ChatState::Idle);
-            for provider in [Provider::Claude, Provider::Codex, Provider::Muse] {
-                update_info(cx, handle, &view, |view| {
-                    view.model.transcript.info.as_mut().unwrap().provider = provider;
-                });
-                cx.update_window(handle.into(), |_, window, _| {
-                    assert_eq!(
-                        window.try_find("chat-contributor").is_some(),
-                        provider == Provider::Muse,
-                        "{design:?} {provider:?}"
-                    );
-                })
-                .unwrap();
-            }
-            // A Codex chat that kept on from Muse shows it, to turn it off; never on.
+        let previous = ui_text::set_for_tests(1.0, ui_text::Face::System);
+        let (handle, view, recording) = composer_fixture(cx, 760.0, ChatState::Idle);
+        for provider in [Provider::Claude, Provider::Codex, Provider::Muse] {
+            update_info(cx, handle, &view, |view| {
+                view.model.transcript.info.as_mut().unwrap().provider = provider;
+            });
+            cx.update_window(handle.into(), |_, window, _| {
+                assert_eq!(
+                    window.try_find("chat-contributor").is_some(),
+                    provider == Provider::Muse,
+                    "{provider:?}"
+                );
+            })
+            .unwrap();
+        }
+        // A Codex chat that kept on from Muse shows it, to turn it off; never on.
+        update_info(cx, handle, &view, |view| {
+            let info = view.model.transcript.info.as_mut().unwrap();
+            info.provider = Provider::Codex;
+            info.contributor_mode = ContributorMode::On;
+        });
+        cx.update_window(handle.into(), |_, window, cx| {
+            let toggle = window.find("chat-contributor");
+            assert_eq!(toggle.label(), Some("Contributor on".into()));
+            window.click("chat-contributor", cx);
+        })
+        .unwrap();
+        draw(cx, handle);
+        assert_eq!(
+            configured(&recording),
+            Some(ChatCommand::Configure {
+                model: None,
+                effort: None,
+                approval_mode: None,
+                fast: None,
+                contributor_mode: Some(ContributorMode::Off),
+                contributor_opt_out: None,
+                claude_billing: None,
+            })
+        );
+        update_info(cx, handle, &view, |view| {
+            view.model.transcript.info.as_mut().unwrap().provider = Provider::Muse;
+        });
+        // Labeled by what holds, never Muse settings for a chat this host reports; a click
+        // asks for the other state (off for a chat an older host leaves to the Muse
+        // settings), and the chat says what holds once the host has made it so.
+        for (mode, opt_out) in CONTRIBUTOR_STATES {
             update_info(cx, handle, &view, |view| {
                 let info = view.model.transcript.info.as_mut().unwrap();
-                info.provider = Provider::Codex;
-                info.contributor_mode = ContributorMode::On;
+                info.contributor_mode = mode;
+                info.contributor_opt_out = opt_out;
             });
+            let (label, asks) = match (mode, opt_out) {
+                (ContributorMode::On, _) => ("Contributor on", ContributorMode::Off),
+                (ContributorMode::Off, true) => ("Contributor off", ContributorMode::On),
+                (ContributorMode::Off, false) => {
+                    (toolbar::CONTRIBUTOR_SETTINGS_LABEL, ContributorMode::Off)
+                }
+            };
             cx.update_window(handle.into(), |_, window, cx| {
                 let toggle = window.find("chat-contributor");
-                assert_eq!(toggle.label(), Some("Contributor on".into()), "{design:?}");
+                assert_eq!(toggle.label(), Some(label.into()));
+                assert_eq!(
+                    toggle.checked(),
+                    Some(mode == ContributorMode::On),
+                    "{label}"
+                );
                 window.click("chat-contributor", cx);
             })
             .unwrap();
-            draw_hermes(cx, handle);
+            draw(cx, handle);
             assert_eq!(
                 configured(&recording),
                 Some(ChatCommand::Configure {
@@ -3954,110 +3896,59 @@ mod tests {
                     effort: None,
                     approval_mode: None,
                     fast: None,
-                    contributor_mode: Some(ContributorMode::Off),
+                    contributor_mode: Some(asks),
                     contributor_opt_out: None,
                     claude_billing: None,
                 }),
-                "{design:?}"
+                "{label}"
             );
-            update_info(cx, handle, &view, |view| {
-                view.model.transcript.info.as_mut().unwrap().provider = Provider::Muse;
-            });
-            // Labeled by what holds, never Muse settings for a chat this host reports; a click
-            // asks for the other state (off for a chat an older host leaves to the Muse
-            // settings), and the chat says what holds once the host has made it so.
-            for (mode, opt_out) in CONTRIBUTOR_STATES {
-                update_info(cx, handle, &view, |view| {
-                    let info = view.model.transcript.info.as_mut().unwrap();
-                    info.contributor_mode = mode;
-                    info.contributor_opt_out = opt_out;
-                });
-                let (label, asks) = match (mode, opt_out) {
-                    (ContributorMode::On, _) => ("Contributor on", ContributorMode::Off),
-                    (ContributorMode::Off, true) => ("Contributor off", ContributorMode::On),
-                    (ContributorMode::Off, false) => {
-                        (toolbar::CONTRIBUTOR_SETTINGS_LABEL, ContributorMode::Off)
-                    }
-                };
-                cx.update_window(handle.into(), |_, window, cx| {
-                    let toggle = window.find("chat-contributor");
-                    assert_eq!(toggle.label(), Some(label.into()), "{design:?}");
-                    assert_eq!(
-                        toggle.checked(),
-                        Some(mode == ContributorMode::On),
-                        "{design:?} {label}"
-                    );
-                    window.click("chat-contributor", cx);
-                })
-                .unwrap();
-                draw_hermes(cx, handle);
-                assert_eq!(
-                    configured(&recording),
-                    Some(ChatCommand::Configure {
-                        model: None,
-                        effort: None,
-                        approval_mode: None,
-                        fast: None,
-                        contributor_mode: Some(asks),
-                        contributor_opt_out: None,
-                        claude_billing: None,
-                    }),
-                    "{design:?} {label}"
-                );
-                assert!(configured(&recording).is_none());
-                assert_eq!(
-                    view.read_with(cx, |view, _| {
-                        view.model
-                            .transcript
-                            .info
-                            .as_ref()
-                            .unwrap()
-                            .contributor_mode
-                    }),
-                    mode
-                );
-            }
-            ui_text::set_for_tests(previous.0, previous.1);
+            assert!(configured(&recording).is_none());
+            assert_eq!(
+                view.read_with(cx, |view, _| {
+                    view.model
+                        .transcript
+                        .info
+                        .as_ref()
+                        .unwrap()
+                        .contributor_mode
+                }),
+                mode
+            );
         }
+        ui_text::set_for_tests(previous.0, previous.1);
     }
 
     #[gpui::test]
     fn the_contributor_toggle_is_one_of_the_composer_controls_in_a_wide_and_a_narrow_pane(
         cx: &mut gpui::TestAppContext,
     ) {
-        for (face, design) in [
-            (ui_text::Face::System, theme::ThemeChoice::Native),
-            (ui_text::Face::Hermes, theme::ThemeChoice::Hermes),
-            (ui_text::Face::System, theme::ThemeChoice::RiWork),
-        ] {
-            let previous = ui_text::set_for_tests(1.0, face);
-            for width in [760.0, 300.0] {
-                let (handle, view, _) = composer_fixture(cx, width, design, ChatState::Idle);
-                for (mode, opt_out) in CONTRIBUTOR_STATES {
-                    update_info(cx, handle, &view, |view| {
-                        let info = view.model.transcript.info.as_mut().unwrap();
-                        info.provider = Provider::Muse;
-                        info.contributor_mode = mode;
-                        info.contributor_opt_out = opt_out;
-                    });
-                    cx.update_window(handle.into(), |_, window, _| {
-                        let shell = window.find("chat-composer-shell").bounds();
-                        let model = window.find("chat-model").bounds();
-                        let toggle = window.find("chat-contributor").bounds();
-                        assert!(
-                            (toggle.size.height - model.size.height).abs() < px(0.5),
-                            "{design:?} {width}: {toggle:?} beside {model:?}"
-                        );
-                        assert!(
-                            toggle.left() >= shell.left() && toggle.right() <= shell.right(),
-                            "{design:?} {width} {mode:?} {opt_out}: {toggle:?} outside {shell:?}"
-                        );
-                    })
-                    .unwrap();
-                }
+        let previous = ui_text::set_for_tests(1.0, ui_text::Face::System);
+        for width in [760.0, 300.0] {
+            let (handle, view, _) = composer_fixture(cx, width, ChatState::Idle);
+            for (mode, opt_out) in CONTRIBUTOR_STATES {
+                update_info(cx, handle, &view, |view| {
+                    let info = view.model.transcript.info.as_mut().unwrap();
+                    info.provider = Provider::Muse;
+                    info.contributor_mode = mode;
+                    info.contributor_opt_out = opt_out;
+                });
+                cx.update_window(handle.into(), |_, window, _| {
+                    let shell = window.find("chat-composer-shell").bounds();
+                    let model = window.find("chat-model").bounds();
+                    let toggle = window.find("chat-contributor").bounds();
+                    assert!(
+                        (toggle.size.height - model.size.height).abs() < px(0.5),
+                        "{width}: {toggle:?} beside {model:?}"
+                    );
+                    assert!(
+                        toggle.left() >= shell.left() && toggle.right() <= shell.right(),
+                        "{width} {mode:?} {opt_out}: {toggle:?} outside {shell:?}"
+                    );
+                })
+                .unwrap();
             }
-            ui_text::set_for_tests(previous.0, previous.1);
         }
+        ui_text::set_for_tests(previous.0, previous.1);
     }
 
     #[gpui::test]
@@ -4087,83 +3978,76 @@ mod tests {
                 std::sync::Arc::new(MemoryStore::with_key("sk-ant-dummy-composer")),
             ))
         });
-        for (face, design) in [
-            (ui_text::Face::System, theme::ThemeChoice::Native),
-            (ui_text::Face::Hermes, theme::ThemeChoice::Hermes),
-            (ui_text::Face::System, theme::ThemeChoice::RiWork),
-        ] {
-            let previous = ui_text::set_for_tests(1.0, face);
-            for width in [760.0, 300.0] {
-                let (handle, view, recording) =
-                    composer_fixture(cx, width, design, ChatState::Idle);
-                for provider in [Provider::Codex, Provider::Muse, Provider::Claude] {
-                    update_info(cx, handle, &view, |view| {
-                        view.model.transcript.info.as_mut().unwrap().provider = provider;
-                    });
-                    cx.update_window(handle.into(), |_, window, _| {
-                        assert_eq!(
-                            window.try_find("chat-billing").is_some(),
-                            provider == Provider::Claude,
-                            "{design:?} {width} {provider:?}"
-                        );
-                    })
-                    .unwrap();
-                }
-                // No choice of its own (a chat from before): the Settings default, API key.
-                for (own, label, on, asks) in [
-                    (None, "Billing: API key", true, ClaudeBilling::Subscription),
-                    (
-                        Some(ClaudeBilling::Subscription),
-                        "Billing: Subscription",
-                        false,
-                        ClaudeBilling::ApiKey,
-                    ),
-                    (
-                        Some(ClaudeBilling::ApiKey),
-                        "Billing: API key",
-                        true,
-                        ClaudeBilling::Subscription,
-                    ),
-                ] {
-                    update_info(cx, handle, &view, |view| {
-                        view.model.transcript.info.as_mut().unwrap().claude_billing = own;
-                    });
-                    cx.update_window(handle.into(), |_, window, cx| {
-                        let toggle = window.find("chat-billing");
-                        assert_eq!(toggle.label(), Some(label.into()), "{design:?} {width}");
-                        assert_eq!(toggle.checked(), Some(on), "{design:?} {width} {label}");
-                        let shell = window.find("chat-composer-shell").bounds();
-                        let model = window.find("chat-model").bounds();
-                        let bounds = toggle.bounds();
-                        assert!(
-                            (bounds.size.height - model.size.height).abs() < px(0.5),
-                            "{design:?} {width}: {bounds:?} beside {model:?}"
-                        );
-                        assert!(
-                            bounds.left() >= shell.left() && bounds.right() <= shell.right(),
-                            "{design:?} {width} {label}: {bounds:?} outside {shell:?}"
-                        );
-                        window.click("chat-billing", cx);
-                    })
-                    .unwrap();
-                    draw_hermes(cx, handle);
+        let previous = ui_text::set_for_tests(1.0, ui_text::Face::System);
+        for width in [760.0, 300.0] {
+            let (handle, view, recording) = composer_fixture(cx, width, ChatState::Idle);
+            for provider in [Provider::Codex, Provider::Muse, Provider::Claude] {
+                update_info(cx, handle, &view, |view| {
+                    view.model.transcript.info.as_mut().unwrap().provider = provider;
+                });
+                cx.update_window(handle.into(), |_, window, _| {
                     assert_eq!(
-                        configured(&recording),
-                        Some(billing(asks)),
-                        "{design:?} {width} {label}"
+                        window.try_find("chat-billing").is_some(),
+                        provider == Provider::Claude,
+                        "{width} {provider:?}"
                     );
-                    assert!(configured(&recording).is_none());
-                    // The chat says what holds once the host has made it so.
-                    assert_eq!(
-                        view.read_with(cx, |view, _| {
-                            view.model.transcript.info.as_ref().unwrap().claude_billing
-                        }),
-                        own
-                    );
-                }
+                })
+                .unwrap();
             }
-            ui_text::set_for_tests(previous.0, previous.1);
+            // No choice of its own (a chat from before): the Settings default, API key.
+            for (own, label, on, asks) in [
+                (None, "Billing: API key", true, ClaudeBilling::Subscription),
+                (
+                    Some(ClaudeBilling::Subscription),
+                    "Billing: Subscription",
+                    false,
+                    ClaudeBilling::ApiKey,
+                ),
+                (
+                    Some(ClaudeBilling::ApiKey),
+                    "Billing: API key",
+                    true,
+                    ClaudeBilling::Subscription,
+                ),
+            ] {
+                update_info(cx, handle, &view, |view| {
+                    view.model.transcript.info.as_mut().unwrap().claude_billing = own;
+                });
+                cx.update_window(handle.into(), |_, window, cx| {
+                    let toggle = window.find("chat-billing");
+                    assert_eq!(toggle.label(), Some(label.into()), "{width}");
+                    assert_eq!(toggle.checked(), Some(on), "{width} {label}");
+                    let shell = window.find("chat-composer-shell").bounds();
+                    let model = window.find("chat-model").bounds();
+                    let bounds = toggle.bounds();
+                    assert!(
+                        (bounds.size.height - model.size.height).abs() < px(0.5),
+                        "{width}: {bounds:?} beside {model:?}"
+                    );
+                    assert!(
+                        bounds.left() >= shell.left() && bounds.right() <= shell.right(),
+                        "{width} {label}: {bounds:?} outside {shell:?}"
+                    );
+                    window.click("chat-billing", cx);
+                })
+                .unwrap();
+                draw(cx, handle);
+                assert_eq!(
+                    configured(&recording),
+                    Some(billing(asks)),
+                    "{width} {label}"
+                );
+                assert!(configured(&recording).is_none());
+                // The chat says what holds once the host has made it so.
+                assert_eq!(
+                    view.read_with(cx, |view, _| {
+                        view.model.transcript.info.as_ref().unwrap().claude_billing
+                    }),
+                    own
+                );
+            }
         }
+        ui_text::set_for_tests(previous.0, previous.1);
     }
 
     #[gpui::test]
@@ -4178,185 +4062,173 @@ mod tests {
                 Ok(super::super::feed::Delivery::Command(command)) => Some(command),
                 _ => None,
             };
-        for (face, design) in [
-            (ui_text::Face::System, theme::ThemeChoice::Native),
-            (ui_text::Face::Hermes, theme::ThemeChoice::Hermes),
-        ] {
-            let previous = ui_text::set_for_tests(1.0, face);
-            let (handle, view, recording) = composer_fixture(cx, 760.0, design, ChatState::Idle);
-            let cursor = |cx: &mut gpui::TestAppContext| {
-                view.read_with(cx, |view, _| view.menu_cursor.clone())
-            };
-            let open = |cx: &mut gpui::TestAppContext| view.read_with(cx, |view, _| view.menu);
+        let previous = ui_text::set_for_tests(1.0, ui_text::Face::System);
+        let (handle, view, recording) = composer_fixture(cx, 760.0, ChatState::Idle);
+        let cursor =
+            |cx: &mut gpui::TestAppContext| view.read_with(cx, |view, _| view.menu_cursor.clone());
+        let open = |cx: &mut gpui::TestAppContext| view.read_with(cx, |view, _| view.menu);
 
-            // The effort menu: above its picker, its trailing edge on the picker's, in the
-            // window; one-line rows.
+        // The effort menu: above its picker, its trailing edge on the picker's, in the
+        // window; one-line rows.
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.click("chat-effort", cx)
+        })
+        .unwrap();
+        draw(cx, handle);
+        assert_eq!(open(cx), Some(super::super::Menu::Effort));
+        cx.update_window(handle.into(), |_, window, cx| {
+            let picker = window.find("chat-effort").bounds();
+            let menu = window.find("chat-choices-popover").bounds();
+            assert!(menu.bottom() <= picker.top(), "{menu:?} over {picker:?}");
+            assert!((menu.right() - picker.right()).abs() < px(1.0), "{menu:?}");
+            assert!(menu.left() >= px(0.0));
+            assert_eq!(window.find("chat-effort").expanded(), Some(true));
+            let row = window.find("effort-high").bounds();
+            assert!((row.size.height - ui_text::space(CHOICE_ROW)).abs() < px(0.5));
+            assert!(row.left() - menu.left() >= ui_text::space(CHOICE_MENU_PADDING));
+            // The pointer highlights the row it is over.
+            window.hover("effort-high", cx);
+        })
+        .unwrap();
+        draw(cx, handle);
+        assert_eq!(cursor(cx).as_deref(), Some("effort-high"));
+        // ↑ and ↓ move the highlight, ⏎ chooses it and closes the menu.
+        cx.update_window(handle.into(), |_, window, cx| window.press("up", cx))
+            .unwrap();
+        draw(cx, handle);
+        assert_eq!(cursor(cx).as_deref(), Some("effort-medium"));
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.press("up", cx);
+            window.press("down", cx);
+            window.press("enter", cx);
+        })
+        .unwrap();
+        draw(cx, handle);
+        assert_eq!(open(cx), None);
+        assert_eq!(
+            configured(&recording),
+            Some(ChatCommand::Configure {
+                model: None,
+                effort: Some("high".into()),
+                approval_mode: None,
+                fast: None,
+                contributor_mode: None,
+                contributor_opt_out: None,
+                claude_billing: None,
+            })
+        );
+
+        // ⎋ closes the menu, and so does a click outside it.
+        for close in ["escape", "outside"] {
             cx.update_window(handle.into(), |_, window, cx| {
                 window.click("chat-effort", cx)
             })
             .unwrap();
-            draw_hermes(cx, handle);
-            assert_eq!(open(cx), Some(super::super::Menu::Effort));
+            draw(cx, handle);
+            assert_eq!(open(cx), Some(super::super::Menu::Effort), "{close}");
             cx.update_window(handle.into(), |_, window, cx| {
-                let picker = window.find("chat-effort").bounds();
-                let menu = window.find("chat-choices-popover").bounds();
-                assert!(
-                    menu.bottom() <= picker.top(),
-                    "{design:?}: {menu:?} over {picker:?}"
-                );
-                assert!(
-                    (menu.right() - picker.right()).abs() < px(1.0),
-                    "{design:?}: {menu:?}"
-                );
-                assert!(menu.left() >= px(0.0));
-                assert_eq!(window.find("chat-effort").expanded(), Some(true));
-                let row = window.find("effort-high").bounds();
-                assert!((row.size.height - ui_text::space(CHOICE_ROW)).abs() < px(0.5));
-                assert!(row.left() - menu.left() >= ui_text::space(CHOICE_MENU_PADDING));
-                // The pointer highlights the row it is over.
-                window.hover("effort-high", cx);
+                if close == "escape" {
+                    window.press("escape", cx);
+                } else {
+                    // The menu covers the field above the control row; the header is
+                    // outside it.
+                    window.click("chat-display-normal", cx);
+                }
             })
             .unwrap();
-            draw_hermes(cx, handle);
-            assert_eq!(cursor(cx).as_deref(), Some("effort-high"));
-            // ↑ and ↓ move the highlight, ⏎ chooses it and closes the menu.
-            cx.update_window(handle.into(), |_, window, cx| window.press("up", cx))
-                .unwrap();
-            draw_hermes(cx, handle);
-            assert_eq!(cursor(cx).as_deref(), Some("effort-medium"));
-            cx.update_window(handle.into(), |_, window, cx| {
-                window.press("up", cx);
-                window.press("down", cx);
-                window.press("enter", cx);
-            })
-            .unwrap();
-            draw_hermes(cx, handle);
-            assert_eq!(open(cx), None);
-            assert_eq!(
-                configured(&recording),
-                Some(ChatCommand::Configure {
-                    model: None,
-                    effort: Some("high".into()),
-                    approval_mode: None,
-                    fast: None,
-                    contributor_mode: None,
-                    contributor_opt_out: None,
-                    claude_billing: None,
-                })
-            );
-
-            // ⎋ closes the menu, and so does a click outside it.
-            for close in ["escape", "outside"] {
-                cx.update_window(handle.into(), |_, window, cx| {
-                    window.click("chat-effort", cx)
-                })
-                .unwrap();
-                draw_hermes(cx, handle);
-                assert_eq!(open(cx), Some(super::super::Menu::Effort), "{close}");
-                cx.update_window(handle.into(), |_, window, cx| {
-                    if close == "escape" {
-                        window.press("escape", cx);
-                    } else {
-                        // The menu covers the field above the control row; the header is
-                        // outside it.
-                        window.click("chat-display-normal", cx);
-                    }
-                })
-                .unwrap();
-                draw_hermes(cx, handle);
-                assert_eq!(open(cx), None, "{design:?}: {close} left the menu open");
-                assert!(configured(&recording).is_none());
-                // A click on the picker right after must open it again, not be swallowed.
-                update_info(cx, handle, &view, |view| view.menu_closed = None);
-            }
-            // That click outside saved this chat's display mode, and a settings change brings
-            // the interface scale back to the configured one (`ui_text::init`): at 13 pt the
-            // model menu is wider than the room left of its picker and slides inward. The
-            // geometry below is designed at 1.0.
-            ui_text::set_for_tests(1.0, face);
-
-            // The model menu: the search field keeps the keys; ↓ steps from the first row
-            // through this provider's models to the other's, ⏎ chooses.
-            cx.update_window(handle.into(), |_, window, cx| {
-                window.click("chat-model", cx)
-            })
-            .unwrap();
-            draw_hermes(cx, handle);
-            cx.update_window(handle.into(), |_, window, cx| {
-                let picker = window.find("chat-model").bounds();
-                let menu = window.find("chat-choices-popover").bounds();
-                assert!(menu.bottom() <= picker.top(), "{menu:?} over {picker:?}");
-                assert!(
-                    (menu.right() - picker.right()).abs() < px(1.0),
-                    "{menu:?} over {picker:?}"
-                );
-                assert_eq!(
-                    window.find("switch-codex-default").label(),
-                    Some("Codex default")
-                );
-                window.press("down", cx);
-            })
-            .unwrap();
-            draw_hermes(cx, handle);
-            assert_eq!(cursor(cx).as_deref(), Some("model-fixture-model"));
-            cx.update_window(handle.into(), |_, window, cx| window.press("down", cx))
-                .unwrap();
-            draw_hermes(cx, handle);
-            assert_eq!(cursor(cx).as_deref(), Some("switch-codex-default"));
-            cx.update_window(handle.into(), |_, window, cx| {
-                window.press("up", cx);
-                window.press("enter", cx);
-            })
-            .unwrap();
-            draw_hermes(cx, handle);
-            assert_eq!(open(cx), None);
-            update_info(cx, handle, &view, |view| view.menu_closed = None);
-            assert_eq!(
-                configured(&recording),
-                Some(ChatCommand::Configure {
-                    model: Some("fixture-model".into()),
-                    effort: None,
-                    approval_mode: None,
-                    fast: None,
-                    contributor_mode: None,
-                    contributor_opt_out: None,
-                    claude_billing: None,
-                })
-            );
-            // ⏎ on a search takes this provider's first match; with none it does nothing,
-            // never moving the chat to the other provider.
-            cx.update_window(handle.into(), |_, window, cx| {
-                window.click("chat-model", cx);
-            })
-            .unwrap();
-            draw_hermes(cx, handle);
-            cx.update_window(handle.into(), |_, window, cx| {
-                window.input("no such model", cx);
-                window.press("enter", cx);
-            })
-            .unwrap();
-            draw_hermes(cx, handle);
-            assert_eq!(open(cx), Some(super::super::Menu::Model));
+            draw(cx, handle);
+            assert_eq!(open(cx), None, "{close} left the menu open");
             assert!(configured(&recording).is_none());
-            set_search(cx, handle, &view, "fixture");
-            cx.update_window(handle.into(), |_, window, cx| window.press("enter", cx))
-                .unwrap();
-            draw_hermes(cx, handle);
-            assert_eq!(open(cx), None);
-            assert_eq!(
-                configured(&recording),
-                Some(ChatCommand::Configure {
-                    model: Some("fixture-model".into()),
-                    effort: None,
-                    approval_mode: None,
-                    fast: None,
-                    contributor_mode: None,
-                    contributor_opt_out: None,
-                    claude_billing: None,
-                })
-            );
-            ui_text::set_for_tests(previous.0, previous.1);
+            // A click on the picker right after must open it again, not be swallowed.
+            update_info(cx, handle, &view, |view| view.menu_closed = None);
         }
+        // That click outside saved this chat's display mode, and a settings change brings
+        // the interface scale back to the configured one (`ui_text::init`): at 13 pt the
+        // model menu is wider than the room left of its picker and slides inward. The
+        // geometry below is designed at 1.0.
+        ui_text::set_for_tests(1.0, ui_text::Face::System);
+
+        // The model menu: the search field keeps the keys; ↓ steps from the first row
+        // through this provider's models to the other's, ⏎ chooses.
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.click("chat-model", cx)
+        })
+        .unwrap();
+        draw(cx, handle);
+        cx.update_window(handle.into(), |_, window, cx| {
+            let picker = window.find("chat-model").bounds();
+            let menu = window.find("chat-choices-popover").bounds();
+            assert!(menu.bottom() <= picker.top(), "{menu:?} over {picker:?}");
+            assert!(
+                (menu.right() - picker.right()).abs() < px(1.0),
+                "{menu:?} over {picker:?}"
+            );
+            assert_eq!(
+                window.find("switch-codex-default").label(),
+                Some("Codex default")
+            );
+            window.press("down", cx);
+        })
+        .unwrap();
+        draw(cx, handle);
+        assert_eq!(cursor(cx).as_deref(), Some("model-fixture-model"));
+        cx.update_window(handle.into(), |_, window, cx| window.press("down", cx))
+            .unwrap();
+        draw(cx, handle);
+        assert_eq!(cursor(cx).as_deref(), Some("switch-codex-default"));
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.press("up", cx);
+            window.press("enter", cx);
+        })
+        .unwrap();
+        draw(cx, handle);
+        assert_eq!(open(cx), None);
+        update_info(cx, handle, &view, |view| view.menu_closed = None);
+        assert_eq!(
+            configured(&recording),
+            Some(ChatCommand::Configure {
+                model: Some("fixture-model".into()),
+                effort: None,
+                approval_mode: None,
+                fast: None,
+                contributor_mode: None,
+                contributor_opt_out: None,
+                claude_billing: None,
+            })
+        );
+        // ⏎ on a search takes this provider's first match; with none it does nothing,
+        // never moving the chat to the other provider.
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.click("chat-model", cx);
+        })
+        .unwrap();
+        draw(cx, handle);
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.input("no such model", cx);
+            window.press("enter", cx);
+        })
+        .unwrap();
+        draw(cx, handle);
+        assert_eq!(open(cx), Some(super::super::Menu::Model));
+        assert!(configured(&recording).is_none());
+        set_search(cx, handle, &view, "fixture");
+        cx.update_window(handle.into(), |_, window, cx| window.press("enter", cx))
+            .unwrap();
+        draw(cx, handle);
+        assert_eq!(open(cx), None);
+        assert_eq!(
+            configured(&recording),
+            Some(ChatCommand::Configure {
+                model: Some("fixture-model".into()),
+                effort: None,
+                approval_mode: None,
+                fast: None,
+                contributor_mode: None,
+                contributor_opt_out: None,
+                claude_billing: None,
+            })
+        );
+        ui_text::set_for_tests(previous.0, previous.1);
     }
 
     /// A key going down (`held` for a repeat) or coming up, without its pair.
@@ -4381,7 +4253,7 @@ mod tests {
             window.dispatch_event(event, cx);
         })
         .unwrap();
-        draw_hermes(cx, handle);
+        draw(cx, handle);
     }
 
     #[gpui::test]
@@ -4389,8 +4261,7 @@ mod tests {
         cx: &mut gpui::TestAppContext,
     ) {
         let previous = ui_text::set_for_tests(1.0, ui_text::Face::System);
-        let (handle, view, recording) =
-            composer_fixture(cx, 760.0, theme::ThemeChoice::Native, ChatState::Idle);
+        let (handle, view, recording) = composer_fixture(cx, 760.0, ChatState::Idle);
         // Focus changes are only reported in an active window.
         cx.update_window(handle.into(), |_, window, _| window.activate_window())
             .unwrap();
@@ -4399,21 +4270,21 @@ mod tests {
             window.click("chat-model", cx)
         })
         .unwrap();
-        draw_hermes(cx, handle);
+        draw(cx, handle);
         view.update(cx, |view, _| view.menu_cursor = Some("chat-new".into()));
         key_event(cx, handle, "enter", Some(false));
         // The new-chat chooser takes focus, so this ⏎ comes up outside the chat.
         let chooser = cx.update(|cx| cx.focus_handle());
         cx.update_window(handle.into(), |_, window, cx| window.focus(&chooser, cx))
             .unwrap();
-        draw_hermes(cx, handle);
+        draw(cx, handle);
         key_event(cx, handle, "enter", None);
         // Cancelled: back in the chat, the next ⏎ sends.
         cx.update_window(handle.into(), |_, window, cx| {
             view.update(cx, |view, cx| view.focus(window, cx))
         })
         .unwrap();
-        draw_hermes(cx, handle);
+        draw(cx, handle);
         key_event(cx, handle, "enter", Some(false));
         assert!(
             matches!(
@@ -4429,8 +4300,7 @@ mod tests {
     fn an_open_composer_menu_owns_enter_and_ignores_held_keys(cx: &mut gpui::TestAppContext) {
         use crate::chat::model::ChatCommand;
         let previous = ui_text::set_for_tests(1.0, ui_text::Face::System);
-        let (handle, view, recording) =
-            composer_fixture(cx, 760.0, theme::ThemeChoice::Native, ChatState::Idle);
+        let (handle, view, recording) = composer_fixture(cx, 760.0, ChatState::Idle);
         let cursor =
             |cx: &mut gpui::TestAppContext| view.read_with(cx, |view, _| view.menu_cursor.clone());
         let open = |cx: &mut gpui::TestAppContext| view.read_with(cx, |view, _| view.menu);
@@ -4442,13 +4312,13 @@ mod tests {
             window.click("chat-effort", cx)
         })
         .unwrap();
-        draw_hermes(cx, handle);
+        draw(cx, handle);
         assert_eq!(open(cx), Some(super::super::Menu::Effort));
 
         // ⏎ with nothing highlighted: the menu keeps it, the draft is not sent.
         cx.update_window(handle.into(), |_, window, cx| window.press("enter", cx))
             .unwrap();
-        draw_hermes(cx, handle);
+        draw(cx, handle);
         assert_eq!(open(cx), Some(super::super::Menu::Effort));
         assert_eq!(draft(cx), "keep me");
         assert!(recording.try_recv().is_err(), "⏎ reached the message box");
@@ -4474,7 +4344,7 @@ mod tests {
             })
         })
         .unwrap();
-        draw_hermes(cx, handle);
+        draw(cx, handle);
         key_event(cx, handle, "enter", Some(true));
         key_event(cx, handle, "enter", Some(true));
         assert_eq!(open(cx), Some(super::super::Menu::Effort));
@@ -4516,7 +4386,7 @@ mod tests {
                 })
             })
             .unwrap();
-            draw_hermes(cx, handle);
+            draw(cx, handle);
         };
         update_info(cx, handle, &view, |view| {
             view.model.transcript.approvals = vec![crate::chat::model::Approval {

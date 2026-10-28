@@ -107,15 +107,9 @@ impl ChatView {
             .min_w_0()
             .flex()
             .flex_col()
-            // Every design's prose spacing: roomy lines and paragraphs. Hermes sets it in its
-            // proportional face, a size up.
+            // Every design's prose spacing: roomy lines and paragraphs.
             .gap(ui_text::space(12.0))
             .line_height(gpui::relative(1.5))
-            .when(look.hermes(), |prose| {
-                prose
-                    .font_family(".SystemUIFont")
-                    .text_size(ui_text::text(14.0))
-            })
             .children(
                 blocks.iter().enumerate().map(|(at, block)| {
                     self.block(block, &format!("{key}/{}", start + at), look, cx)
@@ -127,7 +121,6 @@ impl ChatView {
 
     fn block(&self, block: &Block, key: &str, look: Look, cx: &mut Context<Self>) -> AnyElement {
         let colors = look.colors;
-        let hermes = look.hermes();
         match block {
             Block::Paragraph(spans) | Block::Task { spans, .. } => {
                 self.text(spans, key, look, None, cx)
@@ -148,9 +141,9 @@ impl ChatView {
                 div()
                     .w_full()
                     .pt(ui_text::space(4.0))
-                    .text_size(ui_text::text((if hermes { 14.0 } else { 12.0 }) * size))
+                    .text_size(ui_text::text(12.0 * size))
                     .font_weight(weight)
-                    .text_color(rgb(if *level <= 2 && !hermes {
+                    .text_color(rgb(if *level <= 2 {
                         colors.cyan
                     } else {
                         colors.text
@@ -316,11 +309,7 @@ impl ChatView {
             })
             .border_1()
             .border_color(rgb(colors.divider))
-            .bg(rgb(if look.hermes() {
-                colors.panel
-            } else {
-                colors.panel_active
-            }))
+            .bg(rgb(colors.panel_active))
             .overflow_hidden()
             .child(
                 div()

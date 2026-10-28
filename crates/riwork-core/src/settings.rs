@@ -213,9 +213,9 @@ pub struct Settings {
     /// Conversation overrides; chat_display remains the default for untouched chats.
     pub chat_display_modes: BTreeMap<String, DisplayMode>,
     pub schema_version: u32,
+    /// Always Native. A removed theme (or a newer build's) in the file reads as
+    /// Native and stays as written until the setting changes.
     pub theme: ThemeChoice,
-    /// Kept for older preferences and as a terminal-only override while following Ghostty.
-    pub use_riwork_colors: bool,
     pub remember_window_size: bool,
     /// Built-in panel tabs and toolbar buttons show an icon instead of their text label.
     /// The key predates the toolbar buttons and stays as it is in `settings.json`.
@@ -269,10 +269,12 @@ pub struct Settings {
     pub ui_text_size: TextPoints,
     /// Interface text follows Ghostty's `font-size` instead of `ui_text_size`.
     pub ui_text_matches_terminal: bool,
-    /// Native's "Terminals match the theme": terminals take Native's white or
-    /// black background and palette. Off keeps Ghostty's own colors.
+    /// "Terminals match the theme": terminals take Native's white or black
+    /// background and palette. Off keeps Ghostty's own colors. The only terminal
+    /// colors option: `use_riwork_colors`, which older builds wrote for the
+    /// removed Ghostty theme, is no longer read and stays in the file as written.
     pub native_terminal_colors: bool,
-    /// Native's interface font. The other themes draw in Menlo.
+    /// The interface font.
     pub interface_font: InterfaceFont,
     /// Microphone buttons for dictation: in the Mac's chat message boxes, and on the
     /// paired phone (its chats and terminals), which reads it from `appearance.json` as
@@ -383,14 +385,9 @@ impl Settings {
             .copied()
             .unwrap_or(self.chat_display)
     }
-    /// Whether the selected theme's terminal colors option is on: "Terminals
-    /// match the theme" for Native, "Use RiWork terminal colors" while following
-    /// Ghostty. The presets force their colors whatever this says.
+    /// Whether "Terminals match the theme" is on.
     pub fn terminal_colors_forced(&self) -> bool {
-        match self.theme {
-            ThemeChoice::Native => self.native_terminal_colors,
-            _ => self.use_riwork_colors,
-        }
+        self.native_terminal_colors
     }
 }
 
@@ -401,8 +398,7 @@ impl Default for Settings {
             tab_close_behavior: TabCloseBehavior::Ask,
             chat_display: Default::default(),
             chat_display_modes: BTreeMap::new(),
-            theme: ThemeChoice::Ghostty,
-            use_riwork_colors: false,
+            theme: ThemeChoice::Native,
             remember_window_size: true,
             panel_tab_icons: false,
             open_preview_on_select: true,
@@ -460,11 +456,6 @@ impl<'de> Deserialize<'de> for Settings {
                 .unwrap_or_default(),
             schema_version: strict_field(&object, "schema_version", defaults.schema_version)?,
             theme: lenient_field(&object, "theme", defaults.theme),
-            use_riwork_colors: lenient_field(
-                &object,
-                "use_riwork_colors",
-                defaults.use_riwork_colors,
-            ),
             remember_window_size: lenient_field(
                 &object,
                 "remember_window_size",
@@ -867,7 +858,7 @@ impl SettingsStore {
 /// the default that stands for that can improve in a later build. The delegation policy
 /// keeps what it cannot read itself, so writing it whole loses nothing.
 /// `chosen_key` also saves an explicit CLI choice equal to the effective default:
-/// choosing Ghostty must replace a future theme that currently reads as Ghostty.
+/// choosing Native must replace a theme this build reads as Native.
 fn merged_document(
     mut document: Map<String, Value>,
     before: &Settings,
@@ -1047,10 +1038,7 @@ mod tests {
 
         fn flip(self, settings: &mut Settings) {
             let value = match self {
-                Self::TerminalColors if settings.theme == ThemeChoice::Native => {
-                    &mut settings.native_terminal_colors
-                }
-                Self::TerminalColors => &mut settings.use_riwork_colors,
+                Self::TerminalColors => &mut settings.native_terminal_colors,
                 Self::PanelTabIcons => &mut settings.panel_tab_icons,
                 Self::PreviewOnSelect => &mut settings.open_preview_on_select,
                 Self::AgentInline => &mut settings.agent_inline_mode,
@@ -1158,7 +1146,7 @@ mod tests {
         )
         .unwrap();
         let loaded = store.load().unwrap();
-        assert_eq!(loaded.theme, ThemeChoice::Ghostty);
+        assert_eq!(loaded.theme, ThemeChoice::Native);
         assert_eq!(loaded.project_order, ProjectOrder::default());
         assert!(loaded.remember_window_size);
         assert_eq!(
@@ -1170,9 +1158,9 @@ mod tests {
         // Changing one setting rewrites the file without touching the values
         // and keys this build could not read.
         let saved = store
-            .update(|settings| settings.use_riwork_colors = true)
+            .update(|settings| settings.panel_tab_icons = true)
             .unwrap();
-        assert!(saved.use_riwork_colors);
+        assert!(saved.panel_tab_icons);
         let document = |dir: &std::path::Path| -> Value {
             serde_json::from_slice(&fs::read(dir.join("settings.json")).unwrap()).unwrap()
         };
@@ -1183,17 +1171,18 @@ mod tests {
         assert_eq!(file["future_setting"], serde_json::json!({"a": 1}));
         assert_eq!(file["status_bar"]["items"][0]["kind"], "future_widget");
         assert_eq!(file["selected_codex_account"], "saved-fixture-account");
-        assert_eq!(file["use_riwork_colors"], true);
+        assert_eq!(file["panel_tab_icons"], true);
 
-        // A deliberate change replaces exactly that setting.
+        // A deliberate change replaces exactly that setting, even one that
+        // chooses what an unreadable value already reads as.
         store
-            .update(|settings| {
-                settings.theme = ThemeChoice::Catppuccin;
+            .update_selected(&["theme"], |settings| {
+                settings.theme = ThemeChoice::Native;
                 settings.remember_window_size = false;
             })
             .unwrap();
         let file = document(&dir);
-        assert_eq!(file["theme"], "catppuccin");
+        assert_eq!(file["theme"], "native");
         assert_eq!(file["remember_window_size"], false);
         assert_eq!(file["project_order"]["by"], "future_sort");
         assert_eq!(file["future_setting"], serde_json::json!({"a": 1}));
@@ -1228,16 +1217,17 @@ mod tests {
     }
 
     #[test]
-    fn native_options_default_on_and_the_terminal_row_flips_the_selected_themes_option() {
+    fn native_options_default_on_and_the_terminal_row_flips_native_terminal_colors() {
         let dir = env::temp_dir().join(format!("riwork-settings-native-{}", Uuid::new_v4()));
         let store = SettingsStore::open(&dir).unwrap();
         let defaults = Settings::default();
         assert!(defaults.native_terminal_colors);
         assert_eq!(defaults.interface_font, InterfaceFont::SystemMono);
-        // A file from a build without them reads as the defaults.
+        // A file from a build without them reads as the defaults; the retired
+        // RiWork terminal colors key is not read.
         fs::write(
             dir.join("settings.json"),
-            r#"{"schema_version":1,"theme":"native","use_riwork_colors":false}"#,
+            r#"{"schema_version":1,"theme":"ghostty","use_riwork_colors":true}"#,
         )
         .unwrap();
         let loaded = store.load().unwrap();
@@ -1246,12 +1236,10 @@ mod tests {
         assert!(loaded.terminal_colors_forced());
         assert_eq!(loaded.interface_font, InterfaceFont::SystemMono);
 
-        // Under Native the terminal row flips Native's option, not RiWork's.
         let saved = store
             .update(|settings| Toggle::TerminalColors.flip(settings))
             .unwrap();
         assert!(!saved.native_terminal_colors);
-        assert!(!saved.use_riwork_colors);
         assert!(!saved.terminal_colors_forced());
         let saved = store
             .update(|settings| settings.interface_font = settings.interface_font.other())
@@ -1261,18 +1249,9 @@ mod tests {
             serde_json::from_slice(&fs::read(dir.join("settings.json")).unwrap()).unwrap();
         assert_eq!(file["native_terminal_colors"], false);
         assert_eq!(file["interface_font"], "system");
+        assert_eq!(file["theme"], "ghostty");
+        assert_eq!(file["use_riwork_colors"], true);
         assert_eq!(store.load().unwrap(), saved);
-
-        // Following Ghostty, the same row is "Use RiWork terminal colors" again.
-        let saved = store
-            .update(|settings| {
-                settings.theme = ThemeChoice::Ghostty;
-                Toggle::TerminalColors.flip(settings);
-            })
-            .unwrap();
-        assert!(saved.use_riwork_colors);
-        assert!(!saved.native_terminal_colors);
-        assert!(saved.terminal_colors_forced());
 
         // A font this build does not know falls back to the default alone.
         fs::write(
@@ -1314,7 +1293,7 @@ mod tests {
         assert_eq!(file["theme"], "native");
         assert_eq!(file["future_setting"], serde_json::json!([1]));
         store
-            .update(|settings| settings.use_riwork_colors = true)
+            .update(|settings| settings.panel_tab_icons = true)
             .unwrap();
         assert!(store.load().unwrap().dictation_mic);
         store
@@ -1542,7 +1521,7 @@ mod tests {
         assert!(resolved.spread_work);
         assert_eq!(resolved.workhorse, Work::Workhorse.built_in());
         store
-            .update(|settings| settings.use_riwork_colors = true)
+            .update(|settings| settings.panel_tab_icons = true)
             .unwrap();
         store
             .update(|settings| settings.delegation_policy.set_parallel_shells(Some(2)))
@@ -1712,7 +1691,7 @@ mod tests {
         assert!(note.contains(r#"orchestrator_mode = "hologram""#), "{note}");
         assert!(note.contains("orchestrator_chat_model = 42"), "{note}");
         store
-            .update(|settings| settings.use_riwork_colors = true)
+            .update(|settings| settings.panel_tab_icons = true)
             .unwrap();
         let file = document(&dir);
         assert_eq!(file["orchestrator_mode"], "hologram");
@@ -1749,7 +1728,7 @@ mod tests {
             "provider and its model"
         );
         store
-            .update(|settings| settings.use_riwork_colors = true)
+            .update(|settings| settings.panel_tab_icons = true)
             .unwrap();
         assert_eq!(document(&dir)["orchestrator_chat_model"], "muse-spark-1.3");
         // Choosing a provider there, even the one shown, replaces both, so the model is
@@ -1907,7 +1886,7 @@ mod tests {
             assert_eq!(loaded.ui_text_size.points(), expected, "{value}");
             assert!(!loaded.ui_text_matches_terminal);
             store
-                .update(|settings| settings.use_riwork_colors = true)
+                .update(|settings| settings.panel_tab_icons = true)
                 .unwrap();
             assert_eq!(
                 document(&dir)["ui_text_size"],
@@ -1922,7 +1901,7 @@ mod tests {
     fn each_toggle_changes_only_its_own_setting() {
         let base = Settings::default();
         for (toggle, expected) in [
-            (Toggle::TerminalColors, "use_riwork_colors"),
+            (Toggle::TerminalColors, "native_terminal_colors"),
             (Toggle::PanelTabIcons, "panel_tab_icons"),
             (Toggle::PreviewOnSelect, "open_preview_on_select"),
             (Toggle::AgentInline, "agent_inline_mode"),
@@ -1973,7 +1952,7 @@ mod tests {
         let worker = std::thread::spawn(move || {
             other
                 .update(|settings| {
-                    settings.use_riwork_colors = true;
+                    settings.panel_tab_icons = true;
                     settings.project_order =
                         ProjectOrder::for_sort(crate::project_sort::ProjectSort::LiveSessions);
                 })
@@ -1984,7 +1963,7 @@ mod tests {
             .unwrap();
         worker.join().unwrap();
         let saved = store.load().unwrap();
-        assert!(saved.use_riwork_colors);
+        assert!(saved.panel_tab_icons);
         assert!(!saved.remember_window_size);
         assert_eq!(
             saved.project_order,
@@ -1993,7 +1972,7 @@ mod tests {
         fs::write(dir.join("settings.json"), "broken").unwrap();
         assert!(
             store
-                .update(|settings| settings.use_riwork_colors = false)
+                .update(|settings| settings.panel_tab_icons = false)
                 .is_err()
         );
         assert_eq!(
@@ -2028,7 +2007,7 @@ mod tests {
                         0 => settings.selected_codex_account = Some("other-fixture-account".into()),
                         1 => settings.status_bar = status,
                         _ => {
-                            settings.theme = ThemeChoice::GruvboxLight;
+                            settings.interface_font = InterfaceFont::System;
                             settings.remember_window_size = false;
                         }
                     })
@@ -2040,7 +2019,7 @@ mod tests {
         store
             .update(|settings| {
                 settings.project_order = project_order;
-                settings.use_riwork_colors = true;
+                settings.panel_tab_icons = true;
             })
             .unwrap();
         for worker in workers {
@@ -2052,9 +2031,9 @@ mod tests {
             Some("other-fixture-account")
         );
         assert_eq!(loaded.status_bar, status);
-        assert_eq!(loaded.theme, ThemeChoice::GruvboxLight);
+        assert_eq!(loaded.interface_font, InterfaceFont::System);
         assert!(!loaded.remember_window_size);
-        assert!(loaded.use_riwork_colors);
+        assert!(loaded.panel_tab_icons);
         assert_eq!(loaded.project_order, project_order);
         fs::remove_dir_all(dir).unwrap();
     }
@@ -2130,7 +2109,7 @@ mod tests {
         )
         .unwrap();
         let loaded = store.load().unwrap();
-        assert_eq!(loaded.theme, ThemeChoice::TokyoNight);
+        assert_eq!(loaded.theme, ThemeChoice::Native);
         assert_eq!(
             loaded.status_bar.visible_items(StatusSide::Right),
             [
@@ -2203,7 +2182,10 @@ mod tests {
             [StatusItemKind::Project, StatusItemKind::Layout]
         );
         assert!(!moved.remember_window_size);
-        assert_eq!(moved.theme, ThemeChoice::TokyoNight);
+        assert_eq!(moved.theme, ThemeChoice::Native);
+        let file: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(dir.join("settings.json")).unwrap()).unwrap();
+        assert_eq!(file["theme"], "tokyo_night");
         fs::remove_dir_all(dir).unwrap();
     }
 

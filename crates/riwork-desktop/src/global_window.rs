@@ -1821,7 +1821,7 @@ impl Render for GlobalWindow {
                     .occlude()
                     .child(dialog.clone())
             }))
-            .children(window_controls_visible(window).then(|| window_controls_island(cx)))
+            .children(window_controls_visible(window).then(window_controls_island))
     }
 }
 

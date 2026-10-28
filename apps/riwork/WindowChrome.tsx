@@ -8,7 +8,6 @@ export const CONTROL_INSET = CONTROL_WIDTH + 14;
 export const DRAG_HANDLE_WIDTH = 12;
 export const DRAG_ROOM = 18;
 
-type Palette = { controlsIsland: boolean; panelActive: string; divider: string };
 type WindowState = { mode?: string; key?: boolean; visible?: boolean; occluded?: boolean; appActive?: boolean };
 export type TopPane = { id?: number; x: number; width: number; tabsEnd?: number };
 
@@ -35,24 +34,19 @@ export function topPaneFrames(node: DockNode, size: { width: number; height: num
   });
 }
 
-/** Window state for the controls island. Its palette is the window's resolved
- * interface theme; title and Dock metadata follow the workspace's project. */
-export function useWindowChrome(palette: () => Palette) {
+/** Window state for the controls island, which leaves the window controls on
+ * the window's own surface; title and Dock metadata follow the workspace's project. */
+export function useWindowChrome() {
   const state = signal<WindowState>({ mode: "windowed" });
   Window.setTitleBar("hidden", CONTROL_HEIGHT);
   cleanup(host.on("window.state", (next) => state.set(next as WindowState)));
-  return { palette, state, fullscreen: () => state().mode === "fullscreen" };
+  return { state, fullscreen: () => state().mode === "fullscreen" };
 }
 
-export function WindowChrome(props: { state: {palette: () => Palette; state: () => WindowState; fullscreen: () => boolean}; panes: TopPane[] }) {
-  const palette = props.state.palette;
+export function WindowChrome(props: { state: {state: () => WindowState; fullscreen: () => boolean}; panes: TopPane[] }) {
   return <>
     {!props.state.fullscreen() && <View testID="window-controls-island" desktop={{ windowDrag: true }} style={{
       position: "absolute", left: 0, top: 0, width: CONTROL_WIDTH, height: CONTROL_HEIGHT,
-      backgroundColor: palette().controlsIsland ? palette().panelActive : "transparent",
-      borderBottomRightRadius: palette().controlsIsland ? 8 : 0,
-      borderRightWidth: palette().controlsIsland ? 1 : 0, borderBottomWidth: palette().controlsIsland ? 1 : 0,
-      borderColor: palette().divider,
     }} />}
     {props.panes.filter((pane) => pane.width >= 40).map((pane) => <View testID={`window-drag:${pane.id}`} desktop={{ windowDrag: true }} style={{
       position: "absolute", top: 0, left: dragRegion(pane).left,

@@ -28,7 +28,7 @@ use crate::{
     remote_tree::Link,
     status_bar::StatusBarSettings,
     text_input::{self, EnterBehavior, InputState},
-    theme::{Appearance, Palette, ThemeChoice, palette},
+    theme::{Appearance, Palette, palette},
     ui_text::{self, InterfaceFont, SizeChange, TextPoints},
 };
 
@@ -233,10 +233,7 @@ impl Toggle {
         let value = match self {
             Self::CodexSubscriptionBalancing => &mut settings.codex_subscription_balancing,
             Self::DashboardHaikuSummaries => &mut settings.dashboard_haiku_summaries,
-            Self::TerminalColors if settings.theme == ThemeChoice::Native => {
-                &mut settings.native_terminal_colors
-            }
-            Self::TerminalColors => &mut settings.use_riwork_colors,
+            Self::TerminalColors => &mut settings.native_terminal_colors,
             Self::PanelTabIcons => &mut settings.panel_tab_icons,
             Self::PreviewOnSelect => &mut settings.open_preview_on_select,
             Self::AgentInline => &mut settings.agent_inline_mode,
@@ -254,10 +251,7 @@ impl Toggle {
         let value = match self {
             Self::CodexSubscriptionBalancing => &mut settings.codex_subscription_balancing,
             Self::DashboardHaikuSummaries => &mut settings.dashboard_haiku_summaries,
-            Self::TerminalColors if settings.theme == ThemeChoice::Native => {
-                &mut settings.native_terminal_colors
-            }
-            Self::TerminalColors => &mut settings.use_riwork_colors,
+            Self::TerminalColors => &mut settings.native_terminal_colors,
             Self::PanelTabIcons => &mut settings.panel_tab_icons,
             Self::PreviewOnSelect => &mut settings.open_preview_on_select,
             Self::AgentInline => &mut settings.agent_inline_mode,
@@ -294,7 +288,6 @@ pub struct SettingsPanel {
     account_balancing_focus: FocusHandle,
     dashboard_haiku_focus: FocusHandle,
     account_focus: BTreeMap<String, FocusHandle>,
-    theme_focus: Vec<FocusHandle>,
     close_focus: FocusHandle,
     terminal_focus: FocusHandle,
     font_focus: FocusHandle,
@@ -372,9 +365,6 @@ const DESCRIPTION_MAX_WIDTH: f32 = 560.0;
 const ROW_GAP: f32 = 8.0;
 const ROW_PAD_X: f32 = 12.0;
 const ROW_PAD_Y: f32 = 10.0;
-/// The narrowest a theme choice can be before the grid drops a column.
-const THEME_CELL_MIN_WIDTH: f32 = 220.0;
-
 /// A width that is not measured yet, or not a number, gets the narrow layout.
 fn layout_for(width: f32) -> SettingsLayout {
     if width >= WIDE_FROM {
@@ -481,7 +471,7 @@ impl Section {
         match self {
             Self::Cua => "Let RiWork agents operate desktop apps through Cua.ai.",
             Self::Codex => "The account new Codex sessions start with.",
-            Self::Appearance => "Choose a theme and text size, or sync with Ghostty.",
+            Self::Appearance => "Choose the text size, the interface font and terminal colors.",
             Self::Files => "How the Files tree and its Preview pane open together.",
             Self::Agents => "How agent sessions draw, how orchestrators run, and dictation.",
             Self::Windows => "How project windows open.",
@@ -507,34 +497,6 @@ fn section_columns(layout: SettingsLayout) -> Vec<Vec<Section>> {
         }
         SettingsLayout::Narrow | SettingsLayout::Medium => vec![Section::ALL.to_vec()],
     }
-}
-
-/// The room inside one section card at a given panel width.
-fn card_inner_width(layout: SettingsLayout, width: f32) -> f32 {
-    let content = (width - 2.0 * layout.page_padding()).max(0.0);
-    let content = layout.max_width().map_or(content, |max| content.min(max));
-    let columns = section_columns(layout).len() as f32;
-    let column = (content - layout.gap() * (columns - 1.0)) / columns;
-    // The card's padding plus its one-pixel border on each side.
-    (column - 2.0 * (layout.card_padding() + 1.0)).max(0.0)
-}
-
-/// Theme choices per row: one on a narrow panel, otherwise as many as fit
-/// (two or three) without squeezing their descriptions.
-fn theme_columns(layout: SettingsLayout, width: f32) -> usize {
-    if layout == SettingsLayout::Narrow {
-        return 1;
-    }
-    let fit = (card_inner_width(layout, width) + ROW_GAP)
-        / (ui_text::space_f32(THEME_CELL_MIN_WIDTH) + ROW_GAP);
-    (fit as usize).clamp(2, 3)
-}
-
-/// Everything that changes the arrangement with the panel's width. The panel
-/// repaints when this changes, not on every pixel of a resize.
-fn width_class(width: f32) -> (SettingsLayout, usize) {
-    let layout = layout_for(width);
-    (layout, theme_columns(layout, width))
 }
 
 /// The narrowest a row's title and description get beside its controls.
@@ -662,24 +624,6 @@ fn native_section_card(section: Section, colors: Palette, body: AnyElement) -> A
         )
         .child(body)
         .into_any_element()
-}
-
-/// The line box of a theme choice's title under Native, which its radio is centered on.
-const THEME_TITLE_LINE: f32 = 16.0;
-
-/// Native's radio mark: a ring, filled with the primary color when chosen.
-fn radio(mark: Div, selected: bool, colors: Palette) -> Div {
-    mark.size(ui_text::space(12.0))
-        .mt_0()
-        .rounded_full()
-        .border_color(rgb(if selected {
-            colors.cyan
-        } else {
-            colors.divider
-        }))
-        .when(selected, |mark| {
-            mark.border(ui_text::space(4.0)).bg(rgb(colors.bg))
-        })
 }
 
 /// Native's kind of a Settings button that is either a group's lead action or not.
@@ -912,7 +856,6 @@ impl SettingsPanel {
                 .map(|id| (id, cx.focus_handle()))
                 .collect(),
             close_focus: cx.focus_handle(),
-            theme_focus: ThemeChoice::ALL.iter().map(|_| cx.focus_handle()).collect(),
             terminal_focus: cx.focus_handle(),
             font_focus: cx.focus_handle(),
             tab_icons_focus: cx.focus_handle(),
@@ -984,11 +927,8 @@ impl SettingsPanel {
             self.cua_focus.focus(window, cx);
             return;
         }
-        let selected = ThemeChoice::ALL
-            .iter()
-            .position(|theme| *theme == settings.theme)
-            .unwrap_or(0);
-        self.theme_focus[selected].focus(window, cx);
+        // Past Computer use, the first row of Appearance.
+        self.terminal_focus.focus(window, cx);
     }
 
     fn focus_order(&self, settings: &Settings) -> Vec<FocusHandle> {
@@ -996,13 +936,8 @@ impl SettingsPanel {
         handles.push(self.account_balancing_focus.clone());
         handles.push(self.account_refresh_focus.clone());
         handles.extend(self.account_focus.values().cloned());
-        handles.extend(self.theme_focus.iter().cloned());
-        if matches!(settings.theme, ThemeChoice::Ghostty | ThemeChoice::Native) {
-            handles.push(self.terminal_focus.clone());
-        }
-        if settings.theme == ThemeChoice::Native {
-            handles.push(self.font_focus.clone());
-        }
+        handles.push(self.terminal_focus.clone());
+        handles.push(self.font_focus.clone());
         handles.push(self.tab_icons_focus.clone());
         handles.push(self.text_size_focus.clone());
         handles.push(self.preview_focus.clone());
@@ -1377,10 +1312,6 @@ impl SettingsPanel {
             return;
         }
         let _settings = cx.global::<Settings>().clone();
-        let theme_index = self
-            .theme_focus
-            .iter()
-            .position(|focus| focus.is_focused(window));
         match event.keystroke.key.as_str() {
             "tab" => {
                 if event.keystroke.modifiers.shift {
@@ -1407,17 +1338,6 @@ impl SettingsPanel {
             {
                 let more = matches!(event.keystroke.key.as_str(), "up" | "right" | "=" | "+");
                 self.step_parallel_shells(more, cx);
-            }
-            "up" | "left" | "down" | "right" => {
-                let Some(index) = theme_index else {
-                    return;
-                };
-                let next = if matches!(event.keystroke.key.as_str(), "up" | "left") {
-                    (index + self.theme_focus.len() - 1) % self.theme_focus.len()
-                } else {
-                    (index + 1) % self.theme_focus.len()
-                };
-                self.theme_focus[next].focus(window, cx);
             }
             _ => return,
         }
@@ -2142,141 +2062,6 @@ impl SettingsPanel {
             .child(action_bar(layout)
                 .child(self.cua_button(if link_skill { "Link Cua skill" } else if ready { "Check Cua" } else if repair { "Repair Cua" } else if verify_capture { "Verify screen capture" } else if installed { "Grant macOS access" } else { "Set up Cua" }, true, state.pending.is_some(), cx))
                 .child(self.cua_button("Check again", false, state.pending.is_some(), cx)))
-            .into_any_element()
-    }
-
-    fn theme_row(
-        &self,
-        index: usize,
-        theme: ThemeChoice,
-        selected: bool,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let colors = palette(cx);
-        behavior::radio_content(
-            ("theme-choice", index),
-            theme.label(),
-            {
-                let mark = div()
-                    .flex_none()
-                    .mt(ui_text::space(4.0))
-                    .size(ui_text::space(8.0))
-                    .border_1()
-                    .border_color(rgb(if selected { colors.cyan } else { colors.muted }))
-                    .when(selected, |style| style.bg(rgb(colors.cyan)));
-                if ui_text::is_native() {
-                    // Centered on the title's line box, which the title is set in exactly.
-                    controls::on_first_line(radio(mark, selected, colors), THEME_TITLE_LINE)
-                        .into_any_element()
-                } else {
-                    mark.into_any_element()
-                }
-            },
-            selected,
-        )
-        .track_focus(&self.theme_focus[index])
-        .flex_1()
-        .min_w_0()
-        .flex()
-        .items_start()
-        .gap(ui_text::space(12.0))
-        .px(ui_text::space(ROW_PAD_X))
-        .py(ui_text::space(ROW_PAD_Y))
-        .bg(rgb(if selected {
-            colors.panel_active
-        } else {
-            colors.panel
-        }))
-        .border_1()
-        .border_color(rgb(if selected {
-            colors.cyan
-        } else {
-            colors.divider
-        }))
-        .hover(move |style| {
-            controls::hovered(style, controls::row_hover(selected, colors), |style| {
-                style.bg(rgb(colors.panel_active))
-            })
-        })
-        .focus_visible(|style| style.border_color(rgb(colors.magenta)))
-        .map(|row| controls::native(row, |row| controls::row(row, selected, colors)))
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .flex()
-                .flex_col()
-                .gap(ui_text::space(3.0))
-                .child(
-                    // The chip shares the title's line so a grid cell keeps its width for the text.
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(ui_text::space(8.0))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .text_size(ui_text::text(12.0))
-                                .when(ui_text::is_native(), |title| {
-                                    title.line_height(ui_text::space(THEME_TITLE_LINE))
-                                })
-                                .text_color(rgb(colors.text))
-                                .child(theme.label()),
-                        )
-                        // Native's filled row and radio already say which is active.
-                        .children(
-                            (selected && !ui_text::is_native())
-                                .then(|| status_chip("Active", colors.cyan, colors)),
-                        ),
-                )
-                .child(
-                    div()
-                        .text_size(ui_text::text(10.0))
-                        .text_color(rgb(colors.muted))
-                        .child(theme.description()),
-                ),
-        )
-        .on_change({
-            let listener = cx.listener(move |view, _, _, cx| {
-                view.change(|settings| settings.theme = theme, cx);
-            });
-            move |_, event, window, cx| listener(event, window, cx)
-        })
-        .into_any_element()
-    }
-
-    /// The theme choices in rows of `columns` equal cells; a short last row keeps its cell widths.
-    fn theme_grid(
-        &self,
-        columns: usize,
-        selected: ThemeChoice,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let mut cells = ThemeChoice::ALL
-            .iter()
-            .copied()
-            .enumerate()
-            .map(|(index, theme)| self.theme_row(index, theme, selected == theme, cx))
-            .collect::<Vec<_>>()
-            .into_iter()
-            .peekable();
-        let mut grid = row_list();
-        while cells.peek().is_some() {
-            let mut row = div().flex().gap(ui_text::space(ROW_GAP));
-            for _ in 0..columns {
-                let cell = div().flex_1().min_w_0().flex();
-                row = row.child(match cells.next() {
-                    Some(theme) => cell.child(theme),
-                    None => cell,
-                });
-            }
-            grid = grid.child(row);
-        }
-        gpui_kit::base::RadioGroup::new("settings-theme-choices")
-            .aria_label("Theme")
-            .axis(gpui::Axis::Vertical)
-            .child(grid)
             .into_any_element()
     }
 
@@ -3040,38 +2825,16 @@ impl SettingsPanel {
             .into_any_element()
     }
 
-    fn appearance_section(
-        &self,
-        theme_columns: usize,
-        settings: &Settings,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let colors = palette(cx);
-        let appearance_error = cx.global::<Appearance>().error.clone();
-        let terminal_row = match settings.theme {
-            ThemeChoice::Ghostty => Some(self.toggle_row(
-                Toggle::TerminalColors,
-                "Use RiWork terminal colors",
-                "Keep RiWork terminal colors while following Ghostty. Off uses Ghostty colors.",
-                settings.use_riwork_colors,
-                cx,
-            )),
-            ThemeChoice::Native => Some(self.toggle_row(
+    fn appearance_section(&self, settings: &Settings, cx: &mut Context<Self>) -> AnyElement {
+        row_list()
+            .child(self.toggle_row(
                 Toggle::TerminalColors,
                 "Terminals match the theme",
                 "Terminals take the theme's white or black background and a quiet palette. Off keeps Ghostty's own colors.",
                 settings.native_terminal_colors,
                 cx,
-            )),
-            _ => None,
-        };
-        let font_row = (settings.theme == ThemeChoice::Native)
-            .then(|| self.font_row(settings.interface_font, cx));
-        row_list()
-            .child(self.theme_grid(theme_columns, settings.theme, cx))
-            .children(appearance_error.map(|error| div().text_size(ui_text::text(11.0)).text_color(rgb(colors.gold)).child(error)))
-            .children(terminal_row)
-            .children(font_row)
+            ))
+            .child(self.font_row(settings.interface_font, cx))
             .child(self.toggle_row(
                 Toggle::PanelTabIcons,
                 "Icons instead of labels",
@@ -3405,7 +3168,6 @@ impl SettingsPanel {
         &self,
         section: Section,
         layout: SettingsLayout,
-        theme_columns: usize,
         settings: &Settings,
         window: &Window,
         cx: &mut Context<Self>,
@@ -3413,7 +3175,7 @@ impl SettingsPanel {
         match section {
             Section::Cua => self.cua_section(layout, cx),
             Section::Codex => self.codex_accounts_section(layout, cx),
-            Section::Appearance => self.appearance_section(theme_columns, settings, cx),
+            Section::Appearance => self.appearance_section(settings, cx),
             Section::Files => self.toggle_row(
                 Toggle::PreviewOnSelect,
                 "Open the preview when a file is selected",
@@ -3446,13 +3208,13 @@ impl Render for SettingsPanel {
         let settings = cx.global::<Settings>().clone();
         let colors = palette(cx);
         let width = self.bounds.get().size.width.as_f32();
-        let (layout, theme_cells) = width_class(width);
+        let layout = layout_for(width);
         let native = ui_text::is_native();
         let mut columns = Vec::new();
         for sections in section_columns(layout) {
             let mut cards = Vec::new();
             for section in sections {
-                let body = self.section_body(section, layout, theme_cells, &settings, window, cx);
+                let body = self.section_body(section, layout, &settings, window, cx);
                 cards.push(section_card(section, layout, colors, body));
             }
             columns.push(
@@ -3493,8 +3255,8 @@ impl Render for SettingsPanel {
                 canvas(
                     move |measured, _, cx| {
                         let previous = bounds.replace(measured);
-                        if width_class(previous.size.width.as_f32())
-                            != width_class(measured.size.width.as_f32())
+                        if layout_for(previous.size.width.as_f32())
+                            != layout_for(measured.size.width.as_f32())
                         {
                             let view = measured_view.clone();
                             cx.defer(move |cx| {

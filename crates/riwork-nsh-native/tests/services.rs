@@ -462,12 +462,22 @@ async fn one_settings_watcher_pushes_terminal_theme_changes_to_two_windows() {
     let service = start(fixture.path(), Arc::new(FakeSessions::default())).await;
     let first = service.subscribe_appearance().await.unwrap();
     let second = service.subscribe_appearance().await.unwrap();
-    assert!(first.recv().await.unwrap().data.terminal_dark.is_none());
+    assert_eq!(
+        first
+            .recv()
+            .await
+            .unwrap()
+            .data
+            .terminal_dark
+            .unwrap()
+            .background,
+        "#000000"
+    );
     second.recv().await.unwrap();
     riwork_core::settings::SettingsStore::open(fixture.path())
         .unwrap()
         .update(|settings| {
-            settings.theme = riwork_core::theme::ThemeChoice::Catppuccin;
+            settings.native_terminal_colors = false;
             settings.tab_close_behavior = riwork_core::settings::TabCloseBehavior::Detach;
         })
         .unwrap();
@@ -475,10 +485,7 @@ async fn one_settings_watcher_pushes_terminal_theme_changes_to_two_windows() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(
-        changed.data.terminal_dark.as_ref().unwrap().background,
-        "#1e1e2e"
-    );
+    assert!(changed.data.terminal_dark.is_none());
     assert_eq!(changed.data.tab_close_behavior, "detach");
     assert_eq!(second.recv().await.unwrap(), changed);
     // Equal settings never generate a duplicate projection.

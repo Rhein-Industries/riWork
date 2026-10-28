@@ -13,11 +13,11 @@ riwork settings set KEY --json JSON    The same command with structured output
 
 Global settings live in RIWORK_HOME/settings.json, or ~/.local/share/riwork/settings.json.
 Keys are top-level saved names, with no dotted paths or project overrides. VALUE is one
-JSON value (quote objects for the shell), or a bare string such as tokyo_night. --json
+JSON value (quote objects for the shell), or a bare string such as detach. --json
 selects output, not input; JSON input works without it too. Use -- before a value that
 starts with --, or JSON-quote the string. Examples:
   riwork settings set dictation_mic true
-  riwork settings set theme tokyo_night
+  riwork settings set tab_close_behavior detach
   riwork settings set status_bar --json '{\"usage_mode\":\"all_accounts\"}'
 Object values replace known preferences in that object; omitted fields use model defaults.
 The store preserves unknown top-level fields and unchanged future values; replacing an
