@@ -88,6 +88,35 @@ pub trait StoreBackend: Send + Sync + 'static {
     fn rename_project(&self, _selector: &str, _name: &str) -> Result<ProjectDto> {
         unsupported!()
     }
+    fn update_project_metadata(
+        &self,
+        _selector: &str,
+        _name: &str,
+        _folder: Option<&str>,
+    ) -> Result<ProjectDto> {
+        unsupported!()
+    }
+    fn set_project_codex_account(
+        &self,
+        _selector: &str,
+        _choice: riwork_core::store::ProjectCodexAccount,
+    ) -> Result<ProjectDto> {
+        unsupported!()
+    }
+    fn set_project_orchestrator(
+        &self,
+        _selector: &str,
+        _choice: riwork_core::store::ProjectOrchestrator,
+    ) -> Result<ProjectDto> {
+        unsupported!()
+    }
+    fn set_project_delegation_policy(
+        &self,
+        _selector: &str,
+        _patch: crate::settings::DelegationPatch,
+    ) -> Result<ProjectDto> {
+        unsupported!()
+    }
     fn set_project_memo(&self, _selector: &str, _text: &str) -> Result<ProjectMemoDto> {
         unsupported!()
     }
@@ -337,6 +366,48 @@ impl StoreBackend for CoreStoreBackend {
         self.store()?
             .rename_project(selector, name)
             .map_err(anyhow::Error::msg)?
+            .try_into()
+    }
+    fn update_project_metadata(
+        &self,
+        selector: &str,
+        name: &str,
+        folder: Option<&str>,
+    ) -> Result<ProjectDto> {
+        self.store()?
+            .update_project_metadata(selector, name, folder)
+            .map_err(Refused)?
+            .try_into()
+    }
+    fn set_project_codex_account(
+        &self,
+        selector: &str,
+        choice: riwork_core::store::ProjectCodexAccount,
+    ) -> Result<ProjectDto> {
+        self.store()?
+            .set_project_codex_account(selector, choice)
+            .map_err(Refused)?
+            .try_into()
+    }
+    fn set_project_orchestrator(
+        &self,
+        selector: &str,
+        choice: riwork_core::store::ProjectOrchestrator,
+    ) -> Result<ProjectDto> {
+        self.store()?
+            .set_project_orchestrator(selector, choice)
+            .map_err(Refused)?
+            .try_into()
+    }
+    fn set_project_delegation_policy(
+        &self,
+        selector: &str,
+        patch: crate::settings::DelegationPatch,
+    ) -> Result<ProjectDto> {
+        patch.validate().map_err(InvalidInput)?;
+        self.store()?
+            .set_project_delegation_policy(selector, move |policy| patch.apply(policy))
+            .map_err(Refused)?
             .try_into()
     }
     fn set_project_memo(&self, selector: &str, text: &str) -> Result<ProjectMemoDto> {

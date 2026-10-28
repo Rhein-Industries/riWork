@@ -1,0 +1,22 @@
+
+running 8 tests
+test nsh_runtime::phase6c_guard_tests::policy::tests::only_exactly_one_turns_the_guard_off ... ok
+test nsh_runtime::phase6c_guard_tests::policy::tests::read_only_tools_pass_even_against_riwork ... ok
+test nsh_runtime::phase6c_guard_tests::policy::tests::nothing_is_refused_while_no_riwork_app_runs ... ok
+test nsh_runtime::phase6c_guard_tests::policy::tests::launching_riwork_while_it_runs_is_refused ... ok
+test nsh_runtime::phase6c_guard_tests::policy::tests::input_to_other_apps_passes ... ok
+test nsh_runtime::phase6c_guard_tests::policy::tests::untargeted_input_is_refused_while_riwork_runs ... ok
+test nsh_runtime::phase6c_guard_tests::policy::tests::input_to_a_live_riwork_app_is_refused_by_pid_or_target ... ok
+fake dispatch click: REFUSED (no dispatch)
+fake dispatch type_text: REFUSED (no dispatch)
+fake dispatch new_future_input_tool: REFUSED (no dispatch)
+fake dispatch hotkey: REFUSED (no dispatch)
+fake dispatch click: REFUSED (no dispatch)
+fake dispatch get_window_state: resolved in fake sink
+fake dispatch click: resolved in fake sink
+fake dispatch type_text: resolved in fake sink
+NSH registered test-process PID; all own inputs refused; fixture targets resolved; registry cleaned. No desktop interaction.
+test nsh_runtime::phase6c_guard_tests::phase6c_nsh_host_registration_refuses_own_input_and_resolves_fixture_targets ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 61 filtered out; finished in 0.01s
+

@@ -1,0 +1,8 @@
+   Compiling riwork-nsh-native v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p1-fix-host/crates/riwork-nsh-native)
+    Finished `test` profile [unoptimized] target(s) in 3.45s
+     Running tests/settings_cua_focus.rs (target/debug/deps/settings_cua_focus-b0956dbaf1979f7f)
+
+thread 'combined_settings_cua_focus_commands' (15187354) panicked at crates/riwork-nsh-native/tests/settings_cua_focus.rs:140:5:
+focus regressions: [(false, Some("claude-api-key-input"), ["cua-primary"], []), (false, Some("theme-choice:native"), ["cua-primary"], []), (false, Some("cua-check"), ["cua-primary"], []), (true, Some("claude-api-key-input"), ["theme-choice:native"], []), (true, Some("theme-choice:native"), ["theme-choice:native"], []), (true, Some("cua-check"), ["theme-choice:native"], [])]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+error: test failed, to rerun pass `-p riwork-nsh-native --test settings_cua_focus`

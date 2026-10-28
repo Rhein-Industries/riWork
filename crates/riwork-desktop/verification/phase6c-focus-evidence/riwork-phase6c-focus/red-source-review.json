@@ -1,0 +1,14 @@
+{
+  "baseline": "1f0738c5782db1b83588d0d0aed132123389f9fb",
+  "production_unchanged_before_red": true,
+  "sha256": {
+    "apps/riwork/CuaSetup.tsx": "8af77a4883572dbe66a6f200b7654cf2e330877561584de92127bd04e050dc7c",
+    "apps/riwork/settings/AppSettings.tsx": "c5057dbb7e79216c7bbf63a6e299d7da199b6348aa653e5d34a74d0b5a0c286c",
+    "apps/riwork/settings/SettingsControls.tsx": "4e128d1f21f2a2c68c7ca333909a88676eb1d2ad71b3dc44665f2b52b7eacb0d",
+    "apps/riwork/Workspace.tsx": "d822c87c0b375e64f1fef7713a3eca48c88ace298f7fe2a8523e34b41226ea27"
+  },
+  "red_run": "focus-9tr2bpca",
+  "result": "not-ready incorrectly targets theme; Cua actions lose existing focus; ready theme/input containment controls pass",
+  "verification_environment": "private headless fixtures only",
+  "live_targets_touched": "none beyond own shell/worktree"
+}

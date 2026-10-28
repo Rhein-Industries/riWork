@@ -1,0 +1,209 @@
+
+running 47 tests
+test layout::tests::default_layout_command_keeps_sessions_selection_and_is_idempotent ... ok
+test layout::tests::compound_native_edit_uses_logged_right_nested_fallback_without_data_loss ... ok
+test layout::tests::compound_topology_change_is_not_misclassified_as_a_simple_move ... ok
+test host_layouts::tests::switched_and_closed_generations_release_their_final_writer_off_the_engine ... ok
+test host_layouts::tests::a_host_close_waits_for_an_admitted_edit_and_rejects_late_edits_without_a_lock ... ok
+test host_layouts::tests::host_lookup_tracks_the_latest_snapshot_without_retaining_the_session ... ok
+test layout::tests::dropping_real_tab_into_an_empty_pane_never_persists_the_sentinel ... ok
+test layout::tests::edge_dock_fallback_moves_back_into_center_only ... ok
+test layout::tests::explicit_reopen_remembers_surviving_unlocked_pane_and_falls_back_if_locked_or_removed ... ok
+test layout::tests::file_link_reveal_keeps_the_clicked_terminal_and_keys ... ok
+test layout::tests::files_preview_reveal_uses_main_without_moving_focus_or_splitting ... ok
+test layout::tests::flattened_resize_reconstructs_binary_ratios_including_inner_divider ... ok
+test layout::tests::gather_uses_core_sources_keeps_main_selection_and_locked_geometry ... ok
+test integration_tests::disposed_session_rejects_project_switch_without_panicking ... ok
+test layout::tests::headroom_aliases_leave_free_ids_for_new_groups_and_opaque_sentinels ... ok
+test layout::tests::implicit_navigation_lock_and_explicit_unlocked_state_survive_no_op ... ok
+test layout::tests::invalid_or_destructive_reports_are_transactional ... ok
+test layout::tests::local_shell_detach_reopen_preserves_identity_and_does_not_resurrect_legacy_tab ... ok
+test layout::tests::max_safe_persisted_id_uses_session_alias_without_poisoning_native_allocator ... ok
+test integration_tests::rejected_close_time_edits_do_not_change_the_session_before_a_cancelled_close ... ok
+test layout::tests::native_active_index_selects_tab_and_pane_only ... ok
+test layout::tests::native_divider_resize_replays_core_ratio_clamp ... ok
+test layout::tests::native_edge_move_splits_through_core_in_all_four_directions ... ok
+test host_layouts::tests::close_during_switch_rejects_commit_and_flushes_the_old_project_only ... ok
+test integration_tests::frozen_delivery_keeps_the_latest_revision_until_interaction_ends ... ok
+test layout::tests::native_id_matching_an_aliased_disk_id_cannot_overwrite_either_pane_on_save ... ok
+test integration_tests::the_first_2_s_after_first_draw_are_ignored ... ok
+test layout::tests::native_last_panel_move_keeps_empty_scaffold_beside_locked_pane ... ok
+test layout::tests::native_last_panel_move_removes_ordinary_source_but_restores_main_sentinel ... ok
+test layout::tests::native_move_to_existing_group_keeps_source_selection_and_selects_target ... ok
+test layout::tests::native_same_group_reorder_preserves_identity_and_changes_selection ... ok
+test integration_tests::disposal_while_project_io_is_pending_never_commits_the_prepared_writer ... ok
+test layout::tests::opening_local_shell_uses_unlocked_main_and_refuses_all_locked_transactionally ... ok
+test layout::tests::ordinary_unsafe_ids_persist_the_safe_remap ... ok
+test integration_tests::stale_revisions_are_dropped_but_a_new_epoch_is_accepted ... ok
+test layout::tests::panel_and_shell_intents_reuse_identity_and_select_their_own_panes ... ok
+test integration_tests::failed_project_preparation_preserves_the_prior_editable_session ... ok
+test layout::tests::preview_without_main_splits_beside_tree_and_obeys_preference ... ok
+test layout::tests::panel_shell_selection_preserves_terminal_reopen_and_lock_policy ... ok
+test layout::tests::resizing_uses_core_locked_minima_and_returns_to_the_original_geometry ... ok
+test layout::tests::real_nsh_normalization_and_assigned_split_ids_do_not_rewrite_the_core_tree ... ok
+test layout::tests::unknown_tabs_pin_a_sentinel_even_while_known_tabs_move_out ... ok
+test layout::tests::unsafe_ids_remap_all_references_and_supply_opaque_tab_persistence_mapping ... ok
+test layout::tests::window_panel_commands_reuse_identity_and_files_find_the_navigation_pane ... ok
+test layout::tests::unchanged_projection_keeps_binary_shape_and_every_project_field_at_three_extents ... ok
+test integration_tests::project_switch_keeps_the_host_handle_and_flushes_both_project_writers ... ok
+test integration_tests::ended_registered_shells_keep_their_tabs_until_explicit_hide_or_registry_pruning ... ok
+
+test result: ok. 47 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+
+
+running 1 test
+test phase6c_preview_spec_persists_and_routing_obeys_main_active_and_focus_mode ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+
+running 1 test
+test layout_module_uses_the_injected_backend_and_sync_calls_do_not_wait_for_it ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+
+running 13 tests
+test five_point_dividers_and_rendered_pane_extents_match_core_at_three_extents ... ok
+test gesture_sentinel_next_to_real_panels_is_dropped ... ok
+test gesture_active_index ... ok
+test gesture_reorder_in_group ... ok
+test gesture_sizes ... ok
+test a_dragged_ratio_is_clamped_to_0_1_0_9 ... ok
+test selecting_a_clipped_native_tab_reveals_it_and_can_scroll_back ... ok
+test gesture_move_to_group ... ok
+test tab_bar_suffix_stays_visible_beside_overflowing_tabs_and_drag_still_moves ... ok
+test gesture_two_changes_fall_back_and_log ... ok
+test gesture_group_disappeared_keeps_main_and_locked_neighbours ... ok
+test gesture_move_to_edge ... ok
+test native_edge_zones_change_between_34_and_36_percent_of_the_content ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.94s
+
+
+running 82 tests
+test default_layout_allocates_navigation_below_the_core_pane_id_ceiling ... ok
+test an_older_layout_s_global_tabs_are_the_global_window_s ... ok
+test corrupt_layout_is_untouched_until_an_edit_then_core_sets_it_aside ... ok
+test an_older_layout_loads_without_its_global_tabs_and_saves_without_them ... ok
+test dragging_the_last_known_tab_out_keeps_its_unknown_tab_and_empty_sentinel ... ok
+test default_layout_relocates_opaque_tabs_and_keeps_their_raw_payload ... ok
+test edit_l_nav_saves_what_riwork_core_saves ... ok
+test edit_l_global_tabs_saves_what_riwork_core_saves ... ok
+test edit_l_carry_dest_saves_what_riwork_core_saves ... ok
+test legacy_sidebar_reconstruction_keeps_shell_positions_selection_and_hidden_choice ... ok
+test edit_l_preview_remote_saves_what_riwork_core_saves ... ok
+test edit_l_main_saves_what_riwork_core_saves ... ok
+test edit_l_empty_saves_what_riwork_core_saves ... ok
+test empty_locked_panes_unknown_tabs_and_unknown_top_level_fields_survive_an_actual_save ... ok
+test edit_l_carry_saves_what_riwork_core_saves ... ok
+test edit_l_bigid_saves_what_riwork_core_saves ... ok
+test edit_l_legacy_saves_what_riwork_core_saves ... ok
+test edit_l_nested_saves_what_riwork_core_saves ... ok
+test edit_l_ratio_saves_what_riwork_core_saves ... ok
+test edit_l_unknown_saves_what_riwork_core_saves ... ok
+test edit_l_unlock_saves_what_riwork_core_saves ... ok
+test open_session_on_d_corrupt ... ok
+test open_session_on_d_entry ... ok
+test nothing_is_saved_without_an_edit ... ok
+test open_session_on_d_newer ... ok
+test oracle_a_narrow_locked_pane_in_a_wide_window_may_go_below_the_drag_limit ... ok
+test opaque_entries_and_unknown_fields_keep_raw_whitespace_and_escapes_after_a_gesture ... ok
+test oracle_a_window_too_small_for_every_minimum_stays_proportional ... ok
+test newer_schema_and_unreadable_entries_show_notice_and_are_never_overwritten ... ok
+test oracle_l_carry_dest ... ok
+test oracle_l_carry ... ok
+test oracle_app_preview_launch_settings_round_trip_and_deduplicate_by_identity ... ok
+test oracle_l_empty ... ok
+test oracle_l_bigid ... ok
+test legacy_saves_merge_chat_dismissals_while_shared_membership_saves_its_projection ... ok
+test oracle_a_small_window_takes_from_the_locked_pane_only_as_far_as_it_must ... ok
+test oracle_l_main ... ok
+test oracle_l_global_tabs ... ok
+test oracle_l_legacy ... ok
+test oracle_l_nav ... ok
+test oracle_l_nested ... ok
+test oracle_a_locked_left_nav_keeps_its_width_and_its_height_follows_the_window ... ok
+test oracle_l_preview_remote ... ok
+test oracle_l_ratio ... ok
+test oracle_l_unknown ... ok
+test oracle_left_navigation_locks_by_default_but_explicit_unlock_survives_round_trip ... ok
+test oracle_a_locked_nav_beside_a_locked_footer_keeps_its_width_and_the_footer_follows ... ok
+test oracle_l_unlock ... ok
+test oracle_ratios_a_resize_leaves_on_narrow_locked_panes_survive_a_restart ... ok
+test oracle_remote_shell_tabs_round_trip_and_are_not_this_macs_shells ... ok
+test oracle_split_ratios_round_trip_and_survive_insertions_and_collapses ... ok
+test oracle_nested_layout_round_trip_preserves_tabs_selections_and_detachment ... ok
+test oracle_surplus_unlocked_slots_remain_empty_and_all_locked_keeps_sessions_recoverable ... ok
+test oracle_newer_schema_is_neither_loaded_nor_overwritten ... ok
+test oracle_the_main_pane_is_kept_per_project_and_comes_back_with_its_layout ... ok
+test oracle_tabs_of_an_unknown_kind_are_skipped_and_the_rest_of_the_layout_still_loads ... ok
+test reopen_l_carry_dest_renders_golden_and_writes_nothing ... ok
+test reopen_l_bigid_renders_golden_and_writes_nothing ... ok
+test reopen_l_carry_renders_golden_and_writes_nothing ... ok
+test reopen_l_global_tabs_renders_golden_and_writes_nothing ... ok
+test reopen_l_main_renders_golden_and_writes_nothing ... ok
+test reopen_l_legacy_renders_golden_and_writes_nothing ... ok
+test reopen_l_empty_renders_golden_and_writes_nothing ... ok
+test reopen_l_nested_renders_golden_and_writes_nothing ... ok
+test reopen_l_preview_remote_renders_golden_and_writes_nothing ... ok
+test reopen_l_nav_renders_golden_and_writes_nothing ... ok
+test the_default_layout_closes_nothing_and_preserves_selection_and_navigation_width ... ok
+test reopen_l_ratio_renders_golden_and_writes_nothing ... ok
+test reopen_l_unlock_renders_golden_and_writes_nothing ... ok
+test reopen_l_unknown_renders_golden_and_writes_nothing ... ok
+test oracle_only_real_changes_are_reported ... ok
+test gpui_written_fixtures_open_identically_and_resave_without_structure_or_metadata_loss ... ok
+test oracle_unusable_sizes_leave_the_layout_alone ... ok
+test flush_points_write_synchronously ... ok
+test restore_snapshot_wins_and_missing_projects_do_not_write_before_an_edit ... ok
+test safe_reload_snapshot_carries_opaque_tabs_from_the_unsaved_unsafe_disk_generation ... ok
+test storage_preserves_unknown_tabs_when_projection_remaps_a_js_unsafe_pane_id ... ok
+test switching_flushes_the_outgoing_project_and_uses_core_locked_region_carry ... ok
+test project_switch_rejects_unknown_destination_tabs_without_losing_them_or_replacing_the_writer ... ok
+test trailing_save_coalesces_edits_and_flush_and_drop_do_not_wait_for_the_deadline ... ok
+test each_trigger_saves_once_after_250_ms ... ok
+test oracle_resizing_back_and_forth_returns_to_the_same_ratios ... ok
+
+test result: ok. 82 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.44s
+
+
+running 18 tests
+test a_closed_pane_preserves_order_membership_and_main_selection ... ok
+test adoption_uses_active_unlocked_pane_when_main_is_locked_and_normalizes_hidden_keys ... ok
+test focused_editor_routing_uses_unlocked_terminal_pane_instead_of_main ... ok
+test reopening_an_existing_navigation_panel_selects_it_where_it_lives ... ok
+test locked_closes_are_refused_but_internal_removals_are_allowed ... ok
+test split_right_adds_the_new_pane_second_at_one_half ... ok
+test a_failed_create_undoes_the_split ... ok
+test focus_mode_never_changes_the_saved_layout ... ok
+test closing_the_last_pane_empties_its_tabs_without_removing_the_pane ... ok
+test default_and_gather_exit_focus_and_report_the_exact_result ... ok
+test restore_skips_dead_and_detached_shells ... ok
+test same_project_updates_preserve_focus_and_opaque_aliases_across_default_layout ... ok
+test editor_tabs_reuse_existing_placement_and_make_room_when_every_pane_is_locked ... ok
+test centered_focus_enter_exit_preserves_the_normal_resize_baseline ... ok
+test restore_adopts_cli_shells_into_main_with_sixteen_per_delivery_and_locked_filter ... ok
+test a_new_tab_routes_to_main_and_focus_mode_routes_to_selected ... ok
+test an_empty_main_keeps_its_sentinel_through_every_gesture ... ok
+test chat_pending_is_never_saved_and_maps_to_chat_id ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+
+running 7 tests
+test zoomed_and_fullscreen_frames_are_ignored ... ok
+test remember_off_writes_nothing ... ok
+test out_of_range_sizes_are_rejected ... ok
+test turning_remember_on_captures_the_current_size ... ok
+test the_size_follows_the_window_across_a_project_switch ... ok
+test a_move_or_a_return_to_the_settled_size_writes_nothing ... ok
+test an_ordinary_resize_is_saved_after_250_ms ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.35s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

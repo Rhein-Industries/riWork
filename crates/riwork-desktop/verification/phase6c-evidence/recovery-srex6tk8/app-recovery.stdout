@@ -1,0 +1,21 @@
+
+running 1 test
+test nsh_host::pending_open_tests::production_app_recovers_pending_open_after_failed_quit_and_restart ... PASS failed quit, cancellation-before-rejection=false; restored once; no writer after teardown
+PASS failed quit, cancellation-before-rejection=true; restored once; no writer after teardown
+PASS successful quit with pending open: no resurrection, write or ready acknowledgement
+PASS failed restart, cancellation-before-rejection=false; restored once; no writer after teardown
+PASS failed restart, cancellation-before-rejection=true; restored once; no writer after teardown
+PASS successful restart with pending open: no resurrection, write or ready acknowledgement
+quit: recovery correctly withheld during delayed failure completion
+READY ACCEPTED: failure_completed=true
+PASS ordered quit: app.restoreReady accepted exactly once after failure completion
+restart-launch: recovery correctly withheld during delayed failure completion
+READY ACCEPTED: failure_completed=true
+PASS ordered restart-launch: app.restoreReady accepted exactly once after failure completion
+restart-ready: recovery correctly withheld during delayed failure completion
+READY ACCEPTED: failure_completed=true
+PASS ordered restart-ready: app.restoreReady accepted exactly once after failure completion
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 68 filtered out; finished in 0.50s
+

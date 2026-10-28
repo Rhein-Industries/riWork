@@ -1,0 +1,73 @@
+{
+  "status": "passed",
+  "evidence_provenance": "phase6a_settings.py completed with exit 0; all three commands reported exit 0; combined stdout/stderr .log files copied byte-for-byte to .stdout for the archive allowlist",
+  "commands": [
+    {
+      "argv": [
+        "/Users/dominik/.cargo/bin/cargo",
+        "run",
+        "--locked",
+        "--offline",
+        "-p",
+        "riwork-nsh-native",
+        "--features",
+        "test-support",
+        "--example",
+        "p1_workspace_fixture_home",
+        "--",
+        "--scenario",
+        "p1-layouts",
+        "--out",
+        "/private/tmp/riwork-phase6c-focus/settings-final/home"
+      ],
+      "log": "seed.log",
+      "raw_source": "/tmp/riwork-phase6c-focus/settings-final/seed.log",
+      "archived_log": "seed.stdout",
+      "sha256": "b1e0208f388f5d1052dce4799bd96e35a61292c271f210a69c4fb6ee1480d6e8"
+    },
+    {
+      "argv": [
+        "/tmp/riwork-nsh-toolchain-60f8aec4.18l3zV/nsh-cli-0.3.0/bin/nsh",
+        "check",
+        "apps/riwork",
+        "--tsc",
+        "/Users/dominik/Library/Caches/nsh/typescript-7.0.2-darwin-arm64/package/lib/tsc"
+      ],
+      "log": "nsh-check.log",
+      "raw_source": "/tmp/riwork-phase6c-focus/settings-final/nsh-check.log",
+      "archived_log": "nsh-check.stdout",
+      "sha256": "d0284c21cc27fc24d6a343ba4ba852da4af570dd89722ec182a2b0a406df2f53"
+    },
+    {
+      "argv": [
+        "/tmp/riwork-nsh-toolchain-60f8aec4.18l3zV/nsh-cli-0.3.0/bin/nsh",
+        "test",
+        "apps/riwork",
+        "--junit",
+        "/private/tmp/riwork-phase6c-focus/settings-final/nsh.xml",
+        "--filter",
+        "P6a"
+      ],
+      "log": "nsh-test.log",
+      "raw_source": "/tmp/riwork-phase6c-focus/settings-final/nsh-test.log",
+      "archived_log": "nsh-test.stdout",
+      "sha256": "ac6005aec7d8a573aaeb4c0207f918b2d92589edaf4d79174a2f38864ebb77c3"
+    }
+  ],
+  "verification_environment": "private HOME/RIWORK_HOME, fake accounts/API key/import and sessions; headless only; jobs=2; offline",
+  "runner_declared_environment": {
+    "HOME": "/tmp/riwork-phase6c-focus/settings-final/os-home",
+    "RIWORK_HOME": "/tmp/riwork-phase6c-focus/settings-final/home",
+    "RIWORK_RUNTIME_DIR": "/tmp/riwork-phase6c-focus/settings-final/runtime",
+    "TMPDIR": "/tmp/riwork-phase6c-focus/settings-final/tmp",
+    "TMUX_TMPDIR": "/tmp/riwork-phase6c-focus/settings-final/tmux",
+    "CARGO_TARGET_DIR": "/Users/dominik/orca/projects/riWork-nsh-p1-fix-host/target",
+    "CARGO_BUILD_JOBS": "2",
+    "CARGO_NET_OFFLINE": "true",
+    "NSH_CACHE": "/tmp/riwork-phase6c-focus/settings-final/nsh-cache",
+    "ORCA_USER_DATA_PATH": "/tmp/riwork-phase6c-focus/settings-final/os-home/fixture-orca",
+    "CARGO": "/tmp/riwork-phase6c-focus/settings-final/cargo-fixture"
+  },
+  "live_targets_touched": "none beyond own shell/worktree",
+  "effective_service_tier": "default, Fast off (user verified); model/effort/account unchanged; no descendants"
+}

@@ -13,6 +13,10 @@ use riwork_core::{
 };
 use serde::{Deserialize, Serialize};
 
+#[path = "settings_forms.rs"]
+pub mod forms;
+pub use forms::{DelegationDto, DelegationPatch, ModelChoiceDto, RouteChoiceDto, RouteDto};
+
 use crate::{
     appearance::AppearanceDto,
     hub::{Hub, Snapshot, TopicSubscription},
@@ -61,6 +65,21 @@ pub struct SettingsDto {
     pub use_riwork_colors: bool,
     pub native_terminal_colors: bool,
     pub open_preview_on_select: bool,
+    pub remember_window_size: bool,
+    pub panel_tab_icons: bool,
+    pub tab_close_behavior: String,
+    pub agent_inline_mode: bool,
+    pub agent_terminals_unrestricted: bool,
+    pub dictation_mic: bool,
+    pub claude_chat_ignores_api_key: bool,
+    pub codex_subscription_balancing: bool,
+    pub dashboard_haiku_summaries: bool,
+    pub orchestrator_mode: String,
+    pub orchestrator_chat_provider: String,
+    pub orchestrator_chat_model: Option<String>,
+    pub orchestrator_unreadable_note: Option<String>,
+    pub model_choices: Vec<ModelChoiceDto>,
+    pub delegation: DelegationDto,
     pub ui_text_size: f32,
     pub ui_text_matches_terminal: bool,
     pub interface_font: String,
@@ -78,6 +97,24 @@ pub struct SettingsPatch {
     pub use_riwork_colors: Option<bool>,
     pub native_terminal_colors: Option<bool>,
     pub open_preview_on_select: Option<bool>,
+    pub remember_window_size: Option<bool>,
+    pub panel_tab_icons: Option<bool>,
+    pub tab_close_behavior: Option<String>,
+    pub agent_inline_mode: Option<bool>,
+    pub agent_terminals_unrestricted: Option<bool>,
+    pub dictation_mic: Option<bool>,
+    pub claude_chat_ignores_api_key: Option<bool>,
+    pub codex_subscription_balancing: Option<bool>,
+    pub dashboard_haiku_summaries: Option<bool>,
+    pub orchestrator_mode: Option<String>,
+    pub orchestrator_chat_provider: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "forms::nullable",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub orchestrator_chat_model: Option<Option<String>>,
+    pub delegation_patch: Option<DelegationPatch>,
     pub ui_text_size: Option<f32>,
     pub ui_text_matches_terminal: Option<bool>,
     pub interface_font: Option<String>,
@@ -117,6 +154,33 @@ impl SettingsDto {
             use_riwork_colors: settings.use_riwork_colors,
             native_terminal_colors: settings.native_terminal_colors,
             open_preview_on_select: settings.open_preview_on_select,
+            remember_window_size: settings.remember_window_size,
+            panel_tab_icons: settings.panel_tab_icons,
+            tab_close_behavior: serde_json::to_value(settings.tab_close_behavior)
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .into(),
+            agent_inline_mode: settings.agent_inline_mode,
+            agent_terminals_unrestricted: settings.agent_terminals_unrestricted,
+            dictation_mic: settings.dictation_mic,
+            claude_chat_ignores_api_key: settings.claude_chat_billing.ignores_api_key(),
+            codex_subscription_balancing: settings.codex_subscription_balancing,
+            dashboard_haiku_summaries: settings.dashboard_haiku_summaries,
+            orchestrator_mode: serde_json::to_value(settings.orchestrator_mode)
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .into(),
+            orchestrator_chat_provider: forms::provider_word(settings.orchestrator_chat_provider)
+                .into(),
+            orchestrator_chat_model: settings.orchestrator_chat_model.clone(),
+            orchestrator_unreadable_note: settings.orchestrator_unreadable_note(),
+            model_choices: forms::model_choices(
+                settings.orchestrator_chat_provider,
+                settings.orchestrator_chat_model.as_deref(),
+            ),
+            delegation: DelegationDto::global(settings),
             ui_text_size: settings.ui_text_size.points(),
             ui_text_matches_terminal: settings.ui_text_matches_terminal,
             interface_font: match settings.interface_font {
@@ -171,6 +235,19 @@ struct ValidatedPatch {
     use_riwork_colors: Option<bool>,
     native_terminal_colors: Option<bool>,
     open_preview_on_select: Option<bool>,
+    remember_window_size: Option<bool>,
+    panel_tab_icons: Option<bool>,
+    tab_close_behavior: Option<riwork_core::settings::TabCloseBehavior>,
+    agent_inline_mode: Option<bool>,
+    agent_terminals_unrestricted: Option<bool>,
+    dictation_mic: Option<bool>,
+    claude_chat_ignores_api_key: Option<bool>,
+    codex_subscription_balancing: Option<bool>,
+    dashboard_haiku_summaries: Option<bool>,
+    orchestrator_mode: Option<riwork_core::settings::OrchestratorMode>,
+    orchestrator_chat_provider: Option<riwork_core::provider::Provider>,
+    orchestrator_chat_model: Option<Option<String>>,
+    delegation_patch: Option<DelegationPatch>,
     ui_text_size: Option<TextPoints>,
     ui_text_matches_terminal: Option<bool>,
     interface_font: Option<InterfaceFont>,
@@ -227,11 +304,50 @@ impl SettingsPatch {
                 )
             })
             .transpose()?;
+        if let Some(patch) = &self.delegation_patch {
+            patch.validate()?;
+        }
+        let orchestrator_chat_model = self
+            .orchestrator_chat_model
+            .as_ref()
+            .map(|value| value.as_deref().map(forms::checked_model).transpose())
+            .transpose()?;
         Ok(ValidatedPatch {
             theme: self.theme.as_deref().map(parse_theme).transpose()?,
             use_riwork_colors: self.use_riwork_colors,
             native_terminal_colors: self.native_terminal_colors,
             open_preview_on_select: self.open_preview_on_select,
+            remember_window_size: self.remember_window_size,
+            panel_tab_icons: self.panel_tab_icons,
+            tab_close_behavior: self
+                .tab_close_behavior
+                .as_ref()
+                .map(|value| {
+                    serde_json::from_value(serde_json::json!(value))
+                        .map_err(|_| format!("invalid: unknown tab_close_behavior {value:?}"))
+                })
+                .transpose()?,
+            agent_inline_mode: self.agent_inline_mode,
+            agent_terminals_unrestricted: self.agent_terminals_unrestricted,
+            dictation_mic: self.dictation_mic,
+            claude_chat_ignores_api_key: self.claude_chat_ignores_api_key,
+            codex_subscription_balancing: self.codex_subscription_balancing,
+            dashboard_haiku_summaries: self.dashboard_haiku_summaries,
+            orchestrator_mode: self
+                .orchestrator_mode
+                .as_ref()
+                .map(|value| {
+                    serde_json::from_value(serde_json::json!(value))
+                        .map_err(|_| format!("invalid: unknown orchestrator_mode {value:?}"))
+                })
+                .transpose()?,
+            orchestrator_chat_provider: self
+                .orchestrator_chat_provider
+                .as_deref()
+                .map(forms::parse_provider)
+                .transpose()?,
+            orchestrator_chat_model,
+            delegation_patch: self.delegation_patch.clone(),
             ui_text_size: self.ui_text_size.map(TextPoints::new),
             ui_text_matches_terminal: self.ui_text_matches_terminal,
             interface_font,
@@ -242,6 +358,46 @@ impl SettingsPatch {
 
 impl ValidatedPatch {
     fn apply(self, settings: &mut CoreSettings) {
+        if let Some(value) = self.remember_window_size {
+            settings.remember_window_size = value;
+        }
+        if let Some(value) = self.panel_tab_icons {
+            settings.panel_tab_icons = value;
+        }
+        if let Some(value) = self.tab_close_behavior {
+            settings.tab_close_behavior = value;
+        }
+        if let Some(value) = self.agent_inline_mode {
+            settings.agent_inline_mode = value;
+        }
+        if let Some(value) = self.agent_terminals_unrestricted {
+            settings.agent_terminals_unrestricted = value;
+        }
+        if let Some(value) = self.dictation_mic {
+            settings.dictation_mic = value;
+        }
+        if let Some(value) = self.claude_chat_ignores_api_key {
+            settings.claude_chat_billing =
+                riwork_core::provider::ClaudeBilling::from_ignores_api_key(value);
+        }
+        if let Some(value) = self.codex_subscription_balancing {
+            settings.codex_subscription_balancing = value;
+        }
+        if let Some(value) = self.dashboard_haiku_summaries {
+            settings.dashboard_haiku_summaries = value;
+        }
+        if let Some(value) = self.orchestrator_mode {
+            settings.choose_orchestrator_mode(value);
+        }
+        if let Some(value) = self.orchestrator_chat_provider {
+            settings.choose_orchestrator_provider(value);
+        }
+        if let Some(value) = self.orchestrator_chat_model {
+            settings.choose_orchestrator_model(value);
+        }
+        if let Some(patch) = self.delegation_patch {
+            patch.apply(&mut settings.delegation_policy);
+        }
         if let Some(value) = self.theme {
             settings.theme = value;
         }
@@ -285,6 +441,8 @@ pub enum StatusChange {
         visible: bool,
     },
     Enabled(bool),
+    UsageMode(riwork_core::status_bar::UsageMode),
+    Reset,
 }
 
 /// Synchronous domain seam. Every call belongs on the bridge blocking pool.
@@ -313,6 +471,38 @@ impl SettingsBackend for CoreSettingsBackend {
     }
     fn set(&self, patch: SettingsPatch) -> Result<CoreSettings, String> {
         let selected = [
+            (patch.remember_window_size.is_some(), "remember_window_size"),
+            (patch.panel_tab_icons.is_some(), "panel_tab_icons"),
+            (patch.tab_close_behavior.is_some(), "tab_close_behavior"),
+            (patch.agent_inline_mode.is_some(), "agent_inline_mode"),
+            (
+                patch.agent_terminals_unrestricted.is_some(),
+                "agent_terminals_unrestricted",
+            ),
+            (patch.dictation_mic.is_some(), "dictation_mic"),
+            (
+                patch.claude_chat_ignores_api_key.is_some(),
+                "claude_chat_ignores_api_key",
+            ),
+            (
+                patch.codex_subscription_balancing.is_some(),
+                "codex_subscription_balancing",
+            ),
+            (
+                patch.dashboard_haiku_summaries.is_some(),
+                "dashboard_haiku_summaries",
+            ),
+            (patch.orchestrator_mode.is_some(), "orchestrator_mode"),
+            (
+                patch.orchestrator_chat_provider.is_some(),
+                "orchestrator_chat_provider",
+            ),
+            (
+                patch.orchestrator_chat_provider.is_some()
+                    || patch.orchestrator_chat_model.is_some(),
+                "orchestrator_chat_model",
+            ),
+            (patch.delegation_patch.is_some(), "delegation_policy"),
             (patch.theme.is_some(), "theme"),
             (patch.use_riwork_colors.is_some(), "use_riwork_colors"),
             (
@@ -357,6 +547,8 @@ impl SettingsBackend for CoreSettingsBackend {
                     settings.status_bar.set_visible(kind, visible)
                 }
                 StatusChange::Enabled(enabled) => settings.status_bar.enabled = enabled,
+                StatusChange::UsageMode(mode) => settings.status_bar.usage_mode = mode,
+                StatusChange::Reset => settings.status_bar = Default::default(),
             })
             .map_err(service::io_error)
     }
@@ -427,6 +619,10 @@ impl PreferenceService {
             }
         }
         self.publish(&state);
+    }
+    pub(crate) fn core(&self) -> (CoreSettings, Option<String>) {
+        let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        (state.settings.clone(), state.error.clone())
     }
     pub fn get(&self) -> SettingsDto {
         let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
@@ -540,6 +736,16 @@ impl Settings {
         let preferences = service::initialize().await?.preferences.clone();
         blocking(move || preferences.change_status(StatusChange::Enabled(enabled))).await
     }
+    pub async fn set_usage_mode(mode: String) -> Result<SettingsDto, String> {
+        let mode = serde_json::from_value(serde_json::json!(mode))
+            .map_err(|_| "invalid: unknown account usage mode".to_string())?;
+        let preferences = service::initialize().await?.preferences.clone();
+        blocking(move || preferences.change_status(StatusChange::UsageMode(mode))).await
+    }
+    pub async fn reset_status_bar() -> Result<SettingsDto, String> {
+        let preferences = service::initialize().await?.preferences.clone();
+        blocking(move || preferences.change_status(StatusChange::Reset)).await
+    }
     pub fn sentence_case(text: String) -> String {
         ui_text::sentence_case(&text)
     }
@@ -591,6 +797,8 @@ macro_rules! snapshot_js_value {
     };
 }
 
+pub(crate) use snapshot_js_value;
+
 snapshot_js_value!(SettingsDto, "SettingsEvent");
 
 // JsObject intentionally decodes only declared properties. Patches instead use
@@ -598,8 +806,8 @@ snapshot_js_value!(SettingsDto, "SettingsEvent");
 impl JsValue for SettingsPatch {
     fn ts_type(types: &mut TsTypes) -> String {
         types.declare("SettingsPatch", |types| format!(
-            "export interface SettingsPatch {{ theme?: string; useRiworkColors?: boolean; nativeTerminalColors?: boolean; openPreviewOnSelect?: boolean; uiTextSize?: number; uiTextMatchesTerminal?: boolean; interfaceFont?: 'system' | 'system_mono'; statusBar?: {}; }}",
-            StatusBarDto::ts_type(types)))
+            "export interface SettingsPatch {{ theme?: string; useRiworkColors?: boolean; nativeTerminalColors?: boolean; openPreviewOnSelect?: boolean; uiTextSize?: number; uiTextMatchesTerminal?: boolean; interfaceFont?: 'system' | 'system_mono'; rememberWindowSize?: boolean; panelTabIcons?: boolean; tabCloseBehavior?: 'ask' | 'detach' | 'exit'; agentInlineMode?: boolean; agentTerminalsUnrestricted?: boolean; dictationMic?: boolean; claudeChatIgnoresApiKey?: boolean; codexSubscriptionBalancing?: boolean; dashboardHaikuSummaries?: boolean; orchestratorMode?: 'automatic' | 'terminal' | 'chat'; orchestratorChatProvider?: 'codex' | 'claude' | 'muse'; orchestratorChatModel?: string | null; statusBar?: {}; delegationPatch?: {}; }}",
+            StatusBarDto::ts_type(types), DelegationPatch::ts_type(types)))
     }
     fn from_js(value: JsIn<'_>) -> Result<Self, PropError> {
         serde_json::from_value(JsonValue::from_js(value)?)

@@ -538,7 +538,8 @@ impl LayoutSession {
             "kind":match tab {SavedTab::Shell{..}=>"shell",SavedTab::Panel{..}=>"panel",SavedTab::RemoteShell{..}=>"remote_shell",SavedTab::Chat{..}=>"chat",SavedTab::AppPreview{..}=>"app_preview"},
             "title":entry.map(|e|e.title.clone()).unwrap_or_else(||tab_title(tab)),
             "shared":entry.is_some(),"status":entry.map(|e|e.status.clone()),"worker":entry.is_some_and(|e|e.worker)||shell.is_some_and(|s|s.worker()),
-            "parent":entry.and_then(|e|e.parent.clone())})
+            "parent":entry.and_then(|e|e.parent.clone()),
+            "previewSpec":match tab {SavedTab::AppPreview{spec,..}=>serde_json::to_value(spec).ok(),_=>None}})
     }
 
     /// Rust-only gesture replay; returns the shared Move its caller must apply.
@@ -675,6 +676,37 @@ impl LayoutSession {
     /// Remove this window's tab while preserving its persistent tmux session.
     pub fn detach_shell(&mut self, shell_id: String) -> Result<Value, String> {
         self.edit(|model| model.detach_shell(&shell_id).map(|next| (next, true)))
+    }
+
+    /// Reveal Cua setup at startup in the active pane, without changing menu routing.
+    pub fn open_cua_setup(&mut self) -> Result<Value, String> {
+        self.edit(|model| model.open_cua_setup().map(|next| (next, true)))
+    }
+
+    /// Opening/restoring a preview only persists its idle configuration.
+    pub fn open_app_preview(&mut self, spec: Value) -> Result<Value, String> {
+        if self.data.root.is_none() {
+            return Err("unavailable: app previews require a local project".into());
+        }
+        let spec = serde_json::from_value(spec).map_err(|e| format!("invalid: {e}"))?;
+        let id = uuid::Uuid::new_v4().to_string();
+        self.edit(|model| {
+            model
+                .open_tab(SavedTab::AppPreview {
+                    preview_id: id,
+                    spec,
+                })
+                .map(|next| (next, true))
+        })
+    }
+
+    pub fn configure_app_preview(&mut self, id: String, spec: Value) -> Result<Value, String> {
+        let spec = serde_json::from_value(spec).map_err(|e| format!("invalid: {e}"))?;
+        self.edit(|model| {
+            model
+                .configure_app_preview(&id, spec)
+                .map(|next| (next, true))
+        })
     }
 
     /// Open a navigation panel or select its existing stable tab identity.
@@ -1315,7 +1347,12 @@ fn tab_title(tab: &SavedTab) -> String {
             shell_id,
         } => format!("{shell_id} · {desktop_id}"),
         SavedTab::Chat { chat_id } => format!("Chat · {chat_id}"),
-        SavedTab::AppPreview { .. } => "App preview".into(),
+        SavedTab::AppPreview { spec, .. } => spec
+            .cwd
+            .file_name()
+            .filter(|name| !name.is_empty())
+            .map(|name| format!("Preview · {}", name.to_string_lossy()))
+            .unwrap_or_else(|| "App Preview".into()),
     }
 }
 

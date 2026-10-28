@@ -1,0 +1,49 @@
+{
+  "verification_environment": "private HOME/RIWORK_HOME; headless fixtures and fake backends only",
+  "mode": "base",
+  "repo": "/Users/dominik/orca/projects/riWork-nsh-p1-fix-host",
+  "root": "/private/tmp/riwork-phase6c-focus",
+  "target_dir": "/Users/dominik/orca/projects/riWork-nsh-p1-fix-host/target",
+  "commands": [
+    {
+      "name": "base-suite",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "nsh-base",
+        "--locked",
+        "--offline"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-p1-fix-host",
+      "environment": {
+        "HOME": "/Users/dominik/orca/projects/riWork-nsh-p1-fix-host/target/nsh-integration-home-4r9sw5r4",
+        "PATH": "/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/opt/homebrew/Caskroom/codex/0.162.1/codex-path:/Users/dominik/.okc/bin:/Users/dominik/.grok/bin:/Users/dominik/.bun/bin:/Users/dominik/.bun/bin:/Users/dominik/.opencode/bin:/opt/homebrew/opt/openjdk@17/bin:/Users/dominik/.bun/bin:/Users/dominik/.pyenv/shims:/Users/dominik/.avm/bin:/Users/dominik/.bun/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/System/Cryptexes/App/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/local/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/bin:/var/run/com.apple.security.cryptexd/codex.system/bootstrap/usr/appleinternal/bin:/opt/pmk/env/global/bin:/Library/Apple/usr/bin:/usr/local/share/dotnet:~/.dotnet/tools:/opt/homebrew/Cellar/openjdk@17/17.0.17/libexec/openjdk.jdk/Contents/Home/bin:/Users/dominik/.codex/tmp/arg0/codex-arg0YIBYhl:/opt/homebrew/Caskroom/codex/0.162.1/codex-path:/Users/dominik/.local/share/riwork/cua/harness-bin:/Users/dominik/.okc/bin:/Users/dominik/Library/pnpm:/Users/dominik/.grok/bin:/Users/dominik/.bun/bin:/Users/dominik/.opencode/bin:/opt/homebrew/opt/openjdk@17/bin:/Users/dominik/.avm/bin:/Users/dominik/.local/share/solana/install/active_release/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/Users/dominik/.starkli/bin:/Users/dominik/Library/Application Support/org.dfinity.dfx/bin:/Users/dominik/.cargo/bin:/Users/dominik/.local/bin:/Users/dominik/.docker/bin:/Users/dominik/.cache/lm-studio/bin:/Users/dominik/.nargo/bin:/opt/local/bin:/Users/dominik/.docker/bin:/Users/dominik/.cache/lm-studio/bin:/Users/dominik/.nargo/bin:/Users/dominik/.local/bin",
+        "RIWORK_HOME": "/private/tmp/riwork-phase6c-focus/base-51y41jq6/state",
+        "RIWORK_RUNTIME_DIR": "/private/tmp/riwork-phase6c-focus/base-51y41jq6/runtime",
+        "TMPDIR": "/tmp",
+        "TMUX_TMPDIR": "/private/tmp/riwork-phase6c-focus/base-51y41jq6/tmux",
+        "XDG_CONFIG_HOME": "/Users/dominik/orca/projects/riWork-nsh-p1-fix-host/target/nsh-integration-home-4r9sw5r4/.config",
+        "CARGO_HOME": "/Users/dominik/.cargo",
+        "RUSTUP_HOME": "/Users/dominik/.rustup",
+        "CARGO_TARGET_DIR": "/Users/dominik/orca/projects/riWork-nsh-p1-fix-host/target",
+        "CARGO_BUILD_JOBS": "2",
+        "CARGO_NET_OFFLINE": "true",
+        "NSH_CACHE": "/private/tmp/riwork-phase6c-focus/nsh-cache",
+        "NSH_TSC": "/Users/dominik/Library/Caches/nsh/typescript-7.0.2-darwin-arm64/package/lib/tsc",
+        "RIWORK_GHOSTTY_INSTALL_DIR": "/Users/dominik/orca/projects/riWork-nsh-p2-terminals/crates/riwork-nsh-terminal/.runtime/pinned/install"
+      },
+      "stdout": "/private/tmp/riwork-phase6c-focus/base-51y41jq6/base-suite.stdout",
+      "stderr": "/private/tmp/riwork-phase6c-focus/base-51y41jq6/base-suite.stderr",
+      "exit_code": 0,
+      "duration_seconds": 53.26,
+      "stdout_sha256": "34f3449af087e43864bfca5552c7d630c14c0d1476d2590983fcd752ed23907d",
+      "stderr_sha256": "f25005be545ed436192ef9438b5f6ec63dbdf2075d65fa5b18a2d81eac5ad4bd"
+    }
+  ],
+  "status": "passed",
+  "assignment": "8fb9a8cb-761d-4c58-a3d6-44c53c24dc91",
+  "live_targets_touched": "none beyond own shell/worktree",
+  "service_tier": "default (Fast off); GPT-6-Astra ultra; system-default account",
+  "descendants_spawned": 0
+}

@@ -202,6 +202,16 @@ impl LayoutModel {
         }
     }
 
+    /// Missing-driver startup opens Settings in the active pane (SHELL-009).
+    pub fn open_cua_setup(&mut self) -> Result<DockAreaLayout, String> {
+        self.open_tab_in(
+            SavedTab::Panel {
+                panel: PanelKind::Settings,
+            },
+            self.project.active_pane,
+        )
+    }
+
     /// File selection and terminal links reveal panels without moving keyboard
     /// focus. Core owns the main-pane, locked-pane and terminal visibility rules.
     pub fn reveal_panel(
@@ -528,6 +538,26 @@ impl LayoutModel {
         self.project = candidate;
         self.allocated_pane_ids.insert(id);
         self.restore_focus(false, false);
+        Ok(self.dock(self.extent.unwrap_or(DEFAULT_EXTENT)))
+    }
+
+    pub fn configure_app_preview(
+        &mut self,
+        id: &str,
+        spec: riwork_core::app_preview::PreviewSpec,
+    ) -> Result<DockAreaLayout, String> {
+        let key = self.tab_key(id);
+        let tab = self
+            .project
+            .panes
+            .values_mut()
+            .flat_map(|pane| &mut pane.tabs)
+            .find(|tab| tab.key() == key)
+            .ok_or("not_found: preview tab")?;
+        match tab {
+            SavedTab::AppPreview { spec: saved, .. } => *saved = spec,
+            _ => return Err("invalid: expected preview tab".into()),
+        }
         Ok(self.dock(self.extent.unwrap_or(DEFAULT_EXTENT)))
     }
 

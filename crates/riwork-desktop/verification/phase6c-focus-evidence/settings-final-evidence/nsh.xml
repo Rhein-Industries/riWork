@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="nsh test" tests="17" failures="0" errors="0" skipped="0" time="42.405">
+  <testsuite name="apps/riwork/settings/project_model.test.ts" tests="4" failures="0" errors="0" skipped="0" time="0.000">
+    <testcase classname="apps/riwork/settings/project_model.test.ts" name="P6a Project settings immediate choices and external refresh keep explicit metadata edits pending" time="0.000"/>
+    <testcase classname="apps/riwork/settings/project_model.test.ts" name="P6a Project settings metadata receipts preserve edits made during save" time="0.000"/>
+    <testcase classname="apps/riwork/settings/project_model.test.ts" name="P6a Project settings refresh follows untouched metadata and drops deleted folder choices" time="0.000"/>
+    <testcase classname="apps/riwork/settings/project_model.test.ts" name="P6a Project settings folder A-B-A edits survive a B snapshot before its save receipt" time="0.000"/>
+  </testsuite>
+  <testsuite name="apps/riwork/settings/settings_model.test.ts" tests="2" failures="0" errors="0" skipped="0" time="0.000">
+    <testcase classname="apps/riwork/settings/settings_model.test.ts" name="P6a settings width classes preserve the nine-section keyboard order" time="0.000"/>
+    <testcase classname="apps/riwork/settings/settings_model.test.ts" name="P6a custom orchestrator model validation never replaces an unreadable choice without a valid edit" time="0.000"/>
+  </testsuite>
+  <testsuite name="apps/riwork/tests/AppSettings.test.tsx" tests="7" failures="0" errors="0" skipped="0" time="10.469">
+    <testcase classname="apps/riwork/tests/AppSettings.test.tsx" name="P6a global settings save appearance, agent choices, and only the selected delegation field" time="3.045"/>
+    <testcase classname="apps/riwork/tests/AppSettings.test.tsx" name="P6a status settings bound reordering, change usage mode, and reset the domain defaults" time="1.598"/>
+    <testcase classname="apps/riwork/tests/AppSettings.test.tsx" name="P6a account rows retain unavailable choices and key input validates a masked paste without exposing it" time="1.844"/>
+    <testcase classname="apps/riwork/tests/AppSettings.test.tsx" name="P6a an API key reveal requested before settings load focuses the mounted secure input" time="0.387"/>
+    <testcase classname="apps/riwork/tests/AppSettings.test.tsx" name="P6a opening Settings focuses the selected theme after its asynchronous settings delivery" time="0.850"/>
+    <testcase classname="apps/riwork/tests/AppSettings.test.tsx" name="P6a theme arrows move focus before Enter while choice arrows save and skip unavailable chips" time="1.879"/>
+    <testcase classname="apps/riwork/tests/AppSettings.test.tsx" name="P6a Orca import keeps a stale preview from confirming and reports a successful refreshed import" time="0.865"/>
+  </testsuite>
+  <testsuite name="apps/riwork/tests/ProjectSettings.test.tsx" tests="2" failures="0" errors="0" skipped="0" time="3.145">
+    <testcase classname="apps/riwork/tests/ProjectSettings.test.tsx" name="P6a Project settings explicit metadata survives immediate account saves and external refresh" time="1.741"/>
+    <testcase classname="apps/riwork/tests/ProjectSettings.test.tsx" name="P6a Project settings inline subfolders wait for explicit Save and Cmd+S saves memo too" time="1.405"/>
+  </testsuite>
+  <testsuite name="apps/riwork/tests/SettingsRouting.test.tsx" tests="2" failures="0" errors="0" skipped="0" time="2.894">
+    <testcase classname="apps/riwork/tests/SettingsRouting.test.tsx" name="P6a Settings keyboard and host routes reuse panels and status preferences update the workspace" time="1.392"/>
+    <testcase classname="apps/riwork/tests/SettingsRouting.test.tsx" name="P6a status account picker writes project scope and keeps the app default" time="1.502"/>
+  </testsuite>
+</testsuites>

@@ -1,3 +1,4 @@
+import { useCua } from "./CuaSetup";
 import { Text, View, cleanup, host, mount, signal } from "nsh";
 import { Store, Layouts, type LayoutSession } from "riwork/native";
 import { Workspace } from "./Workspace";
@@ -8,6 +9,7 @@ import { useAppearance } from "./appearance";
 function App() {
   const params = host.params as unknown as HostParams;
   const ui = useAppearance(params);
+  useCua();
   const session = signal<LayoutSession | null>(null);
   const notice = signal(params.notice ?? "Loading workspace…");
   const name = params.path?.split("/").filter(Boolean).pop() ?? "Workspace";

@@ -27,6 +27,7 @@ export interface PanelModel {
   id: string;
   kind: PanelKind;
   title: string;
+  previewSpec?: import("./AppPreviewTab").PreviewSpec;
   status?: PanelStatus;
   worker?: boolean;
   projectId?: string;

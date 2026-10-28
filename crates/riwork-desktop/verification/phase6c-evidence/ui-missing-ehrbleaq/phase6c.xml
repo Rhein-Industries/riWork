@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="nsh test" tests="1" failures="0" errors="0" skipped="0" time="7.965">
+  <testsuite name="apps/riwork/tests/Phase6c.test.tsx" tests="1" failures="0" errors="0" skipped="0" time="0.222">
+    <testcase classname="apps/riwork/tests/Phase6c.test.tsx" name="CuaMissing opens Settings in the active pane using fixture status only" time="0.222"/>
+  </testsuite>
+</testsuites>

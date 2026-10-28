@@ -1,0 +1,4 @@
+    Checking nsh-base v0.3.0 (/Users/dominik/orca/projects/riWork-nsh-p1-fix-host/apps/riwork/vendor/nsh-base)
+    Checking riwork-nsh-workspace v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p1-fix-host/apps/riwork)
+    Checking riwork-nsh-native v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p1-fix-host/crates/riwork-nsh-native)
+    Finished `dev` profile [unoptimized] target(s) in 6.13s

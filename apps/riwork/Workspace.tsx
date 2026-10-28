@@ -1,3 +1,5 @@
+import { AppPreviewTab } from "./AppPreviewTab";
+import { CuaSetup, useCua, type CuaSetupControl } from "./CuaSetup";
 import { Clipboard, Overlay, Scroll, Text, View, cleanup, colorScheme, computed, createAnimatedValue, effect, host, keymap, signal, type Point, type YNode } from "nsh";
 import { Button, Dialog, Input, Popover, type DockAreaLayout, type DockAreaRef, type DockNode } from "nsh/base";
 import { Menu, Window, type MenuItem } from "nsh/desktop";
@@ -17,12 +19,14 @@ import {
 import { DEFAULT_THEME, space, type InterfaceTheme } from "./appearance";
 import { StatusBar } from "./StatusBar";
 import { ChatTab } from "./chat/ChatTab";
-import { createFilesController, FilesPanel, PreviewPanel, MemoEditor } from "./Files";
+import { createFilesController, FilesPanel, PreviewPanel } from "./Files";
 import { AutomationsPanel } from "./schedules/Automations";
 import { createRemoteController, RemoteProjects, RemoteProjectPanel, RemotePrompt, RemoteSettings, RemoteUnavailable, type RemoteApi } from "./remote/Remote";
 import { RemoteTerminal } from "./remote/RemoteTerminal";
 import { remoteHostLabel, remoteLocalOnly, remotePanelUnavailable, remoteProjectKey, remoteTitle } from "./remote/model";
 import { workspaceRemote, type WorkspaceRemoteApi } from "./remote/workspace";
+import { AppSettings } from "./settings/AppSettings";
+import { ProjectSettingsPanel } from "./settings/ProjectSettings";
 
 type Extent = { width: number; height: number };
 interface WorkspaceProps {
@@ -160,6 +164,20 @@ export function Workspace(props: WorkspaceProps) {
     const refusal = remoteLocalOnly(remote.data(), projectId());
     if (refusal) notice.set(refusal);
     return !!refusal;
+  }
+  const cua = useCua();
+  const cuaFocus = signal<CuaSetupControl | null>(null);
+  let cuaStartupChecked = false;
+  effect(() => {
+    const status = cua.state().status;
+    if (!status || cuaStartupChecked) return;
+    cuaStartupChecked = true;
+    if (!status.installed) action(() => session.openCuaSetup());
+  });
+  function newAppPreview() {
+    const cwd = filesRoot();
+    if (!cwd || snapshot().remoteProject) { notice.set("App previews require a local project folder."); return; }
+    action(() => session.openAppPreview({ command: "", cwd, mode: "cooperative" }));
   }
   function filesRoot() {
     if (snapshot().remoteProject || !panelState.loaded()) return null;
@@ -498,6 +516,9 @@ export function Workspace(props: WorkspaceProps) {
       void host.call("window.open", { kind: "global", view: "dashboard", start: false }).catch((error) => notice.set(String(error)));
     } else action(() => session.openPanel(panel));
   }
+  let settingsControl: { revealApiKey: () => void } | undefined;
+  let projectSettingsControl: { revealMemo: () => void } | undefined;
+  let revealSettingsKey = false, revealProjectMemo = false;
   function paneWidth(id: number) {
     const nodeWidth = (node: DockNode, available: number): number | undefined => {
       if (node.type === "tabs") return node.id === id ? available : undefined;
@@ -561,7 +582,8 @@ export function Workspace(props: WorkspaceProps) {
       ...[["Codex", "mod+shift+c"], ["Claude", "mod+shift+l"], ["Grok", "mod+shift+g"], ["Muse", "mod+shift+u"]].map(([label, shortcut]) => ({ label, shortcut, disabled: !remoteProjectKey(projectId()), onSelect: () => { void createShell(undefined, label.toLowerCase()); } })),
       { label: "Global orchestrator", shortcut: "mod+shift+o", onSelect: openGlobalOrchestrator },
       { label: "Project orchestrator", shortcut: "mod+alt+o", disabled: !UUID.test(projectId()) && !remoteProjectKey(projectId()), onSelect: () => { void openProjectOrchestrator(); } },
-      ...[["New chat…"], ["App preview…"]].map(([label]) => disabled(label)),
+      disabled("New chat…"),
+      { label: "App preview…", disabled: !filesRoot() || !!snapshot().remoteProject, onSelect: newAppPreview },
       { type: "separator" }, disabled("Views"),
       ...VIEWS.map((panel): MenuItem => ({ label: panelTitle(panel), shortcut: VIEW_SHORTCUTS[panel], onSelect: () => view(panel) })),
       { type: "separator" }, disabled("Pane"),
@@ -608,6 +630,7 @@ export function Workspace(props: WorkspaceProps) {
     newSubshell: () => { allTabs.set(false); void createSubshell(); },
     remoteAgent: (kind) => { if (!remoteProjectKey(projectId())) return false; void createShell(undefined, kind); return true; },
     openVim: showVimDialog,
+    appPreview: newAppPreview,
     find,
     closeTab: () => close(),
     closePane: () => closePane(),
@@ -652,7 +675,16 @@ export function Workspace(props: WorkspaceProps) {
     }
     else if ((step?.kind ?? step?.type) === "newSubshell") void createSubshell(step?.parentShellId);
     else if ((step?.kind ?? step?.type) === "openEditor" && step?.path) void openEditor(step.path, step.line, step.worktreeId);
-    else if ((step?.kind ?? step?.type) === "projectMemo") action(() => session.openPanel("project_settings"));
+    else if (kind === "apiKeySettings") {
+      revealSettingsKey = !settingsControl;
+      action(() => session.openPanel("settings"));
+      settingsControl?.revealApiKey();
+    }
+    else if (kind === "projectMemo") {
+      revealProjectMemo = !projectSettingsControl;
+      action(() => session.openPanel("project_settings"));
+      projectSettingsControl?.revealMemo();
+    }
   }));
   cleanup(host.on("project.open", (data) => {
     void switchTo((data as { projectId: string }).projectId).catch((error: unknown) => notice.set(String(error)));
@@ -799,12 +831,18 @@ export function Workspace(props: WorkspaceProps) {
                     <RemoteProjects controller={remote} query={panelState.query} selected={projectId} collapsed={panelState.collapsed} onToggleFolder={panelState.toggleFolder}
                       onSelectProject={(key) => { void switchTo(key).catch((error) => notice.set(String(error))); }} />
                   </Scroll>}
-                </View> : panel.id === "panel:files" || panel.id === "panel:preview" || panel.id === "panel:project_settings" ?
+                </View> : panel.id === "panel:files" || panel.id === "panel:preview" || panel.id === "panel:project_settings" || panel.id === "panel:settings" ?
                 <View testID={`panel:${panel.id}`} style={{ flex: 1, minHeight: 0 }}>
                   {props.diagnostics && <MountProbe id={panel.id} visible={isVisible(panel.id)} theme={theme} />}
                   {panel.id === "panel:files" ? <FilesPanel controller={fileState} surface={panel.id} /> :
                     panel.id === "panel:preview" ? <PreviewPanel controller={fileState} /> :
-                    <MemoEditor projectId={projectId} theme={theme} visible={() => isVisible(panel.id)} />}
+                    panel.id === "panel:settings" ? <AppSettings theme={theme} settings={props.settings} visible={() => isVisible(panel.id)} onError={(error) => notice.set(String(error))} onNotice={(message) => notice.set(message)}
+                      remote={<RemoteSettings controller={remote} />}
+                      computerUseFocus={cuaFocus} computerUse={<CuaSetup theme={theme} visible={isVisible(panel.id)}
+                        onControl={(control) => { cuaFocus.set(control); return () => { if (cuaFocus() === control) cuaFocus.set(null); }; }} />}
+                      onControl={(control) => { settingsControl = control; if (revealSettingsKey) { revealSettingsKey = false; control.revealApiKey(); } return () => { if (settingsControl === control) settingsControl = undefined; }; }} /> :
+                    <ProjectSettingsPanel projectId={projectId} theme={theme} visible={() => isVisible(panel.id)}
+                      onControl={(control) => { projectSettingsControl = control ?? undefined; if (control && revealProjectMemo) { revealProjectMemo = false; control.revealMemo(); } }} />}
                 </View> : panel.id === "panel:schedules" ?
                 <View testID={`panel:${panel.id}`} style={{ flex: 1, minHeight: 0 }}>
                   {props.diagnostics && <MountProbe id={panel.id} visible={isVisible(panel.id)} theme={theme} />}
@@ -833,13 +871,14 @@ export function Workspace(props: WorkspaceProps) {
                     onFocus={() => action(() => session.selectPanel(panel.id))} onLink={openLink} onNotice={(message) => notice.set(message)} />
                 </View> : panel.id.startsWith("chat:") || panel.id.startsWith("chat-pending:") ?
                 <ChatPanel panelId={panel.id} title={findPanel(snapshot(), panel.id) ? displayTitle(findPanel(snapshot(), panel.id)!) : panel.id} /> :
-                <View style={{ flex: 1, minHeight: 0 }}><DeferredPanel id={panel.id}
+                panel.id.startsWith("app_preview:") ?
+                <AppPreviewTab spec={findPanel(snapshot(), panel.id)!.previewSpec!} visible={isVisible(panel.id)} theme={theme}
+                  configure={(spec) => action(() => session.configureAppPreview(panel.id, spec))} /> :
+                <DeferredPanel id={panel.id}
                   title={findPanel(snapshot(), panel.id) ? displayTitle(findPanel(snapshot(), panel.id)!) : panel.id}
-                  theme={theme} settings={props.settings} diagnostics={props.diagnostics} onError={(error) => notice.set(String(error))}
+                  theme={theme} diagnostics={props.diagnostics}
                   visible={isVisible(panel.id)}
-                  onPress={() => { action(() => panel.id.startsWith("empty:") ? session.selectPane(Number(panel.id.slice(6))) : session.selectPanel(panel.id)); focusActive(); }} />
-                  {panel.id === "panel:settings" && <Scroll testID="remote-settings-scroll" style={{ maxHeight: Math.min(320 * theme().scale, (containerHeight() || 600) * 0.45), flexShrink: 1 }}><RemoteSettings controller={remote} /></Scroll>}
-                </View>}
+                  onPress={() => { action(() => panel.id.startsWith("empty:") ? session.selectPane(Number(panel.id.slice(6))) : session.selectPanel(panel.id)); focusActive(); }} />}
             </View>} />}
         </View>
       </View>

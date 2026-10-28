@@ -911,3 +911,7 @@ mod tests {
         assert!(manager.instances().unwrap().is_empty());
     }
 }
+
+#[cfg(test)]
+#[path = "../verification/nsh_cua_guard_tests.rs"]
+mod phase6c_guard_tests;

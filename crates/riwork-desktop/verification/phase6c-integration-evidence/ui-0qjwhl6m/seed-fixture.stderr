@@ -1,0 +1,3 @@
+   Compiling riwork-nsh-native v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p1-fix-host/crates/riwork-nsh-native)
+    Finished `dev` profile [unoptimized] target(s) in 8.39s
+     Running `target/debug/examples/p1_workspace_fixture_home --scenario p1-layouts --out /private/tmp/riwork-phase6c-integration/ui-0qjwhl6m/nsh-home`

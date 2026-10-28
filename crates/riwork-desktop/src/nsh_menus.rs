@@ -82,7 +82,6 @@ const COMMANDS: &[&str] = &[
 // but neither AppKit validation nor direct action delivery may activate it.
 const DEFERRED_MENU_COMMANDS: &[&str] = &[
     "newChat",
-    "appPreview",
     "sessions",
     "toggleTranscriptMode",
     "expandTranscript",

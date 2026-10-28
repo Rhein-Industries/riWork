@@ -1,0 +1,2 @@
+# Preserve Cargo's interleaved raw output, including whitespace.
+*.stdout whitespace=-blank-at-eof,-blank-at-eol

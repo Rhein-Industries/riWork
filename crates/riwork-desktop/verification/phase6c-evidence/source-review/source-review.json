@@ -1,0 +1,99 @@
+{
+  "assignment": "8fb9a8cb-761d-4c58-a3d6-44c53c24dc91",
+  "base": "4df3822dee9f4018be1670823ad49c2987cd6579",
+  "checks": [
+    {
+      "argv": [
+        "git",
+        "merge-base",
+        "--is-ancestor",
+        "7e55db0",
+        "HEAD"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "merge-base",
+        "--is-ancestor",
+        "4df3822",
+        "HEAD"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "diff",
+        "--exit-code",
+        "4df3822",
+        "--",
+        "crates/riwork-engine",
+        "crates/riwork-desktop/verification/pending-open-evidence",
+        "crates/riwork-desktop/verification/quit-ordering-evidence",
+        "crates/riwork-desktop/src/nsh_host.rs",
+        "apps/riwork/src/host_layouts.rs"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "cargo",
+        "fmt",
+        "-p",
+        "riwork-desktop",
+        "-p",
+        "riwork-nsh-workspace",
+        "-p",
+        "riwork-nsh-native",
+        "--check"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": ""
+    }
+  ],
+  "source_sha256": {
+    "apps/riwork/App.tsx": "641086f5c6508ab5d488951c0d31e9e9d0c6de53fa134da233be680e631f064d",
+    "apps/riwork/AppPreviewTab.tsx": "7c980b002080d15e3bd58fd9586459507fa66b053bafc161ff804fc67631d73a",
+    "apps/riwork/CuaSetup.tsx": "8af77a4883572dbe66a6f200b7654cf2e330877561584de92127bd04e050dc7c",
+    "apps/riwork/DeferredPanel.tsx": "47b807ab4f56a856182cf4ccc706d7a698653afe2b91ace63e5c0c9f3515ef47",
+    "apps/riwork/Workspace.tsx": "f5a598b705e77f24e985274b153d133655d2a251d787adf557d8bbc07d5200e1",
+    "apps/riwork/commands.ts": "92bf9a536748c4fc7ac2b9de1491a4ded53b7ad64bb8da934405d54120b328a2",
+    "apps/riwork/keyboard.ts": "cc6ca3dad9879da3ce4d2a0687f6479f85cd6dcf8322c9a5fc59568263c697b8",
+    "apps/riwork/model.ts": "f707bad76cd1ed267c47eceb4e8f49dacaa0c2f81580666248f2a85a7b548317",
+    "apps/riwork/src/layout.rs": "4c4c8113b9917777aa387617aeb5ed26444efb5c8774e87fc8383a390a2171ab",
+    "apps/riwork/src/lib.rs": "470cb1af0a5e6babdb43619e2862a07daf4b4e868ef985c1ce2d3a05d128e892",
+    "apps/riwork/tests/Phase6c.fixture.tsx": "c5678c679d691fedfd7255a64aff79a47b11d1c515dcb9bcec2ff9ef0b34c4b9",
+    "apps/riwork/tests/Phase6c.test.tsx": "0ac2d35b25adf443e9f4421d2473f724a2f88094929b039e170682e5ae685a27",
+    "apps/riwork/tests/app_preview_layout.rs": "7f0504ad1c584b66b30e1fc3fac757c5274d39187a61b4d73d4ec2f5c7a03ec3",
+    "crates/riwork-desktop/src/nsh_menus.rs": "8b63f00f2eac154372dfb5af95c5fce7b671bfce884da03544dac94b43960d63",
+    "crates/riwork-desktop/src/nsh_runtime.rs": "480f67b5cce529d01d979f02fda5cb49cdd8c123f70311aff2816b61de815711",
+    "crates/riwork-desktop/verification/nsh_cua_guard_tests.rs": "861861366c05e45ab9958e484a7f87651cc2fc920d7b3d610b20657449b0b7ec",
+    "crates/riwork-desktop/verification/phase6c.py": "24050fb80a271a847702f7403a73b6a85c30ba29fdd30a7d30ffa1de5ecc1994",
+    "crates/riwork-nsh-native/src/app_preview.rs": "db18b1097d08886a1616941f117b35698fd30a5b8af2a9675d68fc4d935d3d34",
+    "crates/riwork-nsh-native/src/cua.rs": "7d9dea6038785869dbc338af2fe6c236add17da13f9dfd3b1cb9989604cdef5c",
+    "crates/riwork-nsh-native/src/lib.rs": "1f71e82dc4e102f9e3acfa0e3244959581bbfffa0c94c514a0c41f2cc8f75da0"
+  },
+  "verification_environment": "private headless fixtures/fakes only",
+  "live_targets_touched": "none beyond own shell/worktree",
+  "effective_service_tier": "default (Fast off), unchanged; supplied session verification",
+  "descendants": 0
+}

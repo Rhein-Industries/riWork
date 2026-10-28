@@ -1,0 +1,29 @@
+
+running 1 test
+test combined_settings_cua_focus_commands ... ready=false focus_before=None: expected=["cua-primary"] actual=["cua-primary"]
+FOCUS_EVENT claude-api-key-input id=31556 listens=Some(EventMask([7680, 0]))
+ready=false focus_before=Some("claude-api-key-input"): expected=[] actual=["cua-primary"]
+FOCUS_EVENT theme-choice:native id=31098 listens=Some(EventMask([6145, 0]))
+ready=false focus_before=Some("theme-choice:native"): expected=[] actual=["cua-primary"]
+FOCUS_EVENT cua-primary id=29452 listens=Some(EventMask([30721, 0]))
+ready=false focus_before=Some("cua-primary"): expected=[] actual=[]
+FOCUS_EVENT cua-check id=30214 listens=Some(EventMask([30721, 0]))
+ready=false focus_before=Some("cua-check"): expected=[] actual=["cua-primary"]
+ready=true focus_before=None: expected=["theme-choice:native"] actual=["theme-choice:native"]
+FOCUS_EVENT claude-api-key-input id=32388 listens=Some(EventMask([7680, 0]))
+ready=true focus_before=Some("claude-api-key-input"): expected=[] actual=["theme-choice:native"]
+FOCUS_EVENT theme-choice:native id=31066 listens=Some(EventMask([6145, 0]))
+ready=true focus_before=Some("theme-choice:native"): expected=[] actual=["theme-choice:native"]
+FOCUS_EVENT cua-primary id=30180 listens=Some(EventMask([30721, 0]))
+ready=true focus_before=Some("cua-primary"): expected=[] actual=[]
+FOCUS_EVENT cua-check id=30186 listens=Some(EventMask([30721, 0]))
+ready=true focus_before=Some("cua-check"): expected=[] actual=["theme-choice:native"]
+FAILED
+
+failures:
+
+failures:
+    combined_settings_cua_focus_commands
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 9.47s
+

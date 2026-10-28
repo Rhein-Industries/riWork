@@ -1,0 +1,10 @@
+   Compiling riwork-nsh-workspace v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p1-fix-host/apps/riwork)
+    Finished `test` profile [unoptimized] target(s) in 0.52s
+     Running unittests src/lib.rs (target/debug/deps/riwork_nsh_workspace-66a91ee9ce364ec4)
+     Running tests/app_preview_layout.rs (target/debug/deps/app_preview_layout-12374b5ce989c7a9)
+     Running tests/layout_backend.rs (target/debug/deps/layout_backend-88379b5bba43f99b)
+     Running tests/layout_gestures.rs (target/debug/deps/layout_gestures-3033838e048a7eb3)
+     Running tests/layout_roundtrip.rs (target/debug/deps/layout_roundtrip-84841d4cfffdbbf5)
+     Running tests/pane_model.rs (target/debug/deps/pane_model-8bd438986fec8c4d)
+     Running tests/window_size.rs (target/debug/deps/window_size-e1439c69f3bb3667)
+   Doc-tests riwork_nsh_workspace
