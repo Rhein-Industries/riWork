@@ -1,0 +1,30 @@
+{
+  "merge_commit": "8daa3460da85330f63270b9310b3889545430828",
+  "integrated_nsh": "087aa897a7b19256ac18c98bf443f39bb1c418d3",
+  "conflict_resolution": "Retained both Previews and ProjectSettings in the sorted native registry assertion.",
+  "unchanged_source_paths": [
+    "crates/riwork-nsh-native/src/cua.rs",
+    "crates/riwork-nsh-native/src/app_preview.rs",
+    "crates/riwork-engine",
+    "apps/riwork/App.tsx"
+  ],
+  "archives": {
+    "phase6c-evidence": {
+      "verified_artifacts": 64,
+      "unchanged_from": "d33adc4"
+    },
+    "pending-open-evidence": {
+      "verified_artifacts": 24,
+      "unchanged_from": "d33adc4"
+    },
+    "quit-ordering-evidence": {
+      "verified_artifacts": 22,
+      "unchanged_from": "d33adc4"
+    }
+  },
+  "deferred_panel_callers": "Workspace fallback only; Settings routes exclusively to AppSettings.",
+  "placement": "Workspace passes CuaSetup through AppSettings.computerUse (section 01), with theme and reactive visibility.",
+  "verification_environment": "isolated private HOME/RIWORK_HOME fixtures and fakes only; serialized builds; jobs=2; offline",
+  "live_targets_touched": "none beyond own shell/worktree",
+  "effective_service_tier": "default / Fast OFF (assignment verified); model/effort/account unchanged; no descendants"
+}

@@ -103,3 +103,47 @@ assignment; GPT-6-Astra ultra and system-default account unchanged. No `/fast`,
 model/effort/account changes or descendant sessions were used.
 No merge to nsh, push, installation, reload or restart. Task status is left to
 the orchestrator.
+
+## Settings integration follow-up
+
+Merged `nsh` at `087aa897a7b19256ac18c98bf443f39bb1c418d3` in merge
+commit `8daa3460da85330f63270b9310b3889545430828`. The sole textual conflict
+was the native registry assertion; both `Previews` and `ProjectSettings` were
+retained. Workspace now passes `CuaSetup` through AppSettings's `computerUse`
+slot (section 01), with its theme and reactive panel visibility. The Cua service,
+startup `useCua` behavior and preview engine/bridge are unchanged. DeferredPanel's
+only caller is Workspace's fallback, which cannot receive Settings after 6a's
+explicit routing; its dead Settings/Cua/appearance branch and unused props were
+removed. AppSettings retains ownership of its form and layout.
+
+Headless reruns passed: **19 Phase 6c UI cases**, including the new ordinary
+Settings command/route reuse case; **1 missing-driver startup case**, now requiring
+AppSettings, Computer use and exactly one Cua section in the active pane;
+**68 host**, **169 workspace**, and **199 native** tests. The existing ignored
+host recovery acceptance and native manual benchmark remain ignored in these
+suite runs. Cargo check, `nsh check` (including TypeScript), format and whitespace
+checks exited 0. No additional parity rows are claimed beyond the coverage above.
+
+Exact rerun commands (serialized, in this worktree):
+
+```sh
+python3 crates/riwork-desktop/verification/phase6c.py ui --root /tmp/riwork-phase6c-integration --target-dir /Users/dominik/orca/projects/riWork-nsh-p1-fix-host/target --ghostty-artifacts /Users/dominik/orca/projects/riWork-nsh-p2-terminals/crates/riwork-nsh-terminal/.runtime/pinned/install
+python3 crates/riwork-desktop/verification/phase6c.py ui-missing --root /tmp/riwork-phase6c-integration --target-dir /Users/dominik/orca/projects/riWork-nsh-p1-fix-host/target --ghostty-artifacts /Users/dominik/orca/projects/riWork-nsh-p2-terminals/crates/riwork-nsh-terminal/.runtime/pinned/install
+python3 crates/riwork-desktop/verification/phase6c.py suites --root /tmp/riwork-phase6c-integration --target-dir /Users/dominik/orca/projects/riWork-nsh-p1-fix-host/target --ghostty-artifacts /Users/dominik/orca/projects/riWork-nsh-p2-terminals/crates/riwork-nsh-terminal/.runtime/pinned/install
+python3 crates/riwork-desktop/verification/phase6c.py check --root /tmp/riwork-phase6c-integration --target-dir /Users/dominik/orca/projects/riWork-nsh-p1-fix-host/target --ghostty-artifacts /Users/dominik/orca/projects/riWork-nsh-p2-terminals/crates/riwork-nsh-terminal/.runtime/pinned/install
+```
+
+Raw logs and exact subprocess commands/environment are in the separate
+[integration archive](../crates/riwork-desktop/verification/phase6c-integration-evidence/artifact-index.json):
+[UI](../crates/riwork-desktop/verification/phase6c-integration-evidence/ui-0qjwhl6m/ui-fixtures.stderr),
+[missing driver](../crates/riwork-desktop/verification/phase6c-integration-evidence/ui-missing-4l0wva10/ui-fixtures.stderr),
+[suites](../crates/riwork-desktop/verification/phase6c-integration-evidence/suites-dddpt9pi/manifest.json),
+[checks](../crates/riwork-desktop/verification/phase6c-integration-evidence/check-elhwbcaq/manifest.json).
+The prior 64 Phase 6c, 24 pending-open and 22 quit-ordering artifact hashes were
+reverified and those archives remain byte-unchanged.
+
+`verification_environment`: private HOME/RIWORK_HOME, headless fixtures/fakes only,
+own Cargo target, jobs=2, offline. `live_targets_touched`: none beyond own
+shell/worktree. `effective_service_tier`: default / Fast OFF (assignment verified);
+GPT-6-Astra ultra and system-default account unchanged; no descendants. No live
+Cua/GUI input, network, Docker, merge to nsh, push, install, reload or restart.

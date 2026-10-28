@@ -1,5 +1,5 @@
 import { AppPreviewTab } from "./AppPreviewTab";
-import { useCua } from "./CuaSetup";
+import { CuaSetup, useCua } from "./CuaSetup";
 import { Overlay, Scroll, Text, View, cleanup, colorScheme, createAnimatedValue, effect, host, keymap, signal, type Point, type YNode } from "nsh";
 import { Button, Dialog, Input, Popover, type DockAreaLayout, type DockAreaRef, type DockNode } from "nsh/base";
 import { Menu, Window, type MenuItem } from "nsh/desktop";
@@ -784,6 +784,7 @@ export function Workspace(props: WorkspaceProps) {
                   {panel.id === "panel:files" ? <FilesPanel controller={fileState} surface={panel.id} /> :
                     panel.id === "panel:preview" ? <PreviewPanel controller={fileState} /> :
                     panel.id === "panel:settings" ? <AppSettings theme={theme} settings={props.settings} visible={() => isVisible(panel.id)} onError={(error) => notice.set(String(error))} onNotice={(message) => notice.set(message)}
+                      computerUse={<CuaSetup theme={theme} visible={isVisible(panel.id)} />}
                       onControl={(control) => { settingsControl = control; if (revealSettingsKey) { revealSettingsKey = false; control.revealApiKey(); } return () => { if (settingsControl === control) settingsControl = undefined; }; }} /> :
                     <ProjectSettingsPanel projectId={projectId} theme={theme} visible={() => isVisible(panel.id)}
                       onControl={(control) => { projectSettingsControl = control ?? undefined; if (control && revealProjectMemo) { revealProjectMemo = false; control.revealMemo(); } }} />}
@@ -809,7 +810,7 @@ export function Workspace(props: WorkspaceProps) {
                   configure={(spec) => action(() => session.configureAppPreview(panel.id, spec))} /> :
                 <DeferredPanel id={panel.id}
                   title={findPanel(snapshot(), panel.id) ? displayTitle(findPanel(snapshot(), panel.id)!) : panel.id}
-                  theme={theme} settings={props.settings} diagnostics={props.diagnostics} onError={(error) => notice.set(String(error))}
+                  theme={theme} diagnostics={props.diagnostics}
                   visible={isVisible(panel.id)}
                   onPress={() => { action(() => panel.id.startsWith("empty:") ? session.selectPane(Number(panel.id.slice(6))) : session.selectPanel(panel.id)); focusActive(); }} />}
             </View>} />}

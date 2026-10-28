@@ -47,6 +47,22 @@ async function workspace(id: string, restore?: unknown, worktree = false) {
   return app;
 }
 
+test("P6C Settings command hosts Cua in AppSettings and reuses the panel", async () => {
+  const app = await workspace("6c-settings-slot", layout());
+  try {
+    await app.keyboard.press("mod+,");
+    await app.waitFor("id:settings-panel");
+    await app.waitFor("id:settings-section-01");
+    await app.waitFor("id:cua-setup");
+    await app.waitFor("text:Driver ready");
+    expect(app.shows("text:Computer use settings are unavailable here.")).toBe(false);
+    expect(latest(app).panes.find((pane) => pane.id === 2)?.activeTab).toBe("panel:settings");
+    await app.host.send("route", { step: { kind: "panel", panel: "settings" } });
+    expect(latest(app).panes.flatMap((pane) => pane.tabs).filter((tab) => tab.id === "panel:settings").length).toBe(1);
+    expect(app.texts().filter((text) => text === "Cua.ai").length).toBe(1);
+  } finally { app.dispose(); }
+});
+
 test("P6C preview opens in main pane, persists committed spec/title, runs only on Run, restores idle", async () => {
   const app = await workspace("6c-preview-first", layout());
   let id = "";
@@ -115,8 +131,12 @@ test("CuaMissing opens Settings in the active pane using fixture status only", a
   try {
     const checked = app.host.posts().find((post) => post.name === "app.fixture.cua")!.data as CuaState;
     if (checked.status?.installed) { expect(latest(app).panes.find((pane) => pane.id === 3)?.activeTab).toBe("shell:S3"); return; }
+    await app.waitFor("id:settings-panel");
+    await app.waitFor("id:settings-section-01");
     await app.waitFor("id:cua-setup");
     expect(app.shows("text:Set up Cua")).toBe(true);
+    expect(app.shows("text:Computer use settings are unavailable here.")).toBe(false);
+    expect(app.texts().filter((text) => text === "Cua.ai").length).toBe(1);
     expect(latest(app).panes.find((pane) => pane.id === 3)?.activeTab).toBe("panel:settings");
     expect(app.shows("text:Cua Driver is not installed. Select Set up Cua or run `riwork setup`.")).toBe(true);
   } finally { app.dispose(); }

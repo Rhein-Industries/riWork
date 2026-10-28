@@ -1,0 +1,2 @@
+# Cargo's interleaved test output is byte-preserved evidence.
+*.stdout whitespace=-blank-at-eof,-blank-at-eol
