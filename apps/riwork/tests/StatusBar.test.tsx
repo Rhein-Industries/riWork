@@ -138,7 +138,7 @@ test("P5-USAGE-07: the usage item reads the fixture account, names it in its lab
   } finally { app.dispose(); }
 });
 
-test("P5-USAGE-08: the account item opens a read-only menu, asks for the list and closes like the other menus", async () => {
+test("P5-USAGE-08: the account item opens project choices and closes like the other menus", async () => {
   const app = await open("./Appearance.fixture.tsx", options("usage-account"));
   try {
     await app.waitFor("text:DEFAULT (APP) · System default · email unknown");
@@ -146,11 +146,10 @@ test("P5-USAGE-08: the account item opens a read-only menu, asks for the list an
     await app.waitFor("id:account-menu");
     for (const text of ["New Codex sessions in this project", "Running chats and shells keep their account; --account still chooses one.",
       "Inherit app default", "Uses System default", "System default", "Project Settings…"]) expect(app.texts()).toContain(text);
-    // Opening with no list starts the (fixture) discovery once; its error is the status.
-    await app.waitFor("text:Orca is not consulted in this fixture.");
+    // Project choices are writable; discovery and unavailable saved rows remain explicit.
     expect(app.texts()).toContain("✓");
-    expect(app.enabled("id:account-menu-inherit")).toBe(false);
-    expect(app.enabled("id:account-menu-system")).toBe(false);
+    expect(app.enabled("id:account-menu-inherit")).toBe(true);
+    expect(app.enabled("id:account-menu-system")).toBe(true);
     await app.press("id:status-item-codex-account");
     expect(app.shows("id:account-menu")).toBe(false);
     await app.press("id:status-item-codex-account");
@@ -179,8 +178,11 @@ test("P5-USAGE-09: all accounts reads every known account compactly and Native s
   opts.host.params.initial.statusBar.usageMode = "all_accounts";
   const app = await open("./Appearance.fixture.tsx", opts);
   try {
-    await app.waitFor("text:Codex  System default unavailable");
-    expect(app.shows("label:Usage CODEX · System default · UNAVAILABLE")).toBe(true);
+    await app.waitUntil(() => app.texts().some((text) => text.startsWith("Codex  System default unavailable")));
+    // P6a's isolated catalog also supplies one available saved account; both
+    // forms retain the system entry and keep the AX name in its original case.
+    const saved = app.texts().some((text) => text.includes("fixture@example.invalid · Fixture saved unavailable"));
+    expect(app.shows(`label:Usage CODEX · System default · UNAVAILABLE${saved ? "; CODEX · fixture@example.invalid · Fixture saved · UNAVAILABLE" : ""}`)).toBe(true);
     expect(app.texts()).toContain("Default (app) · System default · email unknown");
   } finally { app.dispose(); }
 });

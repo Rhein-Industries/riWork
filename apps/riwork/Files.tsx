@@ -333,12 +333,16 @@ export function MemoEditor(props: {
   projectId: () => string; theme?: () => InterfaceTheme; visible?: () => boolean;
   /** Receipt delivery seam; the default uses the durable native writer. */
   saveMemo?: typeof Store.setProjectMemo;
+  /** A containing form can own Cmd+S and save its metadata and memo together. */
+  bindSaveKey?: boolean;
+  onControl?: (control: { save: () => void; focus: () => void } | null) => void;
 }) {
   const theme = props.theme ?? (() => DEFAULT_THEME);
   const value = signal(""), status = signal("Saved automatically"), saving = signal(false);
   type Draft = { text: string; saved: string; dirty: boolean; running: boolean; error: string; revision?: number };
   const drafts = new Map<string, Draft>();
   let current = "", alive = true, timer: ReturnType<typeof setTimeout> | undefined;
+  let input: YNode | undefined;
   const draft = (id: string) => { if (!drafts.has(id)) drafts.set(id, { text: "", saved: "", dirty: false, running: false, error: "" }); return drafts.get(id)!; };
   function renderStatus() {
     if (!alive) return;
@@ -380,12 +384,13 @@ export function MemoEditor(props: {
     }
     renderStatus();
   });
-  cleanup(() => { alive = false; clearTimeout(timer); subscription.close(); for (const id of drafts.keys()) void save(id); });
-  effect(() => { if (props.visible && !props.visible()) return; return keymap.bind("mod+s", () => void save()); });
+  const control = { save: () => void save(), focus: () => input?.focus() };
+  cleanup(() => { alive = false; clearTimeout(timer); subscription.close(); props.onControl?.(null); for (const id of drafts.keys()) void save(id); });
+  effect(() => { if (props.bindSaveKey === false || props.visible && !props.visible()) return; return keymap.bind("mod+s", () => void save()); });
   const textStyle = () => ({ fontFamily: theme().family, fontSize: 11 * theme().scale, color: theme().palette.text });
   return <View testID="project-memo-editor" style={{ flex: 1, minHeight: 0, padding: 12, gap: 8 }}>
     <Text style={textStyle()}>Project memo</Text>
-    <Input testID="project-memo-input" accessibilityLabel="Project memo" multiline={true} value={value()} placeholder="Write notes for this project in Markdown: plans, links, decisions. Only you see them. No agent is given the memo; type /memo in a chat to insert it yourself."
+    <Input testID="project-memo-input" ref={(node) => { input = node; props.onControl?.(control); }} accessibilityLabel="Project memo" multiline={true} value={value()} placeholder="Write notes for this project in Markdown: plans, links, decisions. Only you see them. No agent is given the memo; type /memo in a chat to insert it yourself."
       onChange={(text) => {
         const d = draft(current); d.text = text; d.dirty = d.running || d.text !== d.saved; d.error = ""; value.set(text); clearTimeout(timer);
         if (memoBytes(text) <= 32768) {

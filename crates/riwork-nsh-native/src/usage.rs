@@ -1105,6 +1105,15 @@ pub struct Accounts;
 
 #[module]
 impl Accounts {
+    /// Cache-only form read. No account discovery or credential access.
+    pub async fn list() -> Result<AccountsDto, String> {
+        let service = usage_service().await?;
+        blocking(move || {
+            service.inner.reload();
+            Ok(service.accounts())
+        })
+        .await
+    }
     /// Cache-only: never starts Orca. Never periodic.
     pub fn subscribe(
         listener: Callback<Snapshot<AccountsDto>>,
