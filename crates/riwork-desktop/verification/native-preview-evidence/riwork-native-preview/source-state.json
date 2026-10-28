@@ -1,0 +1,29 @@
+{
+  "assignment": "9319ad32-317b-4d3a-aba7-203a09f43b23",
+  "base_commit": "82f5a12215793596d81d420f1045071980ecf9b9",
+  "branch": "nsh-p1-fix-host",
+  "source_sha256": {
+    "Cargo.lock": "9c9a8e4a1f6717e135295f83dfa74ea1f7de761fe4497de8afb4eade602b975d",
+    "apps/riwork/AppPreviewTab.tsx": "d88bc327e3b6d90cba0201b2292018ee93c1b9c678701ab11f3cad4a7ce54600",
+    "apps/riwork/PreviewFocus.fixture.tsx": "a11994c513b31fe71775cc7d2e256bcc87a8e0a12c8b40ea72ee8d477ad88f9f",
+    "apps/riwork/PreviewSurface.tsx": "c1f2cae4f42d906efb57f89e1ecc69a2c5b8abde896249e6a4b153ca04f07406",
+    "apps/riwork/Workspace.tsx": "624c51264a7a65957ea4e740799d14b857ca54838b7513f1a9676abe97b0e8dc",
+    "apps/riwork/commands.ts": "48c5ee3d8d673089d16deea58ed543f828881942b583b460efde365489a85875",
+    "apps/riwork/tests/PreviewFocus.fixture.tsx": "7556eb127c486a5c84f04e80b79d073b7aa0e0cc646926ea87f099045ae770d3",
+    "apps/riwork/tests/keymap.test.ts": "ed1f49fa962149f5ef81a60476e9b106663bff09025b2c9d83530245747e6319",
+    "crates/riwork-desktop/src/nsh_host.rs": "48a89705f192f4deb234f39da17449e11352c32daddadca6faa4c704f2812620",
+    "crates/riwork-nsh-native/Cargo.toml": "9a7dfb89768ecbdfd51039fab686a794890971908ce070f8ea76ca64ca239056",
+    "crates/riwork-nsh-native/build.rs": "b90b3c025163d5d511801a2dafe996ea792276b314f8df09974cbb76061e30dc",
+    "crates/riwork-nsh-native/native/preview.m": "c048fc91c9065402f2358667a2361dd511133a64d23ae3294b889464e4a6f551",
+    "crates/riwork-nsh-native/src/app_preview.rs": "a90a8b7fca0b05bc30c419628bdf0812528bcae331d24e5699e6d9a0e7248388",
+    "crates/riwork-nsh-native/src/lib.rs": "0d10f444af52557a30564e2dea3c61ecd15db06c4b2d96e36f31520a3f6a3bce",
+    "crates/riwork-nsh-native/src/preview_input.rs": "c98889091a031c7825a9655debd6a53c92411684b7bdd9d0391a2be0126dfc5f",
+    "crates/riwork-nsh-native/src/preview_macos.rs": "7f92d5c633982066d82b5ae0cf00d3e9f37ebccc760123caff902d57b750fb13",
+    "crates/riwork-nsh-native/src/preview_surface.rs": "dbab99efd43315a40f4088ceabea2047c607151643200768fb24d47612026216",
+    "crates/riwork-nsh-native/tests/preview_focus.rs": "4831f5c954b918837cf158b260839426f7efcb2d15137fec468d1ff0eaf15f59"
+  },
+  "engine_and_vendor_diff_empty": true,
+  "verification_environment": "private HOME/RIWORK_HOME; headless fixtures/fakes; no GUI, Cua input, real preview processes, network, Docker",
+  "live_targets_touched": "none beyond own shell/worktree",
+  "effective_service_tier": "default / Fast OFF (user verified); GPT-6-Astra ultra and system-default account unchanged"
+}

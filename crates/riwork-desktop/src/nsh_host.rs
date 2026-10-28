@@ -2300,6 +2300,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     let (tx, rx) = mpsc::channel();
     let components = Components::default();
     riwork_nsh_terminal::register(&components, startup.home.clone());
+    native::preview_macos::register(&components);
     let (notifier, notification_center) = notification_delivery(&startup.home);
     let mut host = Host {
         #[cfg(feature = "terminal-fixture")]

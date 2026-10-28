@@ -1,0 +1,12 @@
+{
+  "apps/riwork/keyboard.ts": {
+    "baseline": "82f5a12",
+    "identical_before_test_fix": true,
+    "sha256": "cc6ca3dad9879da3ce4d2a0687f6479f85cd6dcf8322c9a5fc59568263c697b8"
+  },
+  "apps/riwork/tests/keymap.test.ts": {
+    "baseline": "82f5a12",
+    "identical_before_test_fix": true,
+    "sha256": "2bd05377a36d9ccdcaf66a4e47ba914346f25f0811abd7b115bff30047b5ce49"
+  }
+}

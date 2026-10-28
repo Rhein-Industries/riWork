@@ -1,0 +1,17 @@
+    Finished `test` profile [unoptimized] target(s) in 0.26s
+     Running unittests src/lib.rs (target/debug/deps/riwork_nsh_native-19032c53196c1e20)
+     Running tests/appearance.rs (target/debug/deps/appearance-b703f4196295e1bb)
+     Running tests/chat_bridge.rs (target/debug/deps/chat_bridge-6e2fc544a4c6bbfa)
+     Running tests/dashboard_bridge.rs (target/debug/deps/dashboard_bridge-bafdce2d1e19e20c)
+     Running tests/files_bridge.rs (target/debug/deps/files_bridge-3d6aa7c7696de555)
+     Running tests/layout_session.rs (target/debug/deps/layout_session-898a5b3d2c640d70)
+     Running tests/native_headless.rs (target/debug/deps/native_headless-600c62b87ed7f582)
+     Running tests/panel_crud.rs (target/debug/deps/panel_crud-36271cc444a4959a)
+     Running tests/preview_focus.rs (target/debug/deps/preview_focus-d24151f0c6a41da0)
+     Running tests/services.rs (target/debug/deps/services-2fce7efb5b93810d)
+     Running tests/settings.rs (target/debug/deps/settings-a9ebf27ed2acdb6e)
+     Running tests/settings_aux_isolation.rs (target/debug/deps/settings_aux_isolation-5b6cc7e6be207ebc)
+     Running tests/settings_cua_focus.rs (target/debug/deps/settings_cua_focus-64f124a152bddfad)
+     Running tests/settings_forms.rs (target/debug/deps/settings_forms-a41c124062dfd594)
+     Running tests/usage_bridge.rs (target/debug/deps/usage_bridge-41790118a079dbb9)
+   Doc-tests riwork_nsh_native

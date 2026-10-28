@@ -224,3 +224,16 @@ private target, offline and jobs=2; existing Ghostty link inputs read only.
 `effective_service_tier`: Service tier default / Fast OFF (user verified),
 GPT-6-Astra ultra and system-default account unchanged; main session only.
 No live Cua/GUI input, network, Docker, merge, push, installation or reload.
+
+## Native preview surface follow-up (TERM-183–189)
+
+Task `9319ad32-317b-4d3a-aba7-203a09f43b23` replaces the Phase 6c JSON/Image
+surface with registered `riwork.preview`: bounded worker PNG decode, native
+CGImage ownership, mouse capture, IME/key-up/clipboard handling, complete release
+gates and the five-second control capture lease. The seven surface rows are now
+implemented with isolated evidence; [full report](nsh-native-preview.md) records
+proof limits, exact commands, shared-file changes and raw logs. The preview
+engine and vendor/base are unchanged. Preview-control mailbox hosting/routing
+and status publication (TERM-201–207) remain separate open migration work.
+The Phase 6c lifecycle, PANEL-138 cases in its UI set, and all nine recovery
+scenarios pass; all prior evidence archives are preserved byte-for-byte.

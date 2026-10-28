@@ -1,0 +1,331 @@
+
+running 149 tests
+test backend::tests::default_directory_is_created_only_inside_injected_fixture ... ok
+test backend::tests::creator_resolves_home_requires_absolute_and_rejects_git_metadata ... ok
+test chat::activity_summary::tests::failed_changes_and_declined_commands_do_not_claim_success ... ok
+test chat::activity_summary::tests::repeated_paths_are_counted_once_and_search_hits_are_not_reads ... ok
+test chat::activity_summary::tests::batches_deduplicate_paths_and_unknown_tools_remain_honest ... ok
+test chat::activity_summary::tests::turn_boundaries_exclude_other_turns_and_late_items ... ok
+test appearance::tests::every_preset_preserves_sixteen_colors_and_ghostty_switching ... ok
+test backend::tests::failed_store_initialization_can_recover_in_the_same_adapter ... ok
+test app_preview::phase6c_tests::preview_control_start_reuses_running_session_but_restarts_error_even_with_pid ... ok
+test app_preview::phase6c_tests::phase6c_owner_teardown_during_delayed_launch_cannot_publish_orphan ... ok
+test app_preview::phase6c_tests::phase6c_preview_run_only_restart_edited_spec_stop_visibility_and_dispose ... ok
+test chat::drafts::references::tests::revision_is_stable_and_provider_serialization_preserves_writing_and_coordinates ... ok
+test chat::drafts::references::tests::malformed_or_oversized_references_are_not_admitted ... ok
+test chat::drafts::references::tests::legacy_records_default_to_no_references_and_new_records_keep_all_provenance ... ok
+test app_preview::phase6c_tests::preview_json_snapshot_has_metadata_only_and_bounds_display_logs ... ok
+test backend::tests::unreadable_membership_refuses_exit_before_initializing_tmux_or_changing_registry ... ok
+test chat::drafts::tests::a_deleted_link_forgets_the_chat_draft ... ok
+test chat::drafts::tests::a_closed_tab_comes_back_with_its_draft_and_another_chat_without ... ok
+test chat::drafts::tests::a_failed_send_after_the_chat_was_deleted_does_not_bring_its_draft_back ... ok
+test chat::drafts::tests::a_draft_survives_a_restart_until_it_is_sent ... ok
+test chat::drafts::tests::admission_refusal_in_stale_window_preserves_the_newer_windows_draft ... ok
+test chat::drafts::tests::a_draft_survives_a_reload_in_a_private_file_and_goes_when_emptied ... ok
+test chat::drafts::tests::clearing_a_sent_draft_keeps_newer_text_and_a_deleted_chat_keeps_none ... ok
+test chat::drafts::tests::failed_writes_keep_only_the_newest_ones ... ok
+test chat::drafts::tests::disk_failure_keeps_editor_and_refuses_dispatch ... ok
+test chat::drafts::tests::a_text_only_draft_is_written_as_raw_text ... ok
+test chat::drafts::tests::closing_a_tab_after_dispatch_does_not_restore_the_sent_draft ... ok
+test chat::drafts::tests::dismissing_snapshot_before_durability_continuation_prevents_dispatch ... ok
+test chat::drafts::tests::a_send_in_one_window_keeps_the_newer_draft_of_another ... ok
+test chat::drafts::tests::escaped_record_overflow_refuses_admission_without_losing_prior_snapshot ... ok
+test chat::drafts::tests::oversized_current_text_cannot_delete_retained_submissions ... ok
+test chat::drafts::tests::corrupt_recovered_snapshot_stays_unavailable_and_preserves_metadata_for_review ... ok
+test chat::drafts::tests::only_a_uuid_becomes_a_file_and_an_oversized_draft_stays_in_memory ... ok
+test chat::drafts::tests::rich_records_keep_the_legacy_serde_shape ... ok
+test chat::drafts::tests::failed_writes_and_removals_retry_identical_text ... ok
+test chat::drafts::tests::checking_completion_never_resurrects_removed_chips_or_overwrites_another_editor ... ok
+test chat::drafts::tests::dismissal_and_chat_deletion_revoke_pending_dispatch_without_deleting_staged_files ... ok
+test chat::drafts::tests::dropping_the_writer_drains_the_latest_text_for_each_chat ... ok
+test chat::drafts::tests::rapid_changes_wait_as_one_entry_per_chat ... ok
+test chat::feed::tests::events_are_next_repeated_or_missing ... ok
+test chat::drafts::tests::unfinished_staging_is_reported_without_restoring_arbitrary_sources ... ok
+test chat::drafts::tests::write_failure_reports_not_durable_and_keeps_intent_for_explicit_recovery ... ok
+test chat::feed::tests::only_a_connection_found_broken_is_worth_a_second_try ... ok
+test chat::drafts::tests::text_and_one_submission_encode_to_the_legacy_bytes ... ok
+test chat::feed::tests::reconnect_waits_500_ms_doubling_to_5_s ... ok
+test chat::links::tests::words_read_as_paths_only_when_shaped_like_one ... ok
+test chat::drafts::tests::one_process_store_mirrors_the_gpui_helpers_before_and_after_init ... ok
+test chat::markdown::document::tests::a_single_newline_in_a_paragraph_is_a_visible_break ... ok
+test chat::drafts::tests::a_failed_write_is_tried_again_without_another_edit ... ok
+test chat::markdown::document::tests::headings_paragraphs_rules_and_code_blocks ... ok
+test chat::markdown::document::tests::a_splice_starts_at_the_first_changed_block_and_carries_only_the_tail ... ok
+test chat::markdown::document::tests::inline_styles_nest_and_links_hold_their_styled_label ... ok
+test chat::markdown::document::tests::images_and_inline_citations_are_links_to_their_target ... ok
+test chat::markdown::document::tests::lists_tasks_quotes_callouts_tables_and_files ... ok
+test chat::drafts::tests::the_first_composers_of_two_windows_never_share_an_editor_identity ... ok
+test chat::markdown::document::tests::the_whole_document_is_a_text_view_document ... ok
+test chat::markdown::incremental_tests::complete_top_level_blank_lines_outside_lists_seal_a_prefix ... ok
+test chat::markdown::incremental_tests::streaming_benchmark ... ignored, manual optimized streaming benchmark
+test chat::drafts::tests::ready_attachment_draft_survives_restart_and_acknowledgment_clears_only_recovery ... ok
+test chat::markdown::incremental_tests::replacements_truncations_and_repeated_reads_keep_exact_source_identity ... ok
+test chat::markdown::tests::a_list_inside_a_numbered_item_nests_even_when_indented_by_less_than_commonmark_asks ... ok
+test chat::markdown::tests::an_image_does_not_absorb_an_adjacent_link_to_the_same_target ... ok
+test chat::markdown::tests::citations_on_lines_of_their_own_are_files_and_in_a_sentence_linked_names ... ok
+test chat::drafts::tests::ready_attachment_identity_survives_restart_and_changed_bytes_are_rejected ... ok
+test chat::markdown::tests::explicit_images_keep_image_semantics_for_remote_data_and_local_targets ... ok
+test chat::markdown::tests::fenced_code_keeps_its_text_and_language_and_runs_to_the_end_while_streaming ... ok
+test chat::markdown::tests::fences_keep_quoted_filename_metadata_separate_from_code ... ok
+test chat::markdown::tests::headings_paragraphs_and_rules ... ok
+test chat::markdown::tests::lists_nest_and_numbered_ones_keep_their_start ... ok
+test chat::markdown::tests::malformed_unfinished_and_quoted_citations_stay_text ... ok
+test chat::markdown::document::tests::a_long_streamed_answer_converts_only_its_tail ... ok
+test chat::links::tests::preview_rejects_missing_files_traversal_and_symlinks ... ok
+test chat::markdown::tests::task_lists_and_callouts_preserve_nested_content ... ok
+test chat::toolbar::tests::choosing_a_model_moves_an_effort_it_does_not_take_to_its_default ... ok
+test chat::markdown::tests::marks_that_do_not_close_or_sit_inside_words_stay_text ... ok
+test chat::markdown::tests::plain_rows_name_cited_files_and_link_them ... ok
+test chat::toolbar::tests::fast_shows_only_for_a_model_with_a_fast_mode ... ok
+test chat::toolbar::tests::the_effort_picker_offers_only_what_the_selected_model_takes ... ok
+test chat::toolbar::tests::the_selected_model_is_the_chosen_one_or_the_default_and_never_a_guess ... ok
+test cua::phase6c_tests::phase6c_cua_read_only_poll_and_single_flight_actions_preserve_error_status ... ok
+test dto::tests::session_dto_preserves_saved_identity_and_live_sample_fields ... ok
+test dto::tests::bridge_camelizes_domain_fields_without_rewriting_persistence_or_opaque_data ... ok
+test chat::markdown::document::tests::streaming_char_by_char_matches_a_full_parse_and_never_resends_sealed_blocks ... ok
+test chat::markdown::incremental_tests::every_unicode_chunk_matches_full_parse_across_block_types ... ok
+test dashboard::tests::global_window_module_uses_an_injected_backend_and_validates_before_writing ... ok
+test chat::drafts::tests::recovered_checks_allow_text_edits_block_send_and_remain_durable_before_completion ... ok
+test host_flush::tests::failed_draft_flush_is_reported_after_every_writer_was_attempted ... ok
+test hub::tests::first_snapshot_deduplication_overflow_and_close ... ok
+test chat::drafts::tests::pending_submission_recovers_as_uncertain_and_receipt_preserves_new_owner ... ok
+test chat::drafts::tests::refused_and_uncertain_drafts_are_persisted_again ... ok
+test backend::tests::vim_refuses_outside_and_symlink_files_before_initializing_tmux ... ok
+test overview::tests::the_reader_waits_without_a_subscriber_and_paces_changes_and_heartbeats ... ok
+test memo::tests::stage_validates_utf8_bytes_before_replacing_the_pending_draft ... ok
+test presence::tests::concurrent_windows_and_snapshot_materialization_share_one_probe_per_path ... ok
+test preview_input::tests::activation_restores_only_the_native_focus_still_owned_by_this_surface ... ok
+test preview_input::tests::adapter_events_decode_without_an_implicit_paste_or_text_commit ... ok
+test presence::tests::missing_and_reappearing_directories_change_only_after_cache_expiry ... ok
+test preview_input::tests::all_buttons_focus_once_and_release_outside_independently ... ok
+test preview_input::tests::capture_clicks_do_not_create_pointer_or_key_holds ... ok
+test preview_input::tests::control_visibility_cannot_bypass_hidden_or_inactive_input_gates ... ok
+test preview_input::tests::mapping_rejects_letterboxes_and_clamps_captured_drags ... ok
+test preview_input::tests::each_gate_and_native_blur_release_every_hold_once_before_rejecting_input ... ok
+test preview_input::tests::paste_commits_host_clipboard_without_a_key_or_unmatched_up ... ok
+test preview_input::tests::reset_forces_a_new_resize_and_refocus_for_the_next_generation ... ok
+test preview_input::tests::resize_is_bounded_and_only_emitted_on_change_for_cooperative ... ok
+test preview_input::tests::text_comes_only_from_commit_and_shortcuts_receive_up_or_release ... ok
+test preview_input::tests::wheel_uses_twenty_pixels_per_line_and_preserves_precise_deltas ... ok
+test preview_macos::tests::native_focus_reactivation_reconciles_the_same_first_responder_once ... ok
+test preview_macos::tests::native_ime_falls_back_only_for_unhandled_navigation_once ... ok
+test chat::drafts::tests::what_still_fails_at_quit_gets_last_tries ... ok
+test preview_macos::tests::native_key_formatter_matches_gpui_names_without_appkit_events ... ok
+test preview_macos::tests::native_key_up_monitor_admits_only_the_exact_focused_owned_release ... ok
+test preview_macos::tests::native_key_up_preserves_down_spelling_after_modifiers_change ... ok
+test preview_macos::tests::native_mouse_records_keep_all_buttons_outside_coordinates_and_wheel_units ... ok
+test files::tests::external_open_refuses_executables_launchers_links_and_changed_files ... ok
+test files::tests::listings_and_actions_fail_closed_for_escapes_and_replaced_ancestors ... ok
+test preview_surface::tests::controlled_refresh_uses_current_source_frame_without_waiting_for_native_decode ... ok
+test preview_surface::tests::a_five_second_control_lease_keeps_capture_visible_but_never_admits_hidden_input ... ok
+test preview_surface::tests::a_malformed_frame_is_attempted_once_and_keeps_the_last_good_native_image ... ok
+test preview_surface::tests::decoder_changes_rgba_to_bgra_and_preserves_alpha_without_json_transport ... ok
+test preview_surface::tests::delayed_decode_cannot_publish_or_send_input_after_close ... ok
+test preview_surface::tests::delayed_decode_cannot_publish_after_reset_or_free_its_single_flight_slot_early ... ok
+test preview_surface::tests::error_stopped_and_exited_with_retained_pid_and_frame_refuse_input_and_control_refresh ... ok
+test preview_surface::tests::hiding_releases_all_held_input_before_notifying_the_engine_of_visibility_false ... ok
+test preview_surface::tests::native_frame_install_and_close_have_one_atomic_order_without_holding_a_decode_lock ... ok
+test preview_surface::tests::queued_native_install_rejects_old_revisions_and_accepts_current_empty_close ... ok
+test preview_surface::tests::release_and_drop_send_each_release_once_and_never_stop_a_live_shared_session ... ok
+test preview_surface::tests::reset_invalidates_an_in_flight_control_refresh_without_visible_or_refresh_side_effects ... ok
+test files::tests::preview_transport_checks_bytes_types_bounds_and_stale_identity ... ok
+test preview_surface::tests::resetting_a_controlled_session_clears_the_capture_lease ... ok
+test settings_aux::tests::key_validation_and_failures_leave_memory_store_and_status_unchanged ... ok
+test preview_macos::tests::native_ime_keeps_utf16_marked_text_local_and_commits_unicode ... ok
+test usage::tests::usage_accounts_list_saved_accounts_with_panel_146_detail_lines ... ok
+test usage::tests::usage_entries_mark_old_figures_stale_and_claude_shells_waiting ... ok
+test usage::tests::usage_targets_follow_the_list_dedupe_homes_and_add_live_codex_shell_homes ... ok
+test tests::native_registry_composes_services_and_layouts_in_one_frozen_module ... ok
+test preview_surface::tests::decoder_enforces_compressed_byte_edge_and_metadata_limits ... ok
+test preview_macos::tests::cgimage_keeps_bgra_owner_until_release_and_rejects_mismatched_length ... ok
+test backend::tests::creator_failure_cleans_only_new_empty_directories ... ok
+test memo::tests::failed_flush_keeps_dirty_text_for_a_successful_retry ... ok
+test memo::tests::close_barrier_persists_latest_text_without_a_javascript_engine ... ok
+test memo::tests::flushed_latest_revision_refuses_an_older_async_save_after_close ... ok
+test preview_surface::tests::maximum_edge_frame_has_a_bounded_native_bgra_allocation ... ok
+test files::tests::fixture_lists_one_level_naturally_with_opaque_identities_and_git_decoration ... ok
+test files::tests::watcher_is_shared_publishes_files_and_git_changes_and_cancels ... ok
+test chat::drafts::tests::loading_drops_stale_and_surplus_drafts_and_stray_files ... ok
+test files::tests::huge_directory_is_capped_with_directories_first ... ok
+test chat::markdown::tests::hostile_input_neither_panics_nor_runs_away ... ok
+test chat::markdown::document::tests::hostile_input_neither_panics_nor_runs_away ... ok
+
+test result: ok. 148 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 4.15s
+
+
+running 3 tests
+test override_is_an_explicit_field_and_keeps_preset_and_native_preferences ... ok
+test follow_ghostty_without_a_parser_uses_the_riwork_palette_and_keeps_the_error ... ok
+test every_preset_token_is_exact ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 11 tests
+test a_toggle_reprojects_once_and_reuses_cached_turns ... ok
+test verbose_expand_all_on_2200_calls_keeps_bodies_windowed_and_markdown_streams_as_tail_splices ... ok
+test a_2200_call_disclosed_turn_in_normal_mode_materializes_under_100_bodies_and_never_reprojects_tokens ... ok
+test drafts_save_restore_survive_a_reload_and_clear_only_after_a_receipt ... ok
+test approval_round_trip_through_a_replayed_codex_stream ... ok
+test a_message_sent_while_a_turn_runs_steers_it ... ok
+test an_interrupted_turn_closes_as_interrupted_and_stops_running ... ok
+test a_replayed_2200_call_turn_reaches_the_subscriber_with_bounded_bodies ... ok
+test streaming_is_coalesced_to_one_delivery_per_16_ms_and_a_quiet_chat_delivers_nothing ... ok
+test questions_are_answered_once_then_the_access_request_is_allowed_for_the_session ... ok
+test a_deleted_chat_reports_deleted_and_forgets_its_draft ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.65s
+
+
+running 5 tests
+test orchestrators_start_only_on_request_validate_ids_and_name_the_fallback ... ok
+test a_failed_read_keeps_the_figures_it_had_and_says_why ... ok
+test nothing_is_read_without_a_window_and_one_read_serves_every_window ... ok
+test a_refresh_is_read_at_once_for_a_window_and_with_no_window_the_reader_blocks ... ok
+test a_change_is_read_at_the_change_pace_a_refresh_at_once_and_a_quiet_window_gets_heartbeats_only ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.72s
+
+
+running 3 tests
+test failed_watch_setup_delivers_an_explicit_error_snapshot ... ok
+test listed_selection_reaches_editor_factory_and_reuses_its_main_pane_tab_without_tmux ... ok
+test files_subscriptions_cross_two_engines_publish_without_polling_and_cancel_by_owner ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.82s
+
+
+running 18 tests
+test restore_adopts_cli_shells_into_main ... ok
+test restore_skips_dead_and_detached_shells ... ok
+test all_locked_adopts_nothing ... ok
+test adoption_caps_at_16_per_apply ... ok
+test new_shell_uses_the_selected_worktree_else_the_root ... ok
+test fake_chats_keep_runtime_status_and_workers_keep_parent_identity ... ok
+test a_restored_empty_main_pane_does_not_create_a_shell ... ok
+test a_failed_create_undoes_the_split ... ok
+test a_failed_restore_retries_on_the_next_sessions_delivery_and_keeps_positions ... ok
+test focus_mode_never_changes_the_saved_layout ... ok
+test no_layout_opens_riwork_cores_default ... ok
+test a_failed_default_shell_retry_is_single_flight_and_clears_its_notice ... ok
+test chat_pending_is_never_saved_and_maps_to_chat_id ... ok
+test a_failed_switch_releases_its_edit_guard ... ok
+test a_pane_close_completion_cannot_close_the_destination_pane ... ok
+test split_right_adds_the_new_pane_second_at_one_half ... ok
+test a_shell_completion_cannot_cross_a_project_switch ... ok
+test two_windows_detach_without_stopping_then_exit_records_close ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.49s
+
+
+running 1 test
+test native_pushes_one_service_to_two_engines_and_stops_on_close_owner_and_engine_drop ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.91s
+
+
+running 4 tests
+test session_create_close_adapters_publish_to_all_window_subscribers ... ok
+test tabs_mutations_and_external_writer_reach_both_services_without_live_inventory ... ok
+test project_folder_and_task_lifecycle_round_trip_real_files_and_second_window_subscription ... ok
+test process_sampler_pushes_worktree_presence_without_ui_polling_or_state_write ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.18s
+
+
+running 1 test
+test native_preview_focus_routes_pane_and_releases_escape_without_losing_global_keys ... ignored, requires private fixture HOME/RIWORK_HOME and RIWORK_PREVIEW_FOCUS_BUNDLE
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 17 tests
+test async_reads_hop_off_the_callers_thread_and_errors_are_coded ... ok
+test store_rejects_non_uuid_ids ... ok
+test one_settings_watcher_pushes_terminal_theme_changes_to_two_windows ... ok
+test sessions_create_and_close_wake_the_single_sampler ... ok
+test errors_use_only_the_frozen_codes ... ok
+test subshell_and_vim_mutations_validate_before_backend_and_publish_inventory ... ok
+test tabs_update_rejects_invalid_keys ... ok
+test local_mutations_hop_off_thread_publish_immediately_and_do_not_hide_failed_exit ... ok
+test watcher_wakes_sessions_and_unavailable_sessions_do_not_block_store ... ok
+test tabs_watcher_and_bridge_updates_share_the_topic_without_idle_sampling ... ok
+test folder_mutations_publish_once_to_every_subscriber_and_preserve_disk_format ... ok
+test home_changes_wake_change_observers_and_a_quiet_home_wakes_none ... ok
+test worktree_presence_has_a_deadline_without_restarting_empty_session_fallback ... ok
+test successful_session_mutations_survive_failed_follow_up_inventory_and_recover ... ok
+test one_sampler_serves_multiple_subscribers_and_emits_only_changes ... ok
+test an_empty_inventory_sleeps_until_a_watcher_event_and_disarms_when_empty_again ... ok
+test a_quiet_home_produces_no_deliveries_for_60_s has been running for over 60 seconds
+test a_quiet_home_produces_no_deliveries_for_60_s ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 60.16s
+
+
+running 7 tests
+test external_settings_writer_fixture ... ok
+test casing_matches_native_and_colorful_legacy_headings ... ok
+test load_errors_keep_a_diagnostic_and_recover_from_a_subscription_invalidation ... ok
+test typed_patch_preserves_unknown_settings_and_validates_before_writing ... ok
+test status_edits_read_under_the_lock_and_keep_other_windows_choices ... ok
+
+running 1 test
+test external_settings_writer_fixture ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.02s
+
+test change_text_size_is_a_read_modify_write_under_the_lock ... ok
+test a_write_by_another_process_reaches_every_subscriber_once ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.13s
+
+
+running 1 test
+
+running 1 test
+test plain_debug_settings_actions_keep_temporary_homes_off_live_services ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+test plain_debug_settings_actions_keep_temporary_homes_off_live_services ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+
+running 2 tests
+test combined_settings_cua_focus_commands ... ignored, requires the isolated Phase 6c focus runner and compiled TSX fixture
+test delayed_checks_and_focus_leaving_the_panel ... ignored, requires the isolated Phase 6c focus runner and compiled TSX fixture
+
+test result: ok. 0 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 7 tests
+test form_defaults_and_saved_model_route_choices_come_from_core_without_changing_files ... ok
+test delegation_field_edits_keep_future_siblings_and_only_null_removes_an_override ... ok
+test strict_opt_in_damage_refuses_form_saves_and_status_mutations_keep_other_fields ... ok
+test project_form_resolves_inheritance_missing_pins_saved_choices_and_folder_order ... ok
+test validation_is_atomic_model_provider_changes_use_core_semantics_and_null_resets ... ok
+test scalar_form_edits_write_only_selected_keys_and_preserve_unknown_preferences ... ok
+test project_writes_validate_accounts_merge_metadata_and_leave_running_bindings_frozen ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.41s
+
+
+running 9 tests
+test accounts_select_refuses_unavailable_and_saves_the_system_default_as_null ... ok
+test fixture_backend_reads_canned_figures_and_starts_no_process ... ok
+test usage_reads_claude_caches_of_listed_shells_and_live_codex_shell_homes ... ok
+test core_backend_settings_and_saved_list_are_file_only ... ok
+test usage_reads_each_home_once_under_concurrent_subscribers_and_records_balancing ... ok
+test accounts_subscribe_is_cache_only_and_refresh_is_single_flight ... ok
+test usage_backoff_follows_todays_intervals_on_the_service_clock ... ok
+test usage_reads_nothing_without_a_subscriber_and_accounts_alone_read_no_usage ... ok
+test usage_republishes_when_figures_turn_stale_without_any_other_wake ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.01s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

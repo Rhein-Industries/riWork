@@ -1,0 +1,15 @@
+   Compiling riwork-nsh-native v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p1-fix-host/crates/riwork-nsh-native)
+    Finished `test` profile [unoptimized] target(s) in 3.37s
+     Running tests/preview_focus.rs (target/debug/deps/preview_focus-d24151f0c6a41da0)
+PREVIEW_FOCUS before native focus: Escape Fire(93)
+PREVIEW_FOCUS native focus true traverses component, tab, workspace: Escape None
+PREVIEW_FOCUS explicit native blur: Escape Fire(95)
+PREVIEW_FOCUS window hiding clears native focus: Escape Fire(97)
+PREVIEW_FOCUS window showing does not invent focus: Escape Fire(97)
+PREVIEW_FOCUS hidden tab clears native focus: Escape Fire(99)
+PREVIEW_FOCUS reshown tab does not invent focus: Escape Fire(99)
+PREVIEW_FOCUS modal regains Escape: Escape Fire(101)
+PREVIEW_FOCUS modal dismiss restores preview Escape: Escape None
+PREVIEW_FOCUS blur after modal: Escape Fire(103)
+PREVIEW_FOCUS unmount releases preview Escape: Escape Fire(107)
+PREVIEW_FOCUS PASS: native event delivery, pane selection, blur/hide/unmount, modal and four global tab keys

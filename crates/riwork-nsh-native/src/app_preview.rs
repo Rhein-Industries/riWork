@@ -1,14 +1,10 @@
 //! An AppView owner for the unchanged preview engine. Constructing/restoring a
-//! handle does no I/O and never starts a process. Run is the only launch path.
+//! handle does no I/O and never starts a process. Only an explicit Run or
+//! control-start request may launch; restoration never does.
 use crate::service;
-use base64::Engine as _;
 use nsh_core::{element::Cleanup, prelude::*};
-use riwork_core::app_preview::{
-    MAX_PREVIEW_DIMENSION, MAX_PREVIEW_MESSAGE_BYTES, PreviewInput, PreviewMode, PreviewSpec,
-};
-use riwork_engine::app_preview::{
-    AppPreview, PreviewFrame, PreviewPhase, PreviewState, validate_input,
-};
+use riwork_core::app_preview::{PreviewInput, PreviewMode, PreviewSpec};
+use riwork_engine::app_preview::{AppPreview, PreviewPhase, PreviewState, validate_input};
 use serde_json::{Value, json};
 use std::{
     sync::{
@@ -18,7 +14,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-trait Session: Send {
+pub(crate) trait Session: Send + Sync {
     fn snapshot(&self) -> PreviewState;
     fn visible(&self, visible: bool);
     fn input(&self, input: PreviewInput);
@@ -48,11 +44,9 @@ impl Session for AppPreview {
 }
 type Launch = Arc<dyn Fn(PreviewSpec) -> Result<Box<dyn Session>, String> + Send + Sync>;
 struct Controller {
-    session: Option<Box<dyn Session>>,
+    session: Option<Arc<dyn Session>>,
     launched: Option<PreviewSpec>,
-    visible: bool,
-    frame: Option<Arc<PreviewFrame>>,
-    image: Option<String>,
+    surface: Arc<crate::preview_surface::Surface>,
     launch: Launch,
 }
 impl Controller {
@@ -60,9 +54,7 @@ impl Controller {
         Self {
             session: None,
             launched: None,
-            visible: false,
-            frame: None,
-            image: None,
+            surface: crate::preview_surface::Surface::new(),
             launch,
         }
     }
@@ -81,11 +73,11 @@ impl Controller {
         {
             return Err("Configure the Xcode scheme for this iOS preview.".into());
         }
+        self.surface.reset();
         if let Some(session) = &self.session {
             if self.launched.as_ref() == Some(&spec) {
                 session.restart();
-                self.frame = None;
-                self.image = None;
+                self.surface.attach(session.clone(), spec.mode);
                 return Ok(());
             }
             // An edited spec must not leave two process groups alive. Error is
@@ -109,17 +101,15 @@ impl Controller {
             }
         }
         self.session = None;
-        self.frame = None;
-        self.image = None;
         if closed.load(Ordering::Acquire) {
             return Err("unavailable: preview is closed".into());
         }
-        let session = (self.launch)(spec.clone())?;
+        let session: Arc<dyn Session> = Arc::from((self.launch)(spec.clone())?);
         if closed.load(Ordering::Acquire) {
             session.stop();
             return Err("unavailable: preview is closed".into());
         }
-        session.visible(self.visible);
+        self.surface.attach(session.clone(), spec.mode);
         self.session = Some(session);
         self.launched = Some(spec);
         Ok(())
@@ -129,42 +119,54 @@ impl Controller {
             return json!({"phase":"idle","message":"Enter a command, then select Run.","logs":[],"windows":[],"frame":null,"pid":null});
         };
         let state = session.snapshot();
-        if let Some(frame) = &state.frame {
-            if frame.png.len() <= MAX_PREVIEW_MESSAGE_BYTES
-                && frame.width > 0
-                && frame.height > 0
-                && frame.width <= MAX_PREVIEW_DIMENSION
-                && frame.height <= MAX_PREVIEW_DIMENSION
-                && !self
-                    .frame
-                    .as_ref()
-                    .is_some_and(|old| Arc::ptr_eq(old, frame))
-            {
-                self.image = Some(format!(
-                    "data:image/png;base64,{}",
-                    base64::engine::general_purpose::STANDARD.encode(&frame.png)
-                ));
-                self.frame = Some(frame.clone());
-            }
-        } else {
-            self.frame = None;
-            self.image = None;
-        }
-        json!({"phase":format!("{:?}",state.phase).to_lowercase(), "message":state.message,"warning":state.warning,"pid":state.pid,"windowId":state.window_id,
-            "frame":self.frame.as_ref().map(|frame| json!({"src":self.image,"width":frame.width,"height":frame.height})),
+        json!({"phase":format!("{:?}",state.phase).to_lowercase(), "message":state.message,"warning":self.surface.error().or(state.warning),"pid":state.pid,"windowId":state.window_id,
+            "frame":state.frame.as_ref().map(|frame| json!({"width":frame.width,"height":frame.height})),
             "windows":state.windows.iter().map(|w| json!({"pid":w.pid,"id":w.window_id,"title":w.title})).collect::<Vec<_>>(),
             "logs":state.logs.iter().rev().take(160).collect::<Vec<_>>().into_iter().rev().map(|log| json!({"text":log.text.chars().filter(|c| !c.is_control() || *c == '\n' || *c == '\t').take(2000).collect::<String>(),"stderr":log.stderr})).collect::<Vec<_>>()})
+    }
+    fn start_controlled(
+        &mut self,
+        spec: PreviewSpec,
+        closed: &AtomicBool,
+        now: Instant,
+    ) -> Result<(), String> {
+        if closed.load(Ordering::Acquire) {
+            return Err("unavailable: preview is closed".into());
+        }
+        let running = self.session.as_ref().is_some_and(|session| {
+            matches!(
+                session.snapshot().phase,
+                PreviewPhase::Starting
+                    | PreviewPhase::WaitingForWindow
+                    | PreviewPhase::Streaming
+                    | PreviewPhase::Paused
+            )
+        });
+        if !running {
+            self.run(spec, closed)?;
+        }
+        self.surface.control_start(now);
+        Ok(())
     }
 }
 struct Owner {
     state: Mutex<Controller>,
     closed: AtomicBool,
+    surface: Arc<crate::preview_surface::Surface>,
 }
 impl Owner {
+    fn new(controller: Controller) -> Arc<Self> {
+        Arc::new(Self {
+            surface: controller.surface.clone(),
+            state: Mutex::new(controller),
+            closed: AtomicBool::new(false),
+        })
+    }
     fn close(self: &Arc<Self>) {
         if self.closed.swap(true, Ordering::AcqRel) {
             return;
         }
+        self.surface.close();
         if let Ok(mut state) = self.state.try_lock() {
             state.session = None;
             return;
@@ -198,6 +200,10 @@ impl Drop for PreviewHandle {
 }
 #[class]
 impl PreviewHandle {
+    /// Opaque process-local native surface binding; contains no frame bytes.
+    pub fn surface_id(&self) -> String {
+        self.owner.surface.id().to_owned()
+    }
     pub async fn snapshot(this: Instance<Self>) -> Result<Value, String> {
         let owner = this.with(|handle| handle.owner.clone());
         service::blocking(move || {
@@ -211,10 +217,35 @@ impl PreviewHandle {
         let owner = this.with(|handle| handle.owner.clone());
         service::blocking(move || owner.state.lock().unwrap().run(spec, &owner.closed)).await
     }
+    /// Explicit control-window launch, with a five-second capture visibility lease.
+    pub async fn start_controlled(this: Instance<Self>, spec: Value) -> Result<(), String> {
+        let spec: PreviewSpec =
+            serde_json::from_value(spec).map_err(|e| format!("invalid: {e}"))?;
+        let owner = this.with(|handle| handle.owner.clone());
+        service::blocking(move || {
+            owner.check()?;
+            owner
+                .state
+                .lock()
+                .unwrap()
+                .start_controlled(spec, &owner.closed, Instant::now())
+        })
+        .await
+    }
+    /// Explicit control capture never admits local input to an invisible panel.
+    pub async fn refresh_controlled(this: Instance<Self>) -> Result<(), String> {
+        let owner = this.with(|handle| handle.owner.clone());
+        service::blocking(move || {
+            owner.check()?;
+            owner.surface.control_refresh(Instant::now())
+        })
+        .await
+    }
     pub async fn stop(this: Instance<Self>) -> Result<(), String> {
         let owner = this.with(|handle| handle.owner.clone());
         service::blocking(move || {
             owner.check()?;
+            owner.surface.reset();
             if let Some(session) = &owner.state.lock().unwrap().session {
                 session.stop();
             }
@@ -226,11 +257,7 @@ impl PreviewHandle {
         let owner = this.with(|handle| handle.owner.clone());
         service::blocking(move || {
             owner.check()?;
-            let mut state = owner.state.lock().unwrap();
-            state.visible = visible;
-            if let Some(session) = &state.session {
-                session.visible(visible);
-            }
+            owner.surface.set_visible(visible);
             Ok(())
         })
         .await
@@ -242,8 +269,18 @@ impl PreviewHandle {
         let owner = this.with(|handle| handle.owner.clone());
         service::blocking(move || {
             owner.check()?;
-            if let Some(session) = &owner.state.lock().unwrap().session {
-                session.input(input);
+            match input {
+                PreviewInput::Refresh => owner.surface.control_refresh(Instant::now())?,
+                PreviewInput::ShowWindow => {
+                    if let Some(session) = &owner.state.lock().unwrap().session {
+                        session.input(input);
+                    }
+                }
+                _ => {
+                    return Err(
+                        "invalid: interactive input belongs to the native preview surface".into(),
+                    );
+                }
             }
             Ok(())
         })
@@ -253,8 +290,17 @@ impl PreviewHandle {
         let owner = this.with(|handle| handle.owner.clone());
         service::blocking(move || {
             owner.check()?;
-            if let Some(session) = &owner.state.lock().unwrap().session {
+            let state = owner.state.lock().unwrap();
+            if let Some(session) = &state.session {
+                owner.surface.reset();
                 session.select_window(pid, window);
+                owner.surface.attach(
+                    session.clone(),
+                    state
+                        .launched
+                        .as_ref()
+                        .map_or(PreviewMode::Cooperative, |s| s.mode),
+                );
             }
             Ok(())
         })
@@ -280,10 +326,7 @@ impl Previews {
                 AppPreview::launch(spec).map(|session| Box::new(session) as Box<dyn Session>)
             })
         };
-        let owner = Arc::new(Owner {
-            state: Mutex::new(Controller::new(launch)),
-            closed: AtomicBool::new(false),
-        });
+        let owner = Owner::new(Controller::new(launch));
         let cleanup_owner = owner.clone();
         let cleanup = cx.on_cleanup(move || cleanup_owner.close());
         Ok(PreviewHandle {
@@ -380,10 +423,7 @@ mod phase6c_tests {
         assert_eq!(launches.load(Ordering::SeqCst), 2);
         controller.session.as_ref().unwrap().stop();
         assert_eq!(controller.snapshot()["phase"], "stopped");
-        let owner = Arc::new(Owner {
-            state: Mutex::new(controller),
-            closed,
-        });
+        let owner = Owner::new(controller);
         owner.close();
         assert!(owner.state.lock().unwrap().session.is_none());
         assert!(
@@ -401,14 +441,11 @@ mod phase6c_tests {
         let (started_tx, started_rx) = std::sync::mpsc::channel();
         let (finish_tx, finish_rx) = std::sync::mpsc::channel();
         let finish = Mutex::new(finish_rx);
-        let owner = Arc::new(Owner {
-            state: Mutex::new(Controller::new(Arc::new(move |spec| {
-                started_tx.send(()).unwrap();
-                finish.lock().unwrap().recv().unwrap();
-                Ok(Box::new(FakeSession::new(spec)))
-            }))),
-            closed: AtomicBool::new(false),
-        });
+        let owner = Owner::new(Controller::new(Arc::new(move |spec| {
+            started_tx.send(()).unwrap();
+            finish.lock().unwrap().recv().unwrap();
+            Ok(Box::new(FakeSession::new(spec)))
+        })));
         let worker = owner.clone();
         let join = std::thread::spawn(move || {
             worker
@@ -422,5 +459,123 @@ mod phase6c_tests {
         finish_tx.send(()).unwrap();
         assert!(join.join().unwrap().is_err());
         assert!(owner.state.lock().unwrap().session.is_none());
+    }
+
+    #[test]
+    fn preview_json_snapshot_has_metadata_only_and_bounds_display_logs() {
+        use riwork_engine::app_preview::{PreviewFrame, PreviewLog};
+        let session = Arc::new(FakeSession::new(spec("fake")));
+        {
+            let mut state = session.0.lock().unwrap();
+            // A large arbitrary source payload must never be encoded/copied
+            // into the JSON result. Decoding belongs to the surface worker.
+            state.frame = Some(Arc::new(PreviewFrame {
+                png: vec![0xab; 16 * 1024 * 1024],
+                width: 2048,
+                height: 2048,
+                sequence: 42,
+            }));
+            state.logs = (0..200)
+                .map(|i| PreviewLog {
+                    text: format!("{i}:\0\u{1b}\t\n{}", "é".repeat(2400)),
+                    stderr: i % 2 == 0,
+                })
+                .collect();
+        }
+        let mut controller = Controller::new(Arc::new(|_| panic!("snapshot must not launch")));
+        controller.session = Some(session.clone());
+        let snapshot = controller.snapshot();
+        assert_eq!(snapshot["frame"], json!({"width":2048,"height":2048}));
+        let logs = snapshot["logs"].as_array().unwrap();
+        assert_eq!(logs.len(), 160);
+        assert!(logs[0]["text"].as_str().unwrap().starts_with("40:\t\n"));
+        assert_eq!(logs[0]["stderr"], true);
+        for log in logs {
+            let text = log["text"].as_str().unwrap();
+            assert_eq!(text.chars().count(), 2000);
+            assert!(!text.contains(['\0', '\u{1b}']));
+        }
+        let encoded = snapshot.to_string();
+        assert!(
+            !encoded.contains("data:image")
+                && !encoded.contains("base64")
+                && !encoded.contains("png")
+                && !encoded.contains("src")
+        );
+        assert!(encoded.len() < 650_000);
+        session.0.lock().unwrap().logs.clear();
+        assert!(
+            controller.snapshot().to_string().len() < 512,
+            "16 MiB source yields <512-byte metadata snapshot"
+        );
+        eprintln!(
+            "preview transport: 16777216 source bytes -> {} JSON bytes, dimensions only; logs last160 x2000 Unicode chars",
+            controller.snapshot().to_string().len()
+        );
+    }
+
+    #[test]
+    fn preview_control_start_reuses_running_session_but_restarts_error_even_with_pid() {
+        struct Shared(Arc<FakeSession>, Arc<AtomicUsize>);
+        impl Session for Shared {
+            fn snapshot(&self) -> PreviewState {
+                self.0.snapshot()
+            }
+            fn visible(&self, visible: bool) {
+                self.0.visible(visible);
+            }
+            fn input(&self, input: PreviewInput) {
+                self.0.input(input);
+            }
+            fn stop(&self) {
+                self.0.stop();
+            }
+            fn restart(&self) {
+                self.1.fetch_add(1, Ordering::SeqCst);
+                self.0.restart();
+            }
+            fn select_window(&self, pid: u32, window: u64) {
+                self.0.select_window(pid, window);
+            }
+        }
+        let session = Arc::new(FakeSession::new(spec("fake")));
+        let restarts = Arc::new(AtomicUsize::new(0));
+        let launches = Arc::new(AtomicUsize::new(0));
+        let mut controller = Controller::new({
+            let (session, restarts, launches) =
+                (session.clone(), restarts.clone(), launches.clone());
+            Arc::new(move |_| {
+                launches.fetch_add(1, Ordering::SeqCst);
+                Ok(Box::new(Shared(session.clone(), restarts.clone())))
+            })
+        });
+        let closed = AtomicBool::new(false);
+        assert!(controller.session.is_none());
+        controller
+            .start_controlled(spec("fake"), &closed, Instant::now())
+            .unwrap();
+        assert_eq!(launches.load(Ordering::SeqCst), 1);
+        controller
+            .start_controlled(spec("fake"), &closed, Instant::now())
+            .unwrap();
+        assert_eq!(restarts.load(Ordering::SeqCst), 0);
+        session.0.lock().unwrap().phase = PreviewPhase::Error;
+        assert!(session.snapshot().pid.is_some());
+        controller
+            .start_controlled(spec("fake"), &closed, Instant::now())
+            .unwrap();
+        assert_eq!(restarts.load(Ordering::SeqCst), 1);
+        let owner = Owner::new(controller);
+        owner.close();
+        assert!(
+            owner
+                .state
+                .lock()
+                .unwrap()
+                .start_controlled(spec("fake"), &owner.closed, Instant::now())
+                .is_err()
+        );
+        assert_eq!(launches.load(Ordering::SeqCst), 1);
+        assert_eq!(restarts.load(Ordering::SeqCst), 1);
     }
 }

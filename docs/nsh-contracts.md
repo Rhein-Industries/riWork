@@ -789,10 +789,33 @@ and bracketed-paste semantics, without an added Return.
 
 ### 3.6 Other native components (reserved)
 
-`riwork.preview`: the app-preview frame view (CGImage/CALayer, aspect-fit, mouse capture
-including up-outside, `NSTextInputClient`; parity TERM app-preview rows). The name is reserved;
-its props/events/commands are frozen by the app-preview port under this document's rules
-(§3.1: no per-frame data through JS).
+`riwork.preview` schema 1 is the app-preview frame view (CGImage/CALayer, aspect-fit,
+mouse capture including up-outside, `NSTextInputClient`; TERM-183–189). The repository's
+`nsh-platform-macos::NativeComponent` registration hosts its NSView directly.
+
+- Props: `owner: string` (opaque process-local ID returned by `PreviewHandle.surfaceId()`),
+  `visible: boolean` (tab visibility combined with host window state).
+- Event: `focusChange: { focused: boolean }`; Workspace selects the owning pane on focus.
+  While focused, Escape belongs to preview unless workspace transient UI takes precedence.
+- No component commands and no frame props/events. Run/stop/spec/cleanup remain with
+  the native PreviewHandle. Its JSON snapshot exposes frame dimensions only; PNG and
+  BGRA never cross JS. Construction/restoration never launches a preview.
+- One worker decode per owner, including across restart. PNG ≤16 MiB, edges ≤2048,
+  ImageReader decoder allocation limit 32 MiB, metadata dimensions checked, RGBA→BGRA.
+  This is a decoder budget, not a total process-memory cap. The decoded allocation is
+  shared with CGDataProvider; one pending publication replaces older queued images.
+  Generation/revision checks reject stale worker completions and queued publications;
+  frame-install admission is serialized with reset/close. Native view drop clears pixels.
+- Local input additionally requires a real visible/active native window, running session
+  and frame. All held buttons/keys and remote focus are released before hiding capture,
+  on blur, stop, restart, window loss and disposal. Window-capture mode sends clicks.
+- Explicit `startControlled` / `refreshControlled` requests keep capture visible for five
+  seconds without admitting hidden local input. Refresh requires a current engine frame;
+  reset clears the lease. The preview-control mailbox host/routing (TERM-201–207) remains
+  a separate migration item; these methods alone do not connect the CLI mailbox.
+
+Implementation and isolated evidence: [native preview report](nsh-native-preview.md).
+Only Native appearance is in migration scope; abandoned style branches are unchanged.
 
 ### 3.7 Teardown protocol (frozen; from the ghostty spike NO-GO)
 

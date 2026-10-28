@@ -1,0 +1,671 @@
+{
+  "artifacts": {
+    "check-h6wuk4rx/cargo-check.stderr": {
+      "archive_sha256": "9a0c8a7bf94736813a32aecff2b00dff9cd663ec737c6c3ba7aa6a45d9fa2fed",
+      "bytes": 288,
+      "source": "/private/tmp/riwork-native-preview/check-h6wuk4rx/cargo-check.stderr",
+      "source_sha256": "9a0c8a7bf94736813a32aecff2b00dff9cd663ec737c6c3ba7aa6a45d9fa2fed"
+    },
+    "check-h6wuk4rx/cargo-check.stdout": {
+      "archive_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "source": "/private/tmp/riwork-native-preview/check-h6wuk4rx/cargo-check.stdout",
+      "source_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "check-h6wuk4rx/manifest.json": {
+      "archive_sha256": "964ab73234cb774f039fe889d13e43d23e64906b323498f197f256e468ca5032",
+      "bytes": 8186,
+      "source": "/private/tmp/riwork-native-preview/check-h6wuk4rx/manifest.json",
+      "source_sha256": "964ab73234cb774f039fe889d13e43d23e64906b323498f197f256e468ca5032"
+    },
+    "check-h6wuk4rx/nsh-check.stderr": {
+      "archive_sha256": "2ba557c4bab59307a6796b53469beb446bf724e07a6c3464b1b92c1c6bc551ff",
+      "bytes": 2399,
+      "source": "/private/tmp/riwork-native-preview/check-h6wuk4rx/nsh-check.stderr",
+      "source_sha256": "2ba557c4bab59307a6796b53469beb446bf724e07a6c3464b1b92c1c6bc551ff"
+    },
+    "check-h6wuk4rx/nsh-check.stdout": {
+      "archive_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "source": "/private/tmp/riwork-native-preview/check-h6wuk4rx/nsh-check.stdout",
+      "source_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "check-rwui6ujk/cargo-check.stderr": {
+      "archive_sha256": "d5be8629b24d6ac9de2442223c4aa20b3b4e50e5f9cca8c698892de66d75644b",
+      "bytes": 3861,
+      "source": "/private/tmp/riwork-native-preview/check-rwui6ujk/cargo-check.stderr",
+      "source_sha256": "d5be8629b24d6ac9de2442223c4aa20b3b4e50e5f9cca8c698892de66d75644b"
+    },
+    "check-rwui6ujk/cargo-check.stdout": {
+      "archive_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "source": "/private/tmp/riwork-native-preview/check-rwui6ujk/cargo-check.stdout",
+      "source_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "check-rwui6ujk/manifest.json": {
+      "archive_sha256": "c2ca3b238423804cd1bba7d4efdcea3d847c3e9c1f14d3ab88eb8b3f9767d5d4",
+      "bytes": 8188,
+      "source": "/private/tmp/riwork-native-preview/check-rwui6ujk/manifest.json",
+      "source_sha256": "c2ca3b238423804cd1bba7d4efdcea3d847c3e9c1f14d3ab88eb8b3f9767d5d4"
+    },
+    "check-rwui6ujk/nsh-check.stderr": {
+      "archive_sha256": "1d10adff11eb79474a14327e0580ef33b4da927be60f1d24c1f6cdc58c6640eb",
+      "bytes": 2452,
+      "source": "/private/tmp/riwork-native-preview/check-rwui6ujk/nsh-check.stderr",
+      "source_sha256": "1d10adff11eb79474a14327e0580ef33b4da927be60f1d24c1f6cdc58c6640eb"
+    },
+    "check-rwui6ujk/nsh-check.stdout": {
+      "archive_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "source": "/private/tmp/riwork-native-preview/check-rwui6ujk/nsh-check.stdout",
+      "source_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "focus-393ihygr/manifest.json": {
+      "archive_sha256": "b6e39b6d16b07117473e1d1acefb8aa9e5bf2bfb0c7c6297e39db81e7ffee4bc",
+      "bytes": 12575,
+      "source": "/private/tmp/riwork-native-preview/focus-393ihygr/manifest.json",
+      "source_sha256": "b6e39b6d16b07117473e1d1acefb8aa9e5bf2bfb0c7c6297e39db81e7ffee4bc"
+    },
+    "focus-393ihygr/native-focus-build.stderr": {
+      "archive_sha256": "bbff3b4969a6d9d315224092a125b42c378872f1e093d7f1a35d813e980c1411",
+      "bytes": 2508,
+      "source": "/private/tmp/riwork-native-preview/focus-393ihygr/native-focus-build.stderr",
+      "source_sha256": "bbff3b4969a6d9d315224092a125b42c378872f1e093d7f1a35d813e980c1411"
+    },
+    "focus-393ihygr/native-focus-build.stdout": {
+      "archive_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "source": "/private/tmp/riwork-native-preview/focus-393ihygr/native-focus-build.stdout",
+      "source_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "focus-393ihygr/native-focus-wiring.stderr": {
+      "archive_sha256": "3ffa833f6edd72aa184de0a0672a22f4ef99f6957bb620f1c718575c76f278be",
+      "bytes": 1049,
+      "source": "/private/tmp/riwork-native-preview/focus-393ihygr/native-focus-wiring.stderr",
+      "source_sha256": "3ffa833f6edd72aa184de0a0672a22f4ef99f6957bb620f1c718575c76f278be"
+    },
+    "focus-393ihygr/native-focus-wiring.stdout": {
+      "archive_sha256": "6ddd245c4d9595fec53fd5501bc72af1453d494f438aa55aa91290c9b75b8a9b",
+      "bytes": 204,
+      "source": "/private/tmp/riwork-native-preview/focus-393ihygr/native-focus-wiring.stdout",
+      "source_sha256": "6ddd245c4d9595fec53fd5501bc72af1453d494f438aa55aa91290c9b75b8a9b"
+    },
+    "focus-393ihygr/seed-fixture.stderr": {
+      "archive_sha256": "d5cf109fda6dbef72e22ffc3c9246f1ab3672f57eeee7a3ef3129f44a82e718a",
+      "bytes": 210,
+      "source": "/private/tmp/riwork-native-preview/focus-393ihygr/seed-fixture.stderr",
+      "source_sha256": "d5cf109fda6dbef72e22ffc3c9246f1ab3672f57eeee7a3ef3129f44a82e718a"
+    },
+    "focus-393ihygr/seed-fixture.stdout": {
+      "archive_sha256": "fc140610a13fed88d6646a7fa0a79d70a65fb82ef6bed456bce8e193d41bf021",
+      "bytes": 198,
+      "source": "/private/tmp/riwork-native-preview/focus-393ihygr/seed-fixture.stdout",
+      "source_sha256": "fc140610a13fed88d6646a7fa0a79d70a65fb82ef6bed456bce8e193d41bf021"
+    },
+    "focus-_fhsch1a/manifest.json": {
+      "archive_sha256": "765e79c4adc1a4219be7dfb803380b4e8ebb8cc9405317afd35771065c1966e7",
+      "bytes": 12581,
+      "source": "/private/tmp/riwork-native-preview/focus-_fhsch1a/manifest.json",
+      "source_sha256": "765e79c4adc1a4219be7dfb803380b4e8ebb8cc9405317afd35771065c1966e7"
+    },
+    "focus-_fhsch1a/native-focus-build.stderr": {
+      "archive_sha256": "a824cccf5965530a5133267f80f7cc2b660341eb2c84a61a8bd7d56880784660",
+      "bytes": 2507,
+      "source": "/private/tmp/riwork-native-preview/focus-_fhsch1a/native-focus-build.stderr",
+      "source_sha256": "a824cccf5965530a5133267f80f7cc2b660341eb2c84a61a8bd7d56880784660"
+    },
+    "focus-_fhsch1a/native-focus-build.stdout": {
+      "archive_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "source": "/private/tmp/riwork-native-preview/focus-_fhsch1a/native-focus-build.stdout",
+      "source_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "focus-_fhsch1a/native-focus-wiring.stderr": {
+      "archive_sha256": "9f8a3dd4c7dad1612bb47560f8b0cf33445f4fc99555a9beebf4700818175032",
+      "bytes": 1057,
+      "source": "/private/tmp/riwork-native-preview/focus-_fhsch1a/native-focus-wiring.stderr",
+      "source_sha256": "9f8a3dd4c7dad1612bb47560f8b0cf33445f4fc99555a9beebf4700818175032"
+    },
+    "focus-_fhsch1a/native-focus-wiring.stdout": {
+      "archive_sha256": "feaca33e3bd90fc8f40d3864f0aa5db8eaf3c775421a51a3d340fd23470c0f88",
+      "bytes": 318,
+      "source": "/private/tmp/riwork-native-preview/focus-_fhsch1a/native-focus-wiring.stdout",
+      "source_sha256": "feaca33e3bd90fc8f40d3864f0aa5db8eaf3c775421a51a3d340fd23470c0f88"
+    },
+    "focus-_fhsch1a/seed-fixture.stderr": {
+      "archive_sha256": "7ef0c19b08212fd5a0e4bb8ef43c692d78211da380af037bb0fba6dd8aa98b30",
+      "bytes": 434,
+      "source": "/private/tmp/riwork-native-preview/focus-_fhsch1a/seed-fixture.stderr",
+      "source_sha256": "7ef0c19b08212fd5a0e4bb8ef43c692d78211da380af037bb0fba6dd8aa98b30"
+    },
+    "focus-_fhsch1a/seed-fixture.stdout": {
+      "archive_sha256": "05c7ad0e11d3d4fe9c1f86f6e7c96b52cea68bdd52a7fa5e20247fdfa5b4d7d6",
+      "bytes": 198,
+      "source": "/private/tmp/riwork-native-preview/focus-_fhsch1a/seed-fixture.stdout",
+      "source_sha256": "05c7ad0e11d3d4fe9c1f86f6e7c96b52cea68bdd52a7fa5e20247fdfa5b4d7d6"
+    },
+    "keys-9mboiu39/existing-keyboard-ui.stderr": {
+      "archive_sha256": "a0174c5cf262043c64bc9d844f89abec3550d30424e43589fcf0da56b004be43",
+      "bytes": 125,
+      "source": "/private/tmp/riwork-native-preview/keys-9mboiu39/existing-keyboard-ui.stderr",
+      "source_sha256": "a0174c5cf262043c64bc9d844f89abec3550d30424e43589fcf0da56b004be43"
+    },
+    "keys-9mboiu39/existing-keyboard-ui.stdout": {
+      "archive_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "source": "/private/tmp/riwork-native-preview/keys-9mboiu39/existing-keyboard-ui.stdout",
+      "source_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "keys-9mboiu39/manifest.json": {
+      "archive_sha256": "7858bedfb383fb2950ef229a543458d3322c77762e60714d5ef03671c0c3a3b8",
+      "bytes": 8539,
+      "source": "/private/tmp/riwork-native-preview/keys-9mboiu39/manifest.json",
+      "source_sha256": "7858bedfb383fb2950ef229a543458d3322c77762e60714d5ef03671c0c3a3b8"
+    },
+    "keys-9mboiu39/seed-fixture.stderr": {
+      "archive_sha256": "c29b01c384bdb8223ecd0c3ad26bf8b0e1c0568fcb98bf273cd02abc8f2361c2",
+      "bytes": 209,
+      "source": "/private/tmp/riwork-native-preview/keys-9mboiu39/seed-fixture.stderr",
+      "source_sha256": "c29b01c384bdb8223ecd0c3ad26bf8b0e1c0568fcb98bf273cd02abc8f2361c2"
+    },
+    "keys-9mboiu39/seed-fixture.stdout": {
+      "archive_sha256": "c59bfdb1f28df7f7f0cb79bcbc554982fc6afb6f89647c63a443cd7eabf0e88d",
+      "bytes": 196,
+      "source": "/private/tmp/riwork-native-preview/keys-9mboiu39/seed-fixture.stdout",
+      "source_sha256": "c59bfdb1f28df7f7f0cb79bcbc554982fc6afb6f89647c63a443cd7eabf0e88d"
+    },
+    "keys-qjxc1kmc/existing-keyboard-ui.stderr": {
+      "archive_sha256": "d4e71ce1d51cb0944d95ad42e0760163d13e6a595035485a157d1d8b49c8210a",
+      "bytes": 3222,
+      "source": "/private/tmp/riwork-native-preview/keys-qjxc1kmc/existing-keyboard-ui.stderr",
+      "source_sha256": "d4e71ce1d51cb0944d95ad42e0760163d13e6a595035485a157d1d8b49c8210a"
+    },
+    "keys-qjxc1kmc/existing-keyboard-ui.stdout": {
+      "archive_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "source": "/private/tmp/riwork-native-preview/keys-qjxc1kmc/existing-keyboard-ui.stdout",
+      "source_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "keys-qjxc1kmc/keys.xml": {
+      "archive_sha256": "c342b24d0f28a5ace8b87f7fb08a6e786856695979de13603afdd621a5e537f7",
+      "bytes": 1250,
+      "source": "/private/tmp/riwork-native-preview/keys-qjxc1kmc/keys.xml",
+      "source_sha256": "c342b24d0f28a5ace8b87f7fb08a6e786856695979de13603afdd621a5e537f7"
+    },
+    "keys-qjxc1kmc/manifest.json": {
+      "archive_sha256": "bb95173efca06d594ad6c1eec095840a6608fad6c6d603c8fcca876d03b2ae1f",
+      "bytes": 8520,
+      "source": "/private/tmp/riwork-native-preview/keys-qjxc1kmc/manifest.json",
+      "source_sha256": "bb95173efca06d594ad6c1eec095840a6608fad6c6d603c8fcca876d03b2ae1f"
+    },
+    "keys-qjxc1kmc/seed-fixture.stderr": {
+      "archive_sha256": "41c341309e3ab5e1df6e5da0b19c7065955efb0e82685607233750664beb0634",
+      "bytes": 209,
+      "source": "/private/tmp/riwork-native-preview/keys-qjxc1kmc/seed-fixture.stderr",
+      "source_sha256": "41c341309e3ab5e1df6e5da0b19c7065955efb0e82685607233750664beb0634"
+    },
+    "keys-qjxc1kmc/seed-fixture.stdout": {
+      "archive_sha256": "ca95b20ab0f8407296f709e9162473764d407f18dbe7bff3e823f0bdfbdfd62a",
+      "bytes": 196,
+      "source": "/private/tmp/riwork-native-preview/keys-qjxc1kmc/seed-fixture.stdout",
+      "source_sha256": "ca95b20ab0f8407296f709e9162473764d407f18dbe7bff3e823f0bdfbdfd62a"
+    },
+    "keys-sm3jpu5c/existing-keyboard-ui.stderr": {
+      "archive_sha256": "0714f187a6e8a98a9190d7d542d5a241521cc46cf5aa216e3637e8b737d82d2c",
+      "bytes": 3948,
+      "source": "/private/tmp/riwork-native-preview/keys-sm3jpu5c/existing-keyboard-ui.stderr",
+      "source_sha256": "0714f187a6e8a98a9190d7d542d5a241521cc46cf5aa216e3637e8b737d82d2c"
+    },
+    "keys-sm3jpu5c/existing-keyboard-ui.stdout": {
+      "archive_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "source": "/private/tmp/riwork-native-preview/keys-sm3jpu5c/existing-keyboard-ui.stdout",
+      "source_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "keys-sm3jpu5c/keys.xml": {
+      "archive_sha256": "add52085603850d92cc650e12f2399d77cb14f377867aa004a68ecc85a5ac6ed",
+      "bytes": 3584,
+      "source": "/private/tmp/riwork-native-preview/keys-sm3jpu5c/keys.xml",
+      "source_sha256": "add52085603850d92cc650e12f2399d77cb14f377867aa004a68ecc85a5ac6ed"
+    },
+    "keys-sm3jpu5c/manifest.json": {
+      "archive_sha256": "2b564d90b3b0e6256260fe52e0031539a145a7eb69529e71f221730a05d4a727",
+      "bytes": 8521,
+      "source": "/private/tmp/riwork-native-preview/keys-sm3jpu5c/manifest.json",
+      "source_sha256": "2b564d90b3b0e6256260fe52e0031539a145a7eb69529e71f221730a05d4a727"
+    },
+    "keys-sm3jpu5c/seed-fixture.stderr": {
+      "archive_sha256": "ef6680b2001ed0496f57c6ed47a127e4e3c80026e5626964eeec31a935aeb60f",
+      "bytes": 209,
+      "source": "/private/tmp/riwork-native-preview/keys-sm3jpu5c/seed-fixture.stderr",
+      "source_sha256": "ef6680b2001ed0496f57c6ed47a127e4e3c80026e5626964eeec31a935aeb60f"
+    },
+    "keys-sm3jpu5c/seed-fixture.stdout": {
+      "archive_sha256": "a2592ace5c0bbac82bc1ab80e7560f664244f4bdade5ceeef3d4dc7221e98c45",
+      "bytes": 196,
+      "source": "/private/tmp/riwork-native-preview/keys-sm3jpu5c/seed-fixture.stdout",
+      "source_sha256": "a2592ace5c0bbac82bc1ab80e7560f664244f4bdade5ceeef3d4dc7221e98c45"
+    },
+    "recovery-ibxmtew8/app-fixture-build.stderr": {
+      "archive_sha256": "cee11d96dc286ff4045e1a10a8c7a1122a8a6ff510260699d214c6253b01c684",
+      "bytes": 2510,
+      "source": "/private/tmp/riwork-native-preview/recovery-ibxmtew8/app-fixture-build.stderr",
+      "source_sha256": "cee11d96dc286ff4045e1a10a8c7a1122a8a6ff510260699d214c6253b01c684"
+    },
+    "recovery-ibxmtew8/app-fixture-build.stdout": {
+      "archive_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "source": "/private/tmp/riwork-native-preview/recovery-ibxmtew8/app-fixture-build.stdout",
+      "source_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "recovery-ibxmtew8/app-recovery.stderr": {
+      "archive_sha256": "42b80621d296ebd50ecb7feb207d4f79fa0e7342f52bf64aa0a9aed507691f54",
+      "bytes": 999,
+      "source": "/private/tmp/riwork-native-preview/recovery-ibxmtew8/app-recovery.stderr",
+      "source_sha256": "42b80621d296ebd50ecb7feb207d4f79fa0e7342f52bf64aa0a9aed507691f54"
+    },
+    "recovery-ibxmtew8/app-recovery.stdout": {
+      "archive_sha256": "4b28f1231ab524e6b7882dd40ec725a593d90cacc0c61b59fde2ea4e676ba7e7",
+      "bytes": 1393,
+      "source": "/private/tmp/riwork-native-preview/recovery-ibxmtew8/app-recovery.stdout",
+      "source_sha256": "4b28f1231ab524e6b7882dd40ec725a593d90cacc0c61b59fde2ea4e676ba7e7"
+    },
+    "recovery-ibxmtew8/manifest.json": {
+      "archive_sha256": "cda1c8ebf68d594a95fa74217efd570718a0911dbbcb15f6cb28745c54a18f1d",
+      "bytes": 8507,
+      "source": "/private/tmp/riwork-native-preview/recovery-ibxmtew8/manifest.json",
+      "source_sha256": "cda1c8ebf68d594a95fa74217efd570718a0911dbbcb15f6cb28745c54a18f1d"
+    },
+    "riwork-native-preview/prior-archives.json": {
+      "archive_sha256": "00cea70def0c936e27a07100c56016c99f2b2919b729d8e65c74e9800d5cab64",
+      "bytes": 347,
+      "source": "/private/tmp/riwork-native-preview/prior-archives.json",
+      "source_sha256": "00cea70def0c936e27a07100c56016c99f2b2919b729d8e65c74e9800d5cab64"
+    },
+    "riwork-native-preview/source-state.json": {
+      "archive_sha256": "d70151118d7c23ff75167ab56fbb8b71a5669cf43ebcc1d8e110e0dacebf452b",
+      "bytes": 2544,
+      "source": "/private/tmp/riwork-native-preview/source-state.json",
+      "source_sha256": "d70151118d7c23ff75167ab56fbb8b71a5669cf43ebcc1d8e110e0dacebf452b"
+    },
+    "riwork-native-preview/stale-keymap-golden.json": {
+      "archive_sha256": "1fc5e69fb028b0024c501649cce56076c980528632a38e3cd080ec4159445b32",
+      "bytes": 378,
+      "source": "/private/tmp/riwork-native-preview/stale-keymap-golden.json",
+      "source_sha256": "1fc5e69fb028b0024c501649cce56076c980528632a38e3cd080ec4159445b32"
+    },
+    "suites-4yfk76qu/format.stderr": {
+      "archive_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "source": "/private/tmp/riwork-native-preview/suites-4yfk76qu/format.stderr",
+      "source_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "suites-4yfk76qu/format.stdout": {
+      "archive_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "source": "/private/tmp/riwork-native-preview/suites-4yfk76qu/format.stdout",
+      "source_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "suites-4yfk76qu/host-suite.stderr": {
+      "archive_sha256": "9506f42e76f2ed1c047be855139b9f6c764fda59770d98925c6ba9a849095bbe",
+      "bytes": 442,
+      "source": "/private/tmp/riwork-native-preview/suites-4yfk76qu/host-suite.stderr",
+      "source_sha256": "9506f42e76f2ed1c047be855139b9f6c764fda59770d98925c6ba9a849095bbe"
+    },
+    "suites-4yfk76qu/host-suite.stdout": {
+      "archive_sha256": "a4bd356d52eb2f7a4a3848558c4e7cdb85dc3761dbc0032696f6c54fa16fedc4",
+      "bytes": 6217,
+      "source": "/private/tmp/riwork-native-preview/suites-4yfk76qu/host-suite.stdout",
+      "source_sha256": "a4bd356d52eb2f7a4a3848558c4e7cdb85dc3761dbc0032696f6c54fa16fedc4"
+    },
+    "suites-4yfk76qu/manifest.json": {
+      "archive_sha256": "58880fa0dfac13eb27d82d29206f21e3048fcdb4e1bc37304ead3966e90893f8",
+      "bytes": 19111,
+      "source": "/private/tmp/riwork-native-preview/suites-4yfk76qu/manifest.json",
+      "source_sha256": "58880fa0dfac13eb27d82d29206f21e3048fcdb4e1bc37304ead3966e90893f8"
+    },
+    "suites-4yfk76qu/native-suite.stderr": {
+      "archive_sha256": "b73d5f8d936e7ca40568565c360cd27f992fa543bcd837111159b1d6d992653d",
+      "bytes": 1401,
+      "source": "/private/tmp/riwork-native-preview/suites-4yfk76qu/native-suite.stderr",
+      "source_sha256": "b73d5f8d936e7ca40568565c360cd27f992fa543bcd837111159b1d6d992653d"
+    },
+    "suites-4yfk76qu/native-suite.stdout": {
+      "archive_sha256": "60ae3be0e57fab603bb855dee05ff132ac8a1e844c4e1da8188dd4d0ed04ea37",
+      "bytes": 23438,
+      "source": "/private/tmp/riwork-native-preview/suites-4yfk76qu/native-suite.stdout",
+      "source_sha256": "60ae3be0e57fab603bb855dee05ff132ac8a1e844c4e1da8188dd4d0ed04ea37"
+    },
+    "suites-4yfk76qu/whitespace.stderr": {
+      "archive_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "source": "/private/tmp/riwork-native-preview/suites-4yfk76qu/whitespace.stderr",
+      "source_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "suites-4yfk76qu/whitespace.stdout": {
+      "archive_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "source": "/private/tmp/riwork-native-preview/suites-4yfk76qu/whitespace.stdout",
+      "source_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "suites-4yfk76qu/workspace-suite.stderr": {
+      "archive_sha256": "8a878fe913adc79bc411551be1dfd8c0ea8f159cf7cf598ff6559a5f5f3ab390",
+      "bytes": 721,
+      "source": "/private/tmp/riwork-native-preview/suites-4yfk76qu/workspace-suite.stderr",
+      "source_sha256": "8a878fe913adc79bc411551be1dfd8c0ea8f159cf7cf598ff6559a5f5f3ab390"
+    },
+    "suites-4yfk76qu/workspace-suite.stdout": {
+      "archive_sha256": "04f4598734b33b7ffff84b4d6774feb21d3bd9e06d392d9a5c80e44e142068a5",
+      "bytes": 13176,
+      "source": "/private/tmp/riwork-native-preview/suites-4yfk76qu/workspace-suite.stdout",
+      "source_sha256": "04f4598734b33b7ffff84b4d6774feb21d3bd9e06d392d9a5c80e44e142068a5"
+    },
+    "surface-2986orsz/manifest.json": {
+      "archive_sha256": "74a311364abb8f345eeb37bd7cdb214b743329b0fcafcf2c54e5f114975f8b58",
+      "bytes": 4411,
+      "source": "/private/tmp/riwork-native-preview/surface-2986orsz/manifest.json",
+      "source_sha256": "74a311364abb8f345eeb37bd7cdb214b743329b0fcafcf2c54e5f114975f8b58"
+    },
+    "surface-2986orsz/surface-fixtures.stderr": {
+      "archive_sha256": "06d0e788b751578ace71b920acff534a11561dce0a2027bfdb0f9455219e5130",
+      "bytes": 5735,
+      "source": "/private/tmp/riwork-native-preview/surface-2986orsz/surface-fixtures.stderr",
+      "source_sha256": "06d0e788b751578ace71b920acff534a11561dce0a2027bfdb0f9455219e5130"
+    },
+    "surface-2986orsz/surface-fixtures.stdout": {
+      "archive_sha256": "8e003ee30c178b0ea6ccf3c63bca55119169edb48e1237de484c0fbe92529221",
+      "bytes": 5256,
+      "source": "/private/tmp/riwork-native-preview/surface-2986orsz/surface-fixtures.stdout",
+      "source_sha256": "8e003ee30c178b0ea6ccf3c63bca55119169edb48e1237de484c0fbe92529221"
+    },
+    "surface-fqpzrvqm/manifest.json": {
+      "archive_sha256": "1d6b678fabc22ee7a4091a29fac39aed6f52b66cc49911fff3a3d55dffb9172c",
+      "bytes": 8234,
+      "source": "/private/tmp/riwork-native-preview/surface-fqpzrvqm/manifest.json",
+      "source_sha256": "1d6b678fabc22ee7a4091a29fac39aed6f52b66cc49911fff3a3d55dffb9172c"
+    },
+    "surface-fqpzrvqm/surface-fixtures.stderr": {
+      "archive_sha256": "1388debbe40c31c84bd6a195d66d39680723c4206b477a6f062d0e9de98dd5d3",
+      "bytes": 7342,
+      "source": "/private/tmp/riwork-native-preview/surface-fqpzrvqm/surface-fixtures.stderr",
+      "source_sha256": "1388debbe40c31c84bd6a195d66d39680723c4206b477a6f062d0e9de98dd5d3"
+    },
+    "surface-fqpzrvqm/surface-fixtures.stdout": {
+      "archive_sha256": "0daf4c047fb27a904b4147c5ef22e1cedc457bc71dfce238e10184ff0e058612",
+      "bytes": 6063,
+      "source": "/private/tmp/riwork-native-preview/surface-fqpzrvqm/surface-fixtures.stdout",
+      "source_sha256": "0daf4c047fb27a904b4147c5ef22e1cedc457bc71dfce238e10184ff0e058612"
+    },
+    "surface-fqpzrvqm/unchanged-engine-log-bounds.stderr": {
+      "archive_sha256": "56e6479eadb06bfd5260970a9683960aae12dae41d0862b8ddadb3091799e202",
+      "bytes": 1060,
+      "source": "/private/tmp/riwork-native-preview/surface-fqpzrvqm/unchanged-engine-log-bounds.stderr",
+      "source_sha256": "56e6479eadb06bfd5260970a9683960aae12dae41d0862b8ddadb3091799e202"
+    },
+    "surface-fqpzrvqm/unchanged-engine-log-bounds.stdout": {
+      "archive_sha256": "767e3a2efb64d89e79738ea95061135610297d81e1372f559cd50b7cc1b0f488",
+      "bytes": 541,
+      "source": "/private/tmp/riwork-native-preview/surface-fqpzrvqm/unchanged-engine-log-bounds.stdout",
+      "source_sha256": "767e3a2efb64d89e79738ea95061135610297d81e1372f559cd50b7cc1b0f488"
+    },
+    "surface-k50yuo5b/manifest.json": {
+      "archive_sha256": "458a631f938590998edac32d7c9a4bec935e207da6a21482e829a61193e58ac9",
+      "bytes": 8233,
+      "source": "/private/tmp/riwork-native-preview/surface-k50yuo5b/manifest.json",
+      "source_sha256": "458a631f938590998edac32d7c9a4bec935e207da6a21482e829a61193e58ac9"
+    },
+    "surface-k50yuo5b/surface-fixtures.stderr": {
+      "archive_sha256": "1f81222fc17986c16436bf968070aa91f1e0bc861b37d9d2e1d9088310b005d0",
+      "bytes": 7485,
+      "source": "/private/tmp/riwork-native-preview/surface-k50yuo5b/surface-fixtures.stderr",
+      "source_sha256": "1f81222fc17986c16436bf968070aa91f1e0bc861b37d9d2e1d9088310b005d0"
+    },
+    "surface-k50yuo5b/surface-fixtures.stdout": {
+      "archive_sha256": "54236a6867818f6012385df2ea32b9e3ef97ed29975a2420689d218ad882e638",
+      "bytes": 6063,
+      "source": "/private/tmp/riwork-native-preview/surface-k50yuo5b/surface-fixtures.stdout",
+      "source_sha256": "54236a6867818f6012385df2ea32b9e3ef97ed29975a2420689d218ad882e638"
+    },
+    "surface-k50yuo5b/unchanged-engine-log-bounds.stderr": {
+      "archive_sha256": "1a7c5f84dc863cab23c189c9f9d5d28de7f21740ea50b77d5f147c13230dfe3e",
+      "bytes": 1060,
+      "source": "/private/tmp/riwork-native-preview/surface-k50yuo5b/unchanged-engine-log-bounds.stderr",
+      "source_sha256": "1a7c5f84dc863cab23c189c9f9d5d28de7f21740ea50b77d5f147c13230dfe3e"
+    },
+    "surface-k50yuo5b/unchanged-engine-log-bounds.stdout": {
+      "archive_sha256": "767e3a2efb64d89e79738ea95061135610297d81e1372f559cd50b7cc1b0f488",
+      "bytes": 541,
+      "source": "/private/tmp/riwork-native-preview/surface-k50yuo5b/unchanged-engine-log-bounds.stdout",
+      "source_sha256": "767e3a2efb64d89e79738ea95061135610297d81e1372f559cd50b7cc1b0f488"
+    },
+    "surface-mf39d1nq/manifest.json": {
+      "archive_sha256": "6cbb314560f16957df0d5264db93d3c51c367130daa32d1046173574ef3039d6",
+      "bytes": 4414,
+      "source": "/private/tmp/riwork-native-preview/surface-mf39d1nq/manifest.json",
+      "source_sha256": "6cbb314560f16957df0d5264db93d3c51c367130daa32d1046173574ef3039d6"
+    },
+    "surface-mf39d1nq/surface-fixtures.stderr": {
+      "archive_sha256": "49a4c0a9fe13f46d015269c3ec2511beaa2ddac737e0850e8abbd9721097bce5",
+      "bytes": 5493,
+      "source": "/private/tmp/riwork-native-preview/surface-mf39d1nq/surface-fixtures.stderr",
+      "source_sha256": "49a4c0a9fe13f46d015269c3ec2511beaa2ddac737e0850e8abbd9721097bce5"
+    },
+    "surface-mf39d1nq/surface-fixtures.stdout": {
+      "archive_sha256": "b494421d1256f070a1cfb636074b70385e20e5fc0f9f0559a14169379d5933aa",
+      "bytes": 3898,
+      "source": "/private/tmp/riwork-native-preview/surface-mf39d1nq/surface-fixtures.stdout",
+      "source_sha256": "b494421d1256f070a1cfb636074b70385e20e5fc0f9f0559a14169379d5933aa"
+    },
+    "ui-sxh028v_/manifest.json": {
+      "archive_sha256": "5147865b21e8b79ccd0908e7c665bba419bb8f1b10fd3b8262fa9833faf32ac9",
+      "bytes": 8464,
+      "source": "/private/tmp/riwork-native-preview/ui-sxh028v_/manifest.json",
+      "source_sha256": "5147865b21e8b79ccd0908e7c665bba419bb8f1b10fd3b8262fa9833faf32ac9"
+    },
+    "ui-sxh028v_/preview.xml": {
+      "archive_sha256": "7f1fb66fe431f8a7bb0f534acb075ebeab69934e0e5356e31526644b16c73d89",
+      "bytes": 3041,
+      "source": "/private/tmp/riwork-native-preview/ui-sxh028v_/preview.xml",
+      "source_sha256": "7f1fb66fe431f8a7bb0f534acb075ebeab69934e0e5356e31526644b16c73d89"
+    },
+    "ui-sxh028v_/seed-fixture.stderr": {
+      "archive_sha256": "e44bcaf7f0ad35815d2cd165236ccecc11615f8456608d3f628269f1d01d0301",
+      "bytes": 207,
+      "source": "/private/tmp/riwork-native-preview/ui-sxh028v_/seed-fixture.stderr",
+      "source_sha256": "e44bcaf7f0ad35815d2cd165236ccecc11615f8456608d3f628269f1d01d0301"
+    },
+    "ui-sxh028v_/seed-fixture.stdout": {
+      "archive_sha256": "2783176aee14ad50830c881e07468a9c382440d949777d1396e442f8d70d1269",
+      "bytes": 192,
+      "source": "/private/tmp/riwork-native-preview/ui-sxh028v_/seed-fixture.stdout",
+      "source_sha256": "2783176aee14ad50830c881e07468a9c382440d949777d1396e442f8d70d1269"
+    },
+    "ui-sxh028v_/ui-fixtures.stderr": {
+      "archive_sha256": "21af23a47591c03b13392fa4ac2431edb0c53df8639932e6861af3c98b95d561",
+      "bytes": 4589,
+      "source": "/private/tmp/riwork-native-preview/ui-sxh028v_/ui-fixtures.stderr",
+      "source_sha256": "21af23a47591c03b13392fa4ac2431edb0c53df8639932e6861af3c98b95d561"
+    },
+    "ui-sxh028v_/ui-fixtures.stdout": {
+      "archive_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "source": "/private/tmp/riwork-native-preview/ui-sxh028v_/ui-fixtures.stdout",
+      "source_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  },
+  "runs": {
+    "check-h6wuk4rx": {
+      "artifacts": [
+        "check-h6wuk4rx/cargo-check.stderr",
+        "check-h6wuk4rx/cargo-check.stdout",
+        "check-h6wuk4rx/manifest.json",
+        "check-h6wuk4rx/nsh-check.stderr",
+        "check-h6wuk4rx/nsh-check.stdout"
+      ],
+      "disposition": "selected",
+      "source_directory": "/private/tmp/riwork-native-preview/check-h6wuk4rx"
+    },
+    "check-rwui6ujk": {
+      "artifacts": [
+        "check-rwui6ujk/cargo-check.stderr",
+        "check-rwui6ujk/cargo-check.stdout",
+        "check-rwui6ujk/manifest.json",
+        "check-rwui6ujk/nsh-check.stderr",
+        "check-rwui6ujk/nsh-check.stdout"
+      ],
+      "disposition": "superseded",
+      "source_directory": "/private/tmp/riwork-native-preview/check-rwui6ujk"
+    },
+    "focus-393ihygr": {
+      "artifacts": [
+        "focus-393ihygr/manifest.json",
+        "focus-393ihygr/native-focus-build.stderr",
+        "focus-393ihygr/native-focus-build.stdout",
+        "focus-393ihygr/native-focus-wiring.stderr",
+        "focus-393ihygr/native-focus-wiring.stdout",
+        "focus-393ihygr/seed-fixture.stderr",
+        "focus-393ihygr/seed-fixture.stdout"
+      ],
+      "disposition": "selected",
+      "source_directory": "/private/tmp/riwork-native-preview/focus-393ihygr"
+    },
+    "focus-_fhsch1a": {
+      "artifacts": [
+        "focus-_fhsch1a/manifest.json",
+        "focus-_fhsch1a/native-focus-build.stderr",
+        "focus-_fhsch1a/native-focus-build.stdout",
+        "focus-_fhsch1a/native-focus-wiring.stderr",
+        "focus-_fhsch1a/native-focus-wiring.stdout",
+        "focus-_fhsch1a/seed-fixture.stderr",
+        "focus-_fhsch1a/seed-fixture.stdout"
+      ],
+      "disposition": "superseded",
+      "source_directory": "/private/tmp/riwork-native-preview/focus-_fhsch1a"
+    },
+    "keys-9mboiu39": {
+      "artifacts": [
+        "keys-9mboiu39/existing-keyboard-ui.stderr",
+        "keys-9mboiu39/existing-keyboard-ui.stdout",
+        "keys-9mboiu39/manifest.json",
+        "keys-9mboiu39/seed-fixture.stderr",
+        "keys-9mboiu39/seed-fixture.stdout"
+      ],
+      "disposition": "superseded",
+      "source_directory": "/private/tmp/riwork-native-preview/keys-9mboiu39"
+    },
+    "keys-qjxc1kmc": {
+      "artifacts": [
+        "keys-qjxc1kmc/existing-keyboard-ui.stderr",
+        "keys-qjxc1kmc/existing-keyboard-ui.stdout",
+        "keys-qjxc1kmc/keys.xml",
+        "keys-qjxc1kmc/manifest.json",
+        "keys-qjxc1kmc/seed-fixture.stderr",
+        "keys-qjxc1kmc/seed-fixture.stdout"
+      ],
+      "disposition": "selected",
+      "source_directory": "/private/tmp/riwork-native-preview/keys-qjxc1kmc"
+    },
+    "keys-sm3jpu5c": {
+      "artifacts": [
+        "keys-sm3jpu5c/existing-keyboard-ui.stderr",
+        "keys-sm3jpu5c/existing-keyboard-ui.stdout",
+        "keys-sm3jpu5c/keys.xml",
+        "keys-sm3jpu5c/manifest.json",
+        "keys-sm3jpu5c/seed-fixture.stderr",
+        "keys-sm3jpu5c/seed-fixture.stdout"
+      ],
+      "disposition": "superseded",
+      "source_directory": "/private/tmp/riwork-native-preview/keys-sm3jpu5c"
+    },
+    "recovery-ibxmtew8": {
+      "artifacts": [
+        "recovery-ibxmtew8/app-fixture-build.stderr",
+        "recovery-ibxmtew8/app-fixture-build.stdout",
+        "recovery-ibxmtew8/app-recovery.stderr",
+        "recovery-ibxmtew8/app-recovery.stdout",
+        "recovery-ibxmtew8/manifest.json"
+      ],
+      "disposition": "selected",
+      "source_directory": "/private/tmp/riwork-native-preview/recovery-ibxmtew8"
+    },
+    "riwork-native-preview": {
+      "artifacts": [
+        "riwork-native-preview/prior-archives.json",
+        "riwork-native-preview/source-state.json",
+        "riwork-native-preview/stale-keymap-golden.json"
+      ],
+      "disposition": "selected",
+      "source_directory": "/private/tmp/riwork-native-preview"
+    },
+    "suites-4yfk76qu": {
+      "artifacts": [
+        "suites-4yfk76qu/format.stderr",
+        "suites-4yfk76qu/format.stdout",
+        "suites-4yfk76qu/host-suite.stderr",
+        "suites-4yfk76qu/host-suite.stdout",
+        "suites-4yfk76qu/manifest.json",
+        "suites-4yfk76qu/native-suite.stderr",
+        "suites-4yfk76qu/native-suite.stdout",
+        "suites-4yfk76qu/whitespace.stderr",
+        "suites-4yfk76qu/whitespace.stdout",
+        "suites-4yfk76qu/workspace-suite.stderr",
+        "suites-4yfk76qu/workspace-suite.stdout"
+      ],
+      "disposition": "selected",
+      "source_directory": "/private/tmp/riwork-native-preview/suites-4yfk76qu"
+    },
+    "surface-2986orsz": {
+      "artifacts": [
+        "surface-2986orsz/manifest.json",
+        "surface-2986orsz/surface-fixtures.stderr",
+        "surface-2986orsz/surface-fixtures.stdout"
+      ],
+      "disposition": "superseded",
+      "source_directory": "/private/tmp/riwork-native-preview/surface-2986orsz"
+    },
+    "surface-fqpzrvqm": {
+      "artifacts": [
+        "surface-fqpzrvqm/manifest.json",
+        "surface-fqpzrvqm/surface-fixtures.stderr",
+        "surface-fqpzrvqm/surface-fixtures.stdout",
+        "surface-fqpzrvqm/unchanged-engine-log-bounds.stderr",
+        "surface-fqpzrvqm/unchanged-engine-log-bounds.stdout"
+      ],
+      "disposition": "superseded",
+      "source_directory": "/private/tmp/riwork-native-preview/surface-fqpzrvqm"
+    },
+    "surface-k50yuo5b": {
+      "artifacts": [
+        "surface-k50yuo5b/manifest.json",
+        "surface-k50yuo5b/surface-fixtures.stderr",
+        "surface-k50yuo5b/surface-fixtures.stdout",
+        "surface-k50yuo5b/unchanged-engine-log-bounds.stderr",
+        "surface-k50yuo5b/unchanged-engine-log-bounds.stdout"
+      ],
+      "disposition": "selected",
+      "source_directory": "/private/tmp/riwork-native-preview/surface-k50yuo5b"
+    },
+    "surface-mf39d1nq": {
+      "artifacts": [
+        "surface-mf39d1nq/manifest.json",
+        "surface-mf39d1nq/surface-fixtures.stderr",
+        "surface-mf39d1nq/surface-fixtures.stdout"
+      ],
+      "disposition": "superseded",
+      "source_directory": "/private/tmp/riwork-native-preview/surface-mf39d1nq"
+    },
+    "ui-sxh028v_": {
+      "artifacts": [
+        "ui-sxh028v_/manifest.json",
+        "ui-sxh028v_/preview.xml",
+        "ui-sxh028v_/seed-fixture.stderr",
+        "ui-sxh028v_/seed-fixture.stdout",
+        "ui-sxh028v_/ui-fixtures.stderr",
+        "ui-sxh028v_/ui-fixtures.stdout"
+      ],
+      "disposition": "selected",
+      "source_directory": "/private/tmp/riwork-native-preview/ui-sxh028v_"
+    }
+  },
+  "schema_version": 1
+}

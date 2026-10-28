@@ -1,0 +1,6 @@
+
+running 1 test
+test native_preview_focus_routes_pane_and_releases_escape_without_losing_global_keys ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.63s
+

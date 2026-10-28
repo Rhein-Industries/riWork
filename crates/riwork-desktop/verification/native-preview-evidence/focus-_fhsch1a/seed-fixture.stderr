@@ -1,0 +1,4 @@
+   Compiling riwork-nsh-native v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p1-fix-host/crates/riwork-nsh-native)
+   Compiling riwork-nsh-workspace v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p1-fix-host/apps/riwork)
+    Finished `dev` profile [unoptimized] target(s) in 9.28s
+     Running `target/debug/examples/p1_workspace_fixture_home --scenario p1-layouts --out /private/tmp/riwork-native-preview/focus-_fhsch1a/nsh-home`

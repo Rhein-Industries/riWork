@@ -26,6 +26,8 @@ export interface CommandHooks {
   cycle: (direction: 1 | -1) => void;
   /** Dismiss workspace-owned transient UI on Escape. */
   escape: () => void;
+  /** A focused native preview owns Escape unless transient workspace UI does. */
+  previewOwnsEscape?: () => boolean;
   /** The window's current project, which a panel project switch can change. */
   projectId: () => string | undefined;
   /** ⌘⌥O: the project's orchestrator, found or made as Settings say. */
@@ -106,10 +108,15 @@ export function workspaceCommands(
   for (const key of new Set(DEFERRED_KEYMAP.map(([key]) => key))) {
     if (key !== "escape" && key !== "mod+f") cleanup(keymap.bind(key, () => { stripOpen.set(false); }));
   }
-  cleanup(keymap.bind("escape", () => {
-    if (stripOpen()) stripOpen.set(false);
-    hooks.escape();
-  }, { when: "always" }));
+  effect(() => {
+    // NSH's local monitor consumes bindings before native keyDown. Remove this
+    // binding while preview owns Escape so its real key/down-up path receives it.
+    if (hooks.previewOwnsEscape?.() && !hooks.blocked() && !stripOpen()) return;
+    return keymap.bind("escape", () => {
+      if (stripOpen()) stripOpen.set(false);
+      hooks.escape();
+    }, { when: "always" });
+  });
   cleanup(host.on("command", (data) => {
     const { id, args } = data as { id?: unknown; args?: { query?: string } };
     if (typeof id === "string") dispatch(id, args);

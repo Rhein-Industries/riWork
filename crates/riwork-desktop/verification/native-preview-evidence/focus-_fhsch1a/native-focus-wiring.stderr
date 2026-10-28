@@ -1,0 +1,16 @@
+   Compiling riwork-nsh-native v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p1-fix-host/crates/riwork-nsh-native)
+    Finished `test` profile [unoptimized] target(s) in 10.12s
+     Running tests/preview_focus.rs (target/debug/deps/preview_focus-d24151f0c6a41da0)
+PREVIEW_FOCUS before native focus: Escape Fire(93)
+PREVIEW_FOCUS native focus true traverses component, tab, workspace: Escape None
+PREVIEW_FOCUS explicit native blur: Escape Fire(95)
+PREVIEW_FOCUS window hiding clears native focus: Escape Fire(97)
+PREVIEW_FOCUS window showing does not invent focus: Escape Fire(97)
+PREVIEW_FOCUS hidden tab clears native focus: Escape None
+
+thread 'native_preview_focus_routes_pane_and_releases_escape_without_losing_global_keys' (15448226) panicked at crates/riwork-nsh-native/tests/preview_focus.rs:208:9:
+assertion `left == right` failed: hidden tab clears native focus
+  left: false
+ right: true
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+error: test failed, to rerun pass `-p riwork-nsh-native --test preview_focus`

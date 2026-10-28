@@ -1,0 +1,47 @@
+   Compiling riwork-nsh-native v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p1-fix-host/crates/riwork-nsh-native)
+    Finished `test` profile [unoptimized] target(s) in 15.89s
+     Running unittests src/lib.rs (target/debug/deps/riwork_nsh_native-19032c53196c1e20)
+preview native fixture: {"characters":"a","modifiers":["cmd"],"operation":"key","typed":"a"} -> {"key":"cmd-a","text_key":false}
+preview native fixture: {"operation":"keyup"} -> {"held":0,"record":{"key":"cmd-shift-a","kind":"key_up","text_key":false}}
+preview native fixture: {"button":0,"down":true,"operation":"pointer","x":-40.5,"y":9000.0} -> {"button":"left","kind":"pointer_down","x":-40.5,"y":9000}
+preview native fixture: {"characters":"\t","modifiers":["shift"],"operation":"key","typed":"\t"} -> {"key":"shift-tab","text_key":false}
+preview native fixture: {"characters":"\r","modifiers":[],"operation":"key","typed":"\r"} -> {"key":"enter","text_key":false}
+preview native fixture: {"characters":"","modifiers":[],"operation":"key","typed":""} -> {"key":"backspace","text_key":false}
+preview native fixture: {"characters":"\u001b","modifiers":[],"operation":"key","typed":"\u001b"} -> {"key":"escape","text_key":false}
+preview native fixture: {"characters":"","modifiers":["fn"],"operation":"key","typed":""} -> {"key":"up","text_key":false}
+preview native fixture: {"characters":"","modifiers":["shift"],"operation":"key","typed":""} -> {"key":"shift-right","text_key":false}
+preview native fixture: {"button":0,"down":false,"operation":"pointer","x":-40.5,"y":9000.0} -> {"button":"left","kind":"pointer_up","x":-40.5,"y":9000}
+preview native fixture: {"characters":"","modifiers":[],"operation":"key","typed":""} -> {"key":"delete","text_key":false}
+preview native fixture: {"button":1,"down":true,"operation":"pointer","x":-40.5,"y":9000.0} -> {"button":"right","kind":"pointer_down","x":-40.5,"y":9000}
+preview native fixture: {"characters":"","modifiers":[],"operation":"key","typed":""} -> {"key":"insert","text_key":false}
+preview native fixture: {"characters":"","modifiers":["fn"],"operation":"key","typed":""} -> {"key":"f1","text_key":false}
+preview native fixture: {"characters":"a","modifiers":["fn","ctrl","alt","cmd","shift"],"operation":"key","typed":"a"} -> {"key":"fn-ctrl-alt-cmd-shift-a","text_key":false}
+preview native fixture: {"button":1,"down":false,"operation":"pointer","x":-40.5,"y":9000.0} -> {"button":"right","kind":"pointer_up","x":-40.5,"y":9000}
+preview native fixture: {"characters":"é","modifiers":[],"operation":"key","typed":"é"} -> {"key":"é","text_key":true}
+preview native fixture: {"button":2,"down":true,"operation":"pointer","x":-40.5,"y":9000.0} -> {"button":"middle","kind":"pointer_down","x":-40.5,"y":9000}
+preview native fixture: {"characters":"日本","modifiers":[],"operation":"key","typed":"日本"} -> {"key":"日本","text_key":true}
+preview native fixture: {"button":2,"down":false,"operation":"pointer","x":-40.5,"y":9000.0} -> {"button":"middle","kind":"pointer_up","x":-40.5,"y":9000}
+preview native fixture: {"characters":"😀","modifiers":[],"operation":"key","typed":"😀"} -> {"key":"😀","text_key":true}
+preview native fixture: {"button":3,"operation":"pointer"} -> null
+preview native fixture: {"characters":" ","modifiers":[],"operation":"key","typed":" "} -> {"key":"space","text_key":true}
+preview native fixture: {"dx":1.25,"dy":-3.5,"operation":"scroll","precise":true,"x":12,"y":14} -> {"delta_x":1.25,"delta_y":-3.5,"kind":"scroll","precise":true,"x":12,"y":14}
+preview native fixture: {"characters":"","modifiers":[],"operation":"key","typed":""} -> {"key":"","text_key":true}
+preview native fixture: {"dx":1.25,"dy":-3.5,"operation":"scroll","precise":false,"x":12,"y":14} -> {"delta_x":1.25,"delta_y":-3.5,"kind":"scroll","precise":false,"x":12,"y":14}
+preview native fixture: {"characters":"?","modifiers":["shift"],"operation":"key","plain":"/","shifted":"?","typed":"?"} -> {"key":"?","text_key":true}
+preview native fixture: {"both":"S","characters":"ս","cmd":"s","modifiers":["cmd","shift"],"operation":"key","plain":"ս","typed":"ս"} -> {"key":"cmd-shift-s","text_key":false}
+preview transport: 16777216 source bytes -> 161 JSON bytes, dimensions only; logs last160 x2000 Unicode chars
+preview native fixture: {"operation":"ime"} -> {"commit":{"kind":"text","text":"日本😀"},"marked_after":0,"marked_utf16":5,"selection_length":0,"selection_start":5}
+preview native fixture: {"operation":"image"} -> {"identical_bgra":true,"invalid_releases":1,"release_after":1,"release_before":0,"valid":true}
+     Running tests/appearance.rs (target/debug/deps/appearance-b703f4196295e1bb)
+     Running tests/chat_bridge.rs (target/debug/deps/chat_bridge-6e2fc544a4c6bbfa)
+     Running tests/dashboard_bridge.rs (target/debug/deps/dashboard_bridge-bafdce2d1e19e20c)
+     Running tests/files_bridge.rs (target/debug/deps/files_bridge-3d6aa7c7696de555)
+     Running tests/layout_session.rs (target/debug/deps/layout_session-898a5b3d2c640d70)
+     Running tests/native_headless.rs (target/debug/deps/native_headless-600c62b87ed7f582)
+     Running tests/panel_crud.rs (target/debug/deps/panel_crud-36271cc444a4959a)
+     Running tests/services.rs (target/debug/deps/services-2fce7efb5b93810d)
+     Running tests/settings.rs (target/debug/deps/settings-a9ebf27ed2acdb6e)
+     Running tests/settings_aux_isolation.rs (target/debug/deps/settings_aux_isolation-5b6cc7e6be207ebc)
+     Running tests/settings_cua_focus.rs (target/debug/deps/settings_cua_focus-64f124a152bddfad)
+     Running tests/settings_forms.rs (target/debug/deps/settings_forms-a41c124062dfd594)
+     Running tests/usage_bridge.rs (target/debug/deps/usage_bridge-41790118a079dbb9)

@@ -1,6 +1,7 @@
 import { Button, Input } from "nsh/base";
-import { Image, Scroll, Text, View, cleanup, effect, host, signal, untracked, type Point } from "nsh";
+import { Scroll, Text, View, cleanup, effect, host, signal, untracked, type Point } from "nsh";
 import { Previews } from "riwork/native";
+import { PreviewSurface } from "./PreviewSurface";
 import { DEFAULT_THEME, type InterfaceTheme } from "./appearance";
 
 export interface PreviewSpec {
@@ -9,7 +10,7 @@ export interface PreviewSpec {
 }
 interface PreviewState {
   phase: string; message: string; warning?: string | null; pid?: number | null; windowId?: number | null;
-  frame?: { src: string; width: number; height: number } | null;
+  frame?: { width: number; height: number } | null;
   windows: { pid: number; id: number; title: string }[];
   logs: { text: string; stderr: boolean }[];
 }
@@ -30,31 +31,34 @@ export function previewViewport(width: number, height: number) {
 }
 
 /** One native owner per stable tab; configuration alone never starts it. */
-export function AppPreviewTab(props: { spec: PreviewSpec; visible: boolean; theme?: () => InterfaceTheme; configure: (spec: PreviewSpec) => void }) {
+export function AppPreviewTab(props: { spec: PreviewSpec; visible: boolean; theme?: () => InterfaceTheme; configure: (spec: PreviewSpec) => void; onFocusChange?: (focused: boolean) => void }) {
   const preview = Previews.open();
   const spec = signal<PreviewSpec>(untracked(() => ({ ...props.spec })));
   const state = signal<PreviewState>({ phase: "idle", message: "Enter a command, then select Run.", logs: [], windows: [] });
   const error = signal("");
   const busy = signal(false);
   const windowState = signal({ visible: true, appActive: true, occluded: false });
-  const size = signal({ width: 1, height: 1 });
   const theme = props.theme ?? (() => DEFAULT_THEME);
   const style = () => ({ fontFamily: theme().family, fontSize: 11 * theme().scale, color: theme().palette.text });
   let alive = true;
+  let nativeFocused = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
-  let pointerDown = false;
-  let lastPoint = { x: 0, y: 0 };
-  const focused = signal(false);
   const logsOpen = signal(false);
   const effectiveVisible = () => props.visible && windowState().visible && windowState().appActive && !windowState().occluded;
-  function releaseInput() {
-    if (pointerDown) { input({ kind: "pointer_up", ...lastPoint, button: "left" }); pointerDown = false; }
-    input({ kind: "focus", focused: false });
+  function focusChanged(focused: boolean) {
+    const next = alive && effectiveVisible() && focused;
+    if (nativeFocused === next) return;
+    nativeFocused = next;
+    props.onFocusChange?.(next);
   }
   const fail = (reason: unknown) => { if (alive) error.set(String(reason)); };
   cleanup(host.on("window.state", (next) => windowState.set({ ...windowState(), ...(next as object) })));
-  cleanup(() => { alive = false; if (timer !== undefined) clearTimeout(timer); preview.close(); });
-  effect(() => { const visible = effectiveVisible(); if (!visible) releaseInput(); void preview.setVisible(visible).catch(fail); });
+  cleanup(() => { alive = false; focusChanged(false); if (timer !== undefined) clearTimeout(timer); preview.close(); });
+  effect(() => {
+    const visible = effectiveVisible();
+    if (!visible) untracked(() => focusChanged(false));
+    void preview.setVisible(visible).catch(fail);
+  });
   async function poll() {
     try { const next = await preview.snapshot(); if (alive && !busy()) state.set(next as PreviewState); }
     catch (reason) { fail(reason); }
@@ -68,20 +72,9 @@ export function AppPreviewTab(props: { spec: PreviewSpec; visible: boolean; them
     if (busy()) return;
     commit(); busy.set(true); error.set("");
     state.set({ phase: "starting", message: "Starting preview…", logs: [], windows: [], frame: null, pid: null });
-    try { await preview.run(spec()); const viewport = previewViewport(size().width, size().height); if (viewport && spec().mode === "cooperative") input({ kind: "resize", ...viewport }); } catch (reason) { fail(reason); } finally { if (alive) busy.set(false); }
+    try { await preview.run(spec()); } catch (reason) { fail(reason); } finally { if (alive) busy.set(false); }
   }
   function input(value: unknown) { void preview.input(value).catch(fail); }
-  function pointer(point: Point | undefined, kind: string, clamp = false) {
-    const frame = state().frame;
-    if (!point || !frame || !effectiveVisible() || !active()) return;
-    const mapped = framePoint(point, size(), frame, clamp);
-    if (mapped) {
-      lastPoint = mapped;
-      if (kind === "pointer_down") pointerDown = true;
-      if (spec().mode === "window_capture") { if (kind === "pointer_down") input({ kind: "click", ...mapped, button: "left" }); return; }
-      input({ kind, ...mapped, ...(kind === "pointer_move" ? {} : { button: "left" }) });
-    }
-  }
   const active = () => !!state().pid || ["starting", "waitingforwindow", "streaming", "paused"].includes(state().phase);
   return <View testID="app-preview" style={{ flex: 1, minHeight: 0, gap: 8, padding: 10 }}>
     <View style={{ flexDirection: "row", gap: 10 }}>{(["cooperative", "window_capture", "ios_simulator"] as const).map((mode) =>
@@ -101,16 +94,7 @@ export function AppPreviewTab(props: { spec: PreviewSpec; visible: boolean; them
     </View>
     <Text testID="preview-message" style={{ ...style(), color: error() ? theme().palette.gold : theme().palette.muted }}>{error() || state().warning || state().message}</Text>
     {state().windows.length > 1 && <View style={{ flexDirection: "row", gap: 8 }}>{state().windows.map((window) => <Button onPress={() => { void preview.selectWindow(window.pid, window.id).catch(fail); }}><Text style={style()}>{window.title || `Window ${window.id}`}</Text></Button>)}</View>}
-    <View testID="preview-frame" focusable={true} style={{ flex: 1, minHeight: 80, backgroundColor: "#101216", borderWidth: 1, borderColor: focused() ? theme().palette.cyan : theme().palette.divider }}
-      onLayout={(bounds) => { if (size().width === bounds.size.width && size().height === bounds.size.height) return; size.set(bounds.size); const viewport = previewViewport(bounds.size.width, bounds.size.height); if (viewport && spec().mode === "cooperative") input({ kind: "resize", ...viewport }); }}
-      onFocus={() => { focused.set(true); if (effectiveVisible()) input({ kind: "focus", focused: true }); }} onBlur={() => { focused.set(false); releaseInput(); }}
-      onPressDown={(event) => { pointer(event?.position, "pointer_down"); }}
-      onPressUp={(event) => { if (pointerDown) pointer(event?.position, "pointer_up", true); pointerDown = false; }}
-      onMouseMove={(point) => pointer(point, "pointer_move", pointerDown)}
-      onContextMenu={(event) => { const frame = state().frame; const point = frame && framePoint(event.position, size(), frame); if (point) input({ kind: "click", ...point, button: "right" }); }}>
-      {!state().frame && <Text style={{ ...style(), color: theme().palette.muted }}>{active() ? "Waiting for the app’s first frame…" : "Configure your app, then choose Run."}</Text>}
-      {state().frame && <Image src={state().frame!.src} resizeMode="contain" fadeDuration={0} style={{ flex: 1 }} />}
-    </View>
+    <PreviewSurface testID="preview-frame" owner={preview.surfaceId()} visible={effectiveVisible()} onFocusChange={(event) => focusChanged(event.focused)} style={{ flex: 1, minHeight: 80 }} />
     <Button testID="preview-logs-toggle" onPress={() => logsOpen.set(!logsOpen())}><Text style={style()}>{`${logsOpen() ? "▾" : "▸"} Logs (${state().logs.length})`}</Text></Button>
     {logsOpen() && <Scroll testID="preview-logs" style={{ height: 160, maxHeight: 180 }} contentStyle={{ gap: 2 }}>{state().logs.map((log) => <Text selectable={true} style={{ ...style(), fontFamily: theme().monoFamily, color: log.stderr ? theme().palette.gold : theme().palette.muted }}>{log.text}</Text>)}</Scroll>}
   </View>;
