@@ -60,6 +60,7 @@ pub struct SettingsDto {
     pub theme_choices: Vec<ThemeChoiceDto>,
     pub use_riwork_colors: bool,
     pub native_terminal_colors: bool,
+    pub open_preview_on_select: bool,
     pub ui_text_size: f32,
     pub ui_text_matches_terminal: bool,
     pub interface_font: String,
@@ -76,6 +77,7 @@ pub struct SettingsPatch {
     pub theme: Option<String>,
     pub use_riwork_colors: Option<bool>,
     pub native_terminal_colors: Option<bool>,
+    pub open_preview_on_select: Option<bool>,
     pub ui_text_size: Option<f32>,
     pub ui_text_matches_terminal: Option<bool>,
     pub interface_font: Option<String>,
@@ -114,6 +116,7 @@ impl SettingsDto {
                 .collect(),
             use_riwork_colors: settings.use_riwork_colors,
             native_terminal_colors: settings.native_terminal_colors,
+            open_preview_on_select: settings.open_preview_on_select,
             ui_text_size: settings.ui_text_size.points(),
             ui_text_matches_terminal: settings.ui_text_matches_terminal,
             interface_font: match settings.interface_font {
@@ -167,6 +170,7 @@ struct ValidatedPatch {
     theme: Option<ThemeChoice>,
     use_riwork_colors: Option<bool>,
     native_terminal_colors: Option<bool>,
+    open_preview_on_select: Option<bool>,
     ui_text_size: Option<TextPoints>,
     ui_text_matches_terminal: Option<bool>,
     interface_font: Option<InterfaceFont>,
@@ -227,6 +231,7 @@ impl SettingsPatch {
             theme: self.theme.as_deref().map(parse_theme).transpose()?,
             use_riwork_colors: self.use_riwork_colors,
             native_terminal_colors: self.native_terminal_colors,
+            open_preview_on_select: self.open_preview_on_select,
             ui_text_size: self.ui_text_size.map(TextPoints::new),
             ui_text_matches_terminal: self.ui_text_matches_terminal,
             interface_font,
@@ -242,6 +247,9 @@ impl ValidatedPatch {
         }
         if let Some(value) = self.use_riwork_colors {
             settings.use_riwork_colors = value;
+        }
+        if let Some(value) = self.open_preview_on_select {
+            settings.open_preview_on_select = value;
         }
         if let Some(value) = self.native_terminal_colors {
             settings.native_terminal_colors = value;
@@ -318,6 +326,10 @@ impl SettingsBackend for CoreSettingsBackend {
             ),
             (patch.interface_font.is_some(), "interface_font"),
             (patch.status_bar.is_some(), "status_bar"),
+            (
+                patch.open_preview_on_select.is_some(),
+                "open_preview_on_select",
+            ),
         ]
         .into_iter()
         .filter_map(|(selected, key)| selected.then_some(key))
@@ -586,7 +598,7 @@ snapshot_js_value!(SettingsDto, "SettingsEvent");
 impl JsValue for SettingsPatch {
     fn ts_type(types: &mut TsTypes) -> String {
         types.declare("SettingsPatch", |types| format!(
-            "export interface SettingsPatch {{ theme?: string; useRiworkColors?: boolean; nativeTerminalColors?: boolean; uiTextSize?: number; uiTextMatchesTerminal?: boolean; interfaceFont?: 'system' | 'system_mono'; statusBar?: {}; }}",
+            "export interface SettingsPatch {{ theme?: string; useRiworkColors?: boolean; nativeTerminalColors?: boolean; openPreviewOnSelect?: boolean; uiTextSize?: number; uiTextMatchesTerminal?: boolean; interfaceFont?: 'system' | 'system_mono'; statusBar?: {}; }}",
             StatusBarDto::ts_type(types)))
     }
     fn from_js(value: JsIn<'_>) -> Result<Self, PropError> {

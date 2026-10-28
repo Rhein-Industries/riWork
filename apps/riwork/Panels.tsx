@@ -72,7 +72,9 @@ export function createPanelController(options: PanelOptions) {
       if (!loaded()) loaded.set(true);
       if (selectedTask() && !event.data.tasks.some((task) => task.id === selectedTask() && task.projectId === options.projectId())) selectTask(null);
       const trees = visibleWorktrees(event.data, options.projectId());
-      if (!trees.some((tree) => tree.id === selectedWorktree())) selectWorktree(trees.find((tree) => tree.isPrimary)?.id ?? null);
+      // Keep an explicit unavailable selection: Files must not silently browse
+      // a different worktree after the selected one disappears.
+      if (selectedWorktree() === null) selectWorktree(trees.find((tree) => tree.isPrimary)?.id ?? null);
     });
     const sessions = Sessions.subscribe((event) => {
       if (!alive || event.rev < sessionsRev) return;

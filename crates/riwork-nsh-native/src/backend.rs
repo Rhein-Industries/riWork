@@ -17,8 +17,8 @@ use serde_json::Value;
 
 use crate::dto::{
     CreateSessionRequest, CreateSubshellRequest, FolderDto, OpenEditorRequest, ProjectDto,
-    ProjectInspectionDto, ProjectRequest, SearchHitDto, SessionsSnapshot, ShellSessionDto,
-    StoreState, TabUpdate, TabsSnapshot, TaskDto, WorktreeDto,
+    ProjectInspectionDto, ProjectMemoDto, ProjectRequest, SearchHitDto, SessionsSnapshot,
+    ShellSessionDto, StoreState, TabUpdate, TabsSnapshot, TaskDto, WorktreeDto,
 };
 
 macro_rules! unsupported {
@@ -84,6 +84,9 @@ pub trait StoreBackend: Send + Sync + 'static {
         unsupported!()
     }
     fn rename_project(&self, _selector: &str, _name: &str) -> Result<ProjectDto> {
+        unsupported!()
+    }
+    fn set_project_memo(&self, _selector: &str, _text: &str) -> Result<ProjectMemoDto> {
         unsupported!()
     }
     fn set_project_notifications(&self, _selector: &str, _enabled: bool) -> Result<ProjectDto> {
@@ -334,6 +337,12 @@ impl StoreBackend for CoreStoreBackend {
             .map_err(anyhow::Error::msg)?
             .try_into()
     }
+    fn set_project_memo(&self, selector: &str, text: &str) -> Result<ProjectMemoDto> {
+        self.store()?
+            .set_project_memo(selector, text)
+            .map(|(_, memo)| memo.into())
+            .map_err(anyhow::Error::msg)
+    }
     fn set_project_notifications(&self, selector: &str, enabled: bool) -> Result<ProjectDto> {
         self.store()?
             .set_project_notifications(selector, enabled)
@@ -579,6 +588,12 @@ impl SessionsBackend for EngineSessionsBackend {
         };
         let path = file_preview::validated_live_editor_path(&root, &requested)
             .map_err(|error| Refused(error))?;
+        let selected_identity = request
+            .identity
+            .as_deref()
+            .map(crate::files::decode_identity)
+            .transpose()
+            .map_err(Refused)?;
         let manager = self.manager()?.for_user();
         if let Some(editor) = manager
             .list()
@@ -606,13 +621,16 @@ impl SessionsBackend for EngineSessionsBackend {
         }
         // Capture identity at selection/open time and revalidate inside the
         // engine launch. A replacement between validation and launch is refused.
-        let expected = FileIdentity::of(&fs::symlink_metadata(&path)?);
+        let expected = match selected_identity {
+            Some(identity) => identity,
+            None => FileIdentity::of(&fs::symlink_metadata(&path)?),
+        };
         manager
             .create_editor(
                 request.project_id,
                 request.worktree_id,
                 root,
-                path,
+                requested,
                 expected,
                 request.line,
             )
@@ -741,6 +759,7 @@ mod tests {
                     worktree_id: None,
                     path: path.to_string_lossy().into_owned(),
                     line: None,
+                    identity: None,
                 })
                 .unwrap_err();
             assert!(error.is::<Refused>(), "{error}");
