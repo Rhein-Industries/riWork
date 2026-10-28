@@ -16,6 +16,14 @@ function Fixture() {
       .catch((reason) => error.set(String(reason)));
   }
   host.on("app.fixture.inspect", () => host.post("app.fixture.state", { chatId: chatId(), ...last }));
+  // The chat's draft as the process-wide native store holds it now.
+  host.on("app.fixture.draft", () => {
+    const handle = Chat.open(chatId()!);
+    void handle.restoreDraft()
+      .then((draft) => host.post("app.fixture.draft", { text: draft?.text ?? null }))
+      .catch((reason) => host.post("app.fixture.draft", { error: String(reason) }))
+      .finally(() => handle.close());
+  });
   return <View style={{ flex: 1 }}>
     {error() !== "" && <Text testID="fixture-error">{error()}</Text>}
     {chatId() && <ChatTab chatId={chatId()!} visible={true} onDiagnostics={(report) => { last = report; }} />}

@@ -35,6 +35,7 @@ or tab write and no side-channel adapter.
 | < 1.5 ms per streamed event at the bridge (structural, every build) | Debug: 0.020 ms (output append, Normal, 2,200 disclosed); 0.045 ms (Markdown splice, Verbose, 2,200 open). Includes JSON payload creation. | pass |
 | Coalescing ≥ 16 ms, no polling, quiet delivers nothing | `streaming_is_coalesced_to_one_delivery_per_16_ms_and_a_quiet_chat_delivers_nothing`. TSX polling guard (patterns of `check-polling.sh`) has no matches; chat TSX has no timers. | pass |
 | Approval round trip | Bridge: `approval_round_trip_through_a_replayed_codex_stream`, `questions_are_answered_once_then_the_access_request_is_allowed_for_the_session`. UI: P4-CHAT-01 (Allow button), P4-CHAT-02 (⏎ allows in an empty box; ⎋ denies a file change), P4-CHAT-04 (question panel, then Allow for session). The fake provider recorded no mismatch. | pass |
+| Drafts across windows | Store: `the_first_composers_of_two_windows_never_share_an_editor_identity`. UI: P4-CHAT-07 (two apps, i.e. two JS runtimes in one process, on one chat; each composer is its runtime's first and both are at the same edit generation; the first window's send leaves the second window's draft stored and restorable) and P4-CHAT-08 (a composer's own send clears its stored draft). Both also assert one composer per tab for the whole turn. | pass |
 | Draft restore | Bridge: `drafts_save_restore_survive_a_reload_and_clear_only_after_a_receipt` (plain legacy file bytes, restart, refused send keeps a saved submission, receipt clears) and `a_deleted_chat_reports_deleted_and_forgets_its_draft`. UI: P4-CHAT-05 (closed tab restores into an empty composer). Draft store: 38 unit tests including legacy-byte goldens. | pass |
 | Interrupted-turn handling | Bridge: `an_interrupted_turn_closes_as_interrupted_and_stops_running`. UI: P4-CHAT-03 (Stop → `· Interrupted`, Send returns). | pass |
 | Steering while running | Bridge: `a_message_sent_while_a_turn_runs_steers_it` (Codex `turn/steer` recording) | pass |
@@ -68,6 +69,40 @@ at `/tmp/riwork-nsh-toolchain-60f8aec4.18l3zV`. RIWORK_HOME, runtime, tmux and
 TMPDIR were under a short `/tmp/rw-p4c.*` root, because macOS limits socket paths
 to 104 bytes. Test `HOME` was `target/nsh-integration-home-p4c`. No app window was
 launched and no live chat, window or state was read or written.
+
+## Follow-up: draft editor identity (task 2a017126)
+
+Source review found that each composer took its draft editor identity from a
+module-level `++editors` counter, which starts again in every window's JS
+runtime, while the draft store matches `(editor, generation)` owners
+process-wide. The first composers of two windows on one chat both got
+identity 1, so one window's send could clear the other window's stored draft
+whenever their edit generations matched.
+
+- `Chat.newEditor()` (sync) returns an identity from one process-wide atomic
+  counter (`chat::drafts::new_editor`), as the GPUI composer's entity id was.
+  Each mounted composer takes one. Owners, generations, `begin_submission`,
+  receipts and the draft files are unchanged.
+- The regression test found a second cause of identity churn. `ChatTab` chose
+  between the deleted notice and the transcript with `deleted()` read straight
+  from `panel()`, so every panel delivery rebuilt the List, Requests and
+  Composer: 7 composers per tab over one replayed turn. Each rebuild minted a
+  new identity, restarted the generation and re-restored the stored draft.
+  `deleted` is now a `computed` boolean.
+
+Negative controls with the final tests:
+
+| Variant | Result |
+|---|---|
+| Per-runtime `++editors` counter, `computed` kept | P4-CHAT-07 fails: stored draft `null`, expected `"draft"` |
+| `newEditor()`, panel-derived `deleted` | P4-CHAT-07 fails: `[7,7]` composers, expected `[1,1]`; P4-CHAT-08 fails: 6, expected 1 |
+| Both fixes | 8/8 chat tests pass |
+
+Open (not changed here): `Requests` renders `ApprovalBar` and `QuestionPanel`
+in expressions that read `panel()`, so they are rebuilt on every panel delivery
+while a request is open. A `QuestionPanel` would then lose typed answers on the
+next clock tick of a running turn. This was found by reading the source; no test
+covers it yet. The same `computed` remedy applies.
 
 ## Known gaps and divergences (not in this slice)
 

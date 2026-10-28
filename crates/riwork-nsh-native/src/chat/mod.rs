@@ -179,6 +179,12 @@ impl Chat {
         ))
     }
 
+    /// A new composer's draft editor identity, unique across every window's JS
+    /// runtime: `saveDraft` and `submit` pass it with their edit generation.
+    pub fn new_editor() -> u64 {
+        drafts::new_editor()
+    }
+
     /// Debug/test fixtures only: the isolated working directory whose name picks
     /// a recorded provider stream. Rejects unless fixture mode is on.
     pub async fn fixture_directory(name: String) -> Result<String, String> {
