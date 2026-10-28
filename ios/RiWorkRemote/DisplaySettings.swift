@@ -42,7 +42,7 @@ struct DisplaySettingsSheet: View {
                             Text(error).font(style.system(.caption)).foregroundStyle(style.error)
                         }
                     } header: { Text("Appearance") } footer: {
-                        Text("\(model.theme.phonePaletteDetail) This color choice is saved on this iPhone. Controls, gestures and text entry remain native.")
+                        Text("\(model.theme.phonePaletteDetail) Saved on this iPhone.")
                     }
                     .listRowBackground(style.surface).listRowSeparatorTint(style.divider)
                 }
@@ -54,6 +54,7 @@ struct DisplaySettingsSheet: View {
                 } header: { Text("Tabs") } footer: {
                     Text("Ask shows Detach and Exit when you close a chat or shell you opened. Detach keeps it running on your Mac; Exit stops it (a chat keeps its history). A worker's tab always detaches. This iPhone only.")
                 }
+                .listRowBackground(style.surface).listRowSeparatorTint(style.divider)
 
                 Section {
                     row(title: "Interface size", value: "\(InterfaceScale.percent(draftScale))%") {
