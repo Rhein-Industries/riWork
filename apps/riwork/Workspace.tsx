@@ -16,6 +16,7 @@ import {
 } from "./model";
 import { DEFAULT_THEME, space, type InterfaceTheme } from "./appearance";
 import { StatusBar } from "./StatusBar";
+import { ChatTab } from "./chat/ChatTab";
 
 type Extent = { width: number; height: number };
 interface WorkspaceProps {
@@ -353,6 +354,32 @@ export function Workspace(props: WorkspaceProps) {
     return M.menuButton + (width >= M.lockAt ? button : 0) + (width >= M.focusAt ? button : 0)
       + (pane?.main && width >= mainMarkerThreshold(snapshot().theme, snapshot().panelTabIcons) ? button : 0);
   }
+  /** A chat tab, or a pending one still being created. It follows its chat
+   * only once first shown, so restored background tabs never subscribe at
+   * launch (CHATT-015); hidden tabs keep their composer alive (CHATC-051). */
+  function ChatPanel(chatProps: { panelId: string; title: string }) {
+    const chatId = signal<string | null>(null);
+    const pending = signal(false);
+    const seen = signal(false);
+    effect(() => {
+      snapshot();
+      const saved = session.panel(chatProps.panelId) as { chat_id?: string } | null;
+      const id = saved?.chat_id ?? "";
+      pending.set(id.startsWith("pending:"));
+      const next = UUID.test(id) ? id : null;
+      if (next !== chatId()) chatId.set(next);
+    });
+    effect(() => { if (isVisible(chatProps.panelId)) seen.set(true); });
+    const ready = () => !!chatId() && seen();
+    return <View testID={`panel:${chatProps.panelId}`} style={{ flex: 1, minHeight: 0 }}>
+      {ready() && <ChatTab chatId={chatId()!} visible={isVisible(chatProps.panelId)} theme={theme}
+        onClose={() => { const tab = findPanel(snapshot(), chatProps.panelId); if (tab) closing.set(tab); }} />}
+      {!ready() && <View style={{ flex: 1, padding: 16, gap: 8 }}>
+        <Text style={textStyle()}>{pending() ? "Starting chat…" : chatProps.title}</Text>
+        {!pending() && !chatId() && <Text style={mutedStyle()}>This view is unavailable.</Text>}
+      </View>}
+    </View>;
+  }
   function paneMenu(id: number) {
     const pane = snapshot().panes.find((pane) => pane.id === id);
     if (!pane) return;
@@ -575,7 +602,8 @@ export function Workspace(props: WorkspaceProps) {
                     onMount={() => props.onTerminalMount?.(panel.id.slice(6))}
                     onAttached={() => { if (pendingFocus() === panel.id.slice(6)) pendingFocus.set(null); }}
                     onFocus={() => action(() => session.selectPanel(panel.id))} onLink={openLink} onNotice={(message) => notice.set(message)} />
-                </View> :
+                </View> : panel.id.startsWith("chat:") || panel.id.startsWith("chat-pending:") ?
+                <ChatPanel panelId={panel.id} title={findPanel(snapshot(), panel.id) ? displayTitle(findPanel(snapshot(), panel.id)!) : panel.id} /> :
                 <DeferredPanel id={panel.id}
                   title={findPanel(snapshot(), panel.id) ? displayTitle(findPanel(snapshot(), panel.id)!) : panel.id}
                   theme={theme} settings={props.settings} diagnostics={props.diagnostics} onError={(error) => notice.set(String(error))}

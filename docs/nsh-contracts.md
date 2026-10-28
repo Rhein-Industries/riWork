@@ -247,6 +247,42 @@ TSX receives projected rows.
 - Patches are coalesced (§1.3). The host spike (task 2a537a8b) measures patch rate and
   List+TextView cost against the GPUI baselines in [`docs/nsh-parity.md`, Perf baselines](nsh-parity.md#perf-baselines-to-beat-p-docs).
 
+#### Phase 4a: Chat payload schema 1 (task `6a41bb58`)
+
+Phase 4a adds the first `Chat` surface. The §1.6 shape holds (sync `open`, a
+`ChatHandle` whose subscription delivers `reset` then `patch`, folding and
+projection in Rust, Markdown parsed in Rust into TextView documents, append ops
+for streaming). The payload is `schema: 1` of these TS declarations; the engine
+wire and log formats and `chat-drafts/` files are unchanged.
+
+| JS | Kind | Rule |
+|---|---|---|
+| `Chat.list()` | async | `Client::list` on an existing host; never starts one. |
+| `Chat.create(NewChatRequest)` | async | Ensures the host; strict decoding (UUID project/worktree, non-empty cwd). The host registers the shared tab entry (`TabStore::register_created`); the bridge adds no tab write. |
+| `Chat.delete(chatId)` | async | `Client::delete`. |
+| `Chat.open(chatId, { history?, mode? }) → ChatHandle` | sync | Validates the UUID and starts the handle's threads; no IO on the engine thread. `history` follows only an existing host (CHATT-013). |
+| `Chat.fixtureDirectory(name)` | async | Debug/test-support fixture only (`RIWORK_NSH_CHAT_FIXTURE=1`, `/tmp` home); rejects `unavailable` otherwise. |
+| `ChatHandle.subscribe(listener)` | sync handle | `ChatDelivery`: `reset { rev, seq, panel, rows, bodies }`, then `patch { rev, seq, panel?, upsert?, remove?, order?, bodies?, drop?, splice?, append? }`, at most one per 16 ms (first change at once, trailing edge after). `resync: true` replaces an overflowed queue (capacity 64). A second subscription replaces the first. |
+| `ChatHandle.setViewport(first, last)`, `toggle(rowId)`, `expandAll(open)`, `setMode(mode)` | sync | Enqueue to the handle's worker; the worker reprojects (never for token deltas) and patches. |
+| `ChatHandle.submit({ text, editor, generation })` | async | Exactly one exchange after the draft recovery snapshot is durable; `ChatReceipt { status: submitted\|refused\|uncertain, error?, key?, clear }`. |
+| `ChatHandle.interrupt()`, `stop()`, `approve(requestId, decision)`, `configure(...)`, `switchProvider(provider, model?)` | async | Ordered, retried once only on a broken connection; rejects with `refused:`/`broken:`. |
+| `ChatHandle.answer({ requestId, answers })` | async | Exactly once, with a receipt. |
+| `ChatHandle.restoreDraft()` / `saveDraft(text, editor, generation)` / `dismissSubmission(key)` | async / sync / sync | The process draft store (byte-identical `chat-drafts/<uuid>` files); saves run in order on the worker, never on the engine thread. |
+| `ChatHandle.close()` | sync | Stops following; queued commands are still delivered. |
+
+Rows (`ChatRow`) are flattened, visible headers keyed by row id; `hasBody` rows
+get a `ChatBody` (`markdown` blocks, `text`, `command`, `detail`, `steps`) only
+near the reported viewport (overscan 16 rows; far bodies are `drop`ped).
+Differences from the §1.6 wording, all within its intent: the chat-level fields
+(`info`, `state`, `approvals`, questions, toolbar choices, banners, failures)
+travel as one `panel`; `page(window)` is `setViewport` paging of bodies (rows
+are headers, so the whole visible list is cheap); `Chat.command` is split into
+typed handle methods; drafts are `ChatHandle` methods over the one process
+store rather than a separate `Drafts` module. Not in this slice (seams only):
+`Chat.subscribeList`, `stageAttachment`, `suggest`, `close`, selection/find
+(`exportSelection`, `find`), `anchor`, `setDisclosure(ids)`, Verbose internals,
+attachments, dictation, and `Chat.claimTab`/`releaseTab`.
+
 ### 1.7 `Sessions` (shells, harnesses, tmux)
 
 Backed by `riwork_engine::sessions::SessionManager` (`crates/riwork-engine/src/sessions.rs:197`).
@@ -919,6 +955,10 @@ Decisions the owner has taken since the freeze are recorded, dated, in [§8](#8-
   (W3 schema 2) also carries Phase 2a `terminalLight`/`terminalDark`/
   `tabCloseBehavior`; the schema 1 `Appearance.snapshot()` is removed.
   `Sessions.create` keeps optional `cwd` with strict decoding.
+- 2026-10-28 Phase 4a (task 6a41bb58): §1.6 gains the Chat payload schema 1
+  table above (reset/patch `ChatDelivery`, viewport-paged bodies, typed handle
+  commands, drafts on the handle). No engine wire, log or draft-file format
+  changed; host params and terminal schemas unchanged.
 - v1, 2026-10-27 addendum (task 8fa16659): §8 records three owner decisions (D-OWN-1, D-PERF-1,
   Phase 2 entry gate). No frozen surface, `schema` field or §3.7 metric changed, so there is no
   version bump.

@@ -985,3 +985,71 @@ fn a_toggle_reprojects_once_and_reuses_cached_turns() {
 
 #[allow(dead_code)]
 fn _unused(_: &Path, _: ChatState) {}
+
+#[test]
+fn a_replayed_2200_call_turn_reaches_the_subscriber_with_bounded_bodies() {
+    let (host, chat) = replay_chat("large_turn");
+    let handle = open(&host, &chat);
+    let receiver = handle.subscribe_channel();
+    let mut mirror = Mirror::default();
+    mirror.until(&receiver, "idle", |m| m.panel().state == "idle");
+    assert_eq!(submit(&handle, "read everything", 1).status, "submitted");
+    mirror.until(&receiver, "the answer", |m| {
+        m.panel().state == "idle"
+            && m.rows.iter().any(|row| row.kind == "final")
+            && m.rows
+                .iter()
+                .any(|row| row.kind == "activity" && !row.running)
+    });
+    let activity = mirror
+        .rows
+        .iter()
+        .find(|row| row.kind == "activity")
+        .unwrap()
+        .id
+        .clone();
+    handle.post(WorkerMsg::Toggle(activity));
+    mirror.until(&receiver, "the disclosed activity", |m| {
+        m.rows.iter().any(|row| row.kind == "activity" && row.open)
+    });
+    let groups: Vec<_> = mirror
+        .rows
+        .iter()
+        .filter(|row| row.kind == "group" && !row.open)
+        .map(|row| row.id.clone())
+        .collect();
+    for group in groups {
+        handle.post(WorkerMsg::Toggle(group));
+    }
+    mirror.until(&receiver, "every call listed", |m| {
+        m.rows
+            .iter()
+            .filter(|row| row.kind == "shell" || row.kind == "read")
+            .count()
+            >= fixture::LARGE_TURN_CALLS
+    });
+    assert!(
+        mirror.bodies.len() < 100,
+        "{} bodies materialized for {} rows",
+        mirror.bodies.len(),
+        mirror.rows.len()
+    );
+    handle.post(WorkerMsg::Viewport(1000, 1030));
+    let (sync, done) = std::sync::mpsc::channel();
+    handle.post(WorkerMsg::Stats(sync));
+    let stats = done.recv_timeout(WAIT).unwrap();
+    assert!(stats.bodies_built < 200, "{stats:?}");
+    std::thread::sleep(Duration::from_millis(50));
+    while let Some(delivery) = recv_timeout(&receiver, Duration::from_millis(100)) {
+        mirror.apply(delivery);
+    }
+    assert!(
+        mirror.bodies.len() < 100,
+        "{} bodies after scrolling",
+        mirror.bodies.len()
+    );
+    assert_mirror_matches(&handle, &mirror);
+    drop(handle);
+    drop(host);
+    record_saw_no_mismatch("large_turn");
+}

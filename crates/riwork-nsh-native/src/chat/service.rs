@@ -150,8 +150,57 @@ pub mod fixture {
         home.starts_with("/tmp") || home.starts_with("/private/tmp")
     }
 
+    /// The handshake every recording starts with (initialize, thread/start).
+    const HANDSHAKE: &str = include_str!("fixture_handshake.ndjson");
+    /// Calls in the synthesized large turn (the D-PERF-1 fixture size).
+    pub const LARGE_TURN_CALLS: usize = 2200;
+
+    /// One turn of `LARGE_TURN_CALLS` read-only commands and a short answer,
+    /// in the recorded Codex app-server frame format, for "read everything".
+    pub fn large_turn() -> String {
+        use serde_json::json;
+        let mut reply = vec![
+            json!({"id": "$id", "result": {"turn": {"id": "turn-1", "items": [], "itemsView": "notLoaded", "status": "inProgress", "error": null}}}),
+            json!({"method": "turn/started", "params": {"threadId": "thread-1", "turn": {"id": "turn-1", "items": [], "itemsView": "notLoaded", "status": "inProgress", "error": null}}}),
+        ];
+        let output = "bounded output line\n".repeat(20);
+        for n in 0..LARGE_TURN_CALLS {
+            let id = format!("exec-{n}");
+            let item = |status: &str, output: Option<&str>, exit: Option<i32>| {
+                json!({"type": "commandExecution", "id": id, "command": "cat src/main.rs", "cwd": "/work",
+                    "processId": null, "source": "agent", "status": status,
+                    "commandActions": [{"type": "read", "command": "cat src/main.rs", "name": "main.rs", "path": "src/main.rs"}],
+                    "aggregatedOutput": output, "exitCode": exit, "durationMs": null})
+            };
+            reply.push(json!({"method": "item/started", "params": {"item": item("inProgress", None, None), "threadId": "thread-1", "turnId": "turn-1", "startedAtMs": 1}}));
+            reply.push(json!({"method": "item/completed", "params": {"item": item("completed", Some(&output), Some(0)), "threadId": "thread-1", "turnId": "turn-1", "completedAtMs": 2}}));
+        }
+        for (method, text) in [
+            ("item/started", ""),
+            ("item/completed", "Read 2,200 files."),
+        ] {
+            reply.push(json!({"method": method, "params": {"item": {"type": "agentMessage", "id": "msg-1", "text": text, "phase": "final_answer", "memoryCitation": null, "delivery": null, "questions": null}, "threadId": "thread-1", "turnId": "turn-1", "startedAtMs": 1}}));
+        }
+        reply.push(json!({"method": "turn/completed", "params": {"threadId": "thread-1", "turn": {"id": "turn-1", "items": [], "itemsView": "notLoaded", "status": "completed", "error": null}}}));
+        let turn = json!({"type": "expect", "frame": {"id": "<any>", "method": "turn/start", "params": {"threadId": "thread-1", "input": [{"type": "text", "text": "read everything"}]}}, "reply": reply});
+        format!("{HANDSHAKE}{turn}\n")
+    }
+
+    /// Every recording a fixture chat may name: the engine's, and the large turn.
+    pub fn recordings() -> Vec<(&'static str, std::borrow::Cow<'static, str>)> {
+        RECORDINGS
+            .iter()
+            .map(|(name, text)| (*name, std::borrow::Cow::Borrowed(*text)))
+            .chain([("large_turn", std::borrow::Cow::Owned(large_turn()))])
+            .collect()
+    }
+
+    fn known(name: &str) -> bool {
+        name == "large_turn" || RECORDINGS.iter().any(|(known, _)| *known == name)
+    }
+
     pub fn directory(home: &Path, name: &str) -> Result<PathBuf, String> {
-        if !RECORDINGS.iter().any(|(known, _)| *known == name) {
+        if !known(name) {
             return Err(format!("not_found: no recorded provider stream {name:?}"));
         }
         let dir = home.join("work").join(name);
@@ -194,9 +243,9 @@ pub mod fixture {
         fs::create_dir_all(&dir).map_err(|error| format!("io: {error}"))?;
         let script = dir.join("fake_provider.py");
         fs::write(&script, FAKE_PROVIDER).map_err(|error| format!("io: {error}"))?;
-        for (name, text) in RECORDINGS {
+        for (name, text) in recordings() {
             let fixture = dir.join(format!("{name}.ndjson"));
-            fs::write(&fixture, text).map_err(|error| format!("io: {error}"))?;
+            fs::write(&fixture, text.as_bytes()).map_err(|error| format!("io: {error}"))?;
             let program = dir.join(name);
             fs::write(
                 &program,
@@ -238,7 +287,7 @@ pub mod fixture {
             .cwd
             .file_name()
             .and_then(|name| name.to_str())
-            .filter(|name| RECORDINGS.iter().any(|(known, _)| known == name))
+            .filter(|name| known(name))
             .unwrap_or("turn");
         Ok(DriverConfig {
             provider: info.provider,

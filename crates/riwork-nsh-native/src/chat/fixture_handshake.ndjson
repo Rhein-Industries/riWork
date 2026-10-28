@@ -1,0 +1,3 @@
+{"type":"expect","frame":{"id":"<any>","method":"initialize","params":{"clientInfo":{"name":"riwork"},"capabilities":{"experimentalApi":true,"optOutNotificationMethods":["turn/diff/updated","item/plan/delta"]}}},"reply":[{"id":"$id","result":{"userAgent":"fake/0","codexHome":"/tmp/fake-codex","platformFamily":"unix","platformOs":"macos"}}]}
+{"type":"expect","frame":{"method":"initialized"}}
+{"type":"expect","frame":{"id":"<any>","method":"thread/start","params":{"cwd":"<any>","approvalPolicy":"untrusted","sandbox":"read-only"}},"reply":[{"id":"$id","result":{"thread":{"id":"thread-1"},"model":"gpt-test","modelProvider":"openai","cwd":"/work","approvalPolicy":"untrusted","approvalsReviewer":"user","sandbox":{"type":"readOnly"}}}]}
