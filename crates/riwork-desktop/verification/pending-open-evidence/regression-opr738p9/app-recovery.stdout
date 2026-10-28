@@ -1,0 +1,11 @@
+
+running 1 test
+test nsh_host::pending_open_tests::production_app_recovers_pending_open_after_failed_quit_and_restart ... FAILED
+
+failures:
+
+failures:
+    nsh_host::pending_open_tests::production_app_recovers_pending_open_after_failed_quit_and_restart
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 47 filtered out; finished in 10.10s
+

@@ -1,0 +1,8 @@
+   Compiling riwork-desktop v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p1-fix-host/crates/riwork-desktop)
+    Finished `test` profile [unoptimized] target(s) in 4.17s
+     Running unittests src/nsh_main.rs (/private/tmp/riwork-w3-c62ea465/target/debug/deps/riwork-15d9683ef617a23d)
+
+thread 'nsh_host::pending_open_tests::production_app_recovers_pending_open_after_failed_quit_and_restart' (13903684) panicked at crates/riwork-desktop/src/nsh_pending_open_tests.rs:185:41:
+waiting for app.restoreReady: timed out waiting on channel
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+error: test failed, to rerun pass `-p riwork-desktop --bin riwork`
