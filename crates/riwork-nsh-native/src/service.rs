@@ -22,8 +22,8 @@ use crate::{
     },
     dto::{
         CreateSessionRequest, CreateSubshellRequest, FolderDto, OpenEditorRequest, ProjectDto,
-        ProjectInspectionDto, ProjectRequest, SearchHitDto, SessionsSnapshot, ShellSessionDto,
-        StoreState, TabUpdate, TabsSnapshot, TaskDto, WorktreeDto,
+        ProjectInspectionDto, ProjectMemoDto, ProjectRequest, SearchHitDto, SessionsSnapshot,
+        ShellSessionDto, StoreState, TabUpdate, TabsSnapshot, TaskDto, WorktreeDto,
     },
     hub::{Hub, TopicSubscription},
     settings::PreferenceService,
@@ -54,8 +54,10 @@ pub fn install_process_service(service: Arc<ProcessService>) -> Result<(), Strin
     }
     let _ = PROCESS_HOME.set(Ok(service.home().to_owned()));
     PROCESS
-        .set(service)
-        .map_err(|_| "conflict: native process service is already initialized".into())
+        .set(service.clone())
+        .map_err(|_| "conflict: native process service is already initialized".to_string())?;
+    register_memo_flush(&service);
+    Ok(())
 }
 
 /// Initialize before the first AppView. Calls from multiple windows also converge
@@ -76,6 +78,7 @@ fn ensure_initialized() -> Result<Arc<ProcessService>, String> {
     let sessions: Arc<dyn SessionsBackend> = session_backend(&home)?;
     let service = ProcessService::with_backends(home, store, sessions).map_err(io_error)?;
     let _ = PROCESS.set(service.clone());
+    register_memo_flush(&service);
     Ok(service)
 }
 
@@ -92,6 +95,31 @@ fn session_backend(home: &Path) -> Result<Arc<dyn SessionsBackend>, String> {
             .map_err(io_error);
     }
     Ok(Arc::new(EngineSessionsBackend::new(home.to_owned())))
+}
+
+/// The host invokes this writer on its blocking service thread before teardown.
+/// It shares the ordinary store-write lock, preserving a newer staged edit when
+/// an older async save and the final close barrier race.
+fn register_memo_flush(service: &Arc<ProcessService>) {
+    let weak = Arc::downgrade(service);
+    crate::memo::init(move |project, text, revision| {
+        let service = weak.upgrade().ok_or("unavailable: memo service stopped")?;
+        let _guard = service
+            .store_refresh
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if !crate::memo::is_current(project, text, revision) {
+            return Ok(());
+        }
+        service
+            .store
+            .set_project_memo(project, text)
+            .map_err(backend_error)?;
+        let snapshot = service.store.snapshot().map_err(backend_error)?;
+        service.store_hub.publish(snapshot);
+        crate::memo::saved(project, text, revision);
+        Ok(())
+    });
 }
 
 /// Shared by layout IO and service startup. Layout-only headless runners do not
@@ -251,6 +279,27 @@ impl ProcessService {
         })
         .await
     }
+    pub async fn set_project_memo(
+        self: &Arc<Self>,
+        project: String,
+        text: String,
+        revision: Option<u32>,
+    ) -> Result<ProjectMemoDto, String> {
+        self.store_write(move |backend| {
+            validate_input_id(&project)?;
+            if revision.is_some_and(|revision| !crate::memo::is_current(&project, &text, revision))
+            {
+                return Err(Refused("memo draft revision is stale".into()).into());
+            }
+            let memo = backend.set_project_memo(&project, &text)?;
+            if let Some(revision) = revision {
+                crate::memo::saved(&project, &text, revision);
+            }
+            Ok(memo)
+        })
+        .await
+    }
+
     pub async fn set_project_notifications(
         self: &Arc<Self>,
         selector: String,

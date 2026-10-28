@@ -1,4 +1,4 @@
-# riwork/native (Phase 1 services, Phase 2a terminals and Phase 3a panels)
+# riwork/native (Phase 1 services, Phase 2a terminals and Phase 3 panels/files)
 
 NSH 0.3.0 bridge for the project, task, shell and shared-tab surfaces of the frozen contract in
 [`docs/nsh-contracts.md` §1](../../docs/nsh-contracts.md). The root workspace's
@@ -56,6 +56,23 @@ Implemented JavaScript surface:
   component owns Ghostty config parsing/watching.
 - `Dashboard.getGlobalWindow/saveGlobalWindow` adapt durable global-window
   preferences; activity/dashboard feeds remain deferred.
+- `Files.listDirectory/subscribe` load one folder level through no-follow
+  directory descriptors. Subscriptions share one notify watcher per selected
+  root, publish changed snapshots (including raw Git XY decorations), and stop
+  when their last owner closes. Folders sort first in natural name order; scans
+  stop at 50,000 names and return at most 5,000 entries. Symlinks are listed but
+  never traversed. `FilesEvent` reports observer setup and subsequent read errors.
+- `Files.preview` uses engine identity-checked, bounded readers for text,
+  Markdown, images, binary notices and explicitly requested PDF pages. Media
+  crosses as bounded PNG data URLs; PDF parsing never runs on arrow selection.
+  `readText` returns exact clipboard text, while `validateOpen/validateEdit`
+  enforce containment and action refusals before host/editor routing. File
+  identity tokens remain opaque strings so JavaScript cannot round inode data.
+- `Store.stageProjectMemo` stages normalized text in memory synchronously and
+  returns a revision. `setProjectMemo(project, text, revision?)` writes through
+  core and rejects a stale staged revision. The host close/quit/reload barrier
+  drains dirty memo text under the same store mutation lock, including text
+  whose AppView was disposed before its debounce timer fired.
 - `Subscription.close()` is idempotent. JS owner disposal, VM shutdown and
   garbage collection also cancel delivery and close the listener queue. Explicit
   close unregisters owner cleanup while JS is alive; finalization only aborts,
