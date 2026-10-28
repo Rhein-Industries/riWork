@@ -22,7 +22,7 @@ test("opens a core-written layout with shell identity, empty unknown pane, and w
     expect(app.shows("id:window-controls-island")).toBe(true);
     expect(app.shows("id:status-bar")).toBe(true);
     expect(app.texts()).toContain("SESSIONS");
-    expect(app.texts()).toContain("Empty pane");
+    expect(app.texts()).toContain("Drop a tab here or use the pane menu");
     const { snapshot, dock } = latest(app);
     expect(snapshot.panes.map((pane) => pane.id)).toEqual([1, 2, 3]);
     expect(snapshot.panes.filter((pane) => pane.locked).map((pane) => pane.id)).toEqual([1, 3]);

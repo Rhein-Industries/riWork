@@ -16,7 +16,7 @@ test("P1-STAT-01: default kinds, order, sides and master visibility reach both w
     // Files now also names the project. Assert each status label in its own
     // surface, then compare the final status-bar sequence after panel content.
     // P5: the fixture backend's system default (no saved list, no figures).
-    const labels = ["Project Alpha", "0 LIVE", "CPU — RAM —", "CODEX · System default · UNAVAILABLE", "DEFAULT (APP) · System default · email unknown", "Global", "P·ORCH", "Layout"];
+    const labels = ["Project Alpha", "0 LIVE", "CPU 0.0% RAM 0 KiB", "CODEX · System default · UNAVAILABLE", "DEFAULT (APP) · System default · email unknown", "Global", "P·ORCH", "Layout"];
     for (const text of labels) expect(app.count(`id:status-bar >> text:${text}`)).toBe(1);
     const defaults = app.texts().filter((text) => labels.includes(text)).slice(-labels.length);
     expect(defaults).toEqual(labels);
@@ -44,7 +44,7 @@ test("P1-STAT-02: project and worktree open panels and missing data keeps GPUI f
     await app.waitFor("id:status-bar");
     expect(app.texts()).toContain("Project Alpha");
     expect(app.texts()).toContain("Agents · —");
-    expect(app.texts()).toContain("CPU — RAM —");
+    expect(app.texts()).toContain("CPU 0.0% RAM 0 KiB");
     expect(app.enabled("id:status-item-session-id")).toBe(false);
     await app.press("id:status-item-project");
     expect(app.shows("id:panel:panel:projects")).toBe(true);

@@ -54,7 +54,7 @@ test("P1-KEYS-04 close modal blocks window actions and modifier shortcuts dismis
     await app.keyboard.press("mod+2");
     await app.host.send("command", { id: "openSettings" });
     // W3's status bar has no pane count: a blocked split leaves no new empty pane.
-    expect(app.texts()).not.toContain("Empty pane");
+    expect(app.texts()).not.toContain("Drop a tab here or use the pane menu");
     expect(app.shows("id:panel:panel:settings")).toBe(false);
     await app.keyboard.press("escape");
     expect(app.shows("id:tab-close-dialog")).toBe(false);

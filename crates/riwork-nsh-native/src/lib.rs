@@ -34,8 +34,8 @@ use nsh_core::{element::Cleanup, prelude::*};
 
 use dto::{
     CreateSessionRequest, CreateSubshellRequest, FolderDto, OpenEditorRequest, ProjectDto,
-    ProjectInspectionDto, ProjectMemoDto, ProjectRequest, SearchHitDto, SessionsSnapshot,
-    ShellSessionDto, StoreState, TabUpdate, TabsSnapshot, TaskDto, WorktreeDto,
+    ProjectInspectionDto, ProjectMemoDto, ProjectRequest, SearchHitDto, SessionMetricsSnapshot,
+    SessionsSnapshot, ShellSessionDto, StoreState, TabUpdate, TabsSnapshot, TaskDto, WorktreeDto,
 };
 use hub::{Snapshot, TopicSubscription};
 pub use service::{ProcessService, initialize};
@@ -277,6 +277,20 @@ impl Sessions {
             }
         }))
     }
+
+    /// Live shells' CPU and memory, sampled only while a subscriber exists.
+    pub fn subscribe_metrics(
+        listener: Callback<Snapshot<SessionMetricsSnapshot>>,
+        cx: CallCx<'_>,
+    ) -> Result<Subscription, String> {
+        Ok(Subscription::start(cx, async move {
+            if let Ok(service) = initialize().await {
+                if let Ok(subscription) = service.subscribe_metrics().await {
+                    deliver(subscription, listener).await;
+                }
+            }
+        }))
+    }
 }
 
 /// Process-shared tab membership. Window-local selection stays in TSX/layouts.
@@ -402,6 +416,7 @@ mod tests {
                 let expected = if matches!(
                     function.name,
                     "subscribe"
+                        | "subscribeMetrics"
                         | "sentenceCase"
                         | "cased"
                         | "open"
@@ -424,6 +439,7 @@ mod tests {
             "inspectProject(root: string): Promise<ProjectInspectionDto>",
             "StoreEvent",
             "SessionsEvent",
+            "SessionMetricsEvent",
             "resync?: boolean",
             "projectFolders",
             "openSession(request: unknown): Promise<LayoutSession>",

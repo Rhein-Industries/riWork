@@ -1,7 +1,7 @@
 import { expect, test } from "nsh/test";
 import {
   EMPTY_REMOTE, checkPairingLink, filteredFolders, linkPresentation, maskedPairingLink,
-  projectConnectionNote, projectNameError, remoteLocalOnly, remotePanelUnavailable,
+  projectConnectionNote, projectNameError, remoteErrorNotice, remoteLocalOnly, remotePanelUnavailable,
   remoteProjectKey, remoteStrip, remoteTitle, removalConfirmation, shellOpenRefusal, singleFlight,
   type RemoteLists, type RemoteShell, type RemoteSnapshot,
 } from "./model";
@@ -93,4 +93,11 @@ test("P6B-REMOTE-MODEL-08 delayed and failed mutations are single-flight and nev
   release!(); expect(await first).toEqual({ accepted: true, value: "first" });
   try { await gate.run(async () => { calls++; throw new Error("fixture timeout; outcome unknown"); }); } catch {}
   expect(calls).toBe(2); expect(gate.pending()).toBe(false);
+});
+
+test("a missing riwork-remote is one short actionable line; the build recipe stays as detail", () => {
+  const missing = "Missing standalone remote binary at /a/riwork-remote or /a/RiWork.app/Contents/MacOS/riwork-remote. Run `riwork update --source /path/to/riWork --no-reload` to build and package it.";
+  expect(remoteErrorNotice(missing)).toEqual({ summary: "Other Macs need the riwork-remote helper, which is not installed. Build it with riwork update.", detail: missing });
+  expect(remoteErrorNotice("Relay unreachable. Retrying in 10 s")).toEqual({ summary: "Relay unreachable.", detail: "Relay unreachable. Retrying in 10 s" });
+  expect(remoteErrorNotice("Relay unreachable")).toEqual({ summary: "Relay unreachable", detail: null });
 });

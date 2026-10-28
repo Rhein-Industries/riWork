@@ -4,7 +4,7 @@ import { Button, Input, View } from "../SettingsFocus";
 import { DEFAULT_THEME, type InterfaceTheme } from "../appearance";
 import {
   EMPTY_REMOTE, REMOTE_HISTORY_NOTE, checkPairingLink, filteredFolders, linkPresentation,
-  maskedPairingLink, projectConnectionNote, projectNameError, remoteHostLabel, remoteProjectKey,
+  maskedPairingLink, projectConnectionNote, projectNameError, remoteErrorNotice, remoteHostLabel, remoteProjectKey,
   remoteStrip, shellOpenRefusal,
   type PairingLink, type PairRequest, type RemoteDefaults, type RemoteLists, type RemotePromptKind,
   type RemoteShell, type RemoteSnapshot, type RemoteWants,
@@ -157,6 +157,19 @@ function status(c: RemoteController, id: string, link: RemoteHostLink) {
 }
 type RemoteHostLink = RemoteSnapshot["hosts"][number]["link"];
 
+/** One short line; the full text (paths, the build recipe) behind Details. */
+function RemoteError(props: { controller: RemoteController; text: string }) {
+  const c = props.controller, open = signal(false);
+  const notice = () => remoteErrorNotice(props.text);
+  return <View testID="remote-hosts-error" accessibilityLabel={props.text} style={{ gap: 4 }}>
+    <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+      <Text numberOfLines={2} style={{ ...font(c, 10, c.theme().palette.gold), flex: 1, minWidth: 0 }}>{notice().summary}</Text>
+      {notice().detail && action(c, "remote-hosts-error-details", open() ? "Hide details" : "Details", () => open.set(!open()))}
+    </View>
+    {open() && notice().detail && <Text testID="remote-hosts-error-detail" style={font(c, 10, c.theme().palette.muted)}>{notice().detail}</Text>}
+  </View>;
+}
+
 /** AppSettings' remote slot shares the page scroll and tracked focus scope. */
 export function RemoteSettings(props: { controller: RemoteController }) {
   const c = props.controller;
@@ -171,7 +184,7 @@ export function RemoteSettings(props: { controller: RemoteController }) {
       {action(c, `remote-remove-${host.id}`, c.pending() && c.confirmation() === host.id ? "Removing…" : c.confirmation() === host.id ? "Confirm remove" : "Remove",
         c.pending() ? undefined : () => void c.remove(host.id), c.confirmation() === host.id ? c.theme().palette.gold : undefined)}
     </View>)}
-    {(c.data().hostsError || (!c.prompt() && c.error())) && <Text testID="remote-hosts-error" style={font(c, 10, c.theme().palette.gold)}>{c.data().hostsError ?? c.error()}</Text>}
+    {(c.data().hostsError || (!c.prompt() && c.error())) && <RemoteError controller={c} text={c.data().hostsError ?? c.error()!} />}
     <View style={{ flexDirection: "row", gap: 8 }}>
       {action(c, "remote-pair", "Pair another Mac", c.pending() ? undefined : () => void c.open({ kind: "pair" }))}
       {action(c, "remote-add", "Add host", c.pending() ? undefined : () => void c.open({ kind: "add" }))}
@@ -205,7 +218,6 @@ export function RemoteProjects(props: {
         </Button>)}
       </View>;
     })}
-    {c.data().hostsError && <Text style={font(c, 10, c.theme().palette.gold)}>{c.data().hostsError}</Text>}
   </View>;
 }
 

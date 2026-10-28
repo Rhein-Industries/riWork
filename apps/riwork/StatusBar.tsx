@@ -1,11 +1,11 @@
-import { Clipboard, Overlay, Scroll, Text, View, cleanup, effect, host, signal, type YNode } from "nsh";
-import { Accounts, Sessions, Store, Usage, type AccountsDto, type LayoutSession, type SettingsDto, type ShellSessionDto, type StoreState, type UsageDto } from "riwork/native";
+import { Clipboard, Overlay, Scroll, Text, View, cleanup, computed, effect, host, signal, type YNode } from "nsh";
+import { Accounts, Sessions, Store, Usage, type AccountsDto, type LayoutSession, type SessionMetricsSnapshot, type SettingsDto, type ShellSessionDto, type StoreState, type UsageDto } from "riwork/native";
 import { Settings } from "riwork/native";
 import { DEFAULT_THEME, space, type InterfaceTheme } from "./appearance";
 import { activePane, mainPaneSummary, type WorkspaceSnapshot } from "./model";
 import {
   BALANCED_INHERIT, accountItemLabel, defaultChoices, knownCodexProfiles, projectSelection, reportedAccountLabel,
-  resolveSelection, systemHome, usageAria, usageFocus, usageHint, usageItemText, usageSegments, type AccountListLike, type ProjectChoice, type UsageMode,
+  resolveSelection, resourcesText, systemHome, usageAria, usageFocus, usageHint, usageItemText, usageSegments, type AccountListLike, type ProjectChoice, type UsageMode,
 } from "./usage";
 
 export const DEFAULT_STATUS_ITEMS = [
@@ -47,6 +47,7 @@ export function StatusBar(props: Props) {
   const store = signal<StoreState | null>(null);
   const usage = signal<UsageDto | null>(null);
   const accounts = signal<AccountsDto | null>(null);
+  const metrics = signal<SessionMetricsSnapshot["metrics"]>([]);
   const globalView = signal<"dashboard" | "chat" | null>(null);
   const layoutAnchor = signal<YNode | null>(null);
   const globalAnchor = signal<YNode | null>(null);
@@ -56,6 +57,7 @@ export function StatusBar(props: Props) {
   let storeRev = -1;
   let usageRev = -1;
   let accountsRev = -1;
+  let metricsRev = -1;
   const sessionSubscription = Sessions.subscribe((event) => {
     if (event.rev <= sessionRev) return;
     sessionRev = event.rev;
@@ -77,6 +79,19 @@ export function StatusBar(props: Props) {
     if (event.rev <= accountsRev) return;
     accountsRev = event.rev;
     accounts.set(event.data);
+  });
+  // Sampling costs a `ps` run, so only a bar showing the item subscribes.
+  // Another Mac's shells are not sampled; its item says so (main.rs).
+  const resourcesShown = computed(() => settings().enabled && !props.snapshot().remoteProject
+    && settings().items.some((item) => item.kind === "resources" && item.enabled));
+  effect(() => {
+    if (!resourcesShown()) return;
+    const subscription = Sessions.subscribeMetrics((event) => {
+      if (event.rev <= metricsRev) return;
+      metricsRev = event.rev;
+      metrics.set(event.data.metrics);
+    });
+    cleanup(() => subscription.close());
   });
   cleanup(() => { sessionSubscription.close(); storeSubscription.close(); usageSubscription.close(); accountsSubscription.close(); });
   cleanup(host.on("global.show", (event) => globalView.set((event as { view: "dashboard" | "chat" | null }).view)));
@@ -141,7 +156,7 @@ export function StatusBar(props: Props) {
     const mode = (props.settings?.()?.statusBar.usageMode ?? "current_chat") as UsageMode;
     const labels: Record<string, string> = {
       project: projectName, worktree: branch, agent_activity: "Agents · —", live_sessions: `${live} ${theme().native ? "live" : "LIVE"}`,
-      resources: "CPU — RAM —", usage: readouts ? usageItemText(mode, readouts) : "CODEX · LOADING", codex_account: accountLabel(), session_id: selectedSession()?.slice(0, 8) ?? "",
+      resources: props.snapshot().remoteProject ? "CPU — RAM —" : resourcesText(sessions() ?? [], metrics(), projectId()), usage: readouts ? usageItemText(mode, readouts) : "CODEX · LOADING", codex_account: accountLabel(), session_id: selectedSession()?.slice(0, 8) ?? "",
       global_orchestrator: "Global", project_orchestrator: "P·ORCH", layout: "Layout",
     };
     const aria: Record<string, string> = {

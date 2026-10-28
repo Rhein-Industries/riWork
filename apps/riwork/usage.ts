@@ -349,3 +349,23 @@ export function defaultChoices(stored: ProjectChoice, appSelected: string | null
   }
   return { ...(status ? { status } : {}), rows };
 }
+
+// ---- The resources item -------------------------------------------------------------------
+
+/** main.rs `format_bytes`. */
+export function formatBytes(bytes: number): string {
+  const GiB = 1024 * 1024 * 1024, MiB = 1024 * 1024;
+  if (bytes >= GiB) return `${(bytes / GiB).toFixed(1)} GiB`;
+  if (bytes >= MiB) return `${(bytes / MiB).toFixed(1)} MiB`;
+  return `${Math.floor(bytes / 1024)} KiB`;
+}
+
+/** main.rs's resources item: this project's live shells summed, zero until a sample arrives. */
+export function resourcesText(
+  shells: readonly { id: string; alive: boolean; projectId?: string | null }[],
+  metrics: readonly { id: string; cpuPercent: number; ramBytes: number }[], projectId: string | undefined,
+): string {
+  const live = new Set(shells.filter((shell) => shell.alive && shell.projectId === projectId).map((shell) => shell.id));
+  const [cpu, ram] = metrics.filter((entry) => live.has(entry.id)).reduce(([cpu, ram], entry) => [cpu + entry.cpuPercent, ram + entry.ramBytes], [0, 0]);
+  return `CPU ${cpu.toFixed(1)}% RAM ${formatBytes(ram)}`;
+}
