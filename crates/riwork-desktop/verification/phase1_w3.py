@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """W3 reproducible checks. All mutable app state is isolated; no live UI input."""
 import argparse
+import hashlib
 import json
 import subprocess
 import tempfile
@@ -60,7 +61,11 @@ def fixture(v):
         changed = sorted(path for path in after if after[path] != before.get(path))
         removed = sorted(set(before) - set(after))
         allowed = {"layouts.json", "layouts.lock", "global-window.json", "settings.json", "state.json", "run/desktop.lock"}
-        bad = [path for path in changed if path not in allowed and not path.startswith(("nsh/", "project-tabs/"))]
+        # Phase 5 (GLB-05, accepted): a dashboard/global read takes the engine's schedule
+        # ledger lock as `riwork dashboard` does; only an empty schedules.lock is allowed.
+        empty_lock = lambda path: path == "schedules.lock" and after[path]["sha256"] == hashlib.sha256(b"").hexdigest()
+        bad = [path for path in changed if path not in allowed and not path.startswith(("nsh/", "project-tabs/"))
+               and not empty_lock(path)]
         unchanged = before.get("appearance.json") == after.get("appearance.json") and "appearance.json" in before
         tmux_files = [str(path) for path in (root / "tmux").rglob("*") if not path.is_dir()]
         v.manifest.update(after=after, changed=changed, removed=removed, disallowed_writes=bad,

@@ -3,6 +3,7 @@
 use crate::{
     nsh_chrome::{create_window, position_controls},
     nsh_menus::{DockWindow, HostMenus, MenuAction},
+    nsh_notifications::{self as notices, Notification, Notifier},
     nsh_runtime::{DesktopInstance, HostRuntime, InstanceStart, OpenRequest},
 };
 use nsh_engine::{HostCall, HostChannel};
@@ -25,7 +26,7 @@ use nsh_platform_macos::{
     set_ui_sets,
 };
 use riwork_core::{
-    global_window::GlobalWindowStore,
+    global_window::{GlobalView, GlobalWindowState, GlobalWindowStore},
     layouts::{LayoutStore, WindowFrame, WindowSize},
     paths,
     settings::SettingsStore,
@@ -40,7 +41,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
     cell::RefCell,
-    collections::BTreeMap,
+    collections::{BTreeMap, VecDeque},
     path::{Path, PathBuf},
     rc::Rc,
     sync::{Arc, mpsc},
@@ -171,11 +172,228 @@ impl PreparedWindow {
     }
 }
 
+/// Why a window is opened or reused, and what it is told afterwards.
+#[derive(Default)]
+struct OpenIntent {
+    /// The `window.open` / `window.route` call to answer.
+    call: Option<HostCall>,
+    /// `window.route`: deliver `route {step}`; the call answers `{windowId}`.
+    route: Option<Value>,
+    /// `riwork open` (possibly forwarded): deliver `project.open`.
+    forwarded: bool,
+    /// A notification click: deliver `notification.activate`.
+    activate: Option<Value>,
+}
+impl OpenIntent {
+    fn call(call: HostCall) -> Self {
+        Self {
+            call: Some(call),
+            ..Self::default()
+        }
+    }
+    fn forwarded() -> Self {
+        Self {
+            forwarded: true,
+            ..Self::default()
+        }
+    }
+    /// These go to a window already showing the project; a plain open makes a new one.
+    fn reuses_project_window(&self) -> bool {
+        self.route.is_some() || self.forwarded || self.activate.is_some()
+    }
+}
+
+/// What the registry knows about one open window, for the pure decisions below.
+#[derive(Clone, Debug, PartialEq)]
+struct WindowFacts {
+    id: String,
+    kind: WindowKind,
+    /// The project the window shows now (it follows in-window project switches).
+    project_id: Option<String>,
+    /// Focus recency, the z-order proxy: higher was key more recently; 0 = never key.
+    focus_serial: u64,
+    minimized: bool,
+    on_active_space: bool,
+    /// Closed but still being released: no longer counts as open.
+    closing: bool,
+}
+
+/// Windows in search order (SHELL-062): on-screen windows front to back, then
+/// minimized windows and windows on other Spaces, also most recent first.
+fn search_order(windows: &[WindowFacts]) -> Vec<&WindowFacts> {
+    let mut order: Vec<_> = windows.iter().filter(|w| !w.closing).collect();
+    order.sort_by_key(|w| {
+        (
+            w.minimized || !w.on_active_space,
+            std::cmp::Reverse(w.focus_serial),
+        )
+    });
+    order
+}
+
+/// `window.route`, forwarded opens and notification clicks: the first project
+/// window showing `project_id` in search order. The global window never is one.
+fn route_target(windows: &[WindowFacts], project_id: &str) -> Option<String> {
+    search_order(windows)
+        .into_iter()
+        .find(|w| w.kind == WindowKind::Project && w.project_id.as_deref() == Some(project_id))
+        .map(|w| w.id.clone())
+}
+
+/// The one global window, if open.
+fn global_window(windows: &[WindowFacts]) -> Option<String> {
+    windows
+        .iter()
+        .find(|w| w.kind == WindowKind::Global && !w.closing)
+        .map(|w| w.id.clone())
+}
+
+#[derive(Debug, PartialEq)]
+enum OpenTarget {
+    Reuse(String),
+    Create,
+}
+
+/// Main::Open: the global window is a singleton (focus it, never a second);
+/// routed, forwarded and notification opens reuse the project's window; any
+/// other project open makes a new window. Valid with no window at all.
+fn open_target(
+    runtime: &RuntimeWindow,
+    reuse_project_window: bool,
+    windows: &[WindowFacts],
+) -> OpenTarget {
+    let existing = if runtime.is_global() {
+        global_window(windows)
+    } else if reuse_project_window {
+        runtime
+            .project_id
+            .as_deref()
+            .and_then(|project| route_target(windows, project))
+    } else {
+        None
+    };
+    existing.map_or(OpenTarget::Create, OpenTarget::Reuse)
+}
+
+fn global_view(options: &OpenOptions) -> &str {
+    options.view.as_deref().unwrap_or("dashboard")
+}
+
+/// The events the opened or reused window receives, in order.
+fn open_events(prepared: &PreparedWindow, intent: &OpenIntent) -> Vec<(&'static str, Value)> {
+    let mut events = Vec::new();
+    if prepared.runtime.is_global() {
+        events.push((
+            "global.show",
+            json!({"view": global_view(&prepared.options),
+                "start": prepared.options.start.unwrap_or(false)}),
+        ));
+    }
+    if intent.forwarded {
+        events.push((
+            "project.open",
+            json!({"projectId": prepared.runtime.project_id, "path": prepared.runtime.path}),
+        ));
+    }
+    if let Some(step) = &intent.route {
+        events.push(("route", json!({"step": step})));
+    }
+    if let Some(activate) = &intent.activate {
+        events.push(("notification.activate", activate.clone()));
+    }
+    events
+}
+
+/// `window.open` answers `{windowId, created}`; `window.route` answers `{windowId}`.
+fn open_result(id: &str, created: bool, routed: bool) -> Value {
+    if routed {
+        json!({"windowId": id})
+    } else {
+        json!({"windowId": id, "created": created})
+    }
+}
+
+/// View ▸ Global Dashboard / Global Chat, ⌘⌥G and ⌘⇧O: these need no window.
+fn global_open_options(command: &str) -> Option<OpenOptions> {
+    let chat = match command {
+        "openGlobalDashboard" => false,
+        "openGlobalChat" => true,
+        _ => return None,
+    };
+    let mut options = OpenOptions::global();
+    options.view = Some(if chat { "chat" } else { "dashboard" }.into());
+    options.start = Some(chat);
+    Some(options)
+}
+
+/// A local project id is a UUID; a remote project's key is not.
+fn is_local_project(id: &str) -> bool {
+    Uuid::parse_str(id).is_ok()
+}
+
+#[derive(Debug, PartialEq)]
+enum NewWindow {
+    /// Open a window on the project of the most recently focused local project window.
+    Project(String),
+    /// Only the global window is open: its TSX resolves the frontmost project
+    /// window, else the active project, else its notice (SHELL-044).
+    AskGlobal(String),
+    /// No window: the active project, else the cwd fallback (`prepare`).
+    Default,
+}
+
+/// Dock "New Window" (and reopen). Remote-project windows are skipped.
+fn new_window_plan(windows: &[WindowFacts]) -> NewWindow {
+    let project = windows
+        .iter()
+        .filter(|w| w.kind == WindowKind::Project && !w.closing)
+        .filter_map(|w| {
+            w.project_id
+                .as_deref()
+                .filter(|id| is_local_project(id))
+                .map(|id| (w.focus_serial, id))
+        })
+        .max_by_key(|(serial, _)| *serial);
+    match (project, global_window(windows)) {
+        (Some((_, project)), _) => NewWindow::Project(project.to_owned()),
+        (None, Some(global)) => NewWindow::AskGlobal(global),
+        (None, None) => NewWindow::Default,
+    }
+}
+
+fn new_window_command() -> Value {
+    json!({"id": "newWindow"})
+}
+
+fn window_title(runtime: &RuntimeWindow) -> &'static str {
+    if runtime.is_global() {
+        "RiWork · Global"
+    } else {
+        "RiWork"
+    }
+}
+
+/// A `system.notify` post, remembered so its click reaches the right window.
+#[derive(Clone)]
+struct PostedNotice {
+    tag: String,
+    window: String,
+    project_id: Option<String>,
+    target: Option<Value>,
+}
+const POSTED_NOTICES: usize = 64;
+
 // Service commands contain plain data only. No AppKit object leaves the main thread.
 enum Service {
     Snapshot(Vec<(String, RuntimeWindow)>),
     Ready(String),
-    Open(OpenOptions, Option<HostCall>, Option<Value>, bool),
+    Open(OpenOptions, OpenIntent),
+    /// A finished-agent notification was clicked: verify, then route `showShell`.
+    OpenAgent {
+        tag: String,
+        project_id: String,
+        shell_id: String,
+    },
     Close(String, ClosingWindows, Option<HostCall>),
     Quit(ClosingWindows),
     PrepareQuit,
@@ -188,7 +406,9 @@ enum Service {
 }
 enum Main {
     Call(String, &'static str, HostCall),
-    Open(PreparedWindow, Option<HostCall>, Option<Value>, bool),
+    Open(PreparedWindow, OpenIntent),
+    Notify(Notification),
+    NotificationResponse(String, Option<String>),
     State(String),
     Close(String),
     Closed(
@@ -419,6 +639,11 @@ struct Host {
     quit_request_pending: bool,
     background: bool,
     forced_appearance: Option<Appearance>,
+    /// `None` when this process must not post (`notices::Delivery::Off`).
+    notifier: Option<Arc<dyn Notifier>>,
+    /// The production poster; only in an app-bundle process.
+    notification_center: Option<notices::NotificationCenter>,
+    posted: VecDeque<PostedNotice>,
 }
 impl Host {
     fn open(&mut self, prepared: PreparedWindow) -> Result<String, String> {
@@ -438,7 +663,6 @@ impl Host {
             "system.openPanel",
             "system.savePanel",
             "system.readPasteboard",
-            "system.notify",
             "system.share",
             "system.requestPermission",
         ] {
@@ -479,11 +703,7 @@ impl Host {
             },
         );
         let window = create_window(self.mtm, frame);
-        window.setTitle(&NSString::from_str(if prepared.runtime.is_global() {
-            "RiWork · Global"
-        } else {
-            "RiWork"
-        }));
+        window.setTitle(&NSString::from_str(window_title(&prepared.runtime)));
         window.setContentView(Some(&view.view()));
         position_controls(&window);
         let delegate = Delegate::new(self.mtm, Some(id.clone()));
@@ -527,7 +747,10 @@ impl Host {
             .find(|window| window.runtime.is_global())
             .and_then(|window| window.runtime.global.as_ref())
             .map(|state| state.view.name());
-        for window in self.windows.values() {
+        // The global window owns its view once open (TSX saves it); only an
+        // explicit open (`open_events`) may switch it. Re-sending the host's
+        // open-time view here would undo a switch made inside the window.
+        for window in self.windows.values().filter(|w| !w.runtime.is_global()) {
             let _ = window
                 .view
                 .host()
@@ -538,23 +761,30 @@ impl Host {
         self.windows
             .iter()
             .map(|(id, window)| {
-                let mut runtime = window.runtime.clone();
                 let screen = window
                     .window
                     .screen()
                     .or_else(|| NSScreen::mainScreen(self.mtm))
                     .map(|screen| screen.frame())
                     .unwrap_or(window.normal);
-                runtime.bounds = Some(runtime_geometry(window.normal, screen));
-                runtime.mode = mode(&window.window);
-                if let Some(global) = &mut runtime.global {
-                    global.window_size = WindowSize::new(
-                        window.normal.size.width as f32,
-                        window.normal.size.height as f32,
-                    );
-                }
+                let mut runtime =
+                    recorded_runtime(&window.runtime, window.normal, screen, mode(&window.window));
                 apply_current_layout(id, &mut runtime);
                 (id.clone(), runtime)
+            })
+            .collect()
+    }
+    fn facts(&self) -> Vec<WindowFacts> {
+        self.windows
+            .iter()
+            .map(|(id, w)| WindowFacts {
+                id: id.clone(),
+                kind: w.runtime.kind,
+                project_id: current_project_id(id, &w.runtime),
+                focus_serial: w.focus_serial,
+                minimized: w.window.isMiniaturized(),
+                on_active_space: w.window.isOnActiveSpace(),
+                closing: w.closing,
             })
             .collect()
     }
@@ -708,85 +938,99 @@ impl Host {
             }
         }
     }
-    fn handle(&mut self, message: Main) {
-        match message {
-            Main::Call(id, name, call) => self.call(id, name, call),
-            Main::Open(prepared, call, route, forwarded) => {
-                if self.quitting {
-                    if let Some(call) = call {
-                        call.reject("unavailable: host is quitting");
+    fn open_requested(&mut self, prepared: PreparedWindow, intent: OpenIntent) {
+        if self.quitting {
+            if let Some(call) = intent.call {
+                call.reject("unavailable: host is quitting");
+            }
+            return;
+        }
+        let target = open_target(
+            &prepared.runtime,
+            intent.reuses_project_window(),
+            &self.facts(),
+        );
+        let events = open_events(&prepared, &intent);
+        let view = prepared
+            .runtime
+            .is_global()
+            .then(|| global_view(&prepared.options).to_owned());
+        let routed = intent.route.is_some();
+        let (id, created) = match target {
+            OpenTarget::Reuse(id) => {
+                let _ = self.focus(&id);
+                (id, false)
+            }
+            OpenTarget::Create => match self.open(prepared) {
+                Ok(id) => (id, true),
+                Err(error) => {
+                    match intent.call {
+                        Some(call) => call.reject(error),
+                        None => eprintln!("riwork: {error}"),
                     }
                     return;
                 }
-                let existing = if prepared.runtime.is_global() {
-                    self.windows
-                        .iter()
-                        .find(|(_, w)| w.runtime.is_global())
-                        .map(|(id, _)| id.clone())
-                } else if route.is_some() || forwarded {
-                    self.windows
-                        .iter()
-                        .filter(|(id, w)| {
-                            current_project_id(id, &w.runtime) == prepared.runtime.project_id
-                        })
-                        .max_by_key(|(_, w)| w.focus_serial)
-                        .map(|(id, _)| id.clone())
-                } else {
-                    None
+            },
+        };
+        if let Some(view) = view {
+            if let Some(state) = self
+                .windows
+                .get_mut(&id)
+                .and_then(|window| window.runtime.global.as_mut())
+            {
+                state.view = GlobalView::from(view);
+            }
+            // Every project status menu follows the shown view;
+            // only the global window receives the start action.
+            self.publish_global_selection();
+            self.publish();
+        }
+        if let Some(window) = self.windows.get(&id) {
+            for (name, data) in events {
+                let _ = window.view.host().send(name, data);
+            }
+        }
+        if let Some(call) = intent.call {
+            call.resolve(open_result(&id, created, routed));
+        }
+    }
+    /// A click on a posted notification or one of its actions (any thread → main).
+    fn notification_response(&mut self, tag: String, action: Option<String>) {
+        if let Some(posted) = self.posted.iter().rev().find(|p| p.tag == tag).cloned() {
+            let activate = notices::activation(&tag, action.as_deref(), posted.target);
+            if let Some(project_id) = posted.project_id {
+                let mut options = OpenOptions::project(None);
+                options.project_id = Some(project_id);
+                let intent = OpenIntent {
+                    activate: Some(activate),
+                    ..OpenIntent::default()
                 };
-                let global = prepared.runtime.is_global();
-                let show = json!({"view": prepared.options.view.as_deref().unwrap_or("dashboard"), "start": prepared.options.start.unwrap_or(false)});
-                let project = json!({"projectId": prepared.runtime.project_id, "path": prepared.runtime.path});
-                let created = existing.is_none();
-                let result = existing.map(Ok).unwrap_or_else(|| self.open(prepared));
-                match result {
-                    Ok(id) => {
-                        if !created {
-                            let _ = self.focus(&id);
-                        }
-                        if global {
-                            if let Some(state) = self
-                                .windows
-                                .get_mut(&id)
-                                .and_then(|window| window.runtime.global.as_mut())
-                            {
-                                state.view = riwork_core::global_window::GlobalView::from(
-                                    show["view"].as_str().unwrap_or("dashboard").to_owned(),
-                                );
-                            }
-                            // Every project status menu follows the shown view;
-                            // only the global window receives the start action.
-                            self.publish_global_selection();
-                            self.publish();
-                        }
-                        if let Some(w) = self.windows.get(&id) {
-                            if global {
-                                let _ = w.view.host().send("global.show", show);
-                            }
-                            if forwarded {
-                                let _ = w.view.host().send("project.open", project);
-                            }
-                            if let Some(step) = &route {
-                                let _ = w.view.host().send("route", json!({"step":step}));
-                            }
-                        }
-                        if let Some(call) = call {
-                            call.resolve(if route.is_some() {
-                                json!({"windowId":id})
-                            } else {
-                                json!({"windowId":id,"created":created})
-                            });
-                        }
-                    }
-                    Err(error) => {
-                        if let Some(call) = call {
-                            call.reject(error);
-                        } else {
-                            eprintln!("riwork: {error}");
-                        }
-                    }
+                let _ = self.service.send(Service::Open(options, intent));
+            } else if let Some(window) = self.windows.get(&posted.window) {
+                let _ = window.view.host().send("notification.activate", activate);
+                let _ = self.focus(&posted.window);
+            }
+            return;
+        }
+        if let Some((project_id, shell_id)) = notices::completion_response(&tag, action.as_deref())
+        {
+            let _ = self.service.send(Service::OpenAgent {
+                tag,
+                project_id,
+                shell_id,
+            });
+        }
+    }
+    fn handle(&mut self, message: Main) {
+        match message {
+            Main::Call(id, name, call) => self.call(id, name, call),
+            Main::Open(prepared, intent) => self.open_requested(prepared, intent),
+            Main::Notify(notification) => {
+                if let Some(center) = &self.notification_center {
+                    center.post(&notification);
                 }
             }
+            Main::NotificationResponse(tag, action) => self.notification_response(tag, action),
             Main::State(id) => self.state(&id),
             Main::Close(id) => self.close(&id, "user", None),
             Main::Closed(id, call, result) => match result {
@@ -1021,28 +1265,32 @@ impl Host {
                 }
             }
             "openGlobalDashboard" | "openGlobalChat" => {
-                let mut options = OpenOptions::global();
-                options.view = Some(
-                    if action.command == "openGlobalChat" {
-                        "chat"
-                    } else {
-                        "dashboard"
+                if let Some(options) = global_open_options(action.command) {
+                    let _ = self
+                        .service
+                        .send(Service::Open(options, OpenIntent::default()));
+                }
+            }
+            "newWindow" => match new_window_plan(&self.facts()) {
+                NewWindow::Project(project_id) => {
+                    let mut options = OpenOptions::project(None);
+                    options.project_id = Some(project_id);
+                    let _ = self
+                        .service
+                        .send(Service::Open(options, OpenIntent::default()));
+                }
+                NewWindow::AskGlobal(id) => {
+                    if let Some(window) = self.windows.get(&id) {
+                        let _ = window.view.host().send("command", new_window_command());
                     }
-                    .into(),
-                );
-                options.start = Some(action.command == "openGlobalChat");
-                let _ = self.service.send(Service::Open(options, None, None, false));
-            }
-            "newWindow" => {
-                let mut options = OpenOptions::project(None);
-                options.project_id = self
-                    .windows
-                    .iter()
-                    .filter(|(_, w)| !w.runtime.is_global())
-                    .max_by_key(|(_, w)| w.focus_serial)
-                    .and_then(|(id, w)| current_project_id(id, &w.runtime));
-                let _ = self.service.send(Service::Open(options, None, None, false));
-            }
+                }
+                NewWindow::Default => {
+                    let _ = self.service.send(Service::Open(
+                        OpenOptions::project(None),
+                        OpenIntent::default(),
+                    ));
+                }
+            },
             command => {
                 let number = crate::nsh_menus::command_window(
                     action.window_number,
@@ -1079,18 +1327,20 @@ impl Host {
         let data = call.data().clone();
         match name {
             "window.open" => match serde_json::from_value::<OpenOptions>(data).map_err(|e| format!("invalid: {e}")).and_then(|o| { o.validate()?; Ok(o) }) {
-                Ok(options) => { let _ = self.service.send(Service::Open(options, Some(call), None, false)); }
+                Ok(options) => { let _ = self.service.send(Service::Open(options, OpenIntent::call(call))); }
                 Err(error) => call.reject(error),
             },
             "window.route" => {
                 let project = data["projectId"].as_str();
                 if project.is_none() || !valid_route(&data["step"]) { call.reject("invalid: projectId and a valid route step are required"); return; }
                 let mut options = OpenOptions::project(None); options.project_id = project.map(str::to_owned);
-                let _ = self.service.send(Service::Open(options, Some(call), Some(data["step"].clone()), false));
+                let intent = OpenIntent { call: Some(call), route: Some(data["step"].clone()), ..OpenIntent::default() };
+                let _ = self.service.send(Service::Open(options, intent));
             }
             "window.list" => call.resolve(Value::Array(self.windows.iter().map(|(id,w)| json!({
                 "windowId":id,"kind":w.runtime.kind,"projectId":current_project_id(id, &w.runtime),
-                "title":w.window.title().to_string(),"key":w.window.isKeyWindow(),"mode":mode(&w.window)})).collect())),
+                "title":w.window.title().to_string(),"key":w.window.isKeyWindow(),"mode":mode(&w.window),
+                "focusSerial":w.focus_serial})).collect())),
             "window.placement" => {
                 let w = &self.windows[&id];
                 call.resolve(json!({"mode":mode(&w.window),"frame":geometry(w.window.frame()),
@@ -1124,6 +1374,19 @@ impl Host {
                     call.resolve(json!({}));
                 }
                 Err(error) => call.reject(error),
+            },
+            "system.notify" => match (notices::Notification::from_call(&data), self.notifier.clone()) {
+                (Err(error), _) => call.reject(error),
+                (Ok(_), None) => call.reject("unavailable: system notifications need the RiWork app bundle"),
+                (Ok(notification), Some(notifier)) => match notifier.post(&notification) {
+                    Ok(()) => {
+                        if self.posted.len() >= POSTED_NOTICES { self.posted.pop_front(); }
+                        self.posted.push_back(PostedNotice { tag: notification.tag, window: id,
+                            project_id: notification.project_id, target: notification.target });
+                        call.resolve(json!({}));
+                    }
+                    Err(error) => call.reject(error),
+                },
             },
             "system.fonts" => {
                 let families = NSFontManager::sharedFontManager(self.mtm).availableFontFamilies();
@@ -1187,10 +1450,12 @@ fn allowed_url(url: &str) -> bool {
     })
 }
 fn valid_route(step: &Value) -> bool {
-    let kind = step
-        .get("kind")
-        .or_else(|| step.get("type"))
-        .and_then(Value::as_str);
+    let kind = match step.get("kind").or_else(|| step.get("type")) {
+        Some(kind) => kind.as_str(),
+        // Contracts §2.3 write a panel step as `{panel}`; the kind is implied.
+        None if step.get("panel").is_some() => Some("panel"),
+        None => None,
+    };
     match kind {
         Some("showShell") => step["shellId"]
             .as_str()
@@ -1314,6 +1579,58 @@ fn window_count<T>(windows: &BTreeMap<String, T>) -> usize {
 }
 fn last_close_quits(remaining: usize) -> bool {
     remaining == 0
+}
+
+/// What the registry records for one window at a publish, close, quit or
+/// reload: its launch RuntimeWindow with the current frame and mode, and for
+/// the global window its captured size. Layouts are applied by the caller.
+fn recorded_runtime(
+    runtime: &RuntimeWindow,
+    normal: NSRect,
+    screen: NSRect,
+    mode: WindowMode,
+) -> RuntimeWindow {
+    let mut runtime = runtime.clone();
+    runtime.bounds = Some(runtime_geometry(normal, screen));
+    runtime.mode = mode;
+    if let Some(global) = &mut runtime.global {
+        global.window_size = WindowSize::new(normal.size.width as f32, normal.size.height as f32);
+    }
+    runtime
+}
+
+/// A window a reload hands over. The global window reopens as itself and
+/// shows the handed-over view.
+fn restored_window(home: &Path, runtime: &RuntimeWindow) -> PreparedWindow {
+    let options = if runtime.is_global() {
+        let mut options = OpenOptions::global();
+        options.view = runtime
+            .global
+            .as_ref()
+            .map(|state| state.view.name().to_owned());
+        options
+    } else {
+        OpenOptions::project(Some(runtime.path.clone()))
+    };
+    PreparedWindow {
+        options,
+        opening_size: preferred_opening_size(home, runtime),
+        runtime: runtime.clone(),
+        restore: true,
+        notice: None,
+    }
+}
+
+/// TSX owns the global window's view, `show_quiet`, filter and sort and saves
+/// them itself (`Dashboard.saveGlobalWindow`); the host owns only the size it
+/// captured. Every host-side write or publish merges onto the file, so a view
+/// switched inside the window is never overwritten by the one from open time.
+/// Service thread only (disk IO).
+fn merged_global_state(home: &Path, host: &GlobalWindowState) -> GlobalWindowState {
+    let mut state = GlobalWindowStore::at(home).load();
+    // An impossible size was already dropped; keep the last ordinary one.
+    state.window_size = host.window_size.or(state.window_size);
+    state
 }
 
 /// Called on the startup/service worker, never while constructing an AppView.
@@ -1490,17 +1807,7 @@ fn startup(args: Vec<String>) -> Result<Option<Startup>, String> {
         snapshot
             .windows
             .iter()
-            .map(|runtime| PreparedWindow {
-                options: if runtime.is_global() {
-                    OpenOptions::global()
-                } else {
-                    OpenOptions::project(Some(runtime.path.clone()))
-                },
-                opening_size: preferred_opening_size(&home, runtime),
-                runtime: runtime.clone(),
-                restore: true,
-                notice: None,
-            })
+            .map(|runtime| restored_window(&home, runtime))
             .collect()
     } else {
         let first = match prepare(&home, OpenOptions::project(path.clone())) {
@@ -1557,6 +1864,9 @@ fn current_layouts(home: &Path, windows: &[(String, RuntimeWindow)]) -> Vec<Runt
         .map(|(id, window)| {
             let mut window = window.clone();
             apply_current_layout(id, &mut window);
+            if let Some(global) = &mut window.global {
+                *global = merged_global_state(home, global);
+            }
             window
         })
         .collect();
@@ -1620,10 +1930,12 @@ impl ClosingWindows {
                 window.layout = Some(project);
                 (window.focus_mode, window.focus_centered) = layout.focus_state();
             }
-            if let Some(global) = &window.global {
-                if let Err(error) = GlobalWindowStore::at(home).save(global) {
+            if let Some(global) = &mut window.global {
+                let merged = merged_global_state(home, global);
+                if let Err(error) = GlobalWindowStore::at(home).save(&merged) {
                     errors.push(format!("global window {id}: {error}"));
                 }
+                *global = merged;
             }
         }
         let mut windows: Vec<_> = windows.into_iter().map(|(_, window)| window).collect();
@@ -1706,16 +2018,40 @@ fn services(mut startup: Startup, rx: mpsc::Receiver<Service>, tx: mpsc::Sender<
                     Err(e) => send(Main::Error(e)),
                 }
             }
-            Ok(Service::Open(options, call, route, forwarded)) => {
-                match prepare(&startup.home, options) {
-                    Ok(window) => send(Main::Open(window, call, route, forwarded)),
-                    Err(error) => {
-                        if let Some(call) = call {
-                            call.reject(error);
-                        } else {
-                            eprintln!("riwork: {error}");
-                        }
+            Ok(Service::Open(options, intent)) => match prepare(&startup.home, options) {
+                Ok(window) => send(Main::Open(window, intent)),
+                Err(error) => {
+                    if let Some(call) = intent.call {
+                        call.reject(error);
+                    } else {
+                        eprintln!("riwork: {error}");
                     }
+                }
+            },
+            Ok(Service::OpenAgent {
+                tag,
+                project_id,
+                shell_id,
+            }) => {
+                // SHELL-271: show the shell in a window of its project, opening
+                // one by id if none shows it; the active project is unchanged.
+                let result =
+                    notices::verify_agent(&startup.home, &project_id, &shell_id).and_then(|()| {
+                        let mut options = OpenOptions::project(None);
+                        options.project_id = Some(project_id.clone());
+                        prepare(&startup.home, options)
+                    });
+                match result {
+                    Ok(window) => {
+                        let target = json!({"projectId": project_id, "shellId": shell_id});
+                        let intent = OpenIntent {
+                            route: Some(json!({"kind": "showShell", "shellId": shell_id})),
+                            activate: Some(notices::activation(&tag, None, Some(target))),
+                            ..OpenIntent::default()
+                        };
+                        send(Main::Open(window, intent));
+                    }
+                    Err(error) => eprintln!("riwork notifications: {error}"),
                 }
             }
             Ok(Service::Close(id, batch, call)) => {
@@ -1758,7 +2094,7 @@ fn services(mut startup: Startup, rx: mpsc::Receiver<Service>, tx: mpsc::Sender<
                 startup.instance.stop_forwarding();
                 for open in startup.instance.drain_requests() {
                     match prepare(&startup.home, OpenOptions::project(open.path)) {
-                        Ok(window) => send(Main::Open(window, None, None, true)),
+                        Ok(window) => send(Main::Open(window, OpenIntent::forwarded())),
                         Err(error) => eprintln!("riwork: forwarded open failed: {error}"),
                     }
                 }
@@ -1810,7 +2146,7 @@ fn services(mut startup: Startup, rx: mpsc::Receiver<Service>, tx: mpsc::Sender<
         if reload.is_none() {
             for request in startup.instance.drain_requests() {
                 match prepare(&startup.home, OpenOptions::project(request.path)) {
-                    Ok(window) => send(Main::Open(window, None, None, true)),
+                    Ok(window) => send(Main::Open(window, OpenIntent::forwarded())),
                     Err(e) => eprintln!("riwork: forwarded open failed: {e}"),
                 }
             }
@@ -1878,7 +2214,7 @@ fn services(mut startup: Startup, rx: mpsc::Receiver<Service>, tx: mpsc::Sender<
                 startup.instance.stop_forwarding();
                 for open in startup.instance.drain_requests() {
                     match prepare(&startup.home, OpenOptions::project(open.path)) {
-                        Ok(window) => send(Main::Open(window, None, None, true)),
+                        Ok(window) => send(Main::Open(window, OpenIntent::forwarded())),
                         Err(error) => eprintln!("riwork: forwarded open failed: {error}"),
                     }
                 }
@@ -1903,6 +2239,36 @@ fn change_text_size(home: &Path, command: &str) -> Result<f32, String> {
     let settings = SettingsStore::open(home)?
         .update(|settings| change.apply(settings, GHOSTTY_DEFAULT_FONT_SIZE))?;
     Ok(settings.ui_text_size.points())
+}
+
+/// Who posts notifications in this process (see `notices::Delivery`). The
+/// production center is created at startup so a click reaches its delegate.
+fn notification_delivery(
+    home: &Path,
+) -> (
+    Option<Arc<dyn Notifier>>,
+    Option<notices::NotificationCenter>,
+) {
+    let executable = std::env::current_exe().ok();
+    let flag = std::env::var_os(notices::FIXTURE_ENV);
+    match notices::delivery(home, flag.as_deref(), executable.as_deref()) {
+        notices::Delivery::Fixture => (
+            notices::FixtureNotifier::at(home).map(|n| Arc::new(n) as Arc<dyn Notifier>),
+            None,
+        ),
+        notices::Delivery::System => {
+            let center = notices::NotificationCenter::new(Arc::new(|tag, action| {
+                send(Main::NotificationResponse(tag, action))
+            }));
+            let notifier = center.is_some().then(|| {
+                Arc::new(notices::MainThreadNotifier::new(|notification| {
+                    send(Main::Notify(notification))
+                })) as Arc<dyn Notifier>
+            });
+            (notifier, center)
+        }
+        notices::Delivery::Off => (None, None),
+    }
 }
 
 pub fn run(args: Vec<String>) -> Result<(), String> {
@@ -1934,6 +2300,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     let (tx, rx) = mpsc::channel();
     let components = Components::default();
     riwork_nsh_terminal::register(&components, startup.home.clone());
+    let (notifier, notification_center) = notification_delivery(&startup.home);
     let mut host = Host {
         #[cfg(feature = "terminal-fixture")]
         fixture: if std::env::var_os("RIWORK_NSH_TERMINAL_FIXTURE").is_some() {
@@ -1960,6 +2327,9 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         quit_request_pending: false,
         background,
         forced_appearance,
+        notifier: notifier.clone(),
+        notification_center,
+        posted: VecDeque::new(),
     };
     // Queue the complete initial snapshot before the worker starts, not one partial set per open.
     let windows = std::mem::take(&mut startup.windows);
@@ -1969,6 +2339,9 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     while rx.try_recv().is_ok() {}
     host.publish();
     HOST.with(|state| *state.borrow_mut() = Some(host));
+    // Process-wide, once (not per window): notification claims and orchestrator
+    // wakes. Their main-thread posts queue behind app.run().
+    let _background = notices::start(startup.home.clone(), notifier);
     let worker_tx = tx.clone();
     let worker = thread::spawn(move || services(startup, rx, worker_tx));
     app.finishLaunching();
@@ -2157,15 +2530,43 @@ mod tests {
         assert!(!allowed_url("javascript:alert(1)"));
         assert!(!valid_route(&json!({"kind":"showShell","shellId":"bad"})));
         assert!(valid_route(&json!({"kind":"projectMemo"})));
+        // Contracts §2.3 `panel {panel}`: the kind may be implied.
+        assert!(valid_route(&json!({"panel":"settings"})));
+        assert!(valid_route(&json!({"kind":"panel","panel":"settings"})));
+        assert!(!valid_route(&json!({"panel":""})));
+        assert!(!valid_route(&json!({"panel":1})));
+        assert!(!valid_route(&json!({"kind":"unknown","panel":"settings"})));
+        assert!(!valid_route(&json!({})));
+        let id = Uuid::new_v4().to_string();
+        assert!(valid_route(&json!({"kind":"chat","chatId":id})));
+        assert!(valid_route(&json!({"kind":"task","taskId":id})));
+        assert!(valid_route(&json!({"kind":"showShell","shellId":id})));
         let mut global = OpenOptions::global();
         global.project_id = Some("bad".into());
         assert!(global.validate().is_err());
     }
-    struct LayoutFixture {
-        root: PathBuf,
+    pub(super) struct LayoutFixture {
+        pub(super) root: PathBuf,
+    }
+    /// Registry facts for the pure window decisions: on screen, never closing.
+    pub(super) fn facts(
+        id: &str,
+        kind: WindowKind,
+        project_id: Option<&str>,
+        focus_serial: u64,
+    ) -> WindowFacts {
+        WindowFacts {
+            id: id.into(),
+            kind,
+            project_id: project_id.map(str::to_owned),
+            focus_serial,
+            minimized: false,
+            on_active_space: true,
+            closing: false,
+        }
     }
     impl LayoutFixture {
-        fn new() -> Self {
+        pub(super) fn new() -> Self {
             let root = PathBuf::from("/tmp")
                 .join(format!("riwork-host-flush-{}", Uuid::new_v4().simple()));
             std::fs::create_dir_all(&root).unwrap();
@@ -2177,7 +2578,7 @@ mod tests {
                 LayoutPersistence::open(&self.root, id, None, SaveMode::LegacyChatState).unwrap();
             host_layouts::registration(id, Arc::new(loaded.persistence), loaded.project).unwrap()
         }
-        fn window(&self, id: &str) -> (String, RuntimeWindow) {
+        pub(super) fn window(&self, id: &str) -> (String, RuntimeWindow) {
             (
                 id.into(),
                 RuntimeWindow {
@@ -2240,18 +2641,34 @@ mod tests {
             layout.schedule(edited).unwrap();
         }
         let mut windows = ids.iter().map(|id| fixture.window(id)).collect::<Vec<_>>();
-        let mut global = riwork_core::global_window::GlobalWindowState::default();
-        global.window_size = Some(WindowSize {
-            width: 900.,
-            height: 650.,
-        });
+        // TSX saved its view and filter itself (Dashboard.saveGlobalWindow) after
+        // the window opened; the host's copy is the one from open time.
+        let mut saved = GlobalWindowState {
+            view: GlobalView::Chat,
+            ..GlobalWindowState::default()
+        };
+        saved.set_filter(riwork_core::global_window::DashboardFilter::All);
+        GlobalWindowStore::at(&fixture.root).save(&saved).unwrap();
+        let host = GlobalWindowState {
+            window_size: Some(WindowSize {
+                width: 900.,
+                height: 650.,
+            }),
+            ..GlobalWindowState::default()
+        };
         windows.push((
-            "global".into(),
-            RuntimeWindow::global(&fixture.root, None, WindowMode::Windowed, global.clone()),
+            format!("quit-global-{}", Uuid::new_v4()),
+            RuntimeWindow::global(&fixture.root, None, WindowMode::Windowed, host.clone()),
         ));
         let closing = ClosingWindows::new(windows);
         let published = closing.flush(&fixture.root).unwrap();
         assert_eq!(published.len(), 3);
+        // The size is the host's; everything else is what TSX saved.
+        let global = GlobalWindowState {
+            window_size: host.window_size,
+            ..saved
+        };
+        assert_eq!(published[2].global.as_ref(), Some(&global));
         let store = riwork_core::layouts::LayoutStore::open(&fixture.root).unwrap();
         for (index, id) in ids.iter().enumerate() {
             assert_eq!(
@@ -2260,6 +2677,44 @@ mod tests {
             );
         }
         assert_eq!(GlobalWindowStore::at(&fixture.root).load(), global);
+    }
+
+    #[test]
+    fn a_view_tsx_saved_survives_a_host_flush_and_the_runtime_publish() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let _entered = runtime.enter();
+        let fixture = LayoutFixture::new();
+        let home = &fixture.root;
+        // The host opened the global window on the dashboard ...
+        let prepared = prepare(home, OpenOptions::global()).unwrap();
+        assert_eq!(
+            prepared.runtime.global.as_ref().unwrap().view,
+            GlobalView::Dashboard
+        );
+        // ... and the user switched it to Chat inside the window, saved by TSX.
+        let saved = GlobalWindowState {
+            view: GlobalView::Chat,
+            ..GlobalWindowState::default()
+        };
+        GlobalWindowStore::at(home).save(&saved).unwrap();
+        let screen = NSRect::new(NSPoint::new(0., 0.), NSSize::new(1800., 1100.));
+        let normal = NSRect::new(NSPoint::new(10., 10.), NSSize::new(1000., 700.));
+        let id = format!("tsx-view-{}", Uuid::new_v4());
+        let recorded = recorded_runtime(&prepared.runtime, normal, screen, WindowMode::Windowed);
+        let expected = GlobalWindowState {
+            window_size: Some(WindowSize {
+                width: 1000.,
+                height: 700.,
+            }),
+            ..saved
+        };
+        let published = current_layouts(home, &[(id.clone(), recorded.clone())]);
+        assert_eq!(published[0].global.as_ref(), Some(&expected));
+        let closing = ClosingWindows::new(vec![(id, recorded)]);
+        let flushed = closing.flush(home).unwrap();
+        closing.cancel();
+        assert_eq!(flushed[0].global.as_ref(), Some(&expected));
+        assert_eq!(GlobalWindowStore::at(home).load(), expected);
     }
 
     #[test]
@@ -2465,6 +2920,383 @@ mod window_registry {
             assert_eq!(window_count(&registry), 0);
             assert!(last_close_quits(window_count(&registry)));
         }
+
+        use super::super::tests::{LayoutFixture, facts};
+
+        #[test]
+        fn the_global_window_is_a_singleton_and_opens_with_no_window() {
+            let fixture = LayoutFixture::new();
+            // View ▸ Global Chat / ⌘⇧O and Global Dashboard / ⌘⌥G have no calling
+            // window: Host::menu sends exactly these options to the service.
+            let options = global_open_options("openGlobalChat").unwrap();
+            options.validate().unwrap();
+            assert_eq!(
+                (options.kind, options.view.as_deref(), options.start),
+                (WindowKind::Global, Some("chat"), Some(true))
+            );
+            let dashboard = global_open_options("openGlobalDashboard").unwrap();
+            assert_eq!(
+                (dashboard.view.as_deref(), dashboard.start),
+                (Some("dashboard"), Some(false))
+            );
+            assert!(global_open_options("newWindow").is_none());
+            // TSX window.open {kind: "global"} is the same request.
+            let from_tsx: OpenOptions =
+                serde_json::from_value(json!({"kind":"global","view":"chat","start":true}))
+                    .unwrap();
+            from_tsx.validate().unwrap();
+            // The service prepares it from the home alone.
+            let prepared = prepare(&fixture.root, options).unwrap();
+            assert!(prepared.runtime.is_global());
+            assert_eq!(prepared.runtime.project_id, None);
+            let intent = OpenIntent::default();
+            let reuse = intent.reuses_project_window();
+            // No window at all: it is created.
+            assert_eq!(
+                open_target(&prepared.runtime, reuse, &[]),
+                OpenTarget::Create
+            );
+            // Project windows only: still created.
+            let project = Uuid::new_v4().to_string();
+            let alpha = facts("alpha", WindowKind::Project, Some(&project), 3);
+            assert_eq!(
+                open_target(&prepared.runtime, reuse, std::slice::from_ref(&alpha)),
+                OpenTarget::Create
+            );
+            // Once it exists, every way in reuses it (focus) — minimised or on
+            // another Space too — and it gets `global.show`; created: false.
+            let global = facts("global", WindowKind::Global, None, 1);
+            for existing in [
+                global.clone(),
+                WindowFacts {
+                    minimized: true,
+                    ..global.clone()
+                },
+                WindowFacts {
+                    on_active_space: false,
+                    ..global.clone()
+                },
+            ] {
+                let windows = [alpha.clone(), existing];
+                assert_eq!(
+                    open_target(&prepared.runtime, reuse, &windows),
+                    OpenTarget::Reuse("global".into())
+                );
+                assert_eq!(
+                    open_target(&prepared.runtime, true, &windows),
+                    OpenTarget::Reuse("global".into())
+                );
+            }
+            assert_eq!(
+                open_events(&prepared, &intent),
+                vec![("global.show", json!({"view":"chat","start":true}))]
+            );
+            assert_eq!(
+                open_result("global", false, false),
+                json!({"windowId":"global","created":false})
+            );
+            assert_eq!(
+                open_result("new", true, false),
+                json!({"windowId":"new","created":true})
+            );
+            // A global window being released no longer counts.
+            let closing = WindowFacts {
+                closing: true,
+                ..global
+            };
+            assert_eq!(
+                open_target(&prepared.runtime, reuse, &[alpha, closing]),
+                OpenTarget::Create
+            );
+        }
+
+        #[test]
+        fn route_prefers_frontmost_then_minimised_then_opens() {
+            let fixture = LayoutFixture::new();
+            let store = Store::open(fixture.root.clone()).unwrap();
+            let alpha = store
+                .create_project(fixture.root.join("alpha"), Some("Alpha"), false)
+                .unwrap();
+            let beta = store
+                .create_project(fixture.root.join("beta"), Some("Beta"), false)
+                .unwrap();
+            let active = store.snapshot().unwrap().active_project_id;
+            let p = beta.id.as_str();
+            let global = facts("global", WindowKind::Global, None, 20);
+            let other = facts("other", WindowKind::Project, Some(&alpha.id), 19);
+            let front = facts("front", WindowKind::Project, Some(p), 3);
+            let behind = facts("behind", WindowKind::Project, Some(p), 2);
+            let minimized = WindowFacts {
+                minimized: true,
+                ..facts("minimized", WindowKind::Project, Some(p), 9)
+            };
+            let away = WindowFacts {
+                on_active_space: false,
+                ..facts("away", WindowKind::Project, Some(p), 7)
+            };
+            let mut windows = vec![
+                global.clone(),
+                minimized,
+                away,
+                other.clone(),
+                behind,
+                front,
+            ];
+            // On-screen windows front to back first, even before a minimised
+            // window that was key more recently.
+            assert_eq!(route_target(&windows, p).as_deref(), Some("front"));
+            windows.retain(|w| w.id != "front");
+            assert_eq!(route_target(&windows, p).as_deref(), Some("behind"));
+            windows.retain(|w| w.id != "behind");
+            // Then minimised windows and windows on other Spaces, most recent first.
+            assert_eq!(route_target(&windows, p).as_deref(), Some("minimized"));
+            windows.retain(|w| w.id != "minimized");
+            assert_eq!(route_target(&windows, p).as_deref(), Some("away"));
+            // A window being released is no target.
+            for window in &mut windows {
+                window.closing |= window.id == "away";
+            }
+            assert_eq!(route_target(&windows, p), None);
+            // The global window is searched first (most recent) but never chosen.
+            assert_eq!(search_order(&windows)[0].id, "global");
+            // None shows the project: the existing open-by-id path. TSX sends the
+            // contracts' `{panel}` step shape; the host validates and forwards it.
+            let step = json!({"panel": "settings"});
+            assert!(valid_route(&step));
+            let mut options = OpenOptions::project(None);
+            options.project_id = Some(beta.id.clone());
+            let prepared = prepare(&fixture.root, options).unwrap();
+            assert_eq!(prepared.runtime.project_id.as_deref(), Some(p));
+            assert_eq!(prepared.runtime.path, beta.root);
+            let intent = OpenIntent {
+                route: Some(step.clone()),
+                ..OpenIntent::default()
+            };
+            assert!(intent.reuses_project_window());
+            assert_eq!(
+                open_target(&prepared.runtime, true, &windows),
+                OpenTarget::Create
+            );
+            // Only `route`: the global window gets no `global.show` and keeps its view.
+            assert_eq!(
+                open_events(&prepared, &intent),
+                vec![("route", json!({"step": step}))]
+            );
+            assert_eq!(open_result("new", true, true), json!({"windowId":"new"}));
+            // A window showing it now is reused (and raised) instead.
+            windows.push(WindowFacts {
+                minimized: true,
+                ..facts("beta-window", WindowKind::Project, Some(p), 1)
+            });
+            assert_eq!(
+                open_target(&prepared.runtime, true, &windows),
+                OpenTarget::Reuse("beta-window".into())
+            );
+            // The store's active project is unchanged.
+            assert_eq!(store.snapshot().unwrap().active_project_id, active);
+        }
+
+        #[test]
+        fn the_global_window_opens_at_its_own_size() {
+            let fixture = LayoutFixture::new();
+            let prepared = prepare(&fixture.root, OpenOptions::global()).unwrap();
+            assert_eq!(
+                prepared.opening_size,
+                WindowSize {
+                    width: 1100.,
+                    height: 760.
+                }
+            );
+            assert_eq!(window_title(&prepared.runtime), "RiWork · Global");
+            assert_eq!(window_title(&fixture.window("project").1), "RiWork");
+            let saved = GlobalWindowState {
+                window_size: WindowSize::new(900., 650.),
+                ..GlobalWindowState::default()
+            };
+            GlobalWindowStore::at(&fixture.root).save(&saved).unwrap();
+            let prepared = prepare(&fixture.root, OpenOptions::global()).unwrap();
+            assert_eq!(
+                prepared.opening_size,
+                WindowSize {
+                    width: 900.,
+                    height: 650.
+                }
+            );
+            // An impossible saved size is dropped: back to 1100×760.
+            std::fs::write(
+                GlobalWindowStore::at(&fixture.root).path(),
+                r#"{"window_size":{"width":10.0,"height":10.0}}"#,
+            )
+            .unwrap();
+            assert_eq!(
+                prepare(&fixture.root, OpenOptions::global())
+                    .unwrap()
+                    .opening_size,
+                WindowSize {
+                    width: 1100.,
+                    height: 760.
+                }
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod runtime_window {
+    #[cfg(test)]
+    mod tests {
+        use super::super::tests::LayoutFixture;
+        use super::super::*;
+
+        #[test]
+        fn the_global_window_is_recorded_as_global() {
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+            let _entered = runtime.enter();
+            let fixture = LayoutFixture::new();
+            let home = &fixture.root;
+            let prepared = prepare(home, OpenOptions::global()).unwrap();
+            // TSX saved the Chat view after the window opened.
+            let saved = GlobalWindowState {
+                view: GlobalView::Chat,
+                ..GlobalWindowState::default()
+            };
+            GlobalWindowStore::at(home).save(&saved).unwrap();
+            let screen = NSRect::new(NSPoint::new(0., 0.), NSSize::new(1800., 1100.));
+            let normal = NSRect::new(NSPoint::new(100., 200.), NSSize::new(900., 650.));
+            // What snapshot() records for it (publish, close, quit, reload).
+            let recorded =
+                recorded_runtime(&prepared.runtime, normal, screen, WindowMode::Windowed);
+            assert_eq!(recorded.kind, WindowKind::Global);
+            assert_eq!(recorded.project_id, None);
+            assert_eq!(recorded.layout, None);
+            assert_eq!(recorded.path, home.join("global-window"));
+            assert_eq!(
+                recorded.bounds,
+                Some(WindowGeometry {
+                    x: 100.,
+                    y: 250.,
+                    width: 900.,
+                    height: 650.
+                })
+            );
+            let encoded = serde_json::to_string(&recorded).unwrap();
+            assert!(encoded.contains(r#""kind":"global""#), "{encoded}");
+            // The quit/reload flush hands it over as itself.
+            let id = format!("runtime-global-{}", Uuid::new_v4());
+            let closing = ClosingWindows::new(vec![(id, recorded)]);
+            let handed = closing.flush(home).unwrap().remove(0);
+            closing.cancel();
+            let expected = GlobalWindowState {
+                window_size: Some(WindowSize {
+                    width: 900.,
+                    height: 650.,
+                }),
+                ..saved
+            };
+            assert_eq!(handed.kind, WindowKind::Global);
+            assert_eq!(handed.project_id, None);
+            assert_eq!(handed.layout, None);
+            assert_eq!(handed.path, home.join("global-window"));
+            assert_eq!(handed.global.as_ref(), Some(&expected));
+            let encoded = serde_json::to_string(&handed).unwrap();
+            assert!(encoded.contains(r#""kind":"global""#), "{encoded}");
+            let handed: RuntimeWindow = serde_json::from_str(&encoded).unwrap();
+            // The file changes after the handover: the handed-over state wins.
+            GlobalWindowStore::at(home)
+                .save(&GlobalWindowState::default())
+                .unwrap();
+            let restored = restored_window(home, &handed);
+            assert!(restored.restore);
+            assert!(restored.options.validate().is_ok());
+            assert_eq!(
+                restored.opening_size,
+                WindowSize {
+                    width: 900.,
+                    height: 650.
+                }
+            );
+            let params = restored.params("restored", 0);
+            assert_eq!(params["kind"], "global");
+            assert_eq!(params["projectId"], Value::Null);
+            assert_eq!(params["path"], json!(home.join("global-window")));
+            assert_eq!(params["restore"]["layout"], Value::Null);
+            assert_eq!(
+                params["restore"]["global"],
+                serde_json::to_value(&expected).unwrap()
+            );
+            assert_eq!(params["restore"]["global"]["view"], "chat");
+            assert_eq!(params["global"]["view"], "chat");
+            // `<home>/global-window` is a name, never a directory or file.
+            assert!(!home.join("global-window").exists());
+        }
+    }
+}
+
+#[cfg(test)]
+mod menu {
+    #[cfg(test)]
+    mod tests {
+        use super::super::tests::{LayoutFixture, facts};
+        use super::super::*;
+
+        #[test]
+        fn dock_new_window() {
+            let (a, b) = (Uuid::new_v4().to_string(), Uuid::new_v4().to_string());
+            let alpha = facts("alpha", WindowKind::Project, Some(&a), 2);
+            let beta = WindowFacts {
+                minimized: true,
+                ..facts("beta", WindowKind::Project, Some(&b), 5)
+            };
+            let remote = facts("remote", WindowKind::Project, Some("ssh:devbox/repo"), 9);
+            let global = facts("global", WindowKind::Global, None, 10);
+            // 1. A local project window exists: the most recently focused one's
+            //    project; remote-project windows and the global window are skipped.
+            assert_eq!(
+                new_window_plan(&[alpha.clone(), beta.clone(), remote.clone(), global.clone()]),
+                NewWindow::Project(b.clone())
+            );
+            assert_eq!(
+                new_window_plan(&[alpha.clone(), remote.clone()]),
+                NewWindow::Project(a.clone())
+            );
+            let closing_beta = WindowFacts {
+                closing: true,
+                ..beta
+            };
+            assert_eq!(
+                new_window_plan(&[alpha, closing_beta.clone(), global.clone()]),
+                NewWindow::Project(a)
+            );
+            // 2. Only the global window: its TSX gets `command {id: "newWindow"}`
+            //    and resolves frontmost project window / active project / notice.
+            assert_eq!(
+                new_window_plan(std::slice::from_ref(&global)),
+                NewWindow::AskGlobal("global".into())
+            );
+            assert_eq!(
+                new_window_plan(&[remote.clone(), closing_beta, global]),
+                NewWindow::AskGlobal("global".into())
+            );
+            assert_eq!(new_window_command(), json!({"id": "newWindow"}));
+            // 3. No window at all (or only a remote one): today's prepare(None),
+            //    which opens the store's active project.
+            assert_eq!(new_window_plan(&[]), NewWindow::Default);
+            assert_eq!(new_window_plan(&[remote]), NewWindow::Default);
+            let fixture = LayoutFixture::new();
+            let store = Store::open(fixture.root.clone()).unwrap();
+            store
+                .create_project(fixture.root.join("first"), Some("First"), false)
+                .unwrap();
+            let active = store
+                .create_project(fixture.root.join("second"), Some("Second"), false)
+                .unwrap();
+            store.use_project(&active.id).unwrap();
+            let prepared = prepare(&fixture.root, OpenOptions::project(None)).unwrap();
+            assert_eq!(
+                prepared.runtime.project_id.as_deref(),
+                Some(active.id.as_str())
+            );
+        }
     }
 }
 #[cfg(test)]
@@ -2515,6 +3347,7 @@ mod host_names {
         "system.openWith",
         "system.revealInFinder",
         "system.fonts",
+        "system.notify",
     ];
     #[cfg(test)]
     mod tests {

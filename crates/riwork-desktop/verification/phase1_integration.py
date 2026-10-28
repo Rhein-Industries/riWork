@@ -312,7 +312,10 @@ class Verification:
         allowed = {"layouts.json", "layouts.lock", "global-window.json", "settings.json", "state.json", "run/desktop.lock"}
         if self.args.fake_sessions:
             allowed.add("fake-sessions.json")
-        forbidden = [name for name in changed if name not in allowed
+        # Phase 5 (GLB-05, accepted): a dashboard/global read takes the engine's schedule
+        # ledger lock as `riwork dashboard` does; only an empty schedules.lock is allowed.
+        empty_lock = lambda name: name == "schedules.lock" and after[name] == hashlib.sha256(b"").hexdigest()
+        forbidden = [name for name in changed if name not in allowed and not empty_lock(name)
                      and not name.startswith(("layouts.corrupt-", "project-tabs/", "nsh/"))]
         self.manifest.update(written_files=changed, disallowed_written_files=forbidden)
         self.assert_no_sessions(state, tmux)

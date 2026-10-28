@@ -47,6 +47,21 @@ objc2-app-kit = { version = "0.3", default-features = false, features = ["NSFont
 dispatch2 = "0.3"
 block2 = "0.6"
 env_logger = "0.11"
+# One process-wide RIWORK_HOME watcher drives the notification and wake services.
+notify = "=8.2.0"
+objc2-user-notifications = { version = "0.3", default-features = false, features = [
+    "std",
+    "bitflags",
+    "block2",
+    "UNNotification",
+    "UNNotificationAction",
+    "UNNotificationCategory",
+    "UNNotificationContent",
+    "UNNotificationRequest",
+    "UNNotificationResponse",
+    "UNNotificationTrigger",
+    "UNUserNotificationCenter",
+] }
 
 [dev-dependencies]
 anyhow = "1"

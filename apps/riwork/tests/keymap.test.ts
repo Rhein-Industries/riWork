@@ -26,11 +26,11 @@ test("P1-KEYS-01 no key is bound twice and every GPUI chord is present", () => {
   ];
   expect(declared.slice().sort()).toEqual(expected.sort());
   expect(Array.from(DEFERRED_COMMANDS).sort()).toEqual([
-    "openCodex", "openClaude", "openGrok", "openMuse", "newChat", "openProjectOrchestrator",
+    "openCodex", "openClaude", "openGrok", "openMuse", "newChat",
     "createProject", "search", "interruptChat", "chatEscape", "toggleDictation", "findInChat",
     "findNext", "findPrevious", "toggleTranscriptMode", "expandTranscript", "collapseTranscript",
     "appPreview", "sessions", "existingSessions", "existingClaudeChats", "existingMuseChats",
-    "openGlobalOrchestrator", "handOff",
+    "handOff",
   ].sort());
 });
 

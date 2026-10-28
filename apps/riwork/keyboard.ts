@@ -1,11 +1,11 @@
 /** Deferred Phase-1 seams, acceptance §8. These never start a deferred surface. */
 export const DEFERRED_COMMANDS = new Set([
   "openCodex", "openClaude", "openGrok", "openMuse", "newChat",
-  "openProjectOrchestrator", "createProject", "search", "interruptChat",
+  "createProject", "search", "interruptChat",
   "toggleDictation", "chatEscape", "findInChat", "findNext", "findPrevious",
   "toggleTranscriptMode", "expandTranscript", "collapseTranscript", "appPreview",
   "sessions", "existingSessions", "existingClaudeChats", "existingMuseChats",
-  "openGlobalOrchestrator", "handOff",
+  "handOff",
 ]);
 
 /** Chat contexts share a chord with window commands; retain that distinction. */
@@ -15,7 +15,6 @@ export const DEFERRED_KEYMAP = [
   ["mod+shift+g", "openGrok", "window"],
   ["mod+shift+u", "openMuse", "window"],
   ["mod+alt+shift+c", "newChat", "window"],
-  ["mod+alt+o", "openProjectOrchestrator", "window"],
   ["mod+n", "createProject", "window"],
   ["mod+f", "search", "window"],
   ["mod+.", "interruptChat", "chat"],
@@ -51,6 +50,7 @@ export const WINDOW_KEYMAP = [
   ["mod+shift+d", "splitDown"], ["mod+w", "closeTab"],
   ["mod+shift+w", "closePane"], ["mod+b", "openProjects"],
   ["mod+shift+f", "toggleFocusMode"], ["mod+shift+n", "newProjectWindow"],
+  ["mod+alt+o", "openProjectOrchestrator"],
   ["mod+1", "selectTab1"], ["mod+2", "selectTab2"],
   ["mod+3", "selectTab3"], ["mod+4", "selectTab4"],
   ["mod+5", "selectTab5"], ["mod+6", "selectTab6"],

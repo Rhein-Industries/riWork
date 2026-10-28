@@ -81,14 +81,15 @@ impl<T: Clone + PartialEq> Hub<T> {
     }
 
     /// Only the process service publishes. Equal values do not wake any engine.
-    pub(crate) fn publish(&self, data: T) {
+    /// Returns whether the value changed.
+    pub(crate) fn publish(&self, data: T) -> bool {
         let mut state = self.0.lock().unwrap_or_else(PoisonError::into_inner);
         if state
             .latest
             .as_ref()
             .is_some_and(|snapshot| snapshot.data == data)
         {
-            return;
+            return false;
         }
         state.rev = state.rev.checked_add(1).expect("topic revision exhausted");
         let snapshot = Snapshot {
@@ -109,6 +110,7 @@ impl<T: Clone + PartialEq> Hub<T> {
                     listener.tx.try_send(snapshot).is_ok()
                 }
             });
+        true
     }
 }
 

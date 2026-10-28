@@ -45,6 +45,7 @@ dated, in [`docs/nsh-contracts.md` §8](nsh-contracts.md#8-decisions-addendum).
 | 2026-10-27 | D-PERF-1, as proposed in [§7](#7-frame-budget-decision-d-perf-1); alternatives (A) and (B) not taken; Phase 1 perf stays report-only until the chat phase | **ADOPTED** | contracts §8.2 |
 | 2026-10-27 | Phase 2 entry gate: the pinned-runtime teardown proof (task e940bd0a) must pass before Phase 2 opens. The cached-runtime 110–156 ms main-loop gaps are not accepted. §3.7 is not amended. This is an owner decision, not a proposal of this plan. | **ADOPTED** | contracts §8.3 |
 | 2026-10-27 | W3 task c62ea465 explicitly applies the D-THEME-1 proposal for P1: RiWork fallback palette, diagnostic retained, no Ghostty parsing or appearance publisher. | P1 assignment | contracts §8.4 |
+| 2026-10-28 | P1-GLB-05 / R-DEFER 5: a dashboard or global-window read may create an empty `schedules.lock`. This is the engine's schedule-ledger lock, taken exactly as `riwork dashboard` takes it (`crates/riwork-cli/tests/dashboard_cli.rs`). The allow-list was written for the Phase 1 placeholder global window. In a global-only run `state.json` stays byte-identical, as that run's own before/after inventory shows; the generic audit scripts still allow `state.json` writes. | **ACCEPTED** (orchestrator, Phase 5 task 9a9d3423) | contracts §8.5 |
 | — | D-PROC-1, D-COPY-1 | open | — |
 
 ---
@@ -132,6 +133,15 @@ A P1 build is a fixture-only build. It must still keep every seam the later phas
    (active project and folders via `Store`), `project-tabs/*` (via `Tabs.update`), `nsh/**` and
    `run/desktop.lock`. It never writes `appearance.json`, `sessions.json` or `chats/`, and it starts
    no tmux server (checked in [§3.3](#33-fixture-app-runs-and-cua-read-only-checks)).
+   *Amended 2026-10-28 (Phase 5, accepted, §1.1):* this list was written for the Phase 1
+   placeholder global window. Once the dashboard reads (global window, dashboard paths), an
+   **empty** `schedules.lock` is also allowed: it is the engine's schedule-ledger lock, created as
+   `riwork dashboard` creates it. A non-empty one, or `schedules.json`, is still a disallowed
+   write. In a global-only run (P1-GLB-05), `state.json` must also stay byte-identical. That is
+   checked by the run's own before/after inventory. The generic fixture scripts in
+   `crates/riwork-desktop/verification/phase1_{w3,m5,integration}.py` allow only an empty
+   `schedules.lock` beyond this list. They still allow `state.json` writes, which broader
+   workflows make, so they do not check that byte-identity.
 
 ### 2.3 Findings from NSH 0.3 that bind P1c
 
@@ -446,7 +456,7 @@ Host-unit modules are in `crates/riwork-desktop/src/`.
 | P1-GLB-02 | Title `RiWork · Global`; 1100×760 or the last ordinary size; an impossible size is dropped; size capture is unconditional (G3); the Dock lists it as `Global` with no branch. | 035, 052 (part) · P1b, P1c | core global_window tests (size validation at `crates/riwork-core/src/global_window.rs:215-222`); fixture+cua title in RLD-01; nsh-test `window.setDockInfo {project: "Global", branch: ""}` posted. |
 | P1-GLB-03 | `global-window.json` (view, `show_quiet`, filter, sort, size) is saved on view/filter/sort change and on release; atomic; > 64 KiB rejected; equal state not rewritten; never in a layout; a save error becomes the notice; search is not saved. | 036, 037, 067 (part) · §1.10 `Dashboard` · P1c | core global_window tests; nsh-test: press `id:global-view-chat`, wait 300 ms, open a second global app → chat selected. |
 | P1-GLB-04 | Reload records it as kind `global`, with no project id or layout and path `<home>/global-window` (never created). Restore reopens it as global. Handed-over state wins over the file. | 038 · §2.2 · P1b, P1c | core `the_global_window_restores_as_itself_and_older_snapshots_hold_project_windows`; host-unit `runtime_window::tests::the_global_window_is_recorded_as_global`; nsh-test: `params.restore.global.view = "chat"`, file says dashboard → chat selected. |
-| P1-GLB-05 | It belongs to no project: it never registers, selects or switches one, and never writes layouts, shared tabs or chat requests. Opening it starts nothing. | 039 · P1c | nsh-test with `kind: "global", projectId: null`; fixture write allow-list for a global-only run: only `global-window.json`; `state.json` sha256 unchanged. |
+| P1-GLB-05 | It belongs to no project: it never registers, selects or switches one, and never writes layouts, shared tabs or chat requests. Opening it starts nothing. | 039 · P1c | nsh-test with `kind: "global", projectId: null`; fixture write allow-list for a global-only run: only `global-window.json` and an empty `schedules.lock` (amended 2026-10-28, [§1.1](#11-decision-record), R-DEFER 5); `state.json` sha256 unchanged. |
 | P1-GLB-06 | Bar: dashboard glyph and `Global` in magenta; segmented Dashboard / Chat (`global-view-dashboard`, `global-view-chat`); a drag region; muted `This Mac · every project`; 34 pt; inset 92 / 10 pt. Switching view saves state. Both bodies are placeholders. | 040, 041 (part) · P1c | nsh-test texts and `app.press("id:global-view-chat")`; `metrics.test.ts`. |
 | P1-GLB-07 | The root has focus from the start; ⌘W closes the global window. | 042 · §2.3 `window.close` · P1c | nsh-test `cmd+w` right after open → `app.host.calls()` has `window.close` (C-C-11 picks this path). |
 | P1-GLB-08 | From the global window: ⌘⇧N and Dock New Window open the frontmost local project window's project, else the active project, else show `Open one of this Mac's projects first.`. ⌘, and ⌘⇧S route the panel to that project's window. | 044, 045 · §2.3 `window.list`, `window.route` · P1c, P1b | nsh-test with a `window.list` handler → `window.open {kind: "project", projectId}`; empty list and no active project → notice; `cmd+,` → `window.route {step: {panel: "settings"}}`; host-unit for Dock New Window. |
