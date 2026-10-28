@@ -22,8 +22,9 @@ use crate::{
     },
     dto::{
         CreateSessionRequest, CreateSubshellRequest, FolderDto, OpenEditorRequest, ProjectDto,
-        ProjectInspectionDto, ProjectMemoDto, ProjectRequest, SearchHitDto, SessionsSnapshot,
-        ShellSessionDto, StoreState, TabUpdate, TabsSnapshot, TaskDto, WorktreeDto,
+        ProjectInspectionDto, ProjectMemoDto, ProjectRequest, SearchHitDto, SessionMetricsSnapshot,
+        SessionsSnapshot, ShellSessionDto, StoreState, TabUpdate, TabsSnapshot, TaskDto,
+        WorktreeDto,
     },
     hub::{Hub, TopicSubscription},
     settings::PreferenceService,
@@ -204,6 +205,7 @@ pub struct ProcessService {
     pub(crate) preferences: Arc<PreferenceService>,
     store_hub: Arc<Hub<StoreState>>,
     sessions_hub: Arc<Hub<SessionsSnapshot>>,
+    metrics_hub: Arc<Hub<SessionMetricsSnapshot>>,
     tabs: Arc<dyn TabsBackend>,
     tabs_hubs: Arc<Mutex<BTreeMap<String, Arc<Hub<TabsSnapshot>>>>>,
     store_refresh: Arc<Mutex<()>>,
@@ -818,6 +820,8 @@ impl ProcessService {
             }
         });
         let has_shells = Arc::new(AtomicBool::new(has_shells));
+        // Shells' CPU and memory: sampled with the inventory, only while shown.
+        let metrics_hub = Arc::new(Hub::new(SessionMetricsSnapshot::default()));
         let stop = Arc::new(AtomicBool::new(false));
         let tabs_hubs = Arc::new(Mutex::new(BTreeMap::new()));
         let store_refresh = Arc::new(Mutex::new(()));
@@ -827,6 +831,7 @@ impl ProcessService {
         let worker_sessions = sessions.clone();
         let worker_store_hub = store_hub.clone();
         let worker_sessions_hub = sessions_hub.clone();
+        let worker_metrics_hub = metrics_hub.clone();
         let worker_error = last_error.clone();
         let worker_tabs = tabs.clone();
         let worker_tabs_hubs = tabs_hubs.clone();
@@ -922,6 +927,19 @@ impl ProcessService {
                                 worker_has_shells
                                     .store(!snapshot.sessions.is_empty(), Ordering::Release);
                                 changed |= worker_sessions_hub.publish(snapshot);
+                                if worker_metrics_hub.has_subscribers() {
+                                    match worker_sessions.metrics() {
+                                        Ok(metrics) => {
+                                            worker_metrics_hub.publish(metrics);
+                                        }
+                                        Err(error) => {
+                                            *worker_error
+                                                .lock()
+                                                .unwrap_or_else(PoisonError::into_inner) =
+                                                Some(format!("session metrics: {error}"))
+                                        }
+                                    }
+                                }
                             }
                             Err(error) => {
                                 *worker_error.lock().unwrap_or_else(PoisonError::into_inner) =
@@ -954,6 +972,7 @@ impl ProcessService {
             preferences,
             store_hub,
             sessions_hub,
+            metrics_hub,
             tabs,
             tabs_hubs,
             store_refresh,
@@ -1024,6 +1043,13 @@ impl ProcessService {
         self: &Arc<Self>,
     ) -> Result<TopicSubscription<SessionsSnapshot>, String> {
         let hub = self.sessions_hub.clone();
+        blocking(move || Ok(hub.subscribe())).await
+    }
+
+    pub async fn subscribe_metrics(
+        self: &Arc<Self>,
+    ) -> Result<TopicSubscription<SessionMetricsSnapshot>, String> {
+        let hub = self.metrics_hub.clone();
         blocking(move || Ok(hub.subscribe())).await
     }
 }

@@ -18,12 +18,16 @@ export function DeferredPanel(props: {
   mounts.set(props.id, mount);
   const empty = props.id.startsWith("empty:");
   const theme = props.theme ?? (() => DEFAULT_THEME);
+  // An empty pane is one muted line at the top left, as main.rs draws it.
+  if (empty) return <View testID={`panel:${props.id}`} onPress={props.onPress} style={{ flex: 1, minHeight: 0, minWidth: 0, padding: 14, overflow: "hidden" }}>
+    <Text style={{ fontFamily: theme().family, fontSize: 11 * theme().scale, color: theme().palette.muted }}>Drop a tab here or use the pane menu</Text>
+  </View>;
   return <View testID={`panel:${props.id}`} onPress={props.onPress}
     style={{ flex: 1, minHeight: 0, padding: 16, gap: 8 }}>
-    <Text style={{ fontFamily: theme().family, fontSize: 11 * theme().scale, color: theme().palette.text }}>{empty ? "Empty pane" : props.title}</Text>
-    <Text style={{ fontFamily: theme().family, fontSize: 11 * theme().scale, color: theme().palette.muted }}>{empty ? "Drop a tab here or use the pane menu" : "This view is unavailable."}</Text>
-    {!empty && props.diagnostics && <Text testID={`mount:${props.id}`} style={{ fontFamily: theme().monoFamily, fontSize: 11 * theme().scale, color: theme().palette.muted }}>{`mount ${mount}`}</Text>}
-    {!empty && props.diagnostics && <Text testID={`visibility:${props.id}`} style={{ fontFamily: theme().monoFamily, fontSize: 11 * theme().scale, color: theme().palette.muted }}>{`visible: ${props.visible}`}</Text>}
+    <Text style={{ fontFamily: theme().family, fontSize: 11 * theme().scale, color: theme().palette.text }}>{props.title}</Text>
+    <Text style={{ fontFamily: theme().family, fontSize: 11 * theme().scale, color: theme().palette.muted }}>This view is unavailable.</Text>
+    {props.diagnostics && <Text testID={`mount:${props.id}`} style={{ fontFamily: theme().monoFamily, fontSize: 11 * theme().scale, color: theme().palette.muted }}>{`mount ${mount}`}</Text>}
+    {props.diagnostics && <Text testID={`visibility:${props.id}`} style={{ fontFamily: theme().monoFamily, fontSize: 11 * theme().scale, color: theme().palette.muted }}>{`visible: ${props.visible}`}</Text>}
   </View>;
 }
 

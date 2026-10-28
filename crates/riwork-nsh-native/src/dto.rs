@@ -503,8 +503,25 @@ macro_rules! snapshot_js_value {
     };
 }
 
+/// CPU and memory of each live shell, for the status bar's resources item. Kept
+/// out of `SessionsSnapshot`: these change every sample, the inventory rarely.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsObject)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionMetricsSnapshot {
+    pub metrics: Vec<ShellMetricsDto>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsObject)]
+#[serde(rename_all = "camelCase")]
+pub struct ShellMetricsDto {
+    pub id: String,
+    pub cpu_percent: f64,
+    pub ram_bytes: u64,
+}
+
 snapshot_js_value!(StoreState, "StoreEvent");
 snapshot_js_value!(SessionsSnapshot, "SessionsEvent");
+snapshot_js_value!(SessionMetricsSnapshot, "SessionMetricsEvent");
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsObject)]
 #[serde(rename_all = "camelCase")]

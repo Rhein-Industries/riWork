@@ -19,8 +19,9 @@ use serde_json::Value;
 
 use crate::dto::{
     CreateSessionRequest, CreateSubshellRequest, FolderDto, OpenEditorRequest, ProjectDto,
-    ProjectInspectionDto, ProjectMemoDto, ProjectRequest, SearchHitDto, SessionsSnapshot,
-    ShellSessionDto, StoreState, TabUpdate, TabsSnapshot, TaskDto, WorktreeDto,
+    ProjectInspectionDto, ProjectMemoDto, ProjectRequest, SearchHitDto, SessionMetricsSnapshot,
+    SessionsSnapshot, ShellMetricsDto, ShellSessionDto, StoreState, TabUpdate, TabsSnapshot,
+    TaskDto, WorktreeDto,
 };
 
 macro_rules! unsupported {
@@ -195,6 +196,12 @@ pub trait SessionsBackend: Send + Sync + 'static {
     /// Periodic fallback and watcher-triggered inventory, once per process.
     fn sample(&self) -> Result<SessionsSnapshot> {
         self.list()
+    }
+
+    /// CPU and memory of the live shells; costs a `ps` run, so only taken
+    /// while a window shows them.
+    fn metrics(&self) -> Result<SessionMetricsSnapshot> {
+        Ok(SessionMetricsSnapshot::default())
     }
 
     /// A home-watcher event invalidates the engine's process-wide sample cache.
@@ -763,6 +770,24 @@ impl SessionsBackend for EngineSessionsBackend {
         self.record_codex_completions(&sample.shells);
         Ok(SessionsSnapshot {
             sessions: sample.shells.into_iter().map(Into::into).collect(),
+        })
+    }
+
+    fn metrics(&self) -> Result<SessionMetricsSnapshot> {
+        // Within the cache's lifetime this adds metrics to the sample just taken.
+        let sample = self.manager()?.sample(true).map_err(anyhow::Error::msg)?;
+        let metrics = sample
+            .metrics
+            .ok_or_else(|| anyhow::anyhow!("shell metrics are unavailable"))?;
+        Ok(SessionMetricsSnapshot {
+            metrics: metrics
+                .into_iter()
+                .map(|(id, metrics)| ShellMetricsDto {
+                    id,
+                    cpu_percent: f64::from(metrics.cpu_percent),
+                    ram_bytes: metrics.ram_bytes,
+                })
+                .collect(),
         })
     }
 

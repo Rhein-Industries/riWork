@@ -1793,7 +1793,9 @@ fn prepare(home: &Path, options: OpenOptions) -> Result<PreparedWindow, String> 
 }
 
 fn fallback_directory(cwd: Option<PathBuf>, home: Option<PathBuf>) -> PathBuf {
-    cwd.into_iter()
+    // A Finder or `open` launch runs in `/`: never a project (main.rs).
+    cwd.filter(|path| path != Path::new("/"))
+        .into_iter()
         .chain(home)
         .chain([PathBuf::from(".")])
         .find(|p| p.is_dir())
@@ -2455,6 +2457,10 @@ mod tests {
             fixture.root
         );
         assert_eq!(fallback_directory(None, None), PathBuf::from("."));
+        assert_eq!(
+            fallback_directory(Some(PathBuf::from("/")), Some(fixture.root.clone())),
+            fixture.root
+        );
     }
 
     #[test]

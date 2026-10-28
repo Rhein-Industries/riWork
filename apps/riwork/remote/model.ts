@@ -35,6 +35,16 @@ export const EMPTY_WANTS: RemoteWants = { folders: false, settings: false, colla
 export const REMOTE_HISTORY_NOTE = "Native Codex and Claude chat history is unavailable on remote hosts. Showing remote shells.";
 export const REMOTE_UNPAIRED = "This Mac is no longer paired. Add it again in Settings.";
 
+/** A hosts error as one short actionable line; the full text (paths, the build
+ * recipe) stays available as its detail instead of a paragraph. */
+export function remoteErrorNotice(error: string): { summary: string; detail: string | null } {
+  if (error.startsWith("Missing standalone remote binary")) {
+    return { summary: "Other Macs need the riwork-remote helper, which is not installed. Build it with riwork update.", detail: error };
+  }
+  const end = error.indexOf(". ");
+  return end > 0 ? { summary: error.slice(0, end + 1), detail: error } : { summary: error, detail: null };
+}
+
 /** Classify exactly like remote_tree::parse_project_key (split once). Transport
  * validation is stricter, but an unusual saved remote key never becomes local. */
 export function remoteProjectKey(key: string | null | undefined): { host: string; project: string } | null {

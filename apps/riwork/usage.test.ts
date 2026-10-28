@@ -1,6 +1,6 @@
 import { expect, test } from "nsh/test";
 import {
-  BALANCED_LABEL, GROK_UNREAD, SYSTEM_DEFAULT_ID, SYSTEM_LABEL, accountItemLabel, codexAccountNumbers, defaultChoices,
+  BALANCED_LABEL, GROK_UNREAD, formatBytes, resourcesText, SYSTEM_DEFAULT_ID, SYSTEM_LABEL, accountItemLabel, codexAccountNumbers, defaultChoices,
   knownCodexProfiles, limits, projectDefaultAccountLabel, projectSelection, shellSelection, usageAria, usageFocus,
   usageHint, usageItemText, usageSegments, whole, type AccountLike, type AccountListLike, type ClaudeEntryLike,
   type CodexEntryLike, type ProviderUsageLike, type Selection, type ShellLike, type UsageFocus, type UsageInputs,
@@ -219,4 +219,15 @@ test("P5-USAGE-06: figures, aria label and hint keep GPUI's forms", () => {
   expect(usageAria(segments)).toBe(`Usage CODEX* · ${TEAM_B} · 5h 80% left / 7d 60% left`);
   expect(usageItemText("current_chat", segments)).toBe(`CODEX* · ${TEAM_B} · 5h 80% left / 7d 60% left`);
   expect(usageHint(segments)).toBe(`CODEX* · ${TEAM_B} · 5h 80% left / 7d 60% left (Last refresh failed: Codex is signed out)\nClick for account usage`);
+});
+
+test("the resources item sums this project's live shells in main.rs's units", () => {
+  expect([formatBytes(0), formatBytes(512 * 1024), formatBytes(3 * 1024 * 1024 / 2), formatBytes(2.5 * 1024 ** 3)])
+    .toEqual(["0 KiB", "512 KiB", "1.5 MiB", "2.5 GiB"]);
+  const shells = [{ id: "a", alive: true, projectId: "p" }, { id: "b", alive: true, projectId: "p" }, { id: "c", alive: false, projectId: "p" }, { id: "d", alive: true, projectId: "q" }];
+  const metrics = [{ id: "a", cpuPercent: 1.25, ramBytes: 1024 * 1024 }, { id: "b", cpuPercent: 0.25, ramBytes: 1024 * 1024 }, { id: "c", cpuPercent: 9, ramBytes: 1 }, { id: "d", cpuPercent: 9, ramBytes: 1 }];
+  expect(resourcesText(shells, metrics, "p")).toBe("CPU 1.5% RAM 2.0 MiB");
+  // Before the first sample, and with no live shell: zeros, never a placeholder.
+  expect(resourcesText(shells, [], "p")).toBe("CPU 0.0% RAM 0 KiB");
+  expect(resourcesText([], metrics, "p")).toBe("CPU 0.0% RAM 0 KiB");
 });
