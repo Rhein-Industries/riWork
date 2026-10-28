@@ -4,8 +4,8 @@ import RiWorkCore
 
 /// The colors the app draws with, for SwiftUI (`Color`) and for UIKit controls (`…UI`).
 ///
-/// Built from a `DesktopTheme` (RiWorkCore): the desktop's synced palette when one is known, otherwise the built-in
-/// Gruvbox Light / RiWork pair. Views read it from the environment (`@Environment(\.desktopStyle)`), so a new palette
+/// Built from a `DesktopTheme` (RiWorkCore): a local color choice with native
+/// controls on iPhone, the desktop's synced palette on iPad. Views read it from the environment (`@Environment(\.desktopStyle)`), so a new palette
 /// re-colors them in place, without rebuilding anything or touching focus. UIKit-backed controls get the dynamic
 /// `UIColor` itself; converting a SwiftUI `Color` back would freeze one appearance.
 struct DesktopStyle: Equatable, @unchecked Sendable {
@@ -25,9 +25,19 @@ struct DesktopStyle: Equatable, @unchecked Sendable {
             let light = Self.uiColor(color.light), dark = Self.uiColor(color.dark)
             return UIColor { $0.userInterfaceStyle == .dark ? dark : light }
         }
-        textUI = ui(theme.text); mutedUI = ui(theme.muted); accentUI = ui(theme.accent); magentaUI = ui(theme.magenta)
-        goldUI = ui(theme.gold); errorUI = ui(theme.error)
-        backgroundUI = ui(theme.background); panelUI = ui(theme.panel); activeUI = ui(theme.active); dividerUI = ui(theme.divider)
+        if theme.followsSystemAppearance {
+            // Semantic colors preserve iOS light/dark, increased contrast and
+            // elevated sheet appearances when Native is selected on the phone.
+            textUI = .label; mutedUI = .secondaryLabel
+            accentUI = .systemBlue; magentaUI = .systemPurple
+            goldUI = .systemOrange; errorUI = .systemRed
+            backgroundUI = .systemBackground; panelUI = .secondarySystemBackground
+            activeUI = .systemGray5; dividerUI = .opaqueSeparator
+        } else {
+            textUI = ui(theme.text); mutedUI = ui(theme.muted); accentUI = ui(theme.accent); magentaUI = ui(theme.magenta)
+            goldUI = ui(theme.gold); errorUI = ui(theme.error)
+            backgroundUI = ui(theme.background); panelUI = ui(theme.panel); activeUI = ui(theme.active); dividerUI = ui(theme.divider)
+        }
         terminalBackgroundUI = ui(theme.terminalBackground); terminalForegroundUI = ui(theme.terminalForeground); terminalCursorUI = ui(theme.terminalCursor)
     }
     static func uiColor(_ rgb: RGB) -> UIColor {
@@ -79,8 +89,8 @@ struct DesktopStyle: Equatable, @unchecked Sendable {
 
     // MARK: Native
 
-    /// The desktop uses its Native skin: the interface is set in the system face, in sentence case, on glass where iOS has it.
-    /// Otherwise (another theme, a desktop from before the flag, no desktop) the terminal look, exactly as before.
+    /// Always Native on iPhone; on iPad the desktop's Native skin opts in.
+    /// The interface uses the system face and sentence case, with glass where available.
     var native: Bool { theme.native }
     /// Drawn with iOS 26's Liquid Glass: Native, on a system that has it.
     var glass: Bool {
@@ -104,8 +114,9 @@ struct DesktopStyle: Equatable, @unchecked Sendable {
     /// The desktop's dictation setting: the mics (chat composer, key bar, line composer) are shown only while it is on. Off by
     /// default and with a desktop that predates the setting.
     var mic: Bool { theme.mic }
-    /// What a bar or a sheet is painted with: nothing on glass, so the system's glass shows through, else the background.
-    var surface: Color { glass ? .clear : background }
+    /// Native's dynamic palette lets system glass show through. Fixed palettes
+    /// supply their background beneath the same native controls and materials.
+    var surface: Color { glass && theme.followsSystemAppearance ? .clear : background }
 
     var text: Color { Color(uiColor: textUI) }
     var muted: Color { Color(uiColor: mutedUI) }
@@ -124,9 +135,10 @@ struct DesktopStyle: Equatable, @unchecked Sendable {
     var terminalBackground: Color { Color(uiColor: terminalBackgroundUI) }
     var terminalForeground: Color { Color(uiColor: terminalForegroundUI) }
     var terminalCursor: Color { Color(uiColor: terminalCursorUI) }
-    /// The desktop's light or dark side, once synced; nil while built in, so the phone's own setting applies.
+    /// Native follows iOS; a selected palette chooses its own light/dark side.
+    /// iPad follows the desktop once synced.
     /// It also decides the status bar style and how system controls (menus, alerts, keyboards) draw.
-    var colorScheme: ColorScheme? { theme.dark.map { $0 ? .dark : .light } }
+    var colorScheme: ColorScheme? { theme.followsSystemAppearance ? nil : theme.dark.map { $0 ? .dark : .light } }
 }
 
 extension EnvironmentValues {

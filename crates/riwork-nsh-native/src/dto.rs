@@ -46,6 +46,9 @@ pub struct StoreState {
     pub tasks: Vec<TaskDto>,
     pub orca_import: Option<ImportReceiptDto>,
     pub project_memos: StringMap<ProjectMemoDto>,
+    /// Last observed edits; reading this cache never scans project folders.
+    #[serde(default)]
+    pub project_recency: StringMap<u64>,
 }
 
 impl Default for StoreState {
@@ -59,6 +62,7 @@ impl Default for StoreState {
             tasks: Vec::new(),
             orca_import: None,
             project_memos: StringMap::default(),
+            project_recency: StringMap::default(),
         }
     }
 }
@@ -86,6 +90,7 @@ impl TryFrom<core::State> for StoreState {
                     .map(|(id, memo)| (id, memo.into()))
                     .collect(),
             ),
+            project_recency: StringMap::default(),
         })
     }
 }
@@ -198,13 +203,13 @@ pub struct WorktreeDto {
     pub is_primary: bool,
     pub repository_root: Option<String>,
     pub created_at: u64,
-    /// Sampled on the process blocking worker, never by a rendering engine.
+    /// Last explicitly observed presence; an unvisited worktree remains visible.
     pub present: bool,
 }
 
 impl From<core::Worktree> for WorktreeDto {
     fn from(value: core::Worktree) -> Self {
-        let present = crate::presence::path_is_present(&value.path);
+        let present = crate::presence::known_present(&value.path);
         Self {
             id: value.id,
             project_id: value.project_id,

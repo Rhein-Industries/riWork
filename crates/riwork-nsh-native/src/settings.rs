@@ -49,14 +49,23 @@ pub struct StatusBarDto {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsObject)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProjectOrderDto {
+    pub sort: String,
+    pub descending: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsObject)]
 #[serde(rename_all = "camelCase")]
 pub struct SettingsDto {
     pub schema: u32,
     pub theme: String,
     pub native_terminal_colors: bool,
+    pub use_riwork_colors: bool,
     pub open_preview_on_select: bool,
     pub remember_window_size: bool,
     pub panel_tab_icons: bool,
+    pub project_order: ProjectOrderDto,
     pub tab_close_behavior: String,
     pub agent_inline_mode: bool,
     pub agent_terminals_unrestricted: bool,
@@ -85,9 +94,11 @@ pub struct SettingsDto {
 pub struct SettingsPatch {
     pub theme: Option<String>,
     pub native_terminal_colors: Option<bool>,
+    pub use_riwork_colors: Option<bool>,
     pub open_preview_on_select: Option<bool>,
     pub remember_window_size: Option<bool>,
     pub panel_tab_icons: Option<bool>,
+    pub project_order: Option<ProjectOrderDto>,
     pub tab_close_behavior: Option<String>,
     pub agent_inline_mode: Option<bool>,
     pub agent_terminals_unrestricted: Option<bool>,
@@ -111,11 +122,7 @@ pub struct SettingsPatch {
 }
 
 pub fn theme_id(choice: ThemeChoice) -> String {
-    serde_json::to_value(choice)
-        .expect("theme serializes")
-        .as_str()
-        .unwrap()
-        .to_owned()
+    choice.id().to_owned()
 }
 
 pub fn parse_theme(choice: &str) -> Result<ThemeChoice, String> {
@@ -133,9 +140,14 @@ impl SettingsDto {
             schema: 2,
             theme: theme_id(settings.theme),
             native_terminal_colors: settings.native_terminal_colors,
+            use_riwork_colors: settings.use_riwork_colors,
             open_preview_on_select: settings.open_preview_on_select,
             remember_window_size: settings.remember_window_size,
             panel_tab_icons: settings.panel_tab_icons,
+            project_order: ProjectOrderDto {
+                sort: serde_json::to_value(settings.project_order.by).unwrap().as_str().unwrap().into(),
+                descending: settings.project_order.descending,
+            },
             tab_close_behavior: serde_json::to_value(settings.tab_close_behavior)
                 .unwrap()
                 .as_str()
@@ -175,6 +187,7 @@ impl SettingsDto {
                     Face::Menlo => "menlo",
                     Face::System => "system",
                     Face::SystemMono => "system_mono",
+                    Face::Hermes => "hermes",
                 }
                 .into(),
             },
@@ -212,9 +225,11 @@ impl SettingsDto {
 struct ValidatedPatch {
     theme: Option<ThemeChoice>,
     native_terminal_colors: Option<bool>,
+    use_riwork_colors: Option<bool>,
     open_preview_on_select: Option<bool>,
     remember_window_size: Option<bool>,
     panel_tab_icons: Option<bool>,
+    project_order: Option<riwork_core::project_sort::ProjectOrder>,
     tab_close_behavior: Option<riwork_core::settings::TabCloseBehavior>,
     agent_inline_mode: Option<bool>,
     agent_terminals_unrestricted: Option<bool>,
@@ -293,9 +308,15 @@ impl SettingsPatch {
         Ok(ValidatedPatch {
             theme: self.theme.as_deref().map(parse_theme).transpose()?,
             native_terminal_colors: self.native_terminal_colors,
+            use_riwork_colors: self.use_riwork_colors,
             open_preview_on_select: self.open_preview_on_select,
             remember_window_size: self.remember_window_size,
             panel_tab_icons: self.panel_tab_icons,
+            project_order: self.project_order.as_ref().map(|order| {
+                let by = serde_json::from_value(serde_json::json!(order.sort))
+                    .map_err(|_| format!("invalid: unknown project sort {:?}", order.sort))?;
+                Ok::<_, String>(riwork_core::project_sort::ProjectOrder { by, descending: order.descending })
+            }).transpose()?,
             tab_close_behavior: self
                 .tab_close_behavior
                 .as_ref()
@@ -341,6 +362,9 @@ impl ValidatedPatch {
         if let Some(value) = self.panel_tab_icons {
             settings.panel_tab_icons = value;
         }
+        if let Some(value) = self.project_order {
+            settings.project_order = value;
+        }
         if let Some(value) = self.tab_close_behavior {
             settings.tab_close_behavior = value;
         }
@@ -383,6 +407,9 @@ impl ValidatedPatch {
         }
         if let Some(value) = self.native_terminal_colors {
             settings.native_terminal_colors = value;
+        }
+        if let Some(value) = self.use_riwork_colors {
+            settings.use_riwork_colors = value;
         }
         if let Some(value) = self.ui_text_size {
             settings.ui_text_size = value;
@@ -447,6 +474,7 @@ impl SettingsBackend for CoreSettingsBackend {
         let selected = [
             (patch.remember_window_size.is_some(), "remember_window_size"),
             (patch.panel_tab_icons.is_some(), "panel_tab_icons"),
+            (patch.project_order.is_some(), "project_order"),
             (patch.tab_close_behavior.is_some(), "tab_close_behavior"),
             (patch.agent_inline_mode.is_some(), "agent_inline_mode"),
             (
@@ -478,6 +506,7 @@ impl SettingsBackend for CoreSettingsBackend {
             ),
             (patch.delegation_patch.is_some(), "delegation_policy"),
             (patch.theme.is_some(), "theme"),
+            (patch.use_riwork_colors.is_some(), "use_riwork_colors"),
             (
                 patch.native_terminal_colors.is_some(),
                 "native_terminal_colors",
@@ -776,7 +805,7 @@ snapshot_js_value!(SettingsDto, "SettingsEvent");
 impl JsValue for SettingsPatch {
     fn ts_type(types: &mut TsTypes) -> String {
         types.declare("SettingsPatch", |types| format!(
-            "export interface SettingsPatch {{ theme?: string; nativeTerminalColors?: boolean; openPreviewOnSelect?: boolean; uiTextSize?: number; uiTextMatchesTerminal?: boolean; interfaceFont?: 'system' | 'system_mono'; rememberWindowSize?: boolean; panelTabIcons?: boolean; tabCloseBehavior?: 'ask' | 'detach' | 'exit'; agentInlineMode?: boolean; agentTerminalsUnrestricted?: boolean; dictationMic?: boolean; claudeChatIgnoresApiKey?: boolean; codexSubscriptionBalancing?: boolean; dashboardHaikuSummaries?: boolean; orchestratorMode?: 'automatic' | 'terminal' | 'chat'; orchestratorChatProvider?: 'codex' | 'claude' | 'muse'; orchestratorChatModel?: string | null; statusBar?: {}; delegationPatch?: {}; }}",
+            "export interface SettingsPatch {{ theme?: string; nativeTerminalColors?: boolean; useRiworkColors?: boolean; projectOrder?: {{ sort: 'name' | 'last_edited' | 'date_added' | 'live_sessions'; descending: boolean }}; openPreviewOnSelect?: boolean; uiTextSize?: number; uiTextMatchesTerminal?: boolean; interfaceFont?: 'system' | 'system_mono'; rememberWindowSize?: boolean; panelTabIcons?: boolean; tabCloseBehavior?: 'ask' | 'detach' | 'exit'; agentInlineMode?: boolean; agentTerminalsUnrestricted?: boolean; dictationMic?: boolean; claudeChatIgnoresApiKey?: boolean; codexSubscriptionBalancing?: boolean; dashboardHaikuSummaries?: boolean; orchestratorMode?: 'automatic' | 'terminal' | 'chat'; orchestratorChatProvider?: 'codex' | 'claude' | 'muse'; orchestratorChatModel?: string | null; statusBar?: {}; delegationPatch?: {}; }}",
             StatusBarDto::ts_type(types), DelegationPatch::ts_type(types)))
     }
     fn from_js(value: JsIn<'_>) -> Result<Self, PropError> {

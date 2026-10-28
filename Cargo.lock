@@ -6573,6 +6573,7 @@ dependencies = [
  "nsh-core",
  "nsh-engine",
  "nsh-platform-macos",
+ "objc2-app-kit 0.3.2",
  "riwork-core",
  "riwork-engine",
  "riwork-nsh-workspace",

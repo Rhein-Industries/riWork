@@ -1,5 +1,11 @@
 # RiWork for iPhone and iPad
 
+On the `nsh` branch, the app starts in Native Shell. The host library, aggregate
+and per-host dashboards, and searchable project navigation live in
+`apps/riwork-mobile`. The existing Swift transport, Keychain storage, terminal
+and chat surfaces remain connected through the native mobile adapter during
+this migration. See [the migration boundary](../docs/nsh-ios-migration.md).
+
 Start with **All hosts** to see work and decisions across your paired RiWork desktops. Choose a desktop to see its own dashboard
 (what needs you and what is working across every project, the global orchestrator, and every project), then a project, and switch between tabs for its
 open terminals and chats, or open a new shell, agent or chat on the desktop with ＋. One terminal
@@ -38,7 +44,7 @@ See [the dashboard contract](../docs/dashboard-decisions.md) for observation and
 Choosing a desktop opens its **Dashboard**, outside every project (`DashboardViews.swift`, `RemoteModel+Dashboard.swift`,
 `Core/GlobalDashboard.swift`, tested). A desktop that says `ready.features.dashboard` answers `dashboard.get {}` with its own global
 dashboard, arranged by the desktop's `global_overview` (docs/remote-protocol.md, "Dashboard extension"); the phone shows it at phone
-scale in the RiWork and Native looks:
+scale with native controls and the chosen palette on iPhone, and the selected look on iPad:
 - **How current it is**: Live, "Last read 2m ago" after 30 s, "Showing the read from … · why" when a read failed, or the connection's
   state with the age of the last read; the last read stays on screen while a new one fails or the link is down.
 - **Global**: the global orchestrator, how it runs (a chat with its provider, or a terminal), its state and activity, with **Open** (the
@@ -71,40 +77,50 @@ Opening, starting or reading it never selects, switches or adopts a project, and
 as they were. From a project, the ⋯ menu's **Global orchestrator** and the New terminal sheet's **Global orchestrator** row go to the
 Global screen (the sheet starts it first if the Mac has none).
 
-The interface follows RiWork’s compact desktop layout: flat rows and tab strips,
-thin dividers, Menlo terminal text and a small workspace bar. Chats use proportional prose, right-aligned user bubbles, rounded tool/code surfaces and a shared composer, with a centered reading column on iPad. Light appearance uses the
-desktop’s Gruvbox Light palette; dark appearance uses its RiWork palette. Buttons
-retain 44-point touch targets, accessible labels and text scaling.
+On iPhone, **Display → Color palette** offers **Native** (the default, following
+the phone's light/dark setting), the same 12 fixed desktop palettes offline, and
+**Follow desktop**. The fixed palettes come from the shared
+[color-palettes.json](../crates/riwork-core/color-palettes.json): RiWork, Catppuccin Mocha,
+Tokyo Night, Gruvbox Light, Hermes, Dracula, Monokai, Nord, Solarized Light,
+Solarized Dark, One Dark and Gruvbox Dark. The choice is saved locally on the
+phone and does not change its Mac. Palettes change colors only; controls,
+system typography and layout stay native. Terminal text remains monospace. Chats use proportional
+prose, right-aligned user bubbles, rounded tool/code surfaces and a shared composer,
+with a centered reading column on iPad. Buttons retain 44-point touch targets,
+accessible labels and text scaling. iPad retains desktop theme synchronization.
 
-**Theme sync.** A desktop that supports `appearance.get` (`{"v":1,"updated_at","dark","palette":{bg, panel,
+**Desktop color sync.** iPad retains its existing synchronization; iPhone uses it
+only when **Follow desktop** is selected. A desktop that supports `appearance.get` (`{"v":1,"updated_at","dark","palette":{bg, panel,
 panel_active, divider, cyan, magenta, gold, text, muted},"terminal":{background, foreground, palette[16]}}`, colors
-as `#rrggbb`) lets the phone draw with its current colors: cyan is the accent, gold marks warnings, magenta is the
+as `#rrggbb`) supplies its current colors, including Ghostty: cyan is the accent, gold marks warnings, magenta is the
 secondary accent (orchestrators, hotkeys), the terminal uses `terminal.background/foreground` (else `bg`/`text`) for its
-background, text and block cursor, and `dark` sets the status bar and system controls. The phone asks on connect, when
+background, text and block cursor, and `dark` sets the status bar and system controls. The app asks on connect, when
 the app becomes active and every 60 s while connected, one request at a time, and only redraws when the colors actually
 changed. The last palette is kept per paired desktop (UserDefaults) and applied at launch and on connect, before the
 first answer; the desktop list wears the most recently used desktop's colors. `not_found` ("appearance not published")
 keeps the last palette; `unsupported RPC method` stops the asking for that connection and restores the built-in style;
 an unreadable palette (invalid hex, wrong count, `v` other than 1) is ignored. A synced text/background pair below a
-3:1 contrast ratio falls back to the built-in pair for that element. Without a palette the built-in Gruvbox Light /
-RiWork colors apply.
+3:1 contrast ratio falls back to the built-in pair for that element. Without a palette, iPad keeps its
+built-in Gruvbox Light / RiWork fallback; iPhone's Follow desktop choice uses Native until colors are available.
+The phone still reads the microphone preference regardless of its local palette choice.
+Terminal applications can still emit their own explicit colors.
 
-**Native.** A desktop using its Native skin also sends `"native": true` (left out otherwise, and by desktops from before
-the flag). The phone then sets its interface in SF Pro and sentence case, shows the key bar's named keys as SF Symbols,
+**Native controls.** iPhone keeps native controls for every palette. On iPad, a desktop using its Native skin
+selects it by sending `"native": true`. Native sets the interface in SF Pro and sentence case, shows the key bar's named keys as SF Symbols,
 and on iOS 26 puts the workspace bar's controls, prominent buttons, the key bar and sheets on Liquid Glass; terminal text,
 typed keys and the command field stay in Menlo. A chat follows too: its tabs, toolbar, cards and bars are set in SF Pro, cards,
 code blocks, diffs and the request and question bars are rounded, what you sent is a bubble on the right, links are the
 system blue, and on iOS 26 the chat's toolbar controls, the composer's field and the request buttons are on glass; commands,
 code, diffs, paths and output stay in Menlo. The chat's model chip is a glass capsule beside the mode menu, the model sheet and the
 New terminal sheet mark the chosen row with a rounded highlight, draw the efforts as a segmented control and the Fast and Unrestricted
-switches in the system green (Native's accent is black or white), and status lines, notes and the orchestrator's tab follow the same
+switches in the system green, and status lines, notes and the orchestrator's tab follow the same
 family; the question bar has Send in its header, and over a short screen (the keyboard up) it gives up scrolling room so the
-transcript keeps its last message whole, cutting its answers between rows rather than through one. Switching Native on or off is
-picked up like any color change.
+transcript keeps its last message whole, cutting its answers between rows rather than through one. On iPad, switching Native on or off is
+picked up like any color change. Choosing another iPhone palette changes colors without switching these controls or fonts.
 
 **Mic.** Dictation is a setting on the Mac, off by default: while it is on the desktop also sends `"mic": true` (left out otherwise,
 and by desktops from before the setting; any other value makes the document invalid, as for `native`). It is read, stored with the
-palette and followed like the Native flag, and turning it on or off alone counts as a change, so it applies live on connect, on
+palette on both iPhone and iPad, and turning it on or off alone counts as a change, so it applies live on connect, on
 coming back to the foreground and on the periodic refresh. Off, the phone has no mic anywhere: none in a chat's composer (the row
 closes up around the field), none in the key bar (the scrolling row runs up to Hide), none beside the line composer's Send, and no
 dictation panel over the terminal; no dictation starts, so neither the microphone nor speech recognition is asked for, and one in
@@ -114,21 +130,31 @@ progress is cancelled the moment the setting turns off. On, dictation works as d
 
 Open `ios/RiWorkRemote.xcodeproj` in Xcode 26, select `RiWorkRemote`, and choose an
 iPhone or iPad. The deployment target is iOS 18.0. Select your development team
-in Signing & Capabilities for a physical device. No third-party packages or AI
-service keys are needed. Regenerate the checked-in project from `project.yml`:
+in Signing & Capabilities for a physical device. The `nsh` branch requires the
+NSH 0.3.0 distribution, including `embed/ios/NativeShell.xcframework`; no AI
+service keys are needed. Prepare its runtime and mobile bundle before
+regenerating the checked-in project from `project.yml`:
 
 ```sh
+export NSH_CLI=/absolute/path/to/nsh-0.3.0/bin/nsh
+/usr/bin/python3 ios/scripts/prepare-nsh.py
 cd ios
 xcodegen generate
 xcodebuild -project RiWorkRemote.xcodeproj -scheme RiWorkRemote \
+  -configuration Release \
   -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \
-  -derivedDataPath .derivedData CODE_SIGN_IDENTITY=- test
-xcrun simctl install booted .derivedData/Build/Products/Debug-iphonesimulator/RiWorkRemote.app
+  -derivedDataPath .derivedData CODE_SIGN_IDENTITY=- build
+xcrun simctl install booted .derivedData/Build/Products/Release-iphonesimulator/RiWorkRemote.app
 xcrun simctl launch booted com.riwork.remote
 ```
 
 Use a specific simulator UDID when several are running. Keep ad-hoc simulator
 signing enabled. `CODE_SIGNING_ALLOWED=NO` compiles but cannot use Keychain (-34018).
+The pinned SDK supports physical arm64 devices and Apple-silicon simulators.
+Xcode rebuilds the mobile bundle before compiling the app, using the verified
+CLI path recorded locally by `prepare-nsh.py`. `NSH_IOS_SDK` can point to the
+matching framework when it is outside the CLI distribution. `ios/Vendor`,
+`ios/Generated`, and the remembered CLI path are generated and ignored by Git.
 `xcodegen generate` also derives `RiWorkRemote/Info-Debug.plist` (`Info.plist` plus the
 Debug-only local-networking ATS exception, via `postGenCommand`); commit both plists.
 Release builds keep default App Transport Security and hide the local-relay switch.
@@ -262,7 +288,7 @@ counts as exited whatever it last said.
   "Claude worker, 44444444, Working, 2 subagents" (or "Waiting for input", "Done"); Session info adds the state and the time it began.
 - **Project rows.** A dot and a count for the agents working, a gold disc and a count for those waiting for input, nothing when there
   are none. VoiceOver reads them as the row's value ("2 agents working, 1 waiting for input").
-- Shapes differ as well as colors; the colors are the synced desktop palette (accent, gold, muted), and sizes follow Dynamic Type and the
+- Shapes differ as well as colors; the colors use the selected phone palette or synced desktop palette on iPad (accent, gold, muted), and sizes follow Dynamic Type and the
   interface scale.
 - **Refresh.** The lists were only read on connect and on demand. While the project list is on screen `projects.list` is read again, and
   while the tab strip is on screen (not in focus mode) `shells.list` and `orchestrators.list` are, every 4 s (`RemoteModel.keepFresh`,
@@ -407,8 +433,8 @@ A desktop that says `ready.features.chat` (the `riwork` CLI reports `"chat": tru
 - A **row of its own under the tab row**, with no ⋯ of its own: the **model chip** (above), the **usage ring** and the **approval mode** chip (Supervised, Auto-edit, Full, Plan; `chat.command` `configure`, shown at once and taken back if refused). The ring fills with how full the context is (gold above 80 %, red above 95 %) with the percent beside it ("Tokens" alone when the window is not known); a tap or long press shows "42% · 84k / 200k tokens" and Claude's cost as "≈ $0.42 (estimate)", never as a price, and it follows the chat's usage as it comes. The same detail lists the provider's **usage windows** (`Core/ChatUsageLimits.swift`, tested): the `rate_limits` windows (a control event, also in the first snapshot page's `controls`, each replacing the last), fullest first, each with its percent (in the warning tone from its own `warn_at`, Claude 70 %, Codex 75 % or 50 %; bold from 90 %) and when it resets. There is no usage chip in the row, and a window is never a banner. The row is one line at any width with default text: [model ⌄] [ring] … [mode ⌄]. The chat's actions are the first section of the tab row's ⋯ menu: Compact conversation, Jump to latest, Notices…, Copy session id and Stop agent (the model and the usage are the row's, not the menu's).
 - **The banner row**, directly above the composer, is the one place a chat says something for a moment (`ChatNoticeBanners`, `Core/ChatNotices.swift`, tested): no link ("Not connected" with Reconnect; the transcript is kept and reading carries on from where it was), a chat that is gone from the Mac (Back), Starting, Stopped ("Your next message starts it again"), Failed with **Retry** (which sends the last message again, only when asked, and only when there was one), a transcript that cannot be read right now, what went wrong with the last command, what an older desktop cannot do ("Update RiWork on the Mac for recent-first loading"), and the **provider's notices**. Every line has × (a 44 pt target) and goes by itself when its cause is resolved (the link back, a read or snapshot that succeeds, the older history loaded, the next command that goes through); the phone's own messages are one line per source, so one that recurs updates its line ("×3") instead of adding one. The provider's notices (Claude's rate and usage limits and API retries, Codex's errors, warnings, config warnings and "Reconnecting… n/5") are not transcript rows: the latest of each kind since the person last sent something is one line (the host's `kind` on the notice, e.g. `rate_limit:seven_day`, `api_retry`, `reconnecting`, the key the Mac groups by too; a notice without one, from an older host, is a line of its own), closed until the provider says it again, gone when `resolved` or when its `resets_at` has passed, and the rest of a long row is "n more". A **reached usage limit** (`rate_limit:*` at error level; a usage warning is never a banner) and a **sign-in** (`auth_required`) are sticky: they stay from any turn until resolved, reset or closed; a limit says when it resets and offers **Usage**, which opens the ring's detail. Closing one of those also sends `chat.command` `dismiss_notice {item_id}`, so the host keeps it closed on every device; a notice the host flags `dismissed`, or that a key of the snapshot's `dismissed_notices` covers (`…|kind@resets_at`, `…|kind#item id`), is not shown (docs/chat-notices.md). Every notice of the chat is in a history ("n notices" in the row, or ⋯ → Notices…). Most severe first: error, warning, note. A shell's errors use the same line above its input, in focus mode too.
 - The **transcript**, newest at the bottom. It follows the bottom while a reply streams, unless the reader scrolled up (the terminal's `StickyBottom` rule); then a "↓ Latest · N new" pill over the transcript's bottom edge takes the reader back (it has no row of its own, so the transcript reaches the composer and showing the pill resizes nothing). It is a `LazyVStack` of `Equatable` rows, so a message that streams rebuilds only itself; which cards are open is kept in the conversation, because rows come and go as the list scrolls.
-- **User messages** are right-aligned rounded bubbles, with an accent tint from the synced theme. **Agent messages** are markdown (`Core/ChatMarkdown.swift`, pure and tested): headings, paragraphs, lists (nested, ordered, task), quotes, tables and rules are laid out here, and the inline syntax is `AttributedString(markdown:)`; only `http` and `https` links stay links (agent text is untrusted). A Codex file citation (`:codex-file-citation{path="…"}`) on a line of its own is the file's chip, which opens the file viewer; one inside a sentence reads as the file's name. Text is selectable; **code blocks** scroll sideways and have **Copy**. Parsing is safe on a streamed prefix (a fence not yet closed is a code block still arriving).
-- **Reasoning** is one collapsed line. Every **card** is one header row while closed: the status, what it is in bold, what it was about after it (cut to the line), counts or the exit code, and one chevron; opened, its body follows under a hairline with tight insets, and Copy is a glyph in the header. **Commands** show `$ command`, a status glyph and the exit code; opened, their working directory and the last 80 lines of output (and how many were left out); a running command shows its last three lines without opening. **Edits** show the path (or the first and how many more) with +/- counts; one file opens straight to its **diff**, several open to a row per file that opens its own; the diff is flush with the card (no frame of its own), a long press copies it, and it is a monospace **diff** (added green, removed red, hunk headers muted, from the synced terminal palette) of at most 2000 lines. **Tools** show `server · tool` and the most telling input; opened, the input and the result. **Plans** and **to-dos** are checklists. **Web searches**, the **compaction** divider and **notices** (info, warning, error) are single rows.
+- **User messages** are right-aligned rounded bubbles, with an accent tint from the chosen palette. **Agent messages** are markdown (`Core/ChatMarkdown.swift`, pure and tested): headings, paragraphs, lists (nested, ordered, task), quotes, tables and rules are laid out here, and the inline syntax is `AttributedString(markdown:)`; only `http` and `https` links stay links (agent text is untrusted). A Codex file citation (`:codex-file-citation{path="…"}`) on a line of its own is the file's chip, which opens the file viewer; one inside a sentence reads as the file's name. Text is selectable; **code blocks** scroll sideways and have **Copy**. Parsing is safe on a streamed prefix (a fence not yet closed is a code block still arriving).
+- **Reasoning** is one collapsed line. Every **card** is one header row while closed: the status, what it is in bold, what it was about after it (cut to the line), counts or the exit code, and one chevron; opened, its body follows under a hairline with tight insets, and Copy is a glyph in the header. **Commands** show `$ command`, a status glyph and the exit code; opened, their working directory and the last 80 lines of output (and how many were left out); a running command shows its last three lines without opening. **Edits** show the path (or the first and how many more) with +/- counts; one file opens straight to its **diff**, several open to a row per file that opens its own; the diff is flush with the card (no frame of its own), a long press copies it, and it is a monospace **diff** (added green, removed red, hunk headers muted, from the active terminal palette) of at most 2000 lines. **Tools** show `server · tool` and the most telling input; opened, the input and the result. **Plans** and **to-dos** are checklists. **Web searches**, the **compaction** divider and **notices** (info, warning, error) are single rows.
 - The **approval bar** is pinned above the composer: what is asked (the command, the files, the tool), details on demand, and the buttons the provider offers, in its order: **Allow**, **Allow for session**, **Deny**, **Stop** (Stop is the decision `cancel`: deny and end the turn). A button leaves the bar at once; if the desktop says the request was answered already, that is said quietly above the composer. A request whose answer was lost (timeout) comes back to the bar, and the events say what happened. VoiceOver announces a new request.
 - **Questions** (`AskUserQuestion`, `item/tool/requestUserInput`) are option buttons per question (one, or any for a multiple-choice one) with a field for an answer of your own; **Send answer** is on when every question has one (`ChatAnswerForm`, tested).
 - The **composer** is one rounded field across the row that holds everything: the paperclip at its start, a multi-line text view that grows to six lines (then scrolls), and one action slot at its end (`ComposerActions`): **Send** once something is typed, **Interrupt** (Stop) while a turn runs, and otherwise, while the Mac's mic setting is on (see **Mic** above), a **mic** that dictates into it on the phone; Stop stays beside Send while a turn runs and the mic stays while it listens. There is no hint text; every button keeps a 44 pt target inside the field. What is typed is kept per chat and saved as it changes (`Core/ChatDrafts.swift`, by chat id in the app's defaults, the oldest of more than 64 or any untouched for 30 days let go), so another tab, the projects list, the background, a dropped link or a relaunch lose nothing; it is cleared only when the message is sent or the person empties the field. A message that did not go through comes back into the composer, and nothing sends a message twice by itself: a message on its way is held until the desktop answers, and if the app ended first it comes back into the composer with a warning to check the conversation before sending it again (the Mac's "outcome uncertain"). Staged attachments are not kept: the protocol has none (a phone upload is a path in the text, which is kept).
@@ -449,7 +475,7 @@ no groups), which would otherwise cover Send. Moving the window to a display of 
 
 **Commands** (`chat.command`) are sent once each and never retried by the phone. Send, Approve, Answer, Configure, Compact and Interrupt each have one request; the desktop answers an `Approve` or `Answer` once, and a repeat is an error shown quietly. A message longer than 64 KiB, or blank, is refused before it leaves the phone.
 
-**Look.** The synced desktop theme (accent for the user's blocks and the selection, gold for waiting and warnings, the terminal palette's green and red for diffs), Dynamic Type and the interface scale, VoiceOver labels and values on every card ("Command: ls, exit 2, failed", "Expanded"), Reduce Motion (the indicator stops pulsing and the list jumps without animating). Prose is the system face; code, commands and chrome are Menlo.
+**Look.** The chosen phone palette, or synced desktop palette on iPad (accent for the user's blocks and the selection, gold for waiting and warnings, the terminal palette's green and red for diffs), Dynamic Type and the interface scale, VoiceOver labels and values on every card ("Command: ls, exit 2, failed", "Expanded"), Reduce Motion (the indicator stops pulsing and the list jumps without animating). Prose and controls use the system face; code and commands remain monospace.
 
 ### Photos and files
 

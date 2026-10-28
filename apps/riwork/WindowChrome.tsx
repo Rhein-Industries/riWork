@@ -1,6 +1,7 @@
 import { View, cleanup, host, signal } from "nsh";
 import { Window } from "nsh/desktop";
 import type { DockNode } from "nsh/base";
+import { WORKSPACE_METRICS } from "./metrics";
 
 export const CONTROL_WIDTH = 78;
 export const CONTROL_HEIGHT = 28;
@@ -20,7 +21,7 @@ export function dragRegion(pane: TopPane): { left: number; width: number } {
 export function topPaneFrames(node: DockNode, size: { width: number; height: number }, x = 0): TopPane[] {
   if (node.type === "tabs") return [{ id: node.id, x, width: size.width }];
   const extent = node.axis === "horizontal" ? size.width : size.height;
-  const free = extent - Math.max(0, node.children.length - 1) * 5;
+  const free = extent - Math.max(0, node.children.length - 1) * WORKSPACE_METRICS.divider;
   const fixed = (node.sizes ?? []).reduce<number>((total, value) => total + (value ?? 0), 0);
   const flexible = node.children.filter((_, index) => node.sizes?.[index] == null).length;
   let offset = 0;
@@ -29,7 +30,7 @@ export function topPaneFrames(node: DockNode, size: { width: number; height: num
     const result = node.axis === "horizontal"
       ? topPaneFrames(child, { width: amount, height: size.height }, x + offset)
       : index === 0 ? topPaneFrames(child, { width: size.width, height: amount }, x) : [];
-    offset += amount + 5;
+    offset += amount + WORKSPACE_METRICS.divider;
     return result;
   });
 }
@@ -38,7 +39,11 @@ export function topPaneFrames(node: DockNode, size: { width: number; height: num
  * the window's own surface; title and Dock metadata follow the workspace's project. */
 export function useWindowChrome() {
   const state = signal<WindowState>({ mode: "windowed" });
-  Window.setTitleBar("hidden", CONTROL_HEIGHT);
+  // Supplying a height makes NSH install an empty native toolbar. Its automatic
+  // traffic-light layout then competes with our host's compact control inset on
+  // every live-resize frame. The host owns that geometry; we reserve the same
+  // 28-point strip here without asking AppKit for a second titlebar layout.
+  Window.setTitleBar("hidden");
   cleanup(host.on("window.state", (next) => state.set(next as WindowState)));
   return { state, fullscreen: () => state().mode === "fullscreen" };
 }

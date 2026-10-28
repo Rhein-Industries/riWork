@@ -222,7 +222,7 @@ pub fn read_claude_usage_at(home: &Path, shell_id: &str) -> Result<Option<Provid
     {
         return Err("Claude usage cache is too large".into());
     }
-    let usage: ProviderUsage = serde_json::from_reader(file.take(MAX_CACHE_BYTES))
+    let mut usage: ProviderUsage = serde_json::from_reader(file.take(MAX_CACHE_BYTES))
         .map_err(|_| "Claude usage cache is invalid")?;
     if usage.provider != "claude"
         || usage.windows.len() > 16
@@ -239,6 +239,12 @@ pub fn read_claude_usage_at(home: &Path, shell_id: &str) -> Result<Option<Provid
     {
         return Err("Claude usage cache is invalid".into());
     }
+    // Older caches may contain a malformed subscription percentage. Do not
+    // clamp it to 100 and present an invented exhausted allowance. Gateway
+    // spend limits, unlike the subscription windows, can genuinely exceed 100.
+    usage.windows.retain(|window| {
+        valid_claude_percent(window.used_percent, window.label == "Spend limit")
+    });
     Ok(Some(usage))
 }
 
@@ -258,7 +264,10 @@ pub fn claude_status_text(value: &Value) -> String {
         parts.push(format!("EST ${cost:.2}"));
     }
     for (key, label) in [("five_hour", "5h"), ("seven_day", "7d")] {
-        if let Some(percent) = number_at(value, &format!("/rate_limits/{key}/used_percentage")) {
+        if let Some(percent) = value
+            .pointer(&format!("/rate_limits/{key}/used_percentage"))
+            .and_then(|value| claude_percent(value, false))
+        {
             parts.push(format!("{label} {percent:.0}% used"));
         }
     }
@@ -313,7 +322,10 @@ fn parse_claude_usage(value: &Value, now: u64) -> Result<ProviderUsage, String> 
         let Some(window) = value.pointer(&format!("/rate_limits/{key}")) else {
             continue;
         };
-        let Some(percent) = window.get("used_percentage").and_then(number) else {
+        let Some(percent) = window
+            .get("used_percentage")
+            .and_then(|value| claude_percent(value, key == "spend_limit"))
+        else {
             continue;
         };
         windows.push(UsageWindow {
@@ -1287,6 +1299,18 @@ fn number_at(value: &Value, pointer: &str) -> Option<f64> {
 
 fn valid_number(value: f64) -> bool {
     value.is_finite() && value >= 0.0
+}
+
+// Claude documents subscription utilization as 0–100, while a gateway spend
+// limit can exceed 100. Missing or malformed readings are not zero usage.
+fn valid_claude_percent(value: f64, spend_limit: bool) -> bool {
+    valid_number(value) && (spend_limit || value <= 100.0)
+}
+
+fn claude_percent(value: &Value, spend_limit: bool) -> Option<f64> {
+    value
+        .as_f64()
+        .filter(|value| valid_claude_percent(*value, spend_limit))
 }
 
 fn positive_u64(value: Option<&Value>) -> Option<u64> {

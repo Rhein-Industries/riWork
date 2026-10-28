@@ -17,6 +17,8 @@ settings:
     SWIFT_STRICT_CONCURRENCY: complete
     DEVELOPMENT_TEAM: ""
     CODE_SIGN_STYLE: Automatic
+    # The pinned NSH 0.3 iOS SDK ships Apple-silicon simulator slices.
+    "EXCLUDED_ARCHS[sdk=iphonesimulator*]": x86_64
 targets:
   RiWorkCore:
     type: framework
@@ -32,12 +34,25 @@ targets:
     sources:
       - path: RiWorkRemote
         excludes: [Info-Debug.plist]
+      - path: Generated/nsh
+        type: folder
+        buildPhase: resources
+      # One palette catalogue is compiled into Rust and bundled unchanged on iOS.
+      - path: ../crates/riwork-core/color-palettes.json
+        buildPhase: resources
     dependencies:
       - target: RiWorkCore
+      - framework: Vendor/NativeShell.xcframework
+        embed: false
+    preBuildScripts:
+      - name: Build NSH mobile UI
+        script: /usr/bin/python3 "$SRCROOT/scripts/prepare-nsh.py"
+        basedOnDependencyAnalysis: false
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.riwork.remote
         TARGETED_DEVICE_FAMILY: "1,2"
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
       configs:
         Debug:
           INFOPLIST_FILE: RiWorkRemote/Info-Debug.plist

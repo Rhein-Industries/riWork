@@ -277,6 +277,15 @@ pub struct DockAreaProps {
     /// the tab, so a row of a title and a close button is a `flex-row` view
     /// of them.
     pub render_tab: Prop<Option<Renderer<DockTab>>>,
+    /// Tabs kept visible before the scrolling session segment, in group order.
+    #[prop(default)]
+    pub fixed_panels: Prop<Vec<PanelId>>,
+    /// Fixed leading chrome, e.g. the native window-controls inset.
+    pub render_tab_bar_prefix: Prop<Option<Renderer<u64>>>,
+    /// Groups at the window's top edge whose unoccupied tab-bar area moves
+    /// the native window. Tabs and interactive controls keep their own input.
+    #[prop(default)]
+    pub draggable_tab_bars: Prop<Vec<u64>>,
     /// Fixed controls after a group's horizontally scrolling tabs. The value
     /// is its group id; without this renderer the upstream tab bar is unchanged.
     pub render_tab_bar_suffix: Prop<Option<Renderer<u64>>>,
@@ -363,6 +372,9 @@ pub struct DockAreaProps {
     reason = "one event per edit, handed on as it is"
 )]
 pub enum DockAreaEvent {
+    /// Native drag ownership, including cancellation without a layout edit.
+    #[args(dragging)]
+    DragChange(bool),
     /// The layout changed (a drag, a selection, a resize, a dock opened or
     /// closed, a method of the ref): the whole new layout, every id in it.
     /// Pass it back as `layout` (and save it, debounced: it comes on every
@@ -1164,13 +1176,15 @@ fn dock_frame(a: AreaCx, placement: DockPlacement) -> AnyElement {
                         end_dock_drag(a, placement, drag.from + *offset * sign);
                     })
                     .child(
-                        // The indicator is the band's line, 1 point
-                        // across (the band stretches it along): the
-                        // app's class colors it, or makes it thicker.
+                        // The indicator is a full-length one-point line.
+                        // Its geometry does not depend on having content;
+                        // the app's class or style only needs to color it.
                         view()
+                            .flex_none()
+                            .pointer_events(PointerEvents::None)
                             .map(|v| match axis {
-                                Axis::Horizontal => v.w(HANDLE_SIZE),
-                                Axis::Vertical => v.h(HANDLE_SIZE),
+                                Axis::Horizontal => v.w(HANDLE_SIZE).h_full(),
+                                Axis::Vertical => v.h(HANDLE_SIZE).w_full(),
                             })
                             .app_class(a.props.handle_class)
                             .inline_style(a.props.handle_style),

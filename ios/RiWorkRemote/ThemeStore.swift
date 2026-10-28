@@ -1,19 +1,27 @@
 import Foundation
 import Observation
 import RiWorkCore
+import UIKit
 
 /// The colors the app is drawn with, and the last palette known for each paired desktop.
 ///
-/// - What is shown: the palette of the desktop that is selected (or, before any is, the most recently used one), and the
-///   built-in style while there is none.
+/// - What is shown: an independent phone palette (Native by default), with
+///   native iOS controls; the selected desktop's palette on iPad.
 /// - What is kept: the last valid `appearance.get` result per desktop, in UserDefaults (colors are not secret). It is applied
 ///   at launch and on connect, before the first fetch returns, and survives a desktop that is offline or has not published.
 /// - What changes: only an actually different palette. A fetch that returns the same colors does not touch the theme, the
 ///   stored copy or any view.
 @MainActor @Observable final class ThemeStore {
     /// The theme being drawn. Views read `style` through the environment; setting it re-colors them in place.
-    private(set) var style = DesktopStyle.builtIn
-    /// The palette behind `style`, if the shown desktop has one.
+    private(set) var style: DesktopStyle
+    /// The phone keeps native controls, independent of its chosen color palette.
+    let usesNativePhoneAppearance: Bool
+    /// Color choices are local to this phone and do not update a desktop setting.
+    private(set) var phonePaletteID: String
+    let phonePalettes: [PhonePalette]
+    let phonePaletteError: String?
+    /// The selected desktop's appearance, including functional settings such as
+    /// dictation. Its colors apply on iPhone only with "Follow desktop" selected.
     private(set) var appearance: DesktopAppearance?
     /// The desktop whose palette is shown.
     private(set) var shownDesktopID: String?
@@ -27,9 +35,54 @@ import RiWorkCore
     static let keyPrefix = "riwork.appearance."
     static let recentKey = "riwork.appearance.recent"
     static let recentLimit = 8
+    static let phonePaletteKey = "riwork.phone.palette"
     static func key(for desktopID: String) -> String { keyPrefix + desktopID }
 
-    init(defaults: UserDefaults) { self.defaults = defaults }
+    init(defaults: UserDefaults, nativePhone: Bool? = nil) {
+        self.defaults = defaults
+        let followsPhone = nativePhone ?? (UIDevice.current.userInterfaceIdiom == .phone)
+        usesNativePhoneAppearance = followsPhone
+        let catalog = Self.loadPhonePalettes()
+        phonePalettes = catalog.presets
+        phonePaletteError = catalog.error
+        let storedID = defaults.string(forKey: Self.phonePaletteKey) ?? "native"
+        let paletteID = Self.validPhonePalette(storedID, presets: catalog.presets) ? storedID : "native"
+        phonePaletteID = paletteID
+        style = DesktopStyle(Self.resolvedTheme(nil, nativePhone: followsPhone, paletteID: paletteID, presets: catalog.presets))
+    }
+
+    private static func loadPhonePalettes() -> (presets: [PhonePalette], error: String?) {
+        do {
+            guard let url = Bundle.main.url(forResource: "color-palettes", withExtension: "json") else {
+                return ([], "The color palette catalog is missing from this app.")
+            }
+            return (try PhonePaletteCatalog.decode(data: Data(contentsOf: url)), nil)
+        } catch { return ([], "The color palette catalog could not be loaded: \(error.localizedDescription)") }
+    }
+
+    private static func validPhonePalette(_ id: String, presets: [PhonePalette]) -> Bool {
+        id == "native" || id == "desktop" || presets.contains { $0.id == id }
+    }
+
+    private static func resolvedTheme(_ appearance: DesktopAppearance?, nativePhone: Bool, paletteID: String, presets: [PhonePalette]) -> DesktopTheme {
+        guard nativePhone else { return DesktopTheme.resolve(appearance) }
+        if paletteID == "desktop" { return .phoneDesktop(appearance) }
+        if let preset = presets.first(where: { $0.id == paletteID }) { return .phonePalette(preset, mic: appearance?.mic ?? false) }
+        return .nativePhone(mic: appearance?.mic ?? false)
+    }
+
+    func setPhonePalette(_ id: String) {
+        guard usesNativePhoneAppearance, Self.validPhonePalette(id, presets: phonePalettes), id != phonePaletteID else { return }
+        defaults.set(id, forKey: Self.phonePaletteKey)
+        phonePaletteID = id
+        apply(appearance)
+    }
+
+    var phonePaletteDetail: String {
+        if phonePaletteID == "native" { return "Follows your iPhone’s light or dark appearance." }
+        if phonePaletteID == "desktop" { return "Uses the selected desktop’s last known colors, including its Ghostty theme. Native is used until those colors are available." }
+        return phonePalettes.first { $0.id == phonePaletteID }?.detail ?? ""
+    }
 
     // MARK: Persistence
 
@@ -59,7 +112,7 @@ import RiWorkCore
     /// (renaming it) while another one is shown.
     func style(for desktopID: String) -> DesktopStyle {
         if desktopID == shownDesktopID { return style }
-        return stored(for: desktopID).map { DesktopStyle(DesktopTheme.resolve($0), scale: scale) } ?? DesktopStyle(.builtIn, scale: scale)
+        return DesktopStyle(Self.resolvedTheme(stored(for: desktopID), nativePhone: usesNativePhoneAppearance, paletteID: phonePaletteID, presets: phonePalettes), scale: scale)
     }
     /// A new interface size: every style is redrawn at it.
     func setScale(_ value: Double) {
@@ -82,7 +135,7 @@ import RiWorkCore
         apply(desktopID.flatMap(stored(for:)))
     }
     private func apply(_ appearance: DesktopAppearance?) {
-        let next = DesktopStyle(DesktopTheme.resolve(appearance), scale: scale)
+        let next = DesktopStyle(Self.resolvedTheme(appearance, nativePhone: usesNativePhoneAppearance, paletteID: phonePaletteID, presets: phonePalettes), scale: scale)
         self.appearance = appearance
         if next.mic != style.mic { onMicChange?(next.mic) }
         // An equal theme is not assigned: observers of `style` are not woken for nothing.

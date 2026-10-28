@@ -1,19 +1,78 @@
 //! Serialized theme selection shared with the desktop.
 
 use serde::{Deserialize, Serialize};
+use std::sync::LazyLock;
 
-/// RiWork's one theme. Kept as a serialized choice so `settings.json` keeps its
-/// `theme` key: a value an older build wrote (a theme since removed) reads as
-/// Native, like any other value this build does not know.
+/// Desktop themes keep their established serialized names. Native remains the
+/// default for a new installation and for an unreadable future choice.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ThemeChoice {
+    Ghostty,
     #[default]
     Native,
+    RiWork,
+    Catppuccin,
+    TokyoNight,
+    GruvboxLight,
+    Hermes,
+    Dracula,
+    Monokai,
+    Nord,
+    SolarizedLight,
+    SolarizedDark,
+    OneDark,
+    GruvboxDark,
+}
+
+impl ThemeChoice {
+    pub const ALL: [Self; 14] = [
+        Self::Ghostty, Self::Native, Self::RiWork, Self::Catppuccin,
+        Self::TokyoNight, Self::GruvboxLight, Self::Hermes,
+        Self::Dracula, Self::Monokai, Self::Nord, Self::SolarizedLight,
+        Self::SolarizedDark, Self::OneDark, Self::GruvboxDark,
+    ];
+
+    /// The persisted ID and shared catalogue key. Existing spellings stay stable.
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::Ghostty => "ghostty",
+            Self::Native => "native",
+            Self::RiWork => "ri_work",
+            Self::Catppuccin => "catppuccin",
+            Self::TokyoNight => "tokyo_night",
+            Self::GruvboxLight => "gruvbox_light",
+            Self::Hermes => "hermes",
+            Self::Dracula => "dracula",
+            Self::Monokai => "monokai",
+            Self::Nord => "nord",
+            Self::SolarizedLight => "solarized_light",
+            Self::SolarizedDark => "solarized_dark",
+            Self::OneDark => "one_dark",
+            Self::GruvboxDark => "gruvbox_dark",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Ghostty => "Follow Ghostty",
+            Self::Native => "Native",
+            _ => &fixed_palette(self).label,
+        }
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::Ghostty => "Use your Ghostty colors throughout RiWork. Configuration changes sync automatically.",
+            Self::Native => "Black on white, or white on black when macOS is dark. Follows the system appearance.",
+            _ => &fixed_palette(self).description,
+        }
+    }
 }
 
 /// Pure packed RGB terminal colors. This type has no Ghostty or GUI dependency.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TerminalTheme {
     pub background: u32,
     pub foreground: u32,
@@ -28,7 +87,8 @@ fn terminal_theme(background: u32, foreground: u32, palette: [u32; 16]) -> Termi
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Palette {
     pub bg: u32,
     pub panel: u32,
@@ -39,11 +99,50 @@ pub struct Palette {
     pub gold: u32,
     pub text: u32,
     pub muted: u32,
-    /// The keyboard focus ring of a control: the primary color, since the one
-    /// signal color is kept for state that must stand out. Not published.
+    /// The keyboard focus ring: primary in Native, gold in colorful themes.
     pub focus: u32,
-    /// What says an agent is working: the signal color (`gold`). Not published.
+    /// Working state: Native's signal orange, or a colorful theme's primary.
     pub working: u32,
+}
+
+/// Fixed palettes are a single resource shared verbatim with iOS. Values are
+/// packed 0xRRGGBB integers; controls, fonts and layout do not belong here.
+pub const COLOR_PALETTES_JSON: &str = include_str!("../color-palettes.json");
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ColorPaletteCatalogue {
+    pub schema: u32,
+    pub palettes: Vec<ColorPaletteEntry>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ColorPaletteEntry {
+    pub id: String,
+    pub label: String,
+    pub description: String,
+    pub dark: bool,
+    pub palette: Palette,
+    pub terminal: TerminalTheme,
+    pub source: String,
+}
+
+static COLOR_PALETTES: LazyLock<ColorPaletteCatalogue> = LazyLock::new(|| {
+    serde_json::from_str(COLOR_PALETTES_JSON).expect("bundled color palette catalogue must decode")
+});
+
+pub fn color_palette_catalogue() -> &'static ColorPaletteCatalogue {
+    &COLOR_PALETTES
+}
+
+/// Native and Follow Ghostty are dynamic, so neither appears in the catalogue.
+pub fn color_palette(choice: ThemeChoice) -> Option<&'static ColorPaletteEntry> {
+    color_palette_catalogue().palettes.iter().find(|entry| entry.id == choice.id())
+}
+
+fn fixed_palette(choice: ThemeChoice) -> &'static ColorPaletteEntry {
+    color_palette(choice).expect("fixed theme must have a bundled color palette")
 }
 
 impl Palette {
@@ -88,13 +187,32 @@ impl Palette {
             Self::NATIVE_LIGHT
         }
     }
+
+    /// Derive readable interface colors from the terminal owner's effective
+    /// palette. Reading/parsing Ghostty configuration stays outside pure core.
+    pub fn from_terminal(theme: &TerminalTheme) -> Self {
+        let bg = theme.background;
+        let text = readable(theme.foreground, bg);
+        let panel = mix(bg, text, 0.035);
+        let panel_active = mix(bg, text, 0.075);
+        let cyan = readable(theme.palette[6], panel_active);
+        let gold = readable(theme.palette[3], panel_active);
+        Self {
+            bg, panel, panel_active, divider: mix(bg, text, 0.20), cyan,
+            magenta: readable(theme.palette[5], panel_active), gold,
+            text: readable(text, panel_active),
+            muted: readable(mix(bg, text, 0.58), panel_active),
+            focus: gold, working: cyan,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Appearance {
     pub selected: ThemeChoice,
     pub palette: Palette,
-    /// Native's terminal colors for the resolved system appearance.
+    /// The selected preset, or effective/fallback colors when following Ghostty.
+    /// `terminal_override` decides whether these are applied to a terminal.
     pub terminal: TerminalTheme,
     /// The terminals' own Ghostty colors, where a caller knows them.
     pub ghostty: Option<TerminalTheme>,
@@ -102,18 +220,42 @@ pub struct Appearance {
 
 impl Appearance {
     pub fn resolve(choice: ThemeChoice, system_dark: bool) -> Self {
+        Self::resolve_with_ghostty(choice, system_dark, None)
+    }
+
+    /// Resolve with effective colors supplied by the native terminal owner.
+    /// Without them, Follow Ghostty uses the original RiWork fallback palette;
+    /// callers must explain that its configuration could not be resolved.
+    pub fn resolve_with_ghostty(
+        choice: ThemeChoice,
+        system_dark: bool,
+        ghostty: Option<TerminalTheme>,
+    ) -> Self {
+        let terminal = match choice {
+            ThemeChoice::Native => native_terminal_theme(system_dark),
+            ThemeChoice::Ghostty => ghostty.unwrap_or_else(riwork_terminal_theme),
+            _ => fixed_palette(choice).terminal,
+        };
+        let palette = match choice {
+            ThemeChoice::Native => Palette::native(system_dark),
+            ThemeChoice::Ghostty if ghostty.is_none() => fixed_palette(ThemeChoice::RiWork).palette,
+            ThemeChoice::Ghostty => Palette::from_terminal(&terminal),
+            _ => fixed_palette(choice).palette,
+        };
         Self {
-            selected: choice,
-            palette: Palette::native(system_dark),
-            terminal: native_terminal_theme(system_dark),
-            ghostty: None,
+            selected: choice, palette, terminal, ghostty,
         }
     }
 
-    /// What terminals are forced to: Native's colors while "Terminals match
-    /// the theme" is on, nothing (Ghostty's own colors) while it is off.
+    /// Native follows its independent matching option. Colorful presets always
+    /// apply their palette. Follow Ghostty keeps its own configuration unless
+    /// the separate RiWork terminal-colors option is explicitly selected.
     pub fn terminal_override(&self, force: bool) -> Option<TerminalTheme> {
-        force.then_some(self.terminal)
+        match self.selected {
+            ThemeChoice::Native => force.then_some(self.terminal),
+            ThemeChoice::Ghostty => force.then(riwork_terminal_theme),
+            _ => Some(self.terminal),
+        }
     }
 
     pub fn shown_terminal(&self, force: bool) -> Option<TerminalTheme> {
@@ -121,7 +263,7 @@ impl Appearance {
     }
 
     pub fn is_stale_for(&self, system_dark: bool) -> bool {
-        self.palette != Palette::native(system_dark)
+        self.selected == ThemeChoice::Native && self.palette != Palette::native(system_dark)
     }
 
     pub fn diff_colors(&self, force: bool) -> DiffColors {
@@ -170,6 +312,10 @@ pub fn native_terminal_theme(dark: bool) -> TerminalTheme {
             ],
         )
     }
+}
+
+pub fn riwork_terminal_theme() -> TerminalTheme {
+    fixed_palette(ThemeChoice::RiWork).terminal
 }
 
 /// `first` moved `amount` (0 to 1) of the way to `second`, channel by channel.

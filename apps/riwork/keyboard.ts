@@ -1,11 +1,8 @@
-/** Deferred Phase-1 seams, acceptance §8. These never start a deferred surface. */
+/** Commands whose native surface is still supplied by a focused chat. */
 export const DEFERRED_COMMANDS = new Set([
-  "openCodex", "openClaude", "openGrok", "openMuse", "newChat",
-  "createProject", "search", "interruptChat",
+  "interruptChat",
   "toggleDictation", "chatEscape", "findInChat", "findNext", "findPrevious",
   "toggleTranscriptMode", "expandTranscript", "collapseTranscript",
-  "sessions", "existingSessions", "existingClaudeChats", "existingMuseChats",
-  "handOff",
 ]);
 
 /** Chat contexts share a chord with window commands; retain that distinction. */

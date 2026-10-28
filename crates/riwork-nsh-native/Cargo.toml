@@ -40,6 +40,7 @@ uuid = { version = "1", features = ["v4"] }
 [target.'cfg(target_os = "macos")'.dependencies]
 nsh-platform-macos = "=0.3.0"
 dispatch2 = "0.3"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["NSImageView", "NSImageCell"] }
 
 [build-dependencies]
 cc = "1"

@@ -30,8 +30,8 @@ pub struct ResizablePanelGroupProps {
     /// No drags: the handles stay where they are (a locked layout).
     #[prop(default)]
     pub disabled: Prop<bool>,
-    /// Reserved gap between visible panels and the indicator's thickness.
-    /// Zero keeps the upstream one-point overlay and consumes no layout space.
+    /// Reserved gap between visible panels, independent of the one-point
+    /// indicator and its wider drag target. Zero consumes no layout space.
     #[prop(default)]
     pub divider_size: Prop<Points>,
     /// The Tailwind classes of each handle's indicator, the part the app
@@ -192,12 +192,16 @@ pub fn ResizablePanelGroup(
                     }
                 })
                 .child(
-                    // The line by default, so one class draws it on either
-                    // axis (`bg-border`); the app's classes win.
+                    // A full-length hairline inside the wider drag band. Give
+                    // the otherwise empty indicator an explicit cross-axis
+                    // extent; its color alone must be enough to paint it.
+                    // The reserved layout gap does not thicken the line.
                     view()
-                        .style_with(move |v| match axis {
-                            Axis::Horizontal => v.w(props.divider_size.get().max(HANDLE_SIZE)),
-                            Axis::Vertical => v.h(props.divider_size.get().max(HANDLE_SIZE)),
+                        .flex_none()
+                        .pointer_events(PointerEvents::None)
+                        .map(|v| match axis {
+                            Axis::Horizontal => v.w(HANDLE_SIZE).h_full(),
+                            Axis::Vertical => v.h(HANDLE_SIZE).w_full(),
                         })
                         .app_class(props.handle_class)
                         .inline_style(props.handle_style)
@@ -662,7 +666,14 @@ impl Model {
             .map(|index| {
                 let gap = start(&frames[index + 1]) - end(&frames[index]);
                 at += sizes[index];
-                let boundary = at + gap / 2.0;
+                // `at` positions the leading edge of the one-point line.
+                // Center that line in a real gap; without a gap keep the
+                // upstream overlay on the following panel's leading pixel.
+                let boundary = if gap > Points::ZERO {
+                    at + (gap - HANDLE_SIZE) / 2.0
+                } else {
+                    at
+                };
                 at += gap;
                 HandleSpot {
                     axis,

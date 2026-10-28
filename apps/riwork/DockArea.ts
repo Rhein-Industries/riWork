@@ -6,6 +6,10 @@ import type { JSX } from "nsh";
 // This is the same native component value, preserving its panel mount cache.
 interface WorkspaceDockAreaProps extends DockAreaProps {
   dividerSize?: number;
+  fixedPanels?: string[];
+  draggableTabBars?: number[];
+  onDragChange?: (dragging: boolean) => void;
+  renderTabBarPrefix?: (groupId: number) => JSX.Element;
   renderTabBarSuffix?: (groupId: number) => JSX.Element;
 }
 

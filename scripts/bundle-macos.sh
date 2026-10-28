@@ -3,8 +3,9 @@ set -eu
 
 cd "$(dirname "$0")/.."
 
-profile=${1:-debug}
+profile=${1:-release}
 binary="target/$profile/riwork"
+ui="target/$profile/riwork-ui"
 bundle="target/$profile/RiWork.app"
 resources="$bundle/Contents/Resources"
 app_icon="assets/app-icon/RiWork-legacy.icns"
@@ -15,6 +16,17 @@ if [ ! -x "$binary" ]; then
         echo "Build RiWork first: cargo build -p riwork-desktop --bin riwork" >&2
     else
         echo "Build RiWork first: cargo build -p riwork-desktop --bin riwork --profile $profile" >&2
+    fi
+    exit 1
+fi
+
+if [ ! -s "$ui/bundle.js" ]; then
+    echo "The NSH UI is missing or empty: $ui/bundle.js" >&2
+    echo "Build the UI with NSH 0.3.0 before bundling; set NSH_CLI to its executable (see README.md):" >&2
+    if [ "$profile" = debug ]; then
+        echo "  \"\$NSH_CLI\" build apps/riwork --out $ui" >&2
+    else
+        echo "  \"\$NSH_CLI\" build apps/riwork --release --out $ui" >&2
     fi
     exit 1
 fi
@@ -74,6 +86,9 @@ ZIG
 rm -rf "$bundle"
 mkdir -p "$bundle/Contents/MacOS" "$resources/terminfo" "$resources/ghostty"
 cp "$binary" "$bundle/Contents/MacOS/riwork"
+# Keep the complete output together: the entry, bytecode, metadata and every
+# imported/crate asset. A packaged app must never depend on a checkout cache.
+cp -R "$ui" "$resources/riwork-ui"
 # Optional standalone connector: build with cargo build -p riwork-remote before bundling.
 remote_binary="target/$profile/riwork-remote"
 if [ -x "$remote_binary" ]; then
@@ -130,11 +145,29 @@ cat > "$bundle/Contents/Info.plist" <<'PLIST'
 </plist>
 PLIST
 
-# Give the bundle a real, stable signature instead of the linker's per-build
-# ad-hoc one: it binds Info.plist, seals the resources and fixes the identifier
-# to CFBundleIdentifier. Set CODESIGN_IDENTITY to a certificate name to sign for
-# distribution; the default is ad-hoc.
-codesign_identity=${CODESIGN_IDENTITY:--}
+# Match `riwork update`: a certificate keeps macOS folder permissions attached
+# to the app across builds. Ad-hoc signing uses a different code hash on every
+# build, and alternating it with a certificate-signed RiWork can repeatedly
+# invalidate the same bundle identifier's permission record.
+codesign_identity=${CODESIGN_IDENTITY:-}
+if [ -z "$codesign_identity" ]; then
+    codesign_identity=$(/usr/bin/security find-identity -v -p codesigning 2>/dev/null | awk '
+        length($2) == 40 && $2 !~ /[^[:xdigit:]]/ {
+            if ($0 ~ /"Developer ID Application: / && developer_id == "") developer_id = $2
+            if ($0 ~ /"Apple Development: / && development == "") development = $2
+        }
+        END {
+            if (developer_id != "") print developer_id
+            else if (development != "") print development
+        }
+    ')
+    codesign_identity=${codesign_identity:--}
+fi
+if [ "$codesign_identity" = - ]; then
+    echo "No signing certificate selected; using ad-hoc signing (folder permissions may reset after rebuilding)." >&2
+else
+    echo "Signing RiWork with $codesign_identity." >&2
+fi
 identifier=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$bundle/Contents/Info.plist")
 if [ -z "$identifier" ]; then
     echo "Could not read CFBundleIdentifier from $bundle/Contents/Info.plist" >&2

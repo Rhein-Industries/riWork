@@ -16,6 +16,7 @@ use uuid::Uuid;
 
 const BUILD_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const BUNDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+const NSH_VERSION: &str = "0.3.0";
 const SMOKE_TIMEOUT: Duration = Duration::from_secs(30);
 /// Cargo and rustc get this long to exit on SIGTERM before the group is killed.
 const STAGE_TERMINATE_GRACE: Duration = Duration::from_secs(5);
@@ -38,7 +39,7 @@ pub struct UpdateBuild {
 
 /// Where an update finds its tools, whether the bundle's signature is checked
 /// (fixture bundles in tests are not signed), and the identity it is signed
-/// with (`None`: the bundler's ad-hoc default).
+/// with (`None`: the bundler's environment/default identity selection).
 struct UpdateEnvironment {
     tool_path: std::ffi::OsString,
     verify_signature: bool,
@@ -236,6 +237,8 @@ fn build_update_with(
     // cleanup must not end the process before staging is removed.
     let _interrupts = InterruptGuard::install();
     let (source, layout) = validate_source_layout(source)?;
+    // Older GPUI checkouts have no NSH app and keep their existing build path.
+    let uses_nsh = layout == SourceLayout::Workspace && source.join("apps/riwork/nsh.json").is_file();
     let profile = update_profile(profile)?.to_owned();
     let target = source.join("target");
     fs::create_dir_all(&target)
@@ -276,6 +279,32 @@ fn build_update_with(
     )?;
     let cargo = find_tool("cargo", tool_path)
         .ok_or("Cargo is required to rebuild RiWork. Install Rust or put cargo on PATH.")?;
+    let ui_output = if uses_nsh {
+        require_source_files(&source, &["apps/riwork/App.tsx"])?;
+        let nsh = update_nsh_cli(tool_path, &source, &mut log, &log_path)?;
+        // Keep this outside the cloned Cargo cache. NSH overlays its output,
+        // so reusing a previous assets directory could ship removed assets.
+        let output = staging.path.join("riwork-ui");
+        let mut build = Command::new(nsh);
+        build
+            .current_dir(&source)
+            .args(["build", "apps/riwork", "--out"])
+            .arg(&output)
+            .env("CARGO_TARGET_DIR", &staged_target)
+            .env("PATH", tool_path);
+        if profile == "release" {
+            build.arg("--release");
+        }
+        if let Some(zig) = &environment.zig {
+            build.env("ZIG", zig);
+        }
+        eprintln!("Building the NSH interface ({profile}).");
+        run_stage(&mut build, "NSH interface build", BUILD_TIMEOUT, &mut log, &log_path)?;
+        require_nsh_bundle(&output)?;
+        Some(output)
+    } else {
+        None
+    };
     let mut build =
         desktop_build_command(&cargo, &source, &staged_target, &profile, tool_path, layout);
     if let Some(zig) = &environment.zig {
@@ -338,6 +367,18 @@ fn build_update_with(
         }
     }
 
+    if let Some(output) = ui_output {
+        let staged_ui = staged_target.join(&profile).join("riwork-ui");
+        if staged_ui.exists() {
+            fs::remove_dir_all(&staged_ui)
+                .map_err(|error| format!("Cannot clear cached NSH interface: {error}"))?;
+        }
+        fs::create_dir_all(staged_ui.parent().unwrap())
+            .map_err(|error| format!("Cannot stage the NSH interface: {error}"))?;
+        fs::rename(output, &staged_ui)
+            .map_err(|error| format!("Cannot stage the NSH interface: {error}"))?;
+    }
+
     // The existing bundler removes target/<profile>/RiWork.app. Run an exact
     // copy in a disposable checkout layout so it can never remove a live app.
     let bundler = stage_bundle_inputs(&source, &staging.path)?;
@@ -365,6 +406,9 @@ fn build_update_with(
     let staged_executable = staged_target.join(&profile).join("riwork");
     let staged_bundle = staged_target.join(&profile).join("RiWork.app");
     validate_artifacts(&staged_executable, &staged_bundle)?;
+    if uses_nsh {
+        require_nsh_bundle(&staged_bundle.join("Contents/Resources/riwork-ui"))?;
+    }
     validate_companion(&staged_bundle, companion)?;
     if environment.verify_signature {
         let mut verify = Command::new("/usr/bin/codesign");
@@ -457,6 +501,59 @@ fn desktop_build_command(
         command.arg("--release");
     }
     command
+}
+
+/// The UI compiler and native registries must speak the same pinned NSH API.
+/// An explicit tool never silently falls back to another installation on PATH.
+fn update_nsh_cli(
+    tool_path: &std::ffi::OsStr,
+    source: &Path,
+    log: &mut File,
+    log_path: &Path,
+) -> Result<PathBuf, String> {
+    let executable = match env::var_os("NSH_CLI").filter(|value| !value.is_empty()) {
+        Some(path) => {
+            let path = PathBuf::from(path);
+            if !path.is_absolute() {
+                return Err("NSH_CLI must be an absolute path to the NSH 0.3.0 executable.".into());
+            }
+            path
+        }
+        None => find_tool("nsh", tool_path).ok_or(
+            "NSH 0.3.0 is required to build this checkout. Set NSH_CLI to its absolute executable path.",
+        )?,
+    };
+    let executable = executable.canonicalize()
+        .map_err(|error| format!("Cannot resolve NSH CLI {}: {error}", executable.display()))?;
+    let offset = log.metadata().map_err(|error| format!("Cannot read update log: {error}"))?.len();
+    let mut version = Command::new(&executable);
+    version.current_dir(source).arg("--version").env("PATH", tool_path);
+    run_stage(&mut version, "NSH compiler version", Duration::from_secs(30), log, log_path)?;
+    let mut output = File::open(log_path).map_err(|error| format!("Cannot read NSH compiler version: {error}"))?;
+    output.seek(SeekFrom::Start(offset)).map_err(|error| format!("Cannot read NSH compiler version: {error}"))?;
+    let mut text = String::new();
+    output.take(8192).read_to_string(&mut text).map_err(|error| format!("Cannot read NSH compiler version: {error}"))?;
+    let supported = text.lines().any(|line| {
+        let mut words = line.split_whitespace();
+        words.next() == Some("nsh") && words.next() == Some(NSH_VERSION)
+    });
+    if !supported {
+        return Err(format!(
+            "This checkout requires NSH {NSH_VERSION}. Set NSH_CLI to that version's absolute executable path. Compiler output: {}",
+            log_path.display()
+        ));
+    }
+    Ok(executable)
+}
+
+fn require_nsh_bundle(directory: &Path) -> Result<(), String> {
+    let bundle = directory.join("bundle.js");
+    let metadata = fs::metadata(&bundle)
+        .map_err(|error| format!("NSH interface is missing at {}: {error}", bundle.display()))?;
+    if !metadata.is_file() || metadata.len() == 0 {
+        return Err(format!("NSH interface must be a nonempty file: {}", bundle.display()));
+    }
+    Ok(())
 }
 
 fn companion_build_command(

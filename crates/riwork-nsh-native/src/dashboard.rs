@@ -1,4 +1,7 @@
 //! The global window's saved preferences and the dashboard's live read.
+mod decisions;
+pub use decisions::DashboardDecisionReviewDto;
+
 use crate::{Subscription, overview, service};
 use nsh_core::prelude::*;
 use riwork_core::{
@@ -115,6 +118,25 @@ fn backend() -> Result<&'static Arc<dyn DashboardBackend>, String> {
 pub struct Dashboard;
 #[module]
 impl Dashboard {
+    /// Read the provider's current request without starting its chat host.
+    pub async fn review_decision(
+        chat_id: String,
+        request_id: String,
+        kind: Option<String>,
+    ) -> Result<DashboardDecisionReviewDto, String> {
+        service::blocking(move || decisions::review(chat_id, request_id, kind)).await
+    }
+
+    /// The opaque review retains the exact request and source event. Neither
+    /// request contents nor authority to approve are accepted back from JS.
+    pub async fn respond_decision(
+        review_id: String,
+        decision: Option<String>,
+        answers: Option<Vec<Vec<String>>>,
+    ) -> Result<DashboardDecisionReviewDto, String> {
+        service::blocking(move || decisions::respond(review_id, decision, answers)).await
+    }
+
     pub async fn get_global_window() -> Result<GlobalWindowDto, String> {
         service::blocking(|| backend()?.load().map(Into::into)).await
     }

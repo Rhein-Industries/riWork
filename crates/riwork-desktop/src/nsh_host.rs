@@ -17,11 +17,11 @@ use nsh_platform_macos::{
     objc2_app_kit::{
         NSAppearance, NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSApplication,
         NSApplicationActivationPolicy, NSApplicationDelegate, NSApplicationTerminateReply, NSEvent,
-        NSEventModifierFlags, NSEventType, NSFontManager, NSMenu, NSScreen, NSWindow,
+        NSEventModifierFlags, NSEventType, NSFontManager, NSMenu, NSModalResponseOK, NSOpenPanel, NSSavePanel, NSScreen, NSWindow,
         NSWindowDelegate, NSWindowOcclusionState, NSWindowStyleMask,
     },
     objc2_foundation::{
-        NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString,
+        NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString, NSURL,
     },
     set_ui_sets,
 };
@@ -51,7 +51,7 @@ use std::{
 use uuid::Uuid;
 
 const APP_ID: &str = "dev.riwork.shell";
-const CAPABILITIES: &str = r#"{"host":["window.*","app.*","system.*"]}"#;
+const CAPABILITIES: &str = r#"{"host":["window.*","app.*","system.*"],"clipboard":true,"openUrl":true}"#;
 
 #[cfg(test)]
 #[path = "nsh_remote_tests.rs"]
@@ -187,6 +187,8 @@ struct OpenIntent {
     forwarded: bool,
     /// A notification click: deliver `notification.activate`.
     activate: Option<Value>,
+    /// A Dock click or plain app launch: focus an existing window, regardless of project.
+    reopen: bool,
 }
 impl OpenIntent {
     fn call(call: HostCall) -> Self {
@@ -198,6 +200,12 @@ impl OpenIntent {
     fn forwarded() -> Self {
         Self {
             forwarded: true,
+            ..Self::default()
+        }
+    }
+    fn reopen() -> Self {
+        Self {
+            reopen: true,
             ..Self::default()
         }
     }
@@ -250,6 +258,17 @@ fn global_window(windows: &[WindowFacts]) -> Option<String> {
         .iter()
         .find(|w| w.kind == WindowKind::Global && !w.closing)
         .map(|w| w.id.clone())
+}
+
+/// A Dock click follows focus recency, including minimized, remote and global
+/// windows. Unlike project routing, another Space is not a reason to choose a
+/// different window; focusing the remembered window lets AppKit restore it.
+fn reopen_target(windows: &[WindowFacts]) -> Option<String> {
+    windows
+        .iter()
+        .filter(|window| !window.closing)
+        .max_by_key(|window| window.focus_serial)
+        .map(|window| window.id.clone())
 }
 
 #[derive(Debug, PartialEq)]
@@ -346,7 +365,7 @@ enum NewWindow {
     Default,
 }
 
-/// Dock "New Window" (and reopen). Remote-project windows are skipped.
+/// Explicit Dock "New Window". Remote-project windows are skipped.
 fn new_window_plan(windows: &[WindowFacts]) -> NewWindow {
     let project = windows
         .iter()
@@ -413,6 +432,8 @@ enum Main {
     Open(PreparedWindow, OpenIntent),
     Notify(Notification),
     NotificationResponse(String, Option<String>),
+    Reopen,
+    Focused(String),
     State(String),
     Close(String),
     Closed(
@@ -519,10 +540,7 @@ define_class!(
         }
         #[unsafe(method(applicationShouldHandleReopen:hasVisibleWindows:))]
         fn reopen(&self, _app: &NSApplication, _visible: bool) -> bool {
-            send(Main::Menu(MenuAction {
-                window_number: None,
-                command: "newWindow",
-            }));
+            send(Main::Reopen);
             false
         }
         #[unsafe(method(applicationDidBecomeActive:))]
@@ -549,27 +567,24 @@ define_class!(
             }
         }
         #[unsafe(method(windowDidBecomeKey:))]
-        fn key(&self, _note: &NSNotification) {
-            self.changed();
+        fn key(&self, note: &NSNotification) {
+            self.layout_controls(note);
+            if let Some(id) = &self.ivars().id {
+                // Preserve the actual event order. A later queued state sample
+                // may already see this window resign key to another window.
+                send(Main::Focused(id.clone()));
+            }
         }
         #[unsafe(method(windowDidResignKey:))]
         fn resigned(&self, _note: &NSNotification) {
             self.changed();
         }
         #[unsafe(method(windowDidResize:))]
-        fn resized(&self, _note: &NSNotification) {
+        fn resized(&self, note: &NSNotification) {
+            // Finish native chrome in this resize pass. A queued State message
+            // can arrive after presentation and visibly snap buttons back.
+            self.layout_controls(note);
             self.changed();
-        }
-        #[unsafe(method(windowDidUpdate:))]
-        fn updated(&self, note: &NSNotification) {
-            // AppKit's titlebar layout can reset standard-button positions
-            // after ordering or resizing. Correct chrome only: queueing a
-            // host state event on every AppKit update can cause idle work.
-            if let Some(object) = note.object()
-                && let Some(window) = object.downcast_ref::<NSWindow>()
-            {
-                position_controls(window);
-            }
         }
         #[unsafe(method(windowDidMove:))]
         fn moved(&self, _note: &NSNotification) {
@@ -580,7 +595,8 @@ define_class!(
             self.changed();
         }
         #[unsafe(method(windowDidChangeBackingProperties:))]
-        fn backing(&self, _note: &NSNotification) {
+        fn backing(&self, note: &NSNotification) {
+            self.layout_controls(note);
             self.changed();
         }
         #[unsafe(method(windowDidMiniaturize:))]
@@ -588,7 +604,8 @@ define_class!(
             self.changed();
         }
         #[unsafe(method(windowDidDeminiaturize:))]
-        fn deminiaturized(&self, _note: &NSNotification) {
+        fn deminiaturized(&self, note: &NSNotification) {
+            self.layout_controls(note);
             self.changed();
         }
         #[unsafe(method(windowDidEnterFullScreen:))]
@@ -596,7 +613,8 @@ define_class!(
             self.changed();
         }
         #[unsafe(method(windowDidExitFullScreen:))]
-        fn windowed(&self, _note: &NSNotification) {
+        fn windowed(&self, note: &NSNotification) {
+            self.layout_controls(note);
             self.changed();
         }
     }
@@ -609,6 +627,13 @@ impl Delegate {
     fn changed(&self) {
         if let Some(id) = &self.ivars().id {
             send(Main::State(id.clone()));
+        }
+    }
+    fn layout_controls(&self, note: &NSNotification) {
+        if let Some(object) = note.object()
+            && let Some(window) = object.downcast_ref::<NSWindow>()
+        {
+            position_controls(window);
         }
     }
 }
@@ -738,6 +763,9 @@ impl Host {
                 closing: false,
             },
         );
+        if self.windows[&id].window.isKeyWindow() {
+            self.record_focus(&id);
+        }
         self.state(&id);
         self.publish_global_selection();
         self.publish();
@@ -795,6 +823,12 @@ impl Host {
     fn publish(&self) {
         let _ = self.service.send(Service::Snapshot(self.snapshot()));
     }
+    fn record_focus(&mut self, id: &str) {
+        if let Some(window) = self.windows.get_mut(id).filter(|window| !window.closing) {
+            self.focus_serial += 1;
+            window.focus_serial = self.focus_serial;
+        }
+    }
     fn state(&mut self, id: &str) {
         if id.is_empty() {
             for id in self.windows.keys().cloned().collect::<Vec<_>>() {
@@ -803,7 +837,6 @@ impl Host {
             return;
         }
         if let Some(w) = self.windows.get_mut(id) {
-            position_controls(&w.window);
             w.normal = normal_frame(
                 w.normal,
                 w.window.frame(),
@@ -815,10 +848,6 @@ impl Host {
                 "mode": mode(&w.window), "backingScale": w.window.backingScaleFactor(),
                 "frame": geometry(w.window.frame()), "appActive": self.app.isActive()});
             if changed_state(&w.last_state, &state) {
-                if w.window.isKeyWindow() && w.last_state["key"] != true {
-                    self.focus_serial += 1;
-                    w.focus_serial = self.focus_serial;
-                }
                 let _ = w.view.host().send("window.state", state.clone());
                 w.last_state = state;
                 self.publish();
@@ -949,6 +978,12 @@ impl Host {
             }
             return;
         }
+        if intent.reopen && let Some(id) = reopen_target(&self.facts()) {
+            // Preparation happens off-thread. Another reopen or explicit open
+            // may have supplied a window while this request was in flight.
+            let _ = self.focus(&id);
+            return;
+        }
         let target = open_target(
             &prepared.runtime,
             intent.reuses_project_window(),
@@ -998,6 +1033,19 @@ impl Host {
             call.resolve(open_result(&id, created, routed));
         }
     }
+    fn reopen(&mut self) {
+        if self.quitting || self.quit_pending || self.quit_request_pending {
+            return;
+        }
+        if let Some(id) = reopen_target(&self.facts()) {
+            let _ = self.focus(&id);
+        } else {
+            let _ = self.service.send(Service::Open(
+                OpenOptions::project(None),
+                OpenIntent::reopen(),
+            ));
+        }
+    }
     /// A click on a posted notification or one of its actions (any thread → main).
     fn notification_response(&mut self, tag: String, action: Option<String>) {
         if let Some(posted) = self.posted.iter().rev().find(|p| p.tag == tag).cloned() {
@@ -1035,6 +1083,11 @@ impl Host {
                 }
             }
             Main::NotificationResponse(tag, action) => self.notification_response(tag, action),
+            Main::Reopen => self.reopen(),
+            Main::Focused(id) => {
+                self.record_focus(&id);
+                self.state(&id);
+            }
             Main::State(id) => self.state(&id),
             Main::Close(id) => self.close(&id, "user", None),
             Main::Closed(id, call, result) => match result {
@@ -1396,6 +1449,52 @@ impl Host {
                 let families = NSFontManager::sharedFontManager(self.mtm).availableFontFamilies();
                 call.resolve(json!({"families": families.iter().map(|family| family.to_string()).collect::<Vec<_>>()}));
             },
+            "system.pickChatAttachments" => {
+                let panel = NSOpenPanel::openPanel(self.mtm);
+                panel.setCanChooseFiles(true);
+                panel.setCanChooseDirectories(false);
+                panel.setAllowsMultipleSelection(true);
+                panel.setResolvesAliases(true);
+                panel.setTitle(Some(&NSString::from_str("Attach files")));
+                panel.setPrompt(Some(&NSString::from_str("Attach")));
+                let result_panel = panel.clone();
+                let pending = Rc::new(RefCell::new(Some(call)));
+                let completion = block2::RcBlock::new(move |response| {
+                    let Some(call) = pending.borrow_mut().take() else { return };
+                    let paths: Vec<String> = if response == NSModalResponseOK {
+                        result_panel.URLs().iter().filter_map(|url| url.path().map(|path| path.to_string())).collect()
+                    } else { Vec::new() };
+                    call.resolve(json!({"paths": paths}));
+                });
+                panel.beginSheetModalForWindow_completionHandler(&self.windows[&id].window, &completion);
+            }
+            "system.exportSnippet" => {
+                let Some(text) = data["text"].as_str() else { call.reject("invalid: snippet text"); return; };
+                if text.len() > crate::nsh_export::MAX_SNIPPET { call.reject("Reader/export limit: 256 KiB"); return; }
+                let text = text.to_owned();
+                let name = crate::nsh_export::suggested_name(data["name"].as_str().unwrap_or("snippet.txt"));
+                let panel = NSSavePanel::savePanel(self.mtm);
+                panel.setTitle(Some(&NSString::from_str("Save snippet")));
+                panel.setNameFieldStringValue(&NSString::from_str(&name));
+                panel.setCanCreateDirectories(true);
+                if let Some(directory) = data["directory"].as_str().filter(|value| Path::new(value).is_absolute() && !value.contains('\0')) {
+                    panel.setDirectoryURL(Some(&NSURL::fileURLWithPath_isDirectory(&NSString::from_str(directory), true)));
+                }
+                let result_panel = panel.clone();
+                let pending = Rc::new(RefCell::new(Some((call, text))));
+                let completion = block2::RcBlock::new(move |response| {
+                    let Some((call, text)) = pending.borrow_mut().take() else { return };
+                    if response != NSModalResponseOK { call.resolve(json!({"saved":false})); return; }
+                    let Some(path) = result_panel.URL().and_then(|url| url.path()).map(|path| PathBuf::from(path.to_string())) else {
+                        call.reject("Cannot read the chosen snippet destination"); return;
+                    };
+                    thread::spawn(move || match crate::nsh_export::write(path, &text) {
+                        Ok(path) => call.resolve(json!({"saved":true,"path":path})),
+                        Err(error) => call.reject(error),
+                    });
+                });
+                panel.beginSheetModalForWindow_completionHandler(&self.windows[&id].window, &completion);
+            }
             "system.openWith" | "system.revealInFinder" => {
                 // The opt-in isolated fixture verifies the complete native ->
                 // TSX -> host event path without opening any external app.
@@ -1843,12 +1942,14 @@ fn startup(args: Vec<String>) -> Result<Option<Startup>, String> {
         .enable_all()
         .build()
         .map_err(|error| format!("Cannot initialize native runtime: {error}"))?;
+    native::dictation::configure_helper_path(option_env!("RIWORK_SPEECH_HELPER_BUILT"));
     let process = runtime.block_on(native::initialize())?;
     native::schedules::start_process_ticker(home.clone())?;
     native::schedules::observe_process_changes(&process);
     // This executable is RiWork: `chat ensure` re-enters `run_cli` in nsh_main.
     // Test runners never call this, so they can never start a chat host.
     native::chat::allow_host_start();
+    native::appearance::enable_publication();
     let (bundle, directory) = crate::nsh_bundle::load()?;
     let bundle = bundle
         .with_app_id(Some(APP_ID))
@@ -2040,6 +2141,17 @@ impl RuntimeTick {
     }
 }
 
+fn forward_open(home: &Path, request: OpenRequest) {
+    let Some(path) = request.path else {
+        send(Main::Reopen);
+        return;
+    };
+    match prepare(home, OpenOptions::project(Some(path))) {
+        Ok(window) => send(Main::Open(window, OpenIntent::forwarded())),
+        Err(error) => eprintln!("riwork: forwarded open failed: {error}"),
+    }
+}
+
 fn services(mut startup: Startup, rx: mpsc::Receiver<Service>, tx: mpsc::Sender<Service>) {
     startup.instance.set_request_waker(move || {
         let _ = tx.send(Service::Wake);
@@ -2148,10 +2260,7 @@ fn services(mut startup: Startup, rx: mpsc::Receiver<Service>, tx: mpsc::Sender<
             Ok(Service::PrepareQuit) => {
                 startup.instance.stop_forwarding();
                 for open in startup.instance.drain_requests() {
-                    match prepare(&startup.home, OpenOptions::project(open.path)) {
-                        Ok(window) => send(Main::Open(window, OpenIntent::forwarded())),
-                        Err(error) => eprintln!("riwork: forwarded open failed: {error}"),
-                    }
+                    forward_open(&startup.home, open);
                 }
                 send(Main::QuitPrepared);
             }
@@ -2200,10 +2309,7 @@ fn services(mut startup: Startup, rx: mpsc::Receiver<Service>, tx: mpsc::Sender<
         }
         if reload.is_none() {
             for request in startup.instance.drain_requests() {
-                match prepare(&startup.home, OpenOptions::project(request.path)) {
-                    Ok(window) => send(Main::Open(window, OpenIntent::forwarded())),
-                    Err(e) => eprintln!("riwork: forwarded open failed: {e}"),
-                }
+                forward_open(&startup.home, request);
             }
         }
         if let Err(error) = startup.runtime.check_restore_deadline() {
@@ -2268,10 +2374,7 @@ fn services(mut startup: Startup, rx: mpsc::Receiver<Service>, tx: mpsc::Sender<
                 // the same main queue. New forwarders retry the replacement.
                 startup.instance.stop_forwarding();
                 for open in startup.instance.drain_requests() {
-                    match prepare(&startup.home, OpenOptions::project(open.path)) {
-                        Ok(window) => send(Main::Open(window, OpenIntent::forwarded())),
-                        Err(error) => eprintln!("riwork: forwarded open failed: {error}"),
-                    }
+                    forward_open(&startup.home, open);
                 }
                 restart_queued = true;
                 send(Main::Restart(request));
@@ -2327,14 +2430,24 @@ fn notification_delivery(
 }
 
 pub fn run(args: Vec<String>) -> Result<(), String> {
-    let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn"))
-        .try_init();
     let Some(mut startup) = thread::spawn(move || startup(args))
         .join()
         .map_err(|_| "NSH startup worker panicked")??
     else {
         return Ok(());
     };
+    // Finder/reload launches have no stderr. Keep renderer errors available
+    // locally so a failed reactive subtree cannot disappear without a trace.
+    let mut logger = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("error"));
+    let log_dir = startup.home.join("nsh/logs");
+    if paths::create_private_dir(&log_dir).is_ok() {
+        use std::os::unix::fs::OpenOptionsExt;
+        if let Ok(file) = std::fs::OpenOptions::new().create(true).truncate(true).write(true).mode(0o600)
+            .open(log_dir.join(format!("desktop-{}.log", std::process::id()))) {
+            logger.target(env_logger::Target::Pipe(Box::new(BoundedErrorLog { file, remaining: 4 * 1024 * 1024 })));
+        }
+    }
+    let _ = logger.try_init();
     let mtm = MainThreadMarker::new().ok_or("AppKit host must run on the main thread")?;
     let app = NSApplication::sharedApplication(mtm);
     let forced_appearance = forced_appearance(std::env::var("RIWORK_APPEARANCE").ok().as_deref())?;
@@ -2354,8 +2467,12 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     let menus = HostMenus::install(mtm, Arc::new(|action| send(Main::Menu(action))));
     let (tx, rx) = mpsc::channel();
     let components = Components::default();
+    riwork_nsh_terminal::initialize_theme_projection(
+        startup.home.clone(), Arc::new(native::appearance::set_ghostty_theme),
+    );
     riwork_nsh_terminal::register(&components, startup.home.clone());
     native::preview_macos::register(&components);
+    native::symbols_macos::register(&components);
     let (notifier, notification_center) = notification_delivery(&startup.home);
     let mut host = Host {
         #[cfg(feature = "terminal-fixture")]
@@ -2422,6 +2539,20 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     app.setDelegate(None);
     worker.join().map_err(|_| "NSH service worker panicked")?;
     Ok(())
+}
+
+struct BoundedErrorLog {
+    file: std::fs::File,
+    remaining: usize,
+}
+impl std::io::Write for BoundedErrorLog {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let count = self.remaining.min(bytes.len());
+        self.file.write_all(&bytes[..count])?;
+        self.remaining -= count;
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> { self.file.flush() }
 }
 
 #[cfg(test)]
@@ -3407,6 +3538,8 @@ mod host_names {
         "system.openWith",
         "system.revealInFinder",
         "system.fonts",
+        "system.pickChatAttachments",
+        "system.exportSnippet",
         "system.notify",
     ];
     #[cfg(test)]

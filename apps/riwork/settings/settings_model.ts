@@ -9,7 +9,7 @@ export function settingsLayout(width: number) {
 export const SETTINGS_SECTIONS = [
   { number: "01", title: "Computer use", description: "Let RiWork agents operate desktop apps through Cua.ai." },
   { number: "02", title: "Codex accounts", description: "The account new Codex sessions start with." },
-  { number: "03", title: "Appearance", description: "Terminal colors, interface font and text size." },
+  { number: "03", title: "Appearance", description: "Theme, terminal colors, interface font and text size." },
   { number: "04", title: "Files", description: "How the Files tree and its Preview pane open together." },
   { number: "05", title: "Agent sessions", description: "How agent sessions draw, how orchestrators run, and dictation." },
   { number: "06", title: "Windows", description: "How project windows open." },

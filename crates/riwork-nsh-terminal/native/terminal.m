@@ -207,7 +207,16 @@ static void closeSurface(void *userdata, bool alive) {
         view->endedReported = YES; [view emit:@"ended" fields:@{}];
     }
 }
+static bool initializeGhostty(void) {
+    // The projection and every terminal share one process initialization gate.
+    static dispatch_once_t once;
+    static int result = -1;
+    dispatch_once(&once, ^{ result = ghostty_init(0, NULL); });
+    return result == GHOSTTY_SUCCESS;
+}
 static ghostty_config_t loadConfig(const char *path) {
+    assertMainThread();
+    if (!initializeGhostty()) return NULL;
     if (!path || !path[0]) return NULL;
     NSString *base = [NSString stringWithUTF8String:path];
     NSString *override = [[base stringByDeletingPathExtension] stringByAppendingPathExtension:@"override.conf"];
@@ -237,6 +246,27 @@ static ghostty_config_t loadConfig(const char *path) {
     }
     cache[key] = [NSValue valueWithPointer:value]; [cacheOrder addObject:key];
     return ghostty_config_clone(value);
+}
+
+bool rw_terminal_read_config_colors(const char *path, uint32_t colors[18]) {
+    assertMainThread();
+    if (!colors) return false;
+    ghostty_config_t value = loadConfig(path);
+    if (!value) return false;
+    ghostty_config_color_s background = {0}, foreground = {0};
+    // The C ABI writes all 256 colors, even though RiWork projects only ANSI 0–15.
+    ghostty_config_palette_s palette = {0};
+    bool valid = ghostty_config_get(value, &background, "background", 10)
+        && ghostty_config_get(value, &foreground, "foreground", 10)
+        && ghostty_config_get(value, &palette, "palette", 7);
+    if (valid) {
+        ghostty_config_color_s values[18] = {background, foreground};
+        memcpy(values + 2, palette.colors, 16 * sizeof(ghostty_config_color_s));
+        for (size_t i = 0; i < 18; i++)
+            colors[i] = ((uint32_t)values[i].r << 16) | ((uint32_t)values[i].g << 8) | values[i].b;
+    }
+    ghostty_config_free(value);
+    return valid;
 }
 
 @implementation RWTerminalView
@@ -279,10 +309,7 @@ static ghostty_config_t loadConfig(const char *path) {
 - (BOOL)attachCommand:(const char *)command cwd:(const char *)cwd config:(const char *)path {
     assertMainThread();
     if (abandoned || closing || surface || !command || !cwd) return NO;
-    static dispatch_once_t initializedOnce;
-    static int initialized = -1;
-    dispatch_once(&initializedOnce, ^{ initialized = ghostty_init(0, NULL); });
-    if (initialized != GHOSTTY_SUCCESS) return NO;
+    if (!initializeGhostty()) return NO;
     config = loadConfig(path);
     if (!config) return NO;
     ghostty_runtime_config_s runtime = {

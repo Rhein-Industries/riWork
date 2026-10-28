@@ -234,6 +234,16 @@ pub fn model_choice(
     (model.to_owned(), effort)
 }
 
+/// Compact provider-reported counts, matching the original chat toolbar.
+pub fn tokens(count: u64) -> String {
+    match count {
+        0..=999 => count.to_string(),
+        1_000..=9_999 => format!("{:.1}k", count as f64 / 1_000.0),
+        10_000..=999_999 => format!("{}k", count / 1_000),
+        _ => format!("{:.1}M", count as f64 / 1_000_000.0),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

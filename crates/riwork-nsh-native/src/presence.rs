@@ -1,5 +1,5 @@
-//! Two-second process cache for worktree directory presence. Materializing a
-//! snapshot must not start another stat for the same path in another window.
+//! Remember presence learned from an explicit worktree refresh. Materializing
+//! an all-project snapshot must never touch project directories or request access.
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
@@ -45,10 +45,24 @@ impl PresenceCache {
     }
 }
 
-pub(crate) fn path_is_present(path: &Path) -> bool {
-    PRESENCE
-        .get_or_init(|| PresenceCache::new(TTL))
-        .sample(path, || path.is_dir())
+pub(crate) fn known_present(path: &Path) -> bool {
+    PRESENCE.get().and_then(|cache| {
+        cache.entries.lock().unwrap_or_else(PoisonError::into_inner)
+            .get(path).map(|(_, present)| *present)
+    }).unwrap_or(true)
+}
+
+pub(crate) fn refresh<'a>(paths: impl Iterator<Item = &'a Path>) {
+    let cache = PRESENCE.get_or_init(|| PresenceCache::new(TTL));
+    for path in paths {
+        cache.sample(path, || match std::fs::metadata(path) {
+            Ok(metadata) => metadata.is_dir(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            // Denied access is not evidence a checkout was removed. Keep it
+            // selectable; another explicit refresh may retry after permission.
+            Err(_) => true,
+        });
+    }
 }
 
 #[cfg(test)]

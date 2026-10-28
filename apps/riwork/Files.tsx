@@ -1,7 +1,9 @@
-import { Clipboard, Image, Scroll, Text, View, cleanup, effect, keymap, signal, type YNode } from "nsh";
+import { Clipboard, Image, List, Scroll, Text, View, cleanup, effect, host, keymap, signal, untracked, type YNode } from "nsh";
 import { Button, Editor, Input, TextView, type EditorRef } from "nsh/base";
+import { Menu } from "nsh/desktop";
 import { Files, Store, type Subscription } from "riwork/native";
-import { DEFAULT_THEME, type InterfaceTheme } from "./appearance";
+import { DEFAULT_THEME, space, type InterfaceTheme } from "./appearance";
+import { Icon, type IconName } from "./Icon";
 import { directoryData, fileRows, memoBytes, omittedLabel, previewData, reconcileListings, type DirectoryListing, type FileEntry, type FilePreview } from "./files_model";
 
 export type { FileEntry } from "./files_model";
@@ -25,16 +27,18 @@ export function createFilesController(options: FilesOptions) {
   const loading = signal(false), previewLoading = signal(false), notice = signal("");
   const renderedMarkdown = signal(true), line = signal<number | undefined>(undefined);
   const treeFocused = signal(false);
-  const filterFocused = signal(false), focused = signal<"files" | "preview" | null>(null), zoom = signal(1);
+  const filterFocused = signal(false), filterComposing = signal(false), focused = signal<"files" | "preview" | null>(null), zoom = signal(1);
   const searches = new Map<string, YNode>();
+  const treeLists = new Map<string, YNode>();
+  const treeFocus = new Map<string, YNode>();
   const theme = options.theme ?? (() => DEFAULT_THEME);
   const watches = new Map<string, Subscription>(), revisions = new Map<string, number>();
-  let currentRoot: string | null = null, generation = 0, previewGeneration = 0, alive = true;
+  let currentRoot: string | null = null, generation = 0, watchGeneration = 0, previewGeneration = 0, alive = true;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const rows = () => fileRows(currentRoot, listings(), expanded(), query(), hidden());
   const setNotice = (message: unknown) => { if (alive) notice.set(String(message)); };
   const visible = () => options.visible?.() ?? true;
-  function closeWatches() { for (const watcher of watches.values()) watcher.close(); watches.clear(); revisions.clear(); }
+  function closeWatches() { watchGeneration++; for (const watcher of watches.values()) watcher.close(); watches.clear(); revisions.clear(); }
   function receive(listing: DirectoryListing, token: number) {
     if (!alive || token !== generation || listing.root !== currentRoot) return;
     // A late child load must never recreate a folder evicted by its parent.
@@ -58,10 +62,10 @@ export function createFilesController(options: FilesOptions) {
   }
   function watch(path: string) {
     if (!currentRoot || !visible() || watches.has(path)) return;
-    const token = generation;
+    const token = generation, watchToken = watchGeneration;
     try {
       const subscription = Files.subscribe(currentRoot, path, hidden(), (event) => {
-        if (token !== generation || event.rev < (revisions.get(path) ?? 0)) return;
+        if (token !== generation || watchToken !== watchGeneration || event.rev < (revisions.get(path) ?? 0)) return;
         revisions.set(path, event.rev); receive(directoryData(event.data), token);
       });
       watches.set(path, subscription);
@@ -79,16 +83,23 @@ export function createFilesController(options: FilesOptions) {
     listings.set(new Map()); expanded.set(new Set()); query.set(""); selected.set(null);
     preview.set(null); previewEntry.set(null); line.set(undefined); notice.set(""); renderedMarkdown.set(true); zoom.set(1);
     loading.set(!!currentRoot); previewLoading.set(false);
-    if (currentRoot) { watch(currentRoot); void load(currentRoot); }
+    // The native subscription supplies the initial listing. A workspace's
+    // selected worktree alone must not read a hidden Files/Preview panel.
+    if (currentRoot && visible()) watch(currentRoot);
   }
   effect(() => { const next = options.root(); if (next !== currentRoot) resetRoot(); });
   // Visibility changes only arm subscriptions. There is no window or per-frame polling.
   effect(() => {
-    if (!visible()) { closeWatches(); return; }
+    if (!visible()) { closeWatches(); clearTimeout(timer); previewGeneration++; previewLoading.set(false); return; }
     if (currentRoot) watch(currentRoot);
     for (const path of expanded()) watch(path);
   });
-  cleanup(() => { alive = false; generation++; previewGeneration++; clearTimeout(timer); closeWatches(); searches.clear(); });
+  cleanup(() => { alive = false; generation++; previewGeneration++; clearTimeout(timer); closeWatches(); searches.clear(); treeLists.clear(); treeFocus.clear(); });
+  // A filtered-out selection must not survive as an invisible keyboard target.
+  effect(() => {
+    const current = rows(), entry = untracked(selected);
+    if (entry && !current.some((row) => row.entry.path === entry.path)) selected.set(current[0]?.entry ?? null);
+  });
 
   async function loadPreview(entry: FileEntry, explicit: boolean, page?: number) {
     clearTimeout(timer);
@@ -104,8 +115,9 @@ export function createFilesController(options: FilesOptions) {
     finally { if (alive && token === previewGeneration && rootToken === generation) previewLoading.set(false); }
   }
   function select(entry: FileEntry, explicit = true) {
-    selected.set(entry); notice.set(""); line.set(undefined);
-    if (entry.kind === "directory") toggle(entry);
+    clearTimeout(timer); previewGeneration++; previewLoading.set(false);
+    selected.set(entry); notice.set(""); line.set(undefined); zoom.set(1);
+    if (entry.kind === "directory") { toggle(entry); return; }
     options.previewRequested();
     if (explicit) void loadPreview(entry, true);
     else { clearTimeout(timer); previewGeneration++; timer = setTimeout(() => void loadPreview(entry, false), 150); }
@@ -117,20 +129,20 @@ export function createFilesController(options: FilesOptions) {
       for (const path of next) if (path.startsWith(`${entry.path}/`)) next.delete(path);
       for (const [path, subscription] of watches) if (path === entry.path || path.startsWith(`${entry.path}/`)) { subscription.close(); watches.delete(path); }
     }
-    else { next.add(entry.path); watch(entry.path); void load(entry.path); }
+    else { next.add(entry.path); watch(entry.path); }
     expanded.set(next);
   }
   function refresh() {
     if (!currentRoot) return;
     // A failed native watcher can recover on a user refresh.
-    closeWatches(); watch(currentRoot); void load(currentRoot); for (const path of expanded()) { watch(path); void load(path); }
+    closeWatches(); watch(currentRoot); for (const path of expanded()) watch(path);
     if (previewEntry()) void loadPreview(previewEntry()!, preview()?.kind === "pdf", preview()?.page);
   }
   function clearPreview() { previewGeneration++; clearTimeout(timer); preview.set(null); previewEntry.set(null); line.set(undefined); zoom.set(1); previewLoading.set(false); }
   function toggleHidden() {
     hidden.set(!hidden()); generation++; closeWatches();
-    if (currentRoot) { watch(currentRoot); void load(currentRoot); }
-    for (const path of expanded()) { watch(path); void load(path); }
+    if (currentRoot) watch(currentRoot);
+    for (const path of expanded()) watch(path);
   }
   async function edit(entry = selected(), atLine = line()) {
     if (!entry || !currentRoot || entry.kind !== "file" || !entry.identity) return;
@@ -167,17 +179,50 @@ export function createFilesController(options: FilesOptions) {
       const next = new Set(expanded()); next.add(entry.path); expanded.set(next); watch(entry.path); parent = entry.path;
     }
   }
+  async function copyPath(entry = selected()) {
+    if (!entry) return;
+    try { await Clipboard.writeText(entry.relativePath); if (alive) notice.set(`Copied ${entry.relativePath}`); }
+    catch (reason) { setNotice(reason); }
+  }
+  async function openPreviewLink(url: string) {
+    if (/^https?:\/\//i.test(url) || /^mailto:/i.test(url)) {
+      try { await host.call("system.openWith", { path: url }); } catch (reason) { setNotice(reason); }
+      return;
+    }
+    if (url.startsWith("#")) return;
+    const current = previewEntry(), root = currentRoot;
+    if (!current || !root || /^[a-z][a-z0-9+.-]*:/i.test(url)) return;
+    try {
+      const [href, fragment] = url.split("#", 2);
+      const parts = (href.startsWith("/") ? decodeURIComponent(href) : `${current.path.slice(0, current.path.lastIndexOf("/"))}/${decodeURIComponent(href)}`).split("/");
+      const resolved: string[] = [];
+      for (const part of parts) { if (part === "..") resolved.pop(); else if (part && part !== ".") resolved.push(part); }
+      const lineMatch = /^L?(\d+)/.exec(fragment ?? "");
+      await reveal(`/${resolved.join("/")}`, lineMatch ? Number(lineMatch[1]) : undefined);
+    } catch (reason) { setNotice(reason); }
+  }
   async function copyContents() {
     const entry = previewEntry(), root = currentRoot;
     if (!entry?.identity || !root) return;
     const token = generation;
-    try { const text = await Files.readText(root, entry.path, entry.identity); if (alive && token === generation) { void Clipboard.writeText(text); notice.set(`Copied ${text.split("\n").length} lines`); } }
+    try { const text = await Files.readText(root, entry.path, entry.identity); if (alive && token === generation) { await Clipboard.writeText(text); notice.set(`Copied ${text.split("\n").length} lines`); } }
     catch (reason) { setNotice(reason); }
+  }
+  function highlight(entry: FileEntry) {
+    clearTimeout(timer); previewGeneration++; previewLoading.set(false);
+    selected.set(entry); zoom.set(1); line.set(undefined);
+    const index = rows().findIndex((row) => row.entry.path === entry.path);
+    if (index >= 0) for (const list of treeLists.values()) list.scrollToIndex({ index, animated: false, viewPosition: 0.5 });
+    if (entry.kind === "file") { options.previewRequested(); timer = setTimeout(() => void loadPreview(entry, false), 150); }
   }
   function move(direction: number) {
     const current = rows(), index = current.findIndex((row) => row.entry.path === selected()?.path);
     const row = current[Math.max(0, Math.min(current.length - 1, index + direction))];
-    if (row) { selected.set(row.entry); if (row.entry.kind === "file") { options.previewRequested(); clearTimeout(timer); previewGeneration++; timer = setTimeout(() => void loadPreview(row.entry, false), 150); } }
+    if (row) highlight(row.entry);
+  }
+  function focusTree(id?: string) {
+    const node = id ? treeFocus.get(id) : treeFocus.values().next().value;
+    node?.focus(); filterFocused.set(false); treeFocused.set(true); focused.set("files");
   }
   const active = () => visible() && (options.active ? options.active() : focused());
   function navigate(key: string) {
@@ -185,14 +230,14 @@ export function createFilesController(options: FilesOptions) {
     treeFocused.set(true);
     if (key === "up" || key === "down") { move(key === "up" ? -1 : 1); return; }
     const currentRows = rows(), entry = selected();
-    if (key === "home" || key === "end") { const row = currentRows[key === "home" ? 0 : currentRows.length - 1]; if (row) { selected.set(row.entry); if (row.entry.kind === "file") { options.previewRequested(); void loadPreview(row.entry, false); } } return; }
+    if (key === "home" || key === "end") { const row = currentRows[key === "home" ? 0 : currentRows.length - 1]; if (row) highlight(row.entry); return; }
     if (!entry) return;
     if (key === "right") {
       if (entry.kind === "directory" && !expanded().has(entry.path)) toggle(entry);
-      else { const index = currentRows.findIndex((row) => row.entry.path === entry.path); const child = currentRows[index + 1]; if (child && child.depth > currentRows[index].depth) selected.set(child.entry); }
+      else { const index = currentRows.findIndex((row) => row.entry.path === entry.path); const current = currentRows[index], child = currentRows[index + 1]; if (current && child && child.depth > current.depth) highlight(child.entry); }
     } else if (key === "left") {
       if (entry.kind === "directory" && expanded().has(entry.path)) toggle(entry);
-      else { const parent = entry.path.slice(0, entry.path.lastIndexOf("/")); const row = currentRows.find((row) => row.entry.path === parent); if (row) selected.set(row.entry); }
+      else { const parent = entry.path.slice(0, entry.path.lastIndexOf("/")); const row = currentRows.find((row) => row.entry.path === parent); if (row) highlight(row.entry); }
     } else if (key === "enter") {
       if (entry.kind === "directory") toggle(entry);
       else if (entry.name.toLowerCase().endsWith(".pdf") && preview()?.kind !== "pdf") { options.previewRequested(); void loadPreview(entry, true); }
@@ -210,10 +255,11 @@ export function createFilesController(options: FilesOptions) {
       if (view === "files") {
         for (const key of ["up", "down", "home", "end", "left", "right", "enter"]) bindings.push(keymap.bind(key, () => navigate(key)));
         bindings.push(keymap.bind("mod+.", toggleHidden));
-        bindings.push(keymap.bind("mod+c", () => { if (selected()) { void Clipboard.writeText(selected()!.relativePath); notice.set(`Copied ${selected()!.relativePath}`); } }));
+        bindings.push(keymap.bind("mod+c", () => { void copyPath(); }));
       }
     }
     if (view === "preview") {
+      bindings.push(keymap.bind("escape", () => { clearPreview(); options.closePreview?.(); }));
       if (preview()?.kind === "pdf") for (const key of ["left", "right"]) bindings.push(keymap.bind(key, () => {
         if (preview()?.kind !== "pdf" || previewLoading()) return;
         const page = (preview()?.page ?? 1) + (key === "left" ? -1 : 1);
@@ -225,9 +271,9 @@ export function createFilesController(options: FilesOptions) {
     }
     return () => { for (const unbind of bindings) unbind(); };
   });
-  effect(() => { if (active() !== "files" || !query()) return; return keymap.bind("escape", () => { query.set(""); filterFocused.set(false); treeFocused.set(true); }); });
+  effect(() => { if (active() !== "files" || !query() || filterComposing()) return; return keymap.bind("escape", () => { query.set(""); focusTree(); }); });
   return { ...options, theme, listings, expanded, query, hidden, selected, preview, previewEntry, loading, previewLoading, notice, renderedMarkdown, line, treeFocused,
-    rows, resetRoot, refresh, toggleHidden, select, toggle, loadPreview, edit, open, reveal, copyContents, move, filterFocused, focused, searches, zoom, clearPreview,
+    rows, resetRoot, refresh, toggleHidden, select, toggle, loadPreview, edit, open, reveal, copyContents, copyPath, openPreviewLink, move, filterFocused, filterComposing, focused, searches, treeLists, treeFocus, focusTree, zoom, clearPreview,
     revealInFinder: (path: string) => { void Promise.resolve(options.reveal?.(path)).catch(setNotice); } };
 }
 export type FilesController = ReturnType<typeof createFilesController>;
@@ -235,54 +281,81 @@ export type FilesController = ReturnType<typeof createFilesController>;
 function styles(c: FilesController) {
   const t = c.theme();
   return { text: { fontFamily: t.family, fontSize: 11 * t.scale, color: t.palette.text }, muted: { fontFamily: t.family, fontSize: 10 * t.scale, color: t.palette.muted },
-    button: { paddingHorizontal: 7, paddingVertical: 5, borderRadius: 4, backgroundColor: t.palette.panelActive } };
+    button: { paddingHorizontal: space(10, t.scale), paddingVertical: space(4, t.scale), borderRadius: space(14, t.scale), backgroundColor: t.palette.panelActive } };
+}
+function FileAction(props: { controller: FilesController; id: string; label: string; icon: IconName; disabled?: boolean; selected?: boolean; onPress: () => void }) {
+  const c = props.controller;
+  return <Button tooltip={<View style={{ padding: 7, borderRadius: 6, backgroundColor: c.theme().palette.panelActive }}><Text style={styles(c).text}>{props.label}</Text></View>} testID={props.id} accessibilityLabel={props.label} disabled={props.disabled} selected={props.selected} onPress={props.onPress}
+    style={{ width: space(26, c.theme().scale), height: space(26, c.theme().scale), borderRadius: space(13, c.theme().scale), alignItems: "center", justifyContent: "center", opacity: props.disabled ? 0.4 : 1 }}
+    hoverStyle={{ backgroundColor: c.theme().palette.panelActive }} focusStyle={{ backgroundColor: c.theme().palette.divider }} selectedStyle={{ backgroundColor: c.theme().palette.panelActive }}>
+    <Icon name={props.icon} size={14 * c.theme().scale} color={props.selected ? c.theme().palette.text : c.theme().palette.muted} />
+  </Button>;
 }
 export function FilesPanel(props: { controller: FilesController; surface?: string }) {
   const c = props.controller, id = props.surface ?? "files";
   let search: YNode | undefined;
-  cleanup(() => c.searches.delete(id));
+  cleanup(() => { c.searches.delete(id); c.treeLists.delete(id); c.treeFocus.delete(id); });
   const empty = () => !c.root() ? "Select a worktree to browse its files." : c.loading() ? "Loading worktree…" : c.listings().get(c.root()!)?.error || (c.query() ? "No loaded files match. Clear the filter and expand folders to load more." : !c.hidden() ? "No visible files. Turn on Hidden to show dotfiles." : "This folder is empty.");
-  return <View testID="files-panel" onPress={() => c.focused.set("files")} style={{ flex: 1, minHeight: 0, gap: 6 }}>
-    <View style={{ padding: 8, gap: 6 }}>
-      <Text numberOfLines={1} style={styles(c).text}>{c.label()}</Text>
-      <View style={{ flexDirection: "row", gap: 5, alignItems: "center" }}>
-        <Text style={styles(c).muted}>{`${c.rows().length} items`}</Text><View style={{ flex: 1 }} />
-        <Button testID={`files-refresh:${id}`} accessibilityLabel="Refresh Files" onPress={c.refresh} style={styles(c).button}><Text style={styles(c).text}>Refresh</Text></Button>
-        <Button testID={`files-hidden:${id}`} accessibilityLabel="Show hidden files" selected={c.hidden()} onPress={c.toggleHidden} style={styles(c).button}><Text style={styles(c).text}>{c.hidden() ? "● Hidden" : "○ Hidden"}</Text></Button>
-        <Button testID={`files-reveal-root:${id}`} disabled={!c.root()} accessibilityLabel="Reveal worktree in Finder" onPress={() => { if (c.root()) c.revealInFinder(c.root()!); }} style={styles(c).button}><Text style={styles(c).text}>Reveal</Text></Button>
+  function contextMenu(entry: FileEntry) {
+    c.selected.set(entry);
+    void Menu.popup([
+      { label: "Preview", disabled: entry.kind !== "file", onSelect: () => c.select(entry) },
+      { label: "Edit in Vim", disabled: entry.kind !== "file" || !entry.identity, onSelect: () => void c.edit(entry) },
+      { label: "Open externally", disabled: entry.kind === "symlink", onSelect: () => void c.open(entry) },
+      { type: "separator" },
+      { label: "Copy path", onSelect: () => void c.copyPath(entry) },
+      { label: "Reveal in Finder", onSelect: () => c.revealInFinder(entry.path) },
+    ]);
+  }
+  return <View testID="files-panel" ref={(node) => c.treeFocus.set(id, node)} focusable={true} accessibilityLabel="Files"
+    onFocus={() => { c.focused.set("files"); c.treeFocused.set(true); }} onBlur={() => c.treeFocused.set(false)}
+    onPress={() => c.focused.set("files")} style={{ flex: 1, minHeight: 0, backgroundColor: c.theme().palette.panel }}>
+    <View style={{ height: space(46, c.theme().scale), paddingLeft: space(12, c.theme().scale), paddingRight: space(8, c.theme().scale), flexDirection: "row", alignItems: "center", gap: 6 }}>
+      <View style={{ flex: 1, minWidth: 0, gap: 1 }}>
+        <Text style={{ ...styles(c).text, fontSize: 13 * c.theme().scale, fontWeight: "600" }}>Files</Text>
+        <Text numberOfLines={1} style={styles(c).muted}>{c.root() ? `${c.label()} · ${c.rows().length} ${c.rows().length === 1 ? "item" : "items"}` : "No worktree"}</Text>
       </View>
-      <Input testID={`files-filter:${id}`} ref={(node) => { search = node; c.searches.set(id, node); }} accessibilityLabel="Filter loaded files" placeholder="Filter loaded files…" value={c.query()} onChange={(value) => c.query.set(value)} onFocus={() => { c.focused.set("files"); c.filterFocused.set(true); }} onBlur={() => c.filterFocused.set(false)} onSubmit={() => { c.filterFocused.set(false); c.treeFocused.set(true); }} />
-      {c.query() !== "" && <Button testID={`files-clear:${id}`} onPress={() => { c.query.set(""); search?.focus(); }}><Text style={styles(c).muted}>Clear filter</Text></Button>}
-    </View>
-    {c.notice() !== "" && <Text testID="files-notice" role="alert" style={{ ...styles(c).text, color: c.theme().palette.gold }}>{c.notice()}</Text>}
-    <Scroll testID={`files-tree:${id}`} style={{ flex: 1, minHeight: 0 }}>
-      <View role="list" accessibilityLabel="Files">
-        {c.rows().map(({ entry, depth }) => <View testID={`file:${entry.relativePath}`} role="row" accessibilityLabel={entry.relativePath}
-          accessibilityState={{ selected: c.selected()?.path === entry.path, expanded: entry.kind === "directory" ? c.expanded().has(entry.path) : undefined }}
-          onPress={(event) => { c.filterFocused.set(false); c.treeFocused.set(true); c.select(entry); if (event?.clickCount === 2 && entry.kind === "file") void c.edit(entry); }} style={{ height: 27, paddingLeft: 8 + depth * 14, paddingRight: 8, flexDirection: "row", alignItems: "center", gap: 5,
-            backgroundColor: c.selected()?.path === entry.path ? c.theme().palette.panelActive : "transparent" }}>
-          <Text style={{ ...styles(c).text, color: entry.kind === "directory" ? c.theme().palette.cyan : entry.kind === "symlink" ? c.theme().palette.magenta : c.theme().palette.muted }}>{entry.kind === "directory" ? c.expanded().has(entry.path) ? "▾" : "▸" : entry.kind === "symlink" ? "↗" : "·"}</Text>
-          <Text numberOfLines={1} style={{ ...styles(c).text, flex: 1 }}>{entry.name}</Text>
-          {entry.kind === "symlink" && <Text style={styles(c).muted}>LINK</Text>}
-          {entry.gitStatus && <Text testID={`git:${entry.relativePath}`} accessibilityLabel={`Git ${entry.gitStatus}`} style={{ ...styles(c).muted, color: c.theme().palette.gold }}>{entry.gitStatus}</Text>}
-        </View>)}
-        {c.rows().length === 0 && <Text testID="files-empty" style={{ ...styles(c).muted, padding: 12 }}>{empty()}</Text>}
-        {!c.query() && [...c.listings().values()].filter((listing) => listing.omitted > 0 && (listing.path === c.root() || c.expanded().has(listing.path))).map((listing) => <Text style={{ ...styles(c).muted, padding: 8 }}>{omittedLabel(listing.omitted, listing.scanLimited)}</Text>)}
-      </View>
-    </Scroll>
-    <View style={{ padding: 8, gap: 5 }}>
-      <Text testID="files-selection" numberOfLines={1} style={styles(c).muted}>{c.selected()?.relativePath ?? "Select a file or folder"}</Text>
-      <View style={{ flexDirection: "row", gap: 6 }}>
-        <Button testID={`files-open:${id}`} disabled={!c.selected()} onPress={() => void c.open()} style={styles(c).button}><Text style={styles(c).text}>Open</Text></Button>
-        <Button testID={`files-edit:${id}`} disabled={c.selected()?.kind !== "file" || !c.selected()?.identity} onPress={() => void c.edit()} style={styles(c).button}><Text style={styles(c).text}>Edit in Vim</Text></Button>
+      <View style={{ flexDirection: "row", gap: 2 }}>
+        <FileAction controller={c} id={`files-refresh:${id}`} label="Refresh Files" icon="refresh" onPress={c.refresh} />
+        <FileAction controller={c} id={`files-hidden:${id}`} label="Show hidden files" icon="eye" selected={c.hidden()} onPress={c.toggleHidden} />
+        <FileAction controller={c} id={`files-reveal-root:${id}`} label="Reveal worktree in Finder" icon="folder" disabled={!c.root()} onPress={() => { if (c.root()) c.revealInFinder(c.root()!); }} />
       </View>
     </View>
+    <View style={{ paddingHorizontal: space(12, c.theme().scale), paddingBottom: space(6, c.theme().scale) }}>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 5, height: space(28, c.theme().scale), paddingHorizontal: 9, borderRadius: space(14, c.theme().scale), backgroundColor: c.theme().palette.panelActive }}>
+        <Icon name="search" size={13 * c.theme().scale} color={c.theme().palette.muted} />
+        <Input testID={`files-filter:${id}`} ref={(node) => { search = node; c.searches.set(id, node); }} accessibilityLabel="Filter loaded files" placeholder="Filter loaded files…" value={c.query()} onChange={(value) => c.query.set(value)} onFocus={() => { c.focused.set("files"); c.filterFocused.set(true); }} onBlur={() => c.filterFocused.set(false)} onCompositionChange={(event) => c.filterComposing.set(event.composing)} onSubmit={() => { if (!c.filterComposing()) c.focusTree(id); }} style={{ ...styles(c).text, padding: 0, flex: 1, minWidth: 0, backgroundColor: "transparent" }} />
+        {c.query() !== "" && <FileAction controller={c} id={`files-clear:${id}`} label="Clear filter" icon="close" onPress={() => { c.query.set(""); search?.focus(); }} />}
+      </View>
+    </View>
+    {c.notice() !== "" && <Text testID="files-notice" role="alert" style={{ ...styles(c).text, color: c.theme().palette.gold, paddingHorizontal: 12, paddingBottom: 6 }}>{c.notice()}</Text>}
+    <List testID={`files-tree:${id}`} ref={(node) => c.treeLists.set(id, node)} each={c.rows()} keyExtractor={(item) => item.entry.path} estimatedItemSize={space(26, c.theme().scale)} style={{ flex: 1, minHeight: 0 }} contentStyle={{ paddingHorizontal: space(6, c.theme().scale), paddingBottom: 6 }}
+      empty={<View style={{ minHeight: space(120, c.theme().scale), padding: 24, gap: 8, alignItems: "center", justifyContent: "center" }}><Icon name="folder" size={22 * c.theme().scale} color={c.theme().palette.muted} /><Text testID="files-empty" style={{ ...styles(c).muted, textAlign: "center" }}>{empty()}</Text></View>}>
+      {(item) => <FileRow item={item} />}
+    </List>
+    {!c.query() && [...c.listings().values()].filter((listing) => listing.omitted > 0 && (listing.path === c.root() || c.expanded().has(listing.path))).map((listing) => <Text style={{ ...styles(c).muted, padding: 8 }}>{omittedLabel(listing.omitted, listing.scanLimited)}</Text>)}
+    <Text testID="files-selection" numberOfLines={1} style={{ ...styles(c).muted, fontSize: 9 * c.theme().scale, fontFamily: c.selected() ? c.theme().monoFamily : c.theme().family, paddingHorizontal: space(12, c.theme().scale), paddingVertical: 8 }}>{c.selected()?.relativePath ?? "Select a file or folder"}</Text>
   </View>;
+
+  function FileRow(props: { item: () => { entry: FileEntry; depth: number } }) {
+    const entry = () => props.item().entry;
+    return <View testID={`file:${entry().relativePath}`} role="row" accessibilityLabel={entry().relativePath}
+      accessibilityState={{ selected: c.selected()?.path === entry().path, expanded: entry().kind === "directory" ? c.expanded().has(entry().path) : undefined }}
+      onContextMenu={() => contextMenu(entry())} onPress={(event) => { c.focusTree(id); c.select(entry()); if (event?.clickCount === 2 && entry().kind === "file") void c.edit(entry()); }}
+      style={{ height: space(26, c.theme().scale), paddingLeft: space(6 + props.item().depth * 16, c.theme().scale), paddingRight: 6, flexDirection: "row", alignItems: "center", gap: 5, borderRadius: space(7, c.theme().scale), backgroundColor: c.selected()?.path === entry().path ? c.theme().palette.panelActive : "transparent" }}
+      hoverStyle={{ backgroundColor: c.theme().palette.panelActive }} focusStyle={{ backgroundColor: c.theme().palette.divider }}>
+      <Icon name={entry().kind === "directory" ? c.expanded().has(entry().path) ? "down" : "right" : entry().kind === "symlink" ? "open" : "file"} size={12 * c.theme().scale} color={c.theme().palette.muted} />
+      <Text numberOfLines={1} style={{ ...styles(c).text, fontFamily: c.theme().monoFamily, flex: 1 }}>{entry().name}</Text>
+      {entry().kind === "symlink" && <Text style={styles(c).muted}>Link</Text>}
+      {entry().gitStatus && <Text testID={`git:${entry().relativePath}`} accessibilityLabel={`Git ${entry().gitStatus}`} style={{ ...styles(c).muted, color: c.theme().palette.gold }}>{entry().gitStatus}</Text>}
+    </View>;
+  }
 }
 
 export function PreviewPanel(props: { controller: FilesController }) {
   const c = props.controller, data = c.preview, entry = c.previewEntry;
   const editor = signal<EditorRef | null>(null);
+  const compact = signal(false);
   effect(() => {
     const node = editor(), atLine = c.line(), content = data();
     if (!node || !atLine || content?.kind !== "text") return;
@@ -290,34 +363,53 @@ export function PreviewPanel(props: { controller: FilesController }) {
     if (atLine > lines.length) { c.notice.set(`Line ${atLine} is past the end of ${content.truncated ? "this preview, which stops early" : "this file"}.`); return; }
     node.revealPosition({ line: Math.max(0, atLine - 1), column: 0 }, true);
   });
-  return <View testID="file-preview-panel" onPress={() => c.focused.set("preview")} style={{ flex: 1, minHeight: 0, gap: 8, padding: 10 }}>
-    <Text testID="preview-title" numberOfLines={1} style={styles(c).text}>{entry()?.relativePath ?? "Preview"}</Text>
-    <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
-      <Button testID="preview-open" disabled={!entry()} onPress={() => void c.open(entry())} style={styles(c).button}><Text style={styles(c).text}>Open</Text></Button>
-      <Button testID="preview-reveal" disabled={!entry()} onPress={() => { if (entry()) c.revealInFinder(entry()!.path); }} style={styles(c).button}><Text style={styles(c).text}>Reveal</Text></Button>
-      <Button testID="preview-edit" disabled={entry()?.kind !== "file" || !entry()?.identity} onPress={() => void c.edit(entry())} style={styles(c).button}><Text style={styles(c).text}>Edit in Vim</Text></Button>
-      <Button testID="preview-copy-contents" disabled={data()?.kind !== "text"} onPress={() => void c.copyContents()} style={styles(c).button}><Text style={styles(c).text}>Copy contents</Text></Button>
-      <Button testID="preview-zoom-out" onPress={() => c.zoom.set(Math.max(data()?.kind === "text" ? 0.5 : 0.05, c.zoom() / 1.2))} style={styles(c).button}><Text style={styles(c).text}>−</Text></Button>
-      <Button testID="preview-zoom-fit" onPress={() => c.zoom.set(1)} style={styles(c).button}><Text style={styles(c).text}>{`Fit · ${Math.round(c.zoom() * 100)}%`}</Text></Button>
-      <Button testID="preview-zoom-in" onPress={() => c.zoom.set(Math.min(5, c.zoom() * 1.2))} style={styles(c).button}><Text style={styles(c).text}>+</Text></Button>
-      {data()?.markdown && <Button testID="preview-markdown-mode" onPress={() => c.renderedMarkdown.set(!c.renderedMarkdown())} style={styles(c).button}><Text style={styles(c).text}>{c.renderedMarkdown() ? "Source" : "Rendered"}</Text></Button>}
-      {c.closePreview && <Button testID="preview-close" accessibilityLabel="Close Preview" onPress={() => { c.clearPreview(); c.closePreview?.(); }} style={styles(c).button}><Text style={styles(c).text}>Close</Text></Button>}
+  return <View testID="file-preview-panel" onLayout={(bounds) => compact.set(bounds.size.width < space(360, c.theme().scale))}
+    onPress={() => c.focused.set("preview")} style={{ flex: 1, minHeight: 0, backgroundColor: c.theme().palette.bg }}>
+    <View testID="preview-toolbar" style={{ height: space(38, c.theme().scale), paddingHorizontal: space(8, c.theme().scale), flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: c.theme().palette.panel }}>
+      <Icon name="file" size={14 * c.theme().scale} color={c.theme().palette.muted} />
+      <Text testID="preview-title" numberOfLines={1} style={{ ...styles(c).text, flex: 1, minWidth: 0, fontWeight: "600" }}>{entry()?.relativePath ?? "Preview"}</Text>
+      <FileAction controller={c} id="preview-edit" label="Edit in Vim" icon="terminal" disabled={entry()?.kind !== "file" || !entry()?.identity} onPress={() => void c.edit(entry())} />
+      {!compact() && <>
+        <FileAction controller={c} id="preview-copy-path" label="Copy path" icon="copy" disabled={!entry()} onPress={() => void c.copyPath(entry())} />
+        <FileAction controller={c} id="preview-reveal" label="Reveal in Finder" icon="folder" disabled={!entry()} onPress={() => { if (entry()) c.revealInFinder(entry()!.path); }} />
+        <FileAction controller={c} id="preview-open" label="Open externally" icon="open" disabled={!entry() || entry()?.kind === "symlink"} onPress={() => void c.open(entry())} />
+      </>}
+      <FileAction controller={c} id="preview-more" label="Preview actions" icon="more" disabled={!entry()} onPress={() => void Menu.popup([
+        { label: "Edit in Vim", shortcut: "mod+e", disabled: entry()?.kind !== "file" || !entry()?.identity, onSelect: () => void c.edit(entry()) },
+        { label: "Open externally", shortcut: "mod+o", disabled: !entry() || entry()?.kind === "symlink", onSelect: () => void c.open(entry()) },
+        { label: "Reveal in Finder", disabled: !entry(), onSelect: () => { if (entry()) c.revealInFinder(entry()!.path); } },
+        { label: "Copy path", disabled: !entry(), onSelect: () => void c.copyPath(entry()) },
+        { type: "separator" },
+        { label: "Copy contents", disabled: data()?.kind !== "text", onSelect: () => void c.copyContents() },
+        { label: c.renderedMarkdown() ? "Show Markdown source" : "Render Markdown", disabled: !data()?.markdown, onSelect: () => c.renderedMarkdown.set(!c.renderedMarkdown()) },
+        { type: "separator" },
+        { label: "Zoom in", onSelect: () => c.zoom.set(Math.min(5, c.zoom() * 1.2)) },
+        { label: "Zoom out", onSelect: () => c.zoom.set(Math.max(data()?.kind === "text" ? 0.5 : 0.05, c.zoom() / 1.2)) },
+        { label: "Actual size", onSelect: () => c.zoom.set(1) },
+      ])} />
+      {c.closePreview && <FileAction controller={c} id="preview-close" label="Close Preview" icon="close" onPress={() => { c.clearPreview(); c.closePreview?.(); }} />}
+    </View>
+    <View style={{ flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: space(12, c.theme().scale), paddingVertical: 4, backgroundColor: c.theme().palette.panel, borderBottomWidth: 1, borderBottomColor: c.theme().palette.divider }}>
+      <Text testID="preview-metadata" numberOfLines={1} style={{ ...styles(c).muted, flex: 1 }}>{data()?.kind === "text" ? data()?.markdown ? c.renderedMarkdown() ? "Markdown · Read only" : "Markdown source · Read only" : "Text / Code · Read only" : data()?.kind === "image" || data()?.kind === "pdf" ? `${data()?.mime ?? (data()?.kind === "pdf" ? "PDF" : "Image")} · ${data()?.width ?? 0} × ${data()?.height ?? 0} pixels` : "Read only"}</Text>
+      {!compact() && data()?.kind === "text" && <Button testID="preview-copy-contents" onPress={() => void c.copyContents()} style={styles(c).button}><Text style={styles(c).muted}>Copy contents</Text></Button>}
+      {!compact() && data()?.markdown && <Button testID="preview-markdown-mode" onPress={() => c.renderedMarkdown.set(!c.renderedMarkdown())} style={styles(c).button}><Text style={styles(c).muted}>{c.renderedMarkdown() ? "Source" : "Rendered"}</Text></Button>}
+      <Button testID="preview-zoom-out" accessibilityLabel="Zoom out" disabled={!data()} onPress={() => c.zoom.set(Math.max(data()?.kind === "text" ? 0.5 : 0.05, c.zoom() / 1.2))} style={{ paddingHorizontal: 5 }}><Text style={styles(c).text}>−</Text></Button>
+      <Button testID="preview-zoom-fit" accessibilityLabel="Actual size" disabled={!data()} onPress={() => c.zoom.set(1)}><Text style={styles(c).muted}>{`${Math.round(c.zoom() * 100)}%`}</Text></Button>
+      <Button testID="preview-zoom-in" accessibilityLabel="Zoom in" disabled={!data()} onPress={() => c.zoom.set(Math.min(5, c.zoom() * 1.2))} style={{ paddingHorizontal: 5 }}><Text style={styles(c).text}>+</Text></Button>
     </View>
     {c.notice() !== "" && <Text testID="preview-notice" role="alert" style={{ ...styles(c).text, color: c.theme().palette.gold }}>{c.notice()}</Text>}
     {c.previewLoading() && !data() && <Text style={styles(c).muted}>Loading…</Text>}
-    {!data() && !c.previewLoading() && <Text testID="preview-empty" style={styles(c).muted}>Select a file to preview it.</Text>}
-    {data()?.truncated && <Text testID="preview-truncated" style={{ ...styles(c).muted, color: c.theme().palette.gold }}>PREVIEW TRUNCATED AT 1 MiB OR 10,000 LINES</Text>}
-    {data()?.kind === "message" && <View testID="preview-fallback" style={{ gap: 8 }}><Text selectable={true} style={styles(c).muted}>{data()?.message}</Text>
+    {!data() && !c.previewLoading() && <Text testID="preview-empty" style={{ ...styles(c).muted, padding: 24 }}>Select a file to preview it.</Text>}
+    {data()?.truncated && <Text testID="preview-truncated" style={{ ...styles(c).muted, color: c.theme().palette.gold }}>Preview truncated at 1 MiB or 10,000 lines</Text>}
+    {data()?.kind === "message" && <View testID="preview-fallback" style={{ gap: 8, padding: 12 }}><Text selectable={true} style={styles(c).muted}>{data()?.message}</Text>
       {entry()?.name.toLowerCase().endsWith(".pdf") && <Button testID="preview-pdf-request" disabled={c.previewLoading()} onPress={() => { if (entry()) void c.loadPreview(entry()!, true); }} style={styles(c).button}><Text style={styles(c).text}>Preview PDF</Text></Button>}
     </View>}
     {data()?.kind === "text" && <View testID="preview-text" style={{ flex: 1, minHeight: 0 }}>
-      <Text style={styles(c).muted}>{data()?.markdown ? c.renderedMarkdown() ? "MARKDOWN · READ ONLY" : "MARKDOWN SOURCE · READ ONLY" : "TEXT / CODE · READ ONLY"}</Text>
-      {data()?.markdown && c.renderedMarkdown() ? <Scroll style={{ flex: 1, minHeight: 0 }}><TextView testID="preview-markdown" markdown={data()?.text ?? data()?.lines?.join("\n") ?? ""} selectable={true} links="report" renderImage={(image) => <Text style={styles(c).muted}>{`[Image: ${image.alt ?? "image"}]`}</Text>} styles={{ root: styles(c).text, code: { fontFamily: c.theme().monoFamily } }} /></Scroll> :
+      {data()?.markdown && c.renderedMarkdown() ? <Scroll style={{ flex: 1, minHeight: 0 }} contentStyle={{ padding: space(16, c.theme().scale) }}><TextView testID="preview-markdown" markdown={data()?.text ?? data()?.lines?.join("\n") ?? ""} selectable={true} links="report" onLinkPress={(event) => void c.openPreviewLink(event.url)} renderImage={(image) => <Text style={styles(c).muted}>{`[Image: ${image.alt ?? "image"}]`}</Text>} styles={{ root: { ...styles(c).text, fontSize: 12 * c.theme().scale * c.zoom() }, code: { fontFamily: c.theme().monoFamily } }} /></Scroll> :
         <Editor testID="preview-code" ref={(node) => editor.set(node)} value={data()?.text ?? data()?.lines?.join("\n") ?? ""} language={entry()?.name} readOnly={true} lineNumbers={true} fontFamily={c.theme().monoFamily} fontSize={12 * c.theme().scale * c.zoom()}
           decorations={c.line() ? [{ range: { start: { line: Math.max(0, c.line()! - 1), column: 0 }, end: { line: Math.max(0, c.line()! - 1), column: 4000 } }, lineStyle: { backgroundColor: c.theme().palette.panelActive } }] : []} style={{ flex: 1, minHeight: 0 }} />}
     </View>}
     {(data()?.kind === "image" || data()?.kind === "pdf") && <View testID={`preview-${data()!.kind}`} style={{ flex: 1, minHeight: 0, gap: 8 }}>
-      <Text style={styles(c).muted}>{`${data()?.mime ?? (data()?.kind === "pdf" ? "PDF" : "Image")} · ${data()?.width ?? 0} × ${data()?.height ?? 0} pixels`}</Text>
       {data()?.dataUrl && <Scroll minimumZoomScale={0.05} maximumZoomScale={5} zoomScale={c.zoom()} style={{ flex: 1, minHeight: 0 }} contentStyle={{ flexGrow: 1 }}><Image testID="preview-bitmap" src={data()!.dataUrl!} resizeMode="contain" style={{ flex: 1, minHeight: 100 }} /></Scroll>}
       {data()?.kind === "pdf" && <View style={{ flexDirection: "row", gap: 10, alignItems: "center" }}>
         <Button testID="preview-pdf-prev" disabled={c.previewLoading() || (data()?.page ?? 1) <= 1} onPress={() => { if (entry()) void c.loadPreview(entry()!, true, (data()?.page ?? 1) - 1); }}><Text style={styles(c).text}>‹ Prev</Text></Button>

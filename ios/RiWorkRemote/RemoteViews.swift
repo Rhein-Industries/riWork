@@ -354,7 +354,7 @@ struct RemoteRootView: View {
     }
 }
 
-private struct LibraryFailureView: View {
+struct LibraryFailureView: View {
     @Environment(\.desktopStyle) private var style
     @Bindable var model: RemoteModel
     @State private var confirmingReset = false

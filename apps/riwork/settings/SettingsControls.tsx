@@ -5,13 +5,13 @@ import { DEFAULT_THEME, space, type InterfaceTheme } from "../appearance";
 export type Theme = () => InterfaceTheme;
 export const defaultTheme: Theme = () => DEFAULT_THEME;
 export const textStyle = (theme: Theme, size = 11, muted = false) => ({ fontFamily: theme().family, fontSize: size * theme().scale, color: muted ? theme().palette.muted : theme().palette.text });
-export const buttonStyle = (theme: Theme) => ({ paddingHorizontal: space(9, theme().scale), paddingVertical: space(6, theme().scale), borderRadius: 5, borderWidth: 1, borderColor: theme().palette.divider, backgroundColor: theme().palette.panel });
+export const buttonStyle = (theme: Theme) => ({ paddingHorizontal: space(9, theme().scale), paddingVertical: space(5, theme().scale), borderRadius: 6, borderWidth: 0, backgroundColor: theme().palette.panelActive });
 
 export function Section(props: { number: string; title: string; description?: string; theme?: Theme; padding?: number; children?: JSX.Element }) {
   const theme = props.theme ?? defaultTheme;
-  return <View testID={`settings-section-${props.number}`} style={{ padding: props.padding ?? space(14, theme().scale), gap: space(10, theme().scale), borderWidth: 0, borderBottomWidth: 1, borderColor: theme().palette.divider, borderRadius: 0, backgroundColor: theme().palette.panel }}>
-    <View style={{ gap: 4 }}>
-      <Text role="header" style={{ ...textStyle(theme, 13), fontWeight: "600" }}>{props.title}</Text>
+  return <View testID={`settings-section-${props.number}`} style={{ paddingHorizontal: space(6, theme().scale), paddingTop: space(10, theme().scale), paddingBottom: space(14, theme().scale), gap: space(12, theme().scale), borderWidth: 0, borderBottomWidth: 1, borderColor: theme().palette.divider, borderRadius: 0, backgroundColor: "transparent" }}>
+    <View style={{ gap: space(2, theme().scale) }}>
+      <Text role="header" style={{ ...textStyle(theme, 10, true), fontWeight: "600" }}>{props.title}</Text>
       {props.description && <Text style={{ ...textStyle(theme, 10, true), maxWidth: 560 }}>{props.description}</Text>}
     </View>
     {props.children}
@@ -55,15 +55,15 @@ export function ChoiceRow(props: { id: string; label: string; description?: stri
   return <View testID={`setting-row-${props.id}`} style={{ gap: 6, paddingVertical: space(7, theme().scale) }}>
     <Text style={textStyle(theme)}>{props.label}</Text>
     {props.description && <Text style={{ ...textStyle(theme, 10, true), maxWidth: 560 }}>{props.description}</Text>}
-    <View testID={props.id} role="radiogroup" accessibilityLabel={props.label} style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
+    <View testID={props.id} role="radiogroup" accessibilityLabel={props.label} style={{ flexDirection: "row", flexWrap: "wrap", alignSelf: "flex-start", gap: space(2, theme().scale), padding: space(2, theme().scale), borderRadius: 8, backgroundColor: theme().palette.panelActive }}>
       {props.choices.map((choice) => <View testID={choice.id} ref={(node) => refs.set(choice.id, node)} role="radio" accessibilityLabel={choice.label}
         disabled={!!props.disabled || !!choice.disabled}
         accessibilityState={{ checked: props.value === choice.id, selected: props.value === choice.id, disabled: !!props.disabled || !!choice.disabled }}
         focusable={!props.disabled && !choice.disabled && (tabStop() === choice.id || focused() === choice.id)}
         onFocus={() => { if (alive) focused.set(choice.id); }} onBlur={() => { if (alive) focused.set(null); }} onPress={() => choose(choice.id)}
-        style={{ ...buttonStyle(theme), opacity: props.disabled || choice.disabled ? 0.45 : 1, borderColor: props.value === choice.id ? theme().palette.cyan : theme().palette.divider, backgroundColor: props.value === choice.id ? theme().palette.panelActive : theme().palette.panel }}
-        focusStyle={{ borderColor: theme().palette.focus }}>
-        <Text style={textStyle(theme, 10)}>{choice.label}</Text>
+        style={{ ...buttonStyle(theme), opacity: props.disabled || choice.disabled ? 0.45 : 1, borderColor: theme().palette.focus, backgroundColor: props.value === choice.id ? theme().palette.bg : "transparent" }}
+        focusStyle={{ borderWidth: 1, borderColor: theme().palette.focus }}>
+        <Text style={{ ...textStyle(theme, 10), color: props.value === choice.id ? theme().palette.text : theme().palette.muted }}>{choice.label}</Text>
         {choice.description && <Text style={textStyle(theme, 9, true)}>{choice.description}</Text>}
       </View>)}
     </View>

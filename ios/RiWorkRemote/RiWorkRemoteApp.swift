@@ -10,7 +10,7 @@ import UIKit
     }
     var body: some Scene {
         WindowGroup {
-            RemoteRootView(model: model)
+            NSHMobileRoot(model: model)
                 .desktopThemed(model.theme.style)
                 .modifier(TerminalPixelScale(model: model))
                 // Dictation is biased towards the session on screen, read fresh each time it starts.

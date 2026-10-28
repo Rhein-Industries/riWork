@@ -4,6 +4,8 @@ mod nsh_bundle;
 #[cfg(target_os = "macos")]
 mod nsh_chrome;
 #[cfg(target_os = "macos")]
+mod nsh_export;
+#[cfg(target_os = "macos")]
 mod nsh_host;
 #[cfg(target_os = "macos")]
 mod nsh_menus;

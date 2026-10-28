@@ -30,12 +30,29 @@ macro_rules! serde_js {
     };
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtifactDto {
+    pub item_id: String,
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_index: Option<usize>,
+}
+
 /// One flattened, visible transcript entry: a header, never a body. Its `key`
 /// is the List key and the body-map key (sections of long answers would be
 /// `<id>#<block>`; Phase 4a keeps answers whole).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RowDto {
+    pub artifacts: Vec<ArtifactDto>,
+    pub file_count: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<AttachmentDto>,
     pub key: String,
     pub id: String,
     pub kind: String,
@@ -64,7 +81,7 @@ pub struct RowDto {
     pub has_body: bool,
 }
 
-const ROW_TS: &str = "export interface ChatRow { key: string; id: string; kind: 'user' | 'final' | 'commentary' | 'reasoning' | 'shell' | 'read' | 'search' | 'list' | 'web_search' | 'web_fetch' | 'mcp' | 'worker' | 'subagent' | 'other' | 'edit' | 'plan' | 'todo' | 'compaction' | 'notice' | 'request' | 'group' | 'activity'; depth: number; title: string; target?: string; meta?: string; open: boolean; disclosure: boolean; failedCount: number; running: boolean; durationMs?: number; currentLabel?: string; provisional: boolean; requestId?: string; status?: 'in_progress' | 'completed' | 'failed' | 'declined' | 'interrupted'; hasBody: boolean; }";
+const ROW_TS: &str = "export interface ChatRow { artifacts?: {itemId:string;label:string;path?:string|null;line?:number|null;imageIndex?:number|null}[]; fileCount?:number; attachments?: ChatAttachment[]; key: string; id: string; kind: 'user' | 'final' | 'commentary' | 'reasoning' | 'shell' | 'read' | 'search' | 'list' | 'web_search' | 'web_fetch' | 'mcp' | 'worker' | 'subagent' | 'other' | 'edit' | 'plan' | 'todo' | 'compaction' | 'notice' | 'request' | 'group' | 'activity'; depth: number; title: string; target?: string; meta?: string; open: boolean; disclosure: boolean; failedCount: number; running: boolean; durationMs?: number; currentLabel?: string; provisional: boolean; requestId?: string; status?: 'in_progress' | 'completed' | 'failed' | 'declined' | 'interrupted'; hasBody: boolean; }";
 serde_js!(RowDto, "ChatRow", ROW_TS);
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -79,6 +96,8 @@ pub struct StepDto {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum BodyDto {
+    Changes { files: Vec<super::review::ChatChangedFile> },
+    Tool { view: Value, raw: String },
     Markdown {
         blocks: Vec<Value>,
     },
@@ -107,7 +126,7 @@ pub enum BodyDto {
     },
 }
 
-pub const BODY_TS: &str = "export type ChatBody = { kind: 'markdown'; blocks: import('nsh/base').TextViewBlock[] } | { kind: 'text'; text: string; tone: 'user' | 'reasoning' | 'info' | 'warning' | 'error' } | { kind: 'command'; command: string; cwd?: string; output: string; omitted: number; exitCode?: number; running: boolean } | { kind: 'detail'; text: string } | { kind: 'steps'; explanation?: string; steps: { text: string; status: 'pending' | 'in_progress' | 'completed' }[] };";
+pub const BODY_TS: &str = "export type ChatBody = {kind:'changes';files:ChatChangedFile[]} | {kind:'tool';raw:string;view: {kind:'file_search';query:string;hits:{path:string;line?:number;preview:string}[];omitted:number} | {kind:'web_search';query:string;hits:{title:string;url:string;snippet:string}[];omitted:number;raw?:string} | {kind:'file_read';path:string;text:string;truncated:boolean} | {kind:'json';text:string;truncated:boolean}} | { kind: 'markdown'; blocks: import('nsh/base').TextViewBlock[] } | { kind: 'text'; text: string; tone: 'user' | 'reasoning' | 'info' | 'warning' | 'error' } | { kind: 'command'; command: string; cwd?: string; output: string; omitted: number; exitCode?: number; running: boolean } | { kind: 'detail'; text: string } | { kind: 'steps'; explanation?: string; steps: { text: string; status: 'pending' | 'in_progress' | 'completed' }[] };";
 serde_js!(BodyDto, "ChatBody", BODY_TS);
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -186,6 +205,10 @@ pub struct ToolbarDto {
     pub approval_mode: String,
     pub mode_label: String,
     pub modes: Vec<PickRowDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contributor_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contributor_label: Option<String>,
     /// Other providers this conversation can move to (`Switch`).
     pub providers: Vec<PickRowDto>,
 }
@@ -227,18 +250,46 @@ pub struct ChatPanelDto {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub toolbar: Option<ToolbarDto>,
     pub notices: Vec<NoticeDto>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub billing: Option<super::billing::BillingDto>,
+    pub file_changes: usize,
+    pub workers: Vec<super::workers::ChatWorker>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage_label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage_detail: Option<String>,
     pub mode: String,
     /// Commands that could not be delivered since the last delivery (CHATT-012).
     pub failures: Vec<String>,
 }
 
-const PANEL_TS: &str = "export interface ChatPanel { chatId: string; title: string; provider?: 'codex' | 'claude' | 'muse'; cwd?: string; projectId?: string; worktreeId?: string; state: 'starting' | 'idle' | 'running' | 'waiting' | 'stopped' | 'failed'; stateMessage?: string; link: 'connecting' | 'live' | 'reconnecting' | 'deleted'; running: boolean; empty: boolean; status?: string; approvals: ChatApproval[]; questions: ChatQuestion[]; toolbar?: ChatToolbar; notices: { id: string; level: 'info' | 'warning' | 'error'; text: string }[]; mode: 'normal' | 'verbose'; failures: string[]; }
+const PANEL_TS: &str = "export interface ChatPanel { chatId: string; title: string; provider?: 'codex' | 'claude' | 'muse'; cwd?: string; projectId?: string; worktreeId?: string; state: 'starting' | 'idle' | 'running' | 'waiting' | 'stopped' | 'failed'; stateMessage?: string; link: 'connecting' | 'live' | 'reconnecting' | 'deleted'; running: boolean; empty: boolean; status?: string; approvals: ChatApproval[]; questions: ChatQuestion[]; toolbar?: ChatToolbar; notices: { id: string; level: 'info' | 'warning' | 'error'; text: string }[]; billing?: {selected?: 'subscription'|'api_key';reported?:'subscription'|'api_key';source?:string;limits:{id:string;resetsAt?:number}[]}; fileChanges?: number; workers?: ChatWorker[]; mode: 'normal' | 'verbose'; failures: string[]; sessionId?: string; usageLabel?: string; usageDetail?: string; }
 export interface ChatApproval { requestId: string; kind: 'command' | 'file_change' | 'permissions' | 'tool'; heading: string; title: string; detail: string; choices: { decision: ChatDecision; label: string; key?: string }[]; }
 export type ChatDecision = 'accept' | 'accept_for_session' | 'decline' | 'cancel';
 export interface ChatQuestion { requestId: string; prompts: { header?: string; question: string; options: { label: string; description: string }[]; multiSelect: boolean }[]; }
 export interface ChatPick { id: string; label: string; detail?: string; current: boolean; }
-export interface ChatToolbar { provider: 'codex' | 'claude' | 'muse'; providerLabel: string; modelLabel: string; model?: string; models: ChatPick[]; modelSuggestions: string[]; effortLabel: string; effort?: string; efforts: ChatPick[]; effortAvailable: boolean; fastAvailable: boolean; fast: boolean; approvalMode: string; modeLabel: string; modes: ChatPick[]; providers: ChatPick[]; }";
+export interface ChatToolbar { provider: 'codex' | 'claude' | 'muse'; providerLabel: string; modelLabel: string; model?: string; models: ChatPick[]; modelSuggestions: string[]; effortLabel: string; effort?: string; efforts: ChatPick[]; effortAvailable: boolean; fastAvailable: boolean; fast: boolean; approvalMode: string; modeLabel: string; modes: ChatPick[]; providers: ChatPick[]; contributorMode?: 'on' | 'off'; contributorLabel?: string; }";
 serde_js!(ChatPanelDto, "ChatPanel", PANEL_TS);
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchHitDto {
+    pub id: String,
+    pub label: String,
+    pub preview: String,
+}
+serde_js!(SearchHitDto, "ChatSearchHit", "export interface ChatSearchHit { id: string; label: string; preview: string; }");
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkTargetDto {
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<u32>,
+}
+serde_js!(LinkTargetDto, "ChatLinkTarget", "export interface ChatLinkTarget { path: string; line?: number; }");
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -308,6 +359,30 @@ impl JsValue for ChatDelivery {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CatalogModelDto {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub efforts: Vec<String>,
+    pub default_effort: Option<String>,
+    pub supports_fast: bool,
+    pub is_default: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelCatalogDto {
+    pub supported: Vec<CatalogModelDto>,
+    pub configured: Vec<String>,
+    pub account_label: Option<String>,
+    pub balanced: bool,
+    pub error: Option<String>,
+    pub warning: Option<String>,
+}
+serde_js!(ModelCatalogDto, "ChatModelCatalog", "export interface ChatModelCatalog { supported: { id: string; name: string; description: string; efforts: string[]; defaultEffort?: string | null; supportsFast: boolean; isDefault: boolean }[]; configured: string[]; accountLabel?: string | null; balanced: boolean; error?: string | null; warning?: string | null; }");
+
 /// A chat as the host lists it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -374,10 +449,17 @@ serde_js!(
     "export interface ChatOpenOptions { history?: boolean; mode?: 'normal' | 'verbose' | null; }"
 );
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct AttachmentDto(pub riwork_engine::chat::attachments::Attachment);
+serde_js!(AttachmentDto, "ChatAttachment", "export interface ChatAttachment { id: string; name: string; path: string; kind: { kind: 'text' } | { kind: 'image'; mime: string }; bytes: number; fingerprint: string; preview: { kind: 'text'; excerpt: string } | { kind: 'image'; path: string }; }");
+
 /// A composer snapshot: exactly one exchange, with a receipt (CHATC-032..035).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SubmitRequest {
+    #[serde(default)]
+    pub attachments: Vec<AttachmentDto>,
     pub text: String,
     pub editor: u64,
     pub generation: u64,
@@ -386,7 +468,7 @@ pub struct SubmitRequest {
 serde_js!(
     SubmitRequest,
     "ChatSubmit",
-    "export interface ChatSubmit { text: string; editor: number; generation: number; }"
+    "export interface ChatSubmit { attachments?: ChatAttachment[]; text: string; editor: number; generation: number; }"
 );
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -424,6 +506,8 @@ serde_js!(
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConfigureRequest {
     #[serde(default)]
+    pub contributor_mode: Option<String>,
+    #[serde(default)]
     pub model: Option<String>,
     #[serde(default)]
     pub effort: Option<String>,
@@ -436,12 +520,13 @@ pub struct ConfigureRequest {
 serde_js!(
     ConfigureRequest,
     "ChatConfigure",
-    "export interface ChatConfigure { model?: string | null; effort?: string | null; fast?: boolean | null; approvalMode?: 'supervised' | 'auto_edit' | 'full' | 'plan' | null; }"
+    "export interface ChatConfigure { contributorMode?: 'on' | 'off' | null; model?: string | null; effort?: string | null; fast?: boolean | null; approvalMode?: 'supervised' | 'auto_edit' | 'full' | 'plan' | null; }"
 );
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SavedSubmissionDto {
+    pub attachments: Vec<AttachmentDto>,
     pub key: String,
     pub text: String,
     pub status: String,
@@ -452,6 +537,7 @@ pub struct SavedSubmissionDto {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DraftDto {
+    pub attachments: Vec<AttachmentDto>,
     pub text: String,
     pub submissions: Vec<SavedSubmissionDto>,
     pub warnings: Vec<String>,
@@ -460,7 +546,7 @@ pub struct DraftDto {
 serde_js!(
     DraftDto,
     "ChatDraft",
-    "export interface ChatDraft { text: string; submissions: { key: string; text: string; status: 'pending' | 'submitted' | 'refused' | 'uncertain'; error?: string }[]; warnings: string[]; }"
+    "export interface ChatDraft { attachments: ChatAttachment[]; text: string; submissions: { attachments: ChatAttachment[]; key: string; text: string; status: 'pending' | 'submitted' | 'refused' | 'uncertain'; error?: string }[]; warnings: string[]; }"
 );
 
 pub fn decision_name(decision: riwork_engine::chat::model::Decision) -> &'static str {

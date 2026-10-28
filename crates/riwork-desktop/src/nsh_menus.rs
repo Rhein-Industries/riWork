@@ -60,6 +60,7 @@ const COMMANDS: &[&str] = &[
     "quit",
     "openGlobalDashboard",
     "openGlobalChat",
+    "openProjectOrchestrator",
     "newChat",
     "appPreview",
     "sessions",
@@ -78,15 +79,9 @@ const COMMANDS: &[&str] = &[
     "openVim",
 ];
 
-// The View-menu subset of acceptance §8. Keep every row and chord in place,
-// but neither AppKit validation nor direct action delivery may activate it.
-const DEFERRED_MENU_COMMANDS: &[&str] = &[
-    "newChat",
-    "sessions",
-    "toggleTranscriptMode",
-    "expandTranscript",
-    "collapseTranscript",
-];
+// These commands now have workspace/chat handlers. AppKit must deliver them
+// instead of retaining the disabled state from the host-only migration phase.
+const DEFERRED_MENU_COMMANDS: &[&str] = &[];
 
 pub(crate) fn app_command(command: &str) -> bool {
     matches!(
@@ -494,6 +489,7 @@ fn menu_model() -> Vec<MenuItem> {
             vec![
                 item("Global Dashboard", "openGlobalDashboard", Some("cmd+alt+g")),
                 item("Global Chat", "openGlobalChat", Some("cmd+shift+o")),
+                item("Project Orchestrator", "openProjectOrchestrator", Some("cmd+alt+o")),
                 Separator,
                 item("New chat…", "newChat", Some("cmd+alt+shift+c")),
                 item("App preview…", "appPreview", None),

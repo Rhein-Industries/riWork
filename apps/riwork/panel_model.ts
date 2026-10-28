@@ -1,7 +1,7 @@
 import type { FolderDto, ProjectDto, ShellSessionDto, StoreState, TaskDto, WorktreeDto } from "riwork/native";
 
 export type ListPanel = "projects" | "worktrees" | "tasks" | "shells";
-export type ProjectOrder = "name" | "added" | "live";
+export type ProjectOrder = "name" | "edited" | "added" | "live";
 export type ProjectTreeRow =
   | { kind: "folder"; id: string; name: string; depth: number; count: number; folder?: FolderDto }
   | { kind: "project"; id: string; depth: number; project: ProjectDto }
@@ -9,7 +9,7 @@ export type ProjectTreeRow =
 
 export const EMPTY_STORE: StoreState = {
   schemaVersion: 1, activeProjectId: null, projects: [], projectFolders: [], worktrees: [], tasks: [],
-  orcaImport: null, projectMemos: {},
+  orcaImport: null, projectMemos: {}, projectRecency: {},
 };
 
 export function matches(query: string, ...fields: (string | null | undefined)[]): boolean {
@@ -30,14 +30,17 @@ function byName(a: { id: string; name: string }, b: { id: string; name: string }
 /** This is a presentation projection only; all tree mutations are validated by Store. */
 export function projectRows(
   state: StoreState, query: string, collapsed: ReadonlySet<string>,
-  order: ProjectOrder = "added", descending = true, sessions: ShellSessionDto[] = [],
+  order: ProjectOrder = "edited", descending = true, sessions: ShellSessionDto[] = [],
 ): ProjectTreeRow[] {
-  const live = (id: string) => sessions.filter((shell) => shell.projectId === id && shell.alive).length;
+  const live = new Map<string, number>();
+  for (const shell of sessions) if (shell.alive && shell.projectId) live.set(shell.projectId, (live.get(shell.projectId) ?? 0) + 1);
+  const recency = state.projectRecency ?? {};
   const projects = [...state.projects].sort((a, b) => {
     if (order === "name") return byName(a, b) * (descending ? -1 : 1);
-    const av = order === "live" ? live(a.id) : a.createdAt;
-    const bv = order === "live" ? live(b.id) : b.createdAt;
-    if (order === "added" && (!av || !bv)) return av ? -1 : bv ? 1 : byName(a, b);
+    const av = order === "live" ? live.get(a.id) ?? 0 : order === "edited" ? recency[a.id] ?? 0 : a.createdAt;
+    const bv = order === "live" ? live.get(b.id) ?? 0 : order === "edited" ? recency[b.id] ?? 0 : b.createdAt;
+    // Unknown dates remain last in either direction, as engine::project_sort.
+    if (order !== "live" && (!av || !bv)) return av ? -1 : bv ? 1 : byName(a, b);
     return (av - bv) * (descending ? -1 : 1) || byName(a, b);
   });
   if (query.trim()) {

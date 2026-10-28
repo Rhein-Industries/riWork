@@ -42,7 +42,7 @@ use nsh_core::{
 
 use super::{
     area::Group,
-    dock_area::{AreaCx, DockDropIndicator, DockPanel, DockTab, DropAt, GroupRefs, TabDrag, Zone},
+    dock_area::{AreaCx, DockAreaEvent, DockDropIndicator, DockPanel, DockTab, DropAt, GroupRefs, TabDrag, Zone},
     drag::{DropPlaceholderBounds, split_placement_at},
     layout::{InsertTarget, NodeId, PanelId},
 };
@@ -102,10 +102,12 @@ pub(crate) fn tab_group(a: AreaCx, node: NodeId) -> AnyElement {
     };
     a.register(refs.clone());
     let tab_refs = refs.tabs.clone();
-    let tab_items = move || {
+    let tab_items = move |fixed: Option<bool>| {
         let tab_refs = tab_refs.clone();
         each(
-            move || tabs.get(),
+            move || tabs.get().into_iter().filter(|panel| {
+                fixed.is_none_or(|fixed| a.props.fixed_panels.get().contains(panel) == fixed)
+            }).collect::<Vec<_>>(),
             |panel: &PanelId| panel.clone(),
             move |panel, _| {
                 let id = panel.get_untracked();
@@ -118,6 +120,7 @@ pub(crate) fn tab_group(a: AreaCx, node: NodeId) -> AnyElement {
         )
     };
     let scrolling_tabs = tab_items.clone();
+    let fixed_tabs = tab_items.clone();
     let scrolling_refs = refs.tabs.clone();
     let content = refs.content.expect("a group's content");
     view()
@@ -130,6 +133,7 @@ pub(crate) fn tab_group(a: AreaCx, node: NodeId) -> AnyElement {
         .child(
             view()
                 .role(AccessibilityRole::Tablist)
+                .window_drag(move || a.props.draggable_tab_bars.get().contains(&node.as_u64()))
                 .element_ref(&refs.bar)
                 .app_class(a.props.tab_bar_class)
                 .inline_style(a.props.tab_bar_style)
@@ -145,7 +149,7 @@ pub(crate) fn tab_group(a: AreaCx, node: NodeId) -> AnyElement {
                             let scroll_offset = offset.clone();
                             let reveal_refs = scrolling_refs.clone();
                             effect(move || {
-                                let selected = shown.get();
+                                let selected = shown.get().filter(|panel| !a.props.fixed_panels.get().contains(panel));
                                 let ticket = revision.get().wrapping_add(1);
                                 revision.set(ticket);
                                 let _ = tabs.get();
@@ -198,6 +202,12 @@ pub(crate) fn tab_group(a: AreaCx, node: NodeId) -> AnyElement {
                                 .flex_row()
                                 .flex_1()
                                 .min_w(px(0.0))
+                                .child(dynamic(move || {
+                                    a.props.render_tab_bar_prefix.get().map(|render| {
+                                        render.render(node.as_u64().to_string(), node.as_u64()).flex_none()
+                                    })
+                                }))
+                                .child(view().flex_row().flex_none().child(fixed_tabs(Some(true))))
                                 .child(
                                     scroll()
                                         .element_ref(&scroll_ref)
@@ -218,7 +228,7 @@ pub(crate) fn tab_group(a: AreaCx, node: NodeId) -> AnyElement {
                                                 .on_layout(move |frame: &Bounds<Points>| {
                                                     content_size.set(frame.size)
                                                 })
-                                                .child(scrolling_tabs()),
+                                                .child(scrolling_tabs(Some(false))),
                                         ),
                                 )
                                 .child(dynamic(move || {
@@ -230,7 +240,7 @@ pub(crate) fn tab_group(a: AreaCx, node: NodeId) -> AnyElement {
                                 }))
                         },
                     )
-                    .otherwise(tab_items),
+                    .otherwise(move || tab_items(None)),
                 ),
         )
         .child(
@@ -296,9 +306,9 @@ fn animate_indicator(fade: bool) {
     });
 }
 
-/// The drop indicator: while a drag would land on a group, over the part
-/// of its content frame the panel would take (all of it to merge, a half
-/// to split). It is an overlay in the root view, placed with the frame
+/// The drop indicator: the complete destination pane when splitting (its
+/// header included), the content frame when merging, or the tab insertion
+/// line when reordering. It is an overlay in the root view, placed with the frame
 /// the drag measured, so it is drawn above everything in the area: the
 /// handles' lines, which lie over the edges of the groups beside them,
 /// never cover its edges, and no frame clips it. It moves from place to
@@ -315,7 +325,7 @@ pub(crate) fn drop_indicator(a: AreaCx) -> AnyElement {
         move || {
             let place = move || {
                 target.get().map(|t| {
-                    let p = DropPlaceholderBounds::for_placement(t.content, t.side);
+                    let p = DropPlaceholderBounds::with_divider(t.content, t.side, a.props.divider_size.get());
                     Bounds {
                         origin: t.content.origin + p.origin(),
                         size: p.size(),
@@ -326,9 +336,12 @@ pub(crate) fn drop_indicator(a: AreaCx) -> AnyElement {
             // moves to.
             let shown = Cell::new(None);
             effect(move || {
-                let now = place();
+                let now = place().map(|bounds| (bounds, target.get().is_some_and(|t| t.index.is_some())));
                 let before = shown.replace(now);
-                if before != now {
+                // A tab insertion line snaps between slots. Morphing its solid
+                // fill from a half-pane rectangle would briefly obscure content.
+                let bar = now.is_some_and(|(_, bar)| bar) || before.is_some_and(|(_, bar)| bar);
+                if before != now && !bar {
                     animate_indicator(before.is_none());
                 }
             });
@@ -400,6 +413,7 @@ pub(crate) fn tab(
     let dragged = panel.clone();
     view()
         .role(AccessibilityRole::Tab)
+        .window_drag(false)
         .accessibility_state(move || AccessibilityState {
             selected: selected(),
             ..AccessibilityState::default()
@@ -472,6 +486,47 @@ fn slot_at(
     (index, others.into_iter().map(|(p, _)| p.clone()).collect())
 }
 
+/// Splits divide the whole pane, including its tab bar. Measuring only the
+/// content made a horizontal split's midpoint one half-header too low.
+fn pane_bounds(zone: &Zone, content: Bounds<Points>) -> Bounds<Points> {
+    let Some(bar) = zone.bar else { return content };
+    let left = content.left().min(bar.left());
+    let top = content.top().min(bar.top());
+    Bounds {
+        origin: Point::new(left, top),
+        size: nsh_core::Size::new(content.right().max(bar.right()) - left, content.bottom().max(bar.bottom()) - top),
+    }
+}
+
+/// The same slot calculation used by the drop: a small line between the
+/// measured visible tabs, clipped to the bar so scrolled tabs cannot put it
+/// outside the pane. Compact bars use the same calculation along their axis.
+fn insertion_bounds(zone: &Zone, panel: &PanelId, at: Point<Points>) -> Option<Bounds<Points>> {
+    let bar = zone.bar?;
+    let across = bar.size.height > bar.size.width;
+    let mut tabs: Vec<_> = zone.tabs.iter().filter(|(id, _)| id != panel).collect();
+    let center = |bounds: &Bounds<Points>| if across { bounds.center().y } else { bounds.center().x };
+    tabs.sort_by(|a, b| center(&a.1).0.total_cmp(&center(&b.1).0));
+    let pointer = if across { at.y } else { at.x };
+    let next = tabs.iter().find(|(_, bounds)| center(bounds) >= pointer);
+    let position = next.map(|(_, bounds)| if across { bounds.top() } else { bounds.left() })
+        .or_else(|| tabs.last().map(|(_, bounds)| if across { bounds.bottom() } else { bounds.right() }))
+        .unwrap_or(if across { bar.top() } else { bar.left() });
+    let thickness = px(2.0);
+    let inset = px(3.0);
+    Some(if across {
+        Bounds {
+            origin: Point::new(bar.left() + inset, position.max(bar.top()).min((bar.bottom() - thickness).max(bar.top()))),
+            size: nsh_core::Size::new((bar.size.width - inset * 2.0).max(px(0.0)), thickness),
+        }
+    } else {
+        Bounds {
+            origin: Point::new(position.max(bar.left()).min((bar.right() - thickness).max(bar.left())), bar.top() + inset),
+            size: nsh_core::Size::new(thickness, (bar.size.height - inset * 2.0).max(px(0.0))),
+        }
+    })
+}
+
 impl AreaCx {
     /// Registers the views of a group for drags to measure, while the view
     /// making them lives.
@@ -491,6 +546,7 @@ impl AreaCx {
 
     /// A tab's drag began at `pointer`: the groups are measured.
     pub(crate) fn start_drag(self, panel: PanelId, source: Option<NodeId>, pointer: Point<Points>) {
+        self.cx.emit(DockAreaEvent::DragChange(true));
         self.drag.set(Some(TabDrag {
             panel,
             source,
@@ -570,8 +626,10 @@ impl AreaCx {
         let Some(drag) = self.drag.get_untracked() else {
             return;
         };
-        self.cancel_drag();
+        self.drag.set(None);
+        self.zones.replace(Vec::new());
         let Some(at) = drag.target else {
+            self.cx.emit(DockAreaEvent::DragChange(false));
             return;
         };
         let target = match at.side {
@@ -590,12 +648,15 @@ impl AreaCx {
             self.current.set(Some(at.group));
         }
         self.edit(|area| area.move_panel(drag.panel, target));
+        self.cx.emit(DockAreaEvent::DragChange(false));
     }
 
     /// The drag ended without a drop.
     pub(crate) fn cancel_drag(self) {
+        let was_dragging = self.drag.get_untracked().is_some();
         self.drag.set(None);
         self.zones.replace(Vec::new());
+        if was_dragging { self.cx.emit(DockAreaEvent::DragChange(false)); }
     }
 
     /// Where `drag` would land with the pointer at `at`.
@@ -629,7 +690,7 @@ impl AreaCx {
                 group,
                 side,
                 index: None,
-                content,
+                content: if side.is_some() { pane_bounds(zone, content) } else { content },
             })
         })
     }
@@ -649,7 +710,7 @@ impl AreaCx {
                     group,
                     side: None,
                     index: Some(index),
-                    content: zone.content.unwrap_or(bar),
+                    content: insertion_bounds(zone, &drag.panel, at).unwrap_or(bar),
                 })
             }
             None => {

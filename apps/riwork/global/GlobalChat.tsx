@@ -1,7 +1,8 @@
-import { Text, View, cleanup, colorScheme, effect, signal } from "nsh";
-import { Appearance, Orchestrators, type AppearanceDto, type SettingsDto } from "riwork/native";
+import { ErrorBoundary, Text, View, cleanup, colorScheme, effect, host, signal } from "nsh";
+import { Appearance, Chat, Orchestrators, Sessions, type AppearanceDto, type SettingsDto } from "riwork/native";
 import { DEFAULT_THEME, type InterfaceTheme } from "../appearance";
 import { ChatTab } from "../chat/ChatTab";
+import { ChatFailure } from "../chat/ChatFailure";
 import { chatCopy, type GlobalOrchestrator, type Plan } from "../dashboard/model";
 import { LocalTerminal, type TerminalColors } from "../Terminal";
 
@@ -27,9 +28,12 @@ export function GlobalChat(props: {
   startNow?: boolean;
   onControl: (control: ChatControl) => void;
   onNotice: (text: string) => void;
+  onApiKeySettings?: () => void;
 }) {
   const theme = props.theme ?? (() => DEFAULT_THEME);
   const shown = signal<Shown>(null);
+  const visited = signal(props.visible());
+  effect(() => { if (props.visible()) visited.set(true); });
   const starting = signal(false);
   const plan = signal<Plan | null>(null);
   const appearance = signal<AppearanceDto | null>(null);
@@ -76,12 +80,23 @@ export function GlobalChat(props: {
     const value = appearance();
     return ((value ? colorScheme() === "dark" ? value.terminalDark : value.terminalLight : null) ?? { source: "ghostty" }) as TerminalColors;
   }
+  async function openWorker(id: string, kind: "shell" | "chat") {
+    try {
+      const projectId = kind === "shell" ? (await Sessions.list()).sessions.find((row) => row.id === id)?.projectId : (await Chat.list()).find((row) => row.id === id)?.projectId;
+      if (!alive) return;
+      if (!projectId) { props.onNotice("This worker has no project workspace to open."); return; }
+      await host.call("window.route", { projectId, step: kind === "chat" ? { kind: "chat", chatId: id } : { kind: "showShell", shellId: id } });
+    } catch (error) { if (alive) props.onNotice(String(error)); }
+  }
   const palette = () => theme().palette;
   const font = (size: number) => ({ fontFamily: theme().family, fontSize: size * theme().scale });
-  return <>{props.visible() && <View testID="global-chat" style={{ flex: 1, minHeight: 0 }}>
+  return <>{visited() && <View testID="global-chat" style={{ flex: 1, minHeight: 0, display: props.visible() ? "flex" : "none" }}>
     {shown()?.kind === "chat" ?
-      <ChatTab chatId={(shown() as { id: string }).id} visible={true} theme={theme}
-        onClose={() => { shown.set(null); }} /> :
+      <ErrorBoundary fallback={(error, retry) => <ChatFailure error={error} retry={retry} theme={theme} />}><ChatTab chatId={(shown() as { id: string }).id} visible={props.visible()} theme={theme}
+        onLink={(path) => { void host.call("system.openWith", { path }).catch((error) => props.onNotice(String(error))); }}
+        onOpenWorker={(id, kind) => { void openWorker(id, kind); }}
+        onApiKeySettings={props.onApiKeySettings}
+        onClose={() => { shown.set(null); }} /></ErrorBoundary> :
       shown()?.kind === "terminal" ?
         <View style={{ flex: 1, minHeight: 0 }}>
           <View testID="global-terminal-label" style={{ paddingHorizontal: 12, paddingVertical: 6, gap: 2, backgroundColor: palette().panel }}>
@@ -89,9 +104,11 @@ export function GlobalChat(props: {
             <Text style={{ ...font(10), color: palette().muted }}>{TERMINAL_NOTE}</Text>
           </View>
           <View style={{ flex: 1, minHeight: 0 }}>
-            <LocalTerminal shellId={(shown() as { shellId: string }).shellId} visible={props.visible()} pinned={false}
+            <LocalTerminal shellId={(shown() as { shellId: string }).shellId} visible={props.visible()} pinned={false} theme={theme}
               focusOnAttach={true} colors={terminalColors()} frozen={false}
-              onFocus={() => {}} onAttached={() => {}} onLink={() => {}} onNotice={props.onNotice} />
+              onFocus={() => {}} onAttached={() => {}} onLink={(event) => {
+                void host.call(event.kind === "folder" ? "system.revealInFinder" : "system.openWith", { path: event.target }).catch((error) => props.onNotice(String(error)));
+              }} onNotice={props.onNotice} />
           </View>
         </View> :
         <StartCard copy={chatCopy(props.global(), plan(), starting())} theme={theme} onPress={start} />}

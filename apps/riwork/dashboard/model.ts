@@ -34,6 +34,7 @@ export interface Intelligence {
   state?: string; summary?: string; error?: string; stale?: boolean; generated_at?: number;
   highlights?: { text: string; source_event_ids?: unknown[] }[];
 }
+export interface DecisionRow { id: string; chat_id: string; request_id: string; session: SessionRow; observed_at: number; kind: "approval" | "question" }
 export interface Wire {
   v: number; generated_at: number; chats_known: boolean;
   totals: { projects: number; active_projects: number; live_shells: number; live_chats?: number; agents: AgentCounts; tasks: TaskCounts; attention: number };
@@ -46,8 +47,10 @@ export interface Wire {
   automations: { state: "not_read" } | { state: "unreadable"; message: string } | { state: "read"; total: number; paused: number; next?: { title: string; at: number; project_id?: string }; items?: AutomationRow[] };
   backends?: { state: "not_read" | "read" };
   decision_sources?: { state: "read" | "partial" | "unavailable"; chats_read: number; chats_complete: number; chats_total: number };
-  decisions?: { id: string; chat_id: string; request_id: string; session: SessionRow; observed_at: number; kind: "approval" | "question" }[];
+  decisions?: DecisionRow[];
   decisions_total?: number;
+  recent_activity?: { session: SessionRow; source: { event_seq: number }; observed_at: number; log_updated_at: number; kind: string; text: string; status: string }[];
+  recent_activity_total?: number;
   intelligence?: Intelligence;
 }
 

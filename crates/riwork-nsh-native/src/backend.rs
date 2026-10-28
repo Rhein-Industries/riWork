@@ -177,6 +177,10 @@ pub trait SessionsBackend: Send + Sync + 'static {
         Err(Unavailable("shell creation is unavailable in this backend".into()).into())
     }
 
+    fn create_harness(&self, _request: CreateSessionRequest, _harness: HarnessKind) -> Result<ShellSessionDto> {
+        unsupported!()
+    }
+
     fn create_subshell(&self, _request: CreateSubshellRequest) -> Result<ShellSessionDto> {
         unsupported!()
     }
@@ -294,10 +298,16 @@ impl CoreStoreBackend {
 
 impl StoreBackend for CoreStoreBackend {
     fn snapshot(&self) -> Result<StoreState> {
-        self.store()?
+        let mut state: StoreState = self.store()?
             .snapshot()
             .map_err(anyhow::Error::msg)?
-            .try_into()
+            .try_into()?;
+        if let Some(cached) = riwork_core::recency_file::read(&self.home) {
+            state.project_recency = crate::dto::StringMap(cached.projects.into_iter()
+                .filter(|(id, _)| state.projects.iter().any(|project| &project.id == id))
+                .collect());
+        }
+        Ok(state)
     }
 
     fn search(&self, query: &str) -> Result<Vec<SearchHitDto>> {
@@ -465,10 +475,11 @@ impl StoreBackend for CoreStoreBackend {
             .try_into()
     }
     fn sync_worktrees(&self, selector: &str) -> Result<Vec<WorktreeDto>> {
-        self.store()?
+        let rows = self.store()?
             .sync_worktrees(selector)
-            .map(|rows| rows.into_iter().map(Into::into).collect())
-            .map_err(anyhow::Error::msg)
+            .map_err(anyhow::Error::msg)?;
+        crate::presence::refresh(rows.iter().map(|row| row.path.as_path()));
+        Ok(rows.into_iter().map(Into::into).collect())
     }
     fn refresh_worktrees(&self, selector: &str) -> Result<Vec<WorktreeDto>> {
         self.store()?
@@ -476,6 +487,7 @@ impl StoreBackend for CoreStoreBackend {
             .map_err(anyhow::Error::msg)?;
         let state = self.store()?.snapshot().map_err(anyhow::Error::msg)?;
         let project = state.project(selector).map_err(anyhow::Error::msg)?;
+        crate::presence::refresh(state.worktrees_for(&project.id).into_iter().map(|row| row.path.as_path()));
         Ok(state
             .worktrees_for(&project.id)
             .into_iter()
@@ -512,16 +524,6 @@ impl StoreBackend for CoreStoreBackend {
             .set_task_status(selector, status)
             .map(Into::into)
             .map_err(anyhow::Error::msg)
-    }
-    fn refresh_presence(&self) -> Result<StoreState> {
-        let state = self.store()?.snapshot().map_err(anyhow::Error::msg)?;
-        for project in state.projects {
-            // Missing/inaccessible projects still need a presence snapshot.
-            // Explicit refreshWorktrees reports discovery failures to its
-            // caller; a background scan cannot suppress all other projects.
-            let _ = self.store()?.refresh_worktrees(&project.id);
-        }
-        self.snapshot()
     }
 }
 
@@ -652,6 +654,23 @@ impl SessionsBackend for EngineSessionsBackend {
                 cwd,
                 request.command,
             )
+            .map(Into::into)
+            .map_err(anyhow::Error::msg)
+    }
+
+    fn create_harness(&self, request: CreateSessionRequest, harness: HarnessKind) -> Result<ShellSessionDto> {
+        if request.command.is_some() {
+            return Err(InvalidInput("a harness cannot also have a custom command".into()).into());
+        }
+        let root = self.project_root(&request.project_id, request.worktree_id.as_deref())?;
+        let cwd = request.cwd.map(PathBuf::from).unwrap_or(root);
+        if !cwd.is_absolute() || !cwd.is_dir() {
+            return Err(InvalidInput("agent cwd must be an existing absolute directory".into()).into());
+        }
+        let unrestricted = riwork_core::settings::agent_terminals_unrestricted(&self.home);
+        self.manager()?
+            .for_user()
+            .create_harness(request.project_id, request.worktree_id, cwd, harness, unrestricted)
             .map(Into::into)
             .map_err(anyhow::Error::msg)
     }

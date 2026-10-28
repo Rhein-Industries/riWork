@@ -1,18 +1,19 @@
-import { List, Scroll, Text, View, cleanup, context, host, keymap, signal, type JSX, type YNode } from "nsh";
+import { List, Scroll, Text, View, cleanup, context, effect, host, keymap, signal, type JSX, type YNode } from "nsh";
 import { Button, Dialog, Input, Switch } from "nsh/base";
 import { Menu } from "nsh/desktop";
-import { Sessions, Store, Tabs, type ProjectDto, type ProjectInspectionDto, type ShellSessionDto, type StoreState, type Subscription, type TabEntryDto, type TabsSnapshot, type TaskDto } from "riwork/native";
+import { Chat, Sessions, Settings, Store, Tabs, type ChatSummary, type ProjectDto, type ProjectInspectionDto, type SettingsDto, type ShellSessionDto, type StoreState, type Subscription, type TabEntryDto, type TabsSnapshot, type TaskDto } from "riwork/native";
 import { EMPTY_STORE, countLabel, matches, projectRows, shellLabel, shellMatches, taskMark, taskMatches, visibleWorktrees, worktreeLabel, type ListPanel, type ProjectOrder, type ProjectTreeRow } from "./panel_model";
 import { DEFAULT_THEME, space, type InterfaceTheme } from "./appearance";
+import { Icon, type IconName } from "./Icon";
 
 const defaultTheme = () => DEFAULT_THEME;
 const PanelTheme = context<() => InterfaceTheme>(defaultTheme);
 const theme = () => PanelTheme()();
 const ink = () => theme().palette.text, muted = () => theme().palette.muted, accent = () => theme().palette.cyan;
 const text = (base: number) => base * theme().scale;
-const button = () => ({ paddingHorizontal: space(7, theme().scale), paddingVertical: space(5, theme().scale), borderRadius: 4, backgroundColor: theme().palette.panel });
+const button = () => ({ paddingHorizontal: space(10, theme().scale), paddingVertical: space(4, theme().scale), borderRadius: space(14, theme().scale), backgroundColor: theme().palette.panelActive });
 const field = () => ({ minHeight: space(28, theme().scale), paddingHorizontal: space(8, theme().scale), paddingVertical: space(5, theme().scale), borderRadius: 4, backgroundColor: theme().palette.bg, color: ink(), fontFamily: theme().family, fontSize: text(12) });
-const row = () => ({ paddingHorizontal: space(10, theme().scale), paddingVertical: space(8, theme().scale), gap: space(4, theme().scale), borderRadius: 4 });
+const row = () => ({ paddingHorizontal: space(6, theme().scale), paddingVertical: space(6, theme().scale), gap: space(2, theme().scale), borderRadius: space(7, theme().scale) });
 const statusColor = (status: string) => status === "done" ? accent() : status === "in_progress" ? theme().palette.gold : muted();
 type Editor = { kind: "folder"; parent?: string; id?: string; name: string } | { kind: "project" } | { kind: "task" };
 
@@ -22,6 +23,8 @@ interface PanelOptions {
   switchProject: (project: ProjectDto) => Promise<void>;
   openPanel: (panel: string) => void;
   showShell: (id: string) => void;
+  showChat?: (id: string) => void;
+  newChat?: () => void;
   selectWorktree: (id: string | null) => void;
   selectTask: (id: string | null) => void;
   initialWorktree?: string | null;
@@ -30,6 +33,7 @@ interface PanelOptions {
   defaultProjectDirectory?: string;
   notice: (message: string) => void;
   theme?: () => InterfaceTheme;
+  settings?: () => SettingsDto | null;
 }
 
 /** One controller per window. Hidden panel tabs never own independent queries or subscriptions. */
@@ -39,6 +43,11 @@ export function createPanelController(options: PanelOptions) {
   const loaded = signal(false);
   const shells = signal<ShellSessionDto[]>([]);
   const tabs = signal<TabsSnapshot | null>(null);
+  const chats = signal<ChatSummary[]>([]);
+  const catalogLoading = signal(false), catalogNotice = signal("");
+  const sessionFilter = signal<"all" | "codex" | "claude" | "muse" | "shells">("all");
+  const selectedChat = signal<string | null>(null);
+  const closingShell = signal<ShellSessionDto | null>(null);
   const query = signal("");
   const collapsed = signal<ReadonlySet<string>>(new Set());
   const selectedWorktree = signal<string | null>(options.initialWorktree ?? null);
@@ -46,13 +55,51 @@ export function createPanelController(options: PanelOptions) {
   const selectedShell = signal<string | null>(null);
   const editor = signal<Editor | null>(null);
   const pending = signal(false);
-  const order = signal<ProjectOrder>("added");
+  const order = signal<ProjectOrder>("edited");
   const descending = signal(true);
+  const sortPending = signal(false);
   const searches = new Map<string, YNode>();
   let generation = 0;
   let alive = true;
   let tabSubscription: Subscription | undefined;
   let storeRev = 0, sessionsRev = 0;
+  let catalogRequest = 0;
+  let savingSort = false;
+  const sortIds = { name: "name", edited: "last_edited", added: "date_added", live: "live_sessions" } as const;
+  function applyOrder(value: SettingsDto["projectOrder"] | undefined) {
+    if (!value) return;
+    order.set((Object.keys(sortIds) as ProjectOrder[]).find((key) => sortIds[key] === value.sort) ?? "edited");
+    descending.set(value.descending);
+  }
+  effect(() => { const value = options.settings?.()?.projectOrder; if (!savingSort) applyOrder(value); });
+  async function setOrder(next: ProjectOrder, reversed = next !== "name") {
+    if (savingSort || next === order() && reversed === descending()) return;
+    const prior = { sort: order(), descending: descending() };
+    savingSort = true; sortPending.set(true); order.set(next); descending.set(reversed);
+    try {
+      const saved = await Settings.set({ projectOrder: { sort: sortIds[next], descending: reversed } });
+      if (alive) applyOrder(saved.projectOrder);
+    } catch (error) {
+      if (alive) { order.set(prior.sort); descending.set(prior.descending); options.notice(`Could not save project order: ${error}`); }
+    } finally { savingSort = false; if (alive) sortPending.set(false); }
+  }
+  async function refreshCatalog() {
+    const request = ++catalogRequest, token = generation, project = options.projectId();
+    if (project.startsWith("remote:")) return;
+    catalogLoading.set(true);
+    try {
+      const next = await Chat.list();
+      if (alive && request === catalogRequest && token === generation && project === options.projectId()) {
+        chats.set(next); catalogNotice.set("");
+      }
+    } catch (reason) { if (alive && request === catalogRequest && token === generation) catalogNotice.set(`Chat history unavailable: ${reason}`); }
+    finally { if (alive && request === catalogRequest && token === generation) catalogLoading.set(false); }
+  }
+  function openChat(chat: ChatSummary, project: string, token: number) {
+    if (token !== generation || project !== options.projectId() || chat.projectId !== project) return;
+    selectedChat.set(chat.id); selectedShell.set(null);
+    options.showChat?.(chat.id);
+  }
   cleanup(() => { alive = false; generation++; searches.clear(); tabSubscription?.close(); });
   function watchTabs() {
     tabSubscription?.close(); tabs.set(null);
@@ -60,10 +107,20 @@ export function createPanelController(options: PanelOptions) {
     // Legacy layout fixtures use opaque non-UUID project keys; shared membership
     // is defined only for canonical persisted project identities.
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(projectId)) return;
-    try { tabSubscription = Tabs.subscribe(projectId, (event) => { if (alive && token === generation && projectId === options.projectId()) tabs.set(event.data); }); }
+    try { tabSubscription = Tabs.subscribe(projectId, (event) => { if (alive && token === generation && projectId === options.projectId()) { tabs.set(event.data); void refreshCatalog(); } }); }
     catch (error) { options.notice(String(error)); }
   }
   watchTabs();
+  void refreshCatalog();
+  let wasForeground: boolean | undefined;
+  cleanup(host.on("window.state", (value) => {
+    const window = value as { key?: boolean; appActive?: boolean };
+    const foreground = window.key === true && window.appActive !== false;
+    // Moving and resizing also publish window.state. Refresh history only
+    // when returning to this window, not on every live-resize frame.
+    if (foreground && wasForeground === false) void refreshCatalog();
+    wasForeground = foreground;
+  }));
   try {
     const store = Store.subscribe((event) => {
       if (!alive || event.rev < storeRev) return;
@@ -93,9 +150,9 @@ export function createPanelController(options: PanelOptions) {
   }
   function resetProject(navigation?: { worktree: string | null; task: string | null }) {
     generation++;
-    query.set(""); selectTask(navigation?.task ?? null); selectedShell.set(null); editor.set(null);
+    query.set(""); selectTask(navigation?.task ?? null); selectedShell.set(null); selectedChat.set(null); closingShell.set(null); chats.set([]); catalogNotice.set(""); editor.set(null);
     selectWorktree(navigation ? navigation.worktree : visibleWorktrees(state(), options.projectId()).find((tree) => tree.isPrimary)?.id ?? null);
-    watchTabs();
+    watchTabs(); void refreshCatalog();
   }
   async function run(action: () => Promise<unknown>, success?: () => void) {
     if (pending()) return;
@@ -116,7 +173,7 @@ export function createPanelController(options: PanelOptions) {
   function attach(shell: ShellSessionDto, projectId: string, token: number) {
     if (projectId !== options.projectId() || token !== generation || shell.projectId !== projectId || !state().projects.some((project) => project.id === projectId)) return;
     if (!shell.alive) { options.notice(`Shell ${shell.id.slice(0, 8)} has exited`); return; }
-    selectedShell.set(shell.id);
+    selectedShell.set(shell.id); selectedChat.set(null);
     if (tabForShell(shell.id)?.hidden) {
       void run(async () => {
         await Tabs.update(projectId, { action: "unhide", key: `shell:${shell.id}` });
@@ -158,15 +215,15 @@ export function createPanelController(options: PanelOptions) {
         onSelect: () => void run(() => projectId ? Store.moveProjectToFolder(projectId, folder.id) : Store.moveFolder(folderId!, folder.id), () => expandFolder(folder.id)) })),
     ]);
   }
-  return { ...options, state, loaded, shells, tabs, query, collapsed, selectedWorktree, selectedTask, selectedShell, editor, pending, order, descending, searches,
-    selectWorktree, selectTask, resetProject, run, activate, attach, tabForShell, titleForShell, toggleFolder, expandFolder, folderMenu, folderPath, generation: () => generation };
+  return { ...options, state, loaded, shells, chats, catalogLoading, catalogNotice, sessionFilter, selectedChat, closingShell, refreshCatalog, openChat, tabs, query, collapsed, selectedWorktree, selectedTask, selectedShell, editor, pending, order, descending, searches,
+    selectWorktree, selectTask, resetProject, run, activate, attach, tabForShell, titleForShell, toggleFolder, expandFolder, folderMenu, folderPath, setOrder, sortPending, generation: () => generation };
 }
 export type PanelController = ReturnType<typeof createPanelController>;
 
 function Command(props: { id?: string; label: string; disabled?: boolean; selected?: boolean; onPress: () => void; children?: JSX.Element }) {
   return <Button testID={props.id} accessibilityLabel={props.label} disabled={props.disabled} selected={props.selected} onPress={props.onPress}
-    style={button()} hoverStyle={{ backgroundColor: theme().palette.panelActive }} focusStyle={{ backgroundColor: theme().palette.divider }} selectedStyle={{ backgroundColor: theme().palette.panelActive }}>
-    <Text style={{ fontFamily: theme().family, fontSize: text(11), color: props.disabled ? muted() : ink() }}>{props.children ?? props.label}</Text>
+    style={button()} hoverStyle={{ backgroundColor: theme().palette.panelActive }} focusStyle={{ backgroundColor: theme().palette.divider }} selectedStyle={{ backgroundColor: theme().palette.cyan }}>
+    <Text style={{ fontFamily: theme().family, fontSize: text(11), color: props.disabled ? muted() : props.selected ? theme().palette.bg : ink() }}>{props.children ?? props.label}</Text>
   </Button>;
 }
 
@@ -175,24 +232,39 @@ function PanelSearch(props: { controller: PanelController; panel: ListPanel; sur
   const noun = props.panel === "shells" ? "sessions" : props.panel;
   let input: YNode | undefined;
   cleanup(() => c.searches.delete(props.surface));
-  return <View style={{ flexDirection: "row", gap: 6, padding: 8, alignItems: "center", minWidth: 0 }} onPress={() => input?.focus()}>
-    <Text style={{ color: muted(), fontFamily: theme().family, fontSize: text(13) }}>⌕</Text>
-    <Input testID={`search:${props.surface}`} accessibilityLabel={`Search ${noun}`} placeholder="Search  ⌘F" value={c.query()}
-      onChange={(text) => c.query.set(text)} ref={(node) => { input = node; c.searches.set(props.surface, node); }}
-      style={{ ...field(), flex: 1, minWidth: 80 }} />
-    {c.query() !== "" && <Command id={`clear-search:${props.surface}`} label="Clear the search" onPress={() => { c.query.set(""); input?.focus(); }}>×</Command>}
+  return <View style={{ paddingHorizontal: space(12, theme().scale), paddingBottom: space(8, theme().scale) }}>
+    <View style={{ flexDirection: "row", gap: 5, paddingHorizontal: space(9, theme().scale), height: space(28, theme().scale), borderRadius: space(14, theme().scale), backgroundColor: theme().palette.panelActive, alignItems: "center", minWidth: 0 }} onPress={() => input?.focus()}>
+      <Icon name="search" size={text(13)} color={muted()} />
+      <Input testID={`search:${props.surface}`} accessibilityLabel={`Search ${noun}`} placeholder="Search  ⌘F" value={c.query()}
+        onChange={(value) => c.query.set(value)} ref={(node) => { input = node; c.searches.set(props.surface, node); }}
+        style={{ flex: 1, minWidth: 0, padding: 0, backgroundColor: "transparent", color: ink(), fontFamily: theme().family, fontSize: text(11) }} />
+      {c.query() !== "" && <ToolbarCommand id={`clear-search:${props.surface}`} label="Clear the search" icon="close" onPress={() => { c.query.set(""); input?.focus(); }}>×</ToolbarCommand>}
+    </View>
   </View>;
 }
 
+function ToolbarCommand(props: { id?: string; label: string; icon?: IconName; disabled?: boolean; selected?: boolean; onPress: () => void; children?: JSX.Element }) {
+  return <Button tooltip={<View style={{ padding: 7, borderRadius: 6, backgroundColor: theme().palette.panelActive }}><Text style={{ fontFamily: theme().family, fontSize: text(11), color: ink() }}>{props.label}</Text></View>} testID={props.id} accessibilityLabel={props.label} disabled={props.disabled} selected={props.selected} onPress={props.onPress}
+    style={{ width: space(24, theme().scale), height: space(24, theme().scale), borderRadius: space(13, theme().scale), alignItems: "center", justifyContent: "center", backgroundColor: "transparent" }}
+    hoverStyle={{ backgroundColor: theme().palette.panelActive }} focusStyle={{ backgroundColor: theme().palette.divider }}>
+    <Icon name={props.icon ?? "more"} size={text(13)} color={props.selected ? ink() : muted()} />
+  </Button>;
+}
+
 function Header(props: { title: string; count: number; total: number; noun: string; project?: string; children?: JSX.Element }) {
-  return <View style={{ padding: 10, paddingBottom: 5, gap: 7 }}>
-    <Text style={{ fontFamily: theme().family, fontSize: text(13), fontWeight: "600", color: ink() }}>{props.title}</Text>
-    <Text testID={`count:${props.noun}`} style={{ fontFamily: theme().monoFamily, fontSize: text(10), color: muted() }}>{`${countLabel(props.count, props.total, props.noun)}${props.project ? ` · ${props.project}` : ""}`}</Text>
-    {props.children && <View style={{ flexDirection: "row", gap: 5, flexWrap: "wrap" }}>{props.children}</View>}
+  return <View style={{ height: space(46, theme().scale), paddingLeft: space(12, theme().scale), paddingRight: space(8, theme().scale), flexDirection: "row", alignItems: "center", gap: space(8, theme().scale) }}>
+    <View style={{ flex: 1, minWidth: 0, gap: 1 }}>
+      <Text numberOfLines={1} style={{ fontFamily: theme().family, fontSize: text(13), fontWeight: "600", color: ink() }}>{props.title}</Text>
+      <Text numberOfLines={1} testID={`count:${props.noun}`} style={{ fontFamily: theme().family, fontSize: text(10), color: muted() }}>{`${countLabel(props.count, props.total, props.noun)}${props.project ? ` · ${props.project}` : ""}`}</Text>
+    </View>
+    {props.children && <View style={{ flexDirection: "row", alignItems: "center", gap: 2 }}>{props.children}</View>}
   </View>;
 }
 function Empty(props: { query: string; noun: string }) {
-  return <View style={{ padding: 16 }}><Text style={{ color: muted(), fontFamily: theme().family, fontSize: text(12) }}>{props.query.trim() ? "No matches" : `No ${props.noun}`}</Text></View>;
+  return <View style={{ minHeight: space(120, theme().scale), padding: 24, gap: 8, alignItems: "center", justifyContent: "center" }}>
+    <Icon name={props.query.trim() ? "search" : "folder"} size={text(22)} color={muted()} />
+    <Text style={{ color: muted(), fontFamily: theme().family, fontSize: text(11) }}>{props.query.trim() ? "No matches" : `No ${props.noun}`}</Text>
+  </View>;
 }
 
 function ProjectRow(props: { item: () => ProjectTreeRow; controller: PanelController }) {
@@ -207,16 +279,29 @@ function FolderRow(props: { item: () => ProjectTreeRow; controller: PanelControl
   const c = props.controller;
   const current = () => props.item() as Extract<ProjectTreeRow, { kind: "folder" }>;
   const id = () => current().folder?.id ?? "unfiled";
-  return <View style={{ paddingLeft: current().depth * 12, flexDirection: "row", alignItems: "center", gap: 3 }} accessibilityState={{ expanded: !c.collapsed().has(id()) }}>
-    <Button testID={current().id} accessibilityLabel={current().name} onPress={() => c.toggleFolder(id())} style={{ flex: 1, padding: 8 }} focusStyle={{ backgroundColor: theme().palette.divider }}>
-      <Text style={{ fontFamily: theme().family, fontSize: text(11), color: muted() }}>{`${c.collapsed().has(id()) ? "▸" : "▾"} ${current().name}  ${current().count}`}</Text>
-    </Button>
-    {current().folder && <View style={{ flexDirection: "row", gap: 2 }}>
-      <Command id={`subfolder:${id()}`} label="Create subfolder" onPress={() => c.editor.set({ kind: "folder", parent: id(), name: "" })}>＋</Command>
-      <Command id={`rename-folder:${id()}`} label="Rename folder" onPress={() => c.editor.set({ kind: "folder", id: id(), parent: current().folder!.parentId ?? undefined, name: current().name })}>✎</Command>
-      <Command id={`move-folder:${id()}`} label="Move folder to…" onPress={() => c.folderMenu(undefined, id())}>…</Command>
-      <Command id={`remove-folder:${id()}`} label="Remove folder; keep its projects and subfolders" disabled={c.pending()} onPress={() => void c.run(() => Store.removeFolder(id()))}>×</Command>
-    </View>}
+  const hovering = signal(false);
+  function menu() {
+    if (!current().folder) return;
+    void Menu.popup([
+      { label: "New subfolder", onSelect: () => c.editor.set({ kind: "folder", parent: id(), name: "" }) },
+      { label: "Rename folder…", onSelect: () => c.editor.set({ kind: "folder", id: id(), parent: current().folder!.parentId ?? undefined, name: current().name }) },
+      { label: "Move folder to…", onSelect: () => c.folderMenu(undefined, id()) },
+      { type: "separator" },
+      { label: "Remove folder", onSelect: () => void c.run(() => Store.removeFolder(id())) },
+    ]);
+  }
+  return <View onHoverIn={() => hovering.set(true)} onHoverOut={() => hovering.set(false)} onContextMenu={menu}
+    style={{ paddingLeft: space(6 + current().depth * 16, theme().scale), paddingRight: 6, height: space(30, theme().scale), flexDirection: "row", alignItems: "center", gap: 3 }}>
+    <View testID={current().id} role="button" focusable={true} accessibilityLabel={current().name} accessibilityState={{ expanded: !c.collapsed().has(id()) }} onPress={() => c.toggleFolder(id())}
+      style={{ flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", gap: space(6, theme().scale), height: "100%" }} focusStyle={{ backgroundColor: theme().palette.divider }}>
+      <Icon name={c.collapsed().has(id()) ? "right" : "down"} size={text(10)} color={muted()} />
+      <Text numberOfLines={1} style={{ flex: 1, fontFamily: theme().family, fontSize: text(10), fontWeight: "600", color: muted() }}>{current().name}</Text>
+      <Text style={{ fontFamily: theme().family, fontSize: text(9), color: muted() }}>{String(current().count).padStart(2, "0")}</Text>
+    </View>
+    {current().folder && hovering() && <>
+      <ToolbarCommand id={`subfolder:${id()}`} icon="add" label="Create subfolder" onPress={() => c.editor.set({ kind: "folder", parent: id(), name: "" })} />
+      <ToolbarCommand id={`folder-menu:${id()}`} icon="more" label="Folder actions" onPress={menu} />
+    </>}
   </View>;
 }
 
@@ -226,42 +311,64 @@ function ProjectItemRow(props: { item: () => ProjectTreeRow; controller: PanelCo
   const tasks = () => c.state().tasks.filter((task) => task.projectId === project().id);
   const trees = () => visibleWorktrees(c.state(), project().id);
   const live = () => c.shells().filter((shell) => shell.projectId === project().id && shell.alive).length;
-  return <View style={{ paddingLeft: props.item().depth * 12, gap: 2 }}>
-    <Button testID={`project-${project().id}`} accessibilityLabel={project().name} selected={c.projectId() === project().id} disabled={c.pending()}
-      onPress={() => void c.activate(project())} style={row()} hoverStyle={{ backgroundColor: theme().palette.panelActive }} focusStyle={{ backgroundColor: theme().palette.divider }} selectedStyle={{ backgroundColor: theme().palette.panelActive }}>
-      <Text numberOfLines={1} style={{ fontFamily: theme().family, fontSize: text(12), color: ink() }}>{project().name}</Text>
-      <Text numberOfLines={1} style={{ fontFamily: theme().family, fontSize: text(10), color: muted() }}>{`${trees().length} trees · ${tasks().filter((task) => task.status === "done").length}/${tasks().length} tasks · ${live()} live`}</Text>
-    </Button>
-    {c.projectId() === project().id && <View style={{ flexDirection: "row", paddingLeft: 10, gap: 4, flexWrap: "wrap" }}>
-      <Command id={`project-notifications:${project().id}`} label="Agent completion notifications" selected={project().notifyOnAgentDone} disabled={c.pending()} onPress={() => void c.run(() => Store.setProjectNotifications(project().id, !project().notifyOnAgentDone))}>{project().notifyOnAgentDone ? "🔔" : "🔕"}</Command>
-      <Command id={`project-wakes:${project().id}`} label="Wake orchestrators when a worker finishes" selected={project().wakeOrchestratorsOnAgentDone} disabled={c.pending()} onPress={() => void c.run(() => Store.setProjectOrchestratorWakes(project().id, !project().wakeOrchestratorsOnAgentDone))}>↻</Command>
-      <Command id={`project-settings:${project().id}`} label="Project settings" onPress={() => c.openPanel("project_settings")}>⚙</Command>
-      <Command id={`move-project:${project().id}`} label="Move to folder…" onPress={() => c.folderMenu(project().id)}>Move to…</Command>
-      <Command id={`open-project-window:${project().id}`} label="Open project in another window" onPress={() => void c.run(() => host.call("window.open", { kind: "project", projectId: project().id, path: project().root }))}>↗</Command>
-    </View>}
+  const selected = () => c.projectId() === project().id;
+  const hovering = signal(false);
+  const activity = () => {
+    const chats = c.chats().filter((chat) => chat.projectId === project().id);
+    const working = chats.filter((chat) => chat.state === "running").length, waiting = chats.filter((chat) => chat.state === "waiting").length;
+    return [working ? `${working} working` : "", waiting ? `${waiting} waiting` : ""].filter(Boolean).join(" · ");
+  };
+  async function settings() { await c.activate(project()); if (c.projectId() === project().id) c.openPanel("project_settings"); }
+  function openWindow() { void c.run(() => host.call("window.open", { kind: "project", projectId: project().id, path: project().root })); }
+  function menu() {
+    void Menu.popup([
+      { label: "Open project", onSelect: () => void c.activate(project()) },
+      { label: "Open in another window", onSelect: openWindow },
+      { label: "Project settings…", onSelect: () => void settings() },
+      { label: "Move to folder…", onSelect: () => c.folderMenu(project().id) },
+      { type: "separator" },
+      { label: "Agent completion notifications", checked: project().notifyOnAgentDone, onSelect: () => void c.run(() => Store.setProjectNotifications(project().id, !project().notifyOnAgentDone)) },
+      { label: "Wake orchestrators when a worker finishes", checked: project().wakeOrchestratorsOnAgentDone, onSelect: () => void c.run(() => Store.setProjectOrchestratorWakes(project().id, !project().wakeOrchestratorsOnAgentDone)) },
+    ]);
+  }
+  return <View onHoverIn={() => hovering.set(true)} onHoverOut={() => hovering.set(false)} onContextMenu={menu}
+    style={{ borderRadius: space(7, theme().scale), backgroundColor: selected() ? theme().palette.panelActive : "transparent" }} hoverStyle={{ backgroundColor: theme().palette.panelActive }}>
+    <View style={{ flexDirection: "row", alignItems: "center", paddingRight: 2 }}>
+      <Button testID={`project-${project().id}`} accessibilityLabel={project().name} selected={selected()} disabled={c.pending()} onPress={() => void c.activate(project())}
+        style={{ flex: 1, minWidth: 0, paddingLeft: space(6 + props.item().depth * 16, theme().scale), paddingVertical: space(6, theme().scale), gap: 2 }} focusStyle={{ backgroundColor: theme().palette.divider }}>
+        <Text numberOfLines={1} style={{ fontFamily: theme().family, fontSize: text(11), color: ink() }}>{project().name}</Text>
+        <Text numberOfLines={1} style={{ fontFamily: theme().family, fontSize: text(10), color: muted() }}>{`${activity() ? `Agents ${activity()} · ` : ""}${trees().length} trees · ${tasks().filter((task) => task.status === "done").length}/${tasks().length} tasks · ${live()} live`}</Text>
+      </Button>
+      {(selected() || hovering()) && <View style={{ flexDirection: "row", alignItems: "center", gap: 0 }}>
+        <ToolbarCommand id={`project-notifications:${project().id}`} icon={project().notifyOnAgentDone ? "bell" : "bell-off"} label="Agent completion notifications" selected={project().notifyOnAgentDone} disabled={c.pending()} onPress={() => void c.run(() => Store.setProjectNotifications(project().id, !project().notifyOnAgentDone))} />
+        <ToolbarCommand id={`project-wakes:${project().id}`} icon="refresh" label="Wake orchestrators when a worker finishes" selected={project().wakeOrchestratorsOnAgentDone} disabled={c.pending()} onPress={() => void c.run(() => Store.setProjectOrchestratorWakes(project().id, !project().wakeOrchestratorsOnAgentDone))} />
+        <ToolbarCommand id={`project-settings:${project().id}`} icon="settings" label="Project settings" onPress={() => void settings()} />
+        <ToolbarCommand id={`open-project-window:${project().id}`} icon="open" label="Open project in another window" onPress={openWindow} />
+      </View>}
+    </View>
   </View>;
 }
 
-function Projects(props: { controller: PanelController; surface: string }) {
+function Projects(props: { controller: PanelController; surface: string; footer?: JSX.Element }) {
   const c = props.controller;
   const rows = () => projectRows(c.state(), c.query(), c.collapsed(), c.order(), c.descending(), c.shells());
   function sortMenu() {
     void Menu.popup([
-      ...([["name", "Project name"], ["added", "Date added"], ["live", "Live sessions"]] as const).map(([value, label]) => ({ label, checked: c.order() === value,
-        onSelect: () => { if (c.order() !== value) { c.order.set(value); c.descending.set(value !== "name"); } } })),
+      ...([["name", "Project name"], ["edited", "Last edited"], ["added", "Date added"], ["live", "Live sessions"]] as const).map(([value, label]) => ({ label, checked: c.order() === value, disabled: c.sortPending(),
+        onSelect: () => { if (c.order() !== value) void c.setOrder(value); } })),
       { type: "separator" },
-      { label: c.order() === "name" ? "A to Z" : c.order() === "live" ? "Fewest live sessions first" : "Oldest first", checked: !c.descending(), onSelect: () => c.descending.set(false) },
-      { label: c.order() === "name" ? "Z to A" : c.order() === "live" ? "Most live sessions first" : "Newest first", checked: c.descending(), onSelect: () => c.descending.set(true) },
+      { label: c.order() === "name" ? "A to Z" : c.order() === "live" ? "Fewest live sessions first" : "Oldest first", checked: !c.descending(), disabled: c.sortPending(), onSelect: () => void c.setOrder(c.order(), false) },
+      { label: c.order() === "name" ? "Z to A" : c.order() === "live" ? "Most live sessions first" : "Newest first", checked: c.descending(), disabled: c.sortPending(), onSelect: () => void c.setOrder(c.order(), true) },
     ]);
   }
-  return <View testID="projects-panel" style={{ flex: 1, minHeight: 0 }}>
-    <Header title="Projects" count={c.query().trim() ? rows().length : c.state().projects.length} total={c.state().projects.length} noun="project">
-      <Command id="new-folder" label="New folder" onPress={() => c.editor.set({ kind: "folder", name: "" })}>＋ Folder</Command>
-      <Command id="new-project" label="New project" onPress={() => c.editor.set({ kind: "project" })}>＋ Project</Command>
-      <Command id="sort-projects" label="Sort projects" onPress={sortMenu}>↕</Command>
+  return <View testID="projects-panel" style={{ flex: 1, minHeight: 0, backgroundColor: theme().palette.panel }}>
+    <Header title="Projects" count={c.query().trim() ? rows().filter((row) => row.kind === "project").length : c.state().projects.length} total={c.state().projects.length} noun="project">
+      <ToolbarCommand id="sort-projects" icon="sort" label="Sort projects" onPress={sortMenu} />
+      <ToolbarCommand id="new-folder" icon="folder" label="New folder" onPress={() => c.editor.set({ kind: "folder", name: "" })} />
+      <ToolbarCommand id="new-project" icon="add" label="New project" onPress={() => c.editor.set({ kind: "project" })} />
     </Header>
     <PanelSearch controller={c} panel="projects" surface={props.surface} />
-    <List each={rows()} keyExtractor={(item) => item.id} estimatedItemSize={space(58, theme().scale)} style={{ flex: 1, minHeight: 0 }} contentStyle={{ paddingHorizontal: 4, paddingBottom: 8 }} empty={<Empty query={c.query()} noun="projects" />}>
+    <List each={rows()} keyExtractor={(item) => item.id} estimatedItemSize={space(46, theme().scale)} style={{ flex: 1, minHeight: 0 }} contentStyle={{ paddingHorizontal: space(6, theme().scale), paddingBottom: 8 }} footer={props.footer} empty={props.footer ? undefined : <Empty query={c.query()} noun="projects" />}>
       {(item) => <ProjectRow item={item} controller={c} />}
     </List>
   </View>;
@@ -271,14 +378,14 @@ function Worktrees(props: { controller: PanelController; surface: string }) {
   const c = props.controller;
   const all = () => visibleWorktrees(c.state(), c.projectId());
   const rows = () => all().filter((tree) => matches(c.query(), tree.id, tree.branch, tree.path));
-  return <View testID="worktrees-panel" style={{ flex: 1, minHeight: 0 }}>
+  return <View testID="worktrees-panel" style={{ flex: 1, minHeight: 0, backgroundColor: theme().palette.panel }}>
     <Header title="Worktrees" count={rows().length} total={all().length} noun="worktree" project={c.projectLabel()}>
-      <Command id="refresh-worktrees" label="Refresh worktrees" disabled={c.pending()} onPress={() => void c.run(() => Store.refreshWorktrees(c.projectId()))}>Refresh</Command>
+      <ToolbarCommand id="refresh-worktrees" icon="refresh" label="Refresh worktrees" disabled={c.pending()} onPress={() => void c.run(() => Store.refreshWorktrees(c.projectId()))} />
     </Header>
     <PanelSearch controller={c} panel="worktrees" surface={props.surface} />
-    <List each={rows()} keyExtractor={(tree) => tree.id} estimatedItemSize={space(72, theme().scale)} style={{ flex: 1, minHeight: 0 }} contentStyle={{ paddingHorizontal: 4 }} empty={<Empty query={c.query()} noun="worktrees" />}>
-      {(item) => <Button testID={`worktree-${item().id}`} accessibilityLabel={worktreeLabel(item())} selected={c.selectedWorktree() === item().id} onPress={() => c.selectWorktree(item().id)} style={row()} focusStyle={{ backgroundColor: theme().palette.divider }} selectedStyle={{ backgroundColor: theme().palette.panelActive }}>
-        <Text style={{ fontFamily: theme().family, fontSize: text(12), color: ink() }}>{`${item().isPrimary ? "▣" : "⑂"} ${worktreeLabel(item())}`}</Text>
+    <List each={rows()} keyExtractor={(tree) => tree.id} estimatedItemSize={space(72, theme().scale)} style={{ flex: 1, minHeight: 0 }} contentStyle={{ paddingHorizontal: space(6, theme().scale) }} empty={<Empty query={c.query()} noun="worktrees" />}>
+      {(item) => <Button testID={`worktree-${item().id}`} accessibilityLabel={worktreeLabel(item())} selected={c.selectedWorktree() === item().id} onPress={() => c.selectWorktree(item().id)} style={row()} hoverStyle={{ backgroundColor: theme().palette.panelActive }} focusStyle={{ backgroundColor: theme().palette.divider }} selectedStyle={{ backgroundColor: theme().palette.panelActive }}>
+        <Text style={{ fontFamily: theme().family, fontSize: text(11), color: ink() }}>{`${item().isPrimary ? "▣" : "⑂"} ${worktreeLabel(item())}`}</Text>
         <Text numberOfLines={1} style={{ fontFamily: theme().monoFamily, fontSize: text(10), color: muted() }}>{item().path}</Text>
         {item().present === false && <Text style={{ fontFamily: theme().family, fontSize: text(10), color: theme().palette.gold }}>Missing</Text>}
         <Text style={{ fontFamily: theme().family, fontSize: text(10), color: muted() }}>{`${c.state().tasks.filter((task) => task.worktreeId === item().id && task.status === "done").length}/${c.state().tasks.filter((task) => task.worktreeId === item().id).length} tasks · ${item().id.slice(0, 8)}`}</Text>
@@ -315,14 +422,14 @@ function Tasks(props: { controller: PanelController; surface: string }) {
   const all = () => c.state().tasks.filter((task) => task.projectId === c.projectId());
   const rows = () => all().filter((task) => taskMatches(task, c.state(), c.query()));
   const selected = () => all().find((task) => task.id === c.selectedTask());
-  return <View testID="tasks-panel" style={{ flex: 1, minHeight: 0 }}>
+  return <View testID="tasks-panel" style={{ flex: 1, minHeight: 0, backgroundColor: theme().palette.panel }}>
     <Header title="Tasks" count={rows().length} total={all().length} noun="task" project={c.projectLabel()}>
-      <Command id="new-task" label="Add task" disabled={c.pending()} onPress={() => c.editor.set({ kind: "task" })}>＋ Task</Command>
+      <ToolbarCommand id="new-task" icon="add" label="Add task" disabled={c.pending()} onPress={() => c.editor.set({ kind: "task" })} />
     </Header>
     <PanelSearch controller={c} panel="tasks" surface={props.surface} />
-    <List each={rows()} keyExtractor={(task) => task.id} estimatedItemSize={space(58, theme().scale)} style={{ flex: 1, minHeight: 0 }} contentStyle={{ paddingHorizontal: 4 }} empty={<Empty query={c.query()} noun="tasks" />}>
-      {(item) => <Button testID={`task-${item().id}`} accessibilityLabel={item().title} selected={c.selectedTask() === item().id} onPress={() => c.selectTask(item().id)} style={row()} focusStyle={{ backgroundColor: theme().palette.divider }} selectedStyle={{ backgroundColor: theme().palette.panelActive }}>
-        <Text style={{ fontFamily: theme().family, fontSize: text(12), color: ink() }}>{`${taskMark(item().status)} ${item().title}`}</Text>
+    <List each={rows()} keyExtractor={(task) => task.id} estimatedItemSize={space(46, theme().scale)} style={{ flex: 1, minHeight: 0 }} contentStyle={{ paddingHorizontal: space(6, theme().scale) }} empty={<Empty query={c.query()} noun="tasks" />}>
+      {(item) => <Button testID={`task-${item().id}`} accessibilityLabel={item().title} selected={c.selectedTask() === item().id} onPress={() => c.selectTask(item().id)} style={row()} hoverStyle={{ backgroundColor: theme().palette.panelActive }} focusStyle={{ backgroundColor: theme().palette.divider }} selectedStyle={{ backgroundColor: theme().palette.panelActive }}>
+        <Text style={{ fontFamily: theme().family, fontSize: text(11), color: ink() }}>{`${taskMark(item().status)} ${item().title}`}</Text>
         <Text style={{ fontFamily: theme().family, fontSize: text(10), color: statusColor(item().status) }}>{`${item().status} · @ ${worktreeLabel(c.state().worktrees.find((tree) => tree.id === item().worktreeId))}`}</Text>
       </Button>}
     </List>
@@ -332,39 +439,92 @@ function Tasks(props: { controller: PanelController; surface: string }) {
 
 function Shells(props: { controller: PanelController; surface: string }) {
   const c = props.controller;
-  const all = () => c.shells().filter((shell) => shell.kind === "project" && shell.projectId === c.projectId());
-  const rows = () => all().filter((shell) => shellMatches(shell, c.state(), c.query()) || (!!c.query().trim() && matches(c.query(), c.tabForShell(shell.id)?.title))).map((shell) => ({ shell, projectId: c.projectId(), token: c.generation() }));
-  return <View testID="shells-panel" style={{ flex: 1, minHeight: 0 }}>
-    <Header title="Sessions" count={rows().length} total={all().length} noun="session" project={c.projectLabel()}>
-      <Command id="new-shell" label="New shell" disabled={c.pending()} onPress={() => void c.run(async () => {
-        const projectId = c.projectId(), token = c.generation();
-        const project = c.state().projects.find((project) => project.id === projectId);
-        if (!project) return;
-        const tree = c.state().worktrees.find((tree) => tree.id === c.selectedWorktree() && tree.projectId === projectId);
-        const shell = await Sessions.create({ projectId, worktreeId: tree?.id, cwd: tree?.path ?? project.root });
-        c.attach(shell, projectId, token);
-      })}>＋ Shell</Command>
+  const allShells = () => c.shells().filter((shell) => shell.kind === "project" && shell.projectId === c.projectId());
+  const allChats = () => c.chats().filter((chat) => chat.projectId === c.projectId());
+  const context = (chat: ChatSummary) => {
+    const trees = c.state().worktrees.filter((tree) => tree.projectId === chat.projectId);
+    const tree = trees.find((tree) => tree.id === chat.worktreeId) ?? trees.filter((tree) => chat.cwd === tree.path || chat.cwd.startsWith(`${tree.path}/`)).sort((a, b) => b.path.length - a.path.length)[0];
+    return tree ? worktreeLabel(tree) : chat.worktreeId ? `Worktree ${chat.worktreeId.slice(0, 8)}` : "Project root";
+  };
+  const provider = (chat: ChatSummary) => chat.provider === "codex" ? "Codex" : chat.provider === "claude" ? "Claude" : "Muse";
+  const status = (chat: ChatSummary) => chat.state === "running" ? "Working" : chat.state.charAt(0).toUpperCase() + chat.state.slice(1);
+  type SessionRow = { kind: "chat"; chat: ChatSummary; id: string; projectId: string; token: number } | { kind: "shell"; shell: ShellSessionDto; id: string; projectId: string; token: number };
+  const rows = (): SessionRow[] => {
+    const filter = c.sessionFilter(), query = c.query(), projectId = c.projectId(), token = c.generation();
+    const chats: SessionRow[] = allChats().filter((chat) => filter !== "shells" && (filter === "all" || chat.provider === filter) && matches(query, chat.id, chat.title, provider(chat), status(chat), context(chat), chat.cwd, chat.worktreeId))
+      .map((chat) => ({ kind: "chat", chat, id: `chat:${chat.id}`, projectId, token }));
+    const shells: SessionRow[] = (filter === "all" || filter === "shells" ? allShells() : [])
+      .filter((shell) => shellMatches(shell, c.state(), query) || (!!query.trim() && matches(query, c.tabForShell(shell.id)?.title)))
+      .map((shell) => ({ kind: "shell", shell, id: `shell:${shell.id}`, projectId, token }));
+    return [...chats, ...shells];
+  };
+  function createShell() {
+    void c.run(async () => {
+      const projectId = c.projectId(), token = c.generation();
+      const project = c.state().projects.find((project) => project.id === projectId);
+      if (!project) return;
+      const tree = c.state().worktrees.find((tree) => tree.id === c.selectedWorktree() && tree.projectId === projectId);
+      const shell = await Sessions.create({ projectId, worktreeId: tree?.id, cwd: tree?.path ?? project.root });
+      c.attach(shell, projectId, token);
+    });
+  }
+  function refresh() { void c.refreshCatalog(); void Sessions.list().then((next) => c.shells.set(next.sessions)).catch((reason) => c.notice(String(reason))); }
+  return <View testID="shells-panel" style={{ flex: 1, minHeight: 0, backgroundColor: theme().palette.panel }}>
+    <Header title="Sessions" count={rows().length} total={allShells().length + allChats().length} noun="session" project={c.projectLabel()}>
+      <ToolbarCommand id="sessions-refresh" icon="refresh" label="Refresh sessions" disabled={c.catalogLoading()} onPress={refresh}>↻</ToolbarCommand>
+      <ToolbarCommand id="new-shell" icon="add" label="New shell" disabled={c.pending()} onPress={createShell}>＋</ToolbarCommand>
     </Header>
     <PanelSearch controller={c} panel="shells" surface={props.surface} />
-    <List each={rows()} keyExtractor={(item) => item.shell.id} estimatedItemSize={space(78, theme().scale)} style={{ flex: 1, minHeight: 0 }} contentStyle={{ paddingHorizontal: 4 }} empty={<Empty query={c.query()} noun="sessions" />}>
-      {(item) => <View style={{ gap: 2 }}>
-        <Button testID={`shell-${item().shell.id}`} accessibilityLabel={c.titleForShell(item().shell)} selected={c.selectedShell() === item().shell.id} onPress={() => c.attach(item().shell, item().projectId, item().token)} style={row()} focusStyle={{ backgroundColor: theme().palette.divider }} selectedStyle={{ backgroundColor: theme().palette.panelActive }}>
-          <Text style={{ fontFamily: theme().family, fontSize: text(12), color: ink() }}>{c.titleForShell(item().shell)}</Text>
-          <Text style={{ fontFamily: theme().family, fontSize: text(10), color: item().shell.alive ? accent() : muted() }}>{`${item().shell.alive ? "Live" : "Exited"} · ${item().shell.harness ?? "shell"}`}</Text>
-          <Text numberOfLines={1} style={{ fontFamily: theme().monoFamily, fontSize: text(10), color: muted() }}>{item().shell.command ?? item().shell.cwd}</Text>
-          <Text style={{ fontFamily: theme().monoFamily, fontSize: text(9), color: muted() }}>{item().shell.id.slice(0, 8)}</Text>
-          {c.tabForShell(item().shell.id)?.hidden && <Text style={{ fontFamily: theme().family, fontSize: text(9), color: muted() }}>Hidden tab · select to reopen</Text>}
-        </Button>
-        {c.selectedShell() === item().shell.id && <View style={{ paddingHorizontal: 10 }}><Command id={`close-shell:${item().shell.id}`} label="Close shell" disabled={c.pending()} onPress={() => void c.run(() => Sessions.close(item().shell.id))} /></View>}
-      </View>}
+    <View testID="sessions-controls" style={{ paddingHorizontal: 8, paddingBottom: 8, flexDirection: "row", gap: 4, flexWrap: "wrap" }}>
+      {c.newChat && <Command id="sessions-new-chat" label="New chat…" onPress={() => c.newChat?.()} />}
+      {([["all", "All sessions"], ["codex", "Codex chats"], ["claude", "Claude chats"], ["muse", "Muse chats"], ["shells", "Shells"]] as const).map(([filter, label]) =>
+        <Command id={`sessions-filter-${filter}`} label={label} selected={c.sessionFilter() === filter} onPress={() => c.sessionFilter.set(filter)} />)}
+    </View>
+    {c.catalogNotice() !== "" && <Text testID="sessions-catalog-notice" style={{ fontFamily: theme().family, fontSize: text(10), color: theme().palette.gold, paddingHorizontal: 12, paddingBottom: 8 }}>{c.catalogNotice()}</Text>}
+    {c.catalogLoading() && allChats().length === 0 && <Text style={{ fontFamily: theme().family, fontSize: text(10), color: muted(), paddingHorizontal: 12, paddingBottom: 8 }}>Loading chat history…</Text>}
+    <List each={rows()} keyExtractor={(item) => item.id} estimatedItemSize={space(76, theme().scale)} style={{ flex: 1, minHeight: 0 }} contentStyle={{ paddingHorizontal: space(6, theme().scale), paddingBottom: 6 }} empty={<Empty query={c.query()} noun="sessions" />}>
+      {(item) => <>{item().kind === "chat" ? <ChatSession item={() => item() as Extract<SessionRow, { kind: "chat" }>} /> : <ShellSession item={() => item() as Extract<SessionRow, { kind: "shell" }>} />}</>}
     </List>
   </View>;
+
+  function ChatSession(props: { item: () => Extract<SessionRow, { kind: "chat" }> }) {
+    const item = props.item, chat = () => item().chat;
+    const tone = () => chat().state === "running" ? theme().palette.working : chat().state === "waiting" || chat().state === "failed" ? theme().palette.gold : muted();
+    return <Button testID={`session-chat-${chat().id}`} accessibilityLabel={`${provider(chat())} chat · ${chat().title || "Untitled chat"} · ${status(chat())} · ${context(chat())}`}
+      selected={c.selectedChat() === chat().id} disabled={!c.showChat} onPress={() => c.openChat(chat(), item().projectId, item().token)}
+      style={row()} hoverStyle={{ backgroundColor: theme().palette.panelActive }} focusStyle={{ backgroundColor: theme().palette.divider }} selectedStyle={{ backgroundColor: theme().palette.panelActive }}>
+      <Text numberOfLines={1} style={{ fontFamily: theme().family, fontSize: text(11), color: ink() }}>{`${provider(chat())} · ${chat().title.trim() || "Untitled chat"}`}</Text>
+      <Text numberOfLines={1} style={{ fontFamily: theme().family, fontSize: text(10), color: tone() }}>{`${status(chat())} · ${context(chat())}`}</Text>
+      <Text numberOfLines={1} style={{ fontFamily: theme().monoFamily, fontSize: text(10), color: muted() }}>{chat().cwd}</Text>
+      <Text numberOfLines={1} style={{ fontFamily: theme().monoFamily, fontSize: text(9), color: muted() }}>{chat().id}</Text>
+    </Button>;
+  }
+  function ShellSession(props: { item: () => Extract<SessionRow, { kind: "shell" }> }) {
+    const item = props.item, shell = () => item().shell;
+    function menu() {
+      void Menu.popup([
+        { label: "Open session", disabled: !shell().alive, onSelect: () => c.attach(shell(), item().projectId, item().token) },
+        { type: "separator" },
+        { label: "End shell…", disabled: !shell().alive, onSelect: () => c.closingShell.set(shell()) },
+      ]);
+    }
+    return <View onContextMenu={menu}>
+      <Button testID={`shell-${shell().id}`} accessibilityLabel={c.titleForShell(shell())} selected={c.selectedShell() === shell().id} onPress={() => c.attach(shell(), item().projectId, item().token)} style={row()}
+        hoverStyle={{ backgroundColor: theme().palette.panelActive }} focusStyle={{ backgroundColor: theme().palette.divider }} selectedStyle={{ backgroundColor: theme().palette.panelActive }}>
+        <Text numberOfLines={1} style={{ fontFamily: theme().family, fontSize: text(11), color: ink() }}>{c.titleForShell(shell())}</Text>
+        <Text numberOfLines={1} style={{ fontFamily: theme().family, fontSize: text(10), color: shell().alive ? accent() : muted() }}>{`${shell().alive ? "Live" : "Exited"} · ${shell().harness ?? "shell"}${c.tabForShell(shell().id)?.hidden ? " · Hidden tab" : ""}`}</Text>
+        <Text numberOfLines={1} style={{ fontFamily: theme().monoFamily, fontSize: text(10), color: muted() }}>{shell().command ?? shell().cwd}</Text>
+        <Text numberOfLines={1} style={{ fontFamily: theme().monoFamily, fontSize: text(9), color: muted() }}>{shell().id}</Text>
+      </Button>
+      {c.selectedShell() === shell().id && shell().alive && <View style={{ paddingHorizontal: 6, paddingBottom: 4 }}><Command id={`close-shell:${shell().id}`} label="End shell…" disabled={c.pending()} onPress={() => c.closingShell.set(shell())} /></View>}
+    </View>;
+  }
 }
 
-export function PanelContent(props: { controller: PanelController; panel: string; surface: string }) {
+export function PanelContent(props: { controller: PanelController; panel: string; surface: string; projectFooter?: JSX.Element }) {
   // NSH's context provider reads its children untracked before resolving them.
   // Keep the changing panel choice in a callable child so its memo tracks it.
-  return <PanelTheme.Provider value={props.controller.theme ?? defaultTheme}>{() => props.panel === "projects" ? <Projects controller={props.controller} surface={props.surface} /> :
+  return <PanelTheme.Provider value={props.controller.theme ?? defaultTheme}>{() => props.panel === "projects" ? <Projects controller={props.controller} surface={props.surface} footer={props.projectFooter} /> :
     props.panel === "worktrees" ? <Worktrees controller={props.controller} surface={props.surface} /> :
     props.panel === "tasks" ? <Tasks controller={props.controller} surface={props.surface} /> :
     props.panel === "shells" ? <Shells controller={props.controller} surface={props.surface} /> : null}</PanelTheme.Provider>;
@@ -378,7 +538,7 @@ function ShellIntentContent(props: { controller: PanelController; shellId: strin
   const shell = () => props.controller.shells().find((shell) => shell.id === props.shellId);
   return <View testID={`shell-intent:${props.shellId}`} style={{ padding: 16, gap: 8 }}>
     <Text style={{ fontFamily: theme().family, fontSize: text(13), color: ink() }}>{shell() ? props.controller.titleForShell(shell()!) : "Shell"}</Text>
-    <Text style={{ fontFamily: theme().family, fontSize: text(11), color: muted() }}>Shell selected. Terminal attachment is pending Phase 2.</Text>
+    <Text style={{ fontFamily: theme().family, fontSize: text(11), color: muted() }}>Opening terminal…</Text>
     <Text selectable={true} style={{ fontFamily: theme().monoFamily, fontSize: text(11), color: muted() }}>{props.shellId}</Text>
     {shell() && <Text style={{ fontFamily: theme().family, fontSize: text(11), color: muted() }}>{`${shell()!.alive ? "Live" : "Exited"} · ${shell()!.cwd}`}</Text>}
   </View>;
@@ -506,7 +666,17 @@ export function PanelEditors(props: { controller: PanelController }) {
 
 function EditorDialog(props: { controller: PanelController }) {
   const c = props.controller;
-  return <>{c.editor() && <Dialog testID="panel-editor" animation="none" closeOnEscape={!c.pending()} closeOnBackdropPress={false} onOpenChange={(open) => { if (!open && !c.pending()) c.editor.set(null); }}
+  return <>
+    {c.closingShell() && <Dialog testID="end-shell-dialog" animation="none" closeOnEscape={!c.pending()} closeOnBackdropPress={false} onOpenChange={(open) => { if (!open && !c.pending()) c.closingShell.set(null); }}
+      style={{ width: 380, maxWidth: "90%", padding: 18, gap: 12, backgroundColor: theme().palette.panel, borderRadius: 12 }} backdropStyle={{ backgroundColor: "#00000080" }}>
+      <Text style={{ fontFamily: theme().family, fontSize: text(14), fontWeight: "600", color: ink() }}>End this shell?</Text>
+      <Text style={{ fontFamily: theme().family, fontSize: text(11), color: muted() }}>{`This ends ${c.titleForShell(c.closingShell()!)} and the processes running in it. Close its tab instead to keep it running.`}</Text>
+      <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: 6 }}>
+        <Command label="Cancel" disabled={c.pending()} onPress={() => c.closingShell.set(null)} />
+        <Command id="confirm-end-shell" label="End shell" disabled={c.pending()} onPress={() => { const shell = c.closingShell(); if (shell) void c.run(() => Sessions.close(shell.id), () => c.closingShell.set(null)); }} />
+      </View>
+    </Dialog>}
+    {c.editor() && <Dialog testID="panel-editor" animation="none" closeOnEscape={!c.pending()} closeOnBackdropPress={false} onOpenChange={(open) => { if (!open && !c.pending()) c.editor.set(null); }}
     style={{ width: 440, maxWidth: "90%", padding: 18, backgroundColor: theme().palette.panel, borderRadius: 8 }} backdropStyle={{ backgroundColor: "#00000080" }}>
     {c.editor()!.kind === "folder" ? <FolderEditor controller={c} editor={c.editor() as Extract<Editor, { kind: "folder" }>} /> :
       c.editor()!.kind === "task" ? <TaskEditor controller={c} /> : <ProjectEditor controller={c} />}

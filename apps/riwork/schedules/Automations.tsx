@@ -1,7 +1,8 @@
 import { Scroll, Text, View, cleanup, computed, effect, keymap, signal, type YNode } from "nsh";
 import { Button, Input, Radio, RadioGroup } from "nsh/base";
 import { Schedules } from "riwork/native";
-import { DEFAULT_THEME, type InterfaceTheme } from "../appearance";
+import { DEFAULT_THEME, space, type InterfaceTheme } from "../appearance";
+import { Icon } from "../Icon";
 import {
   AutomationModel, EMPTY, EMPTY_TARGETS, FOOTNOTE, PERMISSIONS, QUICK_TIMES,
   optionsLabel, projectScope, quickTime, selectScope, selectTarget, singleLine,
@@ -106,8 +107,9 @@ export function AutomationsPanel(props: {
 
   function button(id: string, label: string, onPress: () => void, selected = false, disabled = pending()) {
     return <Button testID={id} accessibilityLabel={label} disabled={disabled} selected={selected} onPress={onPress}
-      style={{ paddingHorizontal: 9, paddingVertical: 5, borderWidth: 1, borderColor: selected ? palette().cyan : palette().divider, borderRadius: 12, backgroundColor: selected ? palette().panelActive : palette().panel }}>
-      <Text style={text(10, selected ? palette().cyan : disabled ? palette().muted : palette().text)}>{label}</Text>
+      style={{ paddingHorizontal: space(12, theme().scale), paddingVertical: space(4, theme().scale), borderRadius: space(14, theme().scale), backgroundColor: selected && !disabled ? palette().cyan : palette().panelActive }}
+      hoverStyle={{ backgroundColor: selected ? palette().magenta : palette().divider }} focusStyle={{ backgroundColor: palette().divider }}>
+      <Text style={text(11, disabled ? palette().muted : selected ? palette().bg : palette().text)}>{label}</Text>
     </Button>;
   }
   function field(id: string, label: string, value: () => string, update: (value: string) => void, isTitle = false) {
@@ -115,7 +117,7 @@ export function AutomationsPanel(props: {
       <Text style={text(10, palette().muted)}>{label}</Text>
       <Input testID={`automation-${id}`} accessibilityLabel={label} placeholder={label} readonly={pending()} value={value()}
         ref={(node) => { if (isTitle) { title = node; if (focusTitle) { focusTitle = false; node.focus(); } } }} onFocus={() => focused.set(true)} onCompositionChange={(event) => composing.set(event.composing)}
-        onChange={(value) => { if (!pending()) update(value); }} style={{ ...text(), borderWidth: 1, borderColor: palette().divider, borderRadius: 4, paddingHorizontal: 7, paddingVertical: 5 }} />
+        onChange={(value) => { if (!pending()) update(value); }} style={{ ...text(), minHeight: space(28, theme().scale), backgroundColor: palette().panel, borderRadius: space(6, theme().scale), paddingHorizontal: space(8, theme().scale), paddingVertical: space(5, theme().scale) }} />
     </View>;
   }
   function choose(id: string, label: string, selected: boolean, onChange: () => void) {
@@ -128,8 +130,8 @@ export function AutomationsPanel(props: {
     const fresh = computed(() => e().fresh), exact = computed(() => e().exact), customRepeat = computed(() => e().repeat === "minutes");
     const patch = (value: Partial<Editor>) => model.patch(value);
     const choices = () => targetsFor(state().data?.targets ?? [], e());
-    return <View testID="automation-editor" style={{ gap: 10, padding: 12, borderWidth: 1, borderColor: palette().divider, borderRadius: 6, backgroundColor: palette().panel }}>
-      <Text style={text(12)}>{e().previous ? "Edit automation" : "New automation"}</Text>
+    return <View testID="automation-editor" style={{ gap: space(10, theme().scale), padding: space(12, theme().scale), borderRadius: space(12, theme().scale), backgroundColor: palette().bg }}>
+      <Text style={{ ...text(13), fontWeight: "600" }}>{e().previous ? "Edit automation" : "New automation"}</Text>
       <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
         {button("automation-destination-chat", "New project chat", () => patch({ fresh: true, scope: projectScope(props.projectId()), binding: null, pinned: false }), e().fresh, pending() || !!e().previous)}
         {button("automation-destination-shell", "Existing AI shell", () => patch({ fresh: false, binding: null, pinned: false }), !e().fresh, pending() || !!e().previous)}
@@ -161,9 +163,9 @@ export function AutomationsPanel(props: {
             if (model.editor) model.patch(selectScope(model.editor, { ...model.editor.scope, worktreeId: tree.id }));
           }, tree.id === e().scope.worktreeId))}
         </View>}
-        {e().pinned && e().previous && <Text testID="automation-pinned" style={text(10, palette().muted)}>{`PINNED TARGET / ${e().previous!.key.targetId}`}</Text>}
+        {e().pinned && e().previous && <Text testID="automation-pinned" style={text(10, palette().muted)}>{`Pinned target · ${e().previous!.key.targetId}`}</Text>}
         <Text style={text(10, palette().muted)}>Existing target · Click to explicitly bind this session</Text>
-        {!choices().length && <Text style={text(10, palette().gold)}>{e().scope.scope === "workspace" && !e().scope.worktreeId ? "Select a worktree in WORKTREES before creating a workspace schedule" : EMPTY_TARGETS}</Text>}
+        {!choices().length && <Text style={text(10, palette().gold)}>{e().scope.scope === "workspace" && !e().scope.worktreeId ? "Select a worktree in Worktrees before creating a workspace schedule" : EMPTY_TARGETS}</Text>}
         {choices().map((target) => button(`automation-target-${target.binding.kind}-${target.binding.id}`, target.label, () => {
           if (model.editor) model.patch(selectTarget(model.editor, target.binding));
         }, e().binding?.id === target.binding.id && e().binding?.kind === target.binding.kind))}
@@ -174,7 +176,7 @@ export function AutomationsPanel(props: {
         {button("automation-exact", "Exact time…", () => patch({ exact: !e().exact }), e().exact)}
       </View>
       {exact() && field("at", "Exact date / time · ISO with UTC offset", () => e().at, (at) => patch({ at, quick: null }))}
-      <Text testID="automation-local-time" style={text(10, palette().muted)}>{`LOCAL ${e().at.replace("T", " ")}`}</Text>
+      <Text testID="automation-local-time" style={text(10, palette().muted)}>{`Local · ${e().at.replace("T", " ")}`}</Text>
       <Text style={text(10, palette().muted)}>Repeat</Text>
       <RadioGroup style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
         {([["once", "Once"], ["hourly", "Hourly"], ["daily", "24 hours"], ["weekly", "7 days"], ["minutes", "Minutes…"]] as const).map(([value, label]) => choose(`automation-repeat-${value}`, label, e().repeat === value, () => patch({ repeat: value })))}
@@ -182,48 +184,65 @@ export function AutomationsPanel(props: {
       {customRepeat() && field("minutes", "Every N minutes · Minimum 5", () => e().minutes, (minutes) => patch({ minutes }))}
       <Text style={text(10, palette().muted)}>Repeats use elapsed time from the first run (fixed UTC cadence, including DST).</Text>
       <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
-        {button("automation-save", e().previous ? "Save changes" : "Create automation", () => void save())}
+        {button("automation-save", e().previous ? "Save changes" : "Create automation", () => void save(), true)}
         {button("automation-cancel", "Cancel", cancel)}
       </View>
     </View>;
   }
   function renderRow(row: ScheduleRow) {
-    return <View testID={`automation-row-${row.key.id}`} style={{ gap: 5, padding: 12, borderWidth: 1, borderColor: palette().divider, borderRadius: 6 }}>
-      <Text style={text(12)}>{row.title}</Text>
-      <Text style={text(10, row.reviewRequired ? palette().gold : palette().muted)}>{`${status(row)} · ${row.everyMinutes == null ? "Once" : `Every ${row.everyMinutes} min`}${row.reviewRequired ? " · Review required" : ""}`}</Text>
-      <Text style={text(10, palette().muted)}>{`NEXT ${row.nextDisplay ?? "—"}`}</Text>
-      <Text style={text(10, palette().muted)}>{row.lastRun ? `LAST ${row.lastRun.observedDisplay} · ${row.lastRun.outcome} · due ${row.lastRun.dueDisplay}` : "LAST —"}</Text>
-      {row.lastRun?.message && <Text style={text(10, row.lastRun.outcome === "failed" || row.lastRun.outcome === "uncertain" ? palette().gold : palette().muted)}>{row.lastRun.message}</Text>}
-      <Text style={text(10, palette().muted)}>{row.destinationLabel}</Text>
+    const scope = row.key.scope.scope === "app" ? "App" : row.key.scope.scope === "workspace" ? "Workspace" : "Project";
+    return <View testID={`automation-row-${row.key.id}`} style={{ gap: space(5, theme().scale), padding: space(12, theme().scale), borderRadius: space(12, theme().scale), backgroundColor: palette().bg }}>
+      <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+        <Text style={{ ...text(11), flex: 1, minWidth: 120, fontWeight: "600" }}>{`${scope} / ${row.title}`}</Text>
+        <Text style={text(10, row.reviewRequired || row.paused ? palette().gold : palette().muted)}>{`${status(row)}${row.reviewRequired ? " · Review required" : ""}`}</Text>
+      </View>
+      <Text style={text(10, palette().muted)}>{`${row.destinationLabel} · ${row.everyMinutes == null ? "Once" : `Every ${row.everyMinutes} min`}`}</Text>
+      <Text style={text(10)}>{`Next · ${row.nextDisplay ?? "—"}`}</Text>
+      <Text style={text(10, palette().muted)}>{row.lastRun ? `Last · ${row.lastRun.observedDisplay} · ${row.lastRun.outcome} · due ${row.lastRun.dueDisplay}` : "Last · —"}</Text>
+      {row.lastRun?.message && <Text style={text(10, row.lastRun.outcome === "failed" || row.lastRun.outcome === "uncertain" || row.lastRun.outcome === "missed" ? palette().gold : palette().muted)}>{row.lastRun.message}</Text>}
       <Text style={text(10, palette().muted)}>{optionsLabel(row)}</Text>
-      <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+      <Text selectable={true} style={{ ...text(11), paddingVertical: space(5, theme().scale) }}>{row.prompt}</Text>
+      <View style={{ flexDirection: "row", flexWrap: "wrap", gap: space(6, theme().scale) }}>
         {button(`automation-edit-${row.key.id}`, "Edit", () => open(row))}
         {button(`automation-pause-${row.key.id}`, row.paused ? "Resume" : "Pause", () => void model.pause(row))}
         {button(`automation-delete-${row.key.id}`, state().confirmDelete === row.key.id ? "Confirm delete" : "Delete", () => void model.remove(row))}
+        {state().confirmDelete === row.key.id && button(`automation-delete-cancel-${row.key.id}`, "Cancel", cancel)}
         {row.lastRun?.createdChatId && button(`automation-created-chat-${row.key.id}`, "Open created chat", () => { if (!pending()) void props.openChat(row.lastRun!.createdChatId!); })}
       </View>
     </View>;
   }
   const rows = () => visibleRows(state().data?.rows ?? [], props.projectId());
   return <View ref={(node) => { panel = node; }} testID="automations-panel" focusable={true} onFocus={() => focused.set(true)} onBlur={() => focused.set(false)} onPress={props.onPress}
-    style={{ flex: 1, minHeight: 0, backgroundColor: palette().bg }}>
+    style={{ flex: 1, minHeight: 0, backgroundColor: palette().panel }}>
     {remote() ? <Text style={{ ...text(), padding: 16 }}>Automations works with this Mac's own projects. Select one of them to use it.</Text> : <>
-      <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", padding: 12, gap: 8 }}>
-        <Text style={text(13)}>Automations</Text>
-        <Text testID="automations-count" style={text(10, palette().muted)}>{!state().data ? "Reading automations…" : rows().length === 0 ? "No automations" : rows().length === 1 ? "1 automation" : `${rows().length} automations`}</Text>
-        {button("automation-new", "+ New automation", () => open())}
+      <View style={{ height: space(46, theme().scale), flexDirection: "row", alignItems: "center", paddingLeft: space(12, theme().scale), paddingRight: space(8, theme().scale), gap: 8 }}>
+        <View style={{ flex: 1, minWidth: 0, gap: 1 }}>
+          <Text style={{ ...text(13), fontWeight: "600" }}>Automations</Text>
+          <Text testID="automations-count" style={text(10, palette().muted)}>{!state().data ? "Reading automations…" : rows().length === 0 ? "No automations" : rows().length === 1 ? "1 automation" : `${rows().length} automations`}</Text>
+        </View>
+        <Button testID="automation-new" accessibilityLabel="New automation" disabled={pending()} onPress={() => open()}
+          tooltip={<Text style={{ ...text(11), padding: 8, backgroundColor: palette().panelActive }}>New automation</Text>}
+          style={{ width: space(26, theme().scale), height: space(26, theme().scale), borderRadius: 13, alignItems: "center", justifyContent: "center" }} hoverStyle={{ backgroundColor: palette().panelActive }} focusStyle={{ backgroundColor: palette().divider }}>
+          <Icon name="add" size={14 * theme().scale} color={palette().muted} />
+        </Button>
       </View>
-      <Scroll testID="automations-scroll" style={{ flex: 1, minHeight: 0 }} contentStyle={{ gap: 10, paddingHorizontal: 12, paddingBottom: 12 }}>
-        {(state().error || state().data?.error || state().data?.runtimeError) && <Text testID="automation-error" role="alert" style={text(11, palette().gold)}>{`SCHEDULER ERROR / ${state().error || state().data?.error || state().data?.runtimeError}`}</Text>}
+      <Scroll testID="automations-scroll" style={{ flex: 1, minHeight: 0 }} contentStyle={{ paddingHorizontal: space(6, theme().scale), paddingBottom: space(12, theme().scale) }}>
+        <View style={{ width: "100%", maxWidth: space(800, theme().scale), gap: space(12, theme().scale) }}>
+        <Text style={{ ...text(10, palette().muted), paddingHorizontal: space(6, theme().scale) }}>Schedule a new project chat or a prompt for an existing AI shell.</Text>
+        {(state().error || state().data?.error || state().data?.runtimeError) && <Text testID="automation-error" role="alert" style={text(11, palette().gold)}>{`Scheduler error · ${state().error || state().data?.error || state().data?.runtimeError}`}</Text>}
         {editing() && <EditorView />}
-        <Text style={text(11, palette().muted)}>Scheduled prompts</Text>
-        {state().data && !rows().length && <Text testID="automations-empty" style={text(11, palette().muted)}>{EMPTY}</Text>}
+        {rows().length > 0 && <Text style={{ ...text(10, palette().muted), fontWeight: "600", paddingHorizontal: space(6, theme().scale), paddingTop: 4 }}>Scheduled prompts</Text>}
+        {state().data && !rows().length && !editing() && <View style={{ minHeight: space(120, theme().scale), padding: 24, gap: 8, alignItems: "center", justifyContent: "center" }}>
+          <Icon name="calendar" size={22 * theme().scale} color={palette().muted} />
+          <Text testID="automations-empty" style={{ ...text(11, palette().muted), textAlign: "center", maxWidth: space(280, theme().scale) }}>{EMPTY}</Text>
+        </View>}
         {rows().map(renderRow)}
         {(state().data?.chats ?? []).filter((chat) => chat.projectId === props.projectId()).length > 0 && <View style={{ gap: 6 }}>
           <Text style={text(11, palette().muted)}>Project chats · Includes earlier automation results</Text>
-          {(state().data?.chats ?? []).filter((chat) => chat.projectId === props.projectId()).map((chat) => button(`automation-project-chat-${chat.id}`, `Open ${chat.title} · ${chat.id}`, () => { if (!pending()) void props.openChat(chat.id); }))}
+          {(state().data?.chats ?? []).filter((chat) => chat.projectId === props.projectId()).map((chat) => button(`automation-project-chat-${chat.id}`, `Open ${chat.title}`, () => { if (!pending()) void props.openChat(chat.id); }))}
         </View>}
-        <Text testID="automation-footnote" style={text(10, palette().muted)}>{pending() ? "Saving…" : FOOTNOTE}</Text>
+        <Text testID="automation-footnote" style={{ ...text(9, palette().muted), paddingHorizontal: space(6, theme().scale) }}>{pending() ? "Saving…" : FOOTNOTE}</Text>
+        </View>
       </Scroll>
     </>}
   </View>;

@@ -1,12 +1,13 @@
 import { Scroll, Text, View, signal, windowSize, type JSX, type YNode } from "nsh";
-import { Input } from "nsh/base";
+import { Button, Input } from "nsh/base";
+import { Icon } from "../Icon";
 import type { DashboardEvent } from "riwork/native";
-import { type InterfaceTheme } from "../appearance";
+import { space, type InterfaceTheme } from "../appearance";
 import {
   COLUMN_WIDTHS, DASHBOARD_METRICS, FILTERS, LIST_LIMIT, SORTS, age, agentParts, attentionCopy, automationDetail,
   chatCopy, emptyTable, filterCounts, filterLabel, freshness, intelligenceSection, layoutFor, orchestratorWords,
-  plural, projectReaderName, projectState, quietAttention, sessionName, sessionsLine, sortLabel, tasksWords,
-  visibleProjects, workDetail, type Filter, type Plan, type ProjectRow, type Sort, type Target, type Wire,
+  matches, plural, projectReaderName, projectState, quietAttention, sessionName, sessionsLine, sortLabel, tasksWords,
+  visibleProjects, workDetail, type DecisionRow, type Filter, type Plan, type ProjectRow, type Sort, type Target, type Wire,
 } from "./model";
 
 type Dto = DashboardEvent["data"];
@@ -26,6 +27,7 @@ export function DashboardView(props: {
   onSort: (sort: Sort) => void;
   onSearch: (node: { focus: () => void }) => void;
   onOpen: (target: Target) => void;
+  onReview: (decision: DecisionRow) => void;
   onPanel: (projectId: string, panel: string) => void;
   onGlobalChat: () => void;
   onRefresh: () => void;
@@ -36,31 +38,33 @@ export function DashboardView(props: {
   const region = signal<Region>("projects");
   const palette = () => props.theme().palette;
   const scale = () => props.theme().scale;
+  const size = (value: number) => space(value, scale());
+  const width = signal(0);
   const font = (size: number, color = palette().text) => ({ fontFamily: props.theme().family, fontSize: size * scale(), color });
   const mono = (size: number, color = palette().text) => ({ fontFamily: props.theme().monoFamily, fontSize: size * scale(), color });
   const wire = () => (props.dto()?.wire ?? null) as Wire | null;
   const now = () => props.dto()?.now ?? 0;
-  const layout = () => layoutFor(windowSize().width, scale());
+  const layout = () => layoutFor(width() || windowSize().width, scale());
   let search: YNode | undefined;
   props.onSearch({ focus: () => search?.focus() });
 
   function button(id: string, label: string, onPress: (() => void) | undefined, selected = false, hint?: string) {
     return <View testID={id} role="button" accessibilityLabel={hint ?? label} accessibilityState={{ selected }} disabled={!onPress} onPress={onPress}
-      style={{ paddingHorizontal: 8, paddingVertical: 3, borderRadius: 5, borderWidth: 1, borderColor: selected ? palette().cyan : palette().divider, backgroundColor: selected ? palette().panelActive : "transparent" }}>
-      <Text numberOfLines={1} style={font(10, selected ? palette().cyan : palette().text)}>{label}</Text>
+      focusable={!!onPress} hoverStyle={{ backgroundColor: palette().panelActive }} style={{ paddingHorizontal: size(8), paddingVertical: size(4), borderRadius: 6, backgroundColor: selected ? palette().bg : "transparent" }}>
+      {label === "↻" || label === "×" ? <Icon name={label === "↻" ? "refresh" : "close"} size={11 * scale()} color={palette().muted} /> : <Text numberOfLines={1} style={font(10, selected ? palette().text : palette().muted)}>{label}</Text>}
     </View>;
   }
   function section(id: string, title: string, children: JSX.Element | JSX.Element[], meta?: string) {
-    return <View testID={id} style={{ gap: 6, padding: 10, borderWidth: 1, borderColor: palette().divider, borderRadius: 8, backgroundColor: palette().panel }}>
-      <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
-        <Text style={mono(10, palette().muted)}>{title.toUpperCase()}</Text>
+    return <View testID={id} style={{ gap: size(3), paddingVertical: size(6), minWidth: 0 }}>
+      <View style={{ flexDirection: "row", justifyContent: "space-between", paddingHorizontal: size(8), paddingVertical: size(4) }}>
+        <Text style={{ ...font(10, palette().muted), fontWeight: "600" }}>{title}</Text>
         {meta && <Text style={mono(10, palette().muted)}>{meta}</Text>}
       </View>
       {children}
     </View>;
   }
   function row(id: string, headline: string, detail: string, target?: Target, tone = palette().text) {
-    return <View testID={id} role={target ? "button" : "text"} accessibilityLabel={`${headline}; ${detail}`} onPress={target ? () => props.onOpen(target) : undefined} style={{ gap: 2 }}>
+    return <View testID={id} role={target ? "button" : "text"} accessibilityLabel={`${headline}; ${detail}`} onPress={target ? () => props.onOpen(target) : undefined} focusable={!!target} hoverStyle={{ backgroundColor: palette().panelActive }} style={{ gap: 2, paddingHorizontal: size(8), paddingVertical: size(5), borderRadius: 7 }}>
       <Text numberOfLines={1} style={font(11, tone)}>{headline}</Text>
       <Text numberOfLines={1} style={font(10, palette().muted)}>{detail}</Text>
     </View>;
@@ -68,35 +72,43 @@ export function DashboardView(props: {
   function more(total: number | undefined, shown: number) {
     return total != null && total > shown ? <Text style={font(10, palette().muted)}>{`${total - shown} more`}</Text> : null;
   }
-  function list<T>(rows: T[] | undefined, total: number | undefined, draw: (item: T, index: number) => JSX.Element, empty: string) {
-    const items = (rows ?? []).slice(0, LIST_LIMIT);
-    return items.length ? <>{items.map(draw)}{more(total ?? rows?.length, items.length)}</> : <Text style={font(10, palette().muted)}>{empty}</Text>;
+  function list<T>(rows: T[] | undefined, total: number | undefined, draw: (item: T, index: number) => JSX.Element, empty: string, fields: (item: T) => string[], limit = LIST_LIMIT) {
+    const found = (rows ?? []).map((item, index) => ({ item, index })).filter(({ item }) => matches(props.query(), fields(item)));
+    const items = found.slice(0, limit);
+    const count = props.query().trim() ? found.length : total ?? rows?.length;
+    return items.length ? <>{items.map(({ item, index }) => draw(item, index))}{more(count, items.length)}</> :
+      <Text style={{ ...font(10, palette().muted), paddingHorizontal: size(8), paddingVertical: size(4) }}>{rows?.length && props.query().trim() ? `Nothing here matches “${props.query().trim()}”.` : empty}</Text>;
   }
+  const sessionFields = (session: { agent: string; title?: string; project_name?: string; branch?: string }) => [session.agent, session.title ?? "", session.project_name ?? "Global", session.branch ?? ""];
 
   // ---- Regions ---------------------------------------------------------------------------
   function toolbar() {
     const fresh = freshness(now(), props.dto()?.readAt ?? null, props.dto()?.error ?? null);
-    return <View testID="dashboard-toolbar" style={{ flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: DASHBOARD_METRICS.page, paddingVertical: 6 }}>
-      <Text style={font(13, palette().muted)}>⌕</Text>
-      <Input testID="dashboard-search" accessibilityLabel="Search the dashboard" placeholder={SEARCH_PLACEHOLDER} value={props.query()}
-        ref={(node) => { search = node; }} onChange={(text) => props.query.set(text)}
-        style={{ ...font(11), flex: 1, minWidth: 120, paddingHorizontal: 6, paddingVertical: 3, borderWidth: 1, borderColor: palette().divider, borderRadius: 5 }} />
-      {props.query() !== "" && button("dashboard-clear-search", "×", () => { props.query.set(""); search?.focus(); }, false, "Clear the search")}
-      <Text testID="dashboard-freshness" numberOfLines={1} style={font(10, fresh.warn ? palette().gold : palette().muted)}>{fresh.text}</Text>
+    return <View testID="dashboard-toolbar" style={{ flexDirection: "row", alignItems: "center", gap: size(10), paddingHorizontal: size(DASHBOARD_METRICS.page), paddingVertical: size(6), borderBottomWidth: 1, borderColor: palette().divider }}>
+      <View style={{ flexDirection: "row", alignItems: "center", height: size(26), paddingHorizontal: size(8), gap: size(5), borderRadius: 13, backgroundColor: palette().panelActive, flex: layout().arrangement === "compact" ? 1 : undefined, width: layout().arrangement === "compact" ? undefined : size(300), minWidth: size(160) }}>
+        <Icon name="search" size={11 * scale()} color={palette().muted} />
+        <Input testID="dashboard-search" accessibilityLabel="Search the dashboard" placeholder={SEARCH_PLACEHOLDER} value={props.query()}
+          ref={(node) => { search = node; }} onChange={(text) => props.query.set(text)}
+          style={{ ...font(11), flex: 1, minWidth: 0, paddingVertical: 3, backgroundColor: "transparent" }} />
+        {props.query() !== "" && button("dashboard-clear-search", "×", () => { props.query.set(""); search?.focus(); }, false, "Clear the search")}
+      </View>
+      {layout().arrangement !== "compact" && <Scroll horizontal={true} style={{ flex: 1, minWidth: 0 }}>{wire() && summaryStrip(wire()!)}</Scroll>}
+      <Text testID="dashboard-freshness" numberOfLines={1} style={{ ...font(10, fresh.warn ? palette().gold : palette().muted), maxWidth: size(layout().arrangement === "compact" ? 180 : 260) }}>{fresh.text}</Text>
       {button("dashboard-refresh", "↻", props.onRefresh, false, "Read everything again now")}
     </View>;
   }
+
   function summaryStrip(read: Wire) {
     const totals = read.totals;
     const copy = chatCopy(read.global, props.plan(), props.starting());
     const cell = (id: string, text: string, tone = palette().text) =>
-      <View testID={id} style={{ paddingHorizontal: 10, paddingVertical: 6, borderRadius: 6, borderWidth: 1, borderColor: palette().divider }}><Text style={font(11, tone)}>{text}</Text></View>;
-    return <View testID="dashboard-summary" style={{ flexDirection: "row", flexWrap: "wrap", gap: 8, paddingHorizontal: DASHBOARD_METRICS.page }}>
+      <View testID={id} style={{ paddingVertical: size(4), flexShrink: 0 }}><Text style={font(11, tone)}>{text}</Text></View>;
+    return <View testID="dashboard-summary" style={{ flexDirection: "row", flexWrap: layout().arrangement === "compact" ? "wrap" : "nowrap", alignItems: "center", gap: size(14), paddingHorizontal: layout().arrangement === "compact" ? size(DASHBOARD_METRICS.page) : 0 }}>
       {cell("dashboard-working", totals.agents.working > 0 ? `${totals.agents.working} working${totals.agents.subagents ? ` · ${plural(totals.agents.subagents, "subagent")}` : ""}` : "No agent working", totals.agents.working ? palette().working : palette().muted)}
       {cell("dashboard-attention", totals.attention > 0 ? `${totals.attention} need you` : "Nothing waits for you", totals.attention ? palette().gold : palette().muted)}
       {cell("dashboard-live", `${plural(totals.live_shells, "live terminal")}${totals.live_chats != null ? ` · ${plural(totals.live_chats, "live chat")}` : ""}`)}
       {cell("dashboard-tasks", totals.tasks.done + totals.tasks.todo + totals.tasks.in_progress ? `Tasks ${totals.tasks.done}/${totals.tasks.done + totals.tasks.todo + totals.tasks.in_progress} done` : "No tasks")}
-      <View testID="dashboard-global-chat-block" style={{ flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 10, paddingVertical: 4, borderRadius: 6, borderWidth: 1, borderColor: palette().magenta }}>
+      <View testID="dashboard-global-chat-block" style={{ flexDirection: "row", alignItems: "center", gap: size(6), paddingVertical: size(4), flexShrink: 0 }}>
         <Text style={font(10, palette().muted)}>{copy.status}</Text>
         {button("dashboard-global-chat", copy.action, copy.enabled ? props.onGlobalChat : undefined)}
       </View>
@@ -104,13 +116,15 @@ export function DashboardView(props: {
   }
   function controls(read: Wire) {
     const counts = filterCounts(read.projects ?? [], props.query());
-    return <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6, alignItems: "center", paddingHorizontal: DASHBOARD_METRICS.page }}>
-      <View testID="dashboard-filters" role="tablist" accessibilityLabel="Filter projects" style={{ flexDirection: "row", gap: 4 }}>
+    return <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6, alignItems: "center", paddingHorizontal: size(DASHBOARD_METRICS.page) }}>
+      <Text style={{ ...font(10), fontWeight: "600" }}>Projects</Text>
+      <Text style={mono(10, palette().muted)}>{`${visibleProjects(read.projects ?? [], props.query(), props.filter(), props.sort()).length} of ${read.projects_total ?? read.projects?.length ?? 0}`}</Text>
+      <View testID="dashboard-filters" role="tablist" accessibilityLabel="Filter projects" style={{ flexDirection: "row", gap: 2, padding: 2, borderRadius: 8, backgroundColor: palette().panelActive }}>
         {FILTERS.map((filter) => button(`dashboard-filter-${filter}`, `${filterLabel(filter)} ${counts.find(([f]) => f === filter)?.[1] ?? 0}`, () => props.onFilter(filter), props.filter() === filter,
           `${props.filter() === filter ? "Showing" : "Show"} ${filterLabel(filter)}`))}
       </View>
-      <Text style={font(10, palette().muted)}>Order</Text>
-      <View testID="dashboard-sorts" role="tablist" accessibilityLabel="Order projects" style={{ flexDirection: "row", gap: 4 }}>
+      <Text style={font(10, palette().muted)}>Sort</Text>
+      <View testID="dashboard-sorts" role="tablist" accessibilityLabel="Order projects" style={{ flexDirection: "row", gap: 2, padding: 2, borderRadius: 8, backgroundColor: palette().panelActive }}>
         {SORTS.map((sort) => button(`dashboard-sort-${sort}`, sortLabel(sort), () => props.onSort(sort), props.sort() === sort,
           `${props.sort() === sort ? "Ordered by" : "Order by"} ${sortLabel(sort)}`))}
       </View>
@@ -122,45 +136,61 @@ export function DashboardView(props: {
     const tone = { gold: palette().gold, working: palette().working, active: palette().muted, quiet: palette().divider }[state.tone];
     const tasks = tasksWords(project.tasks);
     const orchestrator = orchestratorWords(project);
-    const where = [project.folder, project.orchestrator ? `P·Orch ${orchestrator?.[0] ?? ""} ${orchestrator?.[1] ?? ""}`.trim() : undefined, project.worktrees ? plural(project.worktrees, "worktree") : undefined].filter(Boolean).join(" · ");
+    const where = [project.folder, columns.orchestrator == null && project.orchestrator ? `P·Orch ${orchestrator?.[0] ?? ""} ${orchestrator?.[1] ?? ""}`.trim() : undefined, project.worktrees ? plural(project.worktrees, "worktree") : undefined].filter(Boolean).join(" · ");
     const agents = agentParts(project);
     const toneOf = (part: string) => ({ gold: palette().gold, working: palette().working, cyan: palette().cyan, muted: palette().muted } as Record<string, string>)[part];
     return <View testID={`dashboard-project-${project.id}`} role="button" accessibilityLabel={projectReaderName(project, read.chats_known, now())}
-      onPress={() => props.onOpen({ type: "project", id: project.id })}
-      style={{ flexDirection: "row", alignItems: "center", gap: DASHBOARD_METRICS.cellGap, padding: DASHBOARD_METRICS.rowPad, borderBottomWidth: 1, borderColor: palette().divider }}>
-      <Text style={{ ...font(11, tone), width: DASHBOARD_METRICS.mark }}>{state.mark}</Text>
-      <View style={{ flex: 1, minWidth: DASHBOARD_METRICS.projectMin, gap: 2 }}>
+      onPress={() => props.onOpen({ type: "project", id: project.id })} focusable={true} hoverStyle={{ backgroundColor: palette().panelActive }}
+      style={{ flexDirection: "row", alignItems: "center", gap: size(DASHBOARD_METRICS.cellGap), padding: size(DASHBOARD_METRICS.rowPad), borderRadius: 7 }}>
+      <Text style={{ ...font(11, tone), width: size(DASHBOARD_METRICS.mark) }}>{state.mark}</Text>
+      <View style={{ flex: 1, minWidth: size(DASHBOARD_METRICS.projectMin), gap: 2 }}>
         <Text numberOfLines={1} style={font(12)}>{project.name}</Text>
         {where && <Text numberOfLines={1} style={font(10, palette().muted)}>{where}</Text>}
         {columns.activity == null && <Text numberOfLines={1} style={font(10, palette().muted)}>{`${agents.map((part) => part.text).join(" ") || "No agents"} · ${sessionsLine(project, read.chats_known)}`}</Text>}
       </View>
-      {columns.activity != null && <View style={{ width: columns.activity, gap: 2 }}>
+      {columns.activity != null && <View style={{ width: size(columns.activity!), gap: 2 }}>
         <Text numberOfLines={1} style={font(10, agents.length ? toneOf(agents[0].tone) : palette().muted)}>{agents.map((part) => part.text).join(" ") || "No agents"}</Text>
         <Text numberOfLines={1} style={font(10, palette().muted)}>{sessionsLine(project, read.chats_known)}</Text>
       </View>}
-      <View style={{ width: columns.tasks, gap: 2 }}>
+      <View style={{ width: size(columns.tasks), gap: 2 }}>
         <Text style={font(10)}>{tasks?.[0] ?? "No tasks"}</Text>
         {tasks && <Text style={font(10, palette().muted)}>{tasks[1]}</Text>}
       </View>
-      {columns.orchestrator != null && <Text numberOfLines={1} style={{ ...font(10, palette().muted), width: columns.orchestrator }}>{orchestrator ? `${orchestrator[0]} ${orchestrator[1]}` : "None"}</Text>}
-      <Text numberOfLines={1} style={{ ...font(10, palette().muted), width: columns.last }}>{age(now(), project.last_activity) ?? "—"}</Text>
-      <View style={{ width: columns.actions, flexDirection: "row", gap: 4 }}>
+      {columns.orchestrator != null && <Text numberOfLines={1} style={{ ...font(10, palette().muted), width: size(columns.orchestrator!) }}>{orchestrator ? `${orchestrator[0]} ${orchestrator[1]}` : "None"}</Text>}
+      <Text numberOfLines={1} style={{ ...font(10, palette().muted), width: size(columns.last) }}>{age(now(), project.last_activity) ?? "—"}</Text>
+      <View style={{ width: size(columns.actions), flexDirection: "row", gap: 4 }}>
         {button(`dashboard-project-tasks-${project.id}`, "Tasks", () => props.onPanel(project.id, "tasks"))}
         {button(`dashboard-project-sessions-${project.id}`, "Sessions", () => props.onPanel(project.id, "shells"))}
       </View>
     </View>;
   }
+  function tableHead() {
+    const columns = COLUMN_WIDTHS[layout().columns];
+    const label = (title: string, width: number) => <Text numberOfLines={1} style={{ ...font(9, palette().muted), fontWeight: "600", width: size(width) }}>{title}</Text>;
+    return <View testID="dashboard-table-head" style={{ flexDirection: "row", alignItems: "center", gap: size(DASHBOARD_METRICS.cellGap), paddingHorizontal: size(DASHBOARD_METRICS.rowPad), paddingVertical: size(3), borderBottomWidth: 1, borderColor: palette().divider }}>
+      <View style={{ width: size(DASHBOARD_METRICS.mark) }} />
+      <Text style={{ ...font(9, palette().muted), fontWeight: "600", flex: 1, minWidth: size(DASHBOARD_METRICS.projectMin) }}>Project</Text>
+      {columns.activity != null && label("Activity", columns.activity)}
+      {label("Tasks", columns.tasks)}
+      {columns.orchestrator != null && label("Orchestrator", columns.orchestrator)}
+      {label("Last active", columns.last)}
+      <View style={{ width: size(columns.actions) }} />
+    </View>;
+  }
   function table(read: Wire) {
     const shown = visibleProjects(read.projects ?? [], props.query(), props.filter(), props.sort());
     const empty = shown.length ? null : emptyTable(read.projects ?? [], props.query(), props.filter());
-    return <Scroll testID="dashboard-table" style={{ flex: 1, minHeight: 0 }} contentStyle={{ paddingHorizontal: DASHBOARD_METRICS.page }}>
+    return <View style={{ flex: 1, minHeight: 0, paddingHorizontal: size(DASHBOARD_METRICS.page) }}>
+      {tableHead()}
+      <Scroll testID="dashboard-table" style={{ flex: 1, minHeight: 0 }}>
       {shown.map((project) => projectRow(project, read))}
       {more(read.projects_total, read.projects?.length ?? 0)}
       {empty && <View testID="dashboard-empty" style={{ padding: 16, gap: 8, alignItems: "flex-start" }}>
         <Text style={font(11, palette().muted)}>{empty.text}</Text>
         {empty.showAll && button("dashboard-show-all", empty.showAll, () => props.onFilter("all"))}
       </View>}
-    </Scroll>;
+      </Scroll>
+    </View>;
   }
   function activityRail(read: Wire) {
     const intelligence = intelligenceSection(read.intelligence, now());
@@ -169,10 +199,17 @@ export function DashboardView(props: {
       {section("dashboard-decisions", "Decisions", <>
         <Text style={font(10, palette().muted)}>{!sources || sources.state === "unavailable" ? "Chats could not be listed · requests unknown"
           : sources.state === "partial" ? `Partial coverage · ${sources.chats_complete} of ${sources.chats_total} chat logs complete` : `Checked ${plural(sources.chats_total, "chat")} · provider requests`}</Text>
-        {list(read.decisions, read.decisions_total, (decision) => row(`dashboard-decision-${decision.id}`,
-          `${sessionName(decision.session)} asks ${decision.kind === "approval" ? "for approval" : "a question"}`,
-          `${decision.session.project_name ?? "Global"} · ${age(now(), decision.observed_at) ?? ""}`, decision.session.target),
-        sources?.state === "read" ? "No pending approvals or questions." : "No requests found in the available events. Open Needs you sessions for more.")}
+        {list(read.decisions, read.decisions_total, (decision) => <Button testID={`dashboard-decision-${decision.id}`} onPress={() => props.onReview(decision)}
+          accessibilityLabel={`Review ${sessionName(decision.session)}'s ${decision.kind === "approval" ? "approval request" : "question"}`}
+          style={{ gap: 2, paddingHorizontal: size(8), paddingVertical: size(5), borderRadius: 7, alignItems: "stretch" }}
+          hoverStyle={{ backgroundColor: palette().panelActive }} focusStyle={{ backgroundColor: palette().panelActive }}>
+          <Text numberOfLines={1} style={font(11)}>{`${sessionName(decision.session)} asks ${decision.kind === "approval" ? "for approval" : "a question"}`}</Text>
+          <View style={{ flexDirection: "row", gap: size(8), justifyContent: "space-between" }}>
+            <Text numberOfLines={1} style={{ ...font(10, palette().muted), flex: 1 }}>{`${decision.session.project_name ?? "Global"} · ${age(now(), decision.observed_at) ?? ""}`}</Text>
+            <Text style={font(10, palette().cyan)}>Review</Text>
+          </View>
+        </Button>,
+        sources?.state === "read" ? "No pending approvals or questions." : "No requests found in the available events. Open Needs you sessions for more.", (decision) => [...sessionFields(decision.session), decision.kind], Number.POSITIVE_INFINITY)}
       </>)}
       {intelligence && section("dashboard-intelligence", "Overview", <>
         {intelligence.summary && <Text style={font(11)}>{intelligence.summary}</Text>}
@@ -183,26 +220,30 @@ export function DashboardView(props: {
       {section("dashboard-attention-list", "Needs you", list(read.attention, read.attention_total, (item, index) => {
         const [headline, detail] = attentionCopy(item, now());
         return row(`dashboard-attention-${index}`, headline, detail, item.target, palette().gold);
-      }, quietAttention(read)))}
+      }, quietAttention(read), (item) => [...attentionCopy(item, now()), item.project_name ?? "", item.session?.project_name ?? ""], Number.POSITIVE_INFINITY))}
       {section("dashboard-working-list", "Working now", list(read.working, read.working_total, (work, index) =>
-        row(`dashboard-working-${index}`, sessionName(work.session), workDetail(work, now(), false), work.session.target, palette().working), "No agent is working right now."))}
+        row(`dashboard-working-${index}`, sessionName(work.session), workDetail(work, now(), false), work.session.target, palette().working), "No agent is working right now.", (work) => sessionFields(work.session)))}
+      {!!read.recent_activity?.length && section("dashboard-recent-events", "Recent activity", list(read.recent_activity, read.recent_activity_total, (item, index) =>
+        row(`dashboard-recent-event-${index}`, item.text, `${sessionName(item.session)} · ${item.status.replaceAll("_", " ")} · ${age(now(), item.log_updated_at) ?? ""} · event ${item.source.event_seq}`, item.session.target),
+        "No recent activity.", (item) => [item.text, ...sessionFields(item.session)], 6))}
       {section("dashboard-finished-list", "Finished in the last hour", list(read.finished, read.finished_total, (work, index) =>
-        row(`dashboard-finished-${index}`, sessionName(work.session), workDetail(work, now(), true), work.session.target), "No agent finished in the last hour."))}
+        row(`dashboard-finished-${index}`, sessionName(work.session), workDetail(work, now(), true), work.session.target), "No agent finished in the last hour.", (work) => sessionFields(work.session)))}
     </>;
   }
   function workRail(read: Wire) {
     const automations = read.automations;
-    const lines = props.dto()?.backendLines ?? null;
+    const allLines = props.dto()?.backendLines ?? null;
+    const lines = allLines?.filter((line) => matches(props.query(), [line.title, line.detail])) ?? null;
     const mark = { current: "●", stale: "↻", unknown: "?", idle: "○" } as const;
     return <>
       {section("dashboard-tasks-list", "Tasks in progress", list(read.tasks_in_progress, read.tasks_in_progress_total, (task) =>
-        row(`dashboard-task-${task.id}`, task.title, [task.project_name, task.branch, age(now(), task.updated_at)].filter(Boolean).join(" · "), { type: "task", id: task.id }), "No task is in progress."))}
+        row(`dashboard-task-${task.id}`, task.title, [task.project_name, task.branch, age(now(), task.updated_at)].filter(Boolean).join(" · "), { type: "task", id: task.id }), "No task is in progress.", (task) => [task.title, task.project_name, task.branch ?? ""]))}
       {section("dashboard-automations", "Automations", automations.state === "not_read" ? <Text style={font(10, palette().muted)}>Reading automations…</Text>
         : automations.state === "unreadable" ? <Text style={font(10, palette().gold)}>{`Automations could not be read: ${automations.message}`}</Text>
           : list(automations.items, automations.total, (item) => row(`dashboard-automation-${item.id}`, item.title, automationDetail(item, now()),
-            { type: "automations", project_id: item.project_id }), "No automations."))}
+            { type: "automations", project_id: item.project_id }), "No automations.", (item) => [item.title, item.project_name ?? "App"]))}
       {section("dashboard-backends", "Backends", lines == null ? <Text style={font(10, palette().muted)}>Reading the app, the chat host and the providers…</Text>
-        : lines.length === 0 ? <Text style={font(10, palette().muted)}>No provider CLI was found.</Text>
+        : lines.length === 0 ? <Text style={font(10, palette().muted)}>{allLines?.length ? `Nothing here matches “${props.query().trim()}”.` : "No provider CLI was found."}</Text>
           : <>{lines.map((line) => <View testID={`dashboard-backend-${line.key}`} accessibilityLabel={`${line.title}; ${line.detail}`} style={{ gap: 2 }}>
             <Text numberOfLines={1} style={font(11, line.tone === "stale" ? palette().gold : line.tone === "current" ? palette().cyan : palette().muted)}>{`${mark[line.tone]} ${line.title}`}</Text>
             <Text numberOfLines={1} style={font(10, palette().muted)}>{line.detail}</Text>
@@ -211,29 +252,29 @@ export function DashboardView(props: {
   }
   function body(read: Wire) {
     const arrangement = layout().arrangement;
-    const rail = (children: JSX.Element) => <Scroll style={{ width: DASHBOARD_METRICS.rail * Math.max(scale(), 1), minHeight: 0 }} contentStyle={{ gap: DASHBOARD_METRICS.gap, paddingBottom: 10 }}>{children}</Scroll>;
+    const rail = (children: JSX.Element) => <Scroll style={{ width: DASHBOARD_METRICS.rail * Math.max(scale(), 1), minHeight: 0 }} contentStyle={{ gap: size(DASHBOARD_METRICS.gap), paddingBottom: 10 }}>{children}</Scroll>;
     if (arrangement === "compact") {
       const activity = (read.attention_total ?? read.attention?.length ?? 0);
       return <View style={{ flex: 1, minHeight: 0, gap: 8 }}>
-        <View testID="dashboard-regions" role="tablist" style={{ flexDirection: "row", gap: 4, paddingHorizontal: DASHBOARD_METRICS.page }}>
+        <View testID="dashboard-regions" role="tablist" style={{ flexDirection: "row", gap: 4, paddingHorizontal: size(DASHBOARD_METRICS.page) }}>
           {button("dashboard-region-projects", `Projects ${read.projects_total ?? read.projects?.length ?? 0}`, () => region.set("projects"), region() === "projects")}
           {button("dashboard-region-activity", activity ? `Activity · ${activity} need you` : `Activity ${(read.working?.length ?? 0) + (read.finished?.length ?? 0)}`, () => region.set("activity"), region() === "activity")}
           {button("dashboard-region-work", `Tasks ${read.tasks_in_progress_total ?? read.tasks_in_progress?.length ?? 0}`, () => region.set("work"), region() === "work")}
         </View>
         {region() === "projects" ? <View style={{ flex: 1, minHeight: 0, gap: 8 }}>{controls(read)}{table(read)}</View>
-          : <Scroll style={{ flex: 1, minHeight: 0 }} contentStyle={{ gap: DASHBOARD_METRICS.gap, paddingHorizontal: DASHBOARD_METRICS.page }}>
+          : <Scroll style={{ flex: 1, minHeight: 0 }} contentStyle={{ gap: size(DASHBOARD_METRICS.gap), paddingHorizontal: size(DASHBOARD_METRICS.page) }}>
             {region() === "activity" ? activityRail(read) : workRail(read)}
           </Scroll>}
       </View>;
     }
-    return <View style={{ flex: 1, minHeight: 0, flexDirection: "row", gap: DASHBOARD_METRICS.gap, paddingRight: DASHBOARD_METRICS.page }}>
+    return <View style={{ flex: 1, minHeight: 0, flexDirection: "row", gap: size(DASHBOARD_METRICS.gap), paddingRight: size(DASHBOARD_METRICS.page) }}>
       <View style={{ flex: 1, minHeight: 0, gap: 8 }}>{controls(read)}{table(read)}</View>
       {arrangement === "wide" ? <>{rail(activityRail(read))}{rail(workRail(read))}</> : rail(<>{activityRail(read)}{workRail(read)}</>)}
     </View>;
   }
-  return <View testID="dashboard" style={{ flex: 1, minHeight: 0, gap: 8, paddingBottom: 8 }}>
+  return <View testID="dashboard" onLayout={(event) => { if (event.size.width !== width()) width.set(event.size.width); }} style={{ flex: 1, minHeight: 0, gap: size(8), paddingBottom: size(8), backgroundColor: palette().panel }}>
     {toolbar()}
-    {wire() ? <>{summaryStrip(wire()!)}{body(wire()!)}</> :
+    {wire() ? <>{layout().arrangement === "compact" && summaryStrip(wire()!)}{body(wire()!)}</> :
       <View testID="dashboard-unread" style={{ flex: 1, alignItems: "center", justifyContent: "center", gap: 8, padding: 24 }}>
         <Text style={font(18, palette().muted)}>{props.dto()?.error ? "⚠" : "⧗"}</Text>
         <Text style={{ ...font(11, palette().muted), textAlign: "center" }}>{props.dto()?.error

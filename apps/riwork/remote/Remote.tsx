@@ -1,7 +1,8 @@
-import { Text, cleanup, effect, signal, type YNode } from "nsh";
+import { Scroll, Text, cleanup, effect, signal, type YNode } from "nsh";
 import { Dialog } from "nsh/base";
 import { Button, Input, View } from "../SettingsFocus";
-import { DEFAULT_THEME, type InterfaceTheme } from "../appearance";
+import { DEFAULT_THEME, space, type InterfaceTheme } from "../appearance";
+import { Icon } from "../Icon";
 import {
   EMPTY_REMOTE, REMOTE_HISTORY_NOTE, checkPairingLink, filteredFolders, linkPresentation,
   maskedPairingLink, projectConnectionNote, projectNameError, remoteErrorNotice, remoteHostLabel, remoteProjectKey,
@@ -201,23 +202,31 @@ export function RemoteProjects(props: {
   collapsed?: () => ReadonlySet<string>; onToggleFolder?: (key: string) => void; onSelectProject: (key: string) => void;
 }) {
   const c = props.controller;
-  return <View testID="remote-projects" style={{ gap: 6 }}>
+  return <View testID="remote-projects" style={{ gap: 2 }}>
     {filteredFolders(c.data(), props.query?.() ?? "", props.order?.()).map((folder) => {
       const key = `remote:${folder.host}`;
       const collapsed = !props.query?.().trim() && props.collapsed?.().has(key);
-      return <View testID={`remote-folder-${folder.host}`} style={{ gap: 4 }}>
-        <View tooltip="A paired Mac. Its projects open here like local ones." style={{ flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 8, paddingVertical: 5 }}>
-          {action(c, `remote-folder-toggle-${folder.host}`, `${collapsed ? "▸" : "▾"} ${folder.label}`, () => props.onToggleFolder?.(key))}
-          {status(c, `remote-folder-status-${folder.host}`, folder.link)}
-          <Text style={font(c, 10, c.theme().palette.muted)}>{folder.creating ? "creating…" : `${folder.count}`}</Text>
-          {action(c, `remote-new-project-${folder.host}`, "+", folder.link === "online" && !c.pending() && !folder.creating ? () => void c.open({ kind: "project", host: folder.host, label: folder.label }) : undefined, undefined, "New project on this Mac")}
+      return <View testID={`remote-folder-${folder.host}`} style={{ gap: 2 }}>
+        <View tooltip="A paired Mac. Its projects open here like local ones." style={{ flexDirection: "row", alignItems: "center", gap: 3, paddingHorizontal: space(6, c.theme().scale), height: space(30, c.theme().scale) }}>
+          <View testID={`remote-folder-toggle-${folder.host}`} role="button" focusable={true} accessibilityLabel={folder.label} accessibilityState={{ expanded: !collapsed }} onPress={() => props.onToggleFolder?.(key)}
+            style={{ flex: 1, minWidth: 0, height: "100%", flexDirection: "row", alignItems: "center", gap: space(6, c.theme().scale) }}>
+            <Icon name={collapsed ? "right" : "down"} size={10 * c.theme().scale} color={c.theme().palette.muted} />
+            <Text testID={`remote-folder-status-${folder.host}`} tooltip={linkPresentation(folder.link).text} accessibilityLabel={linkPresentation(folder.link).text} style={font(c, 10, c.theme().palette[linkPresentation(folder.link).tone])}>{linkPresentation(folder.link).dot}</Text>
+            <Text numberOfLines={1} style={{ ...font(c, 10, c.theme().palette.muted), fontWeight: "600", flex: 1, minWidth: 0 }}>{folder.label}</Text>
+            {folder.creating && <Text style={font(c, 9, c.theme().palette.muted)}>creating…</Text>}
+            <Text style={font(c, 9, c.theme().palette.muted)}>{String(folder.count).padStart(2, "0")}</Text>
+          </View>
+          {folder.link === "online" && <Button testID={`remote-new-project-${folder.host}`} accessibilityLabel="New project on this Mac" disabled={c.pending() || folder.creating} onPress={() => void c.open({ kind: "project", host: folder.host, label: folder.label })}
+            style={{ width: space(24, c.theme().scale), height: space(24, c.theme().scale), borderRadius: 12, alignItems: "center", justifyContent: "center" }} hoverStyle={{ backgroundColor: c.theme().palette.panelActive }}>
+            <Icon name="add" size={13 * c.theme().scale} color={c.theme().palette.muted} />
+          </Button>}
         </View>
         {folder.failure && <View style={{ flexDirection: "row", alignItems: "center" }}><Text style={font(c, 10, c.theme().palette.gold)}>{folder.failure}</Text>{action(c, `remote-dismiss-project-${folder.host}`, "Dismiss", () => c.dismiss(folder.host, null))}</View>}
-        {folder.note && <Text testID={`remote-folder-note-${folder.host}`} style={font(c, 10, folder.link === "offline" ? c.theme().palette.gold : c.theme().palette.muted)}>{folder.note}</Text>}
+        {!collapsed && folder.note && <Text testID={`remote-folder-note-${folder.host}`} style={{ ...font(c, 10, folder.link === "offline" ? c.theme().palette.gold : c.theme().palette.muted), paddingLeft: space(22, c.theme().scale), paddingVertical: 5 }}>{folder.note}</Text>}
         {!collapsed && folder.projects.map((project) => <Button testID={`remote-project-${project.key}`} accessibilityLabel={`${project.name} on ${folder.label}`}
           selected={props.selected?.() === project.key} onPress={() => props.onSelectProject(project.key)}
-          style={{ opacity: project.dimmed ? 0.5 : 1, paddingHorizontal: 16, paddingVertical: 5, gap: 3, backgroundColor: props.selected?.() === project.key ? c.theme().palette.panelActive : "transparent" }}>
-          <Text style={font(c)}>{project.name}</Text><Text style={font(c, 10, c.theme().palette.muted)}>{project.stats}</Text>
+          style={{ opacity: project.dimmed ? 0.5 : 1, marginLeft: space(16, c.theme().scale), paddingHorizontal: space(8, c.theme().scale), paddingVertical: space(8, c.theme().scale), gap: 3, borderRadius: space(5, c.theme().scale), backgroundColor: props.selected?.() === project.key ? c.theme().palette.panelActive : "transparent" }} hoverStyle={{ backgroundColor: c.theme().palette.panelActive }}>
+          <Text numberOfLines={1} style={font(c)}>{project.name}</Text><Text numberOfLines={1} style={font(c, 9, c.theme().palette.muted)}>{project.stats}</Text>
         </Button>)}
       </View>;
     })}
@@ -241,17 +250,51 @@ export function RemoteUnavailable(props: { hostLabel: string; panel: string; the
 export function RemoteProjectPanel(props: {
   controller: RemoteController; projectKey: () => string; panel: "worktrees" | "tasks" | "shells";
   query?: () => string; selectedWorktree?: () => string | null;
+  onQuery?: (query: string) => void; onSearch?: (node: YNode) => (() => void) | void;
+  onNewShell?: () => void;
   onWorktree: (id: string) => void; onTask: (id: string) => void; onShell: (host: string, shell: RemoteShell) => void;
 }) {
   const c = props.controller;
   const read = () => c.data().projects.find((project) => project.key === props.projectKey());
   const matches = (...parts: (string | null)[]) => !props.query?.().trim() || parts.filter(Boolean).join("\n").toLocaleLowerCase().includes(props.query!().trim().toLocaleLowerCase());
+  const worktrees = () => read()?.worktrees.filter((w) => matches(w.id, w.branch, w.path)) ?? [];
+  const tasks = () => read()?.tasks.filter((task) => matches(task.id, task.title, task.details, task.status)) ?? [];
+  const shells = () => read()?.shells.filter((shell) => matches(shell.id, shell.display, shell.cwd, shell.harness, shell.alive ? "live" : "exited")) ?? [];
+  const count = () => props.panel === "worktrees" ? worktrees().length : props.panel === "tasks" ? tasks().length : shells().length;
+  const total = () => read()?.[props.panel].length ?? 0;
+  const title = props.panel === "shells" ? "Sessions" : props.panel === "tasks" ? "Tasks" : "Worktrees";
+  const noun = props.panel === "shells" ? "session" : props.panel === "tasks" ? "task" : "worktree";
+  const row = () => ({ paddingHorizontal: space(8, c.theme().scale), paddingVertical: space(8, c.theme().scale), gap: 3, borderRadius: space(5, c.theme().scale) });
+  let search: YNode | undefined;
+  let removeSearch: (() => void) | void;
+  cleanup(() => removeSearch?.());
   const listNote = (project: RemoteLists) => {
     const loading = props.panel === "worktrees" ? project.worktreesLoading : props.panel === "tasks" ? project.tasksLoading : project.shellsLoading;
     const error = props.panel === "worktrees" ? project.worktreesError : props.panel === "tasks" ? project.tasksError : project.shellsError;
     return error ? <Text style={font(c, 10, c.theme().palette.gold)}>{error}</Text> : loading ? <Text style={font(c, 10, c.theme().palette.muted)}>Loading…</Text> : null;
   };
-  return <View testID={`remote-${props.panel}-panel`} style={{ gap: 6, padding: 10 }}>
+  return <View testID={`remote-${props.panel}-panel`} style={{ flex: 1, minHeight: 0, backgroundColor: c.theme().palette.panel }}>
+    <View style={{ height: space(46, c.theme().scale), paddingHorizontal: space(12, c.theme().scale), flexDirection: "row", alignItems: "center", gap: 8 }}>
+      <View style={{ flex: 1, minWidth: 0, gap: 1 }}>
+        <Text numberOfLines={1} style={{ ...font(c, 13), fontWeight: "600" }}>{title}</Text>
+        <Text numberOfLines={1} style={font(c, 10, c.theme().palette.muted)}>{`${count() === total() ? total() : `${count()} of ${total()}`} ${noun}${total() === 1 ? "" : "s"}${read() ? ` · ${read()!.projectName}` : ""}`}</Text>
+      </View>
+      {props.panel === "shells" && props.onNewShell && <Button accessibilityLabel="New shell" disabled={read()?.link !== "online" || read()?.unpaired} onPress={props.onNewShell}
+        style={{ width: 24, height: 24, borderRadius: 12, alignItems: "center", justifyContent: "center" }} hoverStyle={{ backgroundColor: c.theme().palette.panelActive }}>
+        <Icon name="add" size={13 * c.theme().scale} color={c.theme().palette.muted} />
+      </Button>}
+    </View>
+    <View style={{ paddingHorizontal: space(12, c.theme().scale), paddingBottom: space(8, c.theme().scale) }}>
+      <View onPress={() => search?.focus()} style={{ flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: space(9, c.theme().scale), height: space(28, c.theme().scale), borderRadius: space(14, c.theme().scale), backgroundColor: c.theme().palette.panelActive }}>
+        <Icon name="search" size={13 * c.theme().scale} color={c.theme().palette.muted} />
+        <Input testID={`search:remote-${props.panel}`} accessibilityLabel={`Search ${title.toLowerCase()}`} placeholder="Search  ⌘F" value={props.query?.() ?? ""} onChange={(value) => props.onQuery?.(value)}
+          ref={(node) => { search = node; removeSearch?.(); removeSearch = props.onSearch?.(node); }} style={{ ...font(c), flex: 1, minWidth: 0, padding: 0, backgroundColor: "transparent" }} />
+        {!!props.query?.() && <Button accessibilityLabel="Clear search" onPress={() => { props.onQuery?.(""); search?.focus(); }} style={{ width: 20, height: 20, alignItems: "center", justifyContent: "center" }}>
+          <Icon name="close" size={11 * c.theme().scale} color={c.theme().palette.muted} />
+        </Button>}
+      </View>
+    </View>
+    <Scroll style={{ flex: 1, minHeight: 0 }} contentStyle={{ paddingHorizontal: space(6, c.theme().scale), paddingBottom: 8, gap: 6 }}>
     {!read() ? <Text style={font(c, 11, c.theme().palette.muted)}>Loading…</Text> : <>
       {projectConnectionNote(read()!) && <Text testID="remote-project-connection" style={font(c, 10, read()!.link === "offline" || read()!.unpaired ? c.theme().palette.gold : c.theme().palette.muted)}>{projectConnectionNote(read()!)}</Text>}
       {!read()!.unpaired && <>
@@ -262,19 +305,24 @@ export function RemoteProjectPanel(props: {
           {read()!.failure && <View style={{ flexDirection: "row" }}><Text style={font(c, 10, c.theme().palette.gold)}>{read()!.failure}</Text>{action(c, "remote-dismiss-shell", "Dismiss", () => c.dismiss(read()!.host, read()!.project))}</View>}
         </>}
         <View testID="remote-project-rows" style={{ gap: 5, opacity: read()!.link === "offline" ? 0.5 : 1 }}>
-          {props.panel === "worktrees" && read()!.worktrees.filter((w) => matches(w.id, w.branch, w.path)).map((w) => <Button testID={`remote-worktree-${w.id}`} accessibilityLabel={w.branch}
-            selected={props.selectedWorktree?.() === w.id} onPress={() => props.onWorktree(w.id)} style={{ gap: 3 }}>
+          {props.panel === "worktrees" && worktrees().map((w) => <Button testID={`remote-worktree-${w.id}`} accessibilityLabel={w.branch}
+            selected={props.selectedWorktree?.() === w.id} onPress={() => props.onWorktree(w.id)} style={row()} hoverStyle={{ backgroundColor: c.theme().palette.panelActive }} selectedStyle={{ backgroundColor: c.theme().palette.panelActive }}>
             <Text style={font(c, 11, props.selectedWorktree?.() === w.id ? c.theme().palette.cyan : c.theme().palette.text)}>{`${w.primary ? "◆" : "◇"} ${w.branch}`}</Text><Text style={font(c, 10, c.theme().palette.muted)}>{w.path}</Text>
           </Button>)}
-          {props.panel === "tasks" && read()!.tasks.filter((task) => matches(task.id, task.title, task.details, task.status)).map((task) => <Button testID={`remote-task-${task.id}`} accessibilityLabel={task.title} onPress={() => props.onTask(task.id)} style={{ gap: 3 }}>
+          {props.panel === "tasks" && tasks().map((task) => <Button testID={`remote-task-${task.id}`} accessibilityLabel={task.title} onPress={() => props.onTask(task.id)} style={row()} hoverStyle={{ backgroundColor: c.theme().palette.panelActive }}>
             <Text style={font(c)}>{task.title}</Text><Text style={font(c, 10, c.theme().palette.muted)}>{`${task.status} · @ ${read()!.worktrees.find((w) => w.id === task.worktreeId)?.branch ?? "unassigned"}`}</Text>
           </Button>)}
-          {props.panel === "shells" && read()!.shells.filter((shell) => matches(shell.id, shell.display, shell.cwd, shell.harness, shell.alive ? "live" : "exited")).map((shell) => <Button testID={`remote-shell-${shell.id}`} accessibilityLabel={shell.display} onPress={() => c.openShell(read()!.host, shell, props.onShell)} style={{ gap: 3 }}>
+          {props.panel === "shells" && shells().map((shell) => <Button testID={`remote-shell-${shell.id}`} accessibilityLabel={shell.display} onPress={() => c.openShell(read()!.host, shell, props.onShell)} style={row()} hoverStyle={{ backgroundColor: c.theme().palette.panelActive }}>
             <Text style={font(c)}>{`${shell.orchestrator ? shell.projectId ? "P·ORCH" : "G·ORCH" : shell.id.slice(0, 8)} · ${shell.harness ?? "shell"} · ${shell.alive ? "live" : "exited"}`}</Text><Text style={font(c, 10, c.theme().palette.muted)}>{shell.cwd}</Text>
           </Button>)}
         </View>
+        {!count() && !read()![props.panel === "worktrees" ? "worktreesLoading" : props.panel === "tasks" ? "tasksLoading" : "shellsLoading"] && <View style={{ padding: 24, gap: 8, alignItems: "center" }}>
+          <Icon name={props.query?.().trim() ? "search" : "folder"} size={22 * c.theme().scale} color={c.theme().palette.muted} />
+          <Text style={font(c, 11, c.theme().palette.muted)}>{props.query?.().trim() ? "No matches" : `No ${title.toLowerCase()}`}</Text>
+        </View>}
       </>}
     </>}
+    </Scroll>
   </View>;
 }
 

@@ -29,8 +29,8 @@ export function interfaceTheme(settings: SettingsDto, appearance: AppearanceDto,
   return {
     palette: appearance.palette,
     scale: settings.text.scale,
-    family: "system-ui",
-    monoFamily: face === "system" ? "system-ui" : families.includes("SF Mono") ? "SF Mono" : "Menlo",
+    family: face === "menlo" ? "Menlo" : "system-ui",
+    monoFamily: face === "system" ? "system-ui" : face === "menlo" ? "Menlo" : families.includes("SF Mono") ? "SF Mono" : "Menlo",
   };
 }
 
@@ -70,6 +70,18 @@ export function useAppearance(params: HostParams) {
   }
   // Effects run only when their inputs change; there are no timers or frames.
   effect(resolve);
+  // Native follows macOS; fixed palettes need matching native menus, sheets
+  // and control chrome. Only a changed choice updates the host, avoiding an
+  // appearance event/resolve feedback loop across project windows.
+  let appliedScheme: string | undefined;
+  effect(() => {
+    const current = resolved();
+    if (!current || (params.appearance && params.appearance !== "system")) return;
+    const appearance = current.settings.theme === "native" ? "system" : current.appearance.dark ? "dark" : "light";
+    if (appearance === appliedScheme) return;
+    appliedScheme = appearance;
+    void host.call("app.setAppearance", { appearance }).catch(error);
+  });
   const settingsSubscription = Settings.subscribe((event) => {
     if (event.rev <= settingsRev) return;
     settingsRev = event.rev;

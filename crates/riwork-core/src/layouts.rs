@@ -253,7 +253,9 @@ fn stored_ratio(ratio: f32) -> f32 {
 
 /// Thickness of the divider between a split's children. The renderer takes it off the
 /// split's extent before sharing the rest by ratio, so pixel maths must do the same.
-pub const DIVIDER_THICKNESS: f32 = 5.0;
+// The panes meet the one-point divider. The UI's wider resize hit target
+// overlaps their edges rather than reserving empty space around the line.
+pub const DIVIDER_THICKNESS: f32 = 1.0;
 
 /// The least a resize leaves a pane along an axis (unless it was already smaller).
 pub const MIN_PANE_EXTENT: f32 = 100.0;

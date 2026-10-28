@@ -8,15 +8,23 @@
 //! a quiet chat blocks on its socket and its worker on its inbox.
 
 pub mod activity_summary;
+pub mod billing;
+pub mod attachments;
 pub mod drafts;
+pub mod diff;
+pub mod review;
+pub mod media;
+pub mod image_scope;
 pub mod dto;
 pub mod feed;
 pub mod links;
 pub mod markdown;
 pub mod service;
+pub mod suggestions;
 pub mod toolbar;
 pub mod view;
 pub mod worker;
+pub mod workers;
 
 use std::{
     path::PathBuf,
@@ -108,6 +116,25 @@ impl Chat {
             Ok(chats.into_iter().map(summary).collect())
         })
         .await
+    }
+
+    /// The same account-aware catalog used by the original new-chat dialog.
+    pub async fn models(provider: String, project_id: Option<String>) -> Result<dto::ModelCatalogDto, String> {
+        let provider: Provider = from_wire(&provider)?;
+        if let Some(id) = project_id.as_deref() { crate::service::validate_uuid(id)?; }
+        blocking(move || {
+            let home = service::backend().home()?;
+            let catalog = riwork_engine::chat::catalog::available(&home, project_id.as_deref(), provider);
+            Ok(dto::ModelCatalogDto {
+                supported: catalog.supported.into_iter().map(|model| dto::CatalogModelDto {
+                    id: model.id, name: model.name, description: model.description,
+                    efforts: model.efforts, default_effort: model.default_effort,
+                    supports_fast: model.supports_fast, is_default: model.is_default,
+                }).collect(),
+                configured: catalog.configured, account_label: catalog.account_label,
+                balanced: catalog.balanced, error: catalog.error, warning: catalog.warning,
+            })
+        }).await
     }
 
     /// Ask the host for a new chat; the host registers its shared tab entry.
@@ -310,6 +337,17 @@ impl ChatHandle {
     }
 }
 
+async fn query_view<T: Send + 'static>(
+    inbox: Option<mpsc::Sender<WorkerMsg>>,
+    work: impl FnOnce(&mut ChatView) -> T + Send + 'static,
+) -> Result<T, String> {
+    let inbox = inbox.ok_or("unavailable: the chat is closed")?;
+    let (reply, result) = async_channel::bounded(1);
+    inbox.send(WorkerMsg::Run(Box::new(move |view| { let _ = reply.try_send(work(view)); })))
+        .map_err(|_| "unavailable: the chat is closed".to_owned())?;
+    result.recv().await.map_err(|_| "unavailable: the chat is closed".to_owned())
+}
+
 fn receipt(result: Result<(), String>) -> ReceiptDto {
     match result {
         Ok(()) => ReceiptDto {
@@ -360,13 +398,15 @@ impl Parts {
     /// says whether the composer may clear (CHATC-032..035, CHATC-059..062).
     pub async fn submit(&self, request: SubmitRequest) -> ReceiptDto {
         let text = request.text.trim().to_owned();
-        if text.is_empty() {
+        let attachments: Vec<_> = request.attachments.into_iter().map(|attachment| attachment.0).collect();
+        if text.is_empty() && attachments.is_empty() {
             return receipt(Err("refused: the draft is empty".into()));
         }
         let key = uuid::Uuid::new_v4().to_string();
         let owner = (request.editor, request.generation);
         let snapshot = drafts::Contents {
             text: request.text,
+            attachments: attachments.clone(),
             ..Default::default()
         };
         let admitted = {
@@ -404,7 +444,8 @@ impl Parts {
             .await
         };
         let result = match admitted {
-            Ok(()) => self.exchange(ChatCommand::Send { text }, true).await,
+            Ok(()) => self.exchange(if attachments.is_empty() { ChatCommand::Send { text } }
+                else { ChatCommand::SendAttachments { text, attachments } }, true).await,
             Err(error) => Err(error),
         };
         let status = match &result {
@@ -435,6 +476,7 @@ impl Parts {
             drafts::init(&backend.home()?)?;
             Ok(
                 drafts::recover(&chat_id).map(|(record, warnings)| DraftDto {
+                    attachments: record.draft.attachments.into_iter().map(dto::AttachmentDto).collect(),
                     text: record.draft.text,
                     submissions: record
                         .submissions
@@ -451,6 +493,7 @@ impl Parts {
                                 }
                             };
                             SavedSubmissionDto {
+                                attachments: saved.snapshot.attachments.into_iter().map(dto::AttachmentDto).collect(),
                                 key: saved.key,
                                 text: saved.snapshot.text,
                                 status: status.into(),
@@ -477,7 +520,7 @@ impl Parts {
                 effort: request.effort,
                 approval_mode,
                 fast: request.fast,
-                contributor_mode: None,
+                contributor_mode: request.contributor_mode.as_deref().map(from_wire::<riwork_engine::chat::model::ContributorMode>).transpose()?,
                 contributor_opt_out: None,
                 claude_billing: None,
             },
@@ -509,6 +552,93 @@ impl ChatHandle {
                 next_frame().await;
             }
         })
+    }
+
+    /// Retrieve Markdown/text without depending on which transcript rows are mounted.
+    pub async fn read_text(this: Instance<Self>, row_id: Option<String>) -> Result<String, String> {
+        let inbox = this.with(|handle| handle.inbox.clone());
+        query_view(inbox, move |view| view.read_text(row_id.as_deref())).await
+    }
+
+    pub async fn search(this: Instance<Self>, query: String) -> Result<Vec<dto::SearchHitDto>, String> {
+        let inbox = this.with(|handle| handle.inbox.clone());
+        query_view(inbox, move |view| view.search(&query)).await
+    }
+
+    /// Suggestions for a deliberately typed token in this chat's own folder.
+    /// Saved catalogs only; this never starts a provider or asks for a folder.
+    pub async fn suggestions(this: Instance<Self>, text: String, caret: u32) -> Result<Option<suggestions::ChatSuggestionResult>, String> {
+        let (parts, inbox) = this.with(|handle| (handle.parts(), handle.inbox.clone()));
+        let (info, models) = query_view(inbox, |view| {
+            (view.fold.transcript.info.clone(), view.fold.transcript.models.clone())
+        }).await?;
+        let info = info.ok_or("unavailable: the chat's folder is not known yet")?;
+        blocking(move || suggestions::read(parts.backend.home()?, info, models, text, caret)).await
+    }
+
+    pub async fn navigation(this: Instance<Self>) -> Result<Vec<dto::SearchHitDto>, String> {
+        let inbox = this.with(|handle| handle.inbox.clone());
+        query_view(inbox, |view| view.navigation()).await
+    }
+
+    pub async fn reveal_item(this: Instance<Self>, item_id: String) -> Result<Option<u32>, String> {
+        let inbox = this.with(|handle| handle.inbox.clone());
+        query_view(inbox, move |view| view.reveal_item(&item_id)).await
+    }
+
+    /// Resolve a deliberate local-file link against this chat's own working directory.
+    pub async fn resolve_link(this: Instance<Self>, target: String) -> Result<dto::LinkTargetDto, String> {
+        let inbox = this.with(|handle| handle.inbox.clone());
+        let cwd = query_view(inbox, |view| view.fold.transcript.info.as_ref().map(|info| info.cwd.clone())).await?
+            .ok_or("unavailable: the chat's folder is not known yet")?;
+        blocking(move || {
+            let (path, line) = links::resolve(&cwd, &cwd, &target)?;
+            Ok(dto::LinkTargetDto { path: path.to_string_lossy().into_owned(), line })
+        }).await
+    }
+
+    pub async fn workers(this: Instance<Self>) -> Result<Vec<workers::ChatWorker>, String> {
+        let inbox = this.with(|handle| handle.inbox.clone());
+        let rows = query_view(inbox, |view| workers::reported(&view.fold.transcript)).await?;
+        let parts = this.with(|handle| handle.parts());
+        blocking(move || workers::live(parts.backend.as_ref(), &parts.chat_id, rows)).await
+    }
+
+    pub async fn worker_action(this: Instance<Self>, session_id: String, action: String, text: Option<String>) -> Result<(), String> {
+        crate::service::validate_uuid(&session_id)?;
+        let inbox = this.with(|handle| handle.inbox.clone());
+        let id = session_id.clone();
+        let known = query_view(inbox, move |view| workers::reported(&view.fold.transcript).iter().any(|worker| worker.kind == "shell" && worker.session_id.as_deref() == Some(id.as_str()))).await?;
+        if !known { return Err("refused: this session is not a worker of this chat".into()); }
+        let parts = this.with(|handle| handle.parts());
+        blocking(move || workers::act(&parts.backend.home()?, &parts.chat_id, &session_id, &action, text.as_deref())).await
+    }
+
+    pub async fn changed_files(this: Instance<Self>, scope: Option<String>) -> Result<Vec<review::ChatChangedFile>, String> {
+        let inbox = this.with(|handle| handle.inbox.clone());
+        query_view(inbox, move |view| review::files(&view.fold.transcript, scope.as_deref())).await
+    }
+
+    pub async fn file_review(this: Instance<Self>, key: String) -> Result<review::ChatFileReview, String> {
+        let inbox = this.with(|handle| handle.inbox.clone());
+        query_view(inbox, move |view| review::read(&view.fold.transcript, &key)).await?
+    }
+
+    pub async fn image_preview(this: Instance<Self>, item_id: String, image_index: u32) -> Result<media::ChatImagePreview, String> {
+        let inbox = this.with(|handle| handle.inbox.clone());
+        let (info, image) = query_view(inbox, move |view| {
+            let transcript = &view.fold.transcript;
+            let info = transcript.info.clone().ok_or("The chat is not ready")?;
+            let image = transcript.items.iter().find(|item| item.id == item_id).and_then(|item| item.presentation.images.get(image_index as usize)).cloned().ok_or("This image is no longer available")?;
+            Ok::<_, String>((info, image))
+        }).await??;
+        let backend = this.with(|handle| handle.backend.clone());
+        blocking(move || media::read(&backend.home()?, &info, image)).await
+    }
+
+    pub async fn billing_action(this: Instance<Self>, action: String, notice_id: Option<String>) -> Result<billing::BillingActionDto, String> {
+        let (parts, inbox) = this.with(|handle| (handle.parts(), handle.inbox.clone()));
+        billing::action(parts, inbox, action, notice_id).await
     }
 
     /// The List's visible rows; bodies near them are materialized.
@@ -590,8 +720,15 @@ impl ChatHandle {
     }
 
     /// Model, effort, Fast or approval mode (CHATC-151..167).
-    pub async fn configure(this: Instance<Self>, request: ConfigureRequest) -> Result<(), String> {
+    pub async fn configure(this: Instance<Self>, mut request: ConfigureRequest) -> Result<(), String> {
         let parts = this.with(|handle| handle.parts());
+        if let Some(model) = request.model.clone().filter(|_| request.effort.is_none()) {
+            let inbox = this.with(|handle| handle.inbox.clone());
+            request.effort = query_view(inbox, move |view| {
+                let transcript = &view.fold.transcript;
+                toolbar::model_choice(&transcript.models, &model, transcript.info.as_ref().and_then(|info| info.effort.as_deref())).1
+            }).await?;
+        }
         parts.configure(request).await
     }
 
@@ -620,6 +757,32 @@ impl ChatHandle {
     pub async fn restore_draft(this: Instance<Self>) -> Result<Option<DraftDto>, String> {
         let parts = this.with(|handle| handle.parts());
         parts.restore_draft().await
+    }
+
+    pub async fn stage_attachment(this: Instance<Self>, path: String) -> Result<dto::AttachmentDto, String> {
+        let parts = this.with(|handle| handle.parts());
+        blocking(move || attachments::stage_path(parts.backend.as_ref(), &parts.chat_id, &path)).await
+    }
+
+    pub async fn stage_image(this: Instance<Self>, name: String, base64: String) -> Result<dto::AttachmentDto, String> {
+        let parts = this.with(|handle| handle.parts());
+        blocking(move || attachments::stage_image(parts.backend.as_ref(), &parts.chat_id, &name, &base64)).await
+    }
+
+    pub async fn attachment_preview(this: Instance<Self>, attachment: dto::AttachmentDto) -> Result<Option<String>, String> {
+        let parts = this.with(|handle| handle.parts());
+        blocking(move || attachments::preview(parts.backend.as_ref(), &parts.chat_id, &attachment.0)).await
+    }
+
+    /// Every edit replaces one owned rich draft, retaining source references from older builds.
+    pub fn save_attachments(&mut self, text: String, attachments: Vec<dto::AttachmentDto>, editor: u64, generation: u64, unready: u32) {
+        let chat_id = self.chat_id.clone();
+        self.post(WorkerMsg::Run(Box::new(move |_| {
+            let contents = drafts::with(|store| store.record(&chat_id).map(|record| record.draft.clone())).flatten().unwrap_or_default();
+            drafts::remember_complete(&chat_id, drafts::Contents {
+                text, attachments: attachments.into_iter().map(|attachment| attachment.0).collect(), ..contents
+            }, (editor, generation), unready as usize);
+        })));
     }
 
     /// Every composer change saves the whole draft at once; the native writer

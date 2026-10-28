@@ -3,7 +3,7 @@
 use crate::settings::Settings;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-/// Settings → Interface font.
+/// Settings → Interface font, independent of the selected color palette.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InterfaceFont {
@@ -35,13 +35,14 @@ impl InterfaceFont {
 /// The faces RiWork's interface is drawn in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Face {
-    /// Menlo throughout: what the desktop draws before settings load. No
-    /// setting chooses it.
+    /// Menlo throughout for the colorful themes and Follow Ghostty.
     Menlo,
     /// The system font throughout.
     System,
     /// The system font, with monospace accents.
     SystemMono,
+    /// Proportional Hermes interface text with fixed-width technical accents.
+    Hermes,
 }
 
 impl Face {
@@ -63,8 +64,8 @@ impl Face {
     pub fn offset(self, matching_terminal: bool) -> f32 {
         match self {
             Self::Menlo => 0.0,
-            Self::System | Self::SystemMono if matching_terminal => 0.0,
-            Self::System | Self::SystemMono => SYSTEM_BODY_POINTS - REFERENCE_SIZE,
+            Self::System | Self::SystemMono | Self::Hermes if matching_terminal => 0.0,
+            Self::System | Self::SystemMono | Self::Hermes => SYSTEM_BODY_POINTS - REFERENCE_SIZE,
         }
     }
 }

@@ -38,7 +38,7 @@ export type UsageFocus =
   | { kind: "claude_shell"; id: string }
   | { kind: "grok_shell"; id: string; alive: boolean }
   | { kind: "other" };
-export type UsageSource = "codex" | "claude" | "grok_session";
+export type UsageSource = "codex" | "claude" | "grok_session" | "chat_session";
 export type Freshness = "current" | "stale" | "loading" | "unavailable";
 export type UsageMode = "current_chat" | "all_accounts";
 
@@ -49,6 +49,10 @@ export interface UsageSegment {
   figures: string;
   freshness: Freshness;
   note?: string;
+  /** Provider-reported quota windows; absent reports never become empty gauges. */
+  windows?: UsageWindowLike[];
+  /** Native chat session usage is distinct from an account's subscription quota. */
+  provider?: string;
 }
 
 const account = (profile: CodexProfile): Selection => ({ kind: "account", home: profile.home, label: profile.label });
@@ -144,7 +148,7 @@ export function codexAccountNumbers(shells: ShellLike[]): Map<string, number> {
   return numbers;
 }
 
-/** What the focused tab runs. Chat tabs carry no provider here and read as Other (the project default). */
+/** Shell account selection. StatusBar handles native chat deliveries separately. */
 export function usageFocus(tabId: string | undefined, shells: ShellLike[], list: AccountListLike): UsageFocus {
   const id = tabId?.startsWith("shell:") ? tabId.slice(6) : undefined;
   const shell = id ? shells.find((entry) => entry.id === id) : undefined;
@@ -190,6 +194,7 @@ export function codexTag(segment: UsageSegment): string {
 export function segmentText(segment: UsageSegment): string {
   if (segment.source === "codex") return segment.account !== undefined ? `${codexTag(segment)} · ${segment.account} · ${segment.figures}` : `CODEX · ${segment.figures}`;
   if (segment.source === "claude") return `CLAUDE${mark(segment)} · ${segment.figures}`;
+  if (segment.source === "chat_session") return `${segment.provider ?? "Chat"} · ${segment.figures}`;
   return segment.figures;
 }
 
@@ -216,6 +221,7 @@ function codexSegment(selection: Selection, inputs: UsageInputs, compact: boolea
   if (entry?.usage) {
     return {
       ...base, figures: limits(entry.usage, compact),
+      windows: entry.usage.windows,
       freshness: entry.error || stale(entry.usage, inputs.now) ? "stale" : "current",
       ...(entry.error ? { note: `Last refresh failed: ${entry.error}` } : {}),
     };
@@ -226,15 +232,16 @@ function codexSegment(selection: Selection, inputs: UsageInputs, compact: boolea
 }
 
 function claudeSegment(usage: ProviderUsageLike, compact: boolean, now: number): UsageSegment {
-  return { source: "claude", figures: limits(usage, compact), freshness: stale(usage, now) ? "stale" : "current" };
+  return { source: "claude", figures: usage.windows.length ? limits(usage, compact) : "QUOTA UNAVAILABLE", windows: usage.windows,
+    freshness: stale(usage, now) ? "stale" : usage.windows.length ? "current" : "unavailable" };
 }
 
-/** Claude's subscription: the newest report with quota windows, else the newest (an API key has none). */
+/** Latest Claude report. A newer report without windows supersedes old quota. */
 export function claudeSubscription(claude: ClaudeEntryLike[]): ProviderUsageLike | undefined {
   const reports = [...claude].sort((a, b) => a.shellId < b.shellId ? -1 : a.shellId > b.shellId ? 1 : 0)
     .map((entry) => entry.usage).filter((usage): usage is ProviderUsageLike => !!usage);
   const newest = (list: ProviderUsageLike[]) => list.reduce<ProviderUsageLike | undefined>((best, usage) => !best || usage.updatedAtUnix >= best.updatedAtUnix ? usage : best, undefined);
-  return newest(reports.filter((usage) => usage.windows.length > 0)) ?? newest(reports);
+  return newest(reports);
 }
 
 /** Current chat: one readout. All accounts: one per known Codex account, then Claude once known. */
@@ -259,7 +266,8 @@ export function usageSegments(inputs: UsageInputs): UsageSegment[] {
   // Not even the system default's home could be found.
   if (segments.length === 0) segments.push(codexSegment({ kind: "unavailable" }, inputs, true));
   const claude = claudeSubscription(inputs.claude);
-  if (claude) segments.push(claudeSegment(claude, true, inputs.now));
+  if (claude) segments.push({ ...claudeSegment(claude, true, inputs.now),
+    note: "Latest Claude session report. Claude does not identify its account here; other sessions may use different accounts." });
   return segments;
 }
 

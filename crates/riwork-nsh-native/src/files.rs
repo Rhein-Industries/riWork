@@ -2,7 +2,7 @@
 //! exist only while a rendering owner holds a subscription; no view polls disk.
 use std::{
     cmp::Ordering,
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     ffi::{CStr, OsString},
     fs::File,
     io::Read,
@@ -686,6 +686,9 @@ struct ListingKey {
 struct RootWatch {
     root: PathBuf,
     listings: Mutex<BTreeMap<ListingKey, Arc<Hub<DirectoryListingDto>>>>,
+    // A failed read waits for an explicit resubscribe/refresh. Unrelated
+    // filesystem activity must not repeatedly ask macOS to open a denied path.
+    failed: Mutex<BTreeSet<ListingKey>>,
     wake: mpsc::SyncSender<bool>,
 }
 impl Drop for RootWatch {
@@ -735,6 +738,7 @@ fn watch_directory(
         let watch = Arc::new(RootWatch {
             root: root.to_owned(),
             listings: Mutex::new(BTreeMap::new()),
+            failed: Mutex::new(BTreeSet::new()),
             wake: tx,
         });
         let weak = Arc::downgrade(&watch);
@@ -765,16 +769,25 @@ fn watch_directory(
                         if !hub.has_subscribers() {
                             continue;
                         }
-                        let listing = list_directory(&watch.root, &key.path, key.show_hidden)
-                            .unwrap_or_else(|error| DirectoryListingDto {
-                                schema: 3,
-                                root: watch.root.to_string_lossy().into(),
-                                path: key.path.to_string_lossy().into(),
-                                entries: Vec::new(),
-                                omitted: 0,
-                                scan_limited: false,
-                                error: Some(error),
-                            });
+                        let mut failed = watch.failed.lock().unwrap_or_else(PoisonError::into_inner);
+                        if failed.contains(&key) {
+                            continue;
+                        }
+                        let listing = match list_directory(&watch.root, &key.path, key.show_hidden) {
+                            Ok(listing) => listing,
+                            Err(error) => {
+                                failed.insert(key.clone());
+                                DirectoryListingDto {
+                                    schema: 3,
+                                    root: watch.root.to_string_lossy().into(),
+                                    path: key.path.to_string_lossy().into(),
+                                    entries: Vec::new(),
+                                    omitted: 0,
+                                    scan_limited: false,
+                                    error: Some(format!("{error} Refresh Files to try again.")),
+                                }
+                            }
+                        };
                         hub.publish(listing);
                     }
                 }
@@ -793,6 +806,7 @@ fn watch_directory(
         .lock()
         .unwrap_or_else(PoisonError::into_inner);
     let initial = list_directory(root, path, show_hidden)?;
+    watch.failed.lock().unwrap_or_else(PoisonError::into_inner).remove(&key);
     let hub = listings
         .entry(key)
         .or_insert_with(|| Arc::new(Hub::new(initial.clone())));

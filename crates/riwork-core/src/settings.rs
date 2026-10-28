@@ -213,9 +213,11 @@ pub struct Settings {
     /// Conversation overrides; chat_display remains the default for untouched chats.
     pub chat_display_modes: BTreeMap<String, DisplayMode>,
     pub schema_version: u32,
-    /// Always Native. A removed theme (or a newer build's) in the file reads as
-    /// Native and stays as written until the setting changes.
+    /// Desktop palette. Unknown future choices read as Native and remain in
+    /// the file until this setting changes.
     pub theme: ThemeChoice,
+    /// Follow Ghostty can independently use RiWork's terminal palette.
+    pub use_riwork_colors: bool,
     pub remember_window_size: bool,
     /// Built-in panel tabs and toolbar buttons show an icon instead of their text label.
     /// The key predates the toolbar buttons and stays as it is in `settings.json`.
@@ -270,9 +272,8 @@ pub struct Settings {
     /// Interface text follows Ghostty's `font-size` instead of `ui_text_size`.
     pub ui_text_matches_terminal: bool,
     /// "Terminals match the theme": terminals take Native's white or black
-    /// background and palette. Off keeps Ghostty's own colors. The only terminal
-    /// colors option: `use_riwork_colors`, which older builds wrote for the
-    /// removed Ghostty theme, is no longer read and stays in the file as written.
+    /// background and palette. Off keeps Ghostty's own colors. Independent of
+    /// the `use_riwork_colors` option retained by the other themes.
     pub native_terminal_colors: bool,
     /// The interface font.
     pub interface_font: InterfaceFont,
@@ -387,7 +388,10 @@ impl Settings {
     }
     /// Whether "Terminals match the theme" is on.
     pub fn terminal_colors_forced(&self) -> bool {
-        self.native_terminal_colors
+        match self.theme {
+            ThemeChoice::Native => self.native_terminal_colors,
+            _ => self.use_riwork_colors,
+        }
     }
 }
 
@@ -399,6 +403,7 @@ impl Default for Settings {
             chat_display: Default::default(),
             chat_display_modes: BTreeMap::new(),
             theme: ThemeChoice::Native,
+            use_riwork_colors: false,
             remember_window_size: true,
             panel_tab_icons: false,
             open_preview_on_select: true,
@@ -456,6 +461,7 @@ impl<'de> Deserialize<'de> for Settings {
                 .unwrap_or_default(),
             schema_version: strict_field(&object, "schema_version", defaults.schema_version)?,
             theme: lenient_field(&object, "theme", defaults.theme),
+            use_riwork_colors: lenient_field(&object, "use_riwork_colors", defaults.use_riwork_colors),
             remember_window_size: lenient_field(
                 &object,
                 "remember_window_size",

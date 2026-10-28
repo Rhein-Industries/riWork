@@ -22,8 +22,16 @@ impl DropPlaceholderBounds {
     /// The half of `bounds` (or all of it, for `None`) a drop at
     /// `placement` takes, relative to `bounds`' origin.
     pub fn for_placement(bounds: Bounds<Points>, placement: Option<Placement>) -> Self {
-        let half_width = bounds.size.width * 0.5;
-        let half_height = bounds.size.height * 0.5;
+        Self::with_divider(bounds, placement, px(0.0))
+    }
+
+    /// The destination's actual half after reserving the split's divider gap.
+    /// Whole-group/tab-bar destinations do not reserve a divider.
+    pub(crate) fn with_divider(bounds: Bounds<Points>, placement: Option<Placement>, divider: Points) -> Self {
+        let horizontal_gap = divider.max(px(0.0)).min(bounds.size.width);
+        let vertical_gap = divider.max(px(0.0)).min(bounds.size.height);
+        let half_width = (bounds.size.width - horizontal_gap) * 0.5;
+        let half_height = (bounds.size.height - vertical_gap) * 0.5;
 
         match placement {
             Some(Placement::Left) => Self {
@@ -31,7 +39,7 @@ impl DropPlaceholderBounds {
                 size: size(half_width, bounds.size.height),
             },
             Some(Placement::Right) => Self {
-                origin: point(half_width, px(0.)),
+                origin: point(half_width + horizontal_gap, px(0.)),
                 size: size(half_width, bounds.size.height),
             },
             Some(Placement::Top) => Self {
@@ -39,7 +47,7 @@ impl DropPlaceholderBounds {
                 size: size(bounds.size.width, half_height),
             },
             Some(Placement::Bottom) => Self {
-                origin: point(px(0.), half_height),
+                origin: point(px(0.), half_height + vertical_gap),
                 size: size(bounds.size.width, half_height),
             },
             None => Self {

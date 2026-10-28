@@ -1,9 +1,10 @@
 import { Scroll, Text, cleanup, effect, keymap, signal, untracked, type JSX, type YNode } from "nsh";
 import { Button, Input, View, SettingsFocus, settingsFocusScope } from "../SettingsFocus";
-import { Accounts, ApiKey, OrcaImport, Settings, type AccountsDto, type SettingsDto, type SettingsPatch } from "riwork/native";
-import { type InterfaceTheme } from "../appearance";
+import { Accounts, ApiKey, Appearance, OrcaImport, Settings, type AccountsDto, type SettingsDto, type SettingsPatch } from "riwork/native";
+import { space, type InterfaceTheme } from "../appearance";
 import { ChoiceRow, Section, StepperRow, ToggleRow, buttonStyle, defaultTheme, textStyle, type Theme } from "./SettingsControls";
 import { SETTINGS_SECTIONS, modelIdError, sectionColumns, settingsLayout } from "./settings_model";
+import { ThemePicker, createPaletteCatalog, type PaletteCatalogSource } from "./ThemePicker";
 
 interface Subscription { close(): void }
 interface Delivery<T> { rev: number; data: T }
@@ -12,6 +13,7 @@ export interface ImportReceipt { source: string; projectCount: number; folderCou
 export interface ImportPreview { id: string; source: string; projectCount: number; folderCount: number; worktreeCount: number; alreadyImported?: ImportReceipt | null; recordable: boolean; warnings: string[] }
 /** Injectable adapters let headless fixtures test the forms without real credentials or account discovery. */
 export interface AppSettingsServices {
+  appearance?: PaletteCatalogSource;
   settings: {
     get(): Promise<SettingsDto>; subscribe(listener: (event: Delivery<SettingsDto>) => void): Subscription;
     set(patch: SettingsPatch): Promise<SettingsDto>; changeTextSize(action: string): Promise<SettingsDto>;
@@ -29,7 +31,7 @@ export interface AppSettingsServices {
   };
   orcaImport: { preview(): Promise<ImportPreview>; run(id: string): Promise<ImportReceipt> };
 }
-const nativeServices: AppSettingsServices = { settings: Settings, accounts: Accounts, apiKey: ApiKey, orcaImport: OrcaImport };
+const nativeServices: AppSettingsServices = { settings: Settings, accounts: Accounts, apiKey: ApiKey, orcaImport: OrcaImport, appearance: Appearance as unknown as PaletteCatalogSource };
 
 export interface AppSettingsControl { revealApiKey(): void }
 export interface AppSettingsProps {
@@ -49,14 +51,16 @@ export function AppSettings(props: AppSettingsProps) {
   const apiKey = signal<ApiKeyState>({ saved: null, error: null }), apiPaste = signal(""), apiError = signal(""), apiPending = signal(false), apiFocused = signal(false);
   const modelInput = signal(""), modelError = signal("");
   const width = signal(0), scrollY = signal(0), accountFocus = signal<string | null>(null), textFocused = signal(false);
+  const themeFocus = signal<string | null>(null), themeNodes = new Map<string, YNode>();
   const preview = signal<ImportPreview | null>(null), receipt = signal<ImportReceipt | null>(null), importPending = signal(""), importError = signal("");
   let alive = true, initializedImport = false, accountsRev = -1, settingsRev = -1, apiRev = -1, wasVisible = false, autoAccountsAttempted = false;
-  let apiInput: YNode | undefined, page: YNode | undefined, apiRow: YNode | undefined, initialControl: YNode | undefined;
+  let apiInput: YNode | undefined, page: YNode | undefined, apiRow: YNode | undefined;
   let revealPending = false, revealTimer: ReturnType<typeof setTimeout> | undefined;
   let initialFocusPending = false, initialFocusTimer: ReturnType<typeof setTimeout> | undefined;
   let mutation = Promise.resolve();
   const settings = () => props.settings?.() ?? local();
   const visible = () => props.visible?.() ?? true;
+  const paletteCatalog = createPaletteCatalog(services.appearance, visible);
   const fail = (reason: unknown) => { if (alive) { error.set(String(reason)); props.onError?.(reason); } };
   function enqueue(action: () => Promise<SettingsDto>) {
     mutation = mutation.then(async () => { const next = await action(); if (alive) { local.set(next); error.set(""); } }).catch(fail);
@@ -69,7 +73,7 @@ export function AppSettings(props: AppSettingsProps) {
   ];
   void services.settings.get().then((value) => { if (alive && settingsRev < 0) local.set(value); }).catch(fail);
   void services.accounts.list().then((value) => { if (alive && accountsRev < 0) accounts.set(value); }).catch(fail);
-  cleanup(() => { alive = false; clearTimeout(revealTimer); clearTimeout(initialFocusTimer); for (const subscription of subscriptions) subscription.close(); initialControl = undefined; });
+  cleanup(() => { alive = false; clearTimeout(revealTimer); clearTimeout(initialFocusTimer); for (const subscription of subscriptions) subscription.close(); themeNodes.clear(); });
   function initialTarget() {
     if (props.computerUseFocus) {
       const control = props.computerUseFocus();
@@ -77,8 +81,7 @@ export function AppSettings(props: AppSettingsProps) {
       const target = control.initialTarget();
       if (target !== null) return target;
     }
-    // Appearance's first control, now that it leads with no theme picker.
-    return initialControl;
+    return themeNodes.get(settings()?.theme ?? "native");
   }
   function scheduleInitialFocus() { untracked(() => {
     if (!alive || !initialFocusPending || revealPending || !visible()) return;
@@ -190,6 +193,16 @@ export function AppSettings(props: AppSettingsProps) {
     bindings.push(keymap.bind("m", () => patch({ uiTextMatchesTerminal: !settings()?.uiTextMatchesTerminal })));
     return () => { for (const unbind of bindings) unbind(); };
   });
+  effect(() => {
+    if (!visible() || !themeFocus()) return;
+    const move = (step: number) => {
+      const choices = paletteCatalog.ids();
+      if (!choices.length) return;
+      const index = choices.indexOf(themeFocus() ?? "");
+      themeNodes.get(choices[(index + step + choices.length) % choices.length])?.focus();
+    };
+    return keymap.bind({ left: () => move(-1), up: () => move(-1), right: () => move(1), down: () => move(1) });
+  });
 
   const muted = () => textStyle(theme, 10, true);
   const button = (id: string, label: string, action: () => void, disabled = false) => <Button testID={id} accessibilityLabel={label} disabled={disabled} onPress={action} style={buttonStyle(theme)} focusStyle={{ borderColor: theme().palette.focus }}><Text style={textStyle(theme, 10)}>{label}</Text></Button>;
@@ -204,7 +217,7 @@ export function AppSettings(props: AppSettingsProps) {
         {accounts()?.accounts.map((account) => {
           const selected = () => account.system ? !accounts()?.selectedId : accounts()?.selectedId === account.id;
           return <View testID={`codex-account-${account.id}`} role="radio" focusable={account.available} accessibilityLabel={account.label} accessibilityState={{ checked: selected(), selected: selected(), disabled: !account.available }}
-            disabled={!account.available} onFocus={() => { if (alive) accountFocus.set(account.id); }} onBlur={() => { if (alive) accountFocus.set(null); }} onPress={() => { if (!alive) return; if (account.available) accountFocus.set(account.id); void selectAccount(account.system ? null : account.id, account.available); }} style={{ ...buttonStyle(theme), gap: 4, opacity: account.available ? 1 : 0.6, borderColor: selected() ? theme().palette.cyan : theme().palette.divider }}>
+            disabled={!account.available} onFocus={() => { if (alive) accountFocus.set(account.id); }} onBlur={() => { if (alive) accountFocus.set(null); }} onPress={() => { if (!alive) return; if (account.available) accountFocus.set(account.id); void selectAccount(account.system ? null : account.id, account.available); }} style={{ paddingHorizontal: space(6, theme().scale), paddingVertical: space(7, theme().scale), borderRadius: 7, gap: 3, opacity: account.available ? 1 : 0.6, backgroundColor: selected() ? theme().palette.panelActive : "transparent" }} hoverStyle={{ backgroundColor: theme().palette.panelActive }}>
             <Text style={textStyle(theme)}>{account.label}</Text><Text style={muted()}>{account.detail}</Text>
             <Text style={{ ...muted(), color: !account.available ? theme().palette.gold : selected() ? theme().palette.cyan : theme().palette.muted }}>{!account.available ? "Unavailable" : selected() ? "Selected" : "Use account"}</Text>
           </View>;
@@ -217,7 +230,11 @@ export function AppSettings(props: AppSettingsProps) {
   }
   function appearanceBody() {
     return <View style={{ gap: 8 }}>
-      <ToggleRow id="terminal-colors" label="Terminals match the theme" checked={settings()!.nativeTerminalColors} onChange={(value) => patch({ nativeTerminalColors: value })} theme={theme} onRef={(node) => { initialControl = node; scheduleInitialFocus(); }} />
+      <ThemePicker catalog={paletteCatalog} selected={() => settings()!.theme} theme={theme} onChoose={(id) => patch({ theme: id })}
+        onNode={(id, node) => { themeNodes.set(id, node); scheduleInitialFocus(); }}
+        onFocus={(id) => { if (alive) themeFocus.set(id); }} onBlur={(id) => { if (alive && themeFocus() === id) themeFocus.set(null); }} />
+      {settings()!.theme === "ghostty" && <ToggleRow id="terminal-colors" label="Use RiWork terminal colors" checked={settings()!.useRiworkColors} onChange={(value) => patch({ useRiworkColors: value })} theme={theme} />}
+      {settings()!.theme === "native" && <ToggleRow id="terminal-colors" label="Terminals match the theme" checked={settings()!.nativeTerminalColors} onChange={(value) => patch({ nativeTerminalColors: value })} theme={theme} />}
       <ChoiceRow id="interface-font" label="Interface font" value={`interface-font-${settings()!.interfaceFont}`} choices={[{ id: "interface-font-system", label: "System (SF Pro)" }, { id: "interface-font-system_mono", label: "System + monospace accents" }]} onChange={(value) => patch({ interfaceFont: value === "interface-font-system" ? "system" : "system_mono" })} theme={theme} />
       <ToggleRow id="panel-tab-icons" label="Icons instead of labels" checked={settings()!.panelTabIcons} onChange={(value) => patch({ panelTabIcons: value })} theme={theme} />
       <ChoiceRow id="tab-close-behavior" label="When closing a tab" description="Ask offers Detach, which keeps the session running, and Exit, which ends it. Workers always detach. This Mac only." value={`tab-close-${settings()!.tabCloseBehavior}`} choices={[{ id: "tab-close-ask", label: "Ask" }, { id: "tab-close-detach", label: "Detach" }, { id: "tab-close-exit", label: "Exit" }]} onChange={(value) => patch({ tabCloseBehavior: value === "tab-close-ask" ? "ask" : value === "tab-close-detach" ? "detach" : "exit" })} theme={theme} />
@@ -320,12 +337,12 @@ export function AppSettings(props: AppSettingsProps) {
       case "09": return importBody();
     }
   }
-  return <SettingsFocus.Provider value={focus}><View testID="settings-panel" onLayout={(event) => { if (alive && event.size.width !== width()) width.set(event.size.width); }} style={{ flex: 1, minHeight: 0, backgroundColor: theme().palette.bg }}>
-    <View style={{ padding: 12, gap: 4 }}>
+  return <SettingsFocus.Provider value={focus}><View testID="settings-panel" onLayout={(event) => { if (alive && event.size.width !== width()) width.set(event.size.width); }} style={{ flex: 1, minHeight: 0, backgroundColor: theme().palette.panel }}>
+    <View style={{ height: space(46, theme().scale), paddingHorizontal: space(12, theme().scale), justifyContent: "center", gap: space(1, theme().scale) }}>
       <View style={{ flexDirection: "row", gap: 10, alignItems: "center" }}><Text role="header" style={{ ...textStyle(theme, 13), flex: 1, fontWeight: "600" }}>Settings</Text></View>
       <Text style={muted()}>All projects · Saved automatically</Text>
     </View>
-    <Scroll testID="appearance-settings" ref={(node) => { page = node; scheduleReveal(); }} onScroll={(event) => { if (alive) scrollY.set(event.offset.y); }} style={{ flex: 1, minHeight: 0 }} contentStyle={{ padding: settingsLayout(width()).page, alignItems: "center" }}>
+    <Scroll testID="appearance-settings" ref={(node) => { page = node; scheduleReveal(); }} onScroll={(event) => { if (alive) scrollY.set(event.offset.y); }} style={{ flex: 1, minHeight: 0 }} contentStyle={{ paddingHorizontal: space(6, theme().scale), paddingBottom: space(12, theme().scale), alignItems: "center" }}>
       <View testID={`settings-layout-${settingsLayout(width()).kind}`} style={{ width: "100%", maxWidth: settingsLayout(width()).maxWidth, flexDirection: settingsLayout(width()).kind === "wide" ? "row" : "column", gap: settingsLayout(width()).gap }}>
         {sectionColumns(width()).map((column) => <View style={{ flex: 1, minWidth: 0, gap: 0 }}>{column.map((number) => {
           const section = SETTINGS_SECTIONS.find((section) => section.number === number)!;

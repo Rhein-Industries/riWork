@@ -10,10 +10,12 @@ pub mod backend;
 pub mod chat;
 pub mod cua;
 pub mod dashboard;
+pub mod dictation;
 pub mod dto;
 pub mod files;
 pub mod host_flush;
 pub mod hub;
+pub mod handoff;
 mod memo;
 pub mod orchestrators;
 pub mod overview;
@@ -21,6 +23,8 @@ mod presence;
 mod preview_input;
 #[cfg(target_os = "macos")]
 pub mod preview_macos;
+#[cfg(target_os = "macos")]
+pub mod symbols_macos;
 pub mod preview_surface;
 pub mod project_settings;
 pub mod remote;
@@ -59,6 +63,9 @@ fn native(registry: &mut Registry) {
         .module::<dashboard::Dashboard>()
         .module::<orchestrators::Orchestrators>()
         .module::<chat::Chat>()
+        .module::<dictation::Dictation>()
+        .class::<dictation::DictationHandle>()
+        .module::<handoff::Handoff>()
         .module::<usage::Usage>()
         .module::<usage::Accounts>()
         .module::<cua::Cua>()
@@ -252,6 +259,12 @@ impl Sessions {
 
     pub async fn create(request: CreateSessionRequest) -> Result<ShellSessionDto, String> {
         initialize().await?.sessions_create(request).await
+    }
+
+    /// Launch through the same account, permissions and harness path as the
+    /// original desktop. The service samples and publishes the new membership.
+    pub async fn create_harness(request: CreateSessionRequest, harness: String) -> Result<ShellSessionDto, String> {
+        initialize().await?.create_harness(request, harness).await
     }
 
     pub async fn create_subshell(

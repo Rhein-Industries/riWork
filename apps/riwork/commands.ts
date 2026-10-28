@@ -9,6 +9,11 @@ export interface CommandHooks {
   blocked: () => boolean;
   /** Create a local shell, optionally splitting the active pane first. */
   newShell: (split?: "right" | "down") => void;
+  newAgent?: (kind: string) => void;
+  newChat?: () => void;
+  newProject?: () => void;
+  handOff?: () => void;
+  existingSessions?: (provider?: string) => void;
   newSubshell?: () => void;
   /** Consumes an agent shortcut only in a remote project. */
   remoteAgent?: (kind: string) => boolean;
@@ -87,6 +92,13 @@ export function workspaceCommands(
     if (!hooks.blocked() && ["find", "search", "findNext", "findPrevious", "findClose"].includes(id)
       && hooks.find?.(id === "search" ? "find" : id, args)) { stripOpen.set(false); return; }
     if (!commandAllowed(id, hooks.blocked(), () => stripOpen.set(false))) return;
+    if (agent) { hooks.newAgent?.(agent); return; }
+    if (id === "newChat") { hooks.newChat?.(); return; }
+    if (id === "createProject") { hooks.newProject?.(); return; }
+    if (id === "handOff") { hooks.handOff?.(); return; }
+    if (["sessions", "existingSessions", "existingClaudeChats", "existingMuseChats"].includes(id)) {
+      hooks.existingSessions?.(id === "existingClaudeChats" ? "claude" : id === "existingMuseChats" ? "muse" : undefined); return;
+    }
     const panel = PANEL_COMMANDS[id] ?? (id.startsWith("panel:") ? id.slice(6) : undefined);
     if (panel) { hooks.view(panel); return; }
     if (/^selectTab[1-9]$/.test(id)) hooks.selectNumbered(Number(id.slice(-1)));
@@ -111,10 +123,10 @@ export function workspaceCommands(
   }
   for (const [key, id] of WINDOW_KEYMAP) cleanup(keymap.bind(key, () => dispatch(id),
     id === "nextTab" || id === "previousTab" ? { when: "always" } : undefined));
-  // Panel search owns ⌘F; the remaining deferred chords stay inert.
-  for (const key of new Set(DEFERRED_KEYMAP.map(([key]) => key))) {
-    const agent = DEFERRED_KEYMAP.find(([chord, id, context]) => chord === key && context === "window" && ["openCodex", "openClaude", "openGrok", "openMuse", "newChat"].includes(id));
-    if (key !== "escape" && key !== "mod+f") cleanup(keymap.bind(key, () => { stripOpen.set(false); if (agent) dispatch(agent[1]); }));
+  // Chat components own their own chords; registering inert window bindings
+  // here used to swallow transcript/composer shortcuts before they reached them.
+  for (const [key, id, context] of DEFERRED_KEYMAP) {
+    if (context === "window" && key !== "mod+f") cleanup(keymap.bind(key, () => dispatch(id)));
   }
   effect(() => {
     // NSH's local monitor consumes bindings before native keyDown. Remove this

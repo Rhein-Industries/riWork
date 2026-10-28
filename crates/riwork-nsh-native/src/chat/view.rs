@@ -277,6 +277,12 @@ pub struct ChatView {
     cache: ProjectionCache,
     visible: Vec<Row>,
     rows: Vec<RowDto>,
+    worker_rows: Vec<super::workers::ChatWorker>,
+    file_counts: super::review::FileCounts,
+    /// Stable transcript positions of notices; streaming messages never enter
+    /// this index, so banners and billing do not traverse message history.
+    notices: BTreeSet<usize>,
+    billing: super::billing::Projection,
     index: HashMap<String, usize>,
     /// Reported viewport `[first, last]`, or `None` (the tail is shown).
     viewport: Option<(usize, usize)>,
@@ -305,6 +311,10 @@ impl ChatView {
             cache: ProjectionCache::default(),
             visible: Vec::new(),
             rows: Vec::new(),
+            worker_rows: Vec::new(),
+            file_counts: super::review::FileCounts::default(),
+            notices: BTreeSet::new(),
+            billing: super::billing::Projection::default(),
             index: HashMap::new(),
             viewport: None,
             tail: true,
@@ -343,10 +353,33 @@ impl ChatView {
     /// Fold a batch of events: reproject at most once, and only for structural
     /// events; text and output deltas touch bodies already sent.
     pub fn apply(&mut self, envelopes: &[Envelope]) -> Applied {
+        let since = self.fold.last_seq;
         let applied = self.fold.apply(envelopes);
         self.stats.events += applied.events as u64;
         if applied.events == 0 {
             return applied;
+        }
+        // Whole-item replacements include additions and turn-finalized items.
+        // Removing the old contribution first also handles a changed turn,
+        // status, file list, or a file/notice replaced with another item kind.
+        let mut billing_changed = envelopes.iter().any(|envelope| {
+            envelope.seq > since && matches!(&envelope.event, ChatEvent::Info { .. } | ChatEvent::Account { .. })
+        });
+        for id in &self.fold.replaced {
+            let item = self.fold.item(id);
+            self.file_counts.replace(id, item);
+            if let Some(&at) = self.fold.positions.get(id) {
+                if item.is_some_and(|item| matches!(&item.body, ItemBody::Notice { .. })) {
+                    self.notices.insert(at);
+                    billing_changed = true;
+                } else if self.notices.remove(&at) {
+                    billing_changed = true;
+                }
+            }
+        }
+        if billing_changed {
+            let transcript = &self.fold.transcript;
+            self.billing.refresh(transcript, self.notices.iter().rev().filter_map(|&at| transcript.items.get(at)));
         }
         self.pending.panel = true;
         if applied.projection_changed || applied.appended > 0 {
@@ -545,6 +578,7 @@ impl ChatView {
     }
 
     fn reproject(&mut self, invalidated: &HashSet<String>) {
+        self.worker_rows = super::workers::reported(&self.fold.transcript);
         self.stats.projection_runs += 1;
         let options = self.options();
         let mut rows = self
@@ -620,6 +654,14 @@ impl ChatView {
             .map(first_line)
             .filter(|target| target.trim() != title.trim());
         RowDto {
+            artifacts: row.artifacts.iter().map(|artifact| super::dto::ArtifactDto {
+                item_id: artifact.item_id.clone(),
+                label: artifact.path.as_ref().map(|path| path.path.clone()).or_else(|| self.fold.item(&artifact.item_id).and_then(|item| item.presentation.images.get(artifact.image_index?)).map(|image| image.label.clone())).unwrap_or_else(|| "Image".into()),
+                path: artifact.path.as_ref().map(|path| path.path.clone()),
+                line: artifact.path.as_ref().and_then(|path| path.line), image_index: artifact.image_index,
+            }).collect(),
+            file_count: item.map(|item| self.file_counts.count_item(item)).unwrap_or_default(),
+            attachments: item.map(|item| item.presentation.attachments.iter().cloned().map(super::dto::AttachmentDto).collect()).unwrap_or_default(),
             key: row.id.clone(),
             id: row.id.clone(),
             kind: wire_name(&row.kind),
@@ -769,14 +811,9 @@ impl ChatView {
                 explanation: None,
                 steps: items.iter().map(step).collect(),
             },
-            ItemBody::FileChange { changes } => BodyDto::Detail {
-                text: changes
-                    .iter()
-                    .map(|change| format!("{} {}", wire_name(&change.kind), change.path))
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-            },
-            ItemBody::ToolCall { input, output, .. } => {
+            ItemBody::FileChange { .. } => BodyDto::Changes { files: super::review::files(&self.fold.transcript, Some(&item.id)) },
+            ItemBody::ToolCall { tool, input, output, .. } => {
+                let structured = item.presentation.tool.clone().or_else(|| output.as_deref().and_then(|output| riwork_engine::chat::tool_output::parse(tool, input, output)));
                 let mut text = String::new();
                 if !input.is_null() {
                     text.push_str(&serde_json::to_string_pretty(input).unwrap_or_default());
@@ -787,8 +824,10 @@ impl ChatView {
                     }
                     text.push_str(tail(output, DETAIL_LIMIT).0);
                 }
-                BodyDto::Detail {
-                    text: cut(&text, DETAIL_LIMIT).to_owned(),
+                if let Some(structured) = structured {
+                    BodyDto::Tool { view: serde_json::to_value(structured).unwrap_or(Value::Null), raw: cut(&text, DETAIL_LIMIT).to_owned() }
+                } else {
+                    BodyDto::Detail { text: cut(&text, DETAIL_LIMIT).to_owned() }
                 }
             }
             ItemBody::WebSearch { query } => BodyDto::Detail {
@@ -846,7 +885,71 @@ impl ChatView {
         }
     }
 
-    fn panel_dto(&self) -> ChatPanelDto {
+    /// Copy and search the source transcript, including bodies outside the viewport.
+    pub fn read_text(&self, id: Option<&str>) -> String {
+        let items = &self.fold.transcript.items;
+        if let Some(id) = id {
+            if let Some(item) = self.fold.item(id) { return item_text(item); }
+            fn collect(row: &Row, ids: &mut HashSet<String>) {
+                ids.insert(row.id.clone());
+                for child in row.children.iter().chain(&row.comments) { collect(child, ids); }
+            }
+            let mut ids = HashSet::new();
+            if let Some(row) = find(&self.visible, id) { collect(row, &mut ids); }
+            return items.iter().filter(|item| ids.contains(&item.id)).map(item_text).filter(|text| !text.is_empty()).collect::<Vec<_>>().join("\n\n");
+        }
+        items.iter().map(|item| {
+            let text = item_text(item);
+            if text.is_empty() { String::new() } else { format!("## {}\n\n{}", item_label(item), text) }
+        }).filter(|text| !text.is_empty()).collect::<Vec<_>>().join("\n\n")
+    }
+
+    pub fn navigation(&self) -> Vec<super::dto::SearchHitDto> {
+        self.fold.transcript.items.iter().filter(|item| matches!(item.body, ItemBody::UserMessage { .. }))
+            .enumerate().map(|(index, item)| super::dto::SearchHitDto {
+                id: item.id.clone(), label: format!("Message {}", index + 1),
+                preview: item_text(item).chars().take(140).collect::<String>().split_whitespace().collect::<Vec<_>>().join(" "),
+            }).collect()
+    }
+
+    pub fn search(&self, query: &str) -> Vec<super::dto::SearchHitDto> {
+        let query = query.trim().to_lowercase();
+        if query.is_empty() { return Vec::new(); }
+        self.fold.transcript.items.iter().filter_map(|item| {
+            let text = item_text(item);
+            let lower = text.to_lowercase();
+            let at = lower.find(&query)?;
+            // A bounded excerpt around the match, with Unicode-safe boundaries.
+            let offset = lower[..at].chars().count().saturating_sub(48);
+            let preview = text.chars().skip(offset).take(200).collect::<String>().split_whitespace().collect::<Vec<_>>().join(" ");
+            Some(super::dto::SearchHitDto { id: item.id.clone(), label: item_label(item).into(), preview })
+        }).take(200).collect()
+    }
+
+    pub fn reveal_item(&mut self, id: &str) -> Option<u32> {
+        fn path(rows: &[Row], id: &str, found: &mut Vec<String>) -> bool {
+            for row in rows {
+                if row.id == id || path(&row.children, id, found) || path(&row.comments, id, found) {
+                    found.push(row.id.clone());
+                    return true;
+                }
+            }
+            false
+        }
+        let mut ancestors = Vec::new();
+        if !path(&self.visible, id, &mut ancestors) {
+            self.set_mode(DisplayMode::Verbose);
+            path(&self.visible, id, &mut ancestors);
+        }
+        for ancestor in ancestors { self.disclosure.overrides.insert(ancestor, true); }
+        self.reproject(&HashSet::new());
+        let at = *self.index.get(id)?;
+        self.set_viewport(at, at.saturating_add(12));
+        Some(at as u32)
+    }
+
+    fn panel_dto(&mut self) -> ChatPanelDto {
+        let billing = self.billing.snapshot();
         let transcript = &self.fold.transcript;
         let info = transcript.info.as_ref();
         let provider = info.map(|info| info.provider);
@@ -866,7 +969,9 @@ impl ChatView {
             title: title(transcript),
             provider: provider.map(|provider| wire_name(&provider)),
             cwd: info.map(|info| info.cwd.to_string_lossy().into_owned()),
-            project_id: info.and_then(|info| info.project_id.clone()),
+            project_id: info.and_then(|info| info.project_id.clone().or_else(|| {
+                info.orchestrator.as_ref().and_then(|scope| scope.project_id().map(str::to_owned))
+            })),
             worktree_id: info.and_then(|info| info.worktree_id.clone()),
             state: state.into(),
             state_message: message,
@@ -878,13 +983,57 @@ impl ChatView {
             questions: transcript.questions.iter().map(question_dto).collect(),
             toolbar: info.map(|info| toolbar_dto(transcript, info)),
             notices: if self.mode == DisplayMode::Normal {
-                banners(transcript)
+                banners(transcript, self.notices.iter().rev().filter_map(|&at| transcript.items.get(at)))
             } else {
                 Vec::new()
             },
+            billing,
+            file_changes: self.file_counts.total(),
+            workers: self.worker_rows.clone(),
             mode: wire_name(&self.mode),
             failures: self.failures.clone(),
+            session_id: info.and_then(|info| info.provider_thread_id.clone()),
+            usage_label: transcript.usage.as_ref().map(|usage| {
+                match (usage.context_used, usage.context_window.filter(|window| *window > 0)) {
+                    (Some(used), Some(window)) => format!("{}% · {} / {}", ((used as f64 / window as f64).clamp(0.0, 1.0) * 100.0).round() as u32, toolbar::tokens(used), toolbar::tokens(window)),
+                    _ => format!("{} in · {} out", toolbar::tokens(usage.input_tokens), toolbar::tokens(usage.output_tokens)),
+                }
+            }),
+            usage_detail: transcript.usage.as_ref().map(|usage| {
+                let mut text = format!("{} input · {} output · {} cached", toolbar::tokens(usage.input_tokens), toolbar::tokens(usage.output_tokens), toolbar::tokens(usage.cached_input_tokens));
+                if let Some(cost) = usage.cost_usd { text.push_str(&format!(" · estimated ${cost:.3}")); }
+                text
+            }),
         }
+    }
+}
+
+fn item_label(item: &Item) -> &'static str {
+    match &item.body {
+        ItemBody::UserMessage { .. } => "You",
+        ItemBody::AgentMessage { .. } => "Assistant",
+        ItemBody::Reasoning { .. } => "Reasoning",
+        ItemBody::Command { .. } => "Command",
+        ItemBody::FileChange { .. } => "File changes",
+        ItemBody::Plan { .. } | ItemBody::Todo { .. } => "Plan",
+        ItemBody::Notice { .. } => "Notice",
+        ItemBody::WebSearch { .. } => "Search",
+        ItemBody::ToolCall { .. } => "Tool",
+        ItemBody::Compaction => "Context compacted",
+    }
+}
+
+fn item_text(item: &Item) -> String {
+    match &item.body {
+        ItemBody::UserMessage { text } => typed_text(text),
+        ItemBody::AgentMessage { text } | ItemBody::Reasoning { text } | ItemBody::Notice { text, .. } => text.clone(),
+        ItemBody::Command { command, output, .. } => format!("$ {command}\n\n{output}"),
+        ItemBody::FileChange { changes } => changes.iter().map(|change| format!("{} {}\n{}", wire_name(&change.kind), change.path, change.diff.as_deref().unwrap_or_default())).collect::<Vec<_>>().join("\n\n"),
+        ItemBody::Plan { explanation, steps } => format!("{}\n{}", explanation.as_deref().unwrap_or_default(), steps.iter().map(|step| format!("[{}] {}", wire_name(&step.status), step.text)).collect::<Vec<_>>().join("\n")),
+        ItemBody::Todo { items } => items.iter().map(|step| format!("[{}] {}", wire_name(&step.status), step.text)).collect::<Vec<_>>().join("\n"),
+        ItemBody::ToolCall { input, output, .. } => format!("{}\n\n{}", serde_json::to_string_pretty(input).unwrap_or_default(), output.as_deref().unwrap_or_default()),
+        ItemBody::WebSearch { query } => query.clone(),
+        ItemBody::Compaction => String::new(),
     }
 }
 
@@ -1171,6 +1320,8 @@ fn toolbar_dto(transcript: &Transcript, info: &riwork_engine::chat::model::ChatI
                 )
             })
             .collect(),
+        contributor_mode: (provider == Provider::Muse).then(|| info.reported_contributor_mode().map(|mode| wire_name(&mode))).flatten(),
+        contributor_label: (provider == Provider::Muse).then(|| info.reported_contributor_mode().map(|mode| toolbar::contributor_label(!mode.is_off()).to_owned()).unwrap_or_else(|| toolbar::CONTRIBUTOR_SETTINGS_LABEL.to_owned())),
         providers: [Provider::Codex, Provider::Claude, Provider::Muse]
             .into_iter()
             .filter(|other| *other != provider)
@@ -1187,11 +1338,11 @@ fn toolbar_dto(transcript: &Transcript, info: &riwork_engine::chat::model::ChatI
 }
 
 /// Open notices as banners, newest per kind (or text), newest first, at most
-/// three (CHATT-188/189 without expiry or history; those follow with Notices).
-fn banners(transcript: &Transcript) -> Vec<NoticeDto> {
+/// three. The caller supplies the notice index, not the entire transcript.
+fn banners<'a>(transcript: &Transcript, notices: impl Iterator<Item = &'a Item>) -> Vec<NoticeDto> {
     let mut seen = HashSet::new();
     let mut result = Vec::new();
-    for item in transcript.items.iter().rev() {
+    for item in notices {
         if let ItemBody::Notice {
             level,
             text,
@@ -1201,7 +1352,7 @@ fn banners(transcript: &Transcript) -> Vec<NoticeDto> {
             ..
         } = &item.body
         {
-            if *resolved || *dismissed {
+            if *resolved || *dismissed || super::billing::hide_notice(transcript, &item.body) {
                 continue;
             }
             let key = kind.clone().unwrap_or_else(|| text.clone());

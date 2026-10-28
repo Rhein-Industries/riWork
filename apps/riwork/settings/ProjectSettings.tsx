@@ -2,7 +2,7 @@ import { Scroll, Text, View, cleanup, effect, keymap, signal, type YNode } from 
 import { Button, Input } from "nsh/base";
 import { Accounts, ProjectSettings as NativeProjectSettings, Settings, Store, type AccountsDto, type ProjectSettingsDto } from "riwork/native";
 import { MemoEditor } from "../Files";
-import { DEFAULT_THEME, type InterfaceTheme } from "../appearance";
+import { DEFAULT_THEME, space, type InterfaceTheme } from "../appearance";
 import { ChoiceRow, Section, StepperRow, buttonStyle, textStyle } from "./SettingsControls";
 import { ProjectDraft } from "./project_model";
 
@@ -139,9 +139,14 @@ export function ProjectSettingsPanel(props: ProjectSettingsProps) {
   }
   const fieldStyle = () => ({ minHeight: 30, padding: 8, borderRadius: 4, backgroundColor: theme().palette.bg, ...textStyle(theme, 12) });
   const note = (text: string | null | undefined, id: string) => text ? <Text testID={id} role="alert" style={{ ...textStyle(theme, 10), color: theme().palette.gold }}>{text}</Text> : null;
-  return <Scroll testID="project-settings-panel" ref={(node) => { scroll = node; }} style={{ flex: 1, minHeight: 0 }}>
-    {!ready() ? <Text style={textStyle(theme)}>{error() || (props.projectId() ? "Reading project settings…" : "Select a local project to edit its settings.")}</Text> : <View style={{ padding: 12, gap: 12, minWidth: 0 }}>
-      <View style={{ gap: 4 }}><Text role="header" style={textStyle(theme, 17)}>Project settings</Text><Text style={textStyle(theme, 12)}>{snapshot()!.project.name}</Text><Text testID="project-settings-badge" style={textStyle(theme, 10, true)}>{draft()!.pending ? "Unsaved" : "Local project"}</Text></View>
+  return <View testID="project-settings-panel" style={{ flex: 1, minHeight: 0, backgroundColor: theme().palette.panel }}>
+    <View style={{ height: space(46, theme().scale), paddingHorizontal: space(12, theme().scale), justifyContent: "center", gap: space(1, theme().scale) }}>
+      <Text role="header" style={{ ...textStyle(theme, 13), fontWeight: "600" }}>Project settings</Text>
+      <Text numberOfLines={1} style={textStyle(theme, 10, true)}>{snapshot()?.project.name ?? "Local project"}</Text>
+    </View>
+    <Scroll ref={(node) => { scroll = node; }} style={{ flex: 1, minHeight: 0 }} contentStyle={{ paddingHorizontal: space(6, theme().scale), paddingBottom: space(12, theme().scale) }}>
+    {!ready() ? <Text style={textStyle(theme)}>{error() || (props.projectId() ? "Reading project settings…" : "Select a local project to edit its settings.")}</Text> : <View style={{ gap: 0, minWidth: 0, width: "100%", maxWidth: 820, alignSelf: "center" }}>
+      {draft()!.pending && <Text testID="project-settings-badge" style={{ ...textStyle(theme, 10, true), paddingHorizontal: space(6, theme().scale) }}>Unsaved changes</Text>}
       {note(error(), "project-settings-error")}
       {note(snapshot()!.settings.error, "project-settings-preferences-error")}
       <Section number="01" title="Identity" theme={theme}><Input testID="project-settings-name" ref={(node) => { nameInput = node; }} accessibilityLabel="Project name" value={draft()!.name} onChange={(name) => { draft()!.editName(name); error.set(""); redraw(); }} onSubmit={() => void save()} style={fieldStyle()} /></Section>
@@ -191,5 +196,5 @@ export function ProjectSettingsPanel(props: ProjectSettingsProps) {
         <MemoEditor projectId={props.projectId} theme={theme} visible={shown} bindSaveKey={false} onControl={(control) => { memoControl = control; if (control && revealPending) focusMemo(); }} />
       </Section>
     </View>}
-  </Scroll>;
+  </Scroll></View>;
 }

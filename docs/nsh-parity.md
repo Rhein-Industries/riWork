@@ -25,6 +25,32 @@ what a doc wishes it did; where docs and code disagree it is noted in the row an
 
 ## How to read a row
 
+### Phone and desktop pass — 2026-10-28
+
+The `nsh` worktree received a source-based feature/design pass across Projects,
+Files/Preview, Global/Dashboard, status controls, Chat, Settings, Schedules and
+Remote, plus the iOS NSH shell and its retained native screens. This does not
+mark the historical checklist's verification rows complete. No test, lint or
+type-check suites were run for this pass.
+
+Concrete restorations include persisted project ordering, Files keyboard focus,
+status-menu keyboard access, direct dashboard decision review, desktop theme
+choices, New Chat provider/location selection, explicit `/memo` insertion and
+chat snippet actions. Composer suggestions reuse the existing engine catalogs.
+Suggestion selection uses clicks and native Return handling; unmodified
+arrow/Tab/Escape interception is omitted because NSH 0.3 cannot synchronously
+exempt IME marked text in its global key monitor. File suggestions show metadata
+without fetching file-content previews.
+
+iPhone always uses Native appearance and follows its own light/dark setting;
+iPad retains theme sync. Mobile dashboard filters, grouped project navigation,
+saved-read indicators, decision coverage, keyboard routes and failure recovery
+were restored in the NSH shell. Chat, terminal, pairing, settings and preview
+interactions continue through their existing native implementations. See
+[the iOS migration boundary](nsh-ios-migration.md) for what still lives in Swift.
+
+### Original checklist columns
+
 | Column | Meaning |
 |---|---|
 | ID | `SHELL-*` shell and windows, `TERM-*` terminals, files, remote, previews, `CHATT-*` chat transcript, `CHATC-*` chat composer and chat chrome, `PANEL-*` panels, settings, dashboard, controls, `DOCS-*` requirements stated in contracts, receipts, README and docs. IDs are stable; a row that turns out wrong is struck through, never renumbered. |

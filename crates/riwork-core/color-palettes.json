@@ -1,0 +1,509 @@
+{
+  "schema": 1,
+  "palettes": [
+    {
+      "id": "ri_work",
+      "label": "RiWork",
+      "description": "RiWork’s original dark palette with cyan and purple accents.",
+      "dark": true,
+      "palette": {
+        "bg": 593172,
+        "panel": 1054496,
+        "panelActive": 1319210,
+        "divider": 2440261,
+        "cyan": 5629660,
+        "magenta": 13531375,
+        "gold": 16039797,
+        "text": 13885926,
+        "muted": 7375251,
+        "focus": 16039797,
+        "working": 5629660
+      },
+      "terminal": {
+        "background": 593172,
+        "foreground": 13885926,
+        "palette": [
+          1252133,
+          15758219,
+          6411694,
+          16039797,
+          7907839,
+          13531375,
+          5629660,
+          13885926,
+          5795963,
+          16747424,
+          8645571,
+          16765329,
+          10207487,
+          14656503,
+          8713194,
+          16777215
+        ]
+      },
+      "source": "RiWork existing preset, preserved from crates/riwork-core/src/theme.rs; UI roles and ANSI colors unchanged."
+    },
+    {
+      "id": "catppuccin",
+      "label": "Catppuccin Mocha",
+      "description": "A soft dark palette with pastel accents.",
+      "dark": true,
+      "palette": {
+        "bg": 1973806,
+        "panel": 2368565,
+        "panelActive": 2829373,
+        "divider": 4277078,
+        "cyan": 9757397,
+        "magenta": 16106215,
+        "gold": 16376495,
+        "text": 13489908,
+        "muted": 9409705,
+        "focus": 16376495,
+        "working": 9757397
+      },
+      "terminal": {
+        "background": 1973806,
+        "foreground": 13489908,
+        "palette": [
+          4540250,
+          15961000,
+          10937249,
+          16376495,
+          9024762,
+          16106215,
+          9757397,
+          10923464,
+          5790576,
+          15955865,
+          9033867,
+          15455121,
+          7645436,
+          15904478,
+          7067594,
+          12239582
+        ]
+      },
+      "source": "RiWork existing preset, preserved from crates/riwork-core/src/theme.rs; UI roles and ANSI colors unchanged."
+    },
+    {
+      "id": "tokyo_night",
+      "label": "Tokyo Night",
+      "description": "A cool dark palette inspired by Tokyo at night.",
+      "dark": true,
+      "palette": {
+        "bg": 1710886,
+        "panel": 2105645,
+        "panelActive": 2500662,
+        "divider": 3882575,
+        "cyan": 8245247,
+        "magenta": 12294903,
+        "gold": 14724968,
+        "text": 12634869,
+        "muted": 9015209,
+        "focus": 14724968,
+        "working": 8245247
+      },
+      "terminal": {
+        "background": 1710886,
+        "foreground": 12634869,
+        "palette": [
+          1381918,
+          16217742,
+          10407530,
+          14724968,
+          8037111,
+          12294903,
+          8245247,
+          11121110,
+          4278376,
+          16217742,
+          10407530,
+          14724968,
+          8037111,
+          12294903,
+          8245247,
+          12634869
+        ]
+      },
+      "source": "RiWork existing preset, preserved from crates/riwork-core/src/theme.rs; UI roles and ANSI colors unchanged."
+    },
+    {
+      "id": "gruvbox_light",
+      "label": "Gruvbox Light",
+      "description": "A warm light palette with earthy accents.",
+      "dark": false,
+      "palette": {
+        "bg": 16511431,
+        "panel": 16051138,
+        "panelActive": 15590332,
+        "divider": 14011562,
+        "cyan": 4812362,
+        "magenta": 9523310,
+        "gold": 8609044,
+        "text": 3946550,
+        "muted": 6907222,
+        "focus": 8609044,
+        "working": 4812362
+      },
+      "terminal": {
+        "background": 16511431,
+        "foreground": 3946550,
+        "palette": [
+          16511431,
+          13378589,
+          10000154,
+          14129441,
+          4556168,
+          11625094,
+          6856042,
+          8154980,
+          9601908,
+          10289158,
+          7959566,
+          11892244,
+          484984,
+          9387889,
+          4356952,
+          3946550
+        ]
+      },
+      "source": "RiWork existing preset, preserved from crates/riwork-core/src/theme.rs; UI roles and ANSI colors unchanged."
+    },
+    {
+      "id": "hermes",
+      "label": "Hermes",
+      "description": "Deep cobalt, navy panels, warm cream prose and gold accents.",
+      "dark": true,
+      "palette": {
+        "bg": 1451364,
+        "panel": 1647176,
+        "panelActive": 2372452,
+        "divider": 2834544,
+        "cyan": 16112568,
+        "magenta": 12042199,
+        "gold": 16112568,
+        "text": 15523015,
+        "muted": 10594235,
+        "focus": 16112568,
+        "working": 16112568
+      },
+      "terminal": {
+        "background": 1451364,
+        "foreground": 15523015,
+        "palette": [
+          1647176,
+          15899551,
+          10209709,
+          16112568,
+          10403061,
+          12891359,
+          11061466,
+          15523015,
+          10594235,
+          16758712,
+          11853761,
+          16770761,
+          12046079,
+          14666482,
+          12771309,
+          16773599
+        ]
+      },
+      "source": "RiWork existing preset, preserved from crates/riwork-core/src/theme.rs; UI roles and ANSI colors unchanged."
+    },
+    {
+      "id": "dracula",
+      "label": "Dracula",
+      "description": "A dark violet-gray palette with bright pink, cyan and green accents.",
+      "dark": true,
+      "palette": {
+        "bg": 2632246,
+        "panel": 3092797,
+        "panelActive": 3684676,
+        "divider": 5395292,
+        "cyan": 9169405,
+        "magenta": 16742854,
+        "gold": 15858316,
+        "text": 16316658,
+        "muted": 10724261,
+        "focus": 15858316,
+        "working": 9169405
+      },
+      "terminal": {
+        "background": 2632246,
+        "foreground": 16316658,
+        "palette": [
+          2171436,
+          16733525,
+          5307003,
+          15858316,
+          12424185,
+          16742854,
+          9169405,
+          16316658,
+          6451876,
+          16739950,
+          6946708,
+          16777125,
+          14068991,
+          16749279,
+          10813439,
+          16777215
+        ]
+      },
+      "source": "Pinned Ghostty themes release 20260810-152212-0173c3c: Dracula; file SHA-256 e6990f485cb0001cd62109e5aa94d34d4f60bb85798735b995a4158ee1ff033f; archive https://deps.files.ghostty.org/ghostty-themes-release-20260810-152212-0173c3c.tgz (SHA-256 ea9878471420ee5b12e7f2ff480099c954ea50e573a1bdf83f43e105c9be63f0). UI roles derive from these terminal colors using RiWork's readable 4.5:1 palette mapping."
+    },
+    {
+      "id": "monokai",
+      "label": "Monokai",
+      "description": "A charcoal palette with vivid pink, green and amber accents.",
+      "dark": true,
+      "palette": {
+        "bg": 2566178,
+        "panel": 3026985,
+        "panelActive": 3618866,
+        "divider": 5395275,
+        "cyan": 6740463,
+        "magenta": 11832063,
+        "gold": 15129460,
+        "text": 16646129,
+        "muted": 10724762,
+        "focus": 15129460,
+        "working": 6740463
+      },
+      "terminal": {
+        "background": 2566178,
+        "foreground": 16646129,
+        "palette": [
+          2566178,
+          16328306,
+          10936878,
+          15129460,
+          16619295,
+          11436543,
+          6740463,
+          16646129,
+          7237734,
+          16328306,
+          10936878,
+          15129460,
+          16619295,
+          11436543,
+          6740463,
+          16646129
+        ]
+      },
+      "source": "Pinned Ghostty themes release 20260810-152212-0173c3c: Monokai Classic; file SHA-256 78cf0958f5e57750eedfd68ef44d3f8655c42035d3732741dc6b59593ebcc6a9; archive https://deps.files.ghostty.org/ghostty-themes-release-20260810-152212-0173c3c.tgz (SHA-256 ea9878471420ee5b12e7f2ff480099c954ea50e573a1bdf83f43e105c9be63f0). UI roles derive from these terminal colors using RiWork's readable 4.5:1 palette mapping."
+    },
+    {
+      "id": "nord",
+      "label": "Nord",
+      "description": "A cool slate palette with muted frost-blue accents.",
+      "dark": true,
+      "palette": {
+        "bg": 3028032,
+        "panel": 3422790,
+        "panelActive": 3883341,
+        "divider": 5264994,
+        "cyan": 8962256,
+        "magenta": 12755901,
+        "gold": 15453067,
+        "text": 14212841,
+        "muted": 11054518,
+        "focus": 15453067,
+        "working": 8962256
+      },
+      "terminal": {
+        "background": 3028032,
+        "foreground": 14212841,
+        "palette": [
+          3883602,
+          12542314,
+          10731148,
+          15453067,
+          8495553,
+          11833005,
+          8962256,
+          15067632,
+          5858167,
+          12542314,
+          10731148,
+          15453067,
+          8495553,
+          11833005,
+          9419963,
+          15527924
+        ]
+      },
+      "source": "Pinned Ghostty themes release 20260810-152212-0173c3c: Nord; file SHA-256 2e6664c01db6a651eb0d19123cff6f744997e3e3b7b0c2b6b8f7177138be50a4; archive https://deps.files.ghostty.org/ghostty-themes-release-20260810-152212-0173c3c.tgz (SHA-256 ea9878471420ee5b12e7f2ff480099c954ea50e573a1bdf83f43e105c9be63f0). UI roles derive from these terminal colors using RiWork's readable 4.5:1 palette mapping."
+    },
+    {
+      "id": "solarized_light",
+      "label": "Solarized Light",
+      "description": "A warm ivory palette with restrained blue, cyan and ochre accents.",
+      "dark": false,
+      "palette": {
+        "bg": 16643811,
+        "panel": 16249311,
+        "panelActive": 15854811,
+        "divider": 14539982,
+        "cyan": 2062192,
+        "magenta": 12595574,
+        "gold": 8807680,
+        "text": 5926517,
+        "muted": 6646889,
+        "focus": 8807680,
+        "working": 2062192
+      },
+      "terminal": {
+        "background": 16643811,
+        "foreground": 6650755,
+        "palette": [
+          472642,
+          14430767,
+          8755456,
+          11897088,
+          2526162,
+          13842050,
+          2793880,
+          12301730,
+          11062,
+          13323030,
+          5795445,
+          6650755,
+          8623254,
+          7107012,
+          9675169,
+          16643811
+        ]
+      },
+      "source": "Pinned Ghostty themes release 20260810-152212-0173c3c: iTerm2 Solarized Light; file SHA-256 5a374b2770f74abebb6593c5fdec1a18d1032035775484d32d88cbfafa9cfea9; archive https://deps.files.ghostty.org/ghostty-themes-release-20260810-152212-0173c3c.tgz (SHA-256 ea9878471420ee5b12e7f2ff480099c954ea50e573a1bdf83f43e105c9be63f0). UI roles derive from these terminal colors using RiWork's readable 4.5:1 palette mapping."
+    },
+    {
+      "id": "solarized_dark",
+      "label": "Solarized Dark",
+      "description": "A deep blue-green palette with restrained cyan and ochre accents.",
+      "dark": true,
+      "palette": {
+        "bg": 11062,
+        "panel": 339769,
+        "panelActive": 668477,
+        "divider": 1720393,
+        "cyan": 3384732,
+        "magenta": 14708902,
+        "gold": 12160781,
+        "text": 8951962,
+        "muted": 8886942,
+        "focus": 12160781,
+        "working": 3384732
+      },
+      "terminal": {
+        "background": 11062,
+        "foreground": 8623254,
+        "palette": [
+          472642,
+          14430767,
+          8755456,
+          11897088,
+          2526162,
+          13842050,
+          2793880,
+          15657173,
+          3366505,
+          13323030,
+          5795445,
+          6650755,
+          8623254,
+          7107012,
+          9675169,
+          16643811
+        ]
+      },
+      "source": "Pinned Ghostty themes release 20260810-152212-0173c3c: iTerm2 Solarized Dark; file SHA-256 9da77ad112701ac55101babbbbfdb7695cc6461ffefe9fa67224f7f9bee38dcb; archive https://deps.files.ghostty.org/ghostty-themes-release-20260810-152212-0173c3c.tgz (SHA-256 ea9878471420ee5b12e7f2ff480099c954ea50e573a1bdf83f43e105c9be63f0). UI roles derive from these terminal colors using RiWork's readable 4.5:1 palette mapping."
+    },
+    {
+      "id": "one_dark",
+      "label": "One Dark",
+      "description": "A graphite palette with soft blue, violet and green accents.",
+      "dark": true,
+      "palette": {
+        "bg": 2172203,
+        "panel": 2501168,
+        "panelActive": 2830390,
+        "divider": 4014409,
+        "cyan": 5682882,
+        "magenta": 13007069,
+        "gold": 15057019,
+        "text": 11252415,
+        "muted": 9672863,
+        "focus": 15057019,
+        "working": 5682882
+      },
+      "terminal": {
+        "background": 2172203,
+        "foreground": 11252415,
+        "palette": [
+          2172203,
+          14707829,
+          10011513,
+          15057019,
+          6402031,
+          13007069,
+          5682882,
+          11252415,
+          7763574,
+          14707829,
+          10011513,
+          15057019,
+          6402031,
+          13007069,
+          5682882,
+          11252415
+        ]
+      },
+      "source": "Pinned Ghostty themes release 20260810-152212-0173c3c: Atom One Dark; file SHA-256 46f57abfbe93bf63de492ed1167f08a79004c60818204cb77eb82ac691b1fb95; archive https://deps.files.ghostty.org/ghostty-themes-release-20260810-152212-0173c3c.tgz (SHA-256 ea9878471420ee5b12e7f2ff480099c954ea50e573a1bdf83f43e105c9be63f0). UI roles derive from these terminal colors using RiWork's readable 4.5:1 palette mapping."
+    },
+    {
+      "id": "gruvbox_dark",
+      "label": "Gruvbox Dark",
+      "description": "A warm dark palette with earthy green, amber and cream accents.",
+      "dark": true,
+      "palette": {
+        "bg": 2631720,
+        "panel": 3092013,
+        "panelActive": 3618098,
+        "divider": 5196868,
+        "cyan": 8038780,
+        "magenta": 13078184,
+        "gold": 14129441,
+        "text": 15457202,
+        "muted": 10853768,
+        "focus": 14129441,
+        "working": 8038780
+      },
+      "terminal": {
+        "background": 2631720,
+        "foreground": 15457202,
+        "palette": [
+          2631720,
+          13378589,
+          10000154,
+          14129441,
+          4556168,
+          11625094,
+          6856042,
+          11049348,
+          9601908,
+          16468276,
+          12106534,
+          16432431,
+          8627608,
+          13862555,
+          9355388,
+          15457202
+        ]
+      },
+      "source": "Pinned Ghostty themes release 20260810-152212-0173c3c: Gruvbox Dark; file SHA-256 2f9ea0d3bc429e78f6cdb19cb1104f522bf187664f14922f3001ed7c0af54595; archive https://deps.files.ghostty.org/ghostty-themes-release-20260810-152212-0173c3c.tgz (SHA-256 ea9878471420ee5b12e7f2ff480099c954ea50e573a1bdf83f43e105c9be63f0). UI roles derive from these terminal colors using RiWork's readable 4.5:1 palette mapping."
+    }
+  ]
+}

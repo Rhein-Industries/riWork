@@ -11,6 +11,7 @@
 		022A9FD7C8E05AC4E37B307E /* ChatTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 07661F0D1A3874613BA4233D /* ChatTests.swift */; };
 		03C0241E1E77D2E0946A068A /* ProjectMemoViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14D16286F92FB983EBC46210 /* ProjectMemoViews.swift */; };
 		0438D07BB6918B5F145C3E56 /* HotkeyStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D5F916E6F96888283E586EF /* HotkeyStoreTests.swift */; };
+		0526A3D45B56A262E94926F6 /* NSHMobileHost.swift in Sources */ = {isa = PBXBuildFile; fileRef = 55F4F1223112B91B85898FEC /* NSHMobileHost.swift */; };
 		0555EB44296CC8A56CF79593 /* HotkeyTemplateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CDD1A9F10A28459EB2561779 /* HotkeyTemplateTests.swift */; };
 		05C16BABA5FF4ACFCCD6CA6B /* ComposerSuggestions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3F1EBADA2575CC81B6AB2B42 /* ComposerSuggestions.swift */; };
 		06717A0BECBE50F1D532507A /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2AE299487CF2D3F69077AEEB /* ChatView.swift */; };
@@ -32,6 +33,7 @@
 		19C6445A484F54408B6B317D /* RemoteModel+ChatModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2BCBBD7DC540974BDD048995 /* RemoteModel+ChatModels.swift */; };
 		19C8A1FF465B63AF5495B707 /* HotkeyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1A81205CCE16E25ED3F501 /* HotkeyTests.swift */; };
 		1A59AADB08B2AAE8E1F5833B /* RiWorkCore.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 761DEE92C9DC86427BFBBC1B /* RiWorkCore.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		1C4B8E4E308A9DC30BD57A86 /* NativeShell.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 5A54CAC48255DA7E04CCEA3E /* NativeShell.xcframework */; };
 		1CAB23B10F48DCCA58EA7DA7 /* ChatModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9EE1EDDBB54137DBB2A39D0 /* ChatModelTests.swift */; };
 		1F6B71EAEE9317CFDD0BB59E /* composer-suggestions.json in Resources */ = {isa = PBXBuildFile; fileRef = DCB6981BFB7C5B84B92F90FB /* composer-suggestions.json */; };
 		205861A409C61C32D994D807 /* GlobalDashboardModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8DE8D5806B70B9D5C7A40CA9 /* GlobalDashboardModelTests.swift */; };
@@ -105,6 +107,7 @@
 		62D252B9219F95B6AFB0A3E2 /* TerminalStyle.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8F33E9BA4707F461B33CB31 /* TerminalStyle.swift */; };
 		62F009BCF7B8D14F7309D484 /* SharedTabStripTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 978DF8F7B09020DF03858F67 /* SharedTabStripTests.swift */; };
 		639CB53931F05EDB1809EBA7 /* RemoteModel+Orchestrator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3454BE722A2F631D8C3ED58F /* RemoteModel+Orchestrator.swift */; };
+		63A56B9CF53C18838CB651BE /* nsh in Resources */ = {isa = PBXBuildFile; fileRef = 7656B7E510C46BE8AD429196 /* nsh */; };
 		6411B66B5525C800AEE7007A /* TerminalChrome.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D0360E631BEBC5256BD1F22 /* TerminalChrome.swift */; };
 		65DE76D485D4291191831482 /* TerminalSurfaceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69D81479E834CEE602A554EA /* TerminalSurfaceTests.swift */; };
 		66D7A09F009A6348B4E4D53E /* ChatModelPickerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 401BC9C19A3B7B44A28C2497 /* ChatModelPickerTests.swift */; };
@@ -189,6 +192,7 @@
 		ACA7D29C83DA4296F1EB4587 /* OrchestratorModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FABB42E29B8253DBD8CC60CD /* OrchestratorModelTests.swift */; };
 		AD381640313766BCF28A4F03 /* TerminalDictation.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00682FCE98709284A8147D26 /* TerminalDictation.swift */; };
 		AD4F608209AD4373B3F0EEEE /* counter-vectors.json in Resources */ = {isa = PBXBuildFile; fileRef = 0162C45E1C9E0E2E28D31FAF /* counter-vectors.json */; };
+		B085B69526B3BC7CA9A7FDCB /* PhonePaletteCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A53949A62E3E60FD4331497 /* PhonePaletteCatalog.swift */; };
 		B24D18BB82CDE48F20856535 /* RiWorkCore.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 761DEE92C9DC86427BFBBC1B /* RiWorkCore.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		B26DC1F64BDB440F5BE6A827 /* RemoteModel+Activity.swift in Sources */ = {isa = PBXBuildFile; fileRef = DB55B14D7C791064D2248305 /* RemoteModel+Activity.swift */; };
 		B340838BD68FEB89E11D04CC /* Dictation.swift in Sources */ = {isa = PBXBuildFile; fileRef = CEB99533AAFDEB90376743DE /* Dictation.swift */; };
@@ -203,6 +207,7 @@
 		BC49DE2CDCABD855CA4C437A /* KeyBarTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC50F3BD76C3390E706DD9F3 /* KeyBarTests.swift */; };
 		BDAA390D1790133ADC4F26D2 /* SharedTabStrip.swift in Sources */ = {isa = PBXBuildFile; fileRef = 350A7673B13BBC5F1620A6A2 /* SharedTabStrip.swift */; };
 		BE9174783655E63938880389 /* NewProjectSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6820FE00A0EA958D9DDC82B7 /* NewProjectSheet.swift */; };
+		C0835E643AF098EC1BAD6435 /* color-palettes.json in Resources */ = {isa = PBXBuildFile; fileRef = 3A1B4FA4E11DA09F5D1FA59F /* color-palettes.json */; };
 		C21A6B00C782AB3C37979C85 /* KeyChord.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2865B6F25C72ED457338E7F8 /* KeyChord.swift */; };
 		C28D80DD94AE01E2A5055AFF /* RemoteModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87216E2F3018C97AC2416AB1 /* RemoteModel.swift */; };
 		C3A7525A2DBD1B14C1984097 /* HotkeyPaletteTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A581661F8637A332F5D17206 /* HotkeyPaletteTests.swift */; };
@@ -256,12 +261,14 @@
 		F0C4822F075FE2067F6A72F4 /* RemoteViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52C50600894DE4ADA5E2A637 /* RemoteViews.swift */; };
 		F32BAD326433D8F05C20DF56 /* ChatDiff.swift in Sources */ = {isa = PBXBuildFile; fileRef = F97F8313789F0AC866FEECF0 /* ChatDiff.swift */; };
 		F378C02073272C7DC4BC0130 /* ProjectTabsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 354757C53710F00D16F23CDE /* ProjectTabsTests.swift */; };
+		F51C457F2E2398801191DC72 /* NSHMobileBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1886C18D799DB89649F181B7 /* NSHMobileBridge.swift */; };
 		F55E794DBA2716548B168D57 /* StyledScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = F50A3A2530BF4ED68C336A29 /* StyledScreen.swift */; };
 		F56466C83F23FF52042331DA /* ProjectTabs.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF4CB316BF5C6D882BC4177A /* ProjectTabs.swift */; };
 		F72D219F10223B81D0966BE2 /* HotkeyMenuTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 072686824F083055521A7C36 /* HotkeyMenuTests.swift */; };
 		F7AA483FA0967F9DAFA928C7 /* dashboard.json in Resources */ = {isa = PBXBuildFile; fileRef = 34B21EAB5F0A5AA96A9BA66C /* dashboard.json */; };
 		F7FEEADAFC728A2FEFBD35B8 /* NewProjectTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E137343F77FA8AD1A4F86F3 /* NewProjectTests.swift */; };
 		F949F025E1E8A075F4A5AD0A /* TerminalCacheTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 928D01B2868BF1BD971D2BE4 /* TerminalCacheTests.swift */; };
+		FA1E13CFA2333EF69E23D75B /* NSHMobileSurfaces.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC4ACB87394B9E824298CC44 /* NSHMobileSurfaces.swift */; };
 		FBBFF9BB7E88AD215EE4D655 /* TabShortcutAdapterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 78B4672D26E3C0E6433A75A6 /* TabShortcutAdapterTests.swift */; };
 		FC4277CB3F19CF32B42B1872 /* ChatTranscriptTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F48930DE2A81AED9431E6F6E /* ChatTranscriptTests.swift */; };
 		FD07B1D5D34015F31B70D5A7 /* KeyBarGeometryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 346473B7CFC3C39CEE1AEDB6 /* KeyBarGeometryTests.swift */; };
@@ -372,6 +379,7 @@
 		162011AE3F68D9FDED43798E /* ThemeStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThemeStore.swift; sourceTree = "<group>"; };
 		175E5F38D29C90B84EB5EAF9 /* KeyBarPlacementTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyBarPlacementTests.swift; sourceTree = "<group>"; };
 		1802ED505CDFDCF0A10544C5 /* ScrollTestCase.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScrollTestCase.swift; sourceTree = "<group>"; };
+		1886C18D799DB89649F181B7 /* NSHMobileBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NSHMobileBridge.swift; sourceTree = "<group>"; };
 		1887ADBCCA10CC2DBDEEF365 /* StateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StateTests.swift; sourceTree = "<group>"; };
 		19184BBA30001C4495391569 /* ChatContributorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatContributorTests.swift; sourceTree = "<group>"; };
 		1922CC196587F63BC7F07635 /* HostDashboardViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostDashboardViews.swift; sourceTree = "<group>"; };
@@ -416,6 +424,7 @@
 		38133DE714F1BD5D89FD533F /* ChatPresentationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatPresentationTests.swift; sourceTree = "<group>"; };
 		386561BE5F9AFB743FE0867E /* CommandField.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandField.swift; sourceTree = "<group>"; };
 		39533931C5385E99F0410B13 /* FileUploadTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileUploadTests.swift; sourceTree = "<group>"; };
+		3A1B4FA4E11DA09F5D1FA59F /* color-palettes.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "color-palettes.json"; sourceTree = "<group>"; };
 		3BE10B3C9EB13F95D1D974D1 /* KeychainStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainStore.swift; sourceTree = "<group>"; };
 		3F1EBADA2575CC81B6AB2B42 /* ComposerSuggestions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerSuggestions.swift; sourceTree = "<group>"; };
 		401BC9C19A3B7B44A28C2497 /* ChatModelPickerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatModelPickerTests.swift; sourceTree = "<group>"; };
@@ -440,8 +449,10 @@
 		520666B9CCBDD7C817FE10BE /* DesktopTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesktopTheme.swift; sourceTree = "<group>"; };
 		52C50600894DE4ADA5E2A637 /* RemoteViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteViews.swift; sourceTree = "<group>"; };
 		52D842181F696AC877BE33EF /* KeyShortcuts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyShortcuts.swift; sourceTree = "<group>"; };
+		55F4F1223112B91B85898FEC /* NSHMobileHost.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NSHMobileHost.swift; sourceTree = "<group>"; };
 		56DDF48EFB901CE08EA2B9C3 /* Perf.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Perf.swift; sourceTree = "<group>"; };
 		5A1CD62441AA7AA25EFDFDDD /* HotkeyHelpTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotkeyHelpTests.swift; sourceTree = "<group>"; };
+		5A54CAC48255DA7E04CCEA3E /* NativeShell.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = NativeShell.xcframework; path = Vendor/NativeShell.xcframework; sourceTree = "<group>"; };
 		5AEC28965130AE2D7102BC19 /* StyledLineCacheTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StyledLineCacheTests.swift; sourceTree = "<group>"; };
 		5BEA6DE980D15BCB253A6E80 /* ChatMarkdownTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatMarkdownTests.swift; sourceTree = "<group>"; };
 		5D0360E631BEBC5256BD1F22 /* TerminalChrome.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalChrome.swift; sourceTree = "<group>"; };
@@ -463,6 +474,7 @@
 		7382E4934CC490FAC2A9B04D /* ComposerSuggestionViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerSuggestionViews.swift; sourceTree = "<group>"; };
 		753A4CDFAF3F70DB3A33AECE /* NewChatChoice.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewChatChoice.swift; sourceTree = "<group>"; };
 		761DEE92C9DC86427BFBBC1B /* RiWorkCore.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = RiWorkCore.framework; sourceTree = BUILT_PRODUCTS_DIR; };
+		7656B7E510C46BE8AD429196 /* nsh */ = {isa = PBXFileReference; lastKnownFileType = folder; name = nsh; path = Generated/nsh; sourceTree = SOURCE_ROOT; };
 		771835CF30B180023CAB200C /* RemoteModel+ChatContributor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "RemoteModel+ChatContributor.swift"; sourceTree = "<group>"; };
 		783C41A877836133721A3B1B /* TerminalLinksTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalLinksTests.swift; sourceTree = "<group>"; };
 		78916261D1CAE11B5C1A4910 /* KeyboardFocusTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardFocusTests.swift; sourceTree = "<group>"; };
@@ -471,6 +483,7 @@
 		7911984A4E02BC0DB5363306 /* v1.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = v1.json; sourceTree = "<group>"; };
 		79A39F6778B08AB31AB8F4EB /* ChatStyle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatStyle.swift; sourceTree = "<group>"; };
 		79C8AEF6CA3476651243F203 /* SharedTabsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedTabsTests.swift; sourceTree = "<group>"; };
+		7A53949A62E3E60FD4331497 /* PhonePaletteCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhonePaletteCatalog.swift; sourceTree = "<group>"; };
 		7C08746383D30373A5163B50 /* TerminalCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalCache.swift; sourceTree = "<group>"; };
 		7C95681B62F7BB139D970860 /* ChatFileViewerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatFileViewerTests.swift; sourceTree = "<group>"; };
 		80C92E922FD7E71B0DB88B82 /* OrchestratorScopeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OrchestratorScopeTests.swift; sourceTree = "<group>"; };
@@ -514,6 +527,7 @@
 		A8955D7CEEB5ED7B59073518 /* TerminalText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalText.swift; sourceTree = "<group>"; };
 		A8D908B81111C5AD8EF54523 /* SharedTabs.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedTabs.swift; sourceTree = "<group>"; };
 		AA1A81205CCE16E25ED3F501 /* HotkeyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotkeyTests.swift; sourceTree = "<group>"; };
+		AC4ACB87394B9E824298CC44 /* NSHMobileSurfaces.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NSHMobileSurfaces.swift; sourceTree = "<group>"; };
 		ACF98E9767A6CEA4494B73C1 /* HistoryPrefetch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryPrefetch.swift; sourceTree = "<group>"; };
 		ADCCA49C767C5985A947FCD0 /* LinkFrame.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinkFrame.swift; sourceTree = "<group>"; };
 		B0701B9089C80549457CF0BC /* HostDashboardStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostDashboardStoreTests.swift; sourceTree = "<group>"; };
@@ -623,6 +637,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				534B27503C99098966C3B1FB /* RiWorkCore.framework in Frameworks */,
+				1C4B8E4E308A9DC30BD57A86 /* NativeShell.xcframework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -638,6 +653,14 @@
 				37F87448D26EF740B122ED8D /* RiWorkRemote.app */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		484B1F1945F90C0AD114F396 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				5A54CAC48255DA7E04CCEA3E /* NativeShell.xcframework */,
+			);
+			name = Frameworks;
 			sourceTree = "<group>";
 		};
 		85B5553D91FE19BC721443F6 /* AppTests */ = {
@@ -742,6 +765,7 @@
 				EE50F21293031ABFD3BAFE68 /* NewTerminal.swift */,
 				F7A3B0DF2B702751CB56446B /* OrchestratorScope.swift */,
 				05CD92EC6EF0523A190B3C1B /* Pairing.swift */,
+				7A53949A62E3E60FD4331497 /* PhonePaletteCatalog.swift */,
 				4CFB315A8E5D6E682E86131E /* ProjectMemo.swift */,
 				50D7E9D4618ACF793C35534E /* ProjectSort.swift */,
 				FF4CB316BF5C6D882BC4177A /* ProjectTabs.swift */,
@@ -774,10 +798,13 @@
 		C26DB73E626E170587DF2761 = {
 			isa = PBXGroup;
 			children = (
+				7656B7E510C46BE8AD429196 /* nsh */,
 				85B5553D91FE19BC721443F6 /* AppTests */,
 				922F4DAB5232AA40C7557B92 /* Core */,
+				EE2C50FA57818560AC8E9120 /* riwork-core */,
 				DA2A7074211FAC2BC9F7CA58 /* RiWorkRemote */,
 				D8C6982EDA0AF0A0C8B06A9D /* Tests */,
+				484B1F1945F90C0AD114F396 /* Frameworks */,
 				37039377AB610CE090C54DAD /* Products */,
 			);
 			sourceTree = "<group>";
@@ -905,6 +932,9 @@
 				71324885440C6813FD006380 /* NewChatModelSection.swift */,
 				6820FE00A0EA958D9DDC82B7 /* NewProjectSheet.swift */,
 				05C76C77CC2B8632B9944B5F /* NewTerminalSheet.swift */,
+				1886C18D799DB89649F181B7 /* NSHMobileBridge.swift */,
+				55F4F1223112B91B85898FEC /* NSHMobileHost.swift */,
+				AC4ACB87394B9E824298CC44 /* NSHMobileSurfaces.swift */,
 				237C9C07E0BBF49923F04184 /* PairingViews.swift */,
 				56DDF48EFB901CE08EA2B9C3 /* Perf.swift */,
 				143F4BDE6553D255EA25F23C /* PhoneTerminal.swift */,
@@ -943,6 +973,15 @@
 			path = RiWorkRemote;
 			sourceTree = "<group>";
 		};
+		EE2C50FA57818560AC8E9120 /* riwork-core */ = {
+			isa = PBXGroup;
+			children = (
+				3A1B4FA4E11DA09F5D1FA59F /* color-palettes.json */,
+			);
+			name = "riwork-core";
+			path = "../crates/riwork-core";
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -950,6 +989,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = 6D60DA0F4693E2A75FE98E62 /* Build configuration list for PBXNativeTarget "RiWorkRemote" */;
 			buildPhases = (
+				D090161B3EC05ED5948164CD /* Build NSH mobile UI */,
 				6D68EF7772D1316109FBE15B /* Sources */,
 				51D7984BFB2EC042439BF844 /* Resources */,
 				A0E74C692C372DE776C2F56C /* Frameworks */,
@@ -1081,6 +1121,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				608E540ED5407BB7A0F52594 /* Assets.xcassets in Resources */,
+				C0835E643AF098EC1BAD6435 /* color-palettes.json in Resources */,
+				63A56B9CF53C18838CB651BE /* nsh in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1099,6 +1141,28 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		D090161B3EC05ED5948164CD /* Build NSH mobile UI */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Build NSH mobile UI";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "/usr/bin/python3 \"$SRCROOT/scripts/prepare-nsh.py\"";
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		5D71620A96B7DE86B6C383FE /* Sources */ = {
@@ -1187,6 +1251,9 @@
 				FF37502303E719419C61D622 /* KeyboardSettings.swift in Sources */,
 				0EF6BF4E74B55271051B90B9 /* KeyboardUI.swift in Sources */,
 				77CC570DFB25CE216EED6199 /* LinkWatcher.swift in Sources */,
+				F51C457F2E2398801191DC72 /* NSHMobileBridge.swift in Sources */,
+				0526A3D45B56A262E94926F6 /* NSHMobileHost.swift in Sources */,
+				FA1E13CFA2333EF69E23D75B /* NSHMobileSurfaces.swift in Sources */,
 				D7A73BF293931961D274982C /* NewChatModelSection.swift in Sources */,
 				BE9174783655E63938880389 /* NewProjectSheet.swift in Sources */,
 				3FCAC85B264379E6999BD15E /* NewTerminalSheet.swift in Sources */,
@@ -1349,6 +1416,7 @@
 				DACA0732A3E28C4F459C56BC /* NewTerminal.swift in Sources */,
 				9EDD0FD070217F83926D48BB /* OrchestratorScope.swift in Sources */,
 				B968D899068CFE984A6A05BF /* Pairing.swift in Sources */,
+				B085B69526B3BC7CA9A7FDCB /* PhonePaletteCatalog.swift in Sources */,
 				479E1ED07945F321F590A0DB /* ProjectMemo.swift in Sources */,
 				0C31512EEFCAFD8D80F5000A /* ProjectSort.swift in Sources */,
 				F56466C83F23FF52042331DA /* ProjectTabs.swift in Sources */,
@@ -1431,6 +1499,11 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"\"Vendor\"",
+				);
 				INFOPLIST_FILE = RiWorkRemote/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -1514,6 +1587,7 @@
 				DEVELOPMENT_TEAM = "";
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = x86_64;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
 				GCC_NO_COMMON_BLOCKS = YES;
 				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
@@ -1590,6 +1664,7 @@
 				DEVELOPMENT_TEAM = "";
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
+				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = x86_64;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
 				GCC_DYNAMIC_NO_PIC = NO;
 				GCC_NO_COMMON_BLOCKS = YES;
@@ -1622,6 +1697,11 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"\"Vendor\"",
+				);
 				INFOPLIST_FILE = "RiWorkRemote/Info-Debug.plist";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",

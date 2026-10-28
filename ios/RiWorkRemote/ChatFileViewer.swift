@@ -43,6 +43,9 @@ extension EnvironmentValues {
     @Entry var chatFileEntries: [ChatFileEntry] = []
     @Entry var chatFileIndex = ChatFileIndex()
     @Entry var chatOpenFile: @MainActor (ChatFileEntry) -> Void = { _ in }
+    /// A UIKit-owned navigation stack can push the same viewer without nesting
+    /// a second SwiftUI NavigationStack around the terminal and its keyboard.
+    @Entry var chatPresentFiles: (@MainActor ([ChatFileEntry], ChatFileEntry) -> Void)? = nil
     /// The height of the chat screen to its window's bottom, whatever the keyboard does; it follows the window as it is resized or turned
     /// (Stage Manager, tiling, rotation). Set by `ChatScreen`; the default stands in elsewhere.
     @Entry var chatScreenHeight: CGFloat = 800
@@ -650,6 +653,7 @@ struct ChatFileViewer: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.desktopStyle) private var style
     let files: [ChatFileEntry]
+    private let onBack: (() -> Void)?
     private let decodePreview: @MainActor (Data) async -> UIImage?
     @State private var selectedID: String
     @State private var image: UIImage?
@@ -664,11 +668,12 @@ struct ChatFileViewer: View {
     @State private var status = ""
     @State private var openDocument: UIDocumentInteractionController?
 
-    init(files: [ChatFileEntry], initialID: String, initialLine: Int? = nil,
+    init(files: [ChatFileEntry], initialID: String, initialLine: Int? = nil, onBack: (() -> Void)? = nil,
          decodePreview: @escaping @MainActor (Data) async -> UIImage? = { data in
              await Task.detached(priority: .userInitiated) { ChatFileBytes.decode(data, maxPixelSize: nil) }.value
          }) {
         self.decodePreview = decodePreview
+        self.onBack = onBack
         self.files = files.map { file in
             guard file.id == initialID, let initialLine else { return file }
             var selected = file; selected.line = initialLine; return selected
@@ -678,6 +683,7 @@ struct ChatFileViewer: View {
     private var index: Int { files.firstIndex { $0.id == selectedID } ?? 0 }
     private var file: ChatFileEntry? { files.first { $0.id == selectedID } ?? files.first }
     private var zoomLabel: String { "\(fit ? "Fit · " : "")\(Int(((image == nil ? zoom : imageFitScale * zoom) * 100).rounded()))%" }
+    private func close() { if let onBack { onBack() } else { dismiss() } }
 
     var body: some View {
         Group {
@@ -709,9 +715,9 @@ struct ChatFileViewer: View {
 
     private func previewToolbar(_ file: ChatFileEntry) -> some View {
         HStack(spacing: 2) {
-            Button { dismiss() } label: { Image(systemName: "chevron.left") }
+            Button { close() } label: { Image(systemName: "chevron.left") }
                 .accessibilityLabel("Back to Chat").accessibilityIdentifier("chat-file-back")
-                .chatLayoutProbe("file-back", action: { dismiss() })
+                .chatLayoutProbe("file-back", action: { close() })
             Image(systemName: file.isImage ? "photo" : "doc.text").foregroundStyle(style.muted).frame(width: 16)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 1) {
@@ -799,7 +805,7 @@ struct ChatFileViewer: View {
                     status = file?.attachment == true ? "Filename copied" : "Path copied"
                 }
                 Button("Fit", systemImage: "arrow.down.right.and.arrow.up.left", action: resetZoom)
-                Button("Close preview", systemImage: "xmark") { dismiss() }
+                Button("Close preview", systemImage: "xmark") { close() }
             } label: { Image(systemName: "ellipsis").frame(width: 44, height: 44) }.accessibilityLabel("More file actions")
         }
         .buttonStyle(.plain).foregroundStyle(Color(uiColor: .link))

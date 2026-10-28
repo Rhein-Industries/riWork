@@ -17,6 +17,9 @@ void *rw_terminal_new(void *context, rw_terminal_event_cb event,
 bool rw_terminal_attach(void *, const char *command, const char *cwd, const char *config_path);
 void rw_terminal_set_state(void *, bool visible, bool frozen, bool focus_on_attach);
 bool rw_terminal_update_config(void *, const char *config_path);
+// Read the same parsed user configuration without creating an app or surface.
+// Output is background, foreground, then 16 ANSI colors, packed as 0xRRGGBB.
+bool rw_terminal_read_config_colors(const char *config_path, uint32_t colors[18]);
 void rw_terminal_command(void *, const char *name);
 void rw_terminal_find(void *, const char *query);
 void rw_terminal_set_link(void *, const char *json);

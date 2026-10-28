@@ -30,6 +30,11 @@ pub(crate) fn create_window(mtm: MainThreadMarker, frame: NSRect) -> Retained<NS
 }
 
 pub(crate) fn position_controls(window: &NSWindow) {
+    // AppKit owns the revealed titlebar and controls in full screen. Moving
+    // them while its titlebar slides in/out also fights its transition layout.
+    if window.styleMask().contains(NSWindowStyleMask::FullScreen) {
+        return;
+    }
     for (index, kind) in [
         NSWindowButton::CloseButton,
         NSWindowButton::MiniaturizeButton,
@@ -43,7 +48,9 @@ pub(crate) fn position_controls(window: &NSWindow) {
         {
             // The titlebar container itself is inset from the NSWindow frame.
             // Position in window coordinates first, then convert to the actual
-            // (possibly flipped) container; a parent-relative inset drifts.
+            // (possibly flipped) container; a parent-relative inset drifts. This
+            // runs in AppKit's synchronous resize notification, before the frame
+            // is presented, rather than correcting a frame from windowDidUpdate.
             let size = button.frame().size;
             let desired = NSRect::new(
                 NSPoint::new(

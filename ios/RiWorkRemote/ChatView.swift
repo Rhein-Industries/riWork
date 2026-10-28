@@ -13,6 +13,7 @@ import RiWorkCore
 /// hierarchy. The keys of a chat are the composer's (see `ChatComposerTextView`) and ⌘. below, and none is one the terminal uses.
 struct ChatScreen: View {
     @Environment(\.desktopStyle) private var style
+    @Environment(\.chatPresentFiles) private var presentFiles
     @Bindable var model: RemoteModel
     let chat: ChatInfo
     /// Counts times a sheet over the screen went away: the composer takes the keyboard back.
@@ -127,12 +128,11 @@ struct ChatScreen: View {
         .environment(\.chatFileEntries, files)
         .environment(\.chatScreenHeight, screenHeight)
         .environment(\.chatFileIndex, fileIndex)
-        .environment(\.chatOpenFile, { file in viewingFile = file })
-        .navigationDestination(item: $viewingFile) { file in
-            ChatFileViewer(files: files.filter { $0.turnID == file.turnID }, initialID: file.id, initialLine: file.line)
-                .desktopThemed(model.theme.style)
-                .toolbar(.hidden, for: .navigationBar)
-        }
+        .environment(\.chatOpenFile, { file in
+            if let presentFiles { presentFiles(files.filter { $0.turnID == file.turnID }, file) }
+            else { viewingFile = file }
+        })
+        .modifier(ChatFileNavigation(file: $viewingFile, files: files, style: model.theme.style, native: presentFiles != nil))
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height = $0; squeeze = 0 }
         .attachmentPicker($picking, onDone: requestFocus) { model.attach($0, to: .chat(chat.id)) }
         .chatDropTarget(model: model, chat: chat)
@@ -242,6 +242,24 @@ struct ChatScreen: View {
 
 /// The chat's own row under the tab row: the model, how full the context is, and the approval mode, each a tap away. The chat's
 /// actions (Compact, Stop agent, Copy session id, …) are in the tab row's one ⋯ menu (`ChatMenuSection`), so the screen has a single ⋯.
+private struct ChatFileNavigation: ViewModifier {
+    @Binding var file: ChatFileEntry?
+    let files: [ChatFileEntry]
+    let style: DesktopStyle
+    let native: Bool
+
+    @ViewBuilder func body(content: Content) -> some View {
+        if native { content }
+        else {
+            content.navigationDestination(item: $file) { selected in
+                ChatFileViewer(files: files.filter { $0.turnID == selected.turnID }, initialID: selected.id, initialLine: selected.line)
+                    .desktopThemed(style)
+                    .toolbar(.hidden, for: .navigationBar)
+            }
+        }
+    }
+}
+
 private struct ChatToolbar: View {
     @Environment(\.desktopStyle) private var style
     let model: RemoteModel

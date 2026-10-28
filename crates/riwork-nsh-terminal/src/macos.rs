@@ -44,6 +44,7 @@ unsafe extern "C" {
     ) -> bool;
     fn rw_terminal_set_state(view: *mut c_void, visible: bool, frozen: bool, focus: bool);
     fn rw_terminal_update_config(view: *mut c_void, path: *const c_char) -> bool;
+    fn rw_terminal_read_config_colors(path: *const c_char, colors: *mut u32) -> bool;
     fn rw_terminal_command(view: *mut c_void, name: *const c_char);
     fn rw_terminal_find(view: *mut c_void, query: *const c_char);
     fn rw_terminal_shutdown(view: *mut c_void);
@@ -172,6 +173,44 @@ struct State {
 }
 static NEXT: AtomicU64 = AtomicU64::new(1);
 static CONFIG_REVISION: AtomicU64 = AtomicU64::new(1);
+struct ThemeProjection {
+    home: PathBuf,
+    publish: Arc<dyn Fn(Result<riwork_core::theme::TerminalTheme, String>) + Send + Sync>,
+}
+static THEME_PROJECTION: OnceLock<ThemeProjection> = OnceLock::new();
+
+/// Called on AppKit's main thread after startup workers finish, before AppViews.
+/// Only parsing touches Ghostty; subscribers receive a plain RGB snapshot and
+/// must never synchronously dispatch back here while a startup worker is joined.
+pub fn initialize_theme_projection(
+    home: PathBuf,
+    publish: Arc<dyn Fn(Result<riwork_core::theme::TerminalTheme, String>) + Send + Sync>,
+) {
+    if THEME_PROJECTION.set(ThemeProjection { home, publish }).is_ok() {
+        refresh_theme_projection();
+    }
+}
+
+fn refresh_theme_projection() {
+    let Some(projection) = THEME_PROJECTION.get() else { return; };
+    let result = (|| {
+        let path = config::write(
+            &projection.home,
+            &format!("appearance-{}-{}", std::process::id(), uuid::Uuid::new_v4()),
+            &config::roots(), &Colors::Ghostty, CONFIG_REVISION.load(Ordering::Acquire),
+        )?;
+        let config = ConfigFile { cstring: cstr(path.to_string_lossy())?, path };
+        let mut colors = [0_u32; 18];
+        if !unsafe { rw_terminal_read_config_colors(config.cstring.as_ptr(), colors.as_mut_ptr()) } {
+            return Err("Ghostty could not resolve its configuration colors. Check the Ghostty configuration for errors.".into());
+        }
+        Ok(riwork_core::theme::TerminalTheme {
+            background: colors[0], foreground: colors[1],
+            palette: std::array::from_fn(|index| colors[index + 2]),
+        })
+    })();
+    (projection.publish)(result);
+}
 static STATES: OnceLock<Mutex<Vec<Weak<State>>>> = OnceLock::new();
 static CLAIMS: OnceLock<Mutex<BTreeMap<(PathBuf, String), u64>>> = OnceLock::new();
 fn claims() -> &'static Mutex<BTreeMap<(PathBuf, String), u64>> {
@@ -1281,6 +1320,9 @@ fn release_schedules() -> &'static Mutex<BTreeMap<isize, policy::PlanSchedule>> 
     RELEASE_SCHEDULES.get_or_init(Default::default)
 }
 fn maintain(states: Vec<Arc<State>>, config_changed: bool) {
+    if config_changed {
+        refresh_theme_projection();
+    }
     let mut windows: BTreeMap<isize, Vec<Arc<State>>> = BTreeMap::new();
     for state in states {
         if !state.alive.load(Ordering::Acquire) {

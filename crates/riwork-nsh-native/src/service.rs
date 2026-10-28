@@ -210,7 +210,6 @@ pub struct ProcessService {
     tabs_hubs: Arc<Mutex<BTreeMap<String, Arc<Hub<TabsSnapshot>>>>>,
     store_refresh: Arc<Mutex<()>>,
     sessions_refresh: Arc<Mutex<()>>,
-    has_worktrees: Arc<AtomicBool>,
     has_shells: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
     wake: SyncSender<()>,
@@ -262,12 +261,8 @@ impl ProcessService {
             // Write and publish are serialized with watcher refreshes, preventing
             // an older read from overwriting a newer mutation in either window.
             let snapshot = service.store.snapshot().map_err(backend_error)?;
-            let has_worktrees = !snapshot.worktrees.is_empty();
             if service.store_hub.publish(snapshot) {
                 service.observers.notify();
-            }
-            if service.has_worktrees.swap(has_worktrees, Ordering::AcqRel) != has_worktrees {
-                let _ = service.wake.try_send(());
             }
             Ok(value)
         })
@@ -601,6 +596,25 @@ impl ProcessService {
         })
         .await
     }
+    pub async fn create_harness(
+        self: &Arc<Self>,
+        request: CreateSessionRequest,
+        harness: String,
+    ) -> Result<ShellSessionDto, String> {
+        self.session_write(move |backend| {
+            validate_input_id(&request.project_id)?;
+            validate_optional_input_id(request.worktree_id.as_deref())?;
+            let kind = match harness.as_str() {
+                "codex" => riwork_engine::sessions::HarnessKind::Codex,
+                "claude" => riwork_engine::sessions::HarnessKind::Claude,
+                "grok" => riwork_engine::sessions::HarnessKind::Grok,
+                "muse" => riwork_engine::sessions::HarnessKind::Muse,
+                _ => return Err(InvalidInput("unknown agent harness".into()).into()),
+            };
+            backend.create_harness(request, kind)
+        }).await
+    }
+
     pub async fn close_session(self: &Arc<Self>, id: String) -> Result<(), String> {
         self.session_write(move |backend| {
             validate_input_id(&id)?;
@@ -803,7 +817,6 @@ impl ProcessService {
         watcher.watch(&home, RecursiveMode::Recursive)?;
         let preferences = PreferenceService::new(home.clone())?;
         let initial_store = store.snapshot().context("initial store snapshot")?;
-        let has_worktrees = Arc::new(AtomicBool::new(!initial_store.worktrees.is_empty()));
         let store_hub = Arc::new(Hub::new(initial_store));
         let mut has_shells = false;
         let mut last_sessions = None;
@@ -837,7 +850,6 @@ impl ProcessService {
         let worker_tabs_hubs = tabs_hubs.clone();
         let worker_store_refresh = store_refresh.clone();
         let worker_sessions_refresh = sessions_refresh.clone();
-        let worker_has_worktrees = has_worktrees.clone();
         let worker_has_shells = has_shells.clone();
         let worker_preferences = preferences.clone();
         let observers = Observers::default();
@@ -846,10 +858,9 @@ impl ProcessService {
             .name("riwork-native-service".into())
             .spawn(move || {
                 let mut next_sample = None;
-                let mut next_presence = None;
                 while !worker_stop.load(Ordering::Acquire) {
-                    // The last successful inventories arm separate deadlines.
-                    // Explicit CRUD updates these flags and wakes this receive,
+                    // Only live shell inventories need a periodic deadline.
+                    // Explicit CRUD updates this flag and wakes this receive,
                     // so scheduling does not depend on filesystem event timing.
                     let now = Instant::now();
                     if worker_has_shells.load(Ordering::Acquire) {
@@ -857,17 +868,11 @@ impl ProcessService {
                     } else {
                         next_sample = None;
                     }
-                    if worker_has_worktrees.load(Ordering::Acquire) {
-                        next_presence.get_or_insert(now + SESSION_SAMPLE_INTERVAL);
-                    } else {
-                        next_presence = None;
-                    }
-                    let deadline = next_sample.into_iter().chain(next_presence).min();
-                    if let Some(deadline) = deadline {
+                    if let Some(deadline) = next_sample {
                         let _ = receive.recv_timeout(deadline.saturating_duration_since(now));
                     } else {
-                        // An empty home has no periodic liveness or presence
-                        // work. Watcher events, CRUD transitions and shutdown
+                        // Project inventories never authorize filesystem scans.
+                        // Watcher events, CRUD transitions and shutdown
                         // still wake this blocking receive.
                         let _ = receive.recv();
                     }
@@ -882,33 +887,18 @@ impl ProcessService {
                     let mut changed = flags & (TABS | SETTINGS | DASHBOARD | SESSIONS) != 0;
                     let now = Instant::now();
                     let sample_due = next_sample.is_some_and(|deadline| now >= deadline);
-                    let presence_due = next_presence.is_some_and(|deadline| now >= deadline);
-                    if flags & STORE != 0 || presence_due {
+                    if flags & STORE != 0 {
                         let _guard = worker_store_refresh
                             .lock()
                             .unwrap_or_else(PoisonError::into_inner);
-                        let snapshot = if presence_due {
-                            worker_store.refresh_presence()
-                        } else {
-                            worker_store.snapshot()
-                        };
-                        match snapshot {
+                        match worker_store.snapshot() {
                             Ok(snapshot) => {
-                                worker_has_worktrees
-                                    .store(!snapshot.worktrees.is_empty(), Ordering::Release);
                                 changed |= worker_store_hub.publish(snapshot);
                             }
                             Err(error) => {
                                 *worker_error.lock().unwrap_or_else(PoisonError::into_inner) =
                                     Some(format!("store snapshot: {error}"))
                             }
-                        }
-                        if presence_due {
-                            // Session watcher wakes may reset their fallback,
-                            // but cannot postpone worktree presence forever.
-                            next_presence = worker_has_worktrees
-                                .load(Ordering::Acquire)
-                                .then(|| Instant::now() + SESSION_SAMPLE_INTERVAL);
                         }
                     }
                     if flags & SESSIONS != 0 || sample_due {
@@ -953,10 +943,8 @@ impl ProcessService {
                             .load(Ordering::Acquire)
                             .then(|| Instant::now() + SESSION_SAMPLE_INTERVAL);
                     }
-                    // Presence alone is not a session inventory trigger. Its
-                    // durable branch/discovery writes raise STORE watcher
-                    // events; a quiet presence check must not query tmux
-                    // indirectly through an empty tab/session inventory.
+                    // Explicit branch/discovery writes raise STORE watcher
+                    // events; reading project metadata never scans their roots.
                     if flags & (TABS | SESSIONS | STORE) != 0 || sample_due {
                         refresh_tabs(&worker_tabs, &worker_tabs_hubs, &worker_error);
                     }
@@ -977,7 +965,6 @@ impl ProcessService {
             tabs_hubs,
             store_refresh,
             sessions_refresh,
-            has_worktrees,
             has_shells,
             stop,
             wake,
@@ -1070,7 +1057,7 @@ fn relevant(path: &Path, home: &Path) -> u8 {
         // relevant flag also wakes them from the watcher callback.
         riwork_nsh_workspace::session_io::changed();
         0
-    } else if path == home.join("state.json") {
+    } else if path == home.join("state.json") || path == home.join(riwork_core::recency_file::FILE_NAME) {
         STORE
     } else if path == home.join("settings.json") {
         SETTINGS

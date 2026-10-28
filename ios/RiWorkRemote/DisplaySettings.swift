@@ -15,6 +15,37 @@ struct DisplaySettingsSheet: View {
         VStack(spacing: 0) {
             WorkspaceBar(title: style.cased("Display")) { Button("Done") { dismiss() } }
             List {
+                if model.theme.usesNativePhoneAppearance {
+                    Section {
+                        Picker("Color palette", selection: Binding(get: { model.theme.phonePaletteID }, set: { model.theme.setPhonePalette($0) })) {
+                            Text("Native").tag("native")
+                            ForEach(model.theme.phonePalettes) { palette in
+                                Text(palette.title).tag(palette.id)
+                            }
+                            Text("Follow desktop").tag("desktop")
+                        }
+                        .pickerStyle(.menu).frame(minHeight: style.target)
+                        .accessibilityIdentifier("phone-color-palette")
+                        HStack(spacing: 8) {
+                            ForEach(Array([style.background, style.panel, style.accent, style.magenta, style.gold].enumerated()), id: \.offset) { _, color in
+                                RoundedRectangle(cornerRadius: 6).fill(color)
+                                    .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(style.divider, lineWidth: 0.5))
+                                    .frame(width: 25, height: 25)
+                            }
+                            Spacer(minLength: 0)
+                            Text(style.colorScheme.map { $0 == .dark ? "Dark" : "Light" } ?? "Follows iPhone")
+                                .font(style.system(.caption)).foregroundStyle(style.muted)
+                        }.accessibilityElement(children: .ignore)
+                            .accessibilityLabel("Palette appearance")
+                            .accessibilityValue(style.colorScheme.map { $0 == .dark ? "Dark" : "Light" } ?? "Follows iPhone")
+                        if let error = model.theme.phonePaletteError {
+                            Text(error).font(style.system(.caption)).foregroundStyle(style.error)
+                        }
+                    } header: { Text("Appearance") } footer: {
+                        Text("\(model.theme.phonePaletteDetail) This color choice is saved on this iPhone. Controls, gestures and text entry remain native.")
+                    }
+                    .listRowBackground(style.surface).listRowSeparatorTint(style.divider)
+                }
                 Section {
                     Picker("When closing a tab", selection: $model.tabCloseBehavior) {
                         ForEach(TabCloseBehavior.allCases) { Text($0.title).tag($0) }

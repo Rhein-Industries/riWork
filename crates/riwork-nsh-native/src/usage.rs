@@ -8,9 +8,9 @@
 //! (`codex_refresh_interval`), one read in flight per home, only while a
 //! subscriber exists, on threads of its own; every read also feeds subscription
 //! balancing. Claude figures are the file-only status-line caches of the shells
-//! the native session inventory lists. Grok is never read here: its figures
-//! need the tmux pane pid and a visible-panel signal, so `grok` stays empty and
-//! the status bar shows `GROK · —`.
+//! the native session inventory lists. Visible Usage panels register their project
+//! with the same service: Grok session tokens and cost are sampled once per
+//! process for those projects, using the engine's bounded, shared usage cache.
 //!
 //! The 15 min / 60 s intervals and the 15-minute staleness are evaluated on the
 //! service's own thread: it waits for the earliest deadline while subscribed,
@@ -101,6 +101,23 @@ impl From<&ProviderUsage> for ProviderUsageDto {
     }
 }
 
+impl ProviderUsageDto {
+    /// A cached Claude window describes the interval ending at `resets_at`.
+    /// Once that interval ends its next utilization is unknown, not 0%. Keep
+    /// the report's context/cost and original timestamp, but stop presenting
+    /// the previous allowance as capacity available now.
+    fn claude_at(usage: &ProviderUsage, now: u64) -> Self {
+        let mut value = Self::from(usage);
+        value.windows.retain(|window| {
+            window.resets_at.is_none_or(|reset| reset > now)
+                && window.used_percent.is_finite()
+                && window.used_percent >= 0.0
+                && (window.label == "Spend limit" || window.used_percent <= 100.0)
+        });
+        value
+    }
+}
+
 /// One Codex account home whose usage is read.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsObject)]
 #[serde(rename_all = "camelCase")]
@@ -133,12 +150,69 @@ pub struct ClaudeUsageDto {
     pub stale: bool,
 }
 
-/// Reserved: Grok session figures are not read by this service.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsObject)]
+#[serde(rename_all = "camelCase")]
+pub struct GrokTokenCountsDto {
+    pub input: u64,
+    pub output: u64,
+    pub cached_read: u64,
+    pub cache_creation: u64,
+    pub reasoning: u64,
+    pub total: u64,
+}
+impl From<&engine_usage::TokenCounts> for GrokTokenCountsDto {
+    fn from(value: &engine_usage::TokenCounts) -> Self {
+        Self { input: value.input, output: value.output, cached_read: value.cached_read,
+            cache_creation: value.cache_creation, reasoning: value.reasoning, total: value.total }
+    }
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsObject)]
+#[serde(rename_all = "camelCase")]
+pub struct GrokModelUsageDto {
+    pub model: String,
+    pub model_calls: u64,
+    pub tokens: GrokTokenCountsDto,
+    pub cost_usd: Option<f64>,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsObject)]
+#[serde(rename_all = "camelCase")]
+pub struct GrokSessionUsageDto {
+    pub session_id: String,
+    pub updated_at: Option<String>,
+    pub updated_at_unix: Option<u64>,
+    pub primary_model: Option<String>,
+    pub turns: u64,
+    pub model_calls: u64,
+    pub tokens: GrokTokenCountsDto,
+    pub cost_usd: Option<f64>,
+    pub models: Vec<GrokModelUsageDto>,
+}
+impl From<&engine_usage::SessionUsage> for GrokSessionUsageDto {
+    fn from(value: &engine_usage::SessionUsage) -> Self {
+        Self {
+            session_id: value.session_id.clone(), updated_at: value.updated_at.clone(),
+            updated_at_unix: value.updated_at_unix, primary_model: value.primary_model.clone(),
+            turns: value.turns, model_calls: value.model_calls, tokens: (&value.tokens).into(),
+            cost_usd: value.cost_usd,
+            models: value.models.iter().map(|model| GrokModelUsageDto {
+                model: model.model.clone(), model_calls: model.model_calls,
+                tokens: (&model.tokens).into(), cost_usd: model.cost_usd,
+            }).collect(),
+        }
+    }
+}
+/// Grok's local session figures; account allowance is only available in its own UI.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsObject)]
 #[serde(rename_all = "camelCase")]
 pub struct GrokUsageDto {
     pub shell_id: String,
+    pub project_id: Option<String>,
     pub label: String,
+    pub usage: Option<GrokSessionUsageDto>,
+    pub error: Option<String>,
+    pub stale: bool,
+    pub pending: bool,
+    pub fetched_at_unix: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsObject)]
@@ -150,7 +224,7 @@ pub struct UsageDto {
     pub codex: Vec<CodexUsageDto>,
     pub claude: Vec<ClaudeUsageDto>,
     pub grok: Vec<GrokUsageDto>,
-    /// Some Codex read is in flight (the Usage panel's "Refreshing…").
+    /// A provider read is in flight (the Usage panel's "Refreshing…").
     pub refreshing: bool,
 }
 
@@ -222,6 +296,10 @@ pub trait UsageBackend: Send + Sync + 'static {
     fn read_claude(&self, shell_id: &str) -> Result<Option<ProviderUsage>, String>;
     /// The saved account list, or None when none was ever saved. Never spawns.
     fn cached_accounts(&self) -> Option<AccountsSnapshot>;
+    /// Bounded reads on a worker. Fixture backends never launch a harness.
+    fn read_grok(&self, ids: &[String], _previous: &BTreeMap<String, engine_usage::GrokTabUsage>, _force: bool) -> BTreeMap<String, engine_usage::GrokTabUsage> {
+        ids.iter().map(|id| (id.clone(), engine_usage::GrokTabUsage::unavailable("Session usage unavailable"))).collect()
+    }
     /// SPAWNS Orca's CLI in production (5 s timeout) and rewrites the cache.
     fn discover_accounts(&self) -> AccountsSnapshot;
     /// The system default before any list was read (`default_codex_home`).
@@ -316,6 +394,17 @@ impl UsageBackend for CoreUsageBackend {
     }
     fn read_claude(&self, shell_id: &str) -> Result<Option<ProviderUsage>, String> {
         engine_usage::read_claude_usage_at(&self.home, shell_id)
+    }
+    fn read_grok(&self, ids: &[String], previous: &BTreeMap<String, engine_usage::GrokTabUsage>, force: bool) -> BTreeMap<String, engine_usage::GrokTabUsage> {
+        let pids = riwork_engine::sessions::SessionManager::at(self.home.clone()).and_then(|sessions| sessions.pane_pids(ids));
+        let targets = ids.iter().map(|id| engine_usage::GrokTarget {
+            shell_id: id.clone(),
+            pane_pid: match &pids {
+                Ok(pids) => pids.get(id).copied().ok_or_else(|| "tmux did not report a process for this tab".to_owned()),
+                Err(error) => Err(error.clone()),
+            },
+        }).collect::<Vec<_>>();
+        engine_usage::read_grok_usages(&targets, previous, force)
     }
     fn cached_accounts(&self) -> Option<AccountsSnapshot> {
         // Woken on many home changes: parse again only when the cache moved.
@@ -485,6 +574,8 @@ struct State {
     shells: Vec<ShellSessionDto>,
     codex: BTreeMap<PathBuf, CodexEntry>,
     claude: BTreeMap<String, ClaudeEntry>,
+    grok: BTreeMap<String, engine_usage::GrokTabUsage>,
+    grok_pending: bool,
     force: bool,
     /// The last published usage body, with `now` cleared.
     published: Option<UsageDto>,
@@ -645,7 +736,10 @@ impl State {
                     project_id: shell.project_id.clone(),
                     waiting: entry.usage.is_none(),
                     stale: entry.usage.as_ref().is_some_and(|usage| stale(usage, now)),
-                    usage: entry.usage.as_ref().map(Into::into),
+                    usage: entry
+                        .usage
+                        .as_ref()
+                        .map(|usage| ProviderUsageDto::claude_at(usage, now)),
                     error: entry.error,
                 }
             })
@@ -653,10 +747,20 @@ impl State {
         UsageDto {
             schema: SCHEMA,
             now,
-            refreshing: codex.iter().any(|entry: &CodexUsageDto| entry.pending),
+            refreshing: self.grok_pending || codex.iter().any(|entry: &CodexUsageDto| entry.pending),
             codex,
             claude,
-            grok: Vec::new(),
+            grok: self.shells.iter().filter(|shell| shell.alive && shell.harness.as_deref() == Some("grok")).map(|shell| {
+                let entry = self.grok.get(&shell.id);
+                GrokUsageDto {
+                    shell_id: shell.id.clone(), project_id: shell.project_id.clone(),
+                    label: format!("Grok · {}", shell.id.chars().take(8).collect::<String>()),
+                    usage: entry.and_then(|entry| entry.usage.as_ref()).map(Into::into),
+                    error: entry.and_then(|entry| entry.error.clone()),
+                    stale: entry.is_some_and(|entry| entry.stale), pending: self.grok_pending,
+                    fetched_at_unix: entry.map_or(0, |entry| entry.fetched_at_unix),
+                }
+            }).collect(),
         }
     }
 }
@@ -701,6 +805,7 @@ struct Inner {
     discovery: Mutex<()>,
     usage_hub: Hub<UsageDto>,
     accounts_hub: Hub<AccountsDto>,
+    grok_projects: Mutex<BTreeMap<String, usize>>,
     wake: SyncSender<()>,
     stop: AtomicBool,
 }
@@ -754,6 +859,7 @@ impl Inner {
     fn pass(self: &Arc<Self>) -> Option<u64> {
         let _pass = lock(&self.pass);
         let usage_subscribed = self.usage_hub.has_subscribers();
+        let grok_projects = lock(&self.grok_projects).keys().cloned().collect::<BTreeSet<_>>();
         if !usage_subscribed && !self.accounts_hub.has_subscribers() {
             lock(&self.state).force = false;
             return None;
@@ -791,6 +897,15 @@ impl Inner {
         state.claude = claude;
         let force = std::mem::take(&mut state.force);
         let targets = state.codex_targets();
+        let live_grok = state.shells.iter().filter(|shell| shell.alive && shell.harness.as_deref() == Some("grok"))
+            .map(|shell| shell.id.clone()).collect::<BTreeSet<_>>();
+        state.grok.retain(|id, _| live_grok.contains(id));
+        let grok_ids = state.shells.iter().filter(|shell| shell.alive && shell.harness.as_deref() == Some("grok")
+            && shell.project_id.as_ref().is_some_and(|id| grok_projects.contains(id))).map(|shell| shell.id.clone()).collect::<Vec<_>>();
+        let grok_due = !state.grok_pending && !grok_ids.is_empty()
+            && (force || grok_ids.iter().any(|id| state.grok.get(id).is_none_or(|entry| entry.is_due(now))));
+        if grok_due { state.grok_pending = true; }
+        let previous_grok = grok_due.then(|| state.grok.clone());
         let mut start = Vec::new();
         for target in &targets {
             let entry = state.codex.entry(target.home.clone()).or_default();
@@ -836,12 +951,38 @@ impl Inner {
             if !stale(usage, now) {
                 soonest(usage.updated_at_unix + STALE_AFTER_SECS + 1);
             }
+            // A quiet or exited terminal may never send another status line.
+            // Publish removal at each reset instead of retaining its old quota
+            // until an unrelated service wake or a manual refresh.
+            for reset in usage.windows.iter().filter_map(|window| window.resets_at) {
+                if reset > now {
+                    soonest(reset);
+                }
+            }
         }
+        if !grok_ids.is_empty() { soonest(now + 5); }
         drop(state);
+        if let Some(previous) = previous_grok { self.start_grok(grok_ids, previous, force); }
         for target in start {
             self.start_read(target);
         }
         next
+    }
+
+    fn start_grok(self: &Arc<Self>, ids: Vec<String>, previous: BTreeMap<String, engine_usage::GrokTabUsage>, force: bool) {
+        let inner = self.clone();
+        let failed_ids = ids.clone();
+        let spawned = thread::Builder::new().name("riwork-usage-grok".into()).spawn(move || {
+            let result = inner.backend.read_grok(&ids, &previous, force);
+            { let mut state = lock(&inner.state); state.grok.extend(result); state.grok_pending = false; }
+            inner.wake();
+        });
+        if let Err(error) = spawned {
+            let mut state = lock(&self.state);
+            state.grok_pending = false;
+            for id in failed_ids { state.grok.insert(id, engine_usage::GrokTabUsage::unavailable(format!("Cannot start a usage read: {error}"))); }
+            drop(state); self.wake();
+        }
     }
 
     fn start_read(self: &Arc<Self>, target: CodexTarget) {
@@ -882,6 +1023,18 @@ impl Inner {
     }
 }
 
+struct GrokProjectLease { inner: Arc<Inner>, project: String }
+impl Drop for GrokProjectLease {
+    fn drop(&mut self) {
+        let mut projects = lock(&self.inner.grok_projects);
+        if let Some(count) = projects.get_mut(&self.project) {
+            *count = count.saturating_sub(1);
+            if *count == 0 { projects.remove(&self.project); }
+        }
+        drop(projects); self.inner.wake();
+    }
+}
+
 /// The process-wide account and usage service. Dropping it stops its thread.
 pub struct UsageService {
     inner: Arc<Inner>,
@@ -904,6 +1057,7 @@ impl UsageService {
             discovery: Mutex::new(()),
             usage_hub: Hub::pending(),
             accounts_hub: Hub::pending(),
+            grok_projects: Mutex::new(BTreeMap::new()),
             wake,
             stop: AtomicBool::new(false),
         });
@@ -931,6 +1085,12 @@ impl UsageService {
         let subscription = self.inner.usage_hub.subscribe();
         self.inner.wake();
         subscription
+    }
+
+    fn project_lease(&self, project: String) -> GrokProjectLease {
+        *lock(&self.inner.grok_projects).entry(project.clone()).or_default() += 1;
+        self.inner.wake();
+        GrokProjectLease { inner: self.inner.clone(), project }
     }
 
     pub fn subscribe_accounts(&self) -> TopicSubscription<AccountsDto> {
@@ -1147,16 +1307,21 @@ pub struct Usage;
 
 #[module]
 impl Usage {
-    /// Codex reads run only while some subscription is open.
+    /// Codex reads run only while subscribed. A visible Usage panel passes its
+    /// project to include that project's live Grok session figures.
     pub fn subscribe(
         listener: Callback<Snapshot<UsageDto>>,
+        project_id: Option<String>,
         cx: CallCx<'_>,
     ) -> Result<crate::Subscription, String> {
         Ok(crate::Subscription::start(cx, async move {
-            if let Ok(service) = usage_service().await
-                && let Ok(subscription) = blocking(move || Ok(service.subscribe_usage())).await
-            {
-                crate::deliver(subscription, listener).await;
+            if let Ok(service) = usage_service().await {
+                let source = service.clone();
+                let registration = blocking(move || {
+                    let lease = project_id.filter(|id| uuid::Uuid::parse_str(id).is_ok()).map(|project| source.project_lease(project));
+                    Ok((source.subscribe_usage(), lease))
+                }).await;
+                if let Ok((subscription, _lease)) = registration { crate::deliver(subscription, listener).await; }
             }
         }))
     }

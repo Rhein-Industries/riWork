@@ -1,2 +1,5 @@
 /target
 .DS_Store
+/ios/Vendor/
+/ios/Generated/
+/ios/.nsh-cli

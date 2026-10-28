@@ -1,10 +1,12 @@
 import { Text, View, cleanup, effect, host, keymap, signal } from "nsh";
 import { Window } from "nsh/desktop";
 import { Dashboard, Sessions, Store, type DashboardEvent, type GlobalWindowDto, type SettingsDto } from "riwork/native";
+import { Icon } from "../Icon";
 import { DEFAULT_THEME, type InterfaceTheme } from "../appearance";
 import type { HostParams } from "../model";
 import { DashboardView } from "../dashboard/Dashboard";
-import { routeTarget, type Filter, type Sort, type Target, type Wire } from "../dashboard/model";
+import { DecisionDialog } from "../dashboard/DecisionDialog";
+import { routeTarget, type DecisionRow, type Filter, type Sort, type Target, type Wire } from "../dashboard/model";
 import { GlobalChat, type ChatControl } from "./GlobalChat";
 
 export type GlobalView = "dashboard" | "chat";
@@ -18,7 +20,7 @@ interface WindowState { mode?: string; occluded?: boolean; visible?: boolean }
 /** The project a global-window command goes to: the most recently focused
  * local project window's, else the store's active project. */
 export function commandProject(windows: WindowEntry[], activeProjectId: string | null | undefined): string | null {
-  const projects = windows.filter((window) => window.kind === "project" && window.projectId);
+  const projects = windows.filter((window) => window.kind === "project" && window.projectId && !window.projectId.startsWith("remote:"));
   projects.sort((a, b) => (b.key ? 1 : 0) - (a.key ? 1 : 0) || (b.focusSerial ?? 0) - (a.focusSerial ?? 0));
   return projects[0]?.projectId ?? activeProjectId ?? null;
 }
@@ -34,18 +36,24 @@ export function GlobalWindow(props: { params: HostParams; theme?: () => Interfac
   const restored = params.restore?.global as Partial<GlobalWindowDto> | undefined;
   const requested = restored?.view ?? params.global?.view;
   const view = signal<GlobalView>(requested === "chat" ? "chat" : "dashboard");
+  const dashboardVisited = signal(view() === "dashboard");
+  effect(() => { if (view() === "dashboard") dashboardVisited.set(true); });
   const filter = signal<Filter>("active");
   const sort = signal<Sort>("priority");
   const query = signal("");
   const notice = signal(params.notice ?? "");
   const windowState = signal<WindowState>({ mode: "windowed" });
   const dashboard = signal<DashboardEvent["data"] | null>(null);
+  const reviewing = signal<DecisionRow | null>(null);
   let saved: GlobalWindowDto | null = null;
   let loaded = false;
   let alive = true;
   let saving: Promise<unknown> = Promise.resolve();
   cleanup(() => { alive = false; });
-  Window.setTitleBar("hidden", GLOBAL_BAR.height);
+  // Native host owns the traffic lights; a height here installs an AppKit
+  // toolbar that competes with its positioning while the window resizes.
+  Window.setTitleBar("hidden");
+  Window.setTitle("RiWork · Global");
   host.post("window.setDockInfo", { project: "Global", branch: "" });
   cleanup(host.on("window.state", (next) => windowState.set(next as WindowState)));
 
@@ -76,6 +84,7 @@ export function GlobalWindow(props: { params: HostParams; theme?: () => Interfac
   }
   const chat: { control?: ChatControl } = {};
   function show(next: GlobalView, start = false) {
+    if (reviewing()) return;
     view.set(next);
     save();
     if (next === "chat" && start) chat.control?.start();
@@ -140,8 +149,11 @@ export function GlobalWindow(props: { params: HostParams; theme?: () => Interfac
 
   let search: { focus: () => void } | undefined;
   function command(id: string) {
+    if (reviewing()) return;
     if (id === "closeTab" || id === "closeWindow") void host.call("window.close", {}).catch(() => {});
     else if (id === "newProjectWindow" || id === "newWindow") newWindow();
+    else if (id === "openGlobalDashboard") show("dashboard");
+    else if (id === "openGlobalChat" || id === "openOrchestrator") show("chat", true);
     else if (id === "openSettings") routePanel("settings");
     else if (id === "openSchedules") routePanel("schedules");
     else if ((id === "search" || id === "find") && view() === "dashboard") search?.focus();
@@ -151,7 +163,10 @@ export function GlobalWindow(props: { params: HostParams; theme?: () => Interfac
   }
   // ⌘F belongs to the dashboard's search only in the Dashboard view; in Chat it
   // reaches the chat's own find.
-  cleanup(keymap.bind("mod+f", () => command("search")));
+  effect(() => {
+    if (view() !== "dashboard" || reviewing()) return;
+    return keymap.bind("mod+f", () => search?.focus());
+  });
   cleanup(host.on("command", (data) => {
     const id = (data as { id?: unknown }).id;
     if (typeof id === "string") command(id);
@@ -163,18 +178,18 @@ export function GlobalWindow(props: { params: HostParams; theme?: () => Interfac
   function segment(id: GlobalView, label: string) {
     const selected = () => view() === id;
     return <View testID={`global-view-${id}`} role="tab" accessibilityLabel={selected() ? `${label}, shown` : label}
-      accessibilityState={{ selected: selected() }} onPress={() => show(id)}
-      style={{ paddingHorizontal: 10, height: 22, justifyContent: "center", borderRadius: 5, backgroundColor: selected() ? palette().panelActive : "transparent" }}>
+      focusable={!reviewing()} disabled={!!reviewing()} accessibilityState={{ selected: selected(), disabled: !!reviewing() }} onPress={() => show(id)}
+      style={{ paddingHorizontal: 10, height: 22, justifyContent: "center", borderRadius: 5, backgroundColor: selected() ? palette().bg : "transparent" }}>
       <Text style={{ ...font(11), color: selected() ? palette().text : palette().muted }}>{label}</Text>
     </View>;
   }
   return <View testID="global-window" style={{ flex: 1, backgroundColor: palette().bg }}>
-    <View testID="global-bar" style={{ height: GLOBAL_BAR.height, flexDirection: "row", alignItems: "center", gap: 10, paddingLeft: inset(), paddingRight: 10, backgroundColor: palette().panel, borderBottomWidth: 1, borderColor: palette().divider }}>
+    <View testID="global-bar" desktop={{ windowDrag: true }} style={{ height: GLOBAL_BAR.height, flexDirection: "row", alignItems: "center", gap: 10, paddingLeft: inset(), paddingRight: 10, backgroundColor: palette().panel, borderBottomWidth: 1, borderColor: palette().divider }}>
       <View testID="global-title" style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-        <Text style={{ ...font(12), color: palette().magenta }}>▦</Text>
-        <Text style={{ ...font(12), color: palette().magenta }}>Global</Text>
+        <Icon name="globe" size={12 * theme().scale} color={palette().muted} />
+        <Text style={{ ...font(12), color: palette().text, fontWeight: "600" }}>Global</Text>
       </View>
-      <View testID="global-view" role="tablist" accessibilityLabel="Global view" style={{ flexDirection: "row", gap: 2, padding: 2, borderRadius: 7, borderWidth: 1, borderColor: palette().divider }}>
+      <View testID="global-view" role="tablist" accessibilityLabel="Global view" style={{ flexDirection: "row", gap: 2, padding: 2, borderRadius: 7, backgroundColor: palette().panelActive }}>
         {segment("dashboard", "Dashboard")}
         {segment("chat", "Chat")}
       </View>
@@ -182,16 +197,25 @@ export function GlobalWindow(props: { params: HostParams; theme?: () => Interfac
       <Text style={{ ...font(10), color: palette().muted }}>This Mac · every project</Text>
     </View>
     <View style={{ flex: 1, minHeight: 0 }}>
-      {view() === "dashboard" ?
+      {dashboardVisited() && <View style={{ flex: 1, minHeight: 0, display: view() === "dashboard" ? "flex" : "none" }}>
         <DashboardView dto={dashboard} theme={theme} filter={filter} sort={sort} query={query}
           onFilter={setFilter} onSort={setSort} onSearch={(node) => { search = node; }}
-          onOpen={route} onPanel={openPanel} onGlobalChat={() => show("chat", true)}
+          onOpen={route} onReview={(decision) => { if (!reviewing()) reviewing.set(decision); }} onPanel={openPanel} onGlobalChat={() => show("chat", true)}
           onRefresh={() => { void Dashboard.refresh().catch((error: unknown) => notice.set(String(error))); }}
-          plan={() => chat.control?.plan() ?? null} starting={() => chat.control?.starting() ?? false} /> : null}
+          plan={() => chat.control?.plan() ?? null} starting={() => chat.control?.starting() ?? false} /></View>}
       <GlobalChat visible={() => view() === "chat"} global={() => wire()?.global ?? { kind: "unknown" }} theme={theme}
         settings={props.settings} startNow={params.global?.start === true && view() === "chat"}
+        onApiKeySettings={() => {
+          void target().then((projectId) => {
+            if (!projectId) { notice.set(NO_PROJECT_NOTICE); return; }
+            return host.call("window.route", { projectId, step: { kind: "apiKeySettings" } });
+          }).catch((error) => notice.set(String(error)));
+        }}
         onControl={(control) => { chat.control = control; }} onNotice={(text) => notice.set(text)} />
     </View>
+    {reviewing() && <DecisionDialog decision={reviewing()!} theme={theme} onClose={() => reviewing.set(null)}
+      onOpenChat={() => { const target = reviewing()?.session.target; reviewing.set(null); if (target) route(target); }}
+      onResponded={() => { void Dashboard.refresh().catch((error: unknown) => notice.set(String(error))); }} />}
     {notice() !== "" && <View testID="global-notice" role="alert" accessibilityLabel={notice()}
       style={{ flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 10, paddingVertical: 6, backgroundColor: palette().panel, borderTopWidth: 1, borderColor: palette().divider }}>
       <Text testID="global-notice-text" style={{ ...font(11), flex: 1, color: palette().gold }}>{notice()}</Text>

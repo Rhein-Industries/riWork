@@ -1,6 +1,6 @@
 /** Native workspace measurements, in logical points. */
 export const WORKSPACE_METRICS = {
-  header: 28, divider: 5, nativeButton: 22, buttonGap: 2, buttonRadius: 3,
+  header: 28, divider: 1, nativeButton: 22, buttonGap: 2, buttonRadius: 3,
   menuButton: 28, trafficLightInset: 92, lockAt: 108, mainAt: 136,
   mainWithLockAt: 152, focusAt: 180, panelCell: 32,
   statusDot: 7, idleDot: 3, tabClose: 16, tabFont: 10,
@@ -17,8 +17,9 @@ export function headerHeight(textPoints = 11): number {
   return WORKSPACE_METRICS.header * Math.max(1, textPoints / 11);
 }
 
-export function mainMarkerThreshold(theme = "native", icons = false): number {
-  return theme === "native" || icons ? WORKSPACE_METRICS.mainAt : WORKSPACE_METRICS.mainWithLockAt;
+export function mainMarkerThreshold(_theme = "native", _icons = false): number {
+  // NSH uses the same native controls in every color palette.
+  return WORKSPACE_METRICS.mainAt;
 }
 
 export function sessionCellWidth(title: string): number {
