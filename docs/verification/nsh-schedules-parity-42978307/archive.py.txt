@@ -1,0 +1,78 @@
+import gzip, hashlib, json, pathlib, re
+r = pathlib.Path(__file__).parent
+repo = pathlib.Path('/Users/dominik/orca/projects/riWork-nsh-spec-terminal-layout')
+out = repo/'docs/verification/nsh-schedules-parity-42978307'
+out.mkdir(exist_ok=False)
+(out/'logs').mkdir()
+def digest(data): return hashlib.sha256(data).hexdigest()
+def write(name, data):
+    with (out/name).open('xb') as f: f.write(data)
+def write_json(name, obj): write(name, (json.dumps(obj, indent=2)+'\n').encode())
+def compress(name, source):
+    data = source.read_bytes()
+    encoded = gzip.compress(data, mtime=0)
+    assert gzip.decompress(encoded) == data
+    write(name, encoded)
+    return {'source':str(source), 'retained':name, 'encoding':'gzip (lossless)',
+            'decoded_bytes':len(data), 'decoded_sha256':digest(data),
+            'stored_bytes':len(encoded), 'stored_sha256':digest(encoded)}
+records = [json.loads(line) for line in (r/'commands.jsonl').read_text().splitlines()]
+logs = []
+for i, record in enumerate(records, 1):
+    logs.append(dict(record_index=i, label=record['label'], exit_code=record['exit_code'],
+                     **compress(f'logs/{i:02d}-{record["label"]}.log.gz', pathlib.Path(record['log']))))
+# Read-only recheck. Never rewrite the earlier checker output or any old record.
+prior = json.loads((r/'prior-evidence-sha256.json').read_text())
+assert len(prior) == 1912
+for name, expected in prior.items(): assert digest(pathlib.Path(name).read_bytes()) == expected, name
+for name in ['commands.jsonl','environment.json','sources.json','prior-evidence-sha256.json',
+             'prior-evidence-result.json','fresh-wire-audits.json']:
+    write(name, (r/name).read_bytes())
+for source, name in [('run.py','run-wrapper.py.txt'),('verify.py','verification-driver.py.txt'),
+                     ('check_prior_evidence.py','check-prior-evidence.py.txt'),('archive.py','archive.py.txt')]:
+    write(name, (r/source).read_bytes())
+artifacts = [compress('source-evidence.txt.gz', r/'source-evidence.txt')]
+for phase in ['red','green']:
+    source = r/f'ui-{phase}/nsh.xml'
+    write(f'ui-{phase}.xml', source.read_bytes())
+    artifacts.append({'source':str(source),'retained':f'ui-{phase}.xml',
+                      'bytes':source.stat().st_size,'sha256':digest(source.read_bytes())})
+failed = [{'index':i, 'label':rec['label'], 'exit_code':rec['exit_code']}
+          for i,rec in enumerate(records,1) if rec['exit_code']]
+assert len(json.loads((r/'fresh-wire-audits.json').read_text())) == 11
+results = dict(
+    assignment='42978307-a1b4-4726-8dbf-bab9ec4fc2a2',
+    branch='nsh-spec-terminal-layout', base='162444b76d7f8496293cbe3a2a4e48a8b47b29e0',
+    effective_service_tier=json.loads((r/'environment.json').read_text())['effective_service_tier'],
+    verification_environment=json.loads((r/'environment.json').read_text())['verification_environment'],
+    live_targets_touched='none beyond own shell/worktree and disposable fixture processes',
+    cargo_jobs=2, builds='serialized; dedicated target belonging to this worktree',
+    command_records=len(records), expected_retained_failures=failed,
+    fresh_dispatch={'tests_passed':6,'scenarios':11,'final_audit_label':'fresh-audit-final',
+                    'providers':['Codex','Claude','Muse'],
+                    'negative_controls':['capability denied then grace expiry','four competing ticks',
+                      'claim denied at existing rate window','Create refused','Create reply lost',
+                      'Send refused','Send reply lost','fake provider startup failed']},
+    ui={'red':{'tests':4,'failures':2,'cause':'rejected save forcibly focused Title'},
+        'green':{'tests':15,'failures':0},
+        'scope':'headless Native control branch; no screenshot/color/visual equivalence'},
+    suites={'native':{'passed':220,'ignored':4},'workspace':{'passed':172,'ignored':0},
+            'additional_nested_settings_writer_invocation':1,
+            'desktop_unit_headless':{'passed':69,'ignored':1},
+            'engine_existing_fresh_filtered':{'passed':10,'unit_filtered':1332}},
+    verification_source_note='Full native/workspace suites preceded test-only all-contender join cleanup; final six dispatch tests and format check reran after that cleanup. No production code changed after UI green.',
+    parity={'PANEL-114_fresh_chat_proof':'covered in isolated fixtures',
+            'PANEL-108_Muse_fresh_offering':'covered in screen and dispatch fixtures',
+            'PANEL-113':'OPEN: pinned NSH lacks programmatic action focus and atomic native marked-text traversal gate',
+            'other_six_ThemeChoice_styles':'dropped by user decision; not modified'},
+    prior_evidence={'recorded_files':1912,'all_byte_identical':True,
+                    'manifest':'prior-evidence-sha256.json','result':'prior-evidence-result.json'},
+    unchanged=['schedule engine and CLI','remote engine and protocol','remote UI/native helpers','host/registry/Workspace wiring','all prior evidence archives'],
+    open_limitations=['exact Tab/Shift+Tab action traversal and native IME',
+      'historical engine spawn-replacement baseline not rerun or reclassified; reported /bin/ps EPERM cause remains unproved',
+      'remote 2cb2bb2b staged todo; not started','umbrella/cutover open/held'],
+    raw_logs=logs, artifacts=artifacts)
+write_json('results.json', results)
+write('README.md', b'''# Schedules parity evidence: 42978307\n\nNew evidence only. Earlier archives and scratch receipts were checked against\n`prior-evidence-sha256.json`; all 1,912 remained byte-identical.\n\n`commands.jsonl` retains expanded argv, exit results, timings and original log\npaths, including nested seed/check/test commands. Duplicate nested labels have\ndifferent disposable roots and separate numbered log captures. `results.json`\nindexes lossless gzip captures with hashes of both stored and decoded bytes.\nFor example: `gzip -dc logs/01-fresh-compile.log.gz`. Failures are intentional\nevidence: first fixture socket setup, then two UI focus regressions before fix.\n\n`fresh-wire-audits.json` is extracted from the final dispatch audit run.\n`ui-red.xml` and `ui-green.xml` retain independent JUnit outcomes.\n`sources.json` pins local/pinned-crate source hashes; numbered excerpts are in\n`source-evidence.txt.gz`. The maintained fixture and regression source is in\nthe same commit. Wrapper/driver snapshots describe isolation and execution.\n\nAny final staging checks are appended as separate `final-checks*` files; the\ninitial command/result/log snapshot is never rewritten to append those checks.\nSee `../../nsh-schedules-parity-followup.md` for scope and explicit open parity.\n''')
+print(json.dumps({'archived_command_records':len(records),'raw_logs':len(logs),
+                  'prior_files_unchanged':len(prior),'archive':str(out)}))

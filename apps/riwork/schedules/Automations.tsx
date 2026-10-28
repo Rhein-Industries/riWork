@@ -83,7 +83,9 @@ export function AutomationsPanel(props: {
   function cancel() { model.cancel(); panel?.focus(); }
   async function save() {
     await model.save();
-    if (alive && visible()) { if (model.editor) title?.focus(); else panel?.focus(); }
+    // Validation and async rejection retain the invoking control's focus,
+    // matching SchedulePanel::save. Kept inputs already own their native refs.
+    if (alive && visible() && !model.editor) panel?.focus();
   }
   function options(patch: Partial<ChatOptions>) { if (model.editor) model.patch({ options: { ...model.editor.options, ...patch } }); }
   function changeProvider(provider: string) {

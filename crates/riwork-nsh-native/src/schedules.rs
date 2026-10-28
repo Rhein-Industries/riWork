@@ -916,3 +916,6 @@ impl Schedules {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod fresh_dispatch_tests;

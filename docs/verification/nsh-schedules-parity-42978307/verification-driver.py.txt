@@ -1,0 +1,16 @@
+import pathlib,subprocess,sys
+r=pathlib.Path(__file__).parent;c='/Users/dominik/.cargo/bin/cargo'
+checks=[
+('format',[c,'fmt','-p','riwork-nsh-native']),
+('native-workspace',[c,'test','--locked','--offline','--jobs','2','-p','riwork-nsh-native','-p','riwork-nsh-workspace','--features','riwork-nsh-native/test-support','--','--test-threads=1']),
+('fresh-audit',[c,'test','--locked','--offline','--jobs','2','-p','riwork-nsh-native','--features','test-support','p6b_fresh','--','--nocapture','--test-threads=1']),
+('desktop-headless',[c,'test','--locked','--offline','--jobs','2','-p','riwork-desktop','--bin','riwork','--','--test-threads=1']),
+('engine-fresh-existing',[c,'test','--locked','--offline','--jobs','2','-p','riwork-engine','schedule_chat::fresh_tests','--','--nocapture','--test-threads=1']),
+('fmt-check',[c,'fmt','--all','--','--check']),
+('polling',['sh','apps/riwork/check-polling.sh']),
+('whitespace',['git','diff','--check']),
+('unchanged-engine-and-remote',['git','diff','--exit-code','162444b76d7f8496293cbe3a2a4e48a8b47b29e0','--','crates/riwork-core','crates/riwork-engine','crates/riwork-cli','remote','apps/riwork/remote','crates/riwork-nsh-native/src/remote.rs','crates/riwork-desktop/src/nsh_host.rs'])]
+for name,argv in checks:
+ print('START '+name,flush=True)
+ result=subprocess.run(['python3',str(r/'run.py'),name]+argv)
+ if result.returncode:sys.exit(result.returncode)

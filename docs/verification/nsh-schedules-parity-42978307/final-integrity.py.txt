@@ -1,0 +1,42 @@
+import gzip, hashlib, json, pathlib, subprocess
+r=pathlib.Path(__file__).parent
+repo=pathlib.Path('/Users/dominik/orca/projects/riWork-nsh-spec-terminal-layout')
+a=repo/'docs/verification/nsh-schedules-parity-42978307'
+def sha(data): return hashlib.sha256(data).hexdigest()
+def git(*args): return subprocess.check_output(['git',*args],cwd=repo).decode().strip()
+assert git('branch','--show-current')=='nsh-spec-terminal-layout'
+assert git('rev-parse','HEAD')=='162444b76d7f8496293cbe3a2a4e48a8b47b29e0'
+subprocess.run(['git','merge-base','--is-ancestor','9dcf245','HEAD'],cwd=repo,check=True)
+subprocess.run(['git','diff','--cached','--check'],cwd=repo,check=True)
+subprocess.run(['git','diff','--exit-code'],cwd=repo,check=True)
+allowed={'apps/riwork/schedules/Automations.fixture.tsx','apps/riwork/schedules/Automations.tsx',
+'apps/riwork/schedules/Parity.test.tsx','apps/riwork/schedules/TraversalCapability.fixture.tsx',
+'crates/riwork-nsh-native/src/schedules.rs','crates/riwork-nsh-native/src/schedules/fresh_dispatch_tests.rs',
+'docs/nsh-schedules-parity-followup.md'}
+files=git('diff','--cached','--name-only').splitlines()
+assert all(f in allowed or f.startswith('docs/verification/nsh-schedules-parity-42978307/') for f in files)
+assert allowed.issubset(files)
+assert not git('ls-files','--others','--exclude-standard')
+prior=json.loads((a/'prior-evidence-sha256.json').read_text())
+for name,expected in prior.items(): assert sha(pathlib.Path(name).read_bytes())==expected,name
+sources=json.loads((a/'sources.json').read_text())
+for item in sources:
+ p=pathlib.Path(item['file']); p=p if p.is_absolute() else repo/p
+ assert sha(p.read_bytes())==item['sha256'],item['file']
+results=json.loads((a/'results.json').read_text())
+for item in results['raw_logs']+results['artifacts']:
+ encoded=(a/item['retained']).read_bytes()
+ if item.get('encoding'):
+  decoded=gzip.decompress(encoded)
+  assert sha(encoded)==item['stored_sha256']
+  assert sha(decoded)==item['decoded_sha256']
+  assert decoded==pathlib.Path(item['source']).read_bytes()
+ else:
+  assert sha(encoded)==item['sha256']
+  assert encoded==pathlib.Path(item['source']).read_bytes()
+assert (r/'commands.jsonl').read_bytes().startswith((a/'commands.jsonl').read_bytes())
+print(json.dumps({'staged_scope_files':len(files),'branch':git('branch','--show-current'),
+'base':git('rev-parse','HEAD'),'accepted_9dcf245_is_ancestor':True,
+'prior_files_byte_identical':len(prior),'source_hashes_current':len(sources),
+'lossless_raw_logs_verified':len(results['raw_logs']),'archive_artifacts_verified':len(results['artifacts']),
+'unstaged_and_untracked_files':0,'staged_whitespace':'passed'}))

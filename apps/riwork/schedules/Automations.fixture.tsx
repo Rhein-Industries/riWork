@@ -3,6 +3,7 @@
 import { Text, View, host, mount, signal } from "nsh";
 import { Button } from "nsh/base";
 import { AutomationsPanel, type AutomationsApi } from "./Automations";
+import { DEFAULT_THEME } from "../appearance";
 import { defaults, localIso, projectScope, type CreateRequest, type ScheduleData, type ScheduleRow, type UpdateRequest } from "./model";
 
 const PROJECT = "11111111-1111-4111-8111-111111111111", OTHER = "22222222-2222-4222-8222-222222222222";
@@ -57,7 +58,9 @@ function Fixture() {
       <Button testID="fixture-switch-project" onPress={() => project.set(project() === PROJECT ? OTHER : PROJECT)}><Text>Switch project</Text></Button>
       <Button testID="fixture-runtime-error" onPress={() => { data = { ...data, runtimeError: "Disposable ticker error" }; publish(); }}><Text>Publish runtime error</Text></Button>
     </View>
-    <AutomationsPanel api={api} projectId={project} visible={visible} now={() => NOW} openChat={(id) => opened.set([...opened(), id])} />
+    <AutomationsPanel api={api} projectId={project} visible={visible} now={() => NOW}
+      theme={() => ({ ...DEFAULT_THEME, native: true, family: "system-ui", scale: 13 / 11 })}
+      openChat={(id) => opened.set([...opened(), id])} />
   </View>;
 }
 mount(Fixture);

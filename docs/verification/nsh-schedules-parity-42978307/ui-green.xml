@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="nsh test" tests="15" failures="0" errors="0" skipped="0" time="14.090">
+  <testsuite name="apps/riwork/schedules/Automations.test.tsx" tests="4" failures="0" errors="0" skipped="0" time="6.301">
+    <testcase classname="apps/riwork/schedules/Automations.test.tsx" name="P6B-SCHED-UI-01 visible subscriptions close and reopen; real status and earlier chats remain visible" time="0.949"/>
+    <testcase classname="apps/riwork/schedules/Automations.test.tsx" name="P6B-SCHED-UI-02 defaults, all permission and repeat controls save once while pending" time="1.776"/>
+    <testcase classname="apps/riwork/schedules/Automations.test.tsx" name="P6B-SCHED-UI-03 scope changes require a worktree and explicit shell; invalid repeat zero never dispatches" time="2.181"/>
+    <testcase classname="apps/riwork/schedules/Automations.test.tsx" name="P6B-SCHED-UI-04 revision conflicts retain the draft; Escape resets two-click delete" time="1.395"/>
+  </testsuite>
+  <testsuite name="apps/riwork/schedules/Parity.test.tsx" tests="4" failures="0" errors="0" skipped="0" time="4.041">
+    <testcase classname="apps/riwork/schedules/Parity.test.tsx" name="P6B-SCHED-PARITY-01 synchronous validation keeps the current minutes input focused" time="1.128"/>
+    <testcase classname="apps/riwork/schedules/Parity.test.tsx" name="P6B-SCHED-PARITY-02 asynchronous save rejection keeps the current prompt input focused" time="1.089"/>
+    <testcase classname="apps/riwork/schedules/Parity.test.tsx" name="P6B-SCHED-PARITY-03 Muse is offered for fresh chats with Fast off" time="0.781"/>
+    <testcase classname="apps/riwork/schedules/Parity.test.tsx" name="P6B-SCHED-PARITY-04 pinned NSH focus API cannot traverse action controls" time="1.043"/>
+  </testsuite>
+  <testsuite name="apps/riwork/schedules/model.test.ts" tests="7" failures="0" errors="0" skipped="0" time="0.001">
+    <testcase classname="apps/riwork/schedules/model.test.ts" name="P6B-SCHED-01 defaults and each quick pick are measured from the click" time="0.000"/>
+    <testcase classname="apps/riwork/schedules/model.test.ts" name="P6B-SCHED-02 custom repeat zero and invalid dates cannot become a one-time run" time="0.000"/>
+    <testcase classname="apps/riwork/schedules/model.test.ts" name="P6B-SCHED-03 UTF-8 title and prompt limits and explicit-target requirement" time="0.000"/>
+    <testcase classname="apps/riwork/schedules/model.test.ts" name="P6B-SCHED-04 scope and target changes require explicit selection, retaining typed kind" time="0.000"/>
+    <testcase classname="apps/riwork/schedules/model.test.ts" name="P6B-SCHED-05 app plus selected-project rows and actual run outcomes are retained" time="0.000"/>
+    <testcase classname="apps/riwork/schedules/model.test.ts" name="P6B-SCHED-06 pending actions dispatch once, revision refusal keeps the draft" time="0.000"/>
+    <testcase classname="apps/riwork/schedules/model.test.ts" name="P6B-SCHED-07 a project switch rejects a late mutation result and preserves its new draft" time="0.000"/>
+  </testsuite>
+</testsuites>

@@ -1,0 +1,23 @@
+{
+  "commands": "final-checks.jsonl",
+  "all_exit_zero": true,
+  "logs": [
+    {
+      "label": "staged-final",
+      "retained": "logs/final-staged-final.log.gz",
+      "decoded_bytes": 0,
+      "decoded_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stored_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "original_log": "/tmp/riwork-schedules-42978307.ewa5a_9y/logs/staged-final.log"
+    },
+    {
+      "label": "final-integrity",
+      "retained": "logs/final-final-integrity.log.gz",
+      "decoded_bytes": 353,
+      "decoded_sha256": "c4ad80dc7025de182ec73e59474cf1cb0bf3f6d4366e0cd0e2c26ba0c9a99e11",
+      "stored_sha256": "684cbd55b28922354e86b3c6820e8e5b4daa68faa9a95e1245e143f0194eba29",
+      "original_log": "/tmp/riwork-schedules-42978307.ewa5a_9y/logs/final-integrity.log"
+    }
+  ],
+  "scope_note": "46 staged paths at integrity check; only these new final-check receipt files are appended afterward. Original archive snapshot remains byte-identical."
+}
