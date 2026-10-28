@@ -1,5 +1,5 @@
-import { Button } from "nsh/base";
-import { Text, View, cleanup, effect, signal, untracked } from "nsh";
+import { Text, cleanup, effect, signal, untracked, type YNode } from "nsh";
+import { Button, View } from "./SettingsFocus";
 import { Cua } from "riwork/native";
 import { DEFAULT_THEME, type InterfaceTheme } from "./appearance";
 
@@ -11,6 +11,8 @@ export interface CuaStatus {
 }
 export interface CuaState { status: CuaStatus | null; pending: string | null; error: string | null }
 export type CuaAction = "install" | "permissions" | "check";
+/** null selects the theme; undefined waits for the check/ref; a node selects Cua. */
+export interface CuaSetupControl { initialTarget(): YNode | null | undefined }
 export function cuaPresentation(state: CuaState) {
   const s = state.status;
   const link = !!s?.ready && s.skills.setup_needed;
@@ -39,9 +41,11 @@ export function useCua() {
 }
 
 /** Independent Settings section: 6a can place this without owning Cua state. */
-export function CuaSetup(props: { theme?: () => InterfaceTheme; controller?: ReturnType<typeof useCua>; visible?: boolean; checkOnShow?: boolean }) {
+export function CuaSetup(props: { theme?: () => InterfaceTheme; controller?: ReturnType<typeof useCua>; visible?: boolean; checkOnShow?: boolean; onControl?: (control: CuaSetupControl) => void | (() => void) }) {
   const controller = props.controller ?? useCua();
   const state = controller.state;
+  const primary = signal<YNode | undefined>(undefined);
+  cleanup(props.onControl?.({ initialTarget: () => state().pending ? undefined : state().status?.ready ? null : primary() }) ?? (() => {}));
   effect(() => { if (props.visible !== false && props.checkOnShow !== false) untracked(() => { void controller.run("check"); }); });
   const presentation = () => cuaPresentation(state());
   const theme = props.theme ?? (() => DEFAULT_THEME);
@@ -63,7 +67,7 @@ export function CuaSetup(props: { theme?: () => InterfaceTheme; controller?: Ret
       <Text style={{ ...style(), color: theme().palette.muted }}>{state().status!.skills.message}</Text>
     </View>}
     <View style={{ flexDirection: "row", gap: 12 }}>
-      <Button testID="cua-primary" disabled={!!state().pending} onPress={() => { void controller.run(presentation().action); }}><Text style={style()}>{presentation().label}</Text></Button>
+      <Button testID="cua-primary" ref={(node) => primary.set(node)} disabled={!!state().pending} onPress={() => { void controller.run(presentation().action); }}><Text style={style()}>{presentation().label}</Text></Button>
       <Button testID="cua-check" disabled={!!state().pending} onPress={() => { void controller.run("check"); }}><Text style={style()}>Check again</Text></Button>
     </View>
   </View>;

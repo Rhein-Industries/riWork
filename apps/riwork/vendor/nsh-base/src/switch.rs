@@ -40,6 +40,10 @@ pub struct SwitchProps {
 /// The events of a [`Switch`].
 #[derive(Debug, Clone, PartialEq, Event)]
 pub enum SwitchEvent {
+    /// The switch took keyboard focus.
+    Focus,
+    /// The switch lost keyboard focus.
+    Blur,
     /// The switch was pressed (a tap, a click, Space or Return): the value
     /// it asks for, the opposite of `checked`.
     #[args(checked)]
@@ -75,6 +79,8 @@ pub fn Switch(props: SwitchProps, cx: Scope<SwitchEvent>) -> impl IntoElement {
             ..AccessibilityState::default()
         })
         .checked_style(props.checked_style)
+        .on_focus(move |_: &()| cx.emit(SwitchEvent::Focus))
+        .on_blur(move |_: &()| cx.emit(SwitchEvent::Blur))
         .on_press(move |_: &()| cx.emit(SwitchEvent::Change(!props.checked.get_untracked())))
         .child(
             part()

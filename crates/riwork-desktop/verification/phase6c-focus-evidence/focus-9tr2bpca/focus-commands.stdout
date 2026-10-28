@@ -1,0 +1,21 @@
+
+running 1 test
+test combined_settings_cua_focus_commands ... ready=false focus_before=None: expected=["cua-primary"] actual=["theme-choice:native"]
+ready=false focus_before=Some("claude-api-key-input"): expected=[] actual=[]
+ready=false focus_before=Some("theme-choice:native"): expected=[] actual=[]
+ready=false focus_before=Some("cua-primary"): expected=[] actual=["theme-choice:native"]
+ready=false focus_before=Some("cua-check"): expected=[] actual=["theme-choice:native"]
+ready=true focus_before=None: expected=["theme-choice:native"] actual=["theme-choice:native"]
+ready=true focus_before=Some("claude-api-key-input"): expected=[] actual=[]
+ready=true focus_before=Some("theme-choice:native"): expected=[] actual=[]
+ready=true focus_before=Some("cua-primary"): expected=[] actual=["theme-choice:native"]
+ready=true focus_before=Some("cua-check"): expected=[] actual=["theme-choice:native"]
+FAILED
+
+failures:
+
+failures:
+    combined_settings_cua_focus_commands
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.05s
+

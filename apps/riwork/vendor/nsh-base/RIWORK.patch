@@ -218,3 +218,47 @@
                          })
                          .app_class(props.handle_class)
                          .inline_style(props.handle_style)
+--- a/src/button.rs
++++ b/src/button.rs
+@@ -29,6 +29,10 @@
+ /// The events of a [`Button`].
+ #[derive(Debug, Clone, PartialEq, Event)]
+ pub enum ButtonEvent {
++    /// The button took keyboard focus.
++    Focus,
++    /// The button lost keyboard focus.
++    Blur,
+     /// The button was pressed.
+     Press,
+     /// A press went down on it (for the app's own press feedback).
+@@ -54,6 +58,8 @@
+             ..AccessibilityState::default()
+         })
+         .selected_style(props.selected_style)
++        .on_focus(move |_: &()| cx.emit(ButtonEvent::Focus))
++        .on_blur(move |_: &()| cx.emit(ButtonEvent::Blur))
+         .on_press(move |_: &()| cx.emit(ButtonEvent::Press))
+         .on_press_down(move |_: &()| cx.emit(ButtonEvent::PressDown))
+         .on_press_up(move |_: &()| cx.emit(ButtonEvent::PressUp))
+--- a/src/switch.rs
++++ b/src/switch.rs
+@@ -40,6 +40,10 @@
+ /// The events of a [`Switch`].
+ #[derive(Debug, Clone, PartialEq, Event)]
+ pub enum SwitchEvent {
++    /// The switch took keyboard focus.
++    Focus,
++    /// The switch lost keyboard focus.
++    Blur,
+     /// The switch was pressed (a tap, a click, Space or Return): the value
+     /// it asks for, the opposite of `checked`.
+     #[args(checked)]
+@@ -75,6 +79,8 @@
+             ..AccessibilityState::default()
+         })
+         .checked_style(props.checked_style)
++        .on_focus(move |_: &()| cx.emit(SwitchEvent::Focus))
++        .on_blur(move |_: &()| cx.emit(SwitchEvent::Blur))
+         .on_press(move |_: &()| cx.emit(SwitchEvent::Change(!props.checked.get_untracked())))
+         .child(
+             part()

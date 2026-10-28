@@ -1,0 +1,3 @@
+    Finished `dev` profile [unoptimized] target(s) in 0.60s
+     Running `target/debug/examples/p1_workspace_fixture_home --scenario p1-layouts --out /private/tmp/riwork-phase6c-focus/settings-final/home`
+{"fixtureCount":18,"home":"/private/tmp/riwork-phase6c-focus/settings-final/home","manifest":"/private/tmp/riwork-phase6c-focus/settings-final/home/fixtures.json","scenario":"p1-layouts"}

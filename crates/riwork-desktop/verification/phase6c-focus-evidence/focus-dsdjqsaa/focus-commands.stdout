@@ -1,0 +1,41 @@
+
+running 2 tests
+test combined_settings_cua_focus_commands ... ready=false focus_before=None: expected=["cua-primary"] actual=["cua-primary"]
+ready=false focus_before=Some("claude-api-key-input"): expected=[] actual=[]
+ready=false focus_before=Some("theme-choice:native"): expected=[] actual=[]
+ready=false focus_before=Some("cua-primary"): expected=[] actual=[]
+ready=false focus_before=Some("cua-check"): expected=[] actual=[]
+ready=false focus_before=Some("panel-tab-icons"): expected=[] actual=[]
+ready=false focus_before=Some("interface-font-system"): expected=[] actual=[]
+ready=false focus_before=Some("delegation-parallel-shells"): expected=[] actual=[]
+ready=false focus_before=Some("delegation-parallel-shells-increase"): expected=[] actual=[]
+ready=false focus_before=Some("orchestrator-other-model"): expected=[] actual=[]
+ready=true focus_before=None: expected=["theme-choice:native"] actual=["theme-choice:native"]
+ready=true focus_before=Some("claude-api-key-input"): expected=[] actual=[]
+ready=true focus_before=Some("theme-choice:native"): expected=[] actual=[]
+ready=true focus_before=Some("cua-primary"): expected=[] actual=[]
+ready=true focus_before=Some("cua-check"): expected=[] actual=[]
+ready=true focus_before=Some("panel-tab-icons"): expected=[] actual=[]
+ready=true focus_before=Some("interface-font-system"): expected=[] actual=[]
+ready=true focus_before=Some("delegation-parallel-shells"): expected=[] actual=[]
+ready=true focus_before=Some("delegation-parallel-shells-increase"): expected=[] actual=[]
+ready=true focus_before=Some("orchestrator-other-model"): expected=[] actual=[]
+ok
+test delayed_checks_and_focus_leaving_the_panel ... delayed ready=false focus_before=None: expected=["cua-primary"] actual=["cua-primary"]
+delayed ready=false focus_before=Some("claude-api-key-input"): expected=[] actual=[]
+delayed ready=false focus_before=Some("cua-check"): expected=[] actual=[]
+delayed ready=false focus_before=Some("panel-tab-icons"): expected=[] actual=[]
+blur/reopen ready=false previous=claude-api-key-input: expected=["cua-primary"] actual=["cua-primary"]
+blur/reopen ready=false previous=cua-check: expected=["cua-primary"] actual=["cua-primary"]
+blur/reopen ready=false previous=panel-tab-icons: expected=["cua-primary"] actual=["cua-primary"]
+delayed ready=true focus_before=None: expected=["theme-choice:native"] actual=["theme-choice:native"]
+delayed ready=true focus_before=Some("claude-api-key-input"): expected=[] actual=[]
+delayed ready=true focus_before=Some("cua-check"): expected=[] actual=[]
+delayed ready=true focus_before=Some("panel-tab-icons"): expected=[] actual=[]
+blur/reopen ready=true previous=claude-api-key-input: expected=["theme-choice:native"] actual=["theme-choice:native"]
+blur/reopen ready=true previous=cua-check: expected=["theme-choice:native"] actual=["theme-choice:native"]
+blur/reopen ready=true previous=panel-tab-icons: expected=["theme-choice:native"] actual=["theme-choice:native"]
+ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 15.05s
+

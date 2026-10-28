@@ -34,13 +34,13 @@ surface is not the reserved full `riwork.preview` native input component.
 | SHELL-009 | PASS in headless AppView fixture: missing-driver status opens Settings in the active pane, without changing ordinary Settings command routing. |
 | PANEL-139..141 | PASS in headless fixtures: initial/missing/signature/version/service/permissions/capture/ready/custom-driver/skill-link/error/pending surfaces, labels, precedence, installed chips, skill chips and disabled actions. Core manager remains responsible for real status and access requests. |
 | SHELL-318 (Cua), PANEL-142 | Shared Rust Check every 15 s while unready, skipping overlapping actions; subscriptions work outside Settings. Unit proof covers single-flight/read-only status interpretation and ready gating. No real driver or wall-clock permission recovery was exercised. |
-| PANEL-138 | Cua recheck on show implemented. Settings-wide account, Keychain and exact focus-order work belongs to 6a and is not claimed here. |
+| PANEL-138 | Cua recheck on show plus combined Settings/Cua focus selection and preservation pass in isolated fixtures; see the focus follow-up below. Account/Keychain/import ownership stays with 6a. |
 | SHELL-113, TERM-168..170 | PASS: UUID tab, default worktree cwd, Cooperative default, main/active/focus routing, Run-only start, Enter/mode/Run commits, saved spec/title, restored idle tab, close. Blur uses the same commit operation. Remote/no-local-root creation is unavailable. |
 | TERM-171..172, 175..177 | Modes/fields, empty-command/scheme validation, Stop/Restart, edited-spec wait, live-PID Stop eligibility, 100 ms polling, window/tab visibility and teardown ownership implemented. Fixtures cover mode changes, empty scheme persistence, Run/Stop, visibility, restart/relaunch, and disposal during delayed launch. Engine invalid-cwd/input-limit tests pass without launching a process. Control-window visibility override is still open. |
 | TERM-183..189 | Partial: aspect-fit Image, bounded frame metadata/base64 caching, placeholders, coordinate mapping and bounded viewport, basic pointer/focus forwarding, bounded/toggleable logs. **Open:** native decoder's exact allocation/generation guarantees, full mouse capture/up-outside/middle/wheel, IME/text/key-up/clipboard shortcuts and complete input-release parity. These are not certified by the pure coordinate tests. |
 | SHELL-328, DOCS-214..215 | **Open:** NSH preview-control mailbox/CLI control-window hosting. Existing engine/control implementation is unchanged. |
 | TERM-173..174, 178..182, 190..195 | Existing preview engine remains unchanged. No live process-group/capture/simulator validation was done. This report does not re-certify those rows through a real NSH window. |
-| Settings 6a; schedules/remote 6b | Other lanes; no implementations changed here. |
+| Settings 6a; schedules/remote 6b | Other lanes. The focus follow-up makes only the listed Settings integration edits; no backend ownership moves. |
 
 Verification used private HOME/RIWORK_HOME/runtime directories, a private worktree
 Cargo target and at most two Cargo jobs, with heavy commands serialized. Debug
@@ -147,3 +147,80 @@ own Cargo target, jobs=2, offline. `live_targets_touched`: none beyond own
 shell/worktree. `effective_service_tier`: default / Fast OFF (assignment verified);
 GPT-6-Astra ultra and system-default account unchanged; no descendants. No live
 Cua/GUI input, network, Docker, merge to nsh, push, install, reload or restart.
+
+
+## PANEL-138 focus follow-up
+
+Reproduced against unchanged `1f0738c` production source **before editing it**:
+when Cua was not ready, showing Settings emitted focus for the selected theme
+instead of `cua-primary`; focus already on either Cua action was also stolen.
+The command-boundary regression failed five of ten cases (Cargo exit 101); its
+ready-theme and existing input/theme containment controls passed. The authentic
+[red log](../crates/riwork-desktop/verification/phase6c-focus-evidence/focus-9tr2bpca/focus-commands.stdout),
+[assertion failure](../crates/riwork-desktop/verification/phase6c-focus-evidence/focus-9tr2bpca/focus-commands.stderr)
+and baseline source hashes are preserved in the new focus archive.
+
+CuaSetup now exposes its primary ref/readiness through a small control handle.
+AppSettings's existing show-time focus scheduling waits for an outstanding Cua
+check, picks Cua when unready and the selected theme otherwise, and cancels the
+request if focus is already inside or enters the panel while waiting. Later
+status deliveries do not refocus. Explicit API-key reveal keeps its precedence.
+Workspace connects the handle at the existing computer-use slot; startup and
+backend ownership are unchanged.
+
+The **only 6a file edits** are `settings/AppSettings.tsx` (optional focus handle,
+initial target choice, and focus-scope provider) and `settings/SettingsControls.tsx`
+(imports only). `SettingsFocus.tsx` composes each control's original focus handlers
+with a local owner-aware scope, since NSH focus events do not bubble. Button and
+Switch require six additive Rust lines each to forward their native Focus/Blur
+events; activation/tab stops are unchanged. The pinned vendor patch was updated
+and reproduced exactly against a private copy of the published source. The
+adapter keeps reactive prop descriptors and prevents NSH 0.3's runtime View
+props spread from evaluating the child getter a second time.
+
+Maintained coverage lives in `apps/riwork/tests/SettingsCuaFocus.fixture.tsx` and
+`SettingsCuaFocus.test.tsx`. NSH 0.3's JS headless runner applies programmatic Focus
+only to text inputs, so the paired `settings_cua_focus.rs` runner mounts the real
+combined TSX through production QuickJS/native registries, records native Focus
+commands, and injects synthetic Focus/Blur events into unique attached fixture
+nodes. It opens no platform window. This tests the command sent to the platform,
+not live macOS first-responder behavior.
+
+The final [green focus run](../crates/riwork-desktop/verification/phase6c-focus-evidence/focus-dsdjqsaa/focus-commands.stdout)
+passes **34 scenarios in two Rust tests**, plus **two maintained input UI tests**:
+ready/unready initial targets; preservation in Cua actions, inputs, theme/choice
+cells, switches and steppers; delayed check completion; blur/reopen; and no repeat
+focus on unchanged visibility or background readiness changes.
+
+Final reruns: **21 Phase 6c UI**, **1 missing-driver startup**, **68 host**,
+**169 workspace**, **199 native**, **589 vendored-control**, and **17 Settings**
+cases passed.
+The host's existing recovery test, the native benchmark, and nine upstream base
+cases remain ignored; the two new native focus tests are ignored by the
+generic suite and explicitly passed by `focus`. Cargo check, NSH/TypeScript,
+format and whitespace checks exited 0.
+
+Exact commands, serialized from this worktree:
+
+```sh
+python3 crates/riwork-desktop/verification/phase6c.py focus --root /tmp/riwork-phase6c-focus --target-dir /Users/dominik/orca/projects/riWork-nsh-p1-fix-host/target --ghostty-artifacts /Users/dominik/orca/projects/riWork-nsh-p2-terminals/crates/riwork-nsh-terminal/.runtime/pinned/install
+python3 crates/riwork-desktop/verification/phase6c.py ui --root /tmp/riwork-phase6c-focus --target-dir /Users/dominik/orca/projects/riWork-nsh-p1-fix-host/target --ghostty-artifacts /Users/dominik/orca/projects/riWork-nsh-p2-terminals/crates/riwork-nsh-terminal/.runtime/pinned/install
+python3 crates/riwork-desktop/verification/phase6c.py ui-missing --root /tmp/riwork-phase6c-focus --target-dir /Users/dominik/orca/projects/riWork-nsh-p1-fix-host/target --ghostty-artifacts /Users/dominik/orca/projects/riWork-nsh-p2-terminals/crates/riwork-nsh-terminal/.runtime/pinned/install
+python3 crates/riwork-desktop/verification/phase6c.py check --root /tmp/riwork-phase6c-focus --target-dir /Users/dominik/orca/projects/riWork-nsh-p1-fix-host/target --ghostty-artifacts /Users/dominik/orca/projects/riWork-nsh-p2-terminals/crates/riwork-nsh-terminal/.runtime/pinned/install
+python3 crates/riwork-desktop/verification/phase6c.py suites --root /tmp/riwork-phase6c-focus --target-dir /Users/dominik/orca/projects/riWork-nsh-p1-fix-host/target --ghostty-artifacts /Users/dominik/orca/projects/riWork-nsh-p2-terminals/crates/riwork-nsh-terminal/.runtime/pinned/install
+python3 crates/riwork-desktop/verification/phase6c.py base --root /tmp/riwork-phase6c-focus --target-dir /Users/dominik/orca/projects/riWork-nsh-p1-fix-host/target --ghostty-artifacts /Users/dominik/orca/projects/riWork-nsh-p2-terminals/crates/riwork-nsh-terminal/.runtime/pinned/install
+RIWORK_GHOSTTY_INSTALL_DIR=/Users/dominik/orca/projects/riWork-nsh-p2-terminals/crates/riwork-nsh-terminal/.runtime/pinned/install python3 crates/riwork-desktop/verification/phase6a_settings.py --root /tmp/riwork-phase6c-focus/settings-final --target-dir /Users/dominik/orca/projects/riWork-nsh-p1-fix-host/target --nsh /tmp/riwork-nsh-toolchain-60f8aec4.18l3zV/nsh-cli-0.3.0/bin/nsh --tsc /Users/dominik/Library/Caches/nsh/typescript-7.0.2-darwin-arm64/package/lib/tsc --filter P6a
+```
+
+The same `focus` command produced the archived red result before the fix. Exact
+subprocess argv/results/environment and raw outputs are in the
+[focus evidence index](../crates/riwork-desktop/verification/phase6c-focus-evidence/artifact-index.json).
+The previous Phase 6c (64), integration (29), pending-open (24), and quit-ordering
+(22) artifact hashes were all reverified; their archive bytes are unchanged.
+
+`verification_environment`: private HOME/RIWORK_HOME, headless fixtures/fakes,
+private target, offline and jobs=2; existing Ghostty link inputs read only.
+`live_targets_touched`: none beyond own shell/worktree.
+`effective_service_tier`: Service tier default / Fast OFF (user verified),
+GPT-6-Astra ultra and system-default account unchanged; main session only.
+No live Cua/GUI input, network, Docker, merge, push, installation or reload.
