@@ -3,7 +3,7 @@
 import { Text, View, host, mount, signal } from "nsh";
 import { Button } from "nsh/base";
 import { RemoteProjects, RemoteProjectPanel, RemotePrompt, RemoteSettings, RemoteStrip, RemoteUnavailable, createRemoteController, type RemoteApi } from "./Remote";
-import { EMPTY_REMOTE, EMPTY_WANTS, type RemoteLists, type RemoteSnapshot } from "./model";
+import { EMPTY_REMOTE, EMPTY_WANTS, shellOpenRefusal, type RemoteLists, type RemoteSnapshot } from "./model";
 
 const KEY = "remote:disposable-mac:disposable-project";
 const initialProject: RemoteLists = {
@@ -39,8 +39,7 @@ function Fixture() {
   };
   const c = createRemoteController({ api, wants: () => { unrelated(); return { ...EMPTY_WANTS, settings: true, folders: true, projectKey: KEY, shells: true }; },
     notice: (message) => notices.set([...notices(), message]), copyText: async () => { copied.set(copied() + 1); },
-    beforePrompt: () => { frozen = true; }, afterPrompt: () => { frozen = false; },
-    onProjectCreated: (key) => selected.set(key) });
+    beforePrompt: () => { frozen = true; }, afterPrompt: () => { frozen = false; } });
   host.on("app.fixture.remote.inspect", () => host.post("app.fixture.remote.state", {
     pending: c.pending(), confirmation: c.confirmation(), prompt: c.prompt()?.kind ?? null,
     calls: calls(), notices: notices(), actions: actions(), copied: copied(), selected: selected(),
@@ -67,7 +66,11 @@ function Fixture() {
       const next = new Set(collapsed()); if (next.has(key)) next.delete(key); else next.add(key); collapsed.set(next);
     }} onSelectProject={(key) => { selected.set(key); actions.set([...actions(), `select:${key}`]); }} />
     <RemoteProjectPanel controller={c} projectKey={() => KEY} panel={panel()} onWorktree={(id) => actions.set([...actions(), `worktree:${id}`])}
-      onTask={(id) => actions.set([...actions(), `task:${id}`])} onShell={(host, shell) => actions.set([...actions(), `shell:${host}:${shell.id}`])} />
+      onTask={(id) => actions.set([...actions(), `task:${id}`])} onShell={(host, shell) => {
+        // As workspace.ts with no tab open on it: refuse a chat or ended shell.
+        const refusal = shellOpenRefusal(shell, "Disposable Mac");
+        if (refusal) notices.set([...notices(), refusal]); else actions.set([...actions(), `shell:${host}:${shell.id}`]);
+      }} />
     <RemoteStrip label="Disposable Mac" link={c.data().hosts[0]?.link ?? null} ended={ended()} onReconnect={() => { actions.set([...actions(), "reattach-same-target"]); ended.set(false); }} />
     <RemoteUnavailable hostLabel="Disposable Mac" panel="files" />
     <RemotePrompt controller={c} />

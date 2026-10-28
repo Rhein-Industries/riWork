@@ -2,7 +2,7 @@ import { expect, test } from "nsh/test";
 import {
   EMPTY_REMOTE, checkPairingLink, filteredFolders, linkPresentation, maskedPairingLink,
   projectConnectionNote, projectNameError, remoteErrorNotice, remoteLocalOnly, remotePanelUnavailable,
-  remoteProjectKey, remoteStrip, remoteTitle, removalConfirmation, shellOpenRefusal, singleFlight,
+  remoteProjectKey, remoteStrip, remoteTabTitle, remoteTitle, removalConfirmation, shellOpenRefusal, singleFlight, splitRemoteTitle,
   type RemoteLists, type RemoteShell, type RemoteSnapshot,
 } from "./model";
 
@@ -100,4 +100,15 @@ test("a missing riwork-remote is one short actionable line; the build recipe sta
   expect(remoteErrorNotice(missing)).toEqual({ summary: "Other Macs need the riwork-remote helper, which is not installed. Build it with riwork update.", detail: missing });
   expect(remoteErrorNotice("Relay unreachable. Retrying in 10 s")).toEqual({ summary: "Relay unreachable.", detail: "Relay unreachable. Retrying in 10 s" });
   expect(remoteErrorNotice("Relay unreachable")).toEqual({ summary: "Relay unreachable", detail: null });
+});
+
+test("2CB-REMOTE-TITLE-01 tab titles come from the native tree and split back into the host mark", () => {
+  const key = "remote:fake-mac:0123456789abcdef";
+  expect(remoteTabTitle(data, key)).toBe("⇄ Fixture Mac · 01234567");
+  expect(remoteTabTitle({ ...data, hosts: [], folders: [] }, key)).toBe("⇄ fake-mac · 01234567");
+  const titled = { ...data, titles: [{ key, title: "⇄ Fixture Mac · orchestrator (codex) · 01234567" }] };
+  expect(remoteTabTitle(titled, key)).toBe("⇄ Fixture Mac · orchestrator (codex) · 01234567");
+  expect(splitRemoteTitle(remoteTabTitle(titled, key))).toEqual(["⇄ Fixture Mac · ", "orchestrator (codex) · 01234567"]);
+  expect(splitRemoteTitle("Shell 1")).toBe(null);
+  expect(splitRemoteTitle("⇄ no separator")).toBe(null);
 });

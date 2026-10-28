@@ -5,7 +5,11 @@ export interface RemoteProject { key: string; id: string; name: string; dimmed: 
 export interface RemoteFolder {
   host: string; label: string; link: RemoteLink; count: number; creating: boolean;
   failure: string | null; note: string | null; projects: RemoteProject[];
+  /** Project keys in each order a visible Projects panel asked for. */
+  orders?: { order: string; descending: boolean; keys: string[] }[];
 }
+/** A window's Projects order, which its remote folders follow. */
+export interface RemoteOrder { order: string; descending: boolean }
 export interface RemoteWorktree { id: string; branch: string; path: string; primary: boolean }
 export interface RemoteTask { id: string; title: string; details: string; status: string; worktreeId: string | null }
 export interface RemoteShell {
@@ -18,20 +22,27 @@ export interface RemoteLists {
   tasks: RemoteTask[]; tasksLoading: boolean; tasksError: string | null;
   shells: RemoteShell[]; shellsLoading: boolean; shellsError: string | null;
   creating: boolean; failure: string | null;
+  /** Live shells as the host last listed them; null before the list arrives. */
+  live?: number | null;
 }
 export interface RemoteSnapshot {
   schema: number; hosts: RemoteHost[]; hostsError: string | null; folders: RemoteFolder[]; projects: RemoteLists[]; selected: string | null;
+  titles: { key: string; title: string }[];
 }
 export interface RemoteWants {
   folders: boolean; settings: boolean; collapsed: string[]; tabHosts: string[];
   projectKey: string | null; worktrees: boolean; tasks: boolean; shells: boolean;
+  /** Every open remote tab key, for its title; never polls a host. */
+  tabs: string[];
+  /** The window's Projects order; "" is the engine default. */
+  order: string; descending: boolean;
 }
 export interface RemoteDefaults { name: string; relay: string; routes: string }
 export interface PairRequest { name: string; relay: string; routes: string }
 export interface PairingLink { link: string; masked: string }
 export type RemotePromptKind = { kind: "add" } | { kind: "pair" } | { kind: "project"; host: string; label: string };
-export const EMPTY_REMOTE: RemoteSnapshot = { schema: 1, hosts: [], hostsError: null, folders: [], projects: [], selected: null };
-export const EMPTY_WANTS: RemoteWants = { folders: false, settings: false, collapsed: [], tabHosts: [], projectKey: null, worktrees: false, tasks: false, shells: false };
+export const EMPTY_REMOTE: RemoteSnapshot = { schema: 1, hosts: [], hostsError: null, folders: [], projects: [], selected: null, titles: [] };
+export const EMPTY_WANTS: RemoteWants = { folders: false, settings: false, collapsed: [], tabHosts: [], projectKey: null, worktrees: false, tasks: false, shells: false, tabs: [], order: "", descending: false };
 export const REMOTE_HISTORY_NOTE = "Native Codex and Claude chat history is unavailable on remote hosts. Showing remote shells.";
 export const REMOTE_UNPAIRED = "This Mac is no longer paired. Add it again in Settings.";
 
@@ -60,6 +71,20 @@ export function remoteTitle(data: RemoteSnapshot, key: string): string | null {
   const project = data.projects.find((row) => row.key === key)?.projectName ?? data.folders.find((row) => row.host === parts.host)?.projects.find((row) => row.key === key)?.name ?? parts.project.slice(0, 8);
   return `${project} (on ${remoteHostLabel(data, parts.host)})`;
 }
+/** `⇄ {host} · {detail}`, as RemoteTree::tab_title computed it from every list of
+ * that host; the host's name and the shell's short id until a snapshot names it. */
+export function remoteTabTitle(data: RemoteSnapshot, key: string): string {
+  const known = data.titles?.find((row) => row.key === key)?.title;
+  if (known) return known;
+  const [, host = "", shell = ""] = key.split(":");
+  return `⇄ ${remoteHostLabel(data, host)} · ${shell.slice(0, 8)}`;
+}
+/** remote_tree::split_remote_title: the host mark (arrow, name, separator) and the rest. */
+export function splitRemoteTitle(title: string): [string, string] | null {
+  if (!title.startsWith("⇄ ")) return null;
+  const end = title.indexOf(" · ", 2);
+  return end < 0 ? null : [title.slice(0, end + 3), title.slice(end + 3)];
+}
 export function remoteLocalOnly(data: RemoteSnapshot, key: string | null, action?: "handoff"): string | null {
   const parts = remoteProjectKey(key); if (!parts) return null;
   return action === "handoff" ? "Hand off works on the projects of this Mac." : `Not available for a project on ${remoteHostLabel(data, parts.host)}`;
@@ -78,13 +103,23 @@ export function remoteStrip(label: string, link: RemoteLink, ended: boolean): { 
   if (link === "offline") return { text: `RECONNECTING · ${label} · offline, or access was revoked`, tone: "gold", reconnect: false };
   return null; // no initial flash before the first status
 }
-export function filteredFolders(data: RemoteSnapshot, query: string): RemoteFolder[] {
-  const needle = query.trim().toLocaleLowerCase(); if (!needle) return data.folders;
-  return data.folders.map((folder) => {
+/** The folder's projects in the window's order, as RemoteTree::folders sorts them. */
+export function orderedProjects(folder: RemoteFolder, order?: RemoteOrder): RemoteProject[] {
+  const keys = order && folder.orders?.find((row) => row.order === order.order && row.descending === order.descending)?.keys;
+  if (!keys) return folder.projects;
+  const rank = new Map(keys.map((key, index) => [key, index]));
+  return [...folder.projects].sort((a, b) => (rank.get(a.key) ?? keys.length) - (rank.get(b.key) ?? keys.length));
+}
+export function filteredFolders(data: RemoteSnapshot, query: string, order?: RemoteOrder): RemoteFolder[] {
+  const needle = query.trim().toLocaleLowerCase();
+  const folders = data.folders.map((folder) => folder.orders?.length && order ? { ...folder, projects: orderedProjects(folder, order) } : folder);
+  if (!needle) return folders;
+  return folders.map((folder) => {
     const all = folder.label.toLocaleLowerCase().includes(needle);
     const projects = folder.projects.filter((project) => all || `${project.name}\n${project.id}`.toLocaleLowerCase().includes(needle));
     projects.sort((a, b) => Number(!a.name.toLocaleLowerCase().includes(needle)) - Number(!b.name.toLocaleLowerCase().includes(needle)));
-    return { ...folder, projects };
+    // "No projects" is not said while searching.
+    return { ...folder, projects, note: folder.note === "No projects" ? null : folder.note };
   }).filter((folder) => folder.projects.length > 0 || folder.label.toLocaleLowerCase().includes(needle));
 }
 export function projectConnectionNote(project: RemoteLists): string | null {

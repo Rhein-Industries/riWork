@@ -20,7 +20,7 @@ use nsh_core::{
     prelude::*,
 };
 use riwork_engine::{
-    project_sort::ProjectOrder,
+    project_sort::{ProjectOrder, ProjectSort},
     remote_cache::{self, Kept},
     remote_hosts::{Daemons, PairRequest, RemoteCli, RemoteError},
     remote_tree::{
@@ -42,20 +42,46 @@ pub struct RemoteWants {
     pub worktrees: bool,
     pub tasks: bool,
     pub shells: bool,
+    /// Every open remote tab (`remote:{host}:{shell}`), shown or not, for its
+    /// title. Titles never ask a host for anything.
+    #[serde(default)]
+    pub tabs: Vec<String>,
+    /// The window's Projects order (`name`, `added`, `live`); its remote
+    /// folders follow it. Empty means the engine's default.
+    #[serde(default)]
+    pub order: String,
+    #[serde(default)]
+    pub descending: bool,
 }
 impl RemoteWants {
+    fn project_order(&self) -> ProjectOrder {
+        let by = match self.order.as_str() {
+            "name" => ProjectSort::Name,
+            "added" => ProjectSort::DateAdded,
+            "live" => ProjectSort::LiveSessions,
+            "edited" => ProjectSort::LastEdited,
+            _ => return ProjectOrder::default(),
+        };
+        ProjectOrder {
+            by,
+            descending: self.descending,
+        }
+    }
     fn engine(&self) -> Result<Wants, String> {
         let selected = self
             .project_key
             .as_deref()
             .map(|key| {
                 let (host, project) = remote_parts(key)?;
+                // As GPUI's remote_wants: each panel names things by worktree,
+                // worktree rows count tasks, and a worktree click decides from
+                // the host's shells.
                 Ok::<_, String>(SelectedWants {
                     host: host.into(),
                     project: project.into(),
-                    worktrees: self.worktrees,
-                    tasks: self.tasks,
-                    shells: self.shells,
+                    worktrees: self.worktrees || self.tasks || self.shells,
+                    tasks: self.tasks || self.worktrees,
+                    shells: self.shells || self.worktrees,
                 })
             })
             .transpose()?;
@@ -101,6 +127,16 @@ pub struct RemoteFolderDto {
     pub failure: Option<String>,
     pub note: Option<String>,
     pub projects: Vec<RemoteProjectDto>,
+    /// The project keys in each order a visible Projects panel asked for.
+    #[serde(default)]
+    pub orders: Vec<RemoteFolderOrder>,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsObject)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteFolderOrder {
+    pub order: String,
+    pub descending: bool,
+    pub keys: Vec<String>,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsObject)]
 #[serde(rename_all = "camelCase")]
@@ -169,6 +205,15 @@ pub struct RemoteProjectLists {
     pub shells_error: Option<String>,
     pub creating: bool,
     pub failure: Option<String>,
+    /// Live shells as last listed (what the status bar counts), else none.
+    #[serde(default)]
+    pub live: Option<u32>,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsObject)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteTabTitle {
+    pub key: String,
+    pub title: String,
 }
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsObject)]
 #[serde(rename_all = "camelCase")]
@@ -179,6 +224,11 @@ pub struct RemoteSnapshot {
     pub folders: Vec<RemoteFolderDto>,
     pub projects: Vec<RemoteProjectLists>,
     pub selected: Option<String>,
+    /// `⇄ {host} · {detail}` for every open remote tab, from whatever list of
+    /// that host knows the shell (any project, its orchestrators, or a creation
+    /// reply), else the shell's short id.
+    #[serde(default)]
+    pub titles: Vec<RemoteTabTitle>,
 }
 impl JsValue for Snapshot<RemoteSnapshot> {
     fn ts_type(types: &mut TsTypes) -> String {
@@ -224,6 +274,13 @@ pub struct RemoteCreateShell {
     pub worktree_id: Option<String>,
     pub kind: String,
     pub unrestricted: bool,
+}
+/// The project's orchestrator to open, or the notice that says why there is none.
+#[derive(Clone, Debug, Serialize, Deserialize, JsObject)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteOrchestrator {
+    pub shell: Option<RemoteShellDto>,
+    pub notice: Option<String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, JsObject)]
 #[serde(rename_all = "camelCase")]
@@ -671,6 +728,50 @@ impl RemoteService {
         project.map(|p| RemoteProjectDto { key: tree::project_key(&host, &p.id), id: p.id, name: p.name, dimmed: false, stats: tree::Stats::default().line() })
             .ok_or_else(|| format!("{}: {}", if uncertain || failure.is_none() { "broken" } else { "refused" }, failure.unwrap_or_else(|| "The host was removed while its reply arrived. Check its projects before trying again.".into())))
     }
+    /// The live orchestrator of the selected remote project if one is listed;
+    /// else the host is asked once. The desktop never starts one.
+    pub fn orchestrator(&self, key: &str) -> Result<RemoteOrchestrator, String> {
+        let (host, project) = remote_parts(key)?;
+        let known = self
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .tree
+            .orchestrator(host, Some(project))
+            .cloned();
+        if let Some(shell) = known {
+            return Ok(RemoteOrchestrator {
+                shell: Some(shell.into()),
+                notice: None,
+            });
+        }
+        let request = Request::Orchestrators { host: host.into() };
+        let reply = self.backend.run(&request);
+        let listed = matches!(reply, Reply::Orchestrators(Ok(_)));
+        let (shell, name) = {
+            let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+            state.tree.apply(&request, reply);
+            (
+                state.tree.orchestrator(host, Some(project)).cloned(),
+                state.tree.host_name(host),
+            )
+        };
+        self.publish();
+        Ok(match shell {
+            Some(shell) => RemoteOrchestrator {
+                shell: Some(shell.into()),
+                notice: None,
+            },
+            None => RemoteOrchestrator {
+                shell: None,
+                notice: Some(if listed {
+                    format!("{name} has no project orchestrator running")
+                } else {
+                    format!("Cannot reach {name}")
+                }),
+            },
+        })
+    }
     pub fn create_shell(&self, request: RemoteCreateShell) -> Result<RemoteShellDto, String> {
         let (host, project) = remote_parts(&request.project_key)?;
         let kind = match request.kind.as_str() {
@@ -698,21 +799,27 @@ impl RemoteService {
             scope
         };
         self.publish();
-        let result = self
-            .backend
-            .create_shell(host, &scope, kind, request.unrestricted);
+        // As the GPUI desktop: an agent follows this Mac's "Agent terminals run
+        // unrestricted", read now so every window follows a change at once; a
+        // plain shell never is. The request's own flag is not trusted.
+        let unrestricted = kind != NewShellKind::Shell
+            && riwork_core::settings::agent_terminals_unrestricted(&self.home);
+        let result = self.backend.create_shell(host, &scope, kind, unrestricted);
         let uncertain = result.as_ref().err().is_some_and(tree::outcome_unknown);
-        let (shell, failure) = {
-            let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-            let shell = state.tree.finish_shell(host, project, result);
-            let failure = state
-                .tree
-                .selected_view(&request.project_key)
-                .and_then(|view| view.failure);
-            (shell, failure)
-        };
+        // The window's notice is the error's own message, as in GPUI; the
+        // Shells panel keeps the project's fuller failure row.
+        let message = result.as_ref().err().map(RemoteError::message);
+        let shell = self
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .tree
+            .finish_shell(host, project, result);
         self.publish();
-        shell.map(Into::into).ok_or_else(|| format!("{}: {}", if uncertain || failure.is_none() { "broken" } else { "refused" }, failure.unwrap_or_else(|| "The host was removed while its reply arrived. Check its terminals before trying again.".into())))
+        shell.map(Into::into).ok_or_else(|| match message {
+            Some(message) => format!("{}: {message}", if uncertain { "broken" } else { "refused" }),
+            None => "broken: The host was removed while its reply arrived. Check its terminals before trying again.".into(),
+        })
     }
 }
 
@@ -727,6 +834,38 @@ fn link_name(link: Option<Link>) -> Option<String> {
     })
 }
 fn snapshot(state: &State) -> RemoteSnapshot {
+    // One engine sort per distinct order among windows showing Projects, so
+    // each window's folders follow its own order (GPUI's one app-wide order is
+    // the case where they all agree).
+    let mut orders: Vec<_> = state
+        .observers
+        .values()
+        .filter(|w| w.folders)
+        .map(|w| (w.order.clone(), w.descending, w.project_order()))
+        .collect();
+    orders.sort_by(|a, b| (&a.0, a.1).cmp(&(&b.0, b.1)));
+    orders.dedup_by(|a, b| a.0 == b.0 && a.1 == b.1);
+    let ordered: Vec<_> = orders
+        .into_iter()
+        .map(|(order, descending, by)| {
+            let keys: BTreeMap<_, _> = state
+                .tree
+                .folders("", by, &HashSet::new(), None)
+                .into_iter()
+                .map(|folder| {
+                    (
+                        folder.host,
+                        folder
+                            .projects
+                            .into_iter()
+                            .map(|p| p.key)
+                            .collect::<Vec<_>>(),
+                    )
+                })
+                .collect();
+            (order, descending, keys)
+        })
+        .collect();
     let folders = state
         .tree
         .folders(
@@ -737,6 +876,16 @@ fn snapshot(state: &State) -> RemoteSnapshot {
         )
         .into_iter()
         .map(|folder| RemoteFolderDto {
+            orders: ordered
+                .iter()
+                .filter_map(|(order, descending, keys)| {
+                    Some(RemoteFolderOrder {
+                        order: order.clone(),
+                        descending: *descending,
+                        keys: keys.get(&folder.host)?.clone(),
+                    })
+                })
+                .collect(),
             host: folder.host,
             label: folder.label,
             link: link_name(folder.link),
@@ -776,6 +925,10 @@ fn snapshot(state: &State) -> RemoteSnapshot {
                 .tree
                 .selected_view(&key)
                 .map(|view| RemoteProjectLists {
+                    live: state
+                        .tree
+                        .live_shells(&view.host, &view.project)
+                        .map(|live| live as u32),
                     key,
                     host: view.host,
                     project: view.project,
@@ -818,8 +971,24 @@ fn snapshot(state: &State) -> RemoteSnapshot {
                 })
         })
         .collect();
+    let mut tabs: Vec<_> = state
+        .observers
+        .values()
+        .flat_map(|w| w.tabs.iter().cloned())
+        .collect();
+    tabs.sort();
+    tabs.dedup();
+    let titles = tabs
+        .into_iter()
+        .filter_map(|key| {
+            let (host, shell) = key.strip_prefix("remote:")?.split_once(':')?;
+            let title = state.tree.tab_title(host, shell);
+            Some(RemoteTabTitle { key, title })
+        })
+        .collect();
     RemoteSnapshot {
         schema: 1,
+        titles,
         hosts: state
             .tree
             .hosts()
@@ -887,6 +1056,28 @@ fn secret_error(error: &str, secret: Option<&str>) -> String {
         })
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+impl RemoteService {
+    /// For the first window of an ordinary launch: asking for a folder chooses
+    /// a project of this Mac, so the record is cleared and nothing reopens;
+    /// otherwise the remote project the last window selected, if valid.
+    pub fn launch_selection(&self, folder: bool) -> Option<String> {
+        if folder {
+            let _ = self.select(None);
+            return None;
+        }
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .selected
+            .clone()
+            .filter(|key| remote_parts(key).is_ok())
+    }
+}
+/// `RemoteService::launch_selection` on the process service, before any AppView.
+pub fn launch_selection(folder: bool) -> Option<String> {
+    process().ok()?.launch_selection(folder)
 }
 
 static PROCESS: OnceLock<Arc<RemoteService>> = OnceLock::new();
@@ -1023,6 +1214,10 @@ impl Remote {
         })
         .await
     }
+    /// ⌘⌥O and P·ORCH on a project of another Mac.
+    pub async fn orchestrator(key: String) -> Result<RemoteOrchestrator, String> {
+        service::blocking(move || process()?.orchestrator(&key)).await
+    }
     pub async fn orchestrators(host: String) -> Result<Vec<RemoteShellDto>, String> {
         service::blocking(move || {
             let host = identifier(&host)?;
@@ -1096,12 +1291,15 @@ mod tests {
     struct Fake {
         calls: Mutex<Vec<String>>,
         creates: AtomicUsize,
+        /// Answer `orchestrators.list` with an empty list instead of failing.
+        orchestrators_listed: std::sync::atomic::AtomicBool,
     }
     impl Fake {
         fn new() -> Arc<Self> {
             Arc::new(Self {
                 calls: Mutex::new(Vec::new()),
                 creates: AtomicUsize::new(0),
+                orchestrators_listed: Default::default(),
             })
         }
     }
@@ -1125,6 +1323,11 @@ mod tests {
                     name: "Fixture project".into(),
                     created_at: 1,
                 }])),
+                Request::Orchestrators { .. }
+                    if self.orchestrators_listed.load(Ordering::SeqCst) =>
+                {
+                    Reply::Orchestrators(Ok(Vec::new()))
+                }
                 _ => failed(request, "fixture list not supplied".into()),
             }
         }
@@ -1305,6 +1508,130 @@ mod tests {
         assert!(remote.current().projects[0].unpaired);
     }
     #[test]
+    fn open_tabs_are_titled_from_any_list_of_their_host_without_asking_it() {
+        let (_directory, remote, fake) = fixture();
+        answer(&remote, Request::Hosts);
+        let orchestrator = format!("remote:{HOST}:0123456789abcdef");
+        let unknown = format!("remote:{HOST}:fedcba9876543210");
+        let (_observation, _topic) = remote
+            .observe(RemoteWants {
+                tabs: vec![orchestrator.clone(), unknown.clone()],
+                ..Default::default()
+            })
+            .unwrap();
+        // Titles are memory-only: an unseen window's tab asks the host nothing.
+        assert!(remote.plan(Instant::now()).is_empty());
+        let request = Request::Orchestrators { host: HOST.into() };
+        remote.state.lock().unwrap().tree.apply(
+            &request,
+            Reply::Orchestrators(Ok(vec![tree::RemoteShell {
+                id: "0123456789abcdef".into(),
+                project_id: None,
+                worktree_id: None,
+                orchestrator: true,
+                chat: false,
+                harness: Some("codex".into()),
+                alive: true,
+                cwd: "/FAKE".into(),
+            }])),
+        );
+        let titles = remote.current().titles;
+        assert_eq!(
+            titles,
+            vec![
+                RemoteTabTitle {
+                    key: orchestrator,
+                    title: "⇄ Disposable Mac · orchestrator (codex) · 01234567".into(),
+                },
+                RemoteTabTitle {
+                    key: unknown,
+                    title: "⇄ Disposable Mac · fedcba98".into(),
+                },
+            ]
+        );
+        assert_eq!(fake.calls.lock().unwrap().len(), 1); // the registry only
+    }
+
+    #[test]
+    fn an_unlisted_orchestrator_is_asked_for_once_and_explained() {
+        let (_directory, remote, fake) = fixture();
+        answer(&remote, Request::Hosts);
+        let key = tree::project_key(HOST, PROJECT);
+        // The fake fails the orchestrator list: the host cannot be reached.
+        let result = remote.orchestrator(&key).unwrap();
+        assert!(result.shell.is_none());
+        assert_eq!(
+            result.notice.as_deref(),
+            Some("Cannot reach Disposable Mac")
+        );
+        let asked = |calls: &[String]| {
+            calls
+                .iter()
+                .filter(|c| c.starts_with("Orchestrators"))
+                .count()
+        };
+        assert_eq!(asked(&fake.calls.lock().unwrap()), 1);
+        // Listed, but only a dead one and another project's: nothing to open.
+        let request = Request::Orchestrators { host: HOST.into() };
+        let orchestrator = |id: &str, project: Option<&str>, alive| tree::RemoteShell {
+            id: id.into(),
+            project_id: project.map(Into::into),
+            worktree_id: None,
+            orchestrator: true,
+            chat: false,
+            harness: None,
+            alive,
+            cwd: "/FAKE".into(),
+        };
+        remote.state.lock().unwrap().tree.apply(
+            &request,
+            Reply::Orchestrators(Ok(vec![
+                orchestrator("dead", Some(PROJECT), false),
+                orchestrator("other", Some("other-project"), true),
+            ])),
+        );
+        fake.orchestrators_listed.store(true, Ordering::SeqCst);
+        assert_eq!(
+            remote.orchestrator(&key).unwrap().notice.as_deref(),
+            Some("Disposable Mac has no project orchestrator running")
+        );
+        // A live one already listed opens without asking again.
+        remote.state.lock().unwrap().tree.apply(
+            &request,
+            Reply::Orchestrators(Ok(vec![orchestrator("live", Some(PROJECT), true)])),
+        );
+        let before = asked(&fake.calls.lock().unwrap());
+        let found = remote.orchestrator(&key).unwrap();
+        assert_eq!(found.shell.map(|shell| shell.id).as_deref(), Some("live"));
+        assert_eq!(asked(&fake.calls.lock().unwrap()), before);
+    }
+
+    #[test]
+    fn a_plain_launch_reopens_the_remote_selection_and_a_folder_launch_clears_it() {
+        let (directory, remote, fake) = fixture();
+        let key = tree::project_key(HOST, PROJECT);
+        remote.select(Some(key.clone())).unwrap();
+        // A new process starts from what the last one kept.
+        let next = RemoteService::new(directory.path().into(), fake.clone());
+        assert_eq!(next.launch_selection(false).as_deref(), Some(key.as_str()));
+        assert_eq!(next.launch_selection(true), None);
+        assert_eq!(remote_cache::load(directory.path()).selected, None);
+        let after = RemoteService::new(directory.path().into(), fake.clone());
+        assert_eq!(after.launch_selection(false), None);
+        // A damaged record never becomes a window.
+        remote_cache::save(
+            directory.path(),
+            &Kept {
+                selected: Some("remote:bad host:project".into()),
+                hosts: Default::default(),
+            },
+        )
+        .unwrap();
+        let damaged = RemoteService::new(directory.path().into(), fake);
+        assert_eq!(damaged.launch_selection(false), None);
+    }
+
+    #[test]
     fn invalid_pairing_and_project_names_never_reach_the_fake() {
         let (_directory, remote, fake) = fixture();
         for link in ["", "https://not-a-pair", "riwork://pair?with space"] {
@@ -1363,15 +1690,26 @@ mod tests {
                 unrestricted: true,
             })
             .unwrap_err();
-        assert!(error.starts_with("broken:"));
-        assert!(error.contains("shell may exist"));
+        // The notice is the transport's message; the Shells panel keeps the
+        // project's own failure row with the advice.
+        assert_eq!(error, "broken: No answer in time");
+        assert!(
+            remote
+                .current()
+                .projects
+                .iter()
+                .find(|lists| lists.key == key)
+                .and_then(|lists| lists.failure.clone())
+                .unwrap()
+                .contains("shell may exist")
+        );
         assert!(
             fake.calls
                 .lock()
                 .unwrap()
                 .last()
                 .unwrap()
-                .contains("Project(\"fixture-project\"):shell:true")
+                .contains("Project(\"fixture-project\"):shell:false") // a plain shell never is unrestricted
         );
         for _ in 0..4 {
             let _ = remote.plan(Instant::now() + Duration::from_secs(100));
@@ -1389,7 +1727,7 @@ mod tests {
                 .unwrap()
                 .last()
                 .unwrap()
-                .contains("Worktree(\"known-tree\"):codex:false")
+                .contains("Worktree(\"known-tree\"):codex:true") // this Mac's default setting
         );
         remote.state.lock().unwrap().tree.begin_shell(HOST, PROJECT);
         let before = fake.creates.load(Ordering::SeqCst);
