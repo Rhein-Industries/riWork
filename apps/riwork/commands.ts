@@ -10,6 +10,8 @@ export interface CommandHooks {
   /** Create a local shell, optionally splitting the active pane first. */
   newShell: (split?: "right" | "down") => void;
   newSubshell?: () => void;
+  /** Consumes an agent shortcut only in a remote project. */
+  remoteAgent?: (kind: string) => boolean;
   openVim?: () => void;
   /** Terminal owns Find; panels keep their own search input. */
   find?: (id: string, args?: { query?: string }) => boolean;
@@ -74,6 +76,8 @@ export function workspaceCommands(
     return () => { for (const unbind of bindings) unbind(); };
   });
   function dispatch(id: string, args?: { query?: string }) {
+    const agent = ({ openCodex: "codex", openClaude: "claude", openGrok: "grok", openMuse: "muse" } as Record<string, string>)[id];
+    if (agent && !hooks.blocked() && hooks.remoteAgent?.(agent)) { stripOpen.set(false); return; }
     if (!hooks.blocked() && ["find", "search", "findNext", "findPrevious", "findClose"].includes(id)
       && hooks.find?.(id === "search" ? "find" : id, args)) { stripOpen.set(false); return; }
     if (!commandAllowed(id, hooks.blocked(), () => stripOpen.set(false))) return;
@@ -102,7 +106,8 @@ export function workspaceCommands(
     id === "nextTab" || id === "previousTab" ? { when: "always" } : undefined));
   // Panel search owns ⌘F; the remaining deferred chords stay inert.
   for (const key of new Set(DEFERRED_KEYMAP.map(([key]) => key))) {
-    if (key !== "escape" && key !== "mod+f") cleanup(keymap.bind(key, () => { stripOpen.set(false); }));
+    const agent = DEFERRED_KEYMAP.find(([chord, id, context]) => chord === key && context === "window" && ["openCodex", "openClaude", "openGrok", "openMuse"].includes(id));
+    if (key !== "escape" && key !== "mod+f") cleanup(keymap.bind(key, () => { stripOpen.set(false); if (agent) dispatch(agent[1]); }));
   }
   cleanup(keymap.bind("escape", () => {
     if (stripOpen()) stripOpen.set(false);

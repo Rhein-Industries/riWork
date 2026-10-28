@@ -1,0 +1,55 @@
+{
+  "status": "passed",
+  "verification_environment": "isolated fixtures only",
+  "source_sha256": {
+    "apps/riwork/App.tsx": "99de4599d2e6d9b7f7a4298b6652bbfd9b6aae07fdb6221e3ff2b372de14edde",
+    "apps/riwork/src/host_layouts.rs": "8b66ae4b620a0ba975456a4fd91f893b08ed8f14d8f6a987a501457d812b2df4",
+    "crates/riwork-desktop/src/nsh_host.rs": "3caa387dd109e32166a6a6ffe44b7e173d82da0d16dc166890abdf9ea9d78873",
+    "crates/riwork-desktop/src/nsh_pending_open_tests.rs": "ccc9ebd03a582b67b8f1aae9a01dfcae4c239628caa0a493fa90fd4f77705853"
+  },
+  "bundle_sha256": "bca6cdd234895f6325bfc21de69d511743f32da3878597ce2a99d912f3eba05f",
+  "commands": [
+    {
+      "name": "app-fixture-build",
+      "argv": [
+        "/tmp/riwork-nsh-toolchain-60f8aec4.18l3zV/nsh-cli-0.3.0/bin/nsh",
+        "build",
+        "apps/riwork/PendingOpen.fixture.tsx",
+        "--out",
+        "/private/tmp/riwork-p6b-fa930048.vn_exbl9/pending-open-final/ordering-0o2qeeq6/bundle"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-spec-terminal-layout",
+      "stdout": "/private/tmp/riwork-p6b-fa930048.vn_exbl9/pending-open-final/ordering-0o2qeeq6/app-fixture-build.stdout",
+      "stderr": "/private/tmp/riwork-p6b-fa930048.vn_exbl9/pending-open-final/ordering-0o2qeeq6/app-fixture-build.stderr",
+      "exit_code": 0,
+      "duration_seconds": 6.099,
+      "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderr_sha256": "b25392a24e9572964229d9e734164a9347b42d69e637550b9ac23cff4976738d"
+    },
+    {
+      "name": "app-recovery",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "riwork-desktop",
+        "--bin",
+        "riwork",
+        "pending_open_tests::production_app_recovers_pending_open_after_failed_quit_and_restart",
+        "--locked",
+        "--offline",
+        "--",
+        "--ignored",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "cwd": "/Users/dominik/orca/projects/riWork-nsh-spec-terminal-layout",
+      "stdout": "/private/tmp/riwork-p6b-fa930048.vn_exbl9/pending-open-final/ordering-0o2qeeq6/app-recovery.stdout",
+      "stderr": "/private/tmp/riwork-p6b-fa930048.vn_exbl9/pending-open-final/ordering-0o2qeeq6/app-recovery.stderr",
+      "exit_code": 0,
+      "duration_seconds": 13.472,
+      "stdout_sha256": "309029e45d40261b307993b8b1a59bb78b4e21b850e5de878575d819f7ff4063",
+      "stderr_sha256": "6ccf4a84d2e98840755387960699f8fd5b763f2853322008b8e19c2f86803a5a"
+    }
+  ]
+}

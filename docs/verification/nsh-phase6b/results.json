@@ -1,0 +1,65 @@
+{
+  "base": "4df3822dee9f4018be1670823ad49c2987cd6579",
+  "branch": "nsh-spec-terminal-layout",
+  "verification_environment": "private HOME/RIWORK_HOME; isolated fixtures; IP network denied; Unix fixture IPC only",
+  "live_targets_touched": "none beyond own shell/worktree and disposable test processes",
+  "effective_service_tier": "default, Fast OFF (user-verified); gpt-6.1-sol, effort/account unchanged",
+  "continuation_2_descendants": 0,
+  "results": {
+    "workspace-desktop-tests": {
+      "exit_code": 0,
+      "raw_log": "/tmp/riwork-p6b-fa930048.vn_exbl9/logs/workspace-desktop-tests.log",
+      "sha256": "9e7ca2f7d9d5cef5654d4b6017d910bc3195218fe27d2b7e36c2389a2886532d"
+    },
+    "native-final-settled": {
+      "exit_code": 0,
+      "raw_log": "/tmp/riwork-p6b-fa930048.vn_exbl9/logs/native-final-settled.log",
+      "sha256": "1ed0fd990d0cbd72cc64b0bc35539f50d260d6bc736f01c7c609ac2b921f8fc3"
+    },
+    "phase6b-screens-final": {
+      "exit_code": 0,
+      "raw_log": "/tmp/riwork-p6b-fa930048.vn_exbl9/logs/phase6b-screens-final.log",
+      "sha256": "08bb28146bead72986edf5c756a0a693abb6e8c1257cd93aaec5e11b3272fcb1"
+    },
+    "pending-open-final": {
+      "exit_code": 0,
+      "raw_log": "/tmp/riwork-p6b-fa930048.vn_exbl9/logs/pending-open-final.log",
+      "sha256": "2b7ef9aca893f4e28ab3c11be2c70b6c535b5c3db56096970a717481817fdc75"
+    },
+    "cli-suite": {
+      "exit_code": 0,
+      "raw_log": "/tmp/riwork-p6b-fa930048.vn_exbl9/logs/cli-suite.log",
+      "sha256": "c5826df394ddf023f862238b79dd753dc00a746ded7f920ac477c36641d26825"
+    },
+    "format-check": {
+      "exit_code": 0,
+      "raw_log": "/tmp/riwork-p6b-fa930048.vn_exbl9/logs/format-check.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "polling-check": {
+      "exit_code": 0,
+      "raw_log": "/tmp/riwork-p6b-fa930048.vn_exbl9/logs/polling-check.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "diff-check": {
+      "exit_code": 0,
+      "raw_log": "/tmp/riwork-p6b-fa930048.vn_exbl9/logs/diff-check.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "unchanged-engines": {
+      "exit_code": 0,
+      "raw_log": "/tmp/riwork-p6b-fa930048.vn_exbl9/logs/unchanged-engines.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "runner-syntax": {
+      "exit_code": 0,
+      "raw_log": "/tmp/riwork-p6b-fa930048.vn_exbl9/logs/runner-syntax.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "staged-whitespace-final": {
+      "exit_code": 0,
+      "raw_log": "/tmp/riwork-p6b-fa930048.vn_exbl9/logs/staged-whitespace-final.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  }
+}

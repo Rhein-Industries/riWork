@@ -1,0 +1,13 @@
+{
+  "root": "/tmp/riwork-p6b-fa930048.vn_exbl9",
+  "target": "/tmp/riwork-p6b-fa930048.vn_exbl9/target",
+  "cargo": "/Users/dominik/.cargo/bin/cargo",
+  "nsh": "/tmp/riwork-nsh-toolchain-60f8aec4.18l3zV/nsh-cli-0.3.0/bin/nsh",
+  "tsc": "/Users/dominik/Library/Caches/nsh/typescript-7.0.2-darwin-arm64/package/lib/tsc",
+  "ghostty": "/Users/dominik/orca/projects/riWork-nsh-p2-terminals/crates/riwork-nsh-terminal/.runtime/pinned/install",
+  "verification_environment": "private HOME and RIWORK_HOME; fixture stores and windowless NSH engines only",
+  "live_targets_touched": [],
+  "cargo_jobs": 2,
+  "offline": true,
+  "effective_service_tier": "default (user-verified); Fast off; inherited model/effort/account unchanged"
+}

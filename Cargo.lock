@@ -6562,6 +6562,7 @@ dependencies = [
  "anyhow",
  "async-channel",
  "base64 0.22.1",
+ "chrono",
  "futures-util",
  "libc",
  "notify",

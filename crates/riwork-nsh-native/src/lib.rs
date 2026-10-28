@@ -16,6 +16,8 @@ mod memo;
 pub mod orchestrators;
 pub mod overview;
 mod presence;
+pub mod remote;
+pub mod schedules;
 pub mod service;
 pub mod settings;
 pub mod tabs;
@@ -48,6 +50,8 @@ fn native(registry: &mut Registry) {
         .module::<chat::Chat>()
         .module::<usage::Usage>()
         .module::<usage::Accounts>()
+        .module::<schedules::Schedules>()
+        .module::<remote::Remote>()
         .class::<chat::ChatHandle>()
         .class::<Subscription>();
     riwork_nsh_workspace::register_layouts(registry, service::process_home);
@@ -332,6 +336,8 @@ mod tests {
                 "Files",
                 "Layouts",
                 "Orchestrators",
+                "Remote",
+                "Schedules",
                 "Sessions",
                 "Settings",
                 "Store",

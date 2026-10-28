@@ -258,19 +258,47 @@ async fn worktree_presence_has_a_deadline_without_restarting_empty_session_fallb
     let tab_listener = service.subscribe_tabs(project.id).await.unwrap();
     tab_listener.recv().await.unwrap();
     assert_eq!(listener.recv().await.unwrap().data.worktrees.len(), 1);
+    // FSEvents may deliver project creation after the watcher is registered.
+    // That STORE event legitimately refreshes tabs. Measure a quiet presence
+    // interval after setup has settled, rather than charging setup to presence.
+    let counts = || {
+        (
+            sessions.samples.load(Ordering::SeqCst),
+            tabs.0.load(Ordering::SeqCst),
+        )
+    };
+    let started = std::time::Instant::now();
+    let mut quiet = started;
+    let mut initial = counts();
+    loop {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let next = counts();
+        if next != initial {
+            initial = next;
+            quiet = std::time::Instant::now();
+        }
+        if quiet.elapsed() >= Duration::from_millis(500) {
+            break;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "fixture setup did not settle"
+        );
+    }
+    let presence = store.presence_refreshes.load(Ordering::SeqCst);
     tokio::time::sleep(SESSION_SAMPLE_INTERVAL + Duration::from_millis(200)).await;
     assert!(
-        store.presence_refreshes.load(Ordering::SeqCst) >= 1,
+        store.presence_refreshes.load(Ordering::SeqCst) > presence,
         "worktrees still need their independent presence refresh"
     );
     assert_eq!(
         sessions.samples.load(Ordering::SeqCst),
-        1,
+        initial.0,
         "presence refresh must not query the empty session inventory"
     );
     assert_eq!(
         tabs.0.load(Ordering::SeqCst),
-        1,
+        initial.1,
         "presence refresh must not indirectly query sessions through tab inventory"
     );
 }
