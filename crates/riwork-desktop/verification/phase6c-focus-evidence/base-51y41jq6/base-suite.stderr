@@ -1,0 +1,31 @@
+   Compiling zerocopy v0.8.59
+   Compiling rustls v0.23.45
+   Compiling rustls-webpki v0.103.15
+   Compiling ppv-lite86 v0.2.21
+   Compiling rand_chacha v0.9.0
+   Compiling aho-corasick v1.1.5
+   Compiling rand v0.9.5
+   Compiling percent-encoding v2.3.2
+   Compiling regex-automata v0.4.18
+   Compiling tungstenite v0.28.0
+   Compiling form_urlencoded v1.2.2
+   Compiling tokio-rustls v0.26.6
+   Compiling crossbeam-utils v0.8.23
+   Compiling simd-adler32 v0.3.10
+   Compiling miniz_oxide v0.9.1
+   Compiling tokio-tungstenite v0.28.0
+   Compiling url v2.5.8
+   Compiling nsh-core v0.3.0
+   Compiling flate2 v1.1.10
+   Compiling fancy-regex v0.16.2
+   Compiling syntect v5.3.0
+   Compiling crossbeam-channel v0.5.17
+   Compiling regex v1.13.1
+   Compiling two-face v0.4.5
+   Compiling nsh-engine v0.3.0
+   Compiling nsh-testing v0.3.0
+   Compiling nsh-base v0.3.0 (/Users/dominik/orca/projects/riWork-nsh-p1-fix-host/apps/riwork/vendor/nsh-base)
+    Finished `test` profile [unoptimized] target(s) in 21.79s
+     Running unittests src/lib.rs (target/debug/deps/nsh_base-4f423c327251293d)
+     Running tests/base/main.rs (target/debug/deps/base-f1c6c403117c470f)
+   Doc-tests nsh_base

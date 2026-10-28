@@ -1,0 +1,3 @@
+   Compiling riwork-nsh-native v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p1-fix-host/crates/riwork-nsh-native)
+    Finished `test` profile [unoptimized] target(s) in 3.57s
+     Running tests/settings_cua_focus.rs (target/debug/deps/settings_cua_focus-b0956dbaf1979f7f)

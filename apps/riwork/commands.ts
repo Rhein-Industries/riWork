@@ -11,6 +11,7 @@ export interface CommandHooks {
   newShell: (split?: "right" | "down") => void;
   newSubshell?: () => void;
   openVim?: () => void;
+  appPreview?: () => void;
   /** Terminal owns Find; panels keep their own search input. */
   find?: (id: string, args?: { query?: string }) => boolean;
   closeTab: () => void;
@@ -86,6 +87,7 @@ export function workspaceCommands(
     else if (id === "newTab" || id === "newShell") hooks.newShell();
     else if (id === "newSubshell") hooks.newSubshell?.();
     else if (id === "openVim") hooks.openVim?.();
+    else if (id === "appPreview") hooks.appPreview?.();
     else if (id === "splitRight" || id === "splitDown") hooks.newShell(id === "splitDown" ? "down" : "right");
     else if (id === "closePane") hooks.closePane();
     else if (id === "closeTab") hooks.closeTab();

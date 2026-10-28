@@ -1,0 +1,13 @@
+    Finished `test` profile [unoptimized] target(s) in 0.20s
+     Running unittests src/lib.rs (target/debug/deps/riwork_nsh_native-a7189a9760fc190e)
+     Running tests/appearance.rs (target/debug/deps/appearance-d4d65de5c1f14933)
+     Running tests/chat_bridge.rs (target/debug/deps/chat_bridge-568f5bb17de6a2d5)
+     Running tests/dashboard_bridge.rs (target/debug/deps/dashboard_bridge-0642d444e5201472)
+     Running tests/files_bridge.rs (target/debug/deps/files_bridge-50c57076ae850400)
+     Running tests/layout_session.rs (target/debug/deps/layout_session-ac072e114101c04f)
+     Running tests/native_headless.rs (target/debug/deps/native_headless-f5d1e77e4006f6ca)
+     Running tests/panel_crud.rs (target/debug/deps/panel_crud-f3eb9eee7ba2221f)
+     Running tests/services.rs (target/debug/deps/services-2e6104a1473feedd)
+     Running tests/settings.rs (target/debug/deps/settings-29cd155ceefb7ee6)
+     Running tests/usage_bridge.rs (target/debug/deps/usage_bridge-00708eed0335bcb0)
+   Doc-tests riwork_nsh_native

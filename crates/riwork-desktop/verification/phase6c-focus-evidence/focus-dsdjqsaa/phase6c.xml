@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="nsh test" tests="2" failures="0" errors="0" skipped="0" time="4.576">
+  <testsuite name="apps/riwork/tests/SettingsCuaFocus.test.tsx" tests="2" failures="0" errors="0" skipped="0" time="1.037">
+    <testcase classname="apps/riwork/tests/SettingsCuaFocus.test.tsx" name="P6C Focus preserves an in-panel input on show with Cua ready=false" time="0.531"/>
+    <testcase classname="apps/riwork/tests/SettingsCuaFocus.test.tsx" name="P6C Focus preserves an in-panel input on show with Cua ready=true" time="0.506"/>
+  </testsuite>
+</testsuites>

@@ -1,5 +1,5 @@
-import { Text, View, cleanup, effect, keymap, signal, type JSX, type YNode } from "nsh";
-import { Button, Switch } from "nsh/base";
+import { Text, cleanup, effect, keymap, signal, type JSX, type YNode } from "nsh";
+import { Button, Switch, View } from "../SettingsFocus";
 import { Settings } from "riwork/native";
 import { DEFAULT_THEME, space, type InterfaceTheme } from "../appearance";
 

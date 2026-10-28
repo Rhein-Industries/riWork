@@ -4,9 +4,11 @@
 //! `[nsh_base::registry(), registry()]` once. All windows share the same process
 //! service; neither subscription registration nor delivery does domain I/O on an
 //! engine thread. See the crate README for lifecycle and test instructions.
+pub mod app_preview;
 pub mod appearance;
 pub mod backend;
 pub mod chat;
+pub mod cua;
 pub mod dashboard;
 pub mod dto;
 pub mod files;
@@ -53,6 +55,9 @@ fn native(registry: &mut Registry) {
         .module::<chat::Chat>()
         .module::<usage::Usage>()
         .module::<usage::Accounts>()
+        .module::<cua::Cua>()
+        .module::<app_preview::Previews>()
+        .class::<app_preview::PreviewHandle>()
         .class::<chat::ChatHandle>()
         .class::<Subscription>();
     riwork_nsh_workspace::register_layouts(registry, service::process_home);
@@ -371,11 +376,13 @@ mod tests {
                 "ApiKey",
                 "Appearance",
                 "Chat",
+                "Cua",
                 "Dashboard",
                 "Files",
                 "Layouts",
                 "OrcaImport",
                 "Orchestrators",
+                "Previews",
                 "ProjectSettings",
                 "Sessions",
                 "Settings",

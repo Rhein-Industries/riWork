@@ -1,5 +1,5 @@
-import { Scroll, Text, View, cleanup, effect, keymap, signal, type JSX, type YNode } from "nsh";
-import { Button, Input } from "nsh/base";
+import { Scroll, Text, cleanup, effect, keymap, signal, untracked, type JSX, type YNode } from "nsh";
+import { Button, Input, View, SettingsFocus, settingsFocusScope } from "../SettingsFocus";
 import { Accounts, ApiKey, OrcaImport, Settings, type AccountsDto, type SettingsDto, type SettingsPatch } from "riwork/native";
 import { type InterfaceTheme } from "../appearance";
 import { ChoiceRow, Section, StepperRow, ToggleRow, buttonStyle, defaultTheme, textStyle, type Theme } from "./SettingsControls";
@@ -35,6 +35,7 @@ export interface AppSettingsControl { revealApiKey(): void }
 export interface AppSettingsProps {
   theme?: () => InterfaceTheme; visible?: () => boolean; settings?: () => SettingsDto | null;
   computerUse?: JSX.Element; remote?: JSX.Element;
+  computerUseFocus?: () => { initialTarget(): YNode | null | undefined } | null;
   services?: AppSettingsServices; onError?: (reason: unknown) => void;
   onNotice?: (message: string) => void;
   onControl?: (control: AppSettingsControl) => void | (() => void);
@@ -43,6 +44,7 @@ export interface AppSettingsProps {
 /** The global Settings form owns drafts only. Every durable edit is a narrow native mutation. */
 export function AppSettings(props: AppSettingsProps) {
   const theme = props.theme ?? defaultTheme, services = props.services ?? nativeServices;
+  const focus = settingsFocusScope();
   const local = signal<SettingsDto | null>(null), accounts = signal<AccountsDto | null>(null), error = signal("");
   const apiKey = signal<ApiKeyState>({ saved: null, error: null }), apiPaste = signal(""), apiError = signal(""), apiPending = signal(false), apiFocused = signal(false);
   const modelInput = signal(""), modelError = signal("");
@@ -69,21 +71,35 @@ export function AppSettings(props: AppSettingsProps) {
   void services.settings.get().then((value) => { if (alive && settingsRev < 0) local.set(value); }).catch(fail);
   void services.accounts.list().then((value) => { if (alive && accountsRev < 0) accounts.set(value); }).catch(fail);
   cleanup(() => { alive = false; clearTimeout(revealTimer); clearTimeout(themeFocusTimer); for (const subscription of subscriptions) subscription.close(); themeRefs.clear(); });
-  function scheduleThemeFocus() {
-    if (!alive || !themeFocusPending || revealPending || !visible()) return;
+  function initialTarget() {
+    if (props.computerUseFocus) {
+      const control = props.computerUseFocus();
+      if (!control) return undefined;
+      const target = control.initialTarget();
+      if (target !== null) return target;
+    }
     const selected = settings()?.theme;
-    if (!selected || !themeRefs.has(selected)) return;
+    return selected ? themeRefs.get(selected) : undefined;
+  }
+  function scheduleThemeFocus() { untracked(() => {
+    if (!alive || !themeFocusPending || revealPending || !visible()) return;
+    if (focus.containsFocus()) { themeFocusPending = false; clearTimeout(themeFocusTimer); return; }
+    if (!initialTarget()) return;
     clearTimeout(themeFocusTimer);
     // Workspace first focuses the pane body. The panel's own initial target
-    // follows it once the selected theme has a mounted native ref.
+    // follows it once Cua has settled and the selected target has a native ref.
     themeFocusTimer = setTimeout(() => {
       if (!alive || !themeFocusPending || revealPending || !visible()) return;
-      if (apiFocused() || accountFocus() || textFocused() || themeFocus()) { themeFocusPending = false; return; }
-      const selected = settings()?.theme, node = selected ? themeRefs.get(selected) : undefined;
-      if (!selected || !node) return;
-      themeFocusPending = false; themeFocus.set(selected); node.focus();
+      if (focus.containsFocus()) { themeFocusPending = false; return; }
+      const node = initialTarget();
+      if (!node) return;
+      themeFocusPending = false;
+      if (node === themeRefs.get(settings()?.theme ?? "")) themeFocus.set(settings()!.theme);
+      node.focus();
     }, 0);
-  }
+  }); }
+  // A check may finish, or the Cua ref may mount, after the show notification.
+  effect(() => { initialTarget(); focus.containsFocus(); scheduleThemeFocus(); });
   function scheduleReveal() {
     if (!alive || !revealPending || !visible() || !page || !apiRow || !apiInput) return;
     clearTimeout(revealTimer);
@@ -328,7 +344,7 @@ export function AppSettings(props: AppSettingsProps) {
       case "09": return importBody();
     }
   }
-  return <View testID="settings-panel" onLayout={(event) => { if (alive && event.size.width !== width()) width.set(event.size.width); }} style={{ flex: 1, minHeight: 0, backgroundColor: theme().palette.bg }}>
+  return <SettingsFocus.Provider value={focus}><View testID="settings-panel" onLayout={(event) => { if (alive && event.size.width !== width()) width.set(event.size.width); }} style={{ flex: 1, minHeight: 0, backgroundColor: theme().palette.bg }}>
     <View style={{ padding: 12, gap: 4 }}>
       {!theme().native && <Text style={{ ...muted(), color: theme().palette.magenta }}>RIWORK / PREFERENCES</Text>}
       <View style={{ flexDirection: "row", gap: 10, alignItems: "center" }}><Text role="header" style={{ ...textStyle(theme, theme().native ? 13 : 20), flex: 1, fontWeight: "600" }}>Settings</Text>{!theme().native && <Text style={{ ...muted(), color: theme().palette.magenta }}>All projects</Text>}</View>
@@ -344,5 +360,5 @@ export function AppSettings(props: AppSettingsProps) {
       {note(error() || settings()?.error, "settings-save-error", true)}
       <Text style={{ ...muted(), paddingVertical: 12 }}>{`${theme().native ? "" : "Saved automatically · "}Tab to move · Enter or Space to select · Arrows step the text size and worker shells`}</Text>
     </Scroll>
-  </View>;
+  </View></SettingsFocus.Provider>;
 }

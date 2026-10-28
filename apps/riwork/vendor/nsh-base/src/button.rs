@@ -29,6 +29,10 @@ pub struct ButtonProps {
 /// The events of a [`Button`].
 #[derive(Debug, Clone, PartialEq, Event)]
 pub enum ButtonEvent {
+    /// The button took keyboard focus.
+    Focus,
+    /// The button lost keyboard focus.
+    Blur,
     /// The button was pressed.
     Press,
     /// A press went down on it (for the app's own press feedback).
@@ -54,6 +58,8 @@ pub fn Button(props: ButtonProps, cx: Scope<ButtonEvent>) -> impl IntoElement {
             ..AccessibilityState::default()
         })
         .selected_style(props.selected_style)
+        .on_focus(move |_: &()| cx.emit(ButtonEvent::Focus))
+        .on_blur(move |_: &()| cx.emit(ButtonEvent::Blur))
         .on_press(move |_: &()| cx.emit(ButtonEvent::Press))
         .on_press_down(move |_: &()| cx.emit(ButtonEvent::PressDown))
         .on_press_up(move |_: &()| cx.emit(ButtonEvent::PressUp))

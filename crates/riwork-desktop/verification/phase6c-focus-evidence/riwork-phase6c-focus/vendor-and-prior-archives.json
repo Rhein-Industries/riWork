@@ -1,0 +1,26 @@
+{
+  "command": [
+    "patch",
+    "-p1",
+    "--batch",
+    "-i",
+    "/Users/dominik/orca/projects/riWork-nsh-p1-fix-host/apps/riwork/vendor/nsh-base/RIWORK.patch"
+  ],
+  "cwd": "/tmp/riwork-p138-vendor-ezxkmit8",
+  "stdout": "patching file Cargo.toml\npatching file 'src/dock/dock_area.rs'\npatching file 'src/dock/tab_group.rs'\npatching file 'src/resizable/panel.rs'\npatching file 'src/button.rs'\npatching file 'src/switch.rs'\n",
+  "exit_code": 0,
+  "exact_patched_files": [
+    "Cargo.toml",
+    "src/dock/dock_area.rs",
+    "src/dock/tab_group.rs",
+    "src/resizable/panel.rs",
+    "src/button.rs",
+    "src/switch.rs"
+  ],
+  "prior_archives": {
+    "phase6c-evidence": 64,
+    "phase6c-integration-evidence": 29,
+    "pending-open-evidence": 24,
+    "quit-ordering-evidence": 22
+  }
+}
