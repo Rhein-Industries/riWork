@@ -434,6 +434,14 @@ mod tests {
     }
 
     #[test]
+    fn native_key_up_records_own_dynamic_keys_after_the_key_down_pool_drains() {
+        assert_eq!(
+            fixture(json!({"operation":"keyup_dynamic"})),
+            json!({"up_owned":true, "repeat_owned":true, "released":true, "held":0})
+        );
+    }
+
+    #[test]
     fn native_ime_falls_back_only_for_unhandled_navigation_once() {
         for (text_key, consumed) in [(false, false), (false, true), (true, false)] {
             let actual = fixture(

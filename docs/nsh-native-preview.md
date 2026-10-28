@@ -57,6 +57,12 @@ its capture/launch/IPC behavior are unchanged.
 Construction and restore remain idle. Only Run or an explicit control-start
 request launches. Owner close rejects late launches and releases native input;
 worker completion and native installation cannot revive a retired generation.
+A window-capture selection keeps the same Session, whose engine only queues
+the request. The surface stays without a frame or input until the snapshot
+reports the selected pid/window and then a frame newer than the one first
+seen with that identity. The engine reports no failed selection
+(`riwork-engine/src/app_preview.rs` 208-210, 584-592), so a refused selection
+leaves the preview blank until the user selects again or runs.
 
 ## Changes shared with other lanes
 

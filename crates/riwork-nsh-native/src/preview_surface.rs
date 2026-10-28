@@ -10,7 +10,7 @@ use image::ImageReader;
 use riwork_core::app_preview::{
     MAX_PREVIEW_DIMENSION, MAX_PREVIEW_MESSAGE_BYTES, PreviewInput, PreviewMode,
 };
-use riwork_engine::app_preview::{PreviewFrame, PreviewPhase, validate_input};
+use riwork_engine::app_preview::{PreviewFrame, PreviewPhase, PreviewState, validate_input};
 use std::{
     collections::HashMap,
     io::Cursor,
@@ -32,8 +32,34 @@ pub struct ViewSnapshot {
     pub focused: bool,
     pub mode: PreviewMode,
 }
+/// A window selection the engine has only queued. Binding publishes the
+/// selected pid/window before that window's first capture, and only the
+/// engine worker publishes frames, each as a new allocation. A frame belongs
+/// to the selection once it replaces the frame first seen with its identity.
+struct Selection {
+    pid: u32,
+    window_id: u64,
+    baseline: Option<Option<Arc<PreviewFrame>>>,
+}
+impl Selection {
+    fn confirmed(&mut self, snapshot: &PreviewState) -> bool {
+        if snapshot.pid != Some(self.pid) || snapshot.window_id != Some(self.window_id) {
+            self.baseline = None;
+            return false;
+        }
+        let Some(baseline) = &self.baseline else {
+            self.baseline = Some(snapshot.frame.clone());
+            return false;
+        };
+        snapshot
+            .frame
+            .as_ref()
+            .is_some_and(|frame| baseline.as_ref().is_none_or(|old| !Arc::ptr_eq(old, frame)))
+    }
+}
 struct State {
     session: Option<Arc<dyn Session>>,
+    selection: Option<Selection>,
     mode: PreviewMode,
     generation: u64,
     revision: u64,
@@ -92,6 +118,7 @@ impl State {
         self.generation = self.generation.wrapping_add(1);
         self.revision = self.revision.wrapping_add(1);
         self.session = None;
+        self.selection = None;
         self.control_until = None;
         self.running = false;
         self.attempted = None;
@@ -125,6 +152,7 @@ impl Surface {
             id: uuid::Uuid::new_v4().to_string(),
             state: Mutex::new(State {
                 session: None,
+                selection: None,
                 mode: PreviewMode::Cooperative,
                 generation: 0,
                 revision: 0,
@@ -160,6 +188,14 @@ impl Surface {
         &self.id
     }
     pub(crate) fn attach(&self, session: Arc<dyn Session>, mode: PreviewMode) {
+        self.attach_selection(session, mode, None);
+    }
+    fn attach_selection(
+        &self,
+        session: Arc<dyn Session>,
+        mode: PreviewMode,
+        selection: Option<Selection>,
+    ) {
         let mut state = self.state.lock().unwrap();
         if state.closed {
             session.stop();
@@ -167,8 +203,27 @@ impl Surface {
         }
         state.reset();
         state.mode = mode;
+        state.selection = selection;
         session.visible(state.capture_visible);
         state.session = Some(session);
+    }
+    /// The same Session keeps streaming its old window until the engine
+    /// worker binds the new one. Only window capture acts on a selection.
+    pub(crate) fn select(
+        &self,
+        session: Arc<dyn Session>,
+        mode: PreviewMode,
+        pid: u32,
+        window_id: u64,
+    ) {
+        self.reset();
+        session.select_window(pid, window_id);
+        let selection = (mode == PreviewMode::WindowCapture).then_some(Selection {
+            pid,
+            window_id,
+            baseline: None,
+        });
+        self.attach_selection(session, mode, selection);
     }
     pub(crate) fn reset(&self) {
         self.state.lock().unwrap().reset();
@@ -323,6 +378,14 @@ impl Surface {
                 state.revision = state.revision.wrapping_add(1);
             }
             state.configure(Instant::now());
+            if state
+                .selection
+                .as_mut()
+                .is_some_and(|selection| !selection.confirmed(&snapshot))
+            {
+                return state.snapshot();
+            }
+            state.selection = None;
             if state.decoding {
                 return state.snapshot();
             }
@@ -710,6 +773,39 @@ mod tests {
             !current.focused,
             "a new generation cannot restore old focus"
         );
+    }
+
+    #[test]
+    fn a_queued_window_selection_keeps_the_same_session_unready_until_its_capture_arrives() {
+        let session = FakeSession::new(Some(pixel(10, 1)));
+        let surface = Surface::new();
+        surface.attach(session.clone(), PreviewMode::WindowCapture);
+        surface.native_event(json!({"kind":"layout","width":100,"height":100}));
+        surface.native_event(json!({"kind":"window","visible":true,"active":true}));
+        surface.set_visible(true);
+        assert!(surface.poll().accepts_input);
+        session.take_calls();
+        // The engine only queues the request; its snapshot is unchanged.
+        surface.select(session.clone(), PreviewMode::WindowCapture, 7, 99);
+        assert!(session.take_calls().contains(&Call::Select(7, 99)));
+        let unready = |snapshot: ViewSnapshot| {
+            assert!(snapshot.frame.is_none() && !snapshot.accepts_input);
+        };
+        unready(surface.poll_with(|_| panic!("the pre-selection frame was decoded again")));
+        // The old binding captures once more before the worker takes the request.
+        session.state.lock().unwrap().frame = Some(pixel(11, 2));
+        unready(surface.poll_with(|_| panic!("an old-window capture was accepted")));
+        // Binding publishes the new identity before the new window's first capture.
+        {
+            let mut state = session.state.lock().unwrap();
+            state.pid = Some(7);
+            state.window_id = Some(99);
+        }
+        unready(surface.poll_with(|_| panic!("a frame paired with the new identity was accepted")));
+        session.state.lock().unwrap().frame = Some(pixel(99, 3));
+        let ready = surface.poll();
+        assert_eq!(ready.frame.unwrap().bgra, [30, 20, 99, 255]);
+        assert!(ready.accepts_input && surface.is_current(ready.revision));
     }
 
     #[test]

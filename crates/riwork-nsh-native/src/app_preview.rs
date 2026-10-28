@@ -292,14 +292,14 @@ impl PreviewHandle {
             owner.check()?;
             let state = owner.state.lock().unwrap();
             if let Some(session) = &state.session {
-                owner.surface.reset();
-                session.select_window(pid, window);
-                owner.surface.attach(
+                owner.surface.select(
                     session.clone(),
                     state
                         .launched
                         .as_ref()
                         .map_or(PreviewMode::Cooperative, |s| s.mode),
+                    pid,
+                    window,
                 );
             }
             Ok(())

@@ -4,6 +4,7 @@
 #import <Carbon/Carbon.h>
 #import <QuartzCore/QuartzCore.h>
 #import <math.h>
+#import <objc/runtime.h>
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
@@ -109,8 +110,12 @@ static NSDictionary *scrollRecord(double x, double y, double dx, double dy, BOOL
 static NSDictionary *keyUpRecord(NSMutableDictionary *held, NSNumber *code, NSString *key, BOOL textKey) {
     NSDictionary *pressed = held[code];
     if (pressed) { key = pressed[@"key"]; textKey = [pressed[@"text_key"] boolValue]; }
+    // `pressed` and its key are borrowed. Under manual reference counting the
+    // held entry may be their last owner, so the record must retain the key
+    // before removal releases it.
+    NSDictionary *record = @{@"kind":@"key_up", @"key":key, @"text_key":@(textKey)};
     [held removeObjectForKey:code];
-    return @{@"kind":@"key_up", @"key":key, @"text_key":@(textKey)};
+    return record;
 }
 static NSDictionary *changedHeldKey(NSMutableDictionary *held, NSNumber *code, NSString *key, BOOL textKey) {
     NSDictionary *previous = held[code];
@@ -486,6 +491,23 @@ void rw_preview_shutdown(void *raw) {
 static void fixturePixelsRelease(void *owner, const void *bytes, size_t length) {
     (void)bytes; (void)length; (*(unsigned int *)owner)++;
 }
+// A per-event key like previewKey's. Its deallocation is recorded but its
+// memory is kept until the fixture disposes it, so a record that outlives the
+// key's last owner is detected deterministically instead of reading reused memory.
+@interface RWFixtureKey : NSString {
+@public
+    NSString *text;
+    BOOL deallocated;
+}
+@end
+@implementation RWFixtureKey
+- (NSUInteger)length { return text.length; }
+- (unichar)characterAtIndex:(NSUInteger)index { return [text characterAtIndex:index]; }
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wobjc-missing-super-calls"
+- (void)dealloc { deallocated = YES; }
+#pragma clang diagnostic pop
+@end
 char *rw_preview_fixture(const char *json) {
     @autoreleasepool {
         NSData *data = [NSData dataWithBytes:json length:strlen(json)];
@@ -526,6 +548,32 @@ char *rw_preview_fixture(const char *json) {
             NSDictionary *unchanged = changedHeldKey(held, @(42), @"cmd-shift-a", NO);
             NSDictionary *changed = changedHeldKey(held, @(42), @"a", YES);
             result = @{@"unchanged":unchanged ?: NSNull.null, @"changed":changed, @"held":@(held.count)};
+        } else if ([operation isEqualToString:@"keyup_dynamic"]) {
+            // Once the key-down autorelease pool drains, the held entry is the
+            // key's only owner. Key-up and a changed repeat must both emit a
+            // record that owns the key it read from that entry.
+            RWFixtureKey *up = [[RWFixtureKey alloc] init], *repeat = [[RWFixtureKey alloc] init];
+            up->text = @"cmd-shift-b"; repeat->text = @"cmd-shift-c";
+            NSMutableDictionary *held = [NSMutableDictionary dictionary];
+            @autoreleasepool {
+                held[@(11)] = @{@"key":up, @"text_key":@NO};
+                held[@(8)] = @{@"key":repeat, @"text_key":@NO};
+            }
+            [up release]; [repeat release];
+            BOOL upOwned, repeatOwned;
+            @autoreleasepool {
+                NSDictionary *upRecord = keyUpRecord(held, @(11), @"b", YES);
+                NSDictionary *repeatRecord = changedHeldKey(held, @(8), @"c", YES);
+                upOwned = !up->deallocated && [upRecord[@"key"] isEqualToString:@"cmd-shift-b"] &&
+                    ![upRecord[@"text_key"] boolValue];
+                repeatOwned = !repeat->deallocated && [repeatRecord[@"key"] isEqualToString:@"cmd-shift-c"] &&
+                    ![repeatRecord[@"text_key"] boolValue];
+            }
+            // Both records are gone, so the keys must be too; only now free them.
+            BOOL released = up->deallocated && repeat->deallocated;
+            object_dispose(up); object_dispose(repeat);
+            result = @{@"up_owned":@(upOwned), @"repeat_owned":@(repeatOwned), @"released":@(released),
+                @"held":@(held.count)};
         } else if ([operation isEqualToString:@"ime"]) {
             NSMutableAttributedString *marked = [[[NSMutableAttributedString alloc] initWithString:@""] autorelease];
             NSRange selection = markText(marked, @"にほん😀", NSMakeRange(99, 99));
