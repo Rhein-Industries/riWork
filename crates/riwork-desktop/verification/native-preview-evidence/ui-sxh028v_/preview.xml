@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="nsh test" tests="21" failures="0" errors="0" skipped="0" time="38.199">
+  <testsuite name="apps/riwork/tests/Phase6c.test.tsx" tests="19" failures="0" errors="0" skipped="0" time="6.577">
+    <testcase classname="apps/riwork/tests/Phase6c.test.tsx" name="P6C Cua renders initial" time="0.257"/>
+    <testcase classname="apps/riwork/tests/Phase6c.test.tsx" name="P6C Cua renders missing" time="0.212"/>
+    <testcase classname="apps/riwork/tests/Phase6c.test.tsx" name="P6C Cua renders signature" time="0.209"/>
+    <testcase classname="apps/riwork/tests/Phase6c.test.tsx" name="P6C Cua renders version" time="0.216"/>
+    <testcase classname="apps/riwork/tests/Phase6c.test.tsx" name="P6C Cua renders service-stopped" time="0.216"/>
+    <testcase classname="apps/riwork/tests/Phase6c.test.tsx" name="P6C Cua renders accessibility" time="0.216"/>
+    <testcase classname="apps/riwork/tests/Phase6c.test.tsx" name="P6C Cua renders recording" time="0.211"/>
+    <testcase classname="apps/riwork/tests/Phase6c.test.tsx" name="P6C Cua renders both-permissions" time="0.216"/>
+    <testcase classname="apps/riwork/tests/Phase6c.test.tsx" name="P6C Cua renders capture-unverified" time="0.214"/>
+    <testcase classname="apps/riwork/tests/Phase6c.test.tsx" name="P6C Cua renders ready" time="0.208"/>
+    <testcase classname="apps/riwork/tests/Phase6c.test.tsx" name="P6C Cua renders custom-driver" time="0.212"/>
+    <testcase classname="apps/riwork/tests/Phase6c.test.tsx" name="P6C Cua renders skill-link" time="0.216"/>
+    <testcase classname="apps/riwork/tests/Phase6c.test.tsx" name="P6C Cua renders probe-error" time="0.213"/>
+    <testcase classname="apps/riwork/tests/Phase6c.test.tsx" name="P6C Cua renders pending" time="0.110"/>
+    <testcase classname="apps/riwork/tests/Phase6c.test.tsx" name="P6C Settings command hosts Cua in AppSettings and reuses the panel" time="0.458"/>
+    <testcase classname="apps/riwork/tests/Phase6c.test.tsx" name="P6C preview opens in main pane, persists committed spec/title, runs only on Run, restores idle" time="2.621"/>
+    <testcase classname="apps/riwork/tests/Phase6c.test.tsx" name="P6C aspect-fit frame mapping rejects letterboxing and clamps captured release" time="0.000"/>
+    <testcase classname="apps/riwork/tests/Phase6c.test.tsx" name="P6C viewport preserves aspect ratio and protocol bounds" time="0.000"/>
+    <testcase classname="apps/riwork/tests/Phase6c.test.tsx" name="P6C preview defaults to the selected worktree folder" time="0.571"/>
+  </testsuite>
+  <testsuite name="apps/riwork/tests/SettingsCuaFocus.test.tsx" tests="2" failures="0" errors="0" skipped="0" time="1.046">
+    <testcase classname="apps/riwork/tests/SettingsCuaFocus.test.tsx" name="P6C Focus preserves an in-panel input on show with Cua ready=false" time="0.537"/>
+    <testcase classname="apps/riwork/tests/SettingsCuaFocus.test.tsx" name="P6C Focus preserves an in-panel input on show with Cua ready=true" time="0.509"/>
+  </testsuite>
+</testsuites>

@@ -90,6 +90,7 @@ export function Workspace(props: WorkspaceProps) {
   const switching = signal(false);
   const appearance = signal<AppearanceDto | null>(null);
   const pendingFocus = signal<string | null>(null);
+  const previewFocus = signal<string | null>(null);
   const busy = signal(false);
   const statusMenu = signal(false);
   // Workspace transient UI: the close dialog, rename, the shared-strip popover,
@@ -626,6 +627,8 @@ export function Workspace(props: WorkspaceProps) {
 
   const commands = workspaceCommands(session, snapshot, action, {
     blocked: () => modal() || !!panelState.editor() || switching(),
+    previewOwnsEscape: () => !!previewFocus() && isVisible(previewFocus()!) && !frozen() &&
+      !statusMenu() && !props.modalOpen?.() && !panelState.editor() && !switching(),
     newShell: (split) => { allTabs.set(false); void createShell(split); },
     newSubshell: () => { allTabs.set(false); void createSubshell(); },
     remoteAgent: (kind) => { if (!remoteProjectKey(projectId())) return false; void createShell(undefined, kind); return true; },
@@ -873,6 +876,10 @@ export function Workspace(props: WorkspaceProps) {
                 <ChatPanel panelId={panel.id} title={findPanel(snapshot(), panel.id) ? displayTitle(findPanel(snapshot(), panel.id)!) : panel.id} /> :
                 panel.id.startsWith("app_preview:") ?
                 <AppPreviewTab spec={findPanel(snapshot(), panel.id)!.previewSpec!} visible={isVisible(panel.id)} theme={theme}
+                  onFocusChange={(focused) => {
+                    if (focused) { previewFocus.set(panel.id); action(() => session.selectPanel(panel.id)); }
+                    else if (previewFocus() === panel.id) previewFocus.set(null);
+                  }}
                   configure={(spec) => action(() => session.configureAppPreview(panel.id, spec))} /> :
                 <DeferredPanel id={panel.id}
                   title={findPanel(snapshot(), panel.id) ? displayTitle(findPanel(snapshot(), panel.id)!) : panel.id}

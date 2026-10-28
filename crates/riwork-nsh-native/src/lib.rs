@@ -18,6 +18,10 @@ mod memo;
 pub mod orchestrators;
 pub mod overview;
 mod presence;
+mod preview_input;
+#[cfg(target_os = "macos")]
+pub mod preview_macos;
+pub mod preview_surface;
 pub mod project_settings;
 pub mod remote;
 pub mod schedules;

@@ -1,0 +1,48 @@
+   Compiling nsh-core v0.3.0
+   Compiling riwork-engine v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p1-fix-host/crates/riwork-engine)
+   Compiling nsh-package v0.3.0
+   Compiling nsh-js v0.3.0
+   Compiling nsh-base v0.3.0 (/Users/dominik/orca/projects/riWork-nsh-p1-fix-host/apps/riwork/vendor/nsh-base)
+   Compiling nsh-engine v0.3.0
+   Compiling objc2-app-kit v0.3.2
+   Compiling riwork-nsh-native v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p1-fix-host/crates/riwork-nsh-native)
+   Compiling nsh-platform-macos v0.3.0
+   Compiling riwork-nsh-workspace v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p1-fix-host/apps/riwork)
+    Finished `test` profile [unoptimized] target(s) in 37.75s
+     Running unittests src/lib.rs (target/debug/deps/riwork_nsh_native-19032c53196c1e20)
+preview native fixture: {"characters":"a","modifiers":["cmd"],"operation":"key","typed":"a"} -> {"key":"cmd-a","text_key":false}
+preview native fixture: {"operation":"keyup"} -> {"held":0,"record":{"key":"cmd-shift-a","kind":"key_up","text_key":false}}
+preview native fixture: {"button":0,"down":true,"operation":"pointer","x":-40.5,"y":9000.0} -> {"button":"left","kind":"pointer_down","x":-40.5,"y":9000}
+preview native fixture: {"characters":"\t","modifiers":["shift"],"operation":"key","typed":"\t"} -> {"key":"shift-tab","text_key":false}
+preview native fixture: {"characters":"\r","modifiers":[],"operation":"key","typed":"\r"} -> {"key":"enter","text_key":false}
+preview native fixture: {"characters":"","modifiers":[],"operation":"key","typed":""} -> {"key":"backspace","text_key":false}
+preview native fixture: {"characters":"\u001b","modifiers":[],"operation":"key","typed":"\u001b"} -> {"key":"escape","text_key":false}
+preview native fixture: {"characters":"","modifiers":["fn"],"operation":"key","typed":""} -> {"key":"up","text_key":false}
+preview native fixture: {"characters":"","modifiers":["shift"],"operation":"key","typed":""} -> {"key":"shift-right","text_key":false}
+preview native fixture: {"characters":"","modifiers":[],"operation":"key","typed":""} -> {"key":"delete","text_key":false}
+preview native fixture: {"characters":"","modifiers":[],"operation":"key","typed":""} -> {"key":"insert","text_key":false}
+preview native fixture: {"button":0,"down":false,"operation":"pointer","x":-40.5,"y":9000.0} -> {"button":"left","kind":"pointer_up","x":-40.5,"y":9000}
+preview native fixture: {"characters":"","modifiers":["fn"],"operation":"key","typed":""} -> {"key":"f1","text_key":false}
+preview native fixture: {"button":1,"down":true,"operation":"pointer","x":-40.5,"y":9000.0} -> {"button":"right","kind":"pointer_down","x":-40.5,"y":9000}
+preview native fixture: {"characters":"a","modifiers":["fn","ctrl","alt","cmd","shift"],"operation":"key","typed":"a"} -> {"key":"fn-ctrl-alt-cmd-shift-a","text_key":false}
+preview native fixture: {"button":1,"down":false,"operation":"pointer","x":-40.5,"y":9000.0} -> {"button":"right","kind":"pointer_up","x":-40.5,"y":9000}
+preview native fixture: {"characters":"é","modifiers":[],"operation":"key","typed":"é"} -> {"key":"é","text_key":true}
+preview native fixture: {"characters":"日本","modifiers":[],"operation":"key","typed":"日本"} -> {"key":"日本","text_key":true}
+preview native fixture: {"button":2,"down":true,"operation":"pointer","x":-40.5,"y":9000.0} -> {"button":"middle","kind":"pointer_down","x":-40.5,"y":9000}
+preview native fixture: {"characters":"😀","modifiers":[],"operation":"key","typed":"😀"} -> {"key":"😀","text_key":true}
+preview native fixture: {"button":2,"down":false,"operation":"pointer","x":-40.5,"y":9000.0} -> {"button":"middle","kind":"pointer_up","x":-40.5,"y":9000}
+preview native fixture: {"characters":" ","modifiers":[],"operation":"key","typed":" "} -> {"key":"space","text_key":true}
+preview native fixture: {"button":3,"operation":"pointer"} -> null
+preview native fixture: {"characters":"","modifiers":[],"operation":"key","typed":""} -> {"key":"","text_key":true}
+preview native fixture: {"dx":1.25,"dy":-3.5,"operation":"scroll","precise":true,"x":12,"y":14} -> {"delta_x":1.25,"delta_y":-3.5,"kind":"scroll","precise":true,"x":12,"y":14}
+preview native fixture: {"characters":"?","modifiers":["shift"],"operation":"key","plain":"/","shifted":"?","typed":"?"} -> {"key":"?","text_key":true}
+preview native fixture: {"dx":1.25,"dy":-3.5,"operation":"scroll","precise":false,"x":12,"y":14} -> {"delta_x":1.25,"delta_y":-3.5,"kind":"scroll","precise":false,"x":12,"y":14}
+preview native fixture: {"both":"S","characters":"ս","cmd":"s","modifiers":["cmd","shift"],"operation":"key","plain":"ս","typed":"ս"} -> {"key":"cmd-shift-s","text_key":false}
+preview transport: 16777216 source bytes -> 161 JSON bytes, dimensions only; logs last160 x2000 Unicode chars
+preview native fixture: {"operation":"ime"} -> {"commit":{"kind":"text","text":"日本😀"},"marked_after":0,"marked_utf16":5,"selection_length":0,"selection_start":5}
+preview native fixture: {"operation":"image"} -> {"identical_bgra":true,"invalid_releases":1,"release_after":1,"release_before":0,"valid":true}
+
+thread 'preview_surface::tests::maximum_edge_frame_has_a_bounded_native_bgra_allocation' (15386812) panicked at crates/riwork-nsh-native/src/preview_surface.rs:612:9:
+assertion failed: frame.png.len() <= MAX_PREVIEW_MESSAGE_BYTES
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+error: test failed, to rerun pass `-p riwork-nsh-native --lib`

@@ -1,0 +1,117 @@
+
+running 41 tests
+test preview_input::tests::mapping_rejects_letterboxes_and_clamps_captured_drags ... ok
+test preview_input::tests::control_visibility_cannot_bypass_hidden_or_inactive_input_gates ... ok
+test preview_input::tests::activation_restores_only_the_native_focus_still_owned_by_this_surface ... ok
+test preview_input::tests::resize_is_bounded_and_only_emitted_on_change_for_cooperative ... ok
+test preview_input::tests::paste_commits_host_clipboard_without_a_key_or_unmatched_up ... ok
+test preview_input::tests::all_buttons_focus_once_and_release_outside_independently ... ok
+test preview_input::tests::capture_clicks_do_not_create_pointer_or_key_holds ... ok
+test preview_input::tests::reset_forces_a_new_resize_and_refocus_for_the_next_generation ... ok
+test preview_input::tests::text_comes_only_from_commit_and_shortcuts_receive_up_or_release ... ok
+test preview_input::tests::wheel_uses_twenty_pixels_per_line_and_preserves_precise_deltas ... ok
+test preview_input::tests::each_gate_and_native_blur_release_every_hold_once_before_rejecting_input ... ok
+test app_preview::phase6c_tests::preview_control_start_reuses_running_session_but_restarts_error_even_with_pid ... ok
+test app_preview::phase6c_tests::phase6c_owner_teardown_during_delayed_launch_cannot_publish_orphan ... ok
+test app_preview::phase6c_tests::phase6c_preview_run_only_restart_edited_spec_stop_visibility_and_dispose ... ok
+test preview_input::tests::adapter_events_decode_without_an_implicit_paste_or_text_commit ... ok
+test preview_macos::tests::native_key_up_preserves_down_spelling_after_modifiers_change ... ok
+test chat::links::tests::preview_rejects_missing_files_traversal_and_symlinks ... ok
+test preview_macos::tests::native_focus_reactivation_reconciles_the_same_first_responder_once ... ok
+test preview_surface::tests::a_five_second_control_lease_keeps_capture_visible_but_never_admits_hidden_input ... ok
+test preview_surface::tests::controlled_refresh_uses_current_source_frame_without_waiting_for_native_decode ... ok
+test preview_surface::tests::decoder_changes_rgba_to_bgra_and_preserves_alpha_without_json_transport ... ok
+test preview_surface::tests::a_malformed_frame_is_attempted_once_and_keeps_the_last_good_native_image ... ok
+test preview_macos::tests::native_ime_falls_back_only_for_unhandled_navigation_once ... ok
+test preview_surface::tests::error_stopped_and_exited_with_retained_pid_and_frame_refuse_input_and_control_refresh ... ok
+test preview_surface::tests::delayed_decode_cannot_publish_or_send_input_after_close ... ok
+test preview_surface::tests::delayed_decode_cannot_publish_after_reset_or_free_its_single_flight_slot_early ... ok
+test preview_surface::tests::hiding_releases_all_held_input_before_notifying_the_engine_of_visibility_false ... ok
+test preview_surface::tests::native_frame_install_and_close_have_one_atomic_order_without_holding_a_decode_lock ... ok
+test preview_surface::tests::queued_native_install_rejects_old_revisions_and_accepts_current_empty_close ... ok
+test preview_surface::tests::release_and_drop_send_each_release_once_and_never_stop_a_live_shared_session ... ok
+test preview_surface::tests::reset_invalidates_an_in_flight_control_refresh_without_visible_or_refresh_side_effects ... ok
+test preview_surface::tests::resetting_a_controlled_session_clears_the_capture_lease ... ok
+test preview_macos::tests::native_key_up_monitor_admits_only_the_exact_focused_owned_release ... ok
+test preview_macos::tests::native_mouse_records_keep_all_buttons_outside_coordinates_and_wheel_units ... ok
+test preview_macos::tests::native_key_formatter_matches_gpui_names_without_appkit_events ... ok
+test files::tests::preview_transport_checks_bytes_types_bounds_and_stale_identity ... ok
+test app_preview::phase6c_tests::preview_json_snapshot_has_metadata_only_and_bounds_display_logs ... ok
+test preview_surface::tests::decoder_enforces_compressed_byte_edge_and_metadata_limits ... ok
+test preview_macos::tests::native_ime_keeps_utf16_marked_text_local_and_commits_unicode ... ok
+test preview_macos::tests::cgimage_keeps_bgra_owner_until_release_and_rejects_mismatched_length ... ok
+test preview_surface::tests::maximum_edge_frame_has_a_bounded_native_bgra_allocation ... ok
+
+test result: ok. 41 passed; 0 failed; 0 ignored; 0 measured; 108 filtered out; finished in 0.27s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 18 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s
+
+
+running 1 test
+test native_preview_focus_routes_pane_and_releases_escape_without_losing_global_keys ... ignored, requires private fixture HOME/RIWORK_HOME and RIWORK_PREVIEW_FOCUS_BUNDLE
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 17 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 9 filtered out; finished in 0.00s
+

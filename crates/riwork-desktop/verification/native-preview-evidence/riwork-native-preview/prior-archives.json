@@ -1,0 +1,22 @@
+[
+  {
+    "archive": "phase6c-evidence",
+    "verified": 64
+  },
+  {
+    "archive": "phase6c-integration-evidence",
+    "verified": 29
+  },
+  {
+    "archive": "phase6c-focus-evidence",
+    "verified": 68
+  },
+  {
+    "archive": "pending-open-evidence",
+    "verified": 24
+  },
+  {
+    "archive": "quit-ordering-evidence",
+    "verified": 22
+  }
+]

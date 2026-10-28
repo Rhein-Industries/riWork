@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="nsh test" tests="5" failures="0" errors="0" skipped="0" time="10.201">
+  <testsuite name="apps/riwork/tests/Keyboard.test.tsx" tests="3" failures="0" errors="0" skipped="0" time="6.704">
+    <testcase classname="apps/riwork/tests/Keyboard.test.tsx" name="P1-MENU-03 P1-KEYS-03 panel chords and host commands select one placeholder and new window routes this project" time="4.156"/>
+    <testcase classname="apps/riwork/tests/Keyboard.test.tsx" name="P1-KEYS-04 close modal blocks window actions and modifier shortcuts dismiss All tabs before selecting" time="0.876"/>
+    <testcase classname="apps/riwork/tests/Keyboard.test.tsx" name="P1-KEYS-04 arrows stay inside All tabs; Escape closes it and restores window shortcuts" time="1.672"/>
+  </testsuite>
+  <testsuite name="apps/riwork/tests/keymap.test.ts" tests="2" failures="0" errors="0" skipped="0" time="0.000">
+    <testcase classname="apps/riwork/tests/keymap.test.ts" name="P1-KEYS-01 no key is bound twice and every GPUI chord is present" time="0.000"/>
+    <testcase classname="apps/riwork/tests/keymap.test.ts" name="P1-KEYS-03 app equivalents are never installed in a TSX window keymap" time="0.000"/>
+  </testsuite>
+</testsuites>

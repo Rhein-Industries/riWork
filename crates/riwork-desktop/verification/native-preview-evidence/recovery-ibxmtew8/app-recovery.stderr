@@ -1,0 +1,12 @@
+   Compiling riwork-nsh-native v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p1-fix-host/crates/riwork-nsh-native)
+   Compiling riwork-desktop v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p1-fix-host/crates/riwork-desktop)
+warning: linker stderr: ld: __eh_frame section too large (max 16MB) to encode dwarf unwind offsets in compact unwind table, performance of exception handling might be affected
+  |
+  = note: `#[warn(linker_messages)]` on by default
+
+warning: `riwork-desktop` (bin "riwork" test) generated 1 warning
+    Finished `test` profile [unoptimized] target(s) in 11.15s
+     Running unittests src/nsh_main.rs (target/debug/deps/riwork-7fd9e705477c06a4)
+riwork: quit cancelled: window other-ordered-quit-c2d535ab-2b0f-4ac0-9967-69b41a55fb8f: fixture: another window failed to flush
+riwork: quit cancelled: window other-ordered-restart-launch-7cb58a90-84c2-4273-a4cc-ff33abb5651b: fixture: another window failed to flush
+riwork: quit cancelled: fixture: replacement readiness failed
