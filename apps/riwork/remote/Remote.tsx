@@ -1,5 +1,6 @@
-import { Text, View, cleanup, effect, signal, type YNode } from "nsh";
-import { Button, Dialog, Input } from "nsh/base";
+import { Text, cleanup, effect, signal, type YNode } from "nsh";
+import { Dialog } from "nsh/base";
+import { Button, Input, View } from "../SettingsFocus";
 import { DEFAULT_THEME, type InterfaceTheme } from "../appearance";
 import {
   EMPTY_REMOTE, REMOTE_HISTORY_NOTE, checkPairingLink, filteredFolders, linkPresentation,
@@ -156,7 +157,7 @@ function status(c: RemoteController, id: string, link: RemoteHostLink) {
 }
 type RemoteHostLink = RemoteSnapshot["hosts"][number]["link"];
 
-/** Append to Settings; the parent retains its existing settings editor. */
+/** AppSettings' remote slot shares the page scroll and tracked focus scope. */
 export function RemoteSettings(props: { controller: RemoteController }) {
   const c = props.controller;
   return <View testID="remote-settings" style={{ gap: 8, padding: 14 }}>

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="nsh test" tests="1" failures="0" errors="0" skipped="0" time="3.642">
+  <testsuite name="apps/riwork/tests/Theme.test.tsx" tests="1" failures="0" errors="0" skipped="0" time="0.211">
+    <testcase classname="apps/riwork/tests/Theme.test.tsx" name="P1-THM-04: Native light first workspace paint uses its resolved palette" time="0.211"/>
+  </testsuite>
+</testsuites>

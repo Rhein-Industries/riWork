@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="nsh test" tests="68" failures="0" errors="0" skipped="0" time="41.752">
+  <testsuite name="apps/riwork/remote/Remote.test.tsx" tests="5" failures="0" errors="0" skipped="0" time="5.373">
+    <testcase classname="apps/riwork/remote/Remote.test.tsx" name="P6B-REMOTE-UI-01 host removal requires two activations and one pending request" time="0.962"/>
+    <testcase classname="apps/riwork/remote/Remote.test.tsx" name="P6B-REMOTE-UI-02 opening Add resets Remove and validates the masked link without sending it" time="1.264"/>
+    <testcase classname="apps/riwork/remote/Remote.test.tsx" name="P6B-REMOTE-UI-03 pairing uses defaults, submits once, shows a mask and copies through fake clipboard" time="1.150"/>
+    <testcase classname="apps/riwork/remote/Remote.test.tsx" name="P6B-REMOTE-UI-04 stale remote projects remain selectable and local-only panels stay unavailable" time="1.151"/>
+    <testcase classname="apps/riwork/remote/Remote.test.tsx" name="P6B-REMOTE-UI-05 an unrelated layout delivery does not close/reopen the remote subscription" time="0.845"/>
+  </testsuite>
+  <testsuite name="apps/riwork/remote/Workspace.test.tsx" tests="1" failures="0" errors="0" skipped="0" time="0.760">
+    <testcase classname="apps/riwork/remote/Workspace.test.tsx" name="P6B-REMOTE-ROUTING-01 remote local-only panels render unavailable before mounting local editors" time="0.760"/>
+  </testsuite>
+  <testsuite name="apps/riwork/remote/model.test.ts" tests="8" failures="0" errors="0" skipped="0" time="0.001">
+    <testcase classname="apps/riwork/remote/model.test.ts" name="P6B-REMOTE-MODEL-01 remote namespace, title and unavailable actions never fall back to local" time="0.000"/>
+    <testcase classname="apps/riwork/remote/model.test.ts" name="P6B-REMOTE-MODEL-02 last-known projects stay searchable and dimmed; source snapshot is untouched" time="0.000"/>
+    <testcase classname="apps/riwork/remote/model.test.ts" name="P6B-REMOTE-MODEL-03 host labels and terminal strip preserve offline/ended distinctions" time="0.000"/>
+    <testcase classname="apps/riwork/remote/model.test.ts" name="P6B-REMOTE-MODEL-04 chat/dead shell refusals preserve host attribution" time="0.000"/>
+    <testcase classname="apps/riwork/remote/model.test.ts" name="P6B-REMOTE-MODEL-05 pairing links validate without reflecting secrets and generated masks expose only 16 characters" time="0.000"/>
+    <testcase classname="apps/riwork/remote/model.test.ts" name="P6B-REMOTE-MODEL-06 remote names match engine character/UTF8 and path restrictions" time="0.000"/>
+    <testcase classname="apps/riwork/remote/model.test.ts" name="P6B-REMOTE-MODEL-07 remove confirmation resets on prompt/host loss and ignores pending activation" time="0.000"/>
+    <testcase classname="apps/riwork/remote/model.test.ts" name="P6B-REMOTE-MODEL-08 delayed and failed mutations are single-flight and never automatically retried" time="0.000"/>
+  </testsuite>
+  <testsuite name="apps/riwork/remote/workspace.test.ts" tests="4" failures="0" errors="0" skipped="0" time="0.000">
+    <testcase classname="apps/riwork/remote/workspace.test.ts" name="P6B-REMOTE-WORKSPACE-01 create dispatches once, uses the captured pane, and never a local API" time="0.000"/>
+    <testcase classname="apps/riwork/remote/workspace.test.ts" name="P6B-REMOTE-WORKSPACE-02 a result settles but cannot open after switch away and back or close" time="0.000"/>
+    <testcase classname="apps/riwork/remote/workspace.test.ts" name="P6B-REMOTE-WORKSPACE-03 failure is never automatically retried and dead/chat shells are refused" time="0.000"/>
+    <testcase classname="apps/riwork/remote/workspace.test.ts" name="P6B-REMOTE-WORKSPACE-04 worktree selects the exact host tab before starting anything" time="0.000"/>
+  </testsuite>
+  <testsuite name="apps/riwork/schedules/Automations.test.tsx" tests="4" failures="0" errors="0" skipped="0" time="6.358">
+    <testcase classname="apps/riwork/schedules/Automations.test.tsx" name="P6B-SCHED-UI-01 visible subscriptions close and reopen; real status and earlier chats remain visible" time="0.955"/>
+    <testcase classname="apps/riwork/schedules/Automations.test.tsx" name="P6B-SCHED-UI-02 defaults, all permission and repeat controls save once while pending" time="1.787"/>
+    <testcase classname="apps/riwork/schedules/Automations.test.tsx" name="P6B-SCHED-UI-03 scope changes require a worktree and explicit shell; invalid repeat zero never dispatches" time="2.194"/>
+    <testcase classname="apps/riwork/schedules/Automations.test.tsx" name="P6B-SCHED-UI-04 revision conflicts retain the draft; Escape resets two-click delete" time="1.423"/>
+  </testsuite>
+  <testsuite name="apps/riwork/schedules/model.test.ts" tests="7" failures="0" errors="0" skipped="0" time="0.001">
+    <testcase classname="apps/riwork/schedules/model.test.ts" name="P6B-SCHED-01 defaults and each quick pick are measured from the click" time="0.000"/>
+    <testcase classname="apps/riwork/schedules/model.test.ts" name="P6B-SCHED-02 custom repeat zero and invalid dates cannot become a one-time run" time="0.000"/>
+    <testcase classname="apps/riwork/schedules/model.test.ts" name="P6B-SCHED-03 UTF-8 title and prompt limits and explicit-target requirement" time="0.000"/>
+    <testcase classname="apps/riwork/schedules/model.test.ts" name="P6B-SCHED-04 scope and target changes require explicit selection, retaining typed kind" time="0.000"/>
+    <testcase classname="apps/riwork/schedules/model.test.ts" name="P6B-SCHED-05 app plus selected-project rows and actual run outcomes are retained" time="0.000"/>
+    <testcase classname="apps/riwork/schedules/model.test.ts" name="P6B-SCHED-06 pending actions dispatch once, revision refusal keeps the draft" time="0.000"/>
+    <testcase classname="apps/riwork/schedules/model.test.ts" name="P6B-SCHED-07 a project switch rejects a late mutation result and preserves its new draft" time="0.000"/>
+  </testsuite>
+  <testsuite name="apps/riwork/settings/project_model.test.ts" tests="4" failures="0" errors="0" skipped="0" time="0.000">
+    <testcase classname="apps/riwork/settings/project_model.test.ts" name="P6a Project settings immediate choices and external refresh keep explicit metadata edits pending" time="0.000"/>
+    <testcase classname="apps/riwork/settings/project_model.test.ts" name="P6a Project settings metadata receipts preserve edits made during save" time="0.000"/>
+    <testcase classname="apps/riwork/settings/project_model.test.ts" name="P6a Project settings refresh follows untouched metadata and drops deleted folder choices" time="0.000"/>
+    <testcase classname="apps/riwork/settings/project_model.test.ts" name="P6a Project settings folder A-B-A edits survive a B snapshot before its save receipt" time="0.000"/>
+  </testsuite>
+  <testsuite name="apps/riwork/settings/settings_model.test.ts" tests="2" failures="0" errors="0" skipped="0" time="0.000">
+    <testcase classname="apps/riwork/settings/settings_model.test.ts" name="P6a settings width classes preserve the nine-section keyboard order" time="0.000"/>
+    <testcase classname="apps/riwork/settings/settings_model.test.ts" name="P6a custom orchestrator model validation never replaces an unreadable choice without a valid edit" time="0.000"/>
+  </testsuite>
+  <testsuite name="apps/riwork/tests/AppSettings.test.tsx" tests="7" failures="0" errors="0" skipped="0" time="10.442">
+    <testcase classname="apps/riwork/tests/AppSettings.test.tsx" name="P6a global settings save appearance, agent choices, and only the selected delegation field" time="2.968"/>
+    <testcase classname="apps/riwork/tests/AppSettings.test.tsx" name="P6a status settings bound reordering, change usage mode, and reset the domain defaults" time="1.602"/>
+    <testcase classname="apps/riwork/tests/AppSettings.test.tsx" name="P6a account rows retain unavailable choices and key input validates a masked paste without exposing it" time="1.842"/>
+    <testcase classname="apps/riwork/tests/AppSettings.test.tsx" name="P6a an API key reveal requested before settings load focuses the mounted secure input" time="0.391"/>
+    <testcase classname="apps/riwork/tests/AppSettings.test.tsx" name="P6a opening Settings focuses the selected theme after its asynchronous settings delivery" time="0.860"/>
+    <testcase classname="apps/riwork/tests/AppSettings.test.tsx" name="P6a theme arrows move focus before Enter while choice arrows save and skip unavailable chips" time="1.908"/>
+    <testcase classname="apps/riwork/tests/AppSettings.test.tsx" name="P6a Orca import keeps a stale preview from confirming and reports a successful refreshed import" time="0.871"/>
+  </testsuite>
+  <testsuite name="apps/riwork/tests/Phase6c.test.tsx" tests="19" failures="0" errors="0" skipped="0" time="7.472">
+    <testcase classname="apps/riwork/tests/Phase6c.test.tsx" name="P6C Cua renders initial" time="0.263"/>
+    <testcase classname="apps/riwork/tests/Phase6c.test.tsx" name="P6C Cua renders missing" time="0.213"/>
+    <testcase classname="apps/riwork/tests/Phase6c.test.tsx" name="P6C Cua renders signature" time="0.213"/>
+    <testcase classname="apps/riwork/tests/Phase6c.test.tsx" name="P6C Cua renders version" time="0.215"/>
+    <testcase classname="apps/riwork/tests/Phase6c.test.tsx" name="P6C Cua renders service-stopped" time="0.217"/>
+    <testcase classname="apps/riwork/tests/Phase6c.test.tsx" name="P6C Cua renders accessibility" time="0.216"/>
+    <testcase classname="apps/riwork/tests/Phase6c.test.tsx" name="P6C Cua renders recording" time="0.216"/>
+    <testcase classname="apps/riwork/tests/Phase6c.test.tsx" name="P6C Cua renders both-permissions" time="0.209"/>
+    <testcase classname="apps/riwork/tests/Phase6c.test.tsx" name="P6C Cua renders capture-unverified" time="0.215"/>
+    <testcase classname="apps/riwork/tests/Phase6c.test.tsx" name="P6C Cua renders ready" time="0.217"/>
+    <testcase classname="apps/riwork/tests/Phase6c.test.tsx" name="P6C Cua renders custom-driver" time="0.216"/>
+    <testcase classname="apps/riwork/tests/Phase6c.test.tsx" name="P6C Cua renders skill-link" time="0.210"/>
+    <testcase classname="apps/riwork/tests/Phase6c.test.tsx" name="P6C Cua renders probe-error" time="0.211"/>
+    <testcase classname="apps/riwork/tests/Phase6c.test.tsx" name="P6C Cua renders pending" time="0.111"/>
+    <testcase classname="apps/riwork/tests/Phase6c.test.tsx" name="P6C Settings command hosts Cua in AppSettings and reuses the panel" time="0.436"/>
+    <testcase classname="apps/riwork/tests/Phase6c.test.tsx" name="P6C preview opens in main pane, persists committed spec/title, runs only on Run, restores idle" time="3.520"/>
+    <testcase classname="apps/riwork/tests/Phase6c.test.tsx" name="P6C aspect-fit frame mapping rejects letterboxing and clamps captured release" time="0.000"/>
+    <testcase classname="apps/riwork/tests/Phase6c.test.tsx" name="P6C viewport preserves aspect ratio and protocol bounds" time="0.000"/>
+    <testcase classname="apps/riwork/tests/Phase6c.test.tsx" name="P6C preview defaults to the selected worktree folder" time="0.576"/>
+  </testsuite>
+  <testsuite name="apps/riwork/tests/ProjectSettings.test.tsx" tests="2" failures="0" errors="0" skipped="0" time="3.144">
+    <testcase classname="apps/riwork/tests/ProjectSettings.test.tsx" name="P6a Project settings explicit metadata survives immediate account saves and external refresh" time="1.745"/>
+    <testcase classname="apps/riwork/tests/ProjectSettings.test.tsx" name="P6a Project settings inline subfolders wait for explicit Save and Cmd+S saves memo too" time="1.399"/>
+  </testsuite>
+  <testsuite name="apps/riwork/tests/SettingsCuaFocus.test.tsx" tests="2" failures="0" errors="0" skipped="0" time="1.069">
+    <testcase classname="apps/riwork/tests/SettingsCuaFocus.test.tsx" name="P6C Focus preserves an in-panel input on show with Cua ready=false" time="0.531"/>
+    <testcase classname="apps/riwork/tests/SettingsCuaFocus.test.tsx" name="P6C Focus preserves an in-panel input on show with Cua ready=true" time="0.538"/>
+  </testsuite>
+  <testsuite name="apps/riwork/tests/SettingsRouting.test.tsx" tests="3" failures="0" errors="0" skipped="0" time="3.410">
+    <testcase classname="apps/riwork/tests/SettingsRouting.test.tsx" name="P6a Settings keyboard and host routes reuse panels and status preferences update the workspace" time="1.356"/>
+    <testcase classname="apps/riwork/tests/SettingsRouting.test.tsx" name="P6B Settings singleton route mounts Remote in AppSettings and ordinary Settings reuses it" time="0.523"/>
+    <testcase classname="apps/riwork/tests/SettingsRouting.test.tsx" name="P6a status account picker writes project scope and keeps the app default" time="1.530"/>
+  </testsuite>
+</testsuites>

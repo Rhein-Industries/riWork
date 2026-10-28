@@ -4,6 +4,8 @@
 No desktop application is launched. The generated NSH runner must enable the
 closed test-support backends; no remote CLI, live host or scheduler is started.
 Run under the assignment's serialized run.py to share its offline Cargo cache.
+Use a fresh root per filtered group: Workspace may rewrite its fake inventory
+in the compact projection. CuaMissing needs its own --cua-missing invocation.
 """
 import argparse
 import json
@@ -24,7 +26,9 @@ def main():
     parser.add_argument("--tsc", required=True, type=Path)
     parser.add_argument("--command-log", type=Path)
     parser.add_argument("--filter")
+    parser.add_argument("--cua-missing", action="store_true", help="seed the standalone CuaMissing fixture status")
     parser.add_argument("--check-only", action="store_true")
+    parser.add_argument("--focus", action="store_true", help="also inspect native Settings/Cua/Remote focus commands")
     args = parser.parse_args()
     root = args.root.resolve()
     if root.exists() or not root.is_relative_to(Path("/tmp").resolve()):
@@ -90,6 +94,23 @@ def main():
     native = root / "store/native-fake-sessions.json"
     native.write_text(json.dumps(fixture, indent=2) + "\n")
     env["RIWORK_NSH_FAKE_SESSIONS"] = str(native)
+    # Match 6a's explicit fake account catalog. These invented identities have
+    # no auth files; one disposable home exists and the other is unavailable.
+    account_profile = root / "user/fixture-orca"
+    (account_profile / "codex-accounts/fixture-saved/home").mkdir(parents=True)
+    env["ORCA_USER_DATA_PATH"] = str(account_profile)
+    accounts = dict(version=1, user_data=str(account_profile), source_active_id="fixture-saved", accounts=[
+        dict(id="fixture-saved", email="fixture@example.invalid", workspaceLabel="Fixture saved", managedHomeRuntime="host"),
+        dict(id="fixture-unavailable", email="unavailable@example.invalid", workspaceLabel="Fixture unavailable", managedHomeRuntime="host")])
+    cache = root / "store/codex-accounts.json"
+    cache.write_text(json.dumps(accounts) + "\n")
+    cache.chmod(0o600)
+    if args.cua_missing:
+        (root / "store/cua-fixture.json").write_text(json.dumps(dict(
+            installed=False, ready=False, running=False, version=None,
+            accessibility=False, screen_recording=False, direct_capture_verified=False,
+            message="Cua Driver is not installed. Select Set up Cua or run `riwork setup`.",
+            skills=dict(setup_needed=False, message="Fixture only; no driver invoked.", targets=[]))) + "\n")
     wrapper = root / "cargo-fixture"
     wrapper.write_text("#!/bin/sh\ncase \" $* \" in\n"
                        "*' -p nsh-app-riwork-nsh-native-test '*) exec " + shlex.quote(cargo) +
@@ -98,6 +119,12 @@ def main():
     wrapper.chmod(0o700)
     env["CARGO"] = str(wrapper)
     run([args.nsh, "check", "apps/riwork", "--tsc", args.tsc], "p6b-nsh-check")
+    if args.focus:
+        run([args.nsh, "build", "apps/riwork/SettingsCuaFocus.fixture.tsx", "--out", root / "focus-bundle"], "p6b-focus-build")
+        env["RIWORK_SETTINGS_FOCUS_BUNDLE"] = str(root / "focus-bundle/bundle.js")
+        run([cargo, "test", "--locked", "--offline", "--jobs", "2", "-p", "riwork-nsh-native",
+             "--features", "test-support", "--test", "settings_cua_focus", "--",
+             "--ignored", "--nocapture", "--test-threads=1"], "p6b-focus-commands")
     if not args.check_only:
         argv = [args.nsh, "test", "apps/riwork", "--junit", root / "nsh.xml"]
         if args.filter:

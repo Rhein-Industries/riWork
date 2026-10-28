@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="nsh test" tests="7" failures="1" errors="0" skipped="0" time="25.573">
+  <testsuite name="apps/riwork/tests/AppSettings.test.tsx" tests="1" failures="0" errors="0" skipped="0" time="0.902">
+    <testcase classname="apps/riwork/tests/AppSettings.test.tsx" name="P6a opening Settings focuses the selected theme after its asynchronous settings delivery" time="0.902"/>
+  </testsuite>
+  <testsuite name="apps/riwork/tests/Phase6c.test.tsx" tests="2" failures="1" errors="0" skipped="0" time="0.744">
+    <testcase classname="apps/riwork/tests/Phase6c.test.tsx" name="P6C Settings command hosts Cua in AppSettings and reuses the panel" time="0.589"/>
+    <testcase classname="apps/riwork/tests/Phase6c.test.tsx" name="CuaMissing opens Settings in the active pane using fixture status only" time="0.155">
+      <failure message="expected &quot;panel:tasks&quot; to be &quot;shell:S3&quot;">expected &quot;panel:tasks&quot; to be &quot;shell:S3&quot;&#10;    at toBe (native)&#10;    at &lt;anonymous&gt; (apps/riwork/tests/Phase6c.test.tsx:133:105)&#10;&#10;on screen: &quot;PROJECTS&quot;, &quot;◆&quot;, &quot;FILES&quot;, &quot;◆&quot;, &quot;◆&quot;, &quot;↗&quot;, &quot;…&quot;, &quot;Projects&quot;, &quot;18 projects&quot;, &quot;＋ Folder&quot;, &quot;＋ Project&quot;, &quot;↕&quot;, &quot;⌕&quot;, &quot;Alpha&quot;, &quot;1 trees · 0/0 tasks · 5 live&quot;, &quot;▾ Unfiled  18&quot;, &quot;Beta&quot;, &quot;1 trees · 0/0 tasks · 5 live&quot;, &quot;Busy&quot;, &quot;1 trees · 0/0 tasks · 24 live&quot;, &quot;Gamma&quot;, &quot;1 trees · 0/0 tasks · 0 live&quot;, &quot;L-BIGID&quot;, &quot;1 trees · 0/0 tasks · 2 live&quot;, &quot;L-CARRY&quot;, &quot;1 trees · 0/0 tasks · 4 live&quot;, &quot;L-CARRY-DEST&quot;, &quot;1 trees · 0/0 tasks · 4 live&quot;, &quot;L-GLOBAL-TABS&quot;, &quot;1 trees · 0/0 tasks · 0 live&quot;, &quot;L-LEGACY&quot;, &quot;1 trees · 0/0 tasks · 3 live&quot;, &quot;L-MAIN&quot;, &quot;1 trees · 0/0 tasks · 3 live&quot;, &quot;🔕&quot;, &quot;↻&quot;, &quot;⚙&quot;, &quot;Move to…&quot;, &quot;↗&quot;, &quot;L-PREVIEW-REMOTE&quot;, &quot;1 trees · 0/0 tasks · 0 live&quot;, &quot;L-RATIO&quot;, &quot;1 trees · 0/0 tasks · 3 live&quot;, &quot;L-UNLOCK&quot;, &quot;1 trees · 0/0 tasks · 2 live&quot;, &quot;Phase5&quot;, &quot;1 trees · 0/0 tasks · 3 live&quot;, &quot;L-EMPTY&quot;, &quot;1 trees · 0/0 tasks · 0 live&quot;, &quot;L-NAV&quot;, &quot;1 trees · 0/0 tasks · 2 live&quot;, &quot;L-NESTED&quot;, &quot;1 trees · 0/0 tasks · 4 live&quot;, &quot;L-UNKNOWN&quot;, &quot;1 trees · 0/0 tasks · 2 live&quot;, &quot;root&quot;, &quot;×&quot;, &quot;root&quot;, &quot;root&quot;, &quot;★&quot;, &quot;◇&quot;, &quot;↗&quot;, &quot;…&quot;, &quot;TASKS&quot;, &quot;×&quot;, &quot;◇&quot;, &quot;↗&quot;, &quot;…&quot;, &quot;Tasks&quot;, &quot;0 tasks · L-MAIN&quot;, &quot;＋ Task&quot;, &quot;⌕&quot;, &quot;No tasks&quot;, &quot;PROJECTS&quot;, &quot;FILES&quot;, &quot;WORKTREES&quot;, &quot;TASKS&quot;, &quot;SESSIONS&quot;, &quot;ALL TABS&quot;, &quot;L-MAIN&quot;, &quot;+ Shell&quot;, &quot;3 LIVE&quot;, &quot;CPU — RAM —&quot;, &quot;CODEX · System default · UNAVAILABLE&quot;, &quot;DEFAULT (APP) · System default · email unknown&quot;, &quot;&quot;, &quot;Global&quot;, &quot;P·ORCH&quot;, &quot;Layout&quot;</failure>
+    </testcase>
+  </testsuite>
+  <testsuite name="apps/riwork/tests/SettingsRouting.test.tsx" tests="2" failures="0" errors="0" skipped="0" time="1.831">
+    <testcase classname="apps/riwork/tests/SettingsRouting.test.tsx" name="P6a Settings keyboard and host routes reuse panels and status preferences update the workspace" time="1.290"/>
+    <testcase classname="apps/riwork/tests/SettingsRouting.test.tsx" name="P6B Settings singleton route mounts Remote in AppSettings and ordinary Settings reuses it" time="0.541"/>
+  </testsuite>
+  <testsuite name="apps/riwork/tests/TextSize.test.tsx" tests="1" failures="0" errors="0" skipped="0" time="0.589">
+    <testcase classname="apps/riwork/tests/TextSize.test.tsx" name="P1-TXT-02: View commands resize through the Settings owner and reset" time="0.589"/>
+  </testsuite>
+  <testsuite name="apps/riwork/tests/Theme.test.tsx" tests="1" failures="0" errors="0" skipped="0" time="0.596">
+    <testcase classname="apps/riwork/tests/Theme.test.tsx" name="P1-THM-01: Settings offers the seven core-labelled themes and changes selection" time="0.596"/>
+  </testsuite>
+</testsuites>

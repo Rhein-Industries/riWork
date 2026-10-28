@@ -18,7 +18,12 @@ test("P6a Settings keyboard and host routes reuse panels and status preferences 
     await app.waitFor("id:workspace-dock");
     await app.keyboard.press("mod+,");
     await app.waitFor("id:settings-panel");
+    await app.waitFor("id:remote-settings");
+    await app.waitFor("id:remote-add");
+    await app.waitFor("id:cua-setup");
+    expect(app.count("id:settings-section-08 >> id:remote-settings")).toBe(1);
     await app.host.send("route", { step: { kind: "panel", panel: "settings" } });
+    await app.waitFor("id:remote-pair");
     expect(latest(app).panes.flatMap((pane) => pane.tabs).filter((tab) => tab.id === "panel:settings").length).toBe(1);
     await app.press("id:settings-status-enabled");
     await app.waitUntil(() => !app.shows("id:status-bar"));
@@ -31,6 +36,23 @@ test("P6a Settings keyboard and host routes reuse panels and status preferences 
     await app.waitFor("id:project-settings-panel");
     await app.waitFor("id:project-memo-input");
     expect(latest(app).panes.flatMap((pane) => pane.tabs).filter((tab) => tab.id === "panel:project_settings").length).toBe(1);
+  } finally { app.dispose(); }
+});
+
+test("P6B Settings singleton route mounts Remote in AppSettings and ordinary Settings reuses it", async () => {
+  const app = await open("./SettingsRouting.fixture.tsx", options("remote-singleton-route"));
+  try {
+    await app.waitFor("id:workspace-dock");
+    await app.host.send("route", { step: { kind: "panel", panel: "settings" } });
+    await app.waitFor("id:settings-panel");
+    await app.waitFor("id:remote-settings");
+    await app.waitFor("id:cua-setup");
+    await app.keyboard.press("mod+,");
+    await app.waitFor("id:remote-add");
+    expect(latest(app).panes.flatMap((pane) => pane.tabs).filter((tab) => tab.id === "panel:settings").length).toBe(1);
+    expect(app.count("id:settings-section-08 >> id:remote-settings")).toBe(1);
+    expect(app.count("id:cua-setup")).toBe(1);
+    expect(app.shows("id:project-settings-panel")).toBe(false);
   } finally { app.dispose(); }
 });
 
