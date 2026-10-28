@@ -69,7 +69,7 @@ New bridge surface (additive to existing schema 2 preferences):
 | PANEL-143–149 | Global picker/availability/refresh/balancing preference and native account persistence. Launch-time balancing algorithm is unchanged. |
 | PANEL-150–156, 158–164, 171–176 | Appearance, keyboard choices, text controls, Files/Windows, agent flags/billing, summaries, model validation, delegation and full status settings. |
 | PANEL-157 | Match/step/reset behavior uses the existing core effective size. Reading the actual Ghostty font-size into the NSH host remains an inherited gap; this form does not invent a config parser or change font semantics. |
-| PANEL-165–170 | Masked key editor, validation/failure handling, memory-store tests, status refresh and early API-key focus routing. Real Keychain/host menu checks were intentionally not run. |
+| PANEL-165–170 | Masked key editor, validation/failure handling, memory-store tests, status refresh and early API-key focus routing. Real Keychain and API-key-specific host menu checks were intentionally not run. |
 | PANEL-179 | Preview/token/confirmation/error/completion UI and core import adapter; headless tests use a canned adapter and never run the installed Orca CLI. |
 | PANEL-187–190 | Existing account/status projection retained; menu choices now write only project scope, preserve frozen sessions and still route Project Settings. |
 | PANEL-139–142, 177–178 | Open for the Cua and Remote lanes; their surfaces were not implemented or operated here. |
@@ -79,7 +79,7 @@ Builds used the worktree's private target directory (an APFS copy-on-write clone
 existing dependency artifacts, no shared target writes), `CARGO_BUILD_JOBS=2`,
 `CARGO_NET_OFFLINE=true`, Rust/Cargo 1.99.1, preinstalled NSH 0.3.0 and TypeScript 7.0.2.
 Heavy build commands were serialized. Cargo/Rustup read the existing tool caches.
-No installation, reload, push, merge into `nsh`, network, Docker, GUI operation,
+No installation, reload, push, merge into `nsh`, network, Docker, operation of live windows,
 real settings/account discovery or real credential access occurred.
 
 The committed `phase6a_settings.py` runner creates a fresh `/tmp` fixture root,
@@ -117,6 +117,7 @@ unset CODEX_HOME RIWORK_CODEX_ACCOUNT_HOME ORCA_USER_DATA_PATH ANTHROPIC_API_KEY
 | `git merge nsh` | Exit 0, fast-forward `4216a3a..4df3822`. | Starting git history. |
 | `cargo check --locked --offline -p riwork-nsh-native --features test-support` | Exit 0. | `cargo-check.log` |
 | `cargo test --locked --offline -p riwork-nsh-native -p riwork-nsh-workspace` | Exit 0: 361 passed, 0 failed, 1 existing ignored (excluding nested child helper totals). | `cargo-tests-final.log` |
+| `cargo test --locked --offline -p riwork-desktop` | Exit 0: 78 passed, 0 failed, 1 existing ignored (60 host unit, 11 AppKit, 6 CLI contract, 1 startup). | `desktop-review/desktop-suite.log`, `desktop-review/manifest.json` |
 | `python3 crates/riwork-desktop/verification/phase6a_settings.py --root "$P6_VERIFY/focused-final" --target-dir "$CARGO_TARGET_DIR" --nsh "$NSH_CLI" --tsc "$NSH_TSC" --filter P6a` | Exit 0: check passed, 17 tests passed. | `focused-final-run.log`, `focused-final/nsh.xml`, `focused-final/nsh-test.log` |
 | `python3 crates/riwork-desktop/verification/phase6a_settings.py --root "$P6_VERIFY/full-final" --target-dir "$CARGO_TARGET_DIR" --nsh "$NSH_CLI" --tsc "$NSH_TSC"` | Exit 0: check passed, 168 tests passed (151 existing + 17 Phase 6a). | `full-final-run.log`, `full-final/nsh.xml`, `full-final/nsh-test.log` |
 | `cargo test --locked --offline -p riwork-engine file_preview::tests --lib -- --test-threads=1` | Exit 0: 14 passed. | `engine-preview.log` |
@@ -143,3 +144,20 @@ executable override. It verifies key save/validation/remove in memory, nonrecord
 fixture import previews and refused import confirmation without creating settings,
 project-state or credential files. The engine dev dependency additionally refuses
 Keychain calls, so a future regression cannot reach a real key during this test.
+
+Review follow-up on `ed560af`: the desktop command above used the same `env.sh`
+discipline with fresh directories under `$P6_VERIFY/desktop-review`: `HOME=os-home`,
+`RIWORK_HOME=state`, `RIWORK_RUNTIME_DIR=runtime`, `TMPDIR=tmp`, `TMUX_TMPDIR=tmux`,
+`XDG_CONFIG_HOME=xdg-config` and `XDG_CACHE_HOME=xdg-cache` (each relative to that
+fixture root). The private Cargo target, offline mode and two-job limit stayed as
+shown above. `RIWORK_GHOSTTY_INSTALL_DIR` was
+`/Users/dominik/orca/projects/riWork-nsh-p2-terminals/crates/riwork-nsh-terminal/.runtime/pinned/install`,
+the same pinned revision/artifacts used in prior host verification. All 605 files
+retained identical SHA-256, byte counts and modification times, recorded in
+`desktop-review/ghostty-before.json` and `ghostty-after.json`. The suite took
+67.488 seconds; the tmux fixture stayed empty. AppKit checks used only their own
+unshown fixture windows/objects, without ordering or activating windows or touching
+a live application. Non-fatal linker-unwind and unused-helper warnings remain.
+No implementation fix was needed. Effective service tier remains default, Fast off;
+model, effort and account are unchanged. Live targets touched: none beyond the own
+shell/worktree and isolated test fixtures. No merge, push, installation or reload.
