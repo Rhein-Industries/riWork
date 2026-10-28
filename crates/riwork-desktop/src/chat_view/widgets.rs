@@ -28,25 +28,14 @@ pub(super) struct Look {
 }
 
 impl Look {
-    /// Whether the chat is drawn in the Hermes design's style: proportional text, flat panel
-    /// cards with small corners, a filled send disc. It chooses how things look only; every
-    /// design lays the chat out the same.
-    pub fn hermes(self) -> bool {
-        self.colors == Palette::HERMES
-    }
-
     /// The corners of the cards at the bottom of the chat (the message box and the bars above
-    /// it): Hermes's small ones, the continuous-corner message field's in every other design.
+    /// it): the continuous-corner message field's.
     pub fn card_radius(self) -> Pixels {
-        ui_text::space(if self.hermes() { 5.0 } else { 16.0 })
+        ui_text::space(16.0)
     }
 
     pub fn chat_family(self) -> SharedString {
-        if self.hermes() {
-            ".SystemUIFont".into()
-        } else {
-            ui_text::ui_family()
-        }
+        ui_text::ui_family()
     }
 
     pub fn of(cx: &App) -> Self {

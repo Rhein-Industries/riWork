@@ -173,19 +173,6 @@ pub(crate) fn flat_cell<E: Styled>(
     pane_selected: bool,
     colors: Palette,
 ) -> E {
-    if !colors.plain_tabs {
-        return cell
-            .border_l_0()
-            .border_t_0()
-            .border_r_1()
-            .border_b_1()
-            .border_color(rgb(if active { colors.cyan } else { colors.divider }))
-            .bg(rgb(if active {
-                colors.panel_active
-            } else {
-                colors.panel
-            }));
-    }
     let cell = cell
         .border_l_0()
         .border_t_0()
@@ -632,11 +619,7 @@ impl Workspace {
             .items_center()
             .bg(rgb(colors.panel))
             .border_b_1()
-            .border_color(rgb(if pane_selected && !colors.plain_tabs {
-                colors.cyan
-            } else {
-                colors.divider
-            }))
+            .border_color(rgb(colors.divider))
             .pl(px(control_inset))
             .child(
                 div()
@@ -728,11 +711,7 @@ impl Workspace {
         let tab_id = tab.id;
         let active = index == pane.active;
         let label = Self::panel_label(kind);
-        let ink = match active {
-            true if !colors.plain_tabs => colors.magenta,
-            true => colors.text,
-            false => colors.muted,
-        };
+        let ink = if active { colors.text } else { colors.muted };
         let pane_selected = self.active_pane == pane_id;
         let workspace = cx.entity();
         behavior_controls::toggle_content(
@@ -750,7 +729,7 @@ impl Workspace {
         .map(|cell| flat_cell(cell, active, pane_selected, colors))
         .focus_visible(move |style| style.border_1().border_color(rgb(colors.focus)))
         .text_color(rgb(ink))
-        .when(!active || !colors.plain_tabs, |cell| {
+        .when(!active, |cell| {
             cell.hover(move |style| {
                 style
                     .bg(rgb(colors.panel_active))
@@ -858,7 +837,7 @@ impl Workspace {
             .text_color(rgb(ink))
             .map(|tab| flat_cell(tab, active, pane_selected, colors))
             .focus_visible(move |style| style.border_1().border_color(rgb(colors.focus)))
-            .when(!(active && colors.plain_tabs), |tab| {
+            .when(!active, |tab| {
                 tab.hover(move |style| {
                     style
                         .bg(rgb(colors.panel_active))

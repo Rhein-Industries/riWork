@@ -18,16 +18,13 @@ fn remote_preferences_skip_local_store_and_session_backends() {
         .unwrap();
     SettingsStore::open(home.path())
         .unwrap()
-        .update(|settings| {
-            settings.theme = ThemeChoice::RiWork;
-            settings.panel_tab_icons = true;
-        })
+        .update(|settings| settings.panel_tab_icons = true)
         .unwrap();
     std::fs::write(home.path().join("state.json"), b"unreadable local store").unwrap();
     let key = riwork_engine::remote_tree::project_key(HOST, PROJECT);
     let data = session_io::load(home.path(), &key).unwrap();
     assert_eq!(data.project_id, key);
-    assert_eq!(data.theme, ThemeChoice::RiWork);
+    assert_eq!(data.theme, ThemeChoice::Native);
     assert!(data.panel_tab_icons);
     assert!(data.root.is_none() && data.shells.is_none() && data.tabs.is_none());
     assert_eq!(

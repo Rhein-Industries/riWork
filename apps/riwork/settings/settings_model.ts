@@ -6,18 +6,10 @@ export function settingsLayout(width: number) {
     card: kind === "wide" ? 18 : kind === "medium" ? 16 : 12,
     gap: kind === "wide" ? 16 : kind === "medium" ? 14 : 10 };
 }
-export function themeColumns(width: number, scale: number): number {
-  const layout = settingsLayout(width);
-  if (layout.kind === "narrow") return 1;
-  const content = Math.min(width - 2 * layout.page, layout.maxWidth ?? Infinity);
-  const column = layout.kind === "wide" ? (content - layout.gap) / 2 : content;
-  const inner = Math.max(0, column - 2 * (layout.card + 1));
-  return Math.max(2, Math.min(3, Math.floor((inner + 8) / (220 * scale + 8))));
-}
 export const SETTINGS_SECTIONS = [
   { number: "01", title: "Computer use", description: "Let RiWork agents operate desktop apps through Cua.ai." },
   { number: "02", title: "Codex accounts", description: "The account new Codex sessions start with." },
-  { number: "03", title: "Appearance", description: "Choose a theme and text size, or sync with Ghostty." },
+  { number: "03", title: "Appearance", description: "Terminal colors, interface font and text size." },
   { number: "04", title: "Files", description: "How the Files tree and its Preview pane open together." },
   { number: "05", title: "Agent sessions", description: "How agent sessions draw, how orchestrators run, and dictation." },
   { number: "06", title: "Windows", description: "How project windows open." },

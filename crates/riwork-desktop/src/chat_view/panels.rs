@@ -140,21 +140,13 @@ fn composer_path(path: &mut PathBuilder, bounds: gpui::Bounds<gpui::Pixels>, rad
     path.close();
 }
 
-/// The message box's card as the design draws it: Hermes's panel with a hairline edge and
-/// small corners; every other design keeps the message field it had, the window's background
-/// in a continuous-corner outline. The edge takes the focus color while the box has focus
-/// (the colorful themes' cyan). The geometry is the same in every design: a one-pixel edge
-/// around the card's padding.
+/// The message box's card as the design draws it: the message field it had, the window's
+/// background in a continuous-corner outline. The edge takes the focus color while the box
+/// has focus (the colorful themes' cyan). The geometry is the same in every design: a
+/// one-pixel edge around the card's padding.
 fn composer_card(card: Stateful<gpui::Div>, look: Look, active: bool) -> Stateful<gpui::Div> {
     let colors = look.colors;
     let radius = look.card_radius();
-    if look.hermes() {
-        return card
-            .rounded(radius)
-            .border_1()
-            .border_color(rgb(if active { colors.focus } else { colors.divider }))
-            .bg(rgb(colors.panel));
-    }
     let outline = match (active, look.native) {
         (false, _) => colors.divider,
         (true, true) => colors.focus,
@@ -747,13 +739,7 @@ impl ChatView {
             use std::hash::{Hash, Hasher};
             let key = |shows: &str| {
                 let mut hasher = std::collections::hash_map::DefaultHasher::new();
-                (
-                    shows,
-                    ui_text::scale().to_bits(),
-                    look.native,
-                    look.hermes(),
-                )
-                    .hash(&mut hasher);
+                (shows, ui_text::scale().to_bits(), look.native).hash(&mut hasher);
                 hasher.finish()
             };
             [
@@ -1374,15 +1360,13 @@ impl ChatView {
                 .p(ui_text::space(CHOICE_MENU_PADDING))
                 .rounded(look.card_radius())
                 .border_1()
-                .border_color(rgb(if look.native || look.hermes() {
+                .border_color(rgb(if look.native {
                     colors.divider
                 } else {
                     colors.magenta
                 }))
                 .bg(rgb(if look.native {
                     controls::raised(colors)
-                } else if look.hermes() {
-                    colors.panel
                 } else {
                     colors.panel_active
                 }))
@@ -1393,16 +1377,8 @@ impl ChatView {
                     .py(ui_text::space(4.0))
                     .rounded(px(4.0))
                     .border_1()
-                    .border_color(rgb(if look.hermes() {
-                        colors.divider
-                    } else {
-                        colors.magenta
-                    }))
-                    .bg(rgb(if look.hermes() {
-                        colors.panel
-                    } else {
-                        colors.panel_active
-                    })),
+                    .border_color(rgb(colors.magenta))
+                    .bg(rgb(colors.panel_active)),
                 |menu| controls::menu(menu, colors),
             )
         };
@@ -1876,14 +1852,10 @@ impl ChatView {
                 )
             }))
             .children(toolbar::fast_available(models, model).then(|| {
-                let toggle = if look.native || look.hermes() {
+                let toggle = if look.native {
                     // On, it takes the design's signal for a mode that is on: Native's working
-                    // color, Hermes's cyan, as a tint under the label.
-                    let on = if look.native {
-                        colors.working
-                    } else {
-                        colors.cyan
-                    };
+                    // color, as a tint under the label.
+                    let on = colors.working;
                     let content = div()
                         .flex()
                         .items_center()
@@ -1974,7 +1946,7 @@ impl ChatView {
                 colors.cyan
             })
         };
-        let toggle = if look.native || look.hermes() {
+        let toggle = if look.native {
             let content = div()
                 .flex()
                 .items_center()
@@ -2059,12 +2031,8 @@ impl ChatView {
             }
             None => (toolbar::CONTRIBUTOR_SETTINGS_LABEL, "Contributor: Muse"),
         };
-        let toggle = if look.native || look.hermes() {
-            let tint = if look.native {
-                colors.working
-            } else {
-                colors.cyan
-            };
+        let toggle = if look.native {
+            let tint = colors.working;
             let content = div()
                 .flex()
                 .items_center()
@@ -2176,10 +2144,9 @@ impl ChatView {
         .min_w_0()
         .max_w(relative(1.0))
         .aria_expanded(open)
-        // The header's pop-up chevron: Native's and Hermes's chevron.down at the label's
-        // x-height, the colorful themes' ▾, muted and centered on the label, the control's
-        // gap after it.
-        .child(if look.native || look.hermes() {
+        // The header's pop-up chevron: Native's chevron.down at the label's x-height, the
+        // colorful themes' ▾, muted and centered on the label, the control's gap after it.
+        .child(if look.native {
             icons::symbol_in_box(
                 "chevron.down",
                 9.5,
@@ -2545,7 +2512,7 @@ impl ChatView {
                 } else {
                     row.label.clone()
                 };
-                let check = if look.native || look.hermes() {
+                let check = if look.native {
                     div().children(
                         row.current
                             .then(|| icons::text_icon(Icon::Check, 11.0, colors.cyan)),
@@ -2656,7 +2623,7 @@ impl ChatView {
         let trigger_bounds = std::rc::Rc::new(std::cell::Cell::new(gpui::Bounds::default()));
         let positioned = trigger_bounds.clone();
         let tip = "Attach files or paste an image · UTF-8 text, PNG or JPEG · or drop them";
-        let trigger = if look.native || look.hermes() {
+        let trigger = if look.native {
             pressable(
                 widgets::symbol_button_sized("chat-attach", "plus", tip, look, side),
                 look,
@@ -2742,8 +2709,8 @@ impl ChatView {
     }
 
     /// Send, drawn as the design draws a message field's send button: Native's filled round
-    /// symbol, Hermes's filled disc, the colorful themes' bordered mark. It waits until there
-    /// is something to send, taking no click or key meanwhile.
+    /// symbol, the colorful themes' bordered mark. It waits until there is something to send,
+    /// taking no click or key meanwhile.
     fn composer_send(&self, look: Look, side: gpui::Pixels, cx: &mut Context<Self>) -> AnyElement {
         let colors = look.colors;
         let empty = (self.draft_empty(cx) && !self.dictation.phase().is_active())
@@ -2766,30 +2733,6 @@ impl ChatView {
                 look,
                 side,
             )
-        } else if look.hermes() {
-            crate::behavior_controls::button_content(
-                "chat-send",
-                tip,
-                icons::symbol_in_box("arrow.up", 14.0, None, (side - px(4.0)).max(px(1.0))),
-            )
-            .disabled(empty)
-            .size(side)
-            .flex_none()
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded_full()
-            .bg(rgb(colors.text))
-            .text_color(rgb(colors.bg))
-            .border_1()
-            .border_color(transparent_black())
-            .focus_visible(move |style| style.border_color(rgb(colors.focus)))
-            .when(!empty, |button| {
-                button
-                    .cursor_pointer()
-                    .hover(move |style| style.bg(rgb(colors.cyan)))
-            })
-            .child(tooltip::anchor(tip, TipLook::Control))
         } else {
             mark_button("chat-send", "↑", tip, Some(colors.cyan), side, look).disabled(empty)
         };
@@ -2797,12 +2740,12 @@ impl ChatView {
             .into_any_element()
     }
 
-    /// Stop, in Send's slot while a turn runs and there is nothing to send: Native and Hermes
-    /// draw it as the box's other quiet round buttons, its symbol and a tint in the warning
-    /// color; the colorful themes their mark in the terminal's red.
+    /// Stop, in Send's slot while a turn runs and there is nothing to send: Native draws it
+    /// as the box's other quiet round buttons, its symbol and a tint in the warning color;
+    /// the colorful themes their mark in the terminal's red.
     fn composer_stop(&self, look: Look, side: gpui::Pixels, cx: &mut Context<Self>) -> AnyElement {
         let tip = "Interrupt · ⌘.";
-        if look.native || look.hermes() {
+        if look.native {
             let warning = look.tone(cards::Tone::Warning);
             let colors = look.colors;
             pressable(
@@ -2862,7 +2805,7 @@ impl ChatView {
         let mic = dictate::mic_shown(cx);
         // The text starts where the ＋ glyph does: inset in its button by half the room the
         // symbol leaves (the colorful themes' bordered mark starts at its edge).
-        let glyph_inset = if look.native || look.hermes() {
+        let glyph_inset = if look.native {
             ((side - ui_text::space(controls::TOOLBAR_SYMBOL)) / 2.).max(px(0.))
         } else {
             px(0.)
@@ -3084,7 +3027,7 @@ impl ChatView {
             .map_or_else(|| tooltip.clone(), |status| format!("{status}. {tooltip}"));
         let busy = matches!(phase, Phase::Preparing { .. } | Phase::Finishing { .. });
         let listening = matches!(phase, Phase::Listening { .. });
-        let mic = if look.native || look.hermes() {
+        let mic = if look.native {
             let symbol = match phase {
                 Phase::Listening { .. } | Phase::Preparing { .. } | Phase::Finishing { .. } => {
                     "mic.fill"

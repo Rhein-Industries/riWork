@@ -403,7 +403,6 @@ mod tests {
                     function.name,
                     "subscribe"
                         | "sentenceCase"
-                        | "cased"
                         | "open"
                         | "stageProjectMemo"
                         | "newEditor"

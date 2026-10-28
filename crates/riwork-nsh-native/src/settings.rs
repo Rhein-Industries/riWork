@@ -25,14 +25,6 @@ use crate::{
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsObject)]
 #[serde(rename_all = "camelCase")]
-pub struct ThemeChoiceDto {
-    pub id: String,
-    pub label: String,
-    pub description: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsObject)]
-#[serde(rename_all = "camelCase")]
 pub struct TextStyleDto {
     pub points: f32,
     pub scale: f32,
@@ -61,8 +53,6 @@ pub struct StatusBarDto {
 pub struct SettingsDto {
     pub schema: u32,
     pub theme: String,
-    pub theme_choices: Vec<ThemeChoiceDto>,
-    pub use_riwork_colors: bool,
     pub native_terminal_colors: bool,
     pub open_preview_on_select: bool,
     pub remember_window_size: bool,
@@ -94,7 +84,6 @@ pub struct SettingsDto {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SettingsPatch {
     pub theme: Option<String>,
-    pub use_riwork_colors: Option<bool>,
     pub native_terminal_colors: Option<bool>,
     pub open_preview_on_select: Option<bool>,
     pub remember_window_size: Option<bool>,
@@ -143,15 +132,6 @@ impl SettingsDto {
         Self {
             schema: 2,
             theme: theme_id(settings.theme),
-            theme_choices: ThemeChoice::ALL
-                .into_iter()
-                .map(|choice| ThemeChoiceDto {
-                    id: theme_id(choice),
-                    label: choice.label().into(),
-                    description: choice.description().into(),
-                })
-                .collect(),
-            use_riwork_colors: settings.use_riwork_colors,
             native_terminal_colors: settings.native_terminal_colors,
             open_preview_on_select: settings.open_preview_on_select,
             remember_window_size: settings.remember_window_size,
@@ -195,7 +175,6 @@ impl SettingsDto {
                     Face::Menlo => "menlo",
                     Face::System => "system",
                     Face::SystemMono => "system_mono",
-                    Face::Hermes => "hermes",
                 }
                 .into(),
             },
@@ -232,7 +211,6 @@ impl SettingsDto {
 
 struct ValidatedPatch {
     theme: Option<ThemeChoice>,
-    use_riwork_colors: Option<bool>,
     native_terminal_colors: Option<bool>,
     open_preview_on_select: Option<bool>,
     remember_window_size: Option<bool>,
@@ -314,7 +292,6 @@ impl SettingsPatch {
             .transpose()?;
         Ok(ValidatedPatch {
             theme: self.theme.as_deref().map(parse_theme).transpose()?,
-            use_riwork_colors: self.use_riwork_colors,
             native_terminal_colors: self.native_terminal_colors,
             open_preview_on_select: self.open_preview_on_select,
             remember_window_size: self.remember_window_size,
@@ -400,9 +377,6 @@ impl ValidatedPatch {
         }
         if let Some(value) = self.theme {
             settings.theme = value;
-        }
-        if let Some(value) = self.use_riwork_colors {
-            settings.use_riwork_colors = value;
         }
         if let Some(value) = self.open_preview_on_select {
             settings.open_preview_on_select = value;
@@ -504,7 +478,6 @@ impl SettingsBackend for CoreSettingsBackend {
             ),
             (patch.delegation_patch.is_some(), "delegation_policy"),
             (patch.theme.is_some(), "theme"),
-            (patch.use_riwork_colors.is_some(), "use_riwork_colors"),
             (
                 patch.native_terminal_colors.is_some(),
                 "native_terminal_colors",
@@ -749,9 +722,6 @@ impl Settings {
     pub fn sentence_case(text: String) -> String {
         ui_text::sentence_case(&text)
     }
-    pub fn cased(text: String, native: bool) -> String {
-        if native { text } else { text.to_uppercase() }
-    }
     pub fn subscribe(
         listener: Callback<Snapshot<SettingsDto>>,
         cx: CallCx<'_>,
@@ -806,7 +776,7 @@ snapshot_js_value!(SettingsDto, "SettingsEvent");
 impl JsValue for SettingsPatch {
     fn ts_type(types: &mut TsTypes) -> String {
         types.declare("SettingsPatch", |types| format!(
-            "export interface SettingsPatch {{ theme?: string; useRiworkColors?: boolean; nativeTerminalColors?: boolean; openPreviewOnSelect?: boolean; uiTextSize?: number; uiTextMatchesTerminal?: boolean; interfaceFont?: 'system' | 'system_mono'; rememberWindowSize?: boolean; panelTabIcons?: boolean; tabCloseBehavior?: 'ask' | 'detach' | 'exit'; agentInlineMode?: boolean; agentTerminalsUnrestricted?: boolean; dictationMic?: boolean; claudeChatIgnoresApiKey?: boolean; codexSubscriptionBalancing?: boolean; dashboardHaikuSummaries?: boolean; orchestratorMode?: 'automatic' | 'terminal' | 'chat'; orchestratorChatProvider?: 'codex' | 'claude' | 'muse'; orchestratorChatModel?: string | null; statusBar?: {}; delegationPatch?: {}; }}",
+            "export interface SettingsPatch {{ theme?: string; nativeTerminalColors?: boolean; openPreviewOnSelect?: boolean; uiTextSize?: number; uiTextMatchesTerminal?: boolean; interfaceFont?: 'system' | 'system_mono'; rememberWindowSize?: boolean; panelTabIcons?: boolean; tabCloseBehavior?: 'ask' | 'detach' | 'exit'; agentInlineMode?: boolean; agentTerminalsUnrestricted?: boolean; dictationMic?: boolean; claudeChatIgnoresApiKey?: boolean; codexSubscriptionBalancing?: boolean; dashboardHaikuSummaries?: boolean; orchestratorMode?: 'automatic' | 'terminal' | 'chat'; orchestratorChatProvider?: 'codex' | 'claude' | 'muse'; orchestratorChatModel?: string | null; statusBar?: {}; delegationPatch?: {}; }}",
             StatusBarDto::ts_type(types), DelegationPatch::ts_type(types)))
     }
     fn from_js(value: JsIn<'_>) -> Result<Self, PropError> {

@@ -148,7 +148,7 @@ Only no arguments or one existing project directory open the workspace; any
 other unknown command or option exits with an error.
 settings addresses top-level settings.json keys in RIWORK_HOME (no project overrides).
 set takes JSON or a bare string; --json selects structured output and can precede VALUE.
-For example: settings set theme tokyo_night, or settings set status_bar --json
+For example: settings set tab_close_behavior detach, or settings set status_bar --json
 '{\"usage_mode\":\"all_accounts\"}'. Object values replace the known object preferences;
 omitted fields use model defaults. Invalid or ignored values are refused without saving.
 Running desktop windows poll settings every two seconds and apply interface preferences;

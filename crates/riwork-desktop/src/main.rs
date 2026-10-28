@@ -113,7 +113,7 @@ use riwork_engine::app_preview::{PreviewMode, PreviewSpec};
 use sessions::{HarnessKind, SessionManager, SessionMetrics, ShellKind, ShellSession};
 use settings::{CuaSetupState, Settings, SettingsEvent, SettingsPanel, SettingsStore};
 use store::{Project, ProjectCodexAccount, SearchHit, State, Store};
-use theme::{Appearance, Palette, ThemeChoice};
+use theme::{Appearance, Palette};
 use tooltip::Look;
 use usage::ProviderUsage;
 
@@ -10178,7 +10178,6 @@ impl Workspace {
             .map(|(index, (tab, display_title))| {
                 let tab_id = tab.id;
                 let active = index == pane.active;
-                let panel = tab.panel().is_some();
                 // Shell tabs keep their titles; only built-in panels swap in an icon.
                 let icon_panel = tab
                     .panel()
@@ -10202,15 +10201,7 @@ impl Workspace {
                     (Some(_), true) => (0.0, 4.0, 0.0),
                     (Some(_), false) => (0.0, 0.0, 0.0),
                 };
-                let tab_color = if active {
-                    if panel && !colors.plain_tabs {
-                        colors.magenta
-                    } else {
-                        colors.text
-                    }
-                } else {
-                    colors.muted
-                };
+                let tab_color = if active { colors.text } else { colors.muted };
                 // Native's selected tab is a full-height cell in the content's own
                 // background with medium weight, brightest in the selected pane.
                 // Other tabs are muted words on the bar; hairlines part the cells.
@@ -10253,21 +10244,6 @@ impl Workspace {
                     .pr(ui_text::space(pad_right))
                     .gap(ui_text::space(gap))
                     .map(|style| {
-                        if !colors.plain_tabs {
-                            return style
-                                .border_r_1()
-                                .border_b_1()
-                                .border_color(rgb(if active {
-                                    colors.cyan
-                                } else {
-                                    colors.divider
-                                }))
-                                .bg(rgb(if active {
-                                    colors.panel_active
-                                } else {
-                                    colors.panel
-                                }));
-                        }
                         let style = style
                             .h_full()
                             .border_r_1()
@@ -10281,13 +10257,9 @@ impl Workspace {
                         }
                     })
                     .text_color(rgb(tab_color))
-                    .text_size(ui_text::text(if panel && !colors.plain_tabs {
-                        9.0
-                    } else {
-                        10.0
-                    }))
+                    .text_size(ui_text::text(10.0))
                     .hover(move |style| {
-                        if active && colors.plain_tabs {
+                        if active {
                             style
                         } else if native {
                             style
@@ -10521,11 +10493,7 @@ impl Workspace {
                 .bg(rgb(colors.panel))
                 .border_b_1()
                 // Native marks the selected pane by its brighter tab, not by a line.
-                .border_color(rgb(if selected && !colors.plain_tabs {
-                    colors.cyan
-                } else {
-                    colors.divider
-                }))
+                .border_color(rgb(colors.divider))
                 .pl(px(control_inset))
                 .child(
                     div()
@@ -12532,7 +12500,7 @@ impl Render for Workspace {
                 self.account_menu_open
                     .then(|| self.render_account_menu(window.viewport_size().width.as_f32(), cx)),
             )
-            .children(show_window_controls.then(|| window_controls_island(cx)))
+            .children(show_window_controls.then(window_controls_island))
             .children(self.project_creator.as_ref().map(|creator| {
                 // The child Base Dialog owns the only focus trap and restoration.
                 behavior_controls::selection_scope(
@@ -12996,8 +12964,7 @@ fn window_controls_visible(window: &Window) -> bool {
     !matches!(window.window_bounds(), WindowBounds::Fullscreen(_))
 }
 
-fn window_controls_island(cx: &App) -> impl IntoElement {
-    let colors = theme::palette(cx);
+fn window_controls_island() -> impl IntoElement {
     // Native keeps the area (it still drags the window) but draws nothing, so the
     // traffic lights sit on the bar like a Mac app's.
     div()
@@ -13007,14 +12974,6 @@ fn window_controls_island(cx: &App) -> impl IntoElement {
         .left_0()
         .w(px(WINDOW_CONTROLS_WIDTH))
         .h(px(WINDOW_CONTROLS_HEIGHT))
-        .when(colors.controls_island, |island| {
-            island
-                .rounded_br(px(8.0))
-                .bg(rgb(colors.panel_active))
-                .border_r_1()
-                .border_b_1()
-                .border_color(rgb(colors.divider))
-        })
         .on_mouse_down(MouseButton::Left, start_window_drag)
 }
 
@@ -13579,23 +13538,16 @@ fn render_provider_usage(snapshot: &ProviderUsage, title: &str, colors: Palette)
 }
 
 fn sync_appearance(cx: &mut App) {
-    // Text matching the terminal follows edits to Ghostty's font-size, whatever the theme.
+    // Text matching the terminal follows edits to Ghostty's font-size.
     ui_text::refresh_terminal_font_size(cx);
     let selected = cx.global::<Settings>().theme;
-    // Presets are static and Native changes only with macOS's light or dark mode;
-    // native configuration is resolved again to pick up edits, including recursive
-    // config files and custom theme files. The parse itself is skipped while none
-    // of those files changed.
+    // Native changes only with macOS's light or dark mode.
+    let system_dark = theme::system_is_dark(cx);
     let current = cx.global::<Appearance>();
-    if selected != ThemeChoice::Ghostty
-        && current.selected == selected
-        && !current.is_stale_for(theme::system_is_dark(cx))
-    {
+    if current.selected == selected && !current.is_stale_for(system_dark) {
         return;
     }
-    let Some(appearance) = theme::refresh_appearance(selected, cx) else {
-        return;
-    };
+    let appearance = Appearance::resolve(selected, system_dark);
     if &appearance != cx.global::<Appearance>() {
         cx.set_global(appearance);
     }
@@ -14731,7 +14683,7 @@ mod workspace_tab_tests {
         let themed = Workspace::terminal_options(
             "shell".to_owned(),
             PathBuf::from("/tmp"),
-            Some(theme::riwork_terminal_theme()),
+            Some(theme::native_terminal_theme(false)),
         );
         assert!(matches!(
             themed.configuration,
@@ -14740,45 +14692,16 @@ mod workspace_tab_tests {
     }
 
     #[test]
-    fn selected_theme_controls_terminals_and_keeps_legacy_preferences() {
+    fn native_forces_its_terminal_colors_only_while_the_option_is_on() {
         let mut settings = Settings::default();
-        // Every colorful theme takes the same path; one proves it.
-        for selected in [ThemeChoice::TokyoNight] {
-            settings.theme = selected;
-            let appearance = Appearance::resolve(selected, false);
-            assert_eq!(
-                Workspace::terminal_theme(&settings, &appearance),
-                appearance.terminal
-            );
-            settings.use_riwork_colors = true;
-            assert_eq!(
-                Workspace::terminal_theme(&settings, &appearance),
-                appearance.terminal
-            );
-        }
-        // Native forces its colors only while "Terminals match the theme" is on,
-        // whatever the RiWork option says.
-        settings.theme = ThemeChoice::Native;
-        let native = Appearance::resolve(ThemeChoice::Native, true);
+        let native = Appearance::resolve(theme::ThemeChoice::Native, true);
         settings.native_terminal_colors = false;
         assert_eq!(Workspace::terminal_theme(&settings, &native), None);
         settings.native_terminal_colors = true;
-        settings.use_riwork_colors = false;
         assert_eq!(
             Workspace::terminal_theme(&settings, &native),
             Some(theme::native_terminal_theme(true))
         );
-        settings.use_riwork_colors = true;
-        let mut appearance = Appearance::resolve(ThemeChoice::RiWork, false);
-        appearance.selected = ThemeChoice::Ghostty;
-        appearance.terminal = None;
-        settings.theme = ThemeChoice::Ghostty;
-        assert_eq!(
-            Workspace::terminal_theme(&settings, &appearance),
-            Some(theme::riwork_terminal_theme())
-        );
-        settings.use_riwork_colors = false;
-        assert_eq!(Workspace::terminal_theme(&settings, &appearance), None);
     }
 
     fn session(kind: ShellKind, project: Option<&str>) -> ShellSession {
@@ -16134,7 +16057,7 @@ mod main_pane_tests {
         cx.update(|cx| {
             cx.set_global(Settings::default());
             cx.set_global(RemoteState::default());
-            cx.set_global(Appearance::resolve(theme::ThemeChoice::RiWork, false));
+            cx.set_global(Appearance::resolve(theme::ThemeChoice::Native, false));
             cx.set_global(settings::CodexAccountsState::default());
         });
         let home = std::env::temp_dir().join(format!("rw-shared-tabs-{}", uuid::Uuid::new_v4()));

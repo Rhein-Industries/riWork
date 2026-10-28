@@ -1,6 +1,6 @@
 import { Text, View, cleanup, effect, host, keymap, signal } from "nsh";
 import { Window } from "nsh/desktop";
-import { Dashboard, Sessions, Settings, Store, type DashboardEvent, type GlobalWindowDto, type SettingsDto } from "riwork/native";
+import { Dashboard, Sessions, Store, type DashboardEvent, type GlobalWindowDto, type SettingsDto } from "riwork/native";
 import { DEFAULT_THEME, type InterfaceTheme } from "../appearance";
 import type { HostParams } from "../model";
 import { DashboardView } from "../dashboard/Dashboard";
@@ -158,7 +158,6 @@ export function GlobalWindow(props: { params: HostParams; theme?: () => Interfac
   }));
 
   const palette = () => theme().palette;
-  const cased = (text: string) => Settings.cased(text, theme().native);
   const inset = () => windowState().mode === "fullscreen" ? GLOBAL_BAR.inset : GLOBAL_BAR.insetWithControls;
   const font = (size: number) => ({ fontFamily: theme().family, fontSize: size * theme().scale });
   function segment(id: GlobalView, label: string) {
@@ -166,14 +165,14 @@ export function GlobalWindow(props: { params: HostParams; theme?: () => Interfac
     return <View testID={`global-view-${id}`} role="tab" accessibilityLabel={selected() ? `${label}, shown` : label}
       accessibilityState={{ selected: selected() }} onPress={() => show(id)}
       style={{ paddingHorizontal: 10, height: 22, justifyContent: "center", borderRadius: 5, backgroundColor: selected() ? palette().panelActive : "transparent" }}>
-      <Text style={{ ...font(11), color: selected() ? palette().text : palette().muted }}>{cased(label)}</Text>
+      <Text style={{ ...font(11), color: selected() ? palette().text : palette().muted }}>{label}</Text>
     </View>;
   }
   return <View testID="global-window" style={{ flex: 1, backgroundColor: palette().bg }}>
     <View testID="global-bar" style={{ height: GLOBAL_BAR.height, flexDirection: "row", alignItems: "center", gap: 10, paddingLeft: inset(), paddingRight: 10, backgroundColor: palette().panel, borderBottomWidth: 1, borderColor: palette().divider }}>
       <View testID="global-title" style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
         <Text style={{ ...font(12), color: palette().magenta }}>▦</Text>
-        <Text style={{ ...font(12), color: palette().magenta }}>{cased("Global")}</Text>
+        <Text style={{ ...font(12), color: palette().magenta }}>Global</Text>
       </View>
       <View testID="global-view" role="tablist" accessibilityLabel="Global view" style={{ flexDirection: "row", gap: 2, padding: 2, borderRadius: 7, borderWidth: 1, borderColor: palette().divider }}>
         {segment("dashboard", "Dashboard")}

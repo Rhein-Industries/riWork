@@ -128,7 +128,7 @@ export function ChatTab(props: ChatTabProps) {
     const row = leafProps.row;
     const kind = () => row().kind;
     return <>
-      {kind() === "user" && <View style={{ marginVertical: 6, padding: 10, borderRadius: theme().native ? 12 : 6, backgroundColor: theme().palette.panelActive }}>
+      {kind() === "user" && <View style={{ marginVertical: 6, padding: 10, borderRadius: 12, backgroundColor: theme().palette.panelActive }}>
         <Body row={row} />
       </View>}
       {(kind() === "final" || kind() === "commentary" || kind() === "reasoning" || kind() === "notice") && <View style={{ marginVertical: 4 }}><Body row={row} /></View>}

@@ -3,7 +3,7 @@ import { Button, Input, View, SettingsFocus, settingsFocusScope } from "../Setti
 import { Accounts, ApiKey, OrcaImport, Settings, type AccountsDto, type SettingsDto, type SettingsPatch } from "riwork/native";
 import { type InterfaceTheme } from "../appearance";
 import { ChoiceRow, Section, StepperRow, ToggleRow, buttonStyle, defaultTheme, textStyle, type Theme } from "./SettingsControls";
-import { SETTINGS_SECTIONS, modelIdError, sectionColumns, settingsLayout, themeColumns } from "./settings_model";
+import { SETTINGS_SECTIONS, modelIdError, sectionColumns, settingsLayout } from "./settings_model";
 
 interface Subscription { close(): void }
 interface Delivery<T> { rev: number; data: T }
@@ -48,14 +48,13 @@ export function AppSettings(props: AppSettingsProps) {
   const local = signal<SettingsDto | null>(null), accounts = signal<AccountsDto | null>(null), error = signal("");
   const apiKey = signal<ApiKeyState>({ saved: null, error: null }), apiPaste = signal(""), apiError = signal(""), apiPending = signal(false), apiFocused = signal(false);
   const modelInput = signal(""), modelError = signal("");
-  const width = signal(0), scrollY = signal(0), themeFocus = signal<string | null>(null), accountFocus = signal<string | null>(null), textFocused = signal(false);
+  const width = signal(0), scrollY = signal(0), accountFocus = signal<string | null>(null), textFocused = signal(false);
   const preview = signal<ImportPreview | null>(null), receipt = signal<ImportReceipt | null>(null), importPending = signal(""), importError = signal("");
   let alive = true, initializedImport = false, accountsRev = -1, settingsRev = -1, apiRev = -1, wasVisible = false, autoAccountsAttempted = false;
-  let apiInput: YNode | undefined, page: YNode | undefined, apiRow: YNode | undefined;
+  let apiInput: YNode | undefined, page: YNode | undefined, apiRow: YNode | undefined, initialControl: YNode | undefined;
   let revealPending = false, revealTimer: ReturnType<typeof setTimeout> | undefined;
-  let themeFocusPending = false, themeFocusTimer: ReturnType<typeof setTimeout> | undefined;
+  let initialFocusPending = false, initialFocusTimer: ReturnType<typeof setTimeout> | undefined;
   let mutation = Promise.resolve();
-  const themeRefs = new Map<string, YNode>();
   const settings = () => props.settings?.() ?? local();
   const visible = () => props.visible?.() ?? true;
   const fail = (reason: unknown) => { if (alive) { error.set(String(reason)); props.onError?.(reason); } };
@@ -70,7 +69,7 @@ export function AppSettings(props: AppSettingsProps) {
   ];
   void services.settings.get().then((value) => { if (alive && settingsRev < 0) local.set(value); }).catch(fail);
   void services.accounts.list().then((value) => { if (alive && accountsRev < 0) accounts.set(value); }).catch(fail);
-  cleanup(() => { alive = false; clearTimeout(revealTimer); clearTimeout(themeFocusTimer); for (const subscription of subscriptions) subscription.close(); themeRefs.clear(); });
+  cleanup(() => { alive = false; clearTimeout(revealTimer); clearTimeout(initialFocusTimer); for (const subscription of subscriptions) subscription.close(); initialControl = undefined; });
   function initialTarget() {
     if (props.computerUseFocus) {
       const control = props.computerUseFocus();
@@ -78,28 +77,27 @@ export function AppSettings(props: AppSettingsProps) {
       const target = control.initialTarget();
       if (target !== null) return target;
     }
-    const selected = settings()?.theme;
-    return selected ? themeRefs.get(selected) : undefined;
+    // Appearance's first control, now that it leads with no theme picker.
+    return initialControl;
   }
-  function scheduleThemeFocus() { untracked(() => {
-    if (!alive || !themeFocusPending || revealPending || !visible()) return;
-    if (focus.containsFocus()) { themeFocusPending = false; clearTimeout(themeFocusTimer); return; }
+  function scheduleInitialFocus() { untracked(() => {
+    if (!alive || !initialFocusPending || revealPending || !visible()) return;
+    if (focus.containsFocus()) { initialFocusPending = false; clearTimeout(initialFocusTimer); return; }
     if (!initialTarget()) return;
-    clearTimeout(themeFocusTimer);
+    clearTimeout(initialFocusTimer);
     // Workspace first focuses the pane body. The panel's own initial target
-    // follows it once Cua has settled and the selected target has a native ref.
-    themeFocusTimer = setTimeout(() => {
-      if (!alive || !themeFocusPending || revealPending || !visible()) return;
-      if (focus.containsFocus()) { themeFocusPending = false; return; }
+    // follows it once Cua has settled and the target has a native ref.
+    initialFocusTimer = setTimeout(() => {
+      if (!alive || !initialFocusPending || revealPending || !visible()) return;
+      if (focus.containsFocus()) { initialFocusPending = false; return; }
       const node = initialTarget();
       if (!node) return;
-      themeFocusPending = false;
-      if (node === themeRefs.get(settings()?.theme ?? "")) themeFocus.set(settings()!.theme);
+      initialFocusPending = false;
       node.focus();
     }, 0);
   }); }
   // A check may finish, or the Cua ref may mount, after the show notification.
-  effect(() => { initialTarget(); focus.containsFocus(); scheduleThemeFocus(); });
+  effect(() => { initialTarget(); focus.containsFocus(); scheduleInitialFocus(); });
   function scheduleReveal() {
     if (!alive || !revealPending || !visible() || !page || !apiRow || !apiInput) return;
     clearTimeout(revealTimer);
@@ -164,9 +162,9 @@ export function AppSettings(props: AppSettingsProps) {
     const shown = visible();
     if (shown === wasVisible) return;
     wasVisible = shown;
-    if (!shown) { themeFocusPending = false; clearTimeout(themeFocusTimer); return; }
-    themeFocusPending = !revealPending;
-    scheduleThemeFocus();
+    if (!shown) { initialFocusPending = false; clearTimeout(initialFocusTimer); return; }
+    initialFocusPending = !revealPending;
+    scheduleInitialFocus();
     scheduleReveal();
     void refreshKey();
     if (!initializedImport) void previewImport();
@@ -175,7 +173,7 @@ export function AppSettings(props: AppSettingsProps) {
     if (!visible()) { autoAccountsAttempted = false; return; }
     if (!autoAccountsAttempted && accounts() && !accounts()!.listed && !accounts()!.refreshing) { autoAccountsAttempted = true; void refreshAccounts(); }
   });
-  cleanup(props.onControl?.({ revealApiKey: () => { revealPending = true; themeFocusPending = false; clearTimeout(themeFocusTimer); scheduleReveal(); } }) ?? (() => {}));
+  cleanup(props.onControl?.({ revealApiKey: () => { revealPending = true; initialFocusPending = false; clearTimeout(initialFocusTimer); scheduleReveal(); } }) ?? (() => {}));
   // Secure input owns ordinary editing. Explicit copy/cut bindings ensure the
   // masked paste never leaves through the window's menu equivalents.
   effect(() => { if (!visible() || !apiFocused()) return; const bindings = [keymap.bind("mod+c", () => {}, { when: "always" }), keymap.bind("mod+x", () => {}, { when: "always" })]; return () => { for (const unbind of bindings) unbind(); }; });
@@ -183,18 +181,6 @@ export function AppSettings(props: AppSettingsProps) {
     if (!visible() || !accountFocus()) return;
     const activate = () => { const account = accounts()?.accounts.find((item) => item.id === accountFocus()); if (account) void selectAccount(account.system ? null : account.id, account.available); };
     const bindings = [keymap.bind("enter", activate), keymap.bind("space", activate)];
-    return () => { for (const unbind of bindings) unbind(); };
-  });
-  effect(() => {
-    if (!visible() || !themeFocus()) return;
-    const bindings: (() => void)[] = [];
-    for (const [key, direction] of [["left", -1], ["up", -1], ["right", 1], ["down", 1]] as const) bindings.push(keymap.bind(key, () => {
-      const choices = settings()?.themeChoices ?? [], index = Math.max(0, choices.findIndex((choice) => choice.id === themeFocus()));
-      if (!choices.length) return;
-      const next = choices[(index + direction + choices.length) % choices.length].id;
-      themeFocus.set(next); themeRefs.get(next)?.focus();
-    }));
-    for (const key of ["enter", "space"]) bindings.push(keymap.bind(key, () => { const selected = themeFocus(); if (selected) patch({ theme: selected }); }));
     return () => { for (const unbind of bindings) unbind(); };
   });
   effect(() => {
@@ -231,18 +217,8 @@ export function AppSettings(props: AppSettingsProps) {
   }
   function appearanceBody() {
     return <View style={{ gap: 8 }}>
-      <View testID="settings-theme-grid" role="radiogroup" accessibilityLabel="Theme" style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
-        {settings()!.themeChoices.map((choice) => <View testID={`theme-choice:${choice.id}`} ref={(node) => { themeRefs.set(choice.id, node); scheduleThemeFocus(); }} role="radio" focusable={true} accessibilityLabel={choice.label} accessibilityState={{ checked: settings()!.theme === choice.id }}
-          onFocus={() => { if (alive) themeFocus.set(choice.id); }} onBlur={() => { if (alive) themeFocus.set(null); }} onPress={() => { if (!alive) return; themeFocus.set(choice.id); themeRefs.get(choice.id)?.focus(); patch({ theme: choice.id }); }}
-          style={{ width: `${100 / themeColumns(width(), theme().scale) - 2}%`, minHeight: 88, padding: 10, borderWidth: 1, borderRadius: 6, borderColor: settings()!.theme === choice.id ? theme().palette.cyan : theme().palette.divider, backgroundColor: settings()!.theme === choice.id ? theme().palette.panelActive : theme().palette.panel, gap: 6 }} focusStyle={{ borderColor: theme().palette.focus }}>
-          <Text style={textStyle(theme)}>{choice.label}</Text><Text style={muted()}>{choice.description}</Text>{!theme().native && settings()!.theme === choice.id && <Text style={{ ...muted(), color: theme().palette.cyan }}>Active</Text>}
-        </View>)}
-      </View>
-      {settings()!.theme === "ghostty" && <ToggleRow id="terminal-colors" label="Use RiWork terminal colors" description="Give terminals RiWork's palette instead of Ghostty's configured terminal colors." checked={settings()!.useRiworkColors} onChange={(value) => patch({ useRiworkColors: value })} theme={theme} />}
-      {settings()!.theme === "native" && <>
-        <ToggleRow id="terminal-colors" label="Terminals match the theme" checked={settings()!.nativeTerminalColors} onChange={(value) => patch({ nativeTerminalColors: value })} theme={theme} />
-        <ChoiceRow id="interface-font" label="Interface font" value={`interface-font-${settings()!.interfaceFont}`} choices={[{ id: "interface-font-system", label: "System (SF Pro)" }, { id: "interface-font-system_mono", label: "System + monospace accents" }]} onChange={(value) => patch({ interfaceFont: value === "interface-font-system" ? "system" : "system_mono" })} theme={theme} />
-      </>}
+      <ToggleRow id="terminal-colors" label="Terminals match the theme" checked={settings()!.nativeTerminalColors} onChange={(value) => patch({ nativeTerminalColors: value })} theme={theme} onRef={(node) => { initialControl = node; scheduleInitialFocus(); }} />
+      <ChoiceRow id="interface-font" label="Interface font" value={`interface-font-${settings()!.interfaceFont}`} choices={[{ id: "interface-font-system", label: "System (SF Pro)" }, { id: "interface-font-system_mono", label: "System + monospace accents" }]} onChange={(value) => patch({ interfaceFont: value === "interface-font-system" ? "system" : "system_mono" })} theme={theme} />
       <ToggleRow id="panel-tab-icons" label="Icons instead of labels" checked={settings()!.panelTabIcons} onChange={(value) => patch({ panelTabIcons: value })} theme={theme} />
       <ChoiceRow id="tab-close-behavior" label="When closing a tab" description="Ask offers Detach, which keeps the session running, and Exit, which ends it. Workers always detach. This Mac only." value={`tab-close-${settings()!.tabCloseBehavior}`} choices={[{ id: "tab-close-ask", label: "Ask" }, { id: "tab-close-detach", label: "Detach" }, { id: "tab-close-exit", label: "Exit" }]} onChange={(value) => patch({ tabCloseBehavior: value === "tab-close-ask" ? "ask" : value === "tab-close-detach" ? "detach" : "exit" })} theme={theme} />
       <View testID="ui-text-size" focusable={true} accessibilityLabel="Interface text size" onFocus={() => { if (alive) textFocused.set(true); }} onBlur={() => { if (alive) textFocused.set(false); }} style={{ gap: 6, paddingVertical: 8 }}>
@@ -346,19 +322,18 @@ export function AppSettings(props: AppSettingsProps) {
   }
   return <SettingsFocus.Provider value={focus}><View testID="settings-panel" onLayout={(event) => { if (alive && event.size.width !== width()) width.set(event.size.width); }} style={{ flex: 1, minHeight: 0, backgroundColor: theme().palette.bg }}>
     <View style={{ padding: 12, gap: 4 }}>
-      {!theme().native && <Text style={{ ...muted(), color: theme().palette.magenta }}>RIWORK / PREFERENCES</Text>}
-      <View style={{ flexDirection: "row", gap: 10, alignItems: "center" }}><Text role="header" style={{ ...textStyle(theme, theme().native ? 13 : 20), flex: 1, fontWeight: "600" }}>Settings</Text>{!theme().native && <Text style={{ ...muted(), color: theme().palette.magenta }}>All projects</Text>}</View>
-      {theme().native && <Text style={muted()}>All projects · Saved automatically</Text>}
+      <View style={{ flexDirection: "row", gap: 10, alignItems: "center" }}><Text role="header" style={{ ...textStyle(theme, 13), flex: 1, fontWeight: "600" }}>Settings</Text></View>
+      <Text style={muted()}>All projects · Saved automatically</Text>
     </View>
     <Scroll testID="appearance-settings" ref={(node) => { page = node; scheduleReveal(); }} onScroll={(event) => { if (alive) scrollY.set(event.offset.y); }} style={{ flex: 1, minHeight: 0 }} contentStyle={{ padding: settingsLayout(width()).page, alignItems: "center" }}>
       <View testID={`settings-layout-${settingsLayout(width()).kind}`} style={{ width: "100%", maxWidth: settingsLayout(width()).maxWidth, flexDirection: settingsLayout(width()).kind === "wide" ? "row" : "column", gap: settingsLayout(width()).gap }}>
-        {sectionColumns(width()).map((column) => <View style={{ flex: 1, minWidth: 0, gap: theme().native ? 0 : settingsLayout(width()).gap }}>{column.map((number) => {
+        {sectionColumns(width()).map((column) => <View style={{ flex: 1, minWidth: 0, gap: 0 }}>{column.map((number) => {
           const section = SETTINGS_SECTIONS.find((section) => section.number === number)!;
           return <Section number={section.number} title={section.title} description={section.description} padding={settingsLayout(width()).card} theme={theme}>{body(number)}</Section>;
         })}</View>)}
       </View>
       {note(error() || settings()?.error, "settings-save-error", true)}
-      <Text style={{ ...muted(), paddingVertical: 12 }}>{`${theme().native ? "" : "Saved automatically · "}Tab to move · Enter or Space to select · Arrows step the text size and worker shells`}</Text>
+      <Text style={{ ...muted(), paddingVertical: 12 }}>Tab to move · Enter or Space to select · Arrows step the text size and worker shells</Text>
     </Scroll>
   </View></SettingsFocus.Provider>;
 }
