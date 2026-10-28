@@ -3,6 +3,7 @@
 pub mod host_layouts;
 pub mod layout;
 pub mod persistence;
+pub mod remote;
 pub mod session_io;
 
 use futures_util::future::{AbortHandle, Abortable};
@@ -652,11 +653,23 @@ impl LayoutSession {
 
     /// Place or select one existing local shell without creating a session.
     pub fn open_shell(&mut self, shell_id: String) -> Result<Value, String> {
+        remote::require_local(&self.data.project_id)?;
         self.edit(|model| model.open_shell(&shell_id).map(|next| (next, true)))
+    }
+
+    /// Place/select the host+shell pair without consulting this Mac's shell registry.
+    pub fn open_remote_shell(
+        &mut self,
+        desktop_id: String,
+        shell_id: String,
+    ) -> Result<Value, String> {
+        let tab = remote::shell(desktop_id, shell_id)?;
+        self.edit(|model| model.open_tab(tab).map(|next| (next, true)))
     }
 
     /// Place an existing dedicated Vim session using the editor routing policy.
     pub fn open_editor_shell(&mut self, shell_id: String) -> Result<Value, String> {
+        remote::require_local(&self.data.project_id)?;
         self.edit(|model| model.open_editor_shell(&shell_id).map(|next| (next, true)))
     }
 
@@ -722,6 +735,7 @@ impl LayoutSession {
 
     /// Place or select a shell chosen by the navigation panels.
     pub fn show_shell(&mut self, shell_id: String) -> Result<Value, String> {
+        remote::require_local(&self.data.project_id)?;
         validate_id(&shell_id)?;
         self.edit(|model| model.show_shell(&shell_id).map(|next| (next, true)))
     }
@@ -729,7 +743,7 @@ impl LayoutSession {
     /// Persist window-local navigation selection through LayoutStore.
     pub fn set_selected_worktree(&mut self, id: Option<String>) -> Result<(), String> {
         if let Some(id) = &id {
-            validate_id(id)?;
+            remote::validate_selection(&self.data.project_id, id)?;
         }
         let host = self.host.clone();
         host.edit(|| {
@@ -740,7 +754,7 @@ impl LayoutSession {
 
     pub fn set_selected_task(&mut self, id: Option<String>) -> Result<(), String> {
         if let Some(id) = &id {
-            validate_id(id)?;
+            remote::validate_selection(&self.data.project_id, id)?;
         }
         let host = self.host.clone();
         host.edit(|| {
@@ -752,7 +766,7 @@ impl LayoutSession {
     /// Flush the outgoing project and prepare locked-region carry away from the
     /// engine. A close, disposal or load failure keeps the old session intact.
     pub async fn switch_project(this: Instance<Self>, project_id: String) -> Result<Value, String> {
-        validate_id(&project_id)?;
+        remote::validate_project(&project_id)?;
         if this.is_disposed() {
             return Err("unavailable: layout session is disposed".into());
         }
@@ -895,7 +909,7 @@ impl LayoutSession {
             let inherits = project
                 .main_pane
                 .is_some_and(|main| main != pane_id && project.panes.contains_key(&main));
-            let updates = if inherits {
+            let updates = if inherits || remote::is_project(&s.data.project_id) {
                 Vec::new()
             } else {
                 pane.tabs
@@ -980,6 +994,22 @@ impl LayoutSession {
         {
             return Err("invalid: split direction".into());
         }
+        if this.is_disposed() {
+            return Err("unavailable: layout session is closed".into());
+        }
+        if this.with(|s| remote::is_project(&s.data.project_id)) {
+            return match split.as_deref() {
+                Some(axis) => this.with_mut(|s| {
+                    let size = s.last_extent;
+                    s.edit(|model| {
+                        model.split_active(axis == "down")?;
+                        model.restore_focus(false, false);
+                        Ok((model.dock(model.extent().unwrap_or(size)), true))
+                    })
+                }),
+                None => Err("refused: create a remote shell through Remote.createShell".into()),
+            };
+        }
         let (home, project, generation) = this.with_mut(|s| {
             s.ensure_editable()?;
             s.shell_creates += 1;
@@ -1062,6 +1092,8 @@ impl LayoutSession {
         let shared = this.with(|s| {
             s.data.root.is_some() && (key.starts_with("shell:") || key.starts_with("chat:"))
         });
+        let local_exit =
+            this.with(|s| !remote::is_project(&s.data.project_id)) && !key.starts_with("remote:");
         tokio::task::spawn_blocking(move || {
             if shared {
                 if let Ok(store) = riwork_engine::project_tabs::TabStore::at(&home, &project) {
@@ -1073,7 +1105,7 @@ impl LayoutSession {
                     }
                 }
             }
-            if exit && !worker {
+            if exit && !worker && local_exit {
                 session_io::exit_key(&home, &key)?;
             }
             Ok::<_, String>(())
@@ -1251,6 +1283,7 @@ impl LayoutSession {
         let ids = project.layout.pane_ids();
         json!({
             "projectId": self.host.project_id(),
+            "remoteProject": remote::is_project(&self.data.project_id),
             "selectedWorktreeId": project.selected_worktree_id,
             "selectedTaskId": project.selected_task_id,
             "activePane": project.active_pane,

@@ -257,6 +257,9 @@ pub struct Data {
     pub owners: BTreeMap<String, String>,
 }
 pub fn load(home: &Path, project: &str) -> Result<Data, String> {
+    if let Some(data) = crate::remote::load(home, project)? {
+        return Ok(data);
+    }
     let state = Store::open(home.to_owned())?.snapshot()?;
     let root = state
         .projects
@@ -341,6 +344,7 @@ pub fn load(home: &Path, project: &str) -> Result<Data, String> {
 /// reconciles against its fake inventory, as `load` does, so the two readers
 /// never fight over the same TabStore; production uses the engine sample.
 pub fn tab_snapshot(home: &Path, project: &str) -> Result<Snapshot, String> {
+    crate::remote::require_local(project)?;
     let fake = fake_path(home)
         .map(|path| {
             let _guard = FAKE_LOCK.lock().unwrap();
@@ -385,6 +389,7 @@ pub fn create(
     cwd: Option<PathBuf>,
     worktree: Option<String>,
 ) -> Result<Shell, String> {
+    crate::remote::require_local(project)?;
     let state = Store::open(home.to_owned())?.snapshot()?;
     let root = state.project(project)?.root.clone();
     let cwd = cwd
@@ -453,6 +458,7 @@ pub fn close(home: &Path, id: &str) -> Result<(), String> {
     Ok(())
 }
 pub fn update(home: &Path, project: &str, update: Update) -> Result<(), String> {
+    crate::remote::require_local(project)?;
     TabStore::at(home, project)?.update(&update)?;
     changed();
     Ok(())

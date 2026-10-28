@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="nsh test" tests="6" failures="0" errors="0" skipped="0" time="13.775">
+  <testsuite name="apps/riwork/tests/Files.test.tsx" tests="3" failures="0" errors="0" skipped="0" time="7.117">
+    <testcase classname="apps/riwork/tests/Files.test.tsx" name="P3b Files selected-row actions validate the exact spaced Unicode file and preserve root selection on relabel" time="2.429"/>
+    <testcase classname="apps/riwork/tests/Files.test.tsx" name="P3b preview byte and type boundaries handle text, binary, oversized text, images and explicit PDF" time="2.299"/>
+    <testcase classname="apps/riwork/tests/Files.test.tsx" name="P3b memo autosave serializes edits, saves component removal, and enforces UTF-8 size" time="2.389"/>
+  </testsuite>
+  <testsuite name="apps/riwork/tests/FilesWorkspace.test.tsx" tests="2" failures="0" errors="0" skipped="0" time="1.241">
+    <testcase classname="apps/riwork/tests/FilesWorkspace.test.tsx" name="P3b workspace Files selection places Preview in main, routes Open, and exposes the memo" time="0.885"/>
+    <testcase classname="apps/riwork/tests/FilesWorkspace.test.tsx" name="P3b an unavailable selected worktree never falls back to the project&apos;s files" time="0.356"/>
+  </testsuite>
+  <testsuite name="apps/riwork/tests/MemoReceipt.test.tsx" tests="1" failures="0" errors="0" skipped="0" time="1.748">
+    <testcase classname="apps/riwork/tests/MemoReceipt.test.tsx" name="P3b memo delayed receipt preserves dirty A-B-A edits until visible text is saved" time="1.748"/>
+  </testsuite>
+</testsuites>

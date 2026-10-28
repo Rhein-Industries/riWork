@@ -1,0 +1,770 @@
+{
+  "environment": {
+    "root": "/tmp/riwork-p6b-fa930048.vn_exbl9",
+    "target": "/tmp/riwork-p6b-fa930048.vn_exbl9/target",
+    "cargo": "/Users/dominik/.cargo/bin/cargo",
+    "nsh": "/tmp/riwork-nsh-toolchain-60f8aec4.18l3zV/nsh-cli-0.3.0/bin/nsh",
+    "tsc": "/Users/dominik/Library/Caches/nsh/typescript-7.0.2-darwin-arm64/package/lib/tsc",
+    "ghostty": "/Users/dominik/orca/projects/riWork-nsh-p2-terminals/crates/riwork-nsh-terminal/.runtime/pinned/install",
+    "verification_environment": "private HOME and RIWORK_HOME; fixture stores and windowless NSH engines only",
+    "live_targets_touched": "none beyond own shell/worktree and disposable fixture processes",
+    "cargo_jobs": 2,
+    "offline": true,
+    "effective_service_tier": "Service tier default, Fast OFF (user-verified); gpt-6.1-sol, effort and saved dominik@rhein.industries account unchanged",
+    "assignment": "fa930048-78c0-4ca5-b44b-86d7de598b68",
+    "candidate": "3fb88b8bf55f3054c5050b30293d2ea41aa744aa",
+    "merged_nsh": "82f5a12215793596d81d420f1045071980ecf9b9",
+    "merge_commit": "42f2a7dacdf2009f649ed6652fae968589613b54",
+    "descendants_spawned": 0
+  },
+  "commands": 82,
+  "final_results": {
+    "ui_groups": {
+      "integration-ui-chat": 14,
+      "integration-ui-global": 10,
+      "integration-ui-memo": 6,
+      "integration-ui-missing": 1,
+      "integration-ui-mount": 1,
+      "integration-ui-native": 1,
+      "integration-ui-p5": 25,
+      "integration-ui-p6": 68
+    },
+    "ui_total": 126,
+    "focus_regressions": 3,
+    "rust": {
+      "desktop": 87,
+      "native": 214,
+      "workspace": 172,
+      "total": 473,
+      "nested_settings_writer": 1,
+      "ordinary_ignored": 5
+    },
+    "cli": {
+      "passed": 175,
+      "failed": 0,
+      "ignored": 39
+    },
+    "pending_open": "passed",
+    "plain_debug_settings_isolation": "passed (plus child)",
+    "final_command_labels": [
+      "integration-suites-final",
+      "integration-pending-open",
+      "integration-cli",
+      "integration-debug-isolation",
+      "integration-fmt-check",
+      "integration-polling",
+      "integration-diff-check",
+      "integration-staged-final",
+      "integration-accepted-sources",
+      "integration-runner-syntax",
+      "integration-ui-chat",
+      "integration-ui-global",
+      "integration-ui-memo",
+      "integration-ui-missing",
+      "integration-ui-mount",
+      "integration-ui-native",
+      "integration-ui-p5",
+      "integration-ui-p6"
+    ]
+  },
+  "focus_regression": {
+    "test": "delayed_cua_check_preserves_remote_settings_focus",
+    "red": "six Remote Add/Pair/Remove x ready/not-ready cases emitted competing Focus commands",
+    "green": "same six cases emitted no Focus commands; both existing PANEL-138 tests passed",
+    "verification": "native mount commands; fake platform; synthetic focus events; no live windows"
+  },
+  "baseline_limitation": "missing process-group field in retained same-tree baseline/rerun; sandbox /bin/ps EPERM is reported/suspected, not proven; no absence-of-regression inference",
+  "raw_logs": [
+    {
+      "source": "/private/tmp/riwork-p6b-fa930048.vn_exbl9/integration-focus-green/p6b-focus-build.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/integration-focus-green/p6b-focus-build.log.gz",
+      "sha256": "9fb6da8eda3d22908ddde1a5704cff37e75be5e11cf792abfdd0a4be7d2d6766",
+      "bytes": 2990,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/private/tmp/riwork-p6b-fa930048.vn_exbl9/integration-focus-green/p6b-focus-commands.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/integration-focus-green/p6b-focus-commands.log.gz",
+      "sha256": "64335c49768544ec889e2a4618913c5a09dc60f1f45230e05674bbb0b0331887",
+      "bytes": 4053,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/private/tmp/riwork-p6b-fa930048.vn_exbl9/integration-focus-green/p6b-nsh-check.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/integration-focus-green/p6b-nsh-check.log.gz",
+      "sha256": "2cee86f05714a48eb7a5bf8b3d247138a956f7f20f956063237895dcb141c68e",
+      "bytes": 2855,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/private/tmp/riwork-p6b-fa930048.vn_exbl9/integration-focus-green/p6b-nsh-test.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/integration-focus-green/p6b-nsh-test.log.gz",
+      "sha256": "01a6a7d82f8d69ee30c0e89733f968680b873db479564078d362460a9f2f1a03",
+      "bytes": 5787,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/private/tmp/riwork-p6b-fa930048.vn_exbl9/integration-focus-green/p6b-seed.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/integration-focus-green/p6b-seed.log.gz",
+      "sha256": "8e5edda270931bbff9ddfddf6c365ae36425b61f0639b998816269af07a10626",
+      "bytes": 489,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/private/tmp/riwork-p6b-fa930048.vn_exbl9/integration-focus-red/p6b-focus-build.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/integration-focus-red/p6b-focus-build.log.gz",
+      "sha256": "e0530ec2d1b6dfa66a79a8b4bc1688a60249b8775df887ee0c12626412b756c5",
+      "bytes": 2988,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/private/tmp/riwork-p6b-fa930048.vn_exbl9/integration-focus-red/p6b-focus-commands.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/integration-focus-red/p6b-focus-commands.log.gz",
+      "sha256": "ab59b2098d24ac2a3defc05cb6b37bfa88726b76b2a3626f5c4c4507b3256b39",
+      "bytes": 5053,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/private/tmp/riwork-p6b-fa930048.vn_exbl9/integration-focus-red/p6b-nsh-check.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/integration-focus-red/p6b-nsh-check.log.gz",
+      "sha256": "7dbf0883b74f2cb6a0384101a8c29c00906f840867a803091d52af9411761d0c",
+      "bytes": 2854,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/private/tmp/riwork-p6b-fa930048.vn_exbl9/integration-focus-red/p6b-seed.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/integration-focus-red/p6b-seed.log.gz",
+      "sha256": "dda6bfce248951e816aa08b973e2aab311c7139f8c959c2c284abf3d6592dcdc",
+      "bytes": 846,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/private/tmp/riwork-p6b-fa930048.vn_exbl9/integration-panels/p6b-focus-build.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/integration-panels/p6b-focus-build.log.gz",
+      "sha256": "cdeaadbef1b01506ddf4e91388f326269bfc33753003210d69567be1d29cf203",
+      "bytes": 2985,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/private/tmp/riwork-p6b-fa930048.vn_exbl9/integration-panels/p6b-focus-commands.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/integration-panels/p6b-focus-commands.log.gz",
+      "sha256": "28a63df50b3f10271a4840f6c801314469e385a244f3444969ec71697160b8d2",
+      "bytes": 4179,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/private/tmp/riwork-p6b-fa930048.vn_exbl9/integration-panels/p6b-nsh-check.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/integration-panels/p6b-nsh-check.log.gz",
+      "sha256": "4d6de8b214833bc387ea9f44727db06a46ad75b091cd7b8b2eebe3a96bdc50a0",
+      "bytes": 2855,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/private/tmp/riwork-p6b-fa930048.vn_exbl9/integration-panels/p6b-nsh-test.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/integration-panels/p6b-nsh-test.log.gz",
+      "sha256": "39710ce5494af1f1f48d78bbbf2ec14767156e3b4994a20c8b557f9a29becd63",
+      "bytes": 21094,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/private/tmp/riwork-p6b-fa930048.vn_exbl9/integration-panels/p6b-seed.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/integration-panels/p6b-seed.log.gz",
+      "sha256": "184b547ff02c11bb4c6a1f886f146f4642b150288eaad2beca8ef1db0d9f4ec1",
+      "bytes": 474,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/private/tmp/riwork-p6b-fa930048.vn_exbl9/integration-panels-final/p6b-nsh-check.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/integration-panels-final/p6b-nsh-check.log.gz",
+      "sha256": "fe40f065fb9e350c62ab00693bb989702c6619d56ffd1b35b81dd8b7aae6398b",
+      "bytes": 273,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/private/tmp/riwork-p6b-fa930048.vn_exbl9/integration-panels-final/p6b-seed.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/integration-panels-final/p6b-seed.log.gz",
+      "sha256": "ccd8de1475a520b0f8a224bd1e129e6ad9e23433a41a48bde7d984af1b8d5d44",
+      "bytes": 492,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/private/tmp/riwork-p6b-fa930048.vn_exbl9/integration-panels-green/p6b-focus-build.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/integration-panels-green/p6b-focus-build.log.gz",
+      "sha256": "f64f536bf619bae91cd58ac7f2217bb7796282b09f133be0601024e10ba9af40",
+      "bytes": 2991,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/private/tmp/riwork-p6b-fa930048.vn_exbl9/integration-panels-green/p6b-focus-commands.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/integration-panels-green/p6b-focus-commands.log.gz",
+      "sha256": "7b30296334b9207a254e5d17f93557056fbf5ca5b702e0a5e1fce5034ec333ac",
+      "bytes": 4053,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/private/tmp/riwork-p6b-fa930048.vn_exbl9/integration-panels-green/p6b-nsh-check.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/integration-panels-green/p6b-nsh-check.log.gz",
+      "sha256": "10fba95ca6fe4bb7cb4accb4e7075499f745e16d5e11213b8dec789773748e7f",
+      "bytes": 2855,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/private/tmp/riwork-p6b-fa930048.vn_exbl9/integration-panels-green/p6b-nsh-test-1.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/integration-panels-green/p6b-nsh-test-1.log.gz",
+      "sha256": "6fe52a197aae501f30d1a7b65aebb142873f4b28f347462224b3857c038e5d73",
+      "bytes": 4652,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/private/tmp/riwork-p6b-fa930048.vn_exbl9/integration-panels-green/p6b-nsh-test.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/integration-panels-green/p6b-nsh-test.log.gz",
+      "sha256": "4682654a2dfb8350300fe3ede882d39749e81c77418ac3de031579702ee6d579",
+      "bytes": 12177,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/private/tmp/riwork-p6b-fa930048.vn_exbl9/integration-panels-green/p6b-seed.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/integration-panels-green/p6b-seed.log.gz",
+      "sha256": "cd01e0d07d7b73f080449837b4cfb5e601c0539f21cc76d02ceff28661baa4e4",
+      "bytes": 492,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/private/tmp/riwork-p6b-fa930048.vn_exbl9/integration-pending-open/ordering-hby3xcy5/app-fixture-build.stderr",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/integration-pending-open/ordering-hby3xcy5/app-fixture-build.stderr.gz",
+      "sha256": "ef03a5598f97b83fe96bffc4bdedbb05aa8fdd600b6e7847d94203d08ad7db55",
+      "bytes": 2997,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/private/tmp/riwork-p6b-fa930048.vn_exbl9/integration-pending-open/ordering-hby3xcy5/app-fixture-build.stdout",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/integration-pending-open/ordering-hby3xcy5/app-fixture-build.stdout.gz",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/private/tmp/riwork-p6b-fa930048.vn_exbl9/integration-pending-open/ordering-hby3xcy5/app-recovery.stderr",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/integration-pending-open/ordering-hby3xcy5/app-recovery.stderr.gz",
+      "sha256": "e5b6691c18ba29243ae93b85dd72b359ed79027d412a39e1c11ca05e5f31d697",
+      "bytes": 1305,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/private/tmp/riwork-p6b-fa930048.vn_exbl9/integration-pending-open/ordering-hby3xcy5/app-recovery.stdout",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/integration-pending-open/ordering-hby3xcy5/app-recovery.stdout.gz",
+      "sha256": "cd557ab0432a942c6b893c84b53a676e11111880b9a3e45d9ca92856b5767f30",
+      "bytes": 1393,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/private/tmp/riwork-p6b-fa930048.vn_exbl9/integration-settings-routes/p6b-nsh-check.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/integration-settings-routes/p6b-nsh-check.log.gz",
+      "sha256": "1041652fba06a41638a58f5b81cddd5afdf518dae1b07ff933f673d8590d9b27",
+      "bytes": 2855,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/private/tmp/riwork-p6b-fa930048.vn_exbl9/integration-settings-routes/p6b-nsh-test.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/integration-settings-routes/p6b-nsh-test.log.gz",
+      "sha256": "0debca580c21bb8e586e4ee943ad2b53bd26428d5e9f607a3e081140a336ad8f",
+      "bytes": 134,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/private/tmp/riwork-p6b-fa930048.vn_exbl9/integration-settings-routes/p6b-seed.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/integration-settings-routes/p6b-seed.log.gz",
+      "sha256": "13e7737c4768c7f91460d888ca3913b3c1222ed3d70222e01b7794f2ea3b9388",
+      "bytes": 501,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/private/tmp/riwork-p6b-fa930048.vn_exbl9/integration-ui-chat/p6b-nsh-check.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/integration-ui-chat/p6b-nsh-check.log.gz",
+      "sha256": "552068990372486dfab9654a480ec3b7ae7f61b358e88c211745f22d59f31f9a",
+      "bytes": 2855,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/private/tmp/riwork-p6b-fa930048.vn_exbl9/integration-ui-chat/p6b-nsh-test.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/integration-ui-chat/p6b-nsh-test.log.gz",
+      "sha256": "ea878beb0c8e3c56117d3f7312bbaba6c60d4f2f1fe4a41cc3013e61e380da75",
+      "bytes": 5105,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/private/tmp/riwork-p6b-fa930048.vn_exbl9/integration-ui-chat/p6b-seed.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/integration-ui-chat/p6b-seed.log.gz",
+      "sha256": "876e508da42c64b524c0b7de63b7266f55cdcec8616818a5729747e5ccc6dc85",
+      "bytes": 477,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/private/tmp/riwork-p6b-fa930048.vn_exbl9/integration-ui-global/p6b-nsh-check.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/integration-ui-global/p6b-nsh-check.log.gz",
+      "sha256": "402d48183441b5bed59fb7d138c483b2f56b5ead6d0250e8f9fef4253bd547b0",
+      "bytes": 2855,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/private/tmp/riwork-p6b-fa930048.vn_exbl9/integration-ui-global/p6b-nsh-test.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/integration-ui-global/p6b-nsh-test.log.gz",
+      "sha256": "ec2f4032a868e2ac6a3ceef782a9fcfde38f5c01411d815b04712266759a3531",
+      "bytes": 4373,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/private/tmp/riwork-p6b-fa930048.vn_exbl9/integration-ui-global/p6b-seed.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/integration-ui-global/p6b-seed.log.gz",
+      "sha256": "f4cbb752fb8e8d9e77238ea7b32239d7be78a7215c949ceaf0cd6a9fda203f78",
+      "bytes": 483,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/private/tmp/riwork-p6b-fa930048.vn_exbl9/integration-ui-memo/p6b-nsh-check.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/integration-ui-memo/p6b-nsh-check.log.gz",
+      "sha256": "abd134697e358a91216fc633887ce9690c4f16ff5bc73993e5f4785a3ec90f54",
+      "bytes": 2855,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/private/tmp/riwork-p6b-fa930048.vn_exbl9/integration-ui-memo/p6b-nsh-test.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/integration-ui-memo/p6b-nsh-test.log.gz",
+      "sha256": "6a26cf5415f89a56fc8369d8e5008ada2a71e293e1324c9d79d06980700a27e0",
+      "bytes": 4012,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/private/tmp/riwork-p6b-fa930048.vn_exbl9/integration-ui-memo/p6b-seed.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/integration-ui-memo/p6b-seed.log.gz",
+      "sha256": "b70040832b4eec49dd3b7fb0b7758dca11404a4131a367630dd2af905cbbd669",
+      "bytes": 477,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/private/tmp/riwork-p6b-fa930048.vn_exbl9/integration-ui-missing/p6b-nsh-check.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/integration-ui-missing/p6b-nsh-check.log.gz",
+      "sha256": "2ae57dff7f2f16eee1138aa5b7af1b6164bc1131d86cb75c5965aac93789d785",
+      "bytes": 2855,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/private/tmp/riwork-p6b-fa930048.vn_exbl9/integration-ui-missing/p6b-nsh-test.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/integration-ui-missing/p6b-nsh-test.log.gz",
+      "sha256": "0979b1a8afa5621a1650cf6ecd0b59577187e41ec3b1778145374ad8478befb5",
+      "bytes": 3132,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/private/tmp/riwork-p6b-fa930048.vn_exbl9/integration-ui-missing/p6b-seed.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/integration-ui-missing/p6b-seed.log.gz",
+      "sha256": "8f7f829dd8c0d68a0116be9d135e6dbac1a73d93a61b1fd4ed57d7d7f48b80a5",
+      "bytes": 486,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/private/tmp/riwork-p6b-fa930048.vn_exbl9/integration-ui-mount/p6b-nsh-check.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/integration-ui-mount/p6b-nsh-check.log.gz",
+      "sha256": "a7355975f34c8cd6f72b3051aaa3d9a8ad0eb387939a5f5cbe19d3406d1b364c",
+      "bytes": 2855,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/private/tmp/riwork-p6b-fa930048.vn_exbl9/integration-ui-mount/p6b-nsh-test.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/integration-ui-mount/p6b-nsh-test.log.gz",
+      "sha256": "7cc04880eb384c7409bf3b15c70732ba1f9a43f99a2033cada7d7c6886c26a36",
+      "bytes": 3128,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/private/tmp/riwork-p6b-fa930048.vn_exbl9/integration-ui-mount/p6b-seed.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/integration-ui-mount/p6b-seed.log.gz",
+      "sha256": "93549b3e4cd188a12d27f1a0efc8eec8fd35ff4937b89bf43c089aa5f9975ffa",
+      "bytes": 480,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/private/tmp/riwork-p6b-fa930048.vn_exbl9/integration-ui-native/p6b-nsh-check.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/integration-ui-native/p6b-nsh-check.log.gz",
+      "sha256": "18a96a097e14c409768ee3bb6fabe5026ad696ae92467aedf10aedf086162c3d",
+      "bytes": 2855,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/private/tmp/riwork-p6b-fa930048.vn_exbl9/integration-ui-native/p6b-nsh-test.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/integration-ui-native/p6b-nsh-test.log.gz",
+      "sha256": "dba3902da3c4798b371aab2fa748674e39d54198bfee7c8868421d59fcb4032b",
+      "bytes": 3134,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/private/tmp/riwork-p6b-fa930048.vn_exbl9/integration-ui-native/p6b-seed.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/integration-ui-native/p6b-seed.log.gz",
+      "sha256": "0cd9ab3fd2b25a464e6ba6c69c3cb254e50659f23ca0e497d731b49a1788dfea",
+      "bytes": 483,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/private/tmp/riwork-p6b-fa930048.vn_exbl9/integration-ui-p5/p6b-nsh-check.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/integration-ui-p5/p6b-nsh-check.log.gz",
+      "sha256": "1b93ecf2d6af150275c1f7fe52f3698ce54375697f9204f97a93133aed3ed489",
+      "bytes": 2855,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/private/tmp/riwork-p6b-fa930048.vn_exbl9/integration-ui-p5/p6b-nsh-test.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/integration-ui-p5/p6b-nsh-test.log.gz",
+      "sha256": "6d2a5ddc2f80f639e7d0ad44005c1bcad18519cf84c86b6713518a123cdb2e5b",
+      "bytes": 6376,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/private/tmp/riwork-p6b-fa930048.vn_exbl9/integration-ui-p5/p6b-seed.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/integration-ui-p5/p6b-seed.log.gz",
+      "sha256": "5c721a051f0ceef991cf56458ba556e02303b2dd4dd34850e35098e939f5e1f7",
+      "bytes": 471,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/private/tmp/riwork-p6b-fa930048.vn_exbl9/integration-ui-p6/p6b-focus-build.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/integration-ui-p6/p6b-focus-build.log.gz",
+      "sha256": "9d671b1ad82ac255f151508659b0ef8024ac8103322e20421baa9a07cc0dba46",
+      "bytes": 2984,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/private/tmp/riwork-p6b-fa930048.vn_exbl9/integration-ui-p6/p6b-focus-commands.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/integration-ui-p6/p6b-focus-commands.log.gz",
+      "sha256": "e11e4c3320c084ede16a3da494de9c75240d9572f1e01d1b4e87651bf465e318",
+      "bytes": 4053,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/private/tmp/riwork-p6b-fa930048.vn_exbl9/integration-ui-p6/p6b-nsh-check.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/integration-ui-p6/p6b-nsh-check.log.gz",
+      "sha256": "7c59580838e64b7951ffdc591b8b7d51f69ee8aad90428aafc24746f7b82d136",
+      "bytes": 2855,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/private/tmp/riwork-p6b-fa930048.vn_exbl9/integration-ui-p6/p6b-nsh-test.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/integration-ui-p6/p6b-nsh-test.log.gz",
+      "sha256": "1182a1280fa06e714bf24ed22e2d82d94fb6b95b85138d4ecf01ff7257deef9f",
+      "bytes": 12177,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/private/tmp/riwork-p6b-fa930048.vn_exbl9/integration-ui-p6/p6b-seed.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/integration-ui-p6/p6b-seed.log.gz",
+      "sha256": "b289a27a20b3db06d8da3a3d921d0747384f8ec876c6f08a9bd186e34516ec81",
+      "bytes": 471,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/tmp/riwork-p6b-fa930048.vn_exbl9/logs/baseline-core-engine.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/logs/baseline-core-engine.log",
+      "sha256": "e910383bf3be192a532688982aaaccdbad486ed898c85c67e1e933e2b69d9a1e",
+      "bytes": 172999,
+      "encoding": "plain"
+    },
+    {
+      "source": "/tmp/riwork-p6b-fa930048.vn_exbl9/logs/baseline-runtime-rerun.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/logs/baseline-runtime-rerun.log",
+      "sha256": "295fadd8c8de092c4ecb786a596fbed1f75dae1d841d7a29fc1b842afbd3e977",
+      "bytes": 2068,
+      "encoding": "plain"
+    },
+    {
+      "source": "/tmp/riwork-p6b-fa930048.vn_exbl9/logs/integration-accepted-sources.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/logs/integration-accepted-sources.log.gz",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/tmp/riwork-p6b-fa930048.vn_exbl9/logs/integration-archive-evidence.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/logs/integration-archive-evidence.log.gz",
+      "sha256": "cce3fcc4d92fdab5ee0395cfd9da4da0482c6618c116bae7b4fc228d258bc81a",
+      "bytes": 84,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/tmp/riwork-p6b-fa930048.vn_exbl9/logs/integration-cli.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/logs/integration-cli.log.gz",
+      "sha256": "5bee018ca962ac2b1b62db51020007511665194cfc67292642f5a9e61ef568d1",
+      "bytes": 24166,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/tmp/riwork-p6b-fa930048.vn_exbl9/logs/integration-debug-isolation.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/logs/integration-debug-isolation.log.gz",
+      "sha256": "9ccd99b441e66df0cb1dce2f9a9c89ac29cd9aac18c0f792f949d155b0e17134",
+      "bytes": 826,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/tmp/riwork-p6b-fa930048.vn_exbl9/logs/integration-diff-check.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/logs/integration-diff-check.log.gz",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/tmp/riwork-p6b-fa930048.vn_exbl9/logs/integration-fmt-check.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/logs/integration-fmt-check.log.gz",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/tmp/riwork-p6b-fa930048.vn_exbl9/logs/integration-focus-green.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/logs/integration-focus-green.log.gz",
+      "sha256": "89409bb88b8584500b319044368cc1916abbd380071c0ca27490fffc551c5208",
+      "bytes": 8336,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/tmp/riwork-p6b-fa930048.vn_exbl9/logs/integration-focus-red.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/logs/integration-focus-red.log.gz",
+      "sha256": "a13b38c271257f336de7f0f39422c0c625a797439f5f564374ab14c71389b0a2",
+      "bytes": 7109,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/tmp/riwork-p6b-fa930048.vn_exbl9/logs/integration-format-final.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/logs/integration-format-final.log.gz",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/tmp/riwork-p6b-fa930048.vn_exbl9/logs/integration-format.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/logs/integration-format.log.gz",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/tmp/riwork-p6b-fa930048.vn_exbl9/logs/integration-native-workspace-desktop.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/logs/integration-native-workspace-desktop.log.gz",
+      "sha256": "8a641caa928423df35d43a128aa3eeed2e206ee92a6de6c773ab723237c63169",
+      "bytes": 9812,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/tmp/riwork-p6b-fa930048.vn_exbl9/logs/integration-panels-final.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/logs/integration-panels-final.log.gz",
+      "sha256": "48b45a91edd6b1fce41a4a70da15cb3b6aec71106e7a3e6601f4becba82f7169",
+      "bytes": 1319,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/tmp/riwork-p6b-fa930048.vn_exbl9/logs/integration-panels-green.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/logs/integration-panels-green.log.gz",
+      "sha256": "8f7428e8c05b6cf8c4537fede98d272c23677e1d08e2a189c760b7d05c5c1d8d",
+      "bytes": 7714,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/tmp/riwork-p6b-fa930048.vn_exbl9/logs/integration-panels.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/logs/integration-panels.log.gz",
+      "sha256": "7baa2482d2f41641a89bde8afa84c56329f654e86284159c23d39b63b226d921",
+      "bytes": 12805,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/tmp/riwork-p6b-fa930048.vn_exbl9/logs/integration-pending-open.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/logs/integration-pending-open.log.gz",
+      "sha256": "d8e0a53823cf6fbdc3dd59dda14916c4b91901d83cde3f3d4a550e1614e95676",
+      "bytes": 936,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/tmp/riwork-p6b-fa930048.vn_exbl9/logs/integration-polling.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/logs/integration-polling.log.gz",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/tmp/riwork-p6b-fa930048.vn_exbl9/logs/integration-retain-evidence.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/logs/integration-retain-evidence.log.gz",
+      "sha256": "ddbe65dd5edc0941a0503de48e0cb739263759c20a3405f88f6466ba96c1c910",
+      "bytes": 84,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/tmp/riwork-p6b-fa930048.vn_exbl9/logs/integration-retain-final.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/logs/integration-retain-final.log.gz",
+      "sha256": "8716bec071c552239595d9603b0f3a4745271bc7b6873485be6812eebc1d3d05",
+      "bytes": 84,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/tmp/riwork-p6b-fa930048.vn_exbl9/logs/integration-runner-syntax.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/logs/integration-runner-syntax.log.gz",
+      "sha256": "e568a88dae1b3c6c3be566cb8b2719dfbfb96b0c97b066e64734c79829292f5f",
+      "bytes": 20,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/tmp/riwork-p6b-fa930048.vn_exbl9/logs/integration-settings-routes.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/logs/integration-settings-routes.log.gz",
+      "sha256": "19d259b7fa5e7b5321106d98d659012241f597849b4a55ee1dd7c03a393ede1a",
+      "bytes": 1698,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/tmp/riwork-p6b-fa930048.vn_exbl9/logs/integration-staged-check.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/logs/integration-staged-check.log.gz",
+      "sha256": "d6926b7249fdffda57c924781897235dfee69115a21540815cb7e5dfba7461b4",
+      "bytes": 2293,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/tmp/riwork-p6b-fa930048.vn_exbl9/logs/integration-staged-final.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/logs/integration-staged-final.log.gz",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/tmp/riwork-p6b-fa930048.vn_exbl9/logs/integration-suites-final.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/logs/integration-suites-final.log.gz",
+      "sha256": "9ed91190864b0e0d0a3d042a61f22d423824a9042d4d57ad8f17126f75c8472d",
+      "bytes": 46493,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/tmp/riwork-p6b-fa930048.vn_exbl9/logs/integration-ui-chat.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/logs/integration-ui-chat.log.gz",
+      "sha256": "3db3e4b10cf48f9fb94decdba21dcf845867f6802068bd33e0f0c39a331c0906",
+      "bytes": 1563,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/tmp/riwork-p6b-fa930048.vn_exbl9/logs/integration-ui-global.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/logs/integration-ui-global.log.gz",
+      "sha256": "bf334a579ebe0bd05e0165f02b038e67da8ac2446e81196e2d4f42f6c6abc04d",
+      "bytes": 1577,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/tmp/riwork-p6b-fa930048.vn_exbl9/logs/integration-ui-memo.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/logs/integration-ui-memo.log.gz",
+      "sha256": "1f6010189676308e764b8754ae9e9ecee42cf566c85071f48b34c206dfc3f76c",
+      "bytes": 1564,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/tmp/riwork-p6b-fa930048.vn_exbl9/logs/integration-ui-missing.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/logs/integration-ui-missing.log.gz",
+      "sha256": "584e71f5db5dc9a5478d8cbff60839549d69aa20e34b1db7fd50c5b507d145ed",
+      "bytes": 1586,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/tmp/riwork-p6b-fa930048.vn_exbl9/logs/integration-ui-mount.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/logs/integration-ui-mount.log.gz",
+      "sha256": "2a9fe6755ef8af317c06a9930b5330b1065a720648c995e395635f65e4884c89",
+      "bytes": 1587,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/tmp/riwork-p6b-fa930048.vn_exbl9/logs/integration-ui-native.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/logs/integration-ui-native.log.gz",
+      "sha256": "29a27ef7bb0dcf2061c471a785cfb05eb46e8d7e53f4bef5a11672975df2afbb",
+      "bytes": 1588,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/tmp/riwork-p6b-fa930048.vn_exbl9/logs/integration-ui-p5.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/logs/integration-ui-p5.log.gz",
+      "sha256": "7f47368c2e56e5f79d44ebb50620b1aeeaf7e2678454fd918a2144bb1aeb8a38",
+      "bytes": 1554,
+      "encoding": "gzip; lossless original bytes"
+    },
+    {
+      "source": "/tmp/riwork-p6b-fa930048.vn_exbl9/logs/integration-ui-p6.log",
+      "retained": "docs/verification/nsh-phase6b/integration/logs/logs/integration-ui-p6.log.gz",
+      "sha256": "36ff0c4ee4129690b89e31725238315d12c1ba90cbaedaacdcfa631534ec8df4",
+      "bytes": 2558,
+      "encoding": "gzip; lossless original bytes"
+    }
+  ],
+  "junit": [
+    {
+      "source": "/tmp/riwork-p6b-fa930048.vn_exbl9/integration-focus-green/nsh.xml",
+      "retained": "docs/verification/nsh-phase6b/integration/junit/integration-focus-green/nsh.xml",
+      "sha256": "4553f617e9db66d08158687f22ad349e5515af3fedecb4891f5964fadba8be12"
+    },
+    {
+      "source": "/tmp/riwork-p6b-fa930048.vn_exbl9/integration-panels/p6b-nsh-test.xml",
+      "retained": "docs/verification/nsh-phase6b/integration/junit/integration-panels/p6b-nsh-test.xml",
+      "sha256": "f5c65dfaaf35d3a854d7001b74aaef19b4acbd21a4da1a73a82e4f51b036cdf3"
+    },
+    {
+      "source": "/tmp/riwork-p6b-fa930048.vn_exbl9/integration-panels-green/p6b-nsh-test-1.xml",
+      "retained": "docs/verification/nsh-phase6b/integration/junit/integration-panels-green/p6b-nsh-test-1.xml",
+      "sha256": "6551da9f2d548de8f8327126ba6d1743e81e0ed5b016132bea05bc09caf79bcb"
+    },
+    {
+      "source": "/tmp/riwork-p6b-fa930048.vn_exbl9/integration-panels-green/p6b-nsh-test.xml",
+      "retained": "docs/verification/nsh-phase6b/integration/junit/integration-panels-green/p6b-nsh-test.xml",
+      "sha256": "5483e2c4037d77d36b278cf966ec1bb1af102f6ff0f7c154dc94cf1ebcd0b184"
+    },
+    {
+      "source": "/tmp/riwork-p6b-fa930048.vn_exbl9/integration-ui-chat/nsh.xml",
+      "retained": "docs/verification/nsh-phase6b/integration/junit/integration-ui-chat/nsh.xml",
+      "sha256": "8527f7385d3678bd36c3d54fe07c7ae66ec1e75142bc56651e5afd9ee21816fd"
+    },
+    {
+      "source": "/tmp/riwork-p6b-fa930048.vn_exbl9/integration-ui-global/nsh.xml",
+      "retained": "docs/verification/nsh-phase6b/integration/junit/integration-ui-global/nsh.xml",
+      "sha256": "7342618b758052be00f3b7f73a9817e48e13971f1ac9afdda28eba825baa1df6"
+    },
+    {
+      "source": "/tmp/riwork-p6b-fa930048.vn_exbl9/integration-ui-memo/nsh.xml",
+      "retained": "docs/verification/nsh-phase6b/integration/junit/integration-ui-memo/nsh.xml",
+      "sha256": "f07b0b2c972f8c1948deacf186f6673b087011d46265f87bcdcaed7fd186a432"
+    },
+    {
+      "source": "/tmp/riwork-p6b-fa930048.vn_exbl9/integration-ui-missing/nsh.xml",
+      "retained": "docs/verification/nsh-phase6b/integration/junit/integration-ui-missing/nsh.xml",
+      "sha256": "96e0f55721dc637446885ee8a34f97813bbdbfe8d1c5eec5922e9f6a5c4d00c3"
+    },
+    {
+      "source": "/tmp/riwork-p6b-fa930048.vn_exbl9/integration-ui-mount/nsh.xml",
+      "retained": "docs/verification/nsh-phase6b/integration/junit/integration-ui-mount/nsh.xml",
+      "sha256": "41a45b76f0db486987cfbee24bcc83411f22e85518150e46b2f8fb1e213e4d80"
+    },
+    {
+      "source": "/tmp/riwork-p6b-fa930048.vn_exbl9/integration-ui-native/nsh.xml",
+      "retained": "docs/verification/nsh-phase6b/integration/junit/integration-ui-native/nsh.xml",
+      "sha256": "8e898cdb210102ebad9fb63dfeee39cf0fa5b03455591bafe2a500674f343a20"
+    },
+    {
+      "source": "/tmp/riwork-p6b-fa930048.vn_exbl9/integration-ui-p5/nsh.xml",
+      "retained": "docs/verification/nsh-phase6b/integration/junit/integration-ui-p5/nsh.xml",
+      "sha256": "2922f60f6e09532acf889f936ab4d6a48d1c4849fd70e12a34114ce0ef91ce48"
+    },
+    {
+      "source": "/tmp/riwork-p6b-fa930048.vn_exbl9/integration-ui-p6/nsh.xml",
+      "retained": "docs/verification/nsh-phase6b/integration/junit/integration-ui-p6/nsh.xml",
+      "sha256": "43447ced13da32c4b0103dd54b7966047037d290dd324f6811bef126049b823b"
+    }
+  ],
+  "pending_open": [
+    "docs/verification/nsh-phase6b/integration/pending-open/ordering-hby3xcy5/manifest.json"
+  ],
+  "focus_bundles": [
+    {
+      "source": "/tmp/riwork-p6b-fa930048.vn_exbl9/integration-focus-red/focus-bundle/bundle.js",
+      "sha256": "f7cd09a7b269111979e0b50bdf55a0286e1bfdc3ae39da701fd221f49f4aaf8b"
+    },
+    {
+      "source": "/tmp/riwork-p6b-fa930048.vn_exbl9/integration-ui-p6/focus-bundle/bundle.js",
+      "sha256": "f173f4e78475b620061e79d848a52372505df562777900d77199aa76343b670d"
+    }
+  ]
+}

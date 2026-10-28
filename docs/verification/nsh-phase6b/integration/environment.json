@@ -1,0 +1,18 @@
+{
+  "root": "/tmp/riwork-p6b-fa930048.vn_exbl9",
+  "target": "/tmp/riwork-p6b-fa930048.vn_exbl9/target",
+  "cargo": "/Users/dominik/.cargo/bin/cargo",
+  "nsh": "/tmp/riwork-nsh-toolchain-60f8aec4.18l3zV/nsh-cli-0.3.0/bin/nsh",
+  "tsc": "/Users/dominik/Library/Caches/nsh/typescript-7.0.2-darwin-arm64/package/lib/tsc",
+  "ghostty": "/Users/dominik/orca/projects/riWork-nsh-p2-terminals/crates/riwork-nsh-terminal/.runtime/pinned/install",
+  "verification_environment": "private HOME and RIWORK_HOME; fixture stores and windowless NSH engines only",
+  "live_targets_touched": "none beyond own shell/worktree and disposable fixture processes",
+  "cargo_jobs": 2,
+  "offline": true,
+  "effective_service_tier": "Service tier default, Fast OFF (user-verified); gpt-6.1-sol, effort and saved dominik@rhein.industries account unchanged",
+  "assignment": "fa930048-78c0-4ca5-b44b-86d7de598b68",
+  "candidate": "3fb88b8bf55f3054c5050b30293d2ea41aa744aa",
+  "merged_nsh": "82f5a12215793596d81d420f1045071980ecf9b9",
+  "merge_commit": "42f2a7dacdf2009f649ed6652fae968589613b54",
+  "descendants_spawned": 0
+}

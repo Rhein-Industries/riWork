@@ -53,6 +53,10 @@ use uuid::Uuid;
 const APP_ID: &str = "dev.riwork.shell";
 const CAPABILITIES: &str = r#"{"host":["window.*","app.*","system.*"]}"#;
 
+#[cfg(test)]
+#[path = "nsh_remote_tests.rs"]
+mod remote_tests;
+
 fn parse_appearance(value: &str) -> Result<Appearance, String> {
     match value {
         "light" => Ok(Appearance::Light),
@@ -1610,7 +1614,16 @@ fn restored_window(home: &Path, runtime: &RuntimeWindow) -> PreparedWindow {
             .map(|state| state.view.name().to_owned());
         options
     } else {
-        OpenOptions::project(Some(runtime.path.clone()))
+        let mut options = OpenOptions::project(Some(runtime.path.clone()));
+        if runtime
+            .project_id
+            .as_deref()
+            .is_some_and(riwork_nsh_workspace::remote::is_project)
+        {
+            options.project_id = runtime.project_id.clone();
+            options.path = None;
+        }
+        options
     };
     PreparedWindow {
         options,
@@ -1695,6 +1708,11 @@ fn stop(app: &NSApplication) {
 
 fn prepare(home: &Path, options: OpenOptions) -> Result<PreparedWindow, String> {
     options.validate()?;
+    if options.project_id.as_deref().is_some_and(|id| {
+        id.starts_with("remote:") && !riwork_nsh_workspace::remote::is_project(id)
+    }) {
+        return Err("invalid: remote project key".into());
+    }
     let runtime = if options.kind == WindowKind::Global {
         RuntimeWindow::global(
             home,
@@ -1702,12 +1720,30 @@ fn prepare(home: &Path, options: OpenOptions) -> Result<PreparedWindow, String> 
             WindowMode::Windowed,
             GlobalWindowStore::at(home).load(),
         )
+    } else if let Some(project_id) = options
+        .project_id
+        .as_ref()
+        .filter(|id| riwork_nsh_workspace::remote::is_project(id))
+    {
+        // Runtime restoration needs an existing local cwd, never the host's path.
+        // The remote project is not registered in this Mac's Store.
+        RuntimeWindow {
+            project_id: Some(project_id.clone()),
+            path: home.to_owned(),
+            bounds: None,
+            mode: WindowMode::Windowed,
+            layout: None,
+            focus_mode: false,
+            focus_centered: false,
+            kind: WindowKind::Project,
+            global: None,
+        }
     } else {
         let store = Store::open(home.to_path_buf())?;
         let state = store.snapshot()?;
         let project = if let Some(id) = &options.project_id {
             Uuid::parse_str(id)
-                .map_err(|_| "invalid: projectId must be a UUID (remote projects await P1a)")?;
+                .map_err(|_| "invalid: projectId must be a UUID or remote project key")?;
             state.project(id)?.clone()
         } else if let Some(path) = &options.path {
             let root = path
@@ -1795,7 +1831,9 @@ fn startup(args: Vec<String>) -> Result<Option<Startup>, String> {
         .enable_all()
         .build()
         .map_err(|error| format!("Cannot initialize native runtime: {error}"))?;
-    runtime.block_on(native::initialize())?;
+    let process = runtime.block_on(native::initialize())?;
+    native::schedules::start_process_ticker(home.clone())?;
+    native::schedules::observe_process_changes(&process);
     // This executable is RiWork: `chat ensure` re-enters `run_cli` in nsh_main.
     // Test runners never call this, so they can never start a chat host.
     native::chat::allow_host_start();

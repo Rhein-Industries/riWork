@@ -326,7 +326,20 @@ Backed by `riwork_engine::schedule_service::ScheduleService`
 | `Schedules.update(req)` | async | `schedule_service.rs:243` |
 | `Schedules.pause(key, paused)` / `delete(key)` | async | `schedule_service.rs:269,276` |
 | `Schedules.chatOptions(...)` | async | `schedule_service.rs:318` |
+| `Schedules.targets(scope)` | async | Explicit, typed shell/legacy-chat bindings in the requested scope |
 | `Schedules.subscribe(listener)` | event | topics `schedules` (store file watcher, snapshot) and `runtime` (ticker error string, today `RuntimeStatus`, `schedules.rs:6-8`) |
+
+Phase 6b introduces payload schema 1 in `riwork-nsh-native/src/schedules.rs`:
+`ScheduleKeyDto = {id, revision, scope, targetId}` is required for update/pause/delete;
+scope is `{scope, projectId, worktreeId}`. Create/update carry title, single-line prompt,
+RFC 3339 `at` with explicit offset, nullable `everyMinutes`, an explicit typed binding
+or null (retain pinned destination on edit), and nullable chat options. Options are
+`{provider, model, effort, fast, permission, accountId}`; new chats default to Codex,
+Supervised and Fast off. The snapshot data is
+`{schema:1, now, rows, targets, chats, worktrees, error, runtimeError}`. Bridge error codes
+follow §1.2 while retaining the engine's specific reason in the message. The host starts
+the process ticker once before AppViews; subscriptions never start dispatch. Test-support
+builds disable process dispatch. Engine ledger/CLI formats are unchanged.
 
 ### 1.9 `Layouts` — see §4.
 
@@ -356,6 +369,34 @@ These follow §1.1-§1.4 unchanged; each port task adds its function table to th
 | `Dictation` | Dictation state machine over the `riwork-speech` helper |
 | `Markdown`, `Diff`, `Diagram`, `CommandLog`, `Media` | Rust-side parsing/highlighting, diff display, diagram rendering, command-output paging, image loading for non-chat surfaces and for `ChatHandle` rows |
 | `ProjectRecency` | Recency scan |
+
+#### Phase 6b payload schema 1: Remote
+
+`crates/riwork-nsh-native/src/remote.rs` wraps the unchanged remote engine/CLI protocol.
+Snapshot data is `{schema:1, hosts, hostsError, folders, projects, selected}`. `projects`
+contains cached selected-project lists and their loading/error/connection state; it never
+contains local Store records or pairing links. Paired-Mac keys use the existing
+`remote:<host>:<project>` namespace. See [Phase 6b evidence and open parity](nsh-phase6b-report.md).
+
+| JS | Kind | Result / rule |
+|---|---|---|
+| `Remote.snapshot()` | async | Current cached `RemoteSnapshot` |
+| `Remote.subscribe(wants, listener)` | sync handle | Snapshot topic; wants = `{folders, settings, collapsed, tabHosts, projectKey, worktrees, tasks, shells}`. One process service unions window visibility and uses engine cadences. |
+| `Remote.select(keyOrNull)` | async | Persist selected remote key through existing remote cache |
+| `Remote.defaults()` | async | Pair-dialog name, relay and routes defaults |
+| `Remote.addHost(link, label)`, `removeHost(host)` | async | Existing engine host operations; secret links are never put in a topic or cache |
+| `Remote.pairDesktop({name, relay, routes})` | async | `{link, masked}` returned only to the requesting dialog |
+| `Remote.createProject(host, name)` | async | Existing single-flight creation; no automatic retry |
+| `Remote.createShell({projectKey, worktreeId, kind, unrestricted})` | async | Known selected worktree or project; existing single-flight creation, no automatic retry |
+| `Remote.dismissFailure(host, projectOrNull)` | async | Dismiss only that host/project failure |
+| `Remote.tabTitle(host, shell)`, `orchestrators(host)` | async | Cached engine title / existing orchestrator list; never starts an orchestrator |
+| `Remote.clickWorktree(key, worktree, openTabs)` | async | Engine action `tab`, `open`, `start`, or `unknown` |
+
+`LayoutSession.openRemoteShell(desktopId, shellId)` places/selects the existing
+`SavedTab::RemoteShell` pair. Layout snapshots expose `remoteProject`; remote branches
+do not create/adopt/kill local shells or update local shared membership. Native remote
+terminal targets and the engine/protocol remain unchanged. Test-support defaults to a
+closed backend that cannot discover a CLI, pair, or connect to a host.
 
 #### Phase 1 W3 payload schema 2: Settings, Appearance and global-window state
 

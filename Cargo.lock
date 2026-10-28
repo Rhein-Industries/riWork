@@ -6563,6 +6563,7 @@ dependencies = [
  "async-channel",
  "base64 0.22.1",
  "cc",
+ "chrono",
  "dispatch2",
  "futures-util",
  "image",

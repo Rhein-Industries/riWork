@@ -70,6 +70,7 @@ export function createPanelController(options: PanelOptions) {
       storeRev = event.rev;
       state.set(event.data);
       if (!loaded()) loaded.set(true);
+      if (options.projectId().startsWith("remote:")) return;
       if (selectedTask() && !event.data.tasks.some((task) => task.id === selectedTask() && task.projectId === options.projectId())) selectTask(null);
       const trees = visibleWorktrees(event.data, options.projectId());
       // Keep an explicit unavailable selection: Files must not silently browse
@@ -90,10 +91,10 @@ export function createPanelController(options: PanelOptions) {
     const task = state().tasks.find((task) => task.id === id && task.projectId === options.projectId());
     if (task?.worktreeId && state().worktrees.some((tree) => tree.id === task.worktreeId && tree.projectId === options.projectId())) selectWorktree(task.worktreeId);
   }
-  function resetProject() {
+  function resetProject(navigation?: { worktree: string | null; task: string | null }) {
     generation++;
-    query.set(""); selectTask(null); selectedShell.set(null); editor.set(null);
-    selectWorktree(visibleWorktrees(state(), options.projectId()).find((tree) => tree.isPrimary)?.id ?? null);
+    query.set(""); selectTask(navigation?.task ?? null); selectedShell.set(null); editor.set(null);
+    selectWorktree(navigation ? navigation.worktree : visibleWorktrees(state(), options.projectId()).find((tree) => tree.isPrimary)?.id ?? null);
     watchTabs();
   }
   async function run(action: () => Promise<unknown>, success?: () => void) {
@@ -107,8 +108,9 @@ export function createPanelController(options: PanelOptions) {
     if (project.id === options.projectId() || pending()) return;
     await run(async () => {
       await Store.useProject(project.id);
+      const previous = generation;
       await options.switchProject(project);
-      resetProject();
+      if (generation === previous) resetProject();
     });
   }
   function attach(shell: ShellSessionDto, projectId: string, token: number) {
@@ -467,7 +469,8 @@ function ProjectEditor(props: { controller: PanelController }) {
         const request = { root: checked.root, name: name().trim() || undefined, initGit: checked.canInitGit && initGit() };
         const project = checked.exists ? await Store.createProject(request) : await Store.createNewProject(request);
         await Store.useProject(project.id);
-        await c.switchProject(project); c.resetProject(); c.openPanel("projects");
+        const previous = c.generation();
+        await c.switchProject(project); if (c.generation() === previous) c.resetProject(); c.openPanel("projects");
       } catch (reason) { error.set(String(reason)); }
     });
   }
