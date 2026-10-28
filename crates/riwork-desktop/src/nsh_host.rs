@@ -1397,6 +1397,9 @@ fn startup(args: Vec<String>) -> Result<Option<Startup>, String> {
         .build()
         .map_err(|error| format!("Cannot initialize native runtime: {error}"))?;
     runtime.block_on(native::initialize())?;
+    // This executable is RiWork: `chat ensure` re-enters `run_cli` in nsh_main.
+    // Test runners never call this, so they can never start a chat host.
+    native::chat::allow_host_start();
     let (bundle, directory) = crate::nsh_bundle::load()?;
     let bundle = bundle
         .with_app_id(Some(APP_ID))
