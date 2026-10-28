@@ -1,0 +1,6 @@
+   Compiling riwork-desktop v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p1-fix-host/crates/riwork-desktop)
+    Finished `test` profile [unoptimized] target(s) in 3.53s
+     Running unittests src/nsh_main.rs (target/debug/deps/riwork-15d9683ef617a23d)
+riwork: quit cancelled: window other-ordered-quit-ba233876-4315-44a7-b7cf-2ee89ae6cb86: fixture: another window failed to flush
+riwork: quit cancelled: window other-ordered-restart-launch-63975012-7c3c-4318-935b-cbe435111c06: fixture: another window failed to flush
+riwork: quit cancelled: fixture: replacement readiness failed

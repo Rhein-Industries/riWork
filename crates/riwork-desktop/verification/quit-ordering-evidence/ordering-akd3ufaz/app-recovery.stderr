@@ -1,0 +1,99 @@
+   Compiling log v0.4.34
+   Compiling smallvec v1.16.2
+   Compiling rustls v0.23.45
+   Compiling serde_json v1.0.151
+   Compiling rgb v0.8.53
+   Compiling objc2 v0.6.5
+   Compiling float-cmp v0.9.0
+   Compiling strict-num v0.1.1
+   Compiling icu_normalizer v2.3.0
+   Compiling polycool v0.4.0
+   Compiling objc2-encode v4.1.0
+   Compiling arrayref v0.3.9
+   Compiling tiny-skia-path v0.11.4
+   Compiling kurbo v0.13.1
+   Compiling idna_adapter v1.2.2
+   Compiling bitflags v1.3.2
+   Compiling png v0.17.16
+   Compiling svgtypes v0.16.1
+   Compiling idna v1.1.0
+   Compiling parking_lot_core v0.9.12
+   Compiling simplecss v0.2.2
+   Compiling roxmltree v0.21.1
+   Compiling pico-args v0.5.0
+   Compiling imagesize v0.14.0
+   Compiling xmlwriter v0.1.0
+   Compiling data-url v0.3.2
+   Compiling tungstenite v0.28.0
+   Compiling usvg v0.46.0
+   Compiling url v2.5.8
+   Compiling parking_lot v0.12.5
+   Compiling tiny-skia v0.11.4
+   Compiling tokio-rustls v0.26.6
+   Compiling string_cache v0.8.9
+   Compiling tokio-tungstenite v0.28.0
+   Compiling objc2-core-foundation v0.3.2
+   Compiling resvg v0.46.0
+   Compiling taffy v0.15.1
+   Compiling av-scenechange v0.14.1
+   Compiling av1-grain v0.2.5
+   Compiling nsh-core v0.3.0
+   Compiling markup5ever v0.12.1
+   Compiling rav1e v0.8.1
+   Compiling ureq-proto v0.6.4
+   Compiling exr v1.74.2
+   Compiling globset v0.4.20
+   Compiling ravif v0.13.0
+   Compiling html5ever v0.27.0
+   Compiling xml5ever v0.18.1
+   Compiling objc2-core-graphics v0.3.2
+   Compiling block2 v0.6.2
+   Compiling serde_core v1.0.229
+   Compiling ureq v3.4.2
+   Compiling ropey v1.6.1
+   Compiling riwork-core v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p1-fix-host/crates/riwork-core)
+   Compiling image v0.25.10
+   Compiling markup5ever_rcdom v0.3.0
+   Compiling ignore v0.4.33
+   Compiling quickjs-jit-stdlib v0.14.1
+   Compiling riwork-engine v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p1-fix-host/crates/riwork-engine)
+   Compiling nsh-base v0.3.0 (/Users/dominik/orca/projects/riWork-nsh-p1-fix-host/apps/riwork/vendor/nsh-base)
+   Compiling objc2-foundation v0.3.2
+   Compiling objc2-quartz-core v0.3.2
+   Compiling nsh-package v0.3.0
+   Compiling nsh-js v0.3.0
+   Compiling oxc_sourcemap v9.0.0
+   Compiling utf8parse v0.2.2
+   Compiling anstyle-parse v1.0.0
+   Compiling riwork-nsh-terminal v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p1-fix-host/crates/riwork-nsh-terminal)
+   Compiling objc2-app-kit v0.3.2
+   Compiling nsh-engine v0.3.0
+   Compiling dispatch2 v0.3.1
+   Compiling objc2-core-text v0.3.2
+   Compiling objc2-image-io v0.3.2
+   Compiling objc2-io-kit v0.3.2
+   Compiling anstyle v1.0.14
+   Compiling anstyle-query v1.1.5
+   Compiling jiff-core v0.1.1
+   Compiling colorchoice v1.0.5
+   Compiling is_terminal_polyfill v1.70.2
+   Compiling anstream v1.0.0
+   Compiling nsh-platform-macos v0.3.0
+   Compiling jiff v0.2.38
+   Compiling notify v8.2.0
+   Compiling riwork-nsh-workspace v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p1-fix-host/apps/riwork)
+   Compiling env_filter v2.0.0
+   Compiling riwork-desktop v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p1-fix-host/crates/riwork-desktop)
+   Compiling env_logger v0.11.11
+   Compiling riwork-nsh-native v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p1-fix-host/crates/riwork-nsh-native)
+   Compiling riwork-cli v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-p1-fix-host/crates/riwork-cli)
+    Finished `test` profile [unoptimized] target(s) in 51.97s
+     Running unittests src/nsh_main.rs (target/debug/deps/riwork-15d9683ef617a23d)
+riwork: quit cancelled: window other-ordered-quit-e3074c19-5c15-47f8-b387-cd355ae53d0c: fixture: another window failed to flush
+riwork: quit cancelled: window other-ordered-restart-launch-7b667efd-87f9-4207-9af7-f654851bbdcb: fixture: another window failed to flush
+riwork: quit cancelled: fixture: replacement readiness failed
+
+thread 'nsh_host::pending_open_tests::production_app_recovers_pending_open_after_failed_quit_and_restart' (14091818) panicked at crates/riwork-desktop/src/nsh_pending_open_tests.rs:572:5:
+lost ready acknowledgement: quit: attempts=1, accepted=0, rejected=1; restart-launch: attempts=1, accepted=0, rejected=1; restart-ready: attempts=1, accepted=0, rejected=1
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+error: test failed, to rerun pass `-p riwork-desktop --bin riwork`
