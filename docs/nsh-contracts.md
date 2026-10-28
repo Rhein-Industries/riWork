@@ -261,6 +261,7 @@ wire and log formats and `chat-drafts/` files are unchanged.
 | `Chat.create(NewChatRequest)` | async | Ensures the host; strict decoding (UUID project/worktree, non-empty cwd). The host registers the shared tab entry (`TabStore::register_created`); the bridge adds no tab write. |
 | `Chat.delete(chatId)` | async | `Client::delete`. |
 | `Chat.open(chatId, { history?, mode? }) → ChatHandle` | sync | Validates the UUID and starts the handle's threads; no IO on the engine thread. `history` follows only an existing host (CHATT-013). |
+| `Chat.newEditor() → number` | sync | A new composer's draft editor identity, unique across every window's JS runtime in the process (an atomic counter; the draft owners it keys are process-wide). Each mounted composer takes one and passes it to `submit`/`saveDraft`. |
 | `Chat.fixtureDirectory(name)` | async | Debug/test-support fixture only (`RIWORK_NSH_CHAT_FIXTURE=1`, `/tmp` home); rejects `unavailable` otherwise. |
 | `ChatHandle.subscribe(listener)` | sync handle | `ChatDelivery`: `reset { rev, seq, panel, rows, bodies }`, then `patch { rev, seq, panel?, upsert?, remove?, order?, bodies?, drop?, splice?, append? }`, at most one per 16 ms (first change at once, trailing edge after). `resync: true` replaces an overflowed queue (capacity 64). A second subscription replaces the first. |
 | `ChatHandle.setViewport(first, last)`, `toggle(rowId)`, `expandAll(open)`, `setMode(mode)` | sync | Enqueue to the handle's worker; the worker reprojects (never for token deltas) and patches. |
@@ -610,6 +611,7 @@ Window-local chrome stays on NSH built-ins: `Window.setTitle`, `setTitleBar`, `s
 | `command` | `{ id, args? }` | An app-menu item, Dock-menu item or global shortcut chose command `id` while this window is key. The **application menu belongs to the host** (it is process-global on macOS); TSX does not call `Menu.setApplicationMenu`. The v1 menu keeps GPUI's RiWork, Edit and View menus and ⌘W closing a tab, never a window (parity SHELL “menus”); adding AppKit's Window/Help menus is a separate product decision. Command ids are the menu items of parity rows SHELL-250 to SHELL-252 and SHELL-299 and the command list under SHELL “Host needs” in `docs/nsh-parity.md`. **Edit menu:** Cut/Copy/Paste/Select All use the standard responder selectors; a native text field or a `riwork.terminal` handles them itself, otherwise the AppView forwards them as `command { id: "copy" }` (etc.) so the transcript can copy its Rust-built selection (parity CHATT “Edit ▸ Copy”). **Key-equivalent order:** when a `riwork.terminal` view is first responder, ⌘=, ⌘- and ⌘0 go to the terminal (Ghostty font size) and are not also dispatched as text-size commands. |
 | `window.state` | `{ key, visible, occluded, mode, backingScale, frame, appActive }` | On change. Pauses sampling/metrics subscriptions and idle redraws in occluded or inactive windows (parity SHELL “activation”); terminals read occlusion natively. |
 | `window.willClose` | `{ reason: "user" \| "quit" \| "restart" }` | Informational; persistence does not depend on TSX answering (the host flushes Rust state itself). |
+| `window.closeCancelled` | `{}` | A close, quit or restart failed and the host reopened all affected native layout gates. Quit/restart failure bookkeeping finishes first; one main-thread transition clears the host quit gate, reopens native gates, then notifies surviving Apps, so their one-shot `app.restoreReady` can be accepted. Sent to every surviving window in the cancelled batch, including one whose pending `Layouts.openSession` was rejected by the closing marker. App retries that rejection with at most one open in flight and ignores cancellation once a session is installed. Delivery can precede the rejection reaching JavaScript. Successful teardown never sends this event. |
 | `project.open` | `{ projectId, path? }` | `riwork open PROJECT` (possibly forwarded from a second launch) targeted this window. |
 | `route` | `{ step }` | `window.route` chose this window. |
 | `global.show` | `{ view, start }` | Global window only: show Dashboard or Chat. |
@@ -1071,6 +1073,10 @@ Decisions the owner has taken since the freeze are recorded, dated, in [§8](#8-
   table above (reset/patch `ChatDelivery`, viewport-paged bodies, typed handle
   commands, drafts on the handle). No engine wire, log or draft-file format
   changed; host params and terminal schemas unchanged.
+- 2026-10-28 Phase 4a follow-up (task 2a017126): additive sync
+  `Chat.newEditor()`. Composer draft identities come from it instead of a
+  per-runtime counter, so two windows can no longer share an owner. No schema,
+  wire or draft-file change.
 - v1, 2026-10-27 addendum (task 8fa16659): §8 records three owner decisions (D-OWN-1, D-PERF-1,
   Phase 2 entry gate). No frozen surface, `schema` field or §3.7 metric changed, so there is no
   version bump.

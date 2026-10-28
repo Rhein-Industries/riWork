@@ -62,3 +62,6 @@ objc2-user-notifications = { version = "0.3", default-features = false, features
     "UNNotificationTrigger",
     "UNUserNotificationCenter",
 ] }
+
+[dev-dependencies]
+anyhow = "1"

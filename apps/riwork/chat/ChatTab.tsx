@@ -1,4 +1,4 @@
-import { List, Scroll, Text, View, cleanup, effect, keymap, signal, type YNode } from "nsh";
+import { List, Scroll, Text, View, cleanup, computed, effect, keymap, signal, type YNode } from "nsh";
 import { Input, TextView } from "nsh/base";
 import { Menu, type MenuItem } from "nsh/desktop";
 import {
@@ -12,8 +12,6 @@ import {
 } from "./model";
 
 const ERROR = "#ef6b73";
-/** One editor identity per mounted composer in this window (CHATC-035). */
-let editors = 0;
 
 export interface ChatTabProps {
   chatId: string;
@@ -33,6 +31,8 @@ export interface ChatDiagnostics {
   bodies: number;
   groups: string[];
   panel: ChatPanel;
+  /** The draft editor identities this tab's composers took, in order. */
+  editors: number[];
 }
 
 /** A chat tab: the transcript List over the bridge's rows, the requests that
@@ -53,11 +53,13 @@ export function ChatTab(props: ChatTabProps) {
   };
   let cells = 0;
   let constructed = 0;
+  const editors: number[] = [];
   let list: YNode | undefined;
   let following = true;
   const report = () => props.onDiagnostics?.({
     rows: rows().length, cells, constructed, bodies: [...bodies.values()].filter((body) => body() !== undefined).length,
     groups: rows().filter((row) => row.kind === "group" && !row.open).map((row) => row.id), panel: panel(),
+    editors: [...editors],
   });
   const subscription = handle.subscribe((delivery) => {
     if (delivery.kind === "reset") for (const body of bodies.values()) body.set(undefined);
@@ -196,7 +198,8 @@ export function ChatTab(props: ChatTabProps) {
     </View>;
   }
 
-  const deleted = () => panel().link === "deleted";
+  // A boolean, so a panel delivery never rebuilds the transcript and composer.
+  const deleted = computed(() => panel().link === "deleted");
   return <View testID={`chat:${props.chatId}`} style={{ flex: 1, minHeight: 0, backgroundColor: theme().palette.bg }}>
     {deleted() ? <View testID="chat-deleted" style={{ flex: 1, padding: 24, gap: 8 }}>
       <Text style={text(14)}>This chat was deleted</Text>
@@ -230,7 +233,7 @@ export function ChatTab(props: ChatTabProps) {
       {panel().state === "stopped" && <Text style={{ ...text(11, theme().palette.muted), marginHorizontal: space(14, theme().scale) }}>Stopped. The chat will resume when you send a message.</Text>}
       {panel().state === "failed" && <Text style={{ ...text(11, theme().palette.gold), marginHorizontal: space(14, theme().scale) }}>{`Failed: ${panel().stateMessage ?? ""}`}</Text>}
       <Composer panel={panel} handle={handle} theme={theme} notice={notice} visible={() => props.visible}
-        onSent={() => { following = true; list?.scrollToEnd(); }} />
+        onSent={() => { following = true; list?.scrollToEnd(); }} onEditor={(editor) => editors.push(editor)} />
     </>}
   </View>;
 }
@@ -242,11 +245,26 @@ interface PartProps {
   notice: (message: string) => void;
 }
 
-/** Approvals and questions stay visible and actionable above the composer. */
+/** Every panel delivery is a new object; equal content is no change. */
+const sameContent = <T,>(previous: T, next: T) => previous === next || JSON.stringify(previous) === JSON.stringify(next);
+
+/** Approvals and questions stay visible and actionable above the composer.
+ * Each is selected by content and mounted per request, in a View of its own:
+ * expressions returned in a fragment re-run with the parent's other ones. A
+ * panel delivery that leaves a request alone keeps its expanded, picked and
+ * typed state. */
 function Requests(props: PartProps) {
+  // What a mounted request shows. It keeps the last request through the
+  // delivery that ends it: its own expressions may read it before the gate,
+  // keyed by request id, takes it away.
+  const approval = computed<ChatApproval | undefined>((last) => props.panel().approvals[0] ?? last, { equals: sameContent });
+  const question = computed<ChatQuestion | undefined>((last) => props.panel().questions[0] ?? last, { equals: sameContent });
+  const more = computed(() => props.panel().approvals.length - 1);
+  const approvalId = computed(() => props.panel().approvals[0]?.requestId);
+  const questionId = computed(() => props.panel().questions[0]?.requestId);
   return <>
-    {props.panel().approvals.length > 0 && <ApprovalBar {...props} approval={() => props.panel().approvals[0]} more={() => props.panel().approvals.length - 1} />}
-    {props.panel().questions.length > 0 && <QuestionPanel {...props} question={() => props.panel().questions[0]} />}
+    <View>{approvalId() !== undefined && <ApprovalBar {...props} approval={() => approval()!} more={more} />}</View>
+    <View>{questionId() !== undefined && <QuestionPanel {...props} question={() => question()!} />}</View>
   </>;
 }
 
@@ -350,9 +368,12 @@ function QuestionPanel(props: PartProps & { question: () => ChatQuestion }) {
 
 /** The message box, its send/stop slot and the model, effort, Fast and mode
  * choices. Drafts are saved on every change and restored into an empty box. */
-function Composer(props: PartProps & { visible: () => boolean; onSent: () => void }) {
+function Composer(props: PartProps & { visible: () => boolean; onSent: () => void; onEditor: (editor: number) => void }) {
   const theme = props.theme;
-  const editor = ++editors;
+  // One draft editor identity per mounted composer, unique across windows: the
+  // native draft owners are process-wide (CHATC-035).
+  const editor = Chat.newEditor();
+  props.onEditor(editor);
   let generation = 0;
   const draft = signal("");
   const pending = signal(false);

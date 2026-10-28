@@ -186,17 +186,88 @@ pub mod fixture {
         format!("{HANDSHAKE}{turn}\n")
     }
 
-    /// Every recording a fixture chat may name: the engine's, and the large turn.
+    /// Provider warnings a `*_refresh` recording sends while its request waits:
+    /// panel deliveries that leave the approvals and questions alone.
+    pub const REFRESHES: usize = 8;
+    /// The derived recordings: the question, and the approval with a long reason.
+    const REFRESHED: [&str; 2] = ["question_refresh", "approval_refresh"];
+    const LONG_REASON: &str =
+        "May I write the file?\nIt is the build output.\nNothing else changes.\nIt can be undone.";
+
+    /// `base` with [`REFRESHES`] provider warnings 300 ms apart, sent while the
+    /// request its turn/start reply opens waits for the user. `reason`, when
+    /// given, replaces a command approval's reason.
+    pub fn refreshed(base: &str, reason: Option<&str>) -> String {
+        use serde_json::{Value, json};
+        let mut out = String::new();
+        for line in base.lines() {
+            let step = serde_json::from_str::<Value>(line).ok();
+            let opens = step
+                .as_ref()
+                .is_some_and(|step| step["frame"]["method"] == "turn/start");
+            match (step, reason) {
+                (Some(mut step), Some(reason)) if opens => {
+                    for frame in step["reply"].as_array_mut().into_iter().flatten() {
+                        if frame["method"] == "item/commandExecution/requestApproval" {
+                            frame["params"]["reason"] = json!(reason);
+                        }
+                    }
+                    out.push_str(&step.to_string());
+                }
+                _ => out.push_str(line),
+            }
+            out.push('\n');
+            if opens {
+                for n in 1..=REFRESHES {
+                    let message = format!("Still working ({n} of {REFRESHES})");
+                    for step in [
+                        json!({"type": "sleep", "ms": 300}),
+                        json!({"type": "emit", "frame": {"method": "warning", "params": {"threadId": "thread-1", "message": message}}}),
+                    ] {
+                        out.push_str(&step.to_string());
+                        out.push('\n');
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    fn recorded(name: &str) -> &'static str {
+        RECORDINGS
+            .iter()
+            .find(|(known, _)| *known == name)
+            .map(|(_, text)| *text)
+            .unwrap_or_default()
+    }
+
+    /// Every recording a fixture chat may name: the engine's, the large turn,
+    /// and the refreshed request recordings.
     pub fn recordings() -> Vec<(&'static str, std::borrow::Cow<'static, str>)> {
         RECORDINGS
             .iter()
             .map(|(name, text)| (*name, std::borrow::Cow::Borrowed(*text)))
-            .chain([("large_turn", std::borrow::Cow::Owned(large_turn()))])
+            .chain([
+                ("large_turn", std::borrow::Cow::Owned(large_turn())),
+                (
+                    REFRESHED[0],
+                    std::borrow::Cow::Owned(refreshed(recorded("question"), None)),
+                ),
+                (
+                    REFRESHED[1],
+                    std::borrow::Cow::Owned(refreshed(
+                        recorded("approval_accept"),
+                        Some(LONG_REASON),
+                    )),
+                ),
+            ])
             .collect()
     }
 
     fn known(name: &str) -> bool {
-        name == "large_turn" || RECORDINGS.iter().any(|(known, _)| *known == name)
+        name == "large_turn"
+            || REFRESHED.contains(&name)
+            || RECORDINGS.iter().any(|(known, _)| *known == name)
     }
 
     pub fn directory(home: &Path, name: &str) -> Result<PathBuf, String> {

@@ -23,7 +23,10 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     path::{Path, PathBuf},
-    sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError},
+    sync::{
+        Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError,
+        atomic::{AtomicU64, Ordering},
+    },
     thread::{self, JoinHandle},
     time::{Duration, SystemTime},
 };
@@ -135,6 +138,15 @@ impl Record {
 /// Local editor identity plus monotonic edit generation. Equal text is not proof
 /// that an acknowledgment still owns a draft another window edited meanwhile.
 pub type Owner = (u64, u64);
+
+/// A new composer's editor identity, unique in the process. The owners are
+/// process-wide while each window runs its own JS runtime, so a runtime-local
+/// counter would hand the first composer of every window the same identity
+/// (the GPUI composer's entity id was process-unique the same way).
+pub fn new_editor() -> u64 {
+    static EDITORS: AtomicU64 = AtomicU64::new(1);
+    EDITORS.fetch_add(1, Ordering::Relaxed)
+}
 
 /// The drafts of one RiWork data directory, with writes queued off the UI thread.
 pub struct Drafts {
@@ -1638,6 +1650,54 @@ mod tests {
         assert_eq!(record.draft, contents("half a thought\n  indented"));
         assert!(record.submissions.is_empty() && warnings.is_empty());
         assert!(drafts.recover(&b).is_none());
+        drop(drafts);
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn the_first_composers_of_two_windows_never_share_an_editor_identity() {
+        // Each window's runtime mints its first composer's identity from its own
+        // thread; all of them are distinct and none is zero.
+        let minted: Vec<u64> = (0..8)
+            .map(|_| thread::spawn(|| (0..64).map(|_| new_editor()).collect::<Vec<_>>()))
+            .flat_map(|window| window.join().unwrap())
+            .collect();
+        assert!(minted.iter().all(|&editor| editor != 0));
+        assert_eq!(minted.iter().collect::<HashSet<_>>().len(), minted.len());
+
+        let home = home();
+        let chat = id();
+        let (first, second) = (new_editor(), new_editor());
+        let mut drafts = Drafts::load(&home, SystemTime::now());
+        // Both composers are at the same edit generation; the second saved last.
+        drafts
+            .set_draft(&chat, contents("hello"), Some((first, 5)))
+            .unwrap();
+        drafts
+            .set_draft(&chat, contents("draft"), Some((second, 5)))
+            .unwrap();
+        let key = submit(&mut drafts, &chat, (first, 5), contents("hello"));
+        assert_eq!(drafts.get(&chat), Some("draft"));
+        drafts
+            .settle_submission(&chat, &key, SubmissionStatus::Submitted)
+            .unwrap();
+        drafts.flush();
+        assert_eq!(
+            Drafts::load(&home, SystemTime::now()).get(&chat),
+            Some("draft")
+        );
+        // The second composer's own submission still clears its draft.
+        let key = submit(&mut drafts, &chat, (second, 5), contents("draft"));
+        assert_eq!(drafts.get(&chat), None);
+        drafts
+            .settle_submission(&chat, &key, SubmissionStatus::Submitted)
+            .unwrap();
+        drafts.flush();
+        assert!(
+            Drafts::load(&home, SystemTime::now())
+                .recover(&chat)
+                .is_none()
+        );
         drop(drafts);
         fs::remove_dir_all(home).unwrap();
     }

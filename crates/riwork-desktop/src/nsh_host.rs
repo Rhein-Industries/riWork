@@ -411,8 +411,12 @@ enum Main {
     NotificationResponse(String, Option<String>),
     State(String),
     Close(String),
-    Closed(String, Option<HostCall>, Result<(), String>),
-    QuitFailed(String),
+    Closed(
+        String,
+        Option<HostCall>,
+        Result<(), (String, ClosingWindows)>,
+    ),
+    Recovery(Recovery),
     Restart(ReloadRequest),
     SettingsChanged(f32),
     Menu(MenuAction),
@@ -424,6 +428,56 @@ enum Main {
     Fixture(Value),
     Error(String),
 }
+// Kept independent of AppKit so headless fixtures exercise the same queued
+// recovery dispatch and call admission as the real main-thread host.
+enum Recovery {
+    CloseCancelled(String),
+    QuitFailed(String, ClosingWindows),
+}
+impl Recovery {
+    fn handle(self, quitting: &mut bool, mut notify: impl FnMut(&str)) {
+        match self {
+            Self::CloseCancelled(id) => notify(&id),
+            Self::QuitFailed(error, batch) => {
+                // One main-thread transition: admit calls before reopening any
+                // native gate or waking a surviving App's pending opener.
+                *quitting = false;
+                batch.cancel_with(&mut notify);
+                eprintln!("riwork: quit cancelled: {error}");
+            }
+        }
+    }
+}
+
+fn admit_host_call(
+    window: Option<&RuntimeWindow>,
+    quitting: bool,
+    id: &str,
+    name: &str,
+) -> Result<(), &'static str> {
+    let window = window.ok_or("not_found: calling window")?;
+    if quitting {
+        return Err("unavailable: host is quitting");
+    }
+    if name == "app.restoreReady" && !window.is_global() && host_layouts::lookup(id).is_none() {
+        return Err("unavailable: project layout is not ready");
+    }
+    Ok(())
+}
+
+// The closure contains failure bookkeeping/forwarding IO on the service thread.
+fn complete_failed_quit(
+    batch: ClosingWindows,
+    error: String,
+    complete: impl FnOnce(),
+    dispatch: impl Fn(Main),
+) {
+    complete();
+    // Keep the native close guards and retained layouts until the main thread
+    // can reopen call admission and notify Apps in the same turn.
+    dispatch(Main::Recovery(Recovery::QuitFailed(error, batch)));
+}
+
 thread_local! { static HOST: RefCell<Option<Host>> = const { RefCell::new(None) }; }
 fn send(message: Main) {
     dispatch2::DispatchQueue::main().exec_async(move || {
@@ -820,8 +874,8 @@ impl Host {
             .send(Service::Close(id.to_owned(), batch, call))
         {
             if let Service::Close(_, batch, call) = error.0 {
-                batch.cancel();
                 self.windows.get_mut(id).unwrap().closing = false;
+                batch.cancel();
                 if let Some(call) = call {
                     call.reject("unavailable: host service stopped");
                 }
@@ -856,10 +910,10 @@ impl Host {
         }
         let batch = ClosingWindows::new(self.snapshot());
         if let Err(error) = self.service.send(Service::Quit(batch)) {
+            self.quitting = false;
             if let Service::Quit(batch) = error.0 {
                 batch.cancel();
             }
-            self.quitting = false;
             eprintln!("riwork: unavailable: host service stopped");
         }
     }
@@ -878,10 +932,10 @@ impl Host {
         }
         let batch = ClosingWindows::new(self.snapshot());
         if let Err(error) = self.service.send(Service::Restart(request, batch)) {
+            self.quitting = false;
             if let Service::Restart(_, batch) = error.0 {
                 batch.cancel();
             }
-            self.quitting = false;
         }
     }
     fn open_requested(&mut self, prepared: PreparedWindow, intent: OpenIntent) {
@@ -990,11 +1044,12 @@ impl Host {
                         self.quit();
                     }
                 }
-                Err(error) => {
+                Err((error, batch)) => {
                     if let Some(window) = self.windows.get_mut(&id) {
                         window.closing = false;
                     }
                     self.quit_pending = false;
+                    batch.cancel();
                     if let Some(call) = call {
                         call.reject(error);
                     } else {
@@ -1002,10 +1057,11 @@ impl Host {
                     }
                 }
             },
-            Main::QuitFailed(error) => {
-                self.quitting = false;
-                eprintln!("riwork: quit cancelled: {error}");
-            }
+            Main::Recovery(recovery) => recovery.handle(&mut self.quitting, |id| {
+                if let Some(window) = self.windows.get(id) {
+                    let _ = window.view.host().send("window.closeCancelled", json!({}));
+                }
+            }),
             Main::Restart(request) => self.restart(request),
             Main::SettingsChanged(size) => {
                 for window in self.windows.values() {
@@ -1259,12 +1315,13 @@ impl Host {
         }
     }
     fn call(&mut self, id: String, name: &str, call: HostCall) {
-        if !self.windows.contains_key(&id) {
-            call.reject("not_found: calling window");
-            return;
-        }
-        if self.quitting {
-            call.reject("unavailable: host is quitting");
+        if let Err(error) = admit_host_call(
+            self.windows.get(&id).map(|window| &window.runtime),
+            self.quitting,
+            &id,
+            name,
+        ) {
+            call.reject(error);
             return;
         }
         let data = call.data().clone();
@@ -1301,13 +1358,9 @@ impl Host {
             }
             "window.setDockInfo" => { self.windows.get_mut(&id).unwrap().dock_info = data; call.resolve(json!({})); }
             "app.restoreReady" => {
-                if !self.windows[&id].runtime.is_global() && host_layouts::lookup(&id).is_none() {
-                    call.reject("unavailable: project layout is not ready");
-                } else {
-                    self.publish();
-                    let _ = self.service.send(Service::Ready(id));
-                    call.resolve(json!({}));
-                }
+                self.publish();
+                let _ = self.service.send(Service::Ready(id));
+                call.resolve(json!({}));
             }
             "app.quit" => { call.resolve(json!({})); self.quit(); }
             "app.restart" => { let _ = self.service.send(Service::QueueRestart(call)); }
@@ -1895,11 +1948,24 @@ impl ClosingWindows {
     }
 
     fn cancel(&self) {
+        self.cancel_with(|id| send(Main::Recovery(Recovery::CloseCancelled(id.to_owned()))));
+    }
+
+    // Reopen every native gate before notifying the surviving engines. The
+    // pending open may have rejected even when this batch retained no layout.
+    fn cancel_with(&self, mut notify: impl FnMut(&str)) {
         for (id, _) in &self.windows {
             host_layouts::cancel_window_close(id);
         }
+        for (id, _) in &self.windows {
+            notify(id);
+        }
     }
 }
+
+#[cfg(test)]
+#[path = "nsh_pending_open_tests.rs"]
+mod pending_open_tests;
 
 struct RuntimeTick {
     due_at: Instant,
@@ -1989,10 +2055,12 @@ fn services(mut startup: Startup, rx: mpsc::Receiver<Service>, tx: mpsc::Sender<
                 }
             }
             Ok(Service::Close(id, batch, call)) => {
-                let result = batch.flush(&startup.home).map(|_| ());
-                if result.is_err() {
-                    batch.cancel();
-                }
+                let result = batch
+                    .flush(&startup.home)
+                    .map(|_| ())
+                    .map_err(|error| (error, batch));
+                // Failed single-close recovery waits for Main::Closed to clear
+                // the window's closing state before reopening native gates.
                 send(Main::Closed(id, call, result));
             }
             Ok(Service::Quit(batch)) => {
@@ -2000,11 +2068,16 @@ fn services(mut startup: Startup, rx: mpsc::Receiver<Service>, tx: mpsc::Sender<
                     .flush(&startup.home)
                     .and_then(|windows| startup.runtime.publish(windows));
                 if let Err(error) = result {
-                    batch.cancel();
-                    if let Err(error) = startup.instance.resume_forwarding() {
-                        eprintln!("riwork: {error}");
-                    }
-                    send(Main::QuitFailed(error));
+                    complete_failed_quit(
+                        batch,
+                        error,
+                        || {
+                            if let Err(error) = startup.instance.resume_forwarding() {
+                                eprintln!("riwork: {error}");
+                            }
+                        },
+                        send,
+                    );
                     continue;
                 }
                 startup.instance.stop_forwarding();
@@ -2039,12 +2112,17 @@ fn services(mut startup: Startup, rx: mpsc::Receiver<Service>, tx: mpsc::Sender<
                 {
                     Ok(launch) => reload = Some((launch, batch)),
                     Err(error) => {
-                        batch.cancel();
-                        let _ = startup.runtime.fail_reload(&request, &error);
-                        if let Err(error) = startup.instance.resume_forwarding() {
-                            eprintln!("riwork: {error}");
-                        }
-                        send(Main::QuitFailed(format!("restart: {error}")));
+                        complete_failed_quit(
+                            batch,
+                            format!("restart: {error}"),
+                            || {
+                                let _ = startup.runtime.fail_reload(&request, &error);
+                                if let Err(error) = startup.instance.resume_forwarding() {
+                                    eprintln!("riwork: {error}");
+                                }
+                            },
+                            send,
+                        );
                     }
                 }
             }
@@ -2099,12 +2177,17 @@ fn services(mut startup: Startup, rx: mpsc::Receiver<Service>, tx: mpsc::Sender<
                 }
                 Err(error) => {
                     if let Some((_, batch)) = reload.take() {
-                        batch.cancel();
+                        complete_failed_quit(
+                            batch,
+                            format!("restart: {error}"),
+                            || {
+                                if let Err(error) = startup.instance.resume_forwarding() {
+                                    eprintln!("riwork: {error}");
+                                }
+                            },
+                            send,
+                        );
                     }
-                    if let Err(error) = startup.instance.resume_forwarding() {
-                        eprintln!("riwork: {error}");
-                    }
-                    send(Main::QuitFailed(format!("restart: {error}")));
                 }
                 Ok(false) => {}
             }

@@ -1,0 +1,23 @@
+
+running 1 test
+test nsh_host::pending_open_tests::production_app_recovers_pending_open_after_failed_quit_and_restart ... PASS failed quit, cancellation-before-rejection=false; restored once; no writer after teardown
+PASS failed quit, cancellation-before-rejection=true; restored once; no writer after teardown
+PASS successful quit with pending open: no resurrection, write or ready acknowledgement
+PASS failed restart, cancellation-before-rejection=false; restored once; no writer after teardown
+PASS failed restart, cancellation-before-rejection=true; restored once; no writer after teardown
+PASS successful restart with pending open: no resurrection, write or ready acknowledgement
+READY REJECTED: unavailable: host is quitting; failure_completed=false
+quit: readiness lost while failure completion is deliberately blocked
+READY REJECTED: unavailable: host is quitting; failure_completed=false
+restart-launch: readiness lost while failure completion is deliberately blocked
+READY REJECTED: unavailable: host is quitting; failure_completed=false
+restart-ready: readiness lost while failure completion is deliberately blocked
+FAILED
+
+failures:
+
+failures:
+    nsh_host::pending_open_tests::production_app_recovers_pending_open_after_failed_quit_and_restart
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 47 filtered out; finished in 0.42s
+
