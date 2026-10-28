@@ -201,3 +201,50 @@ test("P4-CHAT-08 a composer's own submission clears its saved draft", async () =
     expect((await inspect(app)).editors?.length).toBe(1);
   } finally { app.dispose(); }
 });
+
+/** The provider's last warning of a `*_refresh` recording is on screen. */
+async function refreshed(app: App) {
+  await app.waitUntil(() => app.texts().some((text) => text.includes("Still working (8 of 8)")), { timeout: 20000 });
+}
+
+test("P4-CHAT-09 picked and typed answers survive provider refreshes while the question waits", async () => {
+  const app = await chat("question_refresh");
+  try {
+    await send(app, "ask me");
+    await app.waitFor("id:chat-question", { timeout: 20000 });
+    await app.press("label:Strict (Recommended)");
+    await app.type("id:chat-answer:1", "no thanks");
+    // The running turn's provider warns while the question waits: panel
+    // deliveries that leave the question alone.
+    await refreshed(app);
+    expect(app.value("id:chat-answer:1")).toBe("no thanks");
+    expect(app.texts().some((text) => text.startsWith("✓ Strict (Recommended)"))).toBe(true);
+    // The answer box is the same input, still focused: a key lands in it.
+    await app.keyboard.press("s");
+    expect(app.value("id:chat-answer:1")).toBe("no thankss");
+    await app.keyboard.press("backspace");
+    expect(app.value("id:chat-answer:1")).toBe("no thanks");
+    await app.press("id:chat-send-answers");
+    await app.waitFor("id:chat-question", { state: "gone", timeout: 20000 });
+    await app.waitFor("id:chat-approval", { timeout: 20000 });
+    await app.press("label:Allow for session");
+    await app.waitFor("id:chat-approval", { state: "gone", timeout: 20000 });
+  } finally { app.dispose(); }
+});
+
+test("P4-CHAT-10 an expanded approval stays expanded through provider refreshes", async () => {
+  const app = await chat("approval_refresh");
+  try {
+    await send(app, "write it");
+    await app.waitFor("id:chat-approval", { timeout: 20000 });
+    expect(app.texts().join("\n")).not.toContain("It can be undone.");
+    await app.press("label:show 2 more lines");
+    await app.waitFor("label:show less", { timeout: 20000 });
+    await refreshed(app);
+    expect(app.shows("label:show less")).toBe(true);
+    expect(app.texts().join("\n")).toContain("It can be undone.");
+    await app.press("id:chat-decision:accept");
+    await app.waitFor("text:Done", { timeout: 20000 });
+    await app.waitFor("id:chat-approval", { state: "gone", timeout: 20000 });
+  } finally { app.dispose(); }
+});
