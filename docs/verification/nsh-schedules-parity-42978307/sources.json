@@ -1,0 +1,308 @@
+[
+  {
+    "file": "crates/riwork-desktop/src/schedule_panel.rs",
+    "sha256": "b36925948e06e73188fd640b70a62b212139d88b55be69456f07485a02eab5df",
+    "ranges": [
+      [
+        495,
+        545
+      ],
+      [
+        785,
+        800
+      ],
+      [
+        835,
+        865
+      ],
+      [
+        965,
+        982
+      ],
+      [
+        1101,
+        1165
+      ],
+      [
+        1204,
+        1384
+      ],
+      [
+        1525,
+        1585
+      ]
+    ]
+  },
+  {
+    "file": "crates/riwork-desktop/src/form_input.rs",
+    "sha256": "982c2e7dee60b9eb7963439ae3627d892a90e64be1d39b2af45daa713ca2ec3c",
+    "ranges": [
+      [
+        51,
+        62
+      ]
+    ]
+  },
+  {
+    "file": "crates/riwork-desktop/src/text_input.rs",
+    "sha256": "a300c86588abd7268e61778b14222e32522ae02f83fe8a047946ea1041d0c1e5",
+    "ranges": [
+      [
+        97,
+        112
+      ],
+      [
+        131,
+        147
+      ]
+    ]
+  },
+  {
+    "file": "crates/riwork-desktop/src/behavior_controls/tests.rs",
+    "sha256": "ad5f09d523d6023241abc38295de6569ceee4ed06a8dae87cd9dcec1a272db0f",
+    "ranges": [
+      [
+        672,
+        746
+      ]
+    ]
+  },
+  {
+    "file": "/Users/dominik/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/nsh-js-0.3.0/src/dom.rs",
+    "sha256": "c96c5bc0b3c5e2a1eca0fa2f95c75f3129e08773bc5759a78cf8ecb53efba8f2",
+    "ranges": [
+      [
+        330,
+        345
+      ]
+    ]
+  },
+  {
+    "file": "/Users/dominik/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/nsh-js-0.3.0/src/keymap.rs",
+    "sha256": "aece0cd38a1bb2fd432069f4135cb3f2efaa15ebc6fd048d11f498458f1b8d8b",
+    "ranges": [
+      [
+        240,
+        263
+      ],
+      [
+        279,
+        319
+      ]
+    ]
+  },
+  {
+    "file": "/Users/dominik/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/nsh-core-0.3.0/src/ops.rs",
+    "sha256": "1e8c36f3bf6fe7858dbe4017c591c49b81307871100fbe4af96206945994bc8f",
+    "ranges": [
+      [
+        1437,
+        1445
+      ]
+    ]
+  },
+  {
+    "file": "/Users/dominik/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/nsh-platform-macos-0.3.0/src/mount.rs",
+    "sha256": "4771b1946699043ae503b5965a514a4cc3b952e13be3182afaa407531b623c45",
+    "ranges": [
+      [
+        403,
+        414
+      ]
+    ]
+  },
+  {
+    "file": "/Users/dominik/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/nsh-platform-macos-0.3.0/src/text_input.rs",
+    "sha256": "2ccd0a009b391f6aeafa279173a919820957aad7b1d6f6f852ba3c5b1300134a",
+    "ranges": [
+      [
+        399,
+        421
+      ],
+      [
+        506,
+        520
+      ],
+      [
+        713,
+        724
+      ],
+      [
+        1900,
+        1912
+      ]
+    ]
+  },
+  {
+    "file": "/Users/dominik/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/nsh-platform-macos-0.3.0/src/keymap.rs",
+    "sha256": "2f3e4e6d04186726682fc2f2e28072aa87a3f5bacfd6f3b401a557bbd0a08e02",
+    "ranges": [
+      [
+        90,
+        141
+      ]
+    ]
+  },
+  {
+    "file": "/Users/dominik/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/nsh-testing-0.3.0/src/headless/keyboard.rs",
+    "sha256": "4d483a6cb2003c12b9d323240485311677217f4a8b61066d6ec86c3f017ff0d3",
+    "ranges": [
+      [
+        28,
+        50
+      ],
+      [
+        91,
+        101
+      ]
+    ]
+  },
+  {
+    "file": "/Users/dominik/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/nsh-testing-0.3.0/src/screen.rs",
+    "sha256": "8eea9c1f6b0f1d76beecc613eec578018ec2cd1141712a7c59a4cd32174dd73e",
+    "ranges": [
+      [
+        530,
+        542
+      ]
+    ]
+  },
+  {
+    "file": "/Users/dominik/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/nsh-testing-0.3.0/src/driver.rs",
+    "sha256": "0bdcf96a6897893fa3397925875599fc399ac1f15dc327fc11e4536079a9752d",
+    "ranges": [
+      [
+        19,
+        87
+      ]
+    ]
+  },
+  {
+    "file": ".cargo/config.toml",
+    "sha256": "15f844a1314f36460439af9834fdc86e61443c33cb87c4c50aee0184dc5936fe",
+    "ranges": [
+      [
+        1,
+        12
+      ]
+    ]
+  },
+  {
+    "file": "apps/riwork/vendor/nsh-base/src/button.rs",
+    "sha256": "02b39f17c5c24e259b45fa7f37d0b6e5c9dc629232e5f4aab8887162f27fe536",
+    "ranges": [
+      [
+        24,
+        66
+      ]
+    ]
+  },
+  {
+    "file": "apps/riwork/vendor/nsh-base/src/radio.rs",
+    "sha256": "e2f90e1c562978186fe92d39b5f8de7ce3165cb17474b028f1a936a8f064fe61",
+    "ranges": [
+      [
+        22,
+        45
+      ]
+    ]
+  },
+  {
+    "file": "crates/riwork-engine/src/schedule_chat.rs",
+    "sha256": "4155cfe60de60e3ce7b0610c59d8e051734233a407ffe31287ccc81f5cceb686",
+    "ranges": [
+      [
+        188,
+        370
+      ]
+    ]
+  },
+  {
+    "file": "crates/riwork-engine/src/schedules.rs",
+    "sha256": "4f4d80f1b1d18cd435b4aabe4d6f34e857ddb85863f7417a103b49209d700e5b",
+    "ranges": [
+      [
+        729,
+        780
+      ],
+      [
+        850,
+        905
+      ]
+    ]
+  },
+  {
+    "file": "crates/riwork-engine/src/orchestrators.rs",
+    "sha256": "a544106ff7db507d465139a0c95222dcda5854dd351fbfb4e1b10d83b852cb68",
+    "ranges": [
+      [
+        65,
+        100
+      ]
+    ]
+  },
+  {
+    "file": "crates/riwork-engine/src/chat/testing.rs",
+    "sha256": "4f33cfea3640e3570f622fbb6679190a8990dd6599767063b09bf7e2d244ad82",
+    "ranges": [
+      [
+        367,
+        413
+      ],
+      [
+        474,
+        515
+      ]
+    ]
+  },
+  {
+    "file": "crates/riwork-engine/src/schedule_chat/fresh_tests.rs",
+    "sha256": "a609545030b8f76ccf9a93650d2df4367e45d806a67300653149635f44989b05",
+    "ranges": []
+  },
+  {
+    "file": "crates/riwork-nsh-native/src/schedules.rs",
+    "sha256": "2362739a0c6e18952243f2b053808eda1e50cf6ea058d950f9192716acedbd73",
+    "ranges": []
+  },
+  {
+    "file": "apps/riwork/schedules/Automations.tsx",
+    "sha256": "29ee3987eb21f37950154f16503293a2325e61dcfd74f277abe21ca753c0393c",
+    "ranges": []
+  },
+  {
+    "file": "apps/riwork/schedules/model.ts",
+    "sha256": "df2a5027c9c23fd563c7f015f67479b1066a9cd628e174ffeae5427ce377e325",
+    "ranges": []
+  },
+  {
+    "file": "apps/riwork/schedules/Automations.fixture.tsx",
+    "sha256": "5fb286a2480fa939975204ef2d8250099ae30bedbb14ca0a59885cef4682f58a",
+    "ranges": []
+  },
+  {
+    "file": "apps/riwork/schedules/Parity.test.tsx",
+    "sha256": "b2443ccf9a6ae5ed6b1b1b8818eb6bdd10eb9b87e4a47c7aa953f79961b5cff6",
+    "ranges": []
+  },
+  {
+    "file": "apps/riwork/schedules/TraversalCapability.fixture.tsx",
+    "sha256": "10ef854a05560926cae0f3a65b2e1625e92768d845b2cc902cf711ca02affb03",
+    "ranges": []
+  },
+  {
+    "file": "crates/riwork-nsh-native/src/schedules/fresh_dispatch_tests.rs",
+    "sha256": "90d505d95c76cb5454546a2ac16d3a4b5ac19dea6f93e1d35a48b2af29daab91",
+    "ranges": []
+  },
+  {
+    "file": "crates/riwork-desktop/Cargo.toml",
+    "sha256": "d6966a636826a2bf2bc3c60bd19cf89c9276a0dd099a1a66c8a2d0cc79e5c5ba",
+    "ranges": []
+  },
+  {
+    "file": "apps/riwork/Cargo.toml",
+    "sha256": "9a01c029ed5231c3f7c453bb7e6fa927b2468caf2d73e0d2968a8453fd21a399",
+    "ranges": []
+  }
+]

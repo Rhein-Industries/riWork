@@ -1,0 +1,418 @@
+{
+  "assignment": "42978307-a1b4-4726-8dbf-bab9ec4fc2a2",
+  "branch": "nsh-spec-terminal-layout",
+  "base": "162444b76d7f8496293cbe3a2a4e48a8b47b29e0",
+  "effective_service_tier": "Service tier default, Fast OFF (user-verified); GPT-6.1-Sol ultra/effort/saved dominik@rhein.industries account unchanged",
+  "verification_environment": "private HOME/RIWORK_HOME; disposable ledgers; in-process fake provider and private Unix IPC; headless fixtures; IP denied",
+  "live_targets_touched": "none beyond own shell/worktree and disposable fixture processes",
+  "cargo_jobs": 2,
+  "builds": "serialized; dedicated target belonging to this worktree",
+  "command_records": 24,
+  "expected_retained_failures": [
+    {
+      "index": 2,
+      "label": "fresh-proof-first",
+      "exit_code": 101
+    },
+    {
+      "index": 6,
+      "label": "p6b-nsh-test",
+      "exit_code": 1
+    },
+    {
+      "index": 7,
+      "label": "schedules-ui-red",
+      "exit_code": 1
+    }
+  ],
+  "fresh_dispatch": {
+    "tests_passed": 6,
+    "scenarios": 11,
+    "final_audit_label": "fresh-audit-final",
+    "providers": [
+      "Codex",
+      "Claude",
+      "Muse"
+    ],
+    "negative_controls": [
+      "capability denied then grace expiry",
+      "four competing ticks",
+      "claim denied at existing rate window",
+      "Create refused",
+      "Create reply lost",
+      "Send refused",
+      "Send reply lost",
+      "fake provider startup failed"
+    ]
+  },
+  "ui": {
+    "red": {
+      "tests": 4,
+      "failures": 2,
+      "cause": "rejected save forcibly focused Title"
+    },
+    "green": {
+      "tests": 15,
+      "failures": 0
+    },
+    "scope": "headless Native control branch; no screenshot/color/visual equivalence"
+  },
+  "suites": {
+    "native": {
+      "passed": 220,
+      "ignored": 4
+    },
+    "workspace": {
+      "passed": 172,
+      "ignored": 0
+    },
+    "additional_nested_settings_writer_invocation": 1,
+    "desktop_unit_headless": {
+      "passed": 69,
+      "ignored": 1
+    },
+    "engine_existing_fresh_filtered": {
+      "passed": 10,
+      "unit_filtered": 1332
+    }
+  },
+  "verification_source_note": "Full native/workspace suites preceded test-only all-contender join cleanup; final six dispatch tests and format check reran after that cleanup. No production code changed after UI green.",
+  "parity": {
+    "PANEL-114_fresh_chat_proof": "covered in isolated fixtures",
+    "PANEL-108_Muse_fresh_offering": "covered in screen and dispatch fixtures",
+    "PANEL-113": "OPEN: pinned NSH lacks programmatic action focus and atomic native marked-text traversal gate",
+    "other_six_ThemeChoice_styles": "dropped by user decision; not modified"
+  },
+  "prior_evidence": {
+    "recorded_files": 1912,
+    "all_byte_identical": true,
+    "manifest": "prior-evidence-sha256.json",
+    "result": "prior-evidence-result.json"
+  },
+  "unchanged": [
+    "schedule engine and CLI",
+    "remote engine and protocol",
+    "remote UI/native helpers",
+    "host/registry/Workspace wiring",
+    "all prior evidence archives"
+  ],
+  "open_limitations": [
+    "exact Tab/Shift+Tab action traversal and native IME",
+    "historical engine spawn-replacement baseline not rerun or reclassified; reported /bin/ps EPERM cause remains unproved",
+    "remote 2cb2bb2b staged todo; not started",
+    "umbrella/cutover open/held"
+  ],
+  "raw_logs": [
+    {
+      "record_index": 1,
+      "label": "fresh-compile",
+      "exit_code": 0,
+      "source": "/tmp/riwork-schedules-42978307.ewa5a_9y/logs/fresh-compile.log",
+      "retained": "logs/01-fresh-compile.log.gz",
+      "encoding": "gzip (lossless)",
+      "decoded_bytes": 14687,
+      "decoded_sha256": "1910cfe2042d2830a0d6b993617f7216cda23206fd9eac56b107cbfa6c7ba7c2",
+      "stored_bytes": 3923,
+      "stored_sha256": "61d30e3fd4c84b462b5e25bf686e097d430eadb8cbaf53144c1f791a61c73a85"
+    },
+    {
+      "record_index": 2,
+      "label": "fresh-proof-first",
+      "exit_code": 101,
+      "source": "/tmp/riwork-schedules-42978307.ewa5a_9y/logs/fresh-proof-first.log",
+      "retained": "logs/02-fresh-proof-first.log.gz",
+      "encoding": "gzip (lossless)",
+      "decoded_bytes": 7214,
+      "decoded_sha256": "a3ba67d0b067ce655bfb4ea984226dec8a5234a5a6c534aa525d46c234865e1f",
+      "stored_bytes": 1726,
+      "stored_sha256": "7da22ddb25d7937f08ea1e96a3eebd0656c473d73d7ee9bf612c90caa5fac0ca"
+    },
+    {
+      "record_index": 3,
+      "label": "fresh-proof-socket-fixed",
+      "exit_code": 0,
+      "source": "/tmp/riwork-schedules-42978307.ewa5a_9y/logs/fresh-proof-socket-fixed.log",
+      "retained": "logs/03-fresh-proof-socket-fixed.log.gz",
+      "encoding": "gzip (lossless)",
+      "decoded_bytes": 4845,
+      "decoded_sha256": "e01fb603ef830b3abe43fbe2463fc0233ad22343d0943285fd6ccbac882c2705",
+      "stored_bytes": 1075,
+      "stored_sha256": "399f2fe96751323384ec643d8c0092829e9a8851812c65edaf60bc1f03d21c97"
+    },
+    {
+      "record_index": 4,
+      "label": "p6b-seed",
+      "exit_code": 0,
+      "source": "/private/tmp/riwork-schedules-42978307.ewa5a_9y/ui-red/p6b-seed.log",
+      "retained": "logs/04-p6b-seed.log.gz",
+      "encoding": "gzip (lossless)",
+      "decoded_bytes": 582,
+      "decoded_sha256": "7b5dc5a26a154fcf7c6f03b6d139d83a0041fc123b15a25511d8e2d5aff5b0a3",
+      "stored_bytes": 332,
+      "stored_sha256": "f17b4760a91614817817bc963913b67afb2c6e589d1eb9374e24ffc2d12af215"
+    },
+    {
+      "record_index": 5,
+      "label": "p6b-nsh-check",
+      "exit_code": 0,
+      "source": "/private/tmp/riwork-schedules-42978307.ewa5a_9y/ui-red/p6b-nsh-check.log",
+      "retained": "logs/05-p6b-nsh-check.log.gz",
+      "encoding": "gzip (lossless)",
+      "decoded_bytes": 2856,
+      "decoded_sha256": "72fa5c7c1cc931358f85a10db731107e7941e18d4ddb9a226fc211a6f92b12d5",
+      "stored_bytes": 950,
+      "stored_sha256": "3fe17738a06bcd7f3de635ef17e468e1fbe336cfbcd10302e23f5efc5c2c05d9"
+    },
+    {
+      "record_index": 6,
+      "label": "p6b-nsh-test",
+      "exit_code": 1,
+      "source": "/private/tmp/riwork-schedules-42978307.ewa5a_9y/ui-red/p6b-nsh-test.log",
+      "retained": "logs/06-p6b-nsh-test.log.gz",
+      "encoding": "gzip (lossless)",
+      "decoded_bytes": 7096,
+      "decoded_sha256": "d26b18272161fb0fbfd306c12827ff927e9871f235983ee1364c0c3522a7d484",
+      "stored_bytes": 2317,
+      "stored_sha256": "d754b4a499a9937f22ba790b002b51052e87ee51448b5e7aed086819919a6f20"
+    },
+    {
+      "record_index": 7,
+      "label": "schedules-ui-red",
+      "exit_code": 1,
+      "source": "/tmp/riwork-schedules-42978307.ewa5a_9y/logs/schedules-ui-red.log",
+      "retained": "logs/07-schedules-ui-red.log.gz",
+      "encoding": "gzip (lossless)",
+      "decoded_bytes": 8579,
+      "decoded_sha256": "363a3fe8b8aa54a8c551b5d35eac4c1225ee86c9106e1795d1accb875e315e4e",
+      "stored_bytes": 2767,
+      "stored_sha256": "2439e5d0781edf8c6a91880107b314038bbb55d8542230f8b7a0daeb21d98260"
+    },
+    {
+      "record_index": 8,
+      "label": "p6b-seed",
+      "exit_code": 0,
+      "source": "/private/tmp/riwork-schedules-42978307.ewa5a_9y/ui-green/p6b-seed.log",
+      "retained": "logs/08-p6b-seed.log.gz",
+      "encoding": "gzip (lossless)",
+      "decoded_bytes": 462,
+      "decoded_sha256": "dd84702bef0a55e5bc871749b8b3510719b38651c8f82fda8928f369ff0279f1",
+      "stored_bytes": 266,
+      "stored_sha256": "2ffbe6e7f955066eb0049cd1009d49f192dd3f84fe7bb91f7f63e590c9e6b736"
+    },
+    {
+      "record_index": 9,
+      "label": "p6b-nsh-check",
+      "exit_code": 0,
+      "source": "/private/tmp/riwork-schedules-42978307.ewa5a_9y/ui-green/p6b-nsh-check.log",
+      "retained": "logs/09-p6b-nsh-check.log.gz",
+      "encoding": "gzip (lossless)",
+      "decoded_bytes": 2854,
+      "decoded_sha256": "094ff40d10f207061e830369226d9c67b5ae727d654105cfe481ab708d163e7b",
+      "stored_bytes": 949,
+      "stored_sha256": "860fd5f9c79daf612b267c960537d333d1a3fcd05a7d7393070486e558374cef"
+    },
+    {
+      "record_index": 10,
+      "label": "p6b-nsh-test",
+      "exit_code": 0,
+      "source": "/private/tmp/riwork-schedules-42978307.ewa5a_9y/ui-green/p6b-nsh-test.log",
+      "retained": "logs/10-p6b-nsh-test.log.gz",
+      "encoding": "gzip (lossless)",
+      "decoded_bytes": 5222,
+      "decoded_sha256": "0f10ba7ed0689ea01d28c96da4babf4aba5a6f940ddb88816e242f1458fbb4ad",
+      "stored_bytes": 1700,
+      "stored_sha256": "340397ba61defe12f5b68317dd1e733ed2b1b644fcb7ddbab2cd018832f6de38"
+    },
+    {
+      "record_index": 11,
+      "label": "schedules-ui-green",
+      "exit_code": 0,
+      "source": "/tmp/riwork-schedules-42978307.ewa5a_9y/logs/schedules-ui-green.log",
+      "retained": "logs/11-schedules-ui-green.log.gz",
+      "encoding": "gzip (lossless)",
+      "decoded_bytes": 1545,
+      "decoded_sha256": "424e72f6887a1413692fa2d358f383e8cb90f916a2bcad21c2bb4cb29182d7b2",
+      "stored_bytes": 561,
+      "stored_sha256": "5a6b46595b8fd7a6fc5cf03259e4c300ac32ced575622ba7a29177d5e6261472"
+    },
+    {
+      "record_index": 12,
+      "label": "format",
+      "exit_code": 0,
+      "source": "/tmp/riwork-schedules-42978307.ewa5a_9y/logs/format.log",
+      "retained": "logs/12-format.log.gz",
+      "encoding": "gzip (lossless)",
+      "decoded_bytes": 0,
+      "decoded_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stored_bytes": 20,
+      "stored_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64"
+    },
+    {
+      "record_index": 13,
+      "label": "native-workspace",
+      "exit_code": 0,
+      "source": "/tmp/riwork-schedules-42978307.ewa5a_9y/logs/native-workspace.log",
+      "retained": "logs/13-native-workspace.log.gz",
+      "encoding": "gzip (lossless)",
+      "decoded_bytes": 38043,
+      "decoded_sha256": "851df7fb06b3f654c0c09c87407a77fe2b8c6917c38d27f3cc06dade80a2ea69",
+      "stored_bytes": 10487,
+      "stored_sha256": "1d54f29dc3991c906cac4eff9a04c0b5c20bfbd05f738cd7c4001bb8e1b0b1de"
+    },
+    {
+      "record_index": 14,
+      "label": "fresh-audit",
+      "exit_code": 0,
+      "source": "/tmp/riwork-schedules-42978307.ewa5a_9y/logs/fresh-audit.log",
+      "retained": "logs/14-fresh-audit.log.gz",
+      "encoding": "gzip (lossless)",
+      "decoded_bytes": 32680,
+      "decoded_sha256": "c1222c1fa054992163c8e9d8768d28b95b01bef50d312fbd0e45e1bf5aa85f50",
+      "stored_bytes": 4769,
+      "stored_sha256": "ee24ae03d4cc3243a9b09f5dc706d6829c09e1dc854a9365c8301aeb8535ab4b"
+    },
+    {
+      "record_index": 15,
+      "label": "desktop-headless",
+      "exit_code": 0,
+      "source": "/tmp/riwork-schedules-42978307.ewa5a_9y/logs/desktop-headless.log",
+      "retained": "logs/15-desktop-headless.log.gz",
+      "encoding": "gzip (lossless)",
+      "decoded_bytes": 10504,
+      "decoded_sha256": "56a6cbb217e2e483b843ec8e6f5bbf73e6b12d3370f792fc57d5ec4efd943032",
+      "stored_bytes": 3294,
+      "stored_sha256": "f146aab7ae21331ebe138efc3cccc41ada57504064cd58fca8e2d8ec9fbc8844"
+    },
+    {
+      "record_index": 16,
+      "label": "engine-fresh-existing",
+      "exit_code": 0,
+      "source": "/tmp/riwork-schedules-42978307.ewa5a_9y/logs/engine-fresh-existing.log",
+      "retained": "logs/16-engine-fresh-existing.log.gz",
+      "encoding": "gzip (lossless)",
+      "decoded_bytes": 4444,
+      "decoded_sha256": "2c87f302801af0a001e39ef0cbed2a0337e03ea2589487f99fb908fa553016a3",
+      "stored_bytes": 1473,
+      "stored_sha256": "278e933adcc35065e564183a4748571d6722df7bce879237ba45279d4a40a4e8"
+    },
+    {
+      "record_index": 17,
+      "label": "fmt-check",
+      "exit_code": 0,
+      "source": "/tmp/riwork-schedules-42978307.ewa5a_9y/logs/fmt-check.log",
+      "retained": "logs/17-fmt-check.log.gz",
+      "encoding": "gzip (lossless)",
+      "decoded_bytes": 0,
+      "decoded_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stored_bytes": 20,
+      "stored_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64"
+    },
+    {
+      "record_index": 18,
+      "label": "polling",
+      "exit_code": 0,
+      "source": "/tmp/riwork-schedules-42978307.ewa5a_9y/logs/polling.log",
+      "retained": "logs/18-polling.log.gz",
+      "encoding": "gzip (lossless)",
+      "decoded_bytes": 0,
+      "decoded_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stored_bytes": 20,
+      "stored_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64"
+    },
+    {
+      "record_index": 19,
+      "label": "whitespace",
+      "exit_code": 0,
+      "source": "/tmp/riwork-schedules-42978307.ewa5a_9y/logs/whitespace.log",
+      "retained": "logs/19-whitespace.log.gz",
+      "encoding": "gzip (lossless)",
+      "decoded_bytes": 0,
+      "decoded_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stored_bytes": 20,
+      "stored_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64"
+    },
+    {
+      "record_index": 20,
+      "label": "unchanged-engine-and-remote",
+      "exit_code": 0,
+      "source": "/tmp/riwork-schedules-42978307.ewa5a_9y/logs/unchanged-engine-and-remote.log",
+      "retained": "logs/20-unchanged-engine-and-remote.log.gz",
+      "encoding": "gzip (lossless)",
+      "decoded_bytes": 0,
+      "decoded_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stored_bytes": 20,
+      "stored_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64"
+    },
+    {
+      "record_index": 21,
+      "label": "prior-evidence-check",
+      "exit_code": 0,
+      "source": "/tmp/riwork-schedules-42978307.ewa5a_9y/logs/prior-evidence-check.log",
+      "retained": "logs/21-prior-evidence-check.log.gz",
+      "encoding": "gzip (lossless)",
+      "decoded_bytes": 68,
+      "decoded_sha256": "68d3d01859ec57462c8d4a48792f23746b71063bf71623fcb0ca29925e405c10",
+      "stored_bytes": 84,
+      "stored_sha256": "5ee9d69db9974da68d715155cb0360a587bfb44bec64fd909214154e2ec6a0f7"
+    },
+    {
+      "record_index": 22,
+      "label": "final-source-whitespace",
+      "exit_code": 0,
+      "source": "/tmp/riwork-schedules-42978307.ewa5a_9y/logs/final-source-whitespace.log",
+      "retained": "logs/22-final-source-whitespace.log.gz",
+      "encoding": "gzip (lossless)",
+      "decoded_bytes": 0,
+      "decoded_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stored_bytes": 20,
+      "stored_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64"
+    },
+    {
+      "record_index": 23,
+      "label": "fresh-audit-final",
+      "exit_code": 0,
+      "source": "/tmp/riwork-schedules-42978307.ewa5a_9y/logs/fresh-audit-final.log",
+      "retained": "logs/23-fresh-audit-final.log.gz",
+      "encoding": "gzip (lossless)",
+      "decoded_bytes": 32806,
+      "decoded_sha256": "b4a7c0ad3210421a2cf06965e29850d42312e1cd162ce2a668bfe8fc0253e81e",
+      "stored_bytes": 4879,
+      "stored_sha256": "76086203c8c7b2b3e709e21395ffc5039891879629e27ea412386c33fd941ccf"
+    },
+    {
+      "record_index": 24,
+      "label": "fmt-final",
+      "exit_code": 0,
+      "source": "/tmp/riwork-schedules-42978307.ewa5a_9y/logs/fmt-final.log",
+      "retained": "logs/24-fmt-final.log.gz",
+      "encoding": "gzip (lossless)",
+      "decoded_bytes": 0,
+      "decoded_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stored_bytes": 20,
+      "stored_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64"
+    }
+  ],
+  "artifacts": [
+    {
+      "source": "/tmp/riwork-schedules-42978307.ewa5a_9y/source-evidence.txt",
+      "retained": "source-evidence.txt.gz",
+      "encoding": "gzip (lossless)",
+      "decoded_bytes": 64985,
+      "decoded_sha256": "15d3e007ac32b03c7d74632a479ec38b50877427a9641111f73393a780758c89",
+      "stored_bytes": 19328,
+      "stored_sha256": "f1a25b2a5db5e1481d22c756fc8f54a5976b1f02749cb6c902cf51b2701770a4"
+    },
+    {
+      "source": "/tmp/riwork-schedules-42978307.ewa5a_9y/ui-red/nsh.xml",
+      "retained": "ui-red.xml",
+      "bytes": 5797,
+      "sha256": "8034a579bef0458c0b98f973168761aeb42de6f7cbb1e91d052744176aacb6e9"
+    },
+    {
+      "source": "/tmp/riwork-schedules-42978307.ewa5a_9y/ui-green/nsh.xml",
+      "retained": "ui-green.xml",
+      "bytes": 3084,
+      "sha256": "10b922849737e2387dca1a1ff3bb27d95419172c6c9cb2e45b847a6d837bbe3b"
+    }
+  ]
+}

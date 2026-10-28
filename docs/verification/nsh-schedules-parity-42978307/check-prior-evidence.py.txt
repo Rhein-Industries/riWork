@@ -1,0 +1,11 @@
+import hashlib,json,pathlib
+r=pathlib.Path(__file__).parent
+entries=json.loads((r/'prior-evidence-sha256.json').read_text())
+changed=[]
+for name,expected in entries.items():
+ p=pathlib.Path(name)
+ if not p.is_file() or hashlib.sha256(p.read_bytes()).hexdigest()!=expected:changed.append(name)
+result=dict(recorded_files=len(entries),changed=changed,all_byte_identical=not changed)
+(r/'prior-evidence-result.json').write_text(json.dumps(result,indent=2)+'\n')
+print(json.dumps(result))
+assert not changed

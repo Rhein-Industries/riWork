@@ -1,0 +1,23 @@
+import fcntl, json, os, pathlib, signal, subprocess, sys, time
+root=pathlib.Path(__file__).parent
+info=json.loads((root/'environment.json').read_text())
+label=sys.argv[1]; command=sys.argv[2:]
+repo='/Users/dominik/orca/projects/riWork-nsh-spec-terminal-layout'
+env=os.environ.copy()
+for key in list(env):
+    if key.startswith(('RIWORK_','CODEX_','ANTHROPIC_','OPENAI_','ORCA_')) or key in ('CARGO','TMUX','TMUX_TMPDIR'):
+        env.pop(key,None)
+env.update(HOME=str(root/'home'),RIWORK_HOME=str(root/'riwork-home'),RIWORK_RUNTIME_DIR=str(root/'runtime'),TMPDIR=str(root/'tmp'),TMUX_TMPDIR=str(root/'tmux'),XDG_CONFIG_HOME=str(root/'config'),XDG_DATA_HOME=str(root/'data'),XDG_CACHE_HOME=str(root/'cache'),CARGO_HOME=str(root/'cargo-home'),RUSTUP_HOME='/Users/dominik/.rustup',RUSTUP_TOOLCHAIN='1.99.1',CARGO_TARGET_DIR=info['target'],CARGO_BUILD_JOBS='2',CARGO_NET_OFFLINE='true',NSH_CACHE=str(root/'nsh-cache'),RIWORK_GHOSTTY_INSTALL_DIR=info['ghostty'])
+signal.pthread_sigmask(signal.SIG_SETMASK,[])
+profile='(version 1)(allow default)(deny network-inbound (local ip "*:*"))(deny network-outbound (remote ip "*:*"))'
+wrapped=['/usr/bin/sandbox-exec','-p',profile]+command
+with (root/'build.lock').open('w') as lock:
+    fcntl.flock(lock,fcntl.LOCK_EX)
+    started=time.time()
+    with (root/'logs'/f'{label}.log').open('x') as log:
+        result=subprocess.run(wrapped,cwd=repo,env=env,stdout=log,stderr=subprocess.STDOUT)
+    record={'label':label,'argv':command,'sandbox':'IP network denied; Unix fixture IPC permitted','exit_code':result.returncode,'elapsed_seconds':round(time.time()-started,2),'log':str(root/'logs'/f'{label}.log'),'verification_environment':info['verification_environment'],'cargo_jobs':2}
+    with (root/'commands.jsonl').open('a') as out: out.write(json.dumps(record)+'\n')
+    print(json.dumps(record),flush=True)
+    print((root/'logs'/f'{label}.log').read_text()[-7000:],flush=True)
+    sys.exit(result.returncode)

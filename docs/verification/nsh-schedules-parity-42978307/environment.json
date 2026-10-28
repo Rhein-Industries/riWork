@@ -1,0 +1,15 @@
+{
+  "root": "/tmp/riwork-schedules-42978307.ewa5a_9y",
+  "target": "/tmp/riwork-p6b-fa930048.vn_exbl9/target",
+  "cargo": "/Users/dominik/.cargo/bin/cargo",
+  "nsh": "/tmp/riwork-nsh-toolchain-60f8aec4.18l3zV/nsh-cli-0.3.0/bin/nsh",
+  "tsc": "/Users/dominik/Library/Caches/nsh/typescript-7.0.2-darwin-arm64/package/lib/tsc",
+  "ghostty": "/Users/dominik/orca/projects/riWork-nsh-p2-terminals/crates/riwork-nsh-terminal/.runtime/pinned/install",
+  "verification_environment": "private HOME/RIWORK_HOME; disposable ledgers; in-process fake provider and private Unix IPC; headless fixtures; IP denied",
+  "live_targets_touched": "none beyond own shell/worktree and disposable fixture processes",
+  "cargo_jobs": 2,
+  "offline": true,
+  "effective_service_tier": "Service tier default, Fast OFF (user-verified); GPT-6.1-Sol ultra/effort/saved dominik@rhein.industries account unchanged",
+  "assignment": "42978307-a1b4-4726-8dbf-bab9ec4fc2a2",
+  "base": "162444b76d7f8496293cbe3a2a4e48a8b47b29e0"
+}

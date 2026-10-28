@@ -1,0 +1,1259 @@
+[
+  {
+    "scenario": "Codex",
+    "observation": {
+      "fake_sends": 1,
+      "final": {
+        "accountLabel": "System default",
+        "destination": "new_chat",
+        "destinationLabel": "New codex project chat \u00b7 /private/tmp/riwork-schedules-42978307.ewa5a_9y/tmp/rwh-f8a37d/work",
+        "everyMinutes": null,
+        "firstAt": 1793181234,
+        "firstIso": "2026-10-28T10:53:54+01:00",
+        "key": {
+          "id": "b0100ffe-b1ec-422c-9914-a7d3ec36225d",
+          "revision": 3,
+          "scope": {
+            "projectId": "33925a67-b8b3-4f30-b13d-c978429a9716",
+            "scope": "project",
+            "worktreeId": null
+          },
+          "targetId": "82b79d85-28a3-4b66-9307-07c785c569b6"
+        },
+        "lastRun": {
+          "createdChatId": "0c2a8304-e70c-4f69-a47f-a6729a956259",
+          "dueAt": 1793181234,
+          "dueDisplay": "2026-10-28 10:53:54 +01:00",
+          "message": "Prompt submitted once; agent completion is separate.",
+          "observedAt": 1793181234,
+          "observedDisplay": "2026-10-28 10:53:54 +01:00",
+          "outcome": "submitted"
+        },
+        "nextDisplay": null,
+        "nextRun": null,
+        "options": {
+          "accountId": null,
+          "effort": "high",
+          "fast": false,
+          "model": "fixture-model",
+          "permission": "plan",
+          "provider": "codex"
+        },
+        "paused": false,
+        "prompt": "inert scheduled fresh prompt",
+        "reviewRequired": false,
+        "title": "Fresh fixture title"
+      },
+      "wire": [
+        {
+          "attempts_before_request": 0,
+          "consumed_before_request": [],
+          "durable_run_before_request": null,
+          "next_run_before_request": 1793181234,
+          "request": {
+            "id": "0ea372f7-a625-4c72-a581-3bb763a76ae2",
+            "op": "capabilities"
+          }
+        },
+        {
+          "attempts_before_request": 1,
+          "consumed_before_request": [
+            [
+              "82b79d85-28a3-4b66-9307-07c785c569b6",
+              "new-chat:0c2a8304-e70c-4f69-a47f-a6729a956259"
+            ]
+          ],
+          "durable_run_before_request": {
+            "created_chat_id": "0c2a8304-e70c-4f69-a47f-a6729a956259",
+            "due_at": 1793181234,
+            "message": "Delivery in progress",
+            "observed_at": 1793181234,
+            "outcome": "dispatching"
+          },
+          "next_run_before_request": null,
+          "request": {
+            "chat": {
+              "approval_mode": "plan",
+              "codex_account_id": "system-default",
+              "cwd": "/private/tmp/riwork-schedules-42978307.ewa5a_9y/tmp/rwh-f8a37d/work",
+              "effort": "high",
+              "fast": false,
+              "model": "fixture-model",
+              "project_id": "33925a67-b8b3-4f30-b13d-c978429a9716",
+              "provider": "codex",
+              "title": "Fresh fixture title"
+            },
+            "chat_id": "0c2a8304-e70c-4f69-a47f-a6729a956259",
+            "id": "6bee4890-944e-462d-bcd9-48313fc7dca6",
+            "op": "create"
+          }
+        },
+        {
+          "attempts_before_request": 1,
+          "consumed_before_request": [
+            [
+              "82b79d85-28a3-4b66-9307-07c785c569b6",
+              "new-chat:0c2a8304-e70c-4f69-a47f-a6729a956259"
+            ]
+          ],
+          "durable_run_before_request": {
+            "created_chat_id": "0c2a8304-e70c-4f69-a47f-a6729a956259",
+            "due_at": 1793181234,
+            "message": "Delivery in progress",
+            "observed_at": 1793181234,
+            "outcome": "dispatching"
+          },
+          "next_run_before_request": null,
+          "request": {
+            "id": "a2e32734-8831-4c71-8c4f-66b3c7b80718",
+            "op": "list"
+          }
+        },
+        {
+          "attempts_before_request": 1,
+          "consumed_before_request": [
+            [
+              "82b79d85-28a3-4b66-9307-07c785c569b6",
+              "new-chat:0c2a8304-e70c-4f69-a47f-a6729a956259"
+            ]
+          ],
+          "durable_run_before_request": {
+            "created_chat_id": "0c2a8304-e70c-4f69-a47f-a6729a956259",
+            "due_at": 1793181234,
+            "message": "Delivery in progress",
+            "observed_at": 1793181234,
+            "outcome": "dispatching"
+          },
+          "next_run_before_request": null,
+          "request": {
+            "chat_id": "0c2a8304-e70c-4f69-a47f-a6729a956259",
+            "command": {
+              "command": "send",
+              "text": "inert scheduled fresh prompt"
+            },
+            "id": "70bf1a71-e011-4ea0-85ce-335ab77fe687",
+            "op": "command"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "scenario": "Claude",
+    "observation": {
+      "fake_sends": 1,
+      "final": {
+        "accountLabel": "Claude system login",
+        "destination": "new_chat",
+        "destinationLabel": "New claude project chat \u00b7 /private/tmp/riwork-schedules-42978307.ewa5a_9y/tmp/rwh-eb3db3/work",
+        "everyMinutes": null,
+        "firstAt": 1793181234,
+        "firstIso": "2026-10-28T10:53:54+01:00",
+        "key": {
+          "id": "a6273eec-6da7-44e6-8cd5-b407e12f23a5",
+          "revision": 3,
+          "scope": {
+            "projectId": "fc09d143-e946-49ce-83c3-25a9a59571a1",
+            "scope": "project",
+            "worktreeId": null
+          },
+          "targetId": "f3acaee1-d744-4664-bab2-a8ca7e7c4bb5"
+        },
+        "lastRun": {
+          "createdChatId": "e2c828ac-d94c-4e6f-9fc4-013db1d5ac37",
+          "dueAt": 1793181234,
+          "dueDisplay": "2026-10-28 10:53:54 +01:00",
+          "message": "Prompt submitted once; agent completion is separate.",
+          "observedAt": 1793181234,
+          "observedDisplay": "2026-10-28 10:53:54 +01:00",
+          "outcome": "submitted"
+        },
+        "nextDisplay": null,
+        "nextRun": null,
+        "options": {
+          "accountId": null,
+          "effort": "high",
+          "fast": false,
+          "model": "fixture-model",
+          "permission": "plan",
+          "provider": "claude"
+        },
+        "paused": false,
+        "prompt": "inert scheduled fresh prompt",
+        "reviewRequired": false,
+        "title": "Fresh fixture title"
+      },
+      "wire": [
+        {
+          "attempts_before_request": 0,
+          "consumed_before_request": [],
+          "durable_run_before_request": null,
+          "next_run_before_request": 1793181234,
+          "request": {
+            "id": "20ac3ef2-0519-4ace-97f6-857c3eca92dd",
+            "op": "capabilities"
+          }
+        },
+        {
+          "attempts_before_request": 1,
+          "consumed_before_request": [
+            [
+              "f3acaee1-d744-4664-bab2-a8ca7e7c4bb5",
+              "new-chat:e2c828ac-d94c-4e6f-9fc4-013db1d5ac37"
+            ]
+          ],
+          "durable_run_before_request": {
+            "created_chat_id": "e2c828ac-d94c-4e6f-9fc4-013db1d5ac37",
+            "due_at": 1793181234,
+            "message": "Delivery in progress",
+            "observed_at": 1793181234,
+            "outcome": "dispatching"
+          },
+          "next_run_before_request": null,
+          "request": {
+            "chat": {
+              "approval_mode": "plan",
+              "cwd": "/private/tmp/riwork-schedules-42978307.ewa5a_9y/tmp/rwh-eb3db3/work",
+              "effort": "high",
+              "fast": false,
+              "model": "fixture-model",
+              "project_id": "fc09d143-e946-49ce-83c3-25a9a59571a1",
+              "provider": "claude",
+              "title": "Fresh fixture title"
+            },
+            "chat_id": "e2c828ac-d94c-4e6f-9fc4-013db1d5ac37",
+            "id": "02d61abe-322a-427c-8e5a-9660fcb5bea5",
+            "op": "create"
+          }
+        },
+        {
+          "attempts_before_request": 1,
+          "consumed_before_request": [
+            [
+              "f3acaee1-d744-4664-bab2-a8ca7e7c4bb5",
+              "new-chat:e2c828ac-d94c-4e6f-9fc4-013db1d5ac37"
+            ]
+          ],
+          "durable_run_before_request": {
+            "created_chat_id": "e2c828ac-d94c-4e6f-9fc4-013db1d5ac37",
+            "due_at": 1793181234,
+            "message": "Delivery in progress",
+            "observed_at": 1793181234,
+            "outcome": "dispatching"
+          },
+          "next_run_before_request": null,
+          "request": {
+            "id": "f332e5c3-7fdd-475d-b8aa-ff6a5e65d157",
+            "op": "list"
+          }
+        },
+        {
+          "attempts_before_request": 1,
+          "consumed_before_request": [
+            [
+              "f3acaee1-d744-4664-bab2-a8ca7e7c4bb5",
+              "new-chat:e2c828ac-d94c-4e6f-9fc4-013db1d5ac37"
+            ]
+          ],
+          "durable_run_before_request": {
+            "created_chat_id": "e2c828ac-d94c-4e6f-9fc4-013db1d5ac37",
+            "due_at": 1793181234,
+            "message": "Delivery in progress",
+            "observed_at": 1793181234,
+            "outcome": "dispatching"
+          },
+          "next_run_before_request": null,
+          "request": {
+            "chat_id": "e2c828ac-d94c-4e6f-9fc4-013db1d5ac37",
+            "command": {
+              "command": "send",
+              "text": "inert scheduled fresh prompt"
+            },
+            "id": "54740940-27a2-481f-a02b-0dbf97a7b258",
+            "op": "command"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "scenario": "Muse",
+    "observation": {
+      "fake_sends": 1,
+      "final": {
+        "accountLabel": "Muse system login",
+        "destination": "new_chat",
+        "destinationLabel": "New muse project chat \u00b7 /private/tmp/riwork-schedules-42978307.ewa5a_9y/tmp/rwh-76fbda/work",
+        "everyMinutes": null,
+        "firstAt": 1793181234,
+        "firstIso": "2026-10-28T10:53:54+01:00",
+        "key": {
+          "id": "1742545a-626e-4b68-a1c1-3063c06bc2d4",
+          "revision": 3,
+          "scope": {
+            "projectId": "8082d95a-6395-438d-a323-312f186dffb5",
+            "scope": "project",
+            "worktreeId": null
+          },
+          "targetId": "47b3a455-7d51-4199-b0cc-fd38ec2ab585"
+        },
+        "lastRun": {
+          "createdChatId": "aa7d1056-0506-440a-b6c8-6ee161951fe2",
+          "dueAt": 1793181234,
+          "dueDisplay": "2026-10-28 10:53:54 +01:00",
+          "message": "Prompt submitted once; agent completion is separate.",
+          "observedAt": 1793181234,
+          "observedDisplay": "2026-10-28 10:53:54 +01:00",
+          "outcome": "submitted"
+        },
+        "nextDisplay": null,
+        "nextRun": null,
+        "options": {
+          "accountId": null,
+          "effort": "high",
+          "fast": false,
+          "model": "fixture-model",
+          "permission": "plan",
+          "provider": "muse"
+        },
+        "paused": false,
+        "prompt": "inert scheduled fresh prompt",
+        "reviewRequired": false,
+        "title": "Fresh fixture title"
+      },
+      "wire": [
+        {
+          "attempts_before_request": 0,
+          "consumed_before_request": [],
+          "durable_run_before_request": null,
+          "next_run_before_request": 1793181234,
+          "request": {
+            "id": "3edd9a94-b439-4e5e-bd5c-dd0dc3c2699d",
+            "op": "capabilities"
+          }
+        },
+        {
+          "attempts_before_request": 1,
+          "consumed_before_request": [
+            [
+              "47b3a455-7d51-4199-b0cc-fd38ec2ab585",
+              "new-chat:aa7d1056-0506-440a-b6c8-6ee161951fe2"
+            ]
+          ],
+          "durable_run_before_request": {
+            "created_chat_id": "aa7d1056-0506-440a-b6c8-6ee161951fe2",
+            "due_at": 1793181234,
+            "message": "Delivery in progress",
+            "observed_at": 1793181234,
+            "outcome": "dispatching"
+          },
+          "next_run_before_request": null,
+          "request": {
+            "chat": {
+              "approval_mode": "plan",
+              "contributor_opt_out": true,
+              "cwd": "/private/tmp/riwork-schedules-42978307.ewa5a_9y/tmp/rwh-76fbda/work",
+              "effort": "high",
+              "fast": false,
+              "model": "fixture-model",
+              "project_id": "8082d95a-6395-438d-a323-312f186dffb5",
+              "provider": "muse",
+              "title": "Fresh fixture title"
+            },
+            "chat_id": "aa7d1056-0506-440a-b6c8-6ee161951fe2",
+            "id": "1dd2f905-ada0-4538-9ab3-a5d34658c0e4",
+            "op": "create"
+          }
+        },
+        {
+          "attempts_before_request": 1,
+          "consumed_before_request": [
+            [
+              "47b3a455-7d51-4199-b0cc-fd38ec2ab585",
+              "new-chat:aa7d1056-0506-440a-b6c8-6ee161951fe2"
+            ]
+          ],
+          "durable_run_before_request": {
+            "created_chat_id": "aa7d1056-0506-440a-b6c8-6ee161951fe2",
+            "due_at": 1793181234,
+            "message": "Delivery in progress",
+            "observed_at": 1793181234,
+            "outcome": "dispatching"
+          },
+          "next_run_before_request": null,
+          "request": {
+            "id": "4ff55f30-8aeb-452d-9abc-05a6a33c52cf",
+            "op": "list"
+          }
+        },
+        {
+          "attempts_before_request": 1,
+          "consumed_before_request": [
+            [
+              "47b3a455-7d51-4199-b0cc-fd38ec2ab585",
+              "new-chat:aa7d1056-0506-440a-b6c8-6ee161951fe2"
+            ]
+          ],
+          "durable_run_before_request": {
+            "created_chat_id": "aa7d1056-0506-440a-b6c8-6ee161951fe2",
+            "due_at": 1793181234,
+            "message": "Delivery in progress",
+            "observed_at": 1793181234,
+            "outcome": "dispatching"
+          },
+          "next_run_before_request": null,
+          "request": {
+            "chat_id": "aa7d1056-0506-440a-b6c8-6ee161951fe2",
+            "command": {
+              "command": "send",
+              "text": "inert scheduled fresh prompt"
+            },
+            "id": "1c85b4e4-8484-451c-b570-fb8948c8a6bb",
+            "op": "command"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "scenario": "capability denied -> expiry",
+    "observation": {
+      "fake_sends": 0,
+      "final": {
+        "accountLabel": "Claude system login",
+        "destination": "new_chat",
+        "destinationLabel": "New claude project chat \u00b7 /private/tmp/riwork-schedules-42978307.ewa5a_9y/tmp/rwh-12c46b/work",
+        "everyMinutes": null,
+        "firstAt": 1793181235,
+        "firstIso": "2026-10-28T10:53:55+01:00",
+        "key": {
+          "id": "badb89e2-9cf1-4fb8-80d1-e2a262b09d57",
+          "revision": 4,
+          "scope": {
+            "projectId": "78f54649-560e-4e47-b5ec-96963b860031",
+            "scope": "project",
+            "worktreeId": null
+          },
+          "targetId": "8bd0c915-9a84-42e9-b8d1-53927a18f75c"
+        },
+        "lastRun": {
+          "createdChatId": null,
+          "dueAt": 1793181235,
+          "dueDisplay": "2026-10-28 10:53:55 +01:00",
+          "message": "Missed the 5-minute delivery window; skipped overdue occurrences. Last check: Chat host does not support identified creation; waiting for a compatible host",
+          "observedAt": 1793181536,
+          "observedDisplay": "2026-10-28 10:58:56 +01:00",
+          "outcome": "missed"
+        },
+        "nextDisplay": null,
+        "nextRun": null,
+        "options": {
+          "accountId": null,
+          "effort": "high",
+          "fast": false,
+          "model": "fixture-model",
+          "permission": "plan",
+          "provider": "claude"
+        },
+        "paused": false,
+        "prompt": "inert scheduled fresh prompt",
+        "reviewRequired": false,
+        "title": "Fresh fixture title"
+      },
+      "wire": [
+        {
+          "attempts_before_request": 0,
+          "consumed_before_request": [],
+          "durable_run_before_request": null,
+          "next_run_before_request": 1793181235,
+          "request": {
+            "id": "37f7178c-4349-4a58-9a09-b6f2c1a5063b",
+            "op": "capabilities"
+          }
+        },
+        {
+          "attempts_before_request": 0,
+          "consumed_before_request": [],
+          "durable_run_before_request": {
+            "due_at": 1793181235,
+            "message": "Chat host does not support identified creation; waiting for a compatible host",
+            "observed_at": 1793181235,
+            "outcome": "deferred"
+          },
+          "next_run_before_request": 1793181235,
+          "request": {
+            "id": "4d2737d3-ebea-4671-890f-c3b220eff995",
+            "op": "capabilities"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "scenario": "four competing ticks",
+    "observation": {
+      "fake_sends": 1,
+      "final": {
+        "accountLabel": "Claude system login",
+        "destination": "new_chat",
+        "destinationLabel": "New claude project chat \u00b7 /private/tmp/riwork-schedules-42978307.ewa5a_9y/tmp/rwh-0e464b/work",
+        "everyMinutes": null,
+        "firstAt": 1793181235,
+        "firstIso": "2026-10-28T10:53:55+01:00",
+        "key": {
+          "id": "df846d98-b656-402c-a5c1-49b73edc0922",
+          "revision": 3,
+          "scope": {
+            "projectId": "6c8e408d-95cc-4f65-8099-3f0e63946fd8",
+            "scope": "project",
+            "worktreeId": null
+          },
+          "targetId": "97584177-6eae-4b51-8026-1215a8d475ce"
+        },
+        "lastRun": {
+          "createdChatId": "7fb01e66-1e4e-42be-999b-e9b15f541941",
+          "dueAt": 1793181235,
+          "dueDisplay": "2026-10-28 10:53:55 +01:00",
+          "message": "Prompt submitted once; agent completion is separate.",
+          "observedAt": 1793181235,
+          "observedDisplay": "2026-10-28 10:53:55 +01:00",
+          "outcome": "submitted"
+        },
+        "nextDisplay": null,
+        "nextRun": null,
+        "options": {
+          "accountId": null,
+          "effort": "high",
+          "fast": false,
+          "model": "fixture-model",
+          "permission": "plan",
+          "provider": "claude"
+        },
+        "paused": false,
+        "prompt": "inert scheduled fresh prompt",
+        "reviewRequired": false,
+        "title": "Fresh fixture title"
+      },
+      "wire": [
+        {
+          "attempts_before_request": 0,
+          "consumed_before_request": [],
+          "durable_run_before_request": null,
+          "next_run_before_request": 1793181235,
+          "request": {
+            "id": "371a1c72-367f-401b-b2f6-33e78f8edd84",
+            "op": "capabilities"
+          }
+        },
+        {
+          "attempts_before_request": 1,
+          "consumed_before_request": [
+            [
+              "97584177-6eae-4b51-8026-1215a8d475ce",
+              "new-chat:7fb01e66-1e4e-42be-999b-e9b15f541941"
+            ]
+          ],
+          "durable_run_before_request": {
+            "created_chat_id": "7fb01e66-1e4e-42be-999b-e9b15f541941",
+            "due_at": 1793181235,
+            "message": "Delivery in progress",
+            "observed_at": 1793181235,
+            "outcome": "dispatching"
+          },
+          "next_run_before_request": null,
+          "request": {
+            "chat": {
+              "approval_mode": "plan",
+              "cwd": "/private/tmp/riwork-schedules-42978307.ewa5a_9y/tmp/rwh-0e464b/work",
+              "effort": "high",
+              "fast": false,
+              "model": "fixture-model",
+              "project_id": "6c8e408d-95cc-4f65-8099-3f0e63946fd8",
+              "provider": "claude",
+              "title": "Fresh fixture title"
+            },
+            "chat_id": "7fb01e66-1e4e-42be-999b-e9b15f541941",
+            "id": "6b571e73-5ab8-4923-ad9e-10e9f9871ad1",
+            "op": "create"
+          }
+        },
+        {
+          "attempts_before_request": 1,
+          "consumed_before_request": [
+            [
+              "97584177-6eae-4b51-8026-1215a8d475ce",
+              "new-chat:7fb01e66-1e4e-42be-999b-e9b15f541941"
+            ]
+          ],
+          "durable_run_before_request": {
+            "created_chat_id": "7fb01e66-1e4e-42be-999b-e9b15f541941",
+            "due_at": 1793181235,
+            "message": "Delivery in progress",
+            "observed_at": 1793181235,
+            "outcome": "dispatching"
+          },
+          "next_run_before_request": null,
+          "request": {
+            "id": "bf3505a8-6738-4998-bf1c-1e505f0c7dd9",
+            "op": "list"
+          }
+        },
+        {
+          "attempts_before_request": 1,
+          "consumed_before_request": [
+            [
+              "97584177-6eae-4b51-8026-1215a8d475ce",
+              "new-chat:7fb01e66-1e4e-42be-999b-e9b15f541941"
+            ]
+          ],
+          "durable_run_before_request": {
+            "created_chat_id": "7fb01e66-1e4e-42be-999b-e9b15f541941",
+            "due_at": 1793181235,
+            "message": "Delivery in progress",
+            "observed_at": 1793181235,
+            "outcome": "dispatching"
+          },
+          "next_run_before_request": null,
+          "request": {
+            "chat_id": "7fb01e66-1e4e-42be-999b-e9b15f541941",
+            "command": {
+              "command": "send",
+              "text": "inert scheduled fresh prompt"
+            },
+            "id": "8ef89aea-046c-46b3-a355-568a255fe515",
+            "op": "command"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "scenario": "claim denied by existing four-attempt window",
+    "observation": {
+      "fake_sends": 0,
+      "final": {
+        "accountLabel": "Claude system login",
+        "destination": "new_chat",
+        "destinationLabel": "New claude project chat \u00b7 /private/tmp/riwork-schedules-42978307.ewa5a_9y/tmp/rwh-4d2639/work",
+        "everyMinutes": null,
+        "firstAt": 1793181235,
+        "firstIso": "2026-10-28T10:53:55+01:00",
+        "key": {
+          "id": "61086367-645b-4233-879e-e7a1e7d3c239",
+          "revision": 2,
+          "scope": {
+            "projectId": "17c60027-5ec2-45bb-bf00-715a1c9ac9e9",
+            "scope": "project",
+            "worktreeId": null
+          },
+          "targetId": "1e9ef37d-4b31-4303-8d11-5262ddb3bc13"
+        },
+        "lastRun": {
+          "createdChatId": null,
+          "dueAt": 1793181235,
+          "dueDisplay": "2026-10-28 10:53:55 +01:00",
+          "message": "Waiting for the four-attempts-per-minute delivery limit",
+          "observedAt": 1793181235,
+          "observedDisplay": "2026-10-28 10:53:55 +01:00",
+          "outcome": "deferred"
+        },
+        "nextDisplay": "2026-10-28 10:53:55 +01:00",
+        "nextRun": 1793181235,
+        "options": {
+          "accountId": null,
+          "effort": "high",
+          "fast": false,
+          "model": "fixture-model",
+          "permission": "plan",
+          "provider": "claude"
+        },
+        "paused": false,
+        "prompt": "inert scheduled fresh prompt",
+        "reviewRequired": false,
+        "title": "Fresh fixture title"
+      },
+      "wire": [
+        {
+          "attempts_before_request": 4,
+          "consumed_before_request": [],
+          "durable_run_before_request": null,
+          "next_run_before_request": 1793181235,
+          "request": {
+            "id": "0fe08c75-83c8-4f7d-b40e-89bda8eb5521",
+            "op": "capabilities"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "scenario": "CreateRefused",
+    "observation": {
+      "fake_sends": 0,
+      "final": {
+        "accountLabel": "Claude system login",
+        "destination": "new_chat",
+        "destinationLabel": "New claude project chat \u00b7 /private/tmp/riwork-schedules-42978307.ewa5a_9y/tmp/rwh-db8486/work",
+        "everyMinutes": null,
+        "firstAt": 1793181235,
+        "firstIso": "2026-10-28T10:53:55+01:00",
+        "key": {
+          "id": "a2e7c733-4b01-4136-9698-68d19691eeac",
+          "revision": 3,
+          "scope": {
+            "projectId": "e12fca61-35a1-467e-ac0e-96967702a9d5",
+            "scope": "project",
+            "worktreeId": null
+          },
+          "targetId": "307ea81c-f593-4a3f-b870-c11885c83060"
+        },
+        "lastRun": {
+          "createdChatId": "2077e5e0-083a-473a-afac-6a56ff265a24",
+          "dueAt": 1793181235,
+          "dueDisplay": "2026-10-28 10:53:55 +01:00",
+          "message": "Chat creation refused: inert fixture refusal. No automatic retry.",
+          "observedAt": 1793181235,
+          "observedDisplay": "2026-10-28 10:53:55 +01:00",
+          "outcome": "failed"
+        },
+        "nextDisplay": null,
+        "nextRun": null,
+        "options": {
+          "accountId": null,
+          "effort": "high",
+          "fast": false,
+          "model": "fixture-model",
+          "permission": "plan",
+          "provider": "claude"
+        },
+        "paused": true,
+        "prompt": "inert scheduled fresh prompt",
+        "reviewRequired": true,
+        "title": "Fresh fixture title"
+      },
+      "wire": [
+        {
+          "attempts_before_request": 0,
+          "consumed_before_request": [],
+          "durable_run_before_request": null,
+          "next_run_before_request": 1793181235,
+          "request": {
+            "id": "7a082243-0953-4cd9-8ce5-733e9b68a197",
+            "op": "capabilities"
+          }
+        },
+        {
+          "attempts_before_request": 1,
+          "consumed_before_request": [
+            [
+              "307ea81c-f593-4a3f-b870-c11885c83060",
+              "new-chat:2077e5e0-083a-473a-afac-6a56ff265a24"
+            ]
+          ],
+          "durable_run_before_request": {
+            "created_chat_id": "2077e5e0-083a-473a-afac-6a56ff265a24",
+            "due_at": 1793181235,
+            "message": "Delivery in progress",
+            "observed_at": 1793181235,
+            "outcome": "dispatching"
+          },
+          "next_run_before_request": null,
+          "request": {
+            "chat": {
+              "approval_mode": "plan",
+              "cwd": "/private/tmp/riwork-schedules-42978307.ewa5a_9y/tmp/rwh-db8486/work",
+              "effort": "high",
+              "fast": false,
+              "model": "fixture-model",
+              "project_id": "e12fca61-35a1-467e-ac0e-96967702a9d5",
+              "provider": "claude",
+              "title": "Fresh fixture title"
+            },
+            "chat_id": "2077e5e0-083a-473a-afac-6a56ff265a24",
+            "id": "7f11a6e1-53ed-4efb-a9ff-0d8c3855f119",
+            "op": "create"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "scenario": "CreateReplyLost",
+    "observation": {
+      "fake_sends": 0,
+      "final": {
+        "accountLabel": "Claude system login",
+        "destination": "new_chat",
+        "destinationLabel": "New claude project chat \u00b7 /private/tmp/riwork-schedules-42978307.ewa5a_9y/tmp/rwh-a38ca3/work",
+        "everyMinutes": null,
+        "firstAt": 1793181235,
+        "firstIso": "2026-10-28T10:53:55+01:00",
+        "key": {
+          "id": "0c5240a3-f301-4275-a6aa-43c62d77ee39",
+          "revision": 3,
+          "scope": {
+            "projectId": "1b525c52-54d0-42af-baa9-9514fa400d95",
+            "scope": "project",
+            "worktreeId": null
+          },
+          "targetId": "fd3f7da2-a124-460a-b0f8-80aaa3f0c5f7"
+        },
+        "lastRun": {
+          "createdChatId": "972bce73-6cd2-470c-b3d9-aabcddb89b8e",
+          "dueAt": 1793181235,
+          "dueDisplay": "2026-10-28 10:53:55 +01:00",
+          "message": "Chat creation may have succeeded: chat host closed the connection. Open the recorded chat; no automatic retry.",
+          "observedAt": 1793181235,
+          "observedDisplay": "2026-10-28 10:53:55 +01:00",
+          "outcome": "uncertain"
+        },
+        "nextDisplay": null,
+        "nextRun": null,
+        "options": {
+          "accountId": null,
+          "effort": "high",
+          "fast": false,
+          "model": "fixture-model",
+          "permission": "plan",
+          "provider": "claude"
+        },
+        "paused": true,
+        "prompt": "inert scheduled fresh prompt",
+        "reviewRequired": true,
+        "title": "Fresh fixture title"
+      },
+      "wire": [
+        {
+          "attempts_before_request": 0,
+          "consumed_before_request": [],
+          "durable_run_before_request": null,
+          "next_run_before_request": 1793181235,
+          "request": {
+            "id": "3c7f1dd5-c157-4d59-a1ec-24b6bde408b4",
+            "op": "capabilities"
+          }
+        },
+        {
+          "attempts_before_request": 1,
+          "consumed_before_request": [
+            [
+              "fd3f7da2-a124-460a-b0f8-80aaa3f0c5f7",
+              "new-chat:972bce73-6cd2-470c-b3d9-aabcddb89b8e"
+            ]
+          ],
+          "durable_run_before_request": {
+            "created_chat_id": "972bce73-6cd2-470c-b3d9-aabcddb89b8e",
+            "due_at": 1793181235,
+            "message": "Delivery in progress",
+            "observed_at": 1793181235,
+            "outcome": "dispatching"
+          },
+          "next_run_before_request": null,
+          "request": {
+            "chat": {
+              "approval_mode": "plan",
+              "cwd": "/private/tmp/riwork-schedules-42978307.ewa5a_9y/tmp/rwh-a38ca3/work",
+              "effort": "high",
+              "fast": false,
+              "model": "fixture-model",
+              "project_id": "1b525c52-54d0-42af-baa9-9514fa400d95",
+              "provider": "claude",
+              "title": "Fresh fixture title"
+            },
+            "chat_id": "972bce73-6cd2-470c-b3d9-aabcddb89b8e",
+            "id": "567027f0-c1f9-4931-8630-501464e0b1b0",
+            "op": "create"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "scenario": "SendRefused",
+    "observation": {
+      "fake_sends": 0,
+      "final": {
+        "accountLabel": "Claude system login",
+        "destination": "new_chat",
+        "destinationLabel": "New claude project chat \u00b7 /private/tmp/riwork-schedules-42978307.ewa5a_9y/tmp/rwh-18192d/work",
+        "everyMinutes": null,
+        "firstAt": 1793181235,
+        "firstIso": "2026-10-28T10:53:55+01:00",
+        "key": {
+          "id": "eebc0955-c7e3-46b6-9813-0aa861d765d4",
+          "revision": 3,
+          "scope": {
+            "projectId": "f8c56d05-1654-4de0-9809-1cbe411da0dc",
+            "scope": "project",
+            "worktreeId": null
+          },
+          "targetId": "5dad14fd-5482-43d2-9629-3c356b882594"
+        },
+        "lastRun": {
+          "createdChatId": "6ecd14ad-bd1b-4e67-a867-fc9c3d306026",
+          "dueAt": 1793181235,
+          "dueDisplay": "2026-10-28 10:53:55 +01:00",
+          "message": "Created chat refused prompt: inert fixture refusal. No automatic retry.",
+          "observedAt": 1793181235,
+          "observedDisplay": "2026-10-28 10:53:55 +01:00",
+          "outcome": "failed"
+        },
+        "nextDisplay": null,
+        "nextRun": null,
+        "options": {
+          "accountId": null,
+          "effort": "high",
+          "fast": false,
+          "model": "fixture-model",
+          "permission": "plan",
+          "provider": "claude"
+        },
+        "paused": true,
+        "prompt": "inert scheduled fresh prompt",
+        "reviewRequired": true,
+        "title": "Fresh fixture title"
+      },
+      "wire": [
+        {
+          "attempts_before_request": 0,
+          "consumed_before_request": [],
+          "durable_run_before_request": null,
+          "next_run_before_request": 1793181235,
+          "request": {
+            "id": "8f82d002-00f1-4975-981a-db021bdb9e2d",
+            "op": "capabilities"
+          }
+        },
+        {
+          "attempts_before_request": 1,
+          "consumed_before_request": [
+            [
+              "5dad14fd-5482-43d2-9629-3c356b882594",
+              "new-chat:6ecd14ad-bd1b-4e67-a867-fc9c3d306026"
+            ]
+          ],
+          "durable_run_before_request": {
+            "created_chat_id": "6ecd14ad-bd1b-4e67-a867-fc9c3d306026",
+            "due_at": 1793181235,
+            "message": "Delivery in progress",
+            "observed_at": 1793181235,
+            "outcome": "dispatching"
+          },
+          "next_run_before_request": null,
+          "request": {
+            "chat": {
+              "approval_mode": "plan",
+              "cwd": "/private/tmp/riwork-schedules-42978307.ewa5a_9y/tmp/rwh-18192d/work",
+              "effort": "high",
+              "fast": false,
+              "model": "fixture-model",
+              "project_id": "f8c56d05-1654-4de0-9809-1cbe411da0dc",
+              "provider": "claude",
+              "title": "Fresh fixture title"
+            },
+            "chat_id": "6ecd14ad-bd1b-4e67-a867-fc9c3d306026",
+            "id": "ea480132-be20-4427-aada-9da79f699acb",
+            "op": "create"
+          }
+        },
+        {
+          "attempts_before_request": 1,
+          "consumed_before_request": [
+            [
+              "5dad14fd-5482-43d2-9629-3c356b882594",
+              "new-chat:6ecd14ad-bd1b-4e67-a867-fc9c3d306026"
+            ]
+          ],
+          "durable_run_before_request": {
+            "created_chat_id": "6ecd14ad-bd1b-4e67-a867-fc9c3d306026",
+            "due_at": 1793181235,
+            "message": "Delivery in progress",
+            "observed_at": 1793181235,
+            "outcome": "dispatching"
+          },
+          "next_run_before_request": null,
+          "request": {
+            "id": "422ec84f-956c-4ee7-8279-abb148600a77",
+            "op": "list"
+          }
+        },
+        {
+          "attempts_before_request": 1,
+          "consumed_before_request": [
+            [
+              "5dad14fd-5482-43d2-9629-3c356b882594",
+              "new-chat:6ecd14ad-bd1b-4e67-a867-fc9c3d306026"
+            ]
+          ],
+          "durable_run_before_request": {
+            "created_chat_id": "6ecd14ad-bd1b-4e67-a867-fc9c3d306026",
+            "due_at": 1793181235,
+            "message": "Delivery in progress",
+            "observed_at": 1793181235,
+            "outcome": "dispatching"
+          },
+          "next_run_before_request": null,
+          "request": {
+            "chat_id": "6ecd14ad-bd1b-4e67-a867-fc9c3d306026",
+            "command": {
+              "command": "send",
+              "text": "inert scheduled fresh prompt"
+            },
+            "id": "6ad276e4-4a82-4a42-b51d-926340a47a6d",
+            "op": "command"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "scenario": "SendReplyLost",
+    "observation": {
+      "fake_sends": 1,
+      "final": {
+        "accountLabel": "Claude system login",
+        "destination": "new_chat",
+        "destinationLabel": "New claude project chat \u00b7 /private/tmp/riwork-schedules-42978307.ewa5a_9y/tmp/rwh-0641aa/work",
+        "everyMinutes": null,
+        "firstAt": 1793181236,
+        "firstIso": "2026-10-28T10:53:56+01:00",
+        "key": {
+          "id": "8ec9eeb4-8de0-4528-9d29-1df56aa16c47",
+          "revision": 3,
+          "scope": {
+            "projectId": "7a0983eb-5b38-445a-a75d-c543d5b534c4",
+            "scope": "project",
+            "worktreeId": null
+          },
+          "targetId": "c81c6ead-05db-4774-8f08-73f3925545fa"
+        },
+        "lastRun": {
+          "createdChatId": "6aea1545-7789-4c70-9677-1ff52d1fb5c8",
+          "dueAt": 1793181236,
+          "dueDisplay": "2026-10-28 10:53:56 +01:00",
+          "message": "Prompt may have been sent: chat host closed the connection. Open the created chat; no automatic retry.",
+          "observedAt": 1793181236,
+          "observedDisplay": "2026-10-28 10:53:56 +01:00",
+          "outcome": "uncertain"
+        },
+        "nextDisplay": null,
+        "nextRun": null,
+        "options": {
+          "accountId": null,
+          "effort": "high",
+          "fast": false,
+          "model": "fixture-model",
+          "permission": "plan",
+          "provider": "claude"
+        },
+        "paused": true,
+        "prompt": "inert scheduled fresh prompt",
+        "reviewRequired": true,
+        "title": "Fresh fixture title"
+      },
+      "wire": [
+        {
+          "attempts_before_request": 0,
+          "consumed_before_request": [],
+          "durable_run_before_request": null,
+          "next_run_before_request": 1793181236,
+          "request": {
+            "id": "26cd9978-5b71-4c08-b2e4-49f6795340c7",
+            "op": "capabilities"
+          }
+        },
+        {
+          "attempts_before_request": 1,
+          "consumed_before_request": [
+            [
+              "c81c6ead-05db-4774-8f08-73f3925545fa",
+              "new-chat:6aea1545-7789-4c70-9677-1ff52d1fb5c8"
+            ]
+          ],
+          "durable_run_before_request": {
+            "created_chat_id": "6aea1545-7789-4c70-9677-1ff52d1fb5c8",
+            "due_at": 1793181236,
+            "message": "Delivery in progress",
+            "observed_at": 1793181236,
+            "outcome": "dispatching"
+          },
+          "next_run_before_request": null,
+          "request": {
+            "chat": {
+              "approval_mode": "plan",
+              "cwd": "/private/tmp/riwork-schedules-42978307.ewa5a_9y/tmp/rwh-0641aa/work",
+              "effort": "high",
+              "fast": false,
+              "model": "fixture-model",
+              "project_id": "7a0983eb-5b38-445a-a75d-c543d5b534c4",
+              "provider": "claude",
+              "title": "Fresh fixture title"
+            },
+            "chat_id": "6aea1545-7789-4c70-9677-1ff52d1fb5c8",
+            "id": "9d5381eb-33fb-4355-ad09-6c4434ce83ef",
+            "op": "create"
+          }
+        },
+        {
+          "attempts_before_request": 1,
+          "consumed_before_request": [
+            [
+              "c81c6ead-05db-4774-8f08-73f3925545fa",
+              "new-chat:6aea1545-7789-4c70-9677-1ff52d1fb5c8"
+            ]
+          ],
+          "durable_run_before_request": {
+            "created_chat_id": "6aea1545-7789-4c70-9677-1ff52d1fb5c8",
+            "due_at": 1793181236,
+            "message": "Delivery in progress",
+            "observed_at": 1793181236,
+            "outcome": "dispatching"
+          },
+          "next_run_before_request": null,
+          "request": {
+            "id": "b6993717-497c-4144-ab93-85f47d65ba0c",
+            "op": "list"
+          }
+        },
+        {
+          "attempts_before_request": 1,
+          "consumed_before_request": [
+            [
+              "c81c6ead-05db-4774-8f08-73f3925545fa",
+              "new-chat:6aea1545-7789-4c70-9677-1ff52d1fb5c8"
+            ]
+          ],
+          "durable_run_before_request": {
+            "created_chat_id": "6aea1545-7789-4c70-9677-1ff52d1fb5c8",
+            "due_at": 1793181236,
+            "message": "Delivery in progress",
+            "observed_at": 1793181236,
+            "outcome": "dispatching"
+          },
+          "next_run_before_request": null,
+          "request": {
+            "chat_id": "6aea1545-7789-4c70-9677-1ff52d1fb5c8",
+            "command": {
+              "command": "send",
+              "text": "inert scheduled fresh prompt"
+            },
+            "id": "f1cc453d-721b-40c4-b18f-f54bb17dd412",
+            "op": "command"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "scenario": "fake provider startup failed",
+    "observation": {
+      "fake_sends": 0,
+      "final": {
+        "accountLabel": "Claude system login",
+        "destination": "new_chat",
+        "destinationLabel": "New claude project chat \u00b7 /private/tmp/riwork-schedules-42978307.ewa5a_9y/tmp/rwh-1cdc6c/work",
+        "everyMinutes": null,
+        "firstAt": 1793181236,
+        "firstIso": "2026-10-28T10:53:56+01:00",
+        "key": {
+          "id": "a2a4a01c-d32d-43ac-a265-14620af816e7",
+          "revision": 3,
+          "scope": {
+            "projectId": "4e2f8768-9712-4f48-8c7a-ca7ed4ddf67d",
+            "scope": "project",
+            "worktreeId": null
+          },
+          "targetId": "45b8b884-4227-4d11-93f6-d3617ca18e1b"
+        },
+        "lastRun": {
+          "createdChatId": "40578659-e418-4cec-9386-5453a26076cb",
+          "dueAt": 1793181236,
+          "dueDisplay": "2026-10-28 10:53:56 +01:00",
+          "message": "Created chat failed to start: inert startup refusal. No prompt sent.",
+          "observedAt": 1793181236,
+          "observedDisplay": "2026-10-28 10:53:56 +01:00",
+          "outcome": "failed"
+        },
+        "nextDisplay": null,
+        "nextRun": null,
+        "options": {
+          "accountId": null,
+          "effort": "high",
+          "fast": false,
+          "model": "fixture-model",
+          "permission": "plan",
+          "provider": "claude"
+        },
+        "paused": true,
+        "prompt": "inert scheduled fresh prompt",
+        "reviewRequired": true,
+        "title": "Fresh fixture title"
+      },
+      "wire": [
+        {
+          "attempts_before_request": 0,
+          "consumed_before_request": [],
+          "durable_run_before_request": null,
+          "next_run_before_request": 1793181236,
+          "request": {
+            "id": "b42824f4-fc34-4332-be8e-aa8393d1136b",
+            "op": "capabilities"
+          }
+        },
+        {
+          "attempts_before_request": 1,
+          "consumed_before_request": [
+            [
+              "45b8b884-4227-4d11-93f6-d3617ca18e1b",
+              "new-chat:40578659-e418-4cec-9386-5453a26076cb"
+            ]
+          ],
+          "durable_run_before_request": {
+            "created_chat_id": "40578659-e418-4cec-9386-5453a26076cb",
+            "due_at": 1793181236,
+            "message": "Delivery in progress",
+            "observed_at": 1793181236,
+            "outcome": "dispatching"
+          },
+          "next_run_before_request": null,
+          "request": {
+            "chat": {
+              "approval_mode": "plan",
+              "cwd": "/private/tmp/riwork-schedules-42978307.ewa5a_9y/tmp/rwh-1cdc6c/work",
+              "effort": "high",
+              "fast": false,
+              "model": "fixture-model",
+              "project_id": "4e2f8768-9712-4f48-8c7a-ca7ed4ddf67d",
+              "provider": "claude",
+              "title": "Fresh fixture title"
+            },
+            "chat_id": "40578659-e418-4cec-9386-5453a26076cb",
+            "id": "6d7e48e0-88fd-49b5-acc0-e21d165d31f8",
+            "op": "create"
+          }
+        },
+        {
+          "attempts_before_request": 1,
+          "consumed_before_request": [
+            [
+              "45b8b884-4227-4d11-93f6-d3617ca18e1b",
+              "new-chat:40578659-e418-4cec-9386-5453a26076cb"
+            ]
+          ],
+          "durable_run_before_request": {
+            "created_chat_id": "40578659-e418-4cec-9386-5453a26076cb",
+            "due_at": 1793181236,
+            "message": "Delivery in progress",
+            "observed_at": 1793181236,
+            "outcome": "dispatching"
+          },
+          "next_run_before_request": null,
+          "request": {
+            "id": "80a8c1ba-4516-49b0-abae-799e7ceeea74",
+            "op": "list"
+          }
+        }
+      ]
+    }
+  }
+]
