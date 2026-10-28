@@ -7,6 +7,8 @@ mod nsh_chrome;
 mod nsh_host;
 #[cfg(target_os = "macos")]
 mod nsh_menus;
+#[cfg(target_os = "macos")]
+mod nsh_notifications;
 #[cfg(unix)]
 mod nsh_runtime;
 mod nsh_startup;

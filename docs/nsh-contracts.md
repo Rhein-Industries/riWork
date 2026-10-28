@@ -438,6 +438,36 @@ are host-internal and have no JS surface (§2.5).
 
 ---
 
+#### Phase 5: Dashboard schema 3, Orchestrators, Usage and Accounts (task `9a9d3423`)
+
+Added before first TSX use, as §1.10 asks. Engine wire, ledger and file formats
+are unchanged; `GlobalWindowDto` stays schema 2.
+
+| JS | Kind | Result / rule |
+|---|---|---|
+| `Dashboard.subscribe(listener)` | sync handle | `DashboardEvent { data: DashboardDto }`, schema 3: `{ now, readAt, error, wire, backendLines }`. `wire` is the engine's `dashboard.get` wire v1 (`wire_with_observations` plus `enrich_saved`'s `intelligence`), exactly what `riwork dashboard --json` prints. There is one process reader: none while no window subscribes, a change read at most every 2 s, extras and the heartbeat at most every 10 s. Reading starts no host, chat, shell, orchestrator or tmux server, and makes no model request. |
+| `Dashboard.refresh()` | async | Forces a read; one requested during a read runs after it. The result arrives on the subscription. |
+| `Dashboard.saveGlobalWindow(state)` | async | Unchanged. TSX owns `view`, `showQuiet`, `dashboardFilter` and `dashboardSort`. The host owns `windowSize` and merges it into the file on flush and runtime publish. |
+| `Orchestrators.find(projectId \| null)` | async | `OrchestratorDto \| null` as `orchestrators::find` answers. Starts nothing. |
+| `Orchestrators.start(projectId \| null)` | async | Explicit Start only. `orchestrators::plan` + `create` (scope lock, a live one reused). `OrchestratorDto { projectId, kind: chat\|terminal, chatId?, shellId?, provider?, state, title, created, fallback? }`. |
+| `Orchestrators.plan(projectId \| null)` | async | `{ mode: automatic\|terminal\|chat, provider?, model?, automatic: ["provider:model"…], notes }`, for the Start button's words. |
+| `Accounts.subscribe(listener)` / `refresh()` / `selectDefault(id \| null)` | sync handle / async / async | Saved-account cache and Settings only; `refresh` runs discovery once (it starts Orca's CLI); an unavailable choice is `refused`. Schema 1. |
+| `Usage.subscribe(listener)` / `refresh(force)` | sync handle / async | One process service: Codex per account home with the engine backoff (it starts `codex app-server`), Claude file figures for live Claude shells, Grok not read. It reads only while subscribed. Schema 1. |
+| `LayoutSession.openChat(chatId)` | sync | Places or selects an existing chat by the main-pane rules. |
+
+Fixture rule, as for W1's inventory: debug or `test-support` builds with an
+isolated `/tmp` home take shells from `fake-sessions.json`, make orchestrators as
+fixture-host chats, and never start codex, grok or Orca.
+
+Host channel additions (§2.3, §2.4), also Phase 5:
+
+- `window.list` entries gain `focusSerial` (key-window recency; 0 = never key).
+- `system.notify` is served: `{ id, title, body, projectId?, target?, actions? }` → `{}`. Each string is non-empty and ≤ 1 KiB, `actions` ≤ 4, `target` ≤ 4 KiB. Without the app bundle it is `unavailable`.
+- `notification.activate` may carry `action` (a named action rather than the notification itself). An agent-completion click also sends `route { step: { kind: "showShell", shellId } }` to the same window.
+- `command { id: "newWindow" }` goes to the global window when no local project window is open (Dock New Window).
+- `route` steps accept the `{ panel }` shorthand for `{ kind: "panel", panel }`.
+- Host-internal services (no JS surface): agent-completion alerts are claimed at startup and on each `agent-notifications.json` change; orchestrator wakes tick at most once a second, only while `orchestrator-wakes.json` holds a pending wake. Both share one non-recursive home watcher.
+
 ## 2. AppKit host channel (per window)
 
 ### 2.1 Topology (frozen)
@@ -983,6 +1013,11 @@ Decisions the owner has taken since the freeze are recorded, dated, in [§8](#8-
   (W3 schema 2) also carries Phase 2a `terminalLight`/`terminalDark`/
   `tabCloseBehavior`; the schema 1 `Appearance.snapshot()` is removed.
   `Sessions.create` keeps optional `cwd` with strict decoding.
+- 2026-10-28 Phase 5 (task 9a9d3423): §1.10 gains Dashboard schema 3 (live read),
+  `Orchestrators`, `Accounts`, `Usage` and `LayoutSession.openChat`; §2 gains
+  `focusSerial`, served `system.notify`, `notification.activate.action`, the
+  global window's `command newWindow` and the `{ panel }` route shorthand. No
+  frozen name, engine wire or file format changed.
 - 2026-10-28 Phase 4a (task 6a41bb58): §1.6 gains the Chat payload schema 1
   table above (reset/patch `ChatDelivery`, viewport-paged bodies, typed handle
   commands, drafts on the handle). No engine wire, log or draft-file format

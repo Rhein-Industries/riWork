@@ -34,6 +34,8 @@ const STORE: u8 = 1;
 const SESSIONS: u8 = 2;
 const TABS: u8 = 4;
 const SETTINGS: u8 = 8;
+/// Files only the global dashboard reads: automations and Claude usage.
+const DASHBOARD: u8 = 16;
 
 // Kept strongly for the life of the process, never once per AppView. The home's
 // resolution and all setup happen inside initialize's blocking-pool hop.
@@ -64,6 +66,11 @@ pub async fn initialize() -> Result<Arc<ProcessService>, String> {
     #[cfg(feature = "test-support")]
     crate::host_flush::install_fixture();
     blocking(ensure_initialized).await
+}
+
+/// `initialize` for callers already on the blocking pool.
+pub(crate) fn initialized() -> Result<Arc<ProcessService>, String> {
+    ensure_initialized()
 }
 
 fn ensure_initialized() -> Result<Arc<ProcessService>, String> {
@@ -180,6 +187,34 @@ pub struct ProcessService {
     worker: Option<JoinHandle<()>>,
     _watcher: notify::RecommendedWatcher,
     last_error: Arc<Mutex<Option<String>>>,
+    observers: Observers,
+}
+
+/// Process services that follow every home change (the dashboard) register a
+/// wake here. Each gets at most one pending wake; a full queue already means
+/// "read again", so nothing is lost and no sender ever blocks.
+#[derive(Clone, Default)]
+pub(crate) struct Observers(Arc<Mutex<Vec<SyncSender<()>>>>);
+
+impl Observers {
+    pub(crate) fn add(&self, wake: SyncSender<()>) {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(wake);
+    }
+
+    fn notify(&self) {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|wake| {
+                !matches!(
+                    wake.try_send(()),
+                    Err(std::sync::mpsc::TrySendError::Disconnected(_))
+                )
+            });
+    }
 }
 
 impl ProcessService {
@@ -198,7 +233,9 @@ impl ProcessService {
             // an older read from overwriting a newer mutation in either window.
             let snapshot = service.store.snapshot().map_err(backend_error)?;
             let has_worktrees = !snapshot.worktrees.is_empty();
-            service.store_hub.publish(snapshot);
+            if service.store_hub.publish(snapshot) {
+                service.observers.notify();
+            }
             if service.has_worktrees.swap(has_worktrees, Ordering::AcqRel) != has_worktrees {
                 let _ = service.wake.try_send(());
             }
@@ -420,7 +457,9 @@ impl ProcessService {
             let has_shells = match service.sessions.sample() {
                 Ok(snapshot) => {
                     let has_shells = !snapshot.sessions.is_empty();
-                    service.sessions_hub.publish(snapshot);
+                    if service.sessions_hub.publish(snapshot) {
+                        service.observers.notify();
+                    }
                     has_shells
                 }
                 Err(error) => {
@@ -632,7 +671,9 @@ impl ProcessService {
         let mut watcher =
             notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
                 let flags = match event {
-                    Ok(event) if event.need_rescan() => STORE | SESSIONS | TABS | SETTINGS,
+                    Ok(event) if event.need_rescan() => {
+                        STORE | SESSIONS | TABS | SETTINGS | DASHBOARD
+                    }
                     Ok(event) if !matches!(event.kind, EventKind::Access(_)) => event
                         .paths
                         .iter()
@@ -641,11 +682,13 @@ impl ProcessService {
                     Err(error) => {
                         *watch_error.lock().unwrap_or_else(PoisonError::into_inner) =
                             Some(format!("home watcher: {error}"));
-                        STORE | SESSIONS | TABS | SETTINGS
+                        STORE | SESSIONS | TABS | SETTINGS | DASHBOARD
                     }
                 };
-                if flags != 0 {
+                if flags & !DASHBOARD != 0 {
                     riwork_nsh_workspace::session_io::changed();
+                }
+                if flags != 0 {
                     watch_dirty.fetch_or(flags, Ordering::Release);
                     let _ = watch_wake.try_send(());
                 }
@@ -689,6 +732,8 @@ impl ProcessService {
         let worker_has_worktrees = has_worktrees.clone();
         let worker_has_shells = has_shells.clone();
         let worker_preferences = preferences.clone();
+        let observers = Observers::default();
+        let worker_observers = observers.clone();
         let worker = thread::Builder::new()
             .name("riwork-native-service".into())
             .spawn(move || {
@@ -725,6 +770,8 @@ impl ProcessService {
                     if flags & SETTINGS != 0 {
                         worker_preferences.refresh();
                     }
+                    // Settings choose the orchestrator mode the dashboard offers.
+                    let mut changed = flags & (TABS | SETTINGS | DASHBOARD | SESSIONS) != 0;
                     let now = Instant::now();
                     let sample_due = next_sample.is_some_and(|deadline| now >= deadline);
                     let presence_due = next_presence.is_some_and(|deadline| now >= deadline);
@@ -741,7 +788,7 @@ impl ProcessService {
                             Ok(snapshot) => {
                                 worker_has_worktrees
                                     .store(!snapshot.worktrees.is_empty(), Ordering::Release);
-                                worker_store_hub.publish(snapshot);
+                                changed |= worker_store_hub.publish(snapshot);
                             }
                             Err(error) => {
                                 *worker_error.lock().unwrap_or_else(PoisonError::into_inner) =
@@ -771,7 +818,7 @@ impl ProcessService {
                                 }
                                 worker_has_shells
                                     .store(!snapshot.sessions.is_empty(), Ordering::Release);
-                                worker_sessions_hub.publish(snapshot);
+                                changed |= worker_sessions_hub.publish(snapshot);
                             }
                             Err(error) => {
                                 *worker_error.lock().unwrap_or_else(PoisonError::into_inner) =
@@ -791,6 +838,9 @@ impl ProcessService {
                     // indirectly through an empty tab/session inventory.
                     if flags & (TABS | SESSIONS | STORE) != 0 || sample_due {
                         refresh_tabs(&worker_tabs, &worker_tabs_hubs, &worker_error);
+                    }
+                    if changed {
+                        worker_observers.notify();
                     }
                 }
             })?;
@@ -812,6 +862,7 @@ impl ProcessService {
             worker: Some(worker),
             _watcher: watcher,
             last_error,
+            observers,
         }))
     }
 
@@ -827,6 +878,12 @@ impl ProcessService {
 
     pub fn home(&self) -> &Path {
         &self.home
+    }
+
+    /// Wake `wake` (without blocking) after every store, session, chat, settings,
+    /// automation or usage change this process sees.
+    pub fn observe_changes(&self, wake: SyncSender<()>) {
+        self.observers.add(wake);
     }
 
     pub fn preferences(&self) -> &Arc<PreferenceService> {
@@ -888,6 +945,8 @@ fn relevant(path: &Path, home: &Path) -> u8 {
         STORE
     } else if path == home.join("settings.json") {
         SETTINGS
+    } else if path == home.join("schedules.json") || path.starts_with(home.join("usage")) {
+        DASHBOARD
     } else if path == home.join("sessions.json")
         || path == home.join("orchestrator-wakes.json")
         || path.starts_with(home.join("agent-activity"))
@@ -920,7 +979,9 @@ fn refresh_tabs(
             return false;
         }
         match backend.snapshot(project) {
-            Ok(snapshot) => hub.publish(snapshot),
+            Ok(snapshot) => {
+                hub.publish(snapshot);
+            }
             Err(failure) => {
                 *error.lock().unwrap_or_else(PoisonError::into_inner) =
                     Some(format!("tabs snapshot: {failure}"))

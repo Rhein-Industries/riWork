@@ -27,6 +27,10 @@ export interface CommandHooks {
   escape: () => void;
   /** The window's current project, which a panel project switch can change. */
   projectId: () => string | undefined;
+  /** ⌘⌥O: the project's orchestrator, found or made as Settings say. */
+  projectOrchestrator?: () => void;
+  /** The new-tab menu's Global orchestrator: the global window's Chat, started. */
+  globalOrchestrator?: () => void;
 }
 
 /** Both native menus and key bindings enter this one window-local dispatcher. */
@@ -88,6 +92,8 @@ export function workspaceCommands(
     else if (id === "tabContextMenu") hooks.tabContextMenu();
     else if (id === "toggleFocusMode" || id === "focusMode" || id === "toggleFocus") hooks.toggleFocus();
     else if (id === "focusCentered") hooks.toggleCentered();
+    else if (id === "openProjectOrchestrator") hooks.projectOrchestrator?.();
+    else if (id === "openGlobalOrchestrator") hooks.globalOrchestrator?.();
     else if (id === "newProjectWindow") {
       void host.call("window.open", { kind: "project", projectId: hooks.projectId() ?? params.projectId }).catch(() => {});
     }

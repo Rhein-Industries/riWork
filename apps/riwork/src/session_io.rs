@@ -193,6 +193,12 @@ fn fake_elapsed(path: &Path, rows: &[Shell]) -> Duration {
     });
     start.elapsed()
 }
+/// Whether `home` is an isolated debug fixture whose shells come from its
+/// `fake-sessions.json` (never true in a release build).
+pub fn is_fixture(home: &Path) -> bool {
+    fake_path(home).is_some()
+}
+
 pub fn list(home: &Path) -> Result<Vec<Shell>, String> {
     if let Some(path) = fake_path(home) {
         let _guard = FAKE_LOCK.lock().unwrap();

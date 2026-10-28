@@ -1,5 +1,5 @@
-//! P1 global-window preferences only; dashboard activity remains deferred.
-use crate::service;
+//! The global window's saved preferences and the dashboard's live read.
+use crate::{Subscription, overview, service};
 use nsh_core::prelude::*;
 use riwork_core::{
     global_window::{GlobalWindowState, GlobalWindowStore},
@@ -123,6 +123,36 @@ impl Dashboard {
             let state = state.validate()?;
             backend()?.save(&state)?;
             Ok(state.into())
+        })
+        .await
+    }
+
+    /// The dashboard, read once per process for every subscribed window: a
+    /// snapshot after each read (`overview` module). Nothing is read while no
+    /// window subscribes; reading starts no host, chat, shell or orchestrator.
+    pub fn subscribe(
+        listener: Callback<crate::hub::Snapshot<overview::DashboardDto>>,
+        cx: CallCx<'_>,
+    ) -> Result<Subscription, String> {
+        Ok(Subscription::start(cx, async move {
+            if service::initialize().await.is_err() {
+                return;
+            }
+            if let Ok(subscription) =
+                service::blocking(|| Ok(overview::service()?.subscribe())).await
+            {
+                crate::deliver(subscription, listener).await;
+            }
+        }))
+    }
+
+    /// Read everything again now (the toolbar's Refresh). The result arrives as
+    /// the next snapshot; a request made during a read runs after it.
+    pub async fn refresh() -> Result<(), String> {
+        service::initialize().await?;
+        service::blocking(|| {
+            overview::service()?.refresh();
+            Ok(())
         })
         .await
     }

@@ -1,6 +1,7 @@
 import { Text, View, cleanup, host, mount, signal } from "nsh";
 import { Store, Layouts, type LayoutSession } from "riwork/native";
 import { Workspace } from "./Workspace";
+import { GlobalWindow } from "./global/GlobalWindow";
 import { windowTitle, type HostParams } from "./model";
 import { useAppearance } from "./appearance";
 
@@ -10,7 +11,6 @@ function App() {
   const session = signal<LayoutSession | null>(null);
   const notice = signal(params.notice ?? "Loading workspace…");
   const name = params.path?.split("/").filter(Boolean).pop() ?? "Workspace";
-  if (params.kind === "global") host.post("window.setDockInfo", { project: "Global", branch: null });
   let alive = true;
   let restoreReady = false;
   function installed() {
@@ -26,8 +26,13 @@ function App() {
       .then((loaded) => { if (alive) session.set(loaded); else loaded.dispose(); })
       .catch((error: unknown) => notice.set(String(error)));
   } else {
-    notice.set(params.kind === "global" ? "Global workspace" : "A project window is required.");
+    notice.set(params.kind === "global" ? "" : "A project window is required.");
     if (params.kind === "global") installed();
+  }
+  if (params.kind === "global") {
+    return <View style={{ flex: 1 }}>
+      <GlobalWindow params={params} theme={ui.theme} settings={ui.settings} />
+    </View>;
   }
   return <View style={{ flex: 1 }}>
     {session() && ui.ready() ? <Workspace session={session()!} title={windowTitle(name)} projectLabel={name}

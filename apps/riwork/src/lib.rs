@@ -902,6 +902,10 @@ impl LayoutSession {
         self.interaction = active;
         self.apply_queued()
     }
+    /// Place or select an existing chat by the main-pane rules (SHELL-215, SHELL-219).
+    pub fn open_chat(&mut self, chat_id: String) -> Result<Value, String> {
+        self.edit(|m| m.open_chat(&chat_id).map(|d| (d, true)))
+    }
     pub fn open_pending_chat(&mut self, id: String) -> Result<Value, String> {
         self.edit(|m| m.open_pending_chat(&id).map(|d| (d, false)))
     }

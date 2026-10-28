@@ -11,12 +11,15 @@ pub mod dashboard;
 pub mod dto;
 pub mod host_flush;
 pub mod hub;
+pub mod orchestrators;
+pub mod overview;
 mod presence;
 pub mod service;
 pub mod settings;
 pub mod tabs;
 #[cfg(feature = "test-support")]
 pub mod testing;
+pub mod usage;
 
 use futures_util::future::{AbortHandle, Abortable};
 use nsh_core::{element::Cleanup, prelude::*};
@@ -38,7 +41,10 @@ fn native(registry: &mut Registry) {
         .module::<settings::Settings>()
         .module::<appearance::Appearance>()
         .module::<dashboard::Dashboard>()
+        .module::<orchestrators::Orchestrators>()
         .module::<chat::Chat>()
+        .module::<usage::Usage>()
+        .module::<usage::Accounts>()
         .class::<chat::ChatHandle>()
         .class::<Subscription>();
     riwork_nsh_workspace::register_layouts(registry, service::process_home);
@@ -303,14 +309,17 @@ mod tests {
         assert_eq!(
             modules.iter().map(|module| module.name).collect::<Vec<_>>(),
             [
+                "Accounts",
                 "Appearance",
                 "Chat",
                 "Dashboard",
                 "Layouts",
+                "Orchestrators",
                 "Sessions",
                 "Settings",
                 "Store",
-                "Tabs"
+                "Tabs",
+                "Usage"
             ]
         );
         for module in modules {

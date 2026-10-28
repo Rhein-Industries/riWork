@@ -1,7 +1,7 @@
 import { Overlay, Scroll, Text, View, cleanup, colorScheme, createAnimatedValue, effect, host, keymap, signal, type Point, type YNode } from "nsh";
 import { Button, Dialog, Input, Popover, type DockAreaLayout, type DockAreaRef, type DockNode } from "nsh/base";
 import { Menu, Window, type MenuItem } from "nsh/desktop";
-import { Appearance, Sessions, Settings, Tabs, type AppearanceDto, type LayoutSession, type SettingsDto } from "riwork/native";
+import { Appearance, Orchestrators, Sessions, Settings, Tabs, type AppearanceDto, type LayoutSession, type SettingsDto } from "riwork/native";
 import { DockArea } from "./DockArea";
 import { CloseDialog } from "./CloseDialog";
 import { DeferredPanel, MountProbe } from "./DeferredPanel";
@@ -190,6 +190,25 @@ export function Workspace(props: WorkspaceProps) {
       }
       if (alive && project === projectId() && token === panelState.generation()) { install(session.openShell(id)); pendingFocus.set(id); }
     } catch (error) { if (alive) notice.set(String(error)); }
+  }
+  /** ⌘⌥O and P·ORCH: the project's one orchestrator, found or made off-thread
+   * as the project or Settings say (SHELL-217..219). A second request waits. */
+  const orchestratorBusy = signal(false);
+  async function openProjectOrchestrator() {
+    const project = projectId();
+    if (orchestratorBusy() || switching() || modal() || !UUID.test(project)) return;
+    orchestratorBusy.set(true);
+    try {
+      const made = await Orchestrators.start(project);
+      if (!alive || project !== projectId()) return;
+      if (made.fallback) notice.set(made.fallback);
+      if (made.kind === "chat" && made.chatId) install(session.openChat(made.chatId));
+      else if (made.shellId) await openShell(made.shellId);
+    } catch (error) { if (alive) notice.set(String(error).replace(/^Error: /, "")); }
+    finally { if (alive) orchestratorBusy.set(false); }
+  }
+  function openGlobalOrchestrator() {
+    void host.call("window.open", { kind: "global", view: "chat", start: true, activate: true }).catch((error: unknown) => notice.set(String(error)));
   }
   /** One local-shell creation path: the layout session creates and places it. */
   async function createShell(split?: "right" | "down") {
@@ -448,7 +467,10 @@ export function Workspace(props: WorkspaceProps) {
       { label: "Shell", shortcut: "mod+t", onSelect: () => { void createShell(); } },
       { label: "Subshell", disabled: !selected()?.startsWith("shell:"), onSelect: () => { void createSubshell(); } },
       { label: "Open file in Vim…", onSelect: showVimDialog },
-      ...[["Codex", "mod+shift+c"], ["Claude", "mod+shift+l"], ["Grok", "mod+shift+g"], ["Muse", "mod+shift+u"], ["Global orchestrator", "mod+shift+o"], ["Project orchestrator", "mod+alt+o"], ["New chat…"], ["App preview…"]].map(([label, shortcut]) => disabled(label, shortcut)),
+      ...[["Codex", "mod+shift+c"], ["Claude", "mod+shift+l"], ["Grok", "mod+shift+g"], ["Muse", "mod+shift+u"]].map(([label, shortcut]) => disabled(label, shortcut)),
+      { label: "Global orchestrator", shortcut: "mod+shift+o", onSelect: openGlobalOrchestrator },
+      { label: "Project orchestrator", shortcut: "mod+alt+o", disabled: !UUID.test(projectId()), onSelect: () => { void openProjectOrchestrator(); } },
+      ...[["New chat…"], ["App preview…"]].map(([label]) => disabled(label)),
       { type: "separator" }, disabled("Views"),
       ...VIEWS.map((panel): MenuItem => ({ label: panelTitle(panel), shortcut: VIEW_SHORTCUTS[panel], onSelect: () => view(panel) })),
       { type: "separator" }, disabled("Pane"),
@@ -519,12 +541,21 @@ export function Workspace(props: WorkspaceProps) {
       thaw();
     },
     projectId: () => projectId() || undefined,
+    projectOrchestrator: () => { void openProjectOrchestrator(); },
+    globalOrchestrator: openGlobalOrchestrator,
   });
 
   cleanup(host.on("route", (data) => {
-    const step = (data as { step?: { kind?: string; type?: string; shellId?: string; panel?: string; parentShellId?: string; path?: string; line?: number; worktreeId?: string } }).step;
-    if ((step?.kind ?? step?.type) === "showShell" && step?.shellId) void openShell(step.shellId);
-    else if ((step?.kind ?? step?.type) === "panel" && step?.panel) action(() => session.openPanel(step.panel!));
+    const step = (data as { step?: { kind?: string; type?: string; shellId?: string; panel?: string; parentShellId?: string; path?: string; line?: number; worktreeId?: string; chatId?: string; taskId?: string } }).step;
+    // `{ panel }` alone is the contract's shorthand for a panel step (§2.3).
+    const kind = step?.kind ?? step?.type ?? (step?.panel ? "panel" : undefined);
+    if (kind === "showShell" && step?.shellId) void openShell(step.shellId);
+    else if (kind === "panel" && step?.panel) view(step.panel);
+    else if (kind === "chat" && step?.chatId) action(() => session.openChat(step.chatId!));
+    else if (kind === "task" && step?.taskId) {
+      try { session.setSelectedTask(step.taskId); } catch (error) { notice.set(String(error)); }
+      action(() => session.openPanel("tasks"));
+    }
     else if ((step?.kind ?? step?.type) === "newSubshell") void createSubshell(step?.parentShellId);
     else if ((step?.kind ?? step?.type) === "openEditor" && step?.path) void openEditor(step.path, step.line, step.worktreeId);
   }));
@@ -698,6 +729,7 @@ export function Workspace(props: WorkspaceProps) {
       <StatusBar session={session} snapshot={snapshot} projectId={projectId} projectLabel={panelState.projectLabel}
         settings={props.settings} theme={theme} action={action} onError={(error) => notice.set(String(error))} modalOpen={() => !!props.modalOpen?.() || modal() || !!panelState.editor() || switching()}
         newShell={props.projectId ? { busy, create: () => { void createShell(); } } : undefined} onMenu={(open) => statusMenu.set(open)}
+        openProjectOrchestrator={UUID.test(projectId()) ? () => commands.dispatch("openProjectOrchestrator") : undefined}
         focus={{ mode: () => !!snapshot().focusMode, centered: () => !!snapshot().focusCentered,
           toggle: () => commands.dispatch("toggleFocusMode"), toggleCentered: () => commands.dispatch("focusCentered") }} />
       {notice() !== "" && <Overlay testID="workspace-notice" onCancel={escapeTopmost} margin={8}

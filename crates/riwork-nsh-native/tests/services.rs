@@ -993,3 +993,26 @@ async fn subshell_and_vim_mutations_validate_before_backend_and_publish_inventor
         .unwrap();
     assert_eq!(second.data.sessions.len(), 2);
 }
+
+#[tokio::test]
+async fn home_changes_wake_change_observers_and_a_quiet_home_wakes_none() {
+    let dir = tempfile::tempdir().unwrap();
+    let service = start(dir.path(), Arc::new(FakeSessions::default())).await;
+    let (wake, woken) = std::sync::mpsc::sync_channel(1);
+    service.observe_changes(wake);
+    let quiet = |woken: &std::sync::mpsc::Receiver<()>| {
+        while woken.recv_timeout(Duration::from_millis(400)).is_ok() {}
+    };
+    quiet(&woken);
+    assert!(woken.recv_timeout(Duration::from_millis(500)).is_err());
+    service.create_folder("Clients".into(), None).await.unwrap();
+    woken
+        .recv_timeout(Duration::from_secs(5))
+        .expect("a store write wakes the dashboard");
+    quiet(&woken);
+    // Files only the dashboard reads wake it too, through the one home watcher.
+    std::fs::write(service.home().join("schedules.json"), b"{\"schedules\":[]}").unwrap();
+    woken
+        .recv_timeout(Duration::from_secs(5))
+        .expect("an automation change wakes the dashboard");
+}

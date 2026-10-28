@@ -7,13 +7,15 @@ test("P1-STAT-01: default kinds, order, sides and master visibility reach both w
   try {
     await app.waitFor("id:status-bar"); await peer.waitFor("id:status-bar");
     await app.waitFor("text:0 LIVE"); await peer.waitFor("text:0 LIVE");
+    await app.waitFor("text:CODEX · System default · UNAVAILABLE");
     expect(app.shows("id:status-left >> id:status-item-project")).toBe(true);
     for (const kind of ["live-sessions", "resources", "usage", "codex-account", "session-id", "project-orchestrator", "layout"]) {
       expect(app.shows(`id:status-right >> id:status-item-${kind}`)).toBe(true);
     }
     expect(app.shows("id:status-right >> id:top-orchestrator")).toBe(true);
-    const defaults = app.texts().filter((text) => ["Project Alpha", "0 LIVE", "CPU — RAM —", "CODEX · ACCOUNT UNKNOWN", "DEFAULT (APP) · Email unknown", "Global", "P·ORCH", "Layout"].includes(text));
-    expect(defaults).toEqual(["Project Alpha", "0 LIVE", "CPU — RAM —", "CODEX · ACCOUNT UNKNOWN", "DEFAULT (APP) · Email unknown", "Global", "P·ORCH", "Layout"]);
+    // P5: the fixture backend's system default (no saved list, no figures).
+    const shown = ["Project Alpha", "0 LIVE", "CPU — RAM —", "CODEX · System default · UNAVAILABLE", "DEFAULT (APP) · System default · email unknown", "Global", "P·ORCH", "Layout"];
+    expect(app.texts().filter((text) => shown.includes(text))).toEqual(shown);
     await statusEdit(app, { action: "visible", kind: "worktree", value: true });
     await statusEdit(app, { action: "side", kind: "layout", side: "left" });
     for (let step = 0; step < 3; step++) await statusEdit(app, { action: "move", kind: "layout", value: true });
@@ -116,5 +118,65 @@ test("P1-STAT-05: global menu routes both views and closes on escape, outside, h
     await app.host.send("app.fixture.modal", { open: true });
     await app.press("id:top-orchestrator");
     expect(app.shows("id:global-menu")).toBe(false);
+  } finally { app.dispose(); }
+});
+
+test("P5-USAGE-07: the usage item reads the fixture account, names it in its label and opens the Usage panel", async () => {
+  const app = await open("./Appearance.fixture.tsx", options("usage-current"));
+  try {
+    await app.waitFor("text:CODEX · System default · UNAVAILABLE");
+    expect(app.shows("label:Usage CODEX · System default · UNAVAILABLE")).toBe(true);
+    expect(app.shows("label:New Codex sessions: DEFAULT (APP) · System default · email unknown")).toBe(true);
+    expect(app.enabled("id:status-item-project-orchestrator")).toBe(false);
+    await app.press("id:status-item-usage");
+    await app.waitFor("id:panel:panel:usage");
+    expect(app.shows("id:status-item-usage")).toBe(true);
+  } finally { app.dispose(); }
+});
+
+test("P5-USAGE-08: the account item opens a read-only menu, asks for the list and closes like the other menus", async () => {
+  const app = await open("./Appearance.fixture.tsx", options("usage-account"));
+  try {
+    await app.waitFor("text:DEFAULT (APP) · System default · email unknown");
+    await app.press("id:status-item-codex-account");
+    await app.waitFor("id:account-menu");
+    for (const text of ["New Codex sessions in this project", "Running chats and shells keep their account; --account still chooses one.",
+      "Inherit app default", "Uses System default", "System default", "Project Settings…"]) expect(app.texts()).toContain(text);
+    // Opening with no list starts the (fixture) discovery once; its error is the status.
+    await app.waitFor("text:Orca is not consulted in this fixture.");
+    expect(app.texts()).toContain("✓");
+    expect(app.enabled("id:account-menu-inherit")).toBe(false);
+    expect(app.enabled("id:account-menu-system")).toBe(false);
+    await app.press("id:status-item-codex-account");
+    expect(app.shows("id:account-menu")).toBe(false);
+    await app.press("id:status-item-codex-account");
+    await app.keyboard.press("escape");
+    expect(app.shows("id:account-menu")).toBe(false);
+    // A press outside an open menu closes it, as for the layout and global menus.
+    await app.press("id:status-item-layout");
+    await app.press("id:status-item-codex-account");
+    expect(app.shows("id:layout-menu")).toBe(false);
+    await app.press("id:status-item-codex-account");
+    expect(app.shows("id:account-menu")).toBe(true);
+    await app.press("id:account-menu-project-settings");
+    expect(app.shows("id:account-menu")).toBe(false);
+    await app.press("id:status-item-codex-account");
+    await statusEdit(app, { action: "visible", kind: "codex_account", value: false });
+    await app.waitUntil(() => !app.shows("id:account-menu"));
+    await statusEdit(app, { action: "visible", kind: "codex_account", value: true });
+    await app.host.send("app.fixture.modal", { open: true });
+    await app.press("id:status-item-codex-account");
+    expect(app.shows("id:account-menu")).toBe(false);
+  } finally { app.dispose(); }
+});
+
+test("P5-USAGE-09: all accounts reads every known account compactly and Native sentence-cases only the text", async () => {
+  const opts = options("usage-all", "native");
+  opts.host.params.initial.statusBar.usageMode = "all_accounts";
+  const app = await open("./Appearance.fixture.tsx", opts);
+  try {
+    await app.waitFor("text:Codex  System default unavailable");
+    expect(app.shows("label:Usage CODEX · System default · UNAVAILABLE")).toBe(true);
+    expect(app.texts()).toContain("Default (app) · System default · email unknown");
   } finally { app.dispose(); }
 });

@@ -108,6 +108,9 @@ fn main() -> Result<(), String> {
                 ("Beta", "L-NESTED"),
                 ("Gamma", "L-EMPTY"),
                 ("Busy", "L-NESTED"),
+                // Phase 5 tests change this project's tabs (routes, orchestrator
+                // chats); no golden layout fixture is read from it.
+                ("Phase5", "L-MAIN"),
             ])
             .collect()
     } else {

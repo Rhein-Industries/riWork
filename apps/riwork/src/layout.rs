@@ -447,6 +447,18 @@ impl LayoutModel {
         Ok(self.dock(self.extent.unwrap_or(DEFAULT_EXTENT)))
     }
 
+    /// Place or select an existing chat (an orchestrator's included) by the
+    /// main-pane rules: in main it is selected in place, behind a terminal in an
+    /// unlocked pane it moves to main, and it never leaves a locked pane.
+    pub fn open_chat(&mut self, chat_id: &str) -> Result<DockAreaLayout, String> {
+        if uuid::Uuid::parse_str(chat_id).map_or(true, |id| id.to_string() != chat_id) {
+            return Err("invalid: a chat id is a canonical UUID".into());
+        }
+        self.open_tab(SavedTab::Chat {
+            chat_id: chat_id.to_owned(),
+        })
+    }
+
     pub fn open_pending_chat(&mut self, id: &str) -> Result<DockAreaLayout, String> {
         let uuid = id.strip_prefix("chat-pending:").unwrap_or(id);
         if uuid.is_empty() {

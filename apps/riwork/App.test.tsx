@@ -78,7 +78,8 @@ test("locked pixel geometry survives resize and pane menu edits remain in Rust",
 test("production entry routes global windows without opening a project DockArea", async () => {
   const app = await open("./App.tsx", { platform: "macos", host: { params: { schema: 1, windowId: "global-fixture", kind: "global", projectId: null, path: "/fixture/global-window" } } });
   try {
-    expect(app.texts()).toContain("Global workspace");
+    await app.waitFor("id:global-bar");
+    expect(app.shows("id:global-view-dashboard")).toBe(true);
     expect(app.shows("id:workspace-dock")).toBe(false);
     expect(app.host.posts().filter((post) => post.name === "app.restoreReady").length).toBe(0);
   } finally { app.dispose(); }
@@ -115,7 +116,7 @@ test("a restored global entry confirms without opening a project session", async
     },
   });
   try {
-    expect(app.texts()).toContain("Global workspace");
+    await app.waitFor("id:global-bar");
     expect(app.shows("id:workspace-dock")).toBe(false);
     expect(app.host.posts().filter((post) => post.name === "app.restoreReady").length).toBe(1);
   } finally { app.dispose(); }

@@ -4,14 +4,16 @@ use std::{
     ffi::OsStr,
     fs,
     path::{Path, PathBuf},
-    sync::OnceLock,
+    sync::{Mutex, OnceLock, PoisonError},
 };
 
 use anyhow::Result;
 use riwork_core::store::Store;
 use riwork_engine::{
+    activity::{ActivityTracker, unix_now},
+    notifications::record_completion_outcome,
     project_tabs::{TabStore, Update},
-    sessions::{SessionManager, registered_shell},
+    sessions::{HarnessKind, SessionManager, registered_shell},
 };
 use serde_json::Value;
 
@@ -438,10 +440,21 @@ impl StoreBackend for CoreStoreBackend {
 
 /// Production session adapter. Its home, and therefore its tmux socket name,
 /// are fixed before any window subscribes.
-#[derive(Debug)]
 pub struct EngineSessionsBackend {
     home: PathBuf,
     manager: OnceLock<SessionManager>,
+    /// Kept across samples: it reads Codex rollouts incrementally and notices
+    /// finished turns, which become completion alerts and orchestrator wakes.
+    activity: Mutex<Option<ActivityTracker>>,
+}
+
+impl std::fmt::Debug for EngineSessionsBackend {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("EngineSessionsBackend")
+            .field("home", &self.home)
+            .finish_non_exhaustive()
+    }
 }
 
 impl EngineSessionsBackend {
@@ -451,6 +464,28 @@ impl EngineSessionsBackend {
         Self {
             home,
             manager: OnceLock::new(),
+            activity: Mutex::new(None),
+        }
+    }
+
+    /// As every GPUI window's sample did, once per process here: record the
+    /// outcome of each Codex turn that finished since the last sample. The
+    /// ledger dedupes by event id across processes; opted-out projects add
+    /// nothing. Claude, Grok and Muse report completions through their hooks.
+    fn record_codex_completions(&self, shells: &[riwork_engine::sessions::ShellSession]) {
+        let mut tracker = self.activity.lock().unwrap_or_else(PoisonError::into_inner);
+        let tracker = tracker.get_or_insert_with(|| ActivityTracker::at(self.home.clone()));
+        tracker.sample_states(shells, unix_now());
+        for completion in tracker.take_completions() {
+            if let Err(error) = record_completion_outcome(
+                &self.home,
+                &completion.shell_id,
+                &completion.event_id,
+                HarnessKind::Codex,
+                completion.outcome,
+            ) {
+                eprintln!("riwork notifications: {error}");
+            }
         }
     }
 
@@ -636,6 +671,7 @@ impl SessionsBackend for EngineSessionsBackend {
 
     fn sample(&self) -> Result<SessionsSnapshot> {
         let sample = self.manager()?.sample(false).map_err(anyhow::Error::msg)?;
+        self.record_codex_completions(&sample.shells);
         Ok(SessionsSnapshot {
             sessions: sample.shells.into_iter().map(Into::into).collect(),
         })
