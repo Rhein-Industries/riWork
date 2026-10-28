@@ -261,6 +261,7 @@ wire and log formats and `chat-drafts/` files are unchanged.
 | `Chat.create(NewChatRequest)` | async | Ensures the host; strict decoding (UUID project/worktree, non-empty cwd). The host registers the shared tab entry (`TabStore::register_created`); the bridge adds no tab write. |
 | `Chat.delete(chatId)` | async | `Client::delete`. |
 | `Chat.open(chatId, { history?, mode? }) → ChatHandle` | sync | Validates the UUID and starts the handle's threads; no IO on the engine thread. `history` follows only an existing host (CHATT-013). |
+| `Chat.newEditor() → number` | sync | A new composer's draft editor identity, unique across every window's JS runtime in the process (an atomic counter; the draft owners it keys are process-wide). Each mounted composer takes one and passes it to `submit`/`saveDraft`. |
 | `Chat.fixtureDirectory(name)` | async | Debug/test-support fixture only (`RIWORK_NSH_CHAT_FIXTURE=1`, `/tmp` home); rejects `unavailable` otherwise. |
 | `ChatHandle.subscribe(listener)` | sync handle | `ChatDelivery`: `reset { rev, seq, panel, rows, bodies }`, then `patch { rev, seq, panel?, upsert?, remove?, order?, bodies?, drop?, splice?, append? }`, at most one per 16 ms (first change at once, trailing edge after). `resync: true` replaces an overflowed queue (capacity 64). A second subscription replaces the first. |
 | `ChatHandle.setViewport(first, last)`, `toggle(rowId)`, `expandAll(open)`, `setMode(mode)` | sync | Enqueue to the handle's worker; the worker reprojects (never for token deltas) and patches. |
@@ -1037,6 +1038,10 @@ Decisions the owner has taken since the freeze are recorded, dated, in [§8](#8-
   table above (reset/patch `ChatDelivery`, viewport-paged bodies, typed handle
   commands, drafts on the handle). No engine wire, log or draft-file format
   changed; host params and terminal schemas unchanged.
+- 2026-10-28 Phase 4a follow-up (task 2a017126): additive sync
+  `Chat.newEditor()`. Composer draft identities come from it instead of a
+  per-runtime counter, so two windows can no longer share an owner. No schema,
+  wire or draft-file change.
 - v1, 2026-10-27 addendum (task 8fa16659): §8 records three owner decisions (D-OWN-1, D-PERF-1,
   Phase 2 entry gate). No frozen surface, `schema` field or §3.7 metric changed, so there is no
   version bump.

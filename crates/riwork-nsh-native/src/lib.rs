@@ -334,7 +334,12 @@ mod tests {
             for function in &module.functions {
                 let expected = if matches!(
                     function.name,
-                    "subscribe" | "sentenceCase" | "cased" | "open" | "stageProjectMemo"
+                    "subscribe"
+                        | "sentenceCase"
+                        | "cased"
+                        | "open"
+                        | "stageProjectMemo"
+                        | "newEditor"
                 ) {
                     FunctionKind::Sync
                 } else {
@@ -356,6 +361,7 @@ mod tests {
             "projectFolders",
             "openSession(request: unknown): Promise<LayoutSession>",
             "class LayoutSession",
+            "newEditor(): number",
             "class Subscription",
         ] {
             assert!(
