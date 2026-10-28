@@ -186,6 +186,33 @@ pub mod fixture {
         format!("{HANDSHAKE}{turn}\n")
     }
 
+    /// Synthetic Cua-shaped MCP image results, used by bridge and TSX tests.
+    pub fn image_turn() -> String {
+        use base64::Engine as _;
+        use serde_json::json;
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::RgbaImage::from_pixel(12, 8, image::Rgba([200, 40, 10, 255]))
+            .write_to(&mut png, image::ImageFormat::Png).unwrap();
+        let encoded = base64::engine::general_purpose::STANDARD.encode(png.into_inner());
+        let item = json!({"type":"mcpToolCall", "id":"cua-shot", "server":"cua-driver",
+            "tool":"get_window_state", "status":"completed", "arguments":{},
+            "result":{"content":[
+                {"type":"image", "mimeType":"image/png", "data":encoded},
+                {"type":"image", "mimeType":"image/png", "data":"not-base64"},
+                {"type":"localImage", "path":"missing.png"},
+                {"type":"localImage", "path":"/unregistered/shot.png"}
+            ]}, "error":null});
+        let turn = json!({"type":"expect", "frame":{"id":"<any>", "method":"turn/start",
+            "params":{"threadId":"thread-1", "input":[{"type":"text", "text":"show screenshots"}]}},
+            "reply":[
+                {"id":"$id", "result":{"turn":{"id":"turn-1", "items":[], "itemsView":"notLoaded", "status":"inProgress", "error":null}}},
+                {"method":"turn/started", "params":{"threadId":"thread-1", "turn":{"id":"turn-1", "items":[], "itemsView":"notLoaded", "status":"inProgress", "error":null}}},
+                {"method":"item/completed", "params":{"item":item, "threadId":"thread-1", "turnId":"turn-1"}},
+                {"method":"turn/completed", "params":{"threadId":"thread-1", "turn":{"id":"turn-1", "items":[], "itemsView":"notLoaded", "status":"completed", "error":null}}}
+            ]});
+        format!("{HANDSHAKE}{turn}\n")
+    }
+
     /// Provider warnings a `*_refresh` recording sends while its request waits:
     /// panel deliveries that leave the approvals and questions alone.
     pub const REFRESHES: usize = 8;
@@ -249,6 +276,7 @@ pub mod fixture {
             .map(|(name, text)| (*name, std::borrow::Cow::Borrowed(*text)))
             .chain([
                 ("large_turn", std::borrow::Cow::Owned(large_turn())),
+                ("image_turn", std::borrow::Cow::Owned(image_turn())),
                 (
                     REFRESHED[0],
                     std::borrow::Cow::Owned(refreshed(recorded("question"), None)),
@@ -266,6 +294,7 @@ pub mod fixture {
 
     fn known(name: &str) -> bool {
         name == "large_turn"
+            || name == "image_turn"
             || REFRESHED.contains(&name)
             || RECORDINGS.iter().any(|(known, _)| *known == name)
     }

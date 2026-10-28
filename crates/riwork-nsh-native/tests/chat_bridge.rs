@@ -184,6 +184,7 @@ impl Mirror {
             BodyDto::Text { text, .. } => Some(text.clone()),
             BodyDto::Command { output, .. } => Some(output.clone()),
             BodyDto::Detail { text } => Some(text.clone()),
+            BodyDto::Changes { .. } | BodyDto::Tool { .. } => None,
             BodyDto::Steps { steps, .. } => Some(
                 steps
                     .iter()
@@ -276,6 +277,7 @@ fn submit(
 ) -> riwork_nsh_native::chat::dto::ReceiptDto {
     let parts = handle.parts();
     let request = SubmitRequest {
+        attachments: Vec::new(),
         text: text.into(),
         editor: 1,
         generation,
@@ -653,6 +655,7 @@ fn streaming_is_coalesced_to_one_delivery_per_16_ms_and_a_quiet_chat_delivers_no
         let receipt = runtime().block_on(async move {
             parts
                 .submit(SubmitRequest {
+                    attachments: Vec::new(),
                     text: "flood:300:64".into(),
                     editor: 1,
                     generation: 1,

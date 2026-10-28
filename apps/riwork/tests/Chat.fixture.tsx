@@ -1,5 +1,5 @@
 import { Text, View, host, mount, signal } from "nsh";
-import { Chat } from "riwork/native";
+import { Chat, Store } from "riwork/native";
 import { ChatTab, type ChatDiagnostics } from "../chat/ChatTab";
 
 /** A chat tab on the isolated fixture host. A new chat's working directory
@@ -11,7 +11,11 @@ function Fixture() {
   let last: ChatDiagnostics | null = null;
   if (!chatId()) {
     void Chat.fixtureDirectory(params.recording ?? "turn")
-      .then((cwd) => Chat.create({ provider: "codex", cwd }))
+      .then(async (cwd) => {
+        const projectId = params.recording === "image_turn"
+          ? (await Store.addProject({ root: cwd, name: "Screenshot fixture" })).id : undefined;
+        return Chat.create({ provider: "codex", cwd, projectId });
+      })
       .then((chat) => chatId.set(chat.id))
       .catch((reason) => error.set(String(reason)));
   }

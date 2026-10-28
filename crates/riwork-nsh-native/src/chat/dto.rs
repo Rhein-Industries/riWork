@@ -41,6 +41,10 @@ pub struct ArtifactDto {
     pub line: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_index: Option<usize>,
+    /// Embedded transcript bytes need no filesystem or network access. Local
+    /// references still require an explicit preview action and native scope check.
+    #[serde(default)]
+    pub inline_image: bool,
 }
 
 /// One flattened, visible transcript entry: a header, never a body. Its `key`
@@ -81,7 +85,7 @@ pub struct RowDto {
     pub has_body: bool,
 }
 
-const ROW_TS: &str = "export interface ChatRow { artifacts?: {itemId:string;label:string;path?:string|null;line?:number|null;imageIndex?:number|null}[]; fileCount?:number; attachments?: ChatAttachment[]; key: string; id: string; kind: 'user' | 'final' | 'commentary' | 'reasoning' | 'shell' | 'read' | 'search' | 'list' | 'web_search' | 'web_fetch' | 'mcp' | 'worker' | 'subagent' | 'other' | 'edit' | 'plan' | 'todo' | 'compaction' | 'notice' | 'request' | 'group' | 'activity'; depth: number; title: string; target?: string; meta?: string; open: boolean; disclosure: boolean; failedCount: number; running: boolean; durationMs?: number; currentLabel?: string; provisional: boolean; requestId?: string; status?: 'in_progress' | 'completed' | 'failed' | 'declined' | 'interrupted'; hasBody: boolean; }";
+const ROW_TS: &str = "export interface ChatRow { artifacts?: {itemId:string;label:string;path?:string|null;line?:number|null;imageIndex?:number|null;inlineImage?:boolean}[]; fileCount?:number; attachments?: ChatAttachment[]; key: string; id: string; kind: 'user' | 'final' | 'commentary' | 'reasoning' | 'shell' | 'read' | 'search' | 'list' | 'web_search' | 'web_fetch' | 'mcp' | 'worker' | 'subagent' | 'other' | 'edit' | 'plan' | 'todo' | 'compaction' | 'notice' | 'request' | 'group' | 'activity'; depth: number; title: string; target?: string; meta?: string; open: boolean; disclosure: boolean; failedCount: number; running: boolean; durationMs?: number; currentLabel?: string; provisional: boolean; requestId?: string; status?: 'in_progress' | 'completed' | 'failed' | 'declined' | 'interrupted'; hasBody: boolean; }";
 serde_js!(RowDto, "ChatRow", ROW_TS);
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

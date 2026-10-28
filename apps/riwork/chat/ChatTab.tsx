@@ -16,6 +16,7 @@ import {
 import { createBillingControl, BillingControls, BillingNoticeAction, type BillingControl } from "./BillingControls";
 import { DictationControl, DictationStatus, type DictationController } from "./Dictation";
 import { FileReview } from "./FileReview";
+import { ChatImage } from "./ChatImage";
 import { WorkerShelf } from "./WorkerShelf";
 import { MemoPreview, appendMemo, createMemoPreview, memoCommandRest } from "./MemoPreview";
 import { CodeTerminalDialog } from "./CodeTerminalDialog";
@@ -73,13 +74,11 @@ export function ChatTab(props: ChatTabProps) {
   const paneWidth = signal(0);
   const reviewing = signal<{ scope?: string; key?: string } | null>(null);
   const imagePreview = signal<ChatImagePreview | null>(null);
-  const imageLoading = signal(false);
   const codeSnippet = signal<string | null>(null);
   const codeReader = signal<{ snippet: CodeSnippet; directory?: string } | null>(null);
   const exporting = signal(false);
   let codeReturnFocus: YNode | undefined;
-  const interactive = () => active() && !reviewing() && !imagePreview() && !imageLoading() && codeSnippet() === null && codeReader() === null && !exporting();
-  let imageGeneration = 0;
+  const interactive = () => active() && !reviewing() && !imagePreview() && codeSnippet() === null && codeReader() === null && !exporting();
   const panel = signal<ChatPanel>(emptyPanel(props.chatId));
   const notices = signal<string[]>([]);
   const bodies = new Map<string, ReturnType<typeof signal<ChatBody | undefined>>>();
@@ -210,14 +209,14 @@ export function ChatTab(props: ChatTabProps) {
     return () => clearTimeout(timer);
   });
 
-  function closeImage() { imageGeneration++; imagePreview.set(null); imageLoading.set(false); }
+  function closeImage() { imagePreview.set(null); }
   function closeCodeSnippet() {
     codeSnippet.set(null);
     if (active()) codeReturnFocus?.focus();
     codeReturnFocus = undefined;
   }
   effect(() => {
-    if (!active() || (!imagePreview() && !imageLoading())) return;
+    if (!active() || !imagePreview()) return;
     return keymap.bind("escape", closeImage, { when: "always" });
   });
   function findInChat() { finding.set(true); searchInput?.focus(); }
@@ -360,14 +359,13 @@ export function ChatTab(props: ChatTabProps) {
       {row().disclosure ? <Header row={row} /> : <Leaf row={row} />}
       {row().disclosure && row().open && row().hasBody && <Body row={row} />}
       {(row().artifacts?.length ?? 0) > 0 && row().kind !== "edit" && <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 4, paddingVertical: 4 }}>
-        {row().artifacts!.map((artifact) => control(artifact.path ? `▤ ${artifact.label.split("/").pop()}` : `▧ ${artifact.label || "Image"}`, () => {
-          if (artifact.path) void openLink(`${artifact.path}${artifact.line ? `:${artifact.line}` : ""}`);
-          else if (artifact.imageIndex !== null && artifact.imageIndex !== undefined) {
-            const token = ++imageGeneration; imageLoading.set(true); imagePreview.set(null);
-            void handle.imagePreview(artifact.itemId, artifact.imageIndex).then((value) => { if (alive && token === imageGeneration) imagePreview.set(value); })
-              .catch((error) => { if (token === imageGeneration) notice(String(error)); }).finally(() => { if (token === imageGeneration) imageLoading.set(false); });
-          }
-        }))}
+        {row().artifacts!.map((artifact) => artifact.path
+          ? control(`▤ ${artifact.label.split("/").pop()}`, () => { void openLink(`${artifact.path}${artifact.line ? `:${artifact.line}` : ""}`); })
+          : artifact.imageIndex !== null && artifact.imageIndex !== undefined && <ChatImage
+            id={`${artifact.itemId}:${artifact.imageIndex}`} label={artifact.label} inline={!!artifact.inlineImage}
+            preview={() => handle.imagePreview(artifact.itemId, artifact.imageIndex!)} theme={theme}
+            width={() => paneWidth() - indent() - chatGutter(paneWidth(), theme().scale)}
+            expand={(value) => imagePreview.set(value)} openLink={(url) => { void openLink(url); }} />)}
       </View>}
     </View>;
   }
@@ -642,10 +640,10 @@ export function ChatTab(props: ChatTabProps) {
       onClose={() => { codeReader.set(null); const restore = codeReturnFocus; codeReturnFocus = undefined; restore?.focus(); }} />}
     {reviewing() && <FileReview handle={handle} scope={() => reviewing()?.scope} initial={() => reviewing()?.key} theme={theme} active={active}
       onClose={() => reviewing.set(null)} onOpen={(path, line) => void openLink(`${path}${line ? `:${line}` : ""}`)} onError={notice} />}
-    {(imagePreview() || imageLoading()) && <View style={{ position: "absolute", left: 0, right: 0, top: 0, bottom: 0, zIndex: 21, backgroundColor: theme().palette.bg, padding: 12, gap: 8 }}>
+    {imagePreview() && <View style={{ position: "absolute", left: 0, right: 0, top: 0, bottom: 0, zIndex: 21, backgroundColor: theme().palette.bg, padding: 12, gap: 8 }}>
       <View style={{ flexDirection: "row", alignItems: "center" }}><Text numberOfLines={1} style={{ ...text(13), flex: 1 }}>{imagePreview()?.label || "Image preview"}</Text>{control("Close", closeImage)}</View>
-      {imageLoading() && <Text style={text(12, theme().palette.muted)}>Loading image…</Text>}
-      {imagePreview()?.dataUrl && <Scroll style={{ flex: 1 }}><Image src={imagePreview()!.dataUrl!} style={{ width: "100%", height: Math.min(640, paneWidth() * 0.8) }} /></Scroll>}
+      {imagePreview()?.dataUrl && <Scroll style={{ flex: 1 }}><Image src={imagePreview()!.dataUrl!} resizeMode="contain" style={{ width: "100%", height: Math.min(640, paneWidth() * ((imagePreview()!.height || 3) / (imagePreview()!.width || 4))) }}
+        onError={(event) => imagePreview.set({ ...imagePreview()!, dataUrl: null, message: event.message || "This image could not be displayed" })} /></Scroll>}
       {imagePreview()?.url && control("Open image", () => void openLink(imagePreview()!.url!))}
       {imagePreview()?.message && <Text style={text(12, theme().palette.muted)}>{imagePreview()!.message}</Text>}
     </View>}

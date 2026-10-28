@@ -659,6 +659,11 @@ impl ChatView {
                 label: artifact.path.as_ref().map(|path| path.path.clone()).or_else(|| self.fold.item(&artifact.item_id).and_then(|item| item.presentation.images.get(artifact.image_index?)).map(|image| image.label.clone())).unwrap_or_else(|| "Image".into()),
                 path: artifact.path.as_ref().map(|path| path.path.clone()),
                 line: artifact.path.as_ref().and_then(|path| path.line), image_index: artifact.image_index,
+                inline_image: self.fold.item(&artifact.item_id)
+                    .and_then(|item| item.presentation.images.get(artifact.image_index?))
+                    .is_some_and(|image| matches!(image.source,
+                        riwork_engine::chat::model::ImageSource::Data { .. }
+                        | riwork_engine::chat::model::ImageSource::Unavailable { .. })),
             }).collect(),
             file_count: item.map(|item| self.file_counts.count_item(item)).unwrap_or_default(),
             attachments: item.map(|item| item.presentation.attachments.iter().cloned().map(super::dto::AttachmentDto).collect()).unwrap_or_default(),

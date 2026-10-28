@@ -278,7 +278,9 @@ fn png_bytes(rgba: image::RgbaImage) -> Result<Vec<u8>, String> {
     Ok(bytes.into_inner())
 }
 
-fn decode_image(bytes: &[u8]) -> Result<PreviewContent, String> {
+/// Decode bounded raster bytes to an oriented, downsampled PNG. Also used for
+/// embedded chat images, which must pass the same checks as local previews.
+pub fn decode_image(bytes: &[u8]) -> Result<PreviewContent, String> {
     use image::{DynamicImage, ImageDecoder, metadata::Orientation};
     let format = match image::guess_format(bytes) {
         Ok(format)
