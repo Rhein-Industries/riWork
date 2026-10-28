@@ -36,6 +36,7 @@ or tab write and no side-channel adapter.
 | Coalescing ≥ 16 ms, no polling, quiet delivers nothing | `streaming_is_coalesced_to_one_delivery_per_16_ms_and_a_quiet_chat_delivers_nothing`. TSX polling guard (patterns of `check-polling.sh`) has no matches; chat TSX has no timers. | pass |
 | Approval round trip | Bridge: `approval_round_trip_through_a_replayed_codex_stream`, `questions_are_answered_once_then_the_access_request_is_allowed_for_the_session`. UI: P4-CHAT-01 (Allow button), P4-CHAT-02 (⏎ allows in an empty box; ⎋ denies a file change), P4-CHAT-04 (question panel, then Allow for session). The fake provider recorded no mismatch. | pass |
 | Drafts across windows | Store: `the_first_composers_of_two_windows_never_share_an_editor_identity`. UI: P4-CHAT-07 (two apps, i.e. two JS runtimes in one process, on one chat; each composer is its runtime's first and both are at the same edit generation; the first window's send leaves the second window's draft stored and restorable) and P4-CHAT-08 (a composer's own send clears its stored draft). Both also assert one composer per tab for the whole turn. | pass |
+| Requests across panel deliveries | P4-CHAT-09: picked and typed answers, and the focused answer box, survive 8 provider refreshes while the question waits; the question then goes and the access approval comes and goes. P4-CHAT-10: an expanded five-line approval detail stays expanded through 8 refreshes, then Allow ends the turn. | pass |
 | Draft restore | Bridge: `drafts_save_restore_survive_a_reload_and_clear_only_after_a_receipt` (plain legacy file bytes, restart, refused send keeps a saved submission, receipt clears) and `a_deleted_chat_reports_deleted_and_forgets_its_draft`. UI: P4-CHAT-05 (closed tab restores into an empty composer). Draft store: 38 unit tests including legacy-byte goldens. | pass |
 | Interrupted-turn handling | Bridge: `an_interrupted_turn_closes_as_interrupted_and_stops_running`. UI: P4-CHAT-03 (Stop → `· Interrupted`, Send returns). | pass |
 | Steering while running | Bridge: `a_message_sent_while_a_turn_runs_steers_it` (Codex `turn/steer` recording) | pass |
@@ -98,11 +99,43 @@ Negative controls with the final tests:
 | `newEditor()`, panel-derived `deleted` | P4-CHAT-07 fails: `[7,7]` composers, expected `[1,1]`; P4-CHAT-08 fails: 6, expected 1 |
 | Both fixes | 8/8 chat tests pass |
 
-Open (not changed here): `Requests` renders `ApprovalBar` and `QuestionPanel`
-in expressions that read `panel()`, so they are rebuilt on every panel delivery
-while a request is open. A `QuestionPanel` would then lose typed answers on the
-next clock tick of a running turn. This was found by reading the source; no test
-covers it yet. The same `computed` remedy applies.
+The approval bar and question panel had the same rebuild problem; it is fixed
+in the follow-up below.
+
+## Follow-up: requests across panel deliveries (task 77827768)
+
+`Requests` rendered `ApprovalBar` and `QuestionPanel` behind
+`props.panel().approvals.length > 0` (and the questions equivalent), and
+returned them in a fragment. Every panel delivery rebuilt both, so an expanded
+approval detail collapsed and picked or typed answers were lost on the next
+provider update while the request waited.
+
+Two causes, both fixed in `ChatTab.tsx`:
+
+- The gates read the whole panel. Each request is now a `computed` selector
+  with content equality (`sameContent`): a delivery is always a new object, so
+  identity alone would still notify. Each request is mounted per request id.
+  The selector keeps the last request through the delivery that ends it, so the
+  bar's own expressions never read `undefined` before the gate removes it.
+- Expressions a component returns in a fragment re-run with the parent's
+  other expressions (here `panel().notices.map(...)` and the state lines,
+  which read the panel). The new tests showed this: with the selectors alone,
+  the gate still re-ran on every delivery. Each gate now sits in its own `View`.
+
+Fixture: `service::fixture` derives `question_refresh` and `approval_refresh`
+from the recorded `question` and `approval_accept` streams. While the request
+waits, the provider sends 8 `warning` notifications 300 ms apart, which are
+panel deliveries that leave the request alone. `approval_refresh` also has a
+five-line command detail, so the bar shows "show 2 more lines".
+
+| Variant | P4-CHAT-09 (question) | P4-CHAT-10 (approval) |
+|---|---|---|
+| Original gating | fails: typed answer `""`, expected `"no thanks"` | fails: expansion lost |
+| Content selectors and id gates, still in the fragment | fails the same way | fails the same way |
+| Own `View`s and id gates, identity selectors | fails: the answer box was rebuilt (a key press no longer reaches it) | passes |
+| Final | passes (5/5 repeats) | passes (5/5 repeats) |
+
+The original gating failed both tests in 3/3 repeats.
 
 ## Known gaps and divergences (not in this slice)
 

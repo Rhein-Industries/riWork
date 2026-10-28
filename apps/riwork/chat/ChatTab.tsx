@@ -245,11 +245,26 @@ interface PartProps {
   notice: (message: string) => void;
 }
 
-/** Approvals and questions stay visible and actionable above the composer. */
+/** Every panel delivery is a new object; equal content is no change. */
+const sameContent = <T,>(previous: T, next: T) => previous === next || JSON.stringify(previous) === JSON.stringify(next);
+
+/** Approvals and questions stay visible and actionable above the composer.
+ * Each is selected by content and mounted per request, in a View of its own:
+ * expressions returned in a fragment re-run with the parent's other ones. A
+ * panel delivery that leaves a request alone keeps its expanded, picked and
+ * typed state. */
 function Requests(props: PartProps) {
+  // What a mounted request shows. It keeps the last request through the
+  // delivery that ends it: its own expressions may read it before the gate,
+  // keyed by request id, takes it away.
+  const approval = computed<ChatApproval | undefined>((last) => props.panel().approvals[0] ?? last, { equals: sameContent });
+  const question = computed<ChatQuestion | undefined>((last) => props.panel().questions[0] ?? last, { equals: sameContent });
+  const more = computed(() => props.panel().approvals.length - 1);
+  const approvalId = computed(() => props.panel().approvals[0]?.requestId);
+  const questionId = computed(() => props.panel().questions[0]?.requestId);
   return <>
-    {props.panel().approvals.length > 0 && <ApprovalBar {...props} approval={() => props.panel().approvals[0]} more={() => props.panel().approvals.length - 1} />}
-    {props.panel().questions.length > 0 && <QuestionPanel {...props} question={() => props.panel().questions[0]} />}
+    <View>{approvalId() !== undefined && <ApprovalBar {...props} approval={() => approval()!} more={more} />}</View>
+    <View>{questionId() !== undefined && <QuestionPanel {...props} question={() => question()!} />}</View>
   </>;
 }
 
