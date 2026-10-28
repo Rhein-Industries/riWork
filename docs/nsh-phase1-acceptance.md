@@ -45,7 +45,7 @@ dated, in [`docs/nsh-contracts.md` §8](nsh-contracts.md#8-decisions-addendum).
 | 2026-10-27 | D-PERF-1, as proposed in [§7](#7-frame-budget-decision-d-perf-1); alternatives (A) and (B) not taken; Phase 1 perf stays report-only until the chat phase | **ADOPTED** | contracts §8.2 |
 | 2026-10-27 | Phase 2 entry gate: the pinned-runtime teardown proof (task e940bd0a) must pass before Phase 2 opens. The cached-runtime 110–156 ms main-loop gaps are not accepted. §3.7 is not amended. This is an owner decision, not a proposal of this plan. | **ADOPTED** | contracts §8.3 |
 | 2026-10-27 | W3 task c62ea465 explicitly applies the D-THEME-1 proposal for P1: RiWork fallback palette, diagnostic retained, no Ghostty parsing or appearance publisher. | P1 assignment | contracts §8.4 |
-| 2026-10-28 | P1-GLB-05 / R-DEFER 5: a dashboard or global-window read may create an empty `schedules.lock`. This is the engine's schedule-ledger lock, taken exactly as `riwork dashboard` takes it (`crates/riwork-cli/tests/dashboard_cli.rs`). The allow-list was written for the Phase 1 placeholder global window. `state.json` stays byte-identical. | **ACCEPTED** (orchestrator, Phase 5 task 9a9d3423) | contracts §8.5 |
+| 2026-10-28 | P1-GLB-05 / R-DEFER 5: a dashboard or global-window read may create an empty `schedules.lock`. This is the engine's schedule-ledger lock, taken exactly as `riwork dashboard` takes it (`crates/riwork-cli/tests/dashboard_cli.rs`). The allow-list was written for the Phase 1 placeholder global window. In a global-only run `state.json` stays byte-identical, as that run's own before/after inventory shows; the generic audit scripts still allow `state.json` writes. | **ACCEPTED** (orchestrator, Phase 5 task 9a9d3423) | contracts §8.5 |
 | — | D-PROC-1, D-COPY-1 | open | — |
 
 ---
@@ -137,8 +137,11 @@ A P1 build is a fixture-only build. It must still keep every seam the later phas
    placeholder global window. Once the dashboard reads (global window, dashboard paths), an
    **empty** `schedules.lock` is also allowed: it is the engine's schedule-ledger lock, created as
    `riwork dashboard` creates it. A non-empty one, or `schedules.json`, is still a disallowed
-   write, and `state.json` must stay byte-identical. The fixture scripts in
-   `crates/riwork-desktop/verification/phase1_{w3,m5,integration}.py` apply the same rule.
+   write. In a global-only run (P1-GLB-05), `state.json` must also stay byte-identical. That is
+   checked by the run's own before/after inventory. The generic fixture scripts in
+   `crates/riwork-desktop/verification/phase1_{w3,m5,integration}.py` allow only an empty
+   `schedules.lock` beyond this list. They still allow `state.json` writes, which broader
+   workflows make, so they do not check that byte-identity.
 
 ### 2.3 Findings from NSH 0.3 that bind P1c
 

@@ -17,6 +17,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex, OnceLock, PoisonError,
+        atomic::{AtomicU64, Ordering},
         mpsc::{self, Receiver, RecvTimeoutError, SyncSender},
     },
     thread,
@@ -271,6 +272,8 @@ enum Wake {
 pub struct OverviewService {
     hub: Arc<Hub<DashboardDto>>,
     wake: SyncSender<Wake>,
+    /// Reader loop turns, so a test can tell a blocked reader from a spinning one.
+    turns: Arc<AtomicU64>,
 }
 
 pub type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
@@ -316,11 +319,13 @@ impl OverviewService {
             })
             .map_err(crate::service::io_error)?;
         let reader_hub = hub.clone();
+        let turns = Arc::new(AtomicU64::new(0));
+        let reader_turns = turns.clone();
         thread::Builder::new()
             .name("riwork-dashboard".into())
-            .spawn(move || run(source, inbox, reader_hub, clock, pacing))
+            .spawn(move || run(source, inbox, reader_hub, clock, pacing, reader_turns))
             .map_err(crate::service::io_error)?;
-        Ok(Arc::new(Self { hub, wake }))
+        Ok(Arc::new(Self { hub, wake, turns }))
     }
 
     pub fn subscribe(&self) -> TopicSubscription<DashboardDto> {
@@ -338,6 +343,11 @@ impl OverviewService {
     #[cfg(any(test, feature = "test-support"))]
     pub fn has_subscribers(&self) -> bool {
         self.hub.has_subscribers()
+    }
+
+    /// How many times the reader loop has turned (woken, timed out or read).
+    pub fn turns(&self) -> u64 {
+        self.turns.load(Ordering::Relaxed)
     }
 }
 
@@ -365,20 +375,17 @@ fn run(
     hub: Arc<Hub<DashboardDto>>,
     clock: Clock,
     pacing: Pacing,
+    turns: Arc<AtomicU64>,
 ) {
     let mut last_read: Option<Instant> = None;
     let mut last_extras: Option<Instant> = None;
     let mut extras: Option<Extras> = None;
     let mut shown: Option<(u64, Read)> = None;
     let mut dirty = true;
-    let mut force = false;
     loop {
+        turns.fetch_add(1, Ordering::Relaxed);
         let now = Instant::now();
-        let deadline = if force {
-            Some(now)
-        } else {
-            next_deadline(hub.has_subscribers(), dirty, last_read, now, pacing)
-        };
+        let deadline = next_deadline(hub.has_subscribers(), dirty, last_read, now, pacing);
         let wake = match deadline {
             None => match inbox.recv() {
                 Ok(wake) => Some(wake),
@@ -391,6 +398,9 @@ fn run(
                 Err(RecvTimeoutError::Disconnected) => return,
             },
         };
+        // A refresh holds for this turn only. Kept across turns with nobody
+        // looking, it made every deadline immediate and the reader spun.
+        let mut force = false;
         for wake in wake
             .into_iter()
             .chain(std::iter::from_fn(|| inbox.try_recv().ok()))
@@ -402,7 +412,7 @@ fn run(
             }
         }
         if !hub.has_subscribers() {
-            // Nobody looks: read again on the next subscription.
+            // Nobody looks: drop any refresh and read again on the next subscription.
             dirty = true;
             continue;
         }
@@ -422,7 +432,6 @@ fn run(
         }
         last_read = Some(now);
         dirty = false;
-        force = false;
         let error = match result {
             Ok(read) => {
                 shown = Some((at, read));

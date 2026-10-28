@@ -8,7 +8,7 @@ use std::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc,
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use riwork_core::store::Store;
@@ -147,6 +147,73 @@ async fn a_change_is_read_at_the_change_pace_a_refresh_at_once_and_a_quiet_windo
         after,
         "no window, no reads"
     );
+}
+
+#[tokio::test]
+async fn a_refresh_is_read_at_once_for_a_window_and_with_no_window_the_reader_blocks() {
+    let (_dir, home) = home_with_project();
+    let source = Arc::new(Counting {
+        home,
+        reads: AtomicUsize::new(0),
+        fail: AtomicBool::new(false),
+    });
+    let (_changes, inbox) = mpsc::sync_channel(1);
+    let clock = Arc::new(AtomicUsize::new(10));
+    let now = clock.clone();
+    // Paced far apart, so only a forced read can arrive within a second.
+    let pacing = Pacing {
+        change_gap: Duration::from_secs(5),
+        extras_every: Duration::from_secs(30),
+    };
+    let service = OverviewService::start(
+        source.clone(),
+        inbox,
+        Arc::new(move || now.fetch_add(1, Ordering::SeqCst) as u64),
+        pacing,
+    )
+    .unwrap();
+    let subscription = service.subscribe();
+    next(&subscription).await;
+    let asked = Instant::now();
+    service.refresh();
+    next(&subscription).await;
+    assert!(
+        asked.elapsed() < Duration::from_secs(1),
+        "a refresh is read at once"
+    );
+    assert_eq!(source.reads.load(Ordering::SeqCst), 2);
+
+    // The last window goes, then a refresh comes: nothing to read for, so the
+    // reader must go back to blocking on its inbox, not loop on the request.
+    drop(subscription);
+    service.refresh();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let before = service.turns();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let turned = service.turns() - before;
+    eprintln!("dashboard reader: {turned} turns in 500 ms with no window after a refresh");
+    // Zero reads alone would not show it: a spinning reader reads nothing either.
+    assert_eq!(
+        source.reads.load(Ordering::SeqCst),
+        2,
+        "no window, no reads"
+    );
+    assert!(
+        turned <= 1,
+        "the reader turned {turned} times in 500 ms with no window and no wake"
+    );
+
+    // A window that comes back is still served, and its refresh is still prompt.
+    let again = service.subscribe();
+    next(&again).await;
+    let asked = Instant::now();
+    service.refresh();
+    next(&again).await;
+    assert!(
+        asked.elapsed() < Duration::from_secs(1),
+        "a refresh is read at once"
+    );
+    assert_eq!(source.reads.load(Ordering::SeqCst), 3);
 }
 
 #[tokio::test]

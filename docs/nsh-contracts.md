@@ -1177,9 +1177,11 @@ listed the files a P1 build may write, while the global window was still a place
 Phase 5 dashboard read makes the engine's `riwork dashboard` read, and that creates an empty
 `schedules.lock`: `ScheduleStore::list` takes the schedule-ledger lock, as the CLI's own test
 `crates/riwork-cli/tests/dashboard_cli.rs` already allows. An empty `schedules.lock` is
-therefore an allowed write on dashboard and global-window paths. Nothing else is: `state.json`
-stays byte-identical, and `schedules.json`, `sessions.json`, `chats/` and tmux stay untouched.
-No frozen surface or `schema` changes.
+therefore an allowed write on dashboard and global-window paths. Nothing else is: in a
+global-only run `state.json` stays byte-identical, and `schedules.json`, `sessions.json`,
+`chats/` and tmux stay untouched. The `state.json` byte-identity is shown by the P1-GLB-05
+run's dedicated before/after inventory. The generic Phase 1 audit scripts still allow
+`state.json` writes, which broader workflows make. No frozen surface or `schema` changes.
 
 ### Phase 1 W2 window chrome (consolidated)
 
