@@ -192,6 +192,7 @@ enum Main {
     State(String),
     Close(String),
     Closed(String, Option<HostCall>, Result<(), String>),
+    CloseCancelled(String),
     QuitFailed(String),
     Restart(ReloadRequest),
     SettingsChanged(f32),
@@ -761,6 +762,11 @@ impl Host {
             Main::QuitFailed(error) => {
                 self.quitting = false;
                 eprintln!("riwork: quit cancelled: {error}");
+            }
+            Main::CloseCancelled(id) => {
+                if let Some(window) = self.windows.get(&id) {
+                    let _ = window.view.host().send("window.closeCancelled", json!({}));
+                }
             }
             Main::Restart(request) => self.restart(request),
             Main::SettingsChanged(size) => {
@@ -1583,11 +1589,24 @@ impl ClosingWindows {
     }
 
     fn cancel(&self) {
+        self.cancel_with(|id| send(Main::CloseCancelled(id.to_owned())));
+    }
+
+    // Reopen every native gate before notifying the surviving engines. The
+    // pending open may have rejected even when this batch retained no layout.
+    fn cancel_with(&self, mut notify: impl FnMut(&str)) {
         for (id, _) in &self.windows {
             host_layouts::cancel_window_close(id);
         }
+        for (id, _) in &self.windows {
+            notify(id);
+        }
     }
 }
+
+#[cfg(test)]
+#[path = "nsh_pending_open_tests.rs"]
+mod pending_open_tests;
 
 struct RuntimeTick {
     due_at: Instant,

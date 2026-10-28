@@ -22,9 +22,35 @@ function App() {
   cleanup(() => { alive = false; session()?.dispose(); });
 
   if (params.kind === "project" && params.projectId && params.windowId) {
-    void Store.snapshot().then(() => Layouts.openSession({ windowId: params.windowId, projectId: params.projectId, restore: params.restore?.layout, focusMode: params.restore?.focusMode ?? false, focusCentered: params.restore?.focusCentered ?? false }))
-      .then((loaded) => { if (alive) session.set(loaded); else loaded.dispose(); })
-      .catch((error: unknown) => notice.set(String(error)));
+    let opening = false;
+    let retryClosing = false;
+    let recovery = 0;
+    async function openSession() {
+      if (!alive || opening || session()) return;
+      opening = true;
+      retryClosing = false;
+      const startedRecovery = recovery;
+      try {
+        await Store.snapshot();
+        if (!alive) return;
+        const loaded = await Layouts.openSession({ windowId: params.windowId, projectId: params.projectId, restore: params.restore?.layout, focusMode: params.restore?.focusMode ?? false, focusCentered: params.restore?.focusCentered ?? false });
+        if (alive) session.set(loaded); else loaded.dispose();
+      } catch (error: unknown) {
+        if (!alive) return;
+        retryClosing = String(error).includes("unavailable: window is closing");
+        notice.set(String(error));
+      } finally {
+        opening = false;
+        // Cancellation can arrive while the blocking opener is still returning
+        // its close rejection. Remember that event instead of losing the retry.
+        if (alive && retryClosing && recovery !== startedRecovery) void openSession();
+      }
+    }
+    cleanup(host.on("window.closeCancelled", () => {
+      recovery++;
+      if (retryClosing) void openSession();
+    }));
+    void openSession();
   } else {
     notice.set(params.kind === "global" ? "Global workspace" : "A project window is required.");
     if (params.kind === "global") installed();
