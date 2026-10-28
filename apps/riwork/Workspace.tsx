@@ -1,3 +1,5 @@
+import { AppPreviewTab } from "./AppPreviewTab";
+import { useCua } from "./CuaSetup";
 import { Overlay, Scroll, Text, View, cleanup, colorScheme, createAnimatedValue, effect, host, keymap, signal, type Point, type YNode } from "nsh";
 import { Button, Dialog, Input, Popover, type DockAreaLayout, type DockAreaRef, type DockNode } from "nsh/base";
 import { Menu, Window, type MenuItem } from "nsh/desktop";
@@ -133,6 +135,19 @@ export function Workspace(props: WorkspaceProps) {
     selectTask: (id) => { try { session.setSelectedTask(id); snapshot.set(session.snapshot() as WorkspaceSnapshot); } catch (error) { notice.set(String(error)); } },
     switchProject: (project) => switchTo(project.id),
   });
+  const cua = useCua();
+  let cuaStartupChecked = false;
+  effect(() => {
+    const status = cua.state().status;
+    if (!status || cuaStartupChecked) return;
+    cuaStartupChecked = true;
+    if (!status.installed) action(() => session.openCuaSetup());
+  });
+  function newAppPreview() {
+    const cwd = filesRoot();
+    if (!cwd || snapshot().remoteProject) { notice.set("App previews require a local project folder."); return; }
+    action(() => session.openAppPreview({ command: "", cwd, mode: "cooperative" }));
+  }
   function filesRoot() {
     if (snapshot().remoteProject || !panelState.loaded()) return null;
     const treeId = panelState.selectedWorktree();
@@ -523,7 +538,8 @@ export function Workspace(props: WorkspaceProps) {
       ...[["Codex", "mod+shift+c"], ["Claude", "mod+shift+l"], ["Grok", "mod+shift+g"], ["Muse", "mod+shift+u"]].map(([label, shortcut]) => disabled(label, shortcut)),
       { label: "Global orchestrator", shortcut: "mod+shift+o", onSelect: openGlobalOrchestrator },
       { label: "Project orchestrator", shortcut: "mod+alt+o", disabled: !UUID.test(projectId()), onSelect: () => { void openProjectOrchestrator(); } },
-      ...[["New chat…"], ["App preview…"]].map(([label]) => disabled(label)),
+      disabled("New chat…"),
+      { label: "App preview…", disabled: !filesRoot() || !!snapshot().remoteProject, onSelect: newAppPreview },
       { type: "separator" }, disabled("Views"),
       ...VIEWS.map((panel): MenuItem => ({ label: panelTitle(panel), shortcut: VIEW_SHORTCUTS[panel], onSelect: () => view(panel) })),
       { type: "separator" }, disabled("Pane"),
@@ -569,6 +585,7 @@ export function Workspace(props: WorkspaceProps) {
     newShell: (split) => { allTabs.set(false); void createShell(split); },
     newSubshell: () => { allTabs.set(false); void createSubshell(); },
     openVim: showVimDialog,
+    appPreview: newAppPreview,
     find,
     closeTab: () => close(),
     closePane: () => closePane(),
@@ -770,6 +787,9 @@ export function Workspace(props: WorkspaceProps) {
                     onFocus={() => action(() => session.selectPanel(panel.id))} onLink={openLink} onNotice={(message) => notice.set(message)} />
                 </View> : panel.id.startsWith("chat:") || panel.id.startsWith("chat-pending:") ?
                 <ChatPanel panelId={panel.id} title={findPanel(snapshot(), panel.id) ? displayTitle(findPanel(snapshot(), panel.id)!) : panel.id} /> :
+                panel.id.startsWith("app_preview:") ?
+                <AppPreviewTab spec={findPanel(snapshot(), panel.id)!.previewSpec!} visible={isVisible(panel.id)} theme={theme}
+                  configure={(spec) => action(() => session.configureAppPreview(panel.id, spec))} /> :
                 <DeferredPanel id={panel.id}
                   title={findPanel(snapshot(), panel.id) ? displayTitle(findPanel(snapshot(), panel.id)!) : panel.id}
                   theme={theme} settings={props.settings} diagnostics={props.diagnostics} onError={(error) => notice.set(String(error))}

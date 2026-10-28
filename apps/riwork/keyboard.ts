@@ -3,7 +3,7 @@ export const DEFERRED_COMMANDS = new Set([
   "openCodex", "openClaude", "openGrok", "openMuse", "newChat",
   "createProject", "search", "interruptChat",
   "toggleDictation", "chatEscape", "findInChat", "findNext", "findPrevious",
-  "toggleTranscriptMode", "expandTranscript", "collapseTranscript", "appPreview",
+  "toggleTranscriptMode", "expandTranscript", "collapseTranscript",
   "sessions", "existingSessions", "existingClaudeChats", "existingMuseChats",
   "handOff",
 ]);

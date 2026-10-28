@@ -1,0 +1,2 @@
+# Preserve Cargo's original trailing blank line in raw evidence.
+*.stdout whitespace=-blank-at-eof

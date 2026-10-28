@@ -1,0 +1,70 @@
+
+running 47 tests
+test layout::tests::compound_topology_change_is_not_misclassified_as_a_simple_move ... ok
+test layout::tests::default_layout_command_keeps_sessions_selection_and_is_idempotent ... ok
+test layout::tests::compound_native_edit_uses_logged_right_nested_fallback_without_data_loss ... ok
+test layout::tests::dropping_real_tab_into_an_empty_pane_never_persists_the_sentinel ... ok
+test layout::tests::edge_dock_fallback_moves_back_into_center_only ... ok
+test host_layouts::tests::a_host_close_waits_for_an_admitted_edit_and_rejects_late_edits_without_a_lock ... ok
+test host_layouts::tests::switched_and_closed_generations_release_their_final_writer_off_the_engine ... ok
+test host_layouts::tests::host_lookup_tracks_the_latest_snapshot_without_retaining_the_session ... ok
+test layout::tests::explicit_reopen_remembers_surviving_unlocked_pane_and_falls_back_if_locked_or_removed ... ok
+test integration_tests::disposed_session_rejects_project_switch_without_panicking ... ok
+test layout::tests::file_link_reveal_keeps_the_clicked_terminal_and_keys ... ok
+test layout::tests::files_preview_reveal_uses_main_without_moving_focus_or_splitting ... ok
+test layout::tests::flattened_resize_reconstructs_binary_ratios_including_inner_divider ... ok
+test integration_tests::the_first_2_s_after_first_draw_are_ignored ... ok
+test integration_tests::frozen_delivery_keeps_the_latest_revision_until_interaction_ends ... ok
+test layout::tests::gather_uses_core_sources_keeps_main_selection_and_locked_geometry ... ok
+test integration_tests::rejected_close_time_edits_do_not_change_the_session_before_a_cancelled_close ... ok
+test integration_tests::disposal_while_project_io_is_pending_never_commits_the_prepared_writer ... ok
+test integration_tests::stale_revisions_are_dropped_but_a_new_epoch_is_accepted ... ok
+test layout::tests::headroom_aliases_leave_free_ids_for_new_groups_and_opaque_sentinels ... ok
+test layout::tests::implicit_navigation_lock_and_explicit_unlocked_state_survive_no_op ... ok
+test layout::tests::local_shell_detach_reopen_preserves_identity_and_does_not_resurrect_legacy_tab ... ok
+test host_layouts::tests::close_during_switch_rejects_commit_and_flushes_the_old_project_only ... ok
+test layout::tests::invalid_or_destructive_reports_are_transactional ... ok
+test layout::tests::max_safe_persisted_id_uses_session_alias_without_poisoning_native_allocator ... ok
+test layout::tests::native_active_index_selects_tab_and_pane_only ... ok
+test layout::tests::native_divider_resize_replays_core_ratio_clamp ... ok
+test layout::tests::native_id_matching_an_aliased_disk_id_cannot_overwrite_either_pane_on_save ... ok
+test layout::tests::native_last_panel_move_keeps_empty_scaffold_beside_locked_pane ... ok
+test layout::tests::native_last_panel_move_removes_ordinary_source_but_restores_main_sentinel ... ok
+test layout::tests::native_edge_move_splits_through_core_in_all_four_directions ... ok
+test integration_tests::failed_project_preparation_preserves_the_prior_editable_session ... ok
+test layout::tests::native_move_to_existing_group_keeps_source_selection_and_selects_target ... ok
+test layout::tests::ordinary_unsafe_ids_persist_the_safe_remap ... ok
+test layout::tests::native_same_group_reorder_preserves_identity_and_changes_selection ... ok
+test layout::tests::opening_local_shell_uses_unlocked_main_and_refuses_all_locked_transactionally ... ok
+test layout::tests::panel_and_shell_intents_reuse_identity_and_select_their_own_panes ... ok
+test integration_tests::ended_registered_shells_keep_their_tabs_until_explicit_hide_or_registry_pruning ... ok
+test layout::tests::preview_without_main_splits_beside_tree_and_obeys_preference ... ok
+test layout::tests::panel_shell_selection_preserves_terminal_reopen_and_lock_policy ... ok
+test layout::tests::real_nsh_normalization_and_assigned_split_ids_do_not_rewrite_the_core_tree ... ok
+test layout::tests::resizing_uses_core_locked_minima_and_returns_to_the_original_geometry ... ok
+test layout::tests::unsafe_ids_remap_all_references_and_supply_opaque_tab_persistence_mapping ... ok
+test layout::tests::unknown_tabs_pin_a_sentinel_even_while_known_tabs_move_out ... ok
+test layout::tests::window_panel_commands_reuse_identity_and_files_find_the_navigation_pane ... ok
+test layout::tests::unchanged_projection_keeps_binary_shape_and_every_project_field_at_three_extents ... ok
+test integration_tests::project_switch_keeps_the_host_handle_and_flushes_both_project_writers ... ok
+
+test result: ok. 47 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+
+
+running 1 test
+test phase6c_preview_spec_persists_and_routing_obeys_main_active_and_focus_mode ... FAILED
+
+failures:
+
+---- phase6c_preview_spec_persists_and_routing_obeys_main_active_and_focus_mode stdout ----
+
+thread 'phase6c_preview_spec_persists_and_routing_obeys_main_active_and_focus_mode' (14871424) panicked at apps/riwork/tests/app_preview_layout.rs:70:40:
+called `Result::unwrap()` on an `Err` value: "Unlock the pane to close its tabs"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    phase6c_preview_spec_persists_and_routing_obeys_main_active_and_focus_mode
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+

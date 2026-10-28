@@ -1,3 +1,4 @@
+import { CuaSetup } from "./CuaSetup";
 import { Scroll, Text, View } from "nsh";
 import { DEFAULT_THEME, type InterfaceTheme } from "./appearance";
 import { Settings, type SettingsDto } from "riwork/native";
@@ -26,6 +27,7 @@ export function DeferredPanel(props: {
     style={{ flex: 1, minHeight: 0, padding: 16, gap: 8 }}>
     <Text style={{ fontFamily: theme().family, fontSize: 11 * theme().scale, color: theme().palette.text }}>{empty ? "Empty pane" : props.title}</Text>
     <Text style={{ fontFamily: theme().family, fontSize: 11 * theme().scale, color: theme().palette.muted }}>{empty ? "Drop a tab here or use the pane menu" : props.id === "panel:settings" ? "Appearance and status bar" : "This view is unavailable."}</Text>
+    {props.id === "panel:settings" && <CuaSetup theme={theme} visible={props.visible} />}
     {props.id === "panel:settings" && props.settings?.() && <Scroll testID="appearance-settings" style={{ flex: 1, minHeight: 0 }} contentStyle={{ gap: 8 }}>
       <Text style={{ fontFamily: theme().family, fontSize: 11 * theme().scale, color: theme().palette.text }}>Theme</Text>
       {props.settings()!.themeChoices.map((choice) => <View testID={`theme-choice:${choice.id}`} role="radio" accessibilityLabel={choice.label}
