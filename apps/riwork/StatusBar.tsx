@@ -51,6 +51,7 @@ export function StatusBar(props: Props) {
   const layoutAnchor = signal<YNode | null>(null);
   const globalAnchor = signal<YNode | null>(null);
   const accountAnchor = signal<YNode | null>(null);
+  const choosingAccount = signal(false);
   let sessionRev = -1;
   let storeRev = -1;
   let usageRev = -1;
@@ -180,8 +181,7 @@ export function StatusBar(props: Props) {
   function note(id: string, text: string, color: string) {
     return <Text testID={id} style={{ paddingHorizontal: 12, paddingBottom: 4, fontFamily: theme().family, fontSize: 9 * theme().scale, color }}>{text}</Text>;
   }
-  /** PANEL-188: the project's choices for new Codex sessions. Read-only until
-   *  `riwork/native` exposes the project's Codex-account store write. */
+  /** PANEL-188: writes only the project's choice for new sessions. */
   function accountMenu() {
     const list = accountList();
     const choices = defaultChoices(projectChoice() ?? { source: "inherit" }, accounts()?.selectedId, list, systemLabel());
@@ -191,8 +191,12 @@ export function StatusBar(props: Props) {
       {row("account-menu-title", "New Codex sessions in this project", "")}
       {note("account-menu-note", "Running chats and shells keep their account; --account still chooses one.", theme().palette.muted)}
       {choices.status && note("account-menu-status", choices.status, theme().palette.gold)}
-      {choices.rows.map((choice) => row(rowId(choice.choice), choice.label, choice.current ? "✓" : "", undefined, choice.detail))}
-      {note("account-menu-read-only", "Choosing a project account here is not available yet.", theme().palette.muted)}
+      {choices.rows.map((choice) => row(rowId(choice.choice), choice.label, choice.current ? "✓" : "", choice.selectable && !choosingAccount() ? () => {
+        choosingAccount.set(true);
+        const id = projectId();
+        if (!id) { choosingAccount.set(false); props.onError("Open a local project to choose its account."); return; }
+        void Store.setProjectCodexAccount(id, choice.choice).then(() => menu.set(null)).catch(props.onError).finally(() => choosingAccount.set(false));
+      } : undefined, choice.detail))}
       {row("account-menu-project-heading", "Project", "")}
       {row("account-menu-project-settings", "Project Settings…", "", () => panel("project_settings"))}
     </>;
