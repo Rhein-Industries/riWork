@@ -1,0 +1,5 @@
+{
+  "name": "RiWork automations headless fixtures",
+  "id": "dev.riwork.test.schedules",
+  "capabilities": { "host": ["app.fixture.*", "window.*", "system.*"], "clipboard": true }
+}

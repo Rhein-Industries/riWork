@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="nsh test" tests="14" failures="0" errors="0" skipped="0" time="52.093">
+  <testsuite name="apps/riwork/chat/model.test.ts" tests="4" failures="0" errors="0" skipped="0" time="0.000">
+    <testcase classname="apps/riwork/chat/model.test.ts" name="P4-MODEL-01 a patch keeps unchanged rows identical and splices only what changed" time="0.000"/>
+    <testcase classname="apps/riwork/chat/model.test.ts" name="P4-MODEL-02 streaming bodies splice Markdown from a block and append text, never a whole message" time="0.000"/>
+    <testcase classname="apps/riwork/chat/model.test.ts" name="P4-MODEL-03 ⏎ allows and ⎋ denies only what the provider offers" time="0.000"/>
+    <testcase classname="apps/riwork/chat/model.test.ts" name="P4-MODEL-04 approval detail folds to three lines; answers need every prompt" time="0.000"/>
+  </testsuite>
+  <testsuite name="apps/riwork/tests/Chat.test.tsx" tests="10" failures="0" errors="0" skipped="0" time="47.911">
+    <testcase classname="apps/riwork/tests/Chat.test.tsx" name="P4-CHAT-01 an approval is visible and its Allow button answers the host" time="1.556"/>
+    <testcase classname="apps/riwork/tests/Chat.test.tsx" name="P4-CHAT-02 ⏎ in an empty composer allows, and ⎋ denies a file change" time="3.243"/>
+    <testcase classname="apps/riwork/tests/Chat.test.tsx" name="P4-CHAT-03 Stop interrupts a running turn, which closes as Interrupted" time="1.030"/>
+    <testcase classname="apps/riwork/tests/Chat.test.tsx" name="P4-CHAT-04 questions are answered from the panel, then access is allowed for the session" time="1.358"/>
+    <testcase classname="apps/riwork/tests/Chat.test.tsx" name="P4-CHAT-05 a draft survives closing the tab and comes back in an empty composer" time="2.020"/>
+    <testcase classname="apps/riwork/tests/Chat.test.tsx" name="P4-CHAT-06 a 2,200-call disclosed turn keeps fewer than 100 rows materialized" time="29.987"/>
+    <testcase classname="apps/riwork/tests/Chat.test.tsx" name="P4-CHAT-07 two windows&apos; first composers never clear each other&apos;s draft" time="1.544"/>
+    <testcase classname="apps/riwork/tests/Chat.test.tsx" name="P4-CHAT-08 a composer&apos;s own submission clears its saved draft" time="0.769"/>
+    <testcase classname="apps/riwork/tests/Chat.test.tsx" name="P4-CHAT-09 picked and typed answers survive provider refreshes while the question waits" time="3.366"/>
+    <testcase classname="apps/riwork/tests/Chat.test.tsx" name="P4-CHAT-10 an expanded approval stays expanded through provider refreshes" time="3.039"/>
+  </testsuite>
+</testsuites>

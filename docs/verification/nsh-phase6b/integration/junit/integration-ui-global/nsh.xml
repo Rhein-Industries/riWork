@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="nsh test" tests="10" failures="0" errors="0" skipped="0" time="9.007">
+  <testsuite name="apps/riwork/tests/Global.test.tsx" tests="10" failures="0" errors="0" skipped="0" time="5.570">
+    <testcase classname="apps/riwork/tests/Global.test.tsx" name="P1-GLB-01 global.show selects the requested view of the one global window" time="0.703"/>
+    <testcase classname="apps/riwork/tests/Global.test.tsx" name="P1-GLB-02 the Dock lists the global window as Global with no branch" time="0.135"/>
+    <testcase classname="apps/riwork/tests/Global.test.tsx" name="P1-GLB-03 a view switch is saved and a second global app reopens on it; search is not saved" time="1.085"/>
+    <testcase classname="apps/riwork/tests/Global.test.tsx" name="P1-GLB-04 handed-over restore state wins over the file and confirms once" time="0.732"/>
+    <testcase classname="apps/riwork/tests/Global.test.tsx" name="P1-GLB-05 the global window belongs to no project and asks nothing of one" time="0.635"/>
+    <testcase classname="apps/riwork/tests/Global.test.tsx" name="P1-GLB-06 the bar: Global in magenta, Dashboard | Chat, a drag region, This Mac · every project" time="0.658"/>
+    <testcase classname="apps/riwork/tests/Global.test.tsx" name="P1-GLB-07 ⌘W right after open closes the global window" time="0.243"/>
+    <testcase classname="apps/riwork/tests/Global.test.tsx" name="P1-GLB-08 ⌘⇧N, Dock New Window, ⌘, and ⌘⇧S go to the frontmost local project window&apos;s project" time="0.654"/>
+    <testcase classname="apps/riwork/tests/Global.test.tsx" name="P1-GLB-09 a route event selects its panel in the window that showed the project" time="0.480"/>
+    <testcase classname="apps/riwork/tests/Global.test.tsx" name="P1-GLB-10 the bottom notice bar shows a startup notice in gold and Dismiss removes it" time="0.246"/>
+  </testsuite>
+</testsuites>

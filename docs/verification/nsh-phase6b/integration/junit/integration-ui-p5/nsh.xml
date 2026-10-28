@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="nsh test" tests="25" failures="0" errors="0" skipped="0" time="11.513">
+  <testsuite name="apps/riwork/dashboard/model.test.ts" tests="10" failures="0" errors="0" skipped="0" time="0.001">
+    <testcase classname="apps/riwork/dashboard/model.test.ts" name="P5-DASH-01 a search needs every word somewhere and ignores case" time="0.000"/>
+    <testcase classname="apps/riwork/dashboard/model.test.ts" name="P5-DASH-02 each filter lists what it names and the counts follow the search" time="0.000"/>
+    <testcase classname="apps/riwork/dashboard/model.test.ts" name="P5-DASH-03 an empty table says why and leads to what is hidden" time="0.000"/>
+    <testcase classname="apps/riwork/dashboard/model.test.ts" name="P5-DASH-04 a project row reads out what it shows and says what is unknown" time="0.000"/>
+    <testcase classname="apps/riwork/dashboard/model.test.ts" name="P5-DASH-05 the toolbar says how old the figures are and why they may be" time="0.000"/>
+    <testcase classname="apps/riwork/dashboard/model.test.ts" name="P5-DASH-06 the dashboard is laid out by the window&apos;s own width" time="0.000"/>
+    <testcase classname="apps/riwork/dashboard/model.test.ts" name="P5-DASH-07 attention, automation and empty lists say only what was read" time="0.000"/>
+    <testcase classname="apps/riwork/dashboard/model.test.ts" name="P5-DASH-08 chat controls say whether a click opens or starts, and a terminal is itself" time="0.000"/>
+    <testcase classname="apps/riwork/dashboard/model.test.ts" name="P5-DASH-09 rows go to their own project and the global orchestrator stays global" time="0.000"/>
+    <testcase classname="apps/riwork/dashboard/model.test.ts" name="P5-DASH-10 the Haiku overview shows only a saved summary and hides when off" time="0.000"/>
+  </testsuite>
+  <testsuite name="apps/riwork/tests/Global.test.tsx" tests="4" failures="0" errors="0" skipped="0" time="3.596">
+    <testcase classname="apps/riwork/tests/Global.test.tsx" name="P5-GLOBAL-01 the dashboard draws projects from store facts with a live freshness line" time="0.626"/>
+    <testcase classname="apps/riwork/tests/Global.test.tsx" name="P5-GLOBAL-02 filter and order are the window&apos;s own and survive a reopen" time="1.341"/>
+    <testcase classname="apps/riwork/tests/Global.test.tsx" name="P5-GLOBAL-03 a search narrows the table and Clear brings everything back" time="0.973"/>
+    <testcase classname="apps/riwork/tests/Global.test.tsx" name="P5-GLOBAL-04 the Chat view shows the terminal orchestrator there is, as itself" time="0.657"/>
+  </testsuite>
+  <testsuite name="apps/riwork/tests/Orchestrators.test.tsx" tests="2" failures="0" errors="0" skipped="0" time="2.413">
+    <testcase classname="apps/riwork/tests/Orchestrators.test.tsx" name="P5-ORCH-01 ⌘⌥O opens the project&apos;s orchestrator as a chat tab, and again reuses it" time="1.909"/>
+    <testcase classname="apps/riwork/tests/Orchestrators.test.tsx" name="P5-ORCH-02 the pane menu&apos;s New tab offers both orchestrators" time="0.504"/>
+  </testsuite>
+  <testsuite name="apps/riwork/tests/StatusBar.test.tsx" tests="3" failures="0" errors="0" skipped="0" time="2.032">
+    <testcase classname="apps/riwork/tests/StatusBar.test.tsx" name="P5-USAGE-07: the usage item reads the fixture account, names it in its label and opens the Usage panel" time="0.307"/>
+    <testcase classname="apps/riwork/tests/StatusBar.test.tsx" name="P5-USAGE-08: the account item opens project choices and closes like the other menus" time="1.582"/>
+    <testcase classname="apps/riwork/tests/StatusBar.test.tsx" name="P5-USAGE-09: all accounts reads every known account compactly and Native sentence-cases only the text" time="0.143"/>
+  </testsuite>
+  <testsuite name="apps/riwork/usage.test.ts" tests="6" failures="0" errors="0" skipped="0" time="0.001">
+    <testcase classname="apps/riwork/usage.test.ts" name="P5-USAGE-01: current chat reads the focused Codex account, else the project default, and names it" time="0.000"/>
+    <testcase classname="apps/riwork/usage.test.ts" name="P5-USAGE-02: all accounts lists every Codex account, keeps unread ones and adds only a known Claude" time="0.000"/>
+    <testcase classname="apps/riwork/usage.test.ts" name="P5-USAGE-03: the default choices mark the saved one and say what each comes to" time="0.000"/>
+    <testcase classname="apps/riwork/usage.test.ts" name="P5-USAGE-04: the project default resolves as a launch does and the item names it" time="0.000"/>
+    <testcase classname="apps/riwork/usage.test.ts" name="P5-USAGE-05: a Codex shell is named by the account of its frozen home and numbered per project" time="0.000"/>
+    <testcase classname="apps/riwork/usage.test.ts" name="P5-USAGE-06: figures, aria label and hint keep GPUI&apos;s forms" time="0.000"/>
+  </testsuite>
+</testsuites>

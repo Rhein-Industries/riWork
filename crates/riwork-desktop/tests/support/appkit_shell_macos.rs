@@ -165,20 +165,24 @@ fn view_menu_matches_gpui(_: MainThreadMarker, menu: &NSMenu, _: &nsh_menus::Hos
             "Actual Size"
         ]
     );
-    for index in [3, 4, 5, 11, 12, 13] {
+    for index in [3, 5, 11, 12, 13] {
         assert!(
             !view.itemAtIndex(index).unwrap().isEnabled(),
             "deferred row {index} must stay disabled"
         );
     }
-    for index in [0, 1, 6, 7, 8, 9, 15, 16, 17] {
+    for index in [0, 1, 4, 6, 7, 8, 9, 15, 16, 17] {
         assert!(view.itemAtIndex(index).unwrap().isEnabled());
     }
     // AppKit must not silently re-enable deferred commands during validation.
     view.update();
-    for index in [3, 4, 5, 11, 12, 13] {
+    for index in [3, 5, 11, 12, 13] {
         assert!(!view.itemAtIndex(index).unwrap().isEnabled());
     }
+    assert!(
+        view.itemAtIndex(4).unwrap().isEnabled(),
+        "Phase 6c App preview is implemented"
+    );
 }
 
 fn view_menu_text_size_items(_: MainThreadMarker, menu: &NSMenu, _: &nsh_menus::HostMenus) {

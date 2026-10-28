@@ -19,6 +19,8 @@ pub mod orchestrators;
 pub mod overview;
 mod presence;
 pub mod project_settings;
+pub mod remote;
+pub mod schedules;
 pub mod service;
 pub mod settings;
 pub mod settings_aux;
@@ -58,6 +60,8 @@ fn native(registry: &mut Registry) {
         .module::<cua::Cua>()
         .module::<app_preview::Previews>()
         .class::<app_preview::PreviewHandle>()
+        .module::<schedules::Schedules>()
+        .module::<remote::Remote>()
         .class::<chat::ChatHandle>()
         .class::<Subscription>();
     riwork_nsh_workspace::register_layouts(registry, service::process_home);
@@ -384,6 +388,8 @@ mod tests {
                 "Orchestrators",
                 "Previews",
                 "ProjectSettings",
+                "Remote",
+                "Schedules",
                 "Sessions",
                 "Settings",
                 "Store",

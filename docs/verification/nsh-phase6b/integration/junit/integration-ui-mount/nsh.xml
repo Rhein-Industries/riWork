@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="nsh test" tests="1" failures="0" errors="0" skipped="0" time="4.500">
+  <testsuite name="apps/riwork/App.test.tsx" tests="1" failures="0" errors="0" skipped="0" time="1.048">
+    <testcase classname="apps/riwork/App.test.tsx" name="terminal native nodes survive selection and resize until an explicit Detach" time="1.048"/>
+  </testsuite>
+</testsuites>

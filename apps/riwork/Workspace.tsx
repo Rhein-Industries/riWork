@@ -1,9 +1,9 @@
 import { AppPreviewTab } from "./AppPreviewTab";
 import { CuaSetup, useCua, type CuaSetupControl } from "./CuaSetup";
-import { Overlay, Scroll, Text, View, cleanup, colorScheme, createAnimatedValue, effect, host, keymap, signal, type Point, type YNode } from "nsh";
+import { Clipboard, Overlay, Scroll, Text, View, cleanup, colorScheme, computed, createAnimatedValue, effect, host, keymap, signal, type Point, type YNode } from "nsh";
 import { Button, Dialog, Input, Popover, type DockAreaLayout, type DockAreaRef, type DockNode } from "nsh/base";
 import { Menu, Window, type MenuItem } from "nsh/desktop";
-import { Appearance, Orchestrators, Sessions, Settings, Tabs, type AppearanceDto, type LayoutSession, type SettingsDto } from "riwork/native";
+import { Appearance, Orchestrators, Remote, Sessions, Settings, Tabs, type AppearanceDto, type LayoutSession, type SettingsDto } from "riwork/native";
 import { DockArea } from "./DockArea";
 import { CloseDialog } from "./CloseDialog";
 import { DeferredPanel, MountProbe } from "./DeferredPanel";
@@ -20,6 +20,11 @@ import { DEFAULT_THEME, space, type InterfaceTheme } from "./appearance";
 import { StatusBar } from "./StatusBar";
 import { ChatTab } from "./chat/ChatTab";
 import { createFilesController, FilesPanel, PreviewPanel } from "./Files";
+import { AutomationsPanel } from "./schedules/Automations";
+import { createRemoteController, RemoteProjects, RemoteProjectPanel, RemotePrompt, RemoteSettings, RemoteUnavailable, type RemoteApi } from "./remote/Remote";
+import { RemoteTerminal } from "./remote/RemoteTerminal";
+import { remoteHostLabel, remoteLocalOnly, remotePanelUnavailable, remoteProjectKey, remoteTitle } from "./remote/model";
+import { workspaceRemote, type WorkspaceRemoteApi } from "./remote/workspace";
 import { AppSettings } from "./settings/AppSettings";
 import { ProjectSettingsPanel } from "./settings/ProjectSettings";
 
@@ -78,7 +83,10 @@ export function Workspace(props: WorkspaceProps) {
   const mutedStyle = (base = 11) => ({ ...textStyle(base), color: theme().palette.muted });
   let root: YNode | null = null;
   function dismissNotice() { notice.set(""); root?.focus(); }
-  const projectId = signal(props.projectId ?? snapshot().projectId ?? "");
+  const projectId = computed(() => snapshot().projectId ?? props.projectId ?? "");
+  // Gate subtree construction on a stable primitive. Watching the whole layout
+  // here would reconstruct local terminals on every unrelated delivery.
+  const remoteProject = computed(() => !!snapshot().remoteProject);
   const switching = signal(false);
   const appearance = signal<AppearanceDto | null>(null);
   const pendingFocus = signal<string | null>(null);
@@ -137,6 +145,26 @@ export function Workspace(props: WorkspaceProps) {
     selectTask: (id) => { try { session.setSelectedTask(id); snapshot.set(session.snapshot() as WorkspaceSnapshot); } catch (error) { notice.set(String(error)); } },
     switchProject: (project) => switchTo(project.id),
   });
+  const remote = createRemoteController({
+    api: Remote as unknown as RemoteApi, theme, copyText: (text) => Clipboard.writeText(text),
+    notice: (message) => notice.set(message), modalBlocked: () => modal() || !!panelState.editor() || switching(),
+    beforePrompt: () => { allTabs.set(false); commands.stripOpen.set(false); freeze(); },
+    afterPrompt: () => thaw(),
+    onProjectCreated: (key) => { void switchTo(key).catch((error) => notice.set(String(error))); },
+    wants: () => ({ folders: isVisible("panel:projects"), settings: isVisible("panel:settings"),
+      collapsed: [...panelState.collapsed()], projectKey: remoteProjectKey(projectId()) ? projectId() : null,
+      worktrees: isVisible("panel:worktrees"), tasks: isVisible("panel:tasks"), shells: isVisible("panel:shells"),
+      tabHosts: [...new Set(snapshot().panes.flatMap((pane) => pane.tabs.filter((tab) => tab.kind === "remote_shell" && isVisible(tab.id)).map((tab) => tab.id.split(":")[1])))],
+    }),
+  });
+  const remoteActions = workspaceRemote({ api: Remote as unknown as WorkspaceRemoteApi, session, projectId, snapshot,
+    data: remote.data, selectedWorktree: panelState.selectedWorktree, alive: () => alive, generation: panelState.generation,
+    install, focus: (key) => pendingFocus.set(key), notice: (message) => notice.set(message) });
+  function localOnly() {
+    const refusal = remoteLocalOnly(remote.data(), projectId());
+    if (refusal) notice.set(refusal);
+    return !!refusal;
+  }
   const cua = useCua();
   const cuaFocus = signal<CuaSetupControl | null>(null);
   let cuaStartupChecked = false;
@@ -169,7 +197,7 @@ export function Workspace(props: WorkspaceProps) {
     theme,
     visible: () => isVisible("panel:files") || isVisible("panel:preview"),
     active: () => {
-      if (closing() || renaming() || vimDialog() || switching() || panelState.editor()) return null;
+      if (closing() || renaming() || vimDialog() || remote.prompt() || switching() || panelState.editor()) return null;
       const id = activePane(snapshot())?.activeTab;
       return id === "panel:files" ? "files" : id === "panel:preview" ? "preview" : null;
     },
@@ -179,10 +207,10 @@ export function Workspace(props: WorkspaceProps) {
     reveal: async (path) => { await host.call("system.revealInFinder", { path }); },
     closePreview: () => action(() => session.closePanel("panel:preview", false)),
   });
-  effect(() => updateTitle(panelState.state().projects.some((project) => project.id === projectId()) ? windowTitle(panelState.projectLabel()) : props.title));
+  effect(() => updateTitle(remoteTitle(remote.data(), projectId()) ? `RiWork · ${remoteTitle(remote.data(), projectId())}` : panelState.state().projects.some((project) => project.id === projectId()) ? windowTitle(panelState.projectLabel()) : props.title));
   // The Dock label waits for stored project names and follows project switches.
   const updateDock = createDockUpdater((info) => host.post("window.setDockInfo", info));
-  effect(() => updateDock(panelState.loaded(), panelState.state().projects.find((project) => project.id === projectId())?.name ?? props.projectLabel));
+  effect(() => updateDock(panelState.loaded() || !!snapshot().remoteProject, remoteTitle(remote.data(), projectId()) ?? panelState.state().projects.find((project) => project.id === projectId())?.name ?? props.projectLabel));
 
   const shared = () => Array.isArray(snapshot().sharedTabs) && !snapshot().remoteProject;
   const selected = () => activePane(snapshot())?.activeTab;
@@ -199,7 +227,7 @@ export function Workspace(props: WorkspaceProps) {
     const next = tree?.id ?? shell.worktreeId;
     if (next && next !== panelState.selectedWorktree()) panelState.selectWorktree(next);
   });
-  const modal = () => !!closing() || !!renaming() || vimDialog();
+  function modal(): boolean { return !!closing() || !!renaming() || vimDialog() || !!remote.prompt(); }
   const frozen = () => modal() || menuOpen() || dragging() || allTabs();
   const ordered = () => stripTabs(snapshot());
   const sessions = () => ordered().filter((tab) => tab.kind !== "panel");
@@ -230,6 +258,11 @@ export function Workspace(props: WorkspaceProps) {
   /** Shell titles prefer shared membership, then the session inventory. */
   function displayTitle(tab: PanelModel): string {
     if (tab.kind === "panel") return label(tab.title);
+    if (tab.kind === "remote_shell") {
+      const [, hostId, shellId] = tab.id.split(":");
+      const shell = remote.data().projects.flatMap((project) => project.host === hostId ? project.shells : []).find((shell) => shell.id === shellId);
+      return `⇄ ${remoteHostLabel(remote.data(), hostId)} · ${shell?.display ?? shellId.slice(0, 8)}`;
+    }
     if (!tab.id.startsWith("shell:")) return tab.title;
     const shell = panelState.shells().find((item) => item.id === tab.id.slice(6));
     return panelState.tabForShell(tab.id.slice(6))?.title || (shell ? panelState.titleForShell(shell) : tab.title);
@@ -256,6 +289,7 @@ export function Workspace(props: WorkspaceProps) {
   const orchestratorBusy = signal(false);
   async function openProjectOrchestrator() {
     const project = projectId();
+    if (remoteProjectKey(project)) { if (!orchestratorBusy() && !switching() && !modal()) { orchestratorBusy.set(true); try { await remoteActions.orchestrator(); } catch (error) { notice.set(String(error)); } finally { orchestratorBusy.set(false); } } return; }
     if (orchestratorBusy() || switching() || modal() || !UUID.test(project)) return;
     orchestratorBusy.set(true);
     try {
@@ -271,12 +305,13 @@ export function Workspace(props: WorkspaceProps) {
     void host.call("window.open", { kind: "global", view: "chat", start: true, activate: true }).catch((error: unknown) => notice.set(String(error)));
   }
   /** One local-shell creation path: the layout session creates and places it. */
-  async function createShell(split?: "right" | "down") {
+  async function createShell(split?: "right" | "down", kind = "shell") {
     if (busy() || switching() || panelState.pending() || modal()) return;
     busy.set(true);
     const before = new Set(snapshot().panes.flatMap((pane) => pane.tabs.map((tab) => tab.id)));
     const tree = panelState.state().worktrees.find((tree) => tree.id === panelState.selectedWorktree() && tree.projectId === projectId());
     try {
+      if (remoteProjectKey(projectId()) && !split) { await remoteActions.create(kind); return; }
       install(await session.newShell({ ...(split ? { split } : {}), ...(tree ? { worktreeId: tree.id, cwd: tree.path } : {}) }));
       const created = snapshot().panes.flatMap((pane) => pane.tabs).find((tab) => tab.kind === "shell" && !before.has(tab.id));
       if (created) pendingFocus.set(created.id.slice(6));
@@ -284,6 +319,7 @@ export function Workspace(props: WorkspaceProps) {
     finally { if (alive) busy.set(false); thaw(); }
   }
   async function createSubshell(parentShellId = selected()?.startsWith("shell:") ? selected()!.slice(6) : undefined) {
+    if (localOnly()) return;
     if (!parentShellId || busy() || switching() || modal()) return;
     busy.set(true);
     const project = projectId(), generation = panelState.generation();
@@ -296,6 +332,7 @@ export function Workspace(props: WorkspaceProps) {
     finally { if (alive) busy.set(false); thaw(); }
   }
   async function openEditor(path: string, line?: number, worktreeId?: string, identity?: string) {
+    if (localOnly()) return;
     if (busy() || switching() || modal()) return;
     busy.set(true);
     const project = projectId(), generation = panelState.generation();
@@ -311,7 +348,7 @@ export function Workspace(props: WorkspaceProps) {
     } catch (error) { if (alive) notice.set(String(error)); }
     finally { if (alive) busy.set(false); thaw(); }
   }
-  function showVimDialog() { vimDialog.set(true); freeze(); }
+  function showVimDialog() { if (!localOnly()) { vimDialog.set(true); freeze(); } }
   function submitVim() {
     const path = vimPath();
     if (!path) return;
@@ -355,7 +392,8 @@ export function Workspace(props: WorkspaceProps) {
       const next = await session.switchProject(id);
       if (!alive) return;
       install(size ? session.setExtent(size) : next);
-      projectId.set(id);
+      panelState.resetProject({ worktree: snapshot().selectedWorktreeId ?? null, task: snapshot().selectedTaskId ?? null });
+      void Remote.select(remoteProjectKey(id) ? id : null).catch((error) => { if (alive) notice.set(String(error)); });
       pendingFocus.set(null);
     } finally { switching.set(false); }
   }
@@ -541,9 +579,9 @@ export function Workspace(props: WorkspaceProps) {
       { label: "Shell", shortcut: "mod+t", onSelect: () => { void createShell(); } },
       { label: "Subshell", disabled: !selected()?.startsWith("shell:"), onSelect: () => { void createSubshell(); } },
       { label: "Open file in Vim…", onSelect: showVimDialog },
-      ...[["Codex", "mod+shift+c"], ["Claude", "mod+shift+l"], ["Grok", "mod+shift+g"], ["Muse", "mod+shift+u"]].map(([label, shortcut]) => disabled(label, shortcut)),
+      ...[["Codex", "mod+shift+c"], ["Claude", "mod+shift+l"], ["Grok", "mod+shift+g"], ["Muse", "mod+shift+u"]].map(([label, shortcut]) => ({ label, shortcut, disabled: !remoteProjectKey(projectId()), onSelect: () => { void createShell(undefined, label.toLowerCase()); } })),
       { label: "Global orchestrator", shortcut: "mod+shift+o", onSelect: openGlobalOrchestrator },
-      { label: "Project orchestrator", shortcut: "mod+alt+o", disabled: !UUID.test(projectId()), onSelect: () => { void openProjectOrchestrator(); } },
+      { label: "Project orchestrator", shortcut: "mod+alt+o", disabled: !UUID.test(projectId()) && !remoteProjectKey(projectId()), onSelect: () => { void openProjectOrchestrator(); } },
       disabled("New chat…"),
       { label: "App preview…", disabled: !filesRoot() || !!snapshot().remoteProject, onSelect: newAppPreview },
       { type: "separator" }, disabled("Views"),
@@ -590,6 +628,7 @@ export function Workspace(props: WorkspaceProps) {
     blocked: () => modal() || !!panelState.editor() || switching(),
     newShell: (split) => { allTabs.set(false); void createShell(split); },
     newSubshell: () => { allTabs.set(false); void createSubshell(); },
+    remoteAgent: (kind) => { if (!remoteProjectKey(projectId())) return false; void createShell(undefined, kind); return true; },
     openVim: showVimDialog,
     appPreview: newAppPreview,
     find,
@@ -610,6 +649,7 @@ export function Workspace(props: WorkspaceProps) {
       if (tab) select(tab.id);
     },
     escape: () => {
+      if (remote.prompt()) { remote.close(); thaw(); return; }
       if (modal()) { closing.set(null); renaming.set(null); vimDialog.set(false); thaw(); return; }
       if (selected() === "panel:preview") { fileState.clearPreview(); fileState.closePreview?.(); return; }
       const terminal = selected() ? terminalControls.get(selected()!) : undefined;
@@ -776,21 +816,45 @@ export function Workspace(props: WorkspaceProps) {
             renderPanel={(panel) => <View ref={(node) => { bodyRefs.set(panel.id, node); props.onViewRef?.(`panel:${panel.id}`, node); }} focusable={true} testID={`pane-${paneOf(panel.id)?.id}`} style={{ flex: 1, minHeight: 0 }}
               onPress={() => { action(() => panel.id.startsWith("empty:") ? session.selectPane(Number(panel.id.slice(6))) : session.selectPanel(panel.id)); focusActive(); }}>
               {shared() && !snapshot().focusMode && <View style={{ height: header(), flexDirection: "row", justifyContent: "flex-end", backgroundColor: theme().palette.panel }}>{paneControls(paneOf(panel.id)?.id ?? snapshot().activePane)}</View>}
-              {panel.id.startsWith("panel:") && NAVIGATION_PANELS.includes(panel.id.slice(6)) ?
+              {remoteProject() && panel.id.startsWith("panel:") && remotePanelUnavailable(panel.id.slice(6)) ?
+                <RemoteUnavailable hostLabel={remoteHostLabel(remote.data(), remoteProjectKey(projectId())!.host)} panel={panel.id.slice(6)} theme={theme} /> :
+                panel.id.startsWith("panel:") && NAVIGATION_PANELS.includes(panel.id.slice(6)) ?
                 <View testID={`panel:${panel.id}`} style={{ flex: 1, minHeight: 0 }}>
-                  <PanelContent controller={panelState} panel={panel.id.slice(6)} surface={panel.id} />
+                  {remoteProject() && panel.id !== "panel:projects" ? <Scroll style={{ flex: 1, minHeight: 0 }}>
+                    <RemoteProjectPanel controller={remote} projectKey={projectId} panel={panel.id.slice(6) as "worktrees" | "tasks" | "shells"}
+                      query={panelState.query} selectedWorktree={panelState.selectedWorktree}
+                      onWorktree={(id) => { panelState.selectWorktree(id); void remoteActions.worktree(id).catch((error) => notice.set(String(error))); }}
+                      onTask={(id) => { panelState.selectTask(id); const task = remote.data().projects.find((project) => project.key === projectId())?.tasks.find((task) => task.id === id); if (task?.worktreeId) panelState.selectWorktree(task.worktreeId); }}
+                      onShell={(hostId, shell) => remoteActions.open(hostId, shell)} />
+                  </Scroll> : <PanelContent controller={panelState} panel={panel.id.slice(6)} surface={panel.id} />}
+                  {panel.id === "panel:projects" && <Scroll testID="remote-projects-scroll" style={{ maxHeight: Math.min(260 * theme().scale, (containerHeight() || 600) * 0.4), flexShrink: 1 }}>
+                    <RemoteProjects controller={remote} query={panelState.query} selected={projectId} collapsed={panelState.collapsed} onToggleFolder={panelState.toggleFolder}
+                      onSelectProject={(key) => { void switchTo(key).catch((error) => notice.set(String(error))); }} />
+                  </Scroll>}
                 </View> : panel.id === "panel:files" || panel.id === "panel:preview" || panel.id === "panel:project_settings" || panel.id === "panel:settings" ?
                 <View testID={`panel:${panel.id}`} style={{ flex: 1, minHeight: 0 }}>
                   {props.diagnostics && <MountProbe id={panel.id} visible={isVisible(panel.id)} theme={theme} />}
                   {panel.id === "panel:files" ? <FilesPanel controller={fileState} surface={panel.id} /> :
                     panel.id === "panel:preview" ? <PreviewPanel controller={fileState} /> :
                     panel.id === "panel:settings" ? <AppSettings theme={theme} settings={props.settings} visible={() => isVisible(panel.id)} onError={(error) => notice.set(String(error))} onNotice={(message) => notice.set(message)}
+                      remote={<RemoteSettings controller={remote} />}
                       computerUseFocus={cuaFocus} computerUse={<CuaSetup theme={theme} visible={isVisible(panel.id)}
                         onControl={(control) => { cuaFocus.set(control); return () => { if (cuaFocus() === control) cuaFocus.set(null); }; }} />}
                       onControl={(control) => { settingsControl = control; if (revealSettingsKey) { revealSettingsKey = false; control.revealApiKey(); } return () => { if (settingsControl === control) settingsControl = undefined; }; }} /> :
                     <ProjectSettingsPanel projectId={projectId} theme={theme} visible={() => isVisible(panel.id)}
                       onControl={(control) => { projectSettingsControl = control ?? undefined; if (control && revealProjectMemo) { revealProjectMemo = false; control.revealMemo(); } }} />}
-                </View> : panel.id.startsWith("shell:") ?
+                </View> : panel.id === "panel:schedules" ?
+                <View testID={`panel:${panel.id}`} style={{ flex: 1, minHeight: 0 }}>
+                  {props.diagnostics && <MountProbe id={panel.id} visible={isVisible(panel.id)} theme={theme} />}
+                  <AutomationsPanel projectId={projectId} worktreeId={panelState.selectedWorktree} visible={() => isVisible(panel.id)} active={() => selected() === panel.id} theme={theme}
+                    openChat={(id) => action(() => session.openChat(id))} />
+                </View> : panel.id.startsWith("remote:") ?
+                <RemoteTerminal desktopId={panel.id.split(":")[1]} shellId={panel.id.split(":")[2]} label={remoteHostLabel(remote.data(), panel.id.split(":")[1])}
+                  link={remote.data().hosts.find((host) => host.id === panel.id.split(":")[1])?.link ?? null} visible={isVisible(panel.id)} focusOnAttach={pendingFocus() === panel.id}
+                  colors={terminalColors()} frozen={terminalFrozen()} theme={theme} onNotice={(message) => notice.set(message)}
+                  onControl={(control) => { terminalControls.set(panel.id, control); return () => { if (terminalControls.get(panel.id) === control) terminalControls.delete(panel.id); }; }}
+                  onFocus={() => action(() => session.selectPanel(panel.id))} onAttached={() => { if (pendingFocus() === panel.id) pendingFocus.set(null); }} /> :
+                panel.id.startsWith("shell:") ?
                 <View testID={`panel:${panel.id}`} style={{ flex: 1, minHeight: 0 }}>
                   {props.diagnostics && <MountProbe id={panel.id} visible={isVisible(panel.id)} theme={theme} />}
                   <LocalTerminal shellId={panel.id.slice(6)} visible={isVisible(panel.id)}
@@ -827,10 +891,10 @@ export function Workspace(props: WorkspaceProps) {
         {snapshot().focusMode && <View testID="focus-restore" role="button" accessibilityLabel="Restore layout" onPress={() => commands.dispatch("toggleFocusMode")}><Text style={{ ...textStyle(), color: theme().palette.cyan }}>↙ RESTORE  ⌘⇧F</Text></View>}
         <View testID="all-tabs" role="button" accessibilityLabel="All tabs" onPress={commands.toggleStrip}><Text style={textStyle()}>{label("All tabs")}</Text></View>
       </View>
-      <StatusBar session={session} snapshot={snapshot} projectId={projectId} projectLabel={panelState.projectLabel}
+      <StatusBar session={session} snapshot={snapshot} projectId={projectId} projectLabel={() => remoteTitle(remote.data(), projectId()) ?? panelState.projectLabel()}
         settings={props.settings} theme={theme} action={action} onError={(error) => notice.set(String(error))} modalOpen={() => !!props.modalOpen?.() || modal() || !!panelState.editor() || switching()}
         newShell={props.projectId ? { busy, create: () => { void createShell(); } } : undefined} onMenu={(open) => statusMenu.set(open)}
-        openProjectOrchestrator={UUID.test(projectId()) ? () => commands.dispatch("openProjectOrchestrator") : undefined}
+        openProjectOrchestrator={UUID.test(projectId()) || remoteProjectKey(projectId()) ? () => commands.dispatch("openProjectOrchestrator") : undefined}
         focus={{ mode: () => !!snapshot().focusMode, centered: () => !!snapshot().focusCentered,
           toggle: () => commands.dispatch("toggleFocusMode"), toggleCentered: () => commands.dispatch("focusCentered") }} />
       {notice() !== "" && <Overlay testID="workspace-notice" onCancel={escapeTopmost} margin={8}
@@ -863,6 +927,7 @@ export function Workspace(props: WorkspaceProps) {
         <View role="button" accessibilityLabel="Save title" onPress={saveRename}><Text style={textStyle()}>Save title</Text></View>
       </Popover>
       <PanelEditors controller={panelState} />
+      <RemotePrompt controller={remote} />
     </View>
   );
 }

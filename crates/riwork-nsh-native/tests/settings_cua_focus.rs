@@ -201,6 +201,26 @@ impl App {
             .dispatch_event(id, kind, EventPayload::None);
         self.settle();
     }
+    fn focus_remote_control(&self, name: &str) {
+        let id = self.observed.lock().unwrap().named(name);
+        // A platform focus is possible even when a control has no focus
+        // listener. Only subscribed events reach JS; retain that negative
+        // control so the regression observes stolen focus before the fix.
+        if self
+            .observed
+            .lock()
+            .unwrap()
+            .masks
+            .get(&id)
+            .is_some_and(|mask| mask.contains(EventKind::Focus))
+        {
+            self.control
+                .get()
+                .unwrap()
+                .dispatch_event(id, EventKind::Focus, EventPayload::None);
+        }
+        self.settle();
+    }
     fn send(&self, event: &str, value: serde_json::Value) -> Vec<String> {
         self.observed.lock().unwrap().focus.clear();
         self.host.send(event, value).unwrap();
@@ -210,6 +230,51 @@ impl App {
     fn show(&self) -> Vec<String> {
         self.send("app.fixture.show", json!(true))
     }
+}
+
+#[test]
+#[ignore = "requires the isolated Phase 6b focus runner and compiled TSX fixture"]
+fn delayed_cua_check_preserves_remote_settings_focus() {
+    let mut failures = Vec::new();
+    for ready in [false, true] {
+        // The no-focus case verifies that the delayed completion really ran
+        // and still performs PANEL-138's initial focus behavior.
+        for inside in [
+            None,
+            Some("remote-add"),
+            Some("remote-pair"),
+            Some("remote-remove-focus-fixture"),
+        ] {
+            let app = App::start(ready, true);
+            assert!(app.show().is_empty());
+            if let Some(name) = inside {
+                app.focus_remote_control(name);
+            }
+            let actual = app.send("app.fixture.cua-ready", json!(ready));
+            let expected = if inside.is_some() {
+                vec![]
+            } else {
+                vec![
+                    if ready {
+                        "theme-choice:native"
+                    } else {
+                        "cua-primary"
+                    }
+                    .to_owned(),
+                ]
+            };
+            println!(
+                "remote delayed ready={ready} focus_before={inside:?}: expected={expected:?} actual={actual:?}"
+            );
+            if actual != expected {
+                failures.push((ready, inside, actual, expected));
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "remote focus regressions: {failures:?}"
+    );
 }
 
 #[test]

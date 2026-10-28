@@ -1,0 +1,45 @@
+   Compiling riwork-engine v0.1.0 (/Users/dominik/orca/projects/riWork-nsh-spec-terminal-layout/crates/riwork-engine)
+warning: function `without_sgr` is never used
+   --> crates/riwork-engine/src/sessions/tmux_tests.rs:712:4
+    |
+712 | fn without_sgr(text: &str) -> String {
+    |    ^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `numbers` is never used
+   --> crates/riwork-engine/src/sessions/tmux_tests.rs:739:4
+    |
+739 | fn numbers(first: u32, last: u32) -> String {
+    |    ^^^^^^^
+
+warning: function `page` is never used
+   --> crates/riwork-engine/src/sessions/tmux_tests.rs:746:4
+    |
+746 | fn page(
+    |    ^^^^
+
+warning: `riwork-engine` (lib test) generated 3 warnings
+    Finished `test` profile [unoptimized] target(s) in 10.61s
+     Running unittests src/lib.rs (/tmp/riwork-p6b-fa930048.vn_exbl9/target/debug/deps/riwork_engine-740671598b759770)
+
+running 1 test
+test runtime::tests::spawn_replacement_starts_a_detached_child_with_the_restore_environment ... FAILED
+
+failures:
+
+---- runtime::tests::spawn_replacement_starts_a_detached_child_with_the_restore_environment stdout ----
+
+thread 'runtime::tests::spawn_replacement_starts_a_detached_child_with_the_restore_environment' (14633142) panicked at crates/riwork-engine/src/runtime.rs:2633:9:
+assertion `left == right` failed
+  left: ["71546", "/private/tmp/riwork-p6b-fa930048.vn_exbl9/tmp/riwork-runtime-test-cfee5b75-ac0c-498d-8909-67584308e0f2/project folder", "ticket-1", "inherited", "detached"]
+ right: ["71546", "71546", "/private/tmp/riwork-p6b-fa930048.vn_exbl9/tmp/riwork-runtime-test-cfee5b75-ac0c-498d-8909-67584308e0f2/project folder", "ticket-1", "inherited", "detached"]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    runtime::tests::spawn_replacement_starts_a_detached_child_with_the_restore_environment
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1341 filtered out; finished in 0.20s
+
+error: test failed, to rerun pass `-p riwork-engine --lib`
