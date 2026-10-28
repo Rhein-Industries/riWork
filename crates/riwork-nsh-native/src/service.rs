@@ -316,6 +316,60 @@ impl ProcessService {
         })
         .await
     }
+    pub async fn update_project_metadata(
+        self: &Arc<Self>,
+        project: String,
+        name: String,
+        folder: Option<String>,
+    ) -> Result<ProjectDto, String> {
+        self.store_write(move |backend| {
+            validate_input_id(&project)?;
+            validate_optional_input_id(folder.as_deref())?;
+            if name.trim().is_empty() {
+                return Err(InvalidInput("Project name cannot be empty".into()).into());
+            }
+            backend.update_project_metadata(&project, &name, folder.as_deref())
+        })
+        .await
+    }
+    pub async fn set_project_codex_account(
+        self: &Arc<Self>,
+        project: String,
+        choice: crate::dto::ProjectCodexAccountDto,
+    ) -> Result<ProjectDto, String> {
+        self.store_write(move |backend| {
+            validate_input_id(&project)?;
+            let choice = crate::project_settings::account_choice(&choice).map_err(InvalidInput)?;
+            backend.set_project_codex_account(&project, choice)
+        })
+        .await
+    }
+    pub async fn set_project_orchestrator(
+        self: &Arc<Self>,
+        project: String,
+        choice: serde_json::Value,
+    ) -> Result<ProjectDto, String> {
+        self.store_write(move |backend| {
+            validate_input_id(&project)?;
+            let choice =
+                crate::project_settings::orchestrator_choice(choice).map_err(InvalidInput)?;
+            backend.set_project_orchestrator(&project, choice)
+        })
+        .await
+    }
+    pub async fn set_project_delegation_policy(
+        self: &Arc<Self>,
+        project: String,
+        patch: crate::settings::DelegationPatch,
+    ) -> Result<ProjectDto, String> {
+        self.store_write(move |backend| {
+            validate_input_id(&project)?;
+            patch.validate().map_err(InvalidInput)?;
+            backend.set_project_delegation_policy(&project, patch)
+        })
+        .await
+    }
+
     pub async fn set_project_memo(
         self: &Arc<Self>,
         project: String,

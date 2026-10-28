@@ -19,7 +19,9 @@ import {
 import { DEFAULT_THEME, space, type InterfaceTheme } from "./appearance";
 import { StatusBar } from "./StatusBar";
 import { ChatTab } from "./chat/ChatTab";
-import { createFilesController, FilesPanel, PreviewPanel, MemoEditor } from "./Files";
+import { createFilesController, FilesPanel, PreviewPanel } from "./Files";
+import { AppSettings } from "./settings/AppSettings";
+import { ProjectSettingsPanel } from "./settings/ProjectSettings";
 
 type Extent = { width: number; height: number };
 interface WorkspaceProps {
@@ -475,6 +477,9 @@ export function Workspace(props: WorkspaceProps) {
       void host.call("window.open", { kind: "global", view: "dashboard", start: false }).catch((error) => notice.set(String(error)));
     } else action(() => session.openPanel(panel));
   }
+  let settingsControl: { revealApiKey: () => void } | undefined;
+  let projectSettingsControl: { revealMemo: () => void } | undefined;
+  let revealSettingsKey = false, revealProjectMemo = false;
   function paneWidth(id: number) {
     const nodeWidth = (node: DockNode, available: number): number | undefined => {
       if (node.type === "tabs") return node.id === id ? available : undefined;
@@ -629,7 +634,16 @@ export function Workspace(props: WorkspaceProps) {
     }
     else if ((step?.kind ?? step?.type) === "newSubshell") void createSubshell(step?.parentShellId);
     else if ((step?.kind ?? step?.type) === "openEditor" && step?.path) void openEditor(step.path, step.line, step.worktreeId);
-    else if ((step?.kind ?? step?.type) === "projectMemo") action(() => session.openPanel("project_settings"));
+    else if (kind === "apiKeySettings") {
+      revealSettingsKey = !settingsControl;
+      action(() => session.openPanel("settings"));
+      settingsControl?.revealApiKey();
+    }
+    else if (kind === "projectMemo") {
+      revealProjectMemo = !projectSettingsControl;
+      action(() => session.openPanel("project_settings"));
+      projectSettingsControl?.revealMemo();
+    }
   }));
   cleanup(host.on("project.open", (data) => {
     void switchTo((data as { projectId: string }).projectId).catch((error: unknown) => notice.set(String(error)));
@@ -764,12 +778,15 @@ export function Workspace(props: WorkspaceProps) {
               {panel.id.startsWith("panel:") && NAVIGATION_PANELS.includes(panel.id.slice(6)) ?
                 <View testID={`panel:${panel.id}`} style={{ flex: 1, minHeight: 0 }}>
                   <PanelContent controller={panelState} panel={panel.id.slice(6)} surface={panel.id} />
-                </View> : panel.id === "panel:files" || panel.id === "panel:preview" || panel.id === "panel:project_settings" ?
+                </View> : panel.id === "panel:files" || panel.id === "panel:preview" || panel.id === "panel:project_settings" || panel.id === "panel:settings" ?
                 <View testID={`panel:${panel.id}`} style={{ flex: 1, minHeight: 0 }}>
                   {props.diagnostics && <MountProbe id={panel.id} visible={isVisible(panel.id)} theme={theme} />}
                   {panel.id === "panel:files" ? <FilesPanel controller={fileState} surface={panel.id} /> :
                     panel.id === "panel:preview" ? <PreviewPanel controller={fileState} /> :
-                    <MemoEditor projectId={projectId} theme={theme} visible={() => isVisible(panel.id)} />}
+                    panel.id === "panel:settings" ? <AppSettings theme={theme} settings={props.settings} visible={() => isVisible(panel.id)} onError={(error) => notice.set(String(error))} onNotice={(message) => notice.set(message)}
+                      onControl={(control) => { settingsControl = control; if (revealSettingsKey) { revealSettingsKey = false; control.revealApiKey(); } return () => { if (settingsControl === control) settingsControl = undefined; }; }} /> :
+                    <ProjectSettingsPanel projectId={projectId} theme={theme} visible={() => isVisible(panel.id)}
+                      onControl={(control) => { projectSettingsControl = control ?? undefined; if (control && revealProjectMemo) { revealProjectMemo = false; control.revealMemo(); } }} />}
                 </View> : panel.id.startsWith("shell:") ?
                 <View testID={`panel:${panel.id}`} style={{ flex: 1, minHeight: 0 }}>
                   {props.diagnostics && <MountProbe id={panel.id} visible={isVisible(panel.id)} theme={theme} />}

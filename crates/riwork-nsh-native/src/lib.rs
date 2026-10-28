@@ -18,8 +18,10 @@ mod memo;
 pub mod orchestrators;
 pub mod overview;
 mod presence;
+pub mod project_settings;
 pub mod service;
 pub mod settings;
+pub mod settings_aux;
 pub mod tabs;
 #[cfg(feature = "test-support")]
 pub mod testing;
@@ -44,6 +46,9 @@ fn native(registry: &mut Registry) {
         .module::<Tabs>()
         .module::<files::Files>()
         .module::<settings::Settings>()
+        .module::<project_settings::ProjectSettings>()
+        .module::<settings_aux::ApiKey>()
+        .module::<settings_aux::OrcaImport>()
         .module::<appearance::Appearance>()
         .module::<dashboard::Dashboard>()
         .module::<orchestrators::Orchestrators>()
@@ -93,6 +98,43 @@ impl Store {
         initialize()
             .await?
             .set_project_memo(project, text, revision)
+            .await
+    }
+    pub async fn update_project_metadata(
+        project: String,
+        name: String,
+        folder: Option<String>,
+    ) -> Result<ProjectDto, String> {
+        initialize()
+            .await?
+            .update_project_metadata(project, name, folder)
+            .await
+    }
+    pub async fn set_project_codex_account(
+        project: String,
+        choice: dto::ProjectCodexAccountDto,
+    ) -> Result<ProjectDto, String> {
+        initialize()
+            .await?
+            .set_project_codex_account(project, choice)
+            .await
+    }
+    pub async fn set_project_orchestrator(
+        project: String,
+        choice: nsh_core::JsonValue,
+    ) -> Result<ProjectDto, String> {
+        initialize()
+            .await?
+            .set_project_orchestrator(project, choice)
+            .await
+    }
+    pub async fn set_project_delegation_policy(
+        project: String,
+        patch: settings::DelegationPatch,
+    ) -> Result<ProjectDto, String> {
+        initialize()
+            .await?
+            .set_project_delegation_policy(project, patch)
             .await
     }
     pub async fn set_project_notifications(
@@ -331,14 +373,17 @@ mod tests {
             modules.iter().map(|module| module.name).collect::<Vec<_>>(),
             [
                 "Accounts",
+                "ApiKey",
                 "Appearance",
                 "Chat",
                 "Cua",
                 "Dashboard",
                 "Files",
                 "Layouts",
+                "OrcaImport",
                 "Orchestrators",
                 "Previews",
+                "ProjectSettings",
                 "Sessions",
                 "Settings",
                 "Store",
