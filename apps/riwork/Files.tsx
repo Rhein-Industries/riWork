@@ -329,7 +329,11 @@ export function PreviewPanel(props: { controller: FilesController }) {
 }
 
 /** A serialized autosave queue survives component cleanup without dropping its final edit. */
-export function MemoEditor(props: { projectId: () => string; theme?: () => InterfaceTheme; visible?: () => boolean }) {
+export function MemoEditor(props: {
+  projectId: () => string; theme?: () => InterfaceTheme; visible?: () => boolean;
+  /** Receipt delivery seam; the default uses the durable native writer. */
+  saveMemo?: typeof Store.setProjectMemo;
+}) {
   const theme = props.theme ?? (() => DEFAULT_THEME);
   const value = signal(""), status = signal("Saved automatically"), saving = signal(false);
   type Draft = { text: string; saved: string; dirty: boolean; running: boolean; error: string; revision?: number };
@@ -352,11 +356,13 @@ export function MemoEditor(props: { projectId: () => string; theme?: () => Inter
       while (d.dirty && memoBytes(d.text) <= 32768) {
         const text = d.text, revision = d.revision;
         let result;
-        try { result = await Store.setProjectMemo(id, text, revision); }
+        try { result = await (props.saveMemo ?? Store.setProjectMemo)(id, text, revision); }
         catch (reason) { if (d.revision !== revision) continue; throw reason; }
         d.saved = result.text;
         // Normalization is authoritative only if the user did not type during this save.
-        if (d.text === text) { d.text = result.text; d.dirty = false; if (alive && current === id) value.set(result.text); }
+        if (d.text === text) { d.text = result.text; if (alive && current === id) value.set(result.text); }
+        // An intervening edit may equal the old saved text but differ from this receipt.
+        d.dirty = d.text !== d.saved;
       }
     } catch (reason) { d.error = String(reason); }
     finally { d.running = false; renderStatus(); }
@@ -381,7 +387,7 @@ export function MemoEditor(props: { projectId: () => string; theme?: () => Inter
     <Text style={textStyle()}>Project memo</Text>
     <Input testID="project-memo-input" accessibilityLabel="Project memo" multiline={true} value={value()} placeholder="Write notes for this project in Markdown: plans, links, decisions. Only you see them. No agent is given the memo; type /memo in a chat to insert it yourself."
       onChange={(text) => {
-        const d = draft(current); d.text = text; d.dirty = d.text !== d.saved; d.error = ""; value.set(text); clearTimeout(timer);
+        const d = draft(current); d.text = text; d.dirty = d.running || d.text !== d.saved; d.error = ""; value.set(text); clearTimeout(timer);
         if (memoBytes(text) <= 32768) {
           try { d.revision = Store.stageProjectMemo(current, text); timer = setTimeout(() => void save(), 600); }
           catch (reason) { d.error = String(reason); }
