@@ -135,8 +135,18 @@ seven P1 modules and prove Add folder broadcasts through the real native bridge.
 The 60-second idle guard watches Store, Sessions, Tabs, Settings and Appearance
 and asserts no deliveries, no repeated empty-session sample and no presence poll.
 Fixtures inject session data; they never start tmux, launch app windows or touch
-live RiWork data. Chat and the
-other contract modules are left for their port phases; no chat feed is touched.
+live RiWork data. The remaining contract modules are left for their port phases.
+
+`Chat`/`ChatHandle` (Phase 4a, `src/chat/`) follow the existing chat host over
+its socket: a follower and an ordered deliverer thread per open handle, and a
+worker that folds events, projects once per batch and pushes coalesced
+reset/patch deliveries (one per 16 ms at most; the 1 s activity clock runs only
+while a turn runs). Bodies are paged by the List viewport. Only the desktop
+executable may start a host (`chat::allow_host_start`); tests install their own
+backend, and debug/test-support builds with `RIWORK_NSH_CHAT_FIXTURE=1` on a
+`/tmp` home run an in-process host replaying recorded Codex provider streams.
+`tests/chat_bridge.rs` holds the bridge acceptance and the D-PERF-1 structural
+guards; the TSX side is `apps/riwork/chat/` and `apps/riwork/tests/Chat.test.tsx`.
 
 Acceptance fixtures are available only with `test-support`. Both scenarios use
 the production Store, LayoutStore, TabStore, settings and global-window writers.

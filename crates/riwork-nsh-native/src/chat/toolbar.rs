@@ -1,0 +1,343 @@
+//! The words of the chat composer bar: approval modes and the model, effort and Fast
+//! choices. Carried from the uncompiled GPUI `chat_view/toolbar.rs` (parity CHATC-151..167)
+//! so the rule tables stay in Rust (one source for desktop, phone and tests).
+
+use riwork_engine::chat::model::{ApprovalMode, ModelOption, Provider};
+
+/// The modes in the order the picker lists them, with what each lets the agent do.
+pub const MODES: [(ApprovalMode, &str, &str); 4] = [
+    (
+        ApprovalMode::Supervised,
+        "Supervised",
+        "Asks before commands and edits",
+    ),
+    (
+        ApprovalMode::AutoEdit,
+        "Auto-edit",
+        "Edits the workspace freely, asks for the rest",
+    ),
+    (ApprovalMode::Full, "Full", "Never asks"),
+    (
+        ApprovalMode::Plan,
+        "Plan",
+        "Plans first and changes nothing",
+    ),
+];
+
+pub fn mode_label(mode: ApprovalMode) -> &'static str {
+    MODES
+        .iter()
+        .find(|(candidate, ..)| *candidate == mode)
+        .map_or("Supervised", |(_, label, _)| label)
+}
+
+/// The reasoning efforts offered for a provider when its driver has not said which models
+/// there are. The host passes the name on as it is, so a level the installed CLI does not
+/// know is the provider's to refuse.
+pub fn efforts(provider: Provider) -> &'static [&'static str] {
+    match provider {
+        Provider::Codex => &["low", "medium", "high", "xhigh"],
+        Provider::Claude => &["low", "medium", "high", "xhigh", "max"],
+        Provider::Muse => &["low", "medium", "high", "xhigh"],
+    }
+}
+
+/// Models offered as buttons beside the text field, when the driver has not listed its
+/// models. Claude's aliases keep working as models change; Codex model names change often
+/// enough that only the text field is offered.
+pub fn model_suggestions(provider: Provider) -> &'static [&'static str] {
+    match provider {
+        Provider::Codex => &[],
+        Provider::Claude => &["opus", "sonnet", "haiku"],
+        Provider::Muse => &[],
+    }
+}
+
+/// The model the chat runs, as far as the driver's list says: the chosen one, or the
+/// provider's own choice for a chat that has chosen none. A chosen model the list does not
+/// know (typed by hand, or from an older list) is `None`.
+pub fn selected_model<'a>(
+    models: &'a [ModelOption],
+    chosen: Option<&str>,
+) -> Option<&'a ModelOption> {
+    match chosen.filter(|id| !id.is_empty()) {
+        Some(id) => models.iter().find(|model| model.id == id),
+        None => models.iter().find(|model| model.is_default),
+    }
+}
+
+/// What the model button says: the model's name, the chosen name as it is when the list does
+/// not know it, or a prompt when nothing is chosen and nothing is known.
+pub fn model_label(models: &[ModelOption], chosen: Option<&str>) -> String {
+    match (selected_model(models, chosen), chosen) {
+        (Some(model), _) => model.name.clone(),
+        (None, Some(chosen)) if !chosen.is_empty() => chosen.to_owned(),
+        _ => "model".to_owned(),
+    }
+}
+
+/// One line of the model picker.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ModelRow {
+    /// What a click chooses.
+    pub id: String,
+    /// The model's name, with a mark on the provider's default.
+    pub label: String,
+    pub detail: Option<String>,
+    pub current: bool,
+}
+
+/// The model picker's lines, in the driver's order.
+pub fn model_rows(models: &[ModelOption], chosen: Option<&str>) -> Vec<ModelRow> {
+    let current = selected_model(models, chosen).map(|model| model.id.as_str());
+    models
+        .iter()
+        .map(|model| ModelRow {
+            id: model.id.clone(),
+            // A name that already says so ("Default (recommended)") gets no second mark.
+            label: if model.is_default && !model.name.to_lowercase().contains("default") {
+                format!("{} (default)", model.name)
+            } else {
+                model.name.clone()
+            },
+            detail: Some(model.description.clone()).filter(|text| !text.is_empty()),
+            current: current == Some(model.id.as_str()),
+        })
+        .collect()
+}
+
+/// Search the installed provider's metadata without inventing models or changing ordering.
+pub fn filtered_model_rows(
+    models: &[ModelOption],
+    chosen: Option<&str>,
+    query: &str,
+) -> Vec<ModelRow> {
+    let query = query.trim().to_lowercase();
+    model_rows(models, chosen)
+        .into_iter()
+        .filter(|row| {
+            query.is_empty()
+                || row.id.to_lowercase().contains(&query)
+                || row.label.to_lowercase().contains(&query)
+                || row
+                    .detail
+                    .as_ref()
+                    .is_some_and(|detail| detail.to_lowercase().contains(&query))
+        })
+        .collect()
+}
+
+/// The efforts to offer for the chosen model: the ones its driver listed for it, none at
+/// all for a model that takes none, and the provider's usual ones when the model is not
+/// described.
+pub fn effort_choices(
+    models: &[ModelOption],
+    chosen: Option<&str>,
+    provider: Provider,
+) -> Vec<String> {
+    match selected_model(models, chosen) {
+        Some(model) => model.efforts.clone(),
+        None => efforts(provider).iter().map(|e| (*e).to_owned()).collect(),
+    }
+}
+
+/// One line of the effort picker.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EffortRow {
+    /// What a click chooses.
+    pub effort: String,
+    /// The effort, with a mark on the one the model uses when none is chosen.
+    pub label: String,
+    pub current: bool,
+}
+
+/// The effort picker's lines. With no effort chosen, the model's default is the current one.
+pub fn effort_rows(
+    models: &[ModelOption],
+    chosen_model: Option<&str>,
+    chosen_effort: Option<&str>,
+    provider: Provider,
+) -> Vec<EffortRow> {
+    let default = selected_model(models, chosen_model).and_then(|m| m.default_effort.as_deref());
+    let current = chosen_effort.or(default);
+    effort_choices(models, chosen_model, provider)
+        .into_iter()
+        .map(|effort| EffortRow {
+            label: if Some(effort.as_str()) == default {
+                format!("{effort} (default)")
+            } else {
+                effort.clone()
+            },
+            current: Some(effort.as_str()) == current,
+            effort,
+        })
+        .collect()
+}
+
+/// What the effort button says: the chosen effort, else the model's default, else a prompt.
+pub fn effort_label(
+    models: &[ModelOption],
+    chosen_model: Option<&str>,
+    chosen_effort: Option<&str>,
+) -> String {
+    chosen_effort
+        .or_else(|| selected_model(models, chosen_model).and_then(|m| m.default_effort.as_deref()))
+        .unwrap_or("effort")
+        .to_owned()
+}
+
+/// Whether the effort button is there: not for a model its driver says takes no effort.
+pub fn effort_available(models: &[ModelOption], chosen: Option<&str>, provider: Provider) -> bool {
+    !effort_choices(models, chosen, provider).is_empty()
+}
+
+/// Whether the Fast toggle is there: only for a model that has a fast mode.
+pub fn fast_available(models: &[ModelOption], chosen: Option<&str>) -> bool {
+    selected_model(models, chosen).is_some_and(|model| model.supports_fast)
+}
+
+/// What the Fast toggle says.
+pub fn fast_label(on: bool) -> &'static str {
+    if on { "Fast on" } else { "Fast off" }
+}
+
+/// What a Muse chat's contributor toggle says, as the new-chat dialog does: on or off.
+pub fn contributor_label(on: bool) -> &'static str {
+    if on {
+        "Contributor on"
+    } else {
+        "Contributor off"
+    }
+}
+
+/// What the toggle says of a chat a chat host from before RiWork's off by default reports with
+/// neither (`ChatInfo::reported_contributor_mode`): the user's Muse settings decide there,
+/// until the chat is turned off or that host is replaced.
+pub const CONTRIBUTOR_SETTINGS_LABEL: &str = "Contributor: Muse settings";
+
+/// The model and effort to send when `model` is picked. An effort the new model does not take
+/// moves to the new model's own default (the driver would leave it out otherwise, and the chat
+/// would show one it does not use); an effort it takes stays, and none stays none.
+pub fn model_choice(
+    models: &[ModelOption],
+    model: &str,
+    current_effort: Option<&str>,
+) -> (String, Option<String>) {
+    let effort = current_effort.and_then(|effort| {
+        let new = models.iter().find(|candidate| candidate.id == model)?;
+        if new.efforts.is_empty() || new.efforts.iter().any(|e| e == effort) {
+            None
+        } else {
+            new.default_effort.clone()
+        }
+    });
+    (model.to_owned(), effort)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn option(id: &str, name: &str, efforts: &[&str], fast: bool, default: bool) -> ModelOption {
+        ModelOption {
+            id: id.into(),
+            name: name.into(),
+            description: format!("About {name}"),
+            efforts: efforts.iter().map(|e| (*e).to_owned()).collect(),
+            default_effort: efforts.first().map(|e| (*e).to_owned()),
+            supports_fast: fast,
+            is_default: default,
+        }
+    }
+
+    fn list() -> Vec<ModelOption> {
+        vec![
+            option("sol", "Sol", &["low", "medium", "high", "max"], true, true),
+            option("luna", "Luna", &["medium", "high"], false, false),
+            option("haiku", "Haiku", &[], false, false),
+        ]
+    }
+
+    #[test]
+    fn the_selected_model_is_the_chosen_one_or_the_default_and_never_a_guess() {
+        let models = list();
+        assert_eq!(selected_model(&models, None).unwrap().id, "sol");
+        assert_eq!(selected_model(&models, Some("")).unwrap().id, "sol");
+        assert_eq!(selected_model(&models, Some("luna")).unwrap().id, "luna");
+        // One the list does not know is not turned into the default.
+        assert!(selected_model(&models, Some("typed-by-hand")).is_none());
+        assert!(selected_model(&[], None).is_none());
+        assert_eq!(model_label(&models, None), "Sol");
+        assert_eq!(model_label(&models, Some("luna")), "Luna");
+        assert_eq!(model_label(&models, Some("typed-by-hand")), "typed-by-hand");
+        assert_eq!(model_label(&[], None), "model");
+        assert_eq!(model_label(&[], Some("opus")), "opus");
+    }
+
+    #[test]
+    fn the_effort_picker_offers_only_what_the_selected_model_takes() {
+        let models = list();
+        let names = |rows: Vec<EffortRow>| rows.into_iter().map(|r| r.effort).collect::<Vec<_>>();
+        assert_eq!(
+            names(effort_rows(&models, None, None, Provider::Codex)),
+            ["low", "medium", "high", "max"]
+        );
+        assert_eq!(
+            names(effort_rows(&models, Some("luna"), None, Provider::Codex)),
+            ["medium", "high"]
+        );
+        // A model that takes none has no picker.
+        assert!(effort_rows(&models, Some("haiku"), None, Provider::Claude).is_empty());
+        assert!(!effort_available(&models, Some("haiku"), Provider::Claude));
+        assert!(effort_available(&models, Some("luna"), Provider::Claude));
+        // Without a list, or for a model not in it, the provider's usual ones.
+        assert_eq!(
+            effort_choices(&[], None, Provider::Codex),
+            ["low", "medium", "high", "xhigh"]
+        );
+        assert!(effort_choices(&models, Some("typed"), Provider::Claude).contains(&"max".into()));
+        assert!(effort_available(&[], None, Provider::Claude));
+    }
+
+    #[test]
+    fn fast_shows_only_for_a_model_with_a_fast_mode() {
+        let models = list();
+        assert!(fast_available(&models, None), "the default model has it");
+        assert!(fast_available(&models, Some("sol")));
+        assert!(!fast_available(&models, Some("luna")));
+        assert!(!fast_available(&models, Some("typed-by-hand")));
+        assert!(!fast_available(&[], None), "no list, no toggle");
+        assert_eq!(
+            (fast_label(true), fast_label(false)),
+            ("Fast on", "Fast off")
+        );
+    }
+
+    #[test]
+    fn choosing_a_model_moves_an_effort_it_does_not_take_to_its_default() {
+        let models = list();
+        // Taken: stays. None: stays none. Not taken: the new model's default.
+        assert_eq!(
+            model_choice(&models, "luna", Some("high")),
+            ("luna".to_owned(), None)
+        );
+        assert_eq!(
+            model_choice(&models, "luna", None),
+            ("luna".to_owned(), None)
+        );
+        assert_eq!(
+            model_choice(&models, "luna", Some("max")),
+            ("luna".to_owned(), Some("medium".to_owned()))
+        );
+        // A model with no efforts leaves the effort alone (the driver ignores it), as does
+        // one the list does not know.
+        assert_eq!(
+            model_choice(&models, "haiku", Some("max")),
+            ("haiku".to_owned(), None)
+        );
+        assert_eq!(
+            model_choice(&models, "x", Some("max")),
+            ("x".to_owned(), None)
+        );
+    }
+}

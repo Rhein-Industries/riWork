@@ -6,6 +6,7 @@
 //! engine thread. See the crate README for lifecycle and test instructions.
 pub mod appearance;
 pub mod backend;
+pub mod chat;
 pub mod dashboard;
 pub mod dto;
 pub mod host_flush;
@@ -37,6 +38,8 @@ fn native(registry: &mut Registry) {
         .module::<settings::Settings>()
         .module::<appearance::Appearance>()
         .module::<dashboard::Dashboard>()
+        .module::<chat::Chat>()
+        .class::<chat::ChatHandle>()
         .class::<Subscription>();
     riwork_nsh_workspace::register_layouts(registry, service::process_home);
 }
@@ -301,6 +304,7 @@ mod tests {
             modules.iter().map(|module| module.name).collect::<Vec<_>>(),
             [
                 "Appearance",
+                "Chat",
                 "Dashboard",
                 "Layouts",
                 "Sessions",
@@ -311,7 +315,10 @@ mod tests {
         );
         for module in modules {
             for function in &module.functions {
-                let expected = if matches!(function.name, "subscribe" | "sentenceCase" | "cased") {
+                let expected = if matches!(
+                    function.name,
+                    "subscribe" | "sentenceCase" | "cased" | "open"
+                ) {
                     FunctionKind::Sync
                 } else {
                     FunctionKind::Async

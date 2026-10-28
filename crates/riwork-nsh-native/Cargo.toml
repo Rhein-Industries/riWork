@@ -26,12 +26,16 @@ nsh-base = "=0.3.0"
 anyhow = "1"
 async-channel = "2.5"
 futures-util = "0.3"
+libc = "0.2"
 notify = "=8.2.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
-uuid = "1"
+uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 nsh-engine = "=0.3.0"
+# The engine's in-process chat host with fake and replayed provider drivers.
+riwork-engine = { path = "../riwork-engine", features = ["test-support"] }
 tempfile = "3"
