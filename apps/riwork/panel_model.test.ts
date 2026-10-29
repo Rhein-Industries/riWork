@@ -1,6 +1,6 @@
 import { expect, test } from "nsh/test";
 import type { FolderDto, ProjectDto, ShellSessionDto, StoreState, TaskDto, WorktreeDto } from "riwork/native";
-import { EMPTY_STORE, countLabel, matches, projectRows, shellLabel, shellMatches, taskMatches, visibleWorktrees } from "./panel_model";
+import { EMPTY_STORE, countLabel, matches, projectRows, shellLabel, shellMatches, taskAge, taskCounts, taskDate, taskMatches, taskRows, taskStatusLabel, taskWorktree, visibleWorktrees } from "./panel_model";
 
 function project(id: string, name: string, folderId: string | null = null, root = `/fixture/${name}`): ProjectDto {
   return { id, name, root, folderId, createdAt: 1, repositoryRoots: [], notifyOnAgentDone: true, wakeOrchestratorsOnAgentDone: true, codexAccount: { source: "inherit" }, orchestrator: {}, delegationPolicy: {} };
@@ -52,6 +52,7 @@ test("task filtering includes exact status and assigned worktree while shell fil
   state.worktrees = [tree("main", "/fixture", true), tree("feature", "/fixture/linked", false)];
   const task: TaskDto = { id: "exact-task", projectId: "one", title: "Implement panel", details: "Stored detail", status: "in_progress", worktreeId: "feature", createdAt: 1, updatedAt: 1 };
   expect(taskMatches(task, state, " IN_PROGRESS ")).toBe(true);
+  expect(taskMatches(task, state, "in progress")).toBe(true);
   expect(taskMatches(task, state, "feature")).toBe(true);
   expect(taskMatches(task, state, "stored detail")).toBe(true);
   expect(taskMatches(task, state, "missing")).toBe(false);
@@ -69,4 +70,40 @@ test("header counts and trimming are independent of rendered folder rows", () =>
   expect(countLabel(0, 0, "session")).toBe("0 sessions");
   expect(matches(" aLpHa ", "Alpha")).toBe(true);
   expect(matches("   ", null)).toBe(true);
+});
+
+function task(id: string, status: string, updatedAt: number, worktreeId: string | null = null): TaskDto {
+  return { id, projectId: "one", title: id, details: "", status, worktreeId, createdAt: 1, updatedAt };
+}
+
+test("tasks list open work first, newest first, with sections only when statuses mix", () => {
+  const tasks = [task("old-done", "done", 5), task("todo", "todo", 3), task("new-done", "done", 9), task("active-old", "in_progress", 2), task("active-new", "in_progress", 8)];
+  expect(taskRows(tasks, "all").map((row) => row.id)).toEqual(["section-in_progress", "active-new", "active-old", "section-todo", "todo", "section-done", "new-done", "old-done"]);
+  expect(taskRows(tasks, "all")[0]).toEqual({ kind: "section", id: "section-in_progress", status: "in_progress", count: 2 });
+  expect(taskRows(tasks, "open").map((row) => row.id)).toEqual(["section-in_progress", "active-new", "active-old", "section-todo", "todo"]);
+  expect(taskRows(tasks, "done").map((row) => row.id)).toEqual(["new-done", "old-done"]);
+  expect(taskRows([], "open")).toEqual([]);
+  expect(taskCounts(tasks)).toEqual({ open: 3, done: 2, all: 5 });
+  // Presentation never reorders the Store's own list.
+  expect(tasks.map((item) => item.id)).toEqual(["old-done", "todo", "new-done", "active-old", "active-new"]);
+  expect(["todo", "in_progress", "done"].map((status) => taskStatusLabel(status))).toEqual(["Todo", "In progress", "Done"]);
+});
+
+test("task worktrees name a missing assignment instead of calling it unassigned", () => {
+  const state = fixture();
+  state.worktrees = [tree("main", "/fixture", true)];
+  expect(taskWorktree(task("a", "todo", 1, "main"), state)).toBe("main");
+  expect(taskWorktree(task("b", "todo", 1), state)).toBe("Unassigned");
+  expect(taskWorktree(task("c", "todo", 1, "0123456789abcdef"), state)).toBe("Worktree 01234567");
+});
+
+test("task times read relative within a week and as dates after", () => {
+  const now = Date.UTC(2026, 9, 29, 12) / 1000;
+  expect(taskAge(now - 5, now)).toBe("just now");
+  expect(taskAge(now + 30, now)).toBe("just now");
+  expect(taskAge(now - 125, now)).toBe("2m ago");
+  expect(taskAge(now - 3 * 3600, now)).toBe("3h ago");
+  expect(taskAge(now - 2 * 86400, now)).toBe("2d ago");
+  expect(taskAge(now - 22 * 86400, now)).toBe("Oct 7");
+  expect(taskDate(Date.UTC(2025, 2, 3, 12) / 1000, now)).toBe("Mar 3, 2025");
 });

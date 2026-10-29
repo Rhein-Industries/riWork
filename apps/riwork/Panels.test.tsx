@@ -50,29 +50,44 @@ test("task form, assignment and status changes reach a peer through Store subscr
   try {
     await app.waitFor("id:projects-panel", { timeout: 15000 }); await peer.waitFor("id:projects-panel", { timeout: 15000 });
     await app.press("id:show-tasks"); await peer.press("id:show-tasks");
+    const title = `Panel lifecycle ${fixtureKey}`;
     await app.press("id:new-task");
-    await app.type("id:task-title", `Panel lifecycle ${fixtureKey}`);
+    await app.type("id:task-title", title);
     await app.type("id:task-details", "Saved by the real native store");
     await app.press("id:save-task");
     await app.waitFor("id:task-detail");
     const created = await inspect(app);
     const taskId = created.selectedTask!;
-    await peer.waitFor(`id:task-${taskId}`);
+    await peer.waitFor(`label:${title} · Todo`);
     await app.press("id:assign-task");
     const primary = created.state.worktrees.find((tree) => tree.projectId === created.projectId && tree.isPrimary)!;
     await app.chooseMenuItem(primary.branch);
-    await app.waitUntil(() => app.texts().some((text) => text === `todo · @ ${primary.branch}`));
-    await app.press("id:task-status:in_progress");
-    await peer.waitUntil(() => peer.texts().includes(`in_progress · @ ${primary.branch}`));
+    await peer.waitUntil(() => peer.texts().some((text) => text.startsWith(`${primary.branch} · `)));
     // A peer can observe the Store push before this window's own call settles.
+    await app.waitUntil(() => app.enabled("id:task-status:in_progress"));
+    await app.press("id:task-status:in_progress");
+    await peer.waitFor(`label:${title} · In progress`);
     await app.waitUntil(() => app.enabled("id:task-status:done"));
     await app.press("id:task-status:done");
-    await peer.waitUntil(() => peer.texts().includes(`done · @ ${primary.branch}`));
-    await app.waitUntil(() => app.enabled("id:assign-task"));
-    await app.press("id:assign-task"); await app.chooseMenuItem("UNASSIGNED");
-    await peer.waitUntil(() => peer.texts().includes("done · @ UNASSIGNED"));
+    // Open is the default filter: a finished task leaves it and is listed under Done.
+    await peer.waitUntil(() => !peer.shows(`id:task-${taskId}`));
+    expect(peer.texts()).toContain("No open tasks");
+    await peer.press("id:tasks-filter-done");
+    await peer.waitFor(`label:${title} · Done`);
+    // The row's own mark reopens it as todo.
+    await peer.press(`id:task-toggle:${taskId}`);
+    await app.waitFor(`label:${title} · Todo`);
+    await peer.press("id:tasks-filter-all");
+    await peer.waitFor(`label:${title} · Todo`);
+    await app.waitUntil(() => app.enabled(`id:task-toggle:${taskId}`));
+    await app.rightClick(`id:task-${taskId}`); await app.chooseMenuItem("Assign to > Unassigned");
+    await peer.waitUntil(() => !peer.texts().some((text) => text.startsWith(`${primary.branch} · `)));
+    await app.press("id:close-task-detail");
+    expect(app.shows("id:task-detail")).toBe(false);
+    expect((await inspect(app)).selectedTask).toBe(null);
     const observed = (await inspect(peer)).state.tasks.find((task) => task.id === taskId)!;
     expect(observed.worktreeId).toBe(null);
+    expect(observed.status).toBe("todo");
     expect(observed.details).toBe("Saved by the real native store");
   } finally { peer.dispose(); app.dispose(); }
 });
