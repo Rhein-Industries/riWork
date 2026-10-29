@@ -30,7 +30,8 @@ export function WorkerShelf(props: {
         if (disposed) return;
         const signature = JSON.stringify(rows);
         unchanged = signature === previous ? unchanged + 1 : 0; previous = signature;
-        workers.set(rows);
+        // An unchanged poll leaves the rows (and an open shelf) as they are.
+        if (signature !== JSON.stringify(workers())) workers.set(rows);
         if (rows.some((row) => row.active)) timer = setTimeout(() => void read(), Math.min(30_000, 2_000 * 2 ** Math.min(unchanged, 4)));
       } catch (error) {
         if (!disposed) { props.onError(String(error)); timer = setTimeout(() => void read(), 30_000); }
@@ -47,6 +48,7 @@ export function WorkerShelf(props: {
     waiting: workers().filter((worker) => /waiting/i.test(worker.status)).length,
     failed: workers().filter((worker) => /failed/i.test(worker.status)).length,
   }));
+  const shown = computed(() => workers().length > 0);
   const summary = () => `${counts().total} workers, ${counts().active} active${counts().waiting ? `, ${counts().waiting} waiting for input` : ""}${counts().failed ? `, ${counts().failed} failed` : ""}`;
   const text = (size = 11, color = theme().palette.text) => ({ fontFamily: theme().family, fontSize: size * theme().scale, color });
   const button = (label: string, act: () => void, disabled = false) => <View role="button" accessibilityLabel={label}
@@ -66,7 +68,7 @@ export function WorkerShelf(props: {
     } catch (error) { props.onError(`Worker ${action} failed: ${error}`); }
     finally { busy.set(null); }
   }
-  return <View>{workers().length > 0 && <View style={{ ...chatColumn(props.width?.() ?? 0, theme().scale), marginVertical: 5 * theme().scale }}>
+  return <View>{shown() && <View style={{ ...chatColumn(props.width?.() ?? 0, theme().scale), marginVertical: 5 * theme().scale }}>
     <View style={{ borderWidth: 1, borderColor: chatHairline(theme()), borderRadius: 8, backgroundColor: theme().palette.panel, overflow: "hidden" }}>
     <View role="button" accessibilityLabel={summary()} accessibilityState={{ expanded: expanded() }}
       onPress={() => expanded.set(!expanded())}

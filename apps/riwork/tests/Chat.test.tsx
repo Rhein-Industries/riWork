@@ -4,7 +4,7 @@ import { expect, open, test, type App } from "nsh/test";
 // RIWORK_HOME: the native module then runs an in-process chat host whose Codex
 // driver replays the engine's recorded provider streams (never a live host).
 
-interface FixtureState { chatId: string | null; rows?: number; cells?: number; constructed?: number; bodies?: number; groups?: string[]; panel?: { state: string; running: boolean; approvals: unknown[] }; editors?: number[] }
+interface FixtureState { chatId: string | null; rows?: number; cells?: number; constructed?: number; bodies?: number; groups?: string[]; panel?: { state: string; running: boolean; approvals: unknown[] }; editors?: number[]; bodyViews?: number; imageCards?: number; composer?: { box: number; input: number; controls: number } }
 
 async function chat(recording: string, chatId?: string, height = 780): Promise<App> {
   const app = await open("./Chat.fixture.tsx", {
@@ -246,5 +246,37 @@ test("P4-CHAT-10 an expanded approval stays expanded through provider refreshes"
     await app.press("id:chat-decision:accept");
     await app.waitFor("text:Done", { timeout: 20000 });
     await app.waitFor("id:chat-approval", { state: "gone", timeout: 20000 });
+  } finally { app.dispose(); }
+});
+
+test("P4-CHAT-11 a streaming answer and its turn's screenshot keep their views", async () => {
+  const app = await chat("streaming_turn", undefined, 1400);
+  try {
+    await send(app, "stream an answer");
+    await app.waitFor("id:chat-image:cua-shot:0", { timeout: 20000 });
+    await app.waitUntil(() => app.texts().some((text) => text.includes("chunk 8.")), { timeout: 20000 });
+    const before = await inspect(app);
+    // 24 deltas and at least two ticks of the running activity row's clock.
+    await app.waitUntil(() => app.texts().some((text) => text.includes("chunk 32.")), { timeout: 20000 });
+    const after = await inspect(app);
+    expect(after.panel?.running).toBe(true);
+    expect({ bodyViews: after.bodyViews, imageCards: after.imageCards })
+      .toEqual({ bodyViews: before.bodyViews, imageCards: before.imageCards });
+    expect(app.shows("id:chat-image:cua-shot:0")).toBe(true);
+    await app.waitUntil(() => app.texts().some((text) => text.startsWith("Worked")), { timeout: 20000 });
+  } finally { app.dispose(); }
+});
+
+test("P4-CHAT-12 a long draft stops the composer at nine lines, with nothing below its controls", async () => {
+  const app = await chat("turn");
+  try {
+    await app.type("id:chat-input", "word ".repeat(600));
+    await app.wait(200);
+    const { input, controls, box } = (await inspect(app)).composer!;
+    expect(input).toBe(9 * 21);
+    // The box holds the message box and controls: two 1 pt borders, 10 pt of
+    // padding each side, and two 8 pt gaps (after the empty dictation and
+    // suggestion slots, and before the controls).
+    expect(box).toBeLessThanOrEqual(input + controls + 2 * 11 + 2 * 8);
   } finally { app.dispose(); }
 });

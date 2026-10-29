@@ -18,18 +18,22 @@ function drain() {
 }
 
 /** A mounted List cell owns its preview bytes. Embedded images are safe to load
- * immediately; local files still need a click and the native chat scope check. */
+ * immediately; local files still need a click and the native chat scope check.
+ * `cache` is the cell's: a card made again in the same cell (its row gained an
+ * image) shows what it read at once, instead of loading it again. */
 export function ChatImage(props: {
   id: string;
   label: string;
   inline: boolean;
   preview: () => Promise<ChatImagePreview>;
+  cache?: Map<string, ChatImagePreview>;
   theme: () => InterfaceTheme;
   width: () => number;
   expand: (preview: ChatImagePreview) => void;
   openLink: (url: string) => void;
 }) {
-  const preview = signal<ChatImagePreview | null>(null);
+  const cached = props.cache?.get(props.id);
+  const preview = signal<ChatImagePreview | null>(cached ?? null);
   const loading = signal(false);
   const error = signal("");
   let alive = true;
@@ -37,17 +41,19 @@ export function ChatImage(props: {
   function load() {
     if (loading()) return;
     loading.set(true); error.set("");
+    const id = props.id;
     schedule(async () => {
       if (!alive) return;
       try {
         const value = await props.preview();
+        props.cache?.set(id, value);
         if (alive) preview.set(value);
       } catch (reason) {
         if (alive) error.set(String(reason));
       } finally { if (alive) loading.set(false); }
     });
   }
-  if (props.inline) void load();
+  if (props.inline && !cached) void load();
   const width = () => Math.max(1, Math.min(560, props.width()));
   const height = () => Math.min(420, width() * ((preview()?.height || 3) / (preview()?.width || 4)));
   const text = () => ({ fontSize: 12 * props.theme().scale, color: props.theme().palette.muted });
@@ -56,7 +62,7 @@ export function ChatImage(props: {
       onPress={() => props.expand(preview()!)}>
       <Image testID={`chat-image:${props.id}`} src={preview()!.dataUrl!} resizeMode="contain"
         accessibilityLabel={props.label || "Image"} style={{ width: width(), height: height() }}
-        onError={(event) => error.set(event.message || "This image could not be displayed")} />
+        onError={(event) => { props.cache?.delete(props.id); error.set(event.message || "This image could not be displayed"); }} />
     </View>}
     {loading() && <Text style={text()}>Loading image…</Text>}
     {(error() || preview()?.message) && <Text testID={`chat-image-error:${props.id}`} style={text()}>{error() || preview()!.message!}</Text>}

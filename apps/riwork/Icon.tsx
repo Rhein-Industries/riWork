@@ -1,4 +1,4 @@
-import { Canvas, Path2D, View, nativeComponent, platform, signal } from "nsh";
+import { Canvas, Path2D, View, computed, nativeComponent, platform, signal } from "nsh";
 
 // Older macOS versions and hosts without AppKit retain a vector fallback.
 const paths = {
@@ -78,7 +78,9 @@ export function Icon(props: { name: IconName; size?: number; color?: string }) {
   const side = () => props.size ?? 14;
   const symbol = () => symbols[props.name];
   const ready = signal<string | null>(availableSymbols.has(symbol()) ? symbol() : null);
-  const native = () => platform.os === "macos" && ready() === symbol();
+  // A memo: a parent's getters run again on its every change, which must
+  // not remake the vector fallback when the symbol stays the same.
+  const native = computed(() => platform.os === "macos" && ready() === symbol());
   const points = () => side() * (props.name === "focus" || props.name === "restore" || props.name === "layout" ? 0.72 : 0.8);
   return <View pointerEvents="none" accessible={false} style={{ width: side(), height: side(), flexShrink: 0 }}>
     {platform.os === "macos" && <SystemSymbol pointerEvents="none" accessible={false}
