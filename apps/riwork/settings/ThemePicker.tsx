@@ -1,4 +1,4 @@
-import { Text, cleanup, colorScheme, effect, signal, type YNode } from "nsh";
+import { Text, cleanup, colorScheme, effect, signal, type Signal, type YNode } from "nsh";
 import { Button, View } from "../SettingsFocus";
 import { Icon } from "../Icon";
 import { space, type InterfaceTheme } from "../appearance";
@@ -21,7 +21,7 @@ export interface PaletteCatalogSource {
  * projection. Stable row signals keep focus on a card while its colors change. */
 export function createPaletteCatalog(source: PaletteCatalogSource | undefined, visible: () => boolean) {
   const ids = signal<string[]>([]), error = signal(""), loading = signal(false), revision = signal(0);
-  const entries = new Map<string, ReturnType<typeof signal<PaletteChoice>>>();
+  const entries = new Map<string, Signal<PaletteChoice>>();
   let alive = true, generation = 0, lastRevision = -1;
   const subscription = source?.subscribe((event) => {
     if (!alive || event.rev <= lastRevision) return;
@@ -76,7 +76,7 @@ export function ThemePicker(props: {
     const selected = () => props.selected() === card.id;
     const colors = () => entry().palette;
     return <Button testID={`theme-choice-${card.id}`} role="radio" accessibilityLabel={entry().label}
-      accessibilityHint={entry().description} selected={selected()}
+      selected={selected()}
       ref={(node) => props.onNode(card.id, node)} onFocus={() => props.onFocus(card.id)} onBlur={() => props.onBlur(card.id)}
       onPress={() => props.onChoose(card.id)}
       style={{ flexGrow: 1, flexBasis: "44%", minWidth: size(145), padding: size(9), gap: size(7), alignItems: "stretch", borderWidth: 1,

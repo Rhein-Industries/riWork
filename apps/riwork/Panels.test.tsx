@@ -101,10 +101,12 @@ test("folder forms and project creation persist and leave terminal attachment ga
     await app.type("id:folder-name", `Group ${fixtureKey}`); await app.press("id:save-folder");
     await app.waitUntil(() => !app.shows("id:panel-editor"));
     const folder = (await inspect(app)).state.projectFolders.find((folder) => folder.name === `Group ${fixtureKey}`)!;
-    await app.press(`id:rename-folder:${folder.id}`);
+    // Rename and remove live in the folder row's menu.
+    await app.rightClick(`id:folder-${folder.id}`); await app.chooseMenuItem("Rename folder…");
     await replace(app, "id:folder-name", `Renamed ${fixtureKey}`); await app.press("id:save-folder");
     await app.waitUntil(() => app.texts().some((text) => text.includes(`Renamed ${fixtureKey}`)));
-    await app.press(`id:remove-folder:${folder.id}`);
+    await app.waitUntil(() => app.enabled(`id:folder-${folder.id}`));
+    await app.rightClick(`id:folder-${folder.id}`); await app.chooseMenuItem("Remove folder");
     await app.waitUntil(() => !app.shows(`id:folder-${folder.id}`));
     await app.press("id:new-project");
     await app.type("id:project-name", `Created-${fixtureKey}`);
@@ -125,7 +127,7 @@ test("folder forms and project creation persist and leave terminal attachment ga
     expect(app.shows("id:shell-intent:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")).toBe(false);
     await app.press("id:shell-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
     await app.waitFor("id:shell-intent:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
-    expect(app.texts()).toContain("Shell selected. Terminal attachment is pending Phase 2.");
+    expect(app.texts()).toContain("Opening terminal…");
     expect(app.host.posts().some((post) => post.name.includes("terminal"))).toBe(false);
   } finally { app.dispose(); }
 });
