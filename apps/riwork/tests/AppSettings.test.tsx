@@ -1,7 +1,7 @@
 import { expect, open, test, type App } from "nsh/test";
 import type { AccountsDto, SettingsDto } from "riwork/native";
 
-interface State { settings: SettingsDto; accounts: AccountsDto; keySaved: boolean | null; notice: string; fixtureChoice: string; importAttempts: number }
+interface State { settings: SettingsDto; accounts: AccountsDto; keySaved: boolean | null; notice: string; fixtureChoice: string; importAttempts: number; themeIds: string[] }
 async function fixture(width = 1000, revealImmediately = false, extra: { keyboardFixture?: boolean; importScenario?: string } = {}) {
   const app = await open("./AppSettings.fixture.tsx", { platform: "macos", width, height: 900,
     clipboard: "keep clipboard", host: { params: { revealImmediately, ...extra }, handlers: { "app.fixture.state": null, "app.fixture.restored": null } } });
@@ -107,9 +107,9 @@ test("P6a an API key reveal requested before settings load focuses the mounted s
 test("P6a opening Settings focuses the selected theme after its asynchronous settings delivery", async () => {
   const app = await fixture(650);
   try {
-    const initial = (await inspect(app)).settings;
-    const choices = initial.themeChoices, index = choices.findIndex((choice) => choice.id === initial.theme);
-    const next = choices[(index + 1) % choices.length].id;
+    await waitState(app, (state) => state.themeIds.length > 1);
+    const { settings: initial, themeIds: choices } = await inspect(app);
+    const next = choices[(choices.indexOf(initial.theme) + 1) % choices.length];
     // No test action targets a theme cell: keyboard behavior proves the panel
     // moved focus from the workspace body after its selected ref was mounted.
     await app.wait(50); await app.keyboard.press("right");

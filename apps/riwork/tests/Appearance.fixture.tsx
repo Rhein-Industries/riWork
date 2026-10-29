@@ -13,7 +13,7 @@ function Ready() {
   let alive = true;
   if (params.diagnostics) effect(() => {
     const selected = ui.settings();
-    if (selected) host.post("app.fixture.theme", { selected: selected.theme, native: ui.theme().native, text: ui.theme().palette.text });
+    if (selected) host.post("app.fixture.theme", { selected: selected.theme, text: ui.theme().palette.text });
   });
   cleanup(() => { alive = false; session()?.dispose(); });
   cleanup(host.on("app.fixture.notice", (event) => notice.set((event as { text: string }).text)));

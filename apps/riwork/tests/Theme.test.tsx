@@ -67,10 +67,9 @@ test("P1-THM-05: theme changes keep panels mounted and install font/casing with 
     await app.waitUntil(() => app.spanStyle("id:tab:panel:projects >> text:PROJECTS").color === "#d3e1e6ff");
     expect(app.texts()).toContain("mount 1");
     expect(app.texts().some((text) => /^mount [2-9]/.test(text))).toBe(false);
-    const paints = app.host.posts().filter((post) => post.name === "app.fixture.theme").map((post) => post.data as { selected: string; native: boolean; text: string });
+    const paints = app.host.posts().filter((post) => post.name === "app.fixture.theme").map((post) => post.data as { selected: string; text: string });
     expect(paints.length).toBeGreaterThan(3);
     for (const paint of paints) {
-      expect(paint.native).toBe(paint.selected === "native");
       if (paint.selected === "native") expect(["#1d1d1f", "#f5f5f7"]).toContain(paint.text);
       else expect(paint.text).toBe(paint.selected === "hermes" ? "#ecdcc7" : "#d3e1e6");
     }

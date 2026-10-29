@@ -1,7 +1,6 @@
 import { Scroll, Text, View, cleanup, signal, type YNode } from "nsh";
 import { Button, Dialog, Input } from "nsh/base";
-import * as Native from "riwork/native";
-import { Accounts, Chat, type AccountsDto } from "riwork/native";
+import { Accounts, Chat, Handoff as HandoffBridge, type AccountsDto } from "riwork/native";
 import { space, type InterfaceTheme } from "./appearance";
 import { Icon } from "./Icon";
 
@@ -41,7 +40,8 @@ const MODES: { id: Mode; label: string }[] = [
 
 /** Opening this form reads the source. Only Hand off collects context or starts an agent. */
 export function Handoff(props: HandoffProps) {
-  const api = (Native as typeof Native & { Handoff: HandoffApi }).Handoff;
+  // The bridge types kind and provider as plain strings; it sends only these values.
+  const api = HandoffBridge as unknown as HandoffApi;
   const sourceId = props.sourceId;
   const source = signal<HandoffSource | null>(null), accounts = signal<AccountsDto | null>(null);
   const kind = signal<Kind>("chat"), provider = signal<Provider>("codex"), context = signal<"transcript" | "summary">("transcript");

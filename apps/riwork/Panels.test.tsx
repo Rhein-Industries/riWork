@@ -50,29 +50,44 @@ test("task form, assignment and status changes reach a peer through Store subscr
   try {
     await app.waitFor("id:projects-panel", { timeout: 15000 }); await peer.waitFor("id:projects-panel", { timeout: 15000 });
     await app.press("id:show-tasks"); await peer.press("id:show-tasks");
+    const title = `Panel lifecycle ${fixtureKey}`;
     await app.press("id:new-task");
-    await app.type("id:task-title", `Panel lifecycle ${fixtureKey}`);
+    await app.type("id:task-title", title);
     await app.type("id:task-details", "Saved by the real native store");
     await app.press("id:save-task");
     await app.waitFor("id:task-detail");
     const created = await inspect(app);
     const taskId = created.selectedTask!;
-    await peer.waitFor(`id:task-${taskId}`);
+    await peer.waitFor(`label:${title} · Todo`);
     await app.press("id:assign-task");
     const primary = created.state.worktrees.find((tree) => tree.projectId === created.projectId && tree.isPrimary)!;
     await app.chooseMenuItem(primary.branch);
-    await app.waitUntil(() => app.texts().some((text) => text === `todo · @ ${primary.branch}`));
-    await app.press("id:task-status:in_progress");
-    await peer.waitUntil(() => peer.texts().includes(`in_progress · @ ${primary.branch}`));
+    await peer.waitUntil(() => peer.texts().some((text) => text.startsWith(`${primary.branch} · `)));
     // A peer can observe the Store push before this window's own call settles.
+    await app.waitUntil(() => app.enabled("id:task-status:in_progress"));
+    await app.press("id:task-status:in_progress");
+    await peer.waitFor(`label:${title} · In progress`);
     await app.waitUntil(() => app.enabled("id:task-status:done"));
     await app.press("id:task-status:done");
-    await peer.waitUntil(() => peer.texts().includes(`done · @ ${primary.branch}`));
-    await app.waitUntil(() => app.enabled("id:assign-task"));
-    await app.press("id:assign-task"); await app.chooseMenuItem("UNASSIGNED");
-    await peer.waitUntil(() => peer.texts().includes("done · @ UNASSIGNED"));
+    // Open is the default filter: a finished task leaves it and is listed under Done.
+    await peer.waitUntil(() => !peer.shows(`id:task-${taskId}`));
+    expect(peer.texts()).toContain("No open tasks");
+    await peer.press("id:tasks-filter-done");
+    await peer.waitFor(`label:${title} · Done`);
+    // The row's own mark reopens it as todo.
+    await peer.press(`id:task-toggle:${taskId}`);
+    await app.waitFor(`label:${title} · Todo`);
+    await peer.press("id:tasks-filter-all");
+    await peer.waitFor(`label:${title} · Todo`);
+    await app.waitUntil(() => app.enabled(`id:task-toggle:${taskId}`));
+    await app.rightClick(`id:task-${taskId}`); await app.chooseMenuItem("Assign to > Unassigned");
+    await peer.waitUntil(() => !peer.texts().some((text) => text.startsWith(`${primary.branch} · `)));
+    await app.press("id:close-task-detail");
+    expect(app.shows("id:task-detail")).toBe(false);
+    expect((await inspect(app)).selectedTask).toBe(null);
     const observed = (await inspect(peer)).state.tasks.find((task) => task.id === taskId)!;
     expect(observed.worktreeId).toBe(null);
+    expect(observed.status).toBe("todo");
     expect(observed.details).toBe("Saved by the real native store");
   } finally { peer.dispose(); app.dispose(); }
 });
@@ -86,10 +101,12 @@ test("folder forms and project creation persist and leave terminal attachment ga
     await app.type("id:folder-name", `Group ${fixtureKey}`); await app.press("id:save-folder");
     await app.waitUntil(() => !app.shows("id:panel-editor"));
     const folder = (await inspect(app)).state.projectFolders.find((folder) => folder.name === `Group ${fixtureKey}`)!;
-    await app.press(`id:rename-folder:${folder.id}`);
+    // Rename and remove live in the folder row's menu.
+    await app.rightClick(`id:folder-${folder.id}`); await app.chooseMenuItem("Rename folder…");
     await replace(app, "id:folder-name", `Renamed ${fixtureKey}`); await app.press("id:save-folder");
     await app.waitUntil(() => app.texts().some((text) => text.includes(`Renamed ${fixtureKey}`)));
-    await app.press(`id:remove-folder:${folder.id}`);
+    await app.waitUntil(() => app.enabled(`id:folder-${folder.id}`));
+    await app.rightClick(`id:folder-${folder.id}`); await app.chooseMenuItem("Remove folder");
     await app.waitUntil(() => !app.shows(`id:folder-${folder.id}`));
     await app.press("id:new-project");
     await app.type("id:project-name", `Created-${fixtureKey}`);
@@ -110,7 +127,7 @@ test("folder forms and project creation persist and leave terminal attachment ga
     expect(app.shows("id:shell-intent:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")).toBe(false);
     await app.press("id:shell-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
     await app.waitFor("id:shell-intent:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
-    expect(app.texts()).toContain("Shell selected. Terminal attachment is pending Phase 2.");
+    expect(app.texts()).toContain("Opening terminal…");
     expect(app.host.posts().some((post) => post.name.includes("terminal"))).toBe(false);
   } finally { app.dispose(); }
 });

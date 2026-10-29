@@ -1,5 +1,5 @@
-import { Text, View, cleanup, host, mount, signal } from "nsh";
-import { Accounts, ApiKey, Settings, type AccountsDto, type SettingsDto, type SettingsPatch } from "riwork/native";
+import { Text, View, cleanup, colorScheme, host, mount, signal } from "nsh";
+import { Accounts, ApiKey, Appearance, Settings, type AccountsDto, type SettingsDto, type SettingsPatch } from "riwork/native";
 import { AppSettings, type AppSettingsControl, type AppSettingsServices, type ImportReceipt } from "../settings/AppSettings";
 import { ChoiceRow } from "../settings/SettingsControls";
 import { DEFAULT_THEME } from "../appearance";
@@ -11,6 +11,9 @@ function Fixture() {
   const settings = signal<SettingsDto | null>(null), accounts = signal<AccountsDto | null>(null);
   const keySaved = signal<boolean | null>(null), notice = signal("");
   const fixtureChoice = signal("fixture-choice-a"), importAttempts = signal(0);
+  // The picker's order: the same catalog it reads, for the system appearance.
+  const themeIds = signal<string[]>([]);
+  void Appearance.catalog(colorScheme() === "dark").then((choices) => themeIds.set(choices.map((choice) => choice.id)));
   let previewSequence = 0, imported: ImportReceipt | null = null;
   const services: AppSettingsServices | undefined = params.importScenario ? {
     settings: Settings, accounts: Accounts, apiKey: ApiKey,
@@ -28,7 +31,7 @@ function Fixture() {
   let original: SettingsDto | null = null, originalAccount: string | null | undefined;
   const subscriptions = [Settings.subscribe((event) => { original ??= event.data; settings.set(event.data); }), Accounts.subscribe((event) => { if (originalAccount === undefined) originalAccount = event.data.selectedId ?? null; accounts.set(event.data); }), ApiKey.subscribe((event) => keySaved.set(event.data.saved ?? null))];
   cleanup(() => { for (const subscription of subscriptions) subscription.close(); });
-  host.on("app.fixture.inspect", () => host.post("app.fixture.state", { settings: settings(), accounts: accounts(), keySaved: keySaved(), notice: notice(), fixtureChoice: fixtureChoice(), importAttempts: importAttempts() }));
+  host.on("app.fixture.inspect", () => host.post("app.fixture.state", { settings: settings(), accounts: accounts(), keySaved: keySaved(), notice: notice(), fixtureChoice: fixtureChoice(), importAttempts: importAttempts(), themeIds: themeIds() }));
   host.on("app.fixture.reveal-key", () => control?.revealApiKey());
   host.on("app.fixture.restore", () => {
     void (async () => {

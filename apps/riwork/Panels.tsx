@@ -2,7 +2,7 @@ import { List, Scroll, Text, View, cleanup, context, effect, host, keymap, signa
 import { Button, Dialog, Input, Switch } from "nsh/base";
 import { Menu } from "nsh/desktop";
 import { Chat, Sessions, Settings, Store, Tabs, type ChatSummary, type ProjectDto, type ProjectInspectionDto, type SettingsDto, type ShellSessionDto, type StoreState, type Subscription, type TabEntryDto, type TabsSnapshot, type TaskDto } from "riwork/native";
-import { EMPTY_STORE, countLabel, matches, projectRows, shellLabel, shellMatches, taskMark, taskMatches, visibleWorktrees, worktreeLabel, type ListPanel, type ProjectOrder, type ProjectTreeRow } from "./panel_model";
+import { EMPTY_STORE, countLabel, matches, projectRows, shellLabel, shellMatches, taskAge, taskCounts, taskDate, taskMatches, taskRows, taskStatusLabel, taskWorktree, visibleWorktrees, worktreeLabel, type ListPanel, type ProjectOrder, type ProjectTreeRow, type TaskFilter, type TaskRow } from "./panel_model";
 import { DEFAULT_THEME, space, type InterfaceTheme } from "./appearance";
 import { Icon, type IconName } from "./Icon";
 
@@ -14,7 +14,9 @@ const text = (base: number) => base * theme().scale;
 const button = () => ({ paddingHorizontal: space(10, theme().scale), paddingVertical: space(4, theme().scale), borderRadius: space(14, theme().scale), backgroundColor: theme().palette.panelActive });
 const field = () => ({ minHeight: space(28, theme().scale), paddingHorizontal: space(8, theme().scale), paddingVertical: space(5, theme().scale), borderRadius: 4, backgroundColor: theme().palette.bg, color: ink(), fontFamily: theme().family, fontSize: text(12) });
 const row = () => ({ paddingHorizontal: space(6, theme().scale), paddingVertical: space(6, theme().scale), gap: space(2, theme().scale), borderRadius: space(7, theme().scale) });
-const statusColor = (status: string) => status === "done" ? accent() : status === "in_progress" ? theme().palette.gold : muted();
+const statusColor = (status: string) => status === "done" ? accent() : status === "in_progress" ? theme().palette.working : muted();
+const statusIcon = (status: string): IconName => status === "done" ? "task-done" : status === "in_progress" ? "task-active" : "task-todo";
+const TASK_STATUSES = ["todo", "in_progress", "done"] as const;
 type Editor = { kind: "folder"; parent?: string; id?: string; name: string } | { kind: "project" } | { kind: "task" };
 
 interface PanelOptions {
@@ -52,6 +54,10 @@ export function createPanelController(options: PanelOptions) {
   const collapsed = signal<ReadonlySet<string>>(new Set());
   const selectedWorktree = signal<string | null>(options.initialWorktree ?? null);
   const selectedTask = signal<string | null>(options.initialTask ?? null);
+  const taskFilter = signal<TaskFilter>("open");
+  // Unix seconds for relative task times. Store pushes and window activation
+  // advance it; the panel data contract is push-only, so no timer does.
+  const now = signal(Math.floor(Date.now() / 1000));
   const selectedShell = signal<string | null>(null);
   const editor = signal<Editor | null>(null);
   const pending = signal(false);
@@ -118,14 +124,14 @@ export function createPanelController(options: PanelOptions) {
     const foreground = window.key === true && window.appActive !== false;
     // Moving and resizing also publish window.state. Refresh history only
     // when returning to this window, not on every live-resize frame.
-    if (foreground && wasForeground === false) void refreshCatalog();
+    if (foreground && wasForeground === false) { now.set(Math.floor(Date.now() / 1000)); void refreshCatalog(); }
     wasForeground = foreground;
   }));
   try {
     const store = Store.subscribe((event) => {
       if (!alive || event.rev < storeRev) return;
       storeRev = event.rev;
-      state.set(event.data);
+      state.set(event.data); now.set(Math.floor(Date.now() / 1000));
       if (!loaded()) loaded.set(true);
       if (options.projectId().startsWith("remote:")) return;
       if (selectedTask() && !event.data.tasks.some((task) => task.id === selectedTask() && task.projectId === options.projectId())) selectTask(null);
@@ -215,8 +221,23 @@ export function createPanelController(options: PanelOptions) {
         onSelect: () => void run(() => projectId ? Store.moveProjectToFolder(projectId, folder.id) : Store.moveFolder(folderId!, folder.id), () => expandFolder(folder.id)) })),
     ]);
   }
-  return { ...options, state, loaded, shells, chats, catalogLoading, catalogNotice, sessionFilter, selectedChat, closingShell, refreshCatalog, openChat, tabs, query, collapsed, selectedWorktree, selectedTask, selectedShell, editor, pending, order, descending, searches,
-    selectWorktree, selectTask, resetProject, run, activate, attach, tabForShell, titleForShell, toggleFolder, expandFolder, folderMenu, folderPath, setOrder, sortPending, generation: () => generation };
+  function setTaskStatus(task: TaskDto, status: string) { void run(() => Store.setTaskStatus(task.id, status)); }
+  function assignItems(task: TaskDto) {
+    return [
+      { label: "Unassigned", checked: !task.worktreeId, onSelect: () => void run(() => Store.unassignTasks([task.id])) },
+      ...state().worktrees.filter((tree) => tree.projectId === options.projectId()).map((tree) => ({ label: worktreeLabel(tree), checked: tree.id === task.worktreeId,
+        onSelect: () => void run(() => Store.assignTasks(tree.id, [task.id]), () => selectWorktree(tree.id)) })),
+    ];
+  }
+  function taskMenu(task: TaskDto) {
+    void Menu.popup([
+      ...TASK_STATUSES.map((status) => ({ label: taskStatusLabel(status), checked: task.status === status, disabled: pending(), onSelect: () => setTaskStatus(task, status) })),
+      { type: "separator" },
+      { label: "Assign to", disabled: pending(), submenu: assignItems(task) },
+    ]);
+  }
+  return { ...options, state, loaded, shells, chats, catalogLoading, catalogNotice, sessionFilter, selectedChat, closingShell, refreshCatalog, openChat, tabs, query, collapsed, selectedWorktree, selectedTask, taskFilter, now, selectedShell, editor, pending, order, descending, searches,
+    selectWorktree, selectTask, setTaskStatus, assignItems, taskMenu, resetProject, run, activate, attach, tabForShell, titleForShell, toggleFolder, expandFolder, folderMenu, folderPath, setOrder, sortPending, generation: () => generation };
 }
 export type PanelController = ReturnType<typeof createPanelController>;
 
@@ -395,43 +416,103 @@ function Worktrees(props: { controller: PanelController; surface: string }) {
 }
 
 function TaskDetail(props: { controller: PanelController; task: TaskDto }) {
-  const c = props.controller;
-  function assign() {
-    void Menu.popup([
-      { label: "UNASSIGNED", checked: !props.task.worktreeId, onSelect: () => void c.run(() => Store.unassignTasks([props.task.id])) },
-      ...c.state().worktrees.filter((tree) => tree.projectId === c.projectId()).map((tree) => ({ label: worktreeLabel(tree), checked: tree.id === props.task.worktreeId,
-        onSelect: () => void c.run(() => Store.assignTasks(tree.id, [props.task.id]), () => c.selectWorktree(tree.id)) })),
-    ]);
-  }
-  return <Scroll testID="task-detail" style={{ maxHeight: 200, borderTopWidth: 1, borderTopColor: theme().palette.divider }} contentStyle={{ padding: 10, gap: 7 }}>
-    <Text style={{ fontFamily: theme().family, fontSize: text(11), fontWeight: "600", color: ink() }}>Task detail</Text>
-    <Text style={{ fontFamily: theme().family, fontSize: text(12), color: ink() }}>{props.task.title}</Text>
-    <Text style={{ fontFamily: theme().family, fontSize: text(10), color: statusColor(props.task.status) }}>{`${props.task.status} · @ ${worktreeLabel(c.state().worktrees.find((tree) => tree.id === props.task.worktreeId))}`}</Text>
-    <Text selectable={true} style={{ fontFamily: theme().family, fontSize: text(11), color: muted() }}>{props.task.details || "No details"}</Text>
-    <Text selectable={true} style={{ fontFamily: theme().monoFamily, fontSize: text(9), color: muted() }}>{props.task.id}</Text>
-    <View style={{ flexDirection: "row", gap: 4, flexWrap: "wrap" }}>
-      {(["todo", "in_progress", "done"] as const).map((status) => <Command id={`task-status:${status}`} label={status === "in_progress" ? "In progress" : status === "done" ? "Done" : "Todo"}
-        selected={props.task.status === status} disabled={c.pending()} onPress={() => void c.run(() => Store.setTaskStatus(props.task.id, status))} />)}
-      <Command id="assign-task" label="Assign task to worktree" disabled={c.pending()} onPress={assign}>Assign…</Command>
+  const c = props.controller, task = () => props.task;
+  const s = () => theme().scale;
+  return <View testID="task-detail" style={{ borderTopWidth: 1, borderTopColor: theme().palette.divider, paddingHorizontal: space(12, s()), paddingTop: space(10, s()), paddingBottom: space(10, s()), gap: space(8, s()) }}>
+    <View style={{ flexDirection: "row", alignItems: "flex-start", gap: space(6, s()) }}>
+      <View style={{ paddingTop: 1 }}><Icon name={statusIcon(task().status)} size={text(14)} color={statusColor(task().status)} /></View>
+      <Text selectable={true} numberOfLines={4} style={{ flex: 1, minWidth: 0, fontFamily: theme().family, fontSize: text(12), fontWeight: "600", color: ink() }}>{task().title}</Text>
+      <ToolbarCommand id="close-task-detail" icon="close" label="Close task detail" onPress={() => c.selectTask(null)} />
     </View>
-  </Scroll>;
+    <View style={{ flexDirection: "row", gap: 4, flexWrap: "wrap", alignItems: "center" }}>
+      {TASK_STATUSES.map((status) => <Command id={`task-status:${status}`} label={taskStatusLabel(status)}
+        selected={task().status === status} disabled={c.pending()} onPress={() => c.setTaskStatus(task(), status)} />)}
+    </View>
+    <Button testID="assign-task" accessibilityLabel={`Assign task to worktree, currently ${taskWorktree(task(), c.state())}`} disabled={c.pending()}
+      onPress={() => void Menu.popup(c.assignItems(task()))}
+      style={{ ...button(), flexDirection: "row", alignItems: "center", gap: space(6, s()), alignSelf: "flex-start", maxWidth: "100%" }}
+      hoverStyle={{ backgroundColor: theme().palette.divider }} focusStyle={{ backgroundColor: theme().palette.divider }}>
+      <Icon name="worktrees" size={text(12)} color={muted()} />
+      <Text numberOfLines={1} style={{ flexShrink: 1, fontFamily: theme().family, fontSize: text(11), color: task().worktreeId ? ink() : muted() }}>{taskWorktree(task(), c.state())}</Text>
+      <Icon name="down" size={text(10)} color={muted()} />
+    </Button>
+    {task().details.trim() !== "" && <Scroll testID="task-details" style={{ maxHeight: space(132, s()) }}>
+      <Text selectable={true} style={{ fontFamily: theme().family, fontSize: text(11), color: muted() }}>{task().details}</Text>
+    </Scroll>}
+    <View style={{ gap: 2 }}>
+      <Text numberOfLines={1} style={{ fontFamily: theme().family, fontSize: text(10), color: muted() }}>{`Created ${taskDate(task().createdAt, c.now())} · updated ${taskAge(task().updatedAt, c.now())}`}</Text>
+      <Text selectable={true} numberOfLines={1} style={{ fontFamily: theme().monoFamily, fontSize: text(9), color: muted() }}>{task().id}</Text>
+    </View>
+  </View>;
+}
+
+function TaskListRow(props: { item: () => TaskRow; controller: PanelController }) {
+  // List recycles a cell across unrelated keys and row kinds; read through item().
+  return <>{props.item().kind === "section" ? <TaskSection item={props.item} /> : <TaskItem item={props.item} controller={props.controller} />}</>;
+}
+
+function TaskSection(props: { item: () => TaskRow }) {
+  const section = () => props.item() as Extract<TaskRow, { kind: "section" }>;
+  return <View testID={section().id} style={{ height: space(28, theme().scale), paddingTop: space(6, theme().scale), paddingHorizontal: space(6, theme().scale), flexDirection: "row", alignItems: "center", gap: 6 }}>
+    <Text numberOfLines={1} style={{ flex: 1, fontFamily: theme().family, fontSize: text(10), fontWeight: "600", color: muted() }}>{taskStatusLabel(section().status)}</Text>
+    <Text style={{ fontFamily: theme().family, fontSize: text(9), color: muted() }}>{String(section().count)}</Text>
+  </View>;
+}
+
+function TaskItem(props: { item: () => TaskRow; controller: PanelController }) {
+  const c = props.controller;
+  const task = () => (props.item() as Extract<TaskRow, { kind: "task" }>).task;
+  const done = () => task().status === "done";
+  const selected = () => c.selectedTask() === task().id;
+  const meta = () => [task().worktreeId ? taskWorktree(task(), c.state()) : "", taskAge(task().updatedAt, c.now())].filter(Boolean).join(" · ");
+  return <View onContextMenu={() => c.taskMenu(task())}
+    style={{ flexDirection: "row", alignItems: "flex-start", borderRadius: space(7, theme().scale), backgroundColor: selected() ? theme().palette.panelActive : "transparent" }} hoverStyle={{ backgroundColor: theme().palette.panelActive }}>
+    <Button testID={`task-toggle:${task().id}`} accessibilityLabel={done() ? `Reopen ${task().title}` : `Mark ${task().title} done`} disabled={c.pending()}
+      onPress={() => c.setTaskStatus(task(), done() ? "todo" : "done")}
+      style={{ width: space(26, theme().scale), height: space(28, theme().scale), borderRadius: space(7, theme().scale), alignItems: "center", justifyContent: "center" }}
+      hoverStyle={{ backgroundColor: theme().palette.divider }} focusStyle={{ backgroundColor: theme().palette.divider }}>
+      <Icon name={statusIcon(task().status)} size={text(14)} color={statusColor(task().status)} />
+    </Button>
+    <Button testID={`task-${task().id}`} accessibilityLabel={`${task().title} · ${taskStatusLabel(task().status)}`} selected={selected()} onPress={() => c.selectTask(task().id)}
+      style={{ flex: 1, minWidth: 0, paddingRight: space(6, theme().scale), paddingVertical: space(6, theme().scale), gap: 2 }} focusStyle={{ backgroundColor: theme().palette.divider }}>
+      <Text numberOfLines={2} style={{ fontFamily: theme().family, fontSize: text(11), color: done() ? muted() : ink() }}>{task().title}</Text>
+      <Text numberOfLines={1} style={{ fontFamily: theme().family, fontSize: text(10), color: muted() }}>{meta()}</Text>
+    </Button>
+  </View>;
+}
+
+function TaskEmpty(props: { controller: PanelController; counts: () => Record<TaskFilter, number> }) {
+  const c = props.controller;
+  const searching = () => c.query().trim() !== "";
+  // The list is empty, so every count here is a match outside the current filter.
+  const elsewhere = () => props.counts().all;
+  const message = () => !elsewhere() ? searching() ? "No matches" : "No tasks yet" : `No ${c.taskFilter()} tasks${searching() ? " match" : ""}`;
+  return <View style={{ minHeight: space(120, theme().scale), padding: 24, gap: 10, alignItems: "center", justifyContent: "center" }}>
+    <Icon name={searching() ? "search" : elsewhere() && c.taskFilter() === "open" ? "task-done" : "tasks"} size={text(22)} color={muted()} />
+    <Text style={{ color: muted(), fontFamily: theme().family, fontSize: text(11) }}>{message()}</Text>
+    {elsewhere() > 0 && <Command id="tasks-show-all" label="Show all tasks" onPress={() => c.taskFilter.set("all")}>{`Show all ${elsewhere()}`}</Command>}
+    {!elsewhere() && !searching() && <Command id="tasks-empty-add" label="Add task" disabled={c.pending()} onPress={() => c.editor.set({ kind: "task" })} />}
+  </View>;
 }
 
 function Tasks(props: { controller: PanelController; surface: string }) {
   const c = props.controller;
   const all = () => c.state().tasks.filter((task) => task.projectId === c.projectId());
-  const rows = () => all().filter((task) => taskMatches(task, c.state(), c.query()));
+  const found = () => all().filter((task) => taskMatches(task, c.state(), c.query()));
+  const counts = () => taskCounts(found());
+  const rows = () => taskRows(found(), c.taskFilter());
   const selected = () => all().find((task) => task.id === c.selectedTask());
   return <View testID="tasks-panel" style={{ flex: 1, minHeight: 0, backgroundColor: theme().palette.panel }}>
-    <Header title="Tasks" count={rows().length} total={all().length} noun="task" project={c.projectLabel()}>
+    <Header title="Tasks" count={counts()[c.taskFilter()]} total={all().length} noun="task" project={c.projectLabel()}>
       <ToolbarCommand id="new-task" icon="add" label="Add task" disabled={c.pending()} onPress={() => c.editor.set({ kind: "task" })} />
     </Header>
     <PanelSearch controller={c} panel="tasks" surface={props.surface} />
-    <List each={rows()} keyExtractor={(task) => task.id} estimatedItemSize={space(46, theme().scale)} style={{ flex: 1, minHeight: 0 }} contentStyle={{ paddingHorizontal: space(6, theme().scale) }} empty={<Empty query={c.query()} noun="tasks" />}>
-      {(item) => <Button testID={`task-${item().id}`} accessibilityLabel={item().title} selected={c.selectedTask() === item().id} onPress={() => c.selectTask(item().id)} style={row()} hoverStyle={{ backgroundColor: theme().palette.panelActive }} focusStyle={{ backgroundColor: theme().palette.divider }} selectedStyle={{ backgroundColor: theme().palette.panelActive }}>
-        <Text style={{ fontFamily: theme().family, fontSize: text(11), color: ink() }}>{`${taskMark(item().status)} ${item().title}`}</Text>
-        <Text style={{ fontFamily: theme().family, fontSize: text(10), color: statusColor(item().status) }}>{`${item().status} · @ ${worktreeLabel(c.state().worktrees.find((tree) => tree.id === item().worktreeId))}`}</Text>
-      </Button>}
+    <View testID="tasks-controls" style={{ paddingHorizontal: space(12, theme().scale), paddingBottom: space(6, theme().scale), flexDirection: "row", gap: 4 }}>
+      {([["open", "Open"], ["done", "Done"], ["all", "All"]] as const).map(([filter, label]) =>
+        <Command id={`tasks-filter-${filter}`} label={`${label} tasks`} selected={c.taskFilter() === filter} onPress={() => c.taskFilter.set(filter)}>{`${label} ${counts()[filter]}`}</Command>)}
+    </View>
+    <List each={rows()} keyExtractor={(row) => row.id} estimatedItemSize={space(42, theme().scale)} style={{ flex: 1, minHeight: 0 }} contentStyle={{ paddingHorizontal: space(6, theme().scale), paddingBottom: space(6, theme().scale) }} empty={<TaskEmpty controller={c} counts={counts} />}>
+      {(item) => <TaskListRow item={item} controller={c} />}
     </List>
     {selected() && <TaskDetail controller={c} task={selected()!} />}
   </View>;
@@ -573,7 +654,11 @@ function TaskEditor(props: { controller: PanelController }) {
   function save() {
     if (c.pending() || projectId !== c.projectId()) return;
     void c.run(async () => {
-      try { const task = await Store.addTask(projectId, title(), details()); c.selectTask(task.id); c.query.set(""); c.editor.set(null); }
+      try {
+        const task = await Store.addTask(projectId, title(), details());
+        if (c.taskFilter() === "done") c.taskFilter.set("open");
+        c.selectTask(task.id); c.query.set(""); c.editor.set(null);
+      }
       catch (reason) { error.set(String(reason)); }
     });
   }

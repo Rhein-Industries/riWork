@@ -3,6 +3,7 @@ import { Dialog } from "nsh/base";
 import { Button, Input, View } from "../SettingsFocus";
 import { DEFAULT_THEME, space, type InterfaceTheme } from "../appearance";
 import { Icon } from "../Icon";
+import { taskStatusLabel } from "../panel_model";
 import {
   EMPTY_REMOTE, REMOTE_HISTORY_NOTE, checkPairingLink, filteredFolders, linkPresentation,
   maskedPairingLink, projectConnectionNote, projectNameError, remoteErrorNotice, remoteHostLabel, remoteProjectKey,
@@ -310,7 +311,7 @@ export function RemoteProjectPanel(props: {
             <Text style={font(c, 11, props.selectedWorktree?.() === w.id ? c.theme().palette.cyan : c.theme().palette.text)}>{`${w.primary ? "◆" : "◇"} ${w.branch}`}</Text><Text style={font(c, 10, c.theme().palette.muted)}>{w.path}</Text>
           </Button>)}
           {props.panel === "tasks" && tasks().map((task) => <Button testID={`remote-task-${task.id}`} accessibilityLabel={task.title} onPress={() => props.onTask(task.id)} style={row()} hoverStyle={{ backgroundColor: c.theme().palette.panelActive }}>
-            <Text style={font(c)}>{task.title}</Text><Text style={font(c, 10, c.theme().palette.muted)}>{`${task.status} · @ ${read()!.worktrees.find((w) => w.id === task.worktreeId)?.branch ?? "unassigned"}`}</Text>
+            <Text style={font(c)}>{task.title}</Text><Text style={font(c, 10, c.theme().palette.muted)}>{`${taskStatusLabel(task.status)} · ${read()!.worktrees.find((w) => w.id === task.worktreeId)?.branch ?? "Unassigned"}`}</Text>
           </Button>)}
           {props.panel === "shells" && shells().map((shell) => <Button testID={`remote-shell-${shell.id}`} accessibilityLabel={shell.display} onPress={() => c.openShell(read()!.host, shell, props.onShell)} style={row()} hoverStyle={{ backgroundColor: c.theme().palette.panelActive }}>
             <Text style={font(c)}>{`${shell.orchestrator ? shell.projectId ? "P·ORCH" : "G·ORCH" : shell.id.slice(0, 8)} · ${shell.harness ?? "shell"} · ${shell.alive ? "live" : "exited"}`}</Text><Text style={font(c, 10, c.theme().palette.muted)}>{shell.cwd}</Text>
