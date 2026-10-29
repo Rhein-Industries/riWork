@@ -60,6 +60,11 @@ export interface ChatDiagnostics {
   panel: ChatPanel;
   /** The draft editor identities this tab's composers took, in order. */
   editors: number[];
+  /** Body views and image cards ever made: streaming updates them in place. */
+  bodyViews: number;
+  imageCards: number;
+  /** The composer's laid-out heights: its box, message box and controls. */
+  composer: { box: number; input: number; controls: number };
 }
 
 /** A chat tab: the transcript List over the bridge's rows, the requests that
@@ -89,6 +94,9 @@ export function ChatTab(props: ChatTabProps) {
   };
   let cells = 0;
   let constructed = 0;
+  let bodyViews = 0;
+  let imageCards = 0;
+  const composer = { box: 0, input: 0, controls: 0 };
   const editors: number[] = [];
   let list: YNode | undefined;
   const following = signal(true);
@@ -108,7 +116,7 @@ export function ChatTab(props: ChatTabProps) {
   const report = () => props.onDiagnostics?.({
     rows: rows().length, cells, constructed, bodies: [...bodies.values()].filter((body) => body() !== undefined).length,
     groups: rows().filter((row) => row.kind === "group" && !row.open).map((row) => row.id), panel: panel(),
-    editors: [...editors],
+    editors: [...editors], bodyViews, imageCards, composer: { ...composer },
   });
   const subscription = handle.subscribe((delivery) => {
     if (delivery.kind === "reset") for (const body of bodies.values()) body.set(undefined);
@@ -148,13 +156,22 @@ export function ChatTab(props: ChatTabProps) {
     list?.scrollToEnd();
   }
 
-  const prompts = computed(() => rows().map((row, index) => ({ row, index })).filter(({ row }) => row.kind === "user"));
+  // The user rows' indices: equal while a turn streams, so the message bar
+  // and its controls stay as they are.
+  const prompts = computed(() => rows().flatMap((row, index) => row.kind === "user" ? [index] : []),
+    { equals: (previous, next) => previous.length === next.length && previous.every((index, at) => index === next[at]) });
   const currentPrompt = computed(() => {
     const entries = prompts();
     let current = 0;
-    for (let at = 0; at < entries.length; at++) { if (entries[at].index <= firstVisible()) current = at; else break; }
+    for (let at = 0; at < entries.length; at++) { if (entries[at] <= firstVisible()) current = at; else break; }
     return current;
   });
+  // What the header, footer and banners show of a panel. Every delivery is a
+  // new panel; expressions that read these only run again on a real change.
+  const mode = computed(() => panel().mode);
+  const usageLabel = computed(() => panel().usageLabel);
+  const hasUsageDetail = computed(() => !!panel().usageDetail);
+  const hasFileChanges = computed(() => !!panel().fileChanges);
 
   async function copy(id?: string) {
     try { await Clipboard.writeText(await handle.readText(id)); }
@@ -245,13 +262,14 @@ export function ChatTab(props: ChatTabProps) {
     else if (command.id === "interruptChat" && panel().running) void handle.interrupt().catch((error) => notice(String(error)));
   }));
 
-  const control = (label: string, action: () => void, active = false, disabled = false) =>
-    <View role="button" accessibilityLabel={label} accessibilityState={{ disabled, selected: active }}
+  // A label that changes (an accessor) updates the control in place.
+  const control = (label: string | (() => string), action: () => void, active = false, disabled = false) =>
+    <View role="button" accessibilityLabel={typeof label === "function" ? label() : label} accessibilityState={{ disabled, selected: active }}
       onPress={() => { if (!disabled) action(); }}
       style={{ paddingHorizontal: 8, height: 27, alignItems: "center", justifyContent: "center", borderRadius: 5,
         backgroundColor: active ? theme().palette.panelActive : "transparent", opacity: disabled ? 0.35 : 1 }}
       hoverStyle={{ backgroundColor: theme().palette.panelActive }}>
-      <Text numberOfLines={1} style={text(11, active ? theme().palette.text : theme().palette.muted)}>{label}</Text>
+      <Text numberOfLines={1} style={text(11, active ? theme().palette.text : theme().palette.muted)}>{typeof label === "function" ? label() : label}</Text>
     </View>;
 
   const iconControl = (name: IconName, label: string, action: () => void, active = false, disabled = false) =>
@@ -282,7 +300,9 @@ export function ChatTab(props: ChatTabProps) {
   }
 
   function ChatHeader() {
-    const compact = () => paneWidth() > 0 && paneWidth() < 560 * theme().scale;
+    const compact = computed(() => paneWidth() > 0 && paneWidth() < 560 * theme().scale);
+    const hasUsage = computed(() => !!usageLabel() && !compact());
+    const several = computed(() => prompts().length > 1);
     return <View style={{ borderBottomWidth: 1, borderColor: chatHairline(theme()), paddingHorizontal: 12, paddingVertical: 7, gap: 5 }}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 6, minWidth: 0, flexShrink: 1 }}>
@@ -291,31 +311,31 @@ export function ChatTab(props: ChatTabProps) {
           <Text numberOfLines={1} style={{ ...text(12), fontWeight: "600", flexShrink: 1 }}>{panel().toolbar?.providerLabel ?? "Chat"}</Text>
         </View>
         <View style={{ width: 1, height: 14, marginHorizontal: 4, backgroundColor: chatHairline(theme()) }} />
-        {compact() ? control(panel().mode === "normal" ? "Normal ▾" : "Verbose ▾", () => {
+        {compact() ? control(mode() === "normal" ? "Normal ▾" : "Verbose ▾", () => {
           void Menu.popup([
-            { label: "Normal", checked: panel().mode === "normal", onSelect: () => handle.setMode("normal") },
-            { label: "Verbose", checked: panel().mode === "verbose", onSelect: () => handle.setMode("verbose") },
+            { label: "Normal", checked: mode() === "normal", onSelect: () => handle.setMode("normal") },
+            { label: "Verbose", checked: mode() === "verbose", onSelect: () => handle.setMode("verbose") },
           ]);
         }) : <View style={{ flexDirection: "row", gap: 2, padding: 2, borderRadius: 7, backgroundColor: theme().palette.panel }}>
-          {control("Normal", () => handle.setMode("normal"), panel().mode === "normal")}
-          {control("Verbose", () => handle.setMode("verbose"), panel().mode === "verbose")}
+          {control("Normal", () => handle.setMode("normal"), mode() === "normal")}
+          {control("Verbose", () => handle.setMode("verbose"), mode() === "verbose")}
         </View>}
         <View style={{ flex: 1, minWidth: 0 }} />
-        {panel().usageLabel && !compact() && control(panel().usageLabel!, () => showUsage.set(!showUsage()), showUsage())}
-        {!!panel().fileChanges && !compact() && iconControl("file", "Review changed files", () => reviewing.set({}))}
+        {hasUsage() && control(() => usageLabel() ?? "", () => showUsage.set(!showUsage()), showUsage())}
+        {hasFileChanges() && !compact() && iconControl("file", "Review changed files", () => reviewing.set({}))}
         {iconControl("search", "Find in conversation · ⌘F", findInChat, finding())}
         {iconControl("more", "Conversation options", moreMenu)}
       </View>
-      {showUsage() && panel().usageDetail && <Text selectable={true} style={mono(10, theme().palette.muted)}>{panel().usageDetail}</Text>}
-      {prompts().length > 1 && <View style={{ flexDirection: "row", alignItems: "center", gap: 2 }}>
-        {iconControl("up", "Previous message", () => jumpTo(prompts()[currentPrompt() - 1]?.index ?? -1), false, currentPrompt() === 0)}
+      {showUsage() && hasUsageDetail() && <Text selectable={true} style={mono(10, theme().palette.muted)}>{panel().usageDetail ?? ""}</Text>}
+      {several() && <View style={{ flexDirection: "row", alignItems: "center", gap: 2 }}>
+        {iconControl("up", "Previous message", () => jumpTo(prompts()[currentPrompt() - 1] ?? -1), false, currentPrompt() === 0)}
         {control(`Message ${currentPrompt() + 1} of ${prompts().length}`, () => {
           void handle.navigation().then((messages) => Menu.popup(messages.map((message, at) => ({
             label: `${message.label} · ${message.preview}`, checked: at === currentPrompt(),
             onSelect: () => jumpTo(rows().findIndex((row) => row.id === message.id)),
           })))).catch((error) => notice(String(error)));
         })}
-        {iconControl("down", "Next message", () => jumpTo(prompts()[currentPrompt() + 1]?.index ?? -1), false, currentPrompt() >= prompts().length - 1)}
+        {iconControl("down", "Next message", () => jumpTo(prompts()[currentPrompt() + 1] ?? -1), false, currentPrompt() >= prompts().length - 1)}
         <View style={{ flex: 1 }} />
         {!following() && control("Latest ↓", latest)}
       </View>}
@@ -348,24 +368,41 @@ export function ChatTab(props: ChatTabProps) {
     });
   });
 
+  // A cell keeps its nodes while its row streams. The runtime runs a JSX
+  // expression again whenever anything it reads changes and makes what it
+  // returns again, so a branch reading `row()` would be remade on every clock
+  // tick, and a body on every delta. Each branch reads a memo that changes
+  // only with the branch (a kind, a flag); changing text updates the nodes in
+  // place. Leaf and Body return one function: the functions of a returned
+  // fragment are no memos of their own and run again with the parent's other
+  // expressions.
   function Row(rowProps: { row: () => ChatRow }) {
     cells += 1;
     constructed += 1;
     cleanup(() => { cells -= 1; });
     const row = rowProps.row;
     const indent = () => chatGutter(paneWidth(), theme().scale) + Math.min(row().depth, paneWidth() < 520 ? 2 : 4) * space(12, theme().scale);
+    const disclosure = computed(() => row().disclosure);
+    const showBody = computed(() => row().disclosure && row().open && row().hasBody);
+    const artifacts = computed<NonNullable<ChatRow["artifacts"]>>(() => row().kind === "edit" ? [] : row().artifacts ?? [], { equals: sameContent });
+    const hasArtifacts = computed(() => artifacts().length > 0);
+    // This cell's image previews, read once: a running activity row gains
+    // screenshots, which makes its strip again.
+    const previews = new Map<string, ChatImagePreview>();
     return <View testID={`chat-row:${row().key}`} style={{ ...chatColumn(paneWidth(), theme().scale), paddingLeft: indent(), paddingVertical: 2,
       backgroundColor: selectedRow() === row().id ? theme().palette.panel : "transparent" }}>
-      {row().disclosure ? <Header row={row} /> : <Leaf row={row} />}
-      {row().disclosure && row().open && row().hasBody && <Body row={row} />}
-      {(row().artifacts?.length ?? 0) > 0 && row().kind !== "edit" && <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 4, paddingVertical: 4 }}>
-        {row().artifacts!.map((artifact) => artifact.path
-          ? control(`▤ ${artifact.label.split("/").pop()}`, () => { void openLink(`${artifact.path}${artifact.line ? `:${artifact.line}` : ""}`); })
-          : artifact.imageIndex !== null && artifact.imageIndex !== undefined && <ChatImage
-            id={`${artifact.itemId}:${artifact.imageIndex}`} label={artifact.label} inline={!!artifact.inlineImage}
-            preview={() => handle.imagePreview(artifact.itemId, artifact.imageIndex!)} theme={theme}
+      {disclosure() ? <Header row={row} /> : <Leaf row={row} />}
+      {showBody() && <Body row={row} />}
+      {hasArtifacts() && <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 4, paddingVertical: 4 }}>
+        {artifacts().map((artifact) => {
+          if (artifact.path) return control(`▤ ${artifact.label.split("/").pop()}`, () => { void openLink(`${artifact.path}${artifact.line ? `:${artifact.line}` : ""}`); });
+          if (artifact.imageIndex === null || artifact.imageIndex === undefined) return null;
+          imageCards += 1;
+          return <ChatImage id={`${artifact.itemId}:${artifact.imageIndex}`} label={artifact.label} inline={!!artifact.inlineImage}
+            preview={() => handle.imagePreview(artifact.itemId, artifact.imageIndex!)} cache={previews} theme={theme}
             width={() => paneWidth() - indent() - chatGutter(paneWidth(), theme().scale)}
-            expand={(value) => imagePreview.set(value)} openLink={(url) => { void openLink(url); }} />)}
+            expand={(value) => imagePreview.set(value)} openLink={(url) => { void openLink(url); }} />;
+        })}
       </View>}
     </View>;
   }
@@ -377,51 +414,68 @@ export function ChatTab(props: ChatTabProps) {
       : ["search", "web_search"].includes(row().kind) ? "search"
       : ["read", "edit"].includes(row().kind) ? "file"
       : ["worker", "subagent"].includes(row().kind) ? "person" : "tasks";
+    const hasIcon = computed(() => row().kind !== "group" && row().kind !== "activity");
+    const chevron = computed((): IconName => row().open ? "down" : "right");
+    const kindIcon = computed(activityIcon);
+    const hasTarget = computed(() => !!row().target);
+    const hasMeta = computed(() => !!row().meta);
+    const hasDuration = computed(() => row().durationMs !== undefined && !/^worked\s/i.test(row().title));
+    const running = computed(() => row().running);
+    const failed = computed(() => !row().running && row().failedCount > 0 && !row().title.includes("failed"));
+    const duration = () => {
+      const ms = row().durationMs ?? 0;
+      return ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`;
+    };
     return <View role="button" testID={`chat-header:${row().id}`} accessibilityLabel={label()} accessibilityState={{ expanded: row().open }}
       onPress={() => { following.set(false); handle.toggle(row().id); }}
       style={{ minHeight: space(28, theme().scale), paddingVertical: 4, paddingHorizontal: 5, flexDirection: "row", alignItems: "center", gap: 7, borderRadius: 5 }}
       hoverStyle={{ backgroundColor: theme().palette.panelActive }}>
-      <Icon name={row().open ? "down" : "right"} size={11} color={theme().palette.muted} />
-      {row().kind !== "group" && row().kind !== "activity" && <Icon name={activityIcon()} size={14} color={theme().palette.muted} />}
+      <Icon name={chevron()} size={11} color={theme().palette.muted} />
+      {hasIcon() && <Icon name={kindIcon()} size={14} color={theme().palette.muted} />}
       <Text numberOfLines={1} style={{ ...text(12, row().running ? theme().palette.text : theme().palette.muted), flexShrink: 1 }}>{row().title}</Text>
-      {row().target && <Text numberOfLines={1} style={{ ...mono(11, theme().palette.muted), flexShrink: 2 }}>{row().target}</Text>}
-      {row().meta && <Text numberOfLines={1} style={{ ...text(11, theme().palette.muted), flexShrink: 3 }}>{`· ${row().meta}`}</Text>}
-      {row().durationMs !== undefined && !/^worked\s/i.test(row().title) && <Text style={text(10, theme().palette.muted)}>{row().durationMs! < 1000 ? `${row().durationMs} ms` : `${(row().durationMs! / 1000).toFixed(1)} s`}</Text>}
-      {row().running && <Text numberOfLines={1} style={{ ...text(10, theme().palette.working), flexShrink: 1 }}>{row().currentLabel || "Running"}</Text>}
-      {!row().running && row().failedCount > 0 && !row().title.includes("failed") && <Text style={text(10, ERROR)}>{`${row().failedCount} failed`}</Text>}
+      {hasTarget() && <Text numberOfLines={1} style={{ ...mono(11, theme().palette.muted), flexShrink: 2 }}>{row().target ?? ""}</Text>}
+      {hasMeta() && <Text numberOfLines={1} style={{ ...text(11, theme().palette.muted), flexShrink: 3 }}>{`· ${row().meta ?? ""}`}</Text>}
+      {hasDuration() && <Text style={text(10, theme().palette.muted)}>{duration()}</Text>}
+      {running() && <Text numberOfLines={1} style={{ ...text(10, theme().palette.working), flexShrink: 1 }}>{row().currentLabel || "Running"}</Text>}
+      {failed() && <Text style={text(10, ERROR)}>{`${row().failedCount} failed`}</Text>}
     </View>;
   }
 
   function Leaf(leafProps: { row: () => ChatRow }) {
     const row = leafProps.row;
-    const kind = () => row().kind;
-    return <>
-      {kind() === "user" && <View style={{ marginTop: space(14, theme().scale), marginBottom: space(10, theme().scale), padding: space(14, theme().scale), borderRadius: 10,
+    const kind = computed(() => row().kind);
+    const attachments = computed<NonNullable<ChatRow["attachments"]>>(() => row().attachments ?? [], { equals: sameContent });
+    const hasAttachments = computed(() => attachments().length > 0);
+    const fileCount = computed(() => row().fileCount ?? 0);
+    return () => {
+      const shown = kind();
+      if (shown === "user") return <View style={{ marginTop: space(14, theme().scale), marginBottom: space(10, theme().scale), padding: space(14, theme().scale), borderRadius: 10,
         borderWidth: 1, borderColor: chatHairline(theme()), backgroundColor: theme().palette.panel }}>
         <View style={{ flexDirection: "row", alignItems: "center", marginTop: -5, marginBottom: 5 }}>
           <Text style={{ ...text(11, theme().palette.muted), fontWeight: "600" }}>You</Text><View style={{ flex: 1 }} />
           {iconControl("copy", "Copy message", () => void copy(row().id))}
         </View>
         <Body row={row} />
-        {(row().attachments?.length ?? 0) > 0 && <View style={{ gap: 5, marginTop: 6 }}>
-          {row().attachments!.map((attachment) => <SentAttachment attachment={attachment} />)}
+        {hasAttachments() && <View style={{ gap: 5, marginTop: 6 }}>
+          {attachments().map((attachment) => <SentAttachment attachment={attachment} />)}
         </View>}
-      </View>}
-      {(kind() === "final" || kind() === "commentary" || kind() === "reasoning" || kind() === "notice") && <View style={{ marginTop: space(kind() === "final" ? 12 : 5, theme().scale), marginBottom: space(8, theme().scale), gap: 8 }}>
-        {kind() === "final" && <Text style={{ ...text(11, theme().palette.muted), fontWeight: "600" }}>{row().title || "Assistant"}</Text>}
+      </View>;
+      if (shown === "final" || shown === "commentary" || shown === "reasoning" || shown === "notice") return <View style={{ marginTop: space(shown === "final" ? 12 : 5, theme().scale), marginBottom: space(8, theme().scale), gap: 8 }}>
+        {shown === "final" && <Text style={{ ...text(11, theme().palette.muted), fontWeight: "600" }}>{row().title || "Assistant"}</Text>}
         <Body row={row} />
-        {kind() === "final" && <View style={{ flexDirection: "row", alignItems: "center", gap: 4, marginLeft: -5 }}>{iconControl("copy", "Copy answer", () => void copy(row().id))}
-          {!!row().fileCount && control(`Review ${row().fileCount} ${row().fileCount === 1 ? "file" : "files"}`, () => reviewing.set({ scope: row().id }))}</View>}
-      </View>}
-      {kind() === "compaction" && <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginVertical: 6 }}>
+        {shown === "final" && <View style={{ flexDirection: "row", alignItems: "center", gap: 4, marginLeft: -5 }}>{iconControl("copy", "Copy answer", () => void copy(row().id))}
+          {fileCount() > 0 && control(`Review ${fileCount()} ${fileCount() === 1 ? "file" : "files"}`, () => reviewing.set({ scope: row().id }))}</View>}
+      </View>;
+      if (shown === "compaction") return <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginVertical: 6 }}>
         <View style={{ flex: 1, height: 1, backgroundColor: chatHairline(theme()) }} />
         <Text style={text(10, theme().palette.muted)}>{Settings.sentenceCase("context compacted")}</Text>
         <View style={{ flex: 1, height: 1, backgroundColor: chatHairline(theme()) }} />
-      </View>}
-      {kind() === "request" && <View style={{ height: space(24, theme().scale), justifyContent: "center" }}>
+      </View>;
+      if (shown === "request") return <View style={{ height: space(24, theme().scale), justifyContent: "center" }}>
         <Text numberOfLines={1} style={text(11, theme().palette.muted)}>{`✓ ${row().title}${row().target ? ` · ${row().target}` : ""}`}</Text>
-      </View>}
-    </>;
+      </View>;
+      return null;
+    };
   }
 
   function SentAttachment(props: { attachment: ChatAttachment }) {
@@ -448,6 +502,10 @@ export function ChatTab(props: ChatTabProps) {
 
   function Body(bodyProps: { row: () => ChatRow }) {
     const body = () => bodySignal(bodyProps.row().key)();
+    // What the body is, and whose: a streamed delta changes neither, so the
+    // TextView stays and takes the new blocks (it remakes only those that
+    // changed). A recycled cell's new row starts its body afresh.
+    const shown = computed(() => `${bodyProps.row().key}\u0000${body()?.kind ?? ""}`);
     const muted = () => bodyProps.row().kind === "commentary";
     let markdown: YNode | undefined;
     const codeActions = () => [
@@ -456,10 +514,17 @@ export function ChatTab(props: ChatTabProps) {
       ...(props.onCopyToTerminal && props.terminalTargets && !bodyProps.row().running && !bodyProps.row().provisional
         ? [{ id: "terminal", label: "Copy & open terminal…" }] : []),
     ];
-    return <>
-      {!body() && <Text style={text(11, theme().palette.muted)}>…</Text>}
-      {body()?.kind === "markdown" && <TextView ref={(node) => { markdown = node; }} selectable={true} links="report" testID={`chat-body:${bodyProps.row().key}`}
-        document={{ blocks: (body() as Extract<ChatBody, { kind: "markdown" }>).blocks }}
+    // The body of `kind`, else none: a node about to go may read it once more.
+    const of = <K extends ChatBody["kind"]>(kind: K) => {
+      const value = body();
+      return value?.kind === kind ? value as Extract<ChatBody, { kind: K }> : undefined;
+    };
+    return () => {
+      const kind = shown().split("\u0000")[1];
+      bodyViews += 1;
+      if (!kind) return <Text style={text(11, theme().palette.muted)}>…</Text>;
+      if (kind === "markdown") return <TextView ref={(node) => { markdown = node; }} selectable={true} links="report" testID={`chat-body:${bodyProps.row().key}`}
+        document={{ blocks: of("markdown")?.blocks ?? [] }}
         onLinkPress={(event) => void openLink(event.url)} codeBlockActions={codeActions()}
         onCodeBlockAction={(event) => {
           if (!interactive() || bodyProps.row().running || bodyProps.row().provisional || !["terminal", "reader", "save"].includes(event.id)) return;
@@ -488,73 +553,84 @@ export function ChatTab(props: ChatTabProps) {
           codeBlockCode: { ...mono(12), lineHeight: 19 * theme().scale, padding: space(12, theme().scale) },
           blockquote: { borderColor: chatHairline(theme()) },
           rule: { borderColor: chatHairline(theme()) },
-        }} />}
-      {body()?.kind === "text" && <Text selectable={true} testID={`chat-body:${bodyProps.row().key}`} style={{
-        ...text(bodyProps.row().kind === "user" ? 14 : 13, toneColor((body() as Extract<ChatBody, { kind: "text" }>).tone)),
+        }} />;
+      if (kind === "text") return <Text selectable={true} testID={`chat-body:${bodyProps.row().key}`} style={{
+        ...text(bodyProps.row().kind === "user" ? 14 : 13, toneColor(of("text")?.tone ?? "")),
         lineHeight: 21 * theme().scale,
-        fontStyle: (body() as Extract<ChatBody, { kind: "text" }>).tone === "reasoning" ? "italic" : "normal",
-      }}>{(body() as Extract<ChatBody, { kind: "text" }>).text}</Text>}
-      {body()?.kind === "changes" && <View style={{ paddingVertical: 5, gap: 3 }}>
-        {(body() as Extract<ChatBody, { kind: "changes" }>).files.map((file) => <View style={{ flexDirection: "row", alignItems: "center", gap: 7, paddingVertical: 4 }}>
+        fontStyle: of("text")?.tone === "reasoning" ? "italic" : "normal",
+      }}>{of("text")?.text ?? ""}</Text>;
+      if (kind === "changes") return <View style={{ paddingVertical: 5, gap: 3 }}>
+        {(of("changes")?.files ?? []).map((file) => <View style={{ flexDirection: "row", alignItems: "center", gap: 7, paddingVertical: 4 }}>
           <Text style={text(10, theme().palette.muted)}>{file.kind}</Text>
           <View role="button" onPress={() => void openLink(file.path)} style={{ flex: 1, minWidth: 0 }}><Text numberOfLines={1} style={mono(11, theme().palette.cyan)}>{file.path}</Text></View>
           <Text style={text(10, theme().palette.muted)}>{`+${file.added} −${file.removed}`}</Text>
           {control("Review", () => reviewing.set({ scope: bodyProps.row().id, key: file.id }))}
         </View>)}
-      </View>}
-      {body()?.kind === "tool" && <ToolResult body={() => body() as Extract<ChatBody, { kind: "tool" }>} />}
-      {body()?.kind === "command" && <CommandBox body={() => body() as Extract<ChatBody, { kind: "command" }>} />}
-      {body()?.kind === "detail" && <Scroll style={{ maxHeight: 320, padding: 8, borderRadius: 4, backgroundColor: theme().palette.panel }}>
-        <Text selectable={true} style={mono(11)}>{(body() as Extract<ChatBody, { kind: "detail" }>).text}</Text>
-      </Scroll>}
-      {body()?.kind === "steps" && <View style={{ gap: 2, paddingVertical: 4 }}>
-        {(body() as Extract<ChatBody, { kind: "steps" }>).explanation && <Text style={text(12)}>{(body() as Extract<ChatBody, { kind: "steps" }>).explanation}</Text>}
-        {(body() as Extract<ChatBody, { kind: "steps" }>).steps.map((step) => <Text style={text(12, step.status === "completed" ? theme().palette.muted : theme().palette.text)}>
+      </View>;
+      if (kind === "tool") return <ToolResult body={() => of("tool")} />;
+      if (kind === "command") return <CommandBox body={() => of("command")} />;
+      if (kind === "detail") return <Scroll style={{ maxHeight: 320, padding: 8, borderRadius: 4, backgroundColor: theme().palette.panel }}>
+        <Text selectable={true} style={mono(11)}>{of("detail")?.text ?? ""}</Text>
+      </Scroll>;
+      if (kind === "steps") return <View style={{ gap: 2, paddingVertical: 4 }}>
+        {!!of("steps")?.explanation && <Text style={text(12)}>{of("steps")?.explanation ?? ""}</Text>}
+        {(of("steps")?.steps ?? []).map((step) => <Text style={text(12, step.status === "completed" ? theme().palette.muted : theme().palette.text)}>
           {`${step.status === "completed" ? "✓" : step.status === "in_progress" ? "◐" : "○"} ${step.text}`}
         </Text>)}
-      </View>}
-    </>;
+      </View>;
+      return null;
+    };
   }
 
-  function ToolResult(props: { body: () => Extract<ChatBody, { kind: "tool" }> }) {
+  function ToolResult(props: { body: () => Extract<ChatBody, { kind: "tool" }> | undefined }) {
     const raw = signal(false);
-    const output = () => props.body().view;
+    const output = computed(() => props.body()?.view, { equals: sameContent });
+    const kind = computed(() => output()?.kind);
+    const omitted = computed(() => {
+      const view = output();
+      return view?.kind === "web_search" || view?.kind === "file_search" ? view.omitted : 0;
+    });
     return <View style={{ gap: 5, paddingVertical: 4 }}>
-      {output().kind === "file_search" && <>
+      {kind() === "file_search" && <>
         {(output() as Extract<ReturnType<typeof output>, { kind: "file_search" }>).hits.map((hit) => <View style={{ gap: 3, paddingVertical: 3 }}>
           {control(`${hit.path}${hit.line ? `:${hit.line}` : ""}`, () => void openLink(`${hit.path}${hit.line ? `:${hit.line}` : ""}`))}
           {hit.preview && <Text selectable={true} style={mono(11, theme().palette.muted)}>{hit.preview}</Text>}
         </View>)}
       </>}
-      {output().kind === "web_search" && <>
+      {kind() === "web_search" && <>
         {(output() as Extract<ReturnType<typeof output>, { kind: "web_search" }>).hits.map((hit) => <View style={{ gap: 3, paddingVertical: 3 }}>
           {control(hit.title || hit.url, () => void openLink(hit.url))}
           {hit.snippet && <Text selectable={true} style={text(11, theme().palette.muted)}>{hit.snippet}</Text>}
         </View>)}
       </>}
-      {output().kind === "file_read" && control((output() as Extract<ReturnType<typeof output>, { kind: "file_read" }>).path, () => void openLink((output() as Extract<ReturnType<typeof output>, { kind: "file_read" }>).path))}
-      {(output().kind === "file_read" || output().kind === "json") && <Scroll style={{ maxHeight: 300, padding: 8, borderRadius: 4, backgroundColor: theme().palette.panel }}>
-        <Text selectable={true} style={mono(11)}>{(output() as Extract<ReturnType<typeof output>, { kind: "file_read" | "json" }>).text}</Text>
+      {kind() === "file_read" && control((output() as Extract<ReturnType<typeof output>, { kind: "file_read" }>).path, () => void openLink((output() as Extract<ReturnType<typeof output>, { kind: "file_read" }>).path))}
+      {(kind() === "file_read" || kind() === "json") && <Scroll style={{ maxHeight: 300, padding: 8, borderRadius: 4, backgroundColor: theme().palette.panel }}>
+        <Text selectable={true} style={mono(11)}>{(output() as Extract<ReturnType<typeof output>, { kind: "file_read" | "json" }> | undefined)?.text ?? ""}</Text>
         {(output() as Extract<ReturnType<typeof output>, { kind: "file_read" | "json" }>).truncated && <Text style={text(10, theme().palette.muted)}>Preview truncated</Text>}
       </Scroll>}
-      {(output().kind === "web_search" || output().kind === "file_search") && (output() as Extract<ReturnType<typeof output>, { kind: "web_search" | "file_search" }>).omitted > 0 && <Text style={text(10, theme().palette.muted)}>{`${(output() as Extract<ReturnType<typeof output>, { kind: "web_search" | "file_search" }>).omitted} more results in raw output`}</Text>}
-      <View style={{ flexDirection: "row" }}>{control(raw() ? "Hide raw output" : "Raw output", () => raw.set(!raw()))}{control("Copy output", () => void Clipboard.writeText(props.body().raw))}</View>
-      {raw() && <Scroll style={{ maxHeight: 300, padding: 8, backgroundColor: theme().palette.panel }}><Text selectable={true} style={mono(11)}>{props.body().raw}</Text></Scroll>}
+      {omitted() > 0 && <Text style={text(10, theme().palette.muted)}>{`${omitted()} more results in raw output`}</Text>}
+      <View style={{ flexDirection: "row" }}>{control(raw() ? "Hide raw output" : "Raw output", () => raw.set(!raw()))}{control("Copy output", () => void Clipboard.writeText(props.body()?.raw ?? ""))}</View>
+      {raw() && <Scroll style={{ maxHeight: 300, padding: 8, backgroundColor: theme().palette.panel }}><Text selectable={true} style={mono(11)}>{props.body()?.raw ?? ""}</Text></Scroll>}
     </View>;
   }
 
-  function CommandBox(boxProps: { body: () => Extract<ChatBody, { kind: "command" }> }) {
+  // Output streams into a running command: its text updates in place, and the
+  // lines around it come and go only when they do.
+  function CommandBox(boxProps: { body: () => Extract<ChatBody, { kind: "command" }> | undefined }) {
     const body = boxProps.body;
+    const hasCwd = computed(() => !!body()?.cwd);
+    const hasExit = computed(() => body()?.exitCode !== undefined);
+    const hasOmitted = computed(() => (body()?.omitted ?? 0) > 0);
     return <View style={{ gap: 2, paddingVertical: 2 }}>
       <View style={{ flexDirection: "row", alignItems: "center" }}>
-        <Text selectable={true} style={{ ...mono(11, theme().palette.muted), flex: 1 }}>{`$ ${body().command}`}</Text>
-        {control("Copy output", () => void Clipboard.writeText(body().output))}
+        <Text selectable={true} style={{ ...mono(11, theme().palette.muted), flex: 1 }}>{`$ ${body()?.command ?? ""}`}</Text>
+        {control("Copy output", () => void Clipboard.writeText(body()?.output ?? ""))}
       </View>
-      {body().cwd && <Text selectable={true} style={mono(10, theme().palette.muted)}>{body().cwd}</Text>}
-      {body().exitCode !== undefined && <Text style={mono(10, body().exitCode === 0 ? theme().palette.muted : ERROR)}>{`Exit ${body().exitCode}`}</Text>}
+      {hasCwd() && <Text selectable={true} style={mono(10, theme().palette.muted)}>{body()?.cwd ?? ""}</Text>}
+      {hasExit() && <Text style={mono(10, body()?.exitCode === 0 ? theme().palette.muted : ERROR)}>{`Exit ${body()?.exitCode}`}</Text>}
       <Scroll style={{ maxHeight: 320, padding: 8, borderRadius: 4, backgroundColor: theme().palette.panel }}>
-        {body().omitted > 0 && <Text style={{ ...mono(10, theme().palette.muted), fontStyle: "italic" }}>{`${body().omitted} earlier bytes not shown`}</Text>}
-        <Text selectable={true} style={mono(11)}>{body().output || (body().running ? "Waiting for output…" : "")}</Text>
+        {hasOmitted() && <Text style={{ ...mono(10, theme().palette.muted), fontStyle: "italic" }}>{`${body()?.omitted ?? 0} earlier bytes not shown`}</Text>}
+        <Text selectable={true} style={mono(11)}>{body()?.output || (body()?.running ? "Waiting for output…" : "")}</Text>
       </Scroll>
     </View>;
   }
@@ -567,18 +643,20 @@ export function ChatTab(props: ChatTabProps) {
   }
 
   function Footer() {
-    const status = () => panel().status;
+    const hasStatus = computed(() => !!panel().status);
+    const welcome = computed(() => !panel().status && panel().empty && panel().link === "live");
+    const hasCwd = computed(() => !!panel().cwd);
     return <View testID="chat-footer" style={{ ...chatColumn(paneWidth(), theme().scale), paddingTop: 12, paddingBottom: 24, gap: 10 }}>
-      {status() && <View style={{ flexDirection: "row", alignItems: "center", gap: 7 }}>
+      {hasStatus() && <View style={{ flexDirection: "row", alignItems: "center", gap: 7 }}>
         <View accessible={false} style={{ width: 5, height: 5, borderRadius: 3, backgroundColor: panel().state === "waiting" ? theme().palette.gold : theme().palette.working }} />
-        <Text testID="chat-status" style={{ ...text(11, panel().state === "waiting" ? theme().palette.gold : theme().palette.working), flex: 1 }}>{status()}</Text>
+        <Text testID="chat-status" style={{ ...text(11, panel().state === "waiting" ? theme().palette.gold : theme().palette.working), flex: 1 }}>{panel().status ?? ""}</Text>
       </View>}
-      {!status() && panel().empty && panel().link === "live" && <>
+      {welcome() && <>
         <View style={{ alignItems: "flex-start", paddingTop: space(28, theme().scale), gap: 10 }}>
           <Icon name="chat" size={25} color={theme().palette.muted} />
           <Text style={{ ...text(19), fontWeight: "600" }}>Start a conversation</Text>
           <Text style={{ ...text(13, theme().palette.muted), lineHeight: 20 * theme().scale }}>Ask a question, plan a change, or describe what you want to build.</Text>
-          {panel().cwd && <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginTop: 4 }}>
+          {hasCwd() && <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginTop: 4 }}>
             <Icon name="folder" size={14} color={theme().palette.muted} />
             <Text selectable={true} numberOfLines={2} style={{ ...mono(11, theme().palette.muted), flexShrink: 1 }}>{panel().cwd}</Text>
           </View>}
@@ -590,6 +668,12 @@ export function ChatTab(props: ChatTabProps) {
 
   // A boolean, so a panel delivery never rebuilds the transcript and composer.
   const deleted = computed(() => panel().link === "deleted");
+  // The fragment's expressions below run again together, whenever one of
+  // them changes: each reads a memo, so a streaming delivery runs none.
+  const jumpToLatest = computed(() => !following() && prompts().length < 2);
+  const banners = computed(() => panel().notices, { equals: sameContent });
+  const stopped = computed(() => panel().state === "stopped");
+  const failed = computed(() => panel().state === "failed");
   return <View testID={`chat:${props.chatId}`} onLayout={(bounds) => paneWidth.set(bounds.size.width)} style={{ flex: 1, minHeight: 0, backgroundColor: theme().palette.bg }}>
     {deleted() ? <View testID="chat-deleted" style={{ flex: 1, padding: 24, gap: 8 }}>
       <Text style={text(14)}>This chat was deleted</Text>
@@ -612,7 +696,7 @@ export function ChatTab(props: ChatTabProps) {
         footer={() => <Footer />}>
         {(row) => <Row row={row} />}
       </List>
-      {!following() && prompts().length < 2 && <View style={{ alignItems: "center" }}>{control("Jump to latest ↓", latest)}</View>}
+      {jumpToLatest() && <View style={{ alignItems: "center" }}>{control("Jump to latest ↓", latest)}</View>}
       <WorkerShelf handle={handle} panel={panel} visible={() => props.visible} theme={theme} width={paneWidth} onOpen={props.onOpenWorker} onError={notice}
         onReveal={(id) => {
           following.set(false); selectedRow.set(id); pendingReveal = id;
@@ -625,14 +709,15 @@ export function ChatTab(props: ChatTabProps) {
           {iconControl("close", "Dismiss notice", () => notices.set(notices().filter((_, at) => at !== index)))}
         </View>)}
       </View>}
-      {panel().notices.map((banner) => <View testID={`chat-banner:${banner.id}`} style={{ ...chatColumn(paneWidth(), theme().scale), paddingVertical: 4 }}>
+      {banners().map((banner) => <View testID={`chat-banner:${banner.id}`} style={{ ...chatColumn(paneWidth(), theme().scale), paddingVertical: 4 }}>
         <Text style={text(11, banner.level === "error" ? ERROR : banner.level === "warning" ? theme().palette.gold : theme().palette.muted)}>{banner.text}</Text>
         <BillingNoticeAction control={billing} noticeId={banner.id} theme={theme} />
       </View>)}
-      {panel().state === "stopped" && <Text style={{ ...text(11, theme().palette.muted), ...chatColumn(paneWidth(), theme().scale) }}>Stopped. The chat will resume when you send a message.</Text>}
-      {panel().state === "failed" && <Text style={{ ...text(11, theme().palette.gold), ...chatColumn(paneWidth(), theme().scale) }}>{`Failed: ${panel().stateMessage ?? ""}`}</Text>}
+      {stopped() && <Text style={{ ...text(11, theme().palette.muted), ...chatColumn(paneWidth(), theme().scale) }}>Stopped. The chat will resume when you send a message.</Text>}
+      {failed() && <Text style={{ ...text(11, theme().palette.gold), ...chatColumn(paneWidth(), theme().scale) }}>{`Failed: ${panel().stateMessage ?? ""}`}</Text>}
       <Composer panel={panel} handle={handle} theme={theme} notice={notice} visible={interactive} width={paneWidth} billing={billing}
-        onSent={() => { following.set(true); list?.scrollToEnd(); }} onEditor={(editor) => editors.push(editor)} onEditMemo={props.onEditMemo} />
+        onSent={() => { following.set(true); list?.scrollToEnd(); }} onEditor={(editor) => editors.push(editor)} onEditMemo={props.onEditMemo}
+        onMeasure={(part, height) => { composer[part] = height; report(); }} />
     </>}
     {codeSnippet() !== null && props.terminalTargets && props.onCopyToTerminal && <CodeTerminalDialog text={codeSnippet()!} targets={props.terminalTargets}
       onCopy={async (id, text) => { await props.onCopyToTerminal!(id, text); codeReturnFocus = undefined; }} theme={theme} onClose={closeCodeSnippet} />}
@@ -796,7 +881,8 @@ function encodeAttachment(bytes: Uint8Array): string {
 
 /** The message box, its send/stop slot and the model, effort, Fast and mode
  * choices. Drafts are saved on every change and restored into an empty box. */
-function Composer(props: PartProps & { billing: BillingControl; width: () => number; visible: () => boolean; onSent: () => void; onEditor: (editor: number) => void; onEditMemo?: (projectId: string) => void }) {
+function Composer(props: PartProps & { billing: BillingControl; width: () => number; visible: () => boolean; onSent: () => void; onEditor: (editor: number) => void; onEditMemo?: (projectId: string) => void;
+  onMeasure?: (part: "box" | "input" | "controls", height: number) => void }) {
   const theme = props.theme;
   // One draft editor identity per mounted composer, unique across windows: the
   // native draft owners are process-wide (CHATC-035).
@@ -828,6 +914,13 @@ function Composer(props: PartProps & { billing: BillingControl; width: () => num
   const roomy = () => contentWidth() >= 620 * theme().scale;
   const spacious = () => contentWidth() >= 760 * theme().scale;
   const saved = signal<ChatDraft["submissions"]>([]);
+  // The message box is as tall as its text (`onContentSizeChange`), from three
+  // lines to nine. Left to measure itself under a `maxHeight`, it stops at nine
+  // lines but the composer around it is sized from its whole text: Taffy sizes
+  // that column from flex bases, which `maxHeight` does not clamp, and the
+  // extra height opened below the controls.
+  const textHeight = signal(0);
+  const inputHeight = () => Math.min(9 * 21 * theme().scale, Math.max(66 * theme().scale, textHeight() + 8));
   let lastSend = 0;
   let input: YNode | undefined;
   const text = (base = 12, color = theme().palette.text) => ({ fontFamily: theme().family, fontSize: base * theme().scale, color });
@@ -1098,17 +1191,23 @@ function Composer(props: PartProps & { billing: BillingControl; width: () => num
     toolbar()?.contributorLabel, props.billing.available() ? props.billing.summary().label : undefined,
   ].filter(Boolean).join(" · ");
 
-  const pill = (testID: string, label: string, onPress: () => void, tint = theme().palette.text) =>
-    <View role="button" testID={testID} focusable={true} tooltip={label} accessibilityLabel={label} onPress={onPress}
+  // The label is read in place: a panel delivery updates it, not the pill.
+  const pill = (testID: string, label: () => string, onPress: () => void, tint = theme().palette.text) =>
+    <View role="button" testID={testID} focusable={true} tooltip={label()} accessibilityLabel={label()} onPress={onPress}
       style={{ height: 28 * theme().scale, minWidth: 0, flexShrink: 1, paddingHorizontal: 7 * theme().scale, justifyContent: "center", borderRadius: 5 }}
       hoverStyle={{ backgroundColor: theme().palette.panelActive }} focusStyle={{ backgroundColor: theme().palette.panelActive }}>
-      <Text numberOfLines={1} style={text(11, tint)}>{label}</Text>
+      <Text numberOfLines={1} style={text(11, tint)}>{label()}</Text>
     </View>;
 
-  const stopping = () => props.panel().running && (empty() || pending() || incompleteAttachments());
+  // Every delivery is a new panel and toolbar: the controls below are chosen
+  // by these memos, so a streaming turn keeps the same buttons.
+  const hasToolbar = computed(() => !!toolbar());
+  const effortAvailable = computed(() => !!toolbar()?.effortAvailable);
+  const options = computed(() => modelOptions(), { equals: sameContent });
+  const stopping = computed(() => props.panel().running && (empty() || pending() || incompleteAttachments()));
   const sendDisabled = () => !!memo.preview() || empty() || pending() || incompleteAttachments() || !accepting();
   return <View style={{ ...chatColumn(props.width(), theme().scale), minWidth: 0, flexShrink: 0, paddingTop: 8, paddingBottom: 12 }}>
-    <View testID="chat-composer"
+    <View testID="chat-composer" onLayout={(bounds) => props.onMeasure?.("box", bounds.size.height)}
     onFileDragEnter={() => draggingFiles.set(true)} onFileDragLeave={() => draggingFiles.set(false)}
     onFileDrop={(event) => { draggingFiles.set(false); addAttachments(event.uris); }} style={{ minWidth: 0, padding: 10, gap: 8, borderRadius: 10, borderWidth: 1, borderColor: draggingFiles() ? theme().palette.cyan : theme().palette.divider, backgroundColor: theme().palette.panel }}>
     {memo.preview() && <MemoPreview preview={memo.preview} theme={theme} active={() => props.visible() && accepting()} onInsert={insertMemo} onCancel={closeMemo}
@@ -1163,14 +1262,14 @@ function Composer(props: PartProps & { billing: BillingControl; width: () => num
           hoverStyle={{ backgroundColor: theme().palette.panelActive }} focusStyle={{ backgroundColor: theme().palette.panelActive }}><Icon name="close" size={12 * theme().scale} color={theme().palette.muted} /></View>
       </View>
       <Scroll style={{ maxHeight: 200 }}>
-        {modelOptions().map((model) => <View role="button" accessibilityLabel={model.label} onPress={() => chooseModel(model.id)}
+        {options().map((model) => <View role="button" accessibilityLabel={model.label} onPress={() => chooseModel(model.id)}
           style={{ padding: 7, gap: 3, borderRadius: 4, backgroundColor: model.current ? theme().palette.panelActive : "transparent" }} hoverStyle={{ backgroundColor: theme().palette.panelActive }}>
           <Text style={text(12)}>{`${model.current ? "✓ " : ""}${model.label}`}</Text>
           {model.detail && <Text numberOfLines={3} style={text(11, theme().palette.muted)}>{model.detail}</Text>}
         </View>)}
       </Scroll>
-      {modelQuery().trim() && !modelOptions().some((model) => model.id === modelQuery().trim()) && pill("chat-model-custom", `Use “${modelQuery().trim()}”`, () => chooseModel(modelQuery()))}
-      {!modelOptions().length && !modelQuery().trim() && <Text style={text(11, theme().palette.muted)}>Enter the model name supplied by your provider.</Text>}
+      {modelQuery().trim() && !options().some((model) => model.id === modelQuery().trim()) && pill("chat-model-custom", () => `Use “${modelQuery().trim()}”`, () => chooseModel(modelQuery()))}
+      {!options().length && !modelQuery().trim() && <Text style={text(11, theme().palette.muted)}>Enter the model name supplied by your provider.</Text>}
     </View>}
     <DictationStatus controller={dictation} theme={theme} />
     <Suggestions control={suggestions} theme={theme} />
@@ -1179,32 +1278,34 @@ function Composer(props: PartProps & { billing: BillingControl; width: () => num
       onSelectionChange={(event) => selection.set({ start: event.start, end: event.end })}
       onPaste={(event) => addAttachments(event.uris, event.uris.length ? [] : event.files)}
       onChange={edit} onSubmit={() => { if (!suggestions.accept()) submit(); }} onFocus={() => focused.set(true)} onBlur={() => focused.set(false)}
-      onCompositionChange={(event) => composing.set(event.composing)}
-      style={{ ...text(14), lineHeight: 21 * theme().scale, minHeight: 66 * theme().scale, maxHeight: 9 * 21 * theme().scale, paddingHorizontal: 3, paddingVertical: 4 }} />
-    <View style={{ flexDirection: "row", alignItems: "center", minWidth: 0, gap: 3, paddingTop: 7, borderTopWidth: 1, borderColor: chatHairline(theme()) }}>
+      onCompositionChange={(event) => composing.set(event.composing)} onContentSizeChange={(size) => textHeight.set(size.height)}
+      onLayout={(bounds) => props.onMeasure?.("input", bounds.size.height)}
+      style={{ ...text(14), lineHeight: 21 * theme().scale, height: inputHeight(), paddingHorizontal: 3, paddingVertical: 4 }} />
+    <View onLayout={(bounds) => props.onMeasure?.("controls", bounds.size.height)}
+      style={{ flexDirection: "row", alignItems: "center", minWidth: 0, gap: 3, paddingTop: 7, borderTopWidth: 1, borderColor: chatHairline(theme()) }}>
       <View role="button" testID="chat-attach" focusable={accepting()} tooltip="Attach files · You can also paste or drop images and files" accessibilityLabel="Attach files"
         accessibilityState={{ disabled: !accepting() }} onPress={() => { if (accepting()) void chooseAttachments(); }}
         style={{ width: 28 * theme().scale, height: 28 * theme().scale, flexShrink: 0, borderRadius: 5, alignItems: "center", justifyContent: "center", opacity: accepting() ? 1 : 0.4 }}
         hoverStyle={{ backgroundColor: theme().palette.panelActive }} focusStyle={{ backgroundColor: theme().palette.panelActive }}>
         <Icon name="add" size={16 * theme().scale} color={theme().palette.muted} />
       </View>
-      {spacious() && toolbar() && <View style={{ maxWidth: 90 * theme().scale, minWidth: 0, flexShrink: 1 }}>
-        {pill("chat-provider", toolbar()!.providerLabel, providerMenu, theme().palette.muted)}
+      {spacious() && hasToolbar() && <View style={{ maxWidth: 90 * theme().scale, minWidth: 0, flexShrink: 1 }}>
+        {pill("chat-provider", () => toolbar()?.providerLabel ?? "", providerMenu, theme().palette.muted)}
       </View>}
       <View style={{ flex: 1, minWidth: 0 }}>
-        {toolbar() && <View role="button" testID="chat-model" focusable={true} tooltip={`${toolbar()!.providerLabel} · ${toolbar()!.modelLabel} · Choose model`}
-          accessibilityLabel={`Choose model, ${toolbar()!.modelLabel}`} onPress={modelMenu}
+        {hasToolbar() && <View role="button" testID="chat-model" focusable={true} tooltip={`${toolbar()?.providerLabel ?? ""} · ${toolbar()?.modelLabel ?? ""} · Choose model`}
+          accessibilityLabel={`Choose model, ${toolbar()?.modelLabel ?? ""}`} onPress={modelMenu}
           style={{ height: 28 * theme().scale, flexDirection: "row", alignItems: "center", minWidth: 0, gap: 4, paddingHorizontal: 5, borderRadius: 5 }}
           hoverStyle={{ backgroundColor: theme().palette.panelActive }} focusStyle={{ backgroundColor: theme().palette.panelActive }}>
-          <Text numberOfLines={1} style={{ ...text(11), flexShrink: 1, minWidth: 0, fontWeight: "500" }}>{toolbar()!.modelLabel}</Text>
+          <Text numberOfLines={1} style={{ ...text(11), flexShrink: 1, minWidth: 0, fontWeight: "500" }}>{toolbar()?.modelLabel ?? ""}</Text>
           <Icon name="down" size={10 * theme().scale} color={theme().palette.muted} />
         </View>}
       </View>
-      {spacious() && toolbar()?.effortAvailable && <View style={{ maxWidth: 96 * theme().scale, minWidth: 0, flexShrink: 1 }}>
-        {pill("chat-effort", toolbar()!.effortLabel, effortMenu, theme().palette.muted)}
+      {spacious() && effortAvailable() && <View style={{ maxWidth: 96 * theme().scale, minWidth: 0, flexShrink: 1 }}>
+        {pill("chat-effort", () => toolbar()?.effortLabel ?? "", effortMenu, theme().palette.muted)}
       </View>}
-      {roomy() && toolbar() && <View style={{ maxWidth: 124 * theme().scale, minWidth: 0, flexShrink: 1 }}>
-        {pill("chat-mode", toolbar()!.modeLabel, modeMenu, theme().palette.muted)}
+      {roomy() && hasToolbar() && <View style={{ maxWidth: 124 * theme().scale, minWidth: 0, flexShrink: 1 }}>
+        {pill("chat-mode", () => toolbar()?.modeLabel ?? "", modeMenu, theme().palette.muted)}
       </View>}
       <View style={{ display: roomy() ? "flex" : "none", flexShrink: 0 }}><BillingControls control={props.billing} theme={theme} narrow={!spacious()} /></View>
       <View role="button" testID="chat-options" focusable={!!toolbar() || props.billing.available()} tooltip={optionsHint()} accessibilityLabel={optionsHint()}

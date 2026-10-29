@@ -213,6 +213,50 @@ pub mod fixture {
         format!("{HANDSHAKE}{turn}\n")
     }
 
+    /// Answer deltas `streaming_turn` sends, 100 ms apart.
+    pub const STREAM_CHUNKS: usize = 40;
+
+    /// A turn whose answer streams for seconds below a screenshot: the
+    /// activity row's clock ticks while the answer's Markdown grows, as in
+    /// a live turn. Every eighth chunk ends a paragraph (`chunk 8.`).
+    pub fn streaming_turn() -> String {
+        use base64::Engine as _;
+        use serde_json::json;
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::RgbaImage::from_pixel(12, 8, image::Rgba([200, 40, 10, 255]))
+            .write_to(&mut png, image::ImageFormat::Png).unwrap();
+        let encoded = base64::engine::general_purpose::STANDARD.encode(png.into_inner());
+        let shot = json!({"type":"mcpToolCall", "id":"cua-shot", "server":"cua-driver",
+            "tool":"get_window_state", "status":"completed", "arguments":{},
+            "result":{"content":[{"type":"image", "mimeType":"image/png", "data":encoded}]}, "error":null});
+        let message = |text: &str| json!({"type":"agentMessage", "id":"msg-1", "text":text, "phase":"final_answer",
+            "memoryCitation":null, "delivery":null, "questions":null});
+        let started = json!({"id":"turn-1", "items":[], "itemsView":"notLoaded", "status":"inProgress", "error":null});
+        let turn = json!({"type":"expect", "frame":{"id":"<any>", "method":"turn/start",
+            "params":{"threadId":"thread-1", "input":[{"type":"text", "text":"stream an answer"}]}},
+            "reply":[
+                {"id":"$id", "result":{"turn":started}},
+                {"method":"turn/started", "params":{"threadId":"thread-1", "turn":started}},
+                {"method":"item/completed", "params":{"item":shot, "threadId":"thread-1", "turnId":"turn-1"}},
+                {"method":"item/started", "params":{"item":message(""), "threadId":"thread-1", "turnId":"turn-1", "startedAtMs":1}}
+            ]});
+        let mut out = format!("{HANDSHAKE}{turn}\n");
+        let mut text = String::new();
+        let mut step = |value: serde_json::Value| { out.push_str(&value.to_string()); out.push('\n'); };
+        for n in 1..=STREAM_CHUNKS {
+            let delta = if n % 8 == 0 { format!("chunk {n}.\n\n") } else { format!("chunk {n} ") };
+            text.push_str(&delta);
+            step(json!({"type":"sleep", "ms":100}));
+            step(json!({"type":"emit", "frame":{"method":"item/agentMessage/delta",
+                "params":{"threadId":"thread-1", "turnId":"turn-1", "itemId":"msg-1", "delta":delta}}}));
+        }
+        step(json!({"type":"emit", "frame":{"method":"item/completed",
+            "params":{"item":message(text.trim_end()), "threadId":"thread-1", "turnId":"turn-1", "completedAtMs":2}}}));
+        step(json!({"type":"emit", "frame":{"method":"turn/completed",
+            "params":{"threadId":"thread-1", "turn":{"id":"turn-1", "items":[], "itemsView":"notLoaded", "status":"completed", "error":null}}}}));
+        out
+    }
+
     /// Provider warnings a `*_refresh` recording sends while its request waits:
     /// panel deliveries that leave the approvals and questions alone.
     pub const REFRESHES: usize = 8;
@@ -277,6 +321,7 @@ pub mod fixture {
             .chain([
                 ("large_turn", std::borrow::Cow::Owned(large_turn())),
                 ("image_turn", std::borrow::Cow::Owned(image_turn())),
+                ("streaming_turn", std::borrow::Cow::Owned(streaming_turn())),
                 (
                     REFRESHED[0],
                     std::borrow::Cow::Owned(refreshed(recorded("question"), None)),
@@ -295,6 +340,7 @@ pub mod fixture {
     fn known(name: &str) -> bool {
         name == "large_turn"
             || name == "image_turn"
+            || name == "streaming_turn"
             || REFRESHED.contains(&name)
             || RECORDINGS.iter().any(|(known, _)| *known == name)
     }
