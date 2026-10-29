@@ -44,11 +44,15 @@
 //! message as a `UserMessage` item, since the CLI does not.
 //!
 //! What the user sent is never dropped without a word. A message sent while a turn
-//! runs waits behind it in the CLI, which drops it on an interrupt (`cancel_queued`)
-//! or when the process ends: if the turn ends that way, an `undelivered` notice says
-//! its delivery is not confirmed and keeps its words. Messages queued for a restart
-//! that does not happen are kept the same way, as not delivered. An attachment
-//! message is echoed once its write is known to have begun, never before.
+//! runs steers: the turn is interrupted, and the driver holds the message until the
+//! turn is over, then sends and shows it, rather than leave it behind the turn in
+//! the CLI, which would take it only after the whole turn and drop it on an
+//! interrupt (`cancel_queued`). If the chat stops or the process ends first, an
+//! `undelivered` notice keeps its words. Messages written behind a turn some other
+//! way (a restart's queue) are doubted the same way when the turn does not run its
+//! course. Messages queued for a restart that does not happen are kept as not
+//! delivered. An attachment message is echoed once its write is known to have
+//! begun, never before.
 //!
 //! # Frames to events
 //!
@@ -91,7 +95,7 @@
 //!
 //! | command                  | sent                                                              |
 //! |--------------------------|-------------------------------------------------------------------|
-//! | `Send`                   | `{"type":"user","session_id":"","message":{"role":"user","content":TEXT},"parent_tool_use_id":null}`; queued while the process restarts |
+//! | `Send`                   | `{"type":"user","session_id":"","message":{"role":"user","content":TEXT},"parent_tool_use_id":null}`; queued while the process restarts; while a turn runs, `Interrupt` and the message once the turn is over |
 //! | `Interrupt`              | `control_request` `interrupt` (with `cancel_queued`); after 5 s SIGINT to the process; after 5 s more, or if the process leaves within 10 s of SIGINT, it is stopped and restarted with `--resume`, closing the turn as Interrupted |
 //! | `Approve`                | `control_response` `{behavior:"allow", updatedInput}` (AcceptForSession adds `updatedPermissions`, always with destination `session`), or `{behavior:"deny", message}` (Cancel adds `interrupt:true` and also starts the `Interrupt` escalation) |
 //! | `Answer`                 | `control_response` `allow` with `updatedInput { questions, answers }`, answers keyed by question text, multiple choices joined by ", " |
@@ -651,6 +655,9 @@ struct Core {
     /// Messages sent while the process restarts, and whether each is echoed as
     /// a user message (a queued `Compact` is not).
     queued: Vec<(String, bool)>,
+    /// Messages sent while a turn ran: the turn is being interrupted, and they go
+    /// (and show) together once it is over (`send_steering`).
+    steering: Vec<String>,
     // The protocol.
     requests: HashMap<String, Reply>,
     request_counter: u64,
@@ -727,6 +734,7 @@ impl Core {
             pending: Vec::new(),
             declined: HashSet::new(),
             queued: Vec::new(),
+            steering: Vec::new(),
             requests: HashMap::new(),
             request_counter: 0,
             state_events: false,
@@ -1070,6 +1078,8 @@ impl Core {
                 if self.restarting {
                     self.queued.push((text, true));
                     Ok(())
+                } else if self.turn.is_some() {
+                    self.steer(text)
                 } else {
                     self.send_user(text, true)
                 }
@@ -1147,6 +1157,49 @@ impl Core {
             });
         }
         Ok(())
+    }
+
+    /// A message sent while a turn runs stops the turn and goes next. Written to
+    /// the CLI now it would wait until the whole turn is over, and an interrupt
+    /// would drop it; held here, it is sent (and shown) as soon as the turn ends.
+    fn steer(&mut self, text: String) -> Result<(), String> {
+        if self.out.is_none() {
+            return Err("claude is not running".into());
+        }
+        self.steering.push(text);
+        self.interrupt()
+    }
+
+    /// The turn the held messages interrupted is over: they go now, as one
+    /// message, since they were all sent while it ran.
+    fn send_steering(&mut self) {
+        if self.steering.is_empty() {
+            return;
+        }
+        let text = self.steering.join("\n\n");
+        if let Err(error) = self.send_user(text, true) {
+            self.drop_steering(&error);
+        }
+    }
+
+    /// The held messages will not be sent (`why`): say so with their words.
+    fn drop_steering(&mut self, why: &str) {
+        let texts = std::mem::take(&mut self.steering);
+        if texts.is_empty() {
+            return;
+        }
+        let (what, it) = if texts.len() == 1 {
+            ("this message, sent while it was working", "it")
+        } else {
+            ("these messages, sent while it was working", "them")
+        };
+        let lead =
+            format!("Not delivered: {why}, so Claude did not receive {what}. Send {it} again.");
+        self.notice(
+            NoticeLevel::Warning,
+            notice_kind::UNDELIVERED,
+            kept_words(&lead, &texts),
+        );
     }
 
     fn interrupt(&mut self) -> Result<(), String> {
@@ -1759,6 +1812,7 @@ impl Core {
         };
         self.close_turn(outcome);
         self.set_state(ChatState::Idle);
+        self.send_steering();
     }
 
     fn on_stream_event(&mut self, frame: &Value) {
@@ -2724,6 +2778,7 @@ fn process_ended(shared: &Arc<Shared>, generation: u64, proc: &Arc<Proc>) {
     core.dead = Some(reason.clone());
     core.out = None;
     core.doubt_queued("claude stopped unexpectedly during the turn");
+    core.drop_steering("claude stopped unexpectedly");
     core.close_turn(TurnOutcome::Failed {
         message: reason.clone(),
     });
@@ -2758,18 +2813,27 @@ fn restart(shared: &Arc<Shared>) {
     core.retiring = None;
     core.restarting = false;
     match result {
-        Ok(()) if core.stopped => core.undelivered("the chat was stopped first"),
+        Ok(()) if core.stopped => {
+            core.undelivered("the chat was stopped first");
+            core.drop_steering("the chat was stopped");
+        }
         Ok(()) => {
             core.launched();
             core.set_state(ChatState::Idle);
+            // What interrupted the turn goes first: it was sent before these.
+            core.send_steering();
             for (text, echo) in std::mem::take(&mut core.queued) {
                 let _ = core.send_user(text, echo);
             }
         }
-        Err(_) if core.stopped => core.undelivered("the chat was stopped first"),
+        Err(_) if core.stopped => {
+            core.undelivered("the chat was stopped first");
+            core.drop_steering("the chat was stopped");
+        }
         Err(error) => {
             core.not_launched();
             core.undelivered("claude did not start again");
+            core.drop_steering("claude did not start again");
             core.dead = Some(error.clone());
             core.set_state(ChatState::Failed { message: error });
         }
@@ -2802,6 +2866,7 @@ fn shutdown(shared: &Arc<Shared>) {
         .map(|(core, _)| core)
         .unwrap_or_else(|poisoned| poisoned.into_inner().0);
     core.doubt_queued("the chat was stopped during the turn");
+    core.drop_steering("the chat was stopped");
     core.close_turn(TurnOutcome::Interrupted);
     if !matches!(core.state, ChatState::Failed { .. }) {
         core.set_state(ChatState::Stopped);
