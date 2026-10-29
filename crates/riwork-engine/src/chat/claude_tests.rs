@@ -2478,37 +2478,38 @@ fn user_texts(events: &[ChatEvent]) -> Vec<String> {
 }
 
 #[test]
-fn a_message_waiting_behind_an_interrupted_turn_keeps_its_text_unconfirmed() {
-    let mut rig = Rig::new(&["interrupt_queued"]);
+fn a_message_sent_while_a_turn_runs_interrupts_it_and_goes_next() {
+    let mut rig = Rig::new(&["steer"]);
     rig.send("go");
     rig.until(|event| matches!(event, ChatEvent::ItemDelta { .. }));
-    let waiting = "and then this 🦀\n  exactly as typed";
-    rig.send(waiting);
-    rig.command(ChatCommand::Interrupt);
+    let steer = "and then this 🦀\n  exactly as typed";
+    rig.send(steer);
+    // The turn is interrupted; the message is not shown until it is sent.
+    rig.until_idle();
+    assert_eq!(outcomes(&rig.seen), vec![TurnOutcome::Interrupted]);
+    assert_eq!(user_texts(&rig.seen), ["go"]);
+    // Then it goes, exactly as typed, as the next turn.
     rig.until_idle();
     assert!(!rig.fake.saw("mismatch"));
-    assert_eq!(outcomes(&rig.seen), vec![TurnOutcome::Interrupted]);
-    // It went to the CLI, so it stays in the transcript; that it got there is not
-    // known, since the interrupt drops what waits behind the turn.
-    assert_eq!(user_texts(&rig.seen), ["go", waiting]);
-    let notice = undelivered_with(&rig.seen, waiting).expect("the waiting text is kept");
-    assert_eq!(notice.status, ItemStatus::Completed);
-    assert!(
-        matches!(&notice.body, ItemBody::Notice { level: NoticeLevel::Warning, text, .. }
-            if text.contains("not confirmed")),
-        "{notice:?}"
+    assert_eq!(
+        outcomes(&rig.seen),
+        vec![TurnOutcome::Interrupted, TurnOutcome::Completed]
     );
-    // The message that started the turn is not in doubt.
-    assert_eq!(completed_notices(&rig.seen).len(), 1);
+    assert_eq!(user_texts(&rig.seen), ["go", steer]);
+    assert!(
+        undelivered_with(&rig.seen, steer).is_none() && completed_notices(&rig.seen).is_empty(),
+        "{:#?}",
+        rig.seen
+    );
 }
 
 #[test]
-fn a_message_waiting_behind_a_turn_that_crashes_keeps_its_text_unconfirmed() {
-    let mut rig = Rig::new(&["crash_queued"]);
+fn a_message_sent_while_a_turn_runs_keeps_its_text_when_claude_dies_first() {
+    let mut rig = Rig::new(&["crash_steering"]);
     rig.send("go");
     rig.until(|event| matches!(event, ChatEvent::ItemDelta { .. }));
-    let waiting = "keep this exact text";
-    rig.send(waiting);
+    let steer = "keep this exact text";
+    rig.send(steer);
     rig.until(|event| {
         matches!(
             event,
@@ -2517,28 +2518,13 @@ fn a_message_waiting_behind_a_turn_that_crashes_keeps_its_text_unconfirmed() {
             }
         )
     });
+    let notice = undelivered_with(&rig.seen, steer).expect("the held text is kept");
     assert!(
-        undelivered_with(&rig.seen, waiting).is_some(),
-        "{:#?}",
-        rig.seen
+        matches!(&notice.body, ItemBody::Notice { text, .. } if text.contains("Not delivered")),
+        "{notice:?}"
     );
-}
-
-#[test]
-fn a_message_waiting_behind_a_turn_that_ends_normally_raises_no_doubt() {
-    let mut rig = Rig::new(&["queued_completes"]);
-    rig.send("go");
-    rig.until(|event| matches!(event, ChatEvent::ItemDelta { .. }));
-    rig.send("later");
-    rig.until_idle();
-    assert!(!rig.fake.saw("mismatch"));
-    assert!(
-        completed_notices(&rig.seen)
-            .iter()
-            .all(|item| !matches!(&item.body, ItemBody::Notice { kind: Some(kind), .. } if kind == notice_kind::UNDELIVERED)),
-        "{:#?}",
-        rig.seen
-    );
+    // It never reached Claude, so it is not shown as sent.
+    assert_eq!(user_texts(&rig.seen), ["go"]);
 }
 
 #[test]
