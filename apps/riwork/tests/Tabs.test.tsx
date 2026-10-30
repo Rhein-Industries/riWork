@@ -25,7 +25,7 @@ test("P1-TAB-02 Dashboard routes globally and panel tooltips retain their natura
   const app = await workspace("tabs-dashboard");
   try {
     await app.press("id:pane-menu-1");
-    await app.chooseMenuItem("Dashboard");
+    await app.chooseMenuItem("Views > Dashboard");
     expect(app.host.calls().find((call) => call.name === "window.open")?.data).toEqual({ kind: "global", view: "dashboard", start: false });
     expect(latest(app).snapshot.panes.flatMap((pane) => pane.tabs).some((tab) => tab.id === "panel:dashboard")).toBe(false);
     await app.hover("id:tab-panel:projects");

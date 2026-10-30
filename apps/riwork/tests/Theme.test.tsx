@@ -42,7 +42,7 @@ test("P1-THM-01: Settings offers the seven core-labelled themes and changes sele
   try {
     await app.waitFor("id:workspace");
     await app.rightClick("id:tab:panel:files");
-    await app.chooseMenuItem("Settings");
+    await app.chooseMenuItem("Views > Settings");
     await app.waitFor("id:appearance-settings");
     expect(app.count("id:settings-theme-grid >> role:radio")).toBe(7);
     await app.press("id:theme-choice:native");

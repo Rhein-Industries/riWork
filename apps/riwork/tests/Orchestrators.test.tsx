@@ -23,15 +23,15 @@ test("P5-ORCH-01 ⌘⌥O opens the project's orchestrator as a chat tab, and aga
   } finally { app.dispose(); }
 });
 
-test("P5-ORCH-02 the pane menu's New tab offers both orchestrators", async () => {
+test("P5-ORCH-02 the pane menu's Orchestrators submenu offers both orchestrators", async () => {
   const app = await namedWorkspace("Phase5", "p5-orch-02");
   try {
     await app.host.send("app.fixture.inspect", {});
     const pane = latest(app).snapshot.activePane;
     await app.press(`id:pane-menu-${pane}`);
     const menu = app.menu() ?? [];
-    expect(menu.find((item) => item.label === "Global orchestrator")?.disabled).toBe(false);
-    expect(menu.find((item) => item.label === "Project orchestrator")?.disabled).toBe(false);
+    expect(menu.find((item) => item.label === "Orchestrators > Global")?.disabled).toBe(false);
+    expect(menu.find((item) => item.label === "Orchestrators > Project")?.disabled).toBe(false);
     await app.closeMenu();
   } finally { app.dispose(); }
 });

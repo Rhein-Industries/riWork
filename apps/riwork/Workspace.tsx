@@ -667,36 +667,43 @@ export function Workspace(props: WorkspaceProps) {
     const pane = snapshot().panes.find((pane) => pane.id === id);
     if (!pane) return;
     action(() => session.selectPane(id));
-    const disabled = (label: string, shortcut?: string): MenuItem => ({ label, disabled: true, shortcut });
-    const rows: MenuItem[] = [
-      { label: "Existing sessions", shortcut: "mod+alt+s", onSelect: () => { panelState.sessionFilter.set("all"); view("shells"); } },
-      { label: "Existing Claude chats", onSelect: () => { panelState.sessionFilter.set("claude"); view("shells"); } },
-      { label: "Existing Muse chats", onSelect: () => { panelState.sessionFilter.set("muse"); view("shells"); } },
-      { type: "separator" }, disabled("New tab"),
+    // What is used most stays on top; the rest is grouped in submenus.
+    const paneRows: MenuItem[] = [];
+    if (!pane.locked) {
+      paneRows.push({ label: "Close tab", shortcut: "mod+w", disabled: !pane.activeTab, onSelect: () => close(pane.activeTab) });
+      paneRows.push({ label: "Close pane", shortcut: "mod+shift+w", onSelect: () => closePane(id) });
+    }
+    paneRows.push({ label: "Main pane", checked: pane.main, onSelect: () => action(() => session.toggleMain(id)) });
+    if (snapshot().panes.some((p) => p.main)) paneRows.push({ label: "Gather tabs into main pane", shortcut: "mod+shift+m", onSelect: () => action(() => session.gather()) });
+    if (!paneButtons(id).lock) paneRows.push({ label: pane.locked ? "Unlock pane" : "Lock pane", onSelect: () => action(() => session.toggleLock(id)) });
+    if (!paneButtons(id).focus) paneRows.push({ label: snapshot().focusMode ? "Restore layout" : "Focus tab", shortcut: "mod+shift+f", onSelect: () => action(() => session.toggleFocus()) });
+    popup([
       { label: "Shell", shortcut: "mod+t", onSelect: () => { void createShell(); } },
-      { label: "Subshell", disabled: !selected()?.startsWith("shell:"), onSelect: () => { void createSubshell(); } },
-      { label: "Open file in Vim…", onSelect: showVimDialog },
-      ...[["Codex", "mod+shift+c"], ["Claude", "mod+shift+l"], ["Grok", "mod+shift+g"], ["Muse", "mod+shift+u"]].map(([label, shortcut]) => ({ label, shortcut, onSelect: () => { void createShell(undefined, label.toLowerCase()); } })),
-      { label: "Global orchestrator", shortcut: "mod+shift+o", onSelect: openGlobalOrchestrator },
-      { label: "Project orchestrator", shortcut: "mod+alt+o", disabled: !UUID.test(projectId()) && !remoteProjectKey(projectId()), onSelect: () => { void openProjectOrchestrator(); } },
       { label: "New chat…", shortcut: "mod+alt+shift+c", onSelect: () => { commands.dispatch("newChat"); } },
-      { label: "Hand off…", disabled: !selected()?.startsWith("shell:") && !selected()?.startsWith("chat:"), onSelect: showHandoff },
-      { label: "App preview…", disabled: !filesRoot() && !snapshot().remoteProject, onSelect: newAppPreview },
-      { type: "separator" }, disabled("Views"),
-      ...VIEWS.map((panel): MenuItem => ({ label: panelTitle(panel), shortcut: VIEW_SHORTCUTS[panel], onSelect: () => view(panel) })),
-      { type: "separator" }, disabled("Pane"),
       { label: "Split right", shortcut: "mod+d", onSelect: () => { void createShell("right"); } },
       { label: "Split down", shortcut: "mod+shift+d", onSelect: () => { void createShell("down"); } },
-    ];
-    if (!pane.locked) {
-      rows.push({ label: "Close tab", shortcut: "mod+w", disabled: !pane.activeTab, onSelect: () => close(pane.activeTab) });
-      rows.push({ label: "Close pane", shortcut: "mod+shift+w", onSelect: () => closePane(id) });
-    }
-    rows.push({ label: "Main pane", checked: pane.main, onSelect: () => action(() => session.toggleMain(id)) });
-    if (snapshot().panes.some((p) => p.main)) rows.push({ label: "Gather tabs into main pane", shortcut: "mod+shift+m", onSelect: () => action(() => session.gather()) });
-    if (!paneButtons(id).lock) rows.push({ label: pane.locked ? "Unlock pane" : "Lock pane", onSelect: () => action(() => session.toggleLock(id)) });
-    if (!paneButtons(id).focus) rows.push({ label: snapshot().focusMode ? "Restore layout" : "Focus tab", shortcut: "mod+shift+f", onSelect: () => action(() => session.toggleFocus()) });
-    popup(rows);
+      { type: "separator" },
+      { label: "New", submenu: [
+        ...[["Codex", "mod+shift+c"], ["Claude", "mod+shift+l"], ["Grok", "mod+shift+g"], ["Muse", "mod+shift+u"]].map(([label, shortcut]): MenuItem => ({ label, shortcut, onSelect: () => { void createShell(undefined, label.toLowerCase()); } })),
+        { type: "separator" },
+        { label: "Subshell", disabled: !selected()?.startsWith("shell:"), onSelect: () => { void createSubshell(); } },
+        { label: "Open file in Vim…", onSelect: showVimDialog },
+        { label: "App preview…", disabled: !filesRoot() && !snapshot().remoteProject, onSelect: newAppPreview },
+      ] },
+      { label: "Sessions", submenu: [
+        { label: "Existing sessions", shortcut: "mod+alt+s", onSelect: () => { panelState.sessionFilter.set("all"); view("shells"); } },
+        { label: "Existing Claude chats", onSelect: () => { panelState.sessionFilter.set("claude"); view("shells"); } },
+        { label: "Existing Muse chats", onSelect: () => { panelState.sessionFilter.set("muse"); view("shells"); } },
+        { type: "separator" },
+        { label: "Hand off…", disabled: !selected()?.startsWith("shell:") && !selected()?.startsWith("chat:"), onSelect: showHandoff },
+      ] },
+      { label: "Orchestrators", submenu: [
+        { label: "Global", shortcut: "mod+shift+o", onSelect: openGlobalOrchestrator },
+        { label: "Project", shortcut: "mod+alt+o", disabled: !UUID.test(projectId()) && !remoteProjectKey(projectId()), onSelect: () => { void openProjectOrchestrator(); } },
+      ] },
+      { label: "Views", submenu: VIEWS.map((panel): MenuItem => ({ label: panelTitle(panel), shortcut: VIEW_SHORTCUTS[panel], onSelect: () => view(panel) })) },
+      { label: "Pane", submenu: paneRows },
+    ]);
   }
   function tabMenu(id: string) {
     const tab = findPanel(snapshot(), id);

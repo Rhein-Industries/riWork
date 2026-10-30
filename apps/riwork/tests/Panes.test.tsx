@@ -117,8 +117,8 @@ test("P1-PANE-11 pane body activation routes a shell to that pane when main is u
     if (app.shows("id:dismiss-notice")) await app.press("id:dismiss-notice");
     const main = latest(app).snapshot.panes.find((pane) => pane.main)!;
     await app.press(`id:pane-menu-${main.id}`);
-    expect(app.menu()?.some((item) => item.label === "Main pane")).toBe(true);
-    await app.chooseMenuItem("Main pane");
+    expect(app.menu()?.some((item) => item.label === "Pane > Main pane")).toBe(true);
+    await app.chooseMenuItem("Pane > Main pane");
     expect(latest(app).snapshot.panes.some((pane) => pane.main)).toBe(false);
     const target = latest(app).snapshot.panes.find((pane) => !pane.locked)!;
     await app.press("id:tab-panel:projects");
@@ -128,7 +128,7 @@ test("P1-PANE-11 pane body activation routes a shell to that pane when main is u
     await app.waitUntil(() => latest(app).snapshot.panes.find((pane) => pane.id === target.id)!.tabs.length > before);
     expect(latest(app).snapshot.activePane).toBe(target.id);
     await app.press(`id:pane-menu-${main.id}`);
-    expect(app.menu()?.some((item) => item.label === "Main pane")).toBe(true);
-    await app.chooseMenuItem("Main pane");
+    expect(app.menu()?.some((item) => item.label === "Pane > Main pane")).toBe(true);
+    await app.chooseMenuItem("Pane > Main pane");
   } finally { app.dispose(); }
 });
