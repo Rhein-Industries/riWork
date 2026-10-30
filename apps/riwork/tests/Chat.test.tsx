@@ -4,7 +4,8 @@ import { expect, open, test, type App } from "nsh/test";
 // RIWORK_HOME: the native module then runs an in-process chat host whose Codex
 // driver replays the engine's recorded provider streams (never a live host).
 
-interface FixtureState { chatId: string | null; rows?: number; cells?: number; constructed?: number; bodies?: number; groups?: string[]; panel?: { state: string; running: boolean; approvals: unknown[] }; editors?: number[]; bodyViews?: number; imageCards?: number; composer?: { box: number; input: number; controls: number } }
+interface Frame { x: number; y: number; width: number; height: number }
+interface FixtureState { chatId: string | null; rows?: number; cells?: number; constructed?: number; bodies?: number; groups?: string[]; panel?: { state: string; running: boolean; approvals: unknown[] }; editors?: number[]; bodyViews?: number; imageCards?: number; composer?: { box: number; input: number; controls: number }; layout?: { main?: Frame; side?: Frame; bottom?: Frame } }
 
 async function chat(recording: string, chatId?: string, height = 780): Promise<App> {
   const app = await open("./Chat.fixture.tsx", {
@@ -43,6 +44,20 @@ async function storedDraftBecomes(app: App, wanted: string): Promise<string | nu
 async function send(app: App, text: string) {
   await app.type("id:chat-input", text);
   await app.press("id:chat-send");
+}
+
+/** The tab's parts once the side panel is laid out. */
+async function sideLayout(app: App): Promise<{ main: Frame; side: Frame; bottom: Frame }> {
+  let state = await inspect(app);
+  for (let tries = 0; !state.layout?.side && tries < 200; tries += 1) { await app.wait(25); state = await inspect(app); }
+  const { main, side, bottom } = state.layout ?? {};
+  if (!main || !side || !bottom) throw new Error(`no side panel layout: ${JSON.stringify(state.layout)}`);
+  return { main, side, bottom };
+}
+
+/** `a` ends where `b` begins or before, along `axis` (half a point of rounding). */
+function ends(a: Frame, b: Frame, axis: "x" | "y") {
+  return axis === "x" ? a.x + a.width <= b.x + 0.5 : a.y + a.height <= b.y + 0.5;
 }
 
 test("P4-CHAT-01 an approval is visible and its Allow button answers the host", async () => {
@@ -278,5 +293,67 @@ test("P4-CHAT-12 a long draft stops the composer at nine lines, with nothing bel
     // padding each side, and two 8 pt gaps (after the empty dictation and
     // suggestion slots, and before the controls).
     expect(box).toBeLessThanOrEqual(input + controls + 2 * 11 + 2 * 8);
+  } finally { app.dispose(); }
+});
+
+test("P4-CHAT-13 changed files open for review beside the transcript, and the composer stays usable", async () => {
+  const app = await chat("approval_decline");
+  try {
+    // The declined change is still a reported file change.
+    await send(app, "add a file");
+    await app.waitFor("id:chat-approval", { timeout: 20000 });
+    await app.wait(800);
+    await app.type("id:chat-input", "x");
+    await app.clear("id:chat-input");
+    await app.keyboard.press("escape");
+    await app.waitFor("text:Understood, I did not write it.", { timeout: 20000 });
+    await app.press("label:Review changed files");
+    await app.waitFor("id:chat-file-review", { timeout: 20000 });
+    expect(app.texts()).toContain("Reported file changes");
+    // Beside the transcript and its composer, the tab's whole height: it covers neither.
+    const { main, side, bottom } = await sideLayout(app);
+    expect(ends(main, side, "x") && ends(bottom, side, "x") && ends(main, bottom, "y")).toBe(true);
+    expect(side.y <= main.y && side.y + side.height >= bottom.y + bottom.height - 0.5).toBe(true);
+    expect(app.shows("text:Understood, I did not write it.")).toBe(true);
+    // The composer takes typing while the review is open, and its ⎋ leaves the review alone.
+    await app.type("id:chat-input", "still typing");
+    expect(app.value("id:chat-input")).toBe("still typing");
+    await app.keyboard.press("escape");
+    expect(app.shows("id:chat-file-review")).toBe(true);
+    // ⎋ in the review folds it away; the draft and the composer stay.
+    await app.type("label:Filter changed files", "new");
+    await app.keyboard.press("escape");
+    await app.waitFor("id:chat-file-review", { state: "gone" });
+    expect(app.value("id:chat-input")).toBe("still typing");
+    expect((await inspect(app)).editors?.length).toBe(1);
+  } finally { app.dispose(); }
+});
+
+test("P4-CHAT-14 a code block's Copy to: row copies to the terminal chosen in place", async () => {
+  const app = await open("./CodeTerminalRow.fixture.tsx", {
+    platform: "macos", width: 700, height: 240, host: { handlers: { "app.fixture.copied": null, "app.fixture.closed": null } },
+  });
+  const posts = (name: string) => app.host.posts().filter((post) => post.name === name).map((post) => post.data);
+  try {
+    await app.waitFor("text:Copy to:");
+    expect(app.shows("label:Copy snippet and open zsh api")).toBe(true);
+    // A failed copy keeps the row, with the error.
+    await app.press("label:Copy snippet and open zsh broken");
+    await app.waitUntil(() => app.texts().some((text) => text.includes("Could not reach the terminal")));
+    expect(app.shows("id:chat-copy-to-terminal")).toBe(true);
+    expect(posts("app.fixture.copied")).toEqual([]);
+    await app.press("label:Copy snippet and open zsh api");
+    await app.waitFor("id:chat-copy-to-terminal", { state: "gone" });
+    expect(posts("app.fixture.copied")).toEqual([{ id: "shell:api", text: "npm test" }]);
+    // The chosen terminal has the focus now: none goes back to the code block.
+    expect(posts("app.fixture.closed")).toEqual([{ focused: false }]);
+    // ⎋ once the row's Cancel has the focus is not shown here: NSH 0.3's
+    // headless driver focuses only text inputs (P4-CHAT-13 folds a review so).
+    // With no terminal open it says so, and Cancel folds it away.
+    await app.host.send("app.fixture.targets", []);
+    await app.host.send("app.fixture.open");
+    await app.waitFor("text:No local terminals are open in this project window.");
+    await app.press("label:Cancel");
+    await app.waitFor("id:chat-copy-to-terminal", { state: "gone" });
   } finally { app.dispose(); }
 });

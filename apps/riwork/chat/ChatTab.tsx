@@ -1,4 +1,4 @@
-import { Clipboard, Image, List, Scroll, Text, View, cleanup, computed, effect, host, keymap, openUrl, signal, type YNode } from "nsh";
+import { Clipboard, Image, List, Scroll, Text, View, cleanup, computed, effect, host, keymap, openUrl, signal, untracked, type YNode } from "nsh";
 import { Input, TextView } from "nsh/base";
 import { Menu, type MenuItem } from "nsh/desktop";
 import {
@@ -20,8 +20,9 @@ import { ChatImage } from "./ChatImage";
 import { WorkerShelf } from "./WorkerShelf";
 import { FlowStrip } from "../flows/FlowStrip";
 import { MemoPreview, appendMemo, createMemoPreview, memoCommandRest } from "./MemoPreview";
-import { CodeTerminalDialog } from "./CodeTerminalDialog";
+import { CodeTerminalRow } from "./CodeTerminalRow";
 import { CodeReader, MAX_SNIPPET, saveSnippet, type CodeSnippet } from "./CodeReader";
+import { SideHeader, escapeWithin, focusWithin, type FocusWithin } from "./SidePanel";
 import { Suggestions, createSuggestions } from "./Suggestions";
 import { utf8Bytes } from "../files_model";
 
@@ -66,7 +67,16 @@ export interface ChatDiagnostics {
   imageCards: number;
   /** The composer's laid-out heights: its box, message box and controls. */
   composer: { box: number; input: number; controls: number };
+  /** Where the tab's parts are laid out, in the tab: the transcript's column,
+   * the side panel (while open) and the composer's block under the column. */
+  layout: { main?: ChatFrame; side?: ChatFrame; bottom?: ChatFrame };
 }
+
+export interface ChatFrame { x: number; y: number; width: number; height: number }
+
+/** What the chat tab's side panel shows: one thing at a time. */
+type SideContent = { kind: "review"; scope?: string; key?: string } | { kind: "image"; preview: ChatImagePreview }
+  | { kind: "reader"; snippet: CodeSnippet; directory?: string };
 
 /** A chat tab: the transcript List over the bridge's rows, the requests that
  * wait for the user, and the composer. Rows are headers; a row's body comes by
@@ -77,14 +87,21 @@ export function ChatTab(props: ChatTabProps) {
   const handle: ChatHandle = Chat.open(props.chatId);
   cleanup(() => handle.close());
   const rows = signal<ChatRow[]>([]);
-  const paneWidth = signal(0);
-  const reviewing = signal<{ scope?: string; key?: string } | null>(null);
-  const imagePreview = signal<ChatImagePreview | null>(null);
-  const codeSnippet = signal<string | null>(null);
-  const codeReader = signal<{ snippet: CodeSnippet; directory?: string } | null>(null);
+  // The transcript and composer's column; the whole tab's width decides where
+  // the side panel goes.
+  const paneWidth = signal(0), tabWidth = signal(0), sideWidth = signal(0);
+  const side = signal<(SideContent & { id: number }) | null>(null);
+  // The code block whose "Copy to:" row shows under its reply (by row key).
+  const codeSnippet = signal<{ key: string; code: string } | null>(null);
   const exporting = signal(false);
   let codeReturnFocus: YNode | undefined;
-  const interactive = () => active() && !reviewing() && !imagePreview() && codeSnippet() === null && codeReader() === null && !exporting();
+  let copyFocus = false;
+  // Reviews, previews, the reader and the copy row leave the tab usable: only
+  // a snippet's native save panel holds it.
+  const interactive = () => active() && !exporting();
+  // The side panel's own keys win while the focus is in it (the reader's editor finds with ⌘F).
+  const sideFocused = signal(false);
+  const shortcuts = () => interactive() && !sideFocused();
   const panel = signal<ChatPanel>(emptyPanel(props.chatId));
   const notices = signal<string[]>([]);
   const bodies = new Map<string, ReturnType<typeof signal<ChatBody | undefined>>>();
@@ -98,6 +115,9 @@ export function ChatTab(props: ChatTabProps) {
   let bodyViews = 0;
   let imageCards = 0;
   const composer = { box: 0, input: 0, controls: 0 };
+  const layout: ChatDiagnostics["layout"] = {};
+  const frame = (bounds: { origin: { x: number; y: number }; size: { width: number; height: number } }): ChatFrame =>
+    ({ x: bounds.origin.x, y: bounds.origin.y, width: bounds.size.width, height: bounds.size.height });
   const editors: number[] = [];
   let list: YNode | undefined;
   const following = signal(true);
@@ -117,7 +137,7 @@ export function ChatTab(props: ChatTabProps) {
   const report = () => props.onDiagnostics?.({
     rows: rows().length, cells, constructed, bodies: [...bodies.values()].filter((body) => body() !== undefined).length,
     groups: rows().filter((row) => row.kind === "group" && !row.open).map((row) => row.id), panel: panel(),
-    editors: [...editors], bodyViews, imageCards, composer: { ...composer },
+    editors: [...editors], bodyViews, imageCards, composer: { ...composer }, layout: { ...layout },
   });
   const subscription = handle.subscribe((delivery) => {
     if (delivery.kind === "reset") for (const body of bodies.values()) body.set(undefined);
@@ -227,20 +247,39 @@ export function ChatTab(props: ChatTabProps) {
     return () => clearTimeout(timer);
   });
 
-  function closeImage() { imagePreview.set(null); }
-  function closeCodeSnippet() {
+  // The focus goes back to the code block when it was in the row.
+  function closeCodeSnippet(focused = true) {
     codeSnippet.set(null);
-    if (active()) codeReturnFocus?.focus();
+    if (active() && focused) codeReturnFocus?.focus();
     codeReturnFocus = undefined;
   }
-  effect(() => {
-    if (!active() || !imagePreview()) return;
-    return keymap.bind("escape", closeImage, { when: "always" });
-  });
+
+  // One side panel at a time: another takes its place, once a reader's edited
+  // scratch copy is discarded (the reader asks first).
+  let sideSequence = 0;
+  let sideReturnFocus: YNode | undefined;
+  let leaveReader: ((then: () => void) => void) | undefined;
+  let composerInput: YNode | undefined;
+  function openSide(next: SideContent, from?: YNode) {
+    const show = () => { sideReturnFocus = from; leaveReader = undefined; side.set({ ...next, id: ++sideSequence }); };
+    if (side()?.kind === "reader" && leaveReader) leaveReader(show);
+    else show();
+  }
+  // A focus in the panel goes back to what opened it, else (nothing did, or it
+  // went with the narrower column, as the header's icon does) to the message box.
+  function closeSide() {
+    const restore = sideFocused() ? sideReturnFocus : null;
+    sideReturnFocus = undefined; leaveReader = undefined;
+    side.set(null);
+    if (restore === null || !active()) return;
+    if (!restore) { composerInput?.focus(); return; }
+    void restore.measure().then((placed) => { if (alive && active()) (placed ? restore : composerInput)?.focus(); });
+  }
+
   function findInChat() { finding.set(true); searchInput?.focus(); }
   function closeFind() { finding.set(false); selectedRow.set(null); }
   effect(() => {
-    if (!interactive()) return;
+    if (!shortcuts()) return;
     return keymap.bind({
       "mod+f": findInChat,
       "mod+g": () => { if (finding()) revealHit(hitIndex() + 1); },
@@ -264,8 +303,9 @@ export function ChatTab(props: ChatTabProps) {
   }));
 
   // A label that changes (an accessor) updates the control in place.
-  const control = (label: string | (() => string), action: () => void, active = false, disabled = false) =>
-    <View role="button" accessibilityLabel={typeof label === "function" ? label() : label} accessibilityState={{ disabled, selected: active }}
+  // `ref` hears the button's node: a side panel it opens gives the focus back to it.
+  const control = (label: string | (() => string), action: () => void, active = false, disabled = false, ref?: (node: YNode) => void) =>
+    <View role="button" ref={(node) => ref?.(node)} accessibilityLabel={typeof label === "function" ? label() : label} accessibilityState={{ disabled, selected: active }}
       onPress={() => { if (!disabled) action(); }}
       style={{ paddingHorizontal: 8, height: 27, alignItems: "center", justifyContent: "center", borderRadius: 5,
         backgroundColor: active ? theme().palette.panelActive : "transparent", opacity: disabled ? 0.35 : 1 }}
@@ -273,8 +313,8 @@ export function ChatTab(props: ChatTabProps) {
       <Text numberOfLines={1} style={text(11, active ? theme().palette.text : theme().palette.muted)}>{typeof label === "function" ? label() : label}</Text>
     </View>;
 
-  const iconControl = (name: IconName, label: string, action: () => void, active = false, disabled = false) =>
-    <View role="button" focusable={!disabled} accessibilityLabel={label} tooltip={label} accessibilityState={{ disabled, selected: active }}
+  const iconControl = (name: IconName, label: string, action: () => void, active = false, disabled = false, ref?: (node: YNode) => void) =>
+    <View role="button" ref={(node) => ref?.(node)} focusable={!disabled} accessibilityLabel={label} tooltip={label} accessibilityState={{ disabled, selected: active }}
       onPress={() => { if (!disabled) action(); }}
       style={{ width: 28, height: 28, flexShrink: 0, alignItems: "center", justifyContent: "center", borderRadius: 5,
         backgroundColor: active ? theme().palette.panelActive : "transparent", opacity: disabled ? 0.35 : 1 }}
@@ -282,10 +322,11 @@ export function ChatTab(props: ChatTabProps) {
       <Icon name={name} size={16} color={active ? theme().palette.text : theme().palette.muted} />
     </View>;
 
+  let reviewButton: YNode | undefined, moreButton: YNode | undefined;
   function moreMenu() {
     const items: MenuItem[] = [
       { label: "Find in conversation…", onSelect: findInChat },
-      ...(panel().fileChanges ? [{ label: "Review changed files…", onSelect: () => reviewing.set({}) }] : []),
+      ...(panel().fileChanges ? [{ label: "Review changed files…", onSelect: () => openSide({ kind: "review" }, moreButton) }] : []),
       ...(panel().usageLabel ? [{ label: `Context usage · ${panel().usageLabel}`, checked: showUsage(), onSelect: () => showUsage.set(!showUsage()) }] : []),
       { label: "Copy conversation as Markdown", onSelect: () => void copy() },
       { label: "Copy chat ID", onSelect: () => void Clipboard.writeText(props.chatId) },
@@ -323,9 +364,9 @@ export function ChatTab(props: ChatTabProps) {
         </View>}
         <View style={{ flex: 1, minWidth: 0 }} />
         {hasUsage() && control(() => usageLabel() ?? "", () => showUsage.set(!showUsage()), showUsage())}
-        {hasFileChanges() && !compact() && iconControl("file", "Review changed files", () => reviewing.set({}))}
+        {hasFileChanges() && !compact() && iconControl("file", "Review changed files", () => openSide({ kind: "review" }, reviewButton), false, false, (node) => { reviewButton = node; })}
         {iconControl("search", "Find in conversation · ⌘F", findInChat, finding())}
-        {iconControl("more", "Conversation options", moreMenu)}
+        {iconControl("more", "Conversation options", moreMenu, false, false, (node) => { moreButton = node; })}
       </View>
       {showUsage() && hasUsageDetail() && <Text selectable={true} style={mono(10, theme().palette.muted)}>{panel().usageDetail ?? ""}</Text>}
       {several() && <View style={{ flexDirection: "row", alignItems: "center", gap: 2 }}>
@@ -361,7 +402,7 @@ export function ChatTab(props: ChatTabProps) {
   });
   // ⌘⇧V switches Normal/Verbose; ⌘⌥→/← expand or collapse (CHATT-031).
   effect(() => {
-    if (!interactive()) return;
+    if (!shortcuts()) return;
     return keymap.bind({
       "mod+shift+v": () => { following.set(true); handle.setMode(panel().mode === "normal" ? "verbose" : "normal"); },
       "mod+alt+right": () => handle.expandAll(true),
@@ -402,7 +443,7 @@ export function ChatTab(props: ChatTabProps) {
           return <ChatImage id={`${artifact.itemId}:${artifact.imageIndex}`} label={artifact.label} inline={!!artifact.inlineImage}
             preview={() => handle.imagePreview(artifact.itemId, artifact.imageIndex!)} cache={previews} theme={theme}
             width={() => paneWidth() - indent() - chatGutter(paneWidth(), theme().scale)}
-            expand={(value) => imagePreview.set(value)} openLink={(url) => { void openLink(url); }} />;
+            expand={(value) => openSide({ kind: "image", preview: value })} openLink={(url) => { void openLink(url); }} />;
         })}
       </View>}
     </View>;
@@ -448,6 +489,7 @@ export function ChatTab(props: ChatTabProps) {
     const attachments = computed<NonNullable<ChatRow["attachments"]>>(() => row().attachments ?? [], { equals: sameContent });
     const hasAttachments = computed(() => attachments().length > 0);
     const fileCount = computed(() => row().fileCount ?? 0);
+    let reviewFiles: YNode | undefined;
     return () => {
       const shown = kind();
       if (shown === "user") return <View style={{ marginTop: space(14, theme().scale), marginBottom: space(10, theme().scale), padding: space(14, theme().scale), borderRadius: 10,
@@ -465,7 +507,8 @@ export function ChatTab(props: ChatTabProps) {
         {shown === "final" && <Text style={{ ...text(11, theme().palette.muted), fontWeight: "600" }}>{row().title || "Assistant"}</Text>}
         <Body row={row} />
         {shown === "final" && <View style={{ flexDirection: "row", alignItems: "center", gap: 4, marginLeft: -5 }}>{iconControl("copy", "Copy answer", () => void copy(row().id))}
-          {fileCount() > 0 && control(`Review ${fileCount()} ${fileCount() === 1 ? "file" : "files"}`, () => reviewing.set({ scope: row().id }))}</View>}
+          {fileCount() > 0 && control(`Review ${fileCount()} ${fileCount() === 1 ? "file" : "files"}`, () => openSide({ kind: "review", scope: row().id }, reviewFiles),
+            false, false, (node) => { reviewFiles = node; })}</View>}
       </View>;
       if (shown === "compaction") return <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginVertical: 6 }}>
         <View style={{ flex: 1, height: 1, backgroundColor: chatHairline(theme()) }} />
@@ -524,18 +567,19 @@ export function ChatTab(props: ChatTabProps) {
       const kind = shown().split("\u0000")[1];
       bodyViews += 1;
       if (!kind) return <Text style={text(11, theme().palette.muted)}>…</Text>;
-      if (kind === "markdown") return <TextView ref={(node) => { markdown = node; }} selectable={true} links="report" testID={`chat-body:${bodyProps.row().key}`}
+      // The code block's "Copy to:" row opens under the reply (a TextView takes
+      // nothing of the app's between its blocks), the reader in the side panel.
+      if (kind === "markdown") return <View><TextView ref={(node) => { markdown = node; }} selectable={true} links="report" testID={`chat-body:${bodyProps.row().key}`}
         document={{ blocks: of("markdown")?.blocks ?? [] }}
         onLinkPress={(event) => void openLink(event.url)} codeBlockActions={codeActions()}
         onCodeBlockAction={(event) => {
           if (!interactive() || bodyProps.row().running || bodyProps.row().provisional || !["terminal", "reader", "save"].includes(event.id)) return;
           if (utf8Bytes(event.code.code) > MAX_SNIPPET) { notice("Reader/export limit: 256 KiB. Copy the text you need instead."); return; }
           if (event.id === "terminal" && props.onCopyToTerminal && props.terminalTargets) {
-            codeReturnFocus = markdown;
-            codeSnippet.set(event.code.code);
+            codeReturnFocus = markdown; copyFocus = true;
+            codeSnippet.set({ key: bodyProps.row().key, code: event.code.code });
           } else if (event.id === "reader") {
-            codeReturnFocus = markdown;
-            codeReader.set({ snippet: { ...event.code }, directory: panel().cwd });
+            openSide({ kind: "reader", snippet: { ...event.code }, directory: panel().cwd }, markdown);
           } else if (event.id === "save") {
             exporting.set(true);
             void saveSnippet({ ...event.code }, panel().cwd).then((result) => { if (alive && result.saved) notice(`Saved ${result.path ?? "snippet"}`); })
@@ -554,19 +598,19 @@ export function ChatTab(props: ChatTabProps) {
           codeBlockCode: { ...mono(12), lineHeight: 19 * theme().scale, padding: space(12, theme().scale) },
           blockquote: { borderColor: chatHairline(theme()) },
           rule: { borderColor: chatHairline(theme()) },
-        }} />;
+        }} /><CopyRow row={bodyProps.row} /></View>;
       if (kind === "text") return <Text selectable={true} testID={`chat-body:${bodyProps.row().key}`} style={{
         ...text(bodyProps.row().kind === "user" ? 14 : 13, toneColor(of("text")?.tone ?? "")),
         lineHeight: 21 * theme().scale,
         fontStyle: of("text")?.tone === "reasoning" ? "italic" : "normal",
       }}>{of("text")?.text ?? ""}</Text>;
       if (kind === "changes") return <View style={{ paddingVertical: 5, gap: 3 }}>
-        {(of("changes")?.files ?? []).map((file) => <View style={{ flexDirection: "row", alignItems: "center", gap: 7, paddingVertical: 4 }}>
+        {(of("changes")?.files ?? []).map((file) => { let review: YNode | undefined; return <View style={{ flexDirection: "row", alignItems: "center", gap: 7, paddingVertical: 4 }}>
           <Text style={text(10, theme().palette.muted)}>{file.kind}</Text>
           <View role="button" onPress={() => void openLink(file.path)} style={{ flex: 1, minWidth: 0 }}><Text numberOfLines={1} style={mono(11, theme().palette.cyan)}>{file.path}</Text></View>
           <Text style={text(10, theme().palette.muted)}>{`+${file.added} −${file.removed}`}</Text>
-          {control("Review", () => reviewing.set({ scope: bodyProps.row().id, key: file.id }))}
-        </View>)}
+          {control("Review", () => openSide({ kind: "review", scope: bodyProps.row().id, key: file.id }, review), false, false, (node) => { review = node; })}
+        </View>; })}
       </View>;
       if (kind === "tool") return <ToolResult body={() => of("tool")} />;
       if (kind === "command") return <CommandBox body={() => of("command")} />;
@@ -636,6 +680,60 @@ export function ChatTab(props: ChatTabProps) {
     </View>;
   }
 
+  // The "Copy to:" row of the reply whose code block asked. It shows again in
+  // a cell scrolled back to, without taking the focus a second time.
+  function CopyRow(copyProps: { row: () => ChatRow }) {
+    const shown = computed(() => { const snippet = codeSnippet(); return snippet?.key === copyProps.row().key ? snippet : null; });
+    return () => {
+      const snippet = shown();
+      if (!snippet || !props.terminalTargets || !props.onCopyToTerminal) return null;
+      const focus = copyFocus; copyFocus = false;
+      return <CodeTerminalRow text={snippet.code} targets={props.terminalTargets} theme={theme} active={active} focus={focus}
+        onCopy={async (id, text) => { await props.onCopyToTerminal!(id, text); codeReturnFocus = undefined; }} onClose={closeCodeSnippet} />;
+    };
+  }
+
+  // The side panel, made again for each thing it opens: an image's failed
+  // load updates the one shown in place. Beside the transcript, or below it
+  // in a narrow tab.
+  function SidePanel() {
+    const shown = untracked(side)!;
+    const focus = focusWithin();
+    effect(() => sideFocused.set(focus.inside()));
+    cleanup(() => { sideFocused.set(false); layout.side = undefined; });
+    return <View testID="chat-side" onLayout={(bounds) => { sideWidth.set(bounds.size.width); layout.side = frame(bounds); report(); }}
+      style={{ minWidth: 0, minHeight: 0, backgroundColor: theme().palette.bg, borderColor: chatHairline(theme()),
+        gridRow: wide() ? "1 / 3" : "2", gridColumn: wide() ? "2" : "1",
+        borderLeftWidth: wide() ? 1 : 0, borderTopWidth: wide() ? 0 : 1, borderBottomWidth: wide() ? 0 : 1 }}>
+      {shown.kind === "review" ? <FileReview handle={handle} scope={() => shown.scope} initial={() => shown.key} theme={theme} active={active} focus={focus}
+        onClose={closeSide} onOpen={(path, line) => void openLink(`${path}${line ? `:${line}` : ""}`)} onError={notice} />
+        : shown.kind === "reader" ? <CodeReader snippet={shown.snippet} directory={shown.directory} theme={theme} active={active} focus={focus}
+          onClose={closeSide} guard={(close) => { leaveReader = close; }} />
+        : <ImagePanel focus={focus} />}
+    </View>;
+  }
+
+  // An image fitted to the panel's width; a tall one scrolls.
+  function ImagePanel(imageProps: { focus: FocusWithin }) {
+    const preview = () => { const shown = side(); return shown?.kind === "image" ? shown.preview : null; };
+    const height = () => Math.max(1, sideWidth() - 24) * ((preview()?.height || 3) / (preview()?.width || 4));
+    escapeWithin(imageProps.focus, active, closeSide);
+    return <View style={{ flex: 1, minHeight: 0 }}>
+      <SideHeader theme={theme} title={() => preview()?.label || "Image preview"} focus={imageProps.focus} onClose={closeSide} closeRef={(node) => node.focus()} />
+      {!!preview()?.dataUrl && <Scroll style={{ flex: 1, minHeight: 0 }} contentStyle={{ padding: 12 }}>
+        <Image testID="chat-side-image" src={preview()!.dataUrl!} resizeMode="contain" style={{ width: "100%", height: height() }}
+          onError={(event) => {
+            const shown = side();
+            if (shown?.kind === "image") side.set({ ...shown, preview: { ...shown.preview, dataUrl: null, message: event.message || "This image could not be displayed" } });
+          }} />
+      </Scroll>}
+      <View style={{ paddingHorizontal: 12, paddingBottom: 12, gap: 8, alignItems: "flex-start" }}>
+        {!!preview()?.url && control("Open image", () => void openLink(preview()!.url!))}
+        {!!preview()?.message && <Text style={text(12, theme().palette.muted)}>{preview()!.message!}</Text>}
+      </View>
+    </View>;
+  }
+
   function toneColor(tone: string): string {
     if (tone === "reasoning") return theme().palette.muted;
     if (tone === "warning") return theme().palette.gold;
@@ -669,70 +767,72 @@ export function ChatTab(props: ChatTabProps) {
 
   // A boolean, so a panel delivery never rebuilds the transcript and composer.
   const deleted = computed(() => panel().link === "deleted");
-  // The fragment's expressions below run again together, whenever one of
-  // them changes: each reads a memo, so a streaming delivery runs none.
+  // The expressions below each read a memo, so a streaming delivery runs none.
   const jumpToLatest = computed(() => !following() && prompts().length < 2);
   const banners = computed(() => panel().notices, { equals: sameContent });
   const stopped = computed(() => panel().state === "stopped");
   const failed = computed(() => panel().state === "failed");
-  return <View testID={`chat:${props.chatId}`} onLayout={(bounds) => paneWidth.set(bounds.size.width)} style={{ flex: 1, minHeight: 0, backgroundColor: theme().palette.bg }}>
+  // Reviews, previews and the reader open beside the transcript and its
+  // composer, or between them in a narrow tab, and cover neither. Grid areas
+  // place the three parts, so opening, closing or resizing moves no node to
+  // another parent: the transcript, the composer and the panel keep theirs.
+  const sideKey = computed(() => { const shown = side(); return shown ? `${shown.kind}:${shown.id}` : ""; });
+  const sideOpen = computed(() => !!sideKey());
+  const wide = computed(() => tabWidth() === 0 || tabWidth() >= 720 * theme().scale);
+  const stacked = () => sideOpen() && !wide();
+  return <View testID={`chat:${props.chatId}`} onLayout={(bounds) => tabWidth.set(bounds.size.width)} style={{ flex: 1, minHeight: 0, backgroundColor: theme().palette.bg }}>
     {deleted() ? <View testID="chat-deleted" style={{ flex: 1, padding: 24, gap: 8 }}>
       <Text style={text(14)}>This chat was deleted</Text>
       <Text style={text(12, theme().palette.muted)}>Its history is gone from the chat host.</Text>
       {props.onClose && <View role="button" accessibilityLabel="Close" onPress={props.onClose}><Text style={text(12, theme().palette.cyan)}>Close</Text></View>}
-    </View> : <>
-      <ChatHeader />
-      <List testID="chat-transcript" ref={(node) => { list = node; }} style={{ flex: 1, minHeight: 0 }}
-        each={rows()} keyExtractor={(row) => row.key} estimatedItemSize={space(28, theme().scale)}
-        maintainVisibleContentPosition={{ autoscrollToBottomThreshold: 48 }}
-        onScrollDragStart={() => { following.set(false); }}
-        onViewableItemsChange={(info) => {
-          const range = viewport(info.viewableItems.map((token) => token.index));
-          if (range) {
-            handle.setViewport(range[0], range[1]); firstVisible.set(range[0]);
-            if (range[1] >= rows().length - 1) following.set(true);
-          }
-          report();
-        }}
-        footer={() => <Footer />}>
-        {(row) => <Row row={row} />}
-      </List>
-      {jumpToLatest() && <View style={{ alignItems: "center" }}>{control("Jump to latest ↓", latest)}</View>}
-      <WorkerShelf handle={handle} panel={panel} visible={() => props.visible} theme={theme} width={paneWidth} onOpen={props.onOpenWorker} onError={notice}
-        onReveal={(id) => {
-          following.set(false); selectedRow.set(id); pendingReveal = id;
-          void handle.revealItem(id).then((index) => { if (index !== undefined && index !== null) jumpTo(index); }).catch((error) => notice(String(error)));
-        }} />
-      <View style={chatColumn(paneWidth(), theme().scale)}><FlowStrip chatId={props.chatId} visible={() => props.visible} theme={theme} notice={notice} /></View>
-      <Requests panel={panel} handle={handle} theme={theme} notice={notice} width={paneWidth} />
-      {notices().length > 0 && <View testID="chat-notices" style={{ ...chatColumn(paneWidth(), theme().scale), gap: 2 }}>
-        {notices().map((message, index) => <View style={{ flexDirection: "row", gap: 8, paddingVertical: 4 }}>
-          <Text testID="chat-notice" style={{ ...text(11, theme().palette.gold), flex: 1 }}>{message}</Text>
-          {iconControl("close", "Dismiss notice", () => notices.set(notices().filter((_, at) => at !== index)))}
+    </View> : <View style={{ flex: 1, minHeight: 0, display: "grid",
+      gridTemplateColumns: sideOpen() && wide() ? "minmax(0, 11fr) minmax(0, 9fr)" : "minmax(0, 1fr)",
+      gridTemplateRows: stacked() ? "minmax(0, 1fr) minmax(0, 1fr) auto" : "minmax(0, 1fr) auto" }}>
+      <View testID="chat-main" onLayout={(bounds) => { paneWidth.set(bounds.size.width); layout.main = frame(bounds); report(); }}
+        style={{ gridRow: 1, gridColumn: 1, minWidth: 0, minHeight: 0 }}>
+        <ChatHeader />
+        <List testID="chat-transcript" ref={(node) => { list = node; }} style={{ flex: 1, minHeight: 0 }}
+          each={rows()} keyExtractor={(row) => row.key} estimatedItemSize={space(28, theme().scale)}
+          maintainVisibleContentPosition={{ autoscrollToBottomThreshold: 48 }}
+          onScrollDragStart={() => { following.set(false); }}
+          onViewableItemsChange={(info) => {
+            const range = viewport(info.viewableItems.map((token) => token.index));
+            if (range) {
+              handle.setViewport(range[0], range[1]); firstVisible.set(range[0]);
+              if (range[1] >= rows().length - 1) following.set(true);
+            }
+            report();
+          }}
+          footer={() => <Footer />}>
+          {(row) => <Row row={row} />}
+        </List>
+        {jumpToLatest() && <View style={{ alignItems: "center" }}>{control("Jump to latest ↓", latest)}</View>}
+      </View>
+      {!!sideKey() && <SidePanel />}
+      <View onLayout={(bounds) => { layout.bottom = frame(bounds); report(); }} style={{ gridRow: stacked() ? 3 : 2, gridColumn: 1, minWidth: 0 }}>
+        <WorkerShelf handle={handle} panel={panel} visible={() => props.visible} theme={theme} width={paneWidth} onOpen={props.onOpenWorker} onError={notice}
+          onReveal={(id) => {
+            following.set(false); selectedRow.set(id); pendingReveal = id;
+            void handle.revealItem(id).then((index) => { if (index !== undefined && index !== null) jumpTo(index); }).catch((error) => notice(String(error)));
+          }} />
+        <View style={chatColumn(paneWidth(), theme().scale)}><FlowStrip chatId={props.chatId} visible={() => props.visible} theme={theme} notice={notice} /></View>
+        <Requests panel={panel} handle={handle} theme={theme} notice={notice} width={paneWidth} />
+        {notices().length > 0 && <View testID="chat-notices" style={{ ...chatColumn(paneWidth(), theme().scale), gap: 2 }}>
+          {notices().map((message, index) => <View style={{ flexDirection: "row", gap: 8, paddingVertical: 4 }}>
+            <Text testID="chat-notice" style={{ ...text(11, theme().palette.gold), flex: 1 }}>{message}</Text>
+            {iconControl("close", "Dismiss notice", () => notices.set(notices().filter((_, at) => at !== index)))}
+          </View>)}
+        </View>}
+        {banners().map((banner) => <View testID={`chat-banner:${banner.id}`} style={{ ...chatColumn(paneWidth(), theme().scale), paddingVertical: 4 }}>
+          <Text style={text(11, banner.level === "error" ? ERROR : banner.level === "warning" ? theme().palette.gold : theme().palette.muted)}>{banner.text}</Text>
+          <BillingNoticeAction control={billing} noticeId={banner.id} theme={theme} />
         </View>)}
-      </View>}
-      {banners().map((banner) => <View testID={`chat-banner:${banner.id}`} style={{ ...chatColumn(paneWidth(), theme().scale), paddingVertical: 4 }}>
-        <Text style={text(11, banner.level === "error" ? ERROR : banner.level === "warning" ? theme().palette.gold : theme().palette.muted)}>{banner.text}</Text>
-        <BillingNoticeAction control={billing} noticeId={banner.id} theme={theme} />
-      </View>)}
-      {stopped() && <Text style={{ ...text(11, theme().palette.muted), ...chatColumn(paneWidth(), theme().scale) }}>Stopped. The chat will resume when you send a message.</Text>}
-      {failed() && <Text style={{ ...text(11, theme().palette.gold), ...chatColumn(paneWidth(), theme().scale) }}>{`Failed: ${panel().stateMessage ?? ""}`}</Text>}
-      <Composer panel={panel} handle={handle} theme={theme} notice={notice} visible={interactive} width={paneWidth} billing={billing}
-        onSent={() => { following.set(true); list?.scrollToEnd(); }} onEditor={(editor) => editors.push(editor)} onEditMemo={props.onEditMemo}
-        onMeasure={(part, height) => { composer[part] = height; report(); }} />
-    </>}
-    {codeSnippet() !== null && props.terminalTargets && props.onCopyToTerminal && <CodeTerminalDialog text={codeSnippet()!} targets={props.terminalTargets}
-      onCopy={async (id, text) => { await props.onCopyToTerminal!(id, text); codeReturnFocus = undefined; }} theme={theme} onClose={closeCodeSnippet} />}
-    {codeReader() && <CodeReader snippet={codeReader()!.snippet} directory={codeReader()!.directory} theme={theme}
-      onClose={() => { codeReader.set(null); const restore = codeReturnFocus; codeReturnFocus = undefined; restore?.focus(); }} />}
-    {reviewing() && <FileReview handle={handle} scope={() => reviewing()?.scope} initial={() => reviewing()?.key} theme={theme} active={active}
-      onClose={() => reviewing.set(null)} onOpen={(path, line) => void openLink(`${path}${line ? `:${line}` : ""}`)} onError={notice} />}
-    {imagePreview() && <View style={{ position: "absolute", left: 0, right: 0, top: 0, bottom: 0, zIndex: 21, backgroundColor: theme().palette.bg, padding: 12, gap: 8 }}>
-      <View style={{ flexDirection: "row", alignItems: "center" }}><Text numberOfLines={1} style={{ ...text(13), flex: 1 }}>{imagePreview()?.label || "Image preview"}</Text>{control("Close", closeImage)}</View>
-      {imagePreview()?.dataUrl && <Scroll style={{ flex: 1 }}><Image src={imagePreview()!.dataUrl!} resizeMode="contain" style={{ width: "100%", height: Math.min(640, paneWidth() * ((imagePreview()!.height || 3) / (imagePreview()!.width || 4))) }}
-        onError={(event) => imagePreview.set({ ...imagePreview()!, dataUrl: null, message: event.message || "This image could not be displayed" })} /></Scroll>}
-      {imagePreview()?.url && control("Open image", () => void openLink(imagePreview()!.url!))}
-      {imagePreview()?.message && <Text style={text(12, theme().palette.muted)}>{imagePreview()!.message}</Text>}
+        {stopped() && <Text style={{ ...text(11, theme().palette.muted), ...chatColumn(paneWidth(), theme().scale) }}>Stopped. The chat will resume when you send a message.</Text>}
+        {failed() && <Text style={{ ...text(11, theme().palette.gold), ...chatColumn(paneWidth(), theme().scale) }}>{`Failed: ${panel().stateMessage ?? ""}`}</Text>}
+        <Composer panel={panel} handle={handle} theme={theme} notice={notice} visible={interactive} width={paneWidth} billing={billing}
+          onSent={() => { following.set(true); list?.scrollToEnd(); }} onEditor={(editor) => editors.push(editor)} onEditMemo={props.onEditMemo}
+          onInput={(node) => { composerInput = node; }} onMeasure={(part, height) => { composer[part] = height; report(); }} />
+      </View>
     </View>}
   </View>;
 }
@@ -884,7 +984,7 @@ function encodeAttachment(bytes: Uint8Array): string {
 /** The message box, its send/stop slot and the model, effort, Fast and mode
  * choices. Drafts are saved on every change and restored into an empty box. */
 function Composer(props: PartProps & { billing: BillingControl; width: () => number; visible: () => boolean; onSent: () => void; onEditor: (editor: number) => void; onEditMemo?: (projectId: string) => void;
-  onMeasure?: (part: "box" | "input" | "controls", height: number) => void }) {
+  onInput?: (node: YNode) => void; onMeasure?: (part: "box" | "input" | "controls", height: number) => void }) {
   const theme = props.theme;
   // One draft editor identity per mounted composer, unique across windows: the
   // native draft owners are process-wide (CHATC-035).
@@ -1275,7 +1375,7 @@ function Composer(props: PartProps & { billing: BillingControl; width: () => num
     </View>}
     <DictationStatus controller={dictation} theme={theme} />
     <Suggestions control={suggestions} theme={theme} />
-    <Input ref={(node) => { input = node; }} testID="chat-input" accessibilityLabel="Chat message" placeholder={props.panel().running ? "Send a follow-up to steer this turn…" : "Write a message…"}
+    <Input ref={(node) => { input = node; props.onInput?.(node); }} testID="chat-input" accessibilityLabel="Chat message" placeholder={props.panel().running ? "Send a follow-up to steer this turn…" : "Write a message…"}
       multiline={true} autoCorrect={false} submitBehavior="submit" readonly={!accepting()} value={draft()}
       onSelectionChange={(event) => selection.set({ start: event.start, end: event.end })}
       onPaste={(event) => addAttachments(event.uris, event.uris.length ? [] : event.files)}

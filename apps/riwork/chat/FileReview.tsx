@@ -1,12 +1,13 @@
-import { Clipboard, List, Scroll, Text, View, cleanup, computed, effect, keymap, signal, type YNode } from "nsh";
+import { Clipboard, List, Scroll, Text, View, cleanup, computed, effect, signal, type YNode } from "nsh";
 import { Input } from "nsh/base";
 import type { ChatChangedFile, ChatFileReview, ChatHandle } from "riwork/native";
 import type { InterfaceTheme } from "../appearance";
+import { SideHeader, escapeWithin, type FocusWithin } from "./SidePanel";
 
-/** A provider patch reader. Opening a live file is separate from reading its recorded edit. */
+/** A provider patch reader, in the chat tab's side panel. Opening a live file is separate from reading its recorded edit. */
 export function FileReview(props: {
   handle: ChatHandle; scope: () => string | undefined; initial: () => string | undefined;
-  theme: () => InterfaceTheme; active: () => boolean; onClose: () => void;
+  theme: () => InterfaceTheme; active: () => boolean; focus: FocusWithin; onClose: () => void;
   onOpen: (path: string, line?: number) => void; onError: (message: string) => void;
 }) {
   const files = signal<ChatChangedFile[]>([]), selected = signal<string | null>(null), review = signal<ChatFileReview | null>(null);
@@ -32,29 +33,30 @@ export function FileReview(props: {
     void props.handle.fileReview(id).then((value) => { if (alive && token === readGeneration) { review.set(value); reading.set(false); list?.scrollToIndex({ index: 0 }); } })
       .catch((error) => { if (alive && token === readGeneration) { reading.set(false); readError.set(String(error)); props.onError(String(error)); } });
   });
-  effect(() => { if (props.active()) return keymap.bind("escape", props.onClose, { when: "always" }); });
+  escapeWithin(props.focus, props.active, props.onClose);
   const theme = props.theme;
   const text = (size = 11, color = theme().palette.text) => ({ fontFamily: theme().family, fontSize: size * theme().scale, color });
-  const button = (label: string, action: () => void, disabled = false) => <View role="button" accessibilityLabel={label}
-    accessibilityState={{ disabled }} onPress={() => { if (!disabled) action(); }} style={{ paddingHorizontal: 8, paddingVertical: 6, borderRadius: 4, opacity: disabled ? 0.4 : 1 }}
-    hoverStyle={{ backgroundColor: theme().palette.panelActive }}><Text style={text(11, theme().palette.cyan)}>{label}</Text></View>;
+  const button = (label: string, action: () => void, disabled = false) => <View role="button" focusable={!disabled} accessibilityLabel={label}
+    accessibilityState={{ disabled }} onPress={() => { if (!disabled) action(); }} {...props.focus.track(label)} style={{ paddingHorizontal: 8, paddingVertical: 6, borderRadius: 4, opacity: disabled ? 0.4 : 1 }}
+    hoverStyle={{ backgroundColor: theme().palette.panelActive }} focusStyle={{ backgroundColor: theme().palette.panelActive }}><Text style={text(11, theme().palette.cyan)}>{label}</Text></View>;
   const shown = () => files().filter((file) => file.path.toLowerCase().includes(filter().trim().toLowerCase()));
   const hunks = computed(() => review()?.lines.flatMap((line, at) => line.kind === "hunk" ? [at] : []) ?? []);
   function moveHunk(delta: number) {
     const entries = hunks(); if (!entries.length) return;
     const next = Math.max(0, Math.min(entries.length - 1, hunk() + delta)); hunk.set(next); list?.scrollToIndex({ index: entries[next], viewPosition: 0 });
   }
-  return <View onLayout={(bounds) => width.set(bounds.size.width)} style={{ position: "absolute", top: 0, bottom: 0, left: 0, right: 0, backgroundColor: theme().palette.bg, zIndex: 20 }}>
-    <View style={{ flexDirection: "row", alignItems: "center", padding: 8, gap: 5, borderBottomWidth: 1, borderColor: theme().palette.divider }}>
-      <View style={{ flex: 1 }}><Text style={text(13)}>Reported file changes</Text><Text style={text(10, theme().palette.muted)}>{`${files().length} ${files().length === 1 ? "file" : "files"} · provider patches`}</Text></View>
-      {button("Close", props.onClose)}
-    </View>
+  // Patch line cells are recycled: each reports its focus under a key of its own.
+  let lineCells = 0;
+  return <View testID="chat-file-review" onLayout={(bounds) => width.set(bounds.size.width)} style={{ flex: 1, minWidth: 0, minHeight: 0 }}>
+    <SideHeader theme={theme} title={() => "Reported file changes"} focus={props.focus} onClose={props.onClose}
+      detail={() => `${files().length} ${files().length === 1 ? "file" : "files"} · provider patches`} />
     <View style={{ flex: 1, minHeight: 0, flexDirection: width() > 580 ? "row" : "column" }}>
       <View style={{ width: width() > 580 ? 230 : "100%", maxHeight: width() > 580 ? undefined : 150, borderRightWidth: width() > 580 ? 1 : 0, borderColor: theme().palette.divider, padding: 6, gap: 5 }}>
-        <Input value={filter()} onChange={(value) => filter.set(value)} placeholder="Filter files" accessibilityLabel="Filter changed files"
-          style={{ ...text(11), padding: 6, borderWidth: 1, borderColor: theme().palette.divider, borderRadius: 4 }} />
+        <Input ref={(node) => node.focus()} value={filter()} onChange={(value) => filter.set(value)} placeholder="Filter files" accessibilityLabel="Filter changed files"
+          {...props.focus.track("filter")} style={{ ...text(11), padding: 6, borderWidth: 1, borderColor: theme().palette.divider, borderRadius: 4 }} />
         <Scroll style={{ flex: 1, minHeight: 0 }}>
           {shown().map((file) => <View role="button" accessibilityLabel={file.path} accessibilityState={{ selected: selected() === file.id }} onPress={() => selected.set(file.id)}
+            {...props.focus.track(`file:${file.id}`)} focusStyle={{ backgroundColor: theme().palette.panelActive }}
             style={{ padding: 8, gap: 4, borderRadius: 4, backgroundColor: selected() === file.id ? theme().palette.panelActive : "transparent" }}>
             <Text numberOfLines={2} style={{ ...text(11), fontFamily: theme().monoFamily }}>{file.path}</Text>
             <Text style={text(10, theme().palette.muted)}>{`${file.kind} · +${file.added} −${file.removed}`}</Text>
@@ -88,13 +90,14 @@ export function FileReview(props: {
               }
               hunk.set(low - 1);
             }}>
-            {(line) => <View style={{ flexDirection: "row", paddingHorizontal: 8, paddingVertical: 2, gap: 8, backgroundColor: line().kind === "hunk" ? theme().palette.panelActive : "transparent" }}>
+            {(line) => { const focusKey = `line:${++lineCells}`; return <View style={{ flexDirection: "row", paddingHorizontal: 8, paddingVertical: 2, gap: 8, backgroundColor: line().kind === "hunk" ? theme().palette.panelActive : "transparent" }}>
               <Text style={{ ...text(10, theme().palette.muted), fontFamily: theme().monoFamily, width: 35, textAlign: "right" }}>{line().oldLine ?? ""}</Text>
-              <View role="button" accessibilityLabel={line().newLine ? `Open line ${line().newLine}` : "Patch line"} onPress={() => { if (line().newLine) props.onOpen(review()!.file.path, line().newLine!); }}>
+              <View role="button" accessibilityLabel={line().newLine ? `Open line ${line().newLine}` : "Patch line"} onPress={() => { if (line().newLine) props.onOpen(review()!.file.path, line().newLine!); }}
+                {...props.focus.track(focusKey)}>
                 <Text style={{ ...text(10, theme().palette.muted), fontFamily: theme().monoFamily, width: 35, textAlign: "right" }}>{line().newLine ?? ""}</Text>
               </View>
               <Text selectable={true} style={{ ...text(11, line().kind === "add" ? "#3da76d" : line().kind === "remove" ? "#df6870" : line().kind === "hunk" ? theme().palette.cyan : theme().palette.text), fontFamily: theme().monoFamily, flex: 1 }}>{line().text || " "}</Text>
-            </View>}
+            </View>; }}
           </List>
         </>}
         {!review() && <Text style={{ ...text(12, theme().palette.muted), padding: 18 }}>{readError() || (loading() || reading() ? "Loading reported patch…" : "No file changes were reported here.")}</Text>}
