@@ -88,6 +88,8 @@
     "native_terminal_colors": true,
     "interface_font": "system_mono",
     "dictation_mic": false,
+    "dictation_model": "apple",
+    "push_to_talk_key": "right_command",
     "claude_chat_ignores_api_key": false
   }
 }

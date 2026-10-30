@@ -636,6 +636,94 @@ private final class RecognitionSink: @unchecked Sendable {
     }
 }
 
+// MARK: - Capture for RiWork's MLX speech models
+
+/// What the MLX speech models take: 16 kHz mono float32.
+let captureFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16_000, channels: 1, interleaved: false)!
+
+/// Writes converted audio as `{"event":"audio","data":"<base64 float32 little-endian>"}` lines. Used from the audio thread;
+/// `close` waits for a buffer in flight, so no audio follows `finished`.
+final class CaptureSink: @unchecked Sendable {
+    private let lock = NSLock()
+    private let converter: BufferConverter
+    private var open = true
+    init(converter: BufferConverter) { self.converter = converter }
+    func append(_ buffer: AVAudioPCMBuffer) {
+        lock.lock(); defer { lock.unlock() }
+        guard open, let converted = try? converter.convert(buffer), let samples = converted.floatChannelData?[0],
+              converted.frameLength > 0 else { return }
+        let data = Data(bytes: samples, count: Int(converted.frameLength) * MemoryLayout<Float>.size)
+        emit(["event": "audio", "data": data.base64EncodedString()])
+    }
+    func close() { lock.lock(); open = false; lock.unlock() }
+}
+
+/// The microphone for RiWork's own speech worker, which does the recognizing: this engine only listens, so it needs microphone
+/// access and never speech recognition. `heard` never comes from here; `finished` is empty and only says the audio has ended.
+@MainActor final class CaptureSpeechEngine: SpeechEngine {
+    var onEvent: ((EngineEvent) -> Void)?
+    private let microphone = MicrophoneTap()
+    private var sink: CaptureSink?
+    func start(vocabulary: SpeechVocabulary) async {
+        if let problem = await SpeechEngines.authorize(recognition: false) { onEvent?(.failed(problem)); return }
+        do {
+            let sink = CaptureSink(converter: try BufferConverter(from: microphone.inputFormat, to: captureFormat))
+            self.sink = sink
+            try microphone.start(lost: { @Sendable [weak self] in
+                Task { @MainActor in self?.stop(); self?.onEvent?(.failed(.interrupted)) }
+            }) { buffer in sink.append(buffer) }
+            onEvent?(.ready)
+        } catch {
+            stop()
+            onEvent?(.failed(error as? Problem ?? .failed(error.localizedDescription)))
+        }
+    }
+    private func stop() { microphone.stop(); sink?.close() }
+    func finish() { stop(); onEvent?(.finished("")) }
+    func cancel() { stop(); onEvent = nil }
+}
+
+/// A recording in place of the microphone, at the pace it was spoken, for tests of the whole path without a microphone. After the
+/// recording it sends silence, as a person who stopped talking, until `finish` (at most a minute).
+@MainActor final class FileCaptureEngine: SpeechEngine {
+    var onEvent: ((EngineEvent) -> Void)?
+    let url: URL
+    private var task: Task<Void, Never>?
+    private var sink: CaptureSink?
+    init(url: URL) { self.url = url }
+    func start(vocabulary: SpeechVocabulary) async {
+        do {
+            let file = try AVAudioFile(forReading: url)
+            let format = file.processingFormat
+            let sink = CaptureSink(converter: try BufferConverter(from: format, to: captureFormat))
+            self.sink = sink
+            let frames = AVAudioFrameCount(format.sampleRate / 10)
+            onEvent?(.ready)
+            task = Task { @MainActor in
+                var silent = 0
+                while !Task.isCancelled, silent < 600 {
+                    guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames) else { return }
+                    if file.framePosition < file.length {
+                        try? file.read(into: buffer, frameCount: frames)
+                    } else {
+                        buffer.frameLength = frames
+                        for channel in 0..<Int(format.channelCount) {
+                            if let samples = buffer.floatChannelData?[channel] { samples.update(repeating: 0, count: Int(frames)) }
+                        }
+                        silent += 1
+                    }
+                    sink.append(buffer)
+                    try? await Task.sleep(for: .milliseconds(100))
+                }
+            }
+        } catch {
+            onEvent?(.failed(.failed("The recording could not be read: \(error.localizedDescription)")))
+        }
+    }
+    func finish() { task?.cancel(); sink?.close(); onEvent?(.finished("")) }
+    func cancel() { task?.cancel(); sink?.close(); onEvent = nil }
+}
+
 // MARK: - Scripted
 
 /// An engine that "hears" a fixed text a word at a time and never touches the microphone: for screenshots and tests of the app's

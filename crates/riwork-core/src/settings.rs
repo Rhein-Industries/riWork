@@ -206,6 +206,17 @@ pub enum TabCloseBehavior {
     Exit,
 }
 
+/// The key held alone to dictate into the selected chat (push-to-talk): releasing it settles
+/// the words and sends them. A tap, or the key used with another key, does nothing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PushToTalkKey {
+    #[default]
+    RightCommand,
+    RightOption,
+    Off,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Settings {
     pub tab_close_behavior: TabCloseBehavior,
@@ -282,6 +293,13 @@ pub struct Settings {
     /// `mic`. Off, the Mac's chats show no mic, ⌃⌥D does nothing in them, and no speech
     /// helper runs or asks for a permission.
     pub dictation_mic: bool,
+    /// What the Mac's chats dictate with: `apple` (Apple's on-device speech, built in) or
+    /// the key of a local MLX speech model in RiWork's pinned catalog, which RiWork
+    /// downloads on request (crates/riwork-nsh-native/speech/models.json). A key this
+    /// build does not know dictates with Apple's.
+    pub dictation_model: String,
+    /// Hold to talk in the selected chat (`PushToTalkKey`).
+    pub push_to_talk_key: PushToTalkKey,
     /// Who a new Claude chat bills (`ClaudeBilling`); each chat then keeps its own choice
     /// (`ChatInfo::claude_billing`). `Subscription` starts chats without
     /// `ANTHROPIC_API_KEY`, so a key exported in the shell cannot switch them to API
@@ -424,6 +442,8 @@ impl Default for Settings {
             native_terminal_colors: true,
             interface_font: InterfaceFont::default(),
             dictation_mic: false,
+            dictation_model: DICTATION_APPLE.to_owned(),
+            push_to_talk_key: PushToTalkKey::default(),
             claude_chat_billing: ClaudeBilling::default(),
         }
     }
@@ -565,6 +585,9 @@ impl<'de> Deserialize<'de> for Settings {
             ),
             interface_font: lenient_field(&object, "interface_font", defaults.interface_font),
             dictation_mic: lenient_field(&object, "dictation_mic", defaults.dictation_mic),
+            dictation_model: dictation_model_key(lenient_field(&object, "dictation_model", String::new()))
+                .unwrap_or(defaults.dictation_model),
+            push_to_talk_key: lenient_field(&object, "push_to_talk_key", defaults.push_to_talk_key),
             // The switch the choice grew from: true is Subscription; false, a file
             // without it and a value of another shape are the default, API key.
             claude_chat_billing: ClaudeBilling::from_ignores_api_key(lenient_field(
@@ -589,6 +612,16 @@ fn unreadable_note(unreadable: &[(String, Value)]) -> Option<String> {
     Some(format!(
         "settings.json has {values}, which this RiWork cannot read or use. It is kept as saved, and the default stands in for it until you choose here."
     ))
+}
+
+/// `dictation_model` for Apple's built-in on-device speech.
+pub const DICTATION_APPLE: &str = "apple";
+
+/// A speech model key's shape (lowercase letters, digits and dashes); `None` for anything else.
+pub fn dictation_model_key(value: String) -> Option<String> {
+    let shaped = (1..=64).contains(&value.len())
+        && value.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+    shaped.then_some(value)
 }
 
 fn lenient_field<T: DeserializeOwned>(object: &Map<String, Value>, key: &str, default: T) -> T {
@@ -1314,6 +1347,52 @@ mod tests {
         )
         .unwrap();
         assert!(!store.load().unwrap().dictation_mic);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn push_to_talk_defaults_to_the_right_command_key_and_reads_odd_values_as_it() {
+        let dir = env::temp_dir().join(format!("riwork-settings-ptt-{}", Uuid::new_v4()));
+        let store = SettingsStore::open(&dir).unwrap();
+        assert_eq!(Settings::default().push_to_talk_key, PushToTalkKey::RightCommand);
+        store.update(|settings| settings.push_to_talk_key = PushToTalkKey::RightOption).unwrap();
+        let file: Value =
+            serde_json::from_slice(&fs::read(dir.join("settings.json")).unwrap()).unwrap();
+        assert_eq!(file["push_to_talk_key"], "right_option");
+        assert_eq!(store.load().unwrap().push_to_talk_key, PushToTalkKey::RightOption);
+        fs::write(dir.join("settings.json"), r#"{"schema_version":1,"push_to_talk_key":"left_pinky"}"#).unwrap();
+        assert_eq!(store.load().unwrap().push_to_talk_key, PushToTalkKey::RightCommand);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn the_dictation_model_defaults_to_apple_and_reads_odd_values_as_apple() {
+        let dir = env::temp_dir().join(format!("riwork-settings-speech-{}", Uuid::new_v4()));
+        let store = SettingsStore::open(&dir).unwrap();
+        assert_eq!(Settings::default().dictation_model, DICTATION_APPLE);
+        let saved = store
+            .update(|settings| settings.dictation_model = "parakeet-v3".to_owned())
+            .unwrap();
+        assert_eq!(saved.dictation_model, "parakeet-v3");
+        let file: Value =
+            serde_json::from_slice(&fs::read(dir.join("settings.json")).unwrap()).unwrap();
+        assert_eq!(file["dictation_model"], "parakeet-v3");
+        assert_eq!(store.load().unwrap().dictation_model, "parakeet-v3");
+        // A key this build does not know is kept: the native side decides what it means.
+        for (value, read) in [
+            (r#""future-model""#, "future-model"),
+            (r#""../../etc""#, DICTATION_APPLE),
+            (r#""Parakeet""#, DICTATION_APPLE),
+            (r#""""#, DICTATION_APPLE),
+            ("7", DICTATION_APPLE),
+        ] {
+            fs::write(
+                dir.join("settings.json"),
+                format!(r#"{{"schema_version":1,"dictation_model":{value}}}"#),
+            )
+            .unwrap();
+            assert_eq!(store.load().unwrap().dictation_model, read, "{value}");
+        }
         fs::remove_dir_all(dir).unwrap();
     }
 
