@@ -849,7 +849,7 @@ function QuestionPanel(props: PartProps & { question: () => ChatQuestion }) {
         {prompt.options.map((option) => <View role={prompt.multiSelect ? "checkbox" : "radio"} testID={`chat-option:${index}:${option.label}`}
           accessibilityLabel={option.label} accessibilityState={{ checked: (picked()[index] ?? []).includes(option.label) }}
           onPress={() => toggle(index, option.label, prompt.multiSelect)}
-          style={{ paddingHorizontal: 8, paddingVertical: 3, borderRadius: 4, borderWidth: 1, borderColor: (picked()[index] ?? []).includes(option.label) ? theme().palette.cyan : theme().palette.divider }}>
+          style={{ minWidth: 0, maxWidth: "100%", paddingHorizontal: 8, paddingVertical: 3, borderRadius: 4, borderWidth: 1, borderColor: (picked()[index] ?? []).includes(option.label) ? theme().palette.cyan : theme().palette.divider }}>
           <Text style={text(11)}>{`${(picked()[index] ?? []).includes(option.label) ? "✓ " : ""}${option.description ? `${option.label}: ${option.description}` : option.label}`}</Text>
         </View>)}
       </View>
