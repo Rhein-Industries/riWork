@@ -1274,7 +1274,7 @@ function Composer(props: PartProps & { billing: BillingControl; width: () => num
     <DictationStatus controller={dictation} theme={theme} />
     <Suggestions control={suggestions} theme={theme} />
     <Input ref={(node) => { input = node; }} testID="chat-input" accessibilityLabel="Chat message" placeholder={props.panel().running ? "Send a follow-up to steer this turn…" : "Write a message…"}
-      multiline={true} submitBehavior="submit" readonly={!accepting()} value={draft()}
+      multiline={true} autoCorrect={false} submitBehavior="submit" readonly={!accepting()} value={draft()}
       onSelectionChange={(event) => selection.set({ start: event.start, end: event.end })}
       onPaste={(event) => addAttachments(event.uris, event.uris.length ? [] : event.files)}
       onChange={edit} onSubmit={() => { if (!suggestions.accept()) submit(); }} onFocus={() => focused.set(true)} onBlur={() => focused.set(false)}

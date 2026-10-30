@@ -482,7 +482,7 @@ export function MemoEditor(props: {
   const textStyle = () => ({ fontFamily: theme().family, fontSize: 11 * theme().scale, color: theme().palette.text });
   return <View testID="project-memo-editor" style={{ flex: 1, minHeight: 0, padding: 12, gap: 8 }}>
     <Text style={textStyle()}>Project memo</Text>
-    <Input testID="project-memo-input" ref={(node) => { input = node; props.onControl?.(control); }} accessibilityLabel="Project memo" multiline={true} value={value()} placeholder="Write notes for this project in Markdown: plans, links, decisions. Only you see them. No agent is given the memo; type /memo in a chat to insert it yourself."
+    <Input testID="project-memo-input" ref={(node) => { input = node; props.onControl?.(control); }} accessibilityLabel="Project memo" multiline={true} autoCorrect={false} value={value()} placeholder="Write notes for this project in Markdown: plans, links, decisions. Only you see them. No agent is given the memo; type /memo in a chat to insert it yourself."
       onChange={(text) => {
         const d = draft(current); d.text = text; d.dirty = d.running || d.text !== d.saved; d.error = ""; value.set(text); clearTimeout(timer);
         if (memoBytes(text) <= 32768) {

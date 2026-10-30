@@ -665,7 +665,7 @@ function TaskEditor(props: { controller: PanelController }) {
   return <View style={{ gap: 10 }}>
     <Text style={{ fontFamily: theme().family, fontSize: text(15), color: ink() }}>Add task</Text>
     <Input testID="task-title" accessibilityLabel="Task title" placeholder="Task title" autoFocus={true} value={title()} onChange={(value) => title.set(value)} onSubmit={save} style={field()} />
-    <Input testID="task-details" accessibilityLabel="Task details" placeholder="Details (optional)" multiline={true} value={details()} onChange={(value) => details.set(value)} style={{ ...field(), minHeight: 90 }} />
+    <Input testID="task-details" accessibilityLabel="Task details" placeholder="Details (optional)" multiline={true} autoCorrect={false} value={details()} onChange={(value) => details.set(value)} style={{ ...field(), minHeight: 90 }} />
     {error() !== "" && <Text style={{ color: theme().palette.gold, fontFamily: theme().family, fontSize: text(11) }}>{error()}</Text>}
     <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: 6 }}>
       <Command label="Cancel" disabled={c.pending()} onPress={() => c.editor.set(null)} />
