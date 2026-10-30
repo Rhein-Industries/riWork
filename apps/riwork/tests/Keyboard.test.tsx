@@ -38,7 +38,7 @@ test("P1-MENU-03 P1-KEYS-03 panel chords and host commands select one placeholde
   } finally { app.dispose(); }
 });
 
-test("P1-KEYS-04 close modal blocks window actions and modifier shortcuts dismiss All tabs before selecting", async () => {
+test("P1-KEYS-04 closing a tab blocks nothing and modifier shortcuts dismiss All tabs before selecting", async () => {
   const app = await open("../App.tsx", {
     platform: "macos", width: 1220, height: 780,
     host: { params: {
@@ -49,16 +49,13 @@ test("P1-KEYS-04 close modal blocks window actions and modifier shortcuts dismis
   try {
     await app.waitFor("id:tab:shell:first");
     await app.keyboard.press("mod+w");
-    expect(app.shows("id:tab-close-dialog")).toBe(true);
-    await app.keyboard.press("mod+d");
-    await app.keyboard.press("mod+2");
-    await app.host.send("command", { id: "openSettings" });
-    // W3's status bar has no pane count: a blocked split leaves no new empty pane.
-    expect(app.texts()).not.toContain("Drop a tab here or use the pane menu");
-    expect(app.shows("id:panel:panel:settings")).toBe(false);
-    await app.keyboard.press("escape");
     expect(app.shows("id:tab-close-dialog")).toBe(false);
-    expect(app.shows("id:panel:shell:first")).toBe(true);
+    await app.waitFor("id:tab-closed-notice");
+    // Nothing waits for an answer: window commands keep working.
+    await app.host.send("command", { id: "openSettings" });
+    expect(app.shows("id:panel:panel:settings")).toBe(true);
+    await app.press("id:tab-closed-undo");
+    await app.waitFor("id:tab:shell:first");
     await app.press("id:all-tabs");
     expect(app.shows("id:all-tabs-menu")).toBe(true);
     await app.keyboard.press("mod+2");

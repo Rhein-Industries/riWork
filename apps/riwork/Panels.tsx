@@ -1,5 +1,5 @@
 import { List, Scroll, Text, View, cleanup, context, effect, host, keymap, signal, type JSX, type YNode } from "nsh";
-import { Button, Dialog, Input, Switch } from "nsh/base";
+import { Button, Input, Switch } from "nsh/base";
 import { Menu } from "nsh/desktop";
 import { Chat, Sessions, Settings, Store, Tabs, type ChatSummary, type ProjectDto, type ProjectInspectionDto, type SettingsDto, type ShellSessionDto, type StoreState, type Subscription, type TabEntryDto, type TabsSnapshot, type TaskDto } from "riwork/native";
 import { EMPTY_STORE, countLabel, matches, projectRows, shellLabel, shellMatches, taskAge, taskCounts, taskDate, taskMatches, taskRows, taskStatusLabel, taskWorktree, visibleWorktrees, worktreeLabel, type ListPanel, type ProjectOrder, type ProjectTreeRow, type TaskFilter, type TaskRow } from "./panel_model";
@@ -388,6 +388,7 @@ function Projects(props: { controller: PanelController; surface: string; footer?
       <ToolbarCommand id="new-folder" icon="folder" label="New folder" onPress={() => c.editor.set({ kind: "folder", name: "" })} />
       <ToolbarCommand id="new-project" icon="add" label="New project" onPress={() => c.editor.set({ kind: "project" })} />
     </Header>
+    <InlineEditor controller={c} kinds={["folder", "project"]} />
     <PanelSearch controller={c} panel="projects" surface={props.surface} />
     <List each={rows()} keyExtractor={(item) => item.id} estimatedItemSize={space(46, theme().scale)} style={{ flex: 1, minHeight: 0 }} contentStyle={{ paddingHorizontal: space(6, theme().scale), paddingBottom: 8 }} footer={props.footer} empty={props.footer ? undefined : <Empty query={c.query()} noun="projects" />}>
       {(item) => <ProjectRow item={item} controller={c} />}
@@ -506,6 +507,7 @@ function Tasks(props: { controller: PanelController; surface: string }) {
     <Header title="Tasks" count={counts()[c.taskFilter()]} total={all().length} noun="task" project={c.projectLabel()}>
       <ToolbarCommand id="new-task" icon="add" label="Add task" disabled={c.pending()} onPress={() => c.editor.set({ kind: "task" })} />
     </Header>
+    <InlineEditor controller={c} kinds={["task"]} />
     <PanelSearch controller={c} panel="tasks" surface={props.surface} />
     <View testID="tasks-controls" style={{ paddingHorizontal: space(12, theme().scale), paddingBottom: space(6, theme().scale), flexDirection: "row", gap: 4 }}>
       {([["open", "Open"], ["done", "Done"], ["all", "All"]] as const).map(([filter, label]) =>
@@ -597,7 +599,14 @@ function Shells(props: { controller: PanelController; surface: string }) {
         <Text numberOfLines={1} style={{ fontFamily: theme().monoFamily, fontSize: text(10), color: muted() }}>{shell().command ?? shell().cwd}</Text>
         <Text numberOfLines={1} style={{ fontFamily: theme().monoFamily, fontSize: text(9), color: muted() }}>{shell().id}</Text>
       </Button>
-      {c.selectedShell() === shell().id && shell().alive && <View style={{ paddingHorizontal: 6, paddingBottom: 4 }}><Command id={`close-shell:${shell().id}`} label="End shell…" disabled={c.pending()} onPress={() => c.closingShell.set(shell())} /></View>}
+      {c.selectedShell() === shell().id && shell().alive && c.closingShell()?.id !== shell().id && <View style={{ paddingHorizontal: 6, paddingBottom: 4 }}><Command id={`close-shell:${shell().id}`} label="End shell…" disabled={c.pending()} onPress={() => c.closingShell.set(shell())} /></View>}
+      {c.closingShell()?.id === shell().id && <View testID="end-shell-confirm" style={{ marginHorizontal: 6, marginBottom: 6, padding: 10, gap: 8, borderRadius: 8, backgroundColor: theme().palette.bg }}>
+        <Text style={{ fontFamily: theme().family, fontSize: text(11), color: muted() }}>{`This ends ${c.titleForShell(shell())} and the processes running in it. Close its tab instead to keep it running.`}</Text>
+        <View style={{ flexDirection: "row", gap: 6 }}>
+          <Command id="confirm-end-shell" label="End shell" disabled={c.pending()} onPress={() => void c.run(() => Sessions.close(shell().id), () => c.closingShell.set(null))} />
+          <Command label="Cancel" disabled={c.pending()} onPress={() => c.closingShell.set(null)} />
+        </View>
+      </View>}
     </View>;
   }
 }
@@ -745,25 +754,13 @@ function ProjectEditor(props: { controller: PanelController }) {
   </View>;
 }
 
-export function PanelEditors(props: { controller: PanelController }) {
-  return <PanelTheme.Provider value={props.controller.theme ?? defaultTheme}><EditorDialog controller={props.controller} /></PanelTheme.Provider>;
-}
-
-function EditorDialog(props: { controller: PanelController }) {
+/** A panel's form (new or renamed folder, new project, new task) unfolds under its toolbar. */
+function InlineEditor(props: { controller: PanelController; kinds: Editor["kind"][] }) {
   const c = props.controller;
-  return <>
-    {c.closingShell() && <Dialog testID="end-shell-dialog" animation="none" closeOnEscape={!c.pending()} closeOnBackdropPress={false} onOpenChange={(open) => { if (!open && !c.pending()) c.closingShell.set(null); }}
-      style={{ width: 380, maxWidth: "90%", padding: 18, gap: 12, backgroundColor: theme().palette.panel, borderRadius: 12 }} backdropStyle={{ backgroundColor: "#00000080" }}>
-      <Text style={{ fontFamily: theme().family, fontSize: text(14), fontWeight: "600", color: ink() }}>End this shell?</Text>
-      <Text style={{ fontFamily: theme().family, fontSize: text(11), color: muted() }}>{`This ends ${c.titleForShell(c.closingShell()!)} and the processes running in it. Close its tab instead to keep it running.`}</Text>
-      <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: 6 }}>
-        <Command label="Cancel" disabled={c.pending()} onPress={() => c.closingShell.set(null)} />
-        <Command id="confirm-end-shell" label="End shell" disabled={c.pending()} onPress={() => { const shell = c.closingShell(); if (shell) void c.run(() => Sessions.close(shell.id), () => c.closingShell.set(null)); }} />
-      </View>
-    </Dialog>}
-    {c.editor() && <Dialog testID="panel-editor" animation="none" closeOnEscape={!c.pending()} closeOnBackdropPress={false} onOpenChange={(open) => { if (!open && !c.pending()) c.editor.set(null); }}
-    style={{ width: 440, maxWidth: "90%", padding: 18, backgroundColor: theme().palette.panel, borderRadius: 8 }} backdropStyle={{ backgroundColor: "#00000080" }}>
+  return <View>{!!c.editor() && props.kinds.includes(c.editor()!.kind) && <View testID="panel-editor"
+    style={{ marginHorizontal: space(8, theme().scale), marginBottom: space(8, theme().scale), padding: space(12, theme().scale), borderRadius: 8, backgroundColor: theme().palette.bg }}>
     {c.editor()!.kind === "folder" ? <FolderEditor controller={c} editor={c.editor() as Extract<Editor, { kind: "folder" }>} /> :
       c.editor()!.kind === "task" ? <TaskEditor controller={c} /> : <ProjectEditor controller={c} />}
-  </Dialog>}</>;
+  </View>}</View>;
 }
+

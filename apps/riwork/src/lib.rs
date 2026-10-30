@@ -1123,6 +1123,20 @@ impl LayoutSession {
             }
         })
     }
+    /// Ends a shell or chat whose tab was already closed (`shell:ID` or `chat:ID`): the
+    /// notice a closed tab leaves offers it. A remote project's sessions are not ended here.
+    pub async fn end_session(this: Instance<Self>, key: String) -> Result<(), String> {
+        if !key.starts_with("shell:") && !key.starts_with("chat:") {
+            return Err("invalid: session key".into());
+        }
+        let (home, local) = this.with(|s| (s.home.clone(), !remote::is_project(&s.data.project_id)));
+        if !local {
+            return Err("unavailable: sessions of a remote project end on their Mac".into());
+        }
+        tokio::task::spawn_blocking(move || session_io::exit_key(&home, &key))
+            .await
+            .map_err(|e| format!("broken: {e}"))?
+    }
     pub async fn refresh_sessions(this: Instance<Self>) -> Result<Value, String> {
         Self::refresh_tabs(this).await
     }

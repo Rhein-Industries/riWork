@@ -1,5 +1,5 @@
-import { Scroll, Text, View, cleanup, signal, type YNode } from "nsh";
-import { Button, Dialog, Input } from "nsh/base";
+import { Scroll, Text, View, cleanup, effect, signal, type YNode } from "nsh";
+import { Button, Input } from "nsh/base";
 import { Chat, Store, type NewChatRequest } from "riwork/native";
 import { space, type InterfaceTheme } from "./appearance";
 import { Icon } from "./Icon";
@@ -31,6 +31,8 @@ export interface NewChatProps {
   locations?: NewChatLocation[];
   onCreated: (id: string, projectId: string) => void;
   onCancel: () => void;
+  /** Whether its tab is on screen: the first time it is, the model search takes the focus. */
+  visible?: () => boolean;
   onError: (message: string) => void;
   provider?: Provider;
   unrestricted?: boolean;
@@ -47,23 +49,25 @@ const MODES: { id: Mode; label: string; description: string }[] = [
   { id: "plan", label: "Plan", description: "Plans first and changes nothing" },
 ];
 
-/** A retained draft. Only Create starts a chat; choosing providers and models reads metadata. */
+/** A new chat's tab before it starts: its choices, and an optional first message. Only Start
+ * creates the chat (the tab then becomes it); choosing providers and models reads metadata. */
 export function NewChat(props: NewChatProps) {
   const projectId = props.projectId;
-  // Keep the reviewed locations stable while the dialog is open; confirm reads
+  // Keep the reviewed locations stable while the tab is open; confirm reads
   // the current store before creating so removed or moved folders cannot win.
   const locations = (props.locations?.length ? props.locations : [{ label: props.worktreeId ? "Selected worktree" : "Project root", cwd: props.cwd, worktreeId: props.worktreeId }]).map((location) => ({ ...location }));
   const locationIndex = signal(Math.max(0, locations.findIndex((location) => location.worktreeId === props.worktreeId && location.cwd === props.cwd)));
   const location = () => locations[locationIndex()];
   const provider = signal<Provider>(props.provider ?? "codex");
   const mode = signal<Mode>(props.unrestricted ? "full" : "supervised");
-  const model = signal(""), query = signal(""), title = signal("");
+  const model = signal(""), query = signal(""), title = signal(""), message = signal("");
   const effort = signal<string | null>(null), fast = signal(false);
   const catalogs = signal<Partial<Record<Provider, NewChatCatalog>>>({});
   const loading = signal(true), pending = signal(false), error = signal("");
   let alive = true, submitted = false;
-  let search: YNode | undefined;
+  let search: YNode | undefined, focused = false;
   cleanup(() => { alive = false; });
+  effect(() => { if (!focused && (props.visible?.() ?? true) && search) { focused = true; search.focus(); } });
   const theme = props.theme;
   const size = (value: number) => space(value, theme().scale);
   const text = (value = 11, muted = false) => ({ fontFamily: theme().family, fontSize: value * theme().scale, color: muted ? theme().palette.muted : theme().palette.text });
@@ -124,10 +128,26 @@ export function NewChat(props: NewChatProps) {
       }
       const chat = await Chat.create(request);
       submitted = true;
+      const first = message().trim();
+      if (first) await sendFirst(chat.id, first);
       props.onCreated(chat.id, projectId);
     } catch (reason) {
       if (alive) { const message = String(reason).replace(/^Error: /, ""); error.set(message); props.onError(message); }
     } finally { if (alive) pending.set(false); }
+  }
+  /** The first message starts the chat's first turn; one that is not sent stays as its draft. */
+  async function sendFirst(chatId: string, text: string) {
+    const handle = Chat.open(chatId), editor = Chat.newEditor();
+    try {
+      const receipt = await handle.submit({ text, editor, generation: 1 });
+      if (receipt.status !== "submitted") {
+        handle.saveDraft(text, editor, 1);
+        props.onError(`The first message was not sent${receipt.error ? `: ${receipt.error}` : ""}. It is in the chat's message box.`);
+      }
+    } catch (reason) {
+      handle.saveDraft(text, editor, 1);
+      props.onError(`The first message was not sent: ${String(reason).replace(/^Error: /, "")}. It is in the chat's message box.`);
+    } finally { handle.close(); }
   }
   function choice(id: string, label: string, selected: boolean, onPress: () => void) {
     return <View testID={id} role="radio" accessibilityLabel={label} accessibilityState={{ checked: selected }} disabled={pending()} onPress={onPress}
@@ -136,11 +156,9 @@ export function NewChat(props: NewChatProps) {
       <Text style={text(11, !selected)}>{label}</Text>
     </View>;
   }
-  return <Dialog testID="new-chat-dialog" animation="none" closeOnBackdropPress={false} closeOnEscape={!pending()}
-    onOpen={() => search?.focus()} onOpenChange={(open) => { if (!open) cancel(); }} backdropStyle={{ backgroundColor: "#00000066" }}
-    style={{ width: size(560), maxWidth: "100%", maxHeight: "90%", padding: size(20), gap: size(12), backgroundColor: theme().palette.panel, borderRadius: 10 }}>
+  return <Scroll testID="new-chat-setup" style={{ flex: 1, minHeight: 0, backgroundColor: theme().palette.bg }} contentStyle={{ alignItems: "center", padding: size(20) }}>
+    <View style={{ width: "100%", maxWidth: size(600), gap: size(12) }}>
     <View style={{ flexDirection: "row", alignItems: "center", gap: size(8) }}><Icon name="chat" size={17 * theme().scale} color={theme().palette.muted} /><Text role="header" style={{ ...text(17), fontWeight: "600" }}>New chat</Text></View>
-    <Scroll style={{ flexShrink: 1, minHeight: 0 }} contentStyle={{ gap: size(12) }}>
     <Text style={{ ...text(10, true), fontWeight: "600" }}>Location</Text>
     <View role="radiogroup" accessibilityLabel="Chat location" style={{ gap: 3 }}>
       {locations.map((item, index) => <Button testID={`new-chat-location-${item.worktreeId ?? "project"}`} selected={locationIndex() === index} disabled={pending()}
@@ -180,11 +198,14 @@ export function NewChat(props: NewChatProps) {
     </View>}
     {selected()?.supportsFast && <View testID="new-chat-fast" role="checkbox" accessibilityLabel="Fast mode" accessibilityState={{ checked: fast() }} disabled={pending()} onPress={() => fast.set(!fast())} style={{ flexDirection: "row", alignItems: "center", gap: 7 }}><Icon name={fast() ? "check" : "add"} size={12 * theme().scale} color={theme().palette.muted} /><Text style={text()}>Fast mode</Text></View>}
     <Input testID="new-chat-title" accessibilityLabel="Chat title" placeholder="Title (optional)" value={title()} onChange={(value) => title.set(value)} disabled={pending()} style={field()} />
-    {(error() || catalog()?.error) && <Text role="alert" style={{ ...text(11), color: theme().palette.gold }}>{error() || catalog()?.error}</Text>}
-    </Scroll>
+    <Text style={{ ...text(10, true), fontWeight: "600" }}>First message</Text>
+    <Input testID="new-chat-message" accessibilityLabel="First message" placeholder="Optional: what the chat starts with" multiline={true} autoCorrect={false}
+      value={message()} onChange={(value) => message.set(value)} disabled={pending()} style={{ ...field(), minHeight: size(64), maxHeight: size(200) }} />
+    {(!!error() || !!catalog()?.error) && <Text role="alert" style={{ ...text(11), color: theme().palette.gold }}>{error() || catalog()?.error}</Text>}
     <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: size(8) }}>
       <Button testID="new-chat-cancel" disabled={pending()} onPress={cancel} style={{ paddingHorizontal: size(12), paddingVertical: size(7), borderRadius: 6 }}><Text style={text()}>Cancel</Text></Button>
-      <Button testID="new-chat-confirm" disabled={pending() || loading() || !!catalog()?.error} onPress={() => void create()} style={{ paddingHorizontal: size(12), paddingVertical: size(7), borderRadius: 6, backgroundColor: theme().palette.panelActive }}><Text style={{ ...text(), fontWeight: "600" }}>{pending() ? "Creating…" : "Create chat"}</Text></Button>
+      <Button testID="new-chat-confirm" disabled={pending() || loading() || !!catalog()?.error} onPress={() => void create()} style={{ paddingHorizontal: size(12), paddingVertical: size(7), borderRadius: 6, backgroundColor: theme().palette.panelActive }}><Text style={{ ...text(), fontWeight: "600" }}>{pending() ? "Starting…" : message().trim() ? "Start chat" : "Create chat"}</Text></Button>
     </View>
-  </Dialog>;
+    </View>
+  </Scroll>;
 }

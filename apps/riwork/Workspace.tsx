@@ -1,20 +1,19 @@
 import { AppPreviewTab } from "./AppPreviewTab";
 import { CuaSetup, useCua, type CuaSetupControl } from "./CuaSetup";
 import { Clipboard, ErrorBoundary, Overlay, Scroll, Text, View, cleanup, colorScheme, computed, effect, host, keymap, signal, type YNode } from "nsh";
-import { Button, Dialog, Input, Popover, type DockAreaLayout, type DockNode } from "nsh/base";
+import { Button, Input, Popover, type DockAreaLayout, type DockNode } from "nsh/base";
 import { Menu, Window, type MenuItem } from "nsh/desktop";
-import { Appearance, Chat, Orchestrators, Remote, Sessions, Tabs, type AppearanceDto, type LayoutSession, type SettingsDto } from "riwork/native";
+import { Appearance, Chat, Files, Orchestrators, Remote, Sessions, Tabs, type AppearanceDto, type LayoutSession, type SettingsDto } from "riwork/native";
 import { DockArea } from "./DockArea";
-import { CloseDialog } from "./CloseDialog";
 import { DeferredPanel, MountProbe } from "./DeferredPanel";
 import { LocalTerminal, type TerminalColors, type TerminalController, type TerminalEvents } from "./Terminal";
-import { PanelContent, PanelEditors, createPanelController, type PanelController } from "./Panels";
+import { PanelContent, createPanelController, type PanelController } from "./Panels";
 import { WindowChrome, useWindowChrome, topPaneFrames, CONTROL_INSET } from "./WindowChrome";
 import { workspaceCommands } from "./commands";
 import { WORKSPACE_METRICS as M, headerHeight, mainMarkerThreshold, sessionCellWidth } from "./metrics";
 import { Icon, PANEL_ICONS } from "./Icon";
 import { NewChat, type NewChatLocation } from "./NewChat";
-import { Handoff as HandoffDialog } from "./Handoff";
+import { Handoff as HandoffSetup } from "./Handoff";
 import { UsagePanel } from "./UsagePanel";
 import {
   activePane, closeChoice, createDockUpdater, createTitleUpdater, cycledTab, findPanel, numberedTab,
@@ -75,6 +74,11 @@ function StatusDot(props: { status?: PanelStatus | null; theme: InterfaceTheme }
   </View>}</>;
 }
 
+/** What a New chat or Hand off tab holds until it starts. */
+type SetupTab =
+  | { kind: "chat"; worktreeId?: string; cwd: string; locations: NewChatLocation[]; provider: "codex" | "claude" | "muse" }
+  | { kind: "handoff"; sourceId: string };
+
 export function Workspace(props: WorkspaceProps) {
   const session = props.session;
   const snapshot = signal(session.snapshot() as WorkspaceSnapshot);
@@ -99,16 +103,18 @@ export function Workspace(props: WorkspaceProps) {
   const previewFocus = signal<string | null>(null);
   const busy = signal(false);
   const statusMenu = signal(false);
-  // Workspace transient UI: the close dialog, rename, the shared-strip popover,
-  // native menus and drags hold session deliveries and freeze native terminals.
-  const closing = signal<PanelModel | null>(null);
+  // Workspace transient UI: the shared-strip popover, native menus and drags hold
+  // session deliveries and freeze native terminals. Nothing else covers the window:
+  // closing, renaming, opening a file and new sessions happen in place.
   const renaming = signal<PanelModel | null>(null);
   const renameTitle = signal("");
-  const vimDialog = signal(false);
-  const newChatDialog = signal(false);
-  const handingOff = signal<string | null>(null);
+  const vimBar = signal(false);
   const vimPath = signal("");
-  let vimInput: YNode | undefined;
+  const vimSuggestions = signal<string[]>([]);
+  /** The tab just closed, while its notice offers Undo (and End, where Ask used to ask). */
+  const closedTab = signal<{ title: string; kind: "shell" | "chat"; id: string; end: boolean } | null>(null);
+  /** What a setup tab (New chat, Hand off) shows, by its pending id. */
+  const setups = new Map<string, SetupTab>();
   const allTabs = signal(false);
   const allTabsPane = signal<number | null>(null);
   const allIndex = signal(0);
@@ -118,7 +124,6 @@ export function Workspace(props: WorkspaceProps) {
   const containerHeight = signal(0);
   const hovered = signal<string | null>(null);
   const tabHint = signal<{ id: string; text: string } | null>(null);
-  let renameInput: YNode | undefined;
   const bodyRefs = new Map<string, YNode>();
   const terminalControls = new Map<string, TerminalController>();
   const tabRefs = new Map<string, YNode>();
@@ -151,7 +156,7 @@ export function Workspace(props: WorkspaceProps) {
   });
   const remote = createRemoteController({
     api: Remote as unknown as RemoteApi, theme, copyText: (text) => Clipboard.writeText(text),
-    notice: (message) => notice.set(message), modalBlocked: () => modal() || !!panelState.editor() || switching(),
+    notice: (message) => notice.set(message), modalBlocked: () => modal() || switching(),
     beforePrompt: () => { allTabs.set(false); commands.stripOpen.set(false); freeze(); },
     afterPrompt: () => thaw(),
     wants: () => ({ order: panelState.order(), descending: panelState.descending(), folders: isVisible("panel:projects"), settings: isVisible("panel:settings"),
@@ -248,7 +253,7 @@ export function Workspace(props: WorkspaceProps) {
     const next = tree?.id ?? shell.worktreeId;
     if (next && next !== panelState.selectedWorktree()) panelState.selectWorktree(next);
   });
-  function modal(): boolean { return !!closing() || !!renaming() || vimDialog() || newChatDialog() || !!handingOff() || !!remote.prompt() || !!panelState.closingShell(); }
+  function modal(): boolean { return !!remote.prompt(); }
   const frozen = () => modal() || menuOpen() || dragging() || allTabs();
   const sessions = () => (snapshot().panes.find((pane) => pane.id === (allTabsPane() ?? snapshot().activePane))?.tabs ?? []).filter((tab) => tab.kind !== "panel" && tab.kind !== "empty");
   const header = () => headerHeight(11 * theme().scale);
@@ -386,12 +391,31 @@ export function Workspace(props: WorkspaceProps) {
     } catch (error) { if (alive) notice.set(String(error)); }
     finally { if (alive) busy.set(false); thaw(); }
   }
-  function showVimDialog() { if (!localOnly()) { vimDialog.set(true); freeze(); } }
+  function showVimBar() { if (!localOnly()) { vimPath.set(""); vimSuggestions.set([]); vimBar.set(true); } }
   function showNewChat() {
     if (localOnly() || busy() || switching()) return;
-    if (!chatLocations().length) { notice.set("Choose an available project or worktree folder before starting a chat."); return; }
+    const locations = chatLocations();
+    if (!locations.length) { notice.set("Choose an available project or worktree folder before starting a chat."); return; }
     if (snapshot().panes.every((pane) => pane.locked)) { notice.set("Unlock a pane to open a new chat."); return; }
-    newChatDialog.set(true); freeze();
+    openSetup({ kind: "chat", worktreeId: panelState.selectedWorktree() ?? undefined, cwd: filesRoot() ?? locations[0].cwd, locations, provider: newChatProvider() });
+  }
+  /** New chat and Hand off open a tab of their own that holds their choices; starting turns
+   * it into the chat (or opens the new shell), and closing it cancels. */
+  function openSetup(setup: SetupTab) {
+    const id = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+    setups.set(id, setup);
+    action(() => session.openPendingChat(id));
+  }
+  function finishSetup(panelId: string, kind: string, id: string, owner?: string | null) {
+    setups.delete(panelId.slice("chat-pending:".length));
+    const open = !!findPanel(snapshot(), panelId);
+    if (open && kind === "chat" && (!owner || owner === projectId())) { action(() => session.resolvePendingChat(panelId, id)); return; }
+    if (open) action(() => session.closePanel(panelId, false));
+    showCreatedSession(kind, id, owner);
+  }
+  function closeSetup(panelId: string) {
+    setups.delete(panelId.slice("chat-pending:".length));
+    if (findPanel(snapshot(), panelId)) action(() => session.closePanel(panelId, false));
   }
   function chatLocations(): NewChatLocation[] {
     const project = panelState.state().projects.find((item) => item.id === projectId());
@@ -408,13 +432,26 @@ export function Workspace(props: WorkspaceProps) {
     if (localOnly() || busy() || switching()) return;
     const tab = selected();
     if (!tab || (!tab.startsWith("shell:") && !tab.startsWith("chat:"))) return;
-    handingOff.set(tab.slice(tab.indexOf(":") + 1)); freeze();
+    openSetup({ kind: "handoff", sourceId: tab.slice(tab.indexOf(":") + 1) });
   }
-  function submitVim() {
-    const path = vimPath();
+  function submitVim(path = vimPath()) {
     if (!path) return;
-    vimDialog.set(false);
+    vimBar.set(false);
     void openEditor(path);
+  }
+  /** As a path is typed, the entries of its folder that start with its last part. */
+  let vimRead = 0;
+  async function suggestVim(typed: string) {
+    vimPath.set(typed);
+    const root = filesRoot(), token = ++vimRead;
+    const slash = typed.lastIndexOf("/"), folder = typed.slice(0, slash + 1), start = typed.slice(slash + 1).toLowerCase();
+    if (!root || typed.startsWith("/") || typed.includes("..")) { vimSuggestions.set([]); return; }
+    try {
+      const listing = await Files.listDirectory(root, folder ? `${root}/${folder.replace(/\/$/, "")}` : root, false);
+      if (token !== vimRead || !alive) return;
+      vimSuggestions.set(listing.entries.filter((entry) => entry.name.toLowerCase().startsWith(start))
+        .slice(0, 8).map((entry) => `${folder}${entry.name}${entry.kind === "directory" ? "/" : ""}`));
+    } catch { if (token === vimRead && alive) vimSuggestions.set([]); }
   }
   function find(id: string, args?: { query?: string }): boolean {
     const active = selected();
@@ -447,7 +484,7 @@ export function Workspace(props: WorkspaceProps) {
   }
   async function switchTo(id: string) {
     if (switching()) throw new Error("conflict: project switch is already in progress");
-    closing.set(null); renaming.set(null); vimDialog.set(false); newChatDialog.set(false); handingOff.set(null); allTabs.set(false); allTabsPane.set(null);
+    renaming.set(null); vimBar.set(false); closedTab.set(null); allTabs.set(false); allTabsPane.set(null);
     switching.set(true);
     const from = projectId();
     try {
@@ -557,9 +594,31 @@ export function Workspace(props: WorkspaceProps) {
     if (!tab) return;
     allTabs.set(false);
     commands.stripOpen.set(false);
+    if (id.startsWith("chat-pending:")) { closeSetup(id); return; }
     const choice = closeChoice(snapshot(), tab);
-    if (choice === "ask") { closing.set(tab); freeze(); }
-    else action(() => session.closePanel(id, choice === "exit"));
+    const saved = session.panel(id) as { kind?: string; shell_id?: string; chat_id?: string } | null;
+    action(() => session.closePanel(id, choice === "exit"));
+    // Undo reopens this Mac's shells and chats; a remote shell's tab is reopened from its host.
+    const kind = saved?.kind === "shell" && saved.shell_id ? "shell" : saved?.kind === "chat" && saved.chat_id && UUID.test(saved.chat_id) ? "chat" : null;
+    if (choice !== "exit" && kind) showClosed({ title: displayTitle(tab), kind, id: (saved!.shell_id ?? saved!.chat_id)!, end: choice === "ask" });
+  }
+  let closedTimer: ReturnType<typeof setTimeout> | undefined;
+  function showClosed(closed: NonNullable<ReturnType<typeof closedTab>>) {
+    closedTab.set(closed);
+    if (closedTimer) clearTimeout(closedTimer);
+    closedTimer = setTimeout(() => { if (alive && closedTab() === closed) closedTab.set(null); }, 15000);
+  }
+  function undoClose() {
+    const closed = closedTab();
+    closedTab.set(null);
+    if (!closed) return;
+    if (closed.kind === "shell") void openShell(closed.id);
+    else action(() => session.openChat(closed.id));
+  }
+  function endClosed() {
+    const closed = closedTab();
+    closedTab.set(null);
+    if (closed) void session.endSession(`${closed.kind}:${closed.id}`).catch((error) => { if (alive) notice.set(String(error)); });
   }
   function closePane(id = snapshot().activePane) {
     allTabs.set(false);
@@ -643,7 +702,15 @@ export function Workspace(props: WorkspaceProps) {
     });
     effect(() => { if (isVisible(chatProps.panelId)) seen.set(true); });
     const ready = () => !!chatId() && seen();
+    const setup = setups.get(chatProps.panelId.slice("chat-pending:".length));
+    const shown = () => isVisible(chatProps.panelId);
     return <View testID={`panel:${chatProps.panelId}`} style={{ flex: 1, minHeight: 0 }}>
+      {!chatId() && pending() && setup?.kind === "chat" && <NewChat theme={theme} projectId={projectId()} worktreeId={setup.worktreeId} cwd={setup.cwd}
+        locations={setup.locations} provider={setup.provider} visible={shown} onError={(message) => notice.set(message)}
+        onCreated={(id, owner) => finishSetup(chatProps.panelId, "chat", id, owner)} onCancel={() => closeSetup(chatProps.panelId)} />}
+      {!chatId() && pending() && setup?.kind === "handoff" && <HandoffSetup sourceId={setup.sourceId} theme={theme} visible={shown}
+        onDone={(result) => finishSetup(chatProps.panelId, result.kind, result.id, result.projectId)} onCancel={() => closeSetup(chatProps.panelId)}
+        onError={(message) => notice.set(message)} onNotice={(message) => notice.set(message)} />}
       {ready() && <ErrorBoundary fallback={(error, retry) => <ChatFailure error={error} retry={retry} theme={theme} />}><ChatTab chatId={chatId()!} visible={isVisible(chatProps.panelId)} active={selected() === chatProps.panelId && !terminalFrozen()} theme={theme}
         onUsage={(usage) => recordChatUsage(chatProps.panelId, usage)}
         terminalTargets={terminalTargets} onCopyToTerminal={copyToTerminal}
@@ -656,8 +723,8 @@ export function Workspace(props: WorkspaceProps) {
           action(() => session.openPanel("project_settings"));
           projectSettingsControl?.revealMemo();
         }}
-        onClose={() => { const tab = findPanel(snapshot(), chatProps.panelId); if (tab) closing.set(tab); }} /></ErrorBoundary>}
-      {!ready() && <View style={{ flex: 1, padding: 16, gap: 8 }}>
+        onClose={() => action(() => session.closePanel(chatProps.panelId, false))} /></ErrorBoundary>}
+      {!ready() && !(pending() && setup && !chatId()) && <View style={{ flex: 1, padding: 16, gap: 8 }}>
         <Text style={textStyle()}>{pending() ? "Starting chat…" : chatProps.title}</Text>
         {!pending() && !chatId() && <Text style={mutedStyle()}>This view is unavailable.</Text>}
       </View>}
@@ -687,7 +754,7 @@ export function Workspace(props: WorkspaceProps) {
         ...[["Codex", "mod+shift+c"], ["Claude", "mod+shift+l"], ["Grok", "mod+shift+g"], ["Muse", "mod+shift+u"]].map(([label, shortcut]): MenuItem => ({ label, shortcut, onSelect: () => { void createShell(undefined, label.toLowerCase()); } })),
         { type: "separator" },
         { label: "Subshell", disabled: !selected()?.startsWith("shell:"), onSelect: () => { void createSubshell(); } },
-        { label: "Open file in Vim…", onSelect: showVimDialog },
+        { label: "Open file in Vim…", onSelect: showVimBar },
         { label: "App preview…", disabled: !filesRoot() && !snapshot().remoteProject, onSelect: newAppPreview },
       ] },
       { label: "Sessions", submenu: [
@@ -715,7 +782,7 @@ export function Workspace(props: WorkspaceProps) {
     const tabs = (snapshot().sharedTabs ?? []).filter((entry) => entry.kind !== "panel" && entry.shared !== false && entry.parent === tab.parent);
     const index = tabs.findIndex((tab) => tab.id === id);
     popup([
-      { label: "Rename…", onSelect: () => { renameTitle.set(tab.title); renaming.set(tab); freeze(); } },
+      { label: "Rename…", onSelect: () => startRename(tab) },
       { type: "separator" },
       { label: "Move left", disabled: index <= 0, onSelect: () => action(() => session.moveTab(id, -1)) },
       { label: "Move right", disabled: index < 0 || index === tabs.length - 1, onSelect: () => action(() => session.moveTab(id, 1)) },
@@ -723,19 +790,24 @@ export function Workspace(props: WorkspaceProps) {
       { type: "separator" }, { label: "Cancel", onSelect: focusActive },
     ]);
   }
+  /** Only a shared session tab has a title of its own (its menu offers Rename…). */
+  function renameable(id: string) {
+    const tab = findPanel(snapshot(), id);
+    return !!tab && tab.kind !== "panel" && tab.shared !== false && (snapshot().sharedTabs ?? []).some((entry) => entry.id === id);
+  }
+  function startRename(tab: PanelModel) { renameTitle.set(tab.title); renaming.set(tab); }
   function saveRename() {
     const tab = renaming();
     if (!tab) return;
     const title = renameTitle();
     renaming.set(null);
-    action(() => session.renameTab(tab.id, title));
-    thaw();
+    if (title !== tab.title) action(() => session.renameTab(tab.id, title));
   }
 
   const commands = workspaceCommands(session, snapshot, action, {
-    blocked: () => modal() || !!panelState.editor() || switching(),
+    blocked: () => modal() || switching(),
     previewOwnsEscape: () => !!previewFocus() && isVisible(previewFocus()!) && !frozen() &&
-      !statusMenu() && !props.modalOpen?.() && !panelState.editor() && !switching(),
+      !statusMenu() && !props.modalOpen?.() && !switching(),
     newShell: (split) => { allTabs.set(false); void createShell(split); },
     newAgent: (kind) => { allTabs.set(false); void createShell(undefined, kind); },
     newChat: showNewChat,
@@ -749,7 +821,7 @@ export function Workspace(props: WorkspaceProps) {
       notice.set(id === "handOff" ? remoteLocalOnly(remote.data(), projectId(), "handoff")! : "Chats run on this Mac. Open a project here to start one.");
       return true;
     },
-    openVim: showVimDialog,
+    openVim: showVimBar,
     appPreview: newAppPreview,
     find,
     closeTab: () => close(),
@@ -770,7 +842,10 @@ export function Workspace(props: WorkspaceProps) {
     },
     escape: () => {
       if (remote.prompt()) { remote.close(); thaw(); return; }
-      if (modal()) { closing.set(null); renaming.set(null); vimDialog.set(false); newChatDialog.set(false); handingOff.set(null); panelState.closingShell.set(null); thaw(); return; }
+      if (renaming()) { renaming.set(null); return; }
+      if (panelState.editor() && !panelState.pending()) { panelState.editor.set(null); return; }
+      if (panelState.closingShell() && !panelState.pending()) { panelState.closingShell.set(null); return; }
+      if (vimBar()) { vimBar.set(false); focusActive(); return; }
       if (selected() === "panel:preview") { fileState.clearPreview(); fileState.closePreview?.(); return; }
       const terminal = selected() ? terminalControls.get(selected()!) : undefined;
       if (terminal?.finding()) { terminal.findClose(); return; }
@@ -855,9 +930,13 @@ export function Workspace(props: WorkspaceProps) {
       <View testID={`pane-menu-${id}`} role="button" tooltip="Pane menu" accessibilityLabel="Pane menu" onPress={() => paneMenu(id)} style={{ ...control(), width: space(M.menuButton, theme().scale) }} hoverStyle={{ backgroundColor: theme().palette.panelActive }}><Icon name="more" color={theme().palette.muted} /></View>
     </View>;
   }
+  function setupTitle(id: string) {
+    const setup = id.startsWith("chat-pending:") ? setups.get(id.slice("chat-pending:".length)) : undefined;
+    return setup ? setup.kind === "handoff" ? "Hand off" : "New chat" : undefined;
+  }
   function tabCell(tab: PanelModel, active: boolean) {
     const pane = snapshot().panes.find((pane) => pane.tabs.some((panel) => panel.id === tab.id));
-    const shownTitle = displayTitle(tab);
+    const shownTitle = setupTitle(tab.id) ?? displayTitle(tab);
     const panel = tab.kind === "panel";
     const symbol = panel && (shared() || snapshot().panelTabIcons);
     const ink = active ? theme().palette.text : theme().palette.muted;
@@ -869,6 +948,9 @@ export function Workspace(props: WorkspaceProps) {
       hoverStyle={{ backgroundColor: active ? undefined : theme().palette.panelActive }}>
       {!panel && <StatusDot status={tab.status} theme={theme()} />}
       {symbol ? <Icon name={PANEL_ICONS[tab.id.slice(6)] ?? "file"} color={ink} size={space(13, theme().scale)} /> :
+        renaming()?.id === tab.id ? <Input testID="tab-rename-input" accessibilityLabel="Tab title" placeholder="Tab title" value={renameTitle()} autoCorrect={false}
+          ref={(node) => node.focus()} onChange={(value) => renameTitle.set(value)} onSubmit={saveRename} onBlur={saveRename}
+          style={{ fontFamily: theme().family, fontSize: M.tabFont * theme().scale, color: theme().palette.text, width: space(150, theme().scale), paddingHorizontal: 4, paddingVertical: 1, borderRadius: 4, backgroundColor: theme().palette.bg }} /> :
         <Text numberOfLines={1} style={{ fontFamily: theme().family, fontSize: M.tabFont * theme().scale, fontWeight: active ? "500" : "400", flexShrink: 1, color: ink }}>{remoteMark(tab, shownTitle)}</Text>}
       {!pane?.locked && !symbol && <View testID={`tab-close-${tab.id}`} role="button" tooltip="Close tab · ⌘W" accessibilityLabel={`Close ${tab.title}`} onPress={() => close(tab.id)}
         style={{ width: space(M.tabClose, theme().scale), height: space(M.tabClose, theme().scale), borderRadius: 8, alignItems: "center", justifyContent: "center", opacity: active || hovered() === tab.id ? 1 : 0 }}
@@ -879,10 +961,10 @@ export function Workspace(props: WorkspaceProps) {
   // keymap; a dialog, rename or tab menu opened over it takes Escape first.
   function escapeTopmost() {
     if (commands.stripOpen()) commands.stripOpen.set(false);
-    else if (modal() || allTabs()) { closing.set(null); renaming.set(null); vimDialog.set(false); newChatDialog.set(false); handingOff.set(null); panelState.closingShell.set(null); allTabs.set(false); allTabsPane.set(null); thaw(); }
+    else if (renaming() || vimBar() || allTabs()) { renaming.set(null); vimBar.set(false); allTabs.set(false); allTabsPane.set(null); thaw(); }
     else dismissNotice();
   }
-  const terminalFrozen = () => frozen() || statusMenu() || commands.stripOpen() || panelState.editor() !== null || switching();
+  const terminalFrozen = () => frozen() || statusMenu() || commands.stripOpen() || switching();
   const paneOf = (id: string) => snapshot().panes.find((pane) => pane.tabs.some((tab) => tab.id === id) || id === `empty:${pane.id}`);
 
   return (
@@ -911,7 +993,8 @@ export function Workspace(props: WorkspaceProps) {
             renderDragPreview={(tab) => <View style={{ paddingHorizontal: 12, paddingVertical: 7, borderWidth: 1, borderColor: theme().palette.cyan, backgroundColor: theme().palette.panel }}><Text style={textStyle()}>{findPanel(snapshot(), tab.panel) ? displayTitle(findPanel(snapshot(), tab.panel)!) : tab.panel}</Text></View>}
             renderTab={(tab) => <View testID={`tab:${tab.panel}`} ref={(node) => props.onViewRef?.(`tab:${tab.panel}`, node)}
               onLayout={(bounds) => measureTab(tab.group, tab.panel, bounds.size.width)}
-              onPress={() => tab.panel.startsWith("empty:") ? action(() => session.selectPane(tab.group)) : select(tab.panel)} onContextMenu={() => tabMenu(tab.panel)}
+              onPress={(event) => tab.panel.startsWith("empty:") ? action(() => session.selectPane(tab.group))
+                : event?.clickCount === 2 && renameable(tab.panel) ? startRename(findPanel(snapshot(), tab.panel)!) : select(tab.panel)} onContextMenu={() => tabMenu(tab.panel)}
               style={{ flexDirection: "row", alignItems: "center" }}>
               {!tab.panel.startsWith("empty:") && tabCell(findPanel(snapshot(), tab.panel) ?? { id: tab.panel, title: tab.panel, kind: "empty" }, tab.active)}
             </View>}
@@ -997,6 +1080,23 @@ export function Workspace(props: WorkspaceProps) {
         </View>
       </View>
       <WindowChrome state={chrome} panes={[]} />
+      {vimBar() && <View testID="vim-open-bar" style={{ gap: 4, paddingHorizontal: space(10, theme().scale), paddingVertical: space(6, theme().scale), borderTopWidth: 1, borderColor: theme().palette.divider, backgroundColor: theme().palette.panel }}>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+          <Text style={mutedStyle()}>Open in Vim</Text>
+          <Input testID="vim-open-path" accessibilityLabel="File path" placeholder="File path in the selected project or worktree" value={vimPath()} autoCorrect={false}
+            ref={(node) => node.focus()} onChange={(value) => void suggestVim(value)} onSubmit={() => submitVim()}
+            style={{ ...textStyle(), flex: 1, minWidth: 0, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, backgroundColor: theme().palette.bg }} />
+          <Button testID="vim-open-submit" disabled={!vimPath()} onPress={() => submitVim()}><Text style={textStyle()}>Open</Text></Button>
+          <Button testID="vim-open-cancel" onPress={() => { vimBar.set(false); focusActive(); }}><Text style={textStyle()}>Cancel</Text></Button>
+        </View>
+        {vimSuggestions().length > 0 && <View testID="vim-open-suggestions" style={{ flexDirection: "row", flexWrap: "wrap", gap: 4 }}>
+          {vimSuggestions().map((path) => <View testID={`vim-open-suggestion:${path}`} role="button" accessibilityLabel={path}
+            onPress={() => path.endsWith("/") ? void suggestVim(path) : submitVim(path)}
+            style={{ paddingHorizontal: 7, paddingVertical: 2, borderRadius: 4, backgroundColor: theme().palette.panelActive }} hoverStyle={{ backgroundColor: theme().palette.divider }}>
+            <Text style={{ ...textStyle(), fontFamily: theme().monoFamily }}>{path}</Text>
+          </View>)}
+        </View>}
+      </View>}
       <StatusBar session={session} snapshot={snapshot} projectId={projectId} projectLabel={() => remoteTitle(remote.data(), projectId()) ?? panelState.projectLabel()}
         nativeChat={nativeChatUsage}
         settings={props.settings} theme={theme} action={action} onError={(error) => notice.set(String(error))} modalOpen={() => !!props.modalOpen?.() || modal() || !!panelState.editor() || switching()}
@@ -1006,6 +1106,14 @@ export function Workspace(props: WorkspaceProps) {
           return { branch: lists?.worktrees.find((row) => row.id === tree)?.branch ?? null, live: lists?.live ?? null }; }}
         focus={{ mode: () => !!snapshot().focusMode, centered: () => !!snapshot().focusCentered,
           toggle: () => commands.dispatch("toggleFocusMode"), toggleCentered: () => commands.dispatch("focusCentered") }} />
+      {closedTab() && <Overlay testID="tab-closed-notice" margin={8}
+        style={{ top: notice() !== "" ? 75 : 31, right: 8, width: 420, maxWidth: "100%", padding: 8, backgroundColor: theme().palette.panel, borderColor: theme().palette.divider, borderWidth: 1, flexDirection: "row", alignItems: "center", gap: 10 }}>
+        <Text testID="tab-closed-message" role="text" numberOfLines={2} style={{ ...textStyle(), flex: 1 }}>{`Closed ${closedTab()!.title}. ${closedTab()!.kind === "shell" ? "The shell keeps running." : "The chat stays in Sessions."}`}</Text>
+        <View testID="tab-closed-undo" role="button" accessibilityLabel="Undo" onPress={undoClose}><Text style={{ ...textStyle(), color: theme().palette.cyan }}>Undo</Text></View>
+        {closedTab()!.end && <View testID="tab-closed-end" role="button" accessibilityLabel={closedTab()!.kind === "shell" ? "End the shell" : "Stop the chat"} onPress={endClosed}>
+          <Text style={{ ...textStyle(), color: theme().palette.gold }}>{closedTab()!.kind === "shell" ? "End shell" : "Stop chat"}</Text></View>}
+        <View testID="tab-closed-dismiss" role="button" accessibilityLabel="Dismiss" onPress={() => closedTab.set(null)}><Text style={mutedStyle()}>×</Text></View>
+      </Overlay>}
       {notice() !== "" && <Overlay testID="workspace-notice" onCancel={escapeTopmost} margin={8}
         style={{ top: 31, right: 8, width: 520, maxWidth: "100%", padding: 8, backgroundColor: theme().palette.panel, borderColor: theme().palette.gold, borderWidth: 1, flexDirection: "row", gap: 10 }}>
         <Text testID="workspace-notice-message" accessible={true} role="alert" accessibilityLabel={notice()} style={{ ...textStyle(), flex: 1, color: theme().palette.gold }}>{notice()}</Text>
@@ -1017,31 +1125,7 @@ export function Workspace(props: WorkspaceProps) {
           {commands.stripItems().map((tab, index) => <View testID={`all-tabs:${tab.id}`} role="menuitem" accessibilityLabel={tab.title} accessibilityState={{ selected: commands.stripIndex() === index }} onPress={() => commands.activateStrip(index)} style={{ padding: 8, backgroundColor: commands.stripIndex() === index ? theme().palette.divider : "transparent" }}><Text style={textStyle()}>{displayTitle(tab)}</Text></View>)}
         </View>
       </Overlay>}
-      {closing() && <CloseDialog title={displayTitle(closing()!)} theme={theme} onChoice={(choice) => { const tab = closing()!; closing.set(null); if (choice) action(() => session.closePanel(tab.id, choice === "exit")); thaw(); }} />}
-      {newChatDialog() && <NewChat theme={theme} projectId={projectId()} worktreeId={panelState.selectedWorktree() ?? undefined} cwd={filesRoot() ?? chatLocations()[0]?.cwd ?? ""}
-        provider={newChatProvider()} locations={chatLocations()}
-        onCreated={(id, owner) => { newChatDialog.set(false); showCreatedSession("chat", id, owner); thaw(); }}
-        onCancel={() => { newChatDialog.set(false); thaw(); }} onError={(message) => notice.set(message)} />}
-      {handingOff() && <HandoffDialog sourceId={handingOff()!} theme={theme}
-        onDone={(result) => { handingOff.set(null); showCreatedSession(result.kind, result.id, result.projectId); thaw(); }}
-        onCancel={() => { handingOff.set(null); thaw(); }} onError={(message) => notice.set(message)} onNotice={(message) => notice.set(message)} />}
-      {vimDialog() && <Dialog testID="vim-open-dialog" animation="none" closeOnEscape={true} closeOnBackdropPress={false}
-        onOpen={() => vimInput?.focus()} onOpenChange={() => { vimDialog.set(false); thaw(); }}
-        style={{ width: 480, maxWidth: "100%", padding: 18, gap: 10, borderRadius: 12, backgroundColor: theme().palette.panel }}>
-        <Text style={textStyle(13)}>Open file in Vim</Text>
-        <Input testID="vim-open-path" accessibilityLabel="File path" placeholder="File path in the selected project or worktree" value={vimPath()}
-          ref={(node) => { vimInput = node; }} onChange={(value) => vimPath.set(value)} onSubmit={submitVim} />
-        <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: 8 }}>
-          <Button testID="vim-open-cancel" onPress={() => { vimDialog.set(false); thaw(); }}><Text style={textStyle()}>Cancel</Text></Button>
-          <Button testID="vim-open-submit" disabled={!vimPath()} onPress={submitVim}><Text style={textStyle()}>Open</Text></Button>
-        </View>
-      </Dialog>}
       {tabHint() && !frozen() && <Overlay pointerEvents="none" anchor={tabRefs.get(`pane:${tabHint()!.id}`)} placement="bottom" align="start" offset={4} style={{ paddingHorizontal: 8, paddingVertical: 5, backgroundColor: theme().palette.panelActive, borderRadius: 4 }}><Text style={textStyle()}>{tabHint()!.text}</Text></Overlay>}
-      <Popover open={!!renaming()} onOpenChange={(open) => { if (!open) { renaming.set(null); thaw(); } }} onOpen={() => renameInput?.focus()} popupStyle={{ width: 260, padding: 12, gap: 8, backgroundColor: theme().palette.panelActive }} trigger={<View style={{ position: "absolute", top: 56, left: 120, width: 1, height: 1 }} />}>
-        <Input ref={(node) => { renameInput = node; }} testID="tab-rename-input" placeholder="Tab title" value={renameTitle()} onChange={(value) => renameTitle.set(value)} onSubmit={saveRename} />
-        <View role="button" accessibilityLabel="Save title" onPress={saveRename}><Text style={textStyle()}>Save title</Text></View>
-      </Popover>
-      <PanelEditors controller={panelState} />
       <RemotePrompt controller={remote} />
     </View>
   );

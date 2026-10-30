@@ -30,19 +30,18 @@ test("P2b Find is local to each terminal and closes on Escape without switching 
   } finally { app.dispose(); }
 });
 
-test("P2b Open Vim is reachable and its dialog blocks window commands", async () => {
+test("P2b Open Vim is a bar at the bottom that blocks nothing", async () => {
   const app = await open("../App.tsx", { platform: "macos", width: 1220, height: 780,
     host: { params: { schema: 1, windowId: "p2b-vim-dialog", kind: "project", projectId: "p2b-vim-dialog", path: "/fixture/Vim", restore: { layout: restore } },
       handlers: { "app.restoreReady": null, "window.setDockInfo": null } } });
   try {
     await app.waitFor("id:terminal:find-parent");
     await app.host.send("command", { id: "openVim" });
-    expect(app.shows("id:vim-open-dialog")).toBe(true);
-    await app.host.send("command", { id: "openSettings" });
-    expect(app.shows("id:panel:panel:settings")).toBe(false);
-    await app.press("id:vim-open-cancel");
-    expect(app.shows("id:vim-open-dialog")).toBe(false);
+    expect(app.shows("id:vim-open-bar")).toBe(true);
     await app.host.send("command", { id: "openSettings" });
     expect(app.shows("id:panel:panel:settings")).toBe(true);
+    expect(app.shows("id:vim-open-bar")).toBe(true);
+    await app.press("id:vim-open-cancel");
+    expect(app.shows("id:vim-open-bar")).toBe(false);
   } finally { app.dispose(); }
 });

@@ -184,9 +184,7 @@ test("local shell content renders and Detach persists before reopening the same 
     await app.waitFor("id:terminal:persistent-local");
     expect(app.shows("id:terminal-panel:persistent-local")).toBe(true);
     await app.press("id:tab-close-shell:persistent-local");
-    expect(app.shows("id:tab-close-dialog")).toBe(true);
-    await app.press("label:Detach");
-    expect(latest(app).snapshot.panes[0].tabs.length).toBe(0);
+    await app.waitUntil(() => latest(app).snapshot.panes[0].tabs.length === 0);
     expect(app.shows("id:terminal:persistent-local")).toBe(false);
     await app.host.send("app.fixture.flush", {});
     await app.waitUntil(() => app.host.posts().some((post) => post.name === "app.fixture.flushed"));
@@ -234,8 +232,7 @@ test("terminal native nodes survive selection and resize until an explicit Detac
     await app.setColorScheme("dark");
     expect(mounts().sort()).toEqual(["stable-one", "stable-two"]);
     await app.press("id:tab-close-shell:stable-one");
-    await app.press("label:Detach");
-    expect(app.shows("id:terminal:stable-one")).toBe(false);
+    await app.waitUntil(() => !app.shows("id:terminal:stable-one"));
     expect(mounts().sort()).toEqual(["stable-one", "stable-two"]);
     await app.host.send("route", { step: { kind: "showShell", shellId: "stable-one" } });
     await app.waitFor("id:terminal:stable-one");

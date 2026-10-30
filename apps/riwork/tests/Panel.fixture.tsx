@@ -1,7 +1,7 @@
 import { Text, View, cleanup, host, mount, signal } from "nsh";
 import { Button } from "nsh/base";
 import { Store, type ProjectDto, type ShellSessionDto } from "riwork/native";
-import { PanelContent, PanelEditors, ShellIntent, createPanelController } from "../Panels";
+import { PanelContent, ShellIntent, createPanelController } from "../Panels";
 import type { ListPanel } from "../panel_model";
 
 function Body(props: { projects: ProjectDto[]; directory: string }) {
@@ -42,7 +42,6 @@ function Body(props: { projects: ProjectDto[]; directory: string }) {
     <PanelContent controller={controller} panel={panel()} surface="fixture" />
     {intent() && <ShellIntent controller={controller} shellId={intent()!} />}
     <Text testID="fixture-notice">{notice()}</Text>
-    <PanelEditors controller={controller} />
   </View>;
 }
 

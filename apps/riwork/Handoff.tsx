@@ -1,5 +1,5 @@
-import { Scroll, Text, View, cleanup, signal, type YNode } from "nsh";
-import { Button, Dialog, Input } from "nsh/base";
+import { Scroll, Text, View, cleanup, effect, signal, type YNode } from "nsh";
+import { Button, Input } from "nsh/base";
 import { Accounts, Chat, Handoff as HandoffBridge, type AccountsDto } from "riwork/native";
 import { space, type InterfaceTheme } from "./appearance";
 import { Icon } from "./Icon";
@@ -30,6 +30,8 @@ export interface HandoffProps {
   onCancel: () => void;
   onError: (message: string) => void;
   onNotice?: (message: string) => void;
+  /** Whether its tab is on screen: the first time it is, the model field takes the focus. */
+  visible?: () => boolean;
 }
 
 const LABELS: Record<Provider, string> = { codex: "Codex", claude: "Claude", grok: "Grok", muse: "Muse" };
@@ -38,7 +40,8 @@ const MODES: { id: Mode; label: string }[] = [
   { id: "auto_edit", label: "Auto-edit" }, { id: "full", label: "Full" }, { id: "plan", label: "Plan" },
 ];
 
-/** Opening this form reads the source. Only Hand off collects context or starts an agent. */
+/** A hand off's own tab. Opening it reads the source; only Hand off collects context or starts
+ * an agent. Closing the tab while it works lets the work finish: the new session opens then. */
 export function Handoff(props: HandoffProps) {
   // The bridge types kind and provider as plain strings; it sends only these values.
   const api = HandoffBridge as unknown as HandoffApi;
@@ -49,8 +52,9 @@ export function Handoff(props: HandoffProps) {
   const models = signal<{ provider: string; model?: string }[]>([]);
   const pending = signal(false), error = signal("");
   let alive = true, submitted = false;
-  let modelInput: YNode | undefined;
+  let modelInput: YNode | undefined, focused = false;
   cleanup(() => { alive = false; });
+  effect(() => { if (!focused && (props.visible?.() ?? true) && source() && modelInput) { focused = true; modelInput.focus(); } });
   const theme = props.theme;
   const size = (value: number) => space(value, theme().scale);
   const text = (value = 11, muted = false) => ({ fontFamily: theme().family, fontSize: value * theme().scale, color: muted ? theme().palette.muted : theme().palette.text });
@@ -60,7 +64,7 @@ export function Handoff(props: HandoffProps) {
 
   void api.source(sourceId).then((value) => {
     if (!alive) return;
-    source.set(value); kind.set(value.kind); provider.set(value.provider); modelInput?.focus();
+    source.set(value); kind.set(value.kind); provider.set(value.provider);
   }).catch((reason) => { if (alive) error.set(String(reason).replace(/^Error: /, "")); });
   void Accounts.list().then((value) => { if (alive) accounts.set(value); }).catch(() => {});
   void Chat.list().then((value) => { if (alive) models.set(value); }).catch(() => {});
@@ -89,7 +93,7 @@ export function Handoff(props: HandoffProps) {
       const result = await api.run(request);
       submitted = true;
       if (result.fallback) props.onNotice?.(result.fallback);
-      // Closing the dialog while busy hides it; completion must still open the new tab.
+      // Its tab may be closed while busy; completion must still open the new session.
       props.onDone(result);
     } catch (reason) {
       const message = String(reason).replace(/^Error: /, "");
@@ -105,12 +109,10 @@ export function Handoff(props: HandoffProps) {
   }
   const group = () => ({ flexDirection: "row" as const, flexWrap: "wrap" as const, alignSelf: "flex-start" as const, gap: 2, padding: 2, borderRadius: 8, backgroundColor: theme().palette.panelActive });
   const heading = (label: string) => <Text style={{ ...text(10, true), fontWeight: "600" }}>{label}</Text>;
-  return <Dialog testID="handoff-dialog" animation="none" closeOnBackdropPress={false} closeOnEscape={true}
-    onOpen={() => modelInput?.focus()} onOpenChange={(open) => { if (!open) dismiss(); }} backdropStyle={{ backgroundColor: "#00000066" }}
-    style={{ width: size(560), maxWidth: "100%", maxHeight: "90%", padding: size(20), gap: size(12), backgroundColor: theme().palette.panel, borderRadius: 10 }}>
+  return <Scroll testID="handoff-setup" style={{ flex: 1, minHeight: 0, backgroundColor: theme().palette.bg }} contentStyle={{ alignItems: "center", padding: size(20) }}>
+    <View style={{ width: "100%", maxWidth: size(600), gap: size(10) }}>
     <View style={{ flexDirection: "row", alignItems: "center", gap: size(8) }}><Icon name="chat" size={17 * theme().scale} color={theme().palette.muted} /><Text role="header" style={{ ...text(17), fontWeight: "600" }}>Hand off conversation</Text></View>
     <Text numberOfLines={2} style={text(11, true)}>{source()?.label ?? (error() ? "Source unavailable" : "Reading the conversation's source…")}</Text>
-    <Scroll style={{ flexShrink: 1, minHeight: 0 }} contentStyle={{ gap: size(10) }}>
       {source() && <>
         {heading("Destination")}
         <View role="radiogroup" accessibilityLabel="Destination" style={group()}>
@@ -139,18 +141,18 @@ export function Handoff(props: HandoffProps) {
             {choice("handoff-transcript", "Transcript", context() === "transcript", () => context.set("transcript"))}
             {choice("handoff-summary", "Summary", context() === "summary", () => context.set("summary"))}
           </View>
-          <Text style={text(10, true)}>{context() === "summary" ? "Asks the source agent to write a summary. You can hide this dialog if it needs your input; the transcript is used if a summary is unavailable." : "Passes the recorded conversation. The source session stays as it is."}</Text>
+          <Text style={text(10, true)}>{context() === "summary" ? "Asks the source agent to write a summary. You can leave this tab while it works, or answer the agent in its own tab; the transcript is used if a summary is unavailable." : "Passes the recorded conversation. The source session stays as it is."}</Text>
         </>}
         {heading("Note")}
         <Input testID="handoff-note" accessibilityLabel="Note for the new agent" placeholder="Anything the new agent should know" multiline={true} autoCorrect={false} value={note()} onChange={(value) => note.set(value)} disabled={pending()} style={{ ...field(), minHeight: size(56), maxHeight: size(120) }} />
         <Text selectable={true} numberOfLines={2} style={{ ...text(10, true), fontFamily: theme().monoFamily }}>{`Same project, worktree and directory · ${source()!.cwd}`}</Text>
       </>}
       {pending() && <Text role="text" style={{ ...text(), color: theme().palette.gold }}>{context() === "summary" ? "Asking for a summary and preparing the new session…" : "Reading the conversation and preparing the new session…"}</Text>}
-      {error() && <Text role="alert" style={{ ...text(), color: theme().palette.gold }}>{error()}</Text>}
-    </Scroll>
+      {!!error() && <Text role="alert" style={{ ...text(), color: theme().palette.gold }}>{error()}</Text>}
     <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: size(8) }}>
       <Button testID="handoff-cancel" onPress={dismiss} style={{ paddingHorizontal: size(12), paddingVertical: size(7), borderRadius: 6 }}><Text style={text()}>{pending() ? "Continue in background" : "Cancel"}</Text></Button>
       <Button testID="handoff-start" disabled={!source() || pending()} onPress={() => void start()} style={{ paddingHorizontal: size(12), paddingVertical: size(7), borderRadius: 6, backgroundColor: theme().palette.panelActive }}><Text style={{ ...text(), fontWeight: "600" }}>{pending() ? "Handing off…" : "Hand off"}</Text></Button>
     </View>
-  </Dialog>;
+    </View>
+  </Scroll>;
 }
