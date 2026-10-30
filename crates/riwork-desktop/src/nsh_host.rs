@@ -2463,7 +2463,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     });
     let delegate = Delegate::new(mtm, None);
     app.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
-    set_ui_sets(vec![nsh_base::registry(), native::registry()]);
+    set_ui_sets(native::ui_sets());
     let menus = HostMenus::install(mtm, Arc::new(|action| send(Main::Menu(action))));
     let (tx, rx) = mpsc::channel();
     let components = Components::default();
@@ -2472,6 +2472,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     );
     riwork_nsh_terminal::register(&components, startup.home.clone());
     native::preview_macos::register(&components);
+    native::addin_view::register(&components);
     native::symbols_macos::register(&components);
     let (notifier, notification_center) = notification_delivery(&startup.home);
     let mut host = Host {

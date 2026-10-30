@@ -43,6 +43,7 @@ const paths = {
   "task-todo": "M21 12a9 9 0 1 0-18 0 9 9 0 0 0 18 0",
   "task-active": "M21 12a9 9 0 1 0-18 0 9 9 0 0 0 18 0M12 3v18M9 3.5v17M6 5.5v13",
   "task-done": "M21 12a9 9 0 1 0-18 0 9 9 0 0 0 18 0M8 12l3 3 5-6",
+  addins: "M4 10h3a2 2 0 1 0 4 0h3v3a2 2 0 1 1 0 4v3H4v-4a2 2 0 1 0 0-4Z",
 } as const;
 
 export type IconName = keyof typeof paths;
@@ -60,6 +61,7 @@ const symbols: Record<IconName, string> = {
   "bell-off": "bell.slash", refresh: "arrow.clockwise", search: "magnifyingglass",
   down: "chevron.down", up: "arrow.up", stop: "stop.fill", right: "chevron.right", check: "checkmark", copy: "doc.on.doc", layout: "sidebar.left",
   "task-todo": "circle", "task-active": "circle.lefthalf.filled", "task-done": "checkmark.circle.fill",
+  addins: "puzzlepiece.extension",
 };
 
 const SystemSymbol = nativeComponent<{
@@ -75,7 +77,7 @@ const availableSymbols = new Set<string>();
 
 export const PANEL_ICONS: Record<string, IconName> = {
   projects: "projects", files: "folder", worktrees: "worktrees", tasks: "tasks", shells: "terminal",
-  usage: "usage", settings: "settings", project_settings: "sliders", schedules: "calendar", dashboard: "globe", preview: "eye",
+  usage: "usage", settings: "settings", project_settings: "sliders", schedules: "calendar", dashboard: "globe", preview: "eye", addins: "addins",
 };
 
 export function Icon(props: { name: IconName; size?: number; color?: string }) {

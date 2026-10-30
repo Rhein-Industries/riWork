@@ -614,7 +614,7 @@ pub fn prune_global_tabs(
             SavedTab::Panel { panel } => *panel == PanelKind::Dashboard,
             SavedTab::Chat { chat_id } => global_chats.contains(chat_id),
             SavedTab::Shell { shell_id } => live_global_shells.contains(shell_id),
-            SavedTab::RemoteShell { .. } | SavedTab::AppPreview { .. } => false,
+            SavedTab::RemoteShell { .. } | SavedTab::AppPreview { .. } | SavedTab::Addin { .. } => false,
         });
         changed |= old_len != pane.tabs.len();
         // Prevent normalize from importing a removed legacy shell again.

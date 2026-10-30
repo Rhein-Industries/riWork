@@ -1,0 +1,19 @@
+{
+  "id": "example.security-dashboard",
+  "name": "Security dashboard",
+  "version": "0.1.0",
+  "api": 1,
+  "description": "Scans the project for secrets left in its files, shows what it found, and turns findings into tasks. Agents can run the scan too.",
+  "views": [{ "id": "main", "title": "Security" }],
+  "permissions": ["project.read", "tasks.write", "status", "notify"],
+  "settings": {
+    "skip": { "type": "string", "label": "Folders to skip", "description": "Comma-separated folder names", "default": "node_modules,target,.git,.build,out" }
+  },
+  "workers": [{ "id": "scanner", "command": ["scanner.py"], "description": "Looks through the project's files for secrets" }],
+  "tools": [{
+    "name": "scan_secrets", "description": "Scan a folder for secrets left in files (keys, tokens, private keys). Returns each finding's file, line and kind.",
+    "worker": "scanner", "method": "scan",
+    "input_schema": { "type": "object", "properties": { "root": { "type": "string", "description": "Absolute folder to scan" } }, "required": ["root"] }
+  }],
+  "commands": [{ "id": "rescan", "title": "Scan again" }]
+}

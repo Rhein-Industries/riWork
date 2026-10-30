@@ -4,6 +4,9 @@
 //! `[nsh_base::registry(), registry()]` once. All windows share the same process
 //! service; neither subscription registration nor delivery does domain I/O on an
 //! engine thread. See the crate README for lifecycle and test instructions.
+#[cfg(target_os = "macos")]
+pub mod addin_view;
+pub mod addins;
 pub mod app_preview;
 pub mod appearance;
 pub mod backend;
@@ -49,6 +52,12 @@ use dto::{
 use hub::{Snapshot, TopicSubscription};
 pub use service::{ProcessService, initialize};
 
+/// The UI sets of RiWork's own engines: `nsh/base` and `riwork/native`. Add-in engines get
+/// `nsh/base` only (addin_view.rs).
+pub fn ui_sets() -> Vec<nsh_core::element::Registry> {
+    vec![nsh_base::registry(), registry()]
+}
+
 #[native_module("riwork/native")]
 fn native(registry: &mut Registry) {
     registry
@@ -65,6 +74,7 @@ fn native(registry: &mut Registry) {
         .module::<orchestrators::Orchestrators>()
         .module::<chat::Chat>()
         .module::<dictation::Dictation>()
+        .module::<addins::Addins>()
         .module::<speech::SpeechModels>()
         .class::<dictation::DictationHandle>()
         .module::<handoff::Handoff>()
@@ -410,6 +420,7 @@ mod tests {
             modules.iter().map(|module| module.name).collect::<Vec<_>>(),
             [
                 "Accounts",
+                "Addins",
                 "ApiKey",
                 "Appearance",
                 "Chat",

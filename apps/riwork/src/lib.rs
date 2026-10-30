@@ -535,11 +535,12 @@ impl LayoutSession {
             .strip_prefix("shell:")
             .and_then(|id| self.data.shells.as_ref()?.iter().find(|s| s.id == id));
         json!({"id":self.model.panel_id(tab),"key":key,
-            "kind":match tab {SavedTab::Shell{..}=>"shell",SavedTab::Panel{..}=>"panel",SavedTab::RemoteShell{..}=>"remote_shell",SavedTab::Chat{..}=>"chat",SavedTab::AppPreview{..}=>"app_preview"},
+            "kind":match tab {SavedTab::Shell{..}=>"shell",SavedTab::Panel{..}=>"panel",SavedTab::RemoteShell{..}=>"remote_shell",SavedTab::Chat{..}=>"chat",SavedTab::AppPreview{..}=>"app_preview",SavedTab::Addin{..}=>"addin"},
             "title":entry.map(|e|e.title.clone()).unwrap_or_else(||tab_title(tab)),
             "shared":entry.is_some(),"status":entry.map(|e|e.status.clone()),"worker":entry.is_some_and(|e|e.worker)||shell.is_some_and(|s|s.worker()),
             "parent":entry.and_then(|e|e.parent.clone()),
-            "previewSpec":match tab {SavedTab::AppPreview{spec,..}=>serde_json::to_value(spec).ok(),_=>None}})
+            "previewSpec":match tab {SavedTab::AppPreview{spec,..}=>serde_json::to_value(spec).ok(),_=>None},
+            "addin":match tab {SavedTab::Addin{instance_id,addin,view,args,..}=>Some(json!({"instance":instance_id,"key":addin,"view":view,"args":args})),_=>None}})
     }
 
     /// Rust-only gesture replay; returns the shared Move its caller must apply.
@@ -696,6 +697,31 @@ impl LayoutSession {
                     preview_id: id,
                     spec,
                 })
+                .map(|next| (next, true))
+        })
+    }
+
+    /// Opens a view of an add-in: `{addin: "<scope>/<id>", view, title, args}`. Without `args`
+    /// it selects a tab of that view that is open already.
+    pub fn open_addin(&mut self, request: Value) -> Result<Value, String> {
+        let text = |name: &str| request.get(name).and_then(Value::as_str).filter(|value| !value.is_empty()).map(str::to_owned);
+        let addin = text("addin").ok_or("invalid: open_addin needs an add-in")?;
+        let view = text("view").ok_or("invalid: open_addin needs a view")?;
+        let title = text("title").unwrap_or_default();
+        let args = request.get("args").cloned().unwrap_or(Value::Null);
+        if args.is_null() {
+            let open = self.model.project().panes.values().flat_map(|pane| &pane.tabs).find(|tab| {
+                matches!(tab, SavedTab::Addin { addin: a, view: v, args, .. } if *a == addin && *v == view && args.is_null())
+            });
+            if let Some(tab) = open {
+                let id = self.model.panel_id(tab);
+                return self.select_panel(id);
+            }
+        }
+        let instance_id = uuid::Uuid::new_v4().to_string();
+        self.edit(|model| {
+            model
+                .open_tab(SavedTab::Addin { instance_id, addin, view, title, args })
                 .map(|next| (next, true))
         })
     }
@@ -1353,6 +1379,9 @@ fn tab_title(tab: &SavedTab) -> String {
             .filter(|name| !name.is_empty())
             .map(|name| format!("Preview · {}", name.to_string_lossy()))
             .unwrap_or_else(|| "App Preview".into()),
+        SavedTab::Addin { title, view, .. } => {
+            if title.is_empty() { format!("Add-in · {view}") } else { title.clone() }
+        }
     }
 }
 

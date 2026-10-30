@@ -60,6 +60,11 @@ riwork settings list [--json]          List global settings and their typed valu
 riwork settings get KEY [--json]       Read one known global setting
 riwork settings set KEY VALUE [--json]   Validate, save, and print the effective value
 riwork settings help                   Show settings input rules and reload behavior
+riwork addin list [--json]              List this folder's project's add-ins and your personal ones
+riwork addin new NAME [--personal] [--id ID]   Make an add-in from the template
+riwork addin trust|revoke KEY           Grant an add-in what it asks for, or take that back
+riwork addin tool KEY TOOL [JSON]       Run an add-in's agent tool as riwork mcp does
+riwork addin help                       Show where add-ins live and what trust covers
 riwork setup                            Install and start Cua.ai Driver; link its skill into each CLI
 riwork cua setup|status|permissions      Manage native computer use (status only reads)
 riwork cua mcp                          Serve Cua.ai Driver over MCP stdio
@@ -444,6 +449,7 @@ fn run_cli_with_invocation(args: &[String], invocation: Invocation) -> Result<bo
             | "usage"
             | "appearance"
             | "settings"
+            | "addin"
             | "capabilities"
             | "telemetry"
             | "agent-notify"
@@ -507,6 +513,7 @@ fn run_cli_with_invocation(args: &[String], invocation: Invocation) -> Result<bo
         "usage" => usage_command(args, json)?,
         "appearance" => appearance_command(args, json)?,
         "settings" => settings_cli::command(args, json)?,
+        "addin" => addin_cli::command(args, json)?,
         "capabilities" => capabilities_command(args, json)?,
         "setup" => {
             ensure_empty(&args)?;
@@ -4144,6 +4151,7 @@ fn ensure_empty(args: &[String]) -> Result<(), String> {
     }
 }
 
+mod addin_cli;
 mod chat_remote;
 mod handoff;
 mod memo;
