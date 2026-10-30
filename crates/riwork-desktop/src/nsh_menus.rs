@@ -214,10 +214,10 @@ define_class!(
             self.emit("newWindow");
         }
 
-        // Keep the standard selectors, but explicitly offer them to a native
-        // text field / terminal first. NSH's own NshView consumes copy: and
-        // selectAll: internally, so a nil target would prevent the transcript
-        // from exporting its Rust-owned selection through host.on("command").
+        // Keep the standard selectors and send them to the responder chain's
+        // target: a native text field or terminal, or NSH's own NshView, whose
+        // copy: and selectAll: copy and select its selectable texts (the chat
+        // transcript). The command is still sent to the window after NshView.
         #[unsafe(method(cut:))]
         fn cut(&self, sender: Option<&AnyObject>) {
             self.edit(sel!(cut:), "cut", sender);
@@ -255,11 +255,10 @@ impl MenuTarget {
         // Asking for the chain's target does not invoke this explicit menu
         // target; it is an NSObject outside the responder chain.
         if let Some(target) = unsafe { app.targetForAction_to_from(action, None, sender) } {
-            if !is_nsh_view(&target) {
-                // SAFETY: AppKit selected an object that answers this action.
-                if unsafe { app.sendAction_to_from(action, Some(&target), sender) } {
-                    return;
-                }
+            // SAFETY: AppKit selected an object that answers this action.
+            let handled = unsafe { app.sendAction_to_from(action, Some(&target), sender) };
+            if handled && !is_nsh_view(&target) {
+                return;
             }
         }
         self.emit(command);
