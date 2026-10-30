@@ -16,6 +16,7 @@ pub mod codex_balancing;
 pub mod cua;
 pub mod dashboard_intelligence;
 pub mod file_preview;
+pub mod flows;
 mod folder_trust;
 pub mod global_overview;
 pub mod handoff;

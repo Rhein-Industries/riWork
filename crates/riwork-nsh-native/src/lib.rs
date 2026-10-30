@@ -11,6 +11,8 @@ pub mod chat;
 pub mod cua;
 pub mod dashboard;
 pub mod dictation;
+mod diagram;
+pub mod flows;
 pub mod dto;
 pub mod files;
 pub mod host_flush;
@@ -68,6 +70,7 @@ fn native(registry: &mut Registry) {
         .module::<speech::SpeechModels>()
         .class::<dictation::DictationHandle>()
         .module::<handoff::Handoff>()
+        .module::<flows::Flows>()
         .module::<usage::Usage>()
         .module::<usage::Accounts>()
         .module::<cua::Cua>()
@@ -417,6 +420,7 @@ mod tests {
                 "Dashboard",
                 "Dictation",
                 "Files",
+                "Flows",
                 "Handoff",
                 "Layouts",
                 "OrcaImport",
@@ -439,6 +443,7 @@ mod tests {
                     function.name,
                     "subscribe"
                         | "subscribeMetrics"
+                        | "subscribeChat"
                         | "sentenceCase"
                         | "open"
                         | "stageProjectMemo"

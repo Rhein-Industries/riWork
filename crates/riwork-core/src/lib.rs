@@ -4,6 +4,7 @@ pub mod app_preview;
 pub mod appearance_file;
 pub mod codex_accounts;
 pub mod delegation;
+pub mod flows;
 pub mod global_window;
 pub mod layouts;
 pub mod orca_import;

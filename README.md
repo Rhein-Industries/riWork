@@ -589,6 +589,51 @@ The new agent's first message is "You are taking over a conversation from SOURCE
 
 **In the app.** **Hand off…** in a Codex, Claude, Grok or Muse tab's **…** menu (its **Tab** section) and in a chat tab's **⋯** menu opens a small dialog: **Open it as a** Shell or Chat, the **Agent**, the **Model** (a free text, with a few suggestions), the **Codex account** (the project's own, the system's, or a saved one, from the list Settings keeps) when the agent is Codex, **What it reads** (Transcript or Summary) when the source can be asked, and a **Note**. Tab or the arrow keys move between the lines, Left and Right or Space change a choice, Return hands off and Esc closes. The work runs off the UI thread while the dialog says what it is doing ("Writing summary…"); an error, such as a busy agent being asked for a summary, shows in the dialog so the choice can be changed. Because a summary can take minutes, and the agent asked may be waiting for your approval in its own tab, Esc (or **Hide**) while it works puts the dialog away and lets the work finish: a notice follows its steps, only one hand off runs at a time, and the window is free. When it is done the new tab opens in the pane new tabs go to (the main pane, if there is one); if a summary did not come, a notice says the transcript was used. A project on another Mac has no hand off; a notice says so.
 
+## Flows
+
+A flow is a statechart that leads a chat step by step. Each step tells the agent what to do; the agent moves on itself, and only when the way on allows it: a check command passes, it gives evidence, or you approve. Flows belong to a project, as JSON files in `.ontack/flows/` (commit them with the code, or ask an agent to write one).
+
+```json
+{
+  "name": "CFD study",
+  "description": "Mesh, solve, report.",
+  "instructions": "Keep notes in study/NOTES.md.",
+  "initial": "geometry",
+  "states": {
+    "geometry": {
+      "title": "Geometry",
+      "instructions": "Prepare and check the geometry.",
+      "on": { "ready": { "target": "solve", "check": { "approval": true } } }
+    },
+    "solve": {
+      "title": "Solve",
+      "initial": "setup",
+      "states": {
+        "setup": { "on": { "run": { "target": "running", "check": { "command": "make check-case", "timeout": 300 } } } },
+        "running": { "on": { "converged": { "target": "report", "evidence": true }, "diverged": { "target": "setup" } } }
+      },
+      "on": { "abandon": { "target": "report", "description": "give up and report why" } }
+    },
+    "report": { "title": "Report", "final": true, "instructions": "Write the report." }
+  }
+}
+```
+
+A state has a `title`, `instructions`, ways on (`on`: event → `target`, an optional `description`, `check` and `evidence`), and may hold nested `states` with an `initial` one: entering it enters that child, and the outer state's ways on apply inside it unless a child has one of the same name. A top-level state may be `final`; reaching one completes the run. A `check` is either a `command` (run with `/bin/sh` in the chat's folder, within `timeout` seconds, 600 by default and at most 3600; a failure answers the agent with the last lines of its output) or `"approval": true`. `"evidence": true` makes the agent say what it did. Names are letters, digits, `_` and `-`; an invalid file is listed with the reason and cannot run.
+
+```sh
+riwork flow new "Code review"        # .ontack/flows/code-review.json, plan → build → review → done
+riwork flow list | show FLOW [--mermaid]
+riwork flow start FLOW --chat CHAT_ID
+riwork flow status                   # in an agent's shell: where it is, and how it moves on
+riwork flow next EVENT [--evidence "what I did"]
+riwork flow runs | approve RUN_ID [--note TEXT] | deny RUN_ID [--note TEXT] | stop RUN_ID
+```
+
+**Running one.** Starting a flow in a chat sends the chat its first step as a message: the instructions (the flow's, the outer states', the step's) and the ways on as commands to run. The agent runs `riwork flow next EVENT` in its shell (`RIWORK_CHAT_ID` says which chat); the answer is the next step, or why it cannot move yet (an unknown event, missing evidence, a failed check), and the command then exits 2. A way on that needs approval makes the agent stop and wait: you decide in RiWork, with an optional note, and the decision reaches the chat as a message (Approve moves it on; Not yet keeps it in the step, with your note). A chat follows one flow at a time. Runs are kept in `RIWORK_HOME/flows/runs/`, with their history; the flow file is read again on every step, so editing it changes a run in progress, and a run whose step was removed says so and is stopped by you.
+
+**In the app.** **Flows** (in the **⋯** menu's views) lists the project's flows with a live diagram, drawn offline by the same worker as chat diagrams, with the step a run is in marked. **Edit file** opens the flow in the editor, **Run in a chat…** picks one of the project's chats, and each run shows where it is, its history, and Approve / Not yet / Stop flow. A chat that a flow leads shows its step above the message box, with Approve and Not yet when it waits for you.
+
 ## UI controls
 
 | Action | Shortcut |

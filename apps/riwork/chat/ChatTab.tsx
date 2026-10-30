@@ -18,6 +18,7 @@ import { DictationControl, DictationStatus, type DictationController } from "./D
 import { FileReview } from "./FileReview";
 import { ChatImage } from "./ChatImage";
 import { WorkerShelf } from "./WorkerShelf";
+import { FlowStrip } from "../flows/FlowStrip";
 import { MemoPreview, appendMemo, createMemoPreview, memoCommandRest } from "./MemoPreview";
 import { CodeTerminalDialog } from "./CodeTerminalDialog";
 import { CodeReader, MAX_SNIPPET, saveSnippet, type CodeSnippet } from "./CodeReader";
@@ -702,6 +703,7 @@ export function ChatTab(props: ChatTabProps) {
           following.set(false); selectedRow.set(id); pendingReveal = id;
           void handle.revealItem(id).then((index) => { if (index !== undefined && index !== null) jumpTo(index); }).catch((error) => notice(String(error)));
         }} />
+      <View style={chatColumn(paneWidth(), theme().scale)}><FlowStrip chatId={props.chatId} visible={() => props.visible} theme={theme} notice={notice} /></View>
       <Requests panel={panel} handle={handle} theme={theme} notice={notice} width={paneWidth} />
       {notices().length > 0 && <View testID="chat-notices" style={{ ...chatColumn(paneWidth(), theme().scale), gap: 2 }}>
         {notices().map((message, index) => <View style={{ flexDirection: "row", gap: 8, paddingVertical: 4 }}>

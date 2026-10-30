@@ -1,0 +1,5 @@
+{
+  "name": "RiWork flows headless fixtures",
+  "id": "dev.riwork.test.flows",
+  "capabilities": { "host": ["app.fixture.*", "window.*", "system.*"], "clipboard": true }
+}

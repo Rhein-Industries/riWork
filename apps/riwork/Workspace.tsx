@@ -26,6 +26,7 @@ import { ChatTab, type NativeChatUsage } from "./chat/ChatTab";
 import { ChatFailure } from "./chat/ChatFailure";
 import { createFilesController, FilesPanel, PreviewPanel } from "./Files";
 import { AutomationsPanel } from "./schedules/Automations";
+import { FlowsPanel } from "./flows/FlowsPanel";
 import { createRemoteController, RemoteProjects, RemoteProjectPanel, RemotePrompt, RemoteSettings, RemoteUnavailable, type RemoteApi } from "./remote/Remote";
 import { RemoteTerminal } from "./remote/RemoteTerminal";
 import { filteredFolders, remoteHostLabel, remoteLocalOnly, remotePanelUnavailable, remoteProjectKey, remoteTabTitle, remoteTitle, splitRemoteTitle } from "./remote/model";
@@ -60,7 +61,7 @@ function panelIds(node: DockNode): string[] {
 }
 
 const NAVIGATION_PANELS = ["projects", "worktrees", "tasks", "shells"];
-const VIEWS = ["projects", "files", "preview", "worktrees", "tasks", "shells", "usage", "schedules", "dashboard", "project_settings", "settings"];
+const VIEWS = ["projects", "files", "preview", "worktrees", "tasks", "shells", "usage", "schedules", "flows", "dashboard", "project_settings", "settings"];
 const VIEW_KEYS: Record<string, string> = { projects: "⌘B", files: "⌘⇧E", preview: "⌘⇧P", shells: "⌘⌥S", schedules: "⌘⇧S", dashboard: "⌘⌥G", project_settings: "⌘⌥A", settings: "⌘," };
 const VIEW_SHORTCUTS: Record<string, string> = { files: "mod+shift+e", preview: "mod+shift+p", schedules: "mod+shift+s", dashboard: "mod+alt+g", settings: "mod+," };
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -944,6 +945,12 @@ export function Workspace(props: WorkspaceProps) {
                   {props.diagnostics && <MountProbe id={panel.id} visible={isVisible(panel.id)} theme={theme} />}
                   <AutomationsPanel projectId={projectId} worktreeId={panelState.selectedWorktree} visible={() => isVisible(panel.id)} active={() => selected() === panel.id && !terminalFrozen()} theme={theme}
                     openChat={(id) => action(() => session.openChat(id))} />
+                </View> : panel.id === "panel:flows" ?
+                <View testID={`panel:${panel.id}`} style={{ flex: 1, minHeight: 0 }}>
+                  {props.diagnostics && <MountProbe id={panel.id} visible={isVisible(panel.id)} theme={theme} />}
+                  <FlowsPanel projectId={projectId} visible={() => isVisible(panel.id)} theme={theme}
+                    chats={() => panelState.chats().filter((chat) => chat.projectId === projectId()).map((chat) => ({ id: chat.id, title: chat.title }))}
+                    openChat={(id) => action(() => session.openChat(id))} editFile={(path) => void openEditor(path)} />
                 </View> : panel.id.startsWith("remote:") ?
                 <RemoteTerminal desktopId={panel.id.split(":")[1]} shellId={panel.id.split(":")[2]} label={remoteHostLabel(remote.data(), panel.id.split(":")[1])}
                   link={remote.data().hosts.find((host) => host.id === panel.id.split(":")[1])?.link ?? null} visible={isVisible(panel.id)} focusOnAttach={pendingFocus() === panel.id}
