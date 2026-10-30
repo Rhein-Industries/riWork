@@ -1,6 +1,8 @@
-import { Canvas, Path2D, Text, View, cleanup, effect, keymap, openUrl, signal } from "nsh";
+import { Canvas, Path2D, Text, View, cleanup, effect, host, keymap, openUrl, signal } from "nsh";
+import { Button } from "nsh/base";
 import * as Native from "riwork/native";
 import type { InterfaceTheme } from "../appearance";
+import { HOLD_KEY_LABELS, createHold, holdCommand } from "./push_to_talk";
 
 export interface DictationSources { names: string[]; paths: string[]; text: string }
 export interface DictationState {
@@ -32,6 +34,8 @@ export interface DictationController {
   dismiss(): void;
   /** True means final words are settling and this callback will send them once. */
   finishBeforeSend(send: () => void): boolean;
+  /** Push-to-talk: dictating while a key or the mic button is held; releasing sends. */
+  holding(): boolean;
 }
 
 interface DictationProps {
@@ -46,6 +50,10 @@ interface DictationProps {
   focus: () => void;
   sources?: () => DictationSources;
   onController: (controller: DictationController) => void;
+  /** Sends the message: push-to-talk's release does, once the words are in. */
+  send?: () => void;
+  /** The key held alone for push-to-talk (`right_command`, `right_option`), or `off`. */
+  holdKey?: string;
 }
 
 /** The original insertion rules, using the NSH editor's UTF-16 offsets. Speech is a
@@ -125,12 +133,16 @@ export function DictationControl(props: DictationProps) {
   let completedSession = 0;
   let suppress = false;
   let deferredSend: (() => void) | undefined;
+  // Push-to-talk's release sends only words it delivered: never a draft on its own.
+  const sendOnCommit = signal(false);
+  const holding = signal(false);
   let commands = Promise.resolve();
 
   function apply(edit: { text: string; start: number; end: number }) {
     props.setValue(edit.text, edit.start, edit.end);
   }
-  function discard() { apply(insertion.discard(props.value(), props.selection())); }
+  // Nothing inserted, nothing touched: a hold voided by a shortcut (⌘C) leaves the box alone.
+  function discard() { const edit = insertion.discard(props.value(), props.selection()); if (edit.text !== props.value()) apply(edit); }
   function fail(error: unknown) {
     if (!alive) return;
     deferredSend = undefined;
@@ -157,8 +169,14 @@ export function DictationControl(props: DictationProps) {
       if (next.delivery.kind === "commit" && !suppress) {
         apply(insertion.show(props.value(), props.selection(), next.delivery.text ?? "", props.focused?.() ?? true));
         insertion.reset();
+        if (sendOnCommit() && props.send) {
+          const send = props.send;
+          // As deferredSend: the controlled editor's draft settles before the send reads it.
+          void Promise.resolve().then(() => { if (alive) send(); });
+        }
       } else discard();
     }
+    sendOnCommit.set(false);
     if (next.phase === "failed") deferredSend = undefined;
     if (deferredSend) {
       const send = deferredSend;
@@ -172,6 +190,8 @@ export function DictationControl(props: DictationProps) {
   function cancel() {
     suppress = true;
     deferredSend = undefined;
+    sendOnCommit.set(false);
+    holding.set(false);
     discard();
     state.set({ ...state(), phase: "idle", text: "", problem: null, settingsUrl: null });
     command(() => handle.cancel());
@@ -180,19 +200,56 @@ export function DictationControl(props: DictationProps) {
     deferredSend = undefined;
     if (isActive(state())) command(() => handle.stop());
   }
+  const ready = () => props.enabled && !props.disabled && props.active;
   function toggle() {
-    if (!props.enabled || props.disabled || !props.active) return;
+    if (!ready()) return;
     if (isActive(state())) { stop(); return; }
+    start();
+  }
+  /** `focus` moves the keyboard to the message box: a click does; a held key does not, so a
+   * shortcut made with it (⌘C on transcript text) still goes where the person was. */
+  function start(focus = true) {
+    sendOnCommit.set(false);
     insertion.reset();
     suppress = false;
     minimumSession = state().session + 1;
     state.set({ ...state(), phase: "preparing", text: "", note: null, problem: null, delivery: null });
-    props.focus();
+    if (focus) props.focus();
     const sources = props.sources?.() ?? { names: [], paths: [], text: "" };
     command(() => handle.start(sources));
   }
+  const hold = createHold({
+    begin: () => {
+      if (!ready() || isActive(state())) return false;
+      start(false);
+      holding.set(true);
+      return true;
+    },
+    release: (send) => {
+      holding.set(false);
+      // Released before the microphone opened: nothing can have been heard.
+      if (state().phase === "preparing") { cancel(); return; }
+      stop();
+      sendOnCommit.set(send);
+    },
+    abort: cancel,
+  });
+  cleanup(host.on("command", (event) => {
+    const command = holdCommand((event as { id?: string }).id ?? "");
+    if (!command || !props.holdKey || command.key !== props.holdKey) return;
+    if (command.edge === "down") { if (ready()) hold.down(); }
+    else if (command.edge === "up") hold.up();
+    else hold.cancel();
+  }));
+  // A key released in another app never comes back here: losing the keyboard ends the hold,
+  // keeping what was said without sending it.
+  cleanup(host.on("window.state", (value) => {
+    const window = value as { key?: boolean; appActive?: boolean };
+    if (window.key === false || window.appActive === false) hold.up(false);
+  }));
+  let swallowPress = false;
   const controller: DictationController = {
-    active: () => isActive(state()), status: state,
+    active: () => isActive(state()), status: state, holding: () => holding() || sendOnCommit(),
     userEdited: () => insertion.userEdited(), stop, cancel,
     dismiss: () => { state.set({ ...state(), phase: "idle", problem: null, settingsUrl: null }); command(() => handle.dismiss()); },
     finishBeforeSend(send) {
@@ -224,13 +281,18 @@ export function DictationControl(props: DictationProps) {
     handle.close();
   });
 
+  const holdHint = () => HOLD_KEY_LABELS[props.holdKey ?? ""] ? `, or hold ${HOLD_KEY_LABELS[props.holdKey!]} or this button to talk` : ", or hold to talk";
   const label = () => state().phase === "preparing" ? state().note ?? "Getting the microphone ready…"
     : state().phase === "finishing" ? "Finishing what was heard…"
-    : state().phase === "listening" ? "Stop dictating and keep words · ⌃⌥D or ⎋ · ⏎ sends"
-    : state().phase === "failed" ? "Dictate again · ⌃⌥D" : "Dictate · ⌃⌥D";
+    : state().phase === "listening" ? holding() ? "Release to send" : "Stop dictating and keep words · ⌃⌥D or ⎋ · ⏎ sends"
+    : state().phase === "failed" ? "Dictate again · ⌃⌥D" : `Dictate · ⌃⌥D${holdHint()}`;
   return <View style={{ display: props.enabled ? "flex" : "none" }}>
-    <View role="button" testID="chat-dictate" tooltip={label()} accessibilityLabel={label()}
-      accessibilityState={{ disabled: !!props.disabled, selected: isActive(state()) }} onPress={toggle}
+    <Button testID="chat-dictate" tooltip={<Text style={{ fontFamily: props.theme().family, fontSize: 11 * props.theme().scale, color: props.theme().palette.text }}>{label()}</Text>}
+      accessibilityLabel={label()} disabled={!!props.disabled} selected={isActive(state())}
+      // A press held past the hold delay is push-to-talk and its release sends; a click toggles.
+      onPressDown={() => { swallowPress = false; if (ready()) hold.down(); }}
+      onPressUp={() => { if (hold.up()) swallowPress = true; }}
+      onPress={() => { if (swallowPress) { swallowPress = false; return; } if (!hold.holding()) toggle(); }}
       style={{ width: 26 * props.theme().scale, height: 26 * props.theme().scale, borderRadius: 13 * props.theme().scale,
         alignItems: "center", justifyContent: "center", opacity: props.disabled ? 0.4 : 1,
         backgroundColor: isActive(state()) ? props.theme().palette.panelActive : "transparent" }}
@@ -247,7 +309,7 @@ export function DictationControl(props: DictationProps) {
         cx.stroke(new Path2D("M5 11v1a7 7 0 0 0 14 0v-1M12 19v3M8 22h8"));
         if (state().phase === "failed") cx.stroke(new Path2D("M3 3l18 18"));
       }} />
-    </View>
+    </Button>
   </View>;
 }
 
@@ -256,8 +318,10 @@ export function DictationStatus(props: { theme: () => InterfaceTheme; controller
   const state = () => props.controller()?.status();
   const shown = () => state() && state()!.phase !== "idle";
   const failed = () => state()?.phase === "failed";
+  const holding = () => props.controller()?.holding() ?? false;
   const message = () => failed() ? state()?.problem : state()?.phase === "preparing" ? state()?.note ?? "Preparing microphone…"
-    : state()?.phase === "finishing" ? "Finishing… · Enter sends" : "Listening · Enter sends";
+    : state()?.phase === "finishing" ? holding() ? "Finishing… · sends when done" : "Finishing… · Enter sends"
+    : `${state()?.note ? `${state()!.note} Keep talking. · ` : ""}${holding() ? "Listening · release to send" : "Listening · Enter sends"}`;
   const text = (color: string) => ({ fontFamily: props.theme().family, fontSize: 11 * props.theme().scale, color });
   const button = (label: string, action: () => void) => <View role="button" accessibilityLabel={label} onPress={action}
     style={{ paddingHorizontal: 5, paddingVertical: 3, borderRadius: 4 }} hoverStyle={{ backgroundColor: props.theme().palette.panelActive }}>

@@ -18,6 +18,10 @@ import Speech
 // and take `finish` (settle the last words, then report `finished`) or `cancel` on stdin. Stdin closing is `cancel`: the helper
 // never outlives the app.
 //
+//   riwork-speech capture              the microphone for RiWork's MLX speech worker: `ready`, then 16 kHz mono float32
+//                                      {"event":"audio","data":"<base64>"} lines; `finish` ends it with an empty `finished`
+//   riwork-speech capture-file FILE    the same from a recording at its own pace, then silence until `finish` (tests)
+//
 //   riwork-speech transcribe FILE [SOURCES.json]   an audio file through the same transcriber, context and rewrite
 //   riwork-speech rewrite                          stdin {"names", "paths", "text", "heard"}: the vocabulary and the rewrite
 
@@ -51,10 +55,14 @@ extension Sources {
     }
 }
 
+/// Audio arrives on the audio thread: one lock keeps every line whole.
+private let outputLock = NSLock()
+
 /// One line of output, written at once.
 func emit(_ object: [String: Any]) {
     guard var data = try? JSONSerialization.data(withJSONObject: object, options: [.withoutEscapingSlashes]) else { return }
     data.append(0x0A)
+    outputLock.lock(); defer { outputLock.unlock() }
     FileHandle.standardOutput.write(data)
 }
 
@@ -105,7 +113,7 @@ func emit(_ event: EngineEvent) {
 }
 
 func usage() -> Never {
-    FileHandle.standardError.write(Data("usage: riwork-speech listen | scripted WORDS | transcribe FILE [SOURCES.json] | rewrite\n".utf8))
+    FileHandle.standardError.write(Data("usage: riwork-speech listen | scripted WORDS | capture | capture-file FILE | transcribe FILE [SOURCES.json] | rewrite\n".utf8))
     exit(64)
 }
 
@@ -116,6 +124,12 @@ case "listen":
 case "scripted":
     let script = arguments.dropFirst().joined(separator: " ")
     MainActor.assumeIsolated { Session(engine: ScriptedSpeechEngine(script: script)).run() }
+case "capture":
+    MainActor.assumeIsolated { Session(engine: CaptureSpeechEngine()).run() }
+case "capture-file":
+    guard arguments.count == 2 else { usage() }
+    let url = URL(fileURLWithPath: arguments[1])
+    MainActor.assumeIsolated { Session(engine: FileCaptureEngine(url: url)).run() }
 case "rewrite":
     let sources = Sources.read(FileHandle.standardInput.readDataToEndOfFile())
     let vocabulary = sources.vocabulary

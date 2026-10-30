@@ -8,6 +8,7 @@ use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
     ptr::NonNull,
+    rc::Rc,
     sync::Arc,
 };
 
@@ -52,6 +53,82 @@ struct DockItem {
 }
 
 type Emit = Arc<dyn Fn(MenuAction) + Send + Sync>;
+
+// IOKit's device-dependent modifier bits (NX_DEVICE*KEYMASK): which side of a modifier is down.
+const DEVICE_LEFT_COMMAND: usize = 0x08;
+const DEVICE_RIGHT_COMMAND: usize = 0x10;
+const DEVICE_LEFT_OPTION: usize = 0x20;
+const DEVICE_RIGHT_OPTION: usize = 0x40;
+const RIGHT_COMMAND_KEY: u16 = 0x36;
+const RIGHT_OPTION_KEY: u16 = 0x3D;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HoldEdge {
+    Down,
+    Up,
+    Chord,
+}
+
+fn hold_command(key: u16, edge: HoldEdge) -> &'static str {
+    match (key == RIGHT_OPTION_KEY, edge) {
+        (false, HoldEdge::Down) => "pushToTalkDown:right_command",
+        (false, HoldEdge::Up) => "pushToTalkUp:right_command",
+        (false, HoldEdge::Chord) => "pushToTalkChord:right_command",
+        (true, HoldEdge::Down) => "pushToTalkDown:right_option",
+        (true, HoldEdge::Up) => "pushToTalkUp:right_option",
+        (true, HoldEdge::Chord) => "pushToTalkChord:right_option",
+    }
+}
+
+/// Push-to-talk: the right Command or Option key held alone dictates into the selected chat.
+/// NSH has no key-up event, so the host reports a hold's edges as window commands:
+/// `pushToTalkDown:<key>` when the key goes down alone, `pushToTalkUp:<key>` when it comes up,
+/// and `pushToTalkChord:<key>` when another key joins it (a shortcut, an Option character),
+/// which voids the hold. Which key is chosen, and what a hold does, is the chat's business.
+#[derive(Debug, Default)]
+struct PushToTalk {
+    held: Option<u16>,
+}
+
+impl PushToTalk {
+    fn flags_changed(&mut self, key: u16, flags: NSEventModifierFlags) -> Option<&'static str> {
+        let raw = flags.bits();
+        let (device, other_side, kind) = match key {
+            RIGHT_COMMAND_KEY => (DEVICE_RIGHT_COMMAND, DEVICE_LEFT_COMMAND, NSEventModifierFlags::Command),
+            RIGHT_OPTION_KEY => (DEVICE_RIGHT_OPTION, DEVICE_LEFT_OPTION, NSEventModifierFlags::Option),
+            // Another modifier changed during a hold: it is a chord.
+            _ => return self.held.take().map(|held| hold_command(held, HoldEdge::Chord)),
+        };
+        let down = raw & device != 0;
+        match self.held {
+            None if down => {
+                let others = (NSEventModifierFlags::Command
+                    | NSEventModifierFlags::Option
+                    | NSEventModifierFlags::Control
+                    | NSEventModifierFlags::Shift)
+                    .difference(kind);
+                if flags.intersects(others) || raw & other_side != 0 {
+                    return None;
+                }
+                self.held = Some(key);
+                Some(hold_command(key, HoldEdge::Down))
+            }
+            Some(held) if held == key && !down => {
+                self.held = None;
+                Some(hold_command(key, HoldEdge::Up))
+            }
+            Some(held) if held != key => {
+                self.held = None;
+                Some(hold_command(held, HoldEdge::Chord))
+            }
+            _ => None,
+        }
+    }
+
+    fn key_down(&mut self) -> Option<&'static str> {
+        self.held.take().map(|held| hold_command(held, HoldEdge::Chord))
+    }
+}
 
 const COMMANDS: &[&str] = &[
     "openSettings",
@@ -137,10 +214,10 @@ define_class!(
             self.emit("newWindow");
         }
 
-        // Keep the standard selectors, but explicitly offer them to a native
-        // text field / terminal first. NSH's own NshView consumes copy: and
-        // selectAll: internally, so a nil target would prevent the transcript
-        // from exporting its Rust-owned selection through host.on("command").
+        // Keep the standard selectors and send them to the responder chain's
+        // target: a native text field or terminal, or NSH's own NshView, whose
+        // copy: and selectAll: copy and select its selectable texts (the chat
+        // transcript). The command is still sent to the window after NshView.
         #[unsafe(method(cut:))]
         fn cut(&self, sender: Option<&AnyObject>) {
             self.edit(sel!(cut:), "cut", sender);
@@ -178,11 +255,10 @@ impl MenuTarget {
         // Asking for the chain's target does not invoke this explicit menu
         // target; it is an NSObject outside the responder chain.
         if let Some(target) = unsafe { app.targetForAction_to_from(action, None, sender) } {
-            if !is_nsh_view(&target) {
-                // SAFETY: AppKit selected an object that answers this action.
-                if unsafe { app.sendAction_to_from(action, Some(&target), sender) } {
-                    return;
-                }
+            // SAFETY: AppKit selected an object that answers this action.
+            let handled = unsafe { app.sendAction_to_from(action, Some(&target), sender) };
+            if handled && !is_nsh_view(&target) {
+                return;
             }
         }
         self.emit(command);
@@ -283,6 +359,8 @@ pub(crate) struct HostMenus {
     _target: Retained<MenuTarget>,
     menu: Retained<NSMenu>,
     monitor: Option<Retained<AnyObject>>,
+    /// Modifier changes, for push-to-talk.
+    flags_monitor: Option<Retained<AnyObject>>,
     dock: RefCell<Option<(Vec<DockItem>, Retained<NSMenu>)>>,
 }
 
@@ -294,8 +372,14 @@ impl HostMenus {
         let menu = render_menu(mtm, "", &menu_model(), &target);
         NSApplication::sharedApplication(mtm).setMainMenu(Some(&menu));
 
+        let push_to_talk = Rc::new(RefCell::new(PushToTalk::default()));
         let key_target = target.clone();
+        let key_hold = push_to_talk.clone();
         let block = RcBlock::new(move |event: NonNull<NSEvent>| -> *mut NSEvent {
+            // Any key during a hold voids it, also one this monitor goes on to consume.
+            if let Some(command) = key_hold.borrow_mut().key_down() {
+                key_target.emit(command);
+            }
             // SAFETY: AppKit supplies a live NSEvent for this callback.
             if key_target.handle_key_equivalent(unsafe { event.as_ref() }) {
                 std::ptr::null_mut()
@@ -308,10 +392,25 @@ impl HostMenus {
         let monitor = unsafe {
             NSEvent::addLocalMonitorForEventsMatchingMask_handler(NSEventMask::KeyDown, &block)
         };
+        let flags_target = target.clone();
+        let flags_block = RcBlock::new(move |event: NonNull<NSEvent>| -> *mut NSEvent {
+            // SAFETY: AppKit supplies a live NSEvent for this callback.
+            let native = unsafe { event.as_ref() };
+            if let Some(command) = push_to_talk.borrow_mut().flags_changed(native.keyCode(), native.modifierFlags()) {
+                flags_target.emit(command);
+            }
+            // Never consumed: the modifier still reaches whatever has the keyboard.
+            event.as_ptr()
+        });
+        // SAFETY: as above; the block always returns the supplied event.
+        let flags_monitor = unsafe {
+            NSEvent::addLocalMonitorForEventsMatchingMask_handler(NSEventMask::FlagsChanged, &flags_block)
+        };
         Self {
             _target: target,
             menu,
             monitor,
+            flags_monitor,
             dock: RefCell::new(None),
         }
     }
@@ -405,7 +504,7 @@ fn dock_items(windows: &[DockWindow], frontmost: Option<isize>) -> Vec<DockItem>
 
 impl Drop for HostMenus {
     fn drop(&mut self) {
-        if let Some(monitor) = self.monitor.take() {
+        for monitor in [self.monitor.take(), self.flags_monitor.take()].into_iter().flatten() {
             // SAFETY: this is the token AppKit returned when installing it.
             unsafe { NSEvent::removeMonitor(&monitor) };
         }
@@ -612,6 +711,37 @@ fn key_equivalent(shortcut: &Shortcut) -> (String, NSEventModifierFlags) {
 mod tests {
     #[allow(unused_imports)] // Included in the harness=false AppKit test target.
     use super::*;
+
+    #[test]
+    fn push_to_talk_reports_a_modifier_held_alone_and_voids_chords() {
+        let flags = |kind: NSEventModifierFlags, device: usize| {
+            NSEventModifierFlags::from_bits_retain(kind.bits() | device)
+        };
+        let command = flags(NSEventModifierFlags::Command, DEVICE_RIGHT_COMMAND);
+        let none = NSEventModifierFlags::empty();
+        let mut hold = PushToTalk::default();
+        assert_eq!(hold.flags_changed(RIGHT_COMMAND_KEY, command), Some("pushToTalkDown:right_command"));
+        assert_eq!(hold.flags_changed(RIGHT_COMMAND_KEY, none), Some("pushToTalkUp:right_command"));
+        assert_eq!(hold.flags_changed(RIGHT_COMMAND_KEY, none), None, "no hold, no edge");
+
+        // A key with it (⌘C, ⌥G for @) voids the hold; its release then says nothing.
+        assert!(hold.flags_changed(RIGHT_OPTION_KEY, flags(NSEventModifierFlags::Option, DEVICE_RIGHT_OPTION)).is_some());
+        assert_eq!(hold.key_down(), Some("pushToTalkChord:right_option"));
+        assert_eq!(hold.flags_changed(RIGHT_OPTION_KEY, none), None);
+        assert_eq!(hold.key_down(), None);
+
+        // Another modifier joining it is a chord too.
+        hold.flags_changed(RIGHT_COMMAND_KEY, command);
+        let with_shift = NSEventModifierFlags::from_bits_retain(command.bits() | NSEventModifierFlags::Shift.bits());
+        assert_eq!(hold.flags_changed(0x38, with_shift), Some("pushToTalkChord:right_command"));
+        assert_eq!(hold.flags_changed(RIGHT_COMMAND_KEY, none), None);
+
+        // Not alone from the start, or the left key, or the left one already down: no hold.
+        assert_eq!(hold.flags_changed(RIGHT_COMMAND_KEY, with_shift), None);
+        assert_eq!(hold.flags_changed(0x37, flags(NSEventModifierFlags::Command, DEVICE_LEFT_COMMAND)), None);
+        let both = flags(NSEventModifierFlags::Command, DEVICE_LEFT_COMMAND | DEVICE_RIGHT_COMMAND);
+        assert_eq!(hold.flags_changed(RIGHT_COMMAND_KEY, both), None);
+    }
 
     #[test]
     fn dedicated_menu_key_routes_without_intercepting_modified_or_text_keys() {

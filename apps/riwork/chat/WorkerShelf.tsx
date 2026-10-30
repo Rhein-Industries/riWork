@@ -111,7 +111,7 @@ export function WorkerShelf(props: {
             {worker.canStop && button("Stop", () => { stopping.set(stopping() === worker.id ? null : worker.id); messaging.set(null); }, !!busy())}
           </View>
           {messaging() === worker.id && <View style={{ flexDirection: "row", gap: 5 }}>
-            <Input ref={(node) => node.focus()} value={message()} onChange={(value) => message.set(value)} placeholder="Message this worker" multiline={true} submitBehavior="submit"
+            <Input ref={(node) => node.focus()} value={message()} onChange={(value) => message.set(value)} placeholder="Message this worker" multiline={true} autoCorrect={false} submitBehavior="submit"
               onSubmit={() => void act(worker, "send")} style={{ ...text(11), flex: 1, padding: 5, borderRadius: 4, borderWidth: 1, borderColor: theme().palette.divider }} />
             {button("Send", () => void act(worker, "send"), !!busy() || !message().trim())}
           </View>}

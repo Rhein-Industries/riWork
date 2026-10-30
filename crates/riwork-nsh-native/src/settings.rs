@@ -70,6 +70,10 @@ pub struct SettingsDto {
     pub agent_inline_mode: bool,
     pub agent_terminals_unrestricted: bool,
     pub dictation_mic: bool,
+    /// The speech model dictation uses; Apple's for a key this build does not know.
+    pub dictation_model: String,
+    /// `right_command`, `right_option` or `off`.
+    pub push_to_talk_key: String,
     pub claude_chat_ignores_api_key: bool,
     pub codex_subscription_balancing: bool,
     pub dashboard_haiku_summaries: bool,
@@ -103,6 +107,8 @@ pub struct SettingsPatch {
     pub agent_inline_mode: Option<bool>,
     pub agent_terminals_unrestricted: Option<bool>,
     pub dictation_mic: Option<bool>,
+    pub dictation_model: Option<String>,
+    pub push_to_talk_key: Option<String>,
     pub claude_chat_ignores_api_key: Option<bool>,
     pub codex_subscription_balancing: Option<bool>,
     pub dashboard_haiku_summaries: Option<bool>,
@@ -156,6 +162,12 @@ impl SettingsDto {
             agent_inline_mode: settings.agent_inline_mode,
             agent_terminals_unrestricted: settings.agent_terminals_unrestricted,
             dictation_mic: settings.dictation_mic,
+            dictation_model: crate::speech::effective(&settings.dictation_model).key.clone(),
+            push_to_talk_key: serde_json::to_value(settings.push_to_talk_key)
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .into(),
             claude_chat_ignores_api_key: settings.claude_chat_billing.ignores_api_key(),
             codex_subscription_balancing: settings.codex_subscription_balancing,
             dashboard_haiku_summaries: settings.dashboard_haiku_summaries,
@@ -234,6 +246,8 @@ struct ValidatedPatch {
     agent_inline_mode: Option<bool>,
     agent_terminals_unrestricted: Option<bool>,
     dictation_mic: Option<bool>,
+    dictation_model: Option<String>,
+    push_to_talk_key: Option<riwork_core::settings::PushToTalkKey>,
     claude_chat_ignores_api_key: Option<bool>,
     codex_subscription_balancing: Option<bool>,
     dashboard_haiku_summaries: Option<bool>,
@@ -328,6 +342,23 @@ impl SettingsPatch {
             agent_inline_mode: self.agent_inline_mode,
             agent_terminals_unrestricted: self.agent_terminals_unrestricted,
             dictation_mic: self.dictation_mic,
+            dictation_model: self
+                .dictation_model
+                .as_ref()
+                .map(|key| {
+                    crate::speech::model(key)
+                        .map(|spec| spec.key.clone())
+                        .ok_or_else(|| format!("invalid: unknown dictation_model {key:?}"))
+                })
+                .transpose()?,
+            push_to_talk_key: self
+                .push_to_talk_key
+                .as_ref()
+                .map(|value| {
+                    serde_json::from_value(serde_json::json!(value))
+                        .map_err(|_| format!("invalid: unknown push_to_talk_key {value:?}"))
+                })
+                .transpose()?,
             claude_chat_ignores_api_key: self.claude_chat_ignores_api_key,
             codex_subscription_balancing: self.codex_subscription_balancing,
             dashboard_haiku_summaries: self.dashboard_haiku_summaries,
@@ -376,6 +407,12 @@ impl ValidatedPatch {
         }
         if let Some(value) = self.dictation_mic {
             settings.dictation_mic = value;
+        }
+        if let Some(value) = &self.dictation_model {
+            settings.dictation_model = value.clone();
+        }
+        if let Some(value) = self.push_to_talk_key {
+            settings.push_to_talk_key = value;
         }
         if let Some(value) = self.claude_chat_ignores_api_key {
             settings.claude_chat_billing =
@@ -482,6 +519,8 @@ impl SettingsBackend for CoreSettingsBackend {
                 "agent_terminals_unrestricted",
             ),
             (patch.dictation_mic.is_some(), "dictation_mic"),
+            (patch.dictation_model.is_some(), "dictation_model"),
+            (patch.push_to_talk_key.is_some(), "push_to_talk_key"),
             (
                 patch.claude_chat_ignores_api_key.is_some(),
                 "claude_chat_ignores_api_key",
@@ -805,7 +844,7 @@ snapshot_js_value!(SettingsDto, "SettingsEvent");
 impl JsValue for SettingsPatch {
     fn ts_type(types: &mut TsTypes) -> String {
         types.declare("SettingsPatch", |types| format!(
-            "export interface SettingsPatch {{ theme?: string; nativeTerminalColors?: boolean; useRiworkColors?: boolean; projectOrder?: {{ sort: 'name' | 'last_edited' | 'date_added' | 'live_sessions'; descending: boolean }}; openPreviewOnSelect?: boolean; uiTextSize?: number; uiTextMatchesTerminal?: boolean; interfaceFont?: 'system' | 'system_mono'; rememberWindowSize?: boolean; panelTabIcons?: boolean; tabCloseBehavior?: 'ask' | 'detach' | 'exit'; agentInlineMode?: boolean; agentTerminalsUnrestricted?: boolean; dictationMic?: boolean; claudeChatIgnoresApiKey?: boolean; codexSubscriptionBalancing?: boolean; dashboardHaikuSummaries?: boolean; orchestratorMode?: 'automatic' | 'terminal' | 'chat'; orchestratorChatProvider?: 'codex' | 'claude' | 'muse'; orchestratorChatModel?: string | null; statusBar?: {}; delegationPatch?: {}; }}",
+            "export interface SettingsPatch {{ theme?: string; nativeTerminalColors?: boolean; useRiworkColors?: boolean; projectOrder?: {{ sort: 'name' | 'last_edited' | 'date_added' | 'live_sessions'; descending: boolean }}; openPreviewOnSelect?: boolean; uiTextSize?: number; uiTextMatchesTerminal?: boolean; interfaceFont?: 'system' | 'system_mono'; rememberWindowSize?: boolean; panelTabIcons?: boolean; tabCloseBehavior?: 'ask' | 'detach' | 'exit'; agentInlineMode?: boolean; agentTerminalsUnrestricted?: boolean; dictationMic?: boolean; dictationModel?: string; pushToTalkKey?: 'right_command' | 'right_option' | 'off'; claudeChatIgnoresApiKey?: boolean; codexSubscriptionBalancing?: boolean; dashboardHaikuSummaries?: boolean; orchestratorMode?: 'automatic' | 'terminal' | 'chat'; orchestratorChatProvider?: 'codex' | 'claude' | 'muse'; orchestratorChatModel?: string | null; statusBar?: {}; delegationPatch?: {}; }}",
             StatusBarDto::ts_type(types), DelegationPatch::ts_type(types)))
     }
     fn from_js(value: JsIn<'_>) -> Result<Self, PropError> {

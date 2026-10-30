@@ -142,7 +142,7 @@ export function Handoff(props: HandoffProps) {
           <Text style={text(10, true)}>{context() === "summary" ? "Asks the source agent to write a summary. You can hide this dialog if it needs your input; the transcript is used if a summary is unavailable." : "Passes the recorded conversation. The source session stays as it is."}</Text>
         </>}
         {heading("Note")}
-        <Input testID="handoff-note" accessibilityLabel="Note for the new agent" placeholder="Anything the new agent should know" multiline={true} value={note()} onChange={(value) => note.set(value)} disabled={pending()} style={{ ...field(), minHeight: size(56), maxHeight: size(120) }} />
+        <Input testID="handoff-note" accessibilityLabel="Note for the new agent" placeholder="Anything the new agent should know" multiline={true} autoCorrect={false} value={note()} onChange={(value) => note.set(value)} disabled={pending()} style={{ ...field(), minHeight: size(56), maxHeight: size(120) }} />
         <Text selectable={true} numberOfLines={2} style={{ ...text(10, true), fontFamily: theme().monoFamily }}>{`Same project, worktree and directory · ${source()!.cwd}`}</Text>
       </>}
       {pending() && <Text role="text" style={{ ...text(), color: theme().palette.gold }}>{context() === "summary" ? "Asking for a summary and preparing the new session…" : "Reading the conversation and preparing the new session…"}</Text>}

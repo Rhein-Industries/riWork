@@ -1,0 +1,314 @@
+{
+ "comment": "Pinned speech models for dictation: exact Hugging Face commits and the files each needs (code is never downloaded). RiWork checks the cache against these sizes; the speech worker downloads and loads them.",
+ "models": [
+  {
+   "key": "apple",
+   "label": "Apple Speech",
+   "detail": "Built into macOS. Nothing to download.",
+   "family": "apple",
+   "repo": null,
+   "revision": null,
+   "downloadable": false,
+   "draft_seconds": null,
+   "bytes": 0,
+   "files": []
+  },
+  {
+   "key": "parakeet-v3",
+   "label": "Parakeet TDT 0.6B v3",
+   "detail": "Fast and accurate. English and 24 other European languages.",
+   "family": "parakeet",
+   "repo": "mlx-community/parakeet-tdt-0.6b-v3",
+   "revision": "ed2b7e8c15f9aaa0b5772e2efb986255eaef7e15",
+   "downloadable": true,
+   "draft_seconds": 0.5,
+   "bytes": 2509041541,
+   "files": [
+    [
+     "config.json",
+     244093
+    ],
+    [
+     "model.safetensors",
+     2508288736
+    ],
+    [
+     "tokenizer.model",
+     360916
+    ],
+    [
+     "tokenizer.vocab",
+     101024
+    ],
+    [
+     "vocab.txt",
+     46772
+    ]
+   ]
+  },
+  {
+   "key": "whisper-turbo",
+   "label": "Whisper large-v3 turbo",
+   "detail": "99 languages.",
+   "family": "whisper",
+   "repo": "mlx-community/whisper-large-v3-turbo-asr-fp16",
+   "revision": "624c19c9af5603fa73b83bce14d4aeea96156d18",
+   "downloadable": true,
+   "draft_seconds": 1.0,
+   "bytes": 1618633596,
+   "files": [
+    [
+     "added_tokens.json",
+     34648
+    ],
+    [
+     "config.json",
+     1301
+    ],
+    [
+     "generation_config.json",
+     3772
+    ],
+    [
+     "merges.txt",
+     493869
+    ],
+    [
+     "model.safetensors",
+     1613977443
+    ],
+    [
+     "model.safetensors.index.json",
+     37633
+    ],
+    [
+     "normalizer.json",
+     52666
+    ],
+    [
+     "preprocessor_config.json",
+     340
+    ],
+    [
+     "special_tokens_map.json",
+     2186
+    ],
+    [
+     "tokenizer.json",
+     2710337
+    ],
+    [
+     "tokenizer_config.json",
+     282843
+    ],
+    [
+     "vocab.json",
+     1036558
+    ]
+   ]
+  },
+  {
+   "key": "nemotron-4bit",
+   "label": "Nemotron 3.5 Transcribe · 4-bit EA",
+   "detail": "40 languages, the most accurate here. Needs 32 GB of memory or more.",
+   "family": "nemotron",
+   "repo": "nativ-community/Nemotron-3.5-Transcribe-30B-A4B-EA-4bit",
+   "revision": "c47153ca2ce4024d43e216b81e6db4f67b886545",
+   "downloadable": true,
+   "draft_seconds": 1.0,
+   "bytes": 19275909878,
+   "files": [
+    [
+     "SHA256SUMS",
+     1067
+    ],
+    [
+     "config.json",
+     15115
+    ],
+    [
+     "conversion.json",
+     422
+    ],
+    [
+     "generation_config.json",
+     56
+    ],
+    [
+     "model-00001-of-00004.safetensors",
+     5122763825
+    ],
+    [
+     "model-00002-of-00004.safetensors",
+     5296388939
+    ],
+    [
+     "model-00003-of-00004.safetensors",
+     5296388917
+    ],
+    [
+     "model-00004-of-00004.safetensors",
+     3543096893
+    ],
+    [
+     "model.safetensors.index.json",
+     161810
+    ],
+    [
+     "tokenizer.json",
+     17078144
+    ],
+    [
+     "tokenizer_config.json",
+     10673
+    ],
+    [
+     "validation.json",
+     4017
+    ]
+   ]
+  },
+  {
+   "key": "nemotron-8bit",
+   "label": "Nemotron 3.5 Transcribe · 8-bit EA",
+   "detail": "40 languages at higher precision. Needs 64 GB of memory or more.",
+   "family": "nemotron",
+   "repo": "nativ-community/Nemotron-3.5-Transcribe-30B-A4B-EA-8bit",
+   "revision": "2c360f2c2425ae34e1796eb758b2a0811659ab71",
+   "downloadable": true,
+   "draft_seconds": 1.0,
+   "bytes": 35060447807,
+   "files": [
+    [
+     "SHA256SUMS",
+     1364
+    ],
+    [
+     "config.json",
+     15115
+    ],
+    [
+     "conversion.json",
+     422
+    ],
+    [
+     "generation_config.json",
+     56
+    ],
+    [
+     "model-00001-of-00007.safetensors",
+     5361292603
+    ],
+    [
+     "model-00002-of-00007.safetensors",
+     5049443208
+    ],
+    [
+     "model-00003-of-00007.safetensors",
+     4965697440
+    ],
+    [
+     "model-00004-of-00007.safetensors",
+     5054352815
+    ],
+    [
+     "model-00005-of-00007.safetensors",
+     4940832001
+    ],
+    [
+     "model-00006-of-00007.safetensors",
+     5029487350
+    ],
+    [
+     "model-00007-of-00007.safetensors",
+     4642070872
+    ],
+    [
+     "model.safetensors.index.json",
+     161810
+    ],
+    [
+     "tokenizer.json",
+     17078144
+    ],
+    [
+     "tokenizer_config.json",
+     10673
+    ],
+    [
+     "validation.json",
+     3934
+    ]
+   ]
+  },
+  {
+   "key": "nemotron-4bit-cached",
+   "label": "Nemotron 3.5 Transcribe · 4-bit (riTranscribe's copy)",
+   "detail": "No longer on Hugging Face; offered while it is still in the cache. Needs 32 GB of memory or more.",
+   "family": "nemotron",
+   "repo": "animegolem/NVIDIA-Nemotron-3.5-Transcribe-30B-A4B-mlx-4bit",
+   "revision": "5414fb4f36b81055f3a4103371422e23329ed72c",
+   "downloadable": false,
+   "draft_seconds": 1.0,
+   "bytes": 19278892608,
+   "files": [
+    [
+     "alignment_tokenizer/tokenizer_config.json",
+     307
+    ],
+    [
+     "alignment_tokenizer/tokenizer.json",
+     2219772
+    ],
+    [
+     "chat_template.jinja",
+     12482
+    ],
+    [
+     "config.json",
+     766548
+    ],
+    [
+     "generation_config.json",
+     56
+    ],
+    [
+     "llm_backbone/config.json",
+     2403
+    ],
+    [
+     "model-00001-of-00004.safetensors",
+     5122763825
+    ],
+    [
+     "model-00002-of-00004.safetensors",
+     5296388939
+    ],
+    [
+     "model-00003-of-00004.safetensors",
+     5296388917
+    ],
+    [
+     "model-00004-of-00004.safetensors",
+     3543096893
+    ],
+    [
+     "model.safetensors.index.json",
+     161810
+    ],
+    [
+     "processor_config.json",
+     685
+    ],
+    [
+     "tokenizer_config.json",
+     11827
+    ],
+    [
+     "tokenizer.json",
+     17078144
+    ]
+   ]
+  }
+ ]
+}

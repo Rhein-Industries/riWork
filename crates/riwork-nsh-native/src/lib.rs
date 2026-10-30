@@ -32,6 +32,7 @@ pub mod schedules;
 pub mod service;
 pub mod settings;
 pub mod settings_aux;
+pub mod speech;
 pub mod tabs;
 #[cfg(feature = "test-support")]
 pub mod testing;
@@ -64,6 +65,7 @@ fn native(registry: &mut Registry) {
         .module::<orchestrators::Orchestrators>()
         .module::<chat::Chat>()
         .module::<dictation::Dictation>()
+        .module::<speech::SpeechModels>()
         .class::<dictation::DictationHandle>()
         .module::<handoff::Handoff>()
         .module::<usage::Usage>()
@@ -413,7 +415,9 @@ mod tests {
                 "Chat",
                 "Cua",
                 "Dashboard",
+                "Dictation",
                 "Files",
+                "Handoff",
                 "Layouts",
                 "OrcaImport",
                 "Orchestrators",
@@ -423,6 +427,7 @@ mod tests {
                 "Schedules",
                 "Sessions",
                 "Settings",
+                "SpeechModels",
                 "Store",
                 "Tabs",
                 "Usage"

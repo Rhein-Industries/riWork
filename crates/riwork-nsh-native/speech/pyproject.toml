@@ -1,0 +1,11 @@
+# RiWork's local speech runtime: MLX speech models through mlx-audio. RiWork installs it with
+# `uv sync --frozen` into RIWORK_HOME/speech; it is never a package of its own.
+[project]
+name = "riwork-speech-runtime"
+version = "1"
+description = "Local MLX speech models for RiWork dictation"
+requires-python = "==3.12.*"
+dependencies = ["mlx-audio[stt]==0.6.3"]
+
+[tool.uv]
+package = false

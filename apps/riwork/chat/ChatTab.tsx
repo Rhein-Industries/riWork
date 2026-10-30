@@ -904,8 +904,8 @@ function Composer(props: PartProps & { billing: BillingControl; width: () => num
   const composing = signal(false);
   const dictation = signal<DictationController | undefined>(undefined);
   const selection = signal({ start: 0, end: 0 });
-  const dictationEnabled = signal(false);
-  const dictationSettings = Settings.subscribe((event) => dictationEnabled.set(event.data.dictationMic));
+  const dictationEnabled = signal(false), holdKey = signal("off");
+  const dictationSettings = Settings.subscribe((event) => { dictationEnabled.set(event.data.dictationMic); holdKey.set(event.data.pushToTalkKey); });
   cleanup(() => dictationSettings.close());
   const focused = signal(false);
   const modelPicker = signal(false);
@@ -1274,7 +1274,7 @@ function Composer(props: PartProps & { billing: BillingControl; width: () => num
     <DictationStatus controller={dictation} theme={theme} />
     <Suggestions control={suggestions} theme={theme} />
     <Input ref={(node) => { input = node; }} testID="chat-input" accessibilityLabel="Chat message" placeholder={props.panel().running ? "Send a follow-up to steer this turn…" : "Write a message…"}
-      multiline={true} submitBehavior="submit" readonly={!accepting()} value={draft()}
+      multiline={true} autoCorrect={false} submitBehavior="submit" readonly={!accepting()} value={draft()}
       onSelectionChange={(event) => selection.set({ start: event.start, end: event.end })}
       onPaste={(event) => addAttachments(event.uris, event.uris.length ? [] : event.files)}
       onChange={edit} onSubmit={() => { if (!suggestions.accept()) submit(); }} onFocus={() => focused.set(true)} onBlur={() => focused.set(false)}
@@ -1315,7 +1315,7 @@ function Composer(props: PartProps & { billing: BillingControl; width: () => num
       </View>
       <View style={{ flexShrink: 0 }}><DictationControl theme={theme} enabled={dictationEnabled()} active={props.visible()} disabled={!accepting() || !!memo.preview()} value={draft} selection={selection} focused={focused}
         setValue={(value, start, end) => { draft.set(value); generation += 1; persist(); selection.set({ start, end }); input?.setSelection(start, end); }}
-        focus={() => input?.focus()} onController={(controller) => dictation.set(controller)}
+        focus={() => input?.focus()} onController={(controller) => dictation.set(controller)} send={submit} holdKey={holdKey()}
         sources={() => ({ names: [toolbar()?.providerLabel ?? "", ...attachments().map((entry) => entry.name)], paths: props.panel().cwd ? [props.panel().cwd!] : [], text: draft() })} /></View>
       {stopping()
         ? <View role="button" testID="chat-interrupt" focusable={true} tooltip={STOP_TIP} accessibilityLabel={STOP_TIP} onPress={interrupt}
