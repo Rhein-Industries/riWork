@@ -437,6 +437,7 @@ async fn what_the_desktop_writes_is_what_the_rpc_serves() {
             gold: appearance_file::Rgb(0x8a5c00),
             text: appearance_file::Rgb(0x3c3836),
             muted: appearance_file::Rgb(0x665c54),
+            danger: Some(appearance_file::Rgb(0xc4231c)),
         },
         Some(appearance_file::TerminalColors {
             background: appearance_file::Rgb(0xfbf1c7),

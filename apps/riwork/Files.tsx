@@ -509,7 +509,7 @@ export function MemoEditor(props: {
         renderStatus();
       }} onBlur={() => void save()}
       style={{ flex: 1, minHeight: 160, maxHeight: 560, fontFamily: theme().monoFamily, fontSize: 12 * theme().scale, color: theme().palette.text, backgroundColor: theme().palette.bg, padding: 8 }} />
-    <Text testID="project-memo-status" style={{ ...textStyle(), color: status().startsWith("Not saved") || memoBytes(value()) > 32768 ? theme().palette.gold : theme().palette.muted }}>{status()}</Text>
+    <Text testID="project-memo-status" style={{ ...textStyle(), color: status().startsWith("Not saved") ? theme().palette.danger : memoBytes(value()) > 32768 ? theme().palette.gold : theme().palette.muted }}>{status()}</Text>
     {memoBytes(value()) >= 26214 && <Text testID="project-memo-bytes" style={textStyle()}>{`${memoBytes(value())} / 32768 bytes`}</Text>}
     <Button testID="project-memo-save" disabled={saving() || memoBytes(value()) > 32768} onPress={() => void save()}><Text style={textStyle()}>{status().startsWith("Not saved") ? "Retry" : "Save now"}</Text></Button>
   </View>;

@@ -46,6 +46,7 @@ fn publish_saved(process: &service::ProcessService, requested: &str, system_dark
             bg: Rgb(palette.bg), panel: Rgb(palette.panel), panel_active: Rgb(palette.panel_active),
             divider: Rgb(palette.divider), cyan: Rgb(palette.cyan), magenta: Rgb(palette.magenta),
             gold: Rgb(palette.gold), text: Rgb(palette.text), muted: Rgb(palette.muted),
+            danger: Some(Rgb(palette.danger)),
         },
         appearance.shown_terminal(settings.terminal_colors_forced()).map(|terminal| TerminalColors {
             background: Rgb(terminal.background), foreground: Rgb(terminal.foreground),
@@ -96,6 +97,7 @@ pub struct PaletteDto {
     pub muted: String,
     pub focus: String,
     pub working: String,
+    pub danger: String,
 }
 
 fn hex(color: u32) -> String {
@@ -115,6 +117,7 @@ impl From<Palette> for PaletteDto {
             muted: hex(p.muted),
             focus: hex(p.focus),
             working: hex(p.working),
+            danger: hex(p.danger),
         }
     }
 }

@@ -46,6 +46,10 @@ struct Palette {
     gold: Rgb,
     text: Rgb,
     muted: Rgb,
+    /// Errors and failures. Sent only when the desktop wrote it, so a document
+    /// from an older desktop reaches the phone as it was.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    danger: Option<Rgb>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -78,8 +82,8 @@ fn is_false(value: &bool) -> bool {
 }
 
 /// The document re-serialized in the contract's shape (lowercase colors, known
-/// fields only, `native` and `mic` only when true), or None when it is over 16 KiB or not
-/// a version 1 document.
+/// fields only, `palette.danger` only when given, `native` and `mic` only when
+/// true), or None when it is over 16 KiB or not a version 1 document.
 pub fn validate(bytes: &[u8]) -> Option<Value> {
     if bytes.len() > MAX_BYTES {
         return None;

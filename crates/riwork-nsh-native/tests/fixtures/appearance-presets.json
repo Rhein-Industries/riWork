@@ -13,7 +13,8 @@
       "text": "#1d1d1f",
       "muted": "#636366",
       "focus": "#000000",
-      "working": "#b34000"
+      "working": "#0058d0",
+      "danger": "#c80018"
     },
     "dark": false,
     "terminalOverride": {
@@ -59,7 +60,8 @@
       "text": "#f5f5f7",
       "muted": "#98989d",
       "focus": "#ffffff",
-      "working": "#ff9f0a"
+      "working": "#409cff",
+      "danger": "#ff6961"
     },
     "dark": true,
     "terminalOverride": {

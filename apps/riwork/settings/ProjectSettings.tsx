@@ -156,7 +156,7 @@ export function ProjectSettingsPanel(props: ProjectSettingsProps) {
     return `project-delegation-${work}-${choices.find((choice) => choice.route.provider === chosen.provider && choice.route.model === chosen.model)?.id ?? "unreadable"}`;
   }
   const fieldStyle = () => ({ minHeight: 30, padding: 8, borderRadius: 4, backgroundColor: theme().palette.bg, ...textStyle(theme, 12) });
-  const note = (text: string | null | undefined, id: string) => text ? <Text testID={id} role="alert" style={{ ...textStyle(theme, 10), color: theme().palette.gold }}>{text}</Text> : null;
+  const note = (text: string | null | undefined, id: string, tone: "warning" | "error" = "warning") => text ? <Text testID={id} role="alert" style={{ ...textStyle(theme, 10), color: tone === "error" ? theme().palette.danger : theme().palette.gold }}>{text}</Text> : null;
   const compact = () => ({ ...buttonStyle(theme), alignSelf: "flex-start" as const });
   // Off / On chips, as Spread work: a per-project switch that saves when chosen. `value` is read
   // lazily so a refresh updates the row instead of rebuilding it (and dropping its focus).
@@ -183,8 +183,8 @@ export function ProjectSettingsPanel(props: ProjectSettingsProps) {
         {ready() && saveButton()}
       </View>
       {ready() && (error() || snapshot()!.settings.error) ? <View style={{ paddingHorizontal: space(12, theme().scale), paddingBottom: space(8, theme().scale), gap: space(2, theme().scale) }}>
-        {note(error(), "project-settings-error")}
-        {note(snapshot()!.settings.error, "project-settings-preferences-error")}
+        {note(error(), "project-settings-error", "error")}
+        {note(snapshot()!.settings.error, "project-settings-preferences-error", "error")}
       </View> : null}
     </View>
     <Scroll ref={(node) => { scroll = node; }} style={{ flex: 1, minHeight: 0 }} contentStyle={{ paddingHorizontal: space(6, theme().scale), paddingBottom: space(12, theme().scale) }}>
@@ -203,7 +203,7 @@ export function ProjectSettingsPanel(props: ProjectSettingsProps) {
       <Section number="03" title="Codex account" description="New Codex sessions use this choice. Running sessions keep their account. Selection saves immediately." theme={theme}>
         <ChoiceRow id="project-codex-accounts" label="Account" value={accountId()} choices={snapshot()!.accounts.map((choice) => ({ id: accountKey(choice), label: choice.label, disabled: !choice.available, description: choice.reason ?? undefined }))} disabled={pending()} onChange={chooseAccount} theme={theme} />
         {snapshot()!.selectedAccountUnavailable && note("Selected account unavailable. Choose another before starting Codex.", "project-codex-unavailable")}
-        {note(accounts()?.error, "project-codex-error")}
+        {note(accounts()?.error, "project-codex-error", "error")}
         <Button testID="project-codex-refresh" disabled={accountPending() || accounts()?.refreshing} onPress={() => void refreshAccounts()} style={compact()}><Text style={textStyle(theme)}>{accountPending() || accounts()?.refreshing ? "Checking accounts…" : "Refresh accounts"}</Text></Button>
       </Section>
       <Section number="04" title="Orchestrator" description="Applies when this project's orchestrator is next created. Selection saves immediately." theme={theme}>
