@@ -19,11 +19,48 @@ struct Registry {
     // Window IDs are unique for the process. Keep a close marker so an async
     // openSession that finishes after teardown cannot register an orphan writer.
     closing: HashSet<String>,
+    opening: HashMap<String, usize>,
 }
 
 fn registry() -> &'static Mutex<Registry> {
     static REGISTRY: OnceLock<Mutex<Registry>> = OnceLock::new();
     REGISTRY.get_or_init(|| Mutex::new(Registry::default()))
+}
+
+/// Track blocking open jobs before they leave the async caller. A dev remount
+/// retains the close marker until stopped engines have no late opener left.
+pub struct Opening {
+    window_id: String,
+}
+impl Drop for Opening {
+    fn drop(&mut self) {
+        let mut entries = registry().lock().unwrap_or_else(|error| error.into_inner());
+        if let Some(count) = entries.opening.get_mut(&self.window_id) {
+            *count -= 1;
+            if *count == 0 {
+                entries.opening.remove(&self.window_id);
+            }
+        }
+    }
+}
+pub fn begin_window_open(window_id: &str) -> Result<Opening, String> {
+    let mut entries = registry().lock().unwrap_or_else(|error| error.into_inner());
+    if entries.closing.contains(window_id) {
+        return Err("unavailable: window is closing".into());
+    }
+    *entries.opening.entry(window_id.to_owned()).or_default() += 1;
+    Ok(Opening {
+        window_id: window_id.to_owned(),
+    })
+}
+pub fn pending_window_opens(window_id: &str) -> usize {
+    registry()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .opening
+        .get(window_id)
+        .copied()
+        .unwrap_or(0)
 }
 
 fn pack_size(size: Option<WindowSize>) -> u64 {
@@ -527,6 +564,38 @@ mod tests {
     use super::*;
     use crate::persistence::{LayoutPersistence, SaveMode, default_project_layout};
 
+    #[test]
+    fn stopped_window_tracks_a_blocking_open_until_its_late_registration_is_rejected() {
+        let id = "pending-open-remount-contract";
+        let opening = begin_window_open(id).unwrap();
+        let (release, resume) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let _opening = opening;
+            resume.recv().unwrap();
+            assert!(
+                registration(
+                    id,
+                    Arc::new(FakeLayoutBackend::default()),
+                    default_project_layout()
+                )
+                .is_err()
+            );
+        });
+        begin_window_close(id);
+        assert_eq!(pending_window_opens(id), 1);
+        assert!(begin_window_open(id).is_err());
+        release.send(()).unwrap();
+        worker.join().unwrap();
+        assert_eq!(pending_window_opens(id), 0);
+        assert!(lookup(id).is_none());
+        cancel_window_close(id);
+        let _replacement = registration(
+            id,
+            Arc::new(FakeLayoutBackend::default()),
+            default_project_layout(),
+        )
+        .unwrap();
+    }
     #[derive(Default)]
     struct FakeLayoutBackend {
         scheduled: AtomicUsize,

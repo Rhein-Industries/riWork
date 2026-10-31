@@ -4595,6 +4595,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "nsh-dev"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "313c01b20a7960fb00d8dd6635054df3416512245eee763d0784dababb6aebee"
+dependencies = [
+ "base64 0.22.1",
+ "dunce",
+ "log",
+ "serde",
+ "serde_json",
+ "tungstenite 0.30.0",
+]
+
+[[package]]
 name = "nsh-engine"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6503,6 +6517,7 @@ dependencies = [
  "notify",
  "nsh-base",
  "nsh-core",
+ "nsh-dev",
  "nsh-engine",
  "nsh-platform-macos",
  "objc2-app-kit 0.3.2",
@@ -8181,6 +8196,22 @@ dependencies = [
  "log",
  "rand 0.9.5",
  "sha1 0.10.7",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "tungstenite"
+version = "0.30.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e48ac77174b19c110a50ab2128b24215ac9cb40e0e12e093fb602d175c569d22"
+dependencies = [
+ "bytes",
+ "data-encoding",
+ "http",
+ "httparse",
+ "log",
+ "rand 0.10.3",
+ "sha1 0.11.0",
  "thiserror 2.0.21",
 ]
 

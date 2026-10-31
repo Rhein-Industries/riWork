@@ -250,6 +250,108 @@ fn window(id: &str) -> (String, RuntimeWindow) {
     )
 }
 
+#[cfg(feature = "dev-reload")]
+#[test]
+#[ignore = "requires the production App fixture bundle and an isolated RIWORK_HOME; run this test in its own process"]
+fn production_app_remount_waits_for_pending_open_before_reusing_window_id() {
+    let bundle =
+        PathBuf::from(std::env::var_os("RIWORK_PENDING_OPEN_TEST_BUNDLE").expect("fixture bundle"));
+    let home = PathBuf::from(std::env::var_os("RIWORK_HOME").expect("isolated fixture home"));
+    assert!(
+        home.starts_with(std::env::temp_dir().canonicalize().unwrap()) || home.starts_with("/tmp")
+    );
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let _entered = runtime.enter();
+    let service = native::ProcessService::with_backends(
+        home.clone(),
+        Arc::new(native::backend::CoreStoreBackend::new(home.clone())),
+        Arc::new(Sessions),
+    )
+    .unwrap();
+    native::service::install_process_service(service).unwrap();
+    let repo = Arc::new(Repository::default());
+    riwork_nsh_workspace::install_layout_repository(repo.clone()).unwrap();
+    let layout: riwork_core::layouts::ProjectLayout = serde_json::from_value(json!({
+        "layout":{"pane":1},"active_pane":1,"panels_initialized":true,"locked_panes":[],
+        "panes":{"1":{"tabs":[{"kind":"panel","panel":"projects"}],"active_tab_key":"panel:projects"}}
+    })).unwrap();
+    let id = format!("dev-remount-{}", Uuid::new_v4());
+    let attempt = Arc::new(Attempt::default());
+    repo.0.lock().unwrap().insert(id.clone(), attempt.clone());
+    let mut original = AppProbe::start(&bundle, &id, &layout);
+    attempt.entered.wait();
+    assert_eq!(host_layouts::pending_window_opens(&id), 1);
+
+    // A full reload's persistence barrier can complete while an earlier
+    // openSession still has blocking IO in progress and no registered handle.
+    let closing = ClosingWindows::new(vec![window(&id)]);
+    closing.flush(&home).unwrap();
+    original.stop();
+    drop(closing);
+    assert!(host_layouts::lookup(&id).is_none());
+    assert_eq!(host_layouts::pending_window_opens(&id), 1);
+
+    // Keep the old opener alive even after its attempted registration rejects.
+    // Neither dropping the JS engine nor an empty layout registry is sufficient
+    // reason to reopen the same window's admission gate.
+    attempt.release_open.release();
+    attempt.rejected.wait();
+    assert_eq!(host_layouts::pending_window_opens(&id), 1);
+    assert!(host_layouts::lookup(&id).is_none());
+    assert!(
+        host_layouts::registration(
+            &id,
+            Arc::new(OtherWriter {
+                fail: AtomicBool::new(false)
+            }),
+            layout.clone(),
+        )
+        .is_err(),
+        "same window ID must stay closed until its old opener drains"
+    );
+    attempt.release_rejection.release();
+    eventually(
+        "stopped engine left an opener or registered layout behind",
+        || {
+            host_layouts::pending_window_opens(&id) == 0
+                && host_layouts::lookup(&id).is_none()
+                && attempt.writers.load(Ordering::SeqCst) == 0
+        },
+    );
+    assert_eq!(original.ready.load(Ordering::SeqCst), 0);
+    assert_eq!(attempt.writes.load(Ordering::SeqCst), 0);
+
+    host_layouts::cancel_window_close(&id);
+    let mut replacement = AppProbe::start(&bundle, &id, &layout);
+    replacement.wait("app.restoreReady");
+    replacement.ping();
+    assert_eq!(attempt.calls.load(Ordering::SeqCst), 2);
+    assert_eq!(attempt.writers.load(Ordering::SeqCst), 1);
+    assert_eq!(replacement.ready.load(Ordering::SeqCst), 1);
+    assert_eq!(host_layouts::pending_window_opens(&id), 0);
+    let installed = host_layouts::lookup(&id).expect("replacement registered its layout");
+    assert_eq!(
+        serde_json::to_value(installed.project_layout()).unwrap(),
+        serde_json::to_value(&layout).unwrap(),
+        "replacement must reopen the current saved panel layout",
+    );
+    drop(installed);
+
+    let closing = ClosingWindows::new(vec![window(&id)]);
+    closing.flush(&home).unwrap();
+    replacement.stop();
+    drop(closing);
+    eventually("replacement teardown left a live writer or layout", || {
+        host_layouts::pending_window_opens(&id) == 0
+            && host_layouts::lookup(&id).is_none()
+            && attempt.writers.load(Ordering::SeqCst) == 0
+    });
+    host_layouts::cancel_window_close(&id);
+    println!(
+        "PASS TSX remount: pending opener drained before same window ID reopened; one ready acknowledgement and one live writer; no orphan after teardown"
+    );
+}
+
 #[test]
 #[ignore = "requires the production App fixture bundle; run verification/phase1_pending_open.py"]
 fn production_app_recovers_pending_open_after_failed_quit_and_restart() {

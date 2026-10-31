@@ -3,6 +3,8 @@
 mod nsh_bundle;
 #[cfg(target_os = "macos")]
 mod nsh_chrome;
+#[cfg(all(target_os = "macos", feature = "dev-reload"))]
+mod nsh_dev;
 #[cfg(target_os = "macos")]
 mod nsh_export;
 #[cfg(target_os = "macos")]

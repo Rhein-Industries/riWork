@@ -190,12 +190,14 @@ impl Layouts {
     }
     /// Open the project in the process's fixed home, honoring a reload snapshot.
     pub async fn open_session(request: Value) -> Result<LayoutSession, String> {
+        let request: OpenSession =
+            serde_json::from_value(request).map_err(|e| format!("invalid: {e}"))?;
+        if request.window_id.is_empty() || request.project_id.is_empty() {
+            return Err("invalid: windowId and projectId are required".into());
+        }
+        let opening = host_layouts::begin_window_open(&request.window_id)?;
         tokio::task::spawn_blocking(move || {
-            let request: OpenSession =
-                serde_json::from_value(request).map_err(|e| format!("invalid: {e}"))?;
-            if request.window_id.is_empty() || request.project_id.is_empty() {
-                return Err("invalid: windowId and projectId are required".into());
-            }
+            let _opening = opening;
             open_at(process_home()?, request)
         })
         .await

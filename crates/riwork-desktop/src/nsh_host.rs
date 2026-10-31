@@ -50,8 +50,8 @@ use std::{
 };
 use uuid::Uuid;
 
-const APP_ID: &str = "dev.riwork.shell";
-const CAPABILITIES: &str = r#"{"host":["window.*","app.*","system.*"],"clipboard":true,"openUrl":true}"#;
+pub(crate) const APP_ID: &str = "dev.riwork.shell";
+pub(crate) const CAPABILITIES: &str = r#"{"host":["window.*","app.*","system.*"],"clipboard":true,"openUrl":true}"#;
 
 #[cfg(test)]
 #[path = "nsh_remote_tests.rs"]
@@ -424,6 +424,8 @@ enum Service {
     Restart(ReloadRequest, ClosingWindows),
     RestartSkipped,
     TextSize(&'static str),
+    #[cfg(feature = "dev-reload")]
+    DevReload(crate::nsh_dev::Build, ClosingWindows),
     Finished,
     Wake,
 }
@@ -449,6 +451,12 @@ enum Main {
     QuitPrepared,
     Finish,
     DrainTerminals,
+    #[cfg(feature = "dev-reload")]
+    DevBuild(Result<crate::nsh_dev::Build, String>),
+    #[cfg(feature = "dev-reload")]
+    DevPrepared(crate::nsh_dev::Build, ClosingWindows, Result<Vec<RuntimeWindow>, String>),
+    #[cfg(feature = "dev-reload")]
+    DevDrain,
     #[cfg(feature = "terminal-fixture")]
     Fixture(Value),
     Error(String),
@@ -650,6 +658,12 @@ struct Window {
     closing: bool,
 }
 struct Host {
+    #[cfg(feature = "dev-reload")]
+    dev_reloads: crate::nsh_dev::Reloads,
+    #[cfg(feature = "dev-reload")]
+    dev_draining: Option<(crate::nsh_dev::Build, Vec<(String, RuntimeWindow)>)>,
+    #[cfg(feature = "dev-reload")]
+    dev_opens: Vec<(PreparedWindow, OpenIntent)>,
     #[cfg(feature = "terminal-fixture")]
     fixture: Option<crate::nsh_terminal_fixture::Fixture>,
     mtm: MainThreadMarker,
@@ -675,6 +689,117 @@ struct Host {
     posted: VecDeque<PostedNotice>,
 }
 impl Host {
+    #[cfg(feature = "dev-reload")]
+    fn start_dev_reload(&mut self) {
+        let blocked = self.quitting
+            || self.quit_request_pending
+            || self.windows.values().any(|window| window.closing);
+        let Some(build) = self.dev_reloads.next(blocked) else {
+            return;
+        };
+        for window in self.windows.values_mut() {
+            window.closing = true;
+        }
+        let batch = ClosingWindows::new(self.snapshot());
+        if let Err(error) = self.service.send(Service::DevReload(build, batch)) {
+            if let Service::DevReload(_, batch) = error.0 {
+                self.dev_reload_failed(batch, "host service stopped".into());
+            }
+        }
+    }
+
+    #[cfg(feature = "dev-reload")]
+    fn dev_reload_failed(&mut self, batch: ClosingWindows, error: String) {
+        self.dev_reloads.active = false;
+        for window in self.windows.values_mut() {
+            window.closing = false;
+        }
+        batch.cancel();
+        eprintln!("riwork: TSX reload cancelled; keeping the current UI: {error}");
+        self.finish_dev_reload();
+    }
+
+    #[cfg(feature = "dev-reload")]
+    fn dev_prepared(
+        &mut self,
+        build: crate::nsh_dev::Build,
+        batch: ClosingWindows,
+        result: Result<Vec<RuntimeWindow>, String>,
+    ) {
+        let windows = match result {
+            Ok(windows) => windows,
+            Err(error) => {
+                self.dev_reload_failed(batch, error);
+                return;
+            }
+        };
+        let ids: Vec<_> = batch.windows.iter().map(|(id, _)| id.clone()).collect();
+        // Stop joins each JS engine and drops its LayoutSession and terminal
+        // components. Retained layout handles must also be released before a
+        // replacement engine registers the same window ID.
+        for window in self.windows.values() {
+            window.view.stop();
+        }
+        drop(batch);
+        self.dev_draining = Some((build, ids.into_iter().zip(windows).collect()));
+        self.handle(Main::DevDrain);
+    }
+
+    #[cfg(feature = "dev-reload")]
+    fn drain_dev_reload(&mut self) {
+        let pending_layout = self.dev_draining.as_ref().is_some_and(|(_, windows)| {
+            windows.iter().any(|(id, _)| {
+                host_layouts::pending_window_opens(id) != 0 || host_layouts::lookup(id).is_some()
+            })
+        });
+        if riwork_nsh_terminal::pending_count() != 0 || pending_layout {
+            thread::spawn(|| {
+                thread::sleep(Duration::from_millis(20));
+                send(Main::DevDrain);
+            });
+            return;
+        }
+        let Some((build, windows)) = self.dev_draining.take() else {
+            return;
+        };
+        self.bundle = build.bundle;
+        for (id, runtime) in windows {
+            host_layouts::cancel_window_close(&id);
+            if let Some(window) = self.windows.get_mut(&id) {
+                let params =
+                    crate::nsh_dev::restore_params(json!(window.view.host().params()), &runtime);
+                window
+                    .view
+                    .host()
+                    .set_params(params.as_object().unwrap().clone());
+                window.runtime = runtime;
+                window.closing = false;
+                window.last_state = Value::Null;
+                window.view.load(App::Js(self.bundle.clone()));
+            }
+        }
+        self.dev_reloads.active = false;
+        self.state("");
+        self.publish();
+        eprintln!(
+            "riwork: TSX UI reloaded (server {}, build {}); component state was reset",
+            build.session, build.version
+        );
+        self.finish_dev_reload();
+    }
+
+    #[cfg(feature = "dev-reload")]
+    fn finish_dev_reload(&mut self) {
+        for (prepared, intent) in std::mem::take(&mut self.dev_opens) {
+            self.open_requested(prepared, intent);
+        }
+        if self.quit_pending {
+            self.quit_pending = false;
+            self.finish_quit();
+        } else {
+            self.start_dev_reload();
+        }
+    }
     fn open(&mut self, prepared: PreparedWindow) -> Result<String, String> {
         let id = Uuid::new_v4().to_string();
         let channel = HostChannel::new();
@@ -972,6 +1097,11 @@ impl Host {
         }
     }
     fn open_requested(&mut self, prepared: PreparedWindow, intent: OpenIntent) {
+        #[cfg(feature = "dev-reload")]
+        if self.dev_reloads.active {
+            self.dev_opens.push((prepared, intent));
+            return;
+        }
         if self.quitting {
             if let Some(call) = intent.call {
                 call.reject("unavailable: host is quitting");
@@ -1075,6 +1205,15 @@ impl Host {
     }
     fn handle(&mut self, message: Main) {
         match message {
+            #[cfg(feature = "dev-reload")]
+            Main::DevBuild(result) => match result {
+                Ok(build) => { self.dev_reloads.push(build); self.start_dev_reload(); }
+                Err(error) => eprintln!("riwork: TSX build failed; keeping the current UI: {error}"),
+            },
+            #[cfg(feature = "dev-reload")]
+            Main::DevPrepared(build, batch, result) => self.dev_prepared(build, batch, result),
+            #[cfg(feature = "dev-reload")]
+            Main::DevDrain => self.drain_dev_reload(),
             Main::Call(id, name, call) => self.call(id, name, call),
             Main::Open(prepared, intent) => self.open_requested(prepared, intent),
             Main::Notify(notification) => {
@@ -1157,6 +1296,8 @@ impl Host {
             #[cfg(feature = "terminal-fixture")]
             Main::Fixture(request) => self.fixture_call(request),
         }
+        #[cfg(feature = "dev-reload")]
+        self.start_dev_reload();
     }
     #[cfg(feature = "terminal-fixture")]
     fn fixture_call(&mut self, request: Value) {
@@ -1372,6 +1513,11 @@ impl Host {
         }
     }
     fn call(&mut self, id: String, name: &str, call: HostCall) {
+        #[cfg(feature = "dev-reload")]
+        if self.dev_reloads.active {
+            call.reject("unavailable: UI is reloading");
+            return;
+        }
         if let Err(error) = admit_host_call(
             self.windows.get(&id).map(|window| &window.runtime),
             self.quitting,
@@ -2300,6 +2446,11 @@ fn services(mut startup: Startup, rx: mpsc::Receiver<Service>, tx: mpsc::Sender<
                 Ok(size) => send(Main::SettingsChanged(size)),
                 Err(error) => eprintln!("riwork: {error}"),
             },
+            #[cfg(feature = "dev-reload")]
+            Ok(Service::DevReload(build, batch)) => {
+                let result = batch.flush(&startup.home);
+                send(Main::DevPrepared(build, batch, result));
+            }
             Ok(Service::Finished) => break,
             Ok(Service::Wake) | Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -2430,6 +2581,16 @@ fn notification_delivery(
 }
 
 pub fn run(args: Vec<String>) -> Result<(), String> {
+    #[cfg(not(feature = "dev-reload"))]
+    if std::env::var_os("RIWORK_NSH_DEV_URL").is_some() {
+        return Err("RIWORK_NSH_DEV_URL requires a development build: cargo build -p riwork-desktop --features dev-reload".into());
+    }
+    #[cfg(feature = "dev-reload")]
+    let dev_url = std::env::var_os(crate::nsh_dev::ENV).map(|url| {
+        let url = url.into_string().map_err(|_| "RIWORK_NSH_DEV_URL must be UTF-8".to_owned())?;
+        crate::nsh_dev::asset_base(&url)?;
+        Ok::<_, String>(url)
+    }).transpose()?;
     let Some(mut startup) = thread::spawn(move || startup(args))
         .join()
         .map_err(|_| "NSH startup worker panicked")??
@@ -2475,6 +2636,12 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     native::symbols_macos::register(&components);
     let (notifier, notification_center) = notification_delivery(&startup.home);
     let mut host = Host {
+        #[cfg(feature = "dev-reload")]
+        dev_reloads: Default::default(),
+        #[cfg(feature = "dev-reload")]
+        dev_draining: None,
+        #[cfg(feature = "dev-reload")]
+        dev_opens: Vec::new(),
         #[cfg(feature = "terminal-fixture")]
         fixture: if std::env::var_os("RIWORK_NSH_TERMINAL_FIXTURE").is_some() {
             Some(crate::nsh_terminal_fixture::start(
@@ -2512,6 +2679,18 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     while rx.try_recv().is_ok() {}
     host.publish();
     HOST.with(|state| *state.borrow_mut() = Some(host));
+    #[cfg(feature = "dev-reload")]
+    let _dev_client = if let Some(url) = dev_url {
+        let assets = crate::nsh_dev::asset_base(&url)?;
+        HOST.with(|state| {
+            let mut state = state.borrow_mut();
+            let host = state.as_mut().unwrap();
+            host.asset_base = Some(AssetBase::Http(assets.clone()));
+            for window in host.windows.values() { window.view.set_asset_base(Some(AssetBase::Http(assets.clone()))); }
+        });
+        eprintln!("riwork: watching TSX builds at {url}");
+        Some(crate::nsh_dev::start(url, |build| send(Main::DevBuild(build)))?)
+    } else { None };
     // Process-wide, once (not per window): notification claims and orchestrator
     // wakes. Their main-thread posts queue behind app.run().
     let _background = notices::start(startup.home.clone(), notifier);

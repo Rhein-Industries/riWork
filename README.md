@@ -80,6 +80,16 @@ RIWORK_NSH_BUNDLE="$PWD/target/debug/riwork-ui/bundle.js" cargo run -- /path/to/
 
 `RIWORK_NSH_BUNDLE` must be an absolute path. Keep the rest of the UI output beside `bundle.js`, including its `assets` directory. This developer override is unnecessary for the packaged app.
 
+For automatic TSX reloads in a separate development window, use the pinned NSH 0.3.0 CLI:
+
+```sh
+NSH_CLI=/absolute/path/to/nsh-0.3.0/bin/nsh python3 scripts/dev-ui.py
+```
+
+The launcher builds the desktop with `dev-reload`, starts `nsh dev --server-only`, and opens this checkout using separate data and runtime directories under `target/dev-ui`. `--project /path/to/project` chooses the project and `--home /path/to/dev-data` chooses a separate persistent development home. It leaves the installed app running. Saving TSX rebuilds the UI and reloads every development window without rebuilding Rust. Build failures keep the current UI. Before a reload, the host flushes drafts and layouts, stops the old UI engines, and waits for terminal clients to detach; persistent shells and chats remain owned by their backend services. The new views restore their current project and layout. NSH 0.3's public embedding API remounts the whole view, so local component state, focus and scroll position reset. Rust changes still require stopping and rerunning the command. Ctrl-C stops the development window and server.
+
+The optional host connection is selected by `RIWORK_NSH_DEV_URL=ws://127.0.0.1:PORT/ws` and exists only in builds with `--features dev-reload`; ordinary packaged builds have no dev client.
+
 To make the CLI available everywhere, link the built executable into a directory on your `PATH`:
 
 ```sh

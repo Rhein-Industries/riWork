@@ -34,8 +34,11 @@ of this binary. This is the host foundation, not the completed RiWork UI port.
   the desktop crate's compile-time source path, independently of the launch cwd.
   Generate it with the pinned NSH **0.3.0** CLI (see `docs/nsh-toolchain.md`):
   `"$NSH" build apps/riwork --out apps/riwork/.nsh/out`.
-  This is the dev-source workflow: edit TSX, rebuild the bundle, restart the
-  fixture. The host does not compile TSX or provide hot reload.
+  This is the manual dev-source workflow: edit TSX, rebuild the bundle, restart
+  the fixture. For automatic development reloads, use `scripts/dev-ui.py` with
+  the pinned CLI, as documented in the root README. Its optional `dev-reload`
+  host connection remounts views after flushing layouts/drafts and draining
+  terminal clients; NSH 0.3 does not expose its state-preserving embedding API.
 - For a built bundle independent of the checkout, run
   `"$NSH" build apps/riwork --out /absolute/output/riwork`, then set
   `RIWORK_NSH_BUNDLE=/absolute/output/riwork/bundle.js`. Keep generated assets,
