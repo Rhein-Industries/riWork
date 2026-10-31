@@ -610,6 +610,7 @@ function Shells(props: { controller: PanelController; surface: string }) {
   const c = props.controller;
   const allShells = () => c.shells().filter((shell) => shell.kind === "project" && shell.projectId === c.projectId());
   const allChats = () => c.chats().filter((chat) => chat.projectId === c.projectId());
+  const project = () => c.state().projects.find((project) => project.id === c.projectId());
   const context = (chat: ChatSummary) => {
     const trees = c.state().worktrees.filter((tree) => tree.projectId === chat.projectId);
     const tree = trees.find((tree) => tree.id === chat.worktreeId) ?? trees.filter((tree) => chat.cwd === tree.path || chat.cwd.startsWith(`${tree.path}/`)).sort((a, b) => b.path.length - a.path.length)[0];
@@ -617,15 +618,29 @@ function Shells(props: { controller: PanelController; surface: string }) {
   };
   const provider = (chat: ChatSummary) => chat.provider === "codex" ? "Codex" : chat.provider === "claude" ? "Claude" : "Muse";
   const status = (chat: ChatSummary) => chat.state === "running" ? "Working" : chat.state.charAt(0).toUpperCase() + chat.state.slice(1);
-  type SessionRow = { kind: "chat"; chat: ChatSummary; id: string; projectId: string; token: number } | { kind: "shell"; shell: ShellSessionDto; id: string; projectId: string; token: number };
+  // [filter, chip, what it lists, accessibility label]
+  const FILTERS = [["all", "All", "sessions", "All sessions"], ["codex", "Codex", "Codex chats", "Codex chats"], ["claude", "Claude", "Claude chats", "Claude chats"],
+    ["muse", "Muse", "Muse chats", "Muse chats"], ["shells", "Shells", "shells", "Shells"]] as const;
+  type SessionFilter = typeof FILTERS[number][0];
+  type SessionRow = { kind: "chat"; chat: ChatSummary; id: string; projectId: string; token: number; rank: number } | { kind: "shell"; shell: ShellSessionDto; id: string; projectId: string; token: number; rank: number };
+  // What needs the person first, then live work, then history; as Tasks lists open work first.
+  const chatRank = (chat: ChatSummary) => chat.state === "waiting" || chat.state === "failed" ? 0 : chat.state === "running" || chat.state === "starting" ? 1 : chat.state === "stopped" ? 3 : 2;
+  const foundChats = () => { const query = c.query(); return allChats().filter((chat) => matches(query, chat.id, chat.title, provider(chat), status(chat), context(chat), chat.cwd, chat.worktreeId)); };
+  const foundShells = () => { const query = c.query(); return allShells().filter((shell) => shellMatches(shell, c.state(), query) || (!!query.trim() && matches(query, c.tabForShell(shell.id)?.title))); };
+  const counts = (): Record<SessionFilter, number> => {
+    const chats = foundChats(), shells = foundShells().length;
+    const of = (name: string) => chats.filter((chat) => chat.provider === name).length;
+    return { all: chats.length + shells, codex: of("codex"), claude: of("claude"), muse: of("muse"), shells };
+  };
   const rows = (): SessionRow[] => {
-    const filter = c.sessionFilter(), query = c.query(), projectId = c.projectId(), token = c.generation();
-    const chats: SessionRow[] = allChats().filter((chat) => filter !== "shells" && (filter === "all" || chat.provider === filter) && matches(query, chat.id, chat.title, provider(chat), status(chat), context(chat), chat.cwd, chat.worktreeId))
-      .map((chat) => ({ kind: "chat", chat, id: `chat:${chat.id}`, projectId, token }));
-    const shells: SessionRow[] = (filter === "all" || filter === "shells" ? allShells() : [])
-      .filter((shell) => shellMatches(shell, c.state(), query) || (!!query.trim() && matches(query, c.tabForShell(shell.id)?.title)))
-      .map((shell) => ({ kind: "shell", shell, id: `shell:${shell.id}`, projectId, token }));
-    return [...chats, ...shells];
+    const filter = c.sessionFilter(), projectId = c.projectId(), token = c.generation();
+    const chats: SessionRow[] = filter === "shells" ? [] : foundChats().filter((chat) => filter === "all" || chat.provider === filter)
+      .map((chat) => ({ kind: "chat", chat, id: `chat:${chat.id}`, projectId, token, rank: chatRank(chat) }));
+    const shells: SessionRow[] = (filter === "all" || filter === "shells" ? foundShells() : [])
+      .map((shell) => ({ kind: "shell", shell, id: `shell:${shell.id}`, projectId, token, rank: shell.alive ? 1 : 3 }));
+    // Grouped by rank, each group in the host's order.
+    const all = [...chats, ...shells];
+    return [0, 1, 2, 3].flatMap((rank) => all.filter((row) => row.rank === rank));
   };
   function createShell() {
     void c.run(async () => {
@@ -637,39 +652,72 @@ function Shells(props: { controller: PanelController; surface: string }) {
       c.attach(shell, projectId, token);
     });
   }
-  function refresh() { void c.refreshCatalog(); void Sessions.list().then((next) => c.shells.set(next.sessions)).catch((reason) => c.notice(String(reason))); }
+  function refresh() {
+    void c.refreshCatalog();
+    // The subscription is ordered by revision and pushes only changes: a push that lands while
+    // this read is in flight is newer than it, and must not be rolled back.
+    const before = c.shells();
+    void Sessions.list().then((next) => { if (c.shells() === before) c.shells.set(next.sessions); }).catch((reason) => c.notice(String(reason)));
+  }
+  const s = () => theme().scale;
+  const lead = () => space(6, s()) + text(13) + space(8, s());
+  const rowStyle = () => ({ ...row(), flexDirection: "row" as const, alignItems: "flex-start" as const, gap: space(8, s()) });
   return <View testID="shells-panel" style={{ flex: 1, minHeight: 0, backgroundColor: theme().palette.panel }}>
     <Header title="Sessions" count={rows().length} total={allShells().length + allChats().length} noun="session" project={c.projectLabel()}>
-      <ToolbarCommand id="sessions-refresh" icon="refresh" label="Refresh sessions" disabled={c.catalogLoading()} onPress={refresh}>↻</ToolbarCommand>
-      <ToolbarCommand id="new-shell" icon="add" label="New shell" disabled={c.pending()} onPress={createShell}>＋</ToolbarCommand>
+      <ToolbarCommand id="sessions-refresh" icon="refresh" label="Refresh sessions" disabled={c.catalogLoading()} onPress={refresh} />
+      {c.newChat && <ToolbarCommand id="sessions-new-chat" icon="chat" label="New chat…" onPress={() => c.newChat?.()} />}
+      <ToolbarCommand id="new-shell" icon="add" label="New shell" disabled={c.pending() || !project()} onPress={createShell} />
     </Header>
     <PanelSearch controller={c} panel="shells" surface={props.surface} />
-    <View testID="sessions-controls" style={{ paddingHorizontal: 8, paddingBottom: 8, flexDirection: "row", gap: 4, flexWrap: "wrap" }}>
-      {c.newChat && <Command id="sessions-new-chat" label="New chat…" onPress={() => c.newChat?.()} />}
-      {([["all", "All sessions"], ["codex", "Codex chats"], ["claude", "Claude chats"], ["muse", "Muse chats"], ["shells", "Shells"]] as const).map(([filter, label]) =>
-        <Command id={`sessions-filter-${filter}`} label={label} selected={c.sessionFilter() === filter} onPress={() => c.sessionFilter.set(filter)} />)}
+    <View testID="sessions-controls" style={{ paddingHorizontal: space(12, s()), paddingBottom: space(6, s()), flexDirection: "row", gap: 4, flexWrap: "wrap" }}>
+      {FILTERS.filter(([filter]) => filter === "all" || filter === "shells" || c.sessionFilter() === filter || allChats().some((chat) => chat.provider === filter)).map(([filter, chip, , label]) =>
+        <Command id={`sessions-filter-${filter}`} label={label} selected={c.sessionFilter() === filter} onPress={() => c.sessionFilter.set(filter)}>{`${chip} ${counts()[filter]}`}</Command>)}
     </View>
     {c.catalogNotice() !== "" && <Text testID="sessions-catalog-notice" style={{ fontFamily: theme().family, fontSize: text(10), color: theme().palette.gold, paddingHorizontal: 12, paddingBottom: 8 }}>{c.catalogNotice()}</Text>}
     {c.catalogLoading() && allChats().length === 0 && <Text style={{ fontFamily: theme().family, fontSize: text(10), color: muted(), paddingHorizontal: 12, paddingBottom: 8 }}>Loading chat history…</Text>}
-    <List each={rows()} keyExtractor={(item) => item.id} estimatedItemSize={space(76, theme().scale)} style={{ flex: 1, minHeight: 0 }} contentStyle={{ paddingHorizontal: space(6, theme().scale), paddingBottom: 6 }} empty={<Empty query={c.query()} noun="sessions" />}>
+    <List each={rows()} keyExtractor={(item) => item.id} estimatedItemSize={space(58, s())} style={{ flex: 1, minHeight: 0 }} contentStyle={{ paddingHorizontal: space(6, s()), paddingBottom: 6 }} empty={<SessionsEmpty />}>
       {(item) => <>{item().kind === "chat" ? <ChatSession item={() => item() as Extract<SessionRow, { kind: "chat" }>} /> : <ShellSession item={() => item() as Extract<SessionRow, { kind: "shell" }>} />}</>}
     </List>
   </View>;
 
+  function SessionsEmpty() {
+    const searching = () => c.query().trim() !== "";
+    const entry = () => FILTERS.find(([filter]) => filter === c.sessionFilter()) ?? FILTERS[0];
+    // The list is empty, so under a narrower filter every match counted here is outside it.
+    const elsewhere = () => c.sessionFilter() === "all" ? 0 : counts().all;
+    const message = () => elsewhere() ? `No ${entry()[2]}${searching() ? " match" : ""}` : searching() ? "No matches" : `No ${entry()[2]}`;
+    return <View style={{ minHeight: space(120, s()), padding: 24, gap: 10, alignItems: "center", justifyContent: "center" }}>
+      <Icon name={searching() ? "search" : c.sessionFilter() === "all" || c.sessionFilter() === "shells" ? "terminal" : "chat"} size={text(22)} color={muted()} />
+      <Text style={{ color: muted(), fontFamily: theme().family, fontSize: text(11) }}>{message()}</Text>
+      {elsewhere() > 0 && <Command id="sessions-show-all" label="Show all sessions" onPress={() => c.sessionFilter.set("all")}>{`Show all ${elsewhere()}`}</Command>}
+      {!elsewhere() && !searching() && c.sessionFilter() !== "codex" && c.sessionFilter() !== "claude" && c.sessionFilter() !== "muse" &&
+        <Command id="sessions-empty-new-shell" label="New shell" disabled={c.pending() || !project()} onPress={createShell} />}
+    </View>;
+  }
   function ChatSession(props: { item: () => Extract<SessionRow, { kind: "chat" }> }) {
     const item = props.item, chat = () => item().chat;
-    const tone = () => chat().state === "running" ? theme().palette.working : chat().state === "waiting" || chat().state === "failed" ? theme().palette.gold : muted();
+    // Waiting and failed chats need the person; the weight marks them where the theme gives
+    // working and attention the same colour.
+    const attention = () => chat().state === "waiting" || chat().state === "failed";
+    const tone = () => chat().state === "running" || chat().state === "starting" ? theme().palette.working : attention() ? theme().palette.gold : muted();
     return <Button testID={`session-chat-${chat().id}`} accessibilityLabel={`${provider(chat())} chat · ${chat().title || "Untitled chat"} · ${status(chat())} · ${context(chat())}`}
       selected={c.selectedChat() === chat().id} disabled={!c.showChat} onPress={() => c.openChat(chat(), item().projectId, item().token)}
-      style={row()} hoverStyle={{ backgroundColor: theme().palette.panelActive }} focusStyle={{ backgroundColor: theme().palette.divider }} selectedStyle={{ backgroundColor: theme().palette.panelActive }}>
-      <Text numberOfLines={1} style={{ fontFamily: theme().family, fontSize: text(11), color: ink() }}>{`${provider(chat())} · ${chat().title.trim() || "Untitled chat"}`}</Text>
-      <Text numberOfLines={1} style={{ fontFamily: theme().family, fontSize: text(10), color: tone() }}>{`${status(chat())} · ${context(chat())}`}</Text>
-      <Text numberOfLines={1} style={{ fontFamily: theme().monoFamily, fontSize: text(10), color: muted() }}>{chat().cwd}</Text>
-      <Text numberOfLines={1} style={{ fontFamily: theme().monoFamily, fontSize: text(9), color: muted() }}>{chat().id}</Text>
+      style={rowStyle()} hoverStyle={{ backgroundColor: theme().palette.panelActive }} focusStyle={{ backgroundColor: theme().palette.divider }} selectedStyle={{ backgroundColor: theme().palette.panelActive }}>
+      <View style={{ paddingTop: 1 }}><Icon name="chat" size={text(13)} color={tone()} /></View>
+      <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
+        <Text numberOfLines={1} style={{ fontFamily: theme().family, fontSize: text(11), color: ink() }}>{chat().title.trim() || "Untitled chat"}</Text>
+        <View style={{ flexDirection: "row", minWidth: 0 }}>
+          <Text numberOfLines={1} style={{ flexShrink: 0, fontFamily: theme().family, fontSize: text(10), fontWeight: attention() ? "600" : "400", color: tone() }}>{status(chat())}</Text>
+          <Text numberOfLines={1} style={{ flexShrink: 1, minWidth: 0, fontFamily: theme().family, fontSize: text(10), color: muted() }}>{` · ${provider(chat())} · ${context(chat())}`}</Text>
+        </View>
+        <Text numberOfLines={1} ellipsizeMode="middle" style={{ fontFamily: theme().monoFamily, fontSize: text(10), color: muted() }}>{chat().cwd}</Text>
+      </View>
     </Button>;
   }
   function ShellSession(props: { item: () => Extract<SessionRow, { kind: "shell" }> }) {
     const item = props.item, shell = () => item().shell;
+    const state = () => shell().alive ? "Live" : "Exited";
+    const tone = () => shell().alive ? accent() : muted();
     function menu() {
       void Menu.popup([
         { label: "Open session", disabled: !shell().alive, onSelect: () => c.attach(shell(), item().projectId, item().token) },
@@ -678,15 +726,20 @@ function Shells(props: { controller: PanelController; surface: string }) {
       ]);
     }
     return <View onContextMenu={menu}>
-      <Button testID={`shell-${shell().id}`} accessibilityLabel={c.titleForShell(shell())} selected={c.selectedShell() === shell().id} onPress={() => c.attach(shell(), item().projectId, item().token)} style={row()}
+      <Button testID={`shell-${shell().id}`} accessibilityLabel={`Shell · ${c.titleForShell(shell())} · ${state()} · ${shell().command ?? shell().cwd}`} selected={c.selectedShell() === shell().id} onPress={() => c.attach(shell(), item().projectId, item().token)} style={rowStyle()}
         hoverStyle={{ backgroundColor: theme().palette.panelActive }} focusStyle={{ backgroundColor: theme().palette.divider }} selectedStyle={{ backgroundColor: theme().palette.panelActive }}>
-        <Text numberOfLines={1} style={{ fontFamily: theme().family, fontSize: text(11), color: ink() }}>{c.titleForShell(shell())}</Text>
-        <Text numberOfLines={1} style={{ fontFamily: theme().family, fontSize: text(10), color: shell().alive ? accent() : muted() }}>{`${shell().alive ? "Live" : "Exited"} · ${shell().harness ?? "shell"}${c.tabForShell(shell().id)?.hidden ? " · Hidden tab" : ""}`}</Text>
-        <Text numberOfLines={1} style={{ fontFamily: theme().monoFamily, fontSize: text(10), color: muted() }}>{shell().command ?? shell().cwd}</Text>
-        <Text numberOfLines={1} style={{ fontFamily: theme().monoFamily, fontSize: text(9), color: muted() }}>{shell().id}</Text>
+        <View style={{ paddingTop: 1 }}><Icon name="terminal" size={text(13)} color={tone()} /></View>
+        <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
+          <Text numberOfLines={1} style={{ fontFamily: theme().family, fontSize: text(11), color: shell().alive ? ink() : muted() }}>{c.titleForShell(shell())}</Text>
+          <View style={{ flexDirection: "row", minWidth: 0 }}>
+            <Text numberOfLines={1} style={{ flexShrink: 0, fontFamily: theme().family, fontSize: text(10), color: tone() }}>{state()}</Text>
+            <Text numberOfLines={1} style={{ flexShrink: 1, minWidth: 0, fontFamily: theme().family, fontSize: text(10), color: muted() }}>{` · ${shell().harness ?? "shell"}${c.tabForShell(shell().id)?.hidden ? " · Hidden tab" : ""}`}</Text>
+          </View>
+          <Text numberOfLines={1} ellipsizeMode={shell().command ? "tail" : "middle"} style={{ fontFamily: theme().monoFamily, fontSize: text(10), color: muted() }}>{shell().command ?? shell().cwd}</Text>
+        </View>
       </Button>
-      {c.selectedShell() === shell().id && shell().alive && c.closingShell()?.id !== shell().id && <View style={{ paddingHorizontal: 6, paddingBottom: 4 }}><Command id={`close-shell:${shell().id}`} label="End shell…" disabled={c.pending()} onPress={() => c.closingShell.set(shell())} /></View>}
-      {c.closingShell()?.id === shell().id && <View testID="end-shell-confirm" style={{ marginHorizontal: 6, marginBottom: 6, padding: 10, gap: 8, borderRadius: 8, backgroundColor: theme().palette.bg }}>
+      {c.selectedShell() === shell().id && shell().alive && c.closingShell()?.id !== shell().id && <View style={{ paddingLeft: lead(), paddingBottom: 4, alignItems: "flex-start" }}><Command id={`close-shell:${shell().id}`} label="End shell…" disabled={c.pending()} onPress={() => c.closingShell.set(shell())} /></View>}
+      {c.closingShell()?.id === shell().id && shell().alive && <View testID="end-shell-confirm" style={{ marginLeft: lead(), marginRight: 6, marginBottom: 6, padding: 10, gap: 8, borderRadius: 8, backgroundColor: theme().palette.bg }}>
         <Text style={{ fontFamily: theme().family, fontSize: text(11), color: muted() }}>{`This ends ${c.titleForShell(shell())} and the processes running in it. Close its tab instead to keep it running.`}</Text>
         <View style={{ flexDirection: "row", gap: 6 }}>
           <Command id="confirm-end-shell" label="End shell" disabled={c.pending()} onPress={() => void c.run(() => Sessions.close(shell().id), () => c.closingShell.set(null))} />
@@ -712,9 +765,10 @@ export function ShellIntent(props: { controller: PanelController; shellId: strin
 
 function ShellIntentContent(props: { controller: PanelController; shellId: string }) {
   const shell = () => props.controller.shells().find((shell) => shell.id === props.shellId);
-  return <View testID={`shell-intent:${props.shellId}`} style={{ padding: 16, gap: 8 }}>
+  // It draws its own background: it can sit on any host surface.
+  return <View testID={`shell-intent:${props.shellId}`} style={{ padding: 16, gap: 8, backgroundColor: theme().palette.panel }}>
     <Text style={{ fontFamily: theme().family, fontSize: text(13), color: ink() }}>{shell() ? props.controller.titleForShell(shell()!) : "Shell"}</Text>
-    <Text style={{ fontFamily: theme().family, fontSize: text(11), color: muted() }}>Opening terminal…</Text>
+    <Text style={{ fontFamily: theme().family, fontSize: text(11), color: muted() }}>{shell()?.alive === false ? "This shell has exited." : "Opening terminal…"}</Text>
     <Text selectable={true} style={{ fontFamily: theme().monoFamily, fontSize: text(11), color: muted() }}>{props.shellId}</Text>
     {shell() && <Text style={{ fontFamily: theme().family, fontSize: text(11), color: muted() }}>{`${shell()!.alive ? "Live" : "Exited"} · ${shell()!.cwd}`}</Text>}
   </View>;
