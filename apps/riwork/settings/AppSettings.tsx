@@ -104,9 +104,20 @@ export function AppSettings(props: AppSettingsProps) {
       const node = initialTarget();
       if (!node) return;
       initialFocusPending = false;
+      const selected = settings()?.theme ?? "native";
+      if (node === themeNodes.get(selected)) themeFocus.set(selected);
       node.focus();
     }, 0);
   }); }
+  // The focused palette card is recorded here, not only by its focus event, as the account
+  // rows and ChoiceRow record theirs: a click or a programmatic focus need not send one (NSH's
+  // headless driver focuses only text inputs), and the arrows, Enter and Space act on it.
+  function focusTheme(id: string) {
+    const node = themeNodes.get(id);
+    if (!alive || !node) return;
+    themeFocus.set(id);
+    node.focus();
+  }
   // A check may finish, or the Cua ref may mount, after the show notification.
   effect(() => { initialTarget(); focus.containsFocus(); scheduleInitialFocus(); });
   function scheduleReveal() {
@@ -210,9 +221,10 @@ export function AppSettings(props: AppSettingsProps) {
       const choices = paletteCatalog.ids();
       if (!choices.length) return;
       const index = choices.indexOf(themeFocus() ?? "");
-      themeNodes.get(choices[(index + step + choices.length) % choices.length])?.focus();
+      focusTheme(choices[(index + step + choices.length) % choices.length]);
     };
-    return keymap.bind({ left: () => move(-1), up: () => move(-1), right: () => move(1), down: () => move(1) });
+    const choose = () => { const id = themeFocus(); if (id) patch({ theme: id }); };
+    return keymap.bind({ left: () => move(-1), up: () => move(-1), right: () => move(1), down: () => move(1), enter: choose, space: choose });
   });
 
   const muted = () => textStyle(theme, 10, true);
@@ -250,7 +262,7 @@ export function AppSettings(props: AppSettingsProps) {
   }
   function appearanceBody() {
     return <View style={{ gap: 8 }}>
-      <View testID="settings-theme-grid"><ThemePicker catalog={paletteCatalog} selected={() => settings()!.theme} theme={theme} onChoose={(id) => patch({ theme: id })}
+      <View testID="settings-theme-grid"><ThemePicker catalog={paletteCatalog} selected={() => settings()!.theme} theme={theme} onChoose={(id) => { focusTheme(id); patch({ theme: id }); }}
         onNode={(id, node) => { themeNodes.set(id, node); scheduleInitialFocus(); }}
         onFocus={(id) => { if (alive) themeFocus.set(id); }} onBlur={(id) => { if (alive && themeFocus() === id) themeFocus.set(null); }} /></View>
       {settings()!.theme === "ghostty" && <ToggleRow id="terminal-colors" label="Use RiWork terminal colors" checked={settings()!.useRiworkColors} onChange={(value) => patch({ useRiworkColors: value })} theme={theme} />}
