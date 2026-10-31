@@ -935,8 +935,6 @@ pub enum PanelKind {
     /// The global dashboard: the work of every project on this Mac. Builds from before it
     /// skip its tab when they read a layout, and keep it when they save one.
     Dashboard,
-    /// The project's flows (statecharts that lead chats) and their runs.
-    Flows,
 }
 
 impl PanelKind {
@@ -954,7 +952,6 @@ impl PanelKind {
             Self::ProjectSettings => "project_settings",
             Self::Schedules => "schedules",
             Self::Dashboard => "dashboard",
-            Self::Flows => "flows",
         }
     }
 
@@ -972,7 +969,6 @@ impl PanelKind {
             Self::Schedules => "Automations",
             Self::ProjectSettings => "Project settings",
             Self::Dashboard => "Dashboard",
-            Self::Flows => "Flows",
         }
     }
 }

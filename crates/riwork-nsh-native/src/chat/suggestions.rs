@@ -71,8 +71,17 @@ pub fn read(home: PathBuf, info: ChatInfo, own_models: Vec<ModelOption>, text: S
     let Some(trigger) = suggest::trigger(&text, caret) else { return Ok(None); };
     let mut truncated = false;
     let items = match trigger.sigil {
-        Sigil::Slash => suggest::rank_commands(&trigger.query, &suggest::commands(info.provider))
-            .into_iter().map(|command| item(suggest::command_preview(command, info.provider), command.summary.clone(), "command")).collect(),
+        Sigil::Slash => {
+            let mut items: Vec<ChatSuggestion> = suggest::rank_commands(&trigger.query, &suggest::commands(info.provider))
+                .into_iter().map(|command| item(suggest::command_preview(command, info.provider), command.summary.clone(), "command")).collect();
+            // The skills Claude finds for this chat, after RiWork's own commands.
+            let skills = suggest::skills(info.provider, &info.cwd);
+            items.extend(suggest::rank_commands(&trigger.query, &skills).into_iter().take(suggest::SHOWN).map(|skill| {
+                let preview = suggest::Preview { kind: "Claude skill".into(), ..suggest::command_preview(skill, info.provider) };
+                item(preview, skill.summary.clone(), "skill")
+            }));
+            items
+        }
         Sigil::Mention => {
             let mut caches = CACHES.get_or_init(Default::default).lock().map_err(|_| "broken: suggestion cache unavailable")?;
             let listing = caches.files.fresh(&info.cwd, Instant::now()).unwrap_or_else(|| {
