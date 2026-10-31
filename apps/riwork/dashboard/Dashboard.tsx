@@ -65,10 +65,15 @@ export function DashboardView(props: {
     review.set(current?.decision.id === decision.id ? null : createDecisionReview(decision, { api: props.decisions, onResponded: props.onRefresh }));
   }
 
-  function button(id: string, label: string, onPress: (() => void) | undefined, selected = false, hint?: string) {
-    return <View testID={id} role="button" accessibilityLabel={hint ?? label} accessibilityState={{ selected }} disabled={!onPress} onPress={onPress}
-      focusable={!!onPress} hoverStyle={{ backgroundColor: palette().panelActive }} style={{ paddingHorizontal: size(8), paddingVertical: size(4), borderRadius: 6, backgroundColor: selected ? palette().bg : "transparent" }}>
-      {label === "↻" || label === "×" ? <Icon name={label === "↻" ? "refresh" : "close"} size={11 * scale()} color={palette().muted} /> : <Text numberOfLines={1} style={font(10, selected ? palette().text : palette().muted)}>{label}</Text>}
+  /** A plain control; `tab` is a segment of a tablist, `outlined` an action that
+   * must read as one among status words. Without `onPress` it is drawn disabled. */
+  function button(id: string, label: string, onPress: (() => void) | undefined, selected = false, hint?: string, kind: "plain" | "tab" | "outlined" = "plain") {
+    const outlined = kind === "outlined";
+    return <View testID={id} role={kind === "tab" ? "tab" : "button"} accessibilityLabel={hint ?? label} accessibilityState={{ selected, disabled: !onPress }} disabled={!onPress} onPress={onPress}
+      focusable={!!onPress} hoverStyle={onPress ? { backgroundColor: palette().panelActive } : undefined}
+      style={{ paddingHorizontal: size(8), paddingVertical: size(outlined ? 3 : 4), borderRadius: 6, backgroundColor: selected ? palette().bg : "transparent", opacity: onPress ? 1 : 0.5,
+        ...(outlined ? { borderWidth: 1, borderColor: palette().divider } : {}) }}>
+      {label === "↻" || label === "×" ? <Icon name={label === "↻" ? "refresh" : "close"} size={11 * scale()} color={palette().muted} /> : <Text numberOfLines={1} style={font(10, selected || outlined ? palette().text : palette().muted)}>{label}</Text>}
     </View>;
   }
   function section(id: string, title: string, children: JSX.Element | JSX.Element[], meta?: string) {
@@ -86,15 +91,17 @@ export function DashboardView(props: {
       <Text numberOfLines={1} style={font(10, palette().muted)}>{detail}</Text>
     </View>;
   }
+  /** A rail's line of words, on the same left edge as its title and rows. */
+  const note = (tone = palette().muted) => ({ ...font(10, tone), paddingHorizontal: size(8), paddingVertical: size(4) });
   function more(total: number | undefined, shown: number) {
-    return total != null && total > shown ? <Text style={font(10, palette().muted)}>{`${total - shown} more`}</Text> : null;
+    return total != null && total > shown ? <Text style={note()}>{`${total - shown} more`}</Text> : null;
   }
   function list<T>(rows: T[] | undefined, total: number | undefined, draw: (item: T, index: number) => JSX.Element, empty: string, fields: (item: T) => string[], limit = LIST_LIMIT) {
     const found = (rows ?? []).map((item, index) => ({ item, index })).filter(({ item }) => matches(props.query(), fields(item)));
     const items = found.slice(0, limit);
     const count = props.query().trim() ? found.length : total ?? rows?.length;
     return items.length ? <>{items.map(({ item, index }) => draw(item, index))}{more(count, items.length)}</> :
-      <Text style={{ ...font(10, palette().muted), paddingHorizontal: size(8), paddingVertical: size(4) }}>{rows?.length && props.query().trim() ? `Nothing here matches “${props.query().trim()}”.` : empty}</Text>;
+      <Text style={note()}>{rows?.length && props.query().trim() ? `Nothing here matches “${props.query().trim()}”.` : empty}</Text>;
   }
   const sessionFields = (session: { agent: string; title?: string; project_name?: string; branch?: string }) => [session.agent, session.title ?? "", session.project_name ?? "Global", session.branch ?? ""];
 
@@ -127,7 +134,7 @@ export function DashboardView(props: {
       {cell("dashboard-tasks", totals.tasks.done + totals.tasks.todo + totals.tasks.in_progress ? `Tasks ${totals.tasks.done}/${totals.tasks.done + totals.tasks.todo + totals.tasks.in_progress} done` : "No tasks")}
       <View testID="dashboard-global-chat-block" style={{ flexDirection: "row", alignItems: "center", gap: size(6), paddingVertical: size(4), flexShrink: 0 }}>
         <Text style={font(10, palette().muted)}>{copy.status}</Text>
-        {button("dashboard-global-chat", copy.action, copy.enabled ? props.onGlobalChat : undefined)}
+        {button("dashboard-global-chat", copy.action, copy.enabled ? props.onGlobalChat : undefined, false, undefined, "outlined")}
       </View>
     </View>;
   }
@@ -138,12 +145,12 @@ export function DashboardView(props: {
       <Text style={mono(10, palette().muted)}>{`${visibleProjects(read.projects ?? [], props.query(), props.filter(), props.sort()).length} of ${read.projects_total ?? read.projects?.length ?? 0}`}</Text>
       <View testID="dashboard-filters" role="tablist" accessibilityLabel="Filter projects" style={{ flexDirection: "row", gap: 2, padding: 2, borderRadius: 8, backgroundColor: palette().panelActive }}>
         {FILTERS.map((filter) => button(`dashboard-filter-${filter}`, `${filterLabel(filter)} ${counts.find(([f]) => f === filter)?.[1] ?? 0}`, () => props.onFilter(filter), props.filter() === filter,
-          `${props.filter() === filter ? "Showing" : "Show"} ${filterLabel(filter)}`))}
+          `${props.filter() === filter ? "Showing" : "Show"} ${filterLabel(filter)}`, "tab"))}
       </View>
       <Text style={font(10, palette().muted)}>Sort</Text>
       <View testID="dashboard-sorts" role="tablist" accessibilityLabel="Order projects" style={{ flexDirection: "row", gap: 2, padding: 2, borderRadius: 8, backgroundColor: palette().panelActive }}>
         {SORTS.map((sort) => button(`dashboard-sort-${sort}`, sortLabel(sort), () => props.onSort(sort), props.sort() === sort,
-          `${props.sort() === sort ? "Ordered by" : "Order by"} ${sortLabel(sort)}`))}
+          `${props.sort() === sort ? "Ordered by" : "Order by"} ${sortLabel(sort)}`, "tab"))}
       </View>
     </View>;
   }
@@ -223,11 +230,12 @@ export function DashboardView(props: {
     };
     const sources = () => wire()?.decision_sources;
     return section("dashboard-decisions", "Decisions", <>
-      <Text style={font(10, palette().muted)}>{!sources() || sources()!.state === "unavailable" ? "Chats could not be listed · requests unknown"
-        : sources()!.state === "partial" ? `Partial coverage · ${sources()!.chats_complete} of ${sources()!.chats_total} chat logs complete` : `Checked ${plural(sources()!.chats_total, "chat")} · provider requests`}</Text>
+      <Text testID="dashboard-decision-sources" style={{ ...font(10, palette().muted), paddingHorizontal: size(8) }}>{!sources() || sources()!.state === "unavailable" ? "Chats not read yet · requests unknown"
+        : sources()!.state === "partial" ? `${sources()!.chats_complete} of ${plural(sources()!.chats_total, "chat")} checked · some requests may be missing`
+          : `${plural(sources()!.chats_total, "chat")} checked`}</Text>
       <Each of={rows()} key={(decision) => decision.id}>{(decision) => decisionRow(decision)}</Each>
       {more(props.query().trim() ? found().length : wire()?.decisions_total ?? found().length, found().length)}
-      {!rows().length && <Text style={{ ...font(10, palette().muted), paddingHorizontal: size(8), paddingVertical: size(4) }}>{wire()?.decisions?.length && props.query().trim() ? `Nothing here matches “${props.query().trim()}”.`
+      {!rows().length && <Text style={note()}>{wire()?.decisions?.length && props.query().trim() ? `Nothing here matches “${props.query().trim()}”.`
         : sources()?.state === "read" ? "No pending approvals or questions." : "No requests found in the available events. Open Needs you sessions for more."}</Text>}
     </>);
   }
@@ -242,7 +250,9 @@ export function DashboardView(props: {
         <Text numberOfLines={1} style={font(11)}>{`${sessionName(decision().session)} asks ${decision().kind === "approval" ? "for approval" : "a question"}`}</Text>
         <View style={{ flexDirection: "row", gap: size(8), justifyContent: "space-between" }}>
           <Text numberOfLines={1} style={{ ...font(10, palette().muted), flex: 1 }}>{`${decision().session.project_name ?? "Global"} · ${age(now(), decision().observed_at) ?? ""}`}</Text>
-          <Text style={font(10, palette().cyan)}>{open() ? "Hide" : "Review"}</Text>
+          <View style={{ paddingHorizontal: size(8), paddingVertical: size(1), borderRadius: 5, borderWidth: 1, borderColor: palette().divider, backgroundColor: palette().bg }}>
+            <Text style={font(10, palette().text)}>{open() ? "Hide" : "Review"}</Text>
+          </View>
         </View>
       </Button>
       {open() && <DecisionReviewView review={review()!} theme={props.theme} opener={() => opener} onClose={fold}
@@ -252,21 +262,23 @@ export function DashboardView(props: {
   /** The rest of the activity rail, drawn again on each read. */
   function activity(read: Wire) {
     const intelligence = intelligenceSection(read.intelligence, now());
+    // What needs the person comes first, under the decisions; the alert colour is
+    // theirs alone (the section title says the rest are working).
     return <>
-      {intelligence && section("dashboard-intelligence", "Overview", <>
-        {intelligence.summary && <Text style={font(11)}>{intelligence.summary}</Text>}
-        {intelligence.highlights.map((text) => <Text style={font(10, palette().muted)}>{text}</Text>)}
-        <Text testID="dashboard-intelligence-status" style={font(10, palette().muted)}>{intelligence.status}</Text>
-        {intelligence.error && <Text style={font(10, palette().gold)}>{intelligence.error}</Text>}
-      </>, "Haiku")}
       {section("dashboard-attention-list", "Needs you", list(read.attention, read.attention_total, (item, index) => {
         const [headline, detail] = attentionCopy(item, now());
         return row(`dashboard-attention-${index}`, headline, detail, item.target, palette().gold);
       }, quietAttention(read), (item) => [...attentionCopy(item, now()), item.project_name ?? "", item.session?.project_name ?? ""], Number.POSITIVE_INFINITY))}
       {section("dashboard-working-list", "Working now", list(read.working, read.working_total, (work, index) =>
-        row(`dashboard-working-${index}`, sessionName(work.session), workDetail(work, now(), false), work.session.target, palette().working), "No agent is working right now.", (work) => sessionFields(work.session)))}
+        row(`dashboard-working-${index}`, sessionName(work.session), workDetail(work, now(), false), work.session.target), "No agent is working right now.", (work) => sessionFields(work.session)))}
+      {intelligence && section("dashboard-intelligence", "Overview", <View style={{ gap: 3, paddingHorizontal: size(8) }}>
+        {intelligence.summary && <Text style={font(11)}>{intelligence.summary}</Text>}
+        {intelligence.highlights.map((text) => <Text style={font(10, palette().muted)}>{text}</Text>)}
+        <Text testID="dashboard-intelligence-status" style={font(10, palette().muted)}>{intelligence.status}</Text>
+        {intelligence.error && <Text style={font(10, palette().gold)}>{intelligence.error}</Text>}
+      </View>, "Haiku")}
       {!!read.recent_activity?.length && section("dashboard-recent-events", "Recent activity", list(read.recent_activity, read.recent_activity_total, (item, index) =>
-        row(`dashboard-recent-event-${index}`, item.text, `${sessionName(item.session)} · ${item.status.replaceAll("_", " ")} · ${age(now(), item.log_updated_at) ?? ""} · event ${item.source.event_seq}`, item.session.target),
+        row(`dashboard-recent-event-${index}`, item.text, [sessionName(item.session), item.status.replaceAll("_", " "), age(now(), item.log_updated_at)].filter(Boolean).join(" · "), item.session.target),
         "No recent activity.", (item) => [item.text, ...sessionFields(item.session)], 6))}
       {section("dashboard-finished-list", "Finished in the last hour", list(read.finished, read.finished_total, (work, index) =>
         row(`dashboard-finished-${index}`, sessionName(work.session), workDetail(work, now(), true), work.session.target), "No agent finished in the last hour.", (work) => sessionFields(work.session)))}
@@ -280,13 +292,13 @@ export function DashboardView(props: {
     return <>
       {section("dashboard-tasks-list", "Tasks in progress", list(read.tasks_in_progress, read.tasks_in_progress_total, (task) =>
         row(`dashboard-task-${task.id}`, task.title, [task.project_name, task.branch, age(now(), task.updated_at)].filter(Boolean).join(" · "), { type: "task", id: task.id }), "No task is in progress.", (task) => [task.title, task.project_name, task.branch ?? ""]))}
-      {section("dashboard-automations", "Automations", automations.state === "not_read" ? <Text style={font(10, palette().muted)}>Reading automations…</Text>
-        : automations.state === "unreadable" ? <Text style={font(10, palette().gold)}>{`Automations could not be read: ${automations.message}`}</Text>
+      {section("dashboard-automations", "Automations", automations.state === "not_read" ? <Text style={note()}>Reading automations…</Text>
+        : automations.state === "unreadable" ? <Text style={note(palette().gold)}>{`Automations could not be read: ${automations.message}`}</Text>
           : list(automations.items, automations.total, (item) => row(`dashboard-automation-${item.id}`, item.title, automationDetail(item, now()),
             { type: "automations", project_id: item.project_id }), "No automations.", (item) => [item.title, item.project_name ?? "App"]))}
-      {section("dashboard-backends", "Backends", lines == null ? <Text style={font(10, palette().muted)}>Reading the app, the chat host and the providers…</Text>
-        : lines.length === 0 ? <Text style={font(10, palette().muted)}>{allLines?.length ? `Nothing here matches “${props.query().trim()}”.` : "No provider CLI was found."}</Text>
-          : <>{lines.map((line) => <View testID={`dashboard-backend-${line.key}`} accessibilityLabel={`${line.title}; ${line.detail}`} style={{ gap: 2 }}>
+      {section("dashboard-backends", "Backends", lines == null ? <Text style={note()}>Reading the app, the chat host and the providers…</Text>
+        : lines.length === 0 ? <Text style={note()}>{allLines?.length ? `Nothing here matches “${props.query().trim()}”.` : "No provider CLI was found."}</Text>
+          : <>{lines.map((line) => <View testID={`dashboard-backend-${line.key}`} accessibilityLabel={`${line.title}; ${line.detail}`} style={{ gap: 2, paddingHorizontal: size(8), paddingVertical: size(3) }}>
             <Text numberOfLines={1} style={font(11, line.tone === "stale" ? palette().gold : line.tone === "current" ? palette().cyan : palette().muted)}>{`${mark[line.tone]} ${line.title}`}</Text>
             <Text numberOfLines={1} style={font(10, palette().muted)}>{line.detail}</Text>
           </View>)}</>)}
@@ -295,9 +307,9 @@ export function DashboardView(props: {
   function regions(read: Wire) {
     const activity = (read.attention_total ?? read.attention?.length ?? 0);
     return <>
-      {button("dashboard-region-projects", `Projects ${read.projects_total ?? read.projects?.length ?? 0}`, () => region.set("projects"), region() === "projects")}
-      {button("dashboard-region-activity", activity ? `Activity · ${activity} need you` : `Activity ${(read.working?.length ?? 0) + (read.finished?.length ?? 0)}`, () => region.set("activity"), region() === "activity")}
-      {button("dashboard-region-work", `Tasks ${read.tasks_in_progress_total ?? read.tasks_in_progress?.length ?? 0}`, () => region.set("work"), region() === "work")}
+      {button("dashboard-region-projects", `Projects ${read.projects_total ?? read.projects?.length ?? 0}`, () => region.set("projects"), region() === "projects", undefined, "tab")}
+      {button("dashboard-region-activity", activity ? `Activity · ${activity} need you` : `Activity ${(read.working?.length ?? 0) + (read.finished?.length ?? 0)}`, () => region.set("activity"), region() === "activity", undefined, "tab")}
+      {button("dashboard-region-work", `Tasks ${read.tasks_in_progress_total ?? read.tasks_in_progress?.length ?? 0}`, () => region.set("work"), region() === "work", undefined, "tab")}
     </>;
   }
   /** Made again only when the arrangement changes. Each region in it reads the

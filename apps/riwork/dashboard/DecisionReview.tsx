@@ -132,6 +132,8 @@ export function DecisionReviewView(props: {
   const size = (value: number) => space(value, props.theme().scale);
   const text = (value = 11, muted = false) => ({ fontFamily: props.theme().family, fontSize: value * props.theme().scale, color: muted ? palette().muted : palette().text });
   const actionStyle = () => ({ paddingHorizontal: size(10), paddingVertical: size(6), borderRadius: 5, borderWidth: 1, borderColor: palette().divider });
+  // The review sits on its row's `panelActive` card: what answers takes the page colour to stand out.
+  const primary = () => palette().bg;
   const close = () => { if (!r.busy()) props.onClose(); };
   // Focus events do not bubble: each control of the review reports its own.
   const within = settingsFocusScope();
@@ -153,7 +155,7 @@ export function DecisionReviewView(props: {
       {!!r.review()!.approval!.detail && <Text selectable={true} style={text(11, true)}>{r.review()!.approval!.detail}</Text>}
       <View style={{ flexDirection: "row", flexWrap: "wrap", gap: size(8) }}>
         {r.review()!.approval!.choices.map((choice) => <Button testID={`dashboard-decision-${choice.decision}`} disabled={!r.editable()} onPress={() => void r.respond(choice.decision)} {...focusEvents()}
-          style={{ ...actionStyle(), backgroundColor: choice.decision === "accept" || choice.decision === "accept_for_session" ? palette().panelActive : "transparent", opacity: r.editable() ? 1 : 0.5 }}
+          style={{ ...actionStyle(), backgroundColor: choice.decision === "accept" || choice.decision === "accept_for_session" ? primary() : "transparent", opacity: r.editable() ? 1 : 0.5 }}
           focusStyle={{ borderColor: palette().cyan }}>
           <Text style={{ ...text(), color: choice.decision === "decline" || choice.decision === "cancel" ? palette().gold : palette().text }}>{choice.label}</Text>
         </Button>)}
@@ -175,7 +177,7 @@ export function DecisionReviewView(props: {
           onChange={(value) => r.type(index, value)} submitBehavior="submit" {...focusEvents()}
           style={{ ...text(), paddingHorizontal: size(8), paddingVertical: size(6), borderWidth: 1, borderRadius: 5, borderColor: palette().divider, backgroundColor: palette().bg }} />
       </View>)}
-      <Button testID="dashboard-send-answer" disabled={!r.editable()} onPress={() => void r.respond()} {...focusEvents()} style={{ ...actionStyle(), alignSelf: "flex-start", backgroundColor: palette().panelActive, opacity: r.editable() ? 1 : 0.5 }} focusStyle={{ borderColor: palette().cyan }}>
+      <Button testID="dashboard-send-answer" disabled={!r.editable()} onPress={() => void r.respond()} {...focusEvents()} style={{ ...actionStyle(), alignSelf: "flex-start", backgroundColor: primary(), opacity: r.editable() ? 1 : 0.5 }} focusStyle={{ borderColor: palette().cyan }}>
         <Text style={text()}>Send answer</Text>
       </Button>
     </View>}
