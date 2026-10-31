@@ -2,7 +2,7 @@ import SwiftUI
 import RiWorkCore
 
 // What the agents in the terminals are doing, drawn with the synced desktop colors. One shape for each state, so color is never the
-// only difference: working is a pulsing dot in the accent color (with "+N" for the subagents at work), waiting is a filled gold
+// only difference: working is a pulsing dot in the working color (with "+N" for the subagents at work), waiting is a filled gold
 // disc with an exclamation mark, done is a small muted check. Unknown and exited draw nothing, which is how they looked before.
 
 /// The dot that says an agent is working. It pulses; with Reduce Motion it just sits there.
@@ -11,7 +11,7 @@ private struct WorkingDot: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ScaledMetric(relativeTo: .caption2) private var size = 8.0
     var body: some View {
-        Image(systemName: "circle.fill").font(.system(size: size * style.scale)).foregroundStyle(style.accent)
+        Image(systemName: "circle.fill").font(.system(size: size * style.scale)).foregroundStyle(style.working)
             .symbolEffect(.pulse, options: .repeating, isActive: !reduceMotion)
     }
 }
@@ -37,7 +37,7 @@ struct ActivityIndicator: View {
             case .working:
                 HStack(spacing: 3) {
                     WorkingDot()
-                    if subagents > 0 { Text("+\(subagents)").font(style.face(10, bold: true, relativeTo: .caption2)).foregroundStyle(style.accent).monospacedDigit() }
+                    if subagents > 0 { Text("+\(subagents)").font(style.face(10, bold: true, relativeTo: .caption2)).foregroundStyle(style.working).monospacedDigit() }
                 }
             case .waiting:
                 WaitingDisc()
@@ -62,7 +62,7 @@ struct ProjectAgentBadges: View {
             if agents.working > 0 {
                 HStack(spacing: 3) {
                     WorkingDot()
-                    Text("\(agents.working)").font(style.face(11, bold: true, relativeTo: .caption)).foregroundStyle(style.accent).monospacedDigit()
+                    Text("\(agents.working)").font(style.face(11, bold: true, relativeTo: .caption)).foregroundStyle(style.working).monospacedDigit()
                 }
             }
             if agents.waiting > 0 {

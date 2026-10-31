@@ -293,6 +293,14 @@ public enum TerminalControlError: Error, Equatable, Sendable, LocalizedError {
         default: false
         }
     }
+    /// The request failed (shown in the error color). An old desktop, no connection, a request still running or an outcome that is
+    /// not known is a notice that needs the person instead (the warning color).
+    public var isFailure: Bool {
+        switch self {
+        case .unsupported, .notConnected, .busy: false
+        default: !outcomeIsUncertain
+        }
+    }
 
     /// Maps what the transport threw. Only a reply from the desktop (an `rpc` error) says the request did not happen;
     /// anything the connection did to the request leaves the outcome unknown.

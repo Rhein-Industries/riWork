@@ -1,9 +1,11 @@
-import { Scroll, Text, View, cleanup, colorScheme, effect, host, keyboardFrame, keymap, mount, safeAreaInsets, signal, untracked, type JSX, type YNode } from "nsh";
-import { Input, NavPage, NavStack, createNavStack } from "nsh/base";
+import { Scroll, Text, View, cleanup, colorScheme, effect, host, keyboardFrame, keymap, mount, safeAreaInsets, signal, untracked, type IOSNavPageHostProps, type JSX, type YNode } from "nsh";
+import { Input, NavPage as BaseNavPage, NavStack, createNavStack, type NavPageProps } from "nsh/base";
 import { Symbol } from "./Symbol";
 import { INITIAL_SNAPSHOT, SECTION_LABELS, SECTION_ORDER, type Dashboard, type DashboardFilter, type DashboardRow, type DashboardSection, type MobileAction, type MobileSnapshot, type Page, type Project, type Tone } from "./model";
 
 type Route = { page: Page; hostID?: string };
+/** NSH 0.3.0 reads a page's `ios` props (`IOSNavPageHostProps`: the header's system Add button) but leaves them out of `NavPageProps`. */
+const NavPage = BaseNavPage as (props: NavPageProps & { ios?: IOSNavPageHostProps }) => YNode;
 
 function App() {
   const snapshot = signal<MobileSnapshot>(INITIAL_SNAPSHOT);
@@ -75,7 +77,7 @@ function App() {
   const dark = () => loaded() ? snapshot().theme.dark : colorScheme() === "dark";
   const palette = () => loaded() ? snapshot().theme.palette : dark() ? {
     bg: "#000000", panel: "#1c1c1e", panelActive: "#2c2c2e", divider: "#38383a",
-    text: "#f5f5f7", muted: "#98989d", cyan: "#0a84ff", gold: "#ff9f0a", working: "#ff9f0a", magenta: "#a8a8ad", error: "#ff453a",
+    text: "#f5f5f7", muted: "#98989d", cyan: "#0a84ff", gold: "#ff9f0a", working: "#409cff", magenta: "#a8a8ad", error: "#ff6961",
   } : INITIAL_SNAPSHOT.theme.palette;
   const scale = () => Number.isFinite(snapshot().theme.scale) && snapshot().theme.scale > 0 ? snapshot().theme.scale : 1;
   const pt = (size: number) => size * scale();
@@ -129,7 +131,7 @@ function App() {
     return <View style={{ padding: pt(14), backgroundColor: palette().panel, borderRadius: pt(12), gap: pt(8) }}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: pt(9) }}>
         <Symbol name={connected() ? "checkmark.circle" : state().state === "connecting" ? "arrow.triangle.2.circlepath" : "network"}
-          color={connected() ? palette().muted : palette().gold} size={pt(18)} />
+          color={connected() ? palette().muted : state().state === "failed" ? palette().error : palette().gold} size={pt(18)} />
         <Text style={{ ...text(14), flex: 1 }}>{state().label}</Text>
         {connected() && <Action compact={true} label="Disconnect" disabled={blocked()} action={() => void act({ type: "disconnect" })} />}
         {!connected() && state().state !== "connecting" && snapshot().selectedHostID && <Action compact={true} label="Connect" disabled={blocked()}
@@ -148,6 +150,7 @@ function App() {
         </View>)}
       </View>}
       {props.dashboard.freshness && <Text style={text(12, props.dashboard.stale ? "gold" : "muted")}>{props.dashboard.freshness}</Text>}
+      {props.dashboard.automationsError && <Text style={text(12, "error")}>{props.dashboard.automationsError}</Text>}
       {(props.dashboard.notes?.length ?? 0) > 0 && <View style={{ gap: pt(5) }}>
         {props.dashboard.notes!.map((note) => <Text style={text(12, "muted")}>{note}</Text>)}
       </View>}

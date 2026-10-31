@@ -44,9 +44,11 @@ public struct RGB: Sendable, Hashable {
 /// The desktop's UI palette (`src/theme.rs` `Palette`), in the desktop's own names.
 public struct DesktopPalette: Sendable, Equatable {
     public let bg: RGB, panel: RGB, panelActive: RGB, divider: RGB, cyan: RGB, magenta: RGB, gold: RGB, text: RGB, muted: RGB
-    public init(bg: RGB, panel: RGB, panelActive: RGB, divider: RGB, cyan: RGB, magenta: RGB, gold: RGB, text: RGB, muted: RGB) {
+    /// Errors and failures. Nil from a desktop that predates it: errors then keep the phone's own error color, as before.
+    public let danger: RGB?
+    public init(bg: RGB, panel: RGB, panelActive: RGB, divider: RGB, cyan: RGB, magenta: RGB, gold: RGB, text: RGB, muted: RGB, danger: RGB? = nil) {
         self.bg = bg; self.panel = panel; self.panelActive = panelActive; self.divider = divider
-        self.cyan = cyan; self.magenta = magenta; self.gold = gold; self.text = text; self.muted = muted
+        self.cyan = cyan; self.magenta = magenta; self.gold = gold; self.text = text; self.muted = muted; self.danger = danger
     }
 }
 
@@ -73,8 +75,8 @@ public enum AppearanceError: Error, Equatable, LocalizedError, Sendable {
 
 /// What `appearance.get` returns: the desktop's current colors.
 ///
-/// `{"v":1,"updated_at":<unix>,"dark":<bool>,"palette":{…9 × "#rrggbb"},"terminal":{"background","foreground","palette":[16 × "#rrggbb"]},"native":true,"mic":true}`
-/// with `terminal`, `native` and `mic` optional. Parsing is strict about what it uses; unknown extra fields are ignored.
+/// `{"v":1,"updated_at":<unix>,"dark":<bool>,"palette":{…9 × "#rrggbb","danger"},"terminal":{"background","foreground","palette":[16 × "#rrggbb"]},"native":true,"mic":true}`
+/// with `palette.danger`, `terminal`, `native` and `mic` optional. Parsing is strict about what it uses; unknown extra fields are ignored.
 public struct DesktopAppearance: Sendable, Equatable, Codable {
     public static let version = 1
     public let updatedAt: UInt64
@@ -107,11 +109,18 @@ public struct DesktopAppearance: Sendable, Equatable, Codable {
         }
         let p = json["palette"]
         guard case .object = p else { throw AppearanceError.invalid("palette") }
+        // `danger` as the relay checks it (`remote/src/appearance.rs`): left out or null by a desktop from before it, else `#rrggbb`.
+        let danger: RGB?
+        switch p["danger"] {
+        case .null: danger = nil
+        case let value: danger = try color(value, "palette.danger")
+        }
         palette = DesktopPalette(
             bg: try color(p["bg"], "palette.bg"), panel: try color(p["panel"], "palette.panel"),
             panelActive: try color(p["panel_active"], "palette.panel_active"), divider: try color(p["divider"], "palette.divider"),
             cyan: try color(p["cyan"], "palette.cyan"), magenta: try color(p["magenta"], "palette.magenta"),
-            gold: try color(p["gold"], "palette.gold"), text: try color(p["text"], "palette.text"), muted: try color(p["muted"], "palette.muted"))
+            gold: try color(p["gold"], "palette.gold"), text: try color(p["text"], "palette.text"), muted: try color(p["muted"], "palette.muted"),
+            danger: danger)
         let t = json["terminal"]
         switch t {
         case .null: terminal = nil
@@ -137,12 +146,14 @@ public struct DesktopAppearance: Sendable, Equatable, Codable {
 
     /// The wire shape, used for persistence so what is stored is validated by the same parser that reads the network.
     public var json: JSONValue {
+        var colors: [String: JSONValue] = [
+            "bg": .string(palette.bg.hex), "panel": .string(palette.panel.hex), "panel_active": .string(palette.panelActive.hex),
+            "divider": .string(palette.divider.hex), "cyan": .string(palette.cyan.hex), "magenta": .string(palette.magenta.hex),
+            "gold": .string(palette.gold.hex), "text": .string(palette.text.hex), "muted": .string(palette.muted.hex)]
+        // Without it, the stored shape is exactly what it was before the desktop sent `danger`.
+        if let danger = palette.danger { colors["danger"] = .string(danger.hex) }
         var fields: [String: JSONValue] = [
-            "v": .number(Double(Self.version)), "updated_at": .number(Double(updatedAt)), "dark": .bool(dark),
-            "palette": .object([
-                "bg": .string(palette.bg.hex), "panel": .string(palette.panel.hex), "panel_active": .string(palette.panelActive.hex),
-                "divider": .string(palette.divider.hex), "cyan": .string(palette.cyan.hex), "magenta": .string(palette.magenta.hex),
-                "gold": .string(palette.gold.hex), "text": .string(palette.text.hex), "muted": .string(palette.muted.hex)])
+            "v": .number(Double(Self.version)), "updated_at": .number(Double(updatedAt)), "dark": .bool(dark), "palette": .object(colors)
         ]
         if let terminal {
             fields["terminal"] = .object(["background": .string(terminal.background.hex), "foreground": .string(terminal.foreground.hex),

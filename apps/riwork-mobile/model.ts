@@ -28,7 +28,8 @@ export interface Dashboard {
   available: boolean; unavailableReason?: string; freshness: string; stale: boolean; readAt?: number;
   summary: { id: string; label: string; value: number | null; coverage?: string }[];
   overview?: string; rows: DashboardRow[];
-  notes?: string[]; more?: Partial<Record<DashboardSection, number>>; intelligence?: DashboardIntelligence[];
+  /** `automationsError`: the automations could not be read, and why; drawn in the error tone, apart from the muted `notes`. */
+  notes?: string[]; automationsError?: string; more?: Partial<Record<DashboardSection, number>>; intelligence?: DashboardIntelligence[];
   global?: { summary: string; action: "open" | "start" | "unavailable"; actionTitle: string };
 }
 export interface MobileSnapshot {
@@ -56,10 +57,12 @@ export const INITIAL_SNAPSHOT: MobileSnapshot = {
   schema: 1, revision: -1, route: "hosts", desktops: [], projects: [],
   connection: { state: "disconnected", label: "Not connected" }, loading: false, nativePresented: false,
   dashboard: EMPTY_DASHBOARD, canCreateProject: false,
+  // Native in light mode until the host's first snapshot. The state colors are what the bridge sends for Native
+  // (the desktop Native's): working blue, gold for what needs you, error red.
   theme: { scale: 1, fontFamily: "system", dark: false, palette: {
     bg: "#ffffff", panel: "#f5f5f7", panelActive: "#e8e8ed", divider: "#d2d2d7",
     text: "#1d1d1f", muted: "#636366", cyan: "#007aff", gold: "#b34000",
-    working: "#b34000", magenta: "#3a3a3c", error: "#c02927",
+    working: "#0058d0", magenta: "#3a3a3c", error: "#c80018",
   } },
 };
 

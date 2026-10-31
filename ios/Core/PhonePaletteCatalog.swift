@@ -9,7 +9,10 @@ public struct PhonePalette: Identifiable, Sendable, Equatable {
     public let dark: Bool
     public let palette: DesktopPalette
     public let terminal: TerminalColors
+    /// Errors and failures: the palette's `danger`; a catalog from before it gives its `error`, else the terminal's red.
     public let error: RGB
+    /// Agents at work: the palette's `working`; a catalog from before it gives the accent (`cyan`).
+    public let working: RGB
 }
 
 public enum PhonePaletteCatalog {
@@ -42,7 +45,7 @@ public enum PhonePaletteCatalog {
                 palette: DesktopPalette(bg: rgb(p.bg), panel: rgb(p.panel), panelActive: rgb(p.panelActive),
                     divider: rgb(p.divider), cyan: rgb(p.cyan), magenta: rgb(p.magenta), gold: rgb(p.gold), text: rgb(p.text), muted: rgb(p.muted)),
                 terminal: TerminalColors(background: rgb(t.background), foreground: rgb(t.foreground), palette: t.palette.map(rgb)),
-                error: rgb(p.error ?? t.palette[1]))
+                error: rgb(p.danger ?? p.error ?? t.palette[1]), working: rgb(p.working ?? p.cyan))
         }
     }
 
@@ -58,7 +61,8 @@ public enum PhonePaletteCatalog {
     }
     private struct Palette: Decodable {
         let bg, panel, panelActive, divider, cyan, magenta, gold, text, muted: UInt32
-        let error: UInt32?
+        /// The desktop's names for the state colors (`src/theme.rs` `Palette`); `error` is the name before `danger`.
+        let danger, error, working: UInt32?
     }
     private struct Terminal: Decodable {
         let background, foreground: UInt32

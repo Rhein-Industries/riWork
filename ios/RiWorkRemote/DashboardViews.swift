@@ -84,6 +84,7 @@ struct DashboardView: View {
 
     // MARK: How current it is
 
+    /// A read that failed is stale and says why, in the warning color, as the desktop's toolbar draws it (`freshness().warn` in gold).
     private func freshnessLine(_ freshness: DashboardFreshness) -> some View {
         HStack(spacing: 6) {
             Circle().fill(freshness.stale ? style.warning : style.accent).frame(width: 6, height: 6).accessibilityHidden(true)
@@ -159,7 +160,7 @@ struct DashboardView: View {
         return Section {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 12) {
-                    figure(working.map { $0 == 0 ? "None working" : "\($0) working" + (subagents > 0 ? " +\(subagents)" : "") } ?? "Working —", tint: (working ?? 0) > 0 ? style.accent : style.muted)
+                    figure(working.map { $0 == 0 ? "None working" : "\($0) working" + (subagents > 0 ? " +\(subagents)" : "") } ?? "Working —", tint: (working ?? 0) > 0 ? style.working : style.muted)
                     figure(totals.attention.map { $0 == 0 ? "Nothing needs you" : "\($0) need you" } ?? "Needs you —", tint: (totals.attention ?? 0) > 0 ? style.gold : style.muted)
                 }
                 HStack(spacing: 12) {
@@ -208,7 +209,7 @@ struct DashboardView: View {
             case .chatFailed(let message):
                 return ("xmark.octagon.fill", style.error, item.session?.name ?? "Chat", [item.session?.place, message.isEmpty ? "Failed" : message].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · "))
             case .automation(let title, let outcome, let message):
-                return ("exclamationmark.triangle.fill", style.gold, title, [item.projectName ?? (item.projectID == nil ? "App" : nil), outcome.capitalized, message.isEmpty ? nil : message].compactMap { $0 }.joined(separator: " · "))
+                return ("exclamationmark.triangle.fill", item.kind.isFailure ? style.error : style.gold, title, [item.projectName ?? (item.projectID == nil ? "App" : nil), outcome.capitalized, message.isEmpty ? nil : message].compactMap { $0 }.joined(separator: " · "))
             case .other(let word):
                 return ("questionmark.circle", style.muted, item.session?.name ?? word, item.session?.place ?? "")
             }
@@ -260,7 +261,7 @@ struct DashboardView: View {
         Section {
             switch dashboard.automations {
             case .notRead: quiet("Reading automations…")
-            case .unreadable(let message): quiet("Automations could not be read: \(message)", tint: style.warning)
+            case .unreadable(let message): quiet("Automations could not be read: \(message)", tint: style.error)
             case .read(let total, let paused, let next, let items):
                 if total == 0 { quiet("No automations.") } else {
                     let summary = [total.map { "\($0) automation\($0 == 1 ? "" : "s")" }, paused.flatMap { $0 > 0 ? "\($0) paused" : nil },
@@ -276,7 +277,7 @@ struct DashboardView: View {
         let state: String = item.paused ? "Paused" : (item.lastRunFailed ? "Last run \(item.lastOutcome ?? "failed")" : (item.nextRun.map { "Next \(until($0))" } ?? "No next run"))
         let destination: DashboardDestination = item.projectID.map { .project(id: $0, tab: nil) } ?? .none
         return rowButton(destination: destination) {
-            Image(systemName: item.paused ? "pause.circle" : (item.lastRunFailed ? "exclamationmark.triangle" : "clock")).foregroundStyle(item.lastRunFailed ? style.gold : style.muted)
+            Image(systemName: item.paused ? "pause.circle" : (item.lastRunFailed ? "exclamationmark.triangle" : "clock")).foregroundStyle(item.lastRunIsFailure ? style.error : (item.lastRunFailed ? style.gold : style.muted))
                 .font(.system(size: style.pt(12))).accessibilityHidden(true)
             rowText(item.title, [item.projectName ?? (item.projectID == nil ? "App" : nil), state].compactMap { $0 }.joined(separator: " · "))
         }

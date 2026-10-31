@@ -29,7 +29,7 @@ struct HostDashboardSections: View {
                     Text("\(aggregate.freshHostCount)/\(aggregate.totalHostCount) current").font(style.system(.caption)).foregroundStyle(style.muted)
                 }
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], alignment: .leading, spacing: 12) {
-                    metric("Working", aggregate.working, symbol: "bolt", tint: style.accent)
+                    metric("Working", aggregate.working, symbol: "bolt", tint: style.working)
                     metric("Needs you", aggregate.attention, symbol: "hand.raised", tint: style.gold)
                     metric("Projects", aggregate.projects, symbol: "folder", tint: style.text)
                     metric("Open tasks", aggregate.openTasks, symbol: "checklist", tint: style.text)
@@ -157,7 +157,9 @@ struct DashboardIntelligenceCard: View {
                     Label(row.text, systemImage: "arrow.turn.down.right").font(style.system(.footnote)).foregroundStyle(style.muted)
                 }
             } else {
-                Text(intelligence.error ?? "Gathering observed work for the overview…").font(style.system(.footnote)).foregroundStyle(style.muted)
+                // A setup prompt or a summary that could not be made: gold, as the desktop's Overview draws it.
+                Text(intelligence.error ?? "Gathering observed work for the overview…").font(style.system(.footnote))
+                    .foregroundStyle(intelligence.error != nil ? style.gold : style.muted)
             }
             Text("AI summary of observed activity").font(style.system(.caption2)).foregroundStyle(style.muted)
         }.padding(.vertical, 6).accessibilityIdentifier("dashboard-intelligence")
@@ -175,6 +177,9 @@ struct DashboardDecisionSheet: View {
     @State private var sent = false
     @State private var failure: String?
     @State private var uncertain = false
+    /// The desktop refused the response: the error color. A check that sent nothing, no connection or an outcome that is not known
+    /// needs the person instead: the warning color.
+    @State private var failed = false
     var body: some View {
         VStack(spacing: 0) {
             WorkspaceBar(title: style.cased("Decision")) { Button("Done") { dismiss() }.disabled(busy) }
@@ -205,7 +210,7 @@ struct DashboardDecisionSheet: View {
                             }
                         }
                     }
-                    if let failure { Text(failure).font(style.system(.footnote)).foregroundStyle(style.warning).textSelection(.enabled) }
+                    if let failure { Text(failure).font(style.system(.footnote)).foregroundStyle(failed ? style.error : style.warning).textSelection(.enabled) }
                     if busy { ProgressView("Checking current request…") }
                     Text("The host's current request is checked again before your response is sent.").font(style.system(.caption)).foregroundStyle(style.muted)
                 }.padding(16)
@@ -215,13 +220,14 @@ struct DashboardDecisionSheet: View {
     }
     private func send(_ command: ChatCommand) {
         guard !busy, !sent, !uncertain, !answered else { return }
-        busy = true; failure = nil
+        busy = true; failure = nil; failed = false
         Task {
             do { try await respond(command); sent = true }
             catch {
                 failure = error.localizedDescription
                 // Only a command handed to the connection can have gone through; every `DashboardResponseError` sent nothing.
                 uncertain = (error as? ChatControlError)?.outcomeIsUncertain == true
+                failed = (error as? ChatControlError)?.isFailure == true
             }
             busy = false
         }

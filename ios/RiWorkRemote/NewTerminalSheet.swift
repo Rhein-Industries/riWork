@@ -156,12 +156,16 @@ struct NewTerminalSheet: View {
     }
 
     private func messageRow(_ message: NewTabProblem) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: message.outcomeIsUncertain ? "questionmark.circle" : "exclamationmark.triangle")
-            Text(message.message).font(style.system(.footnote)).fixedSize(horizontal: false, vertical: true)
+        // A failure in the error color; a notice that needs the person (an old desktop, no connection, a request still running, an
+        // outcome that is not known) in the warning color. The color is the icon's and the fill's: the words stay in the text color,
+        // which reads on the tinted fill in every palette (as `ChatNoticeLine`).
+        let tint = message.isFailure ? style.error : style.warning
+        return HStack(alignment: .top, spacing: 8) {
+            Image(systemName: message.outcomeIsUncertain ? "questionmark.circle" : "exclamationmark.triangle").foregroundStyle(tint)
+            Text(message.message).font(style.system(.footnote)).foregroundStyle(style.text).fixedSize(horizontal: false, vertical: true)
         }
-        .foregroundStyle(style.warning).padding(12).frame(maxWidth: .infinity, alignment: .leading)
-        .background(style.warning.opacity(0.1), in: style.block())
+        .padding(12).frame(maxWidth: .infinity, alignment: .leading)
+        .background(tint.opacity(0.1), in: style.block())
         .padding(.horizontal, style.native ? 8 : 0)
         .accessibilityElement(children: .combine).accessibilityAddTraits(.updatesFrequently)
         .padding(.top, 8)

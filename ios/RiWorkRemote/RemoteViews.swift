@@ -362,7 +362,7 @@ struct LibraryFailureView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Label(style.cased("Saved pairings unavailable"), systemImage: "exclamationmark.lock").font(style.face(14, bold: true, relativeTo: .headline))
-            Text(model.loadFailure ?? "").foregroundStyle(style.warning).textSelection(.enabled)
+            Text(model.loadFailure ?? "").foregroundStyle(style.error).textSelection(.enabled)
             Text("Nothing was changed or deleted. Pairing and removing desktops is paused until this loads.").foregroundStyle(style.muted)
             if let resetError { Text(resetError).foregroundStyle(style.error) }
             Button("Try again", systemImage: "arrow.clockwise") { model.loadLibrary() }.buttonStyle(DesktopButtonStyle(prominent: true))
@@ -393,7 +393,7 @@ struct ConnectionPanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
-                Circle().fill(model.state == .connected ? style.accent : style.warning).frame(width: 6, height: 6)
+                Circle().fill(model.state == .connected ? style.accent : (model.state == .failed ? style.error : style.warning)).frame(width: 6, height: 6)
                 Text(model.state.label).font(style.face(11, relativeTo: .caption))
                 Spacer(minLength: 4)
                 if model.state == .connecting { ProgressView().controlSize(.small) }
@@ -408,7 +408,7 @@ struct ConnectionPanel: View {
             }
             if let error = model.error {
                 HStack(alignment: .top) {
-                    Text(error).font(style.system(.caption)).foregroundStyle(style.warning).textSelection(.enabled)
+                    Text(error).font(style.system(.caption)).foregroundStyle(style.error).textSelection(.enabled)
                     Button("Dismiss message", systemImage: "xmark") { model.error = nil }.labelStyle(.iconOnly).buttonStyle(TargetButtonStyle(tinted: true))
                 }
             }
@@ -1357,11 +1357,11 @@ struct SessionConsole: View {
                     // It goes by itself when the cause is resolved (a read that succeeds, a reconnect).
                     VStack(spacing: 4) {
                         if let error = model.error {
-                            ChatNoticeLine(line: ChatNoticeBanners.Line(id: "shell-error", level: .warning, icon: ChatNoticeBanners.icon(.warning), text: error,
+                            ChatNoticeLine(line: ChatNoticeBanners.Line(id: "shell-error", level: .error, icon: ChatNoticeBanners.icon(.warning), text: error,
                                                                         close: { model.error = nil }))
                         }
                         if let id = model.sessionID, let activity = model.uploadActivity(for: .shell(id)), case .failed(let message) = activity.phase {
-                            ChatNoticeLine(line: ChatNoticeBanners.Line(id: "upload", level: .warning, icon: ChatNoticeBanners.icon(.warning), text: message,
+                            ChatNoticeLine(line: ChatNoticeBanners.Line(id: "upload", level: .error, icon: ChatNoticeBanners.icon(.warning), text: message,
                                                                         close: { model.dismissUploadFailure() }))
                         }
                         if let line = ChatNoticeBanners.dictationLine(.terminal) { ChatNoticeLine(line: line) }
@@ -1770,7 +1770,7 @@ struct OpenTabSheet: View {
     }
 }
 
-/// A shared tab's state as the Mac's strip draws it: working in the accent, waiting gold, error red, done muted, idle a small muted
+/// A shared tab's state as the Mac's strip draws it: working in the working color, waiting gold, error red, done muted, idle a small muted
 /// point (a live shell with nothing running), stopped an empty ring.
 struct SharedTabStatusDot: View {
     @Environment(\.desktopStyle) private var style
@@ -1779,7 +1779,7 @@ struct SharedTabStatusDot: View {
         let size = style.pt(7)
         Group {
             switch status {
-            case .working: Circle().fill(style.accent).frame(width: size, height: size)
+            case .working: Circle().fill(style.working).frame(width: size, height: size)
             case .waiting: Circle().fill(style.gold).frame(width: size, height: size)
             case .error: Circle().fill(style.error).frame(width: size, height: size)
             case .done: Circle().fill(style.muted).frame(width: size, height: size)

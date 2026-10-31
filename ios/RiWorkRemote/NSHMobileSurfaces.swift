@@ -417,7 +417,7 @@ private struct NSHMobileHostDetails: View {
                     Button("Rename desktop", systemImage: "pencil") { renaming = true }.disabled(busy)
                     Button("Remove from this device", systemImage: "trash", role: .destructive) { confirmingRemoval = true }.disabled(busy)
                 }.listRowBackground(style.panel)
-                if let failure { Section { Text(failure).foregroundStyle(style.warning) }.listRowBackground(style.panel) }
+                if let failure { Section { Text(failure).foregroundStyle(style.error) }.listRowBackground(style.panel) }
                 Section { Text("Pairing keys stay in Keychain. Removing this pairing leaves desktop sessions running.").font(style.system(.caption)).foregroundStyle(style.muted) }
                     .listRowBackground(style.panel)
             }

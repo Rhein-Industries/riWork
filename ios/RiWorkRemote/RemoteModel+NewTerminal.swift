@@ -156,13 +156,15 @@ extension RemoteModel {
 
 /// The "New terminal" sheet's state: the form, what went wrong, and whether a request is on its way. Touch and keyboard both go
 /// through here, so they cannot disagree.
-/// What the sheet says when a request did not go through: the words, and whether it may have happened anyway.
+/// What the sheet says when a request did not go through: the words, whether it may have happened anyway, and whether it failed
+/// (rather than waiting on the person: an old desktop, no connection, a request still running).
 struct NewTabProblem: Equatable {
     let message: String
     let outcomeIsUncertain: Bool
-    init(_ error: TerminalControlError) { message = error.message; outcomeIsUncertain = error.outcomeIsUncertain }
-    init(_ error: ChatControlError) { message = error.message; outcomeIsUncertain = error.outcomeIsUncertain }
-    init(_ error: OrchestratorControlError) { message = error.message; outcomeIsUncertain = error.outcomeIsUncertain }
+    let isFailure: Bool
+    init(_ error: TerminalControlError) { message = error.message; outcomeIsUncertain = error.outcomeIsUncertain; isFailure = error.isFailure }
+    init(_ error: ChatControlError) { message = error.message; outcomeIsUncertain = error.outcomeIsUncertain; isFailure = error.isFailure }
+    init(_ error: OrchestratorControlError) { message = error.message; outcomeIsUncertain = error.outcomeIsUncertain; isFailure = error.isFailure }
 }
 
 @MainActor @Observable final class NewTerminalSheetModel: Identifiable {

@@ -44,7 +44,23 @@ root and retained native screens. **Display → Color palette** defaults to
 plus **Follow desktop** for the selected host's cached colors, including Ghostty.
 Follow desktop falls back to Native until a palette is available. The choice is
 saved locally on the phone; it changes colors without changing fonts, controls
-or layout. Code and terminals remain monospace. iPad retains its existing
+or layout.
+
+The state colors follow the desktop: working, what needs you (gold) and errors
+are told apart. Native uses the desktop Native's values (working `#0058d0` /
+`#409cff`, gold `#b34000` / `#ff9f0a`, danger `#c80018` / `#ff6961`), a fixed
+palette its catalogue `working` and `danger` (falling back to the accent and to
+an older `error` or the terminal's red), and Follow desktop the optional
+`palette.danger` of `appearance.get` (missing on older desktops, which keep the
+app's error color; working is the accent there). The bridge's theme snapshot
+sends these as `working` and `error`, and the bundle's fallback palettes match
+Native until the first snapshot. Rows tell the same story, as the desktop
+Dashboard does: failed chats, an automation run that failed, unreadable
+automations (the dashboard's `automationsError`, apart from its muted `notes`)
+and a failed connection use the `error` tone; decisions, waiting agents, missed
+or uncertain runs, a stale or failed dashboard read (the freshness line) and
+Haiku summary errors and setup prompts stay `gold`; working agents use
+`working`. Code and terminals remain monospace. iPad retains its existing
 desktop-synchronized appearance, and both devices still receive the desktop
 microphone preference independently of palette selection.
 
