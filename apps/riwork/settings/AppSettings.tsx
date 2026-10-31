@@ -57,7 +57,7 @@ export function AppSettings(props: AppSettingsProps) {
   const focus = settingsFocusScope();
   const local = signal<SettingsDto | null>(null), accounts = signal<AccountsDto | null>(null), error = signal("");
   const apiKey = signal<ApiKeyState>({ saved: null, error: null }), apiPaste = signal(""), apiError = signal(""), apiPending = signal(false), apiFocused = signal(false);
-  const modelInput = signal(""), modelError = signal("");
+  const modelInput = signal(""), modelError = signal(""), modelFocused = signal(false);
   const width = signal(0), scrollY = signal(0), accountFocus = signal<string | null>(null), textFocused = signal(false);
   const themeFocus = signal<string | null>(null), themeNodes = new Map<string, YNode>();
   const preview = signal<ImportPreview | null>(null), receipt = signal<ImportReceipt | null>(null), importPending = signal(""), importError = signal("");
@@ -124,14 +124,17 @@ export function AppSettings(props: AppSettingsProps) {
     }, 0);
   }
 
+  // Refresh and selection also publish to the revisioned subscription. Their direct
+  // results carry no revision, so they only stand in until the first delivery: a slow
+  // refresh must not roll back a selection delivered after it.
   async function refreshAccounts() {
     if (accounts()?.refreshing) return;
-    try { const value = await services.accounts.refresh(); if (alive) accounts.set(value); }
+    try { const value = await services.accounts.refresh(); if (alive && accountsRev < 0) accounts.set(value); }
     catch (reason) { fail(reason); }
   }
   async function selectAccount(id: string | null, available: boolean) {
     if (!available) { error.set("This account is unavailable. Refresh accounts or choose another."); return; }
-    try { const value = await services.accounts.selectDefault(id); if (alive) { accounts.set(value); error.set(""); } }
+    try { const value = await services.accounts.selectDefault(id); if (alive) { if (accountsRev < 0) accounts.set(value); error.set(""); } }
     catch (reason) { fail(reason); }
   }
   async function refreshKey() {
@@ -139,7 +142,7 @@ export function AppSettings(props: AppSettingsProps) {
     catch (reason) { if (alive) apiError.set(String(reason)); }
   }
   async function saveKey() {
-    if (apiPending()) return;
+    if (apiPending() || !apiPaste().trim()) return;
     apiPending.set(true); apiError.set("");
     try { const value = await services.apiKey.save(apiPaste()); if (alive) { apiKey.set(value); apiPaste.set(""); } }
     catch (reason) { if (alive) apiError.set(String(reason)); }
@@ -213,19 +216,27 @@ export function AppSettings(props: AppSettingsProps) {
   });
 
   const muted = () => textStyle(theme, 10, true);
-  const button = (id: string, label: string, action: () => void, disabled = false) => <Button testID={id} accessibilityLabel={label} disabled={disabled} onPress={action} style={buttonStyle(theme)} focusStyle={{ borderColor: theme().palette.focus }}><Text style={textStyle(theme, 10)}>{label}</Text></Button>;
-  const note = (text: string | null | undefined, id?: string, warning = false) => !!text && <Text testID={id} selectable={true} style={{ ...muted(), color: warning ? theme().palette.gold : theme().palette.muted }}>{text}</Text>;
+  // The shared button style has no border, so a focus color alone drew nothing, and an
+  // unstyled Button does not dim itself when disabled. A transparent hairline takes the
+  // focus color without moving the layout.
+  const actionStyle = () => ({ ...buttonStyle(theme), borderWidth: 1, borderColor: "transparent" });
+  const actionStates = () => ({ hoverStyle: { backgroundColor: theme().palette.divider }, focusStyle: { borderColor: theme().palette.focus }, disabledStyle: { opacity: 0.4 } });
+  const button = (id: string, label: string, action: () => void, disabled = false, accessibilityLabel = label) => <Button testID={id} accessibilityLabel={accessibilityLabel} disabled={disabled} onPress={action} style={actionStyle()} hoverStyle={actionStates().hoverStyle} focusStyle={actionStates().focusStyle} disabledStyle={actionStates().disabledStyle}><Text style={textStyle(theme, 10)}>{label}</Text></Button>;
+  // Notes wrap at the same measure as row descriptions.
+  const note = (text: string | null | undefined, id?: string, warning = false) => !!text && <Text testID={id} selectable={true} style={{ ...muted(), maxWidth: 560, color: warning ? theme().palette.gold : theme().palette.muted }}>{text}</Text>;
+  const subheading = (text: string) => <Text role="header" style={{ ...textStyle(theme), fontWeight: "600", paddingTop: space(10, theme().scale) }}>{text}</Text>;
+  const fieldStyle = (focused: boolean) => ({ color: theme().palette.text, backgroundColor: theme().palette.bg, padding: 8, borderWidth: 1, borderRadius: 6, borderColor: focused ? theme().palette.focus : theme().palette.divider });
+  const saveError = () => error() || settings()?.error || "";
   function accountBody() {
     return <View style={{ gap: 8 }}>
       <ToggleRow id="codex-subscription-balancing" label="Balance Codex subscriptions" checked={settings()!.codexSubscriptionBalancing} onChange={(value) => patch({ codexSubscriptionBalancing: value })} theme={theme}
         description="New automatic Codex sessions use the saved account with the most quota left across its limits. Explicit accounts, project account choices and existing sessions stay fixed. Quota is checked before launch; missing, stale or exhausted accounts are excluded. If none qualify, choose an account explicitly or turn this off." />
       {note("Choose the account for new Codex sessions when subscription balancing is off, or the preferred account when balanced quotas tie. Running sessions keep their account. A project can override this in Project Settings.")}
-      {button("refresh-codex-accounts", accounts()?.refreshing ? "Checking accounts…" : "Refresh accounts", () => void refreshAccounts(), !!accounts()?.refreshing)}
       <View role="radiogroup" accessibilityLabel="Default Codex account" style={{ gap: 6 }}>
         {accounts()?.accounts.map((account) => {
           const selected = () => account.system ? !accounts()?.selectedId : accounts()?.selectedId === account.id;
           return <View testID={`codex-account-${account.id}`} role="radio" focusable={account.available} accessibilityLabel={account.label} accessibilityState={{ checked: selected(), selected: selected(), disabled: !account.available }}
-            disabled={!account.available} onFocus={() => { if (alive) accountFocus.set(account.id); }} onBlur={() => { if (alive) accountFocus.set(null); }} onPress={() => { if (!alive) return; if (account.available) accountFocus.set(account.id); void selectAccount(account.system ? null : account.id, account.available); }} style={{ paddingHorizontal: space(6, theme().scale), paddingVertical: space(7, theme().scale), borderRadius: 7, gap: 3, opacity: account.available ? 1 : 0.6, backgroundColor: selected() ? theme().palette.panelActive : "transparent" }} hoverStyle={{ backgroundColor: theme().palette.panelActive }}>
+            disabled={!account.available} onFocus={() => { if (alive) accountFocus.set(account.id); }} onBlur={() => { if (alive) accountFocus.set(null); }} onPress={() => { if (!alive) return; if (account.available) accountFocus.set(account.id); void selectAccount(account.system ? null : account.id, account.available); }} style={{ paddingHorizontal: space(6, theme().scale), paddingVertical: space(7, theme().scale), borderRadius: 7, gap: 3, borderWidth: 1, borderColor: "transparent", opacity: account.available ? 1 : 0.6, backgroundColor: selected() ? theme().palette.panelActive : "transparent" }} hoverStyle={{ backgroundColor: theme().palette.panelActive }} focusStyle={{ borderColor: theme().palette.focus }}>
             <Text style={textStyle(theme)}>{account.label}</Text><Text style={muted()}>{account.detail}</Text>
             <Text style={{ ...muted(), color: !account.available ? theme().palette.gold : selected() ? theme().palette.cyan : theme().palette.muted }}>{!account.available ? "Unavailable" : selected() ? "Selected" : "Use account"}</Text>
           </View>;
@@ -234,13 +245,14 @@ export function AppSettings(props: AppSettingsProps) {
       {note(accounts()?.selectedUnavailable ? "Your selected account is unavailable. Refresh accounts or choose another before starting Codex." : null, "settings-account-unavailable", true)}
       {note(accounts()?.error, "settings-accounts-error", true)}
       {note(accounts()?.fromCache ? "Showing saved accounts while Orca is unavailable." : null)}
+      <View style={{ flexDirection: "row" }}>{button("refresh-codex-accounts", accounts()?.refreshing ? "Checking accounts…" : "Refresh accounts", () => void refreshAccounts(), !!accounts()?.refreshing)}</View>
     </View>;
   }
   function appearanceBody() {
     return <View style={{ gap: 8 }}>
-      <ThemePicker catalog={paletteCatalog} selected={() => settings()!.theme} theme={theme} onChoose={(id) => patch({ theme: id })}
+      <View testID="settings-theme-grid"><ThemePicker catalog={paletteCatalog} selected={() => settings()!.theme} theme={theme} onChoose={(id) => patch({ theme: id })}
         onNode={(id, node) => { themeNodes.set(id, node); scheduleInitialFocus(); }}
-        onFocus={(id) => { if (alive) themeFocus.set(id); }} onBlur={(id) => { if (alive && themeFocus() === id) themeFocus.set(null); }} />
+        onFocus={(id) => { if (alive) themeFocus.set(id); }} onBlur={(id) => { if (alive && themeFocus() === id) themeFocus.set(null); }} /></View>
       {settings()!.theme === "ghostty" && <ToggleRow id="terminal-colors" label="Use RiWork terminal colors" checked={settings()!.useRiworkColors} onChange={(value) => patch({ useRiworkColors: value })} theme={theme} />}
       {settings()!.theme === "native" && <ToggleRow id="terminal-colors" label="Terminals match the theme" checked={settings()!.nativeTerminalColors} onChange={(value) => patch({ nativeTerminalColors: value })} theme={theme} />}
       <ChoiceRow id="interface-font" label="Interface font" value={`interface-font-${settings()!.interfaceFont}`} choices={[{ id: "interface-font-system", label: "System (SF Pro)" }, { id: "interface-font-system_mono", label: "System + monospace accents" }]} onChange={(value) => patch({ interfaceFont: value === "interface-font-system" ? "system" : "system_mono" })} theme={theme} />
@@ -248,24 +260,33 @@ export function AppSettings(props: AppSettingsProps) {
       <ChoiceRow id="tab-close-behavior" label="When closing a tab" description="Nothing asks: the tab closes and its session keeps running. Offer to end shows a notice that can undo the close or end the session; Detach offers only Undo; Exit ends it at once. Workers always detach. This Mac only." value={`tab-close-${settings()!.tabCloseBehavior}`} choices={[{ id: "tab-close-ask", label: "Offer to end" }, { id: "tab-close-detach", label: "Detach" }, { id: "tab-close-exit", label: "Exit" }]} onChange={(value) => patch({ tabCloseBehavior: value === "tab-close-ask" ? "ask" : value === "tab-close-detach" ? "detach" : "exit" })} theme={theme} />
       <View testID="ui-text-size" focusable={true} accessibilityLabel="Interface text size" onFocus={() => { if (alive) textFocused.set(true); }} onBlur={() => { if (alive) textFocused.set(false); }} style={{ gap: 6, paddingVertical: 8 }}>
         <Text style={textStyle(theme)}>Interface text size</Text><View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-          <Button testID="ui-text-smaller" accessibilityLabel="Smaller text" disabled={settings()!.uiTextMatchesTerminal || settings()!.uiTextSize <= 9} onPress={() => enqueue(() => services.settings.changeTextSize("smaller"))} style={buttonStyle(theme)}><Text style={textStyle(theme)}>−</Text></Button>
+          <Button testID="ui-text-smaller" accessibilityLabel="Smaller text" disabled={settings()!.uiTextMatchesTerminal || settings()!.uiTextSize <= 9} onPress={() => enqueue(() => services.settings.changeTextSize("smaller"))} style={actionStyle()} hoverStyle={actionStates().hoverStyle} focusStyle={actionStates().focusStyle} disabledStyle={actionStates().disabledStyle}><Text style={textStyle(theme)}>−</Text></Button>
           <Text testID="ui-text-points" style={{ ...textStyle(theme), opacity: settings()!.uiTextMatchesTerminal ? 0.5 : 1 }}>{`${settings()!.uiTextMatchesTerminal ? settings()!.text.points : settings()!.uiTextSize} pt`}</Text>
-          <Button testID="ui-text-bigger" accessibilityLabel="Bigger text" disabled={settings()!.uiTextMatchesTerminal || settings()!.uiTextSize >= 24} onPress={() => enqueue(() => services.settings.changeTextSize("bigger"))} style={buttonStyle(theme)}><Text style={textStyle(theme)}>+</Text></Button>
-          {!settings()!.uiTextMatchesTerminal && settings()!.uiTextSize !== 11 && <Button testID="ui-text-reset" accessibilityLabel="Actual size" onPress={() => enqueue(() => services.settings.changeTextSize("reset"))} style={buttonStyle(theme)}><Text style={textStyle(theme)}>Reset</Text></Button>}
+          <Button testID="ui-text-bigger" accessibilityLabel="Bigger text" disabled={settings()!.uiTextMatchesTerminal || settings()!.uiTextSize >= 24} onPress={() => enqueue(() => services.settings.changeTextSize("bigger"))} style={actionStyle()} hoverStyle={actionStates().hoverStyle} focusStyle={actionStates().focusStyle} disabledStyle={actionStates().disabledStyle}><Text style={textStyle(theme)}>+</Text></Button>
+          {!settings()!.uiTextMatchesTerminal && settings()!.uiTextSize !== 11 && <Button testID="ui-text-reset" accessibilityLabel="Actual size" onPress={() => enqueue(() => services.settings.changeTextSize("reset"))} style={actionStyle()} hoverStyle={actionStates().hoverStyle} focusStyle={actionStates().focusStyle}><Text style={textStyle(theme)}>Reset</Text></Button>}
         </View>
         <ToggleRow id="ui-text-match-terminal" label="Match terminal" checked={settings()!.uiTextMatchesTerminal} onChange={(value) => patch({ uiTextMatchesTerminal: value })} theme={theme} />
         {note("Panels, tabs, menus and status bar. Matches Ghostty's font-size when enabled. ⌘+ bigger ⌘− smaller ⌘0 reset outside a terminal.")}
       </View>
     </View>;
   }
+  // Native starts with neither `saved` nor `error` until the Keychain has been asked;
+  // only an error means it could not say.
+  function apiKeyState() {
+    const state = apiKey(), palette = theme().palette;
+    if (state.saved === true) return { text: "API key saved", color: palette.cyan };
+    if (state.saved === false) return { text: "No API key saved", color: palette.muted };
+    if (state.error) return { text: "The Keychain cannot say whether an API key is saved", color: palette.gold };
+    return { text: "Checking the Keychain…", color: palette.muted };
+  }
   function apiKeyRow() {
     return <View testID="claude-api-key" ref={(node) => { apiRow = node; scheduleReveal(); }} onLayout={scheduleReveal} style={{ paddingVertical: 8, gap: 6 }}>
       <Text style={textStyle(theme)}>Anthropic API key</Text>
-      <Text testID="claude-api-key-state" style={{ ...muted(), color: apiKey().saved === true ? theme().palette.cyan : apiKey().saved == null ? theme().palette.gold : theme().palette.muted }}>{apiKey().saved === true ? "API key saved" : apiKey().saved === false ? "No API key saved" : "The Keychain cannot say whether an API key is saved"}</Text>
+      <Text testID="claude-api-key-state" style={{ ...muted(), color: apiKeyState().color }}>{apiKeyState().text}</Text>
       {!settings()!.claudeChatIgnoresApiKey && note("API key billing uses the key saved here. With no saved key, Claude uses a key your shell exports, or your Claude sign-in.")}
-      <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
-        <Input testID="claude-api-key-input" accessibilityLabel="Anthropic API key" ref={(node) => { apiInput = node; scheduleReveal(); }} masked={true} autoCapitalize="none" autoCorrect={false} placeholder="Paste an Anthropic API key" value={apiPaste()} onChange={(value) => { if (alive) apiPaste.set(value); }} onFocus={() => { if (alive) apiFocused.set(true); }} onBlur={() => { if (alive) apiFocused.set(false); }} onSubmit={() => { if (alive) void saveKey(); }} style={{ width: 220, color: theme().palette.text, backgroundColor: theme().palette.bg, padding: 8 }} />
-        {button("claude-api-key-save", "Save", () => void saveKey(), apiPending())}
+      <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
+        <Input testID="claude-api-key-input" accessibilityLabel="Anthropic API key" ref={(node) => { apiInput = node; scheduleReveal(); }} masked={true} autoCapitalize="none" autoCorrect={false} placeholder="Paste an Anthropic API key" value={apiPaste()} onChange={(value) => { if (alive) apiPaste.set(value); }} onFocus={() => { if (alive) apiFocused.set(true); }} onBlur={() => { if (alive) apiFocused.set(false); }} onSubmit={() => { if (alive) void saveKey(); }} style={{ ...fieldStyle(apiFocused()), width: 220 }} />
+        {button("claude-api-key-save", "Save", () => void saveKey(), apiPending() || !apiPaste().trim())}
         {apiKey().saved === true && button("claude-api-key-remove", "Remove", () => void removeKey(), apiPending())}
       </View>
       {note(apiError() || apiKey().error, "claude-api-key-error", true)}
@@ -287,16 +308,17 @@ export function AppSettings(props: AppSettingsProps) {
         {!!s.newChatDefaults && <View style={{ flexDirection: "row" }}>{button("new-chat-defaults-reset", "Reset", () => patch({ newChatDefaults: null }))}</View>}
       </View>
       <ToggleRow id="dashboard-haiku-summaries" label="Haiku dashboard summaries" description="Summarizes observed work for the dashboard using the saved Anthropic API key. Recent commands, file paths and messages from every provider's chats are sent to Anthropic. API usage is billed separately; decisions remain provider requests." checked={s.dashboardHaikuSummaries} onChange={(value) => patch({ dashboardHaikuSummaries: value })} theme={theme} />
+      {subheading("Orchestrator")}
       <ChoiceRow id="orchestrator-mode" label="Orchestrator runs as" description="Automatic lets RiWork choose a native chat. Terminal uses Codex in a terminal tab. Chat uses the provider and model below." value={`orchestrator-mode-${s.orchestratorMode}`} choices={[{ id: "orchestrator-mode-automatic", label: "Automatic" }, { id: "orchestrator-mode-terminal", label: "Terminal" }, { id: "orchestrator-mode-chat", label: "Chat" }]} onChange={(value) => patch({ orchestratorMode: value === "orchestrator-mode-automatic" ? "automatic" : value === "orchestrator-mode-terminal" ? "terminal" : "chat" })} theme={theme} />
       {s.orchestratorMode === "automatic" && note("RiWork chooses a Muse chat on Wonder Full, or a Codex chat on GPT-6.1-Sol when Muse cannot start.", "orchestrator-automatic-note")}
       {s.orchestratorMode === "chat" && <>
         <ChoiceRow id="orchestrator-provider" label="Chat provider" description="Choosing another provider starts it on that provider's default model." value={`orchestrator-provider-${s.orchestratorChatProvider}`} choices={[{ id: "orchestrator-provider-codex", label: "Codex" }, { id: "orchestrator-provider-claude", label: "Claude" }, { id: "orchestrator-provider-muse", label: "Muse" }]} onChange={(value) => patch({ orchestratorChatProvider: value === "orchestrator-provider-codex" ? "codex" : value === "orchestrator-provider-claude" ? "claude" : "muse", orchestratorChatModel: null })} theme={theme} />
         <ChoiceRow id="orchestrator-model" label="Chat model" value={`orchestrator-model-${s.modelChoices.find((choice) => choice.model === s.orchestratorChatModel)?.id ?? "default"}`} choices={s.modelChoices.map((choice) => ({ id: `orchestrator-model-${choice.id}`, label: choice.label }))} onChange={(value) => patch({ orchestratorChatModel: s.modelChoices.find((choice) => `orchestrator-model-${choice.id}` === value)?.model ?? null })} theme={theme} />
-        <View style={{ gap: 6 }}><Text style={textStyle(theme)}>Other model</Text><Input testID="orchestrator-other-model" accessibilityLabel="Other model ID" placeholder="Other model ID" value={modelInput()} onChange={(value) => modelInput.set(value)} onSubmit={() => { const invalid = modelIdError(modelInput()); modelError.set(invalid ?? ""); if (!invalid) { patch({ orchestratorChatModel: modelInput().trim() }); modelInput.set(""); } }} />{note(modelError(), "orchestrator-model-error", true)}</View>
+        <View style={{ gap: 6 }}><Text style={textStyle(theme)}>Other model</Text><Input testID="orchestrator-other-model" accessibilityLabel="Other model ID" placeholder="Other model ID" value={modelInput()} onChange={(value) => { modelInput.set(value); if (modelError()) modelError.set(""); }} onFocus={() => { if (alive) modelFocused.set(true); }} onBlur={() => { if (alive) modelFocused.set(false); }} onSubmit={() => { const invalid = modelIdError(modelInput()); modelError.set(invalid ?? ""); if (!invalid) { patch({ orchestratorChatModel: modelInput().trim() }); modelInput.set(""); } }} style={{ ...fieldStyle(modelFocused()), width: 220 }} />{note(modelError(), "orchestrator-model-error", true)}</View>
       </>}
       {note(s.orchestratorUnreadableNote, "orchestrator-unreadable-note", true)}
-      {note("Applies to orchestrators created from now on, except a project's whose Project Settings choose otherwise. Existing orchestrators keep their mode, provider and model until closed and created again.")}
-      <Text style={{ ...textStyle(theme), color: theme().palette.cyan }}>Delegation</Text>
+      {note("Applies to orchestrators created from now on, except in projects whose Project Settings choose otherwise. Existing orchestrators keep their mode, provider and model until closed and created again.")}
+      {subheading("Delegation")}
       <ToggleRow id="delegation-spread-work" label="Spread work" description="Orchestrators fan independent tasks out to several worker shells at once instead of working through them one by one. Off, they keep to one worker at a time unless asked." checked={s.delegation.spreadWork} onChange={(value) => patch({ delegationPatch: { spreadWork: value } })} theme={theme} />
       <StepperRow id="delegation-parallel-shells" label="Parallel worker shells" value={s.delegation.parallelShells} minimum={1} maximum={10} onChange={(value) => patch({ delegationPatch: { parallelShells: value } })} theme={theme} />
       {(["design", "workhorse"] as const).map((work) => {
@@ -307,22 +329,30 @@ export function AppSettings(props: AppSettingsProps) {
       {note(s.delegation.unreadableNote, "delegation-unreadable-note", true)}
     </View>;
   }
+  // Items are grouped by the side they sit on, in their order there, so "earlier" and
+  // "later" read against the list you see. Short labels on screen; the accessibility
+  // labels name the item and the side.
   function statusBody() {
     return <View style={{ gap: 8 }}>
       <ToggleRow id="settings-status-enabled" label="Show status bar" checked={settings()!.statusBar.enabled} onChange={(value) => enqueue(() => services.settings.setEnabled(value))} theme={theme} />
-      {button("settings-status-reset", "Reset defaults", () => enqueue(() => services.settings.resetStatusBar()))}
       <ChoiceRow id="status-usage-mode" label="Account usage shows" value={`status-usage-${settings()!.statusBar.usageMode}`} choices={[{ id: "status-usage-current_chat", label: "Current chat" }, { id: "status-usage-all_accounts", label: "All accounts" }]} onChange={(value) => enqueue(() => services.settings.setUsageMode(value.slice(13)))} theme={theme} />
-      {settings()!.statusBar.items.map((item) => {
-        const sameSide = settings()!.statusBar.items.filter((peer) => peer.side === item.side), index = sameSide.findIndex((peer) => peer.kind === item.kind);
-        return <View testID={`settings-status-item-${item.kind}`} style={{ paddingVertical: 5, borderBottomWidth: 1, borderColor: theme().palette.divider, gap: 4 }}>
-          <ToggleRow id={`settings-status-visible-${item.kind}`} label={item.label} checked={item.enabled} onChange={(value) => enqueue(() => services.settings.setVisible(item.kind, value))} theme={theme} />
-          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 5 }}>
-            {button(`settings-status-side-${item.kind}`, `Move to the ${item.side === "left" ? "right" : "left"} side`, () => enqueue(() => services.settings.setSide(item.kind, item.side === "left" ? "right" : "left")))}
-            {button(`settings-status-earlier-${item.kind}`, "Move earlier on this side", () => enqueue(() => services.settings.moveItem(item.kind, true)), index <= 0)}
-            {button(`settings-status-later-${item.kind}`, "Move later on this side", () => enqueue(() => services.settings.moveItem(item.kind, false)), index >= sameSide.length - 1)}
-          </View>
+      {(["left", "right"] as const).map((side) => {
+        const sameSide = settings()!.statusBar.items.filter((item) => (item.side === "left") === (side === "left")), other = side === "left" ? "right" : "left";
+        return sameSide.length > 0 && <View testID={`settings-status-group-${side}`} style={{ gap: 0 }}>
+          {subheading(side === "left" ? "Left side" : "Right side")}
+          {sameSide.map((item, index) => <View testID={`settings-status-item-${item.kind}`} style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8, paddingVertical: 2, borderBottomWidth: 1, borderColor: theme().palette.divider }}>
+            <View style={{ flex: 1, minWidth: 180 }}>
+              <ToggleRow id={`settings-status-visible-${item.kind}`} label={item.label} checked={item.enabled} onChange={(value) => enqueue(() => services.settings.setVisible(item.kind, value))} theme={theme} />
+            </View>
+            <View style={{ flexDirection: "row", gap: 5 }}>
+              {button(`settings-status-side-${item.kind}`, `Move ${other}`, () => enqueue(() => services.settings.setSide(item.kind, other)), false, `Move ${item.label} to the ${other} side`)}
+              {button(`settings-status-earlier-${item.kind}`, "Earlier", () => enqueue(() => services.settings.moveItem(item.kind, true)), index <= 0, `Move ${item.label} earlier on the ${side} side`)}
+              {button(`settings-status-later-${item.kind}`, "Later", () => enqueue(() => services.settings.moveItem(item.kind, false)), index >= sameSide.length - 1, `Move ${item.label} later on the ${side} side`)}
+            </View>
+          </View>)}
         </View>;
       })}
+      <View style={{ flexDirection: "row" }}>{button("settings-status-reset", "Reset defaults", () => enqueue(() => services.settings.resetStatusBar()))}</View>
     </View>;
   }
   function importBody() {
@@ -352,10 +382,14 @@ export function AppSettings(props: AppSettingsProps) {
       case "09": return importBody();
     }
   }
+  // The header sits in the sections' column, and a failed save shows there, in view,
+  // instead of below the last section.
   return <SettingsFocus.Provider value={focus}><View testID="settings-panel" onLayout={(event) => { if (alive && event.size.width !== width()) width.set(event.size.width); }} style={{ flex: 1, minHeight: 0, backgroundColor: theme().palette.panel }}>
-    <View style={{ height: space(46, theme().scale), paddingHorizontal: space(12, theme().scale), justifyContent: "center", gap: space(1, theme().scale) }}>
-      <View style={{ flexDirection: "row", gap: 10, alignItems: "center" }}><Text role="header" style={{ ...textStyle(theme, 13), flex: 1, fontWeight: "600" }}>Settings</Text></View>
-      <Text style={muted()}>All projects · Saved automatically</Text>
+    <View style={{ minHeight: space(46, theme().scale), paddingHorizontal: space(6, theme().scale), paddingVertical: space(6, theme().scale), justifyContent: "center", alignItems: "center" }}>
+      <View style={{ width: "100%", maxWidth: settingsLayout(width()).maxWidth, paddingHorizontal: space(6, theme().scale), gap: space(1, theme().scale) }}>
+        <Text role="header" style={{ ...textStyle(theme, 13), fontWeight: "600" }}>Settings</Text>
+        {saveError() ? <Text testID="settings-save-error" selectable={true} style={{ ...muted(), color: theme().palette.gold }}>{saveError()}</Text> : <Text style={muted()}>All projects · Saved automatically</Text>}
+      </View>
     </View>
     <Scroll testID="appearance-settings" ref={(node) => { page = node; scheduleReveal(); }} onScroll={(event) => { if (alive) scrollY.set(event.offset.y); }} style={{ flex: 1, minHeight: 0 }} contentStyle={{ paddingHorizontal: space(6, theme().scale), paddingBottom: space(12, theme().scale), alignItems: "center" }}>
       <View testID={`settings-layout-${settingsLayout(width()).kind}`} style={{ width: "100%", maxWidth: settingsLayout(width()).maxWidth, flexDirection: settingsLayout(width()).kind === "wide" ? "row" : "column", gap: settingsLayout(width()).gap }}>
@@ -364,7 +398,6 @@ export function AppSettings(props: AppSettingsProps) {
           return <Section number={section.number} title={section.title} description={section.description} padding={settingsLayout(width()).card} theme={theme}>{body(number)}</Section>;
         })}</View>)}
       </View>
-      {note(error() || settings()?.error, "settings-save-error", true)}
       <Text style={{ ...muted(), paddingVertical: 12 }}>Tab to move · Enter or Space to select · Arrows step the text size and worker shells</Text>
     </Scroll>
   </View></SettingsFocus.Provider>;
