@@ -23,10 +23,12 @@ test("P1-WIN-05 stored project labels and remote metadata update a title only on
 
 test("P1-PROC-04 fallback notice is exposed as an accessible alert", async () => {
   const notice = "Project directory disappeared; opened the fallback project.";
+  // The desktop host applies the window's appearance (app.setAppearance); a host
+  // without it would put its own error in the notice instead of the fallback one.
   const app = await open("../App.tsx", {platform:"macos",width:1000,height:700,host:{params:{
     schema:1,windowId:"w2-notice",kind:"project",projectId:"w2-notice",path:"/fixture/Fallback",notice,
     restore:{layout:{layout:{pane:1},active_pane:1,panels_initialized:true,locked_panes:[],panes:{"1":{tabs:[]}}}},
-  },handlers:{"app.restoreReady":null,"window.setDockInfo":null}}});
+  },handlers:{"app.restoreReady":null,"window.setDockInfo":null,"app.setAppearance":null}}});
   try {
     await app.waitFor("id:workspace-notice-message");
     expect(app.shows(`label:${notice}`)).toBe(true);

@@ -21,7 +21,8 @@ test("opens a core-written layout with shell identity, empty unknown pane, and w
     await app.waitFor("id:workspace-dock");
     expect(app.shows("id:window-controls-island")).toBe(true);
     expect(app.shows("id:status-bar")).toBe(true);
-    expect(app.texts()).toContain("SESSIONS");
+    // Native, the only theme, labels panels in sentence case.
+    expect(app.texts()).toContain("Sessions");
     expect(app.texts()).toContain("Drop a tab here or use the pane menu");
     const { snapshot, dock } = latest(app);
     expect(snapshot.panes.map((pane) => pane.id)).toEqual([1, 2, 3]);
@@ -64,14 +65,17 @@ test("locked pixel geometry survives resize and pane menu edits remain in Rust",
     expect(before.type).toBe("split");
     expect(after.type).toBe("split");
     if (before.type === "split" && after.type === "split") expect(after.sizes?.[0]).toBe(before.sizes?.[0]);
+    // The navigation pane's five pinned panel tabs leave its header no room for
+    // the Lock button, so Lock is in the pane menu.
+    expect(app.shows("id:pane-lock-1")).toBe(false);
     await app.rightClick("id:tab:panel:projects");
-    // At this width the header button owns lock; its fallback menu row is omitted.
-    expect(app.menu()?.some((item) => item.label === "Pane > Unlock pane")).toBe(false);
-    await app.closeMenu();
-    await app.press("id:pane-lock-1");
+    expect(app.menu()?.some((item) => item.label === "Pane > Unlock pane")).toBe(true);
+    await app.chooseMenuItem("Pane > Unlock pane");
     expect(latest(app).snapshot.panes.find((pane) => pane.id === 1)?.locked).toBe(false);
     // Restore fixture before disposal so following tests see its original lock set.
-    await app.press("id:pane-lock-1");
+    await app.rightClick("id:tab:panel:projects");
+    await app.chooseMenuItem("Pane > Lock pane");
+    expect(latest(app).snapshot.panes.find((pane) => pane.id === 1)?.locked).toBe(true);
   } finally { app.dispose(); }
 });
 

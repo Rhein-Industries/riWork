@@ -6,9 +6,11 @@ const restore = {
 };
 
 test("P2b Find is local to each terminal and closes on Escape without switching tabs", async () => {
+  // The desktop host handles app.setAppearance. Without it the window shows an
+  // error notice, an overlay that would hear Escape before the terminal's Find.
   const app = await open("../App.tsx", { platform: "macos", width: 1220, height: 780,
     host: { params: { schema: 1, windowId: "p2b-find", kind: "project", projectId: "p2b-find", path: "/fixture/Find", restore: { layout: restore } },
-      handlers: { "app.restoreReady": null, "window.setDockInfo": null } } });
+      handlers: { "app.restoreReady": null, "window.setDockInfo": null, "app.setAppearance": null } } });
   try {
     await app.waitFor("id:terminal:find-parent");
     await app.host.send("command", { id: "find", args: { query: "needle" } });

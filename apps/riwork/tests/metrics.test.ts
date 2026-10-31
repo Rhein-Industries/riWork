@@ -21,10 +21,11 @@ test("P1-STAT-01: rendered status text scales and its right side scrolls at narr
 
 test("P1-WIN-06 chrome dimensions and top-pane drag regions match P-SHELL", () => {
   expect([CONTROL_WIDTH,CONTROL_HEIGHT,CONTROL_INSET,DRAG_HANDLE_WIDTH,DRAG_ROOM]).toEqual([78,28,92,12,18]);
+  // Panes sit one point apart: NSH's DockArea draws a 1 pt divider, not core's 5 pt gap.
   expect(topPaneFrames({type:"split",axis:"horizontal",sizes:[300,null],children:[
     {type:"split",axis:"vertical",sizes:[200,null],children:[{type:"tabs",id:1,panels:[]},{type:"tabs",id:2,panels:[]}]},
     {type:"tabs",id:3,panels:[]},
-  ]},{width:900,height:600})).toEqual([{id:1,x:0,width:300},{id:3,x:305,width:595}]);
+  ]},{width:900,height:600})).toEqual([{id:1,x:0,width:300},{id:3,x:301,width:599}]);
 });
 
 

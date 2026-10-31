@@ -25,12 +25,11 @@ test("P1-KEYS-01 no key is bound twice and every GPUI chord is present", () => {
     ...["mod+f", "mod+g", "mod+shift+g"].map((key) => `chat-input:${key}`),
   ];
   expect(declared.slice().sort()).toEqual(expected.sort());
+  // The window runs New chat, the agent shortcuts, New project, Search, Sessions
+  // and Hand off itself now; only the commands a focused chat supplies stay deferred.
   expect(Array.from(DEFERRED_COMMANDS).sort()).toEqual([
-    "openCodex", "openClaude", "openGrok", "openMuse", "newChat",
-    "createProject", "search", "interruptChat", "chatEscape", "toggleDictation", "findInChat",
+    "interruptChat", "chatEscape", "toggleDictation", "findInChat",
     "findNext", "findPrevious", "toggleTranscriptMode", "expandTranscript", "collapseTranscript",
-    "sessions", "existingSessions", "existingClaudeChats", "existingMuseChats",
-    "handOff",
   ].sort());
 });
 
