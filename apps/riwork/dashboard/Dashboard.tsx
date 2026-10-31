@@ -1,6 +1,7 @@
-import { Scroll, Text, View, signal, windowSize, type JSX, type YNode } from "nsh";
+import { Scroll, Text, View, cleanup, computed, signal, windowSize, type JSX, type YNode } from "nsh";
 import { Button, Input } from "nsh/base";
 import { Icon } from "../Icon";
+import { DecisionReviewView, createDecisionReview, type DecisionApi, type DecisionReview } from "./DecisionReview";
 import type { DashboardEvent } from "riwork/native";
 import { space, type InterfaceTheme } from "../appearance";
 import {
@@ -16,7 +17,8 @@ type Region = "projects" | "activity" | "work";
 export const SEARCH_PLACEHOLDER = "Search projects, tasks and sessions  ⌘F";
 
 /** The global dashboard (PANEL-078..099). It draws what the native read says and
- * asks for nothing while drawing: every click is an explicit route or refresh. */
+ * asks for nothing while drawing: every click is an explicit route or refresh.
+ * A decision unfolds its review in its own row; nothing is laid over the window. */
 export function DashboardView(props: {
   dto: () => Dto | null;
   theme: () => InterfaceTheme;
@@ -27,12 +29,13 @@ export function DashboardView(props: {
   onSort: (sort: Sort) => void;
   onSearch: (node: { focus: () => void }) => void;
   onOpen: (target: Target) => void;
-  onReview: (decision: DecisionRow) => void;
   onPanel: (projectId: string, panel: string) => void;
   onGlobalChat: () => void;
   onRefresh: () => void;
   plan: () => Plan | null;
   starting: () => boolean;
+  /** The native review calls (a fixture passes its own). */
+  decisions?: DecisionApi;
 }) {
   // The compact region is not saved; the search is never saved.
   const region = signal<Region>("projects");
@@ -45,8 +48,22 @@ export function DashboardView(props: {
   const wire = () => (props.dto()?.wire ?? null) as Wire | null;
   const now = () => props.dto()?.now ?? 0;
   const layout = () => layoutFor(width() || windowSize().width, scale());
+  // The body is drawn again only when this changes, not on every read or resize.
+  const arrangement = computed(() => layout().arrangement);
   let search: YNode | undefined;
   props.onSearch({ focus: () => search?.focus() });
+  // The unfolded review lives here, not in its row, which an arrangement or a
+  // compact region change makes again.
+  const review = signal<DecisionReview | null>(null);
+  cleanup(() => review()?.dispose());
+  function fold() { review()?.dispose(); review.set(null); }
+  /** A row's Review unfolds it; again, or Close, folds it; another row switches. */
+  function unfold(decision: DecisionRow) {
+    const current = review();
+    if (current?.busy()) return;
+    current?.dispose();
+    review.set(current?.decision.id === decision.id ? null : createDecisionReview(decision, { api: props.decisions, onResponded: props.onRefresh }));
+  }
 
   function button(id: string, label: string, onPress: (() => void) | undefined, selected = false, hint?: string) {
     return <View testID={id} role="button" accessibilityLabel={hint ?? label} accessibilityState={{ selected }} disabled={!onPress} onPress={onPress}
@@ -192,25 +209,50 @@ export function DashboardView(props: {
       </Scroll>
     </View>;
   }
-  function activityRail(read: Wire) {
+  /** Rows are kept by request: a new read redraws a row in place, so the review
+   * unfolded in it keeps its answers and the keyboard focus. The unfolded one
+   * stays listed where it was after its request leaves the list, until folded. */
+  function decisions() {
+    let at = 0;
+    const found = () => (wire()?.decisions ?? []).filter((decision) => matches(props.query(), [...sessionFields(decision.session), decision.kind]));
+    const rows = () => {
+      const list = found(), open = review()?.decision;
+      const index = open ? list.findIndex((decision) => decision.id === open.id) : -1;
+      if (!open || index >= 0) { at = Math.max(0, index); return list; }
+      return [...list.slice(0, at), open, ...list.slice(at)];
+    };
+    const sources = () => wire()?.decision_sources;
+    return section("dashboard-decisions", "Decisions", <>
+      <Text style={font(10, palette().muted)}>{!sources() || sources()!.state === "unavailable" ? "Chats could not be listed · requests unknown"
+        : sources()!.state === "partial" ? `Partial coverage · ${sources()!.chats_complete} of ${sources()!.chats_total} chat logs complete` : `Checked ${plural(sources()!.chats_total, "chat")} · provider requests`}</Text>
+      <Each of={rows()} key={(decision) => decision.id}>{(decision) => decisionRow(decision)}</Each>
+      {more(props.query().trim() ? found().length : wire()?.decisions_total ?? found().length, found().length)}
+      {!rows().length && <Text style={{ ...font(10, palette().muted), paddingHorizontal: size(8), paddingVertical: size(4) }}>{wire()?.decisions?.length && props.query().trim() ? `Nothing here matches “${props.query().trim()}”.`
+        : sources()?.state === "read" ? "No pending approvals or questions." : "No requests found in the available events. Open Needs you sessions for more."}</Text>}
+    </>);
+  }
+  function decisionRow(decision: () => DecisionRow) {
+    const id = decision().id, open = computed(() => review()?.decision.id === id);
+    let opener: YNode | undefined;
+    return <View testID={`dashboard-decision-row-${id}`} style={{ borderRadius: 7, backgroundColor: open() ? palette().panelActive : "transparent" }}>
+      <Button testID={`dashboard-decision-${id}`} selected={open()} disabled={!!review()?.busy()} ref={(node) => { opener = node; }} onPress={() => unfold(decision())}
+        accessibilityLabel={`${open() ? "Hide the review of" : "Review"} ${sessionName(decision().session)}'s ${decision().kind === "approval" ? "approval request" : "question"}`}
+        style={{ gap: 2, paddingHorizontal: size(8), paddingVertical: size(5), borderRadius: 7, alignItems: "stretch" }}
+        hoverStyle={{ backgroundColor: palette().panelActive }} focusStyle={{ backgroundColor: palette().panelActive }}>
+        <Text numberOfLines={1} style={font(11)}>{`${sessionName(decision().session)} asks ${decision().kind === "approval" ? "for approval" : "a question"}`}</Text>
+        <View style={{ flexDirection: "row", gap: size(8), justifyContent: "space-between" }}>
+          <Text numberOfLines={1} style={{ ...font(10, palette().muted), flex: 1 }}>{`${decision().session.project_name ?? "Global"} · ${age(now(), decision().observed_at) ?? ""}`}</Text>
+          <Text style={font(10, palette().cyan)}>{open() ? "Hide" : "Review"}</Text>
+        </View>
+      </Button>
+      {open() && <DecisionReviewView review={review()!} theme={props.theme} opener={() => opener} onClose={fold}
+        onOpenChat={() => { const target = decision().session.target; fold(); props.onOpen(target); }} />}
+    </View>;
+  }
+  /** The rest of the activity rail, drawn again on each read. */
+  function activity(read: Wire) {
     const intelligence = intelligenceSection(read.intelligence, now());
-    const sources = read.decision_sources;
     return <>
-      {section("dashboard-decisions", "Decisions", <>
-        <Text style={font(10, palette().muted)}>{!sources || sources.state === "unavailable" ? "Chats could not be listed · requests unknown"
-          : sources.state === "partial" ? `Partial coverage · ${sources.chats_complete} of ${sources.chats_total} chat logs complete` : `Checked ${plural(sources.chats_total, "chat")} · provider requests`}</Text>
-        {list(read.decisions, read.decisions_total, (decision) => <Button testID={`dashboard-decision-${decision.id}`} onPress={() => props.onReview(decision)}
-          accessibilityLabel={`Review ${sessionName(decision.session)}'s ${decision.kind === "approval" ? "approval request" : "question"}`}
-          style={{ gap: 2, paddingHorizontal: size(8), paddingVertical: size(5), borderRadius: 7, alignItems: "stretch" }}
-          hoverStyle={{ backgroundColor: palette().panelActive }} focusStyle={{ backgroundColor: palette().panelActive }}>
-          <Text numberOfLines={1} style={font(11)}>{`${sessionName(decision.session)} asks ${decision.kind === "approval" ? "for approval" : "a question"}`}</Text>
-          <View style={{ flexDirection: "row", gap: size(8), justifyContent: "space-between" }}>
-            <Text numberOfLines={1} style={{ ...font(10, palette().muted), flex: 1 }}>{`${decision.session.project_name ?? "Global"} · ${age(now(), decision.observed_at) ?? ""}`}</Text>
-            <Text style={font(10, palette().cyan)}>Review</Text>
-          </View>
-        </Button>,
-        sources?.state === "read" ? "No pending approvals or questions." : "No requests found in the available events. Open Needs you sessions for more.", (decision) => [...sessionFields(decision.session), decision.kind], Number.POSITIVE_INFINITY)}
-      </>)}
       {intelligence && section("dashboard-intelligence", "Overview", <>
         {intelligence.summary && <Text style={font(11)}>{intelligence.summary}</Text>}
         {intelligence.highlights.map((text) => <Text style={font(10, palette().muted)}>{text}</Text>)}
@@ -250,36 +292,49 @@ export function DashboardView(props: {
           </View>)}</>)}
     </>;
   }
-  function body(read: Wire) {
-    const arrangement = layout().arrangement;
+  function regions(read: Wire) {
+    const activity = (read.attention_total ?? read.attention?.length ?? 0);
+    return <>
+      {button("dashboard-region-projects", `Projects ${read.projects_total ?? read.projects?.length ?? 0}`, () => region.set("projects"), region() === "projects")}
+      {button("dashboard-region-activity", activity ? `Activity · ${activity} need you` : `Activity ${(read.working?.length ?? 0) + (read.finished?.length ?? 0)}`, () => region.set("activity"), region() === "activity")}
+      {button("dashboard-region-work", `Tasks ${read.tasks_in_progress_total ?? read.tasks_in_progress?.length ?? 0}`, () => region.set("work"), region() === "work")}
+    </>;
+  }
+  /** Made again only when the arrangement changes. Each region in it reads the
+   * wire itself, so a new read redraws them and leaves the decision rows be.
+   * The decisions stay a child of their own in each list of children: a
+   * function nested in another's array runs again with any sibling. */
+  function body() {
     const rail = (children: JSX.Element) => <Scroll style={{ width: DASHBOARD_METRICS.rail * Math.max(scale(), 1), minHeight: 0 }} contentStyle={{ gap: size(DASHBOARD_METRICS.gap), paddingBottom: 10 }}>{children}</Scroll>;
-    if (arrangement === "compact") {
-      const activity = (read.attention_total ?? read.attention?.length ?? 0);
+    const projects = () => <View style={{ flex: 1, minHeight: 0, gap: 8 }}>{controls(wire()!)}{table(wire()!)}</View>;
+    if (arrangement() === "compact") {
       return <View style={{ flex: 1, minHeight: 0, gap: 8 }}>
-        <View testID="dashboard-regions" role="tablist" style={{ flexDirection: "row", gap: 4, paddingHorizontal: size(DASHBOARD_METRICS.page) }}>
-          {button("dashboard-region-projects", `Projects ${read.projects_total ?? read.projects?.length ?? 0}`, () => region.set("projects"), region() === "projects")}
-          {button("dashboard-region-activity", activity ? `Activity · ${activity} need you` : `Activity ${(read.working?.length ?? 0) + (read.finished?.length ?? 0)}`, () => region.set("activity"), region() === "activity")}
-          {button("dashboard-region-work", `Tasks ${read.tasks_in_progress_total ?? read.tasks_in_progress?.length ?? 0}`, () => region.set("work"), region() === "work")}
-        </View>
-        {region() === "projects" ? <View style={{ flex: 1, minHeight: 0, gap: 8 }}>{controls(read)}{table(read)}</View>
+        <View testID="dashboard-regions" role="tablist" style={{ flexDirection: "row", gap: 4, paddingHorizontal: size(DASHBOARD_METRICS.page) }}>{regions(wire()!)}</View>
+        {region() === "projects" ? projects()
           : <Scroll style={{ flex: 1, minHeight: 0 }} contentStyle={{ gap: size(DASHBOARD_METRICS.gap), paddingHorizontal: size(DASHBOARD_METRICS.page) }}>
-            {region() === "activity" ? activityRail(read) : workRail(read)}
+            {region() === "activity" ? <>{decisions()}{activity(wire()!)}</> : workRail(wire()!)}
           </Scroll>}
       </View>;
     }
+    const wide = arrangement() === "wide";
     return <View style={{ flex: 1, minHeight: 0, flexDirection: "row", gap: size(DASHBOARD_METRICS.gap), paddingRight: size(DASHBOARD_METRICS.page) }}>
-      <View style={{ flex: 1, minHeight: 0, gap: 8 }}>{controls(read)}{table(read)}</View>
-      {arrangement === "wide" ? <>{rail(activityRail(read))}{rail(workRail(read))}</> : rail(<>{activityRail(read)}{workRail(read)}</>)}
+      {projects()}
+      {rail(wide ? <>{decisions()}{activity(wire()!)}</> : <>{decisions()}{activity(wire()!)}{workRail(wire()!)}</>)}
+      {wide && rail(<>{workRail(wire()!)}</>)}
     </View>;
   }
   return <View testID="dashboard" onLayout={(event) => { if (event.size.width !== width()) width.set(event.size.width); }} style={{ flex: 1, minHeight: 0, gap: size(8), paddingBottom: size(8), backgroundColor: palette().panel }}>
     {toolbar()}
-    {wire() ? <>{layout().arrangement === "compact" && summaryStrip(wire()!)}{body(wire()!)}</> :
-      <View testID="dashboard-unread" style={{ flex: 1, alignItems: "center", justifyContent: "center", gap: 8, padding: 24 }}>
-        <Text style={font(18, palette().muted)}>{props.dto()?.error ? "⚠" : "⧗"}</Text>
-        <Text style={{ ...font(11, palette().muted), textAlign: "center" }}>{props.dto()?.error
-          ? "The sessions could not be read, so nothing can be counted yet. RiWork tries again every two seconds; Refresh tries now."
-          : "Reading the sessions, chats and tasks of every project…"}</Text>
-      </View>}
+    <If when={!!wire()} else={<View testID="dashboard-unread" style={{ flex: 1, alignItems: "center", justifyContent: "center", gap: 8, padding: 24 }}>
+      <Text style={font(18, palette().muted)}>{props.dto()?.error ? "⚠" : "⧗"}</Text>
+      <Text style={{ ...font(11, palette().muted), textAlign: "center" }}>{props.dto()?.error
+        ? "The sessions could not be read, so nothing can be counted yet. RiWork tries again every two seconds; Refresh tries now."
+        : "Reading the sessions, chats and tasks of every project…"}</Text>
+    </View>}>
+      <View style={{ flex: 1, minHeight: 0, gap: size(8) }}>
+        {arrangement() === "compact" && summaryStrip(wire()!)}
+        {body()}
+      </View>
+    </If>
   </View>;
 }

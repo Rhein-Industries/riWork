@@ -1,11 +1,18 @@
 import { expect, open, test, type App } from "nsh/test";
-interface State { pending: boolean; confirmation: string | null; prompt: string | null; calls: string[]; notices: string[]; actions: string[]; copied: number; selected: string | null; name: string; relay: string; routes: string; subscribed: number; closed: number; frozen: boolean }
-const options = { platform: "macos" as const, width: 1100, height: 1100, host: { handlers: { "app.fixture.remote.state": null } } };
+interface State { pending: boolean; confirmation: string | null; prompt: string | null; calls: string[]; notices: string[]; actions: string[]; copied: number; selected: string | null; name: string; relay: string; routes: string; subscribed: number; closed: number; unfolded: boolean; elsewhere: string }
+const options = { platform: "macos" as const, width: 1100, height: 1100, host: { handlers: { "app.fixture.remote.state": null, "app.fixture.remote.layout": null } } };
 async function inspect(app: App): Promise<State> {
   const count = app.host.posts().length;
   await app.host.send("app.fixture.remote.inspect", {});
   await app.waitUntil(() => app.host.posts().length > count);
   return app.host.posts().filter((post) => post.name === "app.fixture.remote.state").slice(-1)[0].data as State;
+}
+interface Layout { settings: { y: number; height: number }; projects: { y: number } }
+async function layout(app: App): Promise<Layout> {
+  const count = app.host.posts().length;
+  await app.host.send("app.fixture.remote.measure", {});
+  await app.waitUntil(() => app.host.posts().slice(count).some((post) => post.name === "app.fixture.remote.layout"));
+  return app.host.posts().filter((post) => post.name === "app.fixture.remote.layout").slice(-1)[0].data as Layout;
 }
 // Every operation below stays inside Remote.fixture's fake API. The fixture has
 // no native Remote import, CLI, credential, clipboard, filesystem or socket seam.
@@ -35,7 +42,7 @@ test("P6B-REMOTE-UI-02 opening Add resets Remove and validates the masked link w
     await app.press("id:remote-remove-disposable-mac");
     await app.press("id:remote-add");
     await app.waitFor("id:remote-pairing-link");
-    expect((await inspect(app)).frozen).toBe(true);
+    expect((await inspect(app)).unfolded).toBe(true);
     expect((await inspect(app)).confirmation).toBe(null);
     await app.press("id:remote-submit");
     expect(app.texts()).toContain("Paste the pairing link from the other Mac.");
@@ -45,7 +52,7 @@ test("P6B-REMOTE-UI-02 opening Add resets Remove and validates the masked link w
     expect((await inspect(app)).calls.length).toBe(0);
     expect(app.texts().some((text) => text.includes("not-a-disposable-link"))).toBe(false);
     await app.keyboard.press("escape"); await app.waitUntil(() => !app.shows("id:remote-prompt"));
-    expect((await inspect(app)).frozen).toBe(false);
+    expect((await inspect(app)).unfolded).toBe(false);
     await app.press("id:remote-add");
     expect(app.value("id:remote-pairing-link")).toBe("");
   } finally { app.dispose(); }
@@ -71,7 +78,7 @@ test("P6B-REMOTE-UI-03 pairing uses defaults, submits once, shows a mask and cop
     expect((await inspect(app)).copied).toBe(1);
     await app.press("id:remote-done");
     await app.waitUntil(() => !app.shows("id:remote-prompt"));
-    expect((await inspect(app)).frozen).toBe(false);
+    expect((await inspect(app)).unfolded).toBe(false);
   } finally { app.dispose(); }
 });
 
@@ -121,7 +128,7 @@ test("2CB-REMOTE-UI-06 a new remote project closes the prompt at once, is made i
     await app.waitUntil(() => !app.shows("id:remote-prompt"));
     const before = await inspect(app);
     expect(before.calls).toEqual(["project:Fixture app"]);
-    expect(before.frozen).toBe(false);
+    expect(before.unfolded).toBe(false);
     expect(before.notices).toEqual([]);
     await app.host.send("app.fixture.remote.release", {});
     for (let turn = 0; turn < 40 && !(await inspect(app)).notices.includes("Created Fixture app"); turn++) await app.wait(25);
@@ -136,5 +143,67 @@ test("2CB-REMOTE-UI-07 unavailable panels say what and why, centered, as GPUI", 
     await app.waitFor("id:remote-unavailable-files");
     expect(app.texts()).toContain("Not available for a project on Disposable Mac");
     expect(app.texts()).toContain("Files works with this Mac's own projects. Select one of them to use it.");
+  } finally { app.dispose(); }
+});
+
+test("2CB-REMOTE-UI-08 a form unfolds where it was opened, in the flow, and leaves the rest of the window usable", async () => {
+  const app = await open("./Remote.fixture.tsx", options);
+  try {
+    await app.waitFor("id:remote-host-disposable-mac");
+    const before = await layout(app);
+    await app.press("id:remote-add");
+    await app.waitFor("id:remote-pairing-link");
+    // Under Add host, inside the Remote section; nothing is laid over the window:
+    // what follows the section moves down by exactly what the section grew.
+    expect(app.count("id:remote-settings >> id:remote-prompt")).toBe(1);
+    expect(app.count("id:remote-projects >> id:remote-prompt")).toBe(0);
+    const after = await layout(app);
+    expect(after.settings.height).toBeGreaterThan(before.settings.height);
+    expect(Math.abs((after.projects.y - before.projects.y) - (after.settings.height - before.settings.height))).toBeLessThan(0.5);
+    expect(after.projects.y).toBeGreaterThanOrEqual(after.settings.y + after.settings.height);
+    // Typing and clicking elsewhere work while it is open, and it stays open;
+    // Escape typed elsewhere is not the form's.
+    await app.type("id:fixture-elsewhere", "still typing");
+    expect((await inspect(app)).elsewhere).toBe("still typing");
+    await app.press("id:remote-project-remote:disposable-mac:disposable-project");
+    expect((await inspect(app)).actions).toContain("select:remote:disposable-mac:disposable-project");
+    await app.press("id:fixture-worktrees");
+    await app.waitFor("id:remote-worktrees-panel");
+    await app.keyboard.press("escape");
+    expect(app.shows("id:remote-pairing-link")).toBe(true);
+    // Another opener switches to its form; its own opener folds it.
+    await app.press("id:remote-pair");
+    await app.waitFor("id:remote-prompt-relay");
+    expect(app.shows("id:remote-pairing-link")).toBe(false);
+    await app.press("id:remote-pair");
+    await app.waitUntil(() => !app.shows("id:remote-prompt"));
+    expect((await inspect(app)).unfolded).toBe(false);
+    // New project unfolds in its folder. Snapshots redraw the folder without
+    // remaking the form: the keyboard stays on Cancel, which Return presses (a
+    // remade form would have put it back in the field, where Return creates).
+    await app.press("id:remote-new-project-disposable-mac");
+    await app.waitFor("id:remote-prompt-name");
+    expect(app.count("id:remote-folder-disposable-mac >> id:remote-prompt")).toBe(1);
+    expect(app.count("id:remote-settings >> id:remote-prompt")).toBe(0);
+    await app.type("id:remote-prompt-name", "Half typed");
+    await app.keyboard.press("tab");
+    for (let turn = 0; turn < 3; turn++) await app.host.send("app.fixture.remote.publish", {});
+    expect(app.value("id:remote-prompt-name")).toBe("Half typed");
+    await app.keyboard.press("enter");
+    await app.waitUntil(() => !app.shows("id:remote-prompt"));
+    expect((await inspect(app)).calls).toEqual([]);
+    // Escape in the field folds it, however often snapshots came meanwhile.
+    await app.press("id:remote-new-project-disposable-mac");
+    await app.type("id:remote-prompt-name", "Again");
+    for (let turn = 0; turn < 3; turn++) await app.host.send("app.fixture.remote.publish", {});
+    await app.keyboard.press("escape");
+    await app.waitUntil(() => !app.shows("id:remote-prompt"));
+    expect((await inspect(app)).calls).toEqual([]);
+    // Remove is another action: it folds an open form.
+    await app.press("id:remote-add");
+    await app.waitFor("id:remote-pairing-link");
+    await app.press("id:remote-remove-disposable-mac");
+    expect(app.shows("id:remote-prompt")).toBe(false);
+    expect(app.texts()).toContain("Confirm remove");
   } finally { app.dispose(); }
 });

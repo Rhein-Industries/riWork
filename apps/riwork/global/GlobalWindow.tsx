@@ -5,8 +5,7 @@ import { Icon } from "../Icon";
 import { DEFAULT_THEME, type InterfaceTheme } from "../appearance";
 import type { HostParams } from "../model";
 import { DashboardView } from "../dashboard/Dashboard";
-import { DecisionDialog } from "../dashboard/DecisionDialog";
-import { routeTarget, type DecisionRow, type Filter, type Sort, type Target, type Wire } from "../dashboard/model";
+import { routeTarget, type Filter, type Sort, type Target, type Wire } from "../dashboard/model";
 import { GlobalChat, type ChatControl } from "./GlobalChat";
 
 export type GlobalView = "dashboard" | "chat";
@@ -44,7 +43,6 @@ export function GlobalWindow(props: { params: HostParams; theme?: () => Interfac
   const notice = signal(params.notice ?? "");
   const windowState = signal<WindowState>({ mode: "windowed" });
   const dashboard = signal<DashboardEvent["data"] | null>(null);
-  const reviewing = signal<DecisionRow | null>(null);
   let saved: GlobalWindowDto | null = null;
   let loaded = false;
   let alive = true;
@@ -84,7 +82,6 @@ export function GlobalWindow(props: { params: HostParams; theme?: () => Interfac
   }
   const chat: { control?: ChatControl } = {};
   function show(next: GlobalView, start = false) {
-    if (reviewing()) return;
     view.set(next);
     save();
     if (next === "chat" && start) chat.control?.start();
@@ -149,7 +146,6 @@ export function GlobalWindow(props: { params: HostParams; theme?: () => Interfac
 
   let search: { focus: () => void } | undefined;
   function command(id: string) {
-    if (reviewing()) return;
     if (id === "closeTab" || id === "closeWindow") void host.call("window.close", {}).catch(() => {});
     else if (id === "newProjectWindow" || id === "newWindow") newWindow();
     else if (id === "openGlobalDashboard") show("dashboard");
@@ -164,7 +160,7 @@ export function GlobalWindow(props: { params: HostParams; theme?: () => Interfac
   // ⌘F belongs to the dashboard's search only in the Dashboard view; in Chat it
   // reaches the chat's own find.
   effect(() => {
-    if (view() !== "dashboard" || reviewing()) return;
+    if (view() !== "dashboard") return;
     return keymap.bind("mod+f", () => search?.focus());
   });
   cleanup(host.on("command", (data) => {
@@ -178,7 +174,7 @@ export function GlobalWindow(props: { params: HostParams; theme?: () => Interfac
   function segment(id: GlobalView, label: string) {
     const selected = () => view() === id;
     return <View testID={`global-view-${id}`} role="tab" accessibilityLabel={selected() ? `${label}, shown` : label}
-      focusable={!reviewing()} disabled={!!reviewing()} accessibilityState={{ selected: selected(), disabled: !!reviewing() }} onPress={() => show(id)}
+      focusable={true} accessibilityState={{ selected: selected() }} onPress={() => show(id)}
       style={{ paddingHorizontal: 10, height: 22, justifyContent: "center", borderRadius: 5, backgroundColor: selected() ? palette().bg : "transparent" }}>
       <Text style={{ ...font(11), color: selected() ? palette().text : palette().muted }}>{label}</Text>
     </View>;
@@ -200,7 +196,7 @@ export function GlobalWindow(props: { params: HostParams; theme?: () => Interfac
       {dashboardVisited() && <View style={{ flex: 1, minHeight: 0, display: view() === "dashboard" ? "flex" : "none" }}>
         <DashboardView dto={dashboard} theme={theme} filter={filter} sort={sort} query={query}
           onFilter={setFilter} onSort={setSort} onSearch={(node) => { search = node; }}
-          onOpen={route} onReview={(decision) => { if (!reviewing()) reviewing.set(decision); }} onPanel={openPanel} onGlobalChat={() => show("chat", true)}
+          onOpen={route} onPanel={openPanel} onGlobalChat={() => show("chat", true)}
           onRefresh={() => { void Dashboard.refresh().catch((error: unknown) => notice.set(String(error))); }}
           plan={() => chat.control?.plan() ?? null} starting={() => chat.control?.starting() ?? false} /></View>}
       <GlobalChat visible={() => view() === "chat"} global={() => wire()?.global ?? { kind: "unknown" }} theme={theme}
@@ -213,9 +209,6 @@ export function GlobalWindow(props: { params: HostParams; theme?: () => Interfac
         }}
         onControl={(control) => { chat.control = control; }} onNotice={(text) => notice.set(text)} />
     </View>
-    {reviewing() && <DecisionDialog decision={reviewing()!} theme={theme} onClose={() => reviewing.set(null)}
-      onOpenChat={() => { const target = reviewing()?.session.target; reviewing.set(null); if (target) route(target); }}
-      onResponded={() => { void Dashboard.refresh().catch((error: unknown) => notice.set(String(error))); }} />}
     {notice() !== "" && <View testID="global-notice" role="alert" accessibilityLabel={notice()}
       style={{ flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 10, paddingVertical: 6, backgroundColor: palette().panel, borderTopWidth: 1, borderColor: palette().divider }}>
       <Text testID="global-notice-text" style={{ ...font(11), flex: 1, color: palette().gold }}>{notice()}</Text>

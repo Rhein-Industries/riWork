@@ -2,7 +2,7 @@ import { expect, test } from "nsh/test";
 import {
   EMPTY_REMOTE, checkPairingLink, filteredFolders, linkPresentation, maskedPairingLink,
   projectConnectionNote, projectNameError, remoteErrorNotice, remoteLocalOnly, remotePanelUnavailable,
-  remoteProjectKey, remoteStrip, remoteTabTitle, remoteTitle, removalConfirmation, shellOpenRefusal, singleFlight, splitRemoteTitle,
+  remoteProjectKey, remoteStrip, remoteTabTitle, remoteTitle, removalConfirmation, samePrompt, shellOpenRefusal, singleFlight, splitRemoteTitle,
   type RemoteLists, type RemoteShell, type RemoteSnapshot,
 } from "./model";
 
@@ -111,4 +111,12 @@ test("2CB-REMOTE-TITLE-01 tab titles come from the native tree and split back in
   expect(splitRemoteTitle(remoteTabTitle(titled, key))).toEqual(["⇄ Fixture Mac · ", "orchestrator (codex) · 01234567"]);
   expect(splitRemoteTitle("Shell 1")).toBe(null);
   expect(splitRemoteTitle("⇄ no separator")).toBe(null);
+});
+
+test("2CB-REMOTE-MODEL-09 a form's own opener folds it; another opener, or another Mac's, switches", () => {
+  expect(samePrompt(null, { kind: "add" })).toBe(false);
+  expect(samePrompt({ kind: "add" }, { kind: "add" })).toBe(true);
+  expect(samePrompt({ kind: "add" }, { kind: "pair" })).toBe(false);
+  expect(samePrompt({ kind: "project", host: "a", label: "A" }, { kind: "project", host: "a", label: "Renamed" })).toBe(true);
+  expect(samePrompt({ kind: "project", host: "a", label: "A" }, { kind: "project", host: "b", label: "A" })).toBe(false);
 });

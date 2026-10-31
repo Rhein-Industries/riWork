@@ -1,13 +1,12 @@
-import { Scroll, Text, cleanup, effect, signal, type YNode } from "nsh";
-import { Dialog } from "nsh/base";
-import { Button, Input, View } from "../SettingsFocus";
+import { Scroll, Text, View as HostView, cleanup, computed, effect, keymap, signal, untracked, type YNode } from "nsh";
+import { Button, Input, View, settingsFocusScope } from "../SettingsFocus";
 import { DEFAULT_THEME, space, type InterfaceTheme } from "../appearance";
 import { Icon } from "../Icon";
 import { taskStatusLabel } from "../panel_model";
 import {
   EMPTY_REMOTE, REMOTE_HISTORY_NOTE, checkPairingLink, filteredFolders, linkPresentation,
   maskedPairingLink, projectConnectionNote, projectNameError, remoteErrorNotice, remoteHostLabel, remoteProjectKey,
-  remoteStrip, shellOpenRefusal,
+  remoteStrip, samePrompt, shellOpenRefusal,
   type PairingLink, type PairRequest, type RemoteDefaults, type RemoteLists, type RemoteOrder, type RemotePromptKind,
   type RemoteShell, type RemoteSnapshot, type RemoteWants,
 } from "./model";
@@ -28,7 +27,9 @@ export function createRemoteController(options: {
   wants: () => RemoteWants;
   theme?: () => InterfaceTheme;
   notice?: (message: string) => void;
+  /** A window dialog is open: no form unfolds meanwhile. */
   modalBlocked?: () => boolean;
+  /** A form unfolded and folded again. It covers nothing and holds no keys. */
   beforePrompt?: () => void;
   afterPrompt?: () => void;
   copyText: (text: string) => Promise<void> | void;
@@ -73,9 +74,13 @@ export function createRemoteController(options: {
     if (pending() || !prompt()) return;
     generation++; clearSecret(); finishPrompt(); error.set(null);
   }
+  /** Unfolds `kind`'s form where its opener is. Its opener again folds it;
+   * another opener switches to its own form (the old one's secret is dropped). */
   async function open(kind: RemotePromptKind) {
-    if (pending() || prompt() || options.modalBlocked?.()) return;
-    options.beforePrompt?.(); // workspace closes menus/freezes retained terminals
+    const current = prompt();
+    if (pending() || (!current && options.modalBlocked?.())) return;
+    if (samePrompt(current, kind)) { close(); return; }
+    if (!current) options.beforePrompt?.(); // the workspace closes its menus
     generation++; const asked = generation;
     confirmation.set(null); error.set(null); clearSecret();
     name.set(kind.kind === "pair" ? defaults().name : "");
@@ -129,7 +134,8 @@ export function createRemoteController(options: {
     } finally { if (asked === generation) pending.set(false); }
   }
   async function remove(host: string) {
-    if (pending() || prompt()) return;
+    if (pending()) return;
+    close(); // starting another action folds an open form
     if (confirmation() !== host) { confirmation.set(host); return; }
     pending.set(true); error.set(null);
     try { await options.api.removeHost(host); confirmation.set(null); }
@@ -175,9 +181,20 @@ function RemoteError(props: { controller: RemoteController; text: string }) {
   </View>;
 }
 
-/** AppSettings' remote slot shares the page scroll and tracked focus scope. */
+/** AppSettings' remote slot shares the page scroll and tracked focus scope.
+ * Add host and Pair another Mac unfold their form under their buttons. */
 export function RemoteSettings(props: { controller: RemoteController }) {
   const c = props.controller;
+  // Made again when the form changes (add ↔ pair), not as it is filled in.
+  const form = computed(() => c.prompt()?.kind === "project" ? null : c.prompt()?.kind ?? null);
+  let opened: YNode | undefined;
+  function opener(id: string, label: string, kind: RemotePromptKind) {
+    let node: YNode | undefined;
+    return <Button testID={id} accessibilityLabel={label} selected={samePrompt(c.prompt(), kind)} disabled={c.pending()} ref={(value) => { node = value; }}
+      onPress={() => { opened = node; void c.open(kind); }} style={{ paddingHorizontal: 8, paddingVertical: 4 }}>
+      <Text style={font(c, 10, samePrompt(c.prompt(), kind) ? c.theme().palette.cyan : undefined)}>{label}</Text>
+    </Button>;
+  }
   return <View testID="remote-settings" style={{ gap: 8, padding: 14 }}>
     <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
       <Text style={font(c, 13)}>Other Macs</Text>
@@ -191,47 +208,56 @@ export function RemoteSettings(props: { controller: RemoteController }) {
     </View>)}
     {(c.data().hostsError || (!c.prompt() && c.error())) && <RemoteError controller={c} text={c.data().hostsError ?? c.error()!} />}
     <View style={{ flexDirection: "row", gap: 8 }}>
-      {action(c, "remote-pair", "Pair another Mac", c.pending() ? undefined : () => void c.open({ kind: "pair" }))}
-      {action(c, "remote-add", "Add host", c.pending() ? undefined : () => void c.open({ kind: "add" }))}
+      {opener("remote-pair", "Pair another Mac", { kind: "pair" })}
+      {opener("remote-add", "Add host", { kind: "add" })}
     </View>
+    {!!form() && <RemoteForm controller={c} opener={() => opened} />}
   </View>;
 }
 
-/** Append after local folders. Search expands matches without changing saved collapse state. */
+/** Append after local folders. Search expands matches without changing saved collapse state.
+ * Folders are kept by host: a snapshot redraws one in place, so the New project
+ * form unfolded under its header keeps its field and the keyboard focus. Their
+ * list sits in a host view: a component's children getter would make it anew. */
 export function RemoteProjects(props: {
   controller: RemoteController; query?: () => string; selected?: () => string | null; order?: () => RemoteOrder;
   collapsed?: () => ReadonlySet<string>; onToggleFolder?: (key: string) => void; onSelectProject: (key: string) => void;
 }) {
   const c = props.controller;
-  return <View testID="remote-projects" style={{ gap: 2 }}>
-    {filteredFolders(c.data(), props.query?.() ?? "", props.order?.()).map((folder) => {
-      const key = `remote:${folder.host}`;
-      const collapsed = !props.query?.().trim() && props.collapsed?.().has(key);
-      return <View testID={`remote-folder-${folder.host}`} style={{ gap: 2 }}>
+  return <HostView testID="remote-projects" style={{ gap: 2 }}>
+    <Each of={filteredFolders(c.data(), props.query?.() ?? "", props.order?.())} key={(folder) => folder.host}>{(folder) => {
+      const host = folder().host, key = `remote:${host}`;
+      const collapsed = () => !props.query?.().trim() && props.collapsed?.().has(key);
+      const kind = (): RemotePromptKind => ({ kind: "project", host, label: folder().label });
+      const form = computed(() => samePrompt(c.prompt(), kind())), online = computed(() => folder().link === "online");
+      let add: YNode | undefined;
+      return <View testID={`remote-folder-${host}`} style={{ gap: 2 }}>
         <View tooltip="A paired Mac. Its projects open here like local ones." style={{ flexDirection: "row", alignItems: "center", gap: 3, paddingHorizontal: space(6, c.theme().scale), height: space(30, c.theme().scale) }}>
-          <View testID={`remote-folder-toggle-${folder.host}`} role="button" focusable={true} accessibilityLabel={folder.label} accessibilityState={{ expanded: !collapsed }} onPress={() => props.onToggleFolder?.(key)}
+          <View testID={`remote-folder-toggle-${host}`} role="button" focusable={true} accessibilityLabel={folder().label} accessibilityState={{ expanded: !collapsed() }} onPress={() => props.onToggleFolder?.(key)}
             style={{ flex: 1, minWidth: 0, height: "100%", flexDirection: "row", alignItems: "center", gap: space(6, c.theme().scale) }}>
-            <Icon name={collapsed ? "right" : "down"} size={10 * c.theme().scale} color={c.theme().palette.muted} />
-            <Text testID={`remote-folder-status-${folder.host}`} tooltip={linkPresentation(folder.link).text} accessibilityLabel={linkPresentation(folder.link).text} style={font(c, 10, c.theme().palette[linkPresentation(folder.link).tone])}>{linkPresentation(folder.link).dot}</Text>
-            <Text numberOfLines={1} style={{ ...font(c, 10, c.theme().palette.muted), fontWeight: "600", flex: 1, minWidth: 0 }}>{folder.label}</Text>
-            {folder.creating && <Text style={font(c, 9, c.theme().palette.muted)}>creating…</Text>}
-            <Text style={font(c, 9, c.theme().palette.muted)}>{String(folder.count).padStart(2, "0")}</Text>
+            <Icon name={collapsed() ? "right" : "down"} size={10 * c.theme().scale} color={c.theme().palette.muted} />
+            <Text testID={`remote-folder-status-${host}`} tooltip={linkPresentation(folder().link).text} accessibilityLabel={linkPresentation(folder().link).text} style={font(c, 10, c.theme().palette[linkPresentation(folder().link).tone])}>{linkPresentation(folder().link).dot}</Text>
+            <Text numberOfLines={1} style={{ ...font(c, 10, c.theme().palette.muted), fontWeight: "600", flex: 1, minWidth: 0 }}>{folder().label}</Text>
+            {folder().creating && <Text style={font(c, 9, c.theme().palette.muted)}>creating…</Text>}
+            <Text style={font(c, 9, c.theme().palette.muted)}>{String(folder().count).padStart(2, "0")}</Text>
           </View>
-          {folder.link === "online" && <Button testID={`remote-new-project-${folder.host}`} accessibilityLabel="New project on this Mac" disabled={c.pending() || folder.creating} onPress={() => void c.open({ kind: "project", host: folder.host, label: folder.label })}
-            style={{ width: space(24, c.theme().scale), height: space(24, c.theme().scale), borderRadius: 12, alignItems: "center", justifyContent: "center" }} hoverStyle={{ backgroundColor: c.theme().palette.panelActive }}>
+          {online() && <Button testID={`remote-new-project-${host}`} accessibilityLabel="New project on this Mac" selected={form()} disabled={c.pending() || folder().creating}
+            ref={(node) => { add = node; }} onPress={() => void c.open(kind())}
+            style={{ width: space(24, c.theme().scale), height: space(24, c.theme().scale), borderRadius: 12, alignItems: "center", justifyContent: "center", backgroundColor: form() ? c.theme().palette.panelActive : "transparent" }} hoverStyle={{ backgroundColor: c.theme().palette.panelActive }}>
             <Icon name="add" size={13 * c.theme().scale} color={c.theme().palette.muted} />
           </Button>}
         </View>
-        {folder.failure && <View style={{ flexDirection: "row", alignItems: "center" }}><Text style={font(c, 10, c.theme().palette.gold)}>{folder.failure}</Text>{action(c, `remote-dismiss-project-${folder.host}`, "Dismiss", () => c.dismiss(folder.host, null))}</View>}
-        {!collapsed && folder.note && <Text testID={`remote-folder-note-${folder.host}`} style={{ ...font(c, 10, folder.link === "offline" ? c.theme().palette.gold : c.theme().palette.muted), paddingLeft: space(22, c.theme().scale), paddingVertical: 5 }}>{folder.note}</Text>}
-        {!collapsed && folder.projects.map((project) => <Button testID={`remote-project-${project.key}`} accessibilityLabel={`${project.name} on ${folder.label}`}
+        {form() && <RemoteForm controller={c} opener={() => add} inset={space(16, c.theme().scale)} />}
+        {!!folder().failure && <View style={{ flexDirection: "row", alignItems: "center" }}><Text style={font(c, 10, c.theme().palette.gold)}>{folder().failure}</Text>{action(c, `remote-dismiss-project-${host}`, "Dismiss", () => c.dismiss(host, null))}</View>}
+        {!collapsed() && !!folder().note && <Text testID={`remote-folder-note-${host}`} style={{ ...font(c, 10, folder().link === "offline" ? c.theme().palette.gold : c.theme().palette.muted), paddingLeft: space(22, c.theme().scale), paddingVertical: 5 }}>{folder().note}</Text>}
+        {!collapsed() && folder().projects.map((project) => <Button testID={`remote-project-${project.key}`} accessibilityLabel={`${project.name} on ${folder().label}`}
           selected={props.selected?.() === project.key} onPress={() => props.onSelectProject(project.key)}
           style={{ opacity: project.dimmed ? 0.5 : 1, marginLeft: space(16, c.theme().scale), paddingHorizontal: space(8, c.theme().scale), paddingVertical: space(8, c.theme().scale), gap: 3, borderRadius: space(5, c.theme().scale), backgroundColor: props.selected?.() === project.key ? c.theme().palette.panelActive : "transparent" }} hoverStyle={{ backgroundColor: c.theme().palette.panelActive }}>
           <Text numberOfLines={1} style={font(c)}>{project.name}</Text><Text numberOfLines={1} style={font(c, 9, c.theme().palette.muted)}>{project.stats}</Text>
         </Button>)}
       </View>;
-    })}
-  </View>;
+    }}</Each>
+  </HostView>;
 }
 
 const UNAVAILABLE_WHAT: Record<string, string> = {
@@ -334,65 +360,79 @@ const PROMPT_DESCRIPTION = {
   project: "The project is made in the host's default projects folder.",
 } as const;
 
-/** Render above normal content, alongside the workspace's modal lifecycle.
- * Texts, fields and buttons as GPUI's RemotePrompt; the busy line is separate. */
-export function RemotePrompt(props: { controller: RemoteController }) {
-  const c = props.controller;
+/** Retired: the forms unfold in place (RemoteSettings, RemoteProjects) and
+ * nothing is drawn over the window. Kept so an existing mount still compiles. */
+export function RemotePrompt(_props: { controller: RemoteController }) { return null; }
+
+/** The add, pair or new-project form, unfolded under the control that opened
+ * it, in the flow: it covers nothing and holds no keys outside itself. Escape
+ * folds it while the keyboard focus is in it; the focus then goes back to
+ * `opener`. Texts, fields and buttons as GPUI's RemotePrompt; the busy line is separate. */
+function RemoteForm(props: { controller: RemoteController; opener: () => YNode | undefined; inset?: number }) {
+  const c = props.controller, asked = untracked(c.prompt)!, kind = asked.kind;
+  const title = asked.kind === "add" ? "Add host" : asked.kind === "pair" ? "Pair another Mac" : `New project on ${asked.label}`;
+  const size = (value: number) => space(value, c.theme().scale);
+  const inputStyle = () => ({ ...font(c), padding: 8, borderWidth: 1, borderColor: c.theme().palette.divider, borderRadius: 5, backgroundColor: c.theme().palette.bg });
   const fields: (YNode | undefined)[] = [];
-  const kind = () => c.prompt()!.kind;
-  const title = () => kind() === "add" ? "Add host" : kind() === "pair" ? "Pair another Mac" : `New project on ${(c.prompt() as { label?: string } | null)?.label ?? "this Mac"}`;
-  const space = (value: number) => value * c.theme().scale;
-  const inputStyle = () => ({ ...font(c), padding: 8, borderWidth: 1, borderColor: c.theme().palette.divider, borderRadius: 5 });
-  // A pairing starts on the first field that is still empty.
-  function focusFirst() {
-    const values = kind() === "add" ? [c.link(), c.name()] : kind() === "pair" ? [c.name(), c.relay(), c.routes()] : [c.name()];
-    fields[Math.max(0, values.findIndex((value) => !value))]?.focus();
+  // Focus events do not bubble: each control of the form reports its own.
+  const within = settingsFocusScope();
+  function focusEvents() {
+    const owner = {};
+    cleanup(() => within.leave(owner));
+    return { onFocus: () => within.enter(owner), onBlur: () => within.leave(owner) };
   }
+  effect(() => { if (within.containsFocus()) return keymap.bind("escape", () => c.close(), { when: "always" }); });
+  // A pairing starts on the first field that is still empty.
+  effect(() => untracked(() => {
+    const values = kind === "add" ? [c.link(), c.name()] : kind === "pair" ? [c.name(), c.relay(), c.routes()] : [c.name()];
+    fields[Math.max(0, values.findIndex((value) => !value))]?.focus();
+  }));
+  // After the pending flag clears, which enables the opener again.
+  cleanup(() => { if (untracked(within.containsFocus)) queueMicrotask(() => props.opener()?.focus()); });
   const label = (text: string) => <Text style={font(c, 9, c.theme().palette.muted)}>{text}</Text>;
+  // Return submits and keeps the focus in the field, where an error is fixed.
   function field(index: number, id: string, name: string, placeholder: string, value: () => string, change: (value: string) => void, masked = false) {
-    return <View style={{ gap: space(4) }}>
+    return <View style={{ gap: size(4) }}>
       {label(name)}
-      <Input testID={id} accessibilityLabel={name} placeholder={placeholder} masked={masked} value={value()} readonly={c.pending()}
-        ref={(node) => { fields[index] = node; }} onChange={change} onSubmit={() => void c.submit()} style={inputStyle()} />
+      <Input testID={id} accessibilityLabel={name} placeholder={placeholder} masked={masked} value={value()} readonly={c.pending()} {...focusEvents()}
+        ref={(node) => { fields[index] = node; }} onChange={change} submitBehavior="submit" onSubmit={() => void c.submit()} style={inputStyle()} />
     </View>;
   }
   function button(id: string, text: string, primary: boolean, press: (() => void) | undefined, focus = false) {
     const disabled = c.pending() || !press;
-    return <Button testID={id} accessibilityLabel={text.replace(/\s+↵$/u, "")} disabled={disabled} onPress={press} ref={focus ? (node) => { node.focus(); } : undefined}
-      style={{ paddingHorizontal: space(12), paddingVertical: space(8), borderWidth: 1, borderColor: primary ? c.theme().palette.cyan : c.theme().palette.panel,
+    return <Button testID={id} accessibilityLabel={text.replace(/\s+↵$/u, "")} disabled={disabled} onPress={press} {...focusEvents()} ref={focus ? (node) => { node.focus(); } : undefined}
+      style={{ paddingHorizontal: size(12), paddingVertical: size(8), borderWidth: 1, borderColor: primary ? c.theme().palette.cyan : c.theme().palette.divider,
         backgroundColor: primary ? c.theme().palette.panelActive : c.theme().palette.panel }} focusStyle={{ borderColor: c.theme().palette.focus }}>
       <Text style={font(c, 11, disabled ? c.theme().palette.muted : primary ? c.theme().palette.cyan : c.theme().palette.muted)}>{text}</Text>
     </Button>;
   }
-  return <>{c.prompt() && <Dialog testID="remote-prompt" animation="none" closeOnBackdropPress={false} closeOnEscape={!c.pending()} onOpen={focusFirst}
-    onOpenChange={(open) => { if (!open) c.close(); }} backdropStyle={{ backgroundColor: "#00000070" }}
-    style={{ width: space(480), maxWidth: "95%", padding: space(18), gap: space(14), backgroundColor: c.theme().palette.panel, borderWidth: 1, borderColor: c.theme().palette.magenta }}>
-    <Text style={font(c, 11, c.theme().palette.cyan)}>{title()}</Text>
-    <Text style={font(c, 10, c.theme().palette.muted)}>{PROMPT_DESCRIPTION[c.paired() ? "paired" : kind()]}</Text>
-    {c.paired() ? <Text testID="remote-pairing-mask" numberOfLines={1} style={{ ...font(c, 11, c.theme().palette.cyan), padding: space(10), backgroundColor: c.theme().palette.bg, borderWidth: 1, borderColor: c.theme().palette.divider }}>{c.paired()!.masked}</Text> : <>
-      {kind() === "add" && <>
-        {field(0, "remote-pairing-link", "Pairing link", "Paste the link (⌘V)", c.link, (value) => c.link.set(value), true)}
-        {field(1, "remote-prompt-name", "Name (optional)", "How this Mac is shown here", c.name, (value) => c.name.set(value))}
-      </>}
-      {kind() === "pair" && <>
-        {field(0, "remote-prompt-name", "Name of the other Mac", "MacBook", c.name, (value) => c.name.set(value))}
-        {field(1, "remote-prompt-relay", "Relay", "wss://relay.example.com/v1/ws", c.relay, (value) => c.relay.set(value))}
-        {field(2, "remote-prompt-routes", "Relay routes file", "relay-routes.json", c.routes, (value) => c.routes.set(value))}
-      </>}
-      {kind() === "project" && field(0, "remote-prompt-name", "Project name", "My App", c.name, (value) => c.name.set(value))}
-    </>}
-    {c.pending() && !c.paired() && <Text testID="remote-prompt-busy" style={font(c, 11, c.theme().palette.cyan)}>{kind() === "pair" ? "Making a pairing link…" : "Pairing…"}</Text>}
-    {c.error() && <Text testID="remote-prompt-error" style={font(c, 11, c.theme().palette.gold)}>{c.error()}</Text>}
-    <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: space(10) }}>
+  // Made once (the kind stays while it is open): fields in a fragment would be
+  // made again whenever the error or busy line beside them changes.
+  const inputs = kind === "add" ? [
+    field(0, "remote-pairing-link", "Pairing link", "Paste the link (⌘V)", c.link, (value) => c.link.set(value), true),
+    field(1, "remote-prompt-name", "Name (optional)", "How this Mac is shown here", c.name, (value) => c.name.set(value)),
+  ] : kind === "pair" ? [
+    field(0, "remote-prompt-name", "Name of the other Mac", "MacBook", c.name, (value) => c.name.set(value)),
+    field(1, "remote-prompt-relay", "Relay", "wss://relay.example.com/v1/ws", c.relay, (value) => c.relay.set(value)),
+    field(2, "remote-prompt-routes", "Relay routes file", "relay-routes.json", c.routes, (value) => c.routes.set(value)),
+  ] : [field(0, "remote-prompt-name", "Project name", "My App", c.name, (value) => c.name.set(value))];
+  return <View testID="remote-prompt" accessibilityLabel={title} style={{ gap: size(10), padding: size(12), marginLeft: props.inset ?? 0,
+    borderWidth: 1, borderRadius: 6, borderColor: c.theme().palette.divider, backgroundColor: c.theme().palette.panel }}>
+    <Text style={font(c, 11, c.theme().palette.cyan)}>{title}</Text>
+    <Text style={font(c, 10, c.theme().palette.muted)}>{PROMPT_DESCRIPTION[c.paired() ? "paired" : kind]}</Text>
+    {c.paired() ? <Text testID="remote-pairing-mask" numberOfLines={1} style={{ ...font(c, 11, c.theme().palette.cyan), padding: size(10), backgroundColor: c.theme().palette.bg, borderWidth: 1, borderColor: c.theme().palette.divider }}>{c.paired()!.masked}</Text> : inputs}
+    {c.pending() && !c.paired() && <Text testID="remote-prompt-busy" style={font(c, 11, c.theme().palette.cyan)}>{kind === "pair" ? "Making a pairing link…" : "Pairing…"}</Text>}
+    {!!c.error() && <Text testID="remote-prompt-error" style={font(c, 11, c.theme().palette.gold)}>{c.error()}</Text>}
+    <View style={{ flexDirection: "row", flexWrap: "wrap", justifyContent: "flex-end", gap: size(10) }}>
       {c.paired() ? <>
         {button("remote-copy-link", c.copied() ? "Copied" : "Copy link", false, () => void c.copy(), true)}
         {button("remote-done", "Done  ↵", true, c.close)}
       </> : <>
         {button("remote-cancel", "Cancel", false, c.close)}
-        {button("remote-submit", kind() === "pair" ? "Make link  ↵" : kind() === "add" ? "Add host  ↵" : "Create  ↵", true, () => void c.submit())}
+        {button("remote-submit", kind === "pair" ? "Make link  ↵" : kind === "add" ? "Add host  ↵" : "Create  ↵", true, () => void c.submit())}
       </>}
     </View>
-  </Dialog>}</>;
+  </View>;
 }
 
 /** Optional remote terminal chrome; native reattach is injected by its owner.

@@ -1,8 +1,8 @@
 /** A disposable in-memory paired-Mac fixture. No native Remote import, CLI,
  * network, test sockets, real clipboard, credentials or local filesystem calls. */
-import { Text, View, host, mount, signal } from "nsh";
-import { Button } from "nsh/base";
-import { RemoteProjects, RemoteProjectPanel, RemotePrompt, RemoteSettings, RemoteStrip, RemoteUnavailable, createRemoteController, type RemoteApi } from "./Remote";
+import { Text, View, host, mount, signal, type YNode } from "nsh";
+import { Button, Input } from "nsh/base";
+import { RemoteProjects, RemoteProjectPanel, RemoteSettings, RemoteStrip, RemoteUnavailable, createRemoteController, type RemoteApi } from "./Remote";
 import { EMPTY_REMOTE, EMPTY_WANTS, shellOpenRefusal, type RemoteLists, type RemoteSnapshot } from "./model";
 
 const KEY = "remote:disposable-mac:disposable-project";
@@ -24,8 +24,10 @@ function Fixture() {
   const notices = signal<string[]>([]), actions = signal<string[]>([]), copied = signal(0), calls = signal<string[]>([]);
   const query = signal(""), selected = signal<string | null>(KEY), collapsed = signal<ReadonlySet<string>>(new Set());
   const panel = signal<"worktrees" | "tasks" | "shells">("shells"), ended = signal(false);
-  const unrelated = signal(0);
-  let subscribed = 0, closed = 0, frozen = false;
+  const unrelated = signal(0), elsewhere = signal("");
+  let subscribed = 0, closed = 0, unfolded = false;
+  // The rest of the window: an inline form must leave it in place and usable.
+  let settingsBox: YNode | undefined, projectsBox: YNode | undefined;
   let hold = false, resume: (() => void) | null = null;
   const wait = async () => { if (hold) await new Promise<void>((resolve) => { resume = resolve; }); };
   const api: RemoteApi = {
@@ -39,12 +41,17 @@ function Fixture() {
   };
   const c = createRemoteController({ api, wants: () => { unrelated(); return { ...EMPTY_WANTS, settings: true, folders: true, projectKey: KEY, shells: true }; },
     notice: (message) => notices.set([...notices(), message]), copyText: async () => { copied.set(copied() + 1); },
-    beforePrompt: () => { frozen = true; }, afterPrompt: () => { frozen = false; } });
+    beforePrompt: () => { unfolded = true; }, afterPrompt: () => { unfolded = false; } });
   host.on("app.fixture.remote.inspect", () => host.post("app.fixture.remote.state", {
     pending: c.pending(), confirmation: c.confirmation(), prompt: c.prompt()?.kind ?? null,
     calls: calls(), notices: notices(), actions: actions(), copied: copied(), selected: selected(),
-    name: c.name(), relay: c.relay(), routes: c.routes(), subscribed, closed, frozen, // no secret link is exposed here
+    name: c.name(), relay: c.relay(), routes: c.routes(), subscribed, closed, unfolded, elsewhere: elsewhere(), // no secret link is exposed here
   }));
+  host.on("app.fixture.remote.measure", () => void Promise.all([settingsBox?.measure(), projectsBox?.measure()]).then(([settings, projects]) => host.post("app.fixture.remote.layout", {
+    settings: { y: settings?.pagePosition.y ?? -1, height: settings?.bounds.size.height ?? -1 }, projects: { y: projects?.pagePosition.y ?? -1 },
+  })));
+  // The same data again, as a new snapshot object: rows are redrawn, not remade.
+  host.on("app.fixture.remote.publish", () => { state = { ...state, folders: state.folders.map((f) => ({ ...f })) }; publish(); });
   host.on("app.fixture.remote.hold", () => { hold = true; });
   host.on("app.fixture.remote.release", () => { hold = false; resume?.(); resume = null; });
   host.on("app.fixture.remote.unrelated", () => unrelated.set(unrelated() + 1));
@@ -60,11 +67,12 @@ function Fixture() {
       <Button testID="fixture-tasks" onPress={() => panel.set("tasks")}><Text>Tasks</Text></Button>
       <Button testID="fixture-shells" onPress={() => panel.set("shells")}><Text>Shells</Text></Button>
       <Button testID="fixture-ended" onPress={() => ended.set(true)}><Text>End bridge fixture</Text></Button>
+      <Input testID="fixture-elsewhere" accessibilityLabel="Elsewhere" value={elsewhere()} onChange={(value) => elsewhere.set(value)} style={{ width: 160 }} />
     </View>
-    <RemoteSettings controller={c} />
-    <RemoteProjects controller={c} query={query} selected={selected} collapsed={collapsed} onToggleFolder={(key) => {
+    <View ref={(node) => { settingsBox = node; }}><RemoteSettings controller={c} /></View>
+    <View ref={(node) => { projectsBox = node; }}><RemoteProjects controller={c} query={query} selected={selected} collapsed={collapsed} onToggleFolder={(key) => {
       const next = new Set(collapsed()); if (next.has(key)) next.delete(key); else next.add(key); collapsed.set(next);
-    }} onSelectProject={(key) => { selected.set(key); actions.set([...actions(), `select:${key}`]); }} />
+    }} onSelectProject={(key) => { selected.set(key); actions.set([...actions(), `select:${key}`]); }} /></View>
     <RemoteProjectPanel controller={c} projectKey={() => KEY} panel={panel()} onWorktree={(id) => actions.set([...actions(), `worktree:${id}`])}
       onTask={(id) => actions.set([...actions(), `task:${id}`])} onShell={(host, shell) => {
         // As workspace.ts with no tab open on it: refuse a chat or ended shell.
@@ -73,7 +81,6 @@ function Fixture() {
       }} />
     <RemoteStrip label="Disposable Mac" link={c.data().hosts[0]?.link ?? null} ended={ended()} onReconnect={() => { actions.set([...actions(), "reattach-same-target"]); ended.set(false); }} />
     <RemoteUnavailable hostLabel="Disposable Mac" panel="files" />
-    <RemotePrompt controller={c} />
   </View>;
 }
 mount(Fixture);

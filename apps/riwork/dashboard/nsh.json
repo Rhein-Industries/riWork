@@ -1,0 +1,5 @@
+{
+  "name": "RiWork dashboard headless fixtures",
+  "id": "dev.riwork.test.dashboard",
+  "capabilities": { "host": ["app.fixture.*", "window.*", "system.*"], "clipboard": true }
+}

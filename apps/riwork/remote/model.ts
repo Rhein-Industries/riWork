@@ -40,7 +40,12 @@ export interface RemoteWants {
 export interface RemoteDefaults { name: string; relay: string; routes: string }
 export interface PairRequest { name: string; relay: string; routes: string }
 export interface PairingLink { link: string; masked: string }
+/** A remote form, unfolded in place under the control that opened it. */
 export type RemotePromptKind = { kind: "add" } | { kind: "pair" } | { kind: "project"; host: string; label: string };
+/** The same form: its opener folds it again; any other opener switches to its own. */
+export function samePrompt(a: RemotePromptKind | null | undefined, b: RemotePromptKind): boolean {
+  return a?.kind === b.kind && (a.kind !== "project" || a.host === (b as { host: string }).host);
+}
 export const EMPTY_REMOTE: RemoteSnapshot = { schema: 1, hosts: [], hostsError: null, folders: [], projects: [], selected: null, titles: [] };
 export const EMPTY_WANTS: RemoteWants = { folders: false, settings: false, collapsed: [], tabHosts: [], projectKey: null, worktrees: false, tasks: false, shells: false, tabs: [], order: "", descending: false };
 export const REMOTE_HISTORY_NOTE = "Native Codex and Claude chat history is unavailable on remote hosts. Showing remote shells.";
@@ -156,7 +161,7 @@ export function projectNameError(text: string): string | null {
 }
 
 /** Shared by pointer/keyboard handlers: a pending operation cannot be submitted
- * twice; stale completion never clears a newly opened dialog. No automatic retry. */
+ * twice; stale completion never clears a newly opened form. No automatic retry. */
 export function singleFlight() {
   let pending = false;
   return {
@@ -169,7 +174,7 @@ export function singleFlight() {
   };
 }
 
-/** Remove is a two-activation action; opening a prompt or losing the host resets it. */
+/** Remove is a two-activation action; opening a form or losing the host resets it. */
 export function removalConfirmation() {
   let selected: string | null = null;
   return {
