@@ -2,12 +2,20 @@
 //!
 //! This server deliberately writes only JSON-RPC to stdout. A host can launch
 //! `riwork mcp` and discover the available operations through `tools/list`.
+//!
+//! Trusted add-ins add tools of their own (`addin__<id>__<tool>`): each is a method
+//! of one of the add-in's workers, started once per server and kept until it ends.
 
 use std::{
+    collections::BTreeMap,
     io::{self, BufRead, BufWriter, Write},
-    path::Path,
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex, PoisonError},
+    time::Duration,
 };
 
+use riwork_core::addins::{self, Found, Manifest, ToolSpec};
+use riwork_engine::addin_worker::WorkerProcess;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -26,6 +34,14 @@ const PROTOCOL_VERSION: &str = "2025-11-25";
 /// Serve one MCP connection until its stdin closes. Errors from individual
 /// requests are returned over JSON-RPC; only transport failures escape here.
 pub fn run() -> Result<(), String> {
+    let served = serve();
+    // Add-in workers would also see EOF when this process exits; this gives
+    // them their time and ends what they started.
+    stop_addin_workers();
+    served
+}
+
+fn serve() -> Result<(), String> {
     let mut stdin = io::stdin().lock();
     let mut stdout = BufWriter::new(io::stdout().lock());
     let mut line = Vec::new();
@@ -116,7 +132,11 @@ fn respond(request: &Value) -> Option<Value> {
     let result = match method {
         "initialize" => Ok(initialize(&params)),
         "ping" => Ok(json!({})),
-        "tools/list" => Ok(json!({ "tools": tools() })),
+        "tools/list" => {
+            let mut items = tools();
+            items.extend(current_addin_tools().into_iter().map(|tool| tool.definition));
+            Ok(json!({ "tools": items }))
+        }
         "tools/call" => call_tool(&params),
         _ => return Some(rpc_error(id, -32601, "Method not found")),
     };
@@ -194,6 +214,17 @@ fn unaccepted_arguments(definition: &Value, args: &Value) -> Option<String> {
 
 fn call_tool(params: &Value) -> Result<Value, String> {
     let name = required_str(params, "name")?;
+    if name.starts_with(ADDIN_PREFIX) {
+        let args = params
+            .get("arguments")
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        if !args.is_object() {
+            return Err("Tool arguments must be a JSON object".to_owned());
+        }
+        let (home, project) = addin_context()?;
+        return call_addin_tool(&home, project_ref(&project), name, args);
+    }
     let definition = tools()
         .into_iter()
         .find(|tool| tool["name"].as_str() == Some(name))
@@ -1337,6 +1368,273 @@ fn tools() -> Vec<Value> {
     items
 }
 
+// MARK: Add-in tools
+
+/// Every add-in tool is named `addin__<id>__<tool>`, the id's dots and dashes as `_`.
+const ADDIN_PREFIX: &str = "addin__";
+/// How long an add-in tool may take to answer.
+const ADDIN_TOOL_TIMEOUT: Duration = Duration::from_secs(120);
+/// The longest tool name MCP clients take.
+const TOOL_NAME_LIMIT: usize = 64;
+
+/// The agent tool name of an add-in's tool, or `None` when it would not fit.
+pub(crate) fn addin_tool_name(addin_id: &str, tool: &str) -> Option<String> {
+    let name = format!(
+        "{ADDIN_PREFIX}{}__{tool}",
+        addin_id.replace(['.', '-'], "_")
+    );
+    (name.len() <= TOOL_NAME_LIMIT).then_some(name)
+}
+
+/// Why agents are not offered an add-in's tool, if they are not: a name that does
+/// not fit, or an input schema that is not an object's (clients refuse a whole
+/// tool list for one tool they cannot take).
+pub(crate) fn addin_tool_problem(addin_id: &str, tool: &ToolSpec) -> Option<String> {
+    if addin_tool_name(addin_id, &tool.name).is_none() {
+        return Some(format!(
+            "tool {:?}: its agent tool name would be longer than {TOOL_NAME_LIMIT} characters",
+            tool.name
+        ));
+    }
+    if tool.input_schema.get("type").and_then(Value::as_str) != Some("object") {
+        return Some(format!(
+            "tool {:?}: input_schema must be a JSON schema of type object",
+            tool.name
+        ));
+    }
+    None
+}
+
+/// The project whose add-ins a command or an agent gets: the one its RiWork
+/// session belongs to (RIWORK_CHAT_ID, RIWORK_SHELL_ID), else the one whose root
+/// or worktree holds `cwd` most closely, as `riwork preview` infers it. Its id and
+/// root; `None` outside every project, where only personal add-ins apply.
+pub(crate) fn addin_project(home: &Path, cwd: &Path) -> Option<(String, PathBuf)> {
+    let state = Store::open(home).ok()?.snapshot().ok()?;
+    let session = std::env::var("RIWORK_CHAT_ID")
+        .ok()
+        .and_then(|id| {
+            crate::chat::log::chat_dir(home, &id)
+                .and_then(|path| std::fs::read(path.join("info.json")).ok())
+                .and_then(|bytes| {
+                    serde_json::from_slice::<crate::chat::model::ChatInfo>(&bytes).ok()
+                })
+                .and_then(|chat| chat.project_id)
+        })
+        .or_else(|| {
+            std::env::var("RIWORK_SHELL_ID")
+                .ok()
+                .and_then(|id| crate::sessions::registered_shell(home, &id).ok())
+                .and_then(|shell| shell.project_id)
+        });
+    let cwd = cwd.canonicalize().unwrap_or_else(|_| cwd.to_owned());
+    let by_path = || {
+        state
+            .worktrees
+            .iter()
+            .map(|worktree| (&worktree.path, &worktree.project_id))
+            .chain(
+                state
+                    .projects
+                    .iter()
+                    .map(|project| (&project.root, &project.id)),
+            )
+            .filter(|(path, _)| cwd.starts_with(path))
+            .max_by_key(|(path, _)| path.components().count())
+            .map(|(_, project)| project.clone())
+    };
+    let project_id = session
+        .filter(|id| state.project(id).is_ok())
+        .or_else(by_path)?;
+    let project = state.project(&project_id).ok()?;
+    Some((project.id.clone(), project.root.clone()))
+}
+
+pub(crate) fn project_ref(project: &Option<(String, PathBuf)>) -> Option<(&str, &Path)> {
+    project
+        .as_ref()
+        .map(|(id, root)| (id.as_str(), root.as_path()))
+}
+
+/// RIWORK_HOME, and the project of this process's session or folder.
+fn addin_context() -> Result<(PathBuf, Option<(String, PathBuf)>), String> {
+    let home = crate::paths::riwork_home()?;
+    let project = std::env::current_dir()
+        .ok()
+        .and_then(|cwd| addin_project(&home, &cwd));
+    Ok((home, project))
+}
+
+/// The add-ins of `project` and the personal ones whose current grant the person
+/// trusted, each with its manifest. Nothing of any other add-in lists or runs.
+pub(crate) fn trusted_addins(
+    home: &Path,
+    project: Option<(&str, &Path)>,
+) -> Vec<(Found, Manifest)> {
+    addins::discover(home, project)
+        .into_iter()
+        .filter_map(|addin| {
+            let manifest = addin.manifest.clone().ok()?;
+            let digest = addins::grant_digest(&addin.dir, &manifest);
+            addins::trusted(home, &addin.key(), &digest).then_some((addin, manifest))
+        })
+        .collect()
+}
+
+struct AddinTool {
+    name: String,
+    definition: Value,
+    addin: Found,
+    manifest: Manifest,
+    tool: ToolSpec,
+}
+
+fn addin_tools(home: &Path, project: Option<(&str, &Path)>) -> Vec<AddinTool> {
+    let mut items: Vec<AddinTool> = Vec::new();
+    for (addin, manifest) in trusted_addins(home, project) {
+        for tool in &manifest.tools {
+            let Some(name) = addin_tool_name(&manifest.id, &tool.name) else {
+                continue;
+            };
+            // `acme.x` and `acme-x` share a name: the first found (the project's) keeps it.
+            if addin_tool_problem(&manifest.id, tool).is_some()
+                || items.iter().any(|item| item.name == name)
+            {
+                continue;
+            }
+            let definition = json!({
+                "name": name,
+                "title": format!("{}: {}", manifest.name, tool.name),
+                "description": format!("{}: {}", manifest.name, tool.description),
+                "inputSchema": tool.input_schema,
+                // A worker is a program of the add-in's, run with the person's rights.
+                "annotations": {"readOnlyHint": false, "destructiveHint": true},
+            });
+            items.push(AddinTool {
+                name,
+                definition,
+                addin: addin.clone(),
+                manifest: manifest.clone(),
+                tool: tool.clone(),
+            });
+        }
+    }
+    items
+}
+
+/// The add-in tools of the agent this server runs for.
+fn current_addin_tools() -> Vec<AddinTool> {
+    match addin_context() {
+        Ok((home, project)) => addin_tools(&home, project_ref(&project)),
+        Err(_) => Vec::new(),
+    }
+}
+
+fn call_addin_tool(
+    home: &Path,
+    project: Option<(&str, &Path)>,
+    name: &str,
+    args: Value,
+) -> Result<Value, String> {
+    let tool = addin_tools(home, project)
+        .into_iter()
+        .find(|tool| tool.name == name)
+        .ok_or_else(|| format!("Unknown tool: {name}"))?;
+    // What a tool takes is its add-in's to say; a schema that forbids more holds.
+    if tool.tool.input_schema.get("additionalProperties") == Some(&Value::Bool(false))
+        && let Some(message) = unaccepted_arguments(&tool.definition, &args)
+    {
+        return Ok(tool_error(&message));
+    }
+    Ok(
+        match run_addin_tool(home, &tool.addin, &tool.manifest, &tool.tool, args) {
+            Ok(value) => {
+                let text =
+                    serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string());
+                json!({"content":[{"type":"text","text":text}],"isError":false})
+            }
+            Err(error) => tool_error(&error),
+        },
+    )
+}
+
+/// The workers this process started, by add-in folder, key and worker, with the
+/// grant each started under.
+static ADDIN_WORKERS: Mutex<BTreeMap<String, (String, Arc<WorkerProcess>)>> =
+    Mutex::new(BTreeMap::new());
+
+/// Runs a trusted add-in's tool, as `riwork mcp` does for an agent: the tool's
+/// method on its worker, which starts on first use and is kept for this process
+/// (started again when it died or its grant changed), with 120 s to answer. The
+/// worker's events have nowhere to go here. Its stderr goes to
+/// `RIWORK_HOME/addins-data/<scope>/<id>/logs/<worker>.log`.
+pub(crate) fn run_addin_tool(
+    home: &Path,
+    addin: &Found,
+    manifest: &Manifest,
+    tool: &ToolSpec,
+    arguments: Value,
+) -> Result<Value, String> {
+    let key = addin.key();
+    let digest = addins::grant_digest(&addin.dir, manifest);
+    if !addins::trusted(home, &key, &digest) {
+        return Err(format!(
+            "{} is not trusted with what it asks for now; run riwork addin trust {key}",
+            manifest.name
+        ));
+    }
+    let spec = manifest
+        .workers
+        .iter()
+        .find(|worker| worker.id == tool.worker)
+        .ok_or_else(|| format!("{} has no worker {:?}", manifest.name, tool.worker))?;
+    let worker = {
+        let mut workers = ADDIN_WORKERS
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let slot = format!("{}\n{key}\n{}", addin.dir.display(), spec.id);
+        let running = workers
+            .get(&slot)
+            .filter(|(started, worker)| *started == digest && worker.is_alive())
+            .map(|(_, worker)| Arc::clone(worker));
+        match running {
+            Some(worker) => worker,
+            None => {
+                if let Some((_, old)) = workers.remove(&slot) {
+                    old.stop();
+                }
+                let log = addins::data_dir(home, &addin.scope, &manifest.id)
+                    .join("logs")
+                    .join(format!("{}.log", spec.id));
+                let worker = Arc::new(WorkerProcess::start(
+                    &addin.dir,
+                    spec,
+                    &[],
+                    &log,
+                    |_, _| {},
+                )?);
+                workers.insert(slot, (digest, Arc::clone(&worker)));
+                worker
+            }
+        }
+    };
+    worker.request(&tool.method, arguments, ADDIN_TOOL_TIMEOUT)
+}
+
+/// Stops every add-in worker this process started, all at once.
+pub(crate) fn stop_addin_workers() {
+    let workers = std::mem::take(
+        &mut *ADDIN_WORKERS
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner),
+    );
+    std::thread::scope(|scope| {
+        for (_, worker) in workers.values() {
+            scope.spawn(|| worker.stop());
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1737,6 +2035,137 @@ mod tests {
             target["new_chat"]["properties"]["provider"]["enum"],
             json!(["codex", "claude", "muse"])
         );
+    }
+
+    #[test]
+    fn addin_tool_names_fit_what_clients_take() {
+        assert_eq!(
+            addin_tool_name("acme.security-dashboard", "scan_repo").as_deref(),
+            Some("addin__acme_security_dashboard__scan_repo")
+        );
+        let longest = "a".repeat(TOOL_NAME_LIMIT - "addin____tool".len());
+        assert_eq!(addin_tool_name(&longest, "tool").unwrap().len(), 64);
+        assert_eq!(addin_tool_name(&format!("{longest}b"), "tool"), None);
+    }
+
+    #[test]
+    fn trusted_addins_offer_their_worker_methods_and_untrusted_ones_nothing() {
+        use std::os::unix::fs::PermissionsExt;
+        const WORKER: &str = r#"#!/usr/bin/python3 -I
+import json, sys
+for line in sys.stdin:
+    request = json.loads(line)
+    if request["method"] == "count":
+        reply = {"id": request["id"], "result": {"words": len(request["params"]["text"].split())}}
+    else:
+        reply = {"id": request["id"], "error": {"message": "no such luck"}}
+    print(json.dumps(reply), flush=True)
+"#;
+        let home = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("riwork-mcp-addins-{}", uuid::Uuid::new_v4()));
+        let write = |folder: &str, manifest: Value| {
+            let dir = addins::personal_dir(&home).join(folder);
+            std::fs::create_dir_all(dir.join("bin")).unwrap();
+            std::fs::write(dir.join("addin.json"), manifest.to_string()).unwrap();
+            std::fs::write(dir.join("bin/worker"), WORKER).unwrap();
+            std::fs::set_permissions(
+                dir.join("bin/worker"),
+                std::fs::Permissions::from_mode(0o755),
+            )
+            .unwrap();
+            dir
+        };
+        let tool = |name: &str, method: &str, schema: Value| {
+            json!({"name":name,"description":format!("Does {name}"),"worker":"words","method":method,"input_schema":schema})
+        };
+        let strict = json!({"type":"object","properties":{"text":{"type":"string"}},"required":["text"],"additionalProperties":false});
+        let dir = write(
+            "lab",
+            json!({
+                "id":"me.lab-tools","name":"Lab","views":[{"id":"main","title":"Lab"}],
+                "workers":[{"id":"words","command":["bin/worker"]}],
+                "tools":[
+                    tool("count_words", "count", strict.clone()),
+                    tool("broken", "fail", json!({"type":"object","properties":{}})),
+                    tool(&"x".repeat(48), "count", strict.clone()),
+                    tool("listless", "count", json!({"type":"string"})),
+                ],
+            }),
+        );
+        write(
+            "other",
+            json!({
+                "id":"me.other","name":"Other","views":[{"id":"main","title":"Other"}],
+                "workers":[{"id":"words","command":["bin/worker"]}],
+                "tools":[tool("count_words", "count", strict.clone())],
+            }),
+        );
+        let count = "addin__me_lab_tools__count_words";
+        // Nothing of an add-in is offered or runs before it is trusted.
+        assert!(addin_tools(&home, None).is_empty());
+        assert!(
+            call_addin_tool(&home, None, count, json!({"text":"a b"}))
+                .unwrap_err()
+                .contains("Unknown tool")
+        );
+        let found = addins::discover(&home, None)
+            .into_iter()
+            .find(|addin| addin.dir == dir)
+            .unwrap();
+        let manifest = found.manifest.clone().unwrap();
+        addins::trust(
+            &home,
+            &found.key(),
+            &addins::grant_digest(&found.dir, &manifest),
+        )
+        .unwrap();
+
+        // Trusted: its tools that fit, named for it, its schema as theirs.
+        let listed: Vec<Value> = addin_tools(&home, None)
+            .into_iter()
+            .map(|tool| tool.definition)
+            .collect();
+        let names: Vec<&str> = listed
+            .iter()
+            .map(|tool| tool["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, [count, "addin__me_lab_tools__broken"]);
+        assert_eq!(listed[0]["description"], "Lab: Does count_words");
+        assert_eq!(listed[0]["inputSchema"], strict);
+        assert!(addin_tool_problem(&manifest.id, &manifest.tools[2]).is_some());
+        assert!(addin_tool_problem(&manifest.id, &manifest.tools[3]).is_some());
+
+        let result = call_addin_tool(&home, None, count, json!({"text":"one two three"})).unwrap();
+        assert_eq!(result["isError"], false);
+        assert_eq!(
+            serde_json::from_str::<Value>(text(&result)).unwrap(),
+            json!({"words":3})
+        );
+        // The same worker answers again.
+        let again = call_addin_tool(&home, None, count, json!({"text":"four"})).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(text(&again)).unwrap(),
+            json!({"words":1})
+        );
+        let undeclared =
+            call_addin_tool(&home, None, count, json!({"text":"a","more":1})).unwrap();
+        assert_eq!(undeclared["isError"], true);
+        assert!(text(&undeclared).contains("'more' is not accepted"));
+        let failed = call_addin_tool(&home, None, "addin__me_lab_tools__broken", json!({})).unwrap();
+        assert_eq!(failed["isError"], true);
+        assert_eq!(text(&failed), "no such luck");
+
+        // A changed worker is another grant: it is no longer offered and does not run.
+        std::fs::write(dir.join("bin/worker"), format!("{WORKER}# changed\n")).unwrap();
+        assert!(addin_tools(&home, None).is_empty());
+        let refused =
+            run_addin_tool(&home, &found, &manifest, &manifest.tools[0], json!({"text":"a"}))
+                .unwrap_err();
+        assert!(refused.contains("not trusted"), "{refused}");
+        stop_addin_workers();
+        std::fs::remove_dir_all(home).unwrap();
     }
 
     #[test]

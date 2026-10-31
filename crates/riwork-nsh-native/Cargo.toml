@@ -23,6 +23,8 @@ riwork-engine = { path = "../riwork-engine" }
 riwork-nsh-workspace = { path = "../../apps/riwork" }
 nsh-core = "=0.3.0"
 nsh-base = "=0.3.0"
+# Add-in engines: their host channel (addins.rs).
+nsh-engine = "=0.3.0"
 anyhow = "1"
 base64 = "0.22"
 image = { version = "=0.25.10", default-features = false, features = ["png"] }

@@ -19,7 +19,7 @@ export interface HostParams {
   build?: { version: string; commit: string; debug: boolean };
 }
 
-export type PanelKind = "shell" | "remote_shell" | "panel" | "chat" | "app_preview" | "empty";
+export type PanelKind = "shell" | "remote_shell" | "panel" | "chat" | "app_preview" | "addin" | "empty";
 export type PanelStatus = "working" | "waiting" | "error" | "done" | "idle" | "stopped";
 
 /** View data from Rust; id is the stable DockArea key, not a display label. */
@@ -28,6 +28,8 @@ export interface PanelModel {
   kind: PanelKind;
   title: string;
   previewSpec?: import("./AppPreviewTab").PreviewSpec;
+  /** An add-in's view: which add-in (`<scope>/<id>`), view and arguments. */
+  addin?: { instance: string; key: string; view: string; args: unknown };
   status?: PanelStatus;
   worker?: boolean;
   projectId?: string;
@@ -126,6 +128,7 @@ const PANEL_TITLES: Record<string, string> = {
   schedules: "Automations",
   dashboard: "Dashboard",
   flows: "Flows",
+  addins: "Add-ins",
 };
 
 /** Labels keep legacy saved identities (shells, schedules) unchanged. */

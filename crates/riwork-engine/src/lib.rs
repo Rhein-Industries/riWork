@@ -7,6 +7,8 @@ pub use riwork_core::{
 };
 
 pub mod activity;
+pub mod addin_build;
+pub mod addin_worker;
 pub mod agent_hooks;
 pub mod anthropic_key;
 pub mod app_preview;

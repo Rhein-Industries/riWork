@@ -38,6 +38,9 @@ interface Props {
   /** A project on another Mac: its worktree branch and live shells as its host last
    * listed them (null before a list arrives). This Mac's sessions never stand in. */
   remote?: () => { branch: string | null; live: number | null } | null;
+  /** Items add-ins set (`setStatus`), by add-in key; pressing one shows its tab. */
+  addins?: () => { key: string; text: string; tone: string }[];
+  onAddin?: (key: string) => void;
 }
 
 type Menu = "layout" | "global" | "account";
@@ -366,6 +369,11 @@ export function StatusBar(props: Props) {
       </Scroll>
       <View style={{ flex: 1, minWidth: 4 }} />
       <Scroll testID="status-right" horizontal={true} style={{ flexShrink: 1, minWidth: 0 }} contentStyle={{ flexDirection: "row", alignItems: "center", gap: space(STATUS_METRICS.gap, theme().scale) }}>
+        {(props.addins?.() ?? []).map((entry) => <View testID={`status-addin:${entry.key}`} role="button" accessibilityLabel={entry.text}
+          onPress={() => props.onAddin?.(entry.key)} style={{ paddingHorizontal: 4, borderRadius: 4 }} hoverStyle={{ backgroundColor: theme().palette.panelActive }}>
+          <Text numberOfLines={1} style={{ fontFamily: theme().family, fontSize: 11 * theme().scale,
+            color: entry.tone === "critical" ? theme().palette.gold : entry.tone === "warning" ? theme().palette.working : theme().palette.muted }}>{entry.text}</Text>
+        </View>)}
         {items("right").map((entry) => item(entry.kind))}
       </Scroll>
     </View>}

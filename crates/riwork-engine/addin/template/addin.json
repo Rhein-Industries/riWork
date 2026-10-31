@@ -1,0 +1,9 @@
+{
+  "id": "{{id}}",
+  "name": "{{name}}",
+  "version": "0.1.0",
+  "api": 1,
+  "description": "A new add-in.",
+  "views": [{ "id": "main", "title": "{{name}}" }],
+  "permissions": ["project.read", "tasks.write"]
+}

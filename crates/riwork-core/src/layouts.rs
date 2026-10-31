@@ -937,6 +937,8 @@ pub enum PanelKind {
     Dashboard,
     /// The project's flows (statecharts that lead chats) and their runs.
     Flows,
+    /// The add-ins of the window's project and the person's own (crate::addins).
+    Addins,
 }
 
 impl PanelKind {
@@ -955,6 +957,7 @@ impl PanelKind {
             Self::Schedules => "schedules",
             Self::Dashboard => "dashboard",
             Self::Flows => "flows",
+            Self::Addins => "addins",
         }
     }
 
@@ -973,6 +976,7 @@ impl PanelKind {
             Self::ProjectSettings => "Project settings",
             Self::Dashboard => "Dashboard",
             Self::Flows => "Flows",
+            Self::Addins => "Add-ins",
         }
     }
 }
@@ -1002,6 +1006,18 @@ pub enum SavedTab {
         preview_id: String,
         spec: crate::app_preview::PreviewSpec,
     },
+    /// A view of an add-in (crate::addins): `addin` is its key (`<scope>/<id>`), `view` the
+    /// manifest view, `args` what it was opened with. An add-in that is gone shows as such.
+    Addin {
+        instance_id: String,
+        addin: String,
+        view: String,
+        /// The view's title when it was opened.
+        #[serde(default)]
+        title: String,
+        #[serde(default)]
+        args: serde_json::Value,
+    },
 }
 
 impl SavedTab {
@@ -1015,6 +1031,7 @@ impl SavedTab {
             } => format!("remote:{desktop_id}:{shell_id}"),
             Self::Chat { chat_id } => format!("chat:{chat_id}"),
             Self::AppPreview { preview_id, .. } => format!("app_preview:{preview_id}"),
+            Self::Addin { instance_id, .. } => format!("addin:{instance_id}"),
         }
     }
 }
@@ -1198,7 +1215,8 @@ impl ProjectLayout {
                     SavedTab::Panel { .. }
                     | SavedTab::RemoteShell { .. }
                     | SavedTab::Chat { .. }
-                    | SavedTab::AppPreview { .. } => None,
+                    | SavedTab::AppPreview { .. }
+                    | SavedTab::Addin { .. } => None,
                 })
             })
             .collect::<HashSet<_>>();
@@ -1363,6 +1381,9 @@ impl ProjectLayout {
                 SavedTab::AppPreview { preview_id, .. } => {
                     Uuid::parse_str(preview_id).is_ok() && previews.insert(preview_id.clone())
                 }
+                SavedTab::Addin { instance_id, addin, .. } => {
+                    Uuid::parse_str(instance_id).is_ok() && !addin.is_empty() && previews.insert(instance_id.clone())
+                }
             });
             if !pane
                 .active_tab_key
@@ -1379,7 +1400,8 @@ impl ProjectLayout {
                     SavedTab::Panel { .. }
                     | SavedTab::RemoteShell { .. }
                     | SavedTab::Chat { .. }
-                    | SavedTab::AppPreview { .. } => None,
+                    | SavedTab::AppPreview { .. }
+                    | SavedTab::Addin { .. } => None,
                 })
                 .collect();
             pane.active_shell_id = pane.tabs.iter().find_map(|tab| match tab {
@@ -1557,7 +1579,8 @@ fn sync_saved_pane(pane: &mut SavedPane) {
             SavedTab::Panel { .. }
             | SavedTab::RemoteShell { .. }
             | SavedTab::Chat { .. }
-            | SavedTab::AppPreview { .. } => None,
+            | SavedTab::AppPreview { .. }
+            | SavedTab::Addin { .. } => None,
         })
         .collect();
     pane.active_shell_id = pane.tabs.iter().find_map(|tab| match tab {

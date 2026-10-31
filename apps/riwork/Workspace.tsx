@@ -1,9 +1,11 @@
 import { AppPreviewTab } from "./AppPreviewTab";
+import { AddinTab, type AddinAction, type AddinInfo } from "./AddinTab";
+import { AddinsPanel } from "./AddinsPanel";
 import { CuaSetup, useCua, type CuaSetupControl } from "./CuaSetup";
 import { Clipboard, ErrorBoundary, Overlay, Scroll, Text, View, cleanup, colorScheme, computed, effect, host, keymap, signal, type YNode } from "nsh";
 import { Button, Input, Popover, type DockAreaLayout, type DockNode } from "nsh/base";
 import { Menu, Window, type MenuItem } from "nsh/desktop";
-import { Appearance, Chat, Files, Orchestrators, Remote, Sessions, Tabs, type AppearanceDto, type LayoutSession, type SettingsDto } from "riwork/native";
+import { Addins, Appearance, Chat, Files, Orchestrators, Remote, Sessions, Tabs, type AppearanceDto, type LayoutSession, type SettingsDto } from "riwork/native";
 import { DockArea } from "./DockArea";
 import { DeferredPanel, MountProbe } from "./DeferredPanel";
 import { LocalTerminal, type TerminalColors, type TerminalController, type TerminalEvents } from "./Terminal";
@@ -60,7 +62,7 @@ function panelIds(node: DockNode): string[] {
 }
 
 const NAVIGATION_PANELS = ["projects", "worktrees", "tasks", "shells"];
-const VIEWS = ["projects", "files", "preview", "worktrees", "tasks", "shells", "usage", "schedules", "flows", "dashboard", "project_settings", "settings"];
+const VIEWS = ["projects", "files", "preview", "worktrees", "tasks", "shells", "usage", "schedules", "flows", "dashboard", "addins", "project_settings", "settings"];
 const VIEW_KEYS: Record<string, string> = { projects: "⌘B", files: "⌘⇧E", preview: "⌘⇧P", shells: "⌘⌥S", schedules: "⌘⇧S", dashboard: "⌘⌥G", project_settings: "⌘⌥A", settings: "⌘," };
 const VIEW_SHORTCUTS: Record<string, string> = { files: "mod+shift+e", preview: "mod+shift+p", schedules: "mod+shift+s", dashboard: "mod+alt+g", settings: "mod+," };
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -342,6 +344,44 @@ export function Workspace(props: WorkspaceProps) {
     void host.call("window.open", { kind: "global", view: "chat", start: true, activate: true }).catch((error: unknown) => notice.set(String(error)));
   }
   /** One local-shell creation path: the layout session creates and places it. */
+  // Add-ins: what they ask for happens here, where the person sees it.
+  const addinStatus = signal<Record<string, { text: string; tone: string }>>({});
+  function openAddin(key: string, view: string, title: string, args: unknown = null) {
+    action(() => session.openAddin({ addin: key, view, title, args }));
+  }
+  async function addinAction(key: string, request: AddinAction) {
+    try {
+      if (request.type === "shell") {
+        const project = projectId(), generation = panelState.generation();
+        const shell = await Sessions.create({ projectId: project, worktreeId: request.worktree ?? null, cwd: request.cwd, command: request.command });
+        if (alive && project === projectId() && generation === panelState.generation()) await openShell(shell.id);
+      } else if (request.type === "file") {
+        const root = filesRoot();
+        if (root && (request.path === root || request.path.startsWith(`${root}/`))) {
+          action(() => session.revealPanel("preview", true, true));
+          void fileState.reveal(request.path);
+        } else await host.call("system.openWith", { path: request.path });
+      } else if (request.type === "view") {
+        let target = request.addin, title = request.title ?? request.view;
+        if (target.startsWith("id:")) {
+          const all = await Addins.list(projectId()) as unknown as AddinInfo[];
+          const found = all.find((addin) => addin.id === target.slice(3));
+          if (!found) throw new Error(`No add-in ${target.slice(3)} is here to open.`);
+          target = found.key;
+          title = found.views?.find((view) => view.id === request.view)?.title ?? title;
+        }
+        openAddin(target, request.view, title, request.args);
+      } else if (request.type === "notify") {
+        await host.call("system.notify", { id: `addin:${key}:${Date.now()}`, title: request.title, body: request.body || request.title, projectId: projectId() });
+      } else if (request.type === "status") {
+        const next = { ...addinStatus() };
+        if (request.text) next[key] = { text: request.text, tone: request.tone };
+        else delete next[key];
+        addinStatus.set(next);
+      }
+    } catch (error) { if (alive) notice.set(String(error)); }
+  }
+
   async function createShell(split?: "right" | "down", kind = "shell") {
     if (busy() || switching() || panelState.pending()) return;
     busy.set(true);
@@ -1028,7 +1068,9 @@ export function Workspace(props: WorkspaceProps) {
                       onControl={(control) => { settingsControl = control; if (revealSettingsKey) { revealSettingsKey = false; control.revealApiKey(); } return () => { if (settingsControl === control) settingsControl = undefined; }; }} /> :
                     <ProjectSettingsPanel projectId={projectId} theme={theme} visible={() => isVisible(panel.id)}
                       onControl={(control) => { projectSettingsControl = control ?? undefined; if (control && revealProjectMemo) { revealProjectMemo = false; control.revealMemo(); } }} />}
-                </View> : panel.id === "panel:usage" ?
+                </View> : panel.id === "panel:addins" ?
+                <AddinsPanel projectId={projectId} theme={theme} visible={() => isVisible(panel.id)} notice={(message) => notice.set(message)}
+                  open={(key, view, title) => openAddin(key, view, title)} /> : panel.id === "panel:usage" ?
                 <UsagePanel theme={theme} projectId={projectId} visible={() => isVisible(panel.id)} /> : panel.id === "panel:schedules" ?
                 <View testID={`panel:${panel.id}`} style={{ flex: 1, minHeight: 0 }}>
                   {props.diagnostics && <MountProbe id={panel.id} visible={isVisible(panel.id)} theme={theme} />}
@@ -1063,6 +1105,9 @@ export function Workspace(props: WorkspaceProps) {
                     onFocus={() => action(() => session.selectPanel(panel.id))} onLink={openLink} onNotice={(message) => notice.set(message)} />
                 </View> : panel.id.startsWith("chat:") || panel.id.startsWith("chat-pending:") ?
                 <ChatPanel panelId={panel.id} title={findPanel(snapshot(), panel.id) ? displayTitle(findPanel(snapshot(), panel.id)!) : panel.id} /> :
+                panel.id.startsWith("addin:") && findPanel(snapshot(), panel.id)?.addin ?
+                <AddinTab addin={findPanel(snapshot(), panel.id)!.addin!} projectId={projectId} theme={theme} visible={() => isVisible(panel.id)}
+                  onAction={(key, request) => void addinAction(key, request)} /> :
                 panel.id.startsWith("app_preview:") ?
                 <AppPreviewTab spec={findPanel(snapshot(), panel.id)!.previewSpec!} visible={isVisible(panel.id)} theme={theme}
                   onFocusChange={(focused) => {
@@ -1097,7 +1142,8 @@ export function Workspace(props: WorkspaceProps) {
         </View>}
       </View>}
       <StatusBar session={session} snapshot={snapshot} projectId={projectId} projectLabel={() => remoteTitle(remote.data(), projectId()) ?? panelState.projectLabel()}
-        nativeChat={nativeChatUsage}
+        nativeChat={nativeChatUsage} addins={() => Object.entries(addinStatus()).map(([key, item]) => ({ key, ...item }))}
+        onAddin={(key) => { const tab = snapshot().panes.flatMap((pane) => pane.tabs).find((tab) => tab.addin?.key === key); if (tab) action(() => session.selectPanel(tab.id)); }}
         settings={props.settings} theme={theme} action={action} onError={(error) => notice.set(String(error))} modalOpen={() => !!props.modalOpen?.() || switching()}
         newShell={props.projectId ? { busy, create: () => { void createShell(); } } : undefined} onMenu={(open) => statusMenu.set(open)}
         openProjectOrchestrator={UUID.test(projectId()) || remoteProjectKey(projectId()) ? () => commands.dispatch("openProjectOrchestrator") : undefined}
