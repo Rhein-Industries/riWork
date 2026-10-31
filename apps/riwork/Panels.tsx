@@ -483,8 +483,22 @@ function Worktrees(props: { controller: PanelController; surface: string }) {
   }
 }
 
-function TaskDetail(props: { controller: PanelController; task: TaskDto }) {
-  const c = props.controller, task = () => props.task;
+/** `Command` for the Tasks filter and status chips, except that a focused or hovered chip keeps
+ * its selected fill: `Command`'s focus color covers it and leaves a white label on light gray
+ * after a click. Back to `Command` once it does this itself. */
+function TaskChip(props: { id: string; label: string; selected: boolean; disabled?: boolean; onPress: () => void; children?: JSX.Element }) {
+  const fill = (other: string) => props.selected ? theme().palette.cyan : other;
+  return <Button testID={props.id} accessibilityLabel={props.label} disabled={props.disabled} selected={props.selected} onPress={props.onPress}
+    style={button()} hoverStyle={{ backgroundColor: fill(theme().palette.panelActive) }} focusStyle={{ backgroundColor: fill(theme().palette.divider) }} selectedStyle={{ backgroundColor: theme().palette.cyan }}>
+    <Text style={{ fontFamily: theme().family, fontSize: text(11), color: props.disabled && !props.selected ? muted() : props.selected ? theme().palette.bg : ink() }}>{props.children ?? props.label}</Text>
+  </Button>;
+}
+
+/** The selected task. `task` follows Store pushes in place: the detail is not mounted again, so
+ * the focus and the details' scroll position stay. Choosing the status a task already has does
+ * nothing (the Store would still move it up as "updated just now"). */
+function TaskDetail(props: { controller: PanelController; task: () => TaskDto }) {
+  const c = props.controller, task = props.task;
   const s = () => theme().scale;
   return <View testID="task-detail" style={{ borderTopWidth: 1, borderTopColor: theme().palette.divider, paddingHorizontal: space(12, s()), paddingTop: space(10, s()), paddingBottom: space(10, s()), gap: space(8, s()) }}>
     <View style={{ flexDirection: "row", alignItems: "flex-start", gap: space(6, s()) }}>
@@ -493,8 +507,8 @@ function TaskDetail(props: { controller: PanelController; task: TaskDto }) {
       <ToolbarCommand id="close-task-detail" icon="close" label="Close task detail" onPress={() => c.selectTask(null)} />
     </View>
     <View style={{ flexDirection: "row", gap: 4, flexWrap: "wrap", alignItems: "center" }}>
-      {TASK_STATUSES.map((status) => <Command id={`task-status:${status}`} label={taskStatusLabel(status)}
-        selected={task().status === status} disabled={c.pending()} onPress={() => c.setTaskStatus(task(), status)} />)}
+      {TASK_STATUSES.map((status) => <TaskChip id={`task-status:${status}`} label={taskStatusLabel(status)}
+        selected={task().status === status} disabled={c.pending()} onPress={() => { if (task().status !== status) c.setTaskStatus(task(), status); }} />)}
     </View>
     <Button testID="assign-task" accessibilityLabel={`Assign task to worktree, currently ${taskWorktree(task(), c.state())}`} disabled={c.pending()}
       onPress={() => void Menu.popup(c.assignItems(task()))}
@@ -504,9 +518,11 @@ function TaskDetail(props: { controller: PanelController; task: TaskDto }) {
       <Text numberOfLines={1} style={{ flexShrink: 1, fontFamily: theme().family, fontSize: text(11), color: task().worktreeId ? ink() : muted() }}>{taskWorktree(task(), c.state())}</Text>
       <Icon name="down" size={text(10)} color={muted()} />
     </Button>
-    {task().details.trim() !== "" && <Scroll testID="task-details" style={{ maxHeight: space(132, s()) }}>
-      <Text selectable={true} style={{ fontFamily: theme().family, fontSize: text(11), color: muted() }}>{task().details}</Text>
-    </Scroll>}
+    <If when={task().details.trim() !== ""}>
+      <Scroll testID="task-detail-text" style={{ maxHeight: space(132, s()) }}>
+        <Text selectable={true} style={{ fontFamily: theme().family, fontSize: text(11), color: ink() }}>{task().details}</Text>
+      </Scroll>
+    </If>
     <View style={{ gap: 2 }}>
       <Text numberOfLines={1} style={{ fontFamily: theme().family, fontSize: text(10), color: muted() }}>{`Created ${taskDate(task().createdAt, c.now())} · updated ${taskAge(task().updatedAt, c.now())}`}</Text>
       <Text selectable={true} numberOfLines={1} style={{ fontFamily: theme().monoFamily, fontSize: text(9), color: muted() }}>{task().id}</Text>
@@ -559,7 +575,7 @@ function TaskEmpty(props: { controller: PanelController; counts: () => Record<Ta
     <Icon name={searching() ? "search" : elsewhere() && c.taskFilter() === "open" ? "task-done" : "tasks"} size={text(22)} color={muted()} />
     <Text style={{ color: muted(), fontFamily: theme().family, fontSize: text(11) }}>{message()}</Text>
     {elsewhere() > 0 && <Command id="tasks-show-all" label="Show all tasks" onPress={() => c.taskFilter.set("all")}>{`Show all ${elsewhere()}`}</Command>}
-    {!elsewhere() && !searching() && <Command id="tasks-empty-add" label="Add task" disabled={c.pending()} onPress={() => c.editor.set({ kind: "task" })} />}
+    {!elsewhere() && !searching() && <Command id="tasks-empty-add" label="Add task" disabled={c.pending()} onPress={() => { if (c.editor()?.kind !== "task") c.editor.set({ kind: "task" }); }} />}
   </View>;
 }
 
@@ -570,20 +586,23 @@ function Tasks(props: { controller: PanelController; surface: string }) {
   const counts = () => taskCounts(found());
   const rows = () => taskRows(found(), c.taskFilter());
   const selected = () => all().find((task) => task.id === c.selectedTask());
+  // A new editor value would mount a new, empty form: keep an open form and what it holds.
+  const add = () => { if (c.editor()?.kind !== "task") c.editor.set({ kind: "task" }); };
+  // The filter chips count each filter; the header, like the other panels', counts search matches.
   return <View testID="tasks-panel" style={{ flex: 1, minHeight: 0, backgroundColor: theme().palette.panel }}>
-    <Header title="Tasks" count={counts()[c.taskFilter()]} total={all().length} noun="task" project={c.projectLabel()}>
-      <ToolbarCommand id="new-task" icon="add" label="Add task" disabled={c.pending()} onPress={() => c.editor.set({ kind: "task" })} />
+    <Header title="Tasks" count={counts().all} total={all().length} noun="task" project={c.projectLabel()}>
+      <ToolbarCommand id="new-task" icon="add" label="Add task" disabled={c.pending()} onPress={add} />
     </Header>
     <InlineEditor controller={c} kinds={["task"]} />
     <PanelSearch controller={c} panel="tasks" surface={props.surface} />
     <View testID="tasks-controls" style={{ paddingHorizontal: space(12, theme().scale), paddingBottom: space(6, theme().scale), flexDirection: "row", gap: 4 }}>
       {([["open", "Open"], ["done", "Done"], ["all", "All"]] as const).map(([filter, label]) =>
-        <Command id={`tasks-filter-${filter}`} label={`${label} tasks`} selected={c.taskFilter() === filter} onPress={() => c.taskFilter.set(filter)}>{`${label} ${counts()[filter]}`}</Command>)}
+        <TaskChip id={`tasks-filter-${filter}`} label={`${label} tasks`} selected={c.taskFilter() === filter} onPress={() => c.taskFilter.set(filter)}>{`${label} ${counts()[filter]}`}</TaskChip>)}
     </View>
     <List each={rows()} keyExtractor={(row) => row.id} estimatedItemSize={space(42, theme().scale)} style={{ flex: 1, minHeight: 0 }} contentStyle={{ paddingHorizontal: space(6, theme().scale), paddingBottom: space(6, theme().scale) }} empty={<TaskEmpty controller={c} counts={counts} />}>
       {(item) => <TaskListRow item={item} controller={c} />}
     </List>
-    {selected() && <TaskDetail controller={c} task={selected()!} />}
+    <If when={selected()}>{(task) => <TaskDetail controller={c} task={task} />}</If>
   </View>;
 }
 
@@ -727,11 +746,16 @@ function FolderEditor(props: { controller: PanelController; editor: Extract<Edit
 function TaskEditor(props: { controller: PanelController }) {
   const c = props.controller, title = signal(""), details = signal(""), error = signal("");
   const projectId = c.projectId();
+  // The form sits on the editor card's `bg`: its fields take the panel color and an edge.
+  const input = () => ({ ...field(), backgroundColor: theme().palette.panel, borderWidth: 1, borderColor: theme().palette.divider });
   function save() {
-    if (c.pending() || projectId !== c.projectId()) return;
+    // Return in the title submits too; a blank title is not a task.
+    if (c.pending() || !title().trim() || projectId !== c.projectId()) return;
     void c.run(async () => {
       try {
         const task = await Store.addTask(projectId, title(), details());
+        // The window switched projects while this saved: the task is the previous project's.
+        if (projectId !== c.projectId()) return;
         if (c.taskFilter() === "done") c.taskFilter.set("open");
         c.selectTask(task.id); c.query.set(""); c.editor.set(null);
       }
@@ -739,9 +763,9 @@ function TaskEditor(props: { controller: PanelController }) {
     });
   }
   return <View style={{ gap: 10 }}>
-    <Text style={{ fontFamily: theme().family, fontSize: text(15), color: ink() }}>Add task</Text>
-    <Input testID="task-title" accessibilityLabel="Task title" placeholder="Task title" autoFocus={true} value={title()} onChange={(value) => title.set(value)} onSubmit={save} style={field()} />
-    <Input testID="task-details" accessibilityLabel="Task details" placeholder="Details (optional)" multiline={true} autoCorrect={false} value={details()} onChange={(value) => details.set(value)} style={{ ...field(), minHeight: 90 }} />
+    <Text style={{ fontFamily: theme().family, fontSize: text(13), fontWeight: "600", color: ink() }}>New task</Text>
+    <Input testID="task-title" accessibilityLabel="Task title" placeholder="Task title" autoFocus={true} value={title()} onChange={(value) => { title.set(value); error.set(""); }} onSubmit={save} style={input()} />
+    <Input testID="task-details" accessibilityLabel="Task details" placeholder="Details (optional)" multiline={true} autoCorrect={false} value={details()} onChange={(value) => details.set(value)} style={{ ...input(), minHeight: 90 }} />
     {error() !== "" && <Text style={{ color: theme().palette.gold, fontFamily: theme().family, fontSize: text(11) }}>{error()}</Text>}
     <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: 6 }}>
       <Command label="Cancel" disabled={c.pending()} onPress={() => c.editor.set(null)} />
