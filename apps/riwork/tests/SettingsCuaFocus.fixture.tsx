@@ -5,6 +5,7 @@ import { CuaSetup, type CuaSetupControl, type CuaState } from "../CuaSetup";
 import { AppSettings, type AppSettingsControl } from "../settings/AppSettings";
 import { RemoteSettings, createRemoteController, type RemoteApi } from "../remote/Remote";
 import { EMPTY_REMOTE, EMPTY_WANTS } from "../remote/model";
+import { requirePrivateHome } from "./private-home";
 
 // Retain the panel across show/hide notifications, as DockArea does. The
 // controller reports fixture actions only: Enter must never invoke a driver.
@@ -32,10 +33,17 @@ function Fixture() {
     message: params.ready ? "Fixture ready" : "Fixture needs access",
     skills: { setup_needed: false, message: "Fixture only", targets: [] },
   } });
-  let control: AppSettingsControl | undefined;
-  const subscription = Settings.subscribe((event) => settings.set(event.data));
-  cleanup(() => subscription.close());
-  void Settings.set({ theme: "native", orchestratorMode: "chat" }).then((value) => settings.set(value));
+  let control: AppSettingsControl | undefined, subscription: { close(): void } | undefined, alive = true;
+  cleanup(() => { alive = false; subscription?.close(); });
+  // The panel saves what it is given: Settings, and the panel, wait for a private home.
+  // The handlers below stay registered from the start, for runners that settle at once.
+  const allowed = signal(false), refusal = signal("");
+  void requirePrivateHome().then(() => {
+    if (!alive) return;
+    subscription = Settings.subscribe((event) => settings.set(event.data));
+    allowed.set(true);
+    return Settings.set({ theme: "native", orchestratorMode: "chat" }).then((value) => settings.set(value));
+  }).catch((reason: unknown) => refusal.set(String(reason)));
   cleanup(host.on("app.fixture.show", (value) => visible.set(!!value)));
   cleanup(host.on("app.fixture.inspect", () => host.post("app.fixture.state", settings())));
   cleanup(host.on("app.fixture.reveal", () => control?.revealApiKey()));
@@ -43,10 +51,11 @@ function Fixture() {
   cleanup(host.on("app.fixture.settle", () => { setTimeout(() => host.post("app.fixture.settled", {}), 100); }));
   return <View style={{ flex: 1 }}>
     <Input testID="outside" placeholder="Outside Settings" />
-    <AppSettings settings={settings} visible={visible} onControl={(value) => { control = value; }}
+    {allowed() ? <AppSettings settings={settings} visible={visible} onControl={(value) => { control = value; }}
       remote={<RemoteSettings controller={remote} />}
       computerUseFocus={cuaFocus} computerUse={<CuaSetup visible={visible()} checkOnShow={false} onControl={(value) => { cuaFocus.set(value); return () => cuaFocus.set(null); }} controller={{ state: cua,
         run: async (action) => { host.post("app.fixture.cua-action", action); } }} />} />
+      : <Text testID="private-home-refusal">{refusal()}</Text>}
     <Text testID="fixture-visible">{String(visible())}</Text>
   </View>;
 }

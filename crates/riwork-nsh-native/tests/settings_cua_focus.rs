@@ -161,7 +161,7 @@ impl App {
                 .unwrap()
                 .names
                 .values()
-                .any(|name| name == "theme-choice:native")
+                .any(|name| name == "theme-choice-native")
             {
                 break;
             }
@@ -172,7 +172,7 @@ impl App {
                 .unwrap()
                 .names
                 .values()
-                .any(|name| name == "theme-choice:native")
+                .any(|name| name == "theme-choice-native")
         );
         app
     }
@@ -256,7 +256,7 @@ fn delayed_cua_check_preserves_remote_settings_focus() {
             } else {
                 vec![
                     if ready {
-                        "theme-choice:native"
+                        "theme-choice-native"
                     } else {
                         "cua-primary"
                     }
@@ -285,7 +285,7 @@ fn combined_settings_cua_focus_commands() {
         for inside in [
             None,
             Some("claude-api-key-input"),
-            Some("theme-choice:native"),
+            Some("theme-choice-native"),
             Some("cua-primary"),
             Some("cua-check"),
             Some("panel-tab-icons"),
@@ -304,7 +304,7 @@ fn combined_settings_cua_focus_commands() {
             } else {
                 vec![
                     if ready {
-                        "theme-choice:native"
+                        "theme-choice-native"
                     } else {
                         "cua-primary"
                     }
@@ -328,7 +328,7 @@ fn delayed_checks_and_focus_leaving_the_panel() {
     for ready in [false, true] {
         let expected = vec![
             if ready {
-                "theme-choice:native"
+                "theme-choice-native"
             } else {
                 "cua-primary"
             }

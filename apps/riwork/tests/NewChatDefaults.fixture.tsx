@@ -1,9 +1,10 @@
 /** A New chat tab on the real Settings module in the runner's private home: it saves its
  * choices as defaults, and a reopened one starts from what Settings then holds. */
-import { View, host, mount, signal } from "nsh";
+import { View, host, signal } from "nsh";
 import { Settings, type NewChatDefaultsDto } from "riwork/native";
 import { DEFAULT_THEME } from "../appearance";
 import { NewChat } from "../NewChat";
+import { mountInPrivateHome } from "./private-home";
 
 function Fixture() {
   // undefined: reading Settings; the tab is made again from each reading.
@@ -15,4 +16,4 @@ function Fixture() {
     locations={[{ label: "Project root", cwd: "/tmp" }]} defaults={defaults()} onCreated={() => {}} onCancel={() => {}} onError={() => {}}
     modelCatalog={async () => ({ supported: [], configured: [] })} />}</View>;
 }
-mount(Fixture);
+mountInPrivateHome(Fixture);

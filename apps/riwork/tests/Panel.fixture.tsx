@@ -3,6 +3,7 @@ import { Button } from "nsh/base";
 import { Store, type ProjectDto, type ShellSessionDto } from "riwork/native";
 import { PanelContent, ShellIntent, createPanelController } from "../Panels";
 import type { ListPanel } from "../panel_model";
+import { requirePrivateHome } from "./private-home";
 
 function Body(props: { projects: ProjectDto[]; directory: string }) {
   const project = signal(props.projects[0]);
@@ -52,6 +53,7 @@ function Fixture() {
   let alive = true;
   cleanup(() => { alive = false; });
   void (async () => {
+    await requirePrivateHome();
     const result: ProjectDto[] = [];
     for (const name of ["Alpha", "Beta"]) result.push(await Store.createProject({
       root: `${directory}/${name}`, name: `${name}-${params.fixtureKey}`, initGit: false,

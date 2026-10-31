@@ -1,5 +1,6 @@
 import { Text, View, cleanup, host, mount, signal } from "nsh";
-import { Files, Layouts, Store, type LayoutSession } from "riwork/native";
+import { Layouts, Store, type LayoutSession } from "riwork/native";
+import { privateFixtureDirectory } from "./private-home";
 import { Workspace } from "../Workspace";
 
 function Fixture() {
@@ -10,7 +11,7 @@ function Fixture() {
   let alive = true;
   cleanup(() => { alive = false; ready()?.session.dispose(); });
   void (async () => {
-    const root = await Files.fixtureDirectory(key);
+    const root = await privateFixtureDirectory(key);
     const project = await Store.createProject({ root, name: `Workspace files ${key}`, initGit: false });
     const session = await Layouts.openSession({ windowId: `files-workspace-${key}`, projectId: project.id });
     if (params.unavailable) session.setSelectedWorktree("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");

@@ -1,5 +1,6 @@
 import { Text, View, cleanup, host, mount, signal } from "nsh";
-import { Accounts, Files, Layouts, Settings, Store, type LayoutSession } from "riwork/native";
+import { Accounts, Layouts, Settings, Store, type LayoutSession } from "riwork/native";
+import { privateFixtureDirectory } from "./private-home";
 import { Workspace } from "../Workspace";
 import { useAppearance } from "../appearance";
 
@@ -20,7 +21,7 @@ function Fixture() {
   let alive = true;
   cleanup(() => { alive = false; ready()?.session.dispose(); });
   void (async () => {
-    const root = await Files.fixtureDirectory(key);
+    const root = await privateFixtureDirectory(key);
     const project = await Store.createProject({ root, name: `Settings routing ${key}`, initGit: false });
     await Settings.set({ theme: "native", uiTextSize: 11, uiTextMatchesTerminal: false });
     await Settings.resetStatusBar(); await Accounts.selectDefault(null);

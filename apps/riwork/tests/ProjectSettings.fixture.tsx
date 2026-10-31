@@ -1,5 +1,6 @@
 import { Text, View, cleanup, host, mount, signal } from "nsh";
-import { Files, Store } from "riwork/native";
+import { Store } from "riwork/native";
+import { privateFixtureDirectory } from "./private-home";
 import { ProjectSettingsPanel } from "../settings/ProjectSettings";
 
 function Body(props: { projectId: string; groupId: string; childId: string }) {
@@ -21,8 +22,8 @@ function Fixture() {
   const ready = signal<{ projectId: string; groupId: string; childId: string } | null>(null), error = signal("");
   let alive = true; cleanup(() => { alive = false; });
   void (async () => {
-    // Files.fixtureDirectory refuses non-fixture use. The runner supplies a private home.
-    const root = await Files.fixtureDirectory(key);
+    // privateFixtureDirectory refuses non-fixture use. The runner supplies a private home.
+    const root = await privateFixtureDirectory(key);
     const project = await Store.createProject({ root, name: "Original project", initGit: false });
     const group = await Store.createFolder(`Group ${key}`);
     const child = await Store.createFolder("日本語 child", group.id);

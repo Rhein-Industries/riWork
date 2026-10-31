@@ -31,7 +31,7 @@ async function restore(app: App) {
 test("P6a global settings save appearance, agent choices, and only the selected delegation field", async () => {
   const app = await fixture();
   try {
-    await app.press("id:theme-choice:native"); await waitState(app, (state) => state.settings.theme === "native");
+    await app.press("id:theme-choice-native"); await waitState(app, (state) => state.settings.theme === "native");
     await app.press("id:interface-font-system"); await waitState(app, (state) => state.settings.interfaceFont === "system");
     await app.press("id:tab-close-detach"); await waitState(app, (state) => state.settings.tabCloseBehavior === "detach");
     const initial = await inspect(app), previous = initial.settings.agentTerminalsUnrestricted;
@@ -121,7 +121,7 @@ test("P6a opening Settings focuses the selected theme after its asynchronous set
 test("P6a theme arrows move focus before Enter while choice arrows save and skip unavailable chips", async () => {
   const app = await fixture(1000, false, { keyboardFixture: true });
   try {
-    await app.press("id:theme-choice:ghostty"); await waitState(app, (state) => state.settings.theme === "ghostty");
+    await app.press("id:theme-choice-ghostty"); await waitState(app, (state) => state.settings.theme === "ghostty");
     await app.keyboard.press("right"); expect((await inspect(app)).settings.theme).toBe("ghostty");
     await app.keyboard.press("enter"); await waitState(app, (state) => state.settings.theme === "native");
     await app.press("id:tab-close-ask"); await waitState(app, (state) => state.settings.tabCloseBehavior === "ask");

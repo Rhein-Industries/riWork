@@ -6,17 +6,20 @@ test("P1-STAT-01: default kinds, order, sides and master visibility reach both w
   const peer = await open("./Appearance.fixture.tsx", options("status-peer"));
   try {
     await app.waitFor("id:status-bar"); await peer.waitFor("id:status-bar");
-    await app.waitFor("text:0 LIVE"); await peer.waitFor("text:0 LIVE");
-    await app.waitFor("text:CODEX · System default · UNAVAILABLE");
+    await app.waitFor("text:0 live"); await peer.waitFor("text:0 live");
+    await app.waitFor("label:Usage CODEX · System default · UNAVAILABLE");
     expect(app.shows("id:status-left >> id:status-item-project")).toBe(true);
-    for (const kind of ["live-sessions", "resources", "usage", "codex-account", "session-id", "project-orchestrator", "layout"]) {
+    for (const kind of ["live-sessions", "resources", "usage", "codex-account", "project-orchestrator", "layout"]) {
       expect(app.shows(`id:status-right >> id:status-item-${kind}`)).toBe(true);
     }
+    // With no active session the session ID item has no text, so it draws nothing.
+    expect(app.shows("id:status-item-session-id")).toBe(false);
     expect(app.shows("id:status-right >> id:top-orchestrator")).toBe(true);
     // Files now also names the project. Assert each status label in its own
     // surface, then compare the final status-bar sequence after panel content.
-    // P5: the fixture backend's system default (no saved list, no figures).
-    const labels = ["Project Alpha", "0 LIVE", "CPU 0.0% RAM 0 KiB", "CODEX · System default · UNAVAILABLE", "DEFAULT (APP) · System default · email unknown", "Global", "P·ORCH", "Layout"];
+    // P5: the fixture backend's system default (no saved list, no figures): the
+    // usage item reads its provider and figures, in sentence case like the rest.
+    const labels = ["Project Alpha", "0 live", "CPU 0.0% RAM 0 KiB", "Codex", "Unavailable", "Default (app) · System default · email unknown", "Global", "Project", "Layout"];
     for (const text of labels) expect(app.count(`id:status-bar >> text:${text}`)).toBe(1);
     const defaults = app.texts().filter((text) => labels.includes(text)).slice(-labels.length);
     expect(defaults).toEqual(labels);
@@ -45,9 +48,11 @@ test("P1-STAT-02: project and worktree open panels and missing data keeps GPUI f
     expect(app.texts()).toContain("Project Alpha");
     expect(app.texts()).toContain("Agents · —");
     expect(app.texts()).toContain("CPU 0.0% RAM 0 KiB");
-    expect(app.enabled("id:status-item-session-id")).toBe(false);
+    // No session is active: the session ID item has nothing to copy and draws nothing.
+    expect(app.shows("id:status-item-session-id")).toBe(false);
+    // The project item opens the project's own settings.
     await app.press("id:status-item-project");
-    expect(app.shows("id:panel:panel:projects")).toBe(true);
+    expect(app.shows("id:panel:panel:project_settings")).toBe(true);
     await app.press("id:status-item-worktree");
     await app.waitFor("id:panel:panel:worktrees");
   } finally { app.dispose(); }
@@ -128,12 +133,15 @@ test("P1-STAT-05: global menu routes both views and closes on escape, outside, h
 test("P5-USAGE-07: the usage item reads the fixture account, names it in its label and opens the Usage panel", async () => {
   const app = await open("./Appearance.fixture.tsx", options("usage-current"));
   try {
-    await app.waitFor("text:CODEX · System default · UNAVAILABLE");
-    expect(app.shows("label:Usage CODEX · System default · UNAVAILABLE")).toBe(true);
+    // The item reads the provider and figures in sentence case; its label keeps
+    // the account and GPUI's original case.
+    await app.waitFor("label:Usage CODEX · System default · UNAVAILABLE");
+    expect(app.shows("id:status-item-usage >> text:Codex")).toBe(true);
+    expect(app.shows("id:status-item-usage >> text:Unavailable")).toBe(true);
     expect(app.shows("label:New Codex sessions: DEFAULT (APP) · System default · email unknown")).toBe(true);
     expect(app.enabled("id:status-item-project-orchestrator")).toBe(false);
     await app.press("id:status-item-usage");
-    await app.waitFor("id:panel:panel:usage");
+    await app.waitFor("id:usage-panel");
     expect(app.shows("id:status-item-usage")).toBe(true);
   } finally { app.dispose(); }
 });
@@ -141,7 +149,7 @@ test("P5-USAGE-07: the usage item reads the fixture account, names it in its lab
 test("P5-USAGE-08: the account item opens project choices and closes like the other menus", async () => {
   const app = await open("./Appearance.fixture.tsx", options("usage-account"));
   try {
-    await app.waitFor("text:DEFAULT (APP) · System default · email unknown");
+    await app.waitFor("text:Default (app) · System default · email unknown");
     await app.press("id:status-item-codex-account");
     await app.waitFor("id:account-menu");
     for (const text of ["New Codex sessions in this project", "Running chats and shells keep their account; --account still chooses one.",
@@ -178,10 +186,12 @@ test("P5-USAGE-09: all accounts reads every known account compactly and Native s
   opts.host.params.initial.statusBar.usageMode = "all_accounts";
   const app = await open("./Appearance.fixture.tsx", opts);
   try {
-    await app.waitUntil(() => app.texts().some((text) => text.startsWith("Codex  System default unavailable")));
+    // Each account reads as its name, then its figures in sentence case.
+    await app.waitFor("id:status-item-usage >> text:System default");
     // P6a's isolated catalog also supplies one available saved account; both
     // forms retain the system entry and keep the AX name in its original case.
-    const saved = app.texts().some((text) => text.includes("fixture@example.invalid · Fixture saved unavailable"));
+    const saved = app.shows("id:status-item-usage >> text:fixture@example.invalid · Fixture saved");
+    expect(app.count("id:status-item-usage >> text:Unavailable")).toBe(saved ? 2 : 1);
     expect(app.shows(`label:Usage CODEX · System default · UNAVAILABLE${saved ? "; CODEX · fixture@example.invalid · Fixture saved · UNAVAILABLE" : ""}`)).toBe(true);
     expect(app.texts()).toContain("Default (app) · System default · email unknown");
   } finally { app.dispose(); }

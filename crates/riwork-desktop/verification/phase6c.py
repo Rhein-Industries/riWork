@@ -47,7 +47,8 @@ def main():
         run.command(run.cargo('run', '-p', 'riwork-nsh-native', '--features', 'test-support', '--example', 'p1_workspace_fixture_home') + ['--', '--scenario', 'p1-layouts', '--out', home], 'seed-fixture', timeout=600)
         if args.mode == 'ui-missing':
             (home / 'cua-fixture.json').write_text(json.dumps(dict(installed=False, ready=False, running=False, version=None, accessibility=False, screen_recording=False, direct_capture_verified=False, message='Cua Driver is not installed. Select Set up Cua or run `riwork setup`.', skills=dict(setup_needed=False, message='Fixture only; no driver invoked.', targets=[]))))
-        run.env.update(RIWORK_HOME=str(home), RIWORK_NSH_FAKE_SESSIONS=str(home / 'fake-sessions.json'))
+        # RIWORK_NSH_FILES_FIXTURE: the settings fixtures refuse any home but a private /tmp one.
+        run.env.update(RIWORK_HOME=str(home), RIWORK_NSH_FAKE_SESSIONS=str(home / 'fake-sessions.json'), RIWORK_NSH_FILES_FIXTURE='1')
         if args.mode == 'focus':
             bundle = run.logdir / 'bundle/bundle.js'
             run.command([NSH, 'build', 'apps/riwork/SettingsCuaFocus.fixture.tsx', '--out', bundle.parent], 'focus-fixture-build', timeout=600)
