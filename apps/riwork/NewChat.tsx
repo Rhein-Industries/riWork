@@ -1,6 +1,6 @@
 import { Scroll, Text, View, cleanup, effect, signal, type YNode } from "nsh";
 import { Button, Input } from "nsh/base";
-import { Chat, Store, type NewChatRequest } from "riwork/native";
+import { Chat, Settings, Store, type NewChatDefaultsDto, type NewChatRequest, type SettingsPatch } from "riwork/native";
 import { space, type InterfaceTheme } from "./appearance";
 import { Icon } from "./Icon";
 
@@ -33,6 +33,8 @@ export interface NewChatProps {
   onCancel: () => void;
   /** Whether its tab is on screen: the first time it is, the model search takes the focus. */
   visible?: () => boolean;
+  /** The saved New chat defaults it starts with, over `provider` (Settings › New chat defaults). */
+  defaults?: NewChatDefaultsDto | null;
   onError: (message: string) => void;
   provider?: Provider;
   unrestricted?: boolean;
@@ -40,6 +42,7 @@ export interface NewChatProps {
   modelCatalog?: (provider: Provider, projectId: string, cwd: string) => Promise<NewChatCatalog>;
 }
 
+type NewChatDefaults = NonNullable<SettingsPatch["newChatDefaults"]>;
 const PROVIDERS: Provider[] = ["codex", "claude", "muse"];
 const providerName = (provider: Provider) => provider[0].toUpperCase() + provider.slice(1);
 const MODES: { id: Mode; label: string; description: string }[] = [
@@ -58,10 +61,12 @@ export function NewChat(props: NewChatProps) {
   const locations = (props.locations?.length ? props.locations : [{ label: props.worktreeId ? "Selected worktree" : "Project root", cwd: props.cwd, worktreeId: props.worktreeId }]).map((location) => ({ ...location }));
   const locationIndex = signal(Math.max(0, locations.findIndex((location) => location.worktreeId === props.worktreeId && location.cwd === props.cwd)));
   const location = () => locations[locationIndex()];
-  const provider = signal<Provider>(props.provider ?? "codex");
-  const mode = signal<Mode>(props.unrestricted ? "full" : "supervised");
-  const model = signal(""), query = signal(""), title = signal(""), message = signal("");
-  const effort = signal<string | null>(null), fast = signal(false);
+  const saved = signal<NewChatDefaultsDto | null>(props.defaults ?? null);
+  const savedProvider = PROVIDERS.find((item) => item === saved()?.provider), savedMode = MODES.find((item) => item.id === saved()?.mode)?.id;
+  const provider = signal<Provider>(savedProvider ?? props.provider ?? "codex");
+  const mode = signal<Mode>(props.unrestricted ? "full" : savedMode ?? "supervised");
+  const model = signal(saved()?.model ?? ""), query = signal(""), title = signal(""), message = signal("");
+  const effort = signal<string | null>(saved()?.effort ?? null), fast = signal(saved()?.fast ?? false);
   const catalogs = signal<Partial<Record<Provider, NewChatCatalog>>>({});
   const loading = signal(true), pending = signal(false), error = signal("");
   let alive = true, submitted = false;
@@ -135,6 +140,19 @@ export function NewChat(props: NewChatProps) {
       if (alive) { const message = String(reason).replace(/^Error: /, ""); error.set(message); props.onError(message); }
     } finally { if (alive) pending.set(false); }
   }
+  const choices = (): NewChatDefaults => ({ provider: provider(), model: model().trim() || null, effort: effort(), fast: fast(), mode: mode() });
+  const key = (value: NewChatDefaults | NewChatDefaultsDto | null) => value ? [value.provider, value.model ?? "", value.effort ?? "", value.fast, value.mode].join("|") : "";
+  const savingDefaults = signal(false);
+  async function saveDefaults() {
+    if (savingDefaults() || pending()) return;
+    savingDefaults.set(true); error.set("");
+    try {
+      const next = await Settings.set({ newChatDefaults: choices() });
+      if (alive) saved.set(next.newChatDefaults ?? null);
+    } catch (reason) {
+      if (alive) error.set(`The defaults were not saved: ${String(reason).replace(/^Error: /, "")}`);
+    } finally { if (alive) savingDefaults.set(false); }
+  }
   /** The first message starts the chat's first turn; one that is not sent stays as its draft. */
   async function sendFirst(chatId: string, text: string) {
     const handle = Chat.open(chatId), editor = Chat.newEditor();
@@ -202,7 +220,11 @@ export function NewChat(props: NewChatProps) {
     <Input testID="new-chat-message" accessibilityLabel="First message" placeholder="Optional: what the chat starts with" multiline={true} autoCorrect={false}
       value={message()} onChange={(value) => message.set(value)} disabled={pending()} style={{ ...field(), minHeight: size(64), maxHeight: size(200) }} />
     {(!!error() || !!catalog()?.error) && <Text role="alert" style={{ ...text(11), color: theme().palette.gold }}>{error() || catalog()?.error}</Text>}
-    <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: size(8) }}>
+    <View style={{ flexDirection: "row", justifyContent: "flex-end", alignItems: "center", gap: size(8) }}>
+      <Button testID="new-chat-save-defaults" accessibilityLabel="Save these choices as the defaults of new chats" disabled={pending() || savingDefaults() || key(saved()) === key(choices())}
+        onPress={() => void saveDefaults()} style={{ marginRight: "auto", paddingHorizontal: size(12), paddingVertical: size(7), borderRadius: 6 }}>
+        <Text style={text(11, true)}>{key(saved()) === key(choices()) ? "These are your defaults" : savingDefaults() ? "Saving…" : "Save as default"}</Text>
+      </Button>
       <Button testID="new-chat-cancel" disabled={pending()} onPress={cancel} style={{ paddingHorizontal: size(12), paddingVertical: size(7), borderRadius: 6 }}><Text style={text()}>Cancel</Text></Button>
       <Button testID="new-chat-confirm" disabled={pending() || loading() || !!catalog()?.error} onPress={() => void create()} style={{ paddingHorizontal: size(12), paddingVertical: size(7), borderRadius: 6, backgroundColor: theme().palette.panelActive }}><Text style={{ ...text(), fontWeight: "600" }}>{pending() ? "Starting…" : message().trim() ? "Start chat" : "Create chat"}</Text></Button>
     </View>

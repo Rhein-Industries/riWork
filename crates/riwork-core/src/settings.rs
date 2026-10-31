@@ -217,6 +217,41 @@ pub enum PushToTalkKey {
     Off,
 }
 
+/// The permissions a new chat starts with, as the New chat tab names them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatMode {
+    #[default]
+    Supervised,
+    AutoEdit,
+    Full,
+    Plan,
+}
+
+/// What a New chat tab starts with, saved from one (**Save as default**). Its model may be
+/// one the provider no longer offers: the chat says so when it starts, as for a typed ID.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NewChatDefaults {
+    pub provider: Provider,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub effort: Option<String>,
+    #[serde(default)]
+    pub fast: bool,
+    #[serde(default)]
+    pub mode: ChatMode,
+}
+
+impl NewChatDefaults {
+    /// A model or effort that is no usable ID is dropped, not the defaults around it.
+    fn checked(mut self) -> Self {
+        self.model = self.model.filter(|model| valid_model_id(model));
+        self.effort = self.effort.filter(|effort| valid_model_id(effort));
+        self
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Settings {
     pub tab_close_behavior: TabCloseBehavior,
@@ -300,6 +335,9 @@ pub struct Settings {
     pub dictation_model: String,
     /// Hold to talk in the selected chat (`PushToTalkKey`).
     pub push_to_talk_key: PushToTalkKey,
+    /// What a New chat tab starts with; `None` (the default): the provider of the chat in
+    /// front, its default model, Supervised.
+    pub new_chat_defaults: Option<NewChatDefaults>,
     /// Who a new Claude chat bills (`ClaudeBilling`); each chat then keeps its own choice
     /// (`ChatInfo::claude_billing`). `Subscription` starts chats without
     /// `ANTHROPIC_API_KEY`, so a key exported in the shell cannot switch them to API
@@ -444,6 +482,7 @@ impl Default for Settings {
             dictation_mic: false,
             dictation_model: DICTATION_APPLE.to_owned(),
             push_to_talk_key: PushToTalkKey::default(),
+            new_chat_defaults: None,
             claude_chat_billing: ClaudeBilling::default(),
         }
     }
@@ -588,6 +627,8 @@ impl<'de> Deserialize<'de> for Settings {
             dictation_model: dictation_model_key(lenient_field(&object, "dictation_model", String::new()))
                 .unwrap_or(defaults.dictation_model),
             push_to_talk_key: lenient_field(&object, "push_to_talk_key", defaults.push_to_talk_key),
+            // Defaults this build cannot read are none: New chat starts as it did before them.
+            new_chat_defaults: lenient_field::<Option<NewChatDefaults>>(&object, "new_chat_defaults", None).map(NewChatDefaults::checked),
             // The switch the choice grew from: true is Subscription; false, a file
             // without it and a value of another shape are the default, API key.
             claude_chat_billing: ClaudeBilling::from_ignores_api_key(lenient_field(
@@ -1362,6 +1403,28 @@ mod tests {
         assert_eq!(store.load().unwrap().push_to_talk_key, PushToTalkKey::RightOption);
         fs::write(dir.join("settings.json"), r#"{"schema_version":1,"push_to_talk_key":"left_pinky"}"#).unwrap();
         assert_eq!(store.load().unwrap().push_to_talk_key, PushToTalkKey::RightCommand);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn new_chat_defaults_are_saved_and_unreadable_ones_are_none() {
+        let dir = env::temp_dir().join(format!("riwork-settings-new-chat-{}", Uuid::new_v4()));
+        let store = SettingsStore::open(&dir).unwrap();
+        assert_eq!(Settings::default().new_chat_defaults, None);
+        let chosen = NewChatDefaults { provider: Provider::Claude, model: Some("opus".into()), effort: Some("high".into()), fast: false, mode: ChatMode::AutoEdit };
+        store.update(|settings| settings.new_chat_defaults = Some(chosen.clone())).unwrap();
+        let file: Value = serde_json::from_slice(&fs::read(dir.join("settings.json")).unwrap()).unwrap();
+        assert_eq!(file["new_chat_defaults"], serde_json::json!({"provider": "claude", "model": "opus", "effort": "high", "fast": false, "mode": "auto_edit"}));
+        assert_eq!(store.load().unwrap().new_chat_defaults, Some(chosen));
+        for (value, read) in [
+            (r#"{"provider":"grok"}"#, None),
+            (r#""claude""#, None),
+            (r#"{"provider":"codex","model":"bad\u0007id","mode":"plan"}"#,
+                Some(NewChatDefaults { provider: Provider::Codex, model: None, effort: None, fast: false, mode: ChatMode::Plan })),
+        ] {
+            fs::write(dir.join("settings.json"), format!(r#"{{"schema_version":1,"new_chat_defaults":{value}}}"#)).unwrap();
+            assert_eq!(store.load().unwrap().new_chat_defaults, read, "{value}");
+        }
         fs::remove_dir_all(dir).unwrap();
     }
 

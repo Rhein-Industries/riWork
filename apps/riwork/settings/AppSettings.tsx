@@ -45,6 +45,13 @@ export interface AppSettingsProps {
 }
 
 /** The global Settings form owns drafts only. Every durable edit is a narrow native mutation. */
+const MODE_LABELS: Record<string, string> = { supervised: "Supervised", auto_edit: "Auto-edit", full: "Full", plan: "Plan" };
+/** "Claude · opus · high · fast · Auto-edit". */
+export function newChatSummary(defaults: { provider: string; model?: string | null; effort?: string | null; fast: boolean; mode: string }) {
+  return [defaults.provider[0].toUpperCase() + defaults.provider.slice(1), defaults.model || "default model", defaults.effort, defaults.fast ? "fast" : null, MODE_LABELS[defaults.mode] ?? defaults.mode]
+    .filter(Boolean).join(" · ");
+}
+
 export function AppSettings(props: AppSettingsProps) {
   const theme = props.theme ?? defaultTheme, services = props.services ?? nativeServices;
   const focus = settingsFocusScope();
@@ -274,6 +281,11 @@ export function AppSettings(props: AppSettingsProps) {
       {s.dictationMic && <SpeechModelPicker selected={() => settings()!.dictationModel} onChoose={(key) => patch({ dictationModel: key })} theme={theme} onError={fail} />}
       <ChoiceRow id="claude-billing" label="Claude chats bill" description="Subscription uses your Claude sign-in without ANTHROPIC_API_KEY. API key bills the key saved below, or uses Claude as installed when no key is saved. Each chat keeps its choice. Claude terminal tabs are not affected." value={s.claudeChatIgnoresApiKey ? "claude-billing-subscription" : "claude-billing-api-key"} choices={[{ id: "claude-billing-subscription", label: "Subscription" }, { id: "claude-billing-api-key", label: "API key" }]} onChange={(value) => patch({ claudeChatIgnoresApiKey: value === "claude-billing-subscription" })} theme={theme} />
       {apiKeyRow()}
+      <View testID="new-chat-defaults" style={{ gap: 4, paddingVertical: 6 }}>
+        <Text style={textStyle(theme)}>New chat defaults</Text>
+        {note(s.newChatDefaults ? newChatSummary(s.newChatDefaults) : "None saved: a New chat tab starts with the provider of the chat in front, its default model and Supervised. Choose in a New chat tab and press Save as default.", "new-chat-defaults-summary")}
+        {!!s.newChatDefaults && <View style={{ flexDirection: "row" }}>{button("new-chat-defaults-reset", "Reset", () => patch({ newChatDefaults: null }))}</View>}
+      </View>
       <ToggleRow id="dashboard-haiku-summaries" label="Haiku dashboard summaries" description="Summarizes observed work for the dashboard using the saved Anthropic API key. Recent commands, file paths and messages from every provider's chats are sent to Anthropic. API usage is billed separately; decisions remain provider requests." checked={s.dashboardHaikuSummaries} onChange={(value) => patch({ dashboardHaikuSummaries: value })} theme={theme} />
       <ChoiceRow id="orchestrator-mode" label="Orchestrator runs as" description="Automatic lets RiWork choose a native chat. Terminal uses Codex in a terminal tab. Chat uses the provider and model below." value={`orchestrator-mode-${s.orchestratorMode}`} choices={[{ id: "orchestrator-mode-automatic", label: "Automatic" }, { id: "orchestrator-mode-terminal", label: "Terminal" }, { id: "orchestrator-mode-chat", label: "Chat" }]} onChange={(value) => patch({ orchestratorMode: value === "orchestrator-mode-automatic" ? "automatic" : value === "orchestrator-mode-terminal" ? "terminal" : "chat" })} theme={theme} />
       {s.orchestratorMode === "automatic" && note("RiWork chooses a Muse chat on Wonder Full, or a Codex chat on GPT-6.1-Sol when Muse cannot start.", "orchestrator-automatic-note")}

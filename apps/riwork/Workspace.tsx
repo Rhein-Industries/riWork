@@ -705,7 +705,7 @@ export function Workspace(props: WorkspaceProps) {
     const setup = setups.get(chatProps.panelId.slice("chat-pending:".length));
     const shown = () => isVisible(chatProps.panelId);
     return <View testID={`panel:${chatProps.panelId}`} style={{ flex: 1, minHeight: 0 }}>
-      {!chatId() && pending() && setup?.kind === "chat" && <NewChat theme={theme} projectId={projectId()} worktreeId={setup.worktreeId} cwd={setup.cwd}
+      {!chatId() && pending() && setup?.kind === "chat" && <NewChat theme={theme} projectId={projectId()} worktreeId={setup.worktreeId} cwd={setup.cwd} defaults={props.settings?.()?.newChatDefaults}
         locations={setup.locations} provider={setup.provider} visible={shown} onError={(message) => notice.set(message)}
         onCreated={(id, owner) => finishSetup(chatProps.panelId, "chat", id, owner)} onCancel={() => closeSetup(chatProps.panelId)} />}
       {!chatId() && pending() && setup?.kind === "handoff" && <HandoffSetup sourceId={setup.sourceId} theme={theme} visible={shown}

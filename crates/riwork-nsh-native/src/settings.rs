@@ -55,6 +55,56 @@ pub struct ProjectOrderDto {
     pub descending: bool,
 }
 
+/// What a New chat tab starts with: `provider` codex|claude|muse, `mode`
+/// supervised|auto_edit|full|plan.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsObject)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NewChatDefaultsDto {
+    pub provider: String,
+    #[prop(skip_none)]
+    #[serde(default)]
+    pub model: Option<String>,
+    #[prop(skip_none)]
+    #[serde(default)]
+    pub effort: Option<String>,
+    pub fast: bool,
+    pub mode: String,
+}
+
+impl NewChatDefaultsDto {
+    fn from_core(value: &riwork_core::settings::NewChatDefaults) -> Self {
+        let name = |value: serde_json::Value| value.as_str().unwrap_or_default().to_owned();
+        Self {
+            provider: name(serde_json::json!(value.provider)),
+            model: value.model.clone(),
+            effort: value.effort.clone(),
+            fast: value.fast,
+            mode: name(serde_json::json!(value.mode)),
+        }
+    }
+    fn to_core(&self) -> Result<riwork_core::settings::NewChatDefaults, String> {
+        let id = |value: &Option<String>, label: &str| match value.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
+            Some(value) if riwork_core::settings::valid_model_id(value) => Ok(Some(value.to_owned())),
+            Some(_) => Err(format!("invalid: a default {label} is at most 100 characters without control characters")),
+            None => Ok(None),
+        };
+        Ok(riwork_core::settings::NewChatDefaults {
+            provider: serde_json::from_value(serde_json::json!(self.provider))
+                .map_err(|_| format!("invalid: unknown new chat provider {:?}", self.provider))?,
+            model: id(&self.model, "model")?,
+            effort: id(&self.effort, "effort")?,
+            fast: self.fast,
+            mode: serde_json::from_value(serde_json::json!(self.mode))
+                .map_err(|_| format!("invalid: unknown new chat mode {:?}", self.mode))?,
+        })
+    }
+}
+
+/// Absent is `None`, `null` is `Some(None)`: a patch can clear a value.
+fn present<'de, T: Deserialize<'de>, D: serde::Deserializer<'de>>(value: D) -> Result<Option<Option<T>>, D::Error> {
+    Option::<T>::deserialize(value).map(Some)
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsObject)]
 #[serde(rename_all = "camelCase")]
 pub struct SettingsDto {
@@ -74,6 +124,9 @@ pub struct SettingsDto {
     pub dictation_model: String,
     /// `right_command`, `right_option` or `off`.
     pub push_to_talk_key: String,
+    /// What a New chat tab starts with; none until saved from one.
+    #[prop(skip_none)]
+    pub new_chat_defaults: Option<NewChatDefaultsDto>,
     pub claude_chat_ignores_api_key: bool,
     pub codex_subscription_balancing: bool,
     pub dashboard_haiku_summaries: bool,
@@ -109,6 +162,9 @@ pub struct SettingsPatch {
     pub dictation_mic: Option<bool>,
     pub dictation_model: Option<String>,
     pub push_to_talk_key: Option<String>,
+    /// An object saves New chat's defaults; `null` forgets them.
+    #[serde(default, deserialize_with = "present", skip_serializing_if = "Option::is_none")]
+    pub new_chat_defaults: Option<Option<NewChatDefaultsDto>>,
     pub claude_chat_ignores_api_key: Option<bool>,
     pub codex_subscription_balancing: Option<bool>,
     pub dashboard_haiku_summaries: Option<bool>,
@@ -168,6 +224,7 @@ impl SettingsDto {
                 .as_str()
                 .unwrap()
                 .into(),
+            new_chat_defaults: settings.new_chat_defaults.as_ref().map(NewChatDefaultsDto::from_core),
             claude_chat_ignores_api_key: settings.claude_chat_billing.ignores_api_key(),
             codex_subscription_balancing: settings.codex_subscription_balancing,
             dashboard_haiku_summaries: settings.dashboard_haiku_summaries,
@@ -248,6 +305,7 @@ struct ValidatedPatch {
     dictation_mic: Option<bool>,
     dictation_model: Option<String>,
     push_to_talk_key: Option<riwork_core::settings::PushToTalkKey>,
+    new_chat_defaults: Option<Option<riwork_core::settings::NewChatDefaults>>,
     claude_chat_ignores_api_key: Option<bool>,
     codex_subscription_balancing: Option<bool>,
     dashboard_haiku_summaries: Option<bool>,
@@ -359,6 +417,11 @@ impl SettingsPatch {
                         .map_err(|_| format!("invalid: unknown push_to_talk_key {value:?}"))
                 })
                 .transpose()?,
+            new_chat_defaults: self
+                .new_chat_defaults
+                .as_ref()
+                .map(|value| value.as_ref().map(NewChatDefaultsDto::to_core).transpose())
+                .transpose()?,
             claude_chat_ignores_api_key: self.claude_chat_ignores_api_key,
             codex_subscription_balancing: self.codex_subscription_balancing,
             dashboard_haiku_summaries: self.dashboard_haiku_summaries,
@@ -413,6 +476,9 @@ impl ValidatedPatch {
         }
         if let Some(value) = self.push_to_talk_key {
             settings.push_to_talk_key = value;
+        }
+        if let Some(value) = &self.new_chat_defaults {
+            settings.new_chat_defaults = value.clone();
         }
         if let Some(value) = self.claude_chat_ignores_api_key {
             settings.claude_chat_billing =
@@ -521,6 +587,7 @@ impl SettingsBackend for CoreSettingsBackend {
             (patch.dictation_mic.is_some(), "dictation_mic"),
             (patch.dictation_model.is_some(), "dictation_model"),
             (patch.push_to_talk_key.is_some(), "push_to_talk_key"),
+            (patch.new_chat_defaults.is_some(), "new_chat_defaults"),
             (
                 patch.claude_chat_ignores_api_key.is_some(),
                 "claude_chat_ignores_api_key",
@@ -844,7 +911,7 @@ snapshot_js_value!(SettingsDto, "SettingsEvent");
 impl JsValue for SettingsPatch {
     fn ts_type(types: &mut TsTypes) -> String {
         types.declare("SettingsPatch", |types| format!(
-            "export interface SettingsPatch {{ theme?: string; nativeTerminalColors?: boolean; useRiworkColors?: boolean; projectOrder?: {{ sort: 'name' | 'last_edited' | 'date_added' | 'live_sessions'; descending: boolean }}; openPreviewOnSelect?: boolean; uiTextSize?: number; uiTextMatchesTerminal?: boolean; interfaceFont?: 'system' | 'system_mono'; rememberWindowSize?: boolean; panelTabIcons?: boolean; tabCloseBehavior?: 'ask' | 'detach' | 'exit'; agentInlineMode?: boolean; agentTerminalsUnrestricted?: boolean; dictationMic?: boolean; dictationModel?: string; pushToTalkKey?: 'right_command' | 'right_option' | 'off'; claudeChatIgnoresApiKey?: boolean; codexSubscriptionBalancing?: boolean; dashboardHaikuSummaries?: boolean; orchestratorMode?: 'automatic' | 'terminal' | 'chat'; orchestratorChatProvider?: 'codex' | 'claude' | 'muse'; orchestratorChatModel?: string | null; statusBar?: {}; delegationPatch?: {}; }}",
+            "export interface SettingsPatch {{ theme?: string; nativeTerminalColors?: boolean; useRiworkColors?: boolean; projectOrder?: {{ sort: 'name' | 'last_edited' | 'date_added' | 'live_sessions'; descending: boolean }}; openPreviewOnSelect?: boolean; uiTextSize?: number; uiTextMatchesTerminal?: boolean; interfaceFont?: 'system' | 'system_mono'; rememberWindowSize?: boolean; panelTabIcons?: boolean; tabCloseBehavior?: 'ask' | 'detach' | 'exit'; agentInlineMode?: boolean; agentTerminalsUnrestricted?: boolean; dictationMic?: boolean; dictationModel?: string; pushToTalkKey?: 'right_command' | 'right_option' | 'off'; newChatDefaults?: {{ provider: 'codex' | 'claude' | 'muse'; model?: string | null; effort?: string | null; fast: boolean; mode: 'supervised' | 'auto_edit' | 'full' | 'plan' }} | null; claudeChatIgnoresApiKey?: boolean; codexSubscriptionBalancing?: boolean; dashboardHaikuSummaries?: boolean; orchestratorMode?: 'automatic' | 'terminal' | 'chat'; orchestratorChatProvider?: 'codex' | 'claude' | 'muse'; orchestratorChatModel?: string | null; statusBar?: {}; delegationPatch?: {}; }}",
             StatusBarDto::ts_type(types), DelegationPatch::ts_type(types)))
     }
     fn from_js(value: JsIn<'_>) -> Result<Self, PropError> {
