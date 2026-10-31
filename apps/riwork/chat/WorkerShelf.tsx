@@ -80,7 +80,7 @@ export function WorkerShelf(props: {
       <View style={{ flex: 1, flexDirection: "row", flexWrap: "wrap", columnGap: 8 * theme().scale, rowGap: 3 * theme().scale, alignItems: "center" }}>
         <Text style={text(11, theme().palette.muted)}>{`${counts().active} active · ${counts().total} total`}</Text>
         {!!counts().waiting && <Text style={text(11, theme().palette.gold)}>{`${counts().waiting} waiting`}</Text>}
-        {!!counts().failed && <Text style={text(11, "#ef6b73")}>{`${counts().failed} failed`}</Text>}
+        {!!counts().failed && <Text style={text(11, theme().palette.danger)}>{`${counts().failed} failed`}</Text>}
         {!!busy() && <Text style={text(11, theme().palette.muted)}>Updating…</Text>}
       </View>
     </View>
@@ -95,7 +95,7 @@ export function WorkerShelf(props: {
           onPress={() => selected.set(selected() === worker.id ? null : worker.id)} style={{ flexDirection: "row", alignItems: "center", minHeight: 25 * theme().scale, gap: 7 }}>
           <Icon name={selected() === worker.id ? "down" : "right"} size={10 * theme().scale} color={theme().palette.muted} />
           <Text numberOfLines={1} style={{ ...text(12), flex: 1 }}>{worker.title}</Text>
-          <Text numberOfLines={2} style={{ ...text(11, /failed/i.test(worker.status) ? "#ef6b73" : /waiting/i.test(worker.status) ? theme().palette.gold : worker.active ? theme().palette.working : theme().palette.muted), maxWidth: "45%" }}>{worker.status}</Text>
+          <Text numberOfLines={2} style={{ ...text(11, /failed/i.test(worker.status) ? theme().palette.danger : /waiting/i.test(worker.status) ? theme().palette.gold : worker.active ? theme().palette.working : theme().palette.muted), maxWidth: "45%" }}>{worker.status}</Text>
         </View>
         <Text numberOfLines={selected() === worker.id ? 3 : 1} style={text(11, theme().palette.muted)}>{worker.assignment || worker.output.split("\n").filter(Boolean).slice(-1).join("") || "Waiting for worker output…"}</Text>
         {selected() === worker.id && <>
