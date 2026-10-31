@@ -793,7 +793,7 @@ function FolderEditor(props: { controller: PanelController; editor: Extract<Edit
     <Text numberOfLines={2} style={{ fontFamily: theme().family, fontSize: text(15), color: ink() }}>{props.editor.id ? "Rename folder" : props.editor.parent ? `New folder in ${c.folderPath(props.editor.parent)}` : "New folder"}</Text>
     <Text style={{ fontFamily: theme().family, fontSize: text(11), color: muted() }}>Group projects without moving their files.</Text>
     <Input testID="folder-name" accessibilityLabel="Folder name" placeholder="Folder name" autoFocus={true} value={name()} onChange={(value) => name.set(value)} onSubmit={save} style={field()} focusStyle={fieldFocus()} />
-    {error() !== "" && <Text style={{ color: theme().palette.gold, fontFamily: theme().family, fontSize: text(11) }}>{error()}</Text>}
+    {error() !== "" && <Text style={{ color: theme().palette.danger, fontFamily: theme().family, fontSize: text(11) }}>{error()}</Text>}
     <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: 6 }}>
       <Command label="Cancel" disabled={c.pending()} onPress={() => c.editor.set(null)} />
       <Command id="save-folder" label={props.editor.id ? "Rename folder" : "Create folder"} primary={true} disabled={c.pending() || blank()} onPress={save} />
@@ -822,7 +822,7 @@ function TaskEditor(props: { controller: PanelController }) {
     <Text style={{ fontFamily: theme().family, fontSize: text(13), fontWeight: "600", color: ink() }}>New task</Text>
     <Input testID="task-title" accessibilityLabel="Task title" placeholder="Task title" autoFocus={true} value={title()} onChange={(value) => { title.set(value); error.set(""); }} onSubmit={save} style={field()} focusStyle={fieldFocus()} />
     <Input testID="task-details" accessibilityLabel="Task details" placeholder="Details (optional)" multiline={true} autoCorrect={false} value={details()} onChange={(value) => details.set(value)} style={{ ...field(), minHeight: 90 }} focusStyle={fieldFocus()} />
-    {error() !== "" && <Text style={{ color: theme().palette.gold, fontFamily: theme().family, fontSize: text(11) }}>{error()}</Text>}
+    {error() !== "" && <Text style={{ color: theme().palette.danger, fontFamily: theme().family, fontSize: text(11) }}>{error()}</Text>}
     <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: 6 }}>
       <Command label="Cancel" disabled={c.pending()} onPress={() => c.editor.set(null)} />
       <Command id="save-task" label="Add task" primary={true} disabled={c.pending() || !title().trim()} onPress={save} />
@@ -900,7 +900,7 @@ function ProjectEditor(props: { controller: PanelController }) {
       trackStyle={{ width: 28, height: 16, borderRadius: 8, padding: 2, alignItems: initGit() ? "flex-end" : "flex-start", backgroundColor: initGit() ? accent() : theme().palette.divider }} thumbStyle={{ width: 12, height: 12, borderRadius: 6, backgroundColor: theme().palette.bg }}>
       <Text style={{ fontFamily: theme().family, fontSize: text(11), color: ink() }}>Initialize Git</Text>
     </Switch> : inspection() && <Text style={{ fontFamily: theme().family, fontSize: text(11), color: muted() }}>Use existing repositories</Text>}
-    {error() !== "" && <Text testID="project-error" style={{ fontFamily: theme().family, fontSize: text(11), color: theme().palette.gold }}>{error()}</Text>}
+    {error() !== "" && <Text testID="project-error" style={{ fontFamily: theme().family, fontSize: text(11), color: theme().palette.danger }}>{error()}</Text>}
     <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: 6 }}>
       <Command label="Cancel" disabled={c.pending()} onPress={() => c.editor.set(null)} />
       <Command id="create-project" label={c.pending() ? "Creating…" : "Create project"} primary={true} disabled={c.pending() || checking() || !inspection()} onPress={save} />

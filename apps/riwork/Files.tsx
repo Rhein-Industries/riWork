@@ -1,4 +1,4 @@
-import { Clipboard, Image, List, Scroll, Text, View, cleanup, effect, host, keymap, signal, untracked, type YNode } from "nsh";
+import { Clipboard, Image, List, Scroll, Text, View, cleanup, computed, effect, host, keymap, signal, untracked, type YNode } from "nsh";
 import { Button, Editor, Input, TextView, type EditorRef } from "nsh/base";
 import { Menu } from "nsh/desktop";
 import { Files, Store, type Subscription } from "riwork/native";
@@ -89,8 +89,14 @@ export function createFilesController(options: FilesOptions) {
   }
   effect(() => { const next = options.root(); if (next !== currentRoot) resetRoot(); });
   // Visibility changes only arm subscriptions. There is no window or per-frame polling.
+  // A native subscription belongs to the effect run that opened it, and the next run closes
+  // it: so each run reopens every watch it needs instead of trusting `watches` to hold live
+  // ones (which left the list on "Loading worktree…" and stopped live updates after a folder
+  // was expanded). `shown` keeps unrelated workspace changes from re-running it.
+  const shown = computed(() => visible());
   effect(() => {
-    if (!visible()) { closeWatches(); clearTimeout(timer); previewGeneration++; previewLoading.set(false); return; }
+    if (!shown()) { closeWatches(); clearTimeout(timer); previewGeneration++; previewLoading.set(false); return; }
+    closeWatches();
     if (currentRoot) watch(currentRoot);
     for (const path of expanded()) watch(path);
   });

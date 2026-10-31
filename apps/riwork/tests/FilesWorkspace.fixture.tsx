@@ -14,7 +14,12 @@ function Fixture() {
     const root = await privateFixtureDirectory(key);
     const project = await Store.createProject({ root, name: `Workspace files ${key}`, initGit: false });
     const session = await Layouts.openSession({ windowId: `files-workspace-${key}`, projectId: project.id });
-    if (params.unavailable) session.setSelectedWorktree("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+    if (params.unavailable) {
+      // Open on the Files pane: a focused shell would make the selection follow its worktree
+      // (Workspace's follow-the-shell effect) before the test can look at the missing one.
+      session.selectPane(1);
+      session.setSelectedWorktree("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+    }
     if (alive) ready.set({ session, projectId: project.id }); else session.dispose();
   })().catch((reason) => { if (alive) error.set(String(reason)); });
   return <View style={{ flex: 1 }}>{ready() ? <Workspace session={ready()!.session} projectId={ready()!.projectId}
