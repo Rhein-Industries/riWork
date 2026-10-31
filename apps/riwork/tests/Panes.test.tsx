@@ -99,7 +99,9 @@ test("P1-PANE-10 focus hides other groups without changing the saved tree", asyn
     await app.wait(2100);
     const before = latest(app).dock;
     await app.keyboard.press("mod+shift+f");
-    expect(app.texts()).toContain("↙ RESTORE  ⌘⇧F");
+    // The focused pane's own focus button now restores the layout; the
+    // window strip's "↙ RESTORE  ⌘⇧F" left with the GPUI chrome.
+    expect(app.shows("label:Restore layout")).toBe(true);
     expect(app.count("role:tablist")).toBe(1);
     expect(latest(app).dock).toEqual(before);
     await app.host.send("command", { id: "focusCentered" });
