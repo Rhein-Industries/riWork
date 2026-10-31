@@ -1,5 +1,5 @@
 import { Button, Input } from "nsh/base";
-import { Scroll, Text, View, cleanup, effect, host, signal, untracked, type Point } from "nsh";
+import { Scroll, Text, View, cleanup, computed, effect, host, signal, untracked, type Point } from "nsh";
 import { Previews } from "riwork/native";
 import { PreviewSurface } from "./PreviewSurface";
 import { DEFAULT_THEME, space, type InterfaceTheme } from "./appearance";
@@ -34,7 +34,9 @@ export function previewViewport(width: number, height: number) {
 export function AppPreviewTab(props: { spec: PreviewSpec; visible: boolean; theme?: () => InterfaceTheme; configure: (spec: PreviewSpec) => void; onFocusChange?: (focused: boolean) => void }) {
   const preview = Previews.open();
   const spec = signal<PreviewSpec>(untracked(() => ({ ...props.spec })));
-  const state = signal<PreviewState>({ phase: "idle", message: "Enter a command, then select Run.", logs: [], windows: [] });
+  // Each poll reads a new object; only a changed one redraws. The header's buttons are
+  // rebuilt on every change, and a press across a rebuild (10 a second) was lost.
+  const state = signal<PreviewState>({ phase: "idle", message: "Enter a command, then select Run.", logs: [], windows: [] }, { equals: (a, b) => JSON.stringify(a) === JSON.stringify(b) });
   const error = signal("");
   const busy = signal(false);
   const windowState = signal({ visible: true, appActive: true, occluded: false });
@@ -88,6 +90,9 @@ export function AppPreviewTab(props: { spec: PreviewSpec; visible: boolean; them
   const active = () => ["starting", "waitingforwindow", "streaming", "paused"].includes(state().phase);
   const hasSession = () => state().phase !== "idle";
   const canStop = () => hasSession() && !["stopped", "exited"].includes(state().phase);
+  // The fields switch on the mode alone: reading the whole spec there rebuilt the Command
+  // and Working folder inputs on every keystroke, so typing kept only the first character.
+  const iosMode = computed(() => spec().mode === "ios_simulator");
   const fieldStyle = () => ({ ...style(), minHeight: space(28, theme().scale), paddingHorizontal: space(8, theme().scale), paddingVertical: space(5, theme().scale), borderRadius: space(6, theme().scale), backgroundColor: theme().palette.panelActive });
   function button(id: string, label: string, onPress: () => void, disabled = false, selected = false) {
     return <Button testID={id} accessibilityLabel={label} disabled={disabled} selected={selected} onPress={onPress}
@@ -108,7 +113,7 @@ export function AppPreviewTab(props: { spec: PreviewSpec; visible: boolean; them
         {button("preview-stop", "Stop", () => { void preview.stop().catch(fail); }, busy() || !canStop())}
         {spec().mode === "window_capture" && active() && button("preview-show-window", "Show window", () => input({ kind: "show_window" }), busy())}
       </View>
-      {spec().mode !== "ios_simulator" ? <View style={{ flexDirection: "row", flexWrap: "wrap", gap: space(6, theme().scale) }}>
+      {!iosMode() ? <View style={{ flexDirection: "row", flexWrap: "wrap", gap: space(6, theme().scale) }}>
         <Input testID="preview-command" accessibilityLabel="Command" value={spec().command} placeholder="Command that starts your development app" readonly={busy() || active()}
           onChange={(command) => update({ command })} onBlur={commit} onSubmit={commit} style={{ ...fieldStyle(), flex: 1, minWidth: space(160, theme().scale), fontFamily: theme().monoFamily }} />
         <Input testID="preview-cwd" accessibilityLabel="Working folder" value={spec().cwd} placeholder="Working folder" readonly={busy() || active()} onChange={(cwd) => update({ cwd })} onBlur={commit} onSubmit={commit} style={{ ...fieldStyle(), flex: 1, minWidth: space(160, theme().scale), fontFamily: theme().monoFamily }} />
