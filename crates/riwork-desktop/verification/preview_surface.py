@@ -38,7 +38,8 @@ def main():
     else:
         home = run.logdir / 'nsh-home'
         run.command(run.cargo('run', '-p', 'riwork-nsh-native', '--features', 'test-support', '--example', 'p1_workspace_fixture_home') + ['--', '--scenario', 'p1-layouts', '--out', home], 'seed-fixture', timeout=600)
-        run.env.update(RIWORK_HOME=str(home), RIWORK_NSH_FAKE_SESSIONS=str(home / 'fake-sessions.json'))
+        # RIWORK_NSH_FILES_FIXTURE: the settings fixtures refuse any home but a private /tmp one.
+        run.env.update(RIWORK_HOME=str(home), RIWORK_NSH_FAKE_SESSIONS=str(home / 'fake-sessions.json'), RIWORK_NSH_FILES_FIXTURE='1')
         if args.mode == 'focus':
             bundle = run.logdir / 'bundle/bundle.js'
             run.command([NSH, 'build', 'apps/riwork/PreviewFocus.fixture.tsx', '--out', bundle.parent], 'native-focus-build', timeout=600)

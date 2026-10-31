@@ -32,7 +32,7 @@ ENV_KEYS = ("HOME", "PATH", "RIWORK_HOME", "RIWORK_RUNTIME_DIR", "TMPDIR",
             "TMUX_TMPDIR", "XDG_CONFIG_HOME", "CARGO_HOME", "RUSTUP_HOME",
             "RUSTUP_TOOLCHAIN", "CARGO_TARGET_DIR", "CARGO_BUILD_JOBS",
             "CARGO_NET_OFFLINE", "NSH_CACHE", "NSH_TSC", "RIWORK_NSH_BUNDLE",
-            "RIWORK_NSH_BACKGROUND", "RIWORK_NSH_FAKE_SESSIONS")
+            "RIWORK_NSH_BACKGROUND", "RIWORK_NSH_FAKE_SESSIONS", "RIWORK_NSH_FILES_FIXTURE")
 
 
 def write_json(path, value):
@@ -152,8 +152,11 @@ class Verification:
         self.command(self.cargo("run", "-p", "riwork-nsh-native", "--features", "test-support",
                                 "--example", "p1_workspace_fixture_home")
                      + ["--", "--scenario", "p1-layouts", "--out", nsh_home], "seed-nsh-fixture")
+        # RIWORK_NSH_FILES_FIXTURE: the fixtures that save settings, layouts or projects
+        # (and P3b's Files fixtures) run only in a private /tmp home that opts in.
         env = dict(self.env, RIWORK_HOME=str(nsh_home), TMUX_TMPDIR=str(nsh_tmux),
-                   RIWORK_NSH_FAKE_SESSIONS=str(nsh_home / "fake-sessions.json"))
+                   RIWORK_NSH_FAKE_SESSIONS=str(nsh_home / "fake-sessions.json"),
+                   RIWORK_NSH_FILES_FIXTURE="1")
         self.command([self.args.nsh, "check", "apps/riwork", "--tsc", self.args.tsc],
                      "nsh-check", env=env)
         self.command([self.args.nsh, "test", "apps/riwork", "--junit", self.logdir / "nsh.xml"],

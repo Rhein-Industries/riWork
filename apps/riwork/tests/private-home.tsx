@@ -1,21 +1,29 @@
 /** Test support: fixtures that save RiWork settings, layouts or projects run only in a
  * private /tmp RiWork home, never in the person's own. scripts/pane-test.sh and
- * scripts/pane-shot.sh give every run one (scripts/pane-env.sh). The check is the one
+ * scripts/pane-shot.sh give every run one (scripts/pane-env.sh); a verification runner
+ * that brings its own /tmp home sets RIWORK_NSH_FILES_FIXTURE=1 too. The check is the one
  * Files.fixtureDirectory already makes: a debug build, RIWORK_NSH_FILES_FIXTURE=1 and a
  * RIWORK_HOME under /tmp. */
 import { Text, View, mount, signal, type Component } from "nsh";
 import { Files } from "riwork/native";
 
-export const PRIVATE_HOME_REFUSAL = "Refused: this fixture saves RiWork settings, layouts or projects, so it runs only in "
-  + "a private /tmp RiWork home. Run its tests with scripts/pane-test.sh NAME (pictures: scripts/pane-shot.sh), "
-  + "never with plain `nsh test`.";
+/** The refusal names what this run lacks, from Files.fixtureDirectory's reason. */
+function privateHomeRefusal(reason: unknown): string {
+  const text = String(reason);
+  const missing = /Files fixtures are off/.test(text)
+    ? "RIWORK_NSH_FILES_FIXTURE=1 is not set (or this is not a debug build)"
+    : /isolated \/tmp RIWORK_HOME/.test(text) ? "RIWORK_HOME is not under /tmp" : text;
+  return "Refused: this fixture saves RiWork settings, layouts or projects, so it needs a private "
+    + `fixture home (a debug build, RIWORK_NSH_FILES_FIXTURE=1 and a RIWORK_HOME under /tmp). Missing: ${missing}. `
+    + "Run its tests with scripts/pane-test.sh NAME (pictures: scripts/pane-shot.sh), never with plain `nsh test`.";
+}
 
-/** Files.fixtureDirectory, whose refusal says how to run the fixture instead. */
+/** Files.fixtureDirectory, whose refusal says what is missing and how to run the fixture instead. */
 export async function privateFixtureDirectory(name: string): Promise<string> {
   try {
     return await Files.fixtureDirectory(name);
   } catch (reason) {
-    const message = `${PRIVATE_HOME_REFUSAL} (${String(reason)})`;
+    const message = privateHomeRefusal(reason);
     console.error(message);
     throw new Error(message);
   }
