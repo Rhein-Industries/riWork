@@ -177,7 +177,9 @@ struct ChatModelSheet: View {
 
     private func content(_ choices: ChatModelChoices) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            if let notice = conversation.notice { messageRow(notice, icon: "exclamationmark.triangle", failure: true) }
+            // The notice is plain words from several sources, some of them waiting on the person ("Finish or interrupt the turn first.",
+            // a request still running, an outcome that is not known), so it keeps the warning color.
+            if let notice = conversation.notice { messageRow(notice, icon: "exclamationmark.triangle") }
             else if !connected { messageRow("Not connected. Choose again when the link is back.", icon: "wifi.slash") }
             sectionLabel("Model")
             if loadingModels { ProgressView("Loading models…").padding(12) }
@@ -283,15 +285,17 @@ struct ChatModelSheet: View {
         Text(style.cased(text)).font(style.system(.caption, weight: .bold)).foregroundStyle(style.muted)
             .padding(.horizontal, 12).padding(.top, 12).padding(.bottom, 4).accessibilityAddTraits(.isHeader)
     }
-    /// - `failure`: something did not go through (a switch, a read of the models), in the error color; otherwise a state that
-    ///   needs the person, in the warning color.
+    /// - `failure`: something did not go through (a read of the models), in the error color; otherwise a state that needs the
+    ///   person, in the warning color. The color is the icon's and the fill's: the words stay in the text color, which reads on the
+    ///   tinted fill in every palette (as `ChatNoticeLine`).
     private func messageRow(_ text: String, icon: String, failure: Bool = false) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: icon).accessibilityHidden(true)
-            Text(text).font(style.system(.footnote)).fixedSize(horizontal: false, vertical: true)
+        let tint = failure ? style.error : style.warning
+        return HStack(alignment: .top, spacing: 8) {
+            Image(systemName: icon).foregroundStyle(tint).accessibilityHidden(true)
+            Text(text).font(style.system(.footnote)).foregroundStyle(style.text).fixedSize(horizontal: false, vertical: true)
         }
-        .foregroundStyle(failure ? style.error : style.warning).padding(12).frame(maxWidth: .infinity, alignment: .leading)
-        .background((failure ? style.error : style.warning).opacity(0.1), in: style.block())
+        .padding(12).frame(maxWidth: .infinity, alignment: .leading)
+        .background(tint.opacity(0.1), in: style.block())
         .padding(.horizontal, style.native ? 8 : 0).padding(.top, style.native ? 8 : 0)
         .accessibilityElement(children: .combine).accessibilityAddTraits(.updatesFrequently)
     }

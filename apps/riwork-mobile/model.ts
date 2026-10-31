@@ -25,11 +25,11 @@ export interface DashboardIntelligence {
   model?: string; generatedAt?: number; highlights: string[]; followups: string[];
 }
 export interface Dashboard {
-  /** `failed`: the last read failed, and `freshness` / `unavailableReason` say why. */
-  available: boolean; unavailableReason?: string; freshness: string; stale: boolean; failed?: boolean; readAt?: number;
+  available: boolean; unavailableReason?: string; freshness: string; stale: boolean; readAt?: number;
   summary: { id: string; label: string; value: number | null; coverage?: string }[];
   overview?: string; rows: DashboardRow[];
-  notes?: string[]; more?: Partial<Record<DashboardSection, number>>; intelligence?: DashboardIntelligence[];
+  /** `automationsError`: the automations could not be read, and why; drawn in the error tone, apart from the muted `notes`. */
+  notes?: string[]; automationsError?: string; more?: Partial<Record<DashboardSection, number>>; intelligence?: DashboardIntelligence[];
   global?: { summary: string; action: "open" | "start" | "unavailable"; actionTitle: string };
 }
 export interface MobileSnapshot {

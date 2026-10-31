@@ -149,7 +149,8 @@ function App() {
           {metric.coverage && <Text style={text(11, "muted")}>{metric.coverage}</Text>}
         </View>)}
       </View>}
-      {props.dashboard.freshness && <Text style={text(12, props.dashboard.failed ? "error" : props.dashboard.stale ? "gold" : "muted")}>{props.dashboard.freshness}</Text>}
+      {props.dashboard.freshness && <Text style={text(12, props.dashboard.stale ? "gold" : "muted")}>{props.dashboard.freshness}</Text>}
+      {props.dashboard.automationsError && <Text style={text(12, "error")}>{props.dashboard.automationsError}</Text>}
       {(props.dashboard.notes?.length ?? 0) > 0 && <View style={{ gap: pt(5) }}>
         {props.dashboard.notes!.map((note) => <Text style={text(12, "muted")}>{note}</Text>)}
       </View>}
@@ -176,7 +177,7 @@ function App() {
       <View style={{ padding: pt(16), gap: pt(10) }}>
         {report.stale && <Text style={text(12, "gold")}>Saved summary</Text>}
         {report.summary ? <Text selectable={true} style={text(15)}>{report.summary}</Text>
-          : <Text style={text(14, report.error ? "error" : "muted")}>{report.error ?? "Gathering observed work for the overview…"}</Text>}
+          : <Text style={text(14, report.error ? "gold" : "muted")}>{report.error ?? "Gathering observed work for the overview…"}</Text>}
         {report.highlights.map((line) => <View style={{ flexDirection: "row", gap: pt(8) }}>
           <Text accessible={false} style={text(14, "cyan")}>•</Text><Text selectable={true} style={{ ...text(14), flex: 1 }}>{line}</Text>
         </View>)}
@@ -184,7 +185,7 @@ function App() {
         {report.followups.map((line) => <View style={{ flexDirection: "row", gap: pt(8) }}>
           <Symbol name="arrow.turn.down.right" color={palette().muted} size={pt(15)} /><Text selectable={true} style={{ ...text(14, "muted"), flex: 1 }}>{line}</Text>
         </View>)}
-        {report.summary && report.error && <Text style={text(12, "error")}>{report.error}</Text>}
+        {report.summary && report.error && <Text style={text(12, "gold")}>{report.error}</Text>}
         <Text style={text(11, "muted")}>{`AI summary of observed activity${report.generatedAt ? ` · ${new Date(report.generatedAt * 1000).toLocaleString()}` : ""}`}</Text>
       </View>
     </Section>)}</>;
@@ -213,7 +214,7 @@ function App() {
       : props.filter === "projects" ? "No projects in the latest dashboard."
       : "No activity in the latest dashboard.";
     return <>
-      {!props.dashboard.available && props.dashboard.unavailableReason && <Note message={props.dashboard.unavailableReason} error={props.dashboard.failed} />}
+      {!props.dashboard.available && props.dashboard.unavailableReason && <Note message={props.dashboard.unavailableReason} />}
       {SECTION_ORDER.filter(includes).map((section) => {
         const rows = () => props.dashboard.rows.filter((row) => row.section === section);
         return (rows().length > 0 || (props.dashboard.more?.[section] ?? 0) > 0) && <Section title={SECTION_LABELS[section]}>

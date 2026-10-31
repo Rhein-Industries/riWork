@@ -28,9 +28,7 @@ struct DashboardView: View {
             DesktopRule()
             // A Mac without the dashboard is never read: the notice below says why, and no freshness is claimed for it.
             if model.dashboardSupport != .unsupported {
-                TimelineView(.periodic(from: .now, by: 15)) { context in
-                    freshnessLine(model.dashboardFreshness(now: context.date), failed: model.state == .connected && model.dashboardFailure != nil)
-                }
+                TimelineView(.periodic(from: .now, by: 15)) { context in freshnessLine(model.dashboardFreshness(now: context.date)) }
                 DesktopRule()
             }
             List {
@@ -86,12 +84,11 @@ struct DashboardView: View {
 
     // MARK: How current it is
 
-    /// - `failed`: the last read failed on this connection, and the line says why.
-    private func freshnessLine(_ freshness: DashboardFreshness, failed: Bool) -> some View {
-        let tint = failed ? style.error : style.warning
-        return HStack(spacing: 6) {
-            Circle().fill(freshness.stale ? tint : style.accent).frame(width: 6, height: 6).accessibilityHidden(true)
-            Text(freshness.text).font(style.face(11, relativeTo: .caption)).foregroundStyle(freshness.stale ? tint : style.muted).lineLimit(2)
+    /// A read that failed is stale and says why, in the warning color, as the desktop's toolbar draws it (`freshness().warn` in gold).
+    private func freshnessLine(_ freshness: DashboardFreshness) -> some View {
+        HStack(spacing: 6) {
+            Circle().fill(freshness.stale ? style.warning : style.accent).frame(width: 6, height: 6).accessibilityHidden(true)
+            Text(freshness.text).font(style.face(11, relativeTo: .caption)).foregroundStyle(freshness.stale ? style.warning : style.muted).lineLimit(2)
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 12).padding(.vertical, 6).frame(minHeight: style.pt(28))
@@ -163,7 +160,7 @@ struct DashboardView: View {
         return Section {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 12) {
-                    figure(working.map { $0 == 0 ? "None working" : "\($0) working" + (subagents > 0 ? " +\(subagents)" : "") } ?? "Working —", tint: (working ?? 0) > 0 ? style.accent : style.muted)
+                    figure(working.map { $0 == 0 ? "None working" : "\($0) working" + (subagents > 0 ? " +\(subagents)" : "") } ?? "Working —", tint: (working ?? 0) > 0 ? style.working : style.muted)
                     figure(totals.attention.map { $0 == 0 ? "Nothing needs you" : "\($0) need you" } ?? "Needs you —", tint: (totals.attention ?? 0) > 0 ? style.gold : style.muted)
                 }
                 HStack(spacing: 12) {

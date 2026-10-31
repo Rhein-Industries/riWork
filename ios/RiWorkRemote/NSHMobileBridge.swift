@@ -485,11 +485,11 @@ enum NSHMobilePresentation {
             "rows": projectedRows,
             "global": ["summary": status.summary, "action": action, "actionTitle": status.actionTitle]]
         value["unavailableReason"] = model.dashboardUnavailableReason ?? model.dashboardFailure
-        // The last read failed on this connection: the freshness line and the unavailable note say why, in the error color.
-        value["failed"] = model.state == .connected && model.dashboardFailure != nil
         value["readAt"] = readAt?.timeIntervalSince1970
         if let snapshot {
             value["notes"] = dashboardNotes(snapshot)
+            // Apart from the muted notes: the bundle draws it in the error color, as the desktop draws it in danger.
+            if case .unreadable(let reason) = snapshot.automations { value["automationsError"] = "Automations could not be read: \(reason)" }
             value["more"] = omittedRows(snapshot)
             value["intelligence"] = intelligenceDTO(snapshot.intelligence, hostID: hostID ?? "", hostName: nil).map { [$0] } ?? []
         }
@@ -567,7 +567,7 @@ enum NSHMobilePresentation {
         }
         switch snapshot.automations {
         case .notRead: notes.append("Automations have not been read yet.")
-        case .unreadable(let reason): notes.append("Automations unavailable: \(reason)")
+        case .unreadable: break  // `automationsError`, in the error color.
         case .read(let total, let paused, let next, _):
             if let total, let paused { notes.append("\(total) automations · \(paused) paused") }
             if let next { notes.append("Next automation: \(next.title) · \(timeLabel(next.at, future: true))") }

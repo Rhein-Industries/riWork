@@ -1770,7 +1770,7 @@ struct OpenTabSheet: View {
     }
 }
 
-/// A shared tab's state as the Mac's strip draws it: working in the accent, waiting gold, error red, done muted, idle a small muted
+/// A shared tab's state as the Mac's strip draws it: working in the working color, waiting gold, error red, done muted, idle a small muted
 /// point (a live shell with nothing running), stopped an empty ring.
 struct SharedTabStatusDot: View {
     @Environment(\.desktopStyle) private var style
@@ -1779,7 +1779,7 @@ struct SharedTabStatusDot: View {
         let size = style.pt(7)
         Group {
             switch status {
-            case .working: Circle().fill(style.accent).frame(width: size, height: size)
+            case .working: Circle().fill(style.working).frame(width: size, height: size)
             case .waiting: Circle().fill(style.gold).frame(width: size, height: size)
             case .error: Circle().fill(style.error).frame(width: size, height: size)
             case .done: Circle().fill(style.muted).frame(width: size, height: size)

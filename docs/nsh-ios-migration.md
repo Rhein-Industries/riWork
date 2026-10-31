@@ -54,10 +54,12 @@ an older `error` or the terminal's red), and Follow desktop the optional
 `palette.danger` of `appearance.get` (missing on older desktops, which keep the
 app's error color; working is the accent there). The bridge's theme snapshot
 sends these as `working` and `error`, and the bundle's fallback palettes match
-Native until the first snapshot. Rows tell the same story: failed chats, an
-automation run that failed, unreadable automations, a dashboard read or
-connection that failed and Haiku summary errors use the `error` tone; decisions,
-waiting agents and missed or uncertain runs stay `gold`; working agents use
+Native until the first snapshot. Rows tell the same story, as the desktop
+Dashboard does: failed chats, an automation run that failed, unreadable
+automations (the dashboard's `automationsError`, apart from its muted `notes`)
+and a failed connection use the `error` tone; decisions, waiting agents, missed
+or uncertain runs, a stale or failed dashboard read (the freshness line) and
+Haiku summary errors and setup prompts stay `gold`; working agents use
 `working`. Code and terminals remain monospace. iPad retains its existing
 desktop-synchronized appearance, and both devices still receive the desktop
 microphone preference independently of palette selection.

@@ -89,8 +89,10 @@ one below 3:1 on the palette's surfaces falls back to the accent or the text col
 state colors, light or dark with the phone: working blue (`#0058d0` / `#409cff`), gold for what needs you
 (`#b34000` / `#ff9f0a`) and red for failures (`#c80018` / `#ff6961`), which read at 4.5:1 or better on the system
 surfaces where the system orange and red do not. Failed chats, automations whose last run failed, unreadable
-automations, error text and connection or load failures are drawn in the error color; what waits for you (including a
-missed or uncertain automation run) stays gold. Palettes change colors only; controls,
+automations, requests the Mac refused and connection, load, upload and memo read/save failures are drawn in the error
+color; what waits for you stays gold: a missed or uncertain automation run, an outcome that is not known, an old Mac, no
+connection, a memo conflict, a stale or failed dashboard read and Haiku summary errors, as on the desktop. Working
+agents use the working color. Palettes change colors only; controls,
 system typography and layout stay native. Terminal text remains monospace. Chats use proportional
 prose, right-aligned user bubbles, rounded tool/code surfaces and a shared composer,
 with a centered reading column on iPad. Buttons retain 44-point touch targets,
