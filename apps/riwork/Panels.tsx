@@ -291,8 +291,9 @@ function Empty(props: { query: string; noun: string }) {
 function ProjectRow(props: { item: () => ProjectTreeRow; controller: PanelController }) {
   // List recycles a cell across unrelated keys and row kinds. Keep both the
   // branch and every identity reactive instead of capturing the first item.
+  // Projects move with "Move to folder…"; nothing in the panel takes a drop.
   return <>{props.item().kind === "empty" ?
-    <View style={{ paddingLeft: 12 + props.item().depth * 12, paddingVertical: 7 }}><Text style={{ fontFamily: theme().family, fontSize: text(10), color: muted() }}>Drop projects here</Text></View> :
+    <View style={{ paddingLeft: space(6 + props.item().depth * 16, theme().scale), paddingVertical: space(7, theme().scale) }}><Text numberOfLines={1} style={{ fontFamily: theme().family, fontSize: text(10), color: muted() }}>Empty. Move projects here from their menu.</Text></View> :
     props.item().kind === "folder" ? <FolderRow item={props.item} controller={props.controller} /> : <ProjectItemRow item={props.item} controller={props.controller} />}</>;
 }
 
@@ -326,6 +327,10 @@ function FolderRow(props: { item: () => ProjectTreeRow; controller: PanelControl
   </View>;
 }
 
+const plural = (count: number, noun: string) => `${count} ${count === 1 ? noun : noun.endsWith("y") ? `${noun.slice(0, -1)}ies` : `${noun}s`}`;
+// The project and folder forms sit on InlineEditor's `bg` card, where field()'s own `bg` fill vanishes.
+const formField = () => ({ ...field(), backgroundColor: theme().palette.panelActive });
+
 function ProjectItemRow(props: { item: () => ProjectTreeRow; controller: PanelController }) {
   const c = props.controller;
   const project = () => (props.item() as Extract<ProjectTreeRow, { kind: "project" }>).project;
@@ -339,8 +344,14 @@ function ProjectItemRow(props: { item: () => ProjectTreeRow; controller: PanelCo
     const working = chats.filter((chat) => chat.state === "running").length, waiting = chats.filter((chat) => chat.state === "waiting").length;
     return [working ? `${working} working` : "", waiting ? `${waiting} waiting` : ""].filter(Boolean).join(" · ");
   };
+  // Only what is there: every project has its primary worktree, and zeros say nothing. An idle project is one line.
+  const summary = () => {
+    const open = tasks().filter((task) => task.status !== "done").length, extra = trees().length;
+    return [activity() ? `Agents ${activity()}` : "", live() ? plural(live(), "live session") : "", open ? plural(open, "open task") : "", extra > 1 ? plural(extra, "worktree") : ""].filter(Boolean).join(" · ");
+  };
   async function settings() { await c.activate(project()); if (c.projectId() === project().id) c.openPanel("project_settings"); }
   function openWindow() { void c.run(() => host.call("window.open", { kind: "project", projectId: project().id, path: project().root })); }
+  // The row's ⋯ opens this too; the notification toggles live here, with checkmarks.
   function menu() {
     void Menu.popup([
       { label: "Open project", onSelect: () => void c.activate(project()) },
@@ -356,15 +367,14 @@ function ProjectItemRow(props: { item: () => ProjectTreeRow; controller: PanelCo
     style={{ borderRadius: space(7, theme().scale), backgroundColor: selected() ? theme().palette.panelActive : "transparent" }} hoverStyle={{ backgroundColor: theme().palette.panelActive }}>
     <View style={{ flexDirection: "row", alignItems: "center", paddingRight: 2 }}>
       <Button testID={`project-${project().id}`} accessibilityLabel={project().name} selected={selected()} disabled={c.pending()} onPress={() => void c.activate(project())}
-        style={{ flex: 1, minWidth: 0, paddingLeft: space(6 + props.item().depth * 16, theme().scale), paddingVertical: space(6, theme().scale), gap: 2 }} focusStyle={{ backgroundColor: theme().palette.divider }}>
+        style={{ flex: 1, minWidth: 0, minHeight: space(30, theme().scale), justifyContent: "center", paddingLeft: space(6 + props.item().depth * 16, theme().scale), paddingVertical: space(6, theme().scale), gap: 2 }} focusStyle={{ backgroundColor: theme().palette.divider }}>
         <Text numberOfLines={1} style={{ fontFamily: theme().family, fontSize: text(11), color: ink() }}>{project().name}</Text>
-        <Text numberOfLines={1} style={{ fontFamily: theme().family, fontSize: text(10), color: muted() }}>{`${activity() ? `Agents ${activity()} · ` : ""}${trees().length} trees · ${tasks().filter((task) => task.status === "done").length}/${tasks().length} tasks · ${live()} live`}</Text>
+        {summary() !== "" && <Text numberOfLines={1} testID={`project-summary:${project().id}`} style={{ fontFamily: theme().family, fontSize: text(10), color: muted() }}>{summary()}</Text>}
       </Button>
       {(selected() || hovering()) && <View style={{ flexDirection: "row", alignItems: "center", gap: 0 }}>
-        <ToolbarCommand id={`project-notifications:${project().id}`} icon={project().notifyOnAgentDone ? "bell" : "bell-off"} label="Agent completion notifications" selected={project().notifyOnAgentDone} disabled={c.pending()} onPress={() => void c.run(() => Store.setProjectNotifications(project().id, !project().notifyOnAgentDone))} />
-        <ToolbarCommand id={`project-wakes:${project().id}`} icon="refresh" label="Wake orchestrators when a worker finishes" selected={project().wakeOrchestratorsOnAgentDone} disabled={c.pending()} onPress={() => void c.run(() => Store.setProjectOrchestratorWakes(project().id, !project().wakeOrchestratorsOnAgentDone))} />
         <ToolbarCommand id={`project-settings:${project().id}`} icon="settings" label="Project settings" onPress={() => void settings()} />
         <ToolbarCommand id={`open-project-window:${project().id}`} icon="open" label="Open project in another window" onPress={openWindow} />
+        <ToolbarCommand id={`project-menu:${project().id}`} icon="more" label="Project actions" onPress={menu} />
       </View>}
     </View>
   </View>;
@@ -372,7 +382,17 @@ function ProjectItemRow(props: { item: () => ProjectTreeRow; controller: PanelCo
 
 function Projects(props: { controller: PanelController; surface: string; footer?: JSX.Element }) {
   const c = props.controller;
-  const rows = () => projectRows(c.state(), c.query(), c.collapsed(), c.order(), c.descending(), c.shells());
+  const rows = () => {
+    // Without folders, Unfiled would only mean "all": list the projects flat, ignoring a stale
+    // collapsed Unfiled, so that no projects at all reaches the List's empty state.
+    const flat = !c.query().trim() && !c.state().projectFolders.length;
+    const all = projectRows(c.state(), c.query(), flat ? new Set<string>() : c.collapsed(), c.order(), c.descending(), c.shells());
+    if (flat) return all.flatMap((row): ProjectTreeRow[] => row.kind === "project" ? [{ ...row, depth: 0 }] : []);
+    // With folders, an Unfiled group that holds nothing is only noise.
+    return all.filter((row) => !((row.id === "folder-unfiled" && row.kind === "folder" && row.count === 0) || row.id === "empty-unfiled"));
+  };
+  // A toolbar button closes the form it opened, and shows while that form is open.
+  const rootFolderForm = () => { const editor = c.editor(); return editor?.kind === "folder" && !editor.id && !editor.parent; };
   function sortMenu() {
     void Menu.popup([
       ...([["name", "Project name"], ["edited", "Last edited"], ["added", "Date added"], ["live", "Live sessions"]] as const).map(([value, label]) => ({ label, checked: c.order() === value, disabled: c.sortPending(),
@@ -385,8 +405,8 @@ function Projects(props: { controller: PanelController; surface: string; footer?
   return <View testID="projects-panel" style={{ flex: 1, minHeight: 0, backgroundColor: theme().palette.panel }}>
     <Header title="Projects" count={c.query().trim() ? rows().filter((row) => row.kind === "project").length : c.state().projects.length} total={c.state().projects.length} noun="project">
       <ToolbarCommand id="sort-projects" icon="sort" label="Sort projects" onPress={sortMenu} />
-      <ToolbarCommand id="new-folder" icon="folder" label="New folder" onPress={() => c.editor.set({ kind: "folder", name: "" })} />
-      <ToolbarCommand id="new-project" icon="add" label="New project" onPress={() => c.editor.set({ kind: "project" })} />
+      <ToolbarCommand id="new-folder" icon="folder" label="New folder" selected={rootFolderForm()} onPress={() => c.editor.set(rootFolderForm() ? null : { kind: "folder", name: "" })} />
+      <ToolbarCommand id="new-project" icon="add" label="New project" selected={c.editor()?.kind === "project"} onPress={() => c.editor.set(c.editor()?.kind === "project" ? null : { kind: "project" })} />
     </Header>
     <InlineEditor controller={c} kinds={["folder", "project"]} />
     <PanelSearch controller={c} panel="projects" surface={props.surface} />
@@ -636,8 +656,9 @@ function ShellIntentContent(props: { controller: PanelController; shellId: strin
 
 function FolderEditor(props: { controller: PanelController; editor: Extract<Editor, { kind: "folder" }> }) {
   const c = props.controller, name = signal(props.editor.name), error = signal("");
+  const blank = () => !name().trim();
   function save() {
-    if (c.pending()) return;
+    if (c.pending() || blank()) return;
     error.set("");
     void c.run(async () => {
       try { const folder = props.editor.id ? await Store.renameFolder(props.editor.id, name()) : await Store.createFolder(name(), props.editor.parent); c.expandFolder(folder.id); c.editor.set(null); }
@@ -645,14 +666,13 @@ function FolderEditor(props: { controller: PanelController; editor: Extract<Edit
     });
   }
   return <View style={{ gap: 10 }}>
-    <Text style={{ fontFamily: theme().family, fontSize: text(15), color: ink() }}>{props.editor.id ? "Rename virtual folder" : props.editor.parent ? "New subfolder" : "New virtual folder"}</Text>
+    <Text numberOfLines={2} style={{ fontFamily: theme().family, fontSize: text(15), color: ink() }}>{props.editor.id ? "Rename folder" : props.editor.parent ? `New folder in ${c.folderPath(props.editor.parent)}` : "New folder"}</Text>
     <Text style={{ fontFamily: theme().family, fontSize: text(11), color: muted() }}>Group projects without moving their files.</Text>
-    <Text style={{ fontFamily: theme().family, fontSize: text(10), color: muted() }}>{`PARENT / ${c.folderPath(props.editor.parent)}`}</Text>
-    <Input testID="folder-name" accessibilityLabel="Folder name" autoFocus={true} value={name()} onChange={(value) => name.set(value)} onSubmit={save} style={field()} />
+    <Input testID="folder-name" accessibilityLabel="Folder name" placeholder="Folder name" autoFocus={true} value={name()} onChange={(value) => name.set(value)} onSubmit={save} style={formField()} />
     {error() !== "" && <Text style={{ color: theme().palette.gold, fontFamily: theme().family, fontSize: text(11) }}>{error()}</Text>}
     <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: 6 }}>
       <Command label="Cancel" disabled={c.pending()} onPress={() => c.editor.set(null)} />
-      <Command id="save-folder" label="Save folder" disabled={c.pending()} onPress={save} />
+      <Command id="save-folder" label={props.editor.id ? "Rename folder" : "Create folder"} disabled={c.pending() || blank()} onPress={save} />
     </View>
   </View>;
 }
@@ -693,18 +713,23 @@ function ProjectEditor(props: { controller: PanelController }) {
   void (c.defaultProjectDirectory ? Promise.resolve(c.defaultProjectDirectory) : Store.defaultProjectDirectory()).then((directory) => {
     if (!alive) return;
     defaultDirectory.set(directory);
-    if (followsName()) setPath(`${directory}/${name()}`);
+    if (followsName()) setPath(`${directory}/${name().trim()}`);
   }).catch((reason: unknown) => { if (alive) error.set(String(reason)); });
   function setPath(value: string) {
-    path.set(value); inspection.set(null); error.set(""); checking.set(true);
+    path.set(value); inspection.set(null); error.set("");
     const token = ++generation;
     clearTimeout(timer);
+    // A default path without a name is the projects directory itself: nothing to inspect (a deep
+    // repository walk) and nothing to create, so Create stays off until there is a name.
+    if (!value.trim() || followsName() && !name().trim()) { checking.set(false); return; }
+    checking.set(true);
     timer = setTimeout(() => {
       void Store.inspectProject(value).then((next) => { if (alive && token === generation) { inspection.set(next); checking.set(false); } })
         .catch((reason: unknown) => { if (alive && token === generation) { error.set(String(reason)); checking.set(false); } });
     }, 250);
   }
-  function setName(value: string) { name.set(value); if (followsName() && defaultDirectory()) setPath(`${defaultDirectory()}/${value}`); }
+  // The project is named with the trimmed name, so its default folder is too.
+  function setName(value: string) { name.set(value); if (followsName() && defaultDirectory()) setPath(`${defaultDirectory()}/${value.trim()}`); }
   async function browse() {
     if (c.pending()) return;
     try {
@@ -728,19 +753,21 @@ function ProjectEditor(props: { controller: PanelController }) {
       } catch (reason) { error.set(String(reason)); }
     });
   }
+  // The path as typed is in its field; name the folder it resolves to only when that differs (~, symlinks).
+  const resolved = () => { const root = inspection()?.root ?? ""; return root === path().trim().replace(/(.)\/+$/, "$1") ? "" : root; };
   cleanup(keymap.bind("mod+o", () => void browse()));
   cleanup(keymap.bind("mod+g", () => { if (inspection()?.canInitGit && !c.pending()) initGit.set(!initGit()); }));
   return <View style={{ gap: 10 }}>
     <Text style={{ fontFamily: theme().family, fontSize: text(15), color: ink() }}>New project</Text>
     <Text style={{ fontFamily: theme().family, fontSize: text(11), color: muted() }}>Project name</Text>
-    <Input testID="project-name" accessibilityLabel="Project name" placeholder={followsName() ? "my-project" : "Use folder name"} value={name()} readonly={c.pending()} autoFocus={true} onChange={setName} onSubmit={save} style={field()} />
+    <Input testID="project-name" accessibilityLabel="Project name" placeholder={followsName() ? "my-project" : "Use folder name"} value={name()} readonly={c.pending()} autoFocus={true} onChange={setName} onSubmit={save} style={formField()} />
     <Text style={{ fontFamily: theme().family, fontSize: text(11), color: muted() }}>Folder</Text>
-    <View style={{ flexDirection: "row", gap: 6 }}>
-      <Input testID="project-path" accessibilityLabel="Project folder" placeholder="/path/to/project" value={path()} readonly={c.pending()} onChange={(value) => { followsName.set(false); setPath(value); }} onSubmit={save} ref={(node) => { pathInput = node; }} style={{ ...field(), fontFamily: theme().monoFamily, flex: 1 }} />
+    <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+      <Input testID="project-path" accessibilityLabel="Project folder" placeholder="/path/to/project" value={path()} readonly={c.pending()} onChange={(value) => { followsName.set(false); setPath(value); }} onSubmit={save} ref={(node) => { pathInput = node; }} style={{ ...formField(), fontFamily: theme().monoFamily, flex: 1, minWidth: 0 }} />
       <Command id="browse-project" label="Browse…" disabled={c.pending()} onPress={() => void browse()} />
     </View>
-    <Text testID="project-inspection" style={{ fontFamily: theme().family, fontSize: text(11), color: muted() }}>{checking() ? "Checking folder…" : inspection() ? `${inspection()!.exists ? "Folder" : "New folder"} · ${inspection()!.repositoryCount ? `${inspection()!.repositoryCount} Git repositories` : "no repositories"}` : "Enter a project name, or choose an existing folder."}</Text>
-    {inspection() && <Text numberOfLines={2} style={{ fontFamily: theme().family, fontSize: text(10), color: muted() }}>{`Folder: ${inspection()!.root}`}</Text>}
+    <Text testID="project-inspection" style={{ fontFamily: theme().family, fontSize: text(11), color: muted() }}>{checking() ? "Checking folder…" : inspection() ? `${inspection()!.exists ? "Existing folder" : "New folder"} · ${inspection()!.repositoryCount ? plural(inspection()!.repositoryCount, "Git repository") : "no repositories"}` : "Enter a project name, or choose an existing folder."}</Text>
+    {resolved() !== "" && <Text numberOfLines={2} style={{ fontFamily: theme().family, fontSize: text(10), color: muted() }}>{`Resolves to ${resolved()}`}</Text>}
     {!!inspection()?.warning && <Text style={{ fontFamily: theme().family, fontSize: text(11), color: theme().palette.gold }}>{inspection()!.warning}</Text>}
     {inspection()?.canInitGit ? <Switch testID="project-init-git" accessibilityLabel="Initialize Git" checked={initGit()} onChange={(value) => initGit.set(value)} disabled={c.pending()} style={{ flexDirection: "row", alignItems: "center", gap: 8 }}
       trackStyle={{ width: 28, height: 16, borderRadius: 8, padding: 2, alignItems: initGit() ? "flex-end" : "flex-start", backgroundColor: initGit() ? accent() : theme().palette.divider }} thumbStyle={{ width: 12, height: 12, borderRadius: 6, backgroundColor: theme().palette.bg }}>
