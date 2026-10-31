@@ -4,8 +4,10 @@ import { DEFERRED_COMMANDS, DEFERRED_KEYMAP, PANEL_COMMANDS, TAB_CYCLE_KEYS, WIN
 test("deferred chords retain their context and host-only global keys are absent", () => {
   const chords = DEFERRED_KEYMAP.map(([key, , scope]) => `${scope}:${key}`);
   expect(new Set(chords).size).toBe(chords.length);
-  for (const [key, command] of DEFERRED_KEYMAP) {
-    expect(DEFERRED_COMMANDS.has(command)).toBe(true);
+  // A chat's chords stay deferred to the focused chat; the window runs the
+  // window-scoped commands that share their keys (New chat, the agents, Search).
+  for (const [key, command, scope] of DEFERRED_KEYMAP) {
+    expect(DEFERRED_COMMANDS.has(command)).toBe(scope !== "window");
     expect(["mod+alt+g", "mod+shift+o", "mod+q"].includes(key)).toBe(false);
   }
 });
@@ -44,7 +46,7 @@ test("P1-KEYS-04 closing a tab blocks nothing and modifier shortcuts dismiss All
     host: { params: {
       schema: 1, windowId: "w2-modal", kind: "project", projectId: "w2-modal", path: "/fixture/Modal",
       restore: { layout: { layout: { pane: 1 }, active_pane: 1, panels_initialized: true, locked_panes: [], panes: { "1": { tabs: [{ kind: "shell", shell_id: "first" }, { kind: "chat", chat_id: "second" }], active_tab_key: "shell:first" } } } },
-    }, handlers: { "app.restoreReady": null, "window.setDockInfo": null } },
+    }, handlers: { "app.restoreReady": null, "window.setDockInfo": null, "app.setAppearance": null } },
   });
   try {
     await app.waitFor("id:tab:shell:first");
@@ -56,10 +58,14 @@ test("P1-KEYS-04 closing a tab blocks nothing and modifier shortcuts dismiss All
     expect(app.shows("id:panel:panel:settings")).toBe(true);
     await app.press("id:tab-closed-undo");
     await app.waitFor("id:tab:shell:first");
-    await app.press("id:all-tabs");
-    expect(app.shows("id:all-tabs-menu")).toBe(true);
-    await app.keyboard.press("mod+2");
-    expect(app.shows("id:all-tabs-menu")).toBe(false);
+    expect(app.shows("id:panel:shell:first")).toBe(true);
+    // All tabs is the pane's own menu, offered once its tabs overflow the header.
+    await app.setViewport(480, 780);
+    await app.press("id:strip-all-tabs:1");
+    expect(app.shows("role:menuitem")).toBe(true);
+    // Undo opens the shell again after the other tabs, so the chat is now tab 1.
+    await app.keyboard.press("mod+1");
+    expect(app.shows("role:menuitem")).toBe(false);
     expect(app.shows("id:panel:chat:second")).toBe(true);
     expect(app.host.posts().filter((post) => post.name === "window.setDockInfo").length).toBe(1);
   } finally { app.dispose(); }
@@ -99,46 +105,48 @@ test("deferred keys are inert and all tab-cycle aliases preserve the selected pl
 });
 
 test("P1-KEYS-04 arrows stay inside All tabs; Escape closes it and restores window shortcuts", async () => {
+  // All tabs is the pane's own menu: at this width the two tabs overflow its header.
   const app = await open("../App.tsx", {
-    platform: "macos", width: 1220, height: 780,
+    platform: "macos", width: 360, height: 780,
     host: { params: {
       schema: 1, windowId: "w2-strip-keys", kind: "project", projectId: "w2-strip-keys", path: "/fixture/Strip",
       restore: { layout: { layout: { pane: 1 }, active_pane: 1, panels_initialized: true, locked_panes: [], panes: { "1": { tabs: [{ kind: "shell", shell_id: "first" }, { kind: "chat", chat_id: "second" }], active_tab_key: "shell:first" } } } },
-    }, handlers: { "app.restoreReady": null, "window.setDockInfo": null } },
+    }, handlers: { "app.restoreReady": null, "window.setDockInfo": null, "app.setAppearance": null } },
   });
   try {
     await app.waitFor("id:tab:shell:first");
-    await app.press("id:all-tabs");
+    await app.press("id:strip-all-tabs:1");
     await app.keyboard.press("down");
-    expect(app.shows("id:all-tabs-menu")).toBe(true);
+    expect(app.shows("role:menuitem")).toBe(true);
     expect(app.shows("id:panel:shell:first")).toBe(true);
     expect(app.shows("id:panel:chat:second")).toBe(false);
     await app.keyboard.press("enter");
-    expect(app.shows("id:all-tabs-menu")).toBe(false);
+    expect(app.shows("role:menuitem")).toBe(false);
     expect(app.shows("id:panel:chat:second")).toBe(true);
 
     // Down wraps from the second row to the first, but Escape cancels that
     // tentative highlight and leaves the visible session untouched.
-    await app.press("id:all-tabs");
+    await app.press("id:strip-all-tabs:1");
     await app.keyboard.press("down");
     await app.keyboard.press("escape");
-    expect(app.shows("id:all-tabs-menu")).toBe(false);
+    expect(app.shows("role:menuitem")).toBe(false);
     expect(app.shows("id:panel:chat:second")).toBe(true);
     await app.keyboard.press("ctrl+shift+tab");
     expect(app.shows("id:panel:shell:first")).toBe(true);
 
     // Both axes belong to the overlay while it is open, including wraparound.
-    await app.press("id:all-tabs");
+    await app.press("id:strip-all-tabs:1");
     for (const key of ["up", "left", "right"]) {
       await app.keyboard.press(key);
       expect(app.shows("id:panel:shell:first")).toBe(true);
     }
-    await app.keyboard.press("space");
-    expect(app.shows("id:all-tabs-menu")).toBe(false);
+    // Up wrapped to the last row; the pane's menu chooses it with Enter.
+    await app.keyboard.press("enter");
+    expect(app.shows("role:menuitem")).toBe(false);
     expect(app.shows("id:panel:chat:second")).toBe(true);
-    await app.press("id:all-tabs");
+    await app.press("id:strip-all-tabs:1");
     await app.keyboard.press("ctrl+tab");
-    expect(app.shows("id:all-tabs-menu")).toBe(false);
+    expect(app.shows("role:menuitem")).toBe(false);
     expect(app.shows("id:panel:shell:first")).toBe(true);
   } finally { app.dispose(); }
 });

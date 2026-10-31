@@ -709,10 +709,14 @@ export function Workspace(props: WorkspaceProps) {
     const width = headerWidth(id);
     const main = !!pane?.main && width >= mainMarkerThreshold(snapshot().theme, snapshot().panelTabIcons);
     let lock = width >= M.lockAt, focus = width >= M.focusAt;
-    const panels = shared() || snapshot().panelTabIcons ? pane?.tabs.filter((tab) => tab.kind === "panel").length ?? 0 : 0;
-    const needed = () => panels * M.panelCell + M.menuButton + 12 + ((main ? 1 : 0) + (lock ? 1 : 0) + (focus ? 1 : 0)) * (M.nativeButton + M.buttonGap);
-    if (panels && needed() > width) focus = false;
-    if (panels && needed() > width) lock = false;
+    // Panel tabs are pinned ahead of the scrolling tabs, so the buttons only get the room they
+    // leave: icon cells, or the labels' measured widths (in header points).
+    const icons = shared() || snapshot().panelTabIcons;
+    const pinned = (pane?.tabs ?? []).filter((tab) => tab.kind === "panel")
+      .reduce((total, tab) => total + (icons ? M.panelCell : (tabWidths()[`${id}:${tab.id}`] ?? 0) / (header() / M.header)), 0);
+    const needed = () => pinned + M.menuButton + 12 + ((main ? 1 : 0) + (lock ? 1 : 0) + (focus ? 1 : 0)) * (M.nativeButton + M.buttonGap);
+    if (pinned && needed() > width) focus = false;
+    if (pinned && needed() > width) lock = false;
     return { main, lock, focus };
   }
   function panelCellWidth(id: number) {
