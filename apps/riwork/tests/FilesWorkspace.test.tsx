@@ -1,5 +1,14 @@
-import { expect, open, test } from "nsh/test";
+import { expect, open, test, type App } from "nsh/test";
 import type { WorkspaceSnapshot } from "../model";
+
+/** Opens Files as a person does: Views > Files in the menu of the pane that holds it. */
+async function openFiles(app: App) {
+  await app.waitFor("id:workspace-dock", { timeout: 15000 });
+  const snapshot = app.host.posts().filter((post) => post.name === "app.fixture.state").slice(-1)[0].data as WorkspaceSnapshot;
+  const pane = snapshot.panes.find((pane) => pane.tabs.some((tab) => tab.id === "panel:files"))?.id ?? snapshot.activePane;
+  await app.press(`id:pane-menu-${pane}`);
+  await app.chooseMenuItem("Views > Files");
+}
 
 test("P3b workspace Files selection places Preview in main, routes Open, and exposes the memo", async () => {
   const app = await open("./FilesWorkspace.fixture.tsx", { platform: "macos", width: 1280, height: 800,
@@ -8,8 +17,7 @@ test("P3b workspace Files selection places Preview in main, routes Open, and exp
     } } });
   const latest = () => app.host.posts().filter((post) => post.name === "app.fixture.state").slice(-1)[0].data as WorkspaceSnapshot;
   try {
-    await app.waitFor("id:show-panel:files", { timeout: 15000 });
-    await app.press("id:show-panel:files");
+    await openFiles(app);
     await app.waitFor("id:file:note.txt", { timeout: 15000 });
     const before = latest();
     await app.press("id:file:note.txt");
@@ -35,8 +43,7 @@ test("P3b an unavailable selected worktree never falls back to the project's fil
       "app.fixture.state": null, "window.setDockInfo": null,
     } } });
   try {
-    await app.waitFor("id:show-panel:files", { timeout: 15000 });
-    await app.press("id:show-panel:files");
+    await openFiles(app);
     await app.waitFor("id:files-empty");
     expect(app.texts()).toContain("Select a worktree to browse its files.");
     expect(app.shows("id:file:note.txt")).toBe(false);
