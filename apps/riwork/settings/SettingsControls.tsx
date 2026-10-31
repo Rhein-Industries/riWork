@@ -10,20 +10,27 @@ export const buttonStyle = (theme: Theme) => ({ paddingHorizontal: space(9, them
 export function Section(props: { number: string; title: string; description?: string; theme?: Theme; padding?: number; children?: JSX.Element }) {
   const theme = props.theme ?? defaultTheme;
   return <View testID={`settings-section-${props.number}`} style={{ paddingHorizontal: space(6, theme().scale), paddingTop: space(10, theme().scale), paddingBottom: space(14, theme().scale), gap: space(12, theme().scale), borderWidth: 0, borderBottomWidth: 1, borderColor: theme().palette.divider, borderRadius: 0, backgroundColor: "transparent" }}>
-    <View style={{ gap: space(2, theme().scale) }}>
-      <Text role="header" style={{ ...textStyle(theme, 10, true), fontWeight: "600" }}>{props.title}</Text>
+    <View style={{ gap: space(3, theme().scale) }}>
+      {/* Above the 11 pt row labels and the 11 pt semibold subheadings inside a section. */}
+      <Text role="header" style={{ ...textStyle(theme, 12), fontWeight: "700" }}>{props.title}</Text>
       {props.description && <Text style={{ ...textStyle(theme, 10, true), maxWidth: 560 }}>{props.description}</Text>}
     </View>
     {props.children}
   </View>;
 }
 
+const TRACK_HEIGHT = 16;
+/** One pressable row: the label (and description) on the left, the switch at the right edge. */
 export function ToggleRow(props: { id: string; label: string; description?: string; checked: boolean; disabled?: boolean; onChange: (value: boolean) => void; theme?: Theme; onRef?: (node: YNode) => void }) {
   const theme = props.theme ?? defaultTheme;
+  // The label's first line is about 1.2 times its size tall; whichever of it and the track is
+  // shorter moves down to center on the other, so the switch sits on the first line.
+  const offset = () => (11 * theme().scale * 1.2 - TRACK_HEIGHT) / 2;
+  // A Switch lays out its track first and its children after it: row-reverse puts the label first.
   return <Switch testID={props.id} ref={(node) => props.onRef?.(node)} accessibilityLabel={props.label} checked={props.checked} disabled={props.disabled} onChange={props.onChange}
-    style={{ paddingVertical: space(8, theme().scale), gap: space(12, theme().scale), alignItems: "flex-start" }}
-    trackStyle={{ width: 28, height: 16, borderRadius: 8, backgroundColor: props.checked ? theme().palette.cyan : theme().palette.divider }} thumbStyle={{ width: 12, height: 12, margin: 2, borderRadius: 6, backgroundColor: theme().palette.bg, transform: [{ translateX: props.checked ? 12 : 0 }] }}>
-    <View style={{ flex: 1, gap: 4 }}><Text style={textStyle(theme)}>{props.label}</Text>{props.description && <Text style={{ ...textStyle(theme, 10, true), maxWidth: 560 }}>{props.description}</Text>}</View>
+    style={{ flexDirection: "row-reverse", alignItems: "flex-start", paddingVertical: space(8, theme().scale), gap: space(16, theme().scale), opacity: props.disabled ? 0.45 : 1 }}
+    trackStyle={{ width: 28, height: TRACK_HEIGHT, flexShrink: 0, marginTop: Math.max(0, offset()), borderRadius: 8, backgroundColor: props.checked ? theme().palette.cyan : theme().palette.divider }} thumbStyle={{ width: 12, height: 12, margin: 2, borderRadius: 6, backgroundColor: theme().palette.bg, transform: [{ translateX: props.checked ? 12 : 0 }] }}>
+    <View style={{ flex: 1, minWidth: 0, paddingTop: Math.max(0, -offset()), gap: 4 }}><Text style={textStyle(theme)}>{props.label}</Text>{props.description && <Text style={{ ...textStyle(theme, 10, true), maxWidth: 560 }}>{props.description}</Text>}</View>
   </Switch>;
 }
 

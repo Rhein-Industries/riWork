@@ -3,7 +3,7 @@ import { Button, Input } from "nsh/base";
 import { Accounts, ProjectSettings as NativeProjectSettings, Settings, Store, type AccountsDto, type ProjectSettingsDto } from "riwork/native";
 import { MemoEditor } from "../Files";
 import { DEFAULT_THEME, space, type InterfaceTheme } from "../appearance";
-import { ChoiceRow, Section, StepperRow, buttonStyle, textStyle } from "./SettingsControls";
+import { ChoiceRow, Section, StepperRow, ToggleRow, buttonStyle, textStyle } from "./SettingsControls";
 import { ProjectDraft } from "./project_model";
 
 type ProjectSettingsProps = {
@@ -158,11 +158,6 @@ export function ProjectSettingsPanel(props: ProjectSettingsProps) {
   const fieldStyle = () => ({ minHeight: 30, padding: 8, borderRadius: 4, backgroundColor: theme().palette.bg, ...textStyle(theme, 12) });
   const note = (text: string | null | undefined, id: string) => text ? <Text testID={id} role="alert" style={{ ...textStyle(theme, 10), color: theme().palette.gold }}>{text}</Text> : null;
   const compact = () => ({ ...buttonStyle(theme), alignSelf: "flex-start" as const });
-  // Off / On chips, as Spread work: a per-project switch that saves when chosen. `value` is read
-  // lazily so a refresh updates the row instead of rebuilding it (and dropping its focus).
-  const onOff = (id: string, label: string, description: string | undefined, value: () => boolean, onChange: (enabled: boolean) => void) =>
-    <ChoiceRow id={id} label={label} description={description} value={`${id}-${value() ? "on" : "off"}`} choices={[{ id: `${id}-off`, label: "Off" }, { id: `${id}-on`, label: "On" }]}
-      disabled={pending()} onChange={(choice) => { const enabled = choice.endsWith("-on"); if (enabled !== value()) onChange(enabled); }} theme={theme} />;
   // The form's one action lives in the fixed header: always in view, filled only when it can save.
   // Props read `canSave()` lazily, so the button updates in place and keeps its focus.
   const saveButton = () => <Button testID="project-settings-save" accessibilityLabel="Save name and folder" disabled={!canSave()} onPress={() => void save()}
@@ -228,10 +223,11 @@ export function ProjectSettingsPanel(props: ProjectSettingsProps) {
         }} theme={theme} />)}
       </Section>
       <Section number="06" title="Notifications" description="When an agent in this project finishes. Changes save immediately." theme={theme}>
-        {onOff("project-notify-agent-done", "Agent completion notifications", undefined, () => snapshot()?.project.notifyOnAgentDone === true,
-          (enabled) => void run(() => Store.setProjectNotifications(props.projectId(), enabled), "Notifications saved"))}
-        {onOff("project-wake-orchestrators", "Wake orchestrators when a worker finishes", "A worker shell's finished turn checks in with this project's orchestrator and the global one.", () => snapshot()?.project.wakeOrchestratorsOnAgentDone === true,
-          (enabled) => void run(() => Store.setProjectOrchestratorWakes(props.projectId(), enabled), "Orchestrator wakes saved"))}
+        {/* Each switch saves when pressed; `checked` is read in place, so a refresh updates the row and keeps its focus. */}
+        <ToggleRow id="project-notify-agent-done" label="Agent completion notifications" checked={snapshot()?.project.notifyOnAgentDone === true} disabled={pending()}
+          onChange={(enabled) => void run(() => Store.setProjectNotifications(props.projectId(), enabled), "Notifications saved")} theme={theme} />
+        <ToggleRow id="project-wake-orchestrators" label="Wake orchestrators when a worker finishes" description="A worker shell's finished turn checks in with this project's orchestrator and the global one." checked={snapshot()?.project.wakeOrchestratorsOnAgentDone === true} disabled={pending()}
+          onChange={(enabled) => void run(() => Store.setProjectOrchestratorWakes(props.projectId(), enabled), "Orchestrator wakes saved")} theme={theme} />
       </Section>
       <Section number="07" title="Locations" theme={theme}>
         <Text selectable={true} style={{ ...textStyle(theme), fontFamily: theme().monoFamily }}>{snapshot()!.project.root}</Text>
