@@ -417,23 +417,70 @@ function Projects(props: { controller: PanelController; surface: string; footer?
 }
 
 function Worktrees(props: { controller: PanelController; surface: string }) {
-  const c = props.controller;
+  type Tree = ReturnType<typeof visibleWorktrees>[number];
+  const c = props.controller, s = () => theme().scale, family = () => theme().family;
   const all = () => visibleWorktrees(c.state(), c.projectId());
-  const rows = () => all().filter((tree) => matches(c.query(), tree.id, tree.branch, tree.path));
+  const rows = () => all().filter((tree) => matches(c.query(), tree.id, tree.branch, tree.path, tree.repositoryRoot));
+  const primary = () => all().find((tree) => tree.isPrimary);
+  // A project folder without Git is listed with the placeholder branch "root".
+  const name = (tree: Tree) => tree.isPrimary && !tree.repositoryRoot ? "Project folder" : tree.branch;
+  // Name a repository only when it is not the project's own, so one-repository projects do not repeat it.
+  const repository = (tree: Tree) => tree.repositoryRoot && tree.repositoryRoot !== primary()?.repositoryRoot ? tree.repositoryRoot.split("/").filter(Boolean).pop() ?? "" : "";
+  // The Store keeps a selection after its worktree goes missing (Files must not switch by
+  // itself), but a missing linked worktree has no row. Say so, and offer the way back.
+  const stranded = () => {
+    const id = c.selectedWorktree();
+    if (!c.loaded() || id === null || all().some((tree) => tree.id === id)) return null;
+    const tree = c.state().worktrees.find((tree) => tree.id === id);
+    return tree ? name(tree) : `Worktree ${id.slice(0, 8)}`;
+  };
   return <View testID="worktrees-panel" style={{ flex: 1, minHeight: 0, backgroundColor: theme().palette.panel }}>
     <Header title="Worktrees" count={rows().length} total={all().length} noun="worktree" project={c.projectLabel()}>
       <ToolbarCommand id="refresh-worktrees" icon="refresh" label="Refresh worktrees" disabled={c.pending()} onPress={() => void c.run(() => Store.refreshWorktrees(c.projectId()))} />
     </Header>
     <PanelSearch controller={c} panel="worktrees" surface={props.surface} />
-    <List each={rows()} keyExtractor={(tree) => tree.id} estimatedItemSize={space(72, theme().scale)} style={{ flex: 1, minHeight: 0 }} contentStyle={{ paddingHorizontal: space(6, theme().scale) }} empty={<Empty query={c.query()} noun="worktrees" />}>
-      {(item) => <Button testID={`worktree-${item().id}`} accessibilityLabel={worktreeLabel(item())} selected={c.selectedWorktree() === item().id} onPress={() => c.selectWorktree(item().id)} style={row()} hoverStyle={{ backgroundColor: theme().palette.panelActive }} focusStyle={{ backgroundColor: theme().palette.divider }} selectedStyle={{ backgroundColor: theme().palette.panelActive }}>
-        <Text style={{ fontFamily: theme().family, fontSize: text(11), color: ink() }}>{`${item().isPrimary ? "▣" : "⑂"} ${worktreeLabel(item())}`}</Text>
-        <Text numberOfLines={1} style={{ fontFamily: theme().monoFamily, fontSize: text(10), color: muted() }}>{item().path}</Text>
-        {item().present === false && <Text style={{ fontFamily: theme().family, fontSize: text(10), color: theme().palette.gold }}>Missing</Text>}
-        <Text style={{ fontFamily: theme().family, fontSize: text(10), color: muted() }}>{`${c.state().tasks.filter((task) => task.worktreeId === item().id && task.status === "done").length}/${c.state().tasks.filter((task) => task.worktreeId === item().id).length} tasks · ${item().id.slice(0, 8)}`}</Text>
-      </Button>}
+    {stranded() && <View testID="worktree-selection-missing" style={{ marginHorizontal: space(12, s()), marginBottom: space(8, s()), padding: space(10, s()), gap: space(6, s()), borderRadius: space(8, s()), backgroundColor: theme().palette.bg }}>
+      <Text style={{ fontFamily: family(), fontSize: text(11), fontWeight: "600", color: theme().palette.gold }}>Selected worktree is missing</Text>
+      <Text style={{ fontFamily: family(), fontSize: text(10), color: muted() }}>{`${stranded()} is no longer on disk, so Files has nothing to show.`}</Text>
+      <View style={{ flexDirection: "row" }}>
+        <Command id="worktree-use-primary" label={primary() ? `Use ${name(primary()!)}` : "Use the project folder"} onPress={() => c.selectWorktree(primary()?.id ?? null)} />
+      </View>
+    </View>}
+    <List each={rows()} keyExtractor={(tree) => tree.id} estimatedItemSize={space(58, s())} style={{ flex: 1, minHeight: 0 }} contentStyle={{ paddingHorizontal: space(6, s()), paddingBottom: space(6, s()) }} empty={<Empty query={c.query()} noun="worktrees" />}>
+      {(item) => <WorktreeRow item={item} />}
     </List>
   </View>;
+
+  function WorktreeRow(props: { item: () => Tree }) {
+    // List recycles a cell across keys: read the tree through item() every time.
+    const tree = props.item;
+    const selected = () => c.selectedWorktree() === tree().id, missing = () => tree().present === false;
+    const tasks = () => {
+      let open = 0, done = 0;
+      for (const task of c.state().tasks) if (task.worktreeId === tree().id) { if (task.status === "done") done++; else open++; }
+      return [open ? `${open} open` : "", done ? `${done} done` : ""].filter(Boolean).join(" · ");
+    };
+    const meta = () => [missing() ? "Missing on disk" : "", tasks()].filter(Boolean).join(" · ");
+    const label = () => [name(tree()) === tree().branch ? worktreeLabel(tree()) : name(tree()), tree().isPrimary ? "primary" : "", missing() ? "missing" : ""].filter(Boolean).join(", ");
+    return <Button testID={`worktree-${tree().id}`} accessibilityLabel={label()} selected={selected()} onPress={() => c.selectWorktree(tree().id)}
+      tooltip={<View style={{ maxWidth: space(300, s()), padding: 7, gap: 2, borderRadius: 6, backgroundColor: theme().palette.panelActive }}>
+        <Text style={{ fontFamily: theme().monoFamily, fontSize: text(10), color: ink() }}>{tree().path}</Text>
+        <Text style={{ fontFamily: theme().monoFamily, fontSize: text(9), color: muted() }}>{tree().id}</Text>
+      </View>}
+      style={{ ...row(), flexDirection: "row", alignItems: "flex-start", gap: space(8, s()) }} hoverStyle={{ backgroundColor: theme().palette.panelActive }} focusStyle={{ backgroundColor: theme().palette.divider }} selectedStyle={{ backgroundColor: theme().palette.panelActive }}>
+      <View style={{ paddingTop: 1 }}><Icon name={tree().isPrimary ? "folder" : "worktrees"} size={text(13)} color={missing() ? theme().palette.gold : selected() ? accent() : muted()} /></View>
+      <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: space(6, s()), minWidth: 0 }}>
+          <Text numberOfLines={1} style={{ flexShrink: 1, fontFamily: family(), fontSize: text(11), fontWeight: selected() ? "600" : "400", color: ink() }}>{name(tree())}</Text>
+          {repository(tree()) !== "" && <Text numberOfLines={1} style={{ flexShrink: 0, fontFamily: family(), fontSize: text(10), color: muted() }}>{repository(tree())}</Text>}
+          {tree().isPrimary && name(tree()) === tree().branch && <Text style={{ flexShrink: 0, fontFamily: family(), fontSize: text(10), color: muted() }}>primary</Text>}
+        </View>
+        <Text numberOfLines={1} ellipsizeMode="head" style={{ fontFamily: theme().monoFamily, fontSize: text(10), color: muted() }}>{tree().path}</Text>
+        {meta() !== "" && <Text numberOfLines={1} style={{ fontFamily: family(), fontSize: text(10), color: missing() ? theme().palette.gold : muted() }}>{meta()}</Text>}
+      </View>
+      {selected() && <View style={{ paddingTop: 1 }}><Icon name="check" size={text(12)} color={accent()} /></View>}
+    </Button>;
+  }
 }
 
 function TaskDetail(props: { controller: PanelController; task: TaskDto }) {
