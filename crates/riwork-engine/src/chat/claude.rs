@@ -308,6 +308,37 @@ struct ClaudeDriver {
 }
 
 impl ClaudeDriver {
+    /// A CLI that rejected its saved login can cache that failure after `/login`
+    /// succeeds elsewhere. Only a new submission asks for a fresh process; the
+    /// failed prompt is never replayed on its own.
+    fn refresh_login_for_send(&self) -> Result<(), String> {
+        let replace = {
+            let mut core = self.shared.lock();
+            if !core.auth_restart_needed || core.restarting || core.stopped || core.dead.is_some() {
+                return Ok(());
+            }
+            if core.turn.is_some() || !core.ready {
+                return Err("Claude is finishing its failed sign-in attempt; keep the draft and send again when it is idle".into());
+            }
+            core.begin_restart()
+        };
+        if replace {
+            restart(&self.shared);
+            let core = self.shared.lock();
+            if let Some(reason) = &core.dead {
+                return Err(format!(
+                    "Claude could not restart after the sign-in failure ({reason})"
+                ));
+            }
+            if core.stopped || !core.ready {
+                return Err(
+                    "Claude is not ready; keep the draft and send again after it settles".into(),
+                );
+            }
+        }
+        Ok(())
+    }
+
     fn run(&mut self, command: ChatCommand, reporter: DriverReporter) -> Result<(), String> {
         let mut core = self.shared.lock();
         let result = core.command(command, reporter);
@@ -335,6 +366,12 @@ impl Driver for ClaudeDriver {
         if matches!(command, ChatCommand::Stop) {
             self.shutdown();
             return Ok(());
+        }
+        if matches!(
+            command,
+            ChatCommand::Send { .. } | ChatCommand::SendAttachments { .. }
+        ) {
+            self.refresh_login_for_send()?;
         }
         if let ChatCommand::SendAttachments { text, attachments } = &command {
             let deadline = Instant::now() + child::WRITE_WAIT;
@@ -619,6 +656,9 @@ struct Core {
     out: Option<Sender<Outgoing>>,
     ready: bool,
     restarting: bool,
+    /// This process rejected its login. The next explicit send replaces it so
+    /// credentials saved by an external `/login` are read afresh.
+    auth_restart_needed: bool,
     stopped: bool,
     /// Why the process is gone, once it has failed.
     dead: Option<String>,
@@ -704,6 +744,7 @@ impl Core {
             out: None,
             ready: false,
             restarting: false,
+            auth_restart_needed: false,
             stopped: false,
             dead: None,
             retiring: None,
@@ -829,6 +870,7 @@ impl Core {
 
     fn close_turn(&mut self, outcome: TurnOutcome) {
         if self.turn.is_some() && matches!(outcome, TurnOutcome::Completed) {
+            self.auth_restart_needed = false;
             self.resolve_notice(notice_kind::AUTH_REQUIRED, "Claude is signed in again.");
         }
         self.retry_item = None;
@@ -1394,9 +1436,11 @@ impl Core {
             }
         }
         if let Some(effort) = effort {
-            if self.settings.effort.as_deref() != Some(effort.as_str()) {
+            // Empty is none: Claude starts without --effort and uses the model's own.
+            let effort = (!effort.is_empty()).then_some(effort);
+            if self.settings.effort != effort {
                 // Only a flag at start-up sets it: the next launch has it.
-                self.settings.effort = Some(effort);
+                self.settings.effort = effort;
                 self.restart_wanted = true;
             }
             reporter.report(DriverReport {
@@ -1913,6 +1957,7 @@ impl Core {
     fn on_assistant(&mut self, frame: &Value) {
         self.resolve_notice(notice_kind::API_RETRY, "The API answered again.");
         if str_of(frame, "error") == Some("authentication_failed") {
+            self.auth_restart_needed = true;
             self.ensure_turn();
             let text = frame["message"]["content"]
                 .as_array()
@@ -2198,6 +2243,15 @@ impl Core {
                     }
                     _ => "Claude reported an error.".into(),
                 });
+            // Some CLI versions emit only a failed result, without the
+            // assistant's structured authentication_failed frame.
+            if str_of(frame, "error") == Some("authentication_failed")
+                || message.starts_with("Failed to authenticate")
+                || message.starts_with("Not logged in")
+                || message.contains("OAuth refresh token is no longer valid")
+            {
+                self.auth_restart_needed = true;
+            }
             let interrupted = self.interrupt.is_some();
             let repeated = self
                 .turn
@@ -2622,6 +2676,9 @@ fn start_process(shared: &Arc<Shared>) -> Result<(), String> {
         core.proc = Some(Arc::clone(&proc));
         core.out = Some(out_tx);
         core.ready = false;
+        // Restored auth notices describe earlier processes; this new CLI gets
+        // its own chance to read the credentials currently saved on disk.
+        core.auth_restart_needed = false;
         core.sigint_at = None;
         core.set_state(ChatState::Starting);
         // The answer makes the chat ready as the reader handles it, so that

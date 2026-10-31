@@ -1303,7 +1303,7 @@ fn toolbar_dto(transcript: &Transcript, info: &riwork_engine::chat::model::ChatI
             .iter()
             .map(|name| (*name).to_owned())
             .collect(),
-        effort_label: toolbar::effort_label(models, chosen, info.effort.as_deref()),
+        effort_label: toolbar::effort_label(models, chosen, info.effort.as_deref(), provider),
         effort: info.effort.clone(),
         efforts: toolbar::effort_rows(models, chosen, info.effort.as_deref(), provider)
             .into_iter()

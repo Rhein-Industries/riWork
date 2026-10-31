@@ -2609,6 +2609,22 @@ fn an_effort_the_model_does_not_take_is_reported_as_the_effort_kept() {
 }
 
 #[test]
+fn an_empty_effort_leaves_the_effort_to_the_model() {
+    let mut run = Run::start_with("models_fast", |config| {
+        config.model = Some("gpt-6.1-sol".into());
+        config.effort = Some("high".into());
+        // The recording starts as the chat it was made from: fast, on Sol.
+        config.fast = true;
+    });
+    run.until(is_models);
+    let (effort, heard) = recorder();
+    run.driver.configure(configure(None, Some(""), None), effort).unwrap();
+    // Auto: no effort, so turn/start leaves it out and the model's own is used.
+    assert_eq!(heard.efforts(), [None]);
+    run.driver.shutdown();
+}
+
+#[test]
 fn an_older_start_never_puts_back_or_takes_back_a_choice_a_later_start_carries() {
     let (events, _unused) = mpsc::channel();
     let fake = Fake::new(&[]);

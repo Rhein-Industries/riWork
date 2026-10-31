@@ -1458,7 +1458,11 @@ impl Codex {
                     // Against the model just chosen, if there is a new one.
                     if let Some(effort) = effort {
                         let chosen = session.effective_model();
-                        if session.takes_effort(chosen.as_deref(), &effort) {
+                        if effort.is_empty() {
+                            // None: turn/start leaves it out, and the model's own is used.
+                            session.settings.effort = None;
+                            session.choose(Field::Effort, &reporter);
+                        } else if session.takes_effort(chosen.as_deref(), &effort) {
                             session.settings.effort = Some(effort);
                             session.choose(Field::Effort, &reporter);
                         } else {

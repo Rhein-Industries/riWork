@@ -2135,16 +2135,131 @@ fn authentication_errors_are_not_agent_messages_and_clear_after_a_successful_tur
     );
     core.on_frame(&json!({"type":"result","is_error":true,"result":"Please log in."}));
     let failed = events.try_iter().collect::<Vec<_>>();
+    assert!(core.auth_restart_needed);
     let items = completed_notices(&failed);
     assert_eq!(items.len(), 1);
     assert_notice(&items[0], notice_kind::AUTH_REQUIRED, false);
     assert!(agent_texts(&fold(&failed)).is_empty());
     core.ensure_turn();
     core.on_frame(&json!({"type":"result","subtype":"success","result":"done"}));
+    assert!(!core.auth_restart_needed);
     let resolved = completed_notices(&events.try_iter().collect::<Vec<_>>());
     assert_eq!(resolved.len(), 1);
     assert_eq!(items[0].id, resolved[0].id);
     assert_notice(&resolved[0], notice_kind::AUTH_REQUIRED, true);
+}
+
+#[test]
+fn an_auth_failure_restarts_only_on_the_next_explicit_send_without_replaying_the_failed_prompt() {
+    for assistant_error in [true, false] {
+        let mut replies =
+            vec![json!({"type":"system","subtype":"session_state_changed","state":"running"})];
+        if assistant_error {
+            replies.push(json!({"type":"assistant","error":"authentication_failed","message":{
+                "model":"<synthetic>","content":[{"type":"text","text":"Failed to authenticate: OAuth session expired and could not be refreshed"}]
+            }}));
+        }
+        replies.extend([
+            json!({"type":"result","is_error":true,"result":"Failed to authenticate: OAuth session expired and could not be refreshed"}),
+            json!({"type":"system","subtype":"session_state_changed","state":"idle"}),
+        ]);
+        let failed = format!(
+            "{}\n{}\n",
+            fixture("claude/idle_only.ndjson"),
+            json!({
+                "type":"expect","frame":{"type":"user","message":{"content":"failed prompt"}},"reply":replies,
+            })
+        );
+        let recovered = format!(
+            "{}\n{}\n",
+            fixture("claude/idle_only.ndjson"),
+            json!({
+                "type":"expect","frame":{"type":"user","message":{"content":"new prompt"}},"reply":[
+                    {"type":"system","subtype":"session_state_changed","state":"running"},
+                    {"type":"result","subtype":"success","result":"Signed in."},
+                    {"type":"system","subtype":"session_state_changed","state":"idle"},
+                ],
+            })
+        );
+        let fake = Fake::new(&[&failed, &recovered]);
+        let mut config = fake.config(Provider::Claude);
+        config.resume = Some("sess-1".into());
+        let (sender, events) = mpsc::channel();
+        let mut driver = start_with(config, sender, fast()).unwrap();
+        let mut seen = until(&events, is_idle);
+        driver
+            .command(ChatCommand::Send {
+                text: "failed prompt".into(),
+            })
+            .unwrap();
+        seen.extend(until(&events, is_idle));
+
+        // A failure does not launch a replacement or retry in the background.
+        assert_eq!(fake.starts().len(), 1);
+        driver
+            .command(ChatCommand::Send {
+                text: "new prompt".into(),
+            })
+            .unwrap();
+        seen.extend(until(&events, |event| {
+            matches!(
+                event,
+                ChatEvent::TurnCompleted {
+                    outcome: TurnOutcome::Completed,
+                    ..
+                }
+            )
+        }));
+        seen.extend(until(&events, is_idle));
+        assert_eq!(fake.starts().len(), 2);
+        assert!(has_pair(&argv(&fake.starts()[1]), "--resume", "sess-1"));
+        let received = fake.received();
+        let prompts: Vec<_> = received
+            .iter()
+            .filter(|frame| frame["type"] == "user")
+            .map(|frame| frame["message"]["content"].as_str().unwrap())
+            .collect();
+        assert_eq!(prompts, ["failed prompt", "new prompt"]);
+        assert!(!fake.saw("mismatch"));
+        assert_eq!(agent_texts(&fold(&seen)), ["Signed in."]);
+        driver.shutdown();
+    }
+}
+
+#[test]
+fn an_auth_failure_does_not_restart_or_accept_a_new_message_before_the_turn_settles() {
+    let config = bare_config();
+    let (sender, events) = mpsc::channel();
+    let mut core = Core::new(&config, sender, "session".into());
+    core.ready = true;
+    core.ensure_turn();
+    core.auth_restart_needed = true;
+    let shared = Arc::new(Shared {
+        core: Mutex::new(core),
+        restart_done: Condvar::new(),
+        config,
+        tuning: fast(),
+    });
+    let mut driver = ClaudeDriver {
+        shared: shared.clone(),
+    };
+    let error = driver
+        .command(ChatCommand::Send {
+            text: "keep this draft".into(),
+        })
+        .unwrap_err();
+    assert!(error.contains("keep the draft"), "{error}");
+    assert!(!shared.lock().restarting);
+    assert!(shared.lock().queued.is_empty());
+    assert!(!events.try_iter().any(|event| matches!(
+        event,
+        ChatEvent::ItemCompleted {
+            item: Item {
+                body: ItemBody::UserMessage { .. },
+                ..
+            }
+        }
+    )));
 }
 
 #[test]
@@ -2241,6 +2356,10 @@ fn restored_auth_notice_resolves_on_the_first_successful_turn() {
     config.outstanding_notices = previous.open_notices.clone();
     let original = completed_notices(&events.try_iter().collect::<Vec<_>>());
     let mut core = Core::new(&config, sender, "session".into());
+    assert!(
+        !core.auth_restart_needed,
+        "a restored notice does not invalidate a freshly started process"
+    );
     core.ensure_turn();
     core.on_result(&json!({"subtype":"success","result":"done"}));
     let resolved = completed_notices(&events.try_iter().collect::<Vec<_>>());
@@ -2933,6 +3052,35 @@ fn an_effort_is_reported_at_once_and_the_restart_for_it_settles_what_the_old_pro
     let args = argv(&starts[1]);
     assert!(has_pair(&args, "--model", "model-b"), "{args:?}");
     assert!(has_pair(&args, "--effort", "high"), "{args:?}");
+}
+
+#[test]
+fn an_empty_effort_restarts_claude_without_one() {
+    let mut rig = Rig::new(&["idle_only"]);
+    let effort = |value: &str| ChatCommand::Configure {
+        model: None,
+        effort: Some(value.into()),
+        approval_mode: None,
+        fast: None,
+        contributor_mode: None,
+        contributor_opt_out: None,
+        claude_billing: None,
+    };
+    let (chosen, heard) = recorder();
+    rig.driver.configure(effort("high"), chosen).unwrap();
+    assert_eq!(heard.efforts(), [Some("high".to_owned())]);
+    rig.until_idle();
+    wait_for("the restart with --effort", || rig.fake.starts().len() == 2);
+    let (cleared, heard) = recorder();
+    rig.driver.configure(effort(""), cleared).unwrap();
+    // Auto: the effort is none from now on, and the next launch has no --effort.
+    assert_eq!(heard.efforts(), [None]);
+    rig.until_idle();
+    wait_for("the restart without --effort", || {
+        rig.fake.starts().len() == 3
+    });
+    let args = argv(&rig.fake.starts()[2]);
+    assert!(!args.iter().any(|arg| arg == "--effort"), "{args:?}");
 }
 
 #[test]

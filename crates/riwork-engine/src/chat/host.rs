@@ -3498,8 +3498,9 @@ fn configure(
         inner.info.model = Some(model);
         changed = true;
     }
-    if let Some(effort) = effort.filter(|effort| inner.info.effort.as_ref() != Some(effort)) {
-        inner.info.effort = Some(effort);
+    // An empty effort is none: the model's own default (Auto).
+    if let Some(effort) = effort.map(|effort| (!effort.is_empty()).then_some(effort)).filter(|effort| inner.info.effort != *effort) {
+        inner.info.effort = effort;
         changed = true;
     }
     if let Some(mode) = approval_mode.filter(|mode| inner.info.approval_mode != *mode) {

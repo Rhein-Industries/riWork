@@ -151,7 +151,15 @@ pub struct EffortRow {
     pub current: bool,
 }
 
-/// The effort picker's lines. With no effort chosen, the model's default is the current one.
+/// Whether a chat of `provider` can leave the effort to the model (Auto): Claude starts
+/// without `--effort`, Codex leaves it out of `turn/start`. Muse takes only its own levels.
+pub fn auto_effort(provider: Provider) -> bool {
+    matches!(provider, Provider::Claude | Provider::Codex)
+}
+
+/// The effort picker's lines: Auto first where the provider has it (an empty effort clears
+/// the chosen one), then the model's levels. With no effort chosen, Auto is the current one;
+/// without Auto, the model's default is.
 pub fn effort_rows(
     models: &[ModelOption],
     chosen_model: Option<&str>,
@@ -159,31 +167,47 @@ pub fn effort_rows(
     provider: Provider,
 ) -> Vec<EffortRow> {
     let default = selected_model(models, chosen_model).and_then(|m| m.default_effort.as_deref());
-    let current = chosen_effort.or(default);
-    effort_choices(models, chosen_model, provider)
-        .into_iter()
-        .map(|effort| EffortRow {
-            label: if Some(effort.as_str()) == default {
-                format!("{effort} (default)")
-            } else {
-                effort.clone()
-            },
-            current: Some(effort.as_str()) == current,
-            effort,
-        })
-        .collect()
+    let choices = effort_choices(models, chosen_model, provider);
+    if choices.is_empty() {
+        return Vec::new();
+    }
+    let auto = auto_effort(provider);
+    let current = if auto { chosen_effort } else { chosen_effort.or(default) };
+    let mut rows = Vec::new();
+    if auto {
+        rows.push(EffortRow {
+            effort: String::new(),
+            label: default.map_or("Auto · the model decides".to_owned(), |default| format!("Auto · the model's default ({default})")),
+            current: chosen_effort.is_none(),
+        });
+    }
+    rows.extend(choices.into_iter().map(|effort| EffortRow {
+        label: if Some(effort.as_str()) == default {
+            format!("{effort} (default)")
+        } else {
+            effort.clone()
+        },
+        current: Some(effort.as_str()) == current,
+        effort,
+    }));
+    rows
 }
 
-/// What the effort button says: the chosen effort, else the model's default, else a prompt.
+/// What the effort button says: the chosen effort; with none, `auto` where the provider leaves
+/// it to the model, else the model's default, else a prompt.
 pub fn effort_label(
     models: &[ModelOption],
     chosen_model: Option<&str>,
     chosen_effort: Option<&str>,
+    provider: Provider,
 ) -> String {
-    chosen_effort
-        .or_else(|| selected_model(models, chosen_model).and_then(|m| m.default_effort.as_deref()))
-        .unwrap_or("effort")
-        .to_owned()
+    if let Some(effort) = chosen_effort {
+        return effort.to_owned();
+    }
+    if auto_effort(provider) {
+        return "auto".to_owned();
+    }
+    selected_model(models, chosen_model).and_then(|m| m.default_effort.as_deref()).unwrap_or("effort").to_owned()
 }
 
 /// Whether the effort button is there: not for a model its driver says takes no effort.
@@ -288,14 +312,24 @@ mod tests {
     fn the_effort_picker_offers_only_what_the_selected_model_takes() {
         let models = list();
         let names = |rows: Vec<EffortRow>| rows.into_iter().map(|r| r.effort).collect::<Vec<_>>();
+        // Auto (an empty effort) comes first where the provider can leave it to the model.
         assert_eq!(
             names(effort_rows(&models, None, None, Provider::Codex)),
-            ["low", "medium", "high", "max"]
+            ["", "low", "medium", "high", "max"]
         );
         assert_eq!(
             names(effort_rows(&models, Some("luna"), None, Provider::Codex)),
-            ["medium", "high"]
+            ["", "medium", "high"]
         );
+        let rows = effort_rows(&models, Some("luna"), None, Provider::Claude);
+        assert!(rows[0].current && rows[0].label.starts_with("Auto"), "no effort chosen is Auto");
+        assert!(!rows.iter().skip(1).any(|row| row.current));
+        let rows = effort_rows(&models, Some("luna"), Some("high"), Provider::Claude);
+        assert!(!rows[0].current && rows.iter().any(|row| row.effort == "high" && row.current));
+        assert_eq!(effort_label(&models, Some("luna"), None, Provider::Claude), "auto");
+        assert_eq!(effort_label(&models, Some("luna"), Some("high"), Provider::Claude), "high");
+        // Muse takes only its own levels: no Auto, and the default is what it shows.
+        assert!(effort_rows(&models, Some("luna"), None, Provider::Muse).iter().all(|row| !row.effort.is_empty()));
         // A model that takes none has no picker.
         assert!(effort_rows(&models, Some("haiku"), None, Provider::Claude).is_empty());
         assert!(!effort_available(&models, Some("haiku"), Provider::Claude));

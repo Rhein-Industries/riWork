@@ -1305,6 +1305,17 @@ function Composer(props: PartProps & { billing: BillingControl; width: () => num
   // by these memos, so a streaming turn keeps the same buttons.
   const hasToolbar = computed(() => !!toolbar());
   const effortAvailable = computed(() => !!toolbar()?.effortAvailable);
+  const fastAvailable = computed(() => !!toolbar()?.fastAvailable);
+  /** Why a message cannot go yet, said under the box instead of a silent button. */
+  const blocked = computed(() => {
+    if (props.panel().link === "connecting") return "Connecting to the chat… keep typing; you can send as soon as it is back.";
+    if (props.billing.pending()) return "Switching how this chat bills… sending waits for it.";
+    if (empty()) return "";
+    if (pending()) return "Sending…";
+    if (incompleteAttachments()) return "Adding the attachments… sending waits for them.";
+    if (memo.preview()) return "Insert or close the memo preview to send.";
+    return "";
+  });
   const options = computed(() => modelOptions(), { equals: sameContent });
   const stopping = computed(() => props.panel().running && (empty() || pending() || incompleteAttachments()));
   const sendDisabled = () => !!memo.preview() || empty() || pending() || incompleteAttachments() || !accepting();
@@ -1376,7 +1387,7 @@ function Composer(props: PartProps & { billing: BillingControl; width: () => num
     <DictationStatus controller={dictation} theme={theme} />
     <Suggestions control={suggestions} theme={theme} />
     <Input ref={(node) => { input = node; props.onInput?.(node); }} testID="chat-input" accessibilityLabel="Chat message" placeholder={props.panel().running ? "Send a follow-up to steer this turn…" : "Write a message…"}
-      multiline={true} autoCorrect={false} submitBehavior="submit" readonly={!accepting()} value={draft()}
+      multiline={true} autoCorrect={false} submitBehavior="submit" readonly={props.panel().link === "deleted"} value={draft()}
       onSelectionChange={(event) => selection.set({ start: event.start, end: event.end })}
       onPaste={(event) => addAttachments(event.uris, event.uris.length ? [] : event.files)}
       onChange={edit} onSubmit={() => { if (!suggestions.accept()) submit(); }} onFocus={() => focused.set(true)} onBlur={() => focused.set(false)}
@@ -1403,8 +1414,14 @@ function Composer(props: PartProps & { billing: BillingControl; width: () => num
           <Icon name="down" size={10 * theme().scale} color={theme().palette.muted} />
         </View>}
       </View>
-      {spacious() && effortAvailable() && <View style={{ maxWidth: 96 * theme().scale, minWidth: 0, flexShrink: 1 }}>
-        {pill("chat-effort", () => toolbar()?.effortLabel ?? "", effortMenu, theme().palette.muted)}
+      {effortAvailable() && <View style={{ maxWidth: 110 * theme().scale, minWidth: 0, flexShrink: 1 }}>
+        {pill("chat-effort", () => `${toolbar()?.effortLabel ?? ""} effort`, effortMenu, theme().palette.muted)}
+      </View>}
+      {fastAvailable() && <View role="checkbox" testID="chat-fast" focusable={true} accessibilityLabel="Fast mode" accessibilityState={{ checked: !!toolbar()?.fast }}
+        tooltip={toolbar()?.fast ? "Fast mode is on · click to turn it off" : "Fast mode is off · click to turn it on"} onPress={() => configure({ fast: !toolbar()?.fast })}
+        style={{ height: 28 * theme().scale, flexShrink: 0, paddingHorizontal: 7 * theme().scale, justifyContent: "center", borderRadius: 5, backgroundColor: toolbar()?.fast ? theme().palette.panelActive : "transparent" }}
+        hoverStyle={{ backgroundColor: theme().palette.panelActive }} focusStyle={{ backgroundColor: theme().palette.panelActive }}>
+        <Text numberOfLines={1} style={{ ...text(11, toolbar()?.fast ? theme().palette.cyan : theme().palette.muted), fontWeight: toolbar()?.fast ? "600" : "400" }}>Fast</Text>
       </View>}
       {roomy() && hasToolbar() && <View style={{ maxWidth: 124 * theme().scale, minWidth: 0, flexShrink: 1 }}>
         {pill("chat-mode", () => toolbar()?.modeLabel ?? "", modeMenu, theme().palette.muted)}
@@ -1432,6 +1449,7 @@ function Composer(props: PartProps & { billing: BillingControl; width: () => num
           <Icon name="up" size={17 * theme().scale} color={sendDisabled() ? theme().palette.muted : theme().palette.bg} />
         </View>}
     </View>
+    {!!blocked() && <Text testID="chat-send-blocked" role="text" style={text(11, theme().palette.muted)}>{blocked()}</Text>}
     </View>
   </View>;
 }
