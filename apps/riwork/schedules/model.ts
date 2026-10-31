@@ -37,7 +37,8 @@ export interface Editor {
 }
 export const QUICK_TIMES = [[600, "In 10 min"], [1800, "In 30 min"], [3600, "In 1 hour"], [86400, "In 1 day"]] as const;
 export const PERMISSIONS = [["supervised", "Supervised"], ["auto-edit", "Auto edit"], ["full", "Full access"], ["plan", "Plan"]] as const;
-export const FOOTNOTE = "Runs while RiWork is open. Busy/blocked targets defer for up to 5 min; older runs are skipped. At most 4 attempts/min. Uncertain sends pause without retry. Edit and save a future run to resume after review. TAB / ENTER · CMD+S to save.";
+export const FOOTNOTE = "Runs while RiWork is open. Busy/blocked targets defer for up to 5 min; older runs are skipped. At most 4 attempts/min. Uncertain sends pause without retry. Edit and save a future run to resume after review.";
+export const KEYS = "⌘S saves · Esc cancels";
 export const EMPTY = "No automations yet. Schedule a prompt to start a new project chat, or select an existing AI shell.";
 export const EMPTY_TARGETS = "No live Codex or Claude session in this scope. Open one separately, complete a turn, then return here.";
 export function defaults(): ChatOptions { return { provider: "codex", model: null, effort: null, fast: false, permission: "supervised", accountId: null }; }
@@ -100,7 +101,9 @@ export function status(row: ScheduleRow): string { return row.paused ? "Paused" 
 export function permissionLabel(value: string): string { return PERMISSIONS.find(([key]) => key === value)?.[1] ?? value; }
 export function optionsLabel(row: ScheduleRow): string {
   const options = row.options;
-  return `Permission: ${options ? permissionLabel(options.permission) : "Pinned with target"} · Account: ${row.accountLabel} · Model: ${options?.model ?? "Default"} · Effort: ${options?.effort ?? "Default"}${options?.fast ? " · Fast" : ""}`;
+  // An existing shell keeps its own model and effort: "Default" would not be true of it.
+  if (!options) return `Permission: Pinned with target · Account: ${row.accountLabel}`;
+  return `Permission: ${permissionLabel(options.permission)} · Account: ${row.accountLabel} · Model: ${options.model ?? "Default"} · Effort: ${options.effort ?? "Default"}${options.fast ? " · Fast" : ""}`;
 }
 export function errorMessage(reason: unknown): string {
   const message = String(reason).replace(/^Error: /, "");
@@ -125,6 +128,8 @@ export class AutomationModel {
   patch(patch: Partial<Editor>): void { if (!this.pending && this.editor) { this.editor = { ...this.editor, ...patch }; this.changed(); } }
   open(row?: ScheduleRow): void { if (!this.pending) { this.editor = editorFor(this.projectId, this.now(), row); this.confirmDelete = null; this.error = ""; this.changed(); } }
   cancel(): void { if (!this.pending) { this.editor = null; this.confirmDelete = null; this.error = ""; this.changed(); } }
+  /** Steps back from a delete confirmation only: an open draft stays. */
+  cancelDelete(): void { if (!this.pending && this.confirmDelete !== null) { this.confirmDelete = null; this.changed(); } }
   private async run(work: () => Promise<unknown>, saved = false): Promise<void> {
     if (this.pending) return;
     const token = this.generation;

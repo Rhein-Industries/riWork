@@ -16,7 +16,7 @@ test("P6B-SCHED-UI-01 visible subscriptions close and reopen; real status and ea
   try {
     await app.waitFor(`id:automation-row-${ID}`);
     expect(app.texts()).toContain("1 automation"); expect(app.texts()).toContain(FOOTNOTE);
-    expect(app.texts()).toContain("LAST fixture observed · submitted · due fixture due");
+    expect(app.texts()).toContain("Last · fixture observed · submitted · due fixture due");
     await app.press(`id:automation-created-chat-${ID}`);
     await app.press("id:automation-project-chat-earlier-fixture-chat");
     expect((await inspect(app)).opened).toEqual(["created-fixture-chat", "earlier-fixture-chat"]);
@@ -25,7 +25,7 @@ test("P6B-SCHED-UI-01 visible subscriptions close and reopen; real status and ea
     await app.press("id:fixture-toggle-visible");
     const state = await inspect(app); expect(state.subscribes).toBe(2); expect(state.closes).toBe(1); expect(state.listeners).toBe(1);
     await app.press("id:fixture-runtime-error");
-    await app.waitFor("text:SCHEDULER ERROR / Disposable ticker error");
+    await app.waitFor("text:Scheduler error · Disposable ticker error");
     expect(app.shows(`id:automation-row-${ID}`)).toBe(true);
   } finally { app.dispose(); }
 });
@@ -74,7 +74,7 @@ test("P6B-SCHED-UI-04 revision conflicts retain the draft; Escape resets two-cli
   const app = await open("./Automations.fixture.tsx", options);
   try {
     await app.waitFor(`id:automation-row-${ID}`); await app.press(`id:automation-edit-${ID}`);
-    expect(app.texts()).toContain("PINNED TARGET / 44444444-4444-4444-8444-444444444444");
+    expect(app.texts()).toContain("Pinned target · 44444444-4444-4444-8444-444444444444");
     await app.clear("id:automation-prompt"); await app.type("id:automation-prompt", "Unsaved fixture edit");
     await app.host.send("app.fixture.schedules.conflict", {}); await app.keyboard.press("mod+s");
     await app.waitFor("id:automation-error"); expect(app.value("id:automation-prompt")).toBe("Unsaved fixture edit");
