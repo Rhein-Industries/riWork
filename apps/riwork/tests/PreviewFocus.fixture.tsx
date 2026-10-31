@@ -13,7 +13,7 @@ function Fixture() {
   cleanup(() => { alive = false; session()?.dispose(); });
   cleanup(host.on("app.fixture.settle", () => { setTimeout(() => host.post("app.fixture.settled", {}), 100); }));
   void Layouts.fixtureManifest().then(async (value) => {
-    const entry = (value as { fixtures: { name: string; projectId: string }[] }).fixtures.find((entry) => entry.name === "L-MAIN")!;
+    const entry = (value as { fixtures: { name: string; projectId: string }[] }).fixtures.find((entry) => entry.name === "Preview")!;
     project.set(entry.projectId);
     const loaded = await Layouts.openSession({ windowId: "native-preview-focus", projectId: entry.projectId, restore: {
       layout: { split: { axis: "side_by_side", ratio: 0.5, first: { pane: 1 }, second: { pane: 2 } } },

@@ -111,6 +111,9 @@ fn main() -> Result<(), String> {
                 // Phase 5 tests change this project's tabs (routes, orchestrator
                 // chats); no golden layout fixture is read from it.
                 ("Phase5", "L-MAIN"),
+                // The App Preview fixtures (Phase6c, PreviewFocus) open and save their
+                // own layouts here, never into the golden L-MAIN that P1-LAY-03 reads.
+                ("Preview", "L-MAIN"),
             ])
             .collect()
     } else {

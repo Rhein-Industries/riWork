@@ -4,7 +4,8 @@
 # tests open the whole app and save settings, layouts or an API key: never run them otherwise.
 # Each NAME gets a fresh home, seeded as phase1_integration.py seeds the suite's: the p1-layouts
 # projects and layouts (fixtures.json) the named workspace fixtures open, and fake sessions for
-# their made-up shells. A /tmp home the caller brings is used as it is, for every NAME.
+# their made-up shells, and the invented Codex accounts of the settings tests (in an Orca profile of
+# its own, never the person's). A /tmp home the caller brings is used as it is, for every NAME.
 #
 #   scripts/pane-test.sh NAME [NAME]...
 set -eu
@@ -24,6 +25,15 @@ seed() {
 		echo "pane-test.sh: could not seed the private home $RIWORK_HOME" >&2
 		exit 1
 	fi
+	# The invented Codex accounts phase6a_settings.py gives the settings tests: one saved, one
+	# whose home is gone. No credentials.
+	rm -rf "$private_home/orca"
+	mkdir -p "$ORCA_USER_DATA_PATH/codex-accounts/fixture-saved/home"
+	printf '{"version":1,"user_data":"%s","source_active_id":"fixture-saved","accounts":[%s,%s]}\n' "$ORCA_USER_DATA_PATH" \
+		'{"id":"fixture-saved","email":"fixture@example.invalid","workspaceLabel":"Fixture saved","managedHomeRuntime":"host"}' \
+		'{"id":"fixture-unavailable","email":"unavailable@example.invalid","workspaceLabel":"Fixture unavailable","managedHomeRuntime":"host"}' \
+		>"$RIWORK_HOME/codex-accounts.json"
+	chmod 600 "$RIWORK_HOME/codex-accounts.json"
 }
 [ -z "$private_home" ] || export RIWORK_NSH_FAKE_SESSIONS="$RIWORK_HOME/fake-sessions.json"
 status=0

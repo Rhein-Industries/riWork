@@ -19,7 +19,7 @@ function Fixture() {
   void Layouts.fixtureManifest().then(async (value) => {
     const checked = await Cua.run("check");
     host.post("app.fixture.cua", checked);
-    const entry = (value as { fixtures: { name: string; projectId: string }[] }).fixtures.find((entry) => entry.name === "L-MAIN")!;
+    const entry = (value as { fixtures: { name: string; projectId: string }[] }).fixtures.find((entry) => entry.name === "Preview")!;
     project.set(entry.projectId);
     const loaded = await Layouts.openSession({ windowId: params.windowId, projectId: entry.projectId, restore: params.restore });
     if (params.worktree) {
