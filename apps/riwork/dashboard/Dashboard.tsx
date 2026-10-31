@@ -173,7 +173,7 @@ export function DashboardView(props: {
         {columns.activity == null && <Text numberOfLines={1} style={font(10, palette().muted)}>{`${agents.map((part) => part.text).join(" ") || "No agents"} · ${sessionsLine(project, read.chats_known)}`}</Text>}
       </View>
       {columns.activity != null && <View style={{ width: size(columns.activity!), gap: 2 }}>
-        <Text numberOfLines={1} style={font(10, agents.length ? toneOf(agents[0].tone) : palette().muted)}>{agents.map((part) => part.text).join(" ") || "No agents"}</Text>
+        <Text numberOfLines={1} style={font(10, palette().muted)}>{agents.length ? agents.map((part, index) => <Text style={{ color: toneOf(part.tone) }}>{`${index ? " " : ""}${part.text}`}</Text>) : "No agents"}</Text>
         <Text numberOfLines={1} style={font(10, palette().muted)}>{sessionsLine(project, read.chats_known)}</Text>
       </View>}
       <View style={{ width: size(columns.tasks), gap: 2 }}>
@@ -262,12 +262,14 @@ export function DashboardView(props: {
   /** The rest of the activity rail, drawn again on each read. */
   function activity(read: Wire) {
     const intelligence = intelligenceSection(read.intelligence, now());
-    // What needs the person comes first, under the decisions; the alert colour is
-    // theirs alone (the section title says the rest are working).
+    // What needs the person comes first, under the decisions; the alert colours are
+    // theirs alone (the section title says the rest are working): red for what
+    // failed, the attention colour for what waits or was missed.
     return <>
       {section("dashboard-attention-list", "Needs you", list(read.attention, read.attention_total, (item, index) => {
         const [headline, detail] = attentionCopy(item, now());
-        return row(`dashboard-attention-${index}`, headline, detail, item.target, palette().gold);
+        const failed = item.kind === "chat_failed" || item.kind === "automation" && item.outcome !== "missed" && item.outcome !== "uncertain";
+        return row(`dashboard-attention-${index}`, headline, detail, item.target, failed ? palette().danger : palette().gold);
       }, quietAttention(read), (item) => [...attentionCopy(item, now()), item.project_name ?? "", item.session?.project_name ?? ""], Number.POSITIVE_INFINITY))}
       {section("dashboard-working-list", "Working now", list(read.working, read.working_total, (work, index) =>
         row(`dashboard-working-${index}`, sessionName(work.session), workDetail(work, now(), false), work.session.target), "No agent is working right now.", (work) => sessionFields(work.session)))}
@@ -293,7 +295,7 @@ export function DashboardView(props: {
       {section("dashboard-tasks-list", "Tasks in progress", list(read.tasks_in_progress, read.tasks_in_progress_total, (task) =>
         row(`dashboard-task-${task.id}`, task.title, [task.project_name, task.branch, age(now(), task.updated_at)].filter(Boolean).join(" · "), { type: "task", id: task.id }), "No task is in progress.", (task) => [task.title, task.project_name, task.branch ?? ""]))}
       {section("dashboard-automations", "Automations", automations.state === "not_read" ? <Text style={note()}>Reading automations…</Text>
-        : automations.state === "unreadable" ? <Text style={note(palette().gold)}>{`Automations could not be read: ${automations.message}`}</Text>
+        : automations.state === "unreadable" ? <Text style={note(palette().danger)}>{`Automations could not be read: ${automations.message}`}</Text>
           : list(automations.items, automations.total, (item) => row(`dashboard-automation-${item.id}`, item.title, automationDetail(item, now()),
             { type: "automations", project_id: item.project_id }), "No automations.", (item) => [item.title, item.project_name ?? "App"]))}
       {section("dashboard-backends", "Backends", lines == null ? <Text style={note()}>Reading the app, the chat host and the providers…</Text>

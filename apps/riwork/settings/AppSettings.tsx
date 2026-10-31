@@ -223,7 +223,7 @@ export function AppSettings(props: AppSettingsProps) {
   const actionStates = () => ({ hoverStyle: { backgroundColor: theme().palette.divider }, focusStyle: { borderColor: theme().palette.focus }, disabledStyle: { opacity: 0.4 } });
   const button = (id: string, label: string, action: () => void, disabled = false, accessibilityLabel = label) => <Button testID={id} accessibilityLabel={accessibilityLabel} disabled={disabled} onPress={action} style={actionStyle()} hoverStyle={actionStates().hoverStyle} focusStyle={actionStates().focusStyle} disabledStyle={actionStates().disabledStyle}><Text style={textStyle(theme, 10)}>{label}</Text></Button>;
   // Notes wrap at the same measure as row descriptions.
-  const note = (text: string | null | undefined, id?: string, warning = false) => !!text && <Text testID={id} selectable={true} style={{ ...muted(), maxWidth: 560, color: warning ? theme().palette.gold : theme().palette.muted }}>{text}</Text>;
+  const note = (text: string | null | undefined, id?: string, tone?: "warning" | "error") => !!text && <Text testID={id} selectable={true} style={{ ...muted(), maxWidth: 560, color: tone === "error" ? theme().palette.danger : tone === "warning" ? theme().palette.gold : theme().palette.muted }}>{text}</Text>;
   const subheading = (text: string) => <Text role="header" style={{ ...textStyle(theme), fontWeight: "600", paddingTop: space(10, theme().scale) }}>{text}</Text>;
   const fieldStyle = (focused: boolean) => ({ color: theme().palette.text, backgroundColor: theme().palette.bg, padding: 8, borderWidth: 1, borderRadius: 6, borderColor: focused ? theme().palette.focus : theme().palette.divider });
   const saveError = () => error() || settings()?.error || "";
@@ -242,8 +242,8 @@ export function AppSettings(props: AppSettingsProps) {
           </View>;
         })}
       </View>
-      {note(accounts()?.selectedUnavailable ? "Your selected account is unavailable. Refresh accounts or choose another before starting Codex." : null, "settings-account-unavailable", true)}
-      {note(accounts()?.error, "settings-accounts-error", true)}
+      {note(accounts()?.selectedUnavailable ? "Your selected account is unavailable. Refresh accounts or choose another before starting Codex." : null, "settings-account-unavailable", "warning")}
+      {note(accounts()?.error, "settings-accounts-error", "error")}
       {note(accounts()?.fromCache ? "Showing saved accounts while Orca is unavailable." : null)}
       <View style={{ flexDirection: "row" }}>{button("refresh-codex-accounts", accounts()?.refreshing ? "Checking accounts…" : "Refresh accounts", () => void refreshAccounts(), !!accounts()?.refreshing)}</View>
     </View>;
@@ -276,7 +276,7 @@ export function AppSettings(props: AppSettingsProps) {
     const state = apiKey(), palette = theme().palette;
     if (state.saved === true) return { text: "API key saved", color: palette.cyan };
     if (state.saved === false) return { text: "No API key saved", color: palette.muted };
-    if (state.error) return { text: "The Keychain cannot say whether an API key is saved", color: palette.gold };
+    if (state.error) return { text: "The Keychain cannot say whether an API key is saved", color: palette.danger };
     return { text: "Checking the Keychain…", color: palette.muted };
   }
   function apiKeyRow() {
@@ -289,7 +289,7 @@ export function AppSettings(props: AppSettingsProps) {
         {button("claude-api-key-save", "Save", () => void saveKey(), apiPending() || !apiPaste().trim())}
         {apiKey().saved === true && button("claude-api-key-remove", "Remove", () => void removeKey(), apiPending())}
       </View>
-      {note(apiError() || apiKey().error, "claude-api-key-error", true)}
+      {note(apiError() || apiKey().error, "claude-api-key-error", "error")}
     </View>;
   }
   function agentBody() {
@@ -314,9 +314,9 @@ export function AppSettings(props: AppSettingsProps) {
       {s.orchestratorMode === "chat" && <>
         <ChoiceRow id="orchestrator-provider" label="Chat provider" description="Choosing another provider starts it on that provider's default model." value={`orchestrator-provider-${s.orchestratorChatProvider}`} choices={[{ id: "orchestrator-provider-codex", label: "Codex" }, { id: "orchestrator-provider-claude", label: "Claude" }, { id: "orchestrator-provider-muse", label: "Muse" }]} onChange={(value) => patch({ orchestratorChatProvider: value === "orchestrator-provider-codex" ? "codex" : value === "orchestrator-provider-claude" ? "claude" : "muse", orchestratorChatModel: null })} theme={theme} />
         <ChoiceRow id="orchestrator-model" label="Chat model" value={`orchestrator-model-${s.modelChoices.find((choice) => choice.model === s.orchestratorChatModel)?.id ?? "default"}`} choices={s.modelChoices.map((choice) => ({ id: `orchestrator-model-${choice.id}`, label: choice.label }))} onChange={(value) => patch({ orchestratorChatModel: s.modelChoices.find((choice) => `orchestrator-model-${choice.id}` === value)?.model ?? null })} theme={theme} />
-        <View style={{ gap: 6 }}><Text style={textStyle(theme)}>Other model</Text><Input testID="orchestrator-other-model" accessibilityLabel="Other model ID" placeholder="Other model ID" value={modelInput()} onChange={(value) => { modelInput.set(value); if (modelError()) modelError.set(""); }} onFocus={() => { if (alive) modelFocused.set(true); }} onBlur={() => { if (alive) modelFocused.set(false); }} onSubmit={() => { const invalid = modelIdError(modelInput()); modelError.set(invalid ?? ""); if (!invalid) { patch({ orchestratorChatModel: modelInput().trim() }); modelInput.set(""); } }} style={{ ...fieldStyle(modelFocused()), width: 220 }} />{note(modelError(), "orchestrator-model-error", true)}</View>
+        <View style={{ gap: 6 }}><Text style={textStyle(theme)}>Other model</Text><Input testID="orchestrator-other-model" accessibilityLabel="Other model ID" placeholder="Other model ID" value={modelInput()} onChange={(value) => { modelInput.set(value); if (modelError()) modelError.set(""); }} onFocus={() => { if (alive) modelFocused.set(true); }} onBlur={() => { if (alive) modelFocused.set(false); }} onSubmit={() => { const invalid = modelIdError(modelInput()); modelError.set(invalid ?? ""); if (!invalid) { patch({ orchestratorChatModel: modelInput().trim() }); modelInput.set(""); } }} style={{ ...fieldStyle(modelFocused()), width: 220 }} />{note(modelError(), "orchestrator-model-error", "error")}</View>
       </>}
-      {note(s.orchestratorUnreadableNote, "orchestrator-unreadable-note", true)}
+      {note(s.orchestratorUnreadableNote, "orchestrator-unreadable-note", "warning")}
       {note("Applies to orchestrators created from now on, except in projects whose Project Settings choose otherwise. Existing orchestrators keep their mode, provider and model until closed and created again.")}
       {subheading("Delegation")}
       <ToggleRow id="delegation-spread-work" label="Spread work" description="Orchestrators fan independent tasks out to several worker shells at once instead of working through them one by one. Off, they keep to one worker at a time unless asked." checked={s.delegation.spreadWork} onChange={(value) => patch({ delegationPatch: { spreadWork: value } })} theme={theme} />
@@ -326,7 +326,7 @@ export function AppSettings(props: AppSettingsProps) {
         const route = s.delegation[work], selected = choices.find((choice) => choice.route.provider === route.provider && choice.route.model === route.model);
         return <ChoiceRow id={`delegation-${work}`} label={work === "design" ? "Design work" : "Workhorse work"} value={`delegation-${work}-${selected?.id ?? "saved"}`} choices={choices.map((choice) => ({ id: `delegation-${work}-${choice.id}`, label: choice.label }))} onChange={(value) => { const route = choices.find((choice) => `delegation-${work}-${choice.id}` === value)?.route; if (route) patch({ delegationPatch: { [work]: route } }); }} theme={theme} />;
       })}
-      {note(s.delegation.unreadableNote, "delegation-unreadable-note", true)}
+      {note(s.delegation.unreadableNote, "delegation-unreadable-note", "warning")}
     </View>;
   }
   // Items are grouped by the side they sit on, in their order there, so "earlier" and
@@ -358,10 +358,10 @@ export function AppSettings(props: AppSettingsProps) {
   function importBody() {
     const counts = () => receipt() ?? preview();
     return <View testID="orca-import" style={{ gap: 8 }}>
-      <Text style={{ ...textStyle(theme), color: importPending() ? theme().palette.gold : theme().palette.cyan }}>{importPending() ? "Working" : receipt() ? "Imported" : "One-time import"}</Text>
+      <Text style={{ ...textStyle(theme), color: importPending() ? theme().palette.working : theme().palette.cyan }}>{importPending() ? "Working" : receipt() ? "Imported" : "One-time import"}</Text>
       {counts() && <><Text selectable={true} style={muted()}>{`ORCA CLI · ${counts()!.source}`}</Text><Text style={textStyle(theme)}>{`${counts()!.projectCount} projects${counts()!.folderCount > 0 ? ` · ${counts()!.folderCount} folders` : ""} · ${counts()!.worktreeCount} worktrees`}</Text></>}
-      {!!preview()?.warnings.length && <Scroll style={{ maxHeight: 120 }}>{preview()!.warnings.map((warning) => note(warning, undefined, true))}</Scroll>}
-      {note(importPending(), "orca-import-pending")}{note(importError(), "orca-import-error", true)}
+      {!!preview()?.warnings.length && <Scroll style={{ maxHeight: 120 }}>{preview()!.warnings.map((warning) => note(warning, undefined, "warning"))}</Scroll>}
+      {note(importPending(), "orca-import-pending")}{note(importError(), "orca-import-error", "error")}
       <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
         {button("orca-import-preview", receipt() ? "Check import" : "Preview import", () => void previewImport(), !!importPending())}
         {!receipt() && preview()?.recordable && button("orca-import-confirm", preview()!.projectCount + preview()!.worktreeCount > 0 ? "Import now" : "Finish import", () => void runImport(), !!importPending())}
@@ -388,7 +388,7 @@ export function AppSettings(props: AppSettingsProps) {
     <View style={{ minHeight: space(46, theme().scale), paddingHorizontal: space(6, theme().scale), paddingVertical: space(6, theme().scale), justifyContent: "center", alignItems: "center" }}>
       <View style={{ width: "100%", maxWidth: settingsLayout(width()).maxWidth, paddingHorizontal: space(6, theme().scale), gap: space(1, theme().scale) }}>
         <Text role="header" style={{ ...textStyle(theme, 13), fontWeight: "600" }}>Settings</Text>
-        {saveError() ? <Text testID="settings-save-error" selectable={true} style={{ ...muted(), color: theme().palette.gold }}>{saveError()}</Text> : <Text style={muted()}>All projects · Saved automatically</Text>}
+        {saveError() ? <Text testID="settings-save-error" selectable={true} style={{ ...muted(), color: theme().palette.danger }}>{saveError()}</Text> : <Text style={muted()}>All projects · Saved automatically</Text>}
       </View>
     </View>
     <Scroll testID="appearance-settings" ref={(node) => { page = node; scheduleReveal(); }} onScroll={(event) => { if (alive) scrollY.set(event.offset.y); }} style={{ flex: 1, minHeight: 0 }} contentStyle={{ paddingHorizontal: space(6, theme().scale), paddingBottom: space(12, theme().scale), alignItems: "center" }}>

@@ -64,6 +64,10 @@ pub struct PaletteColors {
     pub gold: Rgb,
     pub text: Rgb,
     pub muted: Rgb,
+    /// Errors and failures. A desktop from before it never writes it, and a
+    /// reader that finds it missing shows errors in `gold`, as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub danger: Option<Rgb>,
 }
 
 /// The terminal colors as shown: background, foreground and the 16 ANSI colors.
@@ -225,6 +229,7 @@ mod tests {
             gold: Rgb(base + 6),
             text: Rgb(base + 7),
             muted: Rgb(base + 8),
+            danger: Some(Rgb(base + 9)),
         }
     }
 
@@ -309,7 +314,8 @@ mod tests {
                 "palette": {
                     "bg": "#101010", "panel": "#101011", "panel_active": "#101012",
                     "divider": "#101013", "cyan": "#101014", "magenta": "#101015",
-                    "gold": "#101016", "text": "#101017", "muted": "#101018"
+                    "gold": "#101016", "text": "#101017", "muted": "#101018",
+                    "danger": "#101019"
                 },
                 "terminal": {
                     "background": "#101110",

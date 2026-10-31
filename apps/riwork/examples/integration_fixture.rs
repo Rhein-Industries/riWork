@@ -41,6 +41,7 @@ fn main() -> Result<(), String> {
             gold: Rgb(0xe4c07a),
             text: Rgb(0xd3e1e6),
             muted: Rgb(0x8eabb5),
+            danger: None,
         };
         appearance_file::publish(&home, &Published::new(true, palette, None), 1)?;
     }

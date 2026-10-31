@@ -88,7 +88,7 @@ fn terminal_theme(background: u32, foreground: u32, palette: [u32; 16]) -> Termi
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", from = "PaletteFields")]
 pub struct Palette {
     pub bg: u32,
     pub panel: u32,
@@ -96,13 +96,55 @@ pub struct Palette {
     pub divider: u32,
     pub cyan: u32,
     pub magenta: u32,
+    /// The attention color: what needs the person, waits for them, or warns.
     pub gold: u32,
     pub text: u32,
     pub muted: u32,
     /// The keyboard focus ring: primary in Native, gold in colorful themes.
     pub focus: u32,
-    /// Working state: Native's signal orange, or a colorful theme's primary.
+    /// Working state: Native's calm blue, or a colorful theme's primary.
     pub working: u32,
+    /// Errors and failures: a red, readable on `panel_active`.
+    pub danger: u32,
+}
+
+/// A palette as stored. One written before `danger` existed shows errors in
+/// its attention color, as it always did.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PaletteFields {
+    bg: u32,
+    panel: u32,
+    panel_active: u32,
+    divider: u32,
+    cyan: u32,
+    magenta: u32,
+    gold: u32,
+    text: u32,
+    muted: u32,
+    focus: u32,
+    working: u32,
+    #[serde(default)]
+    danger: Option<u32>,
+}
+
+impl From<PaletteFields> for Palette {
+    fn from(fields: PaletteFields) -> Self {
+        Self {
+            bg: fields.bg,
+            panel: fields.panel,
+            panel_active: fields.panel_active,
+            divider: fields.divider,
+            cyan: fields.cyan,
+            magenta: fields.magenta,
+            gold: fields.gold,
+            text: fields.text,
+            muted: fields.muted,
+            focus: fields.focus,
+            working: fields.working,
+            danger: fields.danger.unwrap_or(fields.gold),
+        }
+    }
 }
 
 /// Fixed palettes are a single resource shared verbatim with iOS. Values are
@@ -147,9 +189,12 @@ fn fixed_palette(choice: ThemeChoice) -> &'static ColorPaletteEntry {
 
 impl Palette {
     /// Native in light mode, on the published tokens: `cyan`, the primary and
-    /// selection color, is black; `magenta`, the secondary accent, a dark grey;
-    /// `gold` is the one signal color, a deep orange for working agents, errors
-    /// and warnings. Every text color reads at 4.5:1 or better on `panel_active`.
+    /// selection color, is black; `magenta`, the secondary accent, a dark grey.
+    /// Three state colors keep work, attention and failure apart: `working`, a
+    /// calm macOS blue, for agents at work; `gold`, the attention color, a deep
+    /// orange for what needs the person, waits for them or warns; and `danger`,
+    /// a red, for errors and failures. Every text color reads at 4.5:1 or
+    /// better on `panel_active`.
     pub const NATIVE_LIGHT: Self = Self {
         bg: 0xffffff,
         panel: 0xf5f5f7,
@@ -161,11 +206,13 @@ impl Palette {
         text: 0x1d1d1f,
         muted: 0x636366,
         focus: 0x000000,
-        working: 0xb34000,
+        working: 0x0058d0,
+        danger: 0xc80018,
     };
 
     /// Native in dark mode: the same roles inverted, white on black, with the
-    /// signal color lifted to macOS's dark-mode orange.
+    /// state colors lifted to macOS's dark-mode orange and its accessible
+    /// (increased contrast) blue and red.
     pub const NATIVE_DARK: Self = Self {
         bg: 0x000000,
         panel: 0x1c1c1e,
@@ -177,7 +224,8 @@ impl Palette {
         text: 0xf5f5f7,
         muted: 0x98989d,
         focus: 0xffffff,
-        working: 0xff9f0a,
+        working: 0x409cff,
+        danger: 0xff6961,
     };
 
     pub const fn native(dark: bool) -> Self {
@@ -189,7 +237,9 @@ impl Palette {
     }
 
     /// Derive readable interface colors from the terminal owner's effective
-    /// palette. Reading/parsing Ghostty configuration stays outside pure core.
+    /// palette: the primary from its cyan, the attention color from its yellow,
+    /// `danger` from its red. Reading/parsing Ghostty configuration stays
+    /// outside pure core.
     pub fn from_terminal(theme: &TerminalTheme) -> Self {
         let bg = theme.background;
         let text = readable(theme.foreground, bg);
@@ -203,6 +253,7 @@ impl Palette {
             text: readable(text, panel_active),
             muted: readable(mix(bg, text, 0.58), panel_active),
             focus: gold, working: cyan,
+            danger: readable(theme.palette[1], panel_active),
         }
     }
 }

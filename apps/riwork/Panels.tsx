@@ -678,7 +678,7 @@ function Shells(props: { controller: PanelController; surface: string }) {
       {FILTERS.filter(([filter]) => filter === "all" || filter === "shells" || c.sessionFilter() === filter || allChats().some((chat) => chat.provider === filter)).map(([filter, chip, , label]) =>
         <Command id={`sessions-filter-${filter}`} label={label} selected={c.sessionFilter() === filter} onPress={() => c.sessionFilter.set(filter)}>{`${chip} ${counts()[filter]}`}</Command>)}
     </View>
-    {c.catalogNotice() !== "" && <Text testID="sessions-catalog-notice" style={{ fontFamily: theme().family, fontSize: text(10), color: theme().palette.gold, paddingHorizontal: 12, paddingBottom: 8 }}>{c.catalogNotice()}</Text>}
+    {c.catalogNotice() !== "" && <Text testID="sessions-catalog-notice" style={{ fontFamily: theme().family, fontSize: text(10), color: theme().palette.danger, paddingHorizontal: 12, paddingBottom: 8 }}>{c.catalogNotice()}</Text>}
     {c.catalogLoading() && allChats().length === 0 && <Text style={{ fontFamily: theme().family, fontSize: text(10), color: muted(), paddingHorizontal: 12, paddingBottom: 8 }}>Loading chat history…</Text>}
     <List each={rows()} keyExtractor={(item) => item.id} estimatedItemSize={space(58, s())} style={{ flex: 1, minHeight: 0 }} contentStyle={{ paddingHorizontal: space(6, s()), paddingBottom: 6 }} empty={<SessionsEmpty />}>
       {(item) => <>{item().kind === "chat" ? <ChatSession item={() => item() as Extract<SessionRow, { kind: "chat" }>} /> : <ShellSession item={() => item() as Extract<SessionRow, { kind: "shell" }>} />}</>}
@@ -702,7 +702,8 @@ function Shells(props: { controller: PanelController; surface: string }) {
     // Waiting and failed chats need the person; the weight marks them where the theme gives
     // working and attention the same colour.
     const attention = () => chat().state === "waiting" || chat().state === "failed";
-    const tone = () => chat().state === "running" || chat().state === "starting" ? theme().palette.working : attention() ? theme().palette.gold : muted();
+    const tone = () => chat().state === "running" || chat().state === "starting" ? theme().palette.working
+      : chat().state === "failed" ? theme().palette.danger : attention() ? theme().palette.gold : muted();
     return <Button testID={`session-chat-${chat().id}`} accessibilityLabel={`${provider(chat())} chat · ${chat().title || "Untitled chat"} · ${status(chat())} · ${context(chat())}`}
       selected={c.selectedChat() === chat().id} disabled={!c.showChat} onPress={() => c.openChat(chat(), item().projectId, item().token)}
       style={rowStyle()} hoverStyle={{ backgroundColor: theme().palette.panelActive }} focusStyle={{ backgroundColor: theme().palette.divider }} selectedStyle={{ backgroundColor: theme().palette.panelActive }}>

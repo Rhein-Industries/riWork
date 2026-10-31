@@ -312,7 +312,7 @@ export function StatusBar(props: Props) {
       onPress={() => activateItem(kind)}>
       {kind === "layout" && <Icon name="layout" size={11 * theme().scale} color={theme().palette.muted} />}
       {(kind === "global_orchestrator" || kind === "project_orchestrator") && <>
-        {orchestratorMark(orchestratorState(kind)) && <Text style={{ ...textStyle(), color: ["working", "running", "starting", "waiting"].includes(orchestratorState(kind) ?? "") ? theme().palette.working : theme().palette.muted }}>{orchestratorMark(orchestratorState(kind)).trim()}</Text>}
+        {orchestratorMark(orchestratorState(kind)) && <Text style={{ ...textStyle(), color: orchestratorState(kind) === "waiting" ? theme().palette.gold : ["working", "running", "starting"].includes(orchestratorState(kind) ?? "") ? theme().palette.working : theme().palette.muted }}>{orchestratorMark(orchestratorState(kind)).trim()}</Text>}
         <Icon name={kind === "global_orchestrator" ? "globe" : "project-orchestrator"} size={12 * theme().scale} color={menu() === "global" && kind === "global_orchestrator" ? theme().palette.cyan : theme().palette.muted} />
       </>}
       {kind === "usage" && readouts ? readouts.map((segment) => usageReadout(segment, mode))
@@ -372,7 +372,7 @@ export function StatusBar(props: Props) {
         {(props.addins?.() ?? []).map((entry) => <View testID={`status-addin:${entry.key}`} role="button" accessibilityLabel={entry.text}
           onPress={() => props.onAddin?.(entry.key)} style={{ paddingHorizontal: 4, borderRadius: 4 }} hoverStyle={{ backgroundColor: theme().palette.panelActive }}>
           <Text numberOfLines={1} style={{ fontFamily: theme().family, fontSize: 11 * theme().scale,
-            color: entry.tone === "critical" ? theme().palette.gold : entry.tone === "warning" ? theme().palette.working : theme().palette.muted }}>{entry.text}</Text>
+            color: entry.tone === "critical" ? theme().palette.danger : entry.tone === "warning" ? theme().palette.gold : theme().palette.muted }}>{entry.text}</Text>
         </View>)}
         {items("right").map((entry) => item(entry.kind))}
       </Scroll>

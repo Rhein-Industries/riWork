@@ -25,8 +25,6 @@ import { SideHeader, escapeWithin, focusWithin, type FocusWithin } from "./SideP
 import { Suggestions, createSuggestions } from "./Suggestions";
 import { utf8Bytes } from "../files_model";
 
-const ERROR = "#ef6b73";
-
 export interface NativeChatUsage {
   provider: string;
   usageLabel?: string;
@@ -478,7 +476,7 @@ export function ChatTab(props: ChatTabProps) {
       {hasMeta() && <Text numberOfLines={1} style={{ ...text(11, theme().palette.muted), flexShrink: 3 }}>{`· ${row().meta ?? ""}`}</Text>}
       {hasDuration() && <Text style={text(10, theme().palette.muted)}>{duration()}</Text>}
       {running() && <Text numberOfLines={1} style={{ ...text(10, theme().palette.working), flexShrink: 1 }}>{row().currentLabel || "Running"}</Text>}
-      {failed() && <Text style={text(10, ERROR)}>{`${row().failedCount} failed`}</Text>}
+      {failed() && <Text style={text(10, theme().palette.danger)}>{`${row().failedCount} failed`}</Text>}
     </View>;
   }
 
@@ -671,7 +669,7 @@ export function ChatTab(props: ChatTabProps) {
         {control("Copy output", () => void Clipboard.writeText(body()?.output ?? ""))}
       </View>
       {hasCwd() && <Text selectable={true} style={mono(10, theme().palette.muted)}>{body()?.cwd ?? ""}</Text>}
-      {hasExit() && <Text style={mono(10, body()?.exitCode === 0 ? theme().palette.muted : ERROR)}>{`Exit ${body()?.exitCode}`}</Text>}
+      {hasExit() && <Text style={mono(10, body()?.exitCode === 0 ? theme().palette.muted : theme().palette.danger)}>{`Exit ${body()?.exitCode}`}</Text>}
       <Scroll style={{ maxHeight: 320, padding: 8, borderRadius: 4, backgroundColor: theme().palette.panel }}>
         {hasOmitted() && <Text style={{ ...mono(10, theme().palette.muted), fontStyle: "italic" }}>{`${body()?.omitted ?? 0} earlier bytes not shown`}</Text>}
         <Text selectable={true} style={mono(11)}>{body()?.output || (body()?.running ? "Waiting for output…" : "")}</Text>
@@ -736,7 +734,7 @@ export function ChatTab(props: ChatTabProps) {
   function toneColor(tone: string): string {
     if (tone === "reasoning") return theme().palette.muted;
     if (tone === "warning") return theme().palette.gold;
-    if (tone === "error") return ERROR;
+    if (tone === "error") return theme().palette.danger;
     return theme().palette.text;
   }
 
@@ -822,11 +820,11 @@ export function ChatTab(props: ChatTabProps) {
           </View>)}
         </View>}
         {banners().map((banner) => <View testID={`chat-banner:${banner.id}`} style={{ ...chatColumn(paneWidth(), theme().scale), paddingVertical: 4 }}>
-          <Text style={text(11, banner.level === "error" ? ERROR : banner.level === "warning" ? theme().palette.gold : theme().palette.muted)}>{banner.text}</Text>
+          <Text style={text(11, banner.level === "error" ? theme().palette.danger : banner.level === "warning" ? theme().palette.gold : theme().palette.muted)}>{banner.text}</Text>
           <BillingNoticeAction control={billing} noticeId={banner.id} theme={theme} />
         </View>)}
         {stopped() && <Text style={{ ...text(11, theme().palette.muted), ...chatColumn(paneWidth(), theme().scale) }}>Stopped. The chat will resume when you send a message.</Text>}
-        {failed() && <Text style={{ ...text(11, theme().palette.gold), ...chatColumn(paneWidth(), theme().scale) }}>{`Failed: ${panel().stateMessage ?? ""}`}</Text>}
+        {failed() && <Text style={{ ...text(11, theme().palette.danger), ...chatColumn(paneWidth(), theme().scale) }}>{`Failed: ${panel().stateMessage ?? ""}`}</Text>}
         <Composer panel={panel} handle={handle} theme={theme} notice={notice} visible={interactive} width={paneWidth} billing={billing}
           onSent={() => { following.set(true); list?.scrollToEnd(); }} onEditor={(editor) => editors.push(editor)} onEditMemo={props.onEditMemo}
           onInput={(node) => { composerInput = node; }} onMeasure={(part, height) => { composer[part] = height; report(); }} />
@@ -899,8 +897,8 @@ function ApprovalBar(props: PartProps & { approval: () => ChatApproval; more: ()
         accessibilityState={{ disabled: busy() }} onPress={() => decide(choice.decision)}
         style={{ paddingHorizontal: 10, paddingVertical: 4, borderRadius: 4, opacity: busy() ? 0.5 : 1,
           backgroundColor: choice.decision === "accept" || choice.decision === "accept_for_session" ? theme().palette.panelActive : "transparent",
-          borderWidth: 1, borderColor: choice.decision === "decline" || choice.decision === "cancel" ? ERROR : theme().palette.cyan }}>
-        <Text style={text(12, choice.decision === "decline" || choice.decision === "cancel" ? ERROR : theme().palette.cyan)}>{choice.key ? `${choice.label}  ${choice.key}` : choice.label}</Text>
+          borderWidth: 1, borderColor: choice.decision === "decline" || choice.decision === "cancel" ? theme().palette.danger : theme().palette.cyan }}>
+        <Text style={text(12, choice.decision === "decline" || choice.decision === "cancel" ? theme().palette.danger : theme().palette.cyan)}>{choice.key ? `${choice.label}  ${choice.key}` : choice.label}</Text>
       </View>)}
     </View>
     <Text style={text(10, theme().palette.muted)}>With the message box empty: ⏎ allows, ⎋ denies. ⇧⏎ and ⌥⏎ insert a new line.</Text>
@@ -1334,7 +1332,7 @@ function Composer(props: PartProps & { billing: BillingControl; width: () => num
     {attachments().length > 0 && <View style={{ gap: 5 }}>
       <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 5 }}>
         {attachments().map((entry) => <View style={{ maxWidth: 240, minWidth: 100, flexShrink: 1, borderWidth: 1, borderRadius: 6,
-          borderColor: entry.error ? ERROR : previewing() === entry.key ? theme().palette.cyan : theme().palette.divider, padding: 6, gap: 3 }}>
+          borderColor: entry.error ? theme().palette.danger : previewing() === entry.key ? theme().palette.cyan : theme().palette.divider, padding: 6, gap: 3 }}>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
             <View role="button" focusable={true} accessibilityLabel={`Preview ${entry.name}`} onPress={() => previewAttachment(entry)} style={{ flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", gap: 5, borderRadius: 3 }}
               focusStyle={{ backgroundColor: theme().palette.panelActive }}>
@@ -1347,7 +1345,7 @@ function Composer(props: PartProps & { billing: BillingControl; width: () => num
             }} style={{ width: 20, height: 20, flexShrink: 0, borderRadius: 4, alignItems: "center", justifyContent: "center" }}
               hoverStyle={{ backgroundColor: theme().palette.panelActive }} focusStyle={{ backgroundColor: theme().palette.panelActive }}><Icon name="close" size={10 * theme().scale} color={theme().palette.muted} /></View>
           </View>
-          <Text numberOfLines={2} style={text(10, entry.error ? ERROR : theme().palette.muted)}>{entry.error ?? (entry.attachment ? `${Math.max(1, Math.round(entry.attachment.bytes / 1024))} KB · Ready` : "Preparing…")}</Text>
+          <Text numberOfLines={2} style={text(10, entry.error ? theme().palette.danger : theme().palette.muted)}>{entry.error ?? (entry.attachment ? `${Math.max(1, Math.round(entry.attachment.bytes / 1024))} KB · Ready` : "Preparing…")}</Text>
           {entry.error && <View role="button" accessibilityLabel={`Retry ${entry.name}`} onPress={() => {
             attachmentChanged(attachments().map((item) => item.key === entry.key ? { ...item, error: undefined } : item)); void stage(entry);
           }}><Text style={text(10, theme().palette.cyan)}>Retry</Text></View>}

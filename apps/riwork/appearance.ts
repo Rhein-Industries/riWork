@@ -6,7 +6,7 @@ import type { HostParams } from "./model";
 export const NATIVE_PALETTE = {
   bg: "#ffffff", panel: "#f5f5f7", panelActive: "#e8e8ed", divider: "#d2d2d7",
   cyan: "#000000", magenta: "#3a3a3c", gold: "#b34000", text: "#1d1d1f",
-  muted: "#636366", focus: "#000000", working: "#b34000",
+  muted: "#636366", focus: "#000000", working: "#0058d0", danger: "#c80018",
 };
 
 export interface InterfaceTheme {

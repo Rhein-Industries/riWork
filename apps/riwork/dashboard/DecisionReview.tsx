@@ -182,7 +182,7 @@ export function DecisionReviewView(props: {
       </Button>
     </View>}
     {!!r.status() && <Text role="text" style={{ ...text(), color: r.review()?.status === "sent" ? palette().cyan : palette().muted }}>{r.status()}</Text>}
-    {!!(r.error() || r.review()?.error) && <Text role="text" selectable={true} style={{ ...text(), color: palette().gold }}>{r.error() || r.review()?.error}</Text>}
+    {!!(r.error() || r.review()?.error) && <Text role="text" selectable={true} style={{ ...text(), color: palette().danger }}>{r.error() || r.review()?.error}</Text>}
     <View style={{ flexDirection: "row", flexWrap: "wrap", justifyContent: "flex-end", gap: size(8) }}>
       {!r.loading() && !r.uncertain() && (!r.review() || r.review()?.status === "unavailable" || r.review()?.status === "sending") && <Button testID="dashboard-review-again" disabled={r.busy()} onPress={() => void r.read()} {...focusEvents()} style={actionStyle()} focusStyle={{ borderColor: palette().cyan }}><Text style={text()}>Read again</Text></Button>}
       <Button testID="dashboard-review-open-chat" disabled={r.busy()} onPress={() => { if (!r.busy()) props.onOpenChat(); }} {...focusEvents()} style={actionStyle()} focusStyle={{ borderColor: palette().cyan }}><Text style={text()}>Open chat</Text></Button>

@@ -17,7 +17,8 @@
         "text": 13885926,
         "muted": 7375251,
         "focus": 16039797,
-        "working": 5629660
+        "working": 5629660,
+        "danger": 15758219
       },
       "terminal": {
         "background": 593172,
@@ -59,7 +60,8 @@
         "text": 13489908,
         "muted": 9409705,
         "focus": 16376495,
-        "working": 9757397
+        "working": 9757397,
+        "danger": 15961000
       },
       "terminal": {
         "background": 1973806,
@@ -101,7 +103,8 @@
         "text": 12634869,
         "muted": 9015209,
         "focus": 14724968,
-        "working": 8245247
+        "working": 8245247,
+        "danger": 16217742
       },
       "terminal": {
         "background": 1710886,
@@ -143,7 +146,8 @@
         "text": 3946550,
         "muted": 6907222,
         "focus": 8609044,
-        "working": 4812362
+        "working": 4812362,
+        "danger": 12854044
       },
       "terminal": {
         "background": 16511431,
@@ -185,7 +189,8 @@
         "text": 15523015,
         "muted": 10594235,
         "focus": 16112568,
-        "working": 16112568
+        "working": 16112568,
+        "danger": 15899551
       },
       "terminal": {
         "background": 1451364,
@@ -227,7 +232,8 @@
         "text": 16316658,
         "muted": 10724261,
         "focus": 15858316,
-        "working": 9169405
+        "working": 9169405,
+        "danger": 16743034
       },
       "terminal": {
         "background": 2632246,
@@ -269,7 +275,8 @@
         "text": 16646129,
         "muted": 10724762,
         "focus": 15129460,
-        "working": 6740463
+        "working": 6740463,
+        "danger": 16478883
       },
       "terminal": {
         "background": 2566178,
@@ -311,7 +318,8 @@
         "text": 14212841,
         "muted": 11054518,
         "focus": 15453067,
-        "working": 8962256
+        "working": 8962256,
+        "danger": 14130595
       },
       "terminal": {
         "background": 3028032,
@@ -353,7 +361,8 @@
         "text": 5926517,
         "muted": 6646889,
         "focus": 8807680,
-        "working": 2062192
+        "working": 2062192,
+        "danger": 13250091
       },
       "terminal": {
         "background": 16643811,
@@ -395,7 +404,8 @@
         "text": 8951962,
         "muted": 8886942,
         "focus": 12160781,
-        "working": 3384732
+        "working": 3384732,
+        "danger": 15168111
       },
       "terminal": {
         "background": 11062,
@@ -437,7 +447,8 @@
         "text": 11252415,
         "muted": 9672863,
         "focus": 15057019,
-        "working": 5682882
+        "working": 5682882,
+        "danger": 14841471
       },
       "terminal": {
         "background": 2172203,
@@ -479,7 +490,8 @@
         "text": 15457202,
         "muted": 10853768,
         "focus": 14129441,
-        "working": 8038780
+        "working": 8038780,
+        "danger": 14845056
       },
       "terminal": {
         "background": 2631720,
