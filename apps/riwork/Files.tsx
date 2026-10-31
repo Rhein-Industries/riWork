@@ -105,15 +105,19 @@ export function createFilesController(options: FilesOptions) {
     clearTimeout(timer);
     const root = currentRoot;
     if (!root) return;
-    const token = ++previewGeneration, rootToken = generation;
+    // A root change bumps previewGeneration. Toggling hidden files bumps only the listing
+    // generation, which must not strand this load with previewLoading left on.
+    const token = ++previewGeneration;
     previewLoading.set(true);
     try {
       const result = await Files.preview(root, entry.path, entry.identity, explicit, page);
-      if (!alive || token !== previewGeneration || rootToken !== generation) return;
+      if (!alive || token !== previewGeneration || root !== currentRoot) return;
       preview.set(previewData(result)); previewEntry.set(entry);
-    } catch (reason) { if (alive && token === previewGeneration && rootToken === generation) { preview.set({ kind: "message", message: String(reason), truncated: false, markdown: false }); previewEntry.set(entry); } }
-    finally { if (alive && token === previewGeneration && rootToken === generation) previewLoading.set(false); }
+    } catch (reason) { if (alive && token === previewGeneration && root === currentRoot) { preview.set({ kind: "message", message: String(reason), truncated: false, markdown: false }); previewEntry.set(entry); } }
+    finally { if (alive && token === previewGeneration) previewLoading.set(false); }
   }
+  /** Only drawn content zooms; a message (binary, error, PDF not yet asked for) has nothing to scale. */
+  const zoomable = () => { const kind = preview()?.kind; return kind === "text" || kind === "image" || kind === "pdf"; };
   function select(entry: FileEntry, explicit = true) {
     clearTimeout(timer); previewGeneration++; previewLoading.set(false);
     selected.set(entry); notice.set(""); line.set(undefined); zoom.set(1);
@@ -265,7 +269,7 @@ export function createFilesController(options: FilesOptions) {
         const page = (preview()?.page ?? 1) + (key === "left" ? -1 : 1);
         if (page >= 1 && page <= (preview()?.pages ?? 1) && previewEntry()) void loadPreview(previewEntry()!, true, page);
       }));
-      for (const key of ["mod+=", "mod+shift+=", "mod+-", "mod+0"]) bindings.push(keymap.bind(key, () => {
+      if (zoomable()) for (const key of ["mod+=", "mod+shift+=", "mod+-", "mod+0"]) bindings.push(keymap.bind(key, () => {
         zoom.set(key === "mod+0" ? 1 : Math.max(preview()?.kind === "text" ? 0.5 : 0.05, Math.min(5, zoom() * (key === "mod+-" ? 1 / 1.2 : 1.2))));
       }));
     }
@@ -273,7 +277,7 @@ export function createFilesController(options: FilesOptions) {
   });
   effect(() => { if (active() !== "files" || !query() || filterComposing()) return; return keymap.bind("escape", () => { query.set(""); focusTree(); }); });
   return { ...options, theme, listings, expanded, query, hidden, selected, preview, previewEntry, loading, previewLoading, notice, renderedMarkdown, line, treeFocused,
-    rows, resetRoot, refresh, toggleHidden, select, toggle, loadPreview, edit, open, reveal, copyContents, copyPath, openPreviewLink, move, filterFocused, filterComposing, focused, searches, treeLists, treeFocus, focusTree, zoom, clearPreview,
+    rows, resetRoot, refresh, toggleHidden, select, toggle, loadPreview, edit, open, reveal, copyContents, copyPath, openPreviewLink, move, filterFocused, filterComposing, focused, searches, treeLists, treeFocus, focusTree, zoom, zoomable, clearPreview,
     revealInFinder: (path: string) => { void Promise.resolve(options.reveal?.(path)).catch(setNotice); } };
 }
 export type FilesController = ReturnType<typeof createFilesController>;
@@ -316,8 +320,8 @@ export function FilesPanel(props: { controller: FilesController; surface?: strin
         <Text numberOfLines={1} style={styles(c).muted}>{c.root() ? `${c.label()} · ${c.rows().length} ${c.rows().length === 1 ? "item" : "items"}` : "No worktree"}</Text>
       </View>
       <View style={{ flexDirection: "row", gap: 2 }}>
-        <FileAction controller={c} id={`files-refresh:${id}`} label="Refresh Files" icon="refresh" onPress={c.refresh} />
-        <FileAction controller={c} id={`files-hidden:${id}`} label="Show hidden files" icon="eye" selected={c.hidden()} onPress={c.toggleHidden} />
+        <FileAction controller={c} id={`files-refresh:${id}`} label="Refresh Files" icon="refresh" disabled={!c.root()} onPress={c.refresh} />
+        <FileAction controller={c} id={`files-hidden:${id}`} label="Show hidden files" icon="eye" disabled={!c.root()} selected={c.hidden()} onPress={c.toggleHidden} />
         <FileAction controller={c} id={`files-reveal-root:${id}`} label="Reveal worktree in Finder" icon="folder" disabled={!c.root()} onPress={() => { if (c.root()) c.revealInFinder(c.root()!); }} />
       </View>
     </View>
@@ -334,7 +338,11 @@ export function FilesPanel(props: { controller: FilesController; surface?: strin
       {(item) => <FileRow item={item} />}
     </List>
     {!c.query() && [...c.listings().values()].filter((listing) => listing.omitted > 0 && (listing.path === c.root() || c.expanded().has(listing.path))).map((listing) => <Text style={{ ...styles(c).muted, padding: 8 }}>{omittedLabel(listing.omitted, listing.scanLimited)}</Text>)}
-    <Text testID="files-selection" numberOfLines={1} style={{ ...styles(c).muted, fontSize: 9 * c.theme().scale, fontFamily: c.selected() ? c.theme().monoFamily : c.theme().family, paddingHorizontal: space(12, c.theme().scale), paddingVertical: 8 }}>{c.selected()?.relativePath ?? "Select a file or folder"}</Text>
+    {c.root() && <View testID={`files-selection-bar:${id}`} style={{ height: space(36, c.theme().scale), paddingLeft: space(12, c.theme().scale), paddingRight: space(8, c.theme().scale), flexDirection: "row", alignItems: "center", gap: 2, borderTopWidth: 1, borderTopColor: c.theme().palette.divider }}>
+      <Text testID="files-selection" numberOfLines={1} style={{ ...styles(c).muted, flex: 1, minWidth: 0, fontFamily: c.selected() ? c.theme().monoFamily : c.theme().family }}>{c.selected()?.relativePath ?? "Select a file or folder"}</Text>
+      <FileAction controller={c} id={`files-edit:${id}`} label="Edit in Vim" icon="terminal" disabled={c.selected()?.kind !== "file" || !c.selected()?.identity} onPress={() => void c.edit()} />
+      <FileAction controller={c} id={`files-open:${id}`} label="Open externally" icon="open" disabled={!c.selected() || c.selected()?.kind === "symlink"} onPress={() => void c.open()} />
+    </View>}
   </View>;
 
   function FileRow(props: { item: () => { entry: FileEntry; depth: number } }) {
@@ -383,26 +391,35 @@ export function PreviewPanel(props: { controller: FilesController }) {
         { label: "Copy contents", disabled: data()?.kind !== "text", onSelect: () => void c.copyContents() },
         { label: c.renderedMarkdown() ? "Show Markdown source" : "Render Markdown", disabled: !data()?.markdown, onSelect: () => c.renderedMarkdown.set(!c.renderedMarkdown()) },
         { type: "separator" },
-        { label: "Zoom in", onSelect: () => c.zoom.set(Math.min(5, c.zoom() * 1.2)) },
-        { label: "Zoom out", onSelect: () => c.zoom.set(Math.max(data()?.kind === "text" ? 0.5 : 0.05, c.zoom() / 1.2)) },
-        { label: "Actual size", onSelect: () => c.zoom.set(1) },
+        { label: "Zoom in", disabled: !c.zoomable(), onSelect: () => c.zoom.set(Math.min(5, c.zoom() * 1.2)) },
+        { label: "Zoom out", disabled: !c.zoomable(), onSelect: () => c.zoom.set(Math.max(data()?.kind === "text" ? 0.5 : 0.05, c.zoom() / 1.2)) },
+        { label: "Actual size", disabled: !c.zoomable(), onSelect: () => c.zoom.set(1) },
       ])} />
       {c.closePreview && <FileAction controller={c} id="preview-close" label="Close Preview" icon="close" onPress={() => { c.clearPreview(); c.closePreview?.(); }} />}
     </View>
-    <View style={{ flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: space(12, c.theme().scale), paddingVertical: 4, backgroundColor: c.theme().palette.panel, borderBottomWidth: 1, borderBottomColor: c.theme().palette.divider }}>
-      <Text testID="preview-metadata" numberOfLines={1} style={{ ...styles(c).muted, flex: 1 }}>{data()?.kind === "text" ? data()?.markdown ? c.renderedMarkdown() ? "Markdown · Read only" : "Markdown source · Read only" : "Text / Code · Read only" : data()?.kind === "image" || data()?.kind === "pdf" ? `${data()?.mime ?? (data()?.kind === "pdf" ? "PDF" : "Image")} · ${data()?.width ?? 0} × ${data()?.height ?? 0} pixels` : "Read only"}</Text>
+    {/* One fixed height whatever the row holds, so the content edge never moves between files. */}
+    {data() && <View style={{ height: space(32, c.theme().scale), flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: space(12, c.theme().scale), backgroundColor: c.theme().palette.panel, borderBottomWidth: 1, borderBottomColor: c.theme().palette.divider }}>
+      <Text testID="preview-metadata" numberOfLines={1} style={{ ...styles(c).muted, flex: 1 }}>{data()?.kind === "text" ? data()?.markdown ? c.renderedMarkdown() ? "Markdown · Read only" : "Markdown source · Read only" : "Text / Code · Read only" : data()?.kind === "image" || data()?.kind === "pdf" ? `${data()?.mime ?? (data()?.kind === "pdf" ? "PDF" : "Image")} · ${data()?.width ?? 0} × ${data()?.height ?? 0} pixels` : "No preview"}</Text>
       {!compact() && data()?.kind === "text" && <Button testID="preview-copy-contents" onPress={() => void c.copyContents()} style={styles(c).button}><Text style={styles(c).muted}>Copy contents</Text></Button>}
       {!compact() && data()?.markdown && <Button testID="preview-markdown-mode" onPress={() => c.renderedMarkdown.set(!c.renderedMarkdown())} style={styles(c).button}><Text style={styles(c).muted}>{c.renderedMarkdown() ? "Source" : "Rendered"}</Text></Button>}
-      <Button testID="preview-zoom-out" accessibilityLabel="Zoom out" disabled={!data()} onPress={() => c.zoom.set(Math.max(data()?.kind === "text" ? 0.5 : 0.05, c.zoom() / 1.2))} style={{ paddingHorizontal: 5 }}><Text style={styles(c).text}>−</Text></Button>
-      <Button testID="preview-zoom-fit" accessibilityLabel="Actual size" disabled={!data()} onPress={() => c.zoom.set(1)}><Text style={styles(c).muted}>{`${Math.round(c.zoom() * 100)}%`}</Text></Button>
-      <Button testID="preview-zoom-in" accessibilityLabel="Zoom in" disabled={!data()} onPress={() => c.zoom.set(Math.min(5, c.zoom() * 1.2))} style={{ paddingHorizontal: 5 }}><Text style={styles(c).text}>+</Text></Button>
-    </View>
-    {c.notice() !== "" && <Text testID="preview-notice" role="alert" style={{ ...styles(c).text, color: c.theme().palette.gold }}>{c.notice()}</Text>}
-    {c.previewLoading() && !data() && <Text style={styles(c).muted}>Loading…</Text>}
-    {!data() && !c.previewLoading() && <Text testID="preview-empty" style={{ ...styles(c).muted, padding: 24 }}>Select a file to preview it.</Text>}
-    {data()?.truncated && <Text testID="preview-truncated" style={{ ...styles(c).muted, color: c.theme().palette.gold }}>Preview truncated at 1 MiB or 10,000 lines</Text>}
-    {data()?.kind === "message" && <View testID="preview-fallback" style={{ gap: 8, padding: 12 }}><Text selectable={true} style={styles(c).muted}>{data()?.message}</Text>
-      {entry()?.name.toLowerCase().endsWith(".pdf") && <Button testID="preview-pdf-request" disabled={c.previewLoading()} onPress={() => { if (entry()) void c.loadPreview(entry()!, true); }} style={styles(c).button}><Text style={styles(c).text}>Preview PDF</Text></Button>}
+      {c.zoomable() && <View style={{ flexDirection: "row", alignItems: "center", borderRadius: space(14, c.theme().scale), backgroundColor: c.theme().palette.panelActive }}>
+        <Button testID="preview-zoom-out" accessibilityLabel="Zoom out" onPress={() => c.zoom.set(Math.max(data()?.kind === "text" ? 0.5 : 0.05, c.zoom() / 1.2))} style={{ ...styles(c).button, backgroundColor: "transparent" }} hoverStyle={{ backgroundColor: c.theme().palette.divider }}><Text style={styles(c).text}>−</Text></Button>
+        <Button testID="preview-zoom-fit" accessibilityLabel="Actual size" onPress={() => c.zoom.set(1)} style={{ paddingVertical: space(4, c.theme().scale) }} hoverStyle={{ backgroundColor: c.theme().palette.divider }}><Text style={styles(c).muted}>{`${Math.round(c.zoom() * 100)}%`}</Text></Button>
+        <Button testID="preview-zoom-in" accessibilityLabel="Zoom in" onPress={() => c.zoom.set(Math.min(5, c.zoom() * 1.2))} style={{ ...styles(c).button, backgroundColor: "transparent" }} hoverStyle={{ backgroundColor: c.theme().palette.divider }}><Text style={styles(c).text}>+</Text></Button>
+      </View>}
+    </View>}
+    {c.notice() !== "" && <Text testID="preview-notice" role="alert" style={{ ...styles(c).text, color: c.theme().palette.gold, paddingHorizontal: space(12, c.theme().scale), paddingVertical: space(6, c.theme().scale) }}>{c.notice()}</Text>}
+    {c.previewLoading() && !data() && <Text style={{ ...styles(c).muted, paddingHorizontal: space(12, c.theme().scale), paddingVertical: space(6, c.theme().scale) }}>Loading…</Text>}
+    {!data() && !c.previewLoading() && <View style={{ minHeight: space(120, c.theme().scale), padding: 24, gap: 8, alignItems: "center", justifyContent: "center" }}>
+      <Icon name="file" size={22 * c.theme().scale} color={c.theme().palette.muted} />
+      <Text testID="preview-empty" style={{ ...styles(c).muted, textAlign: "center" }}>{c.root() ? "Select a file to preview it." : "Select a worktree to preview its files."}</Text>
+    </View>}
+    {data()?.truncated && <Text testID="preview-truncated" style={{ ...styles(c).muted, color: c.theme().palette.gold, paddingHorizontal: space(12, c.theme().scale), paddingVertical: space(6, c.theme().scale) }}>Preview truncated at 1 MiB or 10,000 lines</Text>}
+    {data()?.kind === "message" && <View testID="preview-fallback" style={{ gap: 10, padding: space(12, c.theme().scale) }}><Text selectable={true} style={styles(c).text}>{data()?.message}</Text>
+      <View style={{ flexDirection: "row", gap: 6 }}>
+        {entry()?.name.toLowerCase().endsWith(".pdf") && <Button testID="preview-pdf-request" disabled={c.previewLoading()} onPress={() => { if (entry()) void c.loadPreview(entry()!, true); }} style={styles(c).button}><Text style={styles(c).text}>Preview PDF</Text></Button>}
+        {entry() && entry()?.kind !== "symlink" && <Button testID="preview-fallback-open" onPress={() => void c.open(entry())} style={styles(c).button}><Text style={styles(c).text}>Open externally</Text></Button>}
+      </View>
     </View>}
     {data()?.kind === "text" && <View testID="preview-text" style={{ flex: 1, minHeight: 0 }}>
       {data()?.markdown && c.renderedMarkdown() ? <Scroll style={{ flex: 1, minHeight: 0 }} contentStyle={{ padding: space(16, c.theme().scale) }}><TextView testID="preview-markdown" markdown={data()?.text ?? data()?.lines?.join("\n") ?? ""} selectable={true} links="report" onLinkPress={(event) => void c.openPreviewLink(event.url)} renderImage={(image) => <Text style={styles(c).muted}>{`[Image: ${image.alt ?? "image"}]`}</Text>} styles={{ root: { ...styles(c).text, fontSize: 12 * c.theme().scale * c.zoom() }, code: { fontFamily: c.theme().monoFamily } }} /></Scroll> :
