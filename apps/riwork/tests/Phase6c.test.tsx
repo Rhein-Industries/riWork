@@ -101,14 +101,13 @@ test("P6C preview opens in main pane, persists committed spec/title, runs only o
     expect(app.enabled("id:preview-command")).toBe(false);
     expect(latest(app).panes.flatMap((pane) => pane.tabs).find((tab) => tab.id === id)?.previewSpec?.command).toBe("fixture-command");
     expect(latest(app).panes.flatMap((pane) => pane.tabs).find((tab) => tab.id === id)?.title.startsWith("Preview · ")).toBe(true);
-    // Hidden, the tab stops reading its owner (which pauses capture) and the session goes
-    // on; shown again, it reads the owner at once.
+    // Hidden, the tab stops reading its owner (which pauses capture): a stop while hidden
+    // is not drawn. Shown again, it reads the owner at once.
     await app.host.send("window.state", { visible: false, appActive: false });
-    expect(app.enabled("id:preview-stop")).toBe(true);
-    await app.host.send("window.state", { visible: true, appActive: true });
-    await app.waitFor("text:Fixture preview running");
-    expect(app.enabled("id:preview-stop")).toBe(true);
     await app.press("id:preview-stop");
+    await app.wait(300);
+    expect(app.shows("text:Fixture preview running")).toBe(true);
+    await app.host.send("window.state", { visible: true, appActive: true });
     await app.waitFor("text:Preview stopped");
     await app.host.send("app.fixture.flush", {});
     await app.waitUntil(() => app.host.posts().some((post) => post.name === "app.fixture.flushed"));
