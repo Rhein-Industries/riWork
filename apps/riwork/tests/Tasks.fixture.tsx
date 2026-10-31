@@ -1,9 +1,10 @@
 /** The Tasks panel on a seeded project: open work in two statuses, finished work, a worktree
- * assignment and one task open in the detail. It uses the native Store, so run it with an
- * isolated /tmp RIWORK_HOME as the Panel tests do. No session or terminal starts. */
+ * assignment and one task open in the detail. It uses the native Store, so it refuses to run
+ * outside an isolated /tmp RIWORK_HOME (scripts/pane-shot.sh). No session or terminal starts. */
 import { Text, View, cleanup, mount, signal } from "nsh";
 import { Store } from "riwork/native";
 import { PanelContent, createPanelController } from "../Panels";
+import { requirePrivateHome } from "./private-home";
 
 const TASKS: { title: string; details: string; status: string; assign?: boolean }[] = [
   { title: "Write the 0.4 release notes", details: "", status: "todo" },
@@ -34,6 +35,7 @@ function Fixture() {
   let alive = true;
   cleanup(() => { alive = false; });
   void (async () => {
+    await requirePrivateHome();
     const project = await Store.createProject({ root: `/tmp/riwork-nsh-tasks-ui-${Date.now()}/riwork`, name: "riwork", initGit: true });
     const primary = (await Store.syncWorktrees(project.id)).find((tree) => tree.isPrimary);
     let selected = "";

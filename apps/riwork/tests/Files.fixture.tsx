@@ -1,6 +1,7 @@
 import { Text, View, cleanup, host, mount, signal } from "nsh";
 import { Button } from "nsh/base";
 import { Files, Store } from "riwork/native";
+import { privateFixtureDirectory } from "./private-home";
 import { FilesPanel, MemoEditor, PreviewPanel, createFilesController } from "../Files";
 
 function Body(props: { root: string; projectId: string }) {
@@ -49,7 +50,7 @@ function Fixture() {
   const ready = signal<{ root: string; projectId: string } | null>(null), error = signal("");
   let alive = true;
   cleanup(() => { alive = false; });
-  void Files.fixtureDirectory(params.key).then(async (root) => {
+  void privateFixtureDirectory(params.key).then(async (root) => {
     const project = await Store.createProject({ root, name: `Files fixture ${params.key}`, initGit: false });
     if (alive) ready.set({ root, projectId: project.id });
   }).catch((reason) => { if (alive) error.set(String(reason)); });

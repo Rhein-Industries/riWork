@@ -1,6 +1,7 @@
 import { Text, View, cleanup, host, mount, signal, type YNode } from "nsh";
 import { Layouts, type LayoutSession } from "riwork/native";
 import { Workspace } from "../Workspace";
+import { requirePrivateHome } from "./private-home";
 
 function Fixture() {
   const params = host.params as { windowId: string; projectId: string; restore?: unknown; fixtureName?: string };
@@ -22,7 +23,9 @@ function Fixture() {
     void session()?.flush().then(() => host.post("app.fixture.flushed", {}));
   });
   async function load() {
-    if (!params.fixtureName) return Layouts.openSession({ ...params });
+    // Opening a made-up project saves its layout, so it waits for a private home. A named
+    // fixture's project comes from fixtureManifest, which already refuses any other home.
+    if (!params.fixtureName) return requirePrivateHome().then(() => Layouts.openSession({ ...params }));
     const value = await Layouts.fixtureManifest() as { fixtures: { name: string; projectId: string }[] };
     manifest = value;
     const entry = value.fixtures.find((entry) => entry.name === params.fixtureName);

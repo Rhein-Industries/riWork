@@ -1,5 +1,6 @@
 import { Text, View, cleanup, host, mount, signal } from "nsh";
-import { Files, Store } from "riwork/native";
+import { Store } from "riwork/native";
+import { privateFixtureDirectory } from "./private-home";
 import { MemoEditor } from "../Files";
 
 function Body(props: { projectId: string }) {
@@ -45,7 +46,7 @@ function Fixture() {
   let alive = true;
   cleanup(() => { alive = false; });
   void (async () => {
-    const root = await Files.fixtureDirectory(key);
+    const root = await privateFixtureDirectory(key);
     const project = await Store.createProject({ root, name: `Memo receipt ${key}`, initGit: false });
     await Store.setProjectMemo(project.id, "A");
     if (alive) ready.set(project.id);

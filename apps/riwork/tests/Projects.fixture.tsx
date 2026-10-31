@@ -1,9 +1,10 @@
 import { Text, View, cleanup, mount, signal } from "nsh";
-import { Files, Store, type ProjectDto } from "riwork/native";
+import { Store, type ProjectDto } from "riwork/native";
+import { privateFixtureDirectory } from "./private-home";
 import { PanelContent, createPanelController } from "../Panels";
 
 // The Projects panel with folders, a nested folder, an empty folder, a long name and
-// tasks, for scripts/pane-shot.sh. Seeding goes through Files.fixtureDirectory, which
+// tasks, for scripts/pane-shot.sh. Seeding goes through privateFixtureDirectory, which
 // refuses unless RIWORK_NSH_FILES_FIXTURE=1 and RIWORK_HOME is an isolated /tmp home.
 function Body(props: { active: ProjectDto; directory: string }) {
   const project = signal(props.active);
@@ -25,7 +26,7 @@ function Fixture() {
   let alive = true;
   cleanup(() => { alive = false; });
   void (async () => {
-    const base = await Files.fixtureDirectory("projects-panel");
+    const base = await privateFixtureDirectory("projects-panel");
     const add = (name: string, initGit: boolean) => Store.createNewProject({ root: `${base}/${name}`, name, initGit });
     const clients = await Store.createFolder("Clients");
     const archive = await Store.createFolder("Archive", clients.id);

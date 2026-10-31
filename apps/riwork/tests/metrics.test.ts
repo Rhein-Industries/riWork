@@ -5,11 +5,13 @@ import { CONTROL_WIDTH, CONTROL_HEIGHT, CONTROL_INSET, DRAG_HANDLE_WIDTH, DRAG_R
 test("P1-STAT-01: rendered status text scales and its right side scrolls at narrow widths", async () => {
   const app = await open("./Appearance.fixture.tsx", options("status-rendered-metrics"));
   try {
-    await app.waitFor("text:0 LIVE");
-    expect(app.spanStyle("text:0 LIVE").fontSize).toBe(9);
-    await settings(app, { theme: "native" });
+    // The status bar reads in sentence case under every palette. The interface
+    // font, not the palette, sets its size: the system face draws the 9 px status
+    // text at 13/11 by default, and a larger text size grows it with the rest.
     await app.waitFor("text:0 live");
     expect(Math.round(app.spanStyle("text:0 live").fontSize * 100) / 100).toBe(10.64);
+    await settings(app, { uiTextSize: 12 });
+    await app.waitUntil(() => Math.round(app.spanStyle("text:0 live").fontSize * 100) / 100 === 11.45);
     await app.setViewport(420, 500);
     await app.scroll("id:status-right", 1000);
     await app.press("id:status-item-layout");

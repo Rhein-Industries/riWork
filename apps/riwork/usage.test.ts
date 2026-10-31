@@ -111,10 +111,11 @@ test("P5-USAGE-02: all accounts lists every Codex account, keeps unread ones and
   reads.claude.push({ shellId: "newer", usage: { windows: [], updatedAtUnix: NOW } });
   const all = reads.segments("all_accounts", { kind: "other" }, unknown, profiles);
   expect(all.length).toBe(4);
+  // The latest Claude report wins: a newer one without windows supersedes old quota.
   const claude = all[3];
-  expect([claude.source, claude.account, claude.figures]).toEqual(["claude", undefined, "5h 50% / 7d 90% left"]);
+  expect([claude.source, claude.account, claude.figures]).toEqual(["claude", undefined, "QUOTA UNAVAILABLE"]);
   expect(all.every((segment) => segment.source === "codex" || segment.source === "claude")).toBe(true);
-  expect(usageItemText("all_accounts", all)).toBe(`CODEX  System default 5h 90% / 7d 70% left  ${LONG_A} UNAVAILABLE  ${TEAM_B} LOADING  CLAUDE 5h 50% / 7d 90% left`);
+  expect(usageItemText("all_accounts", all)).toBe(`CODEX  System default 5h 90% / 7d 70% left  ${LONG_A} UNAVAILABLE  ${TEAM_B} LOADING  CLAUDE QUOTA UNAVAILABLE`);
   expect(knownCodexProfiles(unlisted()).map((entry) => entry.label)).toEqual([SYSTEM_LABEL]);
   // No system home at all: one unavailable readout.
   expect(usageItemText("all_accounts", reads.segments("all_accounts", { kind: "other" }, unknown, []).slice(0, 1))).toBe("CODEX  ACCOUNT UNAVAILABLE");

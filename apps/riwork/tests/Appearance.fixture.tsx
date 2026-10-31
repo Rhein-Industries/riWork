@@ -3,6 +3,7 @@ import { Layouts, Settings, type LayoutSession, type SettingsPatch } from "riwor
 import { Workspace } from "../Workspace";
 import { useAppearance } from "../appearance";
 import type { HostParams } from "../model";
+import { requirePrivateHome } from "./private-home";
 
 function Ready() {
   const params = host.params as unknown as HostParams & { diagnostics?: boolean };
@@ -41,7 +42,7 @@ function Fixture() {
   const params = host.params as unknown as { initial: SettingsPatch };
   const ready = signal(false);
   const error = signal("");
-  void Settings.set(params.initial).then(() => ready.set(true)).catch((reason) => error.set(String(reason)));
+  void requirePrivateHome().then(() => Settings.set(params.initial)).then(() => ready.set(true)).catch((reason) => error.set(String(reason)));
   return <View style={{ flex: 1 }}>{ready() ? <Ready /> : <Text>{error()}</Text>}</View>;
 }
 mount(Fixture);

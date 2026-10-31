@@ -1,8 +1,9 @@
-import { Text, View, cleanup, colorScheme, host, mount, signal } from "nsh";
+import { Text, View, cleanup, colorScheme, host, signal } from "nsh";
 import { Accounts, ApiKey, Appearance, Settings, type AccountsDto, type SettingsDto, type SettingsPatch } from "riwork/native";
 import { AppSettings, type AppSettingsControl, type AppSettingsServices, type ImportReceipt } from "../settings/AppSettings";
 import { ChoiceRow } from "../settings/SettingsControls";
 import { DEFAULT_THEME } from "../appearance";
+import { mountInPrivateHome } from "./private-home";
 
 /** The acceptance runner builds native test-support: fake accounts, in-memory
  * API key storage, and an Orca import preview that never spawns the CLI. */
@@ -58,4 +59,4 @@ function Fixture() {
     <Text testID="settings-fixture-notice">{notice()}</Text>
   </View>;
 }
-mount(Fixture);
+mountInPrivateHome(Fixture);
