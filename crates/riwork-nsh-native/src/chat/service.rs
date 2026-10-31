@@ -351,7 +351,10 @@ pub mod fixture {
         }
         let dir = home.join("work").join(name);
         fs::create_dir_all(&dir).map_err(|error| format!("io: {error}"))?;
-        Ok(dir)
+        // Canonical, as the store registers a project's root (and Files.fixtureDirectory
+        // spells its folders): a fixture chat's working directory is then inside the project
+        // a fixture adds for it, as a real chat's is, under a home through a link (`/tmp`).
+        dir.canonicalize().map_err(|error| format!("io: {error}"))
     }
 
     /// The fixture host's socket, starting it on first use; `None` when off.
