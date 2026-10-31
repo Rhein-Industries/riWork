@@ -105,6 +105,9 @@ pub struct RuntimeWindow {
     pub bounds: Option<WindowGeometry>,
     #[serde(default)]
     pub mode: WindowMode,
+    /// Read leniently: a window registered by another build may hold a tab this one cannot
+    /// show (a removed panel), which must not make the whole registration unreadable.
+    #[serde(default, deserialize_with = "crate::layouts::deserialize_lenient")]
     pub layout: Option<ProjectLayout>,
     #[serde(default)]
     pub focus_mode: bool,

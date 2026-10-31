@@ -1701,6 +1701,20 @@ impl SavedEntry {
     }
 }
 
+/// Reads an optional layout as the store does: a tab this build cannot read (a panel kind it
+/// does not have, from an older or newer build) is left out instead of failing the whole
+/// layout. For layouts that pass between builds outside the store, such as the windows a
+/// running RiWork registers for a reload.
+pub fn deserialize_lenient<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<ProjectLayout>, D::Error> {
+    let Some(raw) = Option::<Value>::deserialize(deserializer)? else { return Ok(None) };
+    if let Ok(layout) = ProjectLayout::deserialize(&raw) {
+        return Ok(Some(layout));
+    }
+    let mut readable = raw;
+    take_unreadable_tabs(&mut readable);
+    ProjectLayout::deserialize(&readable).map(Some).map_err(serde::de::Error::custom)
+}
+
 /// Move every tab that is not a `SavedTab` out of the layout's panes.
 fn take_unreadable_tabs(layout: &mut Value) -> SkippedTabs {
     let mut skipped = SkippedTabs::new();
