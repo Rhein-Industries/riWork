@@ -46,6 +46,9 @@ async function workspace(id: string, restore?: unknown, worktree = false) {
   await app.waitFor("id:workspace-dock");
   return app;
 }
+/** The preview tab shows its owner's message, not its phase: idle reads the first-run hint
+ * and has no session to restart. */
+function idle(app: App) { return app.shows("text:Enter a command, then select Run.") && !app.enabled("id:preview-restart"); }
 
 test("P6C Settings command hosts Cua in AppSettings and reuses the panel", async () => {
   const app = await workspace("6c-settings-slot", layout());
@@ -78,32 +81,35 @@ test("P6C preview opens in main pane, persists committed spec/title, runs only o
     const tab = pane.tabs.find((tab) => tab.kind === "app_preview")!;
     id = tab.id;
     expect(tab.previewSpec?.mode).toBe("cooperative");
-    expect(app.shows("text:idle")).toBe(true);
+    expect(idle(app)).toBe(true);
     await app.type("id:preview-command", "fixture-command");
     expect(latest(app).panes.flatMap((pane) => pane.tabs).find((tab) => tab.id === id)?.previewSpec?.command).toBe("");
     await app.submit("id:preview-command");
     expect(latest(app).panes.flatMap((pane) => pane.tabs).find((tab) => tab.id === id)?.previewSpec?.command).toBe("fixture-command");
     await app.press("id:preview-mode:window_capture");
     expect(latest(app).panes.flatMap((pane) => pane.tabs).find((tab) => tab.id === id)?.previewSpec?.mode).toBe("window_capture");
-    expect(app.shows("text:idle")).toBe(true);
+    expect(idle(app)).toBe(true);
     await app.press("id:preview-mode:ios_simulator");
     await app.type("id:preview-ios:scheme", "FixtureScheme");
     await app.clear("id:preview-ios:scheme");
     await app.submit("id:preview-ios:scheme");
     expect(latest(app).panes.flatMap((pane) => pane.tabs).find((tab) => tab.id === id)?.previewSpec?.ios?.scheme).toBe("");
-    expect(app.shows("text:idle")).toBe(true);
+    expect(idle(app)).toBe(true);
     await app.press("id:preview-mode:cooperative");
     await app.press("id:preview-run");
-    await app.waitFor("text:streaming");
+    await app.waitFor("text:Fixture preview running");
     expect(app.enabled("id:preview-command")).toBe(false);
     expect(latest(app).panes.flatMap((pane) => pane.tabs).find((tab) => tab.id === id)?.previewSpec?.command).toBe("fixture-command");
     expect(latest(app).panes.flatMap((pane) => pane.tabs).find((tab) => tab.id === id)?.title.startsWith("Preview · ")).toBe(true);
+    // Hidden, the tab stops reading its owner (which pauses capture) and the session goes
+    // on; shown again, it reads the owner at once.
     await app.host.send("window.state", { visible: false, appActive: false });
-    await app.waitFor("text:paused");
+    expect(app.enabled("id:preview-stop")).toBe(true);
     await app.host.send("window.state", { visible: true, appActive: true });
-    await app.waitFor("text:streaming");
+    await app.waitFor("text:Fixture preview running");
+    expect(app.enabled("id:preview-stop")).toBe(true);
     await app.press("id:preview-stop");
-    await app.waitFor("text:stopped");
+    await app.waitFor("text:Preview stopped");
     await app.host.send("app.fixture.flush", {});
     await app.waitUntil(() => app.host.posts().some((post) => post.name === "app.fixture.flushed"));
   } finally { app.dispose(); }
@@ -111,7 +117,7 @@ test("P6C preview opens in main pane, persists committed spec/title, runs only o
   try {
     await restored.waitFor("id:app-preview");
     expect(restored.value("id:preview-command")).toBe("fixture-command");
-    expect(restored.shows("text:idle")).toBe(true);
+    expect(idle(restored)).toBe(true);
     expect(latest(restored).panes.flatMap((pane) => pane.tabs).some((tab) => tab.id === id)).toBe(true);
     await restored.host.send("command", { id: "closeTab" });
     await restored.waitUntil(() => !restored.shows("id:app-preview"));
@@ -130,7 +136,13 @@ test("CuaMissing opens Settings in the active pane using fixture status only", a
   const app = await workspace("6c-missing", layout());
   try {
     const checked = app.host.posts().find((post) => post.name === "app.fixture.cua")!.data as CuaState;
-    if (checked.status?.installed) { expect(latest(app).panes.find((pane) => pane.id === 3)?.activeTab).toBe("shell:S3"); return; }
+    // Installed: startup opens no Settings. Restore drops S3, no live shell in the fixture
+    // home, so pane 3 shows its other tab, Tasks.
+    if (checked.status?.installed) {
+      expect(latest(app).panes.flatMap((pane) => pane.tabs).some((tab) => tab.id === "panel:settings")).toBe(false);
+      expect(latest(app).panes.find((pane) => pane.id === 3)?.activeTab).toBe("panel:tasks");
+      return;
+    }
     await app.waitFor("id:settings-panel");
     await app.waitFor("id:settings-section-01");
     await app.waitFor("id:cua-setup");
@@ -157,6 +169,6 @@ test("P6C preview defaults to the selected worktree folder", async () => {
     await app.waitFor("id:app-preview");
     const expected = app.host.posts().find((post) => post.name === "app.fixture.cwd")!.data as { cwd: string };
     expect(app.value("id:preview-cwd")).toBe(expected.cwd);
-    expect(app.shows("text:idle")).toBe(true);
+    expect(idle(app)).toBe(true);
   } finally { app.dispose(); }
 });
