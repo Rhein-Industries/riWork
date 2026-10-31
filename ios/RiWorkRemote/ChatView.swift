@@ -525,7 +525,7 @@ struct ChatNoticeBanners: View {
                                   action: model.state == .connecting ? nil : ("Reconnect", "Connects to the Mac again", true, { Task { await model.connect() } }), close: { closedLink = text }))
             }
         } else if let error = conversation.readError, conversation.dismissedReadError != error.message {
-            lines.append(Line(id: "read", level: .warning, icon: "arrow.triangle.2.circlepath", text: error.message, close: { conversation.dismissedReadError = error.message }))
+            lines.append(Line(id: "read", level: .error, icon: "arrow.triangle.2.circlepath", text: error.message, close: { conversation.dismissedReadError = error.message }))
         }
         if connected, conversation.catchingUp, conversation.readError == nil, !conversation.gone {
             lines.append(Line(id: "catch-up", level: .info, icon: "arrow.triangle.2.circlepath", text: "Updating chat…", working: true, close: {}))
@@ -542,7 +542,7 @@ struct ChatNoticeBanners: View {
         }
         // A file that did not reach the Mac, and a dictation that failed (with Open Settings when that is the way out).
         if let activity = model.uploadActivity(for: .chat(chat.id)), case .failed(let message) = activity.phase {
-            lines.append(Line(id: "upload", level: .warning, icon: "exclamationmark.triangle.fill", text: message, close: { model.dismissUploadFailure() }))
+            lines.append(Line(id: "upload", level: .error, icon: "exclamationmark.triangle.fill", text: message, close: { model.dismissUploadFailure() }))
         }
         if let line = Self.dictationLine(.chat(chat.id)) { lines.append(line) }
         // What the phone itself has to say: one line per source, replaced in place.

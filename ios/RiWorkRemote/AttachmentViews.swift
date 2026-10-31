@@ -206,9 +206,9 @@ struct UploadStatusBar: View {
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: activity.failed ? "exclamationmark.triangle" : "arrow.up.doc")
-                .foregroundStyle(activity.failed ? style.warning : style.accent).accessibilityHidden(true)
+                .foregroundStyle(activity.failed ? style.error : style.accent).accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 3) {
-                Text(title).font(style.face(11, relativeTo: .caption)).foregroundStyle(activity.failed ? style.warning : style.text)
+                Text(title).font(style.face(11, relativeTo: .caption)).foregroundStyle(activity.failed ? style.error : style.text)
                     .lineLimit(activity.failed ? 3 : 1).truncationMode(.middle).fixedSize(horizontal: false, vertical: true)
                 if case .sending = activity.phase { ProgressView(value: activity.fraction).tint(style.accent) }
                 else if !activity.failed { ProgressView().progressViewStyle(.linear).tint(style.accent) }

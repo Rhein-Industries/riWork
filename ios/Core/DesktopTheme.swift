@@ -22,6 +22,9 @@ public struct DesktopTheme: Sendable, Equatable {
     public var magenta: ThemeColor
     /// Warnings and things that need attention (the desktop's gold).
     public var gold: ThemeColor
+    /// Agents at work (the desktop's `working`). The accent where a palette has no working color of its own.
+    public var working: ThemeColor
+    /// Errors and failures (the desktop's `danger`).
     public var error: ThemeColor
     public var terminalBackground: ThemeColor, terminalForeground: ThemeColor
     /// The block cursor. The character under it is drawn in `terminalBackground`.
@@ -58,7 +61,7 @@ public struct DesktopTheme: Sendable, Equatable {
         func pair(_ path: KeyPath<Scheme, RGB>) -> ThemeColor { ThemeColor(light: lightScheme[keyPath: path], dark: darkScheme[keyPath: path]) }
         return DesktopTheme(
             background: pair(\.bg), panel: pair(\.panel), active: pair(\.active), divider: pair(\.divider), text: pair(\.text), muted: pair(\.muted),
-            accent: pair(\.accent), magenta: pair(\.magenta), gold: pair(\.gold), error: pair(\.error),
+            accent: pair(\.accent), magenta: pair(\.magenta), gold: pair(\.gold), working: pair(\.accent), error: pair(\.error),
             terminalBackground: pair(\.bg), terminalForeground: pair(\.text), terminalCursor: pair(\.accent),
             ansi: (0..<TerminalColors.paletteCount).map { ThemeColor(light: TerminalRenderColors.fallbackAnsi(dark: false)[$0], dark: TerminalRenderColors.fallbackAnsi(dark: true)[$0]) },
             dark: nil)
@@ -67,6 +70,11 @@ public struct DesktopTheme: Sendable, Equatable {
     /// iPhone's neutral native palette, independent of the selected desktop's
     /// skin and light/dark setting. Functional settings still come from that
     /// desktop. `dark == nil` lets iOS choose appearance for controls and sheets.
+    ///
+    /// The state colors are the desktop Native's (`src/theme.rs` NATIVE_LIGHT / NATIVE_DARK), so work, attention and failure
+    /// look the same on both: `working` a calm blue, `gold` (what needs the person) a deep orange, `error` (the desktop's
+    /// `danger`) a red. Each reads at 4.5:1 or better on the system background, grouped background and gray 5 rows, which
+    /// the system orange and red do not in light mode; dark blue and red are the system's own increased-contrast ones.
     public static func nativePhone(mic: Bool = false) -> DesktopTheme {
         func pair(_ light: UInt32, _ dark: UInt32) -> ThemeColor {
             ThemeColor(light: RGB(light), dark: RGB(dark))
@@ -100,7 +108,7 @@ public struct DesktopTheme: Sendable, Equatable {
             active: pair(0xe5e5ea, 0x2c2c2e), divider: pair(0xc6c6c8, 0x38383a),
             text: pair(0x1c1c1e, 0xf2f2f7), muted: pair(0x636366, 0xaeaeb2),
             accent: pair(0x0066cc, 0x64b5ff), magenta: pair(0x8944ab, 0xd6a3ed),
-            gold: pair(0x916000, 0xffd60a), error: pair(0xb42318, 0xff6961),
+            gold: pair(0xb34000, 0xff9f0a), working: pair(0x0058d0, 0x409cff), error: pair(0xc80018, 0xff6961),
             terminalBackground: ThemeColor(light: lightBackground, dark: darkBackground),
             terminalForeground: ThemeColor(light: lightForeground, dark: darkForeground),
             terminalCursor: ThemeColor(light: lightForeground, dark: darkForeground),
@@ -116,8 +124,9 @@ public struct DesktopTheme: Sendable, Equatable {
         var result = resolve(DesktopAppearance(updatedAt: 0, dark: preset.dark, palette: preset.palette,
             terminal: preset.terminal, native: true, mic: mic))
         let surfaces = [result.background.light, result.panel.light, result.active.light]
-        result.error = ThemeColor(fixed: surfaces.allSatisfy { preset.error.contrast(with: $0) >= minimumContrast }
-            ? preset.error : result.text.light)
+        func readable(_ color: RGB) -> Bool { surfaces.allSatisfy { color.contrast(with: $0) >= minimumContrast } }
+        result.error = ThemeColor(fixed: readable(preset.error) ? preset.error : result.text.light)
+        result.working = readable(preset.working) ? ThemeColor(fixed: preset.working) : result.accent
         return result
     }
 
@@ -141,8 +150,10 @@ public struct DesktopTheme: Sendable, Equatable {
     /// Contrast guard, so a strange or half-broken desktop palette can never make the app unreadable:
     /// - text must reach 3:1 against the background, the panel and the active row; otherwise the whole base
     ///   (background, panel, active, divider, text) is the built-in one for the desktop's light or dark side;
-    /// - muted, accent, magenta and gold must reach 3:1 against those surfaces; otherwise the built-in color of that
+    /// - muted, accent, magenta, gold and danger must reach 3:1 against those surfaces; otherwise the built-in color of that
     ///   role, and if that is unreadable too, the text color;
+    /// - errors use the desktop's `danger`, and the built-in error color when it sends none (a desktop from before it);
+    /// - working is the accent: the document carries no working color;
     /// - the terminal's own foreground must reach 3:1 against its background; otherwise the terminal uses the base.
     public static func resolve(_ appearance: DesktopAppearance?, nativePhone: Bool = false) -> DesktopTheme {
         if nativePhone { return .nativePhone(mic: appearance?.mic ?? false) }
@@ -170,7 +181,8 @@ public struct DesktopTheme: Sendable, Equatable {
             background: fixed(bg), panel: fixed(panel), active: fixed(active), divider: fixed(divider),
             text: fixed(text), muted: fixed(guarded(p.muted, builtIn: builtIn.muted)),
             accent: fixed(guarded(p.cyan, builtIn: builtIn.accent)), magenta: fixed(guarded(p.magenta, builtIn: builtIn.magenta)),
-            gold: fixed(guarded(p.gold, builtIn: builtIn.gold)), error: fixed(guarded(builtIn.error, builtIn: builtIn.error)),
+            gold: fixed(guarded(p.gold, builtIn: builtIn.gold)), working: fixed(guarded(p.cyan, builtIn: builtIn.accent)),
+            error: fixed(guarded(p.danger ?? builtIn.error, builtIn: builtIn.error)),
             terminalBackground: fixed(background), terminalForeground: fixed(foreground), terminalCursor: fixed(foreground),
             ansi: (appearance.terminal?.palette ?? TerminalRenderColors.fallbackAnsi(dark: appearance.dark)).map(fixed),
             dark: appearance.dark, native: appearance.native, mic: appearance.mic)

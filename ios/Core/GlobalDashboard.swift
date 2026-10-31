@@ -127,6 +127,17 @@ public enum DashboardAttentionKind: Sendable, Equatable {
     case automation(title: String, outcome: String, message: String)
     /// A kind a newer desktop added.
     case other(String)
+
+    /// Something failed: a chat, or an automation run that did not go through for another reason than being missed or uncertain.
+    /// It is shown in the error color; the rest (an agent that waits, a missed or uncertain run) need the person and are shown in
+    /// the attention color, as the desktop's dashboard draws them.
+    public var isFailure: Bool {
+        switch self {
+        case .chatFailed: true
+        case .automation(_, let outcome, _): outcome != "missed" && outcome != "uncertain"
+        case .waiting, .other: false
+        }
+    }
 }
 
 /// Exact provider controls, kept separate from descriptive attention or AI summaries.
@@ -413,6 +424,8 @@ public struct DashboardAutomation: Sendable, Equatable, Identifiable {
     }
     /// Its last run did not go through.
     public var lastRunFailed: Bool { ["failed", "missed", "uncertain"].contains(lastOutcome ?? "") }
+    /// Its last run failed outright, so it is shown in the error color; a missed or uncertain one keeps the attention color.
+    public var lastRunIsFailure: Bool { lastOutcome == "failed" }
 }
 
 public enum DashboardAutomations: Sendable, Equatable {

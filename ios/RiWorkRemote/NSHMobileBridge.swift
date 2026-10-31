@@ -443,7 +443,7 @@ enum NSHMobilePresentation {
             return ["scale": style.scale, "fontFamily": "system", "dark": traits.userInterfaceStyle == .dark,
                 "palette": ["bg": color(style.backgroundUI), "panel": color(style.panelUI), "panelActive": color(style.activeUI),
                     "divider": color(style.dividerUI), "text": color(style.textUI), "muted": color(style.mutedUI),
-                    "cyan": color(style.accentUI), "working": color(style.accentUI), "gold": color(style.goldUI),
+                    "cyan": color(style.accentUI), "working": color(style.workingUI), "gold": color(style.goldUI),
                     "magenta": color(style.magentaUI), "error": color(style.errorUI)]]
         }
         let dark = style.theme.dark ?? (app?.traitCollection.userInterfaceStyle == .dark)
@@ -454,7 +454,7 @@ enum NSHMobilePresentation {
         let palette: [String: String] = ["bg": color(style.theme.background), "panel": color(style.theme.panel),
             "panelActive": color(style.theme.active), "divider": color(style.theme.divider),
             "text": color(style.theme.text), "muted": color(style.theme.muted),
-            "cyan": color(style.theme.accent), "working": color(style.theme.accent),
+            "cyan": color(style.theme.accent), "working": color(style.theme.working),
             "gold": color(style.theme.gold), "magenta": color(style.theme.magenta), "error": color(style.theme.error)]
         return ["scale": style.scale, "fontFamily": "system", "dark": dark, "palette": palette]
     }
@@ -485,6 +485,8 @@ enum NSHMobilePresentation {
             "rows": projectedRows,
             "global": ["summary": status.summary, "action": action, "actionTitle": status.actionTitle]]
         value["unavailableReason"] = model.dashboardUnavailableReason ?? model.dashboardFailure
+        // The last read failed on this connection: the freshness line and the unavailable note say why, in the error color.
+        value["failed"] = model.state == .connected && model.dashboardFailure != nil
         value["readAt"] = readAt?.timeIntervalSince1970
         if let snapshot {
             value["notes"] = dashboardNotes(snapshot)
@@ -618,7 +620,7 @@ enum NSHMobilePresentation {
             case .other(let name): title = attention.session?.name ?? name; detail = name
             }
             add("attention", "\(targetID(attention.target)):\(index)", title,
-                subtitle: attention.session?.place ?? attention.projectName, status: detail, tone: "gold",
+                subtitle: attention.session?.place ?? attention.projectName, status: detail, tone: attention.kind.isFailure ? "error" : "gold",
                 action: destination(attention.target, attention.session, attention.projectID))
         }
         for (section, work) in [("working", snapshot.working.rows), ("finished", snapshot.finished.rows)] {
@@ -636,7 +638,7 @@ enum NSHMobilePresentation {
             for automation in items.rows.prefix(limit) {
                 add("automations", automation.id, automation.title, subtitle: automation.projectName,
                     status: automation.paused ? "Paused" : [automation.nextRun.map { "Next \(timeLabel($0, future: true))" }, automation.lastOutcome].compactMap { $0 }.joined(separator: " · "),
-                    tone: automation.lastRunFailed ? "gold" : "muted",
+                    tone: automation.lastRunIsFailure ? "error" : (automation.lastRunFailed ? "gold" : "muted"),
                     action: destination(.automations(projectID: automation.projectID), nil, automation.projectID))
             }
         }

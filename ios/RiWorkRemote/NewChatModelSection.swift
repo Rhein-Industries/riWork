@@ -49,7 +49,7 @@ struct NewChatModelSection: View {
             Text(label).font(style.system(.caption)).foregroundStyle(style.warning).padding(.horizontal, 12).padding(.vertical, 4)
         }
         if let error = sheet.chatModelsErrors[provider] {
-            Text(error).font(style.system(.caption)).foregroundStyle(style.warning).padding(.horizontal, 12).padding(.vertical, 4)
+            Text(error).font(style.system(.caption)).foregroundStyle(style.error).padding(.horizontal, 12).padding(.vertical, 4)
         }
         if sheet.chatModelsSources[provider] != .live || sheet.chatModelsErrors[provider] != nil {
             Button("Retry live \(provider.title) models") { Task { await sheet.loadChatModels(provider) } }.padding(.horizontal, 12).padding(.vertical, 4)

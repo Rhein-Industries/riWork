@@ -38,7 +38,7 @@ struct ProjectMemoSheet: View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
             Text(editor.status)
                 .font(style.face(12, relativeTo: .footnote))
-                .foregroundStyle(editor.statusIsWarning ? style.warning : style.muted)
+                .foregroundStyle(editor.statusIsFailure ? style.error : (editor.statusIsWarning ? style.warning : style.muted))
                 .accessibilityIdentifier("memo.status")
             Spacer(minLength: 0)
             if editor.canRetry { retry }

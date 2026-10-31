@@ -13,7 +13,7 @@ struct DesktopStyle: Equatable, @unchecked Sendable {
     /// The interface size (`InterfaceScale`): a factor for fonts and touch targets, so headers, lists, the key bar and buttons
     /// grow or shrink together. Dynamic Type is not touched; it still applies on top.
     let scale: Double
-    let textUI, mutedUI, accentUI, magentaUI, goldUI, errorUI: UIColor
+    let textUI, mutedUI, accentUI, magentaUI, goldUI, workingUI, errorUI: UIColor
     let backgroundUI, panelUI, activeUI, dividerUI: UIColor
     let terminalBackgroundUI, terminalForegroundUI, terminalCursorUI: UIColor
 
@@ -30,12 +30,14 @@ struct DesktopStyle: Equatable, @unchecked Sendable {
             // elevated sheet appearances when Native is selected on the phone.
             textUI = .label; mutedUI = .secondaryLabel
             accentUI = .systemBlue; magentaUI = .systemPurple
-            goldUI = .systemOrange; errorUI = .systemRed
             backgroundUI = .systemBackground; panelUI = .secondarySystemBackground
             activeUI = .systemGray5; dividerUI = .opaqueSeparator
+            // The state colors are the desktop Native's, light or dark with the phone (`DesktopTheme.nativePhone`): the
+            // system orange and red read below 4.5:1 as text on light surfaces.
+            goldUI = ui(theme.gold); workingUI = ui(theme.working); errorUI = ui(theme.error)
         } else {
             textUI = ui(theme.text); mutedUI = ui(theme.muted); accentUI = ui(theme.accent); magentaUI = ui(theme.magenta)
-            goldUI = ui(theme.gold); errorUI = ui(theme.error)
+            goldUI = ui(theme.gold); workingUI = ui(theme.working); errorUI = ui(theme.error)
             backgroundUI = ui(theme.background); panelUI = ui(theme.panel); activeUI = ui(theme.active); dividerUI = ui(theme.divider)
         }
         terminalBackgroundUI = ui(theme.terminalBackground); terminalForegroundUI = ui(theme.terminalForeground); terminalCursorUI = ui(theme.terminalCursor)
@@ -127,6 +129,9 @@ struct DesktopStyle: Equatable, @unchecked Sendable {
     /// The desktop's gold: warnings and things that need attention.
     var gold: Color { Color(uiColor: goldUI) }
     var warning: Color { gold }
+    /// Agents at work: the desktop's working color.
+    var working: Color { Color(uiColor: workingUI) }
+    /// Errors and failures: the desktop's danger.
     var error: Color { Color(uiColor: errorUI) }
     var background: Color { Color(uiColor: backgroundUI) }
     var panel: Color { Color(uiColor: panelUI) }

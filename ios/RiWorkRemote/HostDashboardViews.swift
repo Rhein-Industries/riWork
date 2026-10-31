@@ -205,7 +205,7 @@ struct DashboardDecisionSheet: View {
                             }
                         }
                     }
-                    if let failure { Text(failure).font(style.system(.footnote)).foregroundStyle(style.warning).textSelection(.enabled) }
+                    if let failure { Text(failure).font(style.system(.footnote)).foregroundStyle(uncertain ? style.warning : style.error).textSelection(.enabled) }
                     if busy { ProgressView("Checking current request…") }
                     Text("The host's current request is checked again before your response is sent.").font(style.system(.caption)).foregroundStyle(style.muted)
                 }.padding(16)

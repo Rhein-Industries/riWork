@@ -177,13 +177,13 @@ struct ChatModelSheet: View {
 
     private func content(_ choices: ChatModelChoices) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            if let notice = conversation.notice { messageRow(notice, icon: "exclamationmark.triangle") }
+            if let notice = conversation.notice { messageRow(notice, icon: "exclamationmark.triangle", failure: true) }
             else if !connected { messageRow("Not connected. Choose again when the link is back.", icon: "wifi.slash") }
             sectionLabel("Model")
             if loadingModels { ProgressView("Loading models…").padding(12) }
             if let label = conversation.modelCatalogueSource.label { messageRow(label, icon: "clock.arrow.circlepath") }
             if let error = modelsError {
-                messageRow(error, icon: "exclamationmark.triangle")
+                messageRow(error, icon: "exclamationmark.triangle", failure: true)
             }
             if conversation.modelCatalogueSource != .live || modelsError != nil {
                 Button("Retry live models") { Task { await loadModels() } }.buttonStyle(TargetButtonStyle(tinted: true)).padding(.horizontal, 12).disabled(loadingModels || !connected)
@@ -283,13 +283,15 @@ struct ChatModelSheet: View {
         Text(style.cased(text)).font(style.system(.caption, weight: .bold)).foregroundStyle(style.muted)
             .padding(.horizontal, 12).padding(.top, 12).padding(.bottom, 4).accessibilityAddTraits(.isHeader)
     }
-    private func messageRow(_ text: String, icon: String) -> some View {
+    /// - `failure`: something did not go through (a switch, a read of the models), in the error color; otherwise a state that
+    ///   needs the person, in the warning color.
+    private func messageRow(_ text: String, icon: String, failure: Bool = false) -> some View {
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: icon).accessibilityHidden(true)
             Text(text).font(style.system(.footnote)).fixedSize(horizontal: false, vertical: true)
         }
-        .foregroundStyle(style.warning).padding(12).frame(maxWidth: .infinity, alignment: .leading)
-        .background(style.warning.opacity(0.1), in: style.block())
+        .foregroundStyle(failure ? style.error : style.warning).padding(12).frame(maxWidth: .infinity, alignment: .leading)
+        .background((failure ? style.error : style.warning).opacity(0.1), in: style.block())
         .padding(.horizontal, style.native ? 8 : 0).padding(.top, style.native ? 8 : 0)
         .accessibilityElement(children: .combine).accessibilityAddTraits(.updatesFrequently)
     }

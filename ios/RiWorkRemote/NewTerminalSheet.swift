@@ -160,8 +160,9 @@ struct NewTerminalSheet: View {
             Image(systemName: message.outcomeIsUncertain ? "questionmark.circle" : "exclamationmark.triangle")
             Text(message.message).font(style.system(.footnote)).fixedSize(horizontal: false, vertical: true)
         }
-        .foregroundStyle(style.warning).padding(12).frame(maxWidth: .infinity, alignment: .leading)
-        .background(style.warning.opacity(0.1), in: style.block())
+        // A failure in the error color; one whose outcome is unknown needs the person, in the warning color.
+        .foregroundStyle(message.outcomeIsUncertain ? style.warning : style.error).padding(12).frame(maxWidth: .infinity, alignment: .leading)
+        .background((message.outcomeIsUncertain ? style.warning : style.error).opacity(0.1), in: style.block())
         .padding(.horizontal, style.native ? 8 : 0)
         .accessibilityElement(children: .combine).accessibilityAddTraits(.updatesFrequently)
         .padding(.top, 8)

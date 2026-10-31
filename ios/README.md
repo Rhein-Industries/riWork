@@ -83,7 +83,14 @@ the phone's light/dark setting), the same 12 fixed desktop palettes offline, and
 [color-palettes.json](../crates/riwork-core/color-palettes.json): RiWork, Catppuccin Mocha,
 Tokyo Night, Gruvbox Light, Hermes, Dracula, Monokai, Nord, Solarized Light,
 Solarized Dark, One Dark and Gruvbox Dark. The choice is saved locally on the
-phone and does not change its Mac. Palettes change colors only; controls,
+phone and does not change its Mac. Each fixed palette's `working` colors agents at work (its accent in a catalog
+without it) and its `danger` colors errors and failures (an older catalog's `error`, else the terminal's red); either
+one below 3:1 on the palette's surfaces falls back to the accent or the text color. Native uses the desktop Native's
+state colors, light or dark with the phone: working blue (`#0058d0` / `#409cff`), gold for what needs you
+(`#b34000` / `#ff9f0a`) and red for failures (`#c80018` / `#ff6961`), which read at 4.5:1 or better on the system
+surfaces where the system orange and red do not. Failed chats, automations whose last run failed, unreadable
+automations, error text and connection or load failures are drawn in the error color; what waits for you (including a
+missed or uncertain automation run) stays gold. Palettes change colors only; controls,
 system typography and layout stay native. Terminal text remains monospace. Chats use proportional
 prose, right-aligned user bubbles, rounded tool/code surfaces and a shared composer,
 with a centered reading column on iPad. Buttons retain 44-point touch targets,
@@ -91,15 +98,18 @@ accessible labels and text scaling. iPad retains desktop theme synchronization.
 
 **Desktop color sync.** iPad retains its existing synchronization; iPhone uses it
 only when **Follow desktop** is selected. A desktop that supports `appearance.get` (`{"v":1,"updated_at","dark","palette":{bg, panel,
-panel_active, divider, cyan, magenta, gold, text, muted},"terminal":{background, foreground, palette[16]}}`, colors
-as `#rrggbb`) supplies its current colors, including Ghostty: cyan is the accent, gold marks warnings, magenta is the
+panel_active, divider, cyan, magenta, gold, text, muted, danger},"terminal":{background, foreground, palette[16]}}`, colors
+as `#rrggbb`) supplies its current colors, including Ghostty: cyan is the accent (and, as the document has no working
+color, what is working), gold marks warnings and what needs you, `danger` marks errors and failures, magenta is the
 secondary accent (orchestrators, hotkeys), the terminal uses `terminal.background/foreground` (else `bg`/`text`) for its
 background, text and block cursor, and `dark` sets the status bar and system controls. The app asks on connect, when
 the app becomes active and every 60 s while connected, one request at a time, and only redraws when the colors actually
 changed. The last palette is kept per paired desktop (UserDefaults) and applied at launch and on connect, before the
 first answer; the desktop list wears the most recently used desktop's colors. `not_found` ("appearance not published")
 keeps the last palette; `unsupported RPC method` stops the asking for that connection and restores the built-in style;
-an unreadable palette (invalid hex, wrong count, `v` other than 1) is ignored. A synced text/background pair below a
+an unreadable palette (invalid hex, wrong count, `v` other than 1) is ignored. `palette.danger` is optional, as the relay
+checks it: a desktop from before it leaves it out (or null) and errors keep the app's own error color, as before; any
+other value than `#rrggbb` makes the document invalid. A synced text/background pair below a
 3:1 contrast ratio falls back to the built-in pair for that element. Without a palette, iPad keeps its
 built-in Gruvbox Light / RiWork fallback; iPhone's Follow desktop choice uses Native until colors are available.
 The phone still reads the microphone preference regardless of its local palette choice.

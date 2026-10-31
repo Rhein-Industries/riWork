@@ -389,6 +389,14 @@ public struct ProjectMemoEditor: Sendable, Equatable {
         default: false
         }
     }
+    /// The problem is a failure (a read or a save that did not go through), shown in the error color as the desktop shows
+    /// "Not saved"; text that waits for the Mac, is too long or cannot be saved there keeps the warning color.
+    public var statusIsFailure: Bool {
+        switch phase {
+        case .loadFailed, .failed, .conflict: true
+        default: false
+        }
+    }
 }
 
 // MARK: - Text kept on the phone
