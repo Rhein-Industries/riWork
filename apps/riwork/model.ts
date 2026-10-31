@@ -127,7 +127,6 @@ const PANEL_TITLES: Record<string, string> = {
   project_settings: "Project settings",
   schedules: "Automations",
   dashboard: "Dashboard",
-  flows: "Flows",
   addins: "Add-ins",
 };
 

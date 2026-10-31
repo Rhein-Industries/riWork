@@ -4681,8 +4681,6 @@ dependencies = [
 [[package]]
 name = "nsh-platform-macos"
 version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c5d8c32b2c6ca9c4661571287bbc19afa027155b2cc8a99cafdbe3f6b9e387bd"
 dependencies = [
  "block2 0.6.2",
  "crossbeam-channel",

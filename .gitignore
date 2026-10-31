@@ -3,3 +3,6 @@
 /ios/Vendor/
 /ios/Generated/
 /ios/.nsh-cli
+
+# Pictures of panes taken by scripts/pane-shot.sh
+.pane-shot/

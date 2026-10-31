@@ -248,6 +248,84 @@ pub fn commands(provider: Provider) -> Vec<Command> {
         .collect()
 }
 
+/// The skills a Claude chat working in `cwd` runs as `/name`, as commands: the project's
+/// (`.claude/skills/*/SKILL.md` in `cwd` and each folder above it, below the home folder) and
+/// the person's (`$CLAUDE_CONFIG_DIR/skills`, else `~/.claude/skills`). A skill named like one of
+/// `commands`, or marked `user-invocable: false`, is left out; the first of a name wins. Other
+/// providers run no skills by slash, so they get none.
+pub fn skills(provider: Provider, cwd: &std::path::Path) -> Vec<Command> {
+    const MOST: usize = 64;
+    if provider != Provider::Claude {
+        return Vec::new();
+    }
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    let mut folders: Vec<std::path::PathBuf> = cwd
+        .ancestors()
+        .take_while(|folder| home.as_deref() != Some(*folder))
+        .map(|folder| folder.join(".claude/skills"))
+        .collect();
+    let config = std::env::var_os("CLAUDE_CONFIG_DIR").filter(|dir| !dir.is_empty()).map(std::path::PathBuf::from);
+    folders.extend(config.or_else(|| home.map(|home| home.join(".claude"))).map(|dir| dir.join("skills")));
+    let taken: Vec<String> = commands(provider).into_iter().map(|command| command.name).collect();
+    let mut found: Vec<Command> = Vec::new();
+    for folder in folders {
+        let Ok(entries) = std::fs::read_dir(&folder) else { continue };
+        let mut entries: Vec<_> = entries.flatten().map(|entry| entry.path()).collect();
+        entries.sort();
+        for dir in entries {
+            if found.len() >= MOST {
+                return found;
+            }
+            let Some(skill) = read_skill(&dir) else { continue };
+            if !taken.contains(&skill.name) && !found.iter().any(|known| known.name == skill.name) {
+                found.push(skill);
+            }
+        }
+    }
+    found
+}
+
+/// A skill folder's `SKILL.md` front matter as a command; none when it has no usable name or
+/// is not for people to run.
+fn read_skill(dir: &std::path::Path) -> Option<Command> {
+    use std::io::Read as _;
+    let mut text = String::new();
+    std::fs::File::open(dir.join("SKILL.md")).ok()?.take(16 * 1024).read_to_string(&mut text).ok()?;
+    let front = text.strip_prefix("---")?.split("\n---").next()?;
+    let lines: Vec<&str> = front.lines().collect();
+    // A plain or quoted value, or a `>` / `|` block of the indented lines below it, joined.
+    let field = |key: &str| {
+        let index = lines.iter().position(|line| line.strip_prefix(key).is_some_and(|rest| rest.starts_with(':')))?;
+        let value = lines[index][key.len() + 1..].trim();
+        if value.starts_with(['>', '|']) {
+            let block: Vec<&str> = lines[index + 1..].iter().take_while(|line| line.starts_with([' ', '\t'])).map(|line| line.trim()).collect();
+            return Some(block.join(" "));
+        }
+        Some(value.trim_matches(['"', '\'']).to_owned())
+    };
+    if field("user-invocable").is_some_and(|value| value == "false") {
+        return None;
+    }
+    let name = field("name").filter(|name| !name.is_empty()).or_else(|| Some(dir.file_name()?.to_string_lossy().into_owned()))?;
+    if name.is_empty() || name.len() > 64 || !name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | ':')) {
+        return None;
+    }
+    let description = field("description").unwrap_or_default();
+    let summary = match description.char_indices().nth(160) {
+        Some((cut, _)) => format!("{}…", description[..cut].trim_end()),
+        None => description,
+    };
+    Some(Command {
+        name,
+        summary,
+        argument: Some("what it should work on".into()),
+        sends: "Goes to Claude as typed: Claude runs the skill, with the rest of your message as \
+            what it works on."
+            .into(),
+        handler: Handler::Provider,
+    })
+}
+
 /// The commands that match `query`, best first: a name that starts with it, then one that
 /// holds it, then one that holds its letters in order; ties in `commands` order. Case is
 /// ignored.
@@ -1073,7 +1151,8 @@ pub fn reply(
         chat_id: chat_id.to_owned(),
         provider,
         root: root.display().to_string(),
-        commands: commands(provider),
+        // RiWork's commands, then the skills the chat's provider runs by slash.
+        commands: commands(provider).into_iter().chain(skills(provider, root)).collect(),
         files: list_files(root),
         file_bound: FILE_BOUND,
         models,

@@ -131,8 +131,6 @@ riwork handoff [--from SHELL_OR_CHAT_ID] --to shell|chat --provider codex|claude
                [--mode supervised|auto-edit|full|plan] [--contributor-on]
                [--context transcript|summary] [--note TEXT]
                                         Pass a conversation to a new shell or chat
-riwork flow list|show|new [--project ID]   A project's flows: statecharts in .ontack/flows
-riwork flow start|status|next|approve|deny|stop   Lead a chat through a flow (riwork flow help)
 riwork orchestrator [--project ID]       Show the selected orchestrator status
 riwork orchestrator create [--project ID | --cwd PATH] [--command CMD] [--mode automatic|terminal|chat]
                 [--provider codex|claude|muse] [--model NAME]
@@ -546,7 +544,6 @@ fn run_cli_with_invocation(args: &[String], invocation: Invocation) -> Result<bo
         "tabs" => tabs_command(args, json)?,
         "preview" => preview_cli::command(args, json)?,
         "handoff" => handoff::command(args, json)?,
-        "flow" | "flows" => flow_cli::command(args, json)?,
         "schedule" | "automation" => schedule_command(args, json)?,
         "search" => search_command(args, json)?,
         "dashboard" => dashboard_command(args, json)?,
@@ -4158,7 +4155,6 @@ fn ensure_empty(args: &[String]) -> Result<(), String> {
 
 mod addin_cli;
 mod chat_remote;
-mod flow_cli;
 mod handoff;
 mod memo;
 pub(crate) mod preview_cli;
