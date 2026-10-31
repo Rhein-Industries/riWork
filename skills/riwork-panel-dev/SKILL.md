@@ -29,8 +29,11 @@ write new tests unless the person asks. Do not commit.
 
    It builds the app and draws the fixture in the NSH macOS host with a hidden window: nothing
    shows and the focus stays where it is (`PANE_SHOT_VISIBLE=1` shows it). Pick the panel's usual
-   size, `--dark` when dark mode matters, and `--step` lines (test code: `app.press`, `app.type`,
-   `app.host.send`, ...) that bring it to its most telling state. The first run in a fresh
+   size, `--dark` when dark mode matters, `--params JSON` when the fixture reads `host.params`,
+   and `--step` lines (test code: `app.press`, `app.type`, `app.host.send`, ...) that bring it to
+   its most telling state. Every run gets a private RiWork home, so a fixture that writes to the
+   Store or settings is safe; keep your own scripts and notes in your worktree, never in a
+   scratch folder other agents share. The first run in a fresh
    worktree builds for about a minute; later ones take 15–30 s. Write the command you used to
    `.pane-shot/<panel>/shot.txt`.
 3. Look at the picture yourself (read the PNG) before you write anything about it.
@@ -57,17 +60,23 @@ Fix the findings that matter most from both lists (and, from round 2 on, the per
 small, focused changes in the panel's own files; leave unrelated code alone. Then check:
 
 ```sh
-cd apps/riwork && "$NSH" check                       # the app type-checks
-"$NSH" test apps/riwork --filter NAME                # from the repository root, each existing test name
+(cd apps/riwork && "$NSH" check)                     # the app type-checks
+scripts/pane-test.sh NAME...                         # each existing test name, in a private home
 ```
 
-`NSH` is `$NSH_CLI`, else `~/.local/share/riwork/toolchains/nsh-0.3*/bin/nsh`. Fix what fails.
+`NSH` is `$NSH_CLI`, else `~/.local/share/riwork/toolchains/nsh-0.3*/bin/nsh`. Fix what fails;
+say which failures were there before your change.
+
+**Never run a test with plain `nsh test`.** Some tests open the whole app and save settings,
+layouts, projects or an API key; on the person's own RiWork home they overwrite real data.
+`scripts/pane-test.sh` and `scripts/pane-shot.sh` give every run a private `/tmp` home.
 
 ## Show, then wait
 
 Take `after.png` with the same command, compare it with `before.png`, and if a fix does not show
-or broke something, improve again first. Write `summary.md`: what changed and why, what you left
-for later. Then reply to the person with:
+or broke something, improve again first. Write `summary.md` (or, where you may not write report
+files, put it in your reply): what changed and why, what you left for later. Then reply to the
+person with:
 
 - the absolute paths of `before.png` and `after.png` (read both so they are in your transcript),
 - three to six lines of what changed, and the files you touched,
