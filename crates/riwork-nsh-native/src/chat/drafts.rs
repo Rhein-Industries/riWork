@@ -757,12 +757,16 @@ fn store(shared: &Shared) -> MutexGuard<'_, Drafts> {
 
 /// Load the drafts under `home` once per process and register the host's blocking draft
 /// flush (close, quit, reload). Calling it again with the same home does nothing; another
-/// home is refused, since every window must share one store.
+/// home is refused, since every window must share one store. The same home may come spelled
+/// two ways: the process home is RIWORK_HOME as given until the process service starts, and
+/// canonical after (`/tmp/x` and then `/private/tmp/x`).
 pub fn init(home: &Path) -> Result<(), String> {
     static INIT: Mutex<()> = Mutex::new(());
     let _init = INIT.lock().unwrap_or_else(PoisonError::into_inner);
     if let Some(shared) = SHARED.get() {
-        return if shared.home == home {
+        let same = shared.home == home
+            || matches!((shared.home.canonicalize(), home.canonicalize()), (Ok(a), Ok(b)) if a == b);
+        return if same {
             Ok(())
         } else {
             Err(format!(

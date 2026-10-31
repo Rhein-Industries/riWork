@@ -151,8 +151,13 @@ test("P4-CHAT-06 a 2,200-call disclosed turn keeps fewer than 100 rows materiali
     await app.waitUntil(() => app.texts().some((text) => text.startsWith("Worked")), { timeout: 20000 });
     const header = app.texts().find((text) => text.startsWith("Worked"))!;
     await app.press(`label:${header}`);
-    await app.waitUntil(() => app.count("text:▾") > 0, { timeout: 20000 });
-    const groups = (await inspect(app)).groups ?? [];
+    // The opened activity shows its collapsed groups (a header's chevron is an icon, not a ▾ text).
+    let groups = (await inspect(app)).groups ?? [];
+    for (let tries = 0; groups.length === 0 && tries < 200; tries += 1) {
+      await app.wait(100);
+      groups = (await inspect(app)).groups ?? [];
+    }
+    expect(groups.length).toBeGreaterThan(0);
     for (const group of groups) await app.press(`id:chat-header:${group}`);
     let state = await inspect(app);
     for (let tries = 0; (state.rows ?? 0) < 2200 && tries < 200; tries += 1) {

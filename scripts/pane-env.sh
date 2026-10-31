@@ -2,8 +2,10 @@
 # already a /tmp fixture home, gives the run a private RiWork home, runtime folder and tmux
 # folder, so a fixture or a test can never change the person's own settings, layouts, projects
 # or Keychain key. RIWORK_NSH_FILES_FIXTURE=1 selects the fixture services such homes allow (an
-# in-memory API key store, fixture folders). Sets `nsh` and `private_home` (empty when the
-# caller brought its own /tmp home); the caller removes `private_home` when it is done.
+# in-memory API key store, fixture folders) and RIWORK_NSH_CHAT_FIXTURE=1 the in-process chat
+# host that replays recorded provider streams (never a live provider). Sets `nsh` and
+# `private_home` (empty when the caller brought its own /tmp home); the caller removes
+# `private_home` when it is done.
 real_home=$HOME/.local/share/riwork
 nsh=${NSH_CLI:-}
 if [ -z "$nsh" ]; then
@@ -21,4 +23,4 @@ case ${RIWORK_HOME:-} in
 	export RIWORK_HOME="$private_home/home" RIWORK_RUNTIME_DIR="$private_home/run" TMUX_TMPDIR="$private_home/tmux"
 	;;
 esac
-export RIWORK_NSH_FILES_FIXTURE=1
+export RIWORK_NSH_FILES_FIXTURE=1 RIWORK_NSH_CHAT_FIXTURE=1
