@@ -26,7 +26,7 @@ import { ChatFailure } from "./chat/ChatFailure";
 import { createFilesController, FilesPanel, PreviewPanel } from "./Files";
 import { AutomationsPanel } from "./schedules/Automations";
 import { FlowsPanel } from "./flows/FlowsPanel";
-import { createRemoteController, RemoteProjects, RemoteProjectPanel, RemotePrompt, RemoteSettings, RemoteUnavailable, type RemoteApi } from "./remote/Remote";
+import { createRemoteController, RemoteProjects, RemoteProjectPanel, RemoteSettings, RemoteUnavailable, type RemoteApi } from "./remote/Remote";
 import { RemoteTerminal } from "./remote/RemoteTerminal";
 import { filteredFolders, remoteHostLabel, remoteLocalOnly, remotePanelUnavailable, remoteProjectKey, remoteTabTitle, remoteTitle, splitRemoteTitle } from "./remote/model";
 import { workspaceRemote, type WorkspaceRemoteApi } from "./remote/workspace";
@@ -156,9 +156,8 @@ export function Workspace(props: WorkspaceProps) {
   });
   const remote = createRemoteController({
     api: Remote as unknown as RemoteApi, theme, copyText: (text) => Clipboard.writeText(text),
-    notice: (message) => notice.set(message), modalBlocked: () => modal() || switching(),
-    beforePrompt: () => { allTabs.set(false); commands.stripOpen.set(false); freeze(); },
-    afterPrompt: () => thaw(),
+    notice: (message) => notice.set(message), modalBlocked: () => switching(),
+    beforePrompt: () => { allTabs.set(false); commands.stripOpen.set(false); },
     wants: () => ({ order: panelState.order(), descending: panelState.descending(), folders: isVisible("panel:projects"), settings: isVisible("panel:settings"),
       collapsed: [...panelState.collapsed()], projectKey: remoteProjectKey(projectId()) ? projectId() : null,
       worktrees: isVisible("panel:worktrees"), tasks: isVisible("panel:tasks"), shells: isVisible("panel:shells"),
@@ -210,7 +209,7 @@ export function Workspace(props: WorkspaceProps) {
     theme,
     visible: () => isVisible("panel:files") || isVisible("panel:preview"),
     active: () => {
-      if (modal() || switching() || panelState.editor()) return null;
+      if (switching() || panelState.editor()) return null;
       const id = activePane(snapshot())?.activeTab;
       return id === "panel:files" ? "files" : id === "panel:preview" ? "preview" : null;
     },
@@ -253,8 +252,9 @@ export function Workspace(props: WorkspaceProps) {
     const next = tree?.id ?? shell.worktreeId;
     if (next && next !== panelState.selectedWorktree()) panelState.selectWorktree(next);
   });
-  function modal(): boolean { return !!remote.prompt(); }
-  const frozen = () => modal() || menuOpen() || dragging() || allTabs();
+  // Made again only when it appears or goes, so a form open in the remote list keeps its focus.
+  const remoteFolders = computed(() => filteredFolders(remote.data(), panelState.query()).length > 0);
+  const frozen = () => menuOpen() || dragging() || allTabs();
   const sessions = () => (snapshot().panes.find((pane) => pane.id === (allTabsPane() ?? snapshot().activePane))?.tabs ?? []).filter((tab) => tab.kind !== "panel" && tab.kind !== "empty");
   const header = () => headerHeight(11 * theme().scale);
   effect(() => {
@@ -326,8 +326,8 @@ export function Workspace(props: WorkspaceProps) {
   const orchestratorBusy = signal(false);
   async function openProjectOrchestrator() {
     const project = projectId();
-    if (remoteProjectKey(project)) { if (!orchestratorBusy() && !switching() && !modal()) { orchestratorBusy.set(true); try { await remoteActions.orchestrator(); } catch (error) { if (alive) notice.set(String(error).replace(/^(?:Error: )?(?:invalid|io|refused|broken|unavailable): /u, "")); } finally { orchestratorBusy.set(false); } } return; }
-    if (orchestratorBusy() || switching() || modal() || !UUID.test(project)) return;
+    if (remoteProjectKey(project)) { if (!orchestratorBusy() && !switching()) { orchestratorBusy.set(true); try { await remoteActions.orchestrator(); } catch (error) { if (alive) notice.set(String(error).replace(/^(?:Error: )?(?:invalid|io|refused|broken|unavailable): /u, "")); } finally { orchestratorBusy.set(false); } } return; }
+    if (orchestratorBusy() || switching() || !UUID.test(project)) return;
     orchestratorBusy.set(true);
     try {
       const made = await Orchestrators.start(project);
@@ -343,7 +343,7 @@ export function Workspace(props: WorkspaceProps) {
   }
   /** One local-shell creation path: the layout session creates and places it. */
   async function createShell(split?: "right" | "down", kind = "shell") {
-    if (busy() || switching() || panelState.pending() || modal()) return;
+    if (busy() || switching() || panelState.pending()) return;
     busy.set(true);
     const before = new Set(snapshot().panes.flatMap((pane) => pane.tabs.map((tab) => tab.id)));
     const tree = panelState.state().worktrees.find((tree) => tree.id === panelState.selectedWorktree() && tree.projectId === projectId());
@@ -363,7 +363,7 @@ export function Workspace(props: WorkspaceProps) {
   }
   async function createSubshell(parentShellId = selected()?.startsWith("shell:") ? selected()!.slice(6) : undefined) {
     if (localOnly()) return;
-    if (!parentShellId || busy() || switching() || modal()) return;
+    if (!parentShellId || busy() || switching()) return;
     busy.set(true);
     const project = projectId(), generation = panelState.generation();
     try {
@@ -376,7 +376,7 @@ export function Workspace(props: WorkspaceProps) {
   }
   async function openEditor(path: string, line?: number, worktreeId?: string, identity?: string) {
     if (localOnly()) return;
-    if (busy() || switching() || modal()) return;
+    if (busy() || switching()) return;
     busy.set(true);
     const project = projectId(), generation = panelState.generation();
     const selectedTree = panelState.selectedWorktree();
@@ -805,7 +805,7 @@ export function Workspace(props: WorkspaceProps) {
   }
 
   const commands = workspaceCommands(session, snapshot, action, {
-    blocked: () => modal() || switching(),
+    blocked: () => switching(),
     previewOwnsEscape: () => !!previewFocus() && isVisible(previewFocus()!) && !frozen() &&
       !statusMenu() && !props.modalOpen?.() && !switching(),
     newShell: (split) => { allTabs.set(false); void createShell(split); },
@@ -837,11 +837,10 @@ export function Workspace(props: WorkspaceProps) {
     },
     cycle: (direction) => {
       const pane = activePane(snapshot());
-      const tab = pane && cycledTab(pane, pane.activeTab, direction, modal());
+      const tab = pane && cycledTab(pane, pane.activeTab, direction);
       if (tab) select(tab.id);
     },
     escape: () => {
-      if (remote.prompt()) { remote.close(); thaw(); return; }
       if (renaming()) { renaming.set(null); return; }
       if (panelState.editor() && !panelState.pending()) { panelState.editor.set(null); return; }
       if (panelState.closingShell() && !panelState.pending()) { panelState.closingShell.set(null); return; }
@@ -887,16 +886,16 @@ export function Workspace(props: WorkspaceProps) {
   const subscription = session.subscribe((next) => { if (!frozen()) install(next); });
   cleanup(() => subscription.close());
   cleanup(keymap.bind("mod+f", () => {
-    if (panelState.editor() || modal() || switching()) return;
+    if (panelState.editor() || switching()) return;
     find("find");
   }));
-  cleanup(keymap.bind("mod+g", () => { if (!modal() && !panelState.editor()) find("findNext"); }));
+  cleanup(keymap.bind("mod+g", () => { if (!panelState.editor()) find("findNext"); }));
   cleanup(keymap.bind("mod+shift+g", () => {
-    if (modal() || panelState.editor()) return;
+    if (panelState.editor()) return;
     if (selected() && terminalControls.get(selected()!)?.finding()) find("findPrevious");
     else commands.dispatch("openGrok");
   }));
-  cleanup(keymap.bind("shift+f10", () => { if (!modal() && selected()) tabMenu(selected()!); }));
+  cleanup(keymap.bind("shift+f10", () => { if (selected()) tabMenu(selected()!); }));
   effect(() => {
     if (!allTabs()) return;
     for (const [key, direction] of [["down", 1], ["up", -1]] as const) cleanup(keymap.bind(key, () => {
@@ -1014,7 +1013,7 @@ export function Workspace(props: WorkspaceProps) {
                       onTask={(id) => { panelState.selectTask(id); const task = remote.data().projects.find((project) => project.key === projectId())?.tasks.find((task) => task.id === id); if (task?.worktreeId) panelState.selectWorktree(task.worktreeId); }}
                       onShell={(hostId, shell) => remoteActions.open(hostId, shell)} />
                    : <PanelContent controller={panelState} panel={panel.id.slice(6)} surface={panel.id}
-                     projectFooter={panel.id === "panel:projects" && filteredFolders(remote.data(), panelState.query()).length > 0 ?
+                     projectFooter={panel.id === "panel:projects" && remoteFolders() ?
                        <RemoteProjects controller={remote} query={panelState.query} selected={projectId} order={() => ({ order: panelState.order(), descending: panelState.descending() })} collapsed={panelState.collapsed} onToggleFolder={panelState.toggleFolder}
                          onSelectProject={(key) => { void switchTo(key).catch((error) => notice.set(String(error))); }} /> : undefined} />}
                 </View> : panel.id === "panel:files" || panel.id === "panel:preview" || panel.id === "panel:project_settings" || panel.id === "panel:settings" ?
@@ -1099,7 +1098,7 @@ export function Workspace(props: WorkspaceProps) {
       </View>}
       <StatusBar session={session} snapshot={snapshot} projectId={projectId} projectLabel={() => remoteTitle(remote.data(), projectId()) ?? panelState.projectLabel()}
         nativeChat={nativeChatUsage}
-        settings={props.settings} theme={theme} action={action} onError={(error) => notice.set(String(error))} modalOpen={() => !!props.modalOpen?.() || modal() || !!panelState.editor() || switching()}
+        settings={props.settings} theme={theme} action={action} onError={(error) => notice.set(String(error))} modalOpen={() => !!props.modalOpen?.() || switching()}
         newShell={props.projectId ? { busy, create: () => { void createShell(); } } : undefined} onMenu={(open) => statusMenu.set(open)}
         openProjectOrchestrator={UUID.test(projectId()) || remoteProjectKey(projectId()) ? () => commands.dispatch("openProjectOrchestrator") : undefined}
         remote={() => { const lists = remote.data().projects.find((row) => row.key === projectId()); const tree = panelState.selectedWorktree();
@@ -1126,7 +1125,6 @@ export function Workspace(props: WorkspaceProps) {
         </View>
       </Overlay>}
       {tabHint() && !frozen() && <Overlay pointerEvents="none" anchor={tabRefs.get(`pane:${tabHint()!.id}`)} placement="bottom" align="start" offset={4} style={{ paddingHorizontal: 8, paddingVertical: 5, backgroundColor: theme().palette.panelActive, borderRadius: 4 }}><Text style={textStyle()}>{tabHint()!.text}</Text></Overlay>}
-      <RemotePrompt controller={remote} />
     </View>
   );
 }
