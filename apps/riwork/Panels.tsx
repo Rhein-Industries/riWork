@@ -247,14 +247,17 @@ export type PanelController = ReturnType<typeof createPanelController>;
 /** A chip or a button. A `selected` chip (the current filter or status) and a `primary` button (the
  * main action of a form) take the accent fill with a `bg` label, and keep it while hovered or
  * focused: hover and focus come after the selected state, so a plain focus fill would leave the
- * light label on light gray after a click. Disabled, a primary button is a plain one with a muted
- * label, and a selected chip keeps its fill, dimmed. */
+ * light label on light gray after a click. A filled one shows its focus as a ring set off from the
+ * fill by a gap of the surface, so it shows even where the focus color is the accent (native light).
+ * Disabled, a primary button is a plain one with a muted label, and a selected chip keeps its fill,
+ * dimmed. */
 function Command(props: { id?: string; label: string; disabled?: boolean; selected?: boolean; primary?: boolean; onPress: () => void; children?: JSX.Element }) {
   const filled = () => !!props.selected || !!props.primary && !props.disabled;
   const fill = (other: string) => filled() ? theme().palette.cyan : other;
+  const ring = () => ({ backgroundColor: theme().palette.cyan, outlineStyle: "solid" as const, outlineWidth: 2, outlineOffset: 2, outlineColor: theme().palette.focus });
   return <Button testID={props.id} accessibilityLabel={props.label} disabled={props.disabled} selected={props.selected} onPress={props.onPress}
     style={{ ...button(), backgroundColor: fill(theme().palette.panelActive), opacity: props.disabled && props.selected ? 0.5 : 1 }}
-    hoverStyle={filled() ? { backgroundColor: theme().palette.cyan, opacity: 0.85 } : { backgroundColor: theme().palette.divider }} focusStyle={{ backgroundColor: fill(theme().palette.divider) }}>
+    hoverStyle={filled() ? { backgroundColor: theme().palette.cyan, opacity: 0.85 } : { backgroundColor: theme().palette.divider }} focusStyle={filled() ? ring() : { backgroundColor: theme().palette.divider }}>
     <Text style={{ fontFamily: theme().family, fontSize: text(11), fontWeight: props.primary ? "600" : "400", color: filled() ? theme().palette.bg : props.disabled ? muted() : ink() }}>{props.children ?? props.label}</Text>
   </Button>;
 }
