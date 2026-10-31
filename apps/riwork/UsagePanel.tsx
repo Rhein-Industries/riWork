@@ -2,7 +2,7 @@ import { Scroll, Text, View, cleanup, effect, keymap, signal, type JSX } from "n
 import { Button } from "nsh/base";
 import {
   Accounts, Sessions, Usage, type AccountsDto, type CodexUsageDto, type ProviderUsageDto,
-  type ShellSessionDto, type UsageDto, type UsageWindowDto, type GrokTokenCountsDto,
+  type ShellSessionDto, type UsageDto, type UsageWindowDto, type GrokTokenCountsDto, type GrokSessionUsageDto, type GrokUsageDto,
 } from "riwork/native";
 import { space, type InterfaceTheme } from "./appearance";
 import { Icon } from "./Icon";
@@ -16,30 +16,66 @@ function resetSummary(deadline: number | null | undefined, now: number): string 
   return `Resets in ${Math.ceil(seconds / 60)}m`;
 }
 
+/** How long ago `at` was, to the minute: "just now", "4m ago", "2h ago", "3d ago". */
+function ago(at: number, now: number): string {
+  const seconds = Math.max(0, now - at);
+  if (seconds < 60) return "just now";
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+  return `${Math.floor(seconds / 86400)}d ago`;
+}
+
+/** Dollars to the cent; a cost under half a cent is not shown as free. */
+function money(value: number): string {
+  return value > 0 && value < 0.005 ? "<$0.01" : `$${value.toFixed(2)}`;
+}
+
+/** The native reads the panel subscribes to; fixtures supply in-memory ones. */
+export interface UsagePanelApi {
+  usage: Pick<typeof Usage, "subscribe" | "refresh">;
+  accounts: Pick<typeof Accounts, "subscribe">;
+  sessions: Pick<typeof Sessions, "subscribe">;
+}
+const NATIVE_API: UsagePanelApi = { usage: Usage, accounts: Accounts, sessions: Sessions };
+
 /** Account usage is read by the process service; this panel only owns its visible subscriptions. */
 export function UsagePanel(props: {
   theme: () => InterfaceTheme;
   projectId: () => string;
   visible: () => boolean;
+  api?: UsagePanelApi;
 }) {
+  const api = props.api ?? NATIVE_API;
   const usage = signal<UsageDto | null>(null), accounts = signal<AccountsDto | null>(null);
   const shells = signal<ShellSessionDto[]>([]), notice = signal("");
   const refreshing = signal(false);
+  // The service publishes only when figures change (its `now` can be 15 minutes old), so
+  // "ago" and "Resets in" read this display clock: set on each snapshot and when shown.
+  const clock = signal(Date.now());
+  const tick = () => clock.set(Date.now());
   let alive = true;
   cleanup(() => { alive = false; });
   effect(() => {
     if (!props.visible()) return;
+    tick();
     const listeners = [
-      Usage.subscribe((event) => usage.set(event.data), props.projectId()),
-      Accounts.subscribe((event) => accounts.set(event.data)),
-      Sessions.subscribe((event) => shells.set(event.data.sessions)),
+      api.usage.subscribe((event) => { usage.set(event.data); tick(); }, props.projectId()),
+      api.accounts.subscribe((event) => accounts.set(event.data)),
+      api.sessions.subscribe((event) => shells.set(event.data.sessions)),
     ];
     return () => listeners.forEach((listener) => listener.close());
+  });
+  // Not a data read (P1-POLL-03): one timer to the next whole minute, re-armed by the tick.
+  effect(() => {
+    if (!props.visible() || !usage()) return;
+    clock();
+    const timer = setTimeout(() => { if (alive) tick(); }, 60_000 - Date.now() % 60_000 + 50);
+    return () => clearTimeout(timer);
   });
   async function refresh() {
     if (refreshing()) return;
     refreshing.set(true); notice.set("");
-    try { await Usage.refresh(true); }
+    try { await api.usage.refresh(true); }
     catch (reason) { if (alive) notice.set(String(reason)); }
     finally { if (alive) refreshing.set(false); }
   }
@@ -47,16 +83,16 @@ export function UsagePanel(props: {
   const theme = props.theme, palette = () => theme().palette;
   const text = (size = 11, color = palette().text) => ({ fontFamily: theme().family, fontSize: size * theme().scale, color });
   const busy = () => refreshing() || usage()?.refreshing;
-  const now = () => usage()?.now ?? Math.floor(Date.now() / 1000);
+  const now = () => Math.max(Math.floor(clock() / 1000), usage()?.now ?? 0);
   const claude = () => usage()?.claude.filter((entry) => entry.projectId === props.projectId()) ?? [];
   const grok = () => shells().filter((shell) => shell.alive && shell.harness === "grok" && shell.projectId === props.projectId());
   const grokEntry = (shellId: string) => usage()?.grok.find((entry) => entry.shellId === shellId);
   const tokens = (value: number) => value >= 1_000_000 ? `${(value / 1_000_000).toFixed(2)}M` : value >= 1000 ? `${(value / 1000).toFixed(1)}k` : String(value);
   const tokenBreakdown = (value: GrokTokenCountsDto) => `in ${tokens(value.input)} · out ${tokens(value.output)} · cached ${tokens(value.cachedRead)} · cache writes ${tokens(value.cacheCreation)} · reasoning ${tokens(value.reasoning)}`;
   const grokTotal = () => {
-    const unique = new Map<string, NonNullable<ReturnType<typeof grokEntry>>["usage"]>();
+    const unique = new Map<string, GrokSessionUsageDto>();
     for (const shell of grok()) { const report = grokEntry(shell.id)?.usage; if (report) unique.set(report.sessionId, report); }
-    return { sessions: unique.size, tokens: [...unique.values()].reduce((sum, report) => sum + (report?.tokens.total ?? 0), 0), cost: [...unique.values()].reduce((sum, report) => sum + (report?.costUsd ?? 0), 0) };
+    return { sessions: unique.size, tokens: [...unique.values()].reduce((sum, report) => sum + report.tokens.total, 0), cost: [...unique.values()].reduce((sum, report) => sum + (report.costUsd ?? 0), 0) };
   };
   const codex = (): { home: string; label: string; entry?: CodexUsageDto; unavailable?: string }[] => {
     const profiles = new Map<string, { home: string; label: string; entry?: CodexUsageDto; unavailable?: string }>();
@@ -64,7 +100,8 @@ export function UsagePanel(props: {
       home: account.homePath, label: account.label,
       ...(account.available ? {} : { unavailable: account.unavailableReason ?? "Account unavailable" }),
     });
-    for (const shell of shells()) if (shell.harness === "codex" && shell.codexHome && !profiles.has(shell.codexHome)) profiles.set(shell.codexHome, {
+    // Live shells only: the service reads no ended shell's home, so its card would never fill.
+    for (const shell of shells()) if (shell.alive && shell.harness === "codex" && shell.codexHome && !profiles.has(shell.codexHome)) profiles.set(shell.codexHome, {
       home: shell.codexHome, label: shell.codexAccountLabel ?? "Session account",
     });
     for (const entry of usage()?.codex ?? []) {
@@ -73,37 +110,77 @@ export function UsagePanel(props: {
     }
     return [...profiles.values()];
   };
+  const stale = (value: ProviderUsageDto, flagged: boolean) => flagged || now() - value.updatedAtUnix > 900;
   const bodyStyle = () => ({ padding: space(12, theme().scale), gap: space(4, theme().scale), borderRadius: space(12, theme().scale), backgroundColor: palette().bg });
+  const inset = () => space(6, theme().scale);
 
-  function Card(props: { id: string; title: string; children?: JSX.Element }) {
+  function Section(props: { title: string; note?: string; children?: JSX.Element }) {
+    return <View style={{ gap: 6, paddingTop: space(6, theme().scale) }}>
+      <Text role="header" style={{ ...text(10, palette().muted), fontWeight: "600", paddingHorizontal: inset() }}>{props.title}</Text>
+      {props.children}
+      {props.note && <Text style={{ ...text(10, palette().muted), paddingHorizontal: inset() }}>{props.note}</Text>}
+    </View>;
+  }
+  function Empty(props: { id: string; children: string }) {
+    return <Text testID={props.id} style={{ ...text(11, palette().muted), paddingHorizontal: inset() }}>{props.children}</Text>;
+  }
+  function Card(props: { id: string; title: string; aside?: JSX.Element; children?: JSX.Element }) {
     return <View testID={props.id} style={bodyStyle()}>
-      <Text style={{ ...text(11), fontWeight: "600" }}>{props.title}</Text>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+        <Text style={{ ...text(11), fontWeight: "600", flex: 1, minWidth: 0 }}>{props.title}</Text>
+        {props.aside}
+      </View>
       {props.children}
     </View>;
+  }
+  function Freshness(props: { at: number; stale: boolean }) {
+    return <Text style={text(10, props.stale ? palette().gold : palette().muted)}>{`${props.stale ? "Stale · " : ""}${ago(props.at, now())}`}</Text>;
   }
   function WindowGauge(props: { window: UsageWindowDto }) {
     const remaining = () => Math.max(0, Math.min(100, 100 - props.window.usedPercent));
     return <View style={{ gap: 5, paddingTop: space(8, theme().scale) }}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
         <Text style={{ ...text(11), flex: 1 }}>{`${props.window.label} · ${Math.round(remaining())}% left`}</Text>
-        <Text style={text(9, palette().muted)}>{resetSummary(props.window.resetsAt, now())}</Text>
+        <Text style={text(10, palette().muted)}>{resetSummary(props.window.resetsAt, now())}</Text>
       </View>
       <View role="progressbar" accessibilityLabel={`${props.window.label}: ${Math.round(remaining())}% remaining`} style={{ height: space(5, theme().scale), borderRadius: 5, backgroundColor: palette().panelActive, overflow: "hidden" }}>
         <View style={{ height: "100%", width: `${remaining()}%`, borderRadius: 5, backgroundColor: remaining() < 15 ? palette().gold : palette().cyan }} />
       </View>
     </View>;
   }
-  function Provider(props: { value: ProviderUsageDto; stale?: boolean }) {
-    const age = () => Math.max(0, now() - props.value.updatedAtUnix);
-    const stale = () => props.stale || age() > 900;
+  function Provider(props: { value: ProviderUsageDto }) {
+    const session = () => [
+      props.value.contextUsedPercent != null ? `Context ${Math.round(props.value.contextUsedPercent)}% used` : "",
+      props.value.sessionCostUsd != null ? `Estimated session cost ${money(props.value.sessionCostUsd)}` : "",
+    ].filter(Boolean).join(" · ");
     return <>
       {props.value.accountLabel && <Text selectable={true} style={text(11, palette().muted)}>{props.value.accountLabel}</Text>}
-      <Text style={text(9, stale() ? palette().gold : palette().muted)}>{`${stale() ? "Stale · " : ""}Updated ${Math.floor(age() / 60)}m ago`}</Text>
       {props.value.windows.map((window) => <WindowGauge window={window} />)}
       {props.value.windows.length === 0 && <Text style={{ ...text(11, palette().muted), paddingTop: 8 }}>Quota windows unavailable</Text>}
-      {props.value.contextUsedPercent != null && <Text style={{ ...text(11, palette().muted), paddingTop: 8 }}>{`Context · ${Math.round(props.value.contextUsedPercent)}% used`}</Text>}
-      {props.value.sessionCostUsd != null && <Text style={text(11, palette().muted)}>{`Estimated session cost · $${props.value.sessionCostUsd.toFixed(2)}`}</Text>}
+      {session() !== "" && <Text style={{ ...text(10, palette().muted), paddingTop: 8 }}>{session()}</Text>}
     </>;
+  }
+  function GrokFigures(props: { report: GrokSessionUsageDto }) {
+    const report = () => props.report;
+    return <>
+      <Text style={{ ...text(12), paddingTop: 4 }}>{`${report().costUsd != null ? `${money(report().costUsd!)} · ` : ""}${tokens(report().tokens.total)} tokens`}</Text>
+      <Text style={text(10, palette().muted)}>{`${report().primaryModel ?? "Model unavailable"} · ${report().turns} turns · ${report().modelCalls} model calls`}</Text>
+      <Text style={text(10, palette().muted)}>{tokenBreakdown(report().tokens)}</Text>
+      {report().costUsd == null && <Text style={text(10, palette().muted)}>Session cost unavailable</Text>}
+      {report().models.length > 1 && report().models.map((model) => <View style={{ paddingTop: 6, gap: 2 }}>
+        <Text style={text(10)}>{`${model.model} · ${tokens(model.tokens.total)} tokens · ${model.modelCalls} calls${model.costUsd != null ? ` · ${money(model.costUsd)}` : ""}`}</Text>
+        <Text style={text(9, palette().muted)}>{tokenBreakdown(model.tokens)}</Text>
+      </View>)}
+    </>;
+  }
+  function GrokSession(props: { id: string; entry?: GrokUsageDto }) {
+    const entry = () => props.entry;
+    return <Card id={`usage-grok:${props.id}`} title={`Session ${props.id.slice(0, 8)}`}
+      aside={entry()?.usage ? <Freshness at={entry()!.fetchedAtUnix} stale={entry()!.stale} /> : undefined}>
+      {entry()?.usage ? <GrokFigures report={entry()!.usage!} />
+        : <Text style={{ ...text(11, palette().muted), paddingTop: 6 }}>{entry()?.pending ? "Reading session usage…" : entry()?.error ?? "Waiting for session usage…"}</Text>}
+      {entry()?.usage && entry()?.error && <Text style={{ ...text(10, palette().gold), paddingTop: 6 }}>{`Last refresh: ${entry()!.error}`}</Text>}
+    </Card>;
   }
   return <View testID="usage-panel" style={{ flex: 1, minHeight: 0, backgroundColor: palette().panel }}>
     <View style={{ height: space(46, theme().scale), paddingLeft: space(12, theme().scale), paddingRight: space(8, theme().scale), flexDirection: "row", alignItems: "center", gap: 8 }}>
@@ -118,38 +195,34 @@ export function UsagePanel(props: {
       </Button>
     </View>
     {notice() !== "" && <Text role="alert" style={{ ...text(11, palette().gold), paddingHorizontal: 12, paddingBottom: 8 }}>{notice()}</Text>}
-    <Scroll testID="usage-panel-scroll" style={{ flex: 1, minHeight: 0 }} contentStyle={{ paddingHorizontal: space(6, theme().scale), paddingBottom: 6, gap: 6 }}>
-      {!usage() && <Card id="usage-loading" title="Account usage"><Text style={text(11, palette().muted)}>Reading account usage…</Text></Card>}
-      {codex().map((profile) => <Card id={`usage-codex:${profile.home}`} title={`Codex · ${profile.label}`}>
-        {profile.entry?.usage ? <Provider value={profile.entry.usage} stale={profile.entry.stale} /> : <Text style={{ ...text(11, palette().muted), paddingTop: 6 }}>{profile.unavailable ?? (profile.entry?.pending || !usage() ? "Reading account usage…" : profile.entry?.error ?? "Account usage is unavailable")}</Text>}
-        {profile.entry?.usage && profile.entry.error && <Text style={{ ...text(10, palette().gold), paddingTop: 6 }}>{`Last refresh: ${profile.entry.error}`}</Text>}
-      </Card>)}
-      {usage() && codex().length === 0 && <Card id="usage-codex-unavailable" title="Codex"><Text style={text(11, palette().muted)}>Account usage is unavailable</Text></Card>}
-      {claude().map((entry) => <Card id={`usage-claude:${entry.shellId}`} title={`Claude · ${entry.shellId.slice(0, 8)}`}>
-        {entry.usage ? <Provider value={entry.usage} stale={entry.stale} /> : <Text style={{ ...text(11, palette().muted), paddingTop: 6 }}>{entry.error ?? "Waiting for Claude usage after its first response"}</Text>}
-        {entry.usage && entry.error && <Text style={text(10, palette().gold)}>{`Last refresh: ${entry.error}`}</Text>}
-      </Card>)}
-      {usage() && claude().length === 0 && <Card id="usage-claude-empty" title="Claude"><Text style={text(11, palette().muted)}>Open a Claude session to see its usage here</Text></Card>}
-      {grok().map((shell) => <Card id={`usage-grok:${shell.id}`} title={grokEntry(shell.id)?.label ?? `Grok · ${shell.id.slice(0, 8)}`}>
-        {grokEntry(shell.id)?.usage ? <>
-          <Text style={text(11)}>{grokEntry(shell.id)!.usage!.primaryModel ?? "Model unavailable"}</Text>
-          <Text style={text(11, palette().muted)}>{`${tokens(grokEntry(shell.id)!.usage!.tokens.total)} tokens · ${grokEntry(shell.id)!.usage!.turns} turns · ${grokEntry(shell.id)!.usage!.modelCalls} model calls`}</Text>
-          <Text style={text(10, palette().muted)}>{tokenBreakdown(grokEntry(shell.id)!.usage!.tokens)}</Text>
-          <Text style={text(11, palette().muted)}>{grokEntry(shell.id)!.usage!.costUsd != null ? `Session cost · $${grokEntry(shell.id)!.usage!.costUsd!.toFixed(4)}` : "Session cost unavailable"}</Text>
-          <Text style={text(9, grokEntry(shell.id)?.stale ? palette().gold : palette().muted)}>{`${grokEntry(shell.id)?.stale ? "Stale · " : ""}Read ${Math.max(0, Math.floor((now() - (grokEntry(shell.id)?.fetchedAtUnix ?? now())) / 60))}m ago`}</Text>
-          {grokEntry(shell.id)!.usage!.models.map((model) => <View style={{ paddingTop: 6, gap: 2 }}>
-            <Text style={text(10)}>{`${model.model} · ${tokens(model.tokens.total)} tokens · ${model.modelCalls} calls${model.costUsd != null ? ` · $${model.costUsd.toFixed(4)}` : ""}`}</Text>
-            <Text style={text(9, palette().muted)}>{tokenBreakdown(model.tokens)}</Text>
-          </View>)}
-        </> : <Text style={text(11, palette().muted)}>{grokEntry(shell.id)?.pending ? "Reading session usage…" : grokEntry(shell.id)?.error ?? "Waiting for session usage…"}</Text>}
-        {grokEntry(shell.id)?.usage && grokEntry(shell.id)?.error && <Text style={text(10, palette().gold)}>{`Last refresh: ${grokEntry(shell.id)!.error}`}</Text>}
-      </Card>)}
-      {grokTotal().sessions > 0 && <Card id="usage-grok-total" title="Grok · Combined total">
-        <Text style={text(11)}>{`$${grokTotal().cost.toFixed(4)} · ${tokens(grokTotal().tokens)} tokens · ${grokTotal().sessions} ${grokTotal().sessions === 1 ? "session" : "sessions"}`}</Text>
-        <Text style={text(9, palette().muted)}>Each session is counted once, including history from resumes.</Text>
-      </Card>}
-      {grok().length === 0 && <Card id="usage-grok-empty" title="Grok"><Text style={text(11, palette().muted)}>No live Grok sessions</Text></Card>}
+    <Scroll testID="usage-panel-scroll" style={{ flex: 1, minHeight: 0 }} contentStyle={{ paddingHorizontal: space(6, theme().scale), paddingBottom: space(12, theme().scale), gap: 6 }}>
+      {!usage() ? <Card id="usage-loading" title="Account usage"><Text style={text(11, palette().muted)}>Reading account usage…</Text></Card> : <>
+        <Section title="Codex accounts" note={codex().length > 0 ? "Quota is shared by every session on the same account." : undefined}>
+          {codex().map((profile) => <Card id={`usage-codex:${profile.home}`} title={profile.label}
+            aside={profile.entry?.usage ? <Freshness at={profile.entry.usage.updatedAtUnix} stale={stale(profile.entry.usage, profile.entry.stale)} /> : undefined}>
+            {profile.entry?.usage ? <Provider value={profile.entry.usage} />
+              : <Text style={{ ...text(11, profile.unavailable ? palette().gold : palette().muted), paddingTop: 6 }}>{profile.unavailable ?? (profile.entry?.pending ? "Reading account usage…" : profile.entry?.error ?? "Account usage is unavailable")}</Text>}
+            {profile.entry?.usage && profile.entry.error && <Text style={{ ...text(10, palette().gold), paddingTop: 6 }}>{`Last refresh: ${profile.entry.error}`}</Text>}
+          </Card>)}
+          {codex().length === 0 && <Empty id="usage-codex-unavailable">Account usage is unavailable</Empty>}
+        </Section>
+        <Section title="Claude sessions" note={claude().length > 0 ? "Subscription quota needs a Pro or Max account." : undefined}>
+          {claude().map((entry) => <Card id={`usage-claude:${entry.shellId}`} title={`Session ${entry.shellId.slice(0, 8)}`}
+            aside={entry.usage ? <Freshness at={entry.usage.updatedAtUnix} stale={stale(entry.usage, entry.stale)} /> : undefined}>
+            {entry.usage ? <Provider value={entry.usage} /> : <Text style={{ ...text(11, palette().muted), paddingTop: 6 }}>{entry.error ?? "Waiting for Claude usage after its first response"}</Text>}
+            {entry.usage && entry.error && <Text style={{ ...text(10, palette().gold), paddingTop: 6 }}>{`Last refresh: ${entry.error}`}</Text>}
+          </Card>)}
+          {claude().length === 0 && <Empty id="usage-claude-empty">Open a Claude session to see its usage here</Empty>}
+        </Section>
+        <Section title="Grok sessions" note={grok().length > 0 ? "Grok shows its account allowance only in its own /usage screen." : undefined}>
+          {grok().map((shell) => <GrokSession id={shell.id} entry={grokEntry(shell.id)} />)}
+          {grok().length > 1 && grokTotal().sessions > 0 && <Card id="usage-grok-total" title="Combined total">
+            <Text style={{ ...text(12), paddingTop: 4 }}>{`${money(grokTotal().cost)} · ${tokens(grokTotal().tokens)} tokens · ${grokTotal().sessions} ${grokTotal().sessions === 1 ? "session" : "sessions"}`}</Text>
+            <Text style={text(10, palette().muted)}>Each session is counted once, including history from resumes.</Text>
+          </Card>}
+          {grok().length === 0 && <Empty id="usage-grok-empty">No live Grok sessions</Empty>}
+        </Section>
+      </>}
     </Scroll>
-    <Text style={{ ...text(9, palette().muted), paddingHorizontal: space(12, theme().scale), paddingVertical: 8 }}>Quota is shared by all sessions on the same account. Missing windows are unavailable. Claude subscription quota requires a supported Pro/Max account. Grok’s account allowance is only available in its own /usage screen.</Text>
   </View>;
 }
