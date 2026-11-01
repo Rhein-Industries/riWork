@@ -221,8 +221,11 @@ private final class NSHMobileHostController: UIViewController {
         do {
             bridge.attach(to: app)
             // Remote operations go through the existing model. Pairing secrets
-            // and the encrypted transport never enter the JavaScript VM.
-            try app.grantCapabilities(#"{"host":["mobile.snapshot","mobile.action"],"clipboard":true,"openUrl":true}"#)
+            // and the encrypted transport never enter the JavaScript VM. The
+            // shared screens' calls are `NSHHostAPI`'s (`relay.*`, `platform.*`, `nav.*`).
+            try app.grantCapabilities(#"{"host":["mobile.snapshot","mobile.action","relay.*","platform.*","nav.*"],"clipboard":true,"openUrl":true}"#)
+            // The first frame is drawn in the theme Swift resolved; changes come as `platform.theme`.
+            app.params = bridge.hostAPI.params()
             guard let url = Bundle.main.url(forResource: "bundle", withExtension: "nshc", subdirectory: "nsh") else {
                 throw NSError(domain: "RiWorkMobile", code: 1, userInfo: [NSLocalizedDescriptionKey: "The NSH mobile interface is missing from this build."])
             }

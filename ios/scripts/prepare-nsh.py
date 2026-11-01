@@ -45,6 +45,16 @@ try:
     subprocess.run(args, cwd=ROOT, check=True)
     if not (stage / "nsh/bundle.nshc").is_file():
         raise SystemExit("NSH did not produce the mobile bytecode bundle; refusing to package an older UI.")
+    # The shared screens (apps/riwork) reach data through ports; the Mac's native module is not served on
+    # iOS, and a bundle that imports it fails as it loads. `nsh check apps/riwork-mobile` catches the types;
+    # this catches what the bundler kept.
+    bundle_js = stage / "nsh/bundle.js"
+    if not bundle_js.is_file():
+        raise SystemExit("NSH did not produce the mobile bundle.js; refusing to package a UI that cannot be checked.")
+    if re.search(r"""["']riwork/native["']""", bundle_js.read_text(encoding="utf-8", errors="replace")):
+        raise SystemExit("The mobile bundle imports riwork/native, the Mac's native module, which iOS does not have. "
+                         "A file apps/riwork-mobile reaches imports Mac-only code; give that screen its data through "
+                         "apps/riwork/client ports instead.")
     vendor = IOS / "Vendor"
     vendor.mkdir(exist_ok=True)
     link = vendor / "NativeShell.xcframework"

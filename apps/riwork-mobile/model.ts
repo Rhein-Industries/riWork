@@ -30,14 +30,14 @@ export interface Dashboard {
   overview?: string; rows: DashboardRow[];
   /** `automationsError`: the automations could not be read, and why; drawn in the error tone, apart from the muted `notes`. */
   notes?: string[]; automationsError?: string; more?: Partial<Record<DashboardSection, number>>; intelligence?: DashboardIntelligence[];
-  global?: { summary: string; action: "open" | "start" | "unavailable"; actionTitle: string };
 }
 export interface MobileSnapshot {
   schema: 1; revision: number; route: Page; selectedHostID?: string;
   desktops: Desktop[];
   connection: { state: "disconnected" | "connecting" | "connected" | "suspended" | "failed"; label: string; error?: string };
   loading: boolean; error?: string; nativePresented: boolean; libraryUnavailable?: boolean;
-  projects: Project[]; dashboard: Dashboard; homeDashboard?: Dashboard;
+  /** A host's own dashboard is the shared DashboardView's (`relay.call` `dashboard.get`); this is the All hosts overview. */
+  projects: Project[]; homeDashboard?: Dashboard;
   projectSort?: { value: string; title: string; detail?: string };
   theme: MobileTheme; canCreateProject: boolean;
   projectsStale?: boolean;
@@ -56,7 +56,7 @@ export const EMPTY_DASHBOARD: Dashboard = { available: false, freshness: "Not re
 export const INITIAL_SNAPSHOT: MobileSnapshot = {
   schema: 1, revision: -1, route: "hosts", desktops: [], projects: [],
   connection: { state: "disconnected", label: "Not connected" }, loading: false, nativePresented: false,
-  dashboard: EMPTY_DASHBOARD, canCreateProject: false,
+  canCreateProject: false,
   // Native in light mode until the host's first snapshot. The state colors are what the bridge sends for Native
   // (the desktop Native's): working blue, gold for what needs you, error red.
   theme: { scale: 1, fontFamily: "system", dark: false, palette: {

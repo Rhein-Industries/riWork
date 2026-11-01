@@ -4,5 +4,9 @@
   "version": "0.1.0",
   "build": 1,
   "appearance": "system",
-  "capabilities": { "host": ["mobile.snapshot", "mobile.action"] }
+  "capabilities": {
+    "host": ["mobile.snapshot", "mobile.action", "relay.*", "platform.*", "nav.*"],
+    "clipboard": true,
+    "openUrl": true
+  }
 }

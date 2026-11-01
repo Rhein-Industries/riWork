@@ -78,6 +78,7 @@
 		42D45D38997815A7F36224FE /* HotkeyHelpTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F016E2F990602CC29EE6013F /* HotkeyHelpTests.swift */; };
 		45570A99A4BFDDB13B0C9CD3 /* KeyPipelineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 969994643A38C41ADBEC678B /* KeyPipelineTests.swift */; };
 		45AA66D5FCCE8859AAF3AB57 /* HotkeyEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 005C04299055A741176AF5B5 /* HotkeyEditor.swift */; };
+		45AB86558C685AE535350BC8 /* NSHHostAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = 711D2B851BFD26AE74CDD642 /* NSHHostAPI.swift */; };
 		45F693A877CD6697F538235B /* NewTerminalTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBC27824128F385E827A9FEA /* NewTerminalTests.swift */; };
 		4778FC9F8F9A8014A4D3E96A /* ChatModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC76A77536A88AA078AF3DC1 /* ChatModels.swift */; };
 		479E1ED07945F321F590A0DB /* ProjectMemo.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4CFB315A8E5D6E682E86131E /* ProjectMemo.swift */; };
@@ -469,6 +470,7 @@
 		6B63B79D86B056595FFA3F21 /* KeyBarGeometry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyBarGeometry.swift; sourceTree = "<group>"; };
 		6B8603308BE4E27381F99D23 /* RelayClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayClientTests.swift; sourceTree = "<group>"; };
 		6E6556C88DC5FB6A8513323C /* ChatTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatTransport.swift; sourceTree = "<group>"; };
+		711D2B851BFD26AE74CDD642 /* NSHHostAPI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NSHHostAPI.swift; sourceTree = "<group>"; };
 		71324885440C6813FD006380 /* NewChatModelSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewChatModelSection.swift; sourceTree = "<group>"; };
 		7231EC8A895FA1AB9C00B311 /* BackgroundGrace.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundGrace.swift; sourceTree = "<group>"; };
 		7382E4934CC490FAC2A9B04D /* ComposerSuggestionViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerSuggestionViews.swift; sourceTree = "<group>"; };
@@ -932,6 +934,7 @@
 				71324885440C6813FD006380 /* NewChatModelSection.swift */,
 				6820FE00A0EA958D9DDC82B7 /* NewProjectSheet.swift */,
 				05C76C77CC2B8632B9944B5F /* NewTerminalSheet.swift */,
+				711D2B851BFD26AE74CDD642 /* NSHHostAPI.swift */,
 				1886C18D799DB89649F181B7 /* NSHMobileBridge.swift */,
 				55F4F1223112B91B85898FEC /* NSHMobileHost.swift */,
 				AC4ACB87394B9E824298CC44 /* NSHMobileSurfaces.swift */,
@@ -1251,6 +1254,7 @@
 				FF37502303E719419C61D622 /* KeyboardSettings.swift in Sources */,
 				0EF6BF4E74B55271051B90B9 /* KeyboardUI.swift in Sources */,
 				77CC570DFB25CE216EED6199 /* LinkWatcher.swift in Sources */,
+				45AB86558C685AE535350BC8 /* NSHHostAPI.swift in Sources */,
 				F51C457F2E2398801191DC72 /* NSHMobileBridge.swift in Sources */,
 				0526A3D45B56A262E94926F6 /* NSHMobileHost.swift in Sources */,
 				FA1E13CFA2333EF69E23D75B /* NSHMobileSurfaces.swift in Sources */,

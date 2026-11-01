@@ -1,28 +1,11 @@
 import { cleanup, colorScheme, effect, host, setColorScheme, signal } from "nsh";
 import { Appearance, Settings, type AppearanceDto, type SettingsDto } from "riwork/native";
 import type { HostParams } from "./model";
+import { DEFAULT_THEME, type InterfaceTheme } from "./theme";
 
-/** Native light, the context before the native owner's first delivery. Never a resolver. */
-export const NATIVE_PALETTE = {
-  bg: "#ffffff", panel: "#f5f5f7", panelActive: "#e8e8ed", divider: "#d2d2d7",
-  cyan: "#000000", magenta: "#3a3a3c", gold: "#b34000", text: "#1d1d1f",
-  muted: "#636366", focus: "#000000", working: "#0058d0", danger: "#c80018",
-};
-
-export interface InterfaceTheme {
-  palette: typeof NATIVE_PALETTE;
-  scale: number;
-  family: string;
-  monoFamily: string;
-}
-
-export const DEFAULT_THEME: InterfaceTheme = {
-  palette: NATIVE_PALETTE, scale: 1, family: "system-ui", monoFamily: "Menlo",
-};
-
-export function space(base: number, scale: number): number {
-  return Math.round(base * Math.max(scale, 1));
-}
+// The shared look lives in `theme.ts`; these names stay importable from here.
+export { DEFAULT_THEME, NATIVE_PALETTE, space } from "./theme";
+export type { InterfaceTheme } from "./theme";
 
 export function interfaceTheme(settings: SettingsDto, appearance: AppearanceDto, families: string[]): InterfaceTheme {
   const face = settings.text.face;
