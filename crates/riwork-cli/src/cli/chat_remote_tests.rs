@@ -1491,6 +1491,10 @@ fn suggestions_read_a_saved_chats_commands_and_folder_without_a_host() {
     assert!(run(&["suggestions"], true).unwrap_err().contains("Usage"));
 
     let claude = save("claude");
+    let claude_commands: Vec<_> = crate::chat::suggest::commands(Provider::Claude)
+        .into_iter()
+        .chain(crate::chat::suggest::skills(Provider::Claude, &folder))
+        .collect();
     let reply: Value =
         serde_json::from_str(&run(&["suggestions", &claude], true).unwrap()).unwrap();
     // A unique prefix of eight characters or more names the chat, as for every chat command.
@@ -1509,7 +1513,9 @@ fn suggestions_read_a_saved_chats_commands_and_folder_without_a_host() {
             "chat_id": claude,
             "provider": "claude",
             "root": folder.display().to_string(),
-            "commands": serde_json::to_value(crate::chat::suggest::commands(Provider::Claude)).unwrap(),
+            // RiWork's commands, then the skills a Claude chat in this folder can run: the
+            // person's own (~/.claude/skills) as well, which this test does not control.
+            "commands": serde_json::to_value(&claude_commands).unwrap(),
             "files": {"entries": [
                 {"path": "README.md", "dir": false, "bytes": 2},
                 {"path": "src", "dir": true, "bytes": null},
@@ -1522,9 +1528,16 @@ fn suggestions_read_a_saved_chats_commands_and_folder_without_a_host() {
         })
     );
     assert_eq!(reply["commands"][0]["name"], "compact");
+    let skill_lines: String = claude_commands
+        [crate::chat::suggest::commands(Provider::Claude).len()..]
+        .iter()
+        .map(|skill| format!("/{}\t{}\n", skill.name, skill.summary))
+        .collect();
     assert_eq!(
         run(&["suggestions", &claude], false).unwrap(),
-        "/compact\tSummarize the conversation so far to free up context\n/memo\tShow this project's memo\nREADME.md\nsrc/\nsrc/main.rs\n"
+        format!(
+            "/compact\tSummarize the conversation so far to free up context\n/memo\tShow this project's memo\n{skill_lines}README.md\nsrc/\nsrc/main.rs\n"
+        )
     );
     // A Codex chat offers only RiWork's /memo, and the same folder.
     let codex = save("codex");
