@@ -1,6 +1,8 @@
 # NSH generates a nested Cargo workspace for its app runners. Keep that
 # workspace on the same pinned divider geometry as the desktop host, and give its macOS host
-# the hidden window scripts/pane-shot.sh asks for (NSH_HIDDEN_WINDOW).
+# the hidden window scripts/pane-shot.sh asks for (NSH_HIDDEN_WINDOW), and on the patched JS
+# engine binding (apps/riwork/vendor/nsh-js/RIWORK-PATCH.md).
 [patch.crates-io]
 nsh-base = { path = "apps/riwork/vendor/nsh-base" }
 nsh-platform-macos = { path = "apps/riwork/vendor/nsh-platform-macos" }
+nsh-js = { path = "apps/riwork/vendor/nsh-js" }

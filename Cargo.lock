@@ -4630,8 +4630,6 @@ dependencies = [
 [[package]]
 name = "nsh-js"
 version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5e4e431dbc6456b1c2d077cab4a2a6a466928cbfbb5799d23f6c8a74aa219d13"
 dependencies = [
  "futures-util",
  "getrandom 0.4.3",

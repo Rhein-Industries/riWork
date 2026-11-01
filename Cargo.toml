@@ -2,12 +2,13 @@
 resolver = "3"
 members = ["crates/*", "apps/riwork", "apps/riwork/vendor/nsh-base", "remote"]
 default-members = ["crates/riwork-desktop"]
-# Vendored for its hidden-window patch (NSH_HIDDEN_WINDOW); built only as a dependency.
-exclude = ["apps/riwork/vendor/nsh-platform-macos"]
+# Vendored for their patches (RIWORK-PATCH.md in each); built only as dependencies.
+exclude = ["apps/riwork/vendor/nsh-platform-macos", "apps/riwork/vendor/nsh-js"]
 
 [patch.crates-io]
 nsh-base = { path = "apps/riwork/vendor/nsh-base" }
 nsh-platform-macos = { path = "apps/riwork/vendor/nsh-platform-macos" }
+nsh-js = { path = "apps/riwork/vendor/nsh-js" }
 
 [workspace.package]
 version = "0.1.0"
