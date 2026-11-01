@@ -139,6 +139,8 @@ export function StatusBar(props: Props) {
   // A remote project's bar draws no usage or account item.
   const shown = (kind: string) => !((kind === "codex_account" || kind === "usage") && props.snapshot().remoteProject);
   const items = (side: string) => settings().items.filter((item) => item.enabled && item.side === side && shown(item.kind));
+  /** The kinds a side shows, in order: its <Each> keeps an item while its kind stays. */
+  const kinds = (side: string) => items(side).map((item) => item.kind);
   effect(() => {
     const open = menu();
     const wanted = MENU_ITEM[open ?? "layout"];
@@ -230,8 +232,9 @@ export function StatusBar(props: Props) {
   const projectChoice = (): ProjectChoice | undefined => store()?.projects.find((project) => project.id === projectId())?.codexAccount;
   /** What Codex reported for the system default's home: the only name it has. */
   const systemLabel = () => reportedAccountLabel(usage()?.codex ?? [], systemHome(resolveSelection(null, accountList())));
+  const usageMode = () => (props.settings?.()?.statusBar.usageMode ?? "current_chat") as UsageMode;
   const segments = (): UsageSegment[] | null => {
-    const mode = (props.settings?.()?.statusBar.usageMode ?? "current_chat") as UsageMode;
+    const mode = usageMode();
     const chat = props.nativeChat?.();
     if (mode === "current_chat" && chat) {
       const provider = chat.provider === "codex" ? "Codex" : chat.provider === "claude" ? "Claude" : chat.provider === "muse" ? "Muse" : "Chat";
@@ -273,50 +276,85 @@ export function StatusBar(props: Props) {
       </View> : <Text numberOfLines={1} style={{ ...textStyle("usage"), maxWidth: space(250, theme().scale) }}>{Settings.sentenceCase(segment.figures)}</Text>}
     </View>;
   }
-  function item(kind: string) {
-    const key = kind.replaceAll("_", "-");
-    const current = sessions()?.find((session) => session.id === selectedSession());
-    const projectName = store()?.projects.find((project) => project.id === projectId())?.name ?? projectLabel();
-    const worktreeId = props.snapshot().selectedWorktreeId ?? current?.worktreeId;
-    const remote = props.snapshot().remoteProject ? props.remote?.() ?? { branch: null, live: null } : null;
-    const branch = (remote ? remote.branch : store()?.worktrees.find((worktree) => worktree.id === worktreeId)?.branch) ?? "No worktree";
-    const live = (remote ? remote.live : sessions()?.filter((session) => session.alive && session.projectId === projectId()).length) ?? "—";
-    const readouts = kind === "usage" ? segments() : null;
-    const mode = (props.settings?.()?.statusBar.usageMode ?? "current_chat") as UsageMode;
+  // What the items show, each read where it is drawn (StatusItem): a delivery of sessions,
+  // the store, usage, accounts, metrics or the dashboard redraws only what read it.
+  const projectName = computed(() => store()?.projects.find((project) => project.id === projectId())?.name ?? projectLabel());
+  const remoteLists = () => props.snapshot().remoteProject ? props.remote?.() ?? { branch: null, live: null } : null;
+  const branch = () => {
+    const remote = remoteLists();
+    if (remote) return remote.branch ?? "No worktree";
+    const worktreeId = props.snapshot().selectedWorktreeId ?? sessions()?.find((session) => session.id === selectedSession())?.worktreeId;
+    return store()?.worktrees.find((worktree) => worktree.id === worktreeId)?.branch ?? "No worktree";
+  };
+  const live = () => {
+    const remote = remoteLists();
+    return (remote ? remote.live : sessions()?.filter((session) => session.alive && session.projectId === projectId()).length) ?? "—";
+  };
+  const iconOr = (text: string) => props.settings?.()?.panelTabIcons ? "" : text;
+  /** An item's text: an empty one draws none (the icon items, no active session). */
+  function itemLabel(kind: string, readouts: UsageSegment[] | null): string | undefined {
+    switch (kind) {
+      case "project": return projectName();
+      case "worktree": return branch();
+      case "agent_activity": return agentSummary();
+      case "live_sessions": return `${live()} live`;
+      case "resources": return props.snapshot().remoteProject ? "CPU — RAM —" : resourcesText(sessions() ?? [], metrics(), projectId());
+      case "usage": return readouts ? usageItemText(usageMode(), readouts) : "CODEX · LOADING";
+      case "codex_account": return accountLabel();
+      case "session_id": return selectedSession()?.slice(0, 8) ?? "";
+      case "global_orchestrator": return iconOr("Global");
+      case "project_orchestrator": return iconOr("Project");
+      case "layout": return iconOr("Layout");
+      default: return undefined;
+    }
+  }
+  /** An item's accessibility label: its text, or a fuller name where it has one. */
+  function itemAria(kind: string, label: string | undefined, readouts: UsageSegment[] | null, state: string | undefined): string | undefined {
+    switch (kind) {
+      case "global_orchestrator": return "Global: dashboard and chat";
+      case "session_id": return "Copy active session ID";
+      case "project": return `Project ${projectName()}`;
+      case "project_orchestrator": return `Open ${projectName()} orchestrator${state ? ` · ${state}` : ""}`;
+      case "usage": return readouts ? usageAria(readouts) : `Usage ${label}`;
+      case "codex_account": return `New Codex sessions: ${label}`;
+      default: return label;
+    }
+  }
+  /** One item: a row of its side's <Each>, kept while its kind shows there. It runs once, and
+   * its values are read where they are drawn, so a change redraws only the values it touches. */
+  function StatusItem(entry: { kind: string }) {
+    const kind = entry.kind, key = kind.replaceAll("_", "-");
+    const orchestrator = kind === "global_orchestrator" || kind === "project_orchestrator";
+    const state: () => string | undefined = orchestrator ? computed(() => orchestratorState(kind)) : () => undefined;
+    const readouts: () => UsageSegment[] | null = kind === "usage" ? computed(() => segments()) : () => null;
+    const label = computed(() => itemLabel(kind, readouts()));
     const actionable = ["project", "worktree", "layout", "global_orchestrator", "session_id", "usage", "codex_account", "project_orchestrator", "agent_activity"].includes(kind);
-    const disabled = (kind === "session_id" && !selectedSession()) || (kind === "project_orchestrator" && !props.openProjectOrchestrator);
-    const labels: Record<string, string> = {
-      project: projectName, worktree: branch, agent_activity: agentSummary(), live_sessions: `${live} live`,
-      resources: props.snapshot().remoteProject ? "CPU — RAM —" : resourcesText(sessions() ?? [], metrics(), projectId()), usage: readouts ? usageItemText(mode, readouts) : "CODEX · LOADING", codex_account: accountLabel(), session_id: selectedSession()?.slice(0, 8) ?? "",
-      global_orchestrator: props.settings?.()?.panelTabIcons ? "" : "Global", project_orchestrator: props.settings?.()?.panelTabIcons ? "" : "Project", layout: props.settings?.()?.panelTabIcons ? "" : "Layout",
-    };
-    const aria: Record<string, string> = {
-      global_orchestrator: "Global: dashboard and chat", session_id: "Copy active session ID", project: `Project ${projectName}`,
-      project_orchestrator: `Open ${projectName} orchestrator${orchestratorState(kind) ? ` · ${orchestratorState(kind)}` : ""}`,
-      usage: readouts ? usageAria(readouts) : `Usage ${labels.usage}`, codex_account: `New Codex sessions: ${labels.codex_account}`,
-    };
+    const disabled = () => (kind === "session_id" && !selectedSession()) || (kind === "project_orchestrator" && !props.openProjectOrchestrator);
+    // The label's text follows it in place; the usage readouts are drawn again when they change.
+    const text = kind === "usage"
+      ? () => { const read = readouts(); return read ? read.map((segment) => usageReadout(segment, usageMode())) : <Text numberOfLines={1} style={textStyle(kind)}>{Settings.sentenceCase(label()!)}</Text>; }
+      : <If when={label()}><Text numberOfLines={1} style={textStyle(kind)}>{Settings.sentenceCase(label()!)}</Text></If>;
     return <View testID={kind === "global_orchestrator" ? "top-orchestrator" : `status-item-${key}`}
       ref={(node) => { if (kind === "layout") layoutAnchor.set(node); if (kind === "global_orchestrator") globalAnchor.set(node); if (kind === "codex_account") accountAnchor.set(node); }}
-      accessibilityLabel={aria[kind] ?? labels[kind]}
-      accessibilityHint={kind === "usage" && readouts ? usageHint(readouts) : kind === "codex_account" && menu() !== "account" ? "New Codex sessions in this project · click to choose" : undefined}
-      tooltip={kind === "global_orchestrator" ? `Global · dashboard ⌘⌥G · chat ⌘⇧O${orchestratorState(kind) ? `\n${orchestratorState(kind)}` : ""}`
-        : kind === "project_orchestrator" ? `${projectName} orchestrator · ⌘⌥O${orchestratorState(kind) ? `\n${orchestratorState(kind)}` : ""}`
-        : kind === "usage" && readouts ? usageHint(readouts) : undefined}
-      role={actionable ? "button" : "text"} disabled={disabled}
-      focusable={actionable && !disabled} onFocus={() => focusedItem.set(kind)} onBlur={() => { if (focusedItem() === kind) focusedItem.set(null); }}
+      accessibilityLabel={itemAria(kind, label(), readouts(), state())}
+      accessibilityHint={kind === "usage" && readouts() ? usageHint(readouts()!) : kind === "codex_account" && menu() !== "account" ? "New Codex sessions in this project · click to choose" : undefined}
+      tooltip={kind === "global_orchestrator" ? `Global · dashboard ⌘⌥G · chat ⌘⇧O${state() ? `\n${state()}` : ""}`
+        : kind === "project_orchestrator" ? `${projectName()} orchestrator · ⌘⌥O${state() ? `\n${state()}` : ""}`
+        : kind === "usage" && readouts() ? usageHint(readouts()!) : undefined}
+      role={actionable ? "button" : "text"} disabled={disabled()}
+      focusable={actionable && !disabled()} onFocus={() => focusedItem.set(kind)} onBlur={() => { if (focusedItem() === kind) focusedItem.set(null); }}
       hoverStyle={{ backgroundColor: theme().palette.panelActive }} focusStyle={{ backgroundColor: theme().palette.panelActive }}
       style={{ flexDirection: "row", alignItems: "center", gap: space(kind === "usage" ? 10 : 4, theme().scale), borderRadius: 4, minHeight: space(18, theme().scale),
-        paddingHorizontal: kind === "global_orchestrator" || kind === "project_orchestrator" ? space(4, theme().scale) : 0,
+        paddingHorizontal: orchestrator ? space(4, theme().scale) : 0,
         backgroundColor: kind === "global_orchestrator" && menu() === "global" ? theme().palette.panelActive : undefined,
         maxWidth: space(kind === "project" ? 240 : kind === "worktree" ? 220 : kind === "agent_activity" ? 250 : kind === "codex_account" ? 300 : 1000, theme().scale) }}
       onPress={() => activateItem(kind)}>
       {kind === "layout" && <Icon name="layout" size={11 * theme().scale} color={theme().palette.muted} />}
-      {(kind === "global_orchestrator" || kind === "project_orchestrator") && <>
-        {orchestratorMark(orchestratorState(kind)) && <Text style={{ ...textStyle(), color: orchestratorState(kind) === "waiting" ? theme().palette.gold : ["working", "running", "starting"].includes(orchestratorState(kind) ?? "") ? theme().palette.working : theme().palette.muted }}>{orchestratorMark(orchestratorState(kind)).trim()}</Text>}
+      {orchestrator && <>
+        {orchestratorMark(state()) && <Text style={{ ...textStyle(), color: state() === "waiting" ? theme().palette.gold : ["working", "running", "starting"].includes(state() ?? "") ? theme().palette.working : theme().palette.muted }}>{orchestratorMark(state()).trim()}</Text>}
         <Icon name={kind === "global_orchestrator" ? "globe" : "project-orchestrator"} size={12 * theme().scale} color={menu() === "global" && kind === "global_orchestrator" ? theme().palette.cyan : theme().palette.muted} />
       </>}
-      {kind === "usage" && readouts ? readouts.map((segment) => usageReadout(segment, mode))
-        : labels[kind] && <Text numberOfLines={1} style={textStyle(kind)}>{Settings.sentenceCase(labels[kind])}</Text>}
+      {text}
     </View>;
   }
   function row(id: string, label: string, shortcut: string, action?: () => void, detail?: string) {
@@ -365,7 +403,7 @@ export function StatusBar(props: Props) {
       <View testID="status-bar-separator" pointerEvents="none" accessible={false}
         style={{ position: "absolute", top: 0, left: 0, right: 0, height: 1, backgroundColor: theme().palette.divider, opacity: 0.55 }} />
       <Scroll testID="status-left" horizontal={true} style={{ flexShrink: 0, maxWidth: items("right").length ? "40%" : "100%" }} contentStyle={{ flexDirection: "row", alignItems: "center", gap: space(STATUS_METRICS.gap, theme().scale) }}>
-        {items("left").map((entry) => item(entry.kind))}
+        <Each of={kinds("left")}>{(kind) => <StatusItem kind={kind()} />}</Each>
       </Scroll>
       <View style={{ flex: 1, minWidth: 4 }} />
       <Scroll testID="status-right" horizontal={true} style={{ flexShrink: 1, minWidth: 0 }} contentStyle={{ flexDirection: "row", alignItems: "center", gap: space(STATUS_METRICS.gap, theme().scale) }}>
@@ -374,7 +412,7 @@ export function StatusBar(props: Props) {
           <Text numberOfLines={1} style={{ fontFamily: theme().family, fontSize: 11 * theme().scale,
             color: entry.tone === "critical" ? theme().palette.danger : entry.tone === "warning" ? theme().palette.gold : theme().palette.muted }}>{entry.text}</Text>
         </View>)}
-        {items("right").map((entry) => item(entry.kind))}
+        <Each of={kinds("right")}>{(kind) => <StatusItem kind={kind()} />}</Each>
       </Scroll>
     </View>}
     {menu() && <Overlay testID={`${menu()}-menu`} anchor={menu() === "layout" ? layoutAnchor() : menu() === "account" ? accountAnchor() : globalAnchor()} placement="top" align="end" offset={3} margin={6}
