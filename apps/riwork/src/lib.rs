@@ -254,6 +254,7 @@ fn open_at(home: PathBuf, request: OpenSession) -> Result<LayoutSession, String>
         shell_creates: 0,
         project_generation: 0,
         switching: false,
+        switch_settled: Arc::new(tokio::sync::Notify::new()),
         io_notice: Arc::new(Mutex::new(None)),
     };
     session.reconcile(false)?;
@@ -333,6 +334,8 @@ pub struct LayoutSession {
     shell_creates: usize,
     project_generation: u64,
     switching: bool,
+    /// Wakes subscriptions that waited out a project switch.
+    switch_settled: Arc<tokio::sync::Notify>,
     io_notice: Arc<Mutex<Option<String>>>,
 }
 
@@ -391,6 +394,58 @@ impl LayoutSession {
             }
         }
         Ok(self.current_dock())
+    }
+    /// Load this window's project and reconcile it. With `observe`, also say
+    /// whether that changed the layout or the snapshot; without, say it did.
+    async fn reload(this: Instance<Self>, observe: bool) -> Result<(Value, bool), String> {
+        let (home, project, pending, generation) = this.with_mut(|s| {
+            let pending = s.initial_shell_pending && !s.initial_shell_in_flight && !s.switching;
+            s.initial_shell_in_flight |= pending;
+            (
+                s.home.clone(),
+                s.data.project_id.clone(),
+                pending,
+                s.project_generation,
+            )
+        });
+        let data = tokio::task::spawn_blocking(move || {
+            let mut data = session_io::load(&home, &project)?;
+            if pending
+                && data.notice.is_none()
+                && data.root.is_some()
+                && data.shells.as_ref().is_some_and(|shells| {
+                    shells
+                        .iter()
+                        .all(|s| !s.alive || s.project_id.as_deref() != Some(&project))
+                })
+            {
+                match session_io::create(&home, &project, None, None) {
+                    Ok(_) => data = session_io::load(&home, &project)?,
+                    Err(error) => data.notice = Some(error),
+                }
+            }
+            Ok::<_, String>(data)
+        })
+        .await
+        .unwrap_or_else(|e| Err(format!("broken: {e}")));
+        if this.is_disposed() {
+            return Err("unavailable: layout session is closed".into());
+        }
+        this.with_mut(|s| {
+            let before = observe.then(|| (s.snapshot(), s.model.storage_project()));
+            let dock = if s.project_generation != generation {
+                s.current_dock()
+            } else {
+                if pending {
+                    s.initial_shell_in_flight = false;
+                }
+                s.accept_data(data?)?
+            };
+            let moved = before.is_none_or(|(snapshot, project)| {
+                s.snapshot() != snapshot || s.model.storage_project() != project
+            });
+            Ok((dock, moved))
+        })
     }
     fn reconcile(&mut self, persist: bool) -> Result<Value, String> {
         let before = self.model.storage_project();
@@ -809,7 +864,13 @@ impl LayoutSession {
                 Ok(json!(session.model.dock(size)))
             });
         }
-        let (size, home) = this.with(|session| (session.model.extent(), session.home.clone()));
+        let (size, home, settled) = this.with(|session| {
+            (
+                session.model.extent(),
+                session.home.clone(),
+                session.switch_settled.clone(),
+            )
+        });
         let reservation = host.begin_project_switch()?;
         // Incoming session/tab deliveries queue while the switch is pending, and
         // in-flight shell or close operations observe the new generation.
@@ -874,9 +935,10 @@ impl LayoutSession {
         }
         .await;
         if this.is_disposed() {
+            settled.notify_waiters();
             return outcome.and(Err("unavailable: layout session is disposed".into()));
         }
-        this.with_mut(|session| {
+        let result = this.with_mut(|session| {
             session.switching = false;
             // Adoption, hidden-tab filtering and shared order apply to the
             // destination after the commit, as ordinary persisted edits.
@@ -884,7 +946,11 @@ impl LayoutSession {
             // A failed switch resumes incoming snapshots for the source.
             let dock = session.apply_queued();
             result.and(dock)
-        })
+        });
+        // Subscriptions woken during the switch reload now, for whichever project
+        // the window ended on.
+        settled.notify_waiters();
+        result
     }
 
     /// Activate a pane without changing its selected tab (including empty panes).
@@ -1173,48 +1239,7 @@ impl LayoutSession {
         Self::refresh_tabs(this).await
     }
     pub async fn refresh_tabs(this: Instance<Self>) -> Result<Value, String> {
-        let (home, project, pending, generation) = this.with_mut(|s| {
-            let pending = s.initial_shell_pending && !s.initial_shell_in_flight && !s.switching;
-            s.initial_shell_in_flight |= pending;
-            (
-                s.home.clone(),
-                s.data.project_id.clone(),
-                pending,
-                s.project_generation,
-            )
-        });
-        let data = tokio::task::spawn_blocking(move || {
-            let mut data = session_io::load(&home, &project)?;
-            if pending
-                && data.notice.is_none()
-                && data.root.is_some()
-                && data.shells.as_ref().is_some_and(|shells| {
-                    shells
-                        .iter()
-                        .all(|s| !s.alive || s.project_id.as_deref() != Some(&project))
-                })
-            {
-                match session_io::create(&home, &project, None, None) {
-                    Ok(_) => data = session_io::load(&home, &project)?,
-                    Err(error) => data.notice = Some(error),
-                }
-            }
-            Ok::<_, String>(data)
-        })
-        .await
-        .unwrap_or_else(|e| Err(format!("broken: {e}")));
-        if this.is_disposed() {
-            return Err("unavailable: layout session is closed".into());
-        }
-        this.with_mut(|s| {
-            if s.project_generation != generation {
-                return Ok(s.current_dock());
-            }
-            if pending {
-                s.initial_shell_in_flight = false;
-            }
-            s.accept_data(data?)
-        })
+        Self::reload(this, false).await.map(|(dock, _)| dock)
     }
     pub async fn rename_tab(
         this: Instance<Self>,
@@ -1290,19 +1315,55 @@ impl LayoutSession {
         let owner = abort.clone();
         let cleanup = cx.on_cleanup(move || owner.abort());
         let mut receive = session_io::changes().subscribe();
+        let settled = this.with(|s| s.switch_settled.clone());
         cx.start(async move {
             let _ = Abortable::new(
                 async move {
-                    loop {
+                    use tokio::sync::broadcast::error::{RecvError, TryRecvError};
+                    // What this subscription last posted. Posting the same layout
+                    // again makes the window propagate it again, and the watcher
+                    // reports every write of a streaming chat log.
+                    let mut posted: Option<(Value, Value)> = None;
+                    'changes: loop {
                         match receive.recv().await {
-                            Ok(()) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
-                            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                            Ok(()) | Err(RecvError::Lagged(_)) => {}
+                            Err(RecvError::Closed) => break,
                         }
-                        if this.is_disposed() {
-                            break;
+                        // A reload during a switch reads the project being left and
+                        // is thrown away. Wait for the switch to end, then reload
+                        // once for the project the window is on: a change announced
+                        // during the switch may come after the switch read its own.
+                        loop {
+                            if this.is_disposed() {
+                                break 'changes;
+                            }
+                            // Registered before the check, so the end cannot slip
+                            // between them.
+                            let ended = settled.notified();
+                            if !this.with(|s| s.switching) {
+                                break;
+                            }
+                            ended.await;
                         }
-                        match Self::refresh_tabs(this.clone()).await {
-                            Ok(dock) => listener.post(dock),
+                        // The reload below reads after every change announced so
+                        // far, so one covers a whole burst.
+                        loop {
+                            match receive.try_recv() {
+                                Ok(()) | Err(TryRecvError::Lagged(_)) => {}
+                                Err(TryRecvError::Empty | TryRecvError::Closed) => break,
+                            }
+                        }
+                        match Self::reload(this.clone(), true).await {
+                            Ok((dock, moved)) => {
+                                let next = (dock, this.with(|s| s.snapshot()));
+                                // A reload that changed something is posted even
+                                // when it lands on the last post: the window may
+                                // have installed an action's layout since.
+                                if moved || posted.as_ref() != Some(&next) {
+                                    listener.post(next.0.clone());
+                                    posted = Some(next);
+                                }
+                            }
                             Err(error) => {
                                 if this.is_disposed() {
                                     break;
@@ -1831,6 +1892,7 @@ mod integration_tests {
             shell_creates: 0,
             project_generation: 0,
             switching: false,
+            switch_settled: Arc::new(tokio::sync::Notify::new()),
             io_notice: Arc::new(Mutex::new(None)),
         };
         let before = session.project_from_host();

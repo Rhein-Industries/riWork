@@ -2,7 +2,7 @@ import { AppPreviewTab } from "./AppPreviewTab";
 import { AddinTab, type AddinAction, type AddinInfo } from "./AddinTab";
 import { AddinsPanel } from "./AddinsPanel";
 import { CuaSetup, useCua, type CuaSetupControl } from "./CuaSetup";
-import { Clipboard, ErrorBoundary, Overlay, Scroll, Text, View, cleanup, colorScheme, computed, effect, host, keymap, signal, type YNode } from "nsh";
+import { Clipboard, ErrorBoundary, Overlay, Scroll, Text, View, batch, cleanup, colorScheme, computed, effect, host, keymap, signal, type YNode } from "nsh";
 import { Button, Input, Popover, type DockAreaLayout, type DockNode } from "nsh/base";
 import { Menu, Window, type MenuItem } from "nsh/desktop";
 import { Addins, Appearance, Chat, Files, Orchestrators, Remote, Sessions, Tabs, type AppearanceDto, type LayoutSession, type SettingsDto } from "riwork/native";
@@ -529,14 +529,19 @@ export function Workspace(props: WorkspaceProps) {
     try {
       const next = await session.switchProject(id);
       if (!alive) return;
-      install(size ? session.setExtent(size) : next);
-      panelState.resetProject({ worktree: snapshot().selectedWorktreeId ?? null, task: snapshot().selectedTaskId ?? null });
-      // As GPUI: another Mac's project is recorded for the next plain launch; back
-      // on this Mac's projects the record is cleared, by the window that left it.
-      if (id !== from && (remoteProjectKey(id) || remoteProjectKey(from))) {
-        void Remote.select(remoteProjectKey(id) ? id : null).catch((error) => { if (alive) notice.set(String(error)); });
-      }
-      pendingFocus.set(null);
+      // One batch: the layout, selection, Files root and the end of the switch reach
+      // the window together, so it draws the new project once rather than per write.
+      batch(() => {
+        install(size ? session.setExtent(size) : next);
+        panelState.resetProject({ worktree: snapshot().selectedWorktreeId ?? null, task: snapshot().selectedTaskId ?? null });
+        // As GPUI: another Mac's project is recorded for the next plain launch; back
+        // on this Mac's projects the record is cleared, by the window that left it.
+        if (id !== from && (remoteProjectKey(id) || remoteProjectKey(from))) {
+          void Remote.select(remoteProjectKey(id) ? id : null).catch((error) => { if (alive) notice.set(String(error)); });
+        }
+        pendingFocus.set(null);
+        switching.set(false);
+      });
     } finally { switching.set(false); }
   }
 

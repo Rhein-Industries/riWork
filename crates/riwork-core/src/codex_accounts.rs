@@ -714,6 +714,11 @@ fn write_cache(state_home: &Path, cache: &AccountCache) -> Result<(), String> {
     fs::create_dir_all(state_home).map_err(|_| "Cannot save account metadata.")?;
     let temporary = state_home.join(format!(".codex-accounts-{}.tmp", Uuid::new_v4()));
     let result = (|| {
+        // Encode first: pretty printing straight into the file is one write
+        // per token.
+        let mut data =
+            serde_json::to_vec_pretty(cache).map_err(|_| "Cannot save account metadata.")?;
+        data.push(b'\n');
         let mut options = OpenOptions::new();
         options.write(true).create_new(true);
         #[cfg(unix)]
@@ -724,9 +729,7 @@ fn write_cache(state_home: &Path, cache: &AccountCache) -> Result<(), String> {
         let mut file = options
             .open(&temporary)
             .map_err(|_| "Cannot save account metadata.")?;
-        serde_json::to_writer_pretty(&mut file, cache)
-            .map_err(|_| "Cannot save account metadata.")?;
-        file.write_all(b"\n")
+        file.write_all(&data)
             .and_then(|_| file.sync_all())
             .map_err(|_| "Cannot save account metadata.")?;
         fs::rename(&temporary, state_home.join(CACHE_NAME))

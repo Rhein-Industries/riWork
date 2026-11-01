@@ -835,9 +835,12 @@ fn private_file(path: &Path) -> Result<File, String> {
 }
 
 fn write_new_json(path: &Path, value: &impl Serialize) -> Result<(), String> {
+    // Encode first: pretty printing straight into the file is one write per
+    // token.
+    let mut data = serde_json::to_vec_pretty(value).map_err(|error| error.to_string())?;
+    data.push(b'\n');
     let mut file = private_file(path)?;
-    serde_json::to_writer_pretty(&mut file, value).map_err(|error| error.to_string())?;
-    file.write_all(b"\n").map_err(|error| error.to_string())?;
+    file.write_all(&data).map_err(|error| error.to_string())?;
     file.sync_all().map_err(|error| error.to_string())
 }
 
