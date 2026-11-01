@@ -267,11 +267,11 @@ public actor RelayClient: RemoteTransport {
     private var features = DesktopFeatures()
     private var compressing = false
     private var wantsCompression = true
-    /// Requests whose caller was cancelled after the frame was sealed; their response is read and dropped, and gives back their place.
-    /// One still unanswered when its time runs out gives its place back then (`lapsed`), and its late response is dropped all the same.
+    /// Requests whose caller was cancelled after the frame was sealed. Each keeps its place until its response comes, which is read and
+    /// dropped. The desktop answers every request of a session, so the place never goes back while that response may still come: one still
+    /// unanswered when its own time runs out ends the connection, as it would with its caller still waiting.
     private struct Abandoned { let kind: RequestBudget.Kind; let timeout: Task<Void, Never> }
     private var abandoned: [String: Abandoned] = [:]
-    private var lapsed: Set<String> = []
     /// The places this session's requests hold, and the requests waiting for one, in the order they asked.
     private var budget = RequestBudget()
     private struct SlotWaiter {
@@ -410,7 +410,7 @@ public actor RelayClient: RemoteTransport {
         socket?.cancel(with: .goingAway, reason: nil); socket = nil
         cipher = nil
         for item in abandoned.values { item.timeout.cancel() }
-        abandoned.removeAll(); lapsed.removeAll()
+        abandoned.removeAll()
         arrivals.removeAll()
         compressing = false
         features = DesktopFeatures()
@@ -532,20 +532,19 @@ public actor RelayClient: RemoteTransport {
     }
     /// The request's frame is about to go to the socket: its timing starts here, not when the caller asked (it may queue behind others).
     private func sending(id: String) { pending[id]?.sentAt = .now }
-    private func isOutstanding(_ id: String) -> Bool { pending[id] != nil || abandoned[id] != nil || lapsed.contains(id) }
-    /// Detaches one waiter. The socket, keys and every other request stay intact; the request keeps its place until its reply comes, or
-    /// until its time runs out (which, with nobody waiting for it, does not end the connection).
+    private func isOutstanding(_ id: String) -> Bool { pending[id] != nil || abandoned[id] != nil }
+    /// Detaches one waiter. The socket, keys and every other request stay intact; the request keeps its place until its reply comes, and
+    /// its timeout keeps running.
     private func abandon(id: String, token: UUID) {
         guard generation == token, let item = pending.removeValue(forKey: id) else { return }
         abandoned[id] = Abandoned(kind: item.kind, timeout: item.timeout)
         // The frame may already be on the wire, so an input can no longer be reported as "not sent".
         item.continuation.resume(throwing: item.isInput ? RemoteError.uncertainDelivery : CancellationError())
     }
+    /// A request still unanswered when its time runs out ends the connection, whether or not its caller still waits: its reply may yet come,
+    /// so its place cannot go back to the budget while the session lasts.
     private func expire(id: String, token: UUID) {
-        guard generation == token else { return }
-        if pending[id] != nil { endConnection(error: RemoteError.timeout); return }
-        // Its caller let go: its place goes back, and its reply, should it still come, is dropped.
-        if let item = abandoned.removeValue(forKey: id) { lapsed.insert(id); giveSlot(item.kind) }
+        if generation == token, pending[id] != nil || abandoned[id] != nil { endConnection(error: RemoteError.timeout) }
     }
     private func failIfCurrent(token: UUID, error: any Error) { if generation == token { endConnection(error: error) } }
     private func readLoop(ws: any WebSocketConnection, token: UUID) async {
@@ -563,7 +562,6 @@ public actor RelayClient: RemoteTransport {
                 let timing = timing(of: opened, received: received, response: response, sentAt: pending[id]?.sentAt)
                 guard let item = pending.removeValue(forKey: id) else {
                     if let item = abandoned.removeValue(forKey: id) { item.timeout.cancel(); giveSlot(item.kind); continue }
-                    if lapsed.remove(id) != nil { continue }
                     throw RemoteError.protocolViolation("Unexpected response.")
                 }
                 item.timeout.cancel()

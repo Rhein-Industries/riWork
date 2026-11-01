@@ -53,11 +53,10 @@ import UIKit
             try await api.bridge.connect(hostID: try Self.string(data, "host"))
             return [String: Any]()
         }
+        // Only the selected host: another host's socket may be in use by the overview or a decision, and closes by itself once idle.
         on("relay.disconnect") { api, data in
             try api.requireNoNativeScreen()
-            let host = try Self.string(data, "host")
-            if host == api.model.selectedDesktopID { await api.bridge.disconnectInteractive() }
-            else { api.model.connections.close(host) }
+            if try Self.string(data, "host") == api.model.selectedDesktopID { await api.bridge.disconnectInteractive() }
             return [String: Any]()
         }
         on("relay.call") { api, data in try await api.call(data) }
@@ -150,7 +149,8 @@ import UIKit
         return value
     }
 
-    /// What the host's connection announced, by its `ready.features` names: the interactive model's, or another host's open socket's.
+    /// What the host's connection announced, by its `ready.features` names: the interactive model's, or another host's open socket's (whose
+    /// `dashboard` `HostConnections` already leaves out once that session has refused it).
     private func features(_ id: String) -> [String] {
         let features: DesktopFeatures, refusesDashboard: Bool
         if id == model.selectedDesktopID {
@@ -216,13 +216,18 @@ import UIKit
                 if method == "dashboard.get", !lease.features.dashboard {
                     throw HostCallError("unsupported", "Update RiWork on the Mac to see its dashboard here.")
                 }
-                return try await lease.transport.request(method: method, params: params, id: UUID().uuidString.lowercased())
+                do { return try await lease.transport.request(method: method, params: params, id: UUID().uuidString.lowercased()) }
+                catch {
+                    if method == "dashboard.get", RemoteError.isUnsupportedMethod(error) { connections.dashboardRefused(lease) }
+                    throw error
+                }
             }
             return Self.foundation(reply)
         } catch { throw HostCallError.from(error, dashboard: method == "dashboard.get") }
     }
 
-    /// Waits at most `limit` for `work`; past it the waiter is let go (`RelayClient` abandons it) and the connection stays.
+    /// Waits at most `limit` for `work`; past it the waiter is let go (`RelayClient` abandons it) and the connection stays. The request keeps
+    /// its place in the socket's budget until the reply comes; one still unanswered at its own timeout ends the connection, as any request does.
     private static func within<T: Sendable>(_ limit: Duration, _ work: @escaping @Sendable () async throws -> T) async throws -> T {
         try await withThrowingTaskGroup(of: T?.self) { group in
             group.addTask { try await work() }

@@ -48,6 +48,8 @@ enum HostConnectionError: LocalizedError, Equatable {
     enum Link: Equatable { case connecting, connected, failed(String) }
     /// Each host's socket, while it is opening or open, or after its last attempt failed. A host without one is absent.
     private(set) var links: [String: Link] = [:]
+    /// Hosts whose open socket's session refused `dashboard.get` although the desktop announced it (`dashboardRefused`).
+    private var refusingDashboard: Set<String> = []
     /// The person's "Compress traffic" choice, read as each socket opens.
     @ObservationIgnored var compressTraffic: @MainActor () -> Bool = { true }
     /// `RemoteModel`'s connection: the interactive host's socket.
@@ -103,7 +105,7 @@ enum HostConnectionError: LocalizedError, Equatable {
             try await open(socket, hostID: hostID, pairing: desktop.pairing, allowLocalDevelopment: desktop.allowLocalDevelopment, explicit: false)
             guard active else { throw HostConnectionError.background }
             guard let established = socket.established else { throw RemoteError.disconnected }
-            let lease = HostLease(hostID: hostID, transport: socket.transport, pairing: established, features: socket.features, session: socket.session)
+            let lease = HostLease(hostID: hostID, transport: socket.transport, pairing: established, features: announced(socket, hostID: hostID), session: socket.session)
             lent[lease.id] = hostID
             return lease
         } catch {
@@ -124,14 +126,19 @@ enum HostConnectionError: LocalizedError, Equatable {
         return socket.open && socket.session == lease.session
     }
 
-    /// What the host announced when its open socket's session began; nil while it has none.
+    /// What the host announced when its open socket's session began, less a `dashboard` it has refused since; nil while it has none.
     func features(of hostID: String) -> DesktopFeatures? {
         guard let socket = sockets[hostID], socket.open else { return nil }
-        return socket.features
+        return announced(socket, hostID: hostID)
     }
 
-    /// Closes a host's socket now, whoever holds it (`relay.disconnect` of a host that is not the interactive one).
-    func close(_ hostID: String) { shut(hostID) }
+    /// The host refused `dashboard.get` in the lease's session although it announced it (a Mac whose connector is newer than its RiWork).
+    /// For the rest of that session its features leave `dashboard` out, so nobody asks again, as `RemoteModel.dashboardSupport` does for
+    /// the interactive host.
+    func dashboardRefused(_ lease: HostLease) {
+        guard isCurrent(lease) else { return }
+        refusingDashboard.insert(lease.hostID)
+    }
 
     /// The host was removed: its socket closes and its transport is let go.
     func forget(_ hostID: String) {
@@ -196,6 +203,12 @@ enum HostConnectionError: LocalizedError, Equatable {
     }
 
     // MARK: Sockets
+
+    private func announced(_ socket: Socket, hostID: String) -> DesktopFeatures {
+        var features = socket.features
+        if refusingDashboard.contains(hostID) { features.dashboard = false }
+        return features
+    }
 
     private func socket(for hostID: String) -> Socket {
         if let socket = sockets[hostID] { return socket }
@@ -288,6 +301,7 @@ enum HostConnectionError: LocalizedError, Equatable {
         socket.attempt = nil; socket.opening = nil
         socket.open = true; socket.session &+= 1
         socket.openedWith = pairing; socket.established = established; socket.features = features
+        refusingDashboard.remove(hostID)
         if sockets[hostID] === socket { links[hostID] = .connected }
         // Everyone who wanted it may have let go while it opened.
         if socket.holds == 0 { if active, idle > .zero { closeWhenIdle(socket, hostID: hostID) } else { shut(hostID) } }
@@ -305,7 +319,7 @@ enum HostConnectionError: LocalizedError, Equatable {
         socket.idleClose?.cancel(); socket.idleClose = nil
         socket.attempt = nil; socket.opening = nil
         socket.open = false; socket.openedWith = nil; socket.established = nil; socket.features = DesktopFeatures()
-        links[hostID] = nil
+        links[hostID] = nil; refusingDashboard.remove(hostID)
         let transport = socket.transport, previous = socket.tail
         // Disconnecting first ends an attempt already connecting; once that attempt is over, once more for one that connected anyway.
         let task = Task { await transport.disconnect(); await previous?.value; await transport.disconnect() }

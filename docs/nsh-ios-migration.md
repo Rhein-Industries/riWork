@@ -91,8 +91,11 @@ most 2; every other request is a call, and calls always have 3 places to
 themselves. A request that does not fit waits its turn in order within its
 kind, unsealed; its timeout starts only when it is sent. It holds its place
 until its reply arrives, even when its caller has let go, or until the session
-ends. A request still waiting when the session ends was never sent, and fails
-as disconnected. Nothing is retried: creates are never repeated, and an input
+ends: the Mac answers every request of a session, so a place never goes back
+while its reply may still come, and a request unanswered when its own timeout
+runs out ends the session whether or not its caller still waits. A request
+still waiting when the session ends was never sent, and fails as
+disconnected. Nothing is retried: creates are never repeated, and an input
 whose delivery is unknown stays uncertain.
 
 ## Swift host API
@@ -108,7 +111,7 @@ and declared in `apps/riwork-mobile/nsh.json` (`relay.*`, `platform.*`,
 | `relay.hosts` | call | — | `{hosts: HostInfo[]}` |
 | `relay.hosts` | event | | `{hosts: HostInfo[]}` whenever the list, the selection or a link changes |
 | `relay.select` | call | `{host}` | `{}`; makes it the interactive host (the overview's connect); `conflict` while a native screen is up |
-| `relay.disconnect` | call | `{host}` | `{}`; disconnects the interactive host, or closes another host's socket; `conflict` while a native screen is up |
+| `relay.disconnect` | call | `{host}` | `{}`; disconnects the selected host; for any other host nothing (its socket closes by itself once nobody uses it); `conflict` while a native screen is up |
 | `relay.call` | call | `{host, method, params?, timeoutMs?}` | the RPC's `result`; any paired host, `dashboard.get` and `projects.list` only |
 | `relay.link` | event | | `{host, link: LinkState}` |
 | `relay.decision.review` | call | `{host, chatId, requestId, kind?}` | `DecisionReviewDto` (`status` `pending`, or `unavailable` / `uncertain` with `error`) |
@@ -136,7 +139,9 @@ LinkState = {state: "connected"|"connecting"|"offline"|"failed"|"suspended", lab
   and, for any other host, the state of its socket (`connected` while one is
   open, `connecting`, `failed` after an attempt failed, else `offline` "Not
   connected"). `features` lists that connection's `ready.features` by name
-  (empty without one); `dashboard` is left out for a Mac that refuses it.
+  (empty without one); `dashboard` is left out for a Mac that refuses it (for
+  any other host, once its socket's session has refused a `dashboard.get`,
+  from the overview or `relay.call`; it is not asked again in that session).
 - **Decisions** keep the Swift flow the overview's sheet uses.
   `relay.decision.review` reads the request from the host's last parsed
   dashboard (`DashboardDecision`; a request this phone cannot read in full is

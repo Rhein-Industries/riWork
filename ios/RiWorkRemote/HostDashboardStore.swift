@@ -183,6 +183,8 @@ import RiWorkCore
         } catch is CancellationError {
         } catch {
             let unsupported = RemoteError.isUnsupportedMethod(error)
+            // Not asked again on this socket's session (by this overview or `relay.call`), and left out of the host's features.
+            if unsupported, let held { connections.dashboardRefused(held) }
             install(hostID: desktop.id, token: token, state: unsupported ? .unsupported : .offline,
                     failure: unsupported ? "Update RiWork on this host to read its dashboard." : RemoteModel.dashboardFailureText(error))
         }

@@ -11,7 +11,9 @@ import Foundation
 /// - Calls (every other request) always have 3 places to themselves, and share the rest.
 ///
 /// A request that does not fit waits for its turn, in order within its kind. It is sealed, sent and timed only once it has a place,
-/// and keeps it until its reply arrives (a caller that let go still holds it: the reply is on its way) or the session ends.
+/// and keeps it until its reply arrives (a caller that let go still holds it: the reply is on its way) or the session ends. The place
+/// never goes back while that reply may still come: a request unanswered when its own time runs out ends the session, whether or not
+/// its caller still waits.
 public struct RequestBudget: Sendable, Equatable {
     public enum Kind: Sendable, Equatable { case longPoll, call }
 
