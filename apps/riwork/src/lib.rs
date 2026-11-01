@@ -1362,6 +1362,15 @@ impl LayoutSession {
                                 if moved || posted.as_ref() != Some(&next) {
                                     listener.post(next.0.clone());
                                     posted = Some(next);
+                                    // A background failure's notice is shown once, so
+                                    // the same failure again is a change and posts.
+                                    this.with(|s| {
+                                        let mut notice = s.io_notice.lock().unwrap();
+                                        let shown = posted.as_ref().and_then(|(_, snapshot)| snapshot["notice"].as_str());
+                                        if notice.is_some() && notice.as_deref() == shown {
+                                            *notice = None;
+                                        }
+                                    });
                                 }
                             }
                             Err(error) => {

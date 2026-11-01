@@ -961,7 +961,7 @@ terminal is that screen's. The view changes nothing then, and stops putting its 
 it was (reading another project's lists, say); a pushed screen also takes it off the window, and it
 puts its shell back when it returns.
 
-### 3.9 Amendment 1.2 (2026-11-01, awaiting the owner's approval): shells kept across a project switch
+### 3.9 Amendment 1.2 (2026-11-01, for the owner's request that a clicked project show its shells sooner): shells kept across a project switch
 
 Schema 1.2 adds one Mac prop, so that a window switched back to a project shows that project's
 shells at once instead of attaching each anew. Without the prop nothing is kept and every view
@@ -1248,7 +1248,7 @@ Decisions the owner has taken since the freeze are recorded, dated, in [§8](#8-
   the prop `fontScale` and the events `command` and `title`. The Mac ignores `fontScale` and
   never emits the new events; schema-1 props, events and commands are unchanged. No engine wire
   or relay protocol changed.
-- 2026-11-01 amendment 1.2 (awaiting the owner's approval): §3.9 adds the Mac prop
+- 2026-11-01 amendment 1.2 (owner request: faster project switch): §3.9 adds the Mac prop
   `keepOnUnmount`, set only during a project switch, which keeps healthy local terminals for the
   project's return. Every other unmount still detaches; no event, command, engine wire or file
   format changed.

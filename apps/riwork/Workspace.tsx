@@ -2,7 +2,7 @@ import { AppPreviewTab } from "./AppPreviewTab";
 import { AddinTab, type AddinAction, type AddinInfo } from "./AddinTab";
 import { AddinsPanel } from "./AddinsPanel";
 import { CuaSetup, useCua, type CuaSetupControl } from "./CuaSetup";
-import { Clipboard, ErrorBoundary, Overlay, Scroll, Text, View, batch, cleanup, colorScheme, computed, effect, host, keymap, signal, type YNode } from "nsh";
+import { Clipboard, ErrorBoundary, Overlay, Scroll, Text, View, batch, cleanup, colorScheme, computed, effect, host, keymap, signal, untracked, type YNode } from "nsh";
 import { Button, Input, Popover, type DockAreaLayout, type DockNode } from "nsh/base";
 import { Menu, Window, type MenuItem } from "nsh/desktop";
 import { Addins, Appearance, Chat, Files, Orchestrators, Remote, Sessions, Tabs, type AppearanceDto, type LayoutSession, type SettingsDto } from "riwork/native";
@@ -256,6 +256,8 @@ export function Workspace(props: WorkspaceProps) {
   // Made again only when it appears or goes, so a form open in the remote list keeps its focus.
   const remoteFolders = computed(() => filteredFolders(remote.data(), panelState.query()).length > 0);
   const frozen = () => menuOpen() || dragging() || allTabs();
+  // A session layout that arrived while frozen (see the subscription below).
+  let missed: unknown = null;
   const sessions = () => (snapshot().panes.find((pane) => pane.id === (allTabsPane() ?? snapshot().activePane))?.tabs ?? []).filter((tab) => tab.kind !== "panel" && tab.kind !== "empty");
   const header = () => headerHeight(11 * theme().scale);
   effect(() => {
@@ -529,8 +531,9 @@ export function Workspace(props: WorkspaceProps) {
     try {
       const next = await session.switchProject(id);
       if (!alive) return;
-      // One batch: the layout, selection, Files root and the end of the switch reach
-      // the window together, so it draws the new project once rather than per write.
+      // One batch: the layout, selection and Files root reach the window together, so
+      // it draws the new project once rather than per write. `switching` ends after it
+      // (finally): the outgoing shells must unmount while their keepOnUnmount holds.
       batch(() => {
         install(size ? session.setExtent(size) : next);
         panelState.resetProject({ worktree: snapshot().selectedWorktreeId ?? null, task: snapshot().selectedTaskId ?? null });
@@ -540,7 +543,6 @@ export function Workspace(props: WorkspaceProps) {
           void Remote.select(remoteProjectKey(id) ? id : null).catch((error) => { if (alive) notice.set(String(error)); });
         }
         pendingFocus.set(null);
-        switching.set(false);
       });
     } finally { switching.set(false); }
   }
@@ -562,6 +564,7 @@ export function Workspace(props: WorkspaceProps) {
     // Only session results may be installed. The reported DockArea tree is never
     // assigned to this signal; all gestures are replayed through riwork-core.
     if (!alive || !next) return;
+    missed = null;
     dock.set(next as DockAreaLayout);
     if (refreshMetadata) snapshot.set(session.snapshot() as WorkspaceSnapshot);
     // YNode refs own their subtree in NSH. Keep refs for every placed panel,
@@ -939,7 +942,11 @@ export function Workspace(props: WorkspaceProps) {
   cleanup(host.on("project.open", (data) => {
     void switchTo((data as { projectId: string }).projectId).catch((error: unknown) => notice.set(String(error)));
   }));
-  const subscription = session.subscribe((next) => { if (!frozen()) install(next); });
+  // A layout posted while frozen is installed when the freeze ends, unless something
+  // newer was installed meanwhile: the session posts a layout only once, and not every
+  // way out of a freeze goes through thaw().
+  const subscription = session.subscribe((next) => { if (frozen()) missed = next; else install(next); });
+  effect(() => { if (!frozen() && missed !== null) { const next = missed; untracked(() => install(next)); } });
   cleanup(() => subscription.close());
   cleanup(keymap.bind("mod+f", () => {
     if (panelState.editor() || switching()) return;

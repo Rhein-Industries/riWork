@@ -173,6 +173,8 @@ export function createPanelController(options: PanelOptions) {
   async function activate(project: ProjectDto) {
     if (project.id === options.projectId() || pending()) return;
     await run(async () => {
+      // As recording it would: a project removed elsewhere is refused before switching.
+      if (!state().projects.some((known) => known.id === project.id)) throw new Error(`No project matches '${project.id}'`);
       const previous = generation;
       // The switch goes first: nothing on it reads the active project, and recording
       // it is a durable write whose publish every window handles on its JS thread.
