@@ -154,6 +154,57 @@ pub fn plan(screen: &Screen<'_>) -> Plan {
     }
 }
 
+/// Terminals kept, process-wide, after their component unmounted: a project
+/// switch, a closed tab or window. Each holds its surface and tmux client, so
+/// the next terminal for its shell shows at once instead of attaching anew.
+pub const POOL_SIZE: usize = 4;
+
+/// One kept terminal, as far as the policy cares.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PooledTab {
+    pub id: TabId,
+    /// How long ago it was last on screen.
+    pub shown_ago: Duration,
+    /// Its client has exited, or Ghostty's configuration changed since its
+    /// surface was configured: it goes first.
+    pub stale: bool,
+}
+
+/// Decide which kept terminals to release.
+///
+/// * A stale one goes at once.
+/// * Of the others, the `POOL_SIZE` most recently shown stay until
+///   `WARM_EXPIRY` after they were last shown; the rest go at once.
+/// * At most `MAX_RELEASES_PER_PASS` per pass, stale first, then the longest
+///   unseen; the rest follow shortly.
+pub fn plan_pool(pool: &[PooledTab]) -> Plan {
+    let mut order: Vec<&PooledTab> = pool.iter().collect();
+    // Most recently shown first. Terminals that left the screen together (a
+    // project switched away) keep the newer ones.
+    order.sort_by(|a, b| a.shown_ago.cmp(&b.shown_ago).then(b.id.cmp(&a.id)));
+    let mut due = Vec::new();
+    let mut wait: Option<Duration> = None;
+    let mut kept = 0;
+    for tab in order {
+        if tab.stale || kept == POOL_SIZE || tab.shown_ago >= WARM_EXPIRY {
+            due.push(tab);
+        } else {
+            kept += 1;
+            let remaining = WARM_EXPIRY - tab.shown_ago;
+            wait = Some(wait.map_or(remaining, |wait| wait.min(remaining)));
+        }
+    }
+    due.sort_by(|a, b| b.stale.cmp(&a.stale).then(b.shown_ago.cmp(&a.shown_ago)));
+    if due.len() > MAX_RELEASES_PER_PASS {
+        due.truncate(MAX_RELEASES_PER_PASS);
+        wait = Some(MIN_RECHECK);
+    }
+    Plan {
+        release: due.into_iter().map(|tab| tab.id).collect(),
+        recheck: wait.map(|wait| wait.max(MIN_RECHECK)),
+    }
+}
+
 /// A window's release policy is re-evaluated at the deadline it requested, or
 /// immediately after its visibility, attachment, pinning or freeze state changes.
 /// Hidden ages advance with time and deliberately do not invalidate that deadline.

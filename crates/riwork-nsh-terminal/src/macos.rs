@@ -36,6 +36,11 @@ unsafe extern "C" {
         detach: extern "C" fn(*mut c_void, *mut c_void, *const c_char),
         release: extern "C" fn(*mut c_void),
     ) -> *mut NSView;
+    fn rw_terminal_host_new() -> *mut NSView;
+    fn rw_terminal_host_show(host: *mut c_void, view: *mut c_void);
+    fn rw_terminal_pool(view: *mut c_void) -> bool;
+    fn rw_terminal_live(view: *mut c_void) -> bool;
+    fn rw_terminal_swap_context(a: *mut c_void, b: *mut c_void);
     fn rw_terminal_attach(
         view: *mut c_void,
         command: *const c_char,
@@ -131,6 +136,11 @@ struct Model {
     failed: bool,
     recreate: bool,
     hidden: Instant,
+    // What the surface was last configured with, which can lag `colors` and
+    // `CONFIG_REVISION` while an update is on its way. A kept surface is
+    // compared with the colors of the component that takes it.
+    surface_colors: Option<Colors>,
+    surface_revision: u64,
 }
 impl Default for Model {
     fn default() -> Self {
@@ -152,6 +162,8 @@ impl Default for Model {
             failed: false,
             recreate: false,
             hidden: Instant::now(),
+            surface_colors: None,
+            surface_revision: 0,
         }
     }
 }
@@ -159,7 +171,12 @@ struct State {
     id: u64,
     home: PathBuf,
     context: ComponentContext,
+    // The terminal view whose context is this state's. It changes when the
+    // component takes a kept terminal (`adopt`).
     view: AtomicUsize,
+    // The component's own view, which NSH lays out and which hosts `view`.
+    // Not retained: it is used only while the component is alive.
+    host: AtomicUsize,
     alive: AtomicBool,
     generation: AtomicU64,
     config_epoch: AtomicU64,
@@ -171,6 +188,9 @@ struct State {
     // When teardown first hung up a remote bridge; it is killed if it outlives 2 s.
     hangup: Mutex<Option<Instant>>,
     images: Mutex<crate::images::Images>,
+    // The images pasted into kept terminals this component took: their shells
+    // may still read them, so they last as long as this tab.
+    adopted_images: Mutex<Vec<crate::images::Images>>,
     model: Mutex<Model>,
 }
 static NEXT: AtomicU64 = AtomicU64::new(1);
@@ -196,12 +216,13 @@ pub fn initialize_theme_projection(
 fn refresh_theme_projection() {
     let Some(projection) = THEME_PROJECTION.get() else { return; };
     let result = (|| {
+        let revision = CONFIG_REVISION.load(Ordering::Acquire);
         let path = config::write(
             &projection.home,
             &format!("appearance-{}-{}", std::process::id(), uuid::Uuid::new_v4()),
-            &config::roots(), &Colors::Ghostty, CONFIG_REVISION.load(Ordering::Acquire),
+            &config::roots(), &Colors::Ghostty, revision,
         )?;
-        let config = ConfigFile { cstring: cstr(path.to_string_lossy())?, path };
+        let config = ConfigFile { cstring: cstr(path.to_string_lossy())?, path, revision };
         let mut colors = [0_u32; 18];
         if !unsafe { rw_terminal_read_config_colors(config.cstring.as_ptr(), colors.as_mut_ptr()) } {
             return Err("Ghostty could not resolve its configuration colors. Check the Ghostty configuration for errors.".into());
@@ -249,7 +270,11 @@ fn release_claim(state: &State) {
         .retain(|_, owner| *owner != state.id);
 }
 
+/// The surfaces still being disposed of. The host asks only while it drains,
+/// on quit or a development reload, when no component will take a kept
+/// terminal any more: the pool lets all of them go, and they count until freed.
 pub fn pending_count() -> usize {
+    release_pooled(true);
     unsafe { rw_terminal_pending_count() }
 }
 /// Called once on the shared registry, before the first AppView is constructed.
@@ -266,6 +291,7 @@ pub fn register(components: &Components, home: PathBuf) {
                 images: Mutex::new(crate::images::Images::new(&home)),
                 context,
                 view: AtomicUsize::new(0),
+                host: AtomicUsize::new(0),
                 alive: AtomicBool::new(true),
                 generation: AtomicU64::new(0),
                 config_epoch: AtomicU64::new(0),
@@ -274,24 +300,33 @@ pub fn register(components: &Components, home: PathBuf) {
                 link_cache: Mutex::new(None),
                 link_pending: Mutex::new(None),
                 hangup: Mutex::new(None),
+                adopted_images: Mutex::new(Vec::new()),
                 model: Mutex::new(Model::default()),
             });
             let raw_context = Box::into_raw(Box::new(state.clone())).cast();
+            let host = unsafe { Retained::from_raw(rw_terminal_host_new()) }
+                .expect("create terminal host");
             let raw = unsafe { rw_terminal_new(raw_context, on_event, on_detach, on_release) };
             let view = unsafe { Retained::from_raw(raw) }.expect("create terminal NSView");
+            // The host holds the terminal view from here on.
+            unsafe { rw_terminal_host_show(Retained::as_ptr(&host) as *mut c_void, raw.cast()) };
+            drop(view);
             state.view.store(raw as usize, Ordering::Release);
+            state
+                .host
+                .store(Retained::as_ptr(&host) as usize, Ordering::Release);
             states().lock().unwrap().push(Arc::downgrade(&state));
-            Box::new(Terminal { view, state })
+            Box::new(Terminal { host, state })
         }),
     );
 }
 struct Terminal {
-    view: Retained<NSView>,
+    host: Retained<NSView>,
     state: Arc<State>,
 }
 impl NativeComponent for Terminal {
     fn view(&self) -> Retained<NSView> {
-        self.view.clone()
+        self.host.clone()
     }
     fn set_prop(&mut self, name: &str, value: Option<&JsonValue>) {
         let value = value.cloned().unwrap_or(Value::Null);
@@ -441,6 +476,9 @@ impl Drop for Terminal {
     fn drop(&mut self) {
         self.state.alive.store(false, Ordering::Release);
         self.state.generation.fetch_add(1, Ordering::AcqRel);
+        if pool(&self.state) {
+            return;
+        }
         unsafe { rw_terminal_abandon(ptr(&self.state)) };
         if self.state.model.lock().unwrap().active.is_none() {
             release_claim(&self.state);
@@ -453,6 +491,233 @@ fn sync_state(state: &State) {
         (m.visible, m.frozen, m.focus)
     };
     unsafe { rw_terminal_set_state(ptr(state), v, f, focus) };
+}
+
+/// A local terminal kept after its component unmounted (a project switch, a
+/// closed tab or window) with its surface and tmux client, so that the next
+/// component for its shell shows it at once instead of attaching anew. Its
+/// state is dead (not alive, its generation moved on), so work it had in
+/// flight lands nowhere. It keeps the shell's claim until a component takes it
+/// (`adopt`) or the pool lets it go through the ordinary abandon path.
+struct Pooled {
+    state: Arc<State>,
+    shell: String,
+    // The terminal view, retained here while no host holds it.
+    view: usize,
+    // When it was last on screen.
+    shown: Instant,
+    colors: Option<Colors>,
+    revision: u64,
+    // Its client exited while it waited.
+    ended: bool,
+}
+// Used only on the main thread; a lock only because it is a static.
+static POOL: Mutex<Vec<Pooled>> = Mutex::new(Vec::new());
+// When the pool next needs a maintenance pass, on `clock_ms`; never: u64::MAX.
+static POOL_DUE: AtomicU64 = AtomicU64::new(u64::MAX);
+fn clock_ms() -> u64 {
+    static START: OnceLock<Instant> = OnceLock::new();
+    START.get_or_init(Instant::now).elapsed().as_millis() as u64
+}
+
+/// Keeps a dropped component's terminal if it shows its local shell and is
+/// healthy: attached, not about to be replaced, its client and session alive
+/// as far as anyone knows, and on screen within `WARM_EXPIRY`. Anything else,
+/// and anything uncertain, is abandoned as before.
+fn pool(state: &Arc<State>) -> bool {
+    let (shell, shown, colors, revision) = {
+        let m = state.model.lock().unwrap();
+        let Some(shell) = m.target.as_ref().and_then(Target::local) else {
+            return false;
+        };
+        let healthy = m.active.as_deref() == Some(shell)
+            && !(m.attaching
+                || m.closing
+                || m.recreate
+                || m.ended
+                || m.child_exited
+                || m.exit_check_pending
+                || m.failed
+                || m.pinned)
+            && m.retry_at.is_none();
+        let shown = if m.visible { Instant::now() } else { m.hidden };
+        if !healthy || shown.elapsed() >= policy::WARM_EXPIRY {
+            return false;
+        }
+        let colors = m.surface_colors.clone();
+        (shell.to_owned(), shown, colors, m.surface_revision)
+    };
+    let key = (state.home.clone(), shell.clone());
+    if claims().lock().unwrap().get(&key) != Some(&state.id) {
+        return false;
+    }
+    let raw = ptr(state);
+    let Some(view) = (unsafe { Retained::retain(raw.cast::<NSView>()) }) else {
+        return false;
+    };
+    if !unsafe { rw_terminal_pool(raw) } {
+        return false;
+    }
+    POOL.lock().unwrap().push(Pooled {
+        state: state.clone(),
+        shell,
+        view: Retained::into_raw(view) as usize,
+        shown,
+        colors,
+        revision,
+        ended: false,
+    });
+    schedule_pool();
+    true
+}
+fn pool_tabs(pool: &[Pooled]) -> Vec<policy::PooledTab> {
+    let revision = CONFIG_REVISION.load(Ordering::Acquire);
+    pool.iter()
+        .map(|kept| policy::PooledTab {
+            id: kept.state.id,
+            shown_ago: kept.shown.elapsed(),
+            stale: kept.ended || kept.revision != revision,
+        })
+        .collect()
+}
+/// Tells the maintenance thread when the pool next needs a pass.
+fn schedule_pool() {
+    let plan = policy::plan_pool(&pool_tabs(&POOL.lock().unwrap()));
+    let due = if !plan.release.is_empty() {
+        0
+    } else {
+        plan.recheck
+            .map_or(u64::MAX, |wait| clock_ms() + wait.as_millis() as u64)
+    };
+    POOL_DUE.store(due, Ordering::Release);
+}
+/// Lets kept terminals go: those the pool's policy releases now, or every one.
+fn release_pooled(all: bool) {
+    let released = {
+        let mut pool = POOL.lock().unwrap();
+        let chosen = (!all).then(|| policy::plan_pool(&pool_tabs(&pool)).release);
+        let (released, kept): (Vec<_>, Vec<_>) =
+            std::mem::take(&mut *pool).into_iter().partition(|kept| {
+                chosen
+                    .as_ref()
+                    .is_none_or(|ids| ids.contains(&kept.state.id))
+            });
+        *pool = kept;
+        released
+    };
+    for kept in released {
+        release(kept);
+    }
+    schedule_pool();
+}
+/// The ordinary abandon path. Disposal retains the view until it is freed,
+/// and the old state's `disposed` then releases the shell's claim.
+fn release(kept: Pooled) {
+    trace(
+        &kept.state,
+        "pool-released",
+        json!({"shellId":kept.shell,"ended":kept.ended}),
+    );
+    unsafe { rw_terminal_abandon(kept.view as *mut c_void) };
+    drop(unsafe { Retained::from_raw(kept.view as *mut NSView) });
+}
+/// A kept terminal's client exited, so it has nothing left to show: the next
+/// pass lets it go. False when `state` is not a kept terminal's.
+fn pool_ended(state: &State) -> bool {
+    let found = POOL
+        .lock()
+        .unwrap()
+        .iter_mut()
+        .find(|kept| kept.state.id == state.id)
+        .map(|kept| kept.ended = true)
+        .is_some();
+    if found {
+        schedule_pool();
+    }
+    found
+}
+/// The kept terminal of a shell, taken out of the pool.
+fn take_pooled(home: &Path, shell: &str) -> Option<Pooled> {
+    let mut pool = POOL.lock().unwrap();
+    let index = pool
+        .iter()
+        .position(|kept| kept.state.home == home && kept.shell == shell)?;
+    Some(pool.remove(index))
+}
+/// `state`'s component wants the shell a kept terminal shows. It takes the
+/// terminal if that is still live. One whose client has exited shows nothing
+/// of the shell, so it is let go and the claim passes on at once: the new
+/// attach does not wait for it to be freed.
+fn take_over(state: Arc<State>, kept: Pooled) {
+    schedule_pool();
+    if !kept.ended && unsafe { rw_terminal_live(kept.view as *mut c_void) } {
+        adopt(state, kept);
+        return;
+    }
+    claims()
+        .lock()
+        .unwrap()
+        .insert((state.home.clone(), kept.shell.clone()), state.id);
+    release(kept);
+    reconcile(state);
+}
+/// Shows a kept terminal in `state`'s component in place of its unused new
+/// view, as if it had just attached. The kept view takes this component's
+/// context, so it emits here from now on, and the shell's claim moves here;
+/// the old state is left with the new view and nothing else.
+fn adopt(state: Arc<State>, kept: Pooled) {
+    let fresh = ptr(&state);
+    let view = kept.view as *mut c_void;
+    let old = &kept.state;
+    claims()
+        .lock()
+        .unwrap()
+        .insert((state.home.clone(), kept.shell.clone()), state.id);
+    unsafe { rw_terminal_swap_context(fresh, view) };
+    state.view.store(view as usize, Ordering::Release);
+    old.view.store(fresh as usize, Ordering::Release);
+    old.model.lock().unwrap().active = None;
+    // Its shell may still read images pasted into it.
+    let images = std::mem::replace(
+        &mut *old.images.lock().unwrap(),
+        crate::images::Images::new(&old.home),
+    );
+    state.adopted_images.lock().unwrap().push(images);
+    let (recreate, recolor) = {
+        let mut m = state.model.lock().unwrap();
+        m.active = Some(kept.shell.clone());
+        m.ended = false;
+        m.child_exited = false;
+        m.exit_check_pending = false;
+        m.retry_at = None;
+        m.failed = false;
+        // As when a shown terminal's colors change: an app palette updates
+        // the surface, while Ghostty's own colors, or a Ghostty configuration
+        // that changed meanwhile, replace it.
+        let recolor = kept.colors.as_ref() != Some(&m.colors);
+        m.recreate = kept.revision != CONFIG_REVISION.load(Ordering::Acquire)
+            || recolor && matches!(m.colors, Colors::Ghostty);
+        m.surface_colors = kept.colors.clone();
+        m.surface_revision = kept.revision;
+        (m.recreate, recolor)
+    };
+    // The new view never had a surface: this only retires it.
+    unsafe { rw_terminal_abandon(fresh) };
+    sync_state(&state);
+    trace(
+        &state,
+        "adopted",
+        json!({"from":old.id,"shellId":kept.shell}),
+    );
+    status(&state, "attached", None, None);
+    // The host releases the new view, and with it the old state.
+    unsafe { rw_terminal_host_show(state.host.load(Ordering::Acquire) as *mut c_void, view) };
+    drop(unsafe { Retained::from_raw(view.cast::<NSView>()) });
+    if recreate {
+        reconcile(state);
+    } else if recolor {
+        update_config(state);
+    }
 }
 
 #[derive(Deserialize)]
@@ -660,6 +925,13 @@ fn reconcile(state: Arc<State>) {
         // A local tmux session is shown by one surface at a time. Remote tabs
         // each run their own bridge, as every GPUI window did.
         if target.local().is_some() {
+            // A kept terminal of this shell holds its claim: it is taken over,
+            // not attached anew.
+            if let Some(kept) = take_pooled(&state.home, &shell) {
+                drop(m);
+                take_over(state, kept);
+                return;
+            }
             let key = (state.home.clone(), shell.clone());
             let mut owners = claims().lock().unwrap();
             if owners.get(&key).is_some_and(|id| *id != state.id) {
@@ -734,6 +1006,8 @@ fn reconcile(state: Arc<State>) {
                         m.child_exited = false;
                         m.exit_check_pending = false;
                         m.retry_at = None;
+                        m.surface_colors = Some(colors);
+                        m.surface_revision = config.revision;
                     }
                     sync_state(&state);
                     if !unsafe {
@@ -779,9 +1053,12 @@ fn reconcile(state: Arc<State>) {
 struct ConfigFile {
     path: PathBuf,
     cstring: CString,
+    // The `CONFIG_REVISION` it was written for.
+    revision: u64,
 }
 impl ConfigFile {
     fn new(state: &State, colors: &Colors) -> Result<Self, String> {
+        let revision = CONFIG_REVISION.load(Ordering::Acquire);
         let path = config::write(
             &state.home,
             &format!(
@@ -792,10 +1069,14 @@ impl ConfigFile {
             ),
             &config::roots(),
             colors,
-            CONFIG_REVISION.load(Ordering::Acquire),
+            revision,
         )?;
         let cstring = cstr(path.to_string_lossy())?;
-        Ok(Self { path, cstring })
+        Ok(Self {
+            path,
+            cstring,
+            revision,
+        })
     }
 }
 impl Drop for ConfigFile {
@@ -932,8 +1213,12 @@ fn update_config(state: Arc<State>) {
                 && state.generation.load(Ordering::Acquire) == generation
                 && state.config_epoch.load(Ordering::Acquire) == epoch
             {
-                if let Ok(path) = result {
-                    unsafe { rw_terminal_update_config(ptr(&state), path.cstring.as_ptr()) };
+                if let Ok(path) = result
+                    && unsafe { rw_terminal_update_config(ptr(&state), path.cstring.as_ptr()) }
+                {
+                    let mut m = state.model.lock().unwrap();
+                    m.surface_colors = Some(colors);
+                    m.surface_revision = path.revision;
                 }
             }
         });
@@ -978,6 +1263,9 @@ extern "C" fn on_event(context: *mut c_void, name: *const c_char, data: *const c
     match name.as_ref() {
         "ready" => status(&state, "attached", None, None),
         "ended" => {
+            if pool_ended(&state) {
+                return;
+            }
             let remote = state
                 .model
                 .lock()
@@ -1323,6 +1611,7 @@ fn start_maintenance() {
                     false
                 };
                 let needs = changed
+                    || clock_ms() >= POOL_DUE.load(Ordering::Acquire)
                     || list.iter().any(|s| {
                         let m = s.model.lock().unwrap();
                         m.active.is_some() && !m.visible
@@ -1427,6 +1716,8 @@ fn maintain(states: Vec<Arc<State>>, config_changed: bool) {
             }
         }
     }
+    drop(schedules);
+    release_pooled(false);
 }
 
 #[cfg(feature = "terminal-fixture")]
@@ -1457,7 +1748,11 @@ fn fixture_snapshot_inner(include_trace: bool) -> Value {
         json!({"id":s.id,"shellId":m.active,"target":m.target.as_ref().map(Target::key),"active":m.active.is_some(),"closing":m.closing,"attaching":m.attaching,"visible":m.visible,"pinned":m.pinned,"frozen":m.frozen,"ended":m.ended,"childExited":m.child_exited,"hiddenForMs":m.hidden.elapsed().as_millis() as u64,"alive":s.alive.load(Ordering::Acquire),"windowNumber":window})
     }).collect::<Vec<_>>();
     {
-        let mut result = json!({"states":list,"pending":pending_count()});
+        let mut result = json!({
+            "states":list,
+            "pending":unsafe { rw_terminal_pending_count() },
+            "pooled":POOL.lock().unwrap().len(),
+        });
         if include_trace {
             result["trace"] = json!(*TRACE.lock().unwrap());
         }
