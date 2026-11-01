@@ -1,34 +1,22 @@
 import { Text, View, cleanup, effect, keymap, signal, untracked, type YNode } from "nsh";
-import { Dashboard, type ChatApproval, type ChatDecision, type ChatQuestion } from "riwork/native";
 import { Button, Input, settingsFocusScope } from "../SettingsFocus";
-import { space, type InterfaceTheme } from "../appearance";
+import { space, type InterfaceTheme } from "../theme";
+import type { ChatDecision, DecisionReviewDto } from "../client/types";
+import type { DecisionApi } from "../client/ports";
 import type { DecisionRow } from "./model";
 
-export interface Review {
-  reviewId: string;
-  chatId: string;
-  requestId: string;
-  title: string;
-  kind: "approval" | "question";
-  approval?: ChatApproval;
-  question?: ChatQuestion;
-  status: "pending" | "sending" | "sent" | "uncertain" | "unavailable";
-  error?: string;
-}
+/** A provider request under review, as the host's review call answers it. */
+export type Review = DecisionReviewDto;
+/** The two calls a review makes: the Mac's native module (`adapters/local.ts`),
+ * the iOS host's own responder (`relay.decision.*`), or a fixture's. */
+export type { DecisionApi } from "../client/ports";
 
-/** The two native calls a review makes; a fixture passes its own. */
-export interface DecisionApi {
-  reviewDecision(chatId: string, requestId: string, kind?: "approval" | "question"): Promise<Review>;
-  respondDecision(reviewId: string, decision?: ChatDecision | null, answers?: string[][] | null): Promise<Review>;
-}
-const native = Dashboard as typeof Dashboard & DecisionApi;
-
-/** Review a fresh provider request. The native review token retains the exact
+/** Review a fresh provider request. The host's review token retains the exact
  * request; sending rechecks it against the live host and never starts a chat.
  * The dashboard keeps this while the decision's row is unfolded, so a redraw of
  * the row (a new read, a region or width change) keeps its answers and status. */
-export function createDecisionReview(decision: DecisionRow, options: { api?: DecisionApi; onResponded: () => void }) {
-  const api = options.api ?? native;
+export function createDecisionReview(decision: DecisionRow, options: { api: DecisionApi; onResponded: () => void }) {
+  const api = options.api;
   const review = signal<Review | null>(null);
   const loading = signal(true);
   const sending = signal(false);

@@ -27,8 +27,10 @@ enum NSHMobilePresentation {
     var onRootShortcutPolicyChange: ((Bool) -> Void)?
     private weak var app: NshAppView?
     private let hostDashboards = HostDashboardStore()
+    /// The host calls the shared TSX screens use (`relay.*`, `platform.*`, `nav.*`).
+    private(set) lazy var hostAPI = NSHHostAPI(bridge: self)
     private var route = "hosts"
-    private var nativePresented = false
+    private(set) var nativePresented = false
     private var revision = 0
     private var observation = UUID()
     private var navigation = UUID()
@@ -36,6 +38,8 @@ enum NSHMobilePresentation {
     private var respondingHostID: String?
     private var activityTask: Task<Void, Never>?
     private var activityScope: ActivityScope?
+    /// The activity loop leaves `dashboard.get` to the shared TSX dashboard, which reads it over `relay.call`.
+    private var activityLeavesDashboard = false
     private var freshnessTask: Task<Void, Never>?
     private var rows: [String: RowAction] = [:]
     private var sentDecisions: [DecisionKey: Date] = [:]
@@ -74,12 +78,14 @@ enum NSHMobilePresentation {
             self.publishAndObserve()
             return self.snapshot()
         }
+        hostAPI.attach(to: app)
         publishAndObserve()
     }
 
     func detach() {
         observation = UUID(); navigation = UUID()
         app?.removeHandler("mobile.snapshot"); app?.removeHandler("mobile.action")
+        hostAPI.detach()
         app = nil
         onRootShortcutPolicyChange?(false)
         activityTask?.cancel(); activityTask = nil; activityScope = nil
@@ -125,6 +131,8 @@ enum NSHMobilePresentation {
         navigation = UUID(); route = "dashboard"
         present(.global)
     }
+    /// The host the person opened or is opening: the one `relay.call` and the decision calls reach.
+    var interactiveHostID: String? { openingHostID ?? model.selectedDesktopID }
     func projectCreated(_ project: RemoteProject) {
         model.newTerminalRequestedProject = project.id
         present(.project(project))
@@ -162,9 +170,7 @@ enum NSHMobilePresentation {
         }
         switch type {
         case "connect": try await connect(hostID: required(data, "hostID"))
-        case "disconnect":
-            navigation = UUID()
-            await model.disconnect()
+        case "disconnect": await disconnectInteractive()
         case "refresh":
             if model.loadFailed { model.loadLibrary() }
             else if route == "hosts" {
@@ -172,7 +178,8 @@ enum NSHMobilePresentation {
                 await hostDashboards.refresh()
             } else {
                 await model.refresh()
-                await model.refreshDashboardQuietly()
+                // A host's own page reads `dashboard.get` itself (the shared DashboardView, over `relay.call`) as it asks for this.
+                if route != "dashboard" { await model.refreshDashboardQuietly() }
             }
         case "showProjects": showProjects()
         case "cycleProjectSort": model.cycleProjectSort()
@@ -192,31 +199,41 @@ enum NSHMobilePresentation {
                 model.newTerminalRequestedProject = id
             }
             try openProject(id)
-        case "openGlobal":
-            guard model.state == .connected else { throw Failure(message: "Connect to this desktop first.") }
-            let status = globalStatus
-            guard status.action != .unavailable else { throw Failure(message: status.actionTitle) }
-            showGlobal()
-            if status.action == .start, let failure = await model.startGlobalOrchestrator() { model.error = failure.message }
+        case "openGlobal": try await openGlobal(start: true)
         case "openDashboardRow": try await openRow(required(data, "rowID"))
-        case "present":
-            switch try required(data, "name") {
-            case "addHost":
-                guard !model.loadFailed else { throw Failure(message: "Restore the saved pairing library first.") }
-                present(.addHost)
-            case "settings": present(.settings)
-            case "hostDetails":
-                let id = try required(data, "hostID")
-                guard model.desktops.contains(where: { $0.id == id }) else { throw Failure(message: "This desktop is no longer saved.") }
-                present(.hostDetails(id))
-            case "newProject":
-                guard model.canOpenNewProject else { throw Failure(message: "Connect to a desktop that supports creating projects.") }
-                present(.newProject)
-            case "libraryRecovery": present(.libraryRecovery)
-            default: throw Failure(message: "Unknown native screen.")
-            }
+        case "present": try present(named: required(data, "name"), hostID: data["hostID"] as? String)
         case "dismissNative": present(.dismiss)
         default: throw Failure(message: "Unknown mobile action.")
+        }
+    }
+
+    func disconnectInteractive() async {
+        navigation = UUID()
+        await model.disconnect()
+    }
+    /// The global orchestrator's screen; with `start`, it is started first when there is none (an explicit Start).
+    func openGlobal(start: Bool) async throws {
+        guard model.state == .connected else { throw Failure(message: "Connect to this desktop first.") }
+        let status = globalStatus
+        guard status.action != .unavailable else { throw Failure(message: status.actionTitle) }
+        showGlobal()
+        if start, status.action == .start, let failure = await model.startGlobalOrchestrator() { model.error = failure.message }
+    }
+    /// A native screen by name (`mobile.action` `present`, `nav.present`).
+    func present(named name: String, hostID: String?) throws {
+        switch name {
+        case "addHost":
+            guard !model.loadFailed else { throw Failure(message: "Restore the saved pairing library first.") }
+            present(.addHost)
+        case "settings": present(.settings)
+        case "hostDetails":
+            guard let id = hostID, model.desktops.contains(where: { $0.id == id }) else { throw Failure(message: "This desktop is no longer saved.") }
+            present(.hostDetails(id))
+        case "newProject":
+            guard model.canOpenNewProject else { throw Failure(message: "Connect to a desktop that supports creating projects.") }
+            present(.newProject)
+        case "libraryRecovery": present(.libraryRecovery)
+        default: throw Failure(message: "Unknown native screen.")
         }
     }
 
@@ -234,7 +251,7 @@ enum NSHMobilePresentation {
         navigation = UUID(); route = page
         publishAndObserve()
     }
-    private func openProject(_ id: String, tab: String? = nil) throws {
+    func openProject(_ id: String, tab: String? = nil) throws {
         guard model.state == .connected, let project = model.project(withID: id) else {
             throw Failure(message: "This project is unavailable. Refresh the desktop and try again.")
         }
@@ -274,7 +291,9 @@ enum NSHMobilePresentation {
     func isDecisionAnswered(_ item: HostedDashboardDecision) -> Bool {
         sentDecisions[DecisionKey(hostID: item.hostID, decision: item.decision)] != nil
     }
-    func respondToDecision(_ item: HostedDashboardDecision, command: ChatCommand) async throws {
+    /// - Parameter refresh: read the interactive host's dashboard and lists again once it went out (the overview's sheet); the shared
+    ///   review (`relay.decision.respond`) reads them again itself.
+    func respondToDecision(_ item: HostedDashboardDecision, command: ChatCommand, refresh: Bool = true) async throws {
         let key = DecisionKey(hostID: item.hostID, decision: item.decision)
         guard sentDecisions[key] == nil else { throw DashboardResponseError.alreadySent }
         guard openingHostID == nil, respondingHostID == nil,
@@ -297,7 +316,7 @@ enum NSHMobilePresentation {
             throw error
         }
         sentDecisions[key] = .now
-        if interactive { await model.refreshDashboardQuietly(); mirrorActiveDashboard() }
+        if interactive && refresh { await model.refreshDashboardQuietly(); mirrorActiveDashboard() }
     }
 
     private var activeOverviewHostID: String? {
@@ -336,14 +355,17 @@ enum NSHMobilePresentation {
             desktops: model.desktops, sceneActive: model.appActive, activeHostID: activeOverviewHostID)
         mirrorActiveDashboard()
         let scope: ActivityScope? = visible && openingHostID == nil ? (route == "projects" ? .projects : .dashboard) : nil
-        if scope != activityScope {
-            activityTask?.cancel(); activityTask = nil; activityScope = scope
+        // A host's own page is the shared TSX dashboard, which reads `dashboard.get` itself (`relay.call`, installed into the
+        // model as Swift's own read would be): Swift then keeps only the lists its rows open with.
+        let leavesDashboard = scope == .dashboard && route == "dashboard"
+        if scope != activityScope || leavesDashboard != activityLeavesDashboard {
+            activityTask?.cancel(); activityTask = nil; activityScope = scope; activityLeavesDashboard = leavesDashboard
             if let scope {
                 // Reuse the existing visibility-scoped network refresh. This
                 // never polls a JS snapshot or creates another transport.
                 activityTask = Task { [weak model] in
                     guard let model else { return }
-                    await model.keepFresh(scope)
+                    if leavesDashboard { await model.keepDashboardListsFresh() } else { await model.keepFresh(scope) }
                 }
             }
         }
@@ -369,12 +391,15 @@ enum NSHMobilePresentation {
             }
         }
         app.send("mobile.snapshot", data)
+        hostAPI.publish()
     }
 
     private func snapshot() -> [String: Any] {
         rows.removeAll(keepingCapacity: true)
         // These observed values also drive lifecycle changes with no timer.
         _ = model.appActive; _ = model.loadFailed
+        // The active host's read (now the shared dashboard's, over `relay.call`) is mirrored into the overview as it lands.
+        _ = model.dashboard; _ = model.dashboardReadAt; _ = model.dashboardFailure; _ = model.dashboardSupport
         _ = model.keyboard.usesClicks; _ = model.keyboard.usesHardwareLayout
         let currentHost = openingHostID ?? model.selectedDesktopID
         let sameHost = currentHost == model.selectedDesktopID
@@ -402,15 +427,20 @@ enum NSHMobilePresentation {
             "loading": model.loading || openingHostID != nil, "projects": projects,
             "projectSort": ["value": model.projectSort.rawValue, "title": model.projectSort.title, "detail": model.projectSort.detail],
             "keyboard": ["hardware": model.keyboard.usesHardwareLayout, "clicks": model.keyboard.usesClicks],
-            "dashboard": dashboardDTO(sameHost ? model.dashboard : nil, hostID: currentHost,
-                freshness: model.dashboardFreshness(), readAt: model.dashboardReadAt),
             "homeDashboard": homeDashboardDTO(), "theme": themeDTO(),
             "canCreateProject": sameHost && model.canOpenNewProject,
             "projectsStale": model.snapshotStale,
             "libraryUnavailable": model.loadFailed]
         result["selectedHostID"] = currentHost
         result["error"] = model.loadFailure ?? model.error
+        // The page of a Mac without `dashboard.get` still offers its global orchestrator, as `orchestrators.list` has it.
+        if sameHost, model.selectedDesktopID != nil { result["global"] = globalDTO() }
         return result
+    }
+    private func globalDTO() -> [String: Any] {
+        let status = globalStatus
+        let action: String = switch status.action { case .open: "open"; case .start: "start"; case .unavailable: "unavailable" }
+        return ["summary": status.summary, "action": action, "actionTitle": status.actionTitle]
     }
 
     private var connectionState: String {
@@ -427,7 +457,7 @@ enum NSHMobilePresentation {
             dashboard: model.dashboardSupport == .unsupported ? nil : model.dashboard?.global,
             canStart: model.orchestratorsOffered, exitedTerminal: model.globalTerminalExited)
     }
-    private func themeDTO() -> [String: Any] {
+    func themeDTO() -> [String: Any] {
         let style = model.theme.style
         if style.theme.followsSystemAppearance {
             let traits = app?.traitCollection ?? UITraitCollection.current
@@ -462,40 +492,6 @@ enum NSHMobilePresentation {
     private func metric(_ id: String, _ label: String, _ value: Int?) -> [String: Any] {
         ["id": id, "label": label, "value": value.map { $0 as Any } ?? NSNull()]
     }
-    private func dashboardDTO(_ snapshot: DashboardSnapshot?, hostID: String?, freshness: DashboardFreshness, readAt: Date?) -> [String: Any] {
-        let status = globalStatus
-        let action: String = switch status.action { case .open: "open"; case .start: "start"; case .unavailable: "unavailable" }
-        let totals = snapshot?.totals
-        var projectedRows = snapshot.flatMap { snapshot in hostID.map { dashboardRows(snapshot, hostID: $0, stale: freshness.stale) } } ?? []
-        if let hostID, hostID == model.selectedDesktopID {
-            let known = Set(snapshot?.projects.rows.map(\.id) ?? [])
-            for project in model.sortedProjects where !known.contains(project.id) {
-                let id = "\(hostID):projects:\(project.id)"
-                rows[id] = .destination(hostID: hostID, target: .project(id: project.id), session: nil, projectID: project.id)
-                var row: [String: Any] = ["id": id, "hostID": hostID, "section": "projects", "title": project.name,
-                    "subtitle": project.root, "tone": "muted", "enabled": true, "stale": model.snapshotStale]
-                row["status"] = project.agents?.spoken
-                projectedRows.append(row)
-            }
-        }
-        var value: [String: Any] = ["available": snapshot != nil, "freshness": freshness.text, "stale": freshness.stale,
-            "summary": [metric("working", "Working", totals?.agents?.working), metric("attention", "Need you", totals?.attention),
-                metric("sessions", snapshot?.chatsKnown == true ? "Live sessions" : "Live terminals", totals?.liveSessions ?? totals?.liveShells), metric("projects", "Projects", totals?.projects),
-                metric("tasks", "Open tasks", totals?.tasks?.open)],
-            "rows": projectedRows,
-            "global": ["summary": status.summary, "action": action, "actionTitle": status.actionTitle]]
-        value["unavailableReason"] = model.dashboardUnavailableReason ?? model.dashboardFailure
-        value["readAt"] = readAt?.timeIntervalSince1970
-        if let snapshot {
-            value["notes"] = dashboardNotes(snapshot)
-            // Apart from the muted notes: the bundle draws it in the error color, as the desktop draws it in danger.
-            if case .unreadable(let reason) = snapshot.automations { value["automationsError"] = "Automations could not be read: \(reason)" }
-            value["more"] = omittedRows(snapshot)
-            value["intelligence"] = intelligenceDTO(snapshot.intelligence, hostID: hostID ?? "", hostName: nil).map { [$0] } ?? []
-        }
-        return value
-    }
-
     private func homeDashboardDTO() -> [String: Any] {
         let aggregate = hostDashboards.aggregate
         func count(_ id: String, _ label: String, _ value: HostDashboardCount) -> [String: Any] {
@@ -553,26 +549,6 @@ enum NSHMobilePresentation {
         result["hostName"] = hostName; result["summary"] = value.summary; result["error"] = value.error
         result["model"] = value.model; result["generatedAt"] = value.generatedAt
         return result
-    }
-    private func dashboardNotes(_ snapshot: DashboardSnapshot) -> [String] {
-        var notes: [String] = []
-        if snapshot.chatsKnown != true { notes.append("Chat totals have not been read yet; session figures show terminals only.") }
-        if let active = snapshot.totals.activeProjects, let total = snapshot.totals.projects { notes.append("\(active) of \(total) projects active") }
-        if let subagents = snapshot.totals.agents?.subagents, subagents > 0 { notes.append("\(subagents) subagents working") }
-        if let done = snapshot.totals.tasks?.done, let total = snapshot.totals.tasks?.total { notes.append("\(done) of \(total) tasks done") }
-        if !snapshot.decisionSources.complete {
-            if let read = snapshot.decisionSources.chatsRead, let total = snapshot.decisionSources.chatsTotal {
-                notes.append("Decision coverage: \(read) of \(total) chats read. Some pending requests may be missing.")
-            } else { notes.append("Decision coverage is incomplete. Open a waiting chat to see its current requests.") }
-        }
-        switch snapshot.automations {
-        case .notRead: notes.append("Automations have not been read yet.")
-        case .unreadable: break  // `automationsError`, in the error color.
-        case .read(let total, let paused, let next, _):
-            if let total, let paused { notes.append("\(total) automations · \(paused) paused") }
-            if let next { notes.append("Next automation: \(next.title) · \(timeLabel(next.at, future: true))") }
-        }
-        return notes
     }
     private func omittedRows(_ snapshot: DashboardSnapshot, limit: Int = 12) -> [String: Int] {
         func count<Row: Sendable & Equatable>(_ list: DashboardList<Row>, limit: Int) -> Int { max(0, (list.total ?? list.rows.count) - min(limit, list.rows.count)) }

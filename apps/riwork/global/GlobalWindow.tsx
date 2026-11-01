@@ -1,9 +1,11 @@
 import { Text, View, cleanup, effect, host, keymap, signal } from "nsh";
 import { Window } from "nsh/desktop";
-import { Dashboard, Sessions, Store, type DashboardEvent, type GlobalWindowDto, type SettingsDto } from "riwork/native";
+import { Dashboard, Sessions, Store, type GlobalWindowDto, type SettingsDto } from "riwork/native";
 import { Icon } from "../Icon";
 import { DEFAULT_THEME, type InterfaceTheme } from "../appearance";
 import type { HostParams } from "../model";
+import { createLocalServices } from "../adapters/local";
+import type { DashboardDto } from "../client/types";
 import { DashboardView } from "../dashboard/Dashboard";
 import { routeTarget, type Filter, type Sort, type Target, type Wire } from "../dashboard/model";
 import { GlobalChat, type ChatControl } from "./GlobalChat";
@@ -42,7 +44,9 @@ export function GlobalWindow(props: { params: HostParams; theme?: () => Interfac
   const query = signal("");
   const notice = signal(params.notice ?? "");
   const windowState = signal<WindowState>({ mode: "windowed" });
-  const dashboard = signal<DashboardEvent["data"] | null>(null);
+  const dashboard = signal<DashboardDto | null>(null);
+  // This Mac's own ports: the shared dashboard reads and answers through them.
+  const services = createLocalServices();
   let saved: GlobalWindowDto | null = null;
   let loaded = false;
   let alive = true;
@@ -98,12 +102,7 @@ export function GlobalWindow(props: { params: HostParams; theme?: () => Interfac
   const visible = () => windowState().occluded !== true && windowState().visible !== false;
   effect(() => {
     if (!visible()) return;
-    let rev = -1;
-    const subscription = Dashboard.subscribe((event) => {
-      if (event.rev <= rev && !event.resync) return;
-      rev = event.rev;
-      dashboard.set(event.data);
-    });
+    const subscription = services.dashboard.subscribe((dto) => dashboard.set(dto));
     return () => subscription.close();
   });
   const wire = () => (dashboard()?.wire ?? null) as Wire | null;
@@ -197,8 +196,8 @@ export function GlobalWindow(props: { params: HostParams; theme?: () => Interfac
         <DashboardView dto={dashboard} theme={theme} filter={filter} sort={sort} query={query}
           onFilter={setFilter} onSort={setSort} onSearch={(node) => { search = node; }}
           onOpen={route} onPanel={openPanel} onGlobalChat={() => show("chat", true)}
-          onRefresh={() => { void Dashboard.refresh().catch((error: unknown) => notice.set(String(error))); }}
-          plan={() => chat.control?.plan() ?? null} starting={() => chat.control?.starting() ?? false} /></View>}
+          onRefresh={() => { void services.dashboard.refresh().catch((error: unknown) => notice.set(String(error))); }}
+          plan={() => chat.control?.plan() ?? null} starting={() => chat.control?.starting() ?? false} decisions={services.dashboard.decisions} /></View>}
       <GlobalChat visible={() => view() === "chat"} global={() => wire()?.global ?? { kind: "unknown" }} theme={theme}
         settings={props.settings} startNow={params.global?.start === true && view() === "chat"}
         onApiKeySettings={() => {

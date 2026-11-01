@@ -2,8 +2,8 @@ import { Scroll, Text, View, cleanup, computed, signal, windowSize, type JSX, ty
 import { Button, Input } from "nsh/base";
 import { Icon } from "../Icon";
 import { DecisionReviewView, createDecisionReview, type DecisionApi, type DecisionReview } from "./DecisionReview";
-import type { DashboardEvent } from "riwork/native";
-import { space, type InterfaceTheme } from "../appearance";
+import type { DashboardDto } from "../client/types";
+import { space, type InterfaceTheme } from "../theme";
 import {
   COLUMN_WIDTHS, DASHBOARD_METRICS, FILTERS, LIST_LIMIT, SORTS, age, agentParts, attentionCopy, automationDetail,
   chatCopy, emptyTable, filterCounts, filterLabel, freshness, intelligenceSection, layoutFor, orchestratorWords,
@@ -11,10 +11,11 @@ import {
   visibleProjects, workDetail, type DecisionRow, type Filter, type Plan, type ProjectRow, type Sort, type Target, type Wire,
 } from "./model";
 
-type Dto = DashboardEvent["data"];
+type Dto = DashboardDto;
 type Region = "projects" | "activity" | "work";
 
 export const SEARCH_PLACEHOLDER = "Search projects, tasks and sessions  ⌘F";
+const TOUCH_SEARCH_PLACEHOLDER = "Search projects, tasks and sessions";
 
 /** The global dashboard (PANEL-078..099). It draws what the native read says and
  * asks for nothing while drawing: every click is an explicit route or refresh.
@@ -34,8 +35,11 @@ export function DashboardView(props: {
   onRefresh: () => void;
   plan: () => Plan | null;
   starting: () => boolean;
-  /** The native review calls (a fixture passes its own). */
-  decisions?: DecisionApi;
+  /** The host's review calls (`Services.dashboard.decisions`; a fixture passes its own). */
+  decisions: DecisionApi;
+  /** Touch density (iPhone, iPad): 44-point targets, no keyboard hints, and on a
+   * phone-wide view each project's figures under its name instead of in columns. */
+  touch?: boolean;
 }) {
   // The compact region is not saved; the search is never saved.
   const region = signal<Region>("projects");
@@ -48,6 +52,10 @@ export function DashboardView(props: {
   const wire = () => (props.dto()?.wire ?? null) as Wire | null;
   const now = () => props.dto()?.now ?? 0;
   const layout = () => layoutFor(width() || windowSize().width, scale());
+  const touch = () => props.touch === true;
+  /** Below 600 points (`PhoneShell`) the table's columns do not fit. */
+  const stacked = () => touch() && (width() || windowSize().width) < 600;
+  const touchTarget = () => touch() ? { minHeight: 44, justifyContent: "center" as const } : {};
   // The body is drawn again only when this changes, not on every read or resize.
   const arrangement = computed(() => layout().arrangement);
   let search: YNode | undefined;
@@ -72,7 +80,7 @@ export function DashboardView(props: {
     return <View testID={id} role={kind === "tab" ? "tab" : "button"} accessibilityLabel={hint ?? label} accessibilityState={{ selected, disabled: !onPress }} disabled={!onPress} onPress={onPress}
       focusable={!!onPress} hoverStyle={onPress ? { backgroundColor: palette().panelActive } : undefined}
       style={{ paddingHorizontal: size(8), paddingVertical: size(outlined ? 3 : 4), borderRadius: 6, backgroundColor: selected ? palette().bg : "transparent", opacity: onPress ? 1 : 0.5,
-        ...(outlined ? { borderWidth: 1, borderColor: palette().divider } : {}) }}>
+        ...(outlined ? { borderWidth: 1, borderColor: palette().divider } : {}), ...touchTarget() }}>
       {label === "↻" || label === "×" ? <Icon name={label === "↻" ? "refresh" : "close"} size={11 * scale()} color={palette().muted} /> : <Text numberOfLines={1} style={font(10, selected || outlined ? palette().text : palette().muted)}>{label}</Text>}
     </View>;
   }
@@ -86,7 +94,7 @@ export function DashboardView(props: {
     </View>;
   }
   function row(id: string, headline: string, detail: string, target?: Target, tone = palette().text) {
-    return <View testID={id} role={target ? "button" : "text"} accessibilityLabel={`${headline}; ${detail}`} onPress={target ? () => props.onOpen(target) : undefined} focusable={!!target} hoverStyle={{ backgroundColor: palette().panelActive }} style={{ gap: 2, paddingHorizontal: size(8), paddingVertical: size(5), borderRadius: 7 }}>
+    return <View testID={id} role={target ? "button" : "text"} accessibilityLabel={`${headline}; ${detail}`} onPress={target ? () => props.onOpen(target) : undefined} focusable={!!target} hoverStyle={{ backgroundColor: palette().panelActive }} style={{ gap: 2, paddingHorizontal: size(8), paddingVertical: size(5), borderRadius: 7, ...(target ? touchTarget() : {}) }}>
       <Text numberOfLines={1} style={font(11, tone)}>{headline}</Text>
       <Text numberOfLines={1} style={font(10, palette().muted)}>{detail}</Text>
     </View>;
@@ -111,7 +119,7 @@ export function DashboardView(props: {
     return <View testID="dashboard-toolbar" style={{ flexDirection: "row", alignItems: "center", gap: size(10), paddingHorizontal: size(DASHBOARD_METRICS.page), paddingVertical: size(6), borderBottomWidth: 1, borderColor: palette().divider }}>
       <View style={{ flexDirection: "row", alignItems: "center", height: size(26), paddingHorizontal: size(8), gap: size(5), borderRadius: 13, backgroundColor: palette().panelActive, flex: layout().arrangement === "compact" ? 1 : undefined, width: layout().arrangement === "compact" ? undefined : size(300), minWidth: size(160) }}>
         <Icon name="search" size={11 * scale()} color={palette().muted} />
-        <Input testID="dashboard-search" accessibilityLabel="Search the dashboard" placeholder={SEARCH_PLACEHOLDER} value={props.query()}
+        <Input testID="dashboard-search" accessibilityLabel="Search the dashboard" placeholder={touch() ? TOUCH_SEARCH_PLACEHOLDER : SEARCH_PLACEHOLDER} value={props.query()}
           ref={(node) => { search = node; }} onChange={(text) => props.query.set(text)}
           style={{ ...font(11), flex: 1, minWidth: 0, paddingVertical: 3, backgroundColor: "transparent" }} />
         {props.query() !== "" && button("dashboard-clear-search", "×", () => { props.query.set(""); search?.focus(); }, false, "Clear the search")}
@@ -163,6 +171,20 @@ export function DashboardView(props: {
     const where = [project.folder, columns.orchestrator == null && project.orchestrator ? `P·Orch ${orchestrator?.[0] ?? ""} ${orchestrator?.[1] ?? ""}`.trim() : undefined, project.worktrees ? plural(project.worktrees, "worktree") : undefined].filter(Boolean).join(" · ");
     const agents = agentParts(project);
     const toneOf = (part: string) => ({ gold: palette().gold, working: palette().working, cyan: palette().cyan, muted: palette().muted } as Record<string, string>)[part];
+    if (stacked()) {
+      // The same figures as the columns, under the name; the row opens the project.
+      return <View testID={`dashboard-project-${project.id}`} role="button" accessibilityLabel={projectReaderName(project, read.chats_known, now())}
+        onPress={() => props.onOpen({ type: "project", id: project.id })} focusable={true} activeStyle={{ backgroundColor: palette().panelActive }}
+        style={{ flexDirection: "row", alignItems: "center", gap: size(DASHBOARD_METRICS.cellGap), padding: size(DASHBOARD_METRICS.rowPad), borderRadius: 7, minHeight: 44 }}>
+        <Text style={{ ...font(11, tone), width: size(DASHBOARD_METRICS.mark) }}>{state.mark}</Text>
+        <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
+          <Text numberOfLines={1} style={font(12)}>{project.name}</Text>
+          {where && <Text numberOfLines={1} style={font(10, palette().muted)}>{where}</Text>}
+          <Text numberOfLines={1} style={font(10, palette().muted)}>{agents.length ? agents.map((part, index) => <Text style={{ color: toneOf(part.tone) }}>{`${index ? " " : ""}${part.text}`}</Text>) : "No agents"}{` · ${sessionsLine(project, read.chats_known)}`}</Text>
+          <Text numberOfLines={1} style={font(10, palette().muted)}>{`${tasks ? `${tasks[0]} · ${tasks[1]}` : "No tasks"} · ${age(now(), project.last_activity) ?? "—"}`}</Text>
+        </View>
+      </View>;
+    }
     return <View testID={`dashboard-project-${project.id}`} role="button" accessibilityLabel={projectReaderName(project, read.chats_known, now())}
       onPress={() => props.onOpen({ type: "project", id: project.id })} focusable={true} hoverStyle={{ backgroundColor: palette().panelActive }}
       style={{ flexDirection: "row", alignItems: "center", gap: size(DASHBOARD_METRICS.cellGap), padding: size(DASHBOARD_METRICS.rowPad), borderRadius: 7 }}>
@@ -205,7 +227,7 @@ export function DashboardView(props: {
     const shown = visibleProjects(read.projects ?? [], props.query(), props.filter(), props.sort());
     const empty = shown.length ? null : emptyTable(read.projects ?? [], props.query(), props.filter());
     return <View style={{ flex: 1, minHeight: 0, paddingHorizontal: size(DASHBOARD_METRICS.page) }}>
-      {tableHead()}
+      {!stacked() && tableHead()}
       <Scroll testID="dashboard-table" style={{ flex: 1, minHeight: 0 }}>
       {shown.map((project) => projectRow(project, read))}
       {more(read.projects_total, read.projects?.length ?? 0)}

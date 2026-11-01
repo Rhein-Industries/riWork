@@ -1,8 +1,9 @@
 # RiWork for iPhone and iPad
 
-On the `nsh` branch, the app starts in Native Shell. The host library, aggregate
-and per-host dashboards, and searchable project navigation live in
-`apps/riwork-mobile`. The existing Swift transport, Keychain storage, terminal
+On the `nsh` branch, the app starts in Native Shell. The host library, the All
+hosts overview and searchable project navigation live in `apps/riwork-mobile`;
+a host's own dashboard is the desktop's shared `DashboardView` from
+`apps/riwork/dashboard`. The existing Swift transport, Keychain storage, terminal
 and chat surfaces remain connected through the native mobile adapter during
 this migration. See [the migration boundary](../docs/nsh-ios-migration.md).
 
@@ -26,8 +27,9 @@ Leaving it or backgrounding the app closes those connections. The host already c
 connection's dashboard; the overview does not take its terminal viewport or open a second mobile connection for the same pairing.
 A new pairing must finish its first explicit connection before the overview can use it. Pairing keys remain in Keychain.
 
-**Decisions.** Per-host dashboards and All hosts show original approval requests and questions from waiting Claude, Codex and Muse
-chats. Tap **Review** to read the request and choose an offered approval or answer. Before sending, the app connects to the card's
+**Decisions.** A desktop's dashboard and All hosts show original approval requests and questions from waiting Claude, Codex and Muse
+chats. Tap **Review** to read the request (on a desktop's dashboard it unfolds in its row; on All hosts it opens a sheet) and choose
+an offered approval or answer. Before sending, the app connects to the card's
 exact host and checks a fresh chat snapshot for the same pending request and choices. A resolved or changed request is rejected;
 viewing a card does not answer it. Responses are sent only after your explicit choice and are never automatically retried after
 an uncertain delivery. Coverage can be partial when a host could not read every chat log; terminal agents keep their existing
@@ -41,31 +43,31 @@ requests and permits at most 120 requests per host per day. A changed source or 
 missing keys and API errors leave the raw dashboard available. A summary supplies no approval controls and cannot answer requests.
 See [the dashboard contract](../docs/dashboard-decisions.md) for observation and source limits.
 
-Choosing a desktop opens its **Dashboard**, outside every project (`DashboardViews.swift`, `RemoteModel+Dashboard.swift`,
-`Core/GlobalDashboard.swift`, tested). A desktop that says `ready.features.dashboard` answers `dashboard.get {}` with its own global
-dashboard, arranged by the desktop's `global_overview` (docs/remote-protocol.md, "Dashboard extension"); the phone shows it at phone
-scale with native controls and the chosen palette on iPhone, and the selected look on iPad:
-- **How current it is**: Live, "Last read 2m ago" after 30 s, "Showing the read from … · why" when a read failed, or the connection's
-  state with the age of the last read; the last read stays on screen while a new one fails or the link is down.
-- **Global**: the global orchestrator, how it runs (a chat with its provider, or a terminal), its state and activity, with **Open** (the
-  Global screen) or, when the Mac has none to open (none, or its terminal has ended), **Start** (an explicit tap that puts the Global
-  screen up at once and sends `orchestrator.create {}` with no project; a late answer never moves a person who has gone elsewhere). A
-  chat orchestrator's model is shown ("Muse chat · muse-wonder-full-1.0 · Working", and beside the Global screen's title) when its
-  `orchestrators.list` entry names one; none is shown when it runs on its provider's default or the Mac does not say. The button reads
-  "Start global orchestrator" whatever the Mac's "Orchestrator runs as" setting is, because that setting is not on the wire.
-- **Overview**: agents working (and their subagents), what needs you, live sessions (terminals only, "chats not read yet", until the Mac
-  has read its chats), active projects and the task totals.
-- **Needs you** (waiting agents first, then failed chats and automations whose last run did not go through, newest first), **Working
-  now** (longest-running first), **Finished in the last hour**, **Tasks in progress**, **Automations** (count, paused, next run; read-only
-  on the phone), each up to 12 rows with "N more on the Mac".
-- **Projects**: every project, busiest first, with its activity, orchestrator, task status and last activity; projects the dashboard did
-  not send follow in the order chosen on the Projects screen. The bar's folder button opens the **Projects** screen (search, sort, ＋).
-A row opens what it names: its project, with its terminal or chat put on screen (a worker the shared list hides is opened as the
-"Open shell/worker…" picker opens it); a row of the global orchestrator opens the Global screen. A figure the Mac did not send, or sent
-in a form the phone cannot read, is shown as unknown ("—"), never as 0; a row the phone cannot read is left out. The dashboard is read
-only while it is on screen, every 10 s, together with `projects.list` and `orchestrators.list`; pull to refresh reads it at once.
-**An older Mac** does not announce the method and is never asked: the dashboard says RiWork on the Mac needs an update for it, and still
-lists and opens every project, with the global orchestrator's row from `orchestrators.list`.
+Choosing a desktop opens its **Dashboard**, outside every project. A desktop that says `ready.features.dashboard` answers
+`dashboard.get {}` with its own global dashboard (docs/remote-protocol.md, "Dashboard extension"), and the phone draws it with the
+desktop's own `DashboardView` (`apps/riwork/dashboard`), read through `apps/riwork/client/remote.ts` and
+`apps/riwork-mobile/swift_transport.ts`. It is the Mac's page in touch density: 44-point targets, the desktop's 11-point text at 15,
+and below 600 points each project's figures under its name instead of in columns; its colors follow the chosen palette on iPhone and
+the selected look on iPad:
+- **How current it is**: Live, "Last read 2m ago" after 30 s, or "Showing the read from … · why" when a read failed or the link is
+  down; the last read stays on screen meanwhile.
+- **Summary**: agents working (and their subagents), what needs you, live terminals and chats, the task totals, and the global
+  orchestrator: how it runs and its state, with **Open global chat** or **Open terminal orchestrator**, or, when the Mac has none to
+  open, **Start global chat** (an explicit tap that puts the Global screen up at once and sends `orchestrator.create {}` with no
+  project, only while there is still none).
+- **Decisions** (each one's **Review** unfolds in its row), **Needs you**, **Working now**, **Recent activity**, **Finished in the last
+  hour**, **Tasks in progress** and **Automations** (read-only on the phone), each up to 12 rows with "N more".
+- **Projects**: the projects the Mac sends, with the desktop's filters (Active, Needs you, Working, In progress, All), orders
+  (Priority, Recent, Tasks, Sessions, Name) and search. The header's folder button opens the **Projects** screen (every project,
+  search, sort, ＋).
+A row opens what it names, as the Mac's global window routes it: its project, with its terminal or chat put on screen; a row of the
+global orchestrator opens the Global screen. A row naming a project the phone's list does not have yet reads `projects.list` once
+before saying the project is unavailable. The dashboard is read only while it is the screen on top and the desktop is connected,
+every 10 s, and `projects.list` and `orchestrators.list` at the same pace for the screens its rows open. Its **↻** (or ⌘R) reads all
+three at once; the page has no pull to refresh.
+**An older Mac** does not announce the method and is never asked (one that announces it and then refuses it is not asked again): the
+page says RiWork on the Mac needs an update for its dashboard, and still offers the global orchestrator from `orchestrators.list`
+(its state, with Open, or Start when there is none), **All projects**, and pull to refresh.
 
 **The global orchestrator belongs to no project.** It is never a tab of a project (the earlier strip or the shared one, even if a
 list names it), never one of a project's open terminals or chats, never in the hidden-tab count, and never a project's selection or

@@ -1,9 +1,18 @@
-import { Scroll, Text, View, cleanup, colorScheme, effect, host, keyboardFrame, keymap, mount, safeAreaInsets, signal, untracked, type IOSNavPageHostProps, type JSX, type YNode } from "nsh";
+import { Scroll, Text, View, cleanup, colorScheme, computed, effect, host, keyboardFrame, keymap, mount, safeAreaInsets, signal, untracked, type IOSNavPageHostProps, type JSX, type YNode } from "nsh";
 import { Input, NavPage as BaseNavPage, NavStack, createNavStack, type NavPageProps } from "nsh/base";
+import { createRemoteServices } from "../riwork/client/remote";
+import { PortError, type HostInfo, type PresentRequest } from "../riwork/client/ports";
+import type { DashboardDto } from "../riwork/client/types";
+import { DashboardView } from "../riwork/dashboard/Dashboard";
+import { routeTarget, type Filter, type Sort, type Target, type Wire } from "../riwork/dashboard/model";
+import type { InterfaceTheme } from "../riwork/theme";
 import { Symbol } from "./Symbol";
 import { INITIAL_SNAPSHOT, SECTION_LABELS, SECTION_ORDER, type Dashboard, type DashboardFilter, type DashboardRow, type DashboardSection, type MobileAction, type MobileSnapshot, type Page, type Project, type Tone } from "./model";
+import { createSwiftDevice, swiftTransport } from "./swift_transport";
 
 type Route = { page: Page; hostID?: string };
+/** The desktop dashboard's sizes at touch density: its 11-point rows become 15. */
+const TOUCH_SCALE = 15 / 11;
 /** NSH 0.3.0 reads a page's `ios` props (`IOSNavPageHostProps`: the header's system Add button) but leaves them out of `NavPageProps`. */
 const NavPage = BaseNavPage as (props: NavPageProps & { ios?: IOSNavPageHostProps }) => YNode;
 
@@ -15,6 +24,13 @@ function App() {
   const hostRoutes = new Map<string, { dashboard: Route; projects: Route }>();
   let alive = true;
   cleanup(() => { alive = false; });
+  // The device's own ports (Swift): its hosts and their links, and the theme it resolved.
+  const device = createSwiftDevice();
+  const deviceTheme = signal(device.theme.current());
+  const themeSubscription = device.theme.subscribe((next) => deviceTheme.set(next));
+  const hosts = signal<HostInfo[]>(device.hosts.current());
+  const hostsSubscription = device.hosts.subscribe((next) => hosts.set(next));
+  cleanup(() => { themeSubscription.close(); hostsSubscription.close(); });
 
   function install(value: unknown) {
     const next = value as MobileSnapshot | null;
@@ -40,9 +56,15 @@ function App() {
     catch (error) { if (alive) failure.set(String(error)); }
     finally { if (alive && !navigationOnly) pending.set(false); }
   }
+  /** The refresh of the page on top when it reads its own data (a host's dashboard), else Swift's. */
+  let pageRefresh: (() => void) | null = null;
+  function refresh() {
+    if (pageRefresh) pageRefresh();
+    else void act({ type: "refresh" });
+  }
   cleanup(host.on("mobile.command", (value) => {
     const command = value as { type?: string; name?: string };
-    if (command.type === "refresh") void act({ type: "refresh" });
+    if (command.type === "refresh") refresh();
     else if (command.type === "present" && command.name === "settings") void act({ type: "present", name: "settings" });
   }));
   void read();
@@ -89,7 +111,7 @@ function App() {
   effect(() => {
     if (!loaded() || snapshot().nativePresented) return;
     return keymap.bind({
-      "mod+r": () => void act({ type: "refresh" }),
+      "mod+r": () => refresh(),
       "mod+,": () => void act({ type: "present", name: "settings" }),
     });
   });
@@ -282,30 +304,89 @@ function App() {
       </Scroll>
     </NavPage>;
   }
+  /** One host's dashboard: the desktop's own DashboardView over the relay, read
+   * only while this page is the one on screen. A row opens its native screen. */
   function HostDashboard(props: { route: Route }) {
+    const hostID = props.route.hostID ?? "";
     const insets = safeAreaInsets();
-    const filter = signal<DashboardFilter>("all");
-    const dashboard = () => snapshot().selectedHostID === props.route.hostID ? snapshot().dashboard : INITIAL_SNAPSHOT.dashboard;
+    const services = createRemoteServices(swiftTransport(device, hostID), { id: hostID, name: hostName(hostID) });
+    const dto = signal<DashboardDto | null>(null);
+    const filter = signal<Filter>("active"), sort = signal<Sort>("priority"), query = signal("");
+    const notice = signal("");
+    const info = () => hosts().find((entry) => entry.id === hostID);
+    // A Mac whose RiWork predates `dashboard.get` is never asked; its projects still open.
+    const unsupported = computed(() => info()?.link.state === "connected" && !info()!.features.includes("dashboard"));
+    const onScreen = computed(() => loaded() && !snapshot().nativePresented && snapshot().route === "dashboard" && snapshot().selectedHostID === hostID);
+    effect(() => {
+      if (!onScreen() || unsupported()) return;
+      const subscription = services.dashboard.subscribe((next) => dto.set(next));
+      return () => subscription.close();
+    });
+    /** Everything this page shows, read again: the dashboard here, and in Swift the projects and orchestrators its rows open. */
+    function reload() {
+      if (!unsupported()) void services.dashboard.refresh();
+      void act({ type: "refresh" });
+    }
+    effect(() => {
+      if (!onScreen()) return;
+      pageRefresh = reload;
+      return () => { if (pageRefresh === reload) pageRefresh = null; };
+    });
+    let search: { focus: () => void } | undefined;
+    effect(() => { if (onScreen() && !unsupported()) return keymap.bind("mod+f", () => search?.focus()); });
+    const global = () => snapshot().selectedHostID === hostID ? snapshot().global : undefined;
+    const theme = (): InterfaceTheme => { const current = deviceTheme().theme; return { ...current, scale: current.scale * TOUCH_SCALE }; };
+    async function present(request: PresentRequest) {
+      notice.set("");
+      try { await device.nav.present({ ...request, host: hostID }); }
+      catch (error) { if (alive) notice.set(PortError.from(error).message); }
+    }
+    /** Where a row leads, as the Mac's global window decides it (`routeTarget`). */
+    function open(target: Target) {
+      const wire = dto()?.wire as Wire | null | undefined;
+      if (!wire) return;
+      // The global orchestrator's own chat, even where its row does not say so.
+      if (target.type === "chat" && wire.global.kind === "chat" && wire.global.chat_id === target.id) { void present({ name: "global" }); return; }
+      const route = routeTarget(target, wire, shellProjects(wire));
+      if (route.kind === "notice") notice.set(route.text);
+      else if (route.kind === "chat") void present({ name: "global" });
+      else {
+        const step = route.step as { kind?: string; shellId?: string; chatId?: string } | undefined;
+        void present({ name: "project", projectId: route.projectId,
+          shellId: step?.kind === "showShell" ? step.shellId : undefined, chatId: step?.kind === "chat" ? step.chatId : undefined });
+      }
+    }
     return <NavPage title={hostName(props.route.hostID)} headerBackTitle="Dashboard" onDismiss={() => dismissed(props.route)}
       headerStyle={{ backgroundColor: palette().bg, color: palette().text, tintColor: palette().cyan }}
       headerRight={<Action label="Projects" symbol="folder" compact={true} disabled={blocked()} action={() => void act({ type: "showProjects" })} />}
       statusBar={{ foreground: dark() ? "light" : "dark" }} style={{ flex: 1, backgroundColor: palette().bg }}>
-      <Scroll style={{ flex: 1 }} contentStyle={{ padding: pt(16), paddingBottom: Math.max(pt(24), insets().bottom + pt(16)), gap: pt(18) }}
-        refreshing={snapshot().loading} onRefresh={() => void act({ type: "refresh" })}>
-        <Messages /><Connection />
-        <Summary dashboard={dashboard()} />
-        {dashboard().global && <Section title="Global orchestrator">
-          <View style={{ padding: pt(14), gap: pt(8) }}>
-            <Text style={text(14, "muted")}>{dashboard().global!.summary}</Text>
-            <Action label={dashboard().global!.actionTitle} symbol="globe" prominent={true}
-              disabled={blocked() || !connected() || dashboard().global!.action === "unavailable"} action={() => void act({ type: "openGlobal" })} />
-          </View>
-        </Section>}
-        <Filters value={filter()} change={(value) => filter.set(value)} />
-        {filter() === "all" && <Intelligence dashboard={dashboard()} />}
-        <Activity dashboard={dashboard()} filter={filter()} />
-        <Action label="All projects" symbol="folder" prominent={true} disabled={blocked()} action={() => void act({ type: "showProjects" })} />
-      </Scroll>
+      <View style={{ flex: 1, paddingBottom: insets().bottom, backgroundColor: theme().palette.panel }}>
+        <View style={{ paddingHorizontal: pt(16), paddingVertical: pt(8), gap: pt(8), backgroundColor: palette().bg }}>
+          <Messages /><Connection />
+          {notice() && <Note message={notice()} error={true}>
+            <Action label="Dismiss" compact={true} action={() => notice.set("")} />
+          </Note>}
+        </View>
+        {unsupported() ? <Scroll style={{ flex: 1, backgroundColor: palette().bg }} contentStyle={{ padding: pt(16), gap: pt(12) }}
+          refreshing={snapshot().loading} onRefresh={reload}>
+          <Note title="Dashboard unavailable" message="The RiWork on your Mac does not send its dashboard yet. Update RiWork on the Mac to see what needs you, what is working, tasks and automations here. Projects and the global orchestrator still open." />
+          {global() && <Section title="Global orchestrator">
+            <View style={{ padding: pt(14), gap: pt(8) }}>
+              <Text style={text(14, "muted")}>{global()!.summary}</Text>
+              {/* Start only when the button said so: an explicit tap, never a side effect of Open. */}
+              <Action label={global()!.actionTitle} symbol="globe" prominent={true}
+                disabled={blocked() || !connected() || global()!.action === "unavailable"}
+                action={() => void present({ name: "global", start: global()?.action === "start" })} />
+            </View>
+          </Section>}
+          <Action label="All projects" symbol="folder" prominent={true} disabled={blocked()} action={() => void act({ type: "showProjects" })} />
+        </Scroll> : <DashboardView dto={dto} theme={theme} filter={filter} sort={sort} query={query} touch={true}
+          onFilter={(next) => filter.set(next)} onSort={(next) => sort.set(next)} onSearch={(node) => { search = node; }}
+          onOpen={open} onPanel={(projectId) => void present({ name: "project", projectId })}
+          onGlobalChat={() => void present({ name: "global", start: true })}
+          onRefresh={reload}
+          plan={() => null} starting={() => false} decisions={services.dashboard.decisions} />}
+      </View>
     </NavPage>;
   }
   function Projects(props: { route: Route }) {
@@ -444,6 +525,18 @@ function App() {
       {(route) => route.page === "hosts" ? <Hosts /> : route.page === "dashboard" ? <HostDashboard route={route} /> : <Projects route={route} />}
     </NavStack>
   </View>;
+}
+
+/** Each shell a dashboard row names, with its project (`routeTarget` needs them). */
+function shellProjects(wire: Wire): Record<string, string | null> {
+  const shells: Record<string, string | null> = {};
+  const sessions = [
+    ...(wire.working ?? []), ...(wire.finished ?? []), ...(wire.recent_activity ?? []), ...(wire.decisions ?? []),
+  ].map((row) => row.session).concat((wire.attention ?? []).flatMap((row) => row.session ? [row.session] : []));
+  for (const session of sessions) {
+    if (session.target.type === "shell" && session.target.id) shells[session.target.id] = session.project_id ?? shells[session.target.id] ?? null;
+  }
+  return shells;
 }
 
 mount(App);
