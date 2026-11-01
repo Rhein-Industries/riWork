@@ -108,11 +108,12 @@ extension RemoteModel {
     private func enqueue(_ items: [KeyItem], typing: Bool) -> KeyAcceptance {
         guard typing ? directTyping : keysSupport != .unsupported, let key = typingKey, let session, session.alive, !missingSessionIDs.contains(session.id) else { return .unavailable }
         // Whatever the caller hands over, only contract-valid items are queued: literal text loses control characters
-        // (newlines become Enter), unknown keys are dropped.
+        // (newlines become Enter), unknown keys are dropped, and a key of the second list goes as its escape sequence to a
+        // desktop that has only the first.
         let items = items.flatMap { item -> [KeyItem] in
             switch item {
             case .text(let text): KeyMapper.items(for: text)
-            case .key(let key): key.isValid ? [item] : []
+            case .key(let key): key.isValid ? KeyMapper.compatible(item, keyNames: keyNames) : []
             }
         }
         guard !items.isEmpty else { return .accepted }

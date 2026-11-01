@@ -2,18 +2,27 @@ import Foundation
 
 // MARK: - Contract items
 
-/// A named key the desktop `shell.keys` method accepts, or `C-a` … `C-z`.
+/// A named key the desktop `shell.keys` method accepts, or `C-a` … `C-z`; and, from a desktop whose `ready.features.key_names` is 2
+/// (2026-11-01), the second key list: `Insert`, `Space`, `F1` … `F12` and keys with modifiers (`ModifiedKey`).
 public enum TerminalKey: Sendable, Hashable {
     case enter, tab, backTab, escape, backspace, delete
     case up, down, left, right, home, end, pageUp, pageDown
     /// A lowercase ASCII letter. Anything else fails validation.
     case control(Character)
+    /// The second key list (`key_names` 2). A desktop without it gets the escape sequences instead (`KeyMapper.firstList`).
+    case insert, space
+    /// F1 … F12.
+    case function(Int)
+    /// A key with modifiers that the first list has no name for: `C-Up`, `M-x`, `C-\`, `C-M-S-F5`.
+    case modified(ModifiedKey)
 
     private static let named: [(String, TerminalKey)] = [
         ("Enter", .enter), ("Tab", .tab), ("BTab", .backTab), ("Escape", .escape), ("Backspace", .backspace), ("Delete", .delete),
         ("Up", .up), ("Down", .down), ("Left", .left), ("Right", .right), ("Home", .home), ("End", .end),
         ("PageUp", .pageUp), ("PageDown", .pageDown)
     ]
+    /// The second list's own named keys.
+    private static let secondNamed: [(String, TerminalKey)] = [("Insert", .insert), ("Space", .space)] + (1...12).map { ("F\($0)", .function($0)) }
     public static func isControlLetter(_ character: Character) -> Bool {
         character.unicodeScalars.count == 1 && (97...122).contains(character.unicodeScalars.first!.value)
     }
@@ -23,23 +32,48 @@ public enum TerminalKey: Sendable, Hashable {
               (65...90).contains(scalar.value) || (97...122).contains(scalar.value) else { return nil }
         return .control(Character(String(character).lowercased()))
     }
+    /// A name of either list. Each key has one: a first-list key by its first-list name (`Enter`, `C-c`), never `ModifiedKey`'s.
     public init?(name: String) {
-        if let match = Self.named.first(where: { $0.0 == name }) { self = match.1; return }
+        if let match = (Self.named + Self.secondNamed).first(where: { $0.0 == name }) { self = match.1; return }
         let scalars = Array(name.unicodeScalars)
-        guard scalars.count == 3, scalars[0] == "C", scalars[1] == "-", (97...122).contains(scalars[2].value) else { return nil }
-        self = .control(Character(scalars[2]))
+        if scalars.count == 3, scalars[0] == "C", scalars[1] == "-", (97...122).contains(scalars[2].value) { self = .control(Character(scalars[2])); return }
+        guard let modified = ModifiedKey(name: name) else { return nil }
+        self = .modified(modified)
     }
-    /// The wire name. Invalid `.control` letters still render, and fail `KeyItem.validate`.
+    /// The wire name. Invalid `.control` letters and F-key numbers still render, and fail `KeyItem.validate`.
     public var name: String {
-        if case .control(let letter) = self { return "C-\(letter)" }
-        return Self.named.first(where: { $0.1 == self })!.0
+        switch self {
+        case .control(let letter): return "C-\(letter)"
+        case .function(let number): return "F\(number)"
+        case .modified(let key): return key.name
+        default: return (Self.named + Self.secondNamed).first(where: { $0.1 == self })!.0
+        }
     }
-    public var isValid: Bool { if case .control(let letter) = self { Self.isControlLetter(letter) } else { true } }
-    /// Every key a person can pick for a hotkey step: the named keys, then `C-a` … `C-z`.
-    public static let choices: [TerminalKey] = named.map(\.1) + (97...122).map { .control(Character(Unicode.Scalar(UInt8($0)))) }
+    public var isValid: Bool {
+        switch self {
+        case .control(let letter): Self.isControlLetter(letter)
+        case .function(let number): (1...12).contains(number)
+        default: true
+        }
+    }
+    /// Whether only a desktop with the second key list (`key_names` 2) takes this name.
+    public var needsSecondList: Bool {
+        switch self {
+        case .insert, .space, .function, .modified: true
+        default: false
+        }
+    }
+    /// Every key a person can pick for a hotkey step: the named keys, Insert and F1 … F12, then `C-a` … `C-z`. A desktop without
+    /// the second key list gets Insert and the F-keys as their escape sequences.
+    public static let choices: [TerminalKey] = named.map(\.1) + [.insert] + (1...12).map { .function($0) }
+        + (97...122).map { .control(Character(Unicode.Scalar(UInt8($0)))) }
     /// A readable name for menus and the key bar's accessibility labels.
     public var title: String {
         switch self {
+        case .insert: "Insert"
+        case .space: "Space"
+        case .function(let number): "F\(number)"
+        case .modified(let key): key.title
         case .enter: "Enter"
         case .tab: "Tab"
         case .backTab: "Shift-Tab"
@@ -60,6 +94,10 @@ public enum TerminalKey: Sendable, Hashable {
     /// Compact glyph for the pending-input preview.
     public var symbol: String {
         switch self {
+        case .insert: "⎀"
+        case .space: "␣"
+        case .function(let number): "F\(number)"
+        case .modified(let key): key.symbol
         case .enter: "⏎"
         case .tab: "⇥"
         case .backTab: "⇤"
@@ -75,6 +113,104 @@ public enum TerminalKey: Sendable, Hashable {
         case .pageUp: "⇞"
         case .pageDown: "⇟"
         case .control(let letter): "^\(String(letter).uppercased())"
+        }
+    }
+    /// What modifiers go on to name this key with them: its base, and the modifiers it already has (`C-c` is Ctrl and `c`).
+    var modifiable: (ModifiedKey.Base, ChordModifiers)? {
+        switch self {
+        case .control(let letter): (.character(letter), .control)
+        case .modified(let key): (key.base, key.modifiers)
+        default: (.named(name), [])
+        }
+    }
+    /// The key `modified` names, by its first-list name when it has one (`C-c`).
+    public init(_ modified: ModifiedKey) {
+        if modified.modifiers == .control, case .character(let letter) = modified.base, Self.isControlLetter(letter) { self = .control(letter) }
+        else { self = .modified(modified) }
+    }
+}
+
+/// A key with modifiers from the second key list (`ready.features.key_names` 2): `C-`, `M-` (Alt) and `S-`, in that order and each at
+/// most once, then a base. Only what tmux turns into the bytes a terminal sends is a name; the desktop checks the same rules
+/// (`session_keys::Key::parse`, `valid_key` in the connector):
+/// - the cursor and editing keys (Up … PageDown, Insert, Delete) and F1 … F12 take any modifiers (`C-Up`, `S-F5`, `C-M-S-End`);
+/// - Enter, Tab, BTab, Escape and Backspace take only `M-`;
+/// - Space takes `C-` (NUL) and `M-`;
+/// - a printable ASCII character other than space takes `M-` (Escape, then it), and `C-` only when it has a control character
+///   (a–z @ [ \ ] ^ _ ?); it needs one of the two and never takes `S-` (the shifted character is sent instead).
+public struct ModifiedKey: Sendable, Hashable {
+    public enum Base: Sendable, Hashable {
+        /// A named key by its wire name: `Up`, `F5`, `Space`.
+        case named(String)
+        case character(Character)
+    }
+    /// Control, Alt (Meta) and Shift; at least one.
+    public let modifiers: ChordModifiers
+    public let base: Base
+
+    private static let anyModifier: Set<String> = Set(["Up", "Down", "Left", "Right", "Home", "End", "PageUp", "PageDown", "Insert", "Delete"]
+                                                      + (1...12).map { "F\($0)" })
+    private static let altOnly: Set<String> = ["Enter", "Tab", "BTab", "Escape", "Backspace"]
+    /// The characters Ctrl turns into a control character.
+    public static let controlCharacters: Set<Character> = Set("abcdefghijklmnopqrstuvwxyz@[\\]^_?")
+
+    /// Nil for a combination that has no name, and for none of the three modifiers (a plain key is a `TerminalKey` of its own).
+    public init?(modifiers: ChordModifiers, base: Base) {
+        let modifiers = modifiers.intersection([.control, .alt, .shift])
+        guard !modifiers.isEmpty else { return nil }
+        switch base {
+        case .named(let name):
+            if Self.anyModifier.contains(name) { break }
+            if Self.altOnly.contains(name) { guard modifiers == .alt else { return nil }; break }
+            guard name == "Space", !modifiers.contains(.shift) else { return nil }
+        case .character(let character):
+            guard character.unicodeScalars.count == 1, let scalar = character.unicodeScalars.first, (0x21...0x7E).contains(scalar.value),
+                  !modifiers.contains(.shift) else { return nil }
+            if modifiers.contains(.control), !Self.controlCharacters.contains(character) { return nil }
+        }
+        self.modifiers = modifiers
+        self.base = base
+    }
+    /// The wire name, modifiers in their one order (`M-C-a` and `C-Enter` are no names).
+    public init?(name: String) {
+        var rest = Substring(name)
+        var modifiers: ChordModifiers = []
+        for (prefix, modifier) in [("C-", ChordModifiers.control), ("M-", .alt), ("S-", .shift)] where rest.hasPrefix(prefix) {
+            modifiers.insert(modifier)
+            rest = rest.dropFirst(2)
+        }
+        let text = String(rest)
+        if Self.anyModifier.contains(text) || Self.altOnly.contains(text) || text == "Space" { self.init(modifiers: modifiers, base: .named(text)) }
+        else if text.unicodeScalars.count == 1 { self.init(modifiers: modifiers, base: .character(Character(text))) }
+        else { return nil }
+    }
+    public var name: String {
+        var prefix = ""
+        if modifiers.contains(.control) { prefix += "C-" }
+        if modifiers.contains(.alt) { prefix += "M-" }
+        if modifiers.contains(.shift) { prefix += "S-" }
+        switch base {
+        case .named(let name): return prefix + name
+        case .character(let character): return prefix + String(character)
+        }
+    }
+    /// "Ctrl+Alt+Up", "Alt+X".
+    public var title: String {
+        var parts: [String] = []
+        if modifiers.contains(.control) { parts.append("Ctrl") }
+        if modifiers.contains(.alt) { parts.append("Alt") }
+        if modifiers.contains(.shift) { parts.append("Shift") }
+        switch base {
+        case .named(let name): parts.append(TerminalKey(name: name)?.title ?? name)
+        case .character(let character): parts.append(String(character).uppercased())
+        }
+        return parts.joined(separator: "+")
+    }
+    /// "⌃⌥↑", "⌥x".
+    public var symbol: String {
+        switch base {
+        case .named(let name): modifiers.glyphs + (TerminalKey(name: name)?.symbol ?? name)
+        case .character(let character): modifiers.glyphs + String(character)
         }
     }
 }
@@ -338,6 +474,10 @@ public struct KeyMapper: Sendable, Equatable {
     /// The modifier tapped last and when, while a second tap could still make a double tap of it.
     private var lastTap: ChordModifiers?
     private var lastTapAt: Date?
+    /// The newest key list the desktop takes (`ready.features.key_names`): 1 until it says 2. With 2, F-keys, Insert, modified keys,
+    /// Alt plus a character and Ctrl plus a non-letter go by their own names (`F5`, `C-Up`, `M-x`, `C-\`); with 1, as the escape
+    /// sequences they stand for, which every desktop with `shell.keys` takes (and Ctrl plus a non-letter as the character itself).
+    public var keyNames = 1
     public init() {}
 
     public var controlArmed: Bool { control != .off }
@@ -397,9 +537,9 @@ public struct KeyMapper: Sendable, Equatable {
         guard !modifiers.isEmpty, text.count == 1, let character = text.first else { return Self.items(for: text) }
         let items: [KeyItem]
         switch character {
-        case "\r", "\n", "\r\n": items = Self.encode(.enter, modifiers: modifiers)
-        case "\t": items = Self.encode(.tab, modifiers: modifiers)
-        default: items = Self.encode(character, modifiers: modifiers)
+        case "\r", "\n", "\r\n": items = Self.encode(.enter, modifiers: modifiers, keyNames: keyNames)
+        case "\t": items = Self.encode(.tab, modifiers: modifiers, keyNames: keyNames)
+        default: items = Self.encode(character, modifiers: modifiers, keyNames: keyNames)
         }
         // A character that cannot be sent (a bare control character) is not a key press: the modifiers wait for one that is.
         if !items.isEmpty { release() }
@@ -408,20 +548,21 @@ public struct KeyMapper: Sendable, Equatable {
     public mutating func deleteBackward() -> [KeyItem] { press(.backspace) }
     /// A bar or hardware key, with the modifiers a hardware keyboard held for it. It also takes the armed ones.
     public mutating func press(_ key: TerminalKey, modifiers held: ChordModifiers = []) -> [KeyItem] {
-        let items = Self.encode(key, modifiers: armed.union(held))
+        let items = Self.encode(key, modifiers: armed.union(held), keyNames: keyNames)
         release()
         return items
     }
     /// A character key of a hardware keyboard with the modifiers held for it (Ctrl+Alt+B, say), plus the armed ones.
     public mutating func press(_ character: Character, modifiers held: ChordModifiers) -> [KeyItem] {
-        let items = Self.encode(character, modifiers: armed.union(held))
+        let items = Self.encode(character, modifiers: armed.union(held), keyNames: keyNames)
         if !items.isEmpty { release() }
         return items
     }
-    /// A hotkey is complete in itself: it goes out as defined, and uses up what was armed for one key.
+    /// A hotkey is complete in itself: it goes out as defined (an F-key step as its escape sequence where the desktop has no name for
+    /// it), and uses up what was armed for one key.
     public mutating func run(_ hotkey: Hotkey) -> [KeyItem] {
         release()
-        return hotkey.items
+        return hotkey.items.flatMap { Self.compatible($0, keyNames: keyNames) }
     }
 
     // MARK: Encoding
@@ -431,14 +572,45 @@ public struct KeyMapper: Sendable, Equatable {
         1 + (modifiers.contains(.shift) ? 1 : 0) + (modifiers.contains(.alt) ? 2 : 0) + (modifiers.contains(.control) ? 4 : 0)
     }
 
-    /// A named key with modifiers, as xterm sends it. The desktop takes named keys and plain text only, so a modified cursor or
-    /// editing key travels as `Escape` and the rest of its CSI sequence as text (`ESC [1;5A` for Ctrl+Up), which reaches the
-    /// program as the same bytes. Where xterm has no modified form the modifier is dropped, except that Alt puts Escape in front.
-    public static func encode(_ key: TerminalKey, modifiers: ChordModifiers) -> [KeyItem] {
-        let modifiers = modifiers.intersection([.shift, .control, .alt])
+    /// A named key with modifiers. With the second key list (`keyNames` 2) a combination it names goes as that one key (`C-Up`,
+    /// `M-Enter`, `S-F5`); Shift+Tab is Back Tab under either list. Anything else goes as `firstList` sends it.
+    public static func encode(_ key: TerminalKey, modifiers: ChordModifiers, keyNames: Int = 1) -> [KeyItem] {
+        var modifiers = modifiers.intersection([.shift, .control, .alt])
+        guard keyNames >= 2 else { return firstList(key, modifiers: modifiers) }
+        var key = key
+        if key == .tab, modifiers.contains(.shift) { key = .backTab; modifiers.remove(.shift) }
         guard !modifiers.isEmpty else { return [.key(key)] }
+        if let (base, own) = key.modifiable, let named = ModifiedKey(modifiers: modifiers.union(own), base: base) { return [.key(TerminalKey(named))] }
+        // No name for it (Ctrl+Enter, Ctrl+Backspace): as the first list sends it.
+        return firstList(key, modifiers: modifiers)
+    }
+    /// A key as a desktop with only the first key list takes it, as xterm sends it. The desktop takes named keys and plain text only,
+    /// so a modified cursor or editing key travels as `Escape` and the rest of its CSI sequence as text (`ESC [1;5A` for Ctrl+Up),
+    /// which reaches the program as the same bytes; so do Insert and the F-keys (`ESC [2~`, `ESC O P`, `ESC [15;2~`). Where xterm has
+    /// no modified form the modifier is dropped, except that Alt puts Escape in front.
+    public static func firstList(_ key: TerminalKey, modifiers: ChordModifiers) -> [KeyItem] {
+        let modifiers = modifiers.intersection([.shift, .control, .alt])
         let parameter = xtermParameter(modifiers)
         func csi(_ body: String) -> [KeyItem] { [.key(.escape), .text("[" + body)] }
+        switch key {
+        case .insert: return csi(modifiers.isEmpty ? "2~" : "2;\(parameter)~")
+        case .function(let number):
+            guard (1...12).contains(number) else { return [] }
+            if number <= 4 {
+                let final = ["P", "Q", "R", "S"][number - 1]
+                return modifiers.isEmpty ? [.key(.escape), .text("O" + final)] : csi("1;\(parameter)\(final)")
+            }
+            let code = [15, 17, 18, 19, 20, 21, 23, 24][number - 5]
+            return csi(modifiers.isEmpty ? "\(code)~" : "\(code);\(parameter)~")
+        case .space: return encode(" ", modifiers: modifiers)
+        case .modified(let named):
+            switch named.base {
+            case .named(let name): return TerminalKey(name: name).map { firstList($0, modifiers: modifiers.union(named.modifiers)) } ?? []
+            case .character(let character): return encode(character, modifiers: modifiers.union(named.modifiers))
+            }
+        default: break
+        }
+        guard !modifiers.isEmpty else { return [.key(key)] }
         switch key {
         case .up: return csi("1;\(parameter)A")
         case .down: return csi("1;\(parameter)B")
@@ -457,13 +629,26 @@ public struct KeyMapper: Sendable, Equatable {
             return meta(modifiers, [.key(modifiers.contains(.control) ? .control("h") : .backspace)])
         case .backTab, .enter, .escape, .control:
             return meta(modifiers, [.key(key)])
+        case .insert, .space, .function, .modified:
+            return []  // answered above
         }
+    }
+    /// A key of either list as a desktop with `keyNames` takes it: a second-list key goes as its escape sequence to one that
+    /// has only the first list (`firstList`); everything else as it is.
+    public static func compatible(_ item: KeyItem, keyNames: Int) -> [KeyItem] {
+        guard keyNames < 2, case .key(let key) = item, key.needsSecondList else { return [item] }
+        return firstList(key, modifiers: [])
     }
 
     /// One character key with modifiers. Shift makes a letter upper case. Ctrl makes a letter its control key, `[` (and `3`)
     /// Escape and `?` (and `8`) DEL; any other character has no control form the desktop can type, and goes as itself. Alt puts
     /// Escape in front (meta sends escape). A character that cannot travel at all (a control character) gives nothing.
-    public static func encode(_ character: Character, modifiers: ChordModifiers) -> [KeyItem] {
+    ///
+    /// With the second key list (`keyNames` 2) Ctrl also makes `@`, `\`, `]`, `^`, `_` and Space their control characters (and the
+    /// digits xterm maps to them: 2 NUL, 4 FS, 5 GS, 6 RS, 7 US, and `/` US), and Alt goes with the character as one key (`M-x`,
+    /// `C-M-x`). A character outside printable ASCII still goes as Escape and the text.
+    public static func encode(_ character: Character, modifiers: ChordModifiers, keyNames: Int = 1) -> [KeyItem] {
+        if keyNames >= 2, let items = secondList(character, modifiers: modifiers) { return items }
         var character = character
         if modifiers.contains(.shift), TerminalKey.control(forLetter: character) != nil { character = Character(String(character).uppercased()) }
         var items: [KeyItem]
@@ -475,6 +660,33 @@ public struct KeyMapper: Sendable, Equatable {
     }
     private static func meta(_ modifiers: ChordModifiers, _ items: [KeyItem]) -> [KeyItem] {
         modifiers.contains(.alt) ? [.key(.escape)] + items : items
+    }
+    /// The second key list's form of a character with Ctrl or Alt, or nil where it has none (the first list's form is used then).
+    private static func secondList(_ character: Character, modifiers: ChordModifiers) -> [KeyItem]? {
+        let alt = modifiers.contains(.alt)
+        var character = character
+        if modifiers.contains(.shift), TerminalKey.control(forLetter: character) != nil { character = Character(String(character).uppercased()) }
+        if modifiers.contains(.control) {
+            let base: Character
+            switch character {
+            case " ": return encode(.space, modifiers: alt ? [.control, .alt] : .control, keyNames: 2)
+            case "2": base = "@"
+            case "3", "[": return encode(.escape, modifiers: alt ? .alt : [], keyNames: 2)
+            case "8", "?": return encode(.backspace, modifiers: alt ? .alt : [], keyNames: 2)
+            case "4": base = "\\"
+            case "5": base = "]"
+            case "6": base = "^"
+            case "7", "/": base = "_"
+            default:
+                if case .control(let letter)? = TerminalKey.control(forLetter: character) { base = letter }
+                else if ModifiedKey.controlCharacters.contains(character) { base = character }
+                else { return nil }
+            }
+            return ModifiedKey(modifiers: alt ? [.control, .alt] : .control, base: .character(base)).map { [.key(TerminalKey($0))] }
+        }
+        guard alt else { return nil }
+        if character == " " { return encode(.space, modifiers: .alt, keyNames: 2) }
+        return ModifiedKey(modifiers: .alt, base: .character(character)).map { [.key(.modified($0))] }
     }
 
     /// CR, LF and CRLF become Enter, tab becomes Tab, other control characters and U+2028/2029 are dropped,

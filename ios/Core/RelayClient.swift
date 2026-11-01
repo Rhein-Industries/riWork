@@ -16,7 +16,7 @@ public enum RequestValidation {
         case "tabs.list": required = ["project_id"]; optional = []
         case "tabs.update": required = ["project_id", "update"]; optional = []
         case "tasks.list": required = ["project_id"]; optional = ["worktree_id"]
-        case "shell.output": required = ["shell_id"]; optional = ["lines", "styled", "if_changed", "wait_ms"]
+        case "shell.output": required = ["shell_id"]; optional = ["lines", "styled", "if_changed", "wait_ms", "delta"]
         case "shell.history": required = ["shell_id", "end", "lines"]; optional = ["styled"]
         case "shell.input": required = ["shell_id", "line"]; optional = []
         case "shell.keys": required = ["shell_id", "batch", "items"]; optional = []
@@ -52,6 +52,7 @@ public enum RequestValidation {
         }
         if method == "shell.output" {
             if let styled = params["styled"], case .bool = styled {} else if params["styled"] != nil { throw RemoteError.protocolViolation("Output styled must be a boolean.") }
+            if let delta = params["delta"], case .bool = delta {} else if params["delta"] != nil { throw RemoteError.protocolViolation("Output delta must be a boolean.") }
             if let changed = params["if_changed"] { guard case .string(let hash) = changed, LiveSync.isUsableHash(hash) else { throw RemoteError.protocolViolation("Output if_changed must be a short printable string.") } }
             if let wait = params["wait_ms"] { guard case .number(let value) = wait, value >= 0, value <= Double(LiveSync.maximumWaitMilliseconds), value.rounded() == value else { throw RemoteError.protocolViolation("Output wait_ms must be 0–10000.") } }
         }

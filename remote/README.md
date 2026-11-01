@@ -127,7 +127,18 @@ in [remote-protocol.md](../docs/remote-protocol.md)), delivered by
 `shell.input`. Each batch UUID is recorded in a write-ahead ledger of the 4096 most
 recent batches per device (`keys-DEVICE_UUID.json`, mode 600, separate from the
 input outcomes), so a retry with a new request ID answers `duplicate` or
-`uncertain` instead of typing twice. `shell.output` also reports the cursor, pane
+`uncertain` instead of typing twice. When the CLI says `"shell_keys_serve": true`,
+the connector does not start that process for every batch: `rpc/keys_worker.rs`
+keeps one `riwork shell keys --serve` per device (started on its first batch, replaced
+after ten idle minutes or when it dies) and hands it each batch as a JSON line; the
+worker types it exactly as the process would and answers with the same error text, so
+the ledger, the locks, the order and `keys_fault` are untouched. A batch the worker
+took and never answered stays pending (a repeat is `uncertain`); a worker that cannot
+start types nothing, and the batch gets its own process. Since 2026-11-01 the CLI also
+takes the second key list (`F1`-`F12`, `Insert`, `Space`, `C-`/`M-`/`S-` names, see
+the contract), and the connector announces it as `features.key_names` 2 when the CLI
+says `"key_names": 2`; `valid_key` in `rpc.rs` and `session_keys::Key::parse` read
+names the same way. `shell.output` also reports the cursor, pane
 size and copy-mode state that place the phone's cursor. Like `shell.input`, it
 is arbitrary command execution as the desktop user.
 
@@ -137,7 +148,12 @@ attributes as SGR sequences and removes every other escape (the CLI filters, and
 connector refuses to pass on anything else). `if_changed` with a `hash` from an
 earlier result and `wait_ms` (0 to 10000) makes the one `riwork shell output ...
 --if-changed=HASH --wait-ms N` process capture again when tmux says the pane changed
-(about every 80 ms where it cannot say) and answer `{"shell_id","unchanged":true,"hash"}` if nothing changed in time. That
+(about every 80 ms where it cannot say) and answer `{"shell_id","unchanged":true,"hash"}` if nothing changed in time.
+`delta` (announced as `features.output_delta`) has the connector answer a changed screen
+with only the rows that differ from the one `if_changed` names (`rpc/output_delta.rs`
+remembers the last four full screens sent to each device that asked, by hash), or in
+full when it does not hold that screen or the change is not much smaller. Captures
+still cost one CLI process per request. That
 call may take ten seconds, so the connector no longer handles a device's requests one
 at a time: `lanes.rs` lets one ordered request (`shell.keys`, `shell.input`,
 `shell.resize`, `shell.resize.clear`, `shell.create`, `shell.close`, `project.create`, `orchestrator.create`, `chat.create`, `chat.command`, `chat.stop`, `shell.paste`, in arrival order) and three others run at once,

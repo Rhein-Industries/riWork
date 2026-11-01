@@ -78,6 +78,9 @@ enum ConnectionState: Equatable {
     /// Counts accepted keystroke groups; the view keeps the screen scrolled to the bottom while it changes.
     var typedCount = 0
     var preferLineComposer = false
+    /// The newest key list the connected desktop's `shell.keys` takes (`features.key_names`). 1 until a desktop says 2, and again
+    /// from the start of every connection, so keys typed meanwhile go in the form every desktop takes.
+    var keyNames = 1
     // MARK: Opening and closing terminals (pipeline in RemoteModel+NewTerminal.swift)
     /// Whether the desktop understands `shell.create` / `shell.close`. Learned from the first call, reset by every new connection.
     var terminalControl: TerminalControlSupport = .unknown
@@ -618,7 +621,7 @@ enum ConnectionState: Equatable {
         linkMeter.pathChanged(); settleUntil = nil
         restoreTabPending = true
         sharedTabs = nil
-        desktopFeatures = DesktopFeatures(); compressionAgreed = false; historyLineLimit = HistoryLimits.legacyMaximumPageLines
+        desktopFeatures = DesktopFeatures(); keyNames = 1; compressionAgreed = false; historyLineLimit = HistoryLimits.legacyMaximumPageLines
         linkWatcher?.start()
         // The same for its colors, and the last palette for this desktop is on screen while the first fetch is on its way.
         themeSupport = .unknown; appearanceFlight = nil
@@ -922,7 +925,19 @@ enum ConnectionState: Equatable {
             let raw = try await fetchOutput(id: id, ifChanged: known, wait: wait)
             let elapsed = ProcessInfo.processInfo.systemUptime - started
             guard generation == token, sessionID == id else { return .skipped }
+            let screen: ShellOutput
             switch try OutputReply(result: raw) {
+            case .screen(let full):
+                screen = full
+            case .delta(let delta):
+                guard delta.shellID == id else { throw RemoteError.protocolViolation("Session output identity mismatch.") }
+                // Changed rows apply to the screen on the phone, the one their base names. Anything else (another screen came
+                // meanwhile, they do not fit it) is asked for again in full: forgetting the hash makes the next read a full one.
+                guard outputSessionID == id, let held = lastScreen, let rebuilt = delta.apply(to: held) else {
+                    outputHash = nil
+                    return .unchanged
+                }
+                screen = rebuilt
             case .unchanged(let shellID, let hash):
                 guard shellID == id else { throw RemoteError.protocolViolation("Session output identity mismatch.") }
                 latency.outputAnswered(seconds: elapsed, waited: Double(wait) / 1000, unchanged: true, bytes: nil)
@@ -937,33 +952,35 @@ enum ConnectionState: Equatable {
                 if let alternate = OutputExtras(result: raw).alternate { setAlternateScreen(alternate) }
                 kickPrefetch()
                 return .unchanged
-            case .screen(let screen):
-                guard screen.shellID == id else { throw RemoteError.protocolViolation("Session output identity mismatch.") }
-                let live = screen.hash != nil
-                if live { if syncMode != .live { syncMode = .live; wakeLive() } } else if syncMode != .poll { syncMode = .poll }
-                var changed = false
-                // An unchanged screen is not re-parsed or re-rendered: reads are frequent while typing and most see the same thing.
-                if screen != lastScreen || outputSessionID != id {
-                    // Colors, symbols and cursor are worked out off the main actor; a full 500-line screen must not stall touches.
-                    let cache = lineCache
-                    let styled = await Task.detached(priority: .userInitiated) { Perf.interval("ParseAnswer") { screen.styledScreen(cache: cache) } }.value
-                    guard generation == token, sessionID == id else { return .skipped }
-                    if let timing = lastOutputTiming { linkMeter.noteLines(wireBytes: timing.wireBytes, jsonBytes: timing.jsonBytes, lines: styled.lines.count) }
-                    output = styled.text; styledOutput = styled; outputVersion &+= 1
-                    outputCursorOffset = styled.cursorOffset; outputInMode = screen.inMode
-                    takeIn(screen: screen, styled: styled)
-                    lastScreen = screen
-                    latency.screenChanged(at: ProcessInfo.processInfo.systemUptime)
-                    changed = true
-                }
-                latency.outputAnswered(seconds: elapsed, waited: Double(wait) / 1000, unchanged: false, bytes: changed ? screen.text.utf8.count : nil)
-                outputHash = screen.hash
-                outputSessionID = id; lastOutputAt = Date(); snapshotStale = false
-                clearOutputError()
-                // The live screen is in: older history is the next step.
-                kickPrefetch()
-                return changed ? .changed : .unchanged
             }
+            guard screen.shellID == id else { throw RemoteError.protocolViolation("Session output identity mismatch.") }
+            let live = screen.hash != nil
+            if live { if syncMode != .live { syncMode = .live; wakeLive() } } else if syncMode != .poll { syncMode = .poll }
+            var changed = false
+            // An unchanged screen is not re-parsed or re-rendered: reads are frequent while typing and most see the same thing.
+            if screen != lastScreen || outputSessionID != id {
+                // Colors, symbols and cursor are worked out off the main actor; a full 500-line screen must not stall touches.
+                let cache = lineCache
+                let styled = await Task.detached(priority: .userInitiated) { Perf.interval("ParseAnswer") { screen.styledScreen(cache: cache) } }.value
+                guard generation == token, sessionID == id else { return .skipped }
+                // What a line weighs on the wire, from a whole screen only: changed rows say nothing about it.
+                if raw["delta"] == .null, let timing = lastOutputTiming {
+                    linkMeter.noteLines(wireBytes: timing.wireBytes, jsonBytes: timing.jsonBytes, lines: styled.lines.count)
+                }
+                output = styled.text; styledOutput = styled; outputVersion &+= 1
+                outputCursorOffset = styled.cursorOffset; outputInMode = screen.inMode
+                takeIn(screen: screen, styled: styled)
+                lastScreen = screen
+                latency.screenChanged(at: ProcessInfo.processInfo.systemUptime)
+                changed = true
+            }
+            latency.outputAnswered(seconds: elapsed, waited: Double(wait) / 1000, unchanged: false, bytes: changed ? screen.text.utf8.count : nil)
+            outputHash = screen.hash
+            outputSessionID = id; lastOutputAt = Date(); snapshotStale = false
+            clearOutputError()
+            // The live screen is in: older history is the next step.
+            kickPrefetch()
+            return changed ? .changed : .unchanged
         } catch {
             guard generation == token, sessionID == id else { return .skipped }
             // A cancelled read (the loop paused, another caller wants the screen now, the view went away) is not a failure.
@@ -1008,7 +1025,9 @@ enum ConnectionState: Equatable {
         var wait = wait
         while true {
             let extended = outputExtensions
-            let request = OutputRequest(shellID: id, lines: lines, ifChanged: extended ? ifChanged : nil, waitMilliseconds: extended ? wait : 0, styled: extended)
+            // Changed rows only where the desktop offers them (`features.output_delta`); it answers in full whenever it cannot.
+            let request = OutputRequest(shellID: id, lines: lines, ifChanged: extended ? ifChanged : nil, waitMilliseconds: extended ? wait : 0, styled: extended,
+                                        delta: extended && desktopFeatures.outputDelta)
             do { return try await requestOutput(request) }
             catch RemoteError.rpc(let code, let message) where extended && LiveSync.rejectsNewParameters(code: code, message: message) {
                 // An older desktop does not know the new parameters: plain reads for the rest of this connection.

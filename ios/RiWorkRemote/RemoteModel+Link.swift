@@ -36,6 +36,7 @@ extension RemoteModel {
         let features = await client.desktopFeatures()
         guard generation == token else { return }
         desktopFeatures = features
+        keyNames = features.keyNames
         chatSupport = features.chat ? .supported : .unsupported
         orchestratorCreateSupport = features.orchestratorCreate ? .supported : .unsupported
         // A desktop that does not announce the dashboard is never asked for it (it would only answer that it does not know the method).

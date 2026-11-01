@@ -63,7 +63,7 @@ import RiWorkCore
         XCTAssertEqual(view.inlinePredictionType, .no)
         XCTAssertEqual(view.mathExpressionCompletionType, .no)
         XCTAssertEqual(view.writingToolsBehavior, .none)
-        XCTAssertEqual(view.keyboardType, .asciiCapable)
+        XCTAssertEqual(view.keyboardType, .default, "every keyboard the person has, input methods included")
         XCTAssertEqual(view.returnKeyType, .default, "labelled “return”")
         XCTAssertFalse(view.isSecureTextEntry)
         XCTAssertTrue(view.hasText, "or the delete key goes silent")

@@ -40,31 +40,203 @@ pub enum Key {
     PageDown,
     /// Control plus a lowercase ASCII letter.
     Ctrl(u8),
+    /// A name of the second key list (`key_names` 2, 2026-11-01) that the
+    /// first one does not have: `Insert`, `Space`, `F1` to `F12`, and keys
+    /// with modifiers (`C-Up`, `M-x`, `C-\`, `C-M-S-F5`). See `Chord`.
+    Chord(Chord),
 }
 
+/// The modifiers of a key name, written `C-` (Control), `M-` (Meta, Alt)
+/// and `S-` (Shift), in that order and each at most once.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Modifiers {
+    pub ctrl: bool,
+    pub meta: bool,
+    pub shift: bool,
+}
+
+impl Modifiers {
+    const ALL: Self = Self {
+        ctrl: true,
+        meta: true,
+        shift: true,
+    };
+    const META: Self = Self {
+        ctrl: false,
+        meta: true,
+        shift: false,
+    };
+    const CTRL_META: Self = Self {
+        ctrl: true,
+        meta: true,
+        shift: false,
+    };
+    const CTRL: Self = Self {
+        ctrl: true,
+        meta: false,
+        shift: false,
+    };
+
+    /// The modifiers at the start of `name`, in their one order, and what
+    /// follows them.
+    fn strip(mut name: &str) -> (Self, &str) {
+        let mut modifiers = Self::default();
+        for (prefix, flag) in [
+            ("C-", &mut modifiers.ctrl),
+            ("M-", &mut modifiers.meta),
+            ("S-", &mut modifiers.shift),
+        ] {
+            if let Some(rest) = name.strip_prefix(prefix) {
+                *flag = true;
+                name = rest;
+            }
+        }
+        (modifiers, name)
+    }
+
+    /// Whether every modifier set here is one `allowed` has too.
+    fn within(self, allowed: Self) -> bool {
+        (!self.ctrl || allowed.ctrl)
+            && (!self.meta || allowed.meta)
+            && (!self.shift || allowed.shift)
+    }
+
+    fn any(self) -> bool {
+        self.ctrl || self.meta || self.shift
+    }
+
+    /// `C-`, `M-` and `S-` as set, in that order: the start of a name.
+    fn prefix(self) -> String {
+        let mut out = String::new();
+        for (flag, prefix) in [(self.ctrl, "C-"), (self.meta, "M-"), (self.shift, "S-")] {
+            if flag {
+                out.push_str(prefix);
+            }
+        }
+        out
+    }
+}
+
+/// What a key name of the second list names after its modifiers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Base {
+    /// A named key, by its protocol name (`Up`, `F5`, `Space`).
+    Named(&'static str),
+    /// One printable ASCII character other than space (`x`, `\`, `.`).
+    Char(u8),
+}
+
+/// A key of the second list: modifiers and a base. Only combinations that
+/// tmux turns into the bytes a terminal sends are names:
+///
+/// - the cursor and editing keys (`Up` ... `PageDown`, `Insert`, `Delete`) and
+///   `F1` to `F12` take any modifiers;
+/// - `Enter`, `Tab`, `BTab`, `Escape` and `Backspace` take only `M-`;
+/// - `Space` takes `C-` (NUL) and `M-`;
+/// - a character takes `M-` (Escape, then the character), and `C-` only when
+///   it has a control character (`CTRL_CHARACTERS`); it needs one of the two
+///   and never takes `S-` (the shifted character is sent instead).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Chord {
+    pub modifiers: Modifiers,
+    pub base: Base,
+}
+
+/// The named keys of the second list: protocol name, tmux name, and the
+/// modifiers each takes.
+const NAMED: [(&str, &str, Modifiers); 28] = [
+    ("Up", "Up", Modifiers::ALL),
+    ("Down", "Down", Modifiers::ALL),
+    ("Left", "Left", Modifiers::ALL),
+    ("Right", "Right", Modifiers::ALL),
+    ("Home", "Home", Modifiers::ALL),
+    ("End", "End", Modifiers::ALL),
+    ("PageUp", "PPage", Modifiers::ALL),
+    ("PageDown", "NPage", Modifiers::ALL),
+    ("Insert", "IC", Modifiers::ALL),
+    ("Delete", "DC", Modifiers::ALL),
+    ("F1", "F1", Modifiers::ALL),
+    ("F2", "F2", Modifiers::ALL),
+    ("F3", "F3", Modifiers::ALL),
+    ("F4", "F4", Modifiers::ALL),
+    ("F5", "F5", Modifiers::ALL),
+    ("F6", "F6", Modifiers::ALL),
+    ("F7", "F7", Modifiers::ALL),
+    ("F8", "F8", Modifiers::ALL),
+    ("F9", "F9", Modifiers::ALL),
+    ("F10", "F10", Modifiers::ALL),
+    ("F11", "F11", Modifiers::ALL),
+    ("F12", "F12", Modifiers::ALL),
+    ("Enter", "Enter", Modifiers::META),
+    ("Tab", "Tab", Modifiers::META),
+    ("BTab", "BTab", Modifiers::META),
+    ("Escape", "Escape", Modifiers::META),
+    ("Backspace", "BSpace", Modifiers::META),
+    ("Space", "Space", Modifiers::CTRL_META),
+];
+
+/// The characters `C-` takes: those with a control character (NUL, ^A to
+/// ^Z, ESC, FS, GS, RS, US, DEL), which tmux sends for them.
+pub const CTRL_CHARACTERS: &[u8] = b"abcdefghijklmnopqrstuvwxyz@[\\]^_?";
+
 impl Key {
-    /// The protocol name: `Enter`, `PageUp`, `C-c`, ...
+    /// The protocol name: `Enter`, `PageUp`, `C-c`, and since the second key
+    /// list `F5`, `M-x`, `C-S-Up`, `C-\` ... (see `Chord`). Names are
+    /// case-sensitive and each key has exactly one: modifiers in the order
+    /// `C-`, `M-`, `S-`, and a first-list key always by its first-list name.
     pub fn parse(name: &str) -> Option<Self> {
-        Some(match name {
-            "Enter" => Self::Enter,
-            "Tab" => Self::Tab,
-            "BTab" => Self::BTab,
-            "Escape" => Self::Escape,
-            "Backspace" => Self::Backspace,
-            "Delete" => Self::Delete,
-            "Up" => Self::Up,
-            "Down" => Self::Down,
-            "Left" => Self::Left,
-            "Right" => Self::Right,
-            "Home" => Self::Home,
-            "End" => Self::End,
-            "PageUp" => Self::PageUp,
-            "PageDown" => Self::PageDown,
-            _ => match name.as_bytes() {
-                [b'C', b'-', letter @ b'a'..=b'z'] => Self::Ctrl(*letter),
-                _ => return None,
+        let (modifiers, rest) = Modifiers::strip(name);
+        let base = if let Some((protocol, _, takes)) = NAMED.iter().find(|(p, ..)| *p == rest) {
+            if !modifiers.within(*takes) {
+                return None;
+            }
+            Base::Named(protocol)
+        } else {
+            let [character] = rest.as_bytes() else {
+                return None;
+            };
+            if !(0x21..=0x7e).contains(character)
+                || modifiers.shift
+                || !(modifiers.ctrl || modifiers.meta)
+                || (modifiers.ctrl && !CTRL_CHARACTERS.contains(character))
+            {
+                return None;
+            }
+            Base::Char(*character)
+        };
+        Some(Self::canonical(Chord { modifiers, base }))
+    }
+
+    /// A chord as the first list names it when it can (`Enter`, `C-c`).
+    fn canonical(chord: Chord) -> Self {
+        let Chord { modifiers, base } = chord;
+        match base {
+            Base::Named(name) if !modifiers.any() => match name {
+                "Enter" => Self::Enter,
+                "Tab" => Self::Tab,
+                "BTab" => Self::BTab,
+                "Escape" => Self::Escape,
+                "Backspace" => Self::Backspace,
+                "Delete" => Self::Delete,
+                "Up" => Self::Up,
+                "Down" => Self::Down,
+                "Left" => Self::Left,
+                "Right" => Self::Right,
+                "Home" => Self::Home,
+                "End" => Self::End,
+                "PageUp" => Self::PageUp,
+                "PageDown" => Self::PageDown,
+                _ => Self::Chord(chord),
             },
-        })
+            Base::Char(letter @ b'a'..=b'z') if modifiers == Modifiers::CTRL => Self::Ctrl(letter),
+            _ => Self::Chord(chord),
+        }
+    }
+
+    /// Whether this is a name of the first key list (the 14 named keys and
+    /// `C-a` to `C-z`), which every desktop with `shell.keys` takes.
+    pub fn in_first_list(self) -> bool {
+        !matches!(self, Self::Chord(_))
     }
 
     /// The name tmux's `send-keys` knows this key by.
@@ -85,6 +257,17 @@ impl Key {
             Self::PageUp => "PPage".into(),
             Self::PageDown => "NPage".into(),
             Self::Ctrl(letter) => format!("C-{}", char::from(letter)),
+            Self::Chord(Chord { modifiers, base }) => {
+                let base = match base {
+                    Base::Named(name) => NAMED
+                        .iter()
+                        .find(|(protocol, ..)| *protocol == name)
+                        .map_or(name, |(_, tmux, _)| *tmux)
+                        .to_owned(),
+                    Base::Char(character) => char::from(character).to_string(),
+                };
+                modifiers.prefix() + &base
+            }
         }
     }
 }
@@ -187,7 +370,8 @@ pub fn tmux_invocation(pane: &str, items: &[Item]) -> Vec<String> {
                     args.extend(["send-keys".into(), "-t".into(), pane.to_owned()]);
                     keys_open = true;
                 }
-                args.push(key.tmux_name());
+                // `M-;` ends in `;` as text can: it is escaped the same way.
+                args.push(tmux_argument(&key.tmux_name()));
             }
             Item::Text(text) => {
                 if !args.is_empty() {
@@ -325,15 +509,101 @@ mod tests {
         for letter in 'a'..='z' {
             let name = format!("C-{letter}");
             assert_eq!(Key::parse(&name).unwrap().tmux_name(), name);
+            assert!(Key::parse(&name).unwrap().in_first_list());
+        }
+        // The second list (`key_names` 2): its own names, and modifiers in front.
+        let second = [
+            ("Insert", "IC"),
+            ("Space", "Space"),
+            ("F1", "F1"),
+            ("F12", "F12"),
+            ("C-Up", "C-Up"),
+            ("S-Up", "S-Up"),
+            ("M-Up", "M-Up"),
+            ("C-M-S-Up", "C-M-S-Up"),
+            ("C-PageUp", "C-PPage"),
+            ("S-Delete", "S-DC"),
+            ("M-Insert", "M-IC"),
+            ("C-S-F5", "C-S-F5"),
+            ("M-Enter", "M-Enter"),
+            ("M-Tab", "M-Tab"),
+            ("M-BTab", "M-BTab"),
+            ("M-Escape", "M-Escape"),
+            ("M-Backspace", "M-BSpace"),
+            ("C-Space", "C-Space"),
+            ("M-Space", "M-Space"),
+            ("C-M-Space", "C-M-Space"),
+            ("M-a", "M-a"),
+            ("M-A", "M-A"),
+            ("M-.", "M-."),
+            ("M-;", "M-;"),
+            ("M-~", "M-~"),
+            ("C-M-x", "C-M-x"),
+            ("C-@", "C-@"),
+            ("C-[", "C-["),
+            ("C-\\", "C-\\"),
+            ("C-]", "C-]"),
+            ("C-^", "C-^"),
+            ("C-_", "C-_"),
+            ("C-?", "C-?"),
+            ("C-M-\\", "C-M-\\"),
+        ];
+        for (name, tmux) in second {
+            let key = Key::parse(name).unwrap_or_else(|| panic!("{name}"));
+            assert_eq!(key.tmux_name(), tmux, "{name}");
+            assert!(!key.in_first_list(), "{name}");
         }
     }
 
     #[test]
     fn bad_key_names_are_rejected() {
         for name in [
-            "", "enter", "ENTER", "Return", "Space", "F1", "PgUp", "PageUp ", " Enter", "C-",
-            "C-A", "c-a", "C-1", "C-aa", "C--", "C-é", "M-a", "S-Tab", "BSpace", "DC", "PPage",
-            "NPage", "Enter\n", "C-a\0",
+            "",
+            "enter",
+            "ENTER",
+            "Return",
+            "PgUp",
+            "PageUp ",
+            " Enter",
+            "C-",
+            "C-A",
+            "c-a",
+            "C-1",
+            "C-aa",
+            "C--",
+            "C-é",
+            "S-Tab",
+            "BSpace",
+            "DC",
+            "PPage",
+            "NPage",
+            "IC",
+            "Enter\n",
+            "C-a\0",
+            "F0",
+            "F13",
+            "F01",
+            "f1",
+            "M-",
+            "M-é",
+            "M- ",
+            "S-a",
+            "S-Space",
+            "C-Escape",
+            "C-Backspace",
+            "S-Enter",
+            "C-Tab",
+            "M-C-a",
+            "S-C-Up",
+            "S-M-Up",
+            "C-C-a",
+            "M-M-a",
+            "C-M-",
+            "Space ",
+            "M-ab",
+            "C-M-1",
+            "c-Up",
+            "C-up",
         ] {
             assert_eq!(Key::parse(name), None, "{name:?}");
         }
@@ -385,8 +655,9 @@ mod tests {
         assert_eq!(parse_item("t:t:x"), Ok(text("t:x")));
         assert_eq!(parse_item("k:Enter"), Ok(Item::Key(Key::Enter)));
         assert_eq!(parse_item("k:C-c"), Ok(Item::Key(Key::Ctrl(b'c'))));
+        assert_eq!(parse_item("k:F1"), Ok(Item::Key(Key::parse("F1").unwrap())));
         for bad in [
-            "", "t:", "k:", "Enter", "text", "T:x", "K:Enter", "k:enter", "k:F1", "k: Enter",
+            "", "t:", "k:", "Enter", "text", "T:x", "K:Enter", "k:enter", "k:F13", "k: Enter",
             "t:\n", "t:a\tb", "-x", "--json", ":x",
         ] {
             assert!(parse_item(bad).is_err(), "{bad:?}");
@@ -469,6 +740,12 @@ mod tests {
         ] {
             assert_eq!(tmux_argument(text), sent, "{text}");
         }
+        // A key name can end in `;` too (`M-;`): escaped the same way.
+        let items = [Item::Key(Key::parse("M-;").unwrap()), Item::Key(Key::Enter)];
+        assert_eq!(
+            tmux_invocation("P", &items),
+            strings(&["send-keys", "-t", "P", "M-\\;", "Enter"])
+        );
     }
 
     #[test]

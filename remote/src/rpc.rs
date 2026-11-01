@@ -28,8 +28,10 @@ use tokio::{
 mod chat;
 mod chat_assets;
 mod dashboard;
+mod keys_worker;
 mod memo;
 mod orchestrator;
+mod output_delta;
 mod tabs;
 mod upload;
 
@@ -162,6 +164,8 @@ struct Output {
     styled: Option<bool>,
     if_changed: Option<String>,
     wait_ms: Option<i64>,
+    /// Changed rows only, against the screen `if_changed` names (`output_delta`).
+    delta: Option<bool>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -813,27 +817,70 @@ fn project_create_result(spec: &ProjectSpec, cli: &Value) -> Option<Value> {
 /// CLI; the two test matrices must stay identical.
 const KEYS_MAX_ITEMS: usize = 64;
 const KEYS_MAX_TEXT_BYTES: usize = 4096;
-const KEY_NAMES: [&str; 14] = [
-    "Enter",
-    "Tab",
-    "BTab",
-    "Escape",
-    "Backspace",
-    "Delete",
-    "Up",
-    "Down",
-    "Left",
-    "Right",
-    "Home",
-    "End",
-    "PageUp",
-    "PageDown",
-];
+/// The named keys of both key lists, and which modifiers (`C-`, `M-`, `S-`) each takes
+/// since the second list (`key_names` 2): the first 14 are the first list, which takes
+/// none. `riwork_engine::session_keys::Key::parse` reads names the same way.
+const KEY_NAMES: [(&str, [bool; 3]); 28] = {
+    const ANY: [bool; 3] = [true, true, true];
+    const META: [bool; 3] = [false, true, false];
+    [
+        ("Enter", META),
+        ("Tab", META),
+        ("BTab", META),
+        ("Escape", META),
+        ("Backspace", META),
+        ("Delete", ANY),
+        ("Up", ANY),
+        ("Down", ANY),
+        ("Left", ANY),
+        ("Right", ANY),
+        ("Home", ANY),
+        ("End", ANY),
+        ("PageUp", ANY),
+        ("PageDown", ANY),
+        ("Insert", ANY),
+        ("Space", [true, true, false]),
+        ("F1", ANY),
+        ("F2", ANY),
+        ("F3", ANY),
+        ("F4", ANY),
+        ("F5", ANY),
+        ("F6", ANY),
+        ("F7", ANY),
+        ("F8", ANY),
+        ("F9", ANY),
+        ("F10", ANY),
+        ("F11", ANY),
+        ("F12", ANY),
+    ]
+};
+/// The characters `C-` takes: those with a control character.
+const KEY_CTRL_CHARACTERS: &[u8] = b"abcdefghijklmnopqrstuvwxyz@[\\]^_?";
 /// Batches remembered per device, oldest pruned first.
 pub const KEYS_LEDGER_MAX: usize = 4096;
 
+/// A key name of either list: modifiers `C-`, `M-`, `S-` (in that order, each at most
+/// once) and a named key that takes them, or `C-`/`M-` and one printable ASCII
+/// character (`C-` only with one that has a control character, never `S-`).
 fn valid_key(name: &str) -> bool {
-    KEY_NAMES.contains(&name) || matches!(name.as_bytes(), [b'C', b'-', b'a'..=b'z'])
+    let mut rest = name;
+    let mut held = [false; 3];
+    for (index, prefix) in ["C-", "M-", "S-"].into_iter().enumerate() {
+        if let Some(after) = rest.strip_prefix(prefix) {
+            held[index] = true;
+            rest = after;
+        }
+    }
+    if let Some((_, takes)) = KEY_NAMES.iter().find(|(named, _)| *named == rest) {
+        return held.iter().zip(takes).all(|(held, takes)| !held || *takes);
+    }
+    let [ctrl, meta, shift] = held;
+    match rest.as_bytes() {
+        [character] if (0x21..=0x7e).contains(character) && !shift && (ctrl || meta) => {
+            !ctrl || KEY_CTRL_CHARACTERS.contains(character)
+        }
+        _ => false,
+    }
 }
 /// One `shell.keys` item as the CLI's argv encoding: `t:TEXT` or `k:KEY`.
 fn key_item(index: usize, item: &Value) -> std::result::Result<(String, usize), Fault> {
@@ -1162,10 +1209,23 @@ pub struct Rpc {
     chat_assets: Mutex<chat_assets::AssetCache>,
     /// The request ids of each device's input outcome ledger (see `used_for_input`).
     input_ids: ParseCache<BTreeSet<String>>,
+    /// Whether the CLI said it has `shell keys --serve`, learned with the other capabilities
+    /// when a session begins (see `key_names_supported`); then batches go to `keys_workers`.
+    keys_serve: AtomicBool,
+    /// Whether the CLI said its `shell keys` takes the second key list (`key_names` 2).
+    key_names_2: AtomicBool,
+    /// Each device's typing worker (see `keys_worker`).
+    keys_workers: keys_worker::KeysWorkers,
+    /// The last screens sent to each device that asked for changed rows (see `output_delta`).
+    screens: output_delta::Screens,
 }
 impl Rpc {
     pub fn new(cli: PathBuf, storage: Storage) -> Self {
         Self {
+            keys_serve: AtomicBool::new(false),
+            key_names_2: AtomicBool::new(false),
+            keys_workers: keys_worker::KeysWorkers::new(cli.clone()),
+            screens: output_delta::Screens::default(),
             cli,
             input_locks: Mutex::new(BTreeMap::new()),
             history_cap: AtomicU32::new(HISTORY_PAGE_MAX),
@@ -1562,6 +1622,8 @@ impl Rpc {
     }
     /// Lets go of what is kept for a device that was removed or revoked.
     pub fn forget_device(&self, device: &str) {
+        self.keys_workers.forget(device);
+        self.screens.forget(device);
         self.input_ids
             .forget(&self.storage.dir.join(format!("outcomes-{device}.json")));
     }
@@ -1824,6 +1886,27 @@ impl Rpc {
                 // Additive: names this exact answer, for `if_changed`.
                 if let Some(hash) = hash {
                     result["hash"] = json!(hash);
+                }
+                // Changed rows only, when asked for and this device holds the screen its
+                // hash names; the full screen is remembered for the next one either way.
+                if p.delta == Some(true)
+                    && let Some(hash) = hash
+                {
+                    let asked = output_delta::Asked {
+                        device,
+                        shell: &p.shell_id,
+                        lines,
+                        styled,
+                    };
+                    let history = scrollback_fields(&v).map(|(size, _)| size);
+                    if let Some(base) = &p.if_changed
+                        && let Some(delta) = self.screens.delta(&asked, base, history, text)
+                        && let Some(map) = result.as_object_mut()
+                    {
+                        map.remove("output");
+                        map.insert("delta".into(), delta);
+                    }
+                    self.screens.remember(&asked, hash, history, text);
                 }
                 Ok(result)
             }
@@ -2414,12 +2497,7 @@ impl Rpc {
             state: BatchState::Pending,
         });
         private_write(&path, &ledger).map_err(cli_fault)?; // durable before typing
-        let mut args: Vec<String> = ["shell", "keys", p.shell_id.as_str(), "--"]
-            .into_iter()
-            .map(String::from)
-            .collect();
-        args.extend(items);
-        match self.raw(args).await {
+        match self.type_batch(device, &p.shell_id, items).await {
             Ok(_) => {
                 if let Some(record) = ledger.batches.last_mut() {
                     record.state = BatchState::Sent;
@@ -2444,6 +2522,46 @@ impl Rpc {
                 Err(self.explain(checked, fault, &p.shell_id).await)
             }
         }
+    }
+    /// Types one batch (`items` in the argv encoding of `riwork shell keys`): with the
+    /// device's typing worker when the CLI has one (`keys_worker`), otherwise, or when no
+    /// worker could take it, with a `riwork shell keys SHELL -- ITEM...` process of its
+    /// own. Either way a failure reads as that process's would (`keys_fault`): the CLI's
+    /// error text after `RiWork CLI failed: riwork: `, or, for a batch a worker took and
+    /// never answered, an error without it (part of it may be typed).
+    async fn type_batch(&self, device: &str, shell: &str, items: Vec<String>) -> Result<()> {
+        if self.keys_serve.load(Ordering::Relaxed) {
+            match self
+                .keys_workers
+                .send(device, shell, &items, CLI_TIMEOUT)
+                .await
+            {
+                keys_worker::Outcome::Sent => return Ok(()),
+                keys_worker::Outcome::Refused(error) => {
+                    anyhow::bail!("RiWork CLI failed: riwork: {error}")
+                }
+                keys_worker::Outcome::Lost(error) => return Err(error),
+                // Nothing was typed: the process below types it.
+                keys_worker::Outcome::Unavailable(error) => eprintln!(
+                    "Typing worker unavailable ({}); typing with a process.",
+                    crate::log_safe(&format!("{error:#}"))
+                ),
+            }
+        }
+        let mut args: Vec<String> = ["shell", "keys", shell, "--"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        args.extend(items);
+        self.raw(args).await.map(drop)
+    }
+    /// Whether `shell.keys` takes the second key list (`ready.features.key_names` 2): the
+    /// installed CLI says `"key_names": 2`. Asked with the other capabilities when a session
+    /// begins, which also tells whether batches can go to a typing worker.
+    pub async fn key_names_supported(&self) -> bool {
+        self.capability_known(&self.key_names_2, Duration::from_secs(3))
+            .await
+            .unwrap_or(false)
     }
 }
 

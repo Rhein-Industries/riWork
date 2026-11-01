@@ -27,7 +27,7 @@ public enum HIDKey {
     public static let a = 0x04, e = 0x08, k = 0x0E, z = 0x1D
     public static let returnKey = 0x28, escape = 0x29, backspace = 0x2A, tab = 0x2B, space = 0x2C
     public static let f1 = 0x3A, f12 = 0x45, f13 = 0x68, f24 = 0x73
-    public static let home = 0x4A, pageUp = 0x4B, deleteForward = 0x4C, end = 0x4D, pageDown = 0x4E
+    public static let insert = 0x49, home = 0x4A, pageUp = 0x4B, deleteForward = 0x4C, end = 0x4D, pageDown = 0x4E
     public static let right = 0x4F, left = 0x50, down = 0x51, up = 0x52
     public static let leftControl = 0xE0, leftShift = 0xE1, leftAlt = 0xE2, leftCommand = 0xE3
     public static let rightControl = 0xE4, rightShift = 0xE5, rightAlt = 0xE6, rightCommand = 0xE7

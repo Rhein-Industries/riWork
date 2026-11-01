@@ -1250,10 +1250,19 @@ impl Rpc {
                         (&self.chat_suggestions, "chat_suggestions"),
                         (&self.dashboard, "dashboard"),
                         (&self.project_memo, "project_memo"),
+                        (&self.keys_serve, "shell_keys_serve"),
                     ] {
                         if reply.get(name) == Some(&Value::Bool(true)) {
                             flag.store(true, Ordering::Relaxed);
                         }
+                    }
+                    // A number, the newest key list its `shell keys` takes.
+                    if reply
+                        .get("key_names")
+                        .and_then(Value::as_u64)
+                        .is_some_and(|names| names >= 2)
+                    {
+                        self.key_names_2.store(true, Ordering::Relaxed);
                     }
                 }
                 self.capability_answers.fetch_add(1, Ordering::Release);

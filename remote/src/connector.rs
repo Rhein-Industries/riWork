@@ -678,6 +678,7 @@ pub(crate) async fn run_device_with(device: &Device, rpc: &Arc<Rpc>, timing: Tim
                     as_settings,
                     dashboard,
                     project_memo,
+                    key_names,
                 ) = tokio::join!(
                     rpc.chat_supported(),
                     rpc.chat_provider_switch_supported(),
@@ -686,8 +687,17 @@ pub(crate) async fn run_device_with(device: &Device, rpc: &Arc<Rpc>, timing: Tim
                     rpc.orchestrator_create_supported(),
                     rpc.shell_create_as_settings_supported(),
                     rpc.dashboard_supported(),
-                    rpc.project_memo_supported()
+                    rpc.project_memo_supported(),
+                    rpc.key_names_supported()
                 );
+                // The second key list of `shell.keys` (F-keys, Insert, Space, modifiers), when
+                // the installed CLI takes it; a phone without the flag keeps to the first list.
+                if key_names {
+                    features["key_names"] = json!(2);
+                }
+                // Changed rows only (`shell.output` with `delta`), which this connector
+                // does by itself; an older phone never asks.
+                features["output_delta"] = json!(true);
                 if chat {
                     features["chat"] = json!(true);
                     if provider_switch {

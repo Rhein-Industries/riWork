@@ -25,15 +25,19 @@ public struct OutputRequest: Sendable, Equatable {
     public var ifChanged: String?
     /// How long the desktop may hold the request back waiting for a change. Only meaningful with `ifChanged`.
     public var waitMilliseconds: Int
+    /// Ask for the changed rows only (`delta`), against the screen `ifChanged` names. Sent only to a desktop that announces
+    /// `features.output_delta`, and on every request then, the first included: the desktop remembers each full screen it sends.
+    public var delta: Bool
 
-    public init(shellID: String, lines: Int, ifChanged: String? = nil, waitMilliseconds: Int = 0, styled: Bool = true) {
-        self.shellID = shellID; self.lines = lines; self.styled = styled; self.ifChanged = ifChanged
+    public init(shellID: String, lines: Int, ifChanged: String? = nil, waitMilliseconds: Int = 0, styled: Bool = true, delta: Bool = false) {
+        self.shellID = shellID; self.lines = lines; self.styled = styled; self.ifChanged = ifChanged; self.delta = delta
         self.waitMilliseconds = max(0, min(LiveSync.maximumWaitMilliseconds, waitMilliseconds))
     }
     public var isLongPoll: Bool { ifChanged != nil && waitMilliseconds > 0 }
     public var params: [String: JSONValue] {
         var params: [String: JSONValue] = ["shell_id": .string(shellID), "lines": .number(Double(lines))]
         if styled { params["styled"] = .bool(true) }
+        if delta { params["delta"] = .bool(true) }
         if let ifChanged {
             params["if_changed"] = .string(ifChanged)
             if waitMilliseconds > 0 { params["wait_ms"] = .number(Double(waitMilliseconds)) }
@@ -107,6 +111,8 @@ public enum OutputReply: Sendable, Equatable {
     case screen(ShellOutput)
     /// `{"shell_id", "unchanged": true, "hash"}`: the screen still has the hash the request named; there is no `output`.
     case unchanged(shellID: String, hash: String)
+    /// The changed rows only (a request with `delta`): `delta` in place of `output`. `OutputDelta.apply(to:)` makes the screen.
+    case delta(OutputDelta)
 
     public init(result: JSONValue) throws {
         if case .bool(true) = result["unchanged"] {
@@ -114,6 +120,8 @@ public enum OutputReply: Sendable, Equatable {
                 throw RemoteError.protocolViolation("Session output identity mismatch.")
             }
             self = .unchanged(shellID: shellID, hash: hash)
+        } else if case .object = result["delta"], result["output"] == .null {
+            self = .delta(try OutputDelta(result: result))
         } else {
             self = .screen(try ShellOutput(result: result))
         }
@@ -122,6 +130,87 @@ public enum OutputReply: Sendable, Equatable {
     static func hash(_ value: JSONValue) -> String? {
         guard case .string(let text) = value, LiveSync.isUsableHash(text) else { return nil }
         return text
+    }
+}
+
+/// The changed rows of a screen, the answer to a `shell.output` with `delta` (`features.output_delta`): a full answer with
+/// `delta` in place of `output`.
+///
+/// `{"base": HASH, "shift": 3, "line_count": 524, "changed": [[521, ["$ ls", "a  b", ""]]]}`. Split the screen `base` names at every
+/// `\n` (an output that ends in `\n` gives a last, empty piece). The new output has `line_count` pieces: piece `i` is the one a
+/// `changed` run gives it (`[start, [pieces]]`, in order and apart), and every other piece is base piece `i + shift`. Joined with
+/// `\n` they are exactly the `output` a full answer would carry, so `hash` names it.
+public struct OutputDelta: Sendable, Equatable {
+    public struct Run: Sendable, Equatable {
+        public let start: Int
+        public let pieces: [String]
+    }
+    public let shellID: String
+    /// The hash of the screen the changes apply to (the request's `if_changed`).
+    public let base: String
+    /// The hash of the screen they make.
+    public let hash: String
+    public let shift: Int
+    public let lineCount: Int
+    public let runs: [Run]
+    /// The answer without `delta`: cursor, `rows`, `cols`, `in_mode`, `history_size`, `alternate` as a full one carries them.
+    let rest: [String: JSONValue]
+
+    /// A bound on the pieces of one screen (2000 lines of scrollback, the rows of a tall window and the empty piece at the end).
+    static let maximumLines = 20_000
+
+    public init(result: JSONValue) throws {
+        func integer(_ value: JSONValue, in range: ClosedRange<Double>) -> Int? {
+            guard case .number(let number) = value, number.isFinite, range.contains(number), number.rounded() == number else { return nil }
+            return Int(number)
+        }
+        let delta = result["delta"]
+        guard case .object(var rest) = result, let shellID = result["shell_id"].string, let hash = OutputReply.hash(result["hash"]),
+              let base = OutputReply.hash(delta["base"]), let shift = integer(delta["shift"], in: -1_000_000...1_000_000),
+              let lineCount = integer(delta["line_count"], in: 1...Double(Self.maximumLines)), case .array(let rawRuns) = delta["changed"] else {
+            throw RemoteError.protocolViolation("Session output changes are malformed.")
+        }
+        var runs: [Run] = []
+        for raw in rawRuns {
+            guard case .array(let pair) = raw, pair.count == 2, let start = integer(pair[0], in: 0...Double(Self.maximumLines)),
+                  case .array(let rawPieces) = pair[1], !rawPieces.isEmpty else { throw RemoteError.protocolViolation("Session output changes are malformed.") }
+            let pieces = try rawPieces.map { piece -> String in
+                guard let text = piece.string else { throw RemoteError.protocolViolation("Session output changes are malformed.") }
+                return text
+            }
+            runs.append(Run(start: start, pieces: pieces))
+        }
+        rest["delta"] = nil
+        self.shellID = shellID; self.base = base; self.hash = hash; self.shift = shift; self.lineCount = lineCount; self.runs = runs; self.rest = rest
+    }
+
+    /// The screen the changes make from `screen`, or nil when `screen` is not the one they apply to (another hash) or they do not
+    /// fit it (a run out of order or past the end, a line with neither a change nor a base line). The caller asks again in full then.
+    public func apply(to screen: ShellOutput) -> ShellOutput? {
+        guard screen.shellID == shellID, screen.hash == base else { return nil }
+        // Pieces by Unicode scalars, as the desktop splits them: a "\r\n" must not count as one character here.
+        let old = screen.text.unicodeScalars.split(separator: "\n", omittingEmptySubsequences: false).map { String(String.UnicodeScalarView($0)) }
+        var pieces: [String] = []
+        pieces.reserveCapacity(lineCount)
+        var next = 0
+        func copy(upTo end: Int) -> Bool {
+            while next < end {
+                let at = next + shift
+                guard at >= 0, at < old.count else { return false }
+                pieces.append(old[at])
+                next += 1
+            }
+            return true
+        }
+        for run in runs {
+            guard run.start >= next, run.start + run.pieces.count <= lineCount, copy(upTo: run.start) else { return nil }
+            pieces.append(contentsOf: run.pieces)
+            next = run.start + run.pieces.count
+        }
+        guard copy(upTo: lineCount) else { return nil }
+        var result = rest
+        result["output"] = .string(pieces.joined(separator: "\n"))
+        return try? ShellOutput(result: .object(result))
     }
 }
 
