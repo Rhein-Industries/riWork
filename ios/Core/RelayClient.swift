@@ -240,6 +240,8 @@ extension Duration {
 ///
 /// Cancelling one caller detaches only that caller. The frame it sealed still goes out in order (the
 /// peer accepts only the exact next counter) and its late response is discarded.
+///
+/// Every request counts against the socket's `RequestBudget`: one that does not fit waits, unsealed and untimed, for its turn.
 public actor RelayClient: RemoteTransport {
     private let connector: any WebSocketConnecting
     private var socket: (any WebSocketConnection)?
@@ -252,6 +254,7 @@ public actor RelayClient: RemoteTransport {
     private struct Pending {
         let continuation: CheckedContinuation<TimedReply, any Error>
         let isInput: Bool
+        let kind: RequestBudget.Kind
         let timeout: Task<Void, Never>
         /// When the frame went to the socket (the start of the reply's timing); nil until it does.
         var sentAt: ContinuousClock.Instant?
@@ -264,8 +267,19 @@ public actor RelayClient: RemoteTransport {
     private var features = DesktopFeatures()
     private var compressing = false
     private var wantsCompression = true
-    /// Requests whose caller was cancelled after the frame was sealed; their response is read and dropped.
-    private var abandoned: Set<String> = []
+    /// Requests whose caller was cancelled after the frame was sealed; their response is read and dropped, and gives back their place.
+    /// One still unanswered when its time runs out gives its place back then (`lapsed`), and its late response is dropped all the same.
+    private struct Abandoned { let kind: RequestBudget.Kind; let timeout: Task<Void, Never> }
+    private var abandoned: [String: Abandoned] = [:]
+    private var lapsed: Set<String> = []
+    /// The places this session's requests hold, and the requests waiting for one, in the order they asked.
+    private var budget = RequestBudget()
+    private struct SlotWaiter {
+        let id: UUID
+        let kind: RequestBudget.Kind
+        let continuation: CheckedContinuation<Void, any Error>
+    }
+    private var slotWaiters: [SlotWaiter] = []
     private let requestTimeout: Duration
     private let pingInterval: Duration
     private let handshakeTimeout: Duration
@@ -395,16 +409,22 @@ public actor RelayClient: RemoteTransport {
         sendTail?.cancel(); sendTail = nil
         socket?.cancel(with: .goingAway, reason: nil); socket = nil
         cipher = nil
-        abandoned.removeAll()
+        for item in abandoned.values { item.timeout.cancel() }
+        abandoned.removeAll(); lapsed.removeAll()
         arrivals.removeAll()
         compressing = false
         features = DesktopFeatures()
+        budget = RequestBudget()
         let outstanding = pending
         pending.removeAll()
         for item in outstanding.values {
             item.timeout.cancel()
             item.continuation.resume(throwing: item.isInput ? RemoteError.uncertainDelivery : error)
         }
+        // Still waiting for a place: never sealed, so never sent, an input included.
+        let waiting = slotWaiters
+        slotWaiters.removeAll()
+        for waiter in waiting { waiter.continuation.resume(throwing: error) }
     }
     public func request(method: String, params: [String: JSONValue] = [:], id: String = UUID().uuidString.lowercased()) async throws -> JSONValue {
         try await timedRequest(method: method, params: params, id: id).value
@@ -412,7 +432,8 @@ public actor RelayClient: RemoteTransport {
     public func request(method: String, params: [String: JSONValue], id: String, boundTo identity: UploadConnectionIdentity) async throws -> JSONValue {
         guard let uploadIdentity else { throw RemoteError.disconnected }
         guard uploadIdentity == identity else { throw CancellationError() }
-        // No suspension between the identity check and timedRequest sealing on this actor.
+        // No suspension between the identity check and timedRequest taking this session's token on this actor. A request that then waits
+        // for a place in the budget is sealed only if the session (and so the identity) is still the same.
         return try await timedRequest(method: method, params: params, id: id).value
     }
     // `async` although nothing here suspends: on the concrete type a sync actor method loses to the protocol's async default.
@@ -446,11 +467,20 @@ public actor RelayClient: RemoteTransport {
         try RequestValidation.validate(method: method, params: params, id: id)
         // Before sealing: a cancelled caller must not consume a send counter.
         try Task.checkCancellation()
-        guard let ws = socket, var activeCipher = cipher else { throw RemoteError.disconnected }
-        guard pending[id] == nil, !abandoned.contains(id) else { throw RemoteError.protocolViolation("Request already pending.") }
-        let envelope = try activeCipher.seal(.object(["v": .number(1), "type": .string("request"), "id": .string(id), "method": .string(method), "params": .object(params)]))
-        cipher = activeCipher
+        guard socket != nil, cipher != nil else { throw RemoteError.disconnected }
+        guard !isOutstanding(id) else { throw RemoteError.protocolViolation("Request already pending.") }
         let token = generation
+        let kind = RequestBudget.kind(method: method, params: params)
+        try await takeSlot(kind)
+        // The place was taken in this session; a session that ended meanwhile took it back with everything else.
+        guard generation == token, let ws = socket, var activeCipher = cipher else { throw RemoteError.disconnected }
+        // From here every way out gives the place back, or hands it to the reply.
+        if Task.isCancelled { giveSlot(kind); throw CancellationError() }
+        guard !isOutstanding(id) else { giveSlot(kind); throw RemoteError.protocolViolation("Request already pending.") }
+        let envelope: JSONValue
+        do { envelope = try activeCipher.seal(.object(["v": .number(1), "type": .string("request"), "id": .string(id), "method": .string(method), "params": .object(params)])) }
+        catch { giveSlot(kind); throw error }
+        cipher = activeCipher
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 let deadline = Task { [requestTimeout = Self.timeout(for: method, params: params, default: requestTimeout)] in
@@ -459,7 +489,7 @@ public actor RelayClient: RemoteTransport {
                 }
                 // Only `shell.input` reports an unknown outcome as uncertain. `shell.keys` carries a batch id the desktop dedupes,
                 // so a lost connection or cancelled caller surfaces as itself and the batch is simply retried.
-                pending[id] = Pending(continuation: continuation, isInput: method == "shell.input", timeout: deadline)
+                pending[id] = Pending(continuation: continuation, isInput: method == "shell.input", kind: kind, timeout: deadline)
                 let previous = sendTail
                 // The counter is already spent, so this frame is sent even if its caller is cancelled.
                 sendTail = Task {
@@ -472,17 +502,51 @@ public actor RelayClient: RemoteTransport {
             }
         } onCancel: { Task { await self.abandon(id: id, token: token) } }
     }
+    /// Waits for a place of `kind` in the budget: at once when one is free and no earlier request of the same kind waits, else in order.
+    /// A caller cancelled while it waits leaves without one.
+    private func takeSlot(_ kind: RequestBudget.Kind) async throws {
+        if !slotWaiters.contains(where: { $0.kind == kind }), budget.admits(kind) { budget.take(kind); return }
+        let waiter = UUID()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+                if Task.isCancelled { continuation.resume(throwing: CancellationError()); return }
+                slotWaiters.append(SlotWaiter(id: waiter, kind: kind, continuation: continuation))
+            }
+        } onCancel: { Task { await self.stopWaiting(waiter) } }
+    }
+    private func stopWaiting(_ waiter: UUID) {
+        guard let index = slotWaiters.firstIndex(where: { $0.id == waiter }) else { return }
+        slotWaiters.remove(at: index).continuation.resume(throwing: CancellationError())
+    }
+    /// Gives a place back and hands the room to the waiting requests in order. One that still does not fit lets a later one of another
+    /// kind go ahead; none of its own kind passes it.
+    private func giveSlot(_ kind: RequestBudget.Kind) {
+        budget.give(kind)
+        var index = 0
+        while index < slotWaiters.count {
+            guard budget.admits(slotWaiters[index].kind) else { index += 1; continue }
+            let waiter = slotWaiters.remove(at: index)
+            budget.take(waiter.kind)
+            waiter.continuation.resume()
+        }
+    }
     /// The request's frame is about to go to the socket: its timing starts here, not when the caller asked (it may queue behind others).
     private func sending(id: String) { pending[id]?.sentAt = .now }
-    /// Detaches one waiter. The socket, keys and every other request stay intact.
+    private func isOutstanding(_ id: String) -> Bool { pending[id] != nil || abandoned[id] != nil || lapsed.contains(id) }
+    /// Detaches one waiter. The socket, keys and every other request stay intact; the request keeps its place until its reply comes, or
+    /// until its time runs out (which, with nobody waiting for it, does not end the connection).
     private func abandon(id: String, token: UUID) {
         guard generation == token, let item = pending.removeValue(forKey: id) else { return }
-        item.timeout.cancel()
-        abandoned.insert(id)
+        abandoned[id] = Abandoned(kind: item.kind, timeout: item.timeout)
         // The frame may already be on the wire, so an input can no longer be reported as "not sent".
         item.continuation.resume(throwing: item.isInput ? RemoteError.uncertainDelivery : CancellationError())
     }
-    private func expire(id: String, token: UUID) { if generation == token, pending[id] != nil { endConnection(error: RemoteError.timeout) } }
+    private func expire(id: String, token: UUID) {
+        guard generation == token else { return }
+        if pending[id] != nil { endConnection(error: RemoteError.timeout); return }
+        // Its caller let go: its place goes back, and its reply, should it still come, is dropped.
+        if let item = abandoned.removeValue(forKey: id) { lapsed.insert(id); giveSlot(item.kind) }
+    }
     private func failIfCurrent(token: UUID, error: any Error) { if generation == token { endConnection(error: error) } }
     private func readLoop(ws: any WebSocketConnection, token: UUID) async {
         do {
@@ -498,10 +562,12 @@ public actor RelayClient: RemoteTransport {
                 guard response["type"].string == "response", let id = response["id"].string, case .bool(let ok) = response["ok"] else { throw RemoteError.protocolViolation("Unexpected response.") }
                 let timing = timing(of: opened, received: received, response: response, sentAt: pending[id]?.sentAt)
                 guard let item = pending.removeValue(forKey: id) else {
-                    if abandoned.remove(id) != nil { continue }
+                    if let item = abandoned.removeValue(forKey: id) { item.timeout.cancel(); giveSlot(item.kind); continue }
+                    if lapsed.remove(id) != nil { continue }
                     throw RemoteError.protocolViolation("Unexpected response.")
                 }
                 item.timeout.cancel()
+                giveSlot(item.kind)
                 if ok { item.continuation.resume(returning: TimedReply(value: response["result"], timing: timing)) }
                 else {
                     let detail = response["error"]

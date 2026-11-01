@@ -67,6 +67,13 @@ private actor HostOverviewTransport: RemoteTransport {
                               pairing_secret: "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8", relay_token: "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8")
         return SavedDesktop(name: name ?? "Host \(index)", pairing: pairing, allowLocalDevelopment: false)
     }
+    /// The overview over sockets that close as soon as a read gives them back, so each test sees every socket open and close.
+    private func overview(maximumConcurrentHosts: Int = 3, compress: Bool = true,
+                          _ transport: @escaping @MainActor (String) -> any RemoteTransport) -> HostDashboardStore {
+        let connections = HostConnections(idleTimeout: .zero, factory: transport)
+        connections.compressTraffic = { compress }
+        return HostDashboardStore(connections: connections, refreshInterval: .seconds(3600), maximumConcurrentHosts: maximumConcurrentHosts)
+    }
     private func waitFor(_ condition: () async -> Bool, file: StaticString = #filePath, line: UInt = #line) async {
         for _ in 0..<500 {
             if await condition() { return }
@@ -80,7 +87,7 @@ private actor HostOverviewTransport: RemoteTransport {
         let a = HostOverviewTransport(id: first.id, projects: 2), b = HostOverviewTransport(id: second.id, projects: 3), c = HostOverviewTransport(id: third.id)
         await c.setFailing(true)
         let transports = [first.id: a, second.id: b, third.id: c]
-        let store = HostDashboardStore(refreshInterval: .seconds(3600), transportFactory: { transports[$0.id]! })
+        let store = overview { transports[$0]! }
         store.setVisible(true, desktops: [first, second, third])
         await store.refresh()
         XCTAssertEqual(store.aggregate.projects.value, 5)
@@ -102,7 +109,7 @@ private actor HostOverviewTransport: RemoteTransport {
         let first = desktop(1), second = desktop(2)
         let a = HostOverviewTransport(id: first.id), b = HostOverviewTransport(id: second.id)
         let transports = [first.id: a, second.id: b]
-        let store = HostDashboardStore(refreshInterval: .seconds(3600), transportFactory: { transports[$0.id]! })
+        let store = overview { transports[$0]! }
         store.setVisible(true, desktops: [first, second], activeHostID: first.id)
         let mirrored = try DashboardSnapshot(wire: .object(["v": .number(1), "totals": .object(["projects": .number(4)])]))
         store.updateActiveHost(HostDashboardEntry(id: first.id, name: "Old name", snapshot: mirrored, readAt: .now, state: .ready))
@@ -119,7 +126,7 @@ private actor HostOverviewTransport: RemoteTransport {
         let first = desktop(1), second = desktop(2)
         let a = HostOverviewTransport(id: first.id, projects: 2), b = HostOverviewTransport(id: second.id, projects: 3)
         let transports = [first.id: a, second.id: b]
-        let store = HostDashboardStore(refreshInterval: .seconds(3600), transportFactory: { transports[$0.id]! })
+        let store = overview { transports[$0]! }
         store.setVisible(true, desktops: [first, second])
         await store.refresh()
         let saved = try XCTUnwrap(store.hosts.last?.readAt)
@@ -142,8 +149,7 @@ private actor HostOverviewTransport: RemoteTransport {
 
     func testOverviewConnectionsAskForTheChosenCompression() async {
         let desktop = desktop(1), transport = HostOverviewTransport(id: "compression")
-        let store = HostDashboardStore(refreshInterval: .seconds(3600), transportFactory: { _ in transport })
-        store.compressTraffic = { false }
+        let store = overview(compress: false) { _ in transport }
         store.setVisible(true, desktops: [desktop])
         await store.refresh()
         let asked = await transport.compression
@@ -153,7 +159,7 @@ private actor HostOverviewTransport: RemoteTransport {
 
     func testAReadThatEndsUnansweredDoesNotLeaveTheHostReading() async throws {
         let desktop = desktop(1), transport = HostOverviewTransport(id: "abandoned")
-        let store = HostDashboardStore(refreshInterval: .seconds(3600), transportFactory: { _ in transport })
+        let store = overview { _ in transport }
         store.setVisible(true, desktops: [desktop])
         await store.refresh()
         await transport.setFailing(true)
@@ -176,7 +182,7 @@ private actor HostOverviewTransport: RemoteTransport {
     func testUnsupportedHostsAreNotAskedForDashboard() async {
         let desktop = desktop(1), transport = HostOverviewTransport(id: "unsupported")
         await transport.setSupported(false)
-        let store = HostDashboardStore(refreshInterval: .seconds(3600), transportFactory: { _ in transport })
+        let store = overview { _ in transport }
         store.setVisible(true, desktops: [desktop])
         await store.refresh()
         XCTAssertEqual(store.hosts.first?.state, .unsupported)
@@ -188,7 +194,7 @@ private actor HostOverviewTransport: RemoteTransport {
 
     func testNoConnectionsWhenHiddenOrInBackground() async {
         let desktop = desktop(1), transport = HostOverviewTransport(id: "visible")
-        let store = HostDashboardStore(refreshInterval: .seconds(3600), transportFactory: { _ in transport })
+        let store = overview { _ in transport }
         store.updateDesktops([desktop])
         await store.refresh()
         var connects = await transport.connects
@@ -212,7 +218,7 @@ private actor HostOverviewTransport: RemoteTransport {
     func testRemovingHostDiscardsItsLateReply() async {
         let desktop = desktop(1), transport = HostOverviewTransport(id: "late")
         await transport.hold()
-        let store = HostDashboardStore(refreshInterval: .seconds(3600), transportFactory: { _ in transport })
+        let store = overview { _ in transport }
         store.setVisible(true, desktops: [desktop])
         await waitFor { await transport.methods.count == 1 }
         store.updateDesktops([])
@@ -228,12 +234,12 @@ private actor HostOverviewTransport: RemoteTransport {
     func testStopClosesConnectionsAndRejectsLateRepliesBeforeMainHostActivates() async {
         let desktop = desktop(1), transport = HostOverviewTransport(id: "stop")
         await transport.hold()
-        let store = HostDashboardStore(refreshInterval: .seconds(3600), transportFactory: { _ in transport })
+        let store = overview { _ in transport }
         store.setVisible(true, desktops: [desktop])
         await waitFor { await transport.methods.count == 1 }
         await store.stop()
         let connected = await transport.isConnected()
-        XCTAssertFalse(connected, "stop is a disconnect barrier before RemoteModel can register the same route")
+        XCTAssertFalse(connected, "stopping gives back the socket a read held, even one whose host never answers")
         await transport.release()
         for _ in 0..<10 { await Task.yield() }
         XCTAssertNil(store.hosts.first?.snapshot)
@@ -244,7 +250,7 @@ private actor HostOverviewTransport: RemoteTransport {
         let desktops = (1...6).map { desktop($0) }, ledger = HostOverviewLedger()
         let transports = Dictionary(uniqueKeysWithValues: desktops.map { ($0.id, HostOverviewTransport(id: $0.id, ledger: ledger)) })
         for transport in transports.values { await transport.hold() }
-        let store = HostDashboardStore(refreshInterval: .seconds(3600), maximumConcurrentHosts: 2, transportFactory: { transports[$0.id]! })
+        let store = overview(maximumConcurrentHosts: 2) { transports[$0]! }
         store.setVisible(true, desktops: desktops)
         await waitFor { await ledger.count == 2 }
         let maximumBefore = await ledger.maximum
@@ -264,7 +270,7 @@ private actor HostOverviewTransport: RemoteTransport {
                                 device_id: saved.pairing.device_id, route_id: saved.id, device_name: "Pending",
                                 pairing_secret: "", relay_token: saved.pairing.relay_token, invite_state: "pending")
         let transport = HostOverviewTransport(id: "pending")
-        let store = HostDashboardStore(refreshInterval: .seconds(3600), transportFactory: { _ in transport })
+        let store = overview { _ in transport }
         store.setVisible(true, desktops: [saved])
         await store.refresh()
         let connects = await transport.connects
