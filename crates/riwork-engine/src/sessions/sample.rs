@@ -119,11 +119,35 @@ impl SampleCache {
         source: &impl SampleSource,
         want_metrics: bool,
     ) -> Result<SessionSample, String> {
+        self.serve(source, want_metrics, |entry| {
+            entry.taken.elapsed() < self.ttl
+        })
+    }
+
+    /// A sample of tmux as it is now, for a reader that cannot use one up to
+    /// the TTL old: one begun after this call was, by this call or by another
+    /// caller that held the lock meanwhile. It is kept like any other, so the
+    /// readers that follow within the TTL share it instead of asking tmux again.
+    pub(super) fn fresh(
+        &self,
+        source: &impl SampleSource,
+        want_metrics: bool,
+    ) -> Result<SessionSample, String> {
+        let asked = Instant::now();
+        self.serve(source, want_metrics, |entry| entry.taken >= asked)
+    }
+
+    fn serve(
+        &self,
+        source: &impl SampleSource,
+        want_metrics: bool,
+        usable: impl FnOnce(&Entry) -> bool,
+    ) -> Result<SessionSample, String> {
         let mut slot = self.entry.lock().unwrap_or_else(PoisonError::into_inner);
         let generation = self.generation.load(Ordering::SeqCst);
         if let Some(entry) = slot.as_mut()
             && entry.generation == generation
-            && entry.taken.elapsed() < self.ttl
+            && usable(entry)
         {
             if want_metrics
                 && !entry.metrics_taken

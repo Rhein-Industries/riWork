@@ -4,6 +4,7 @@ use riwork_core::{
     store::Store,
 };
 use riwork_engine::{
+    activity::AgentState,
     project_tabs::{self, Kind, Session, Snapshot, Status, TabStore, Update},
     sessions::{SessionManager, ShellKind},
 };
@@ -11,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
-    sync::{Mutex, OnceLock},
+    sync::{Arc, Mutex, OnceLock, PoisonError},
     time::{Duration, Instant},
 };
 
@@ -22,6 +23,47 @@ pub fn changed() {
 pub fn changes() -> &'static tokio::sync::broadcast::Sender<()> {
     static CHANNEL: OnceLock<tokio::sync::broadcast::Sender<()>> = OnceLock::new();
     CHANNEL.get_or_init(|| tokio::sync::broadcast::channel(16).0)
+}
+
+/// How long the activity the session sampler published is trusted. It
+/// publishes every two seconds while the home has shells, so an older answer
+/// means it stopped (a detached service, a failing tmux) and the tab reads
+/// fall back to reading every agent cold, as they would without it.
+const KNOWN_ACTIVITY_FOR: Duration = Duration::from_secs(6);
+
+type KnownActivity = Arc<BTreeMap<String, AgentState>>;
+
+fn known_activity_slots() -> &'static Mutex<BTreeMap<PathBuf, (Instant, KnownActivity)>> {
+    static SLOTS: OnceLock<Mutex<BTreeMap<PathBuf, (Instant, KnownActivity)>>> = OnceLock::new();
+    SLOTS.get_or_init(Default::default)
+}
+
+/// The sampler and the layouts may name one home differently.
+fn activity_key(home: &Path) -> PathBuf {
+    home.canonicalize().unwrap_or_else(|_| home.to_owned())
+}
+
+/// The process's session sampler follows every agent's activity incrementally
+/// (`ActivityTracker`) and hands its latest states here, so a tab read (a
+/// project click, a tabs refresh) need not open every Codex rollout again.
+pub fn publish_activity(home: &Path, states: BTreeMap<String, AgentState>) {
+    known_activity_slots()
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .insert(activity_key(home), (Instant::now(), Arc::new(states)));
+}
+
+/// What the sampler last published for `home`, when it is recent. A shell it
+/// has no state for (one it has not sampled yet, a plain shell, nothing
+/// published at all) is read cold by `refresh_snapshot_with_activity`.
+fn known_activity(home: &Path) -> KnownActivity {
+    known_activity_slots()
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(&activity_key(home))
+        .filter(|(published, _)| published.elapsed() < KNOWN_ACTIVITY_FOR)
+        .map(|(_, states)| states.clone())
+        .unwrap_or_default()
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -210,8 +252,11 @@ pub fn list(home: &Path) -> Result<Vec<Shell>, String> {
             .filter(|s| s.appear_after_ms <= elapsed)
             .collect());
     }
+    // The shells `list` would give, from one pane query that the tab inventory
+    // read right after this (`load`) reuses instead of asking tmux again.
     Ok(SessionManager::at(home.to_owned())?
-        .list()?
+        .fresh_sample(false)?
+        .shells
         .into_iter()
         .map(|s| Shell {
             id: s.id,
@@ -349,7 +394,7 @@ pub fn tab_snapshot(home: &Path, project: &str) -> Result<Snapshot, String> {
         .transpose()?;
     match &fake {
         Some(_) => tab_snapshot_with(home, project, fake.as_ref(), &list(home)?),
-        None => project_tabs::refresh_snapshot_with_activity(home, project, &BTreeMap::new()),
+        None => project_tabs::refresh_snapshot_with_activity(home, project, &known_activity(home)),
     }
 }
 
@@ -360,7 +405,7 @@ fn tab_snapshot_with(
     shells: &[Shell],
 ) -> Result<Snapshot, String> {
     let Some(fake) = fake else {
-        return project_tabs::refresh_snapshot_with_activity(home, project, &BTreeMap::new());
+        return project_tabs::refresh_snapshot_with_activity(home, project, &known_activity(home));
     };
     TabStore::at(home, project).and_then(|store| {
         let inventory = shells

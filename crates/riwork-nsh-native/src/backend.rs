@@ -561,10 +561,15 @@ impl EngineSessionsBackend {
     /// outcome of each Codex turn that finished since the last sample. The
     /// ledger dedupes by event id across processes; opted-out projects add
     /// nothing. Claude, Grok and Muse report completions through their hooks.
+    ///
+    /// The states read on the way are handed to the workspace's tab reads,
+    /// which otherwise read every agent's rollout cold on each project click
+    /// and each tabs refresh.
     fn record_codex_completions(&self, shells: &[riwork_engine::sessions::ShellSession]) {
         let mut tracker = self.activity.lock().unwrap_or_else(PoisonError::into_inner);
         let tracker = tracker.get_or_insert_with(|| ActivityTracker::at(self.home.clone()));
-        tracker.sample_states(shells, unix_now());
+        let states = tracker.sample_states(shells, unix_now());
+        riwork_nsh_workspace::session_io::publish_activity(&self.home, states);
         for completion in tracker.take_completions() {
             if let Err(error) = record_completion_outcome(
                 &self.home,

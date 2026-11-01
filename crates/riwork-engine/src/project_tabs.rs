@@ -926,9 +926,10 @@ pub fn refresh_snapshot(home: &Path, project: &str) -> Result<Snapshot, String> 
     TabStore::at(home, project)?.refresh(&sessions)
 }
 
-/// Desktop windows already follow agent activity incrementally. Reuse their
-/// latest observations instead of opening every Codex rollout again on each
-/// tab poll. Newly discovered shells still get the ordinary cold read.
+/// Desktop windows and the NSH app's session service already follow agent
+/// activity incrementally. Reuse their latest observations instead of opening
+/// every Codex rollout again on each tab poll. Newly discovered shells still
+/// get the ordinary cold read.
 pub fn refresh_snapshot_with_activity(
     home: &Path,
     project: &str,
