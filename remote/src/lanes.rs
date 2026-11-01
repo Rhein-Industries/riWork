@@ -17,12 +17,15 @@
 //!   behind them. (A creation also keeps its CLI alive when the connection
 //!   itself is torn down: see `Rpc::create`, `Rpc::create_project`,
 //!   `Rpc::orchestrator_create` and `Rpc::chat_create`.) A message, an approval or a stop for a chat is typing
-//!   of a kind: it is carried out in the order it was sent.
-//! - `LongPoll`: a `shell.output` that waits for a change, and a `chat.events`
-//!   that waits for an event (any `wait_ms` above 0). At most two.
+//!   of a kind: it is carried out in the order it was sent. A `native.invoke` of a
+//!   method that writes (`rpc::native_is_write`) is ordered too.
+//! - `LongPoll`: a `shell.output` that waits for a change, a `chat.events`
+//!   that waits for an event and a `state.watch` that waits (any `wait_ms` above 0).
+//!   At most two.
 //! - `Read`: everything else, including a `shell.output` that does not wait,
 //!   `shell.history`, a page of scrollback that never waits, `chats.list`, a
-//!   `chat.events` with `wait_ms` 0 and the `upload.*` steps of a file from the
+//!   `native.invoke` of a method that only reads, a `state.watch` with `wait_ms` 0,
+//!   a `chat.events` with `wait_ms` 0 and the `upload.*` steps of a file from the
 //!   phone (each a short write to disk; the paste that follows is `Ordered`). It changes nothing, so it needs no order,
 //!   and it takes one of the three shared slots, never the `Ordered` one.
 //!
@@ -119,13 +122,29 @@ pub fn classify(request: &Value) -> Lane {
         }
         // A chat's events wait for the first one after `since`: like a waiting
         // `shell.output`, but with no hash to compare, so `wait_ms` alone says it.
-        Some("chat.events")
+        // So does a wait for the desktop's data to change.
+        Some("chat.events" | "state.watch")
             if params
                 .and_then(|p| p.get("wait_ms"))
                 .and_then(Value::as_i64)
                 .is_some_and(|ms| ms > 0) =>
         {
             Lane::LongPoll
+        }
+        // One of the desktop's own methods: writes in order, reads shared. A method
+        // that does not exist is answered with an error at once.
+        Some("native.invoke") => {
+            let name = |key: &str| {
+                params
+                    .and_then(|p| p.get(key))
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+            };
+            if crate::rpc::native_is_write(name("module"), name("method")) == Some(true) {
+                Lane::Ordered
+            } else {
+                Lane::Read
+            }
         }
         // `shell.history` and every other method: shared, never waiting.
         _ => Lane::Read,

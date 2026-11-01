@@ -90,6 +90,21 @@ fn ensure_initialized() -> Result<Arc<ProcessService>, String> {
     Ok(service)
 }
 
+/// A service for one call from another process (`riwork native invoke`): the same
+/// backends and validation as [`initialize`], but no home watcher, no session sampler and no
+/// hub publication. It is installed as this process's service, so a module function that
+/// asks [`initialize`] gets it and never starts either. A process holds one service; the host
+/// never calls this.
+pub fn detached_process() -> Result<Arc<ProcessService>, String> {
+    let home = resolved_home()?;
+    let store = Arc::new(CoreStoreBackend::new(home.clone()));
+    let sessions = session_backend(&home)?;
+    let tabs = Arc::new(EngineTabsBackend::new(home.clone()));
+    let service = ProcessService::detached(home, store, sessions, tabs).map_err(io_error)?;
+    install_process_service(service.clone())?;
+    Ok(service)
+}
+
 fn session_backend(home: &Path) -> Result<Arc<dyn SessionsBackend>, String> {
     #[cfg(feature = "test-support")]
     if let Some(path) = std::env::var_os("RIWORK_NSH_FAKE_SESSIONS") {
@@ -214,9 +229,14 @@ pub struct ProcessService {
     stop: Arc<AtomicBool>,
     wake: SyncSender<()>,
     worker: Option<JoinHandle<()>>,
-    _watcher: notify::RecommendedWatcher,
+    /// None for a detached service (`detached_process`).
+    _watcher: Option<notify::RecommendedWatcher>,
     last_error: Arc<Mutex<Option<String>>>,
     observers: Observers,
+    /// One call from another process: writes are not followed by a snapshot, a session
+    /// sample or a publication, since nobody in this process subscribes. The desktop app's
+    /// own watcher sees the files change and publishes there.
+    detached: bool,
 }
 
 /// Process services that follow every home change (the dashboard) register a
@@ -258,6 +278,9 @@ impl ProcessService {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
             let value = operation(service.store.as_ref()).map_err(backend_error)?;
+            if service.detached {
+                return Ok(value);
+            }
             // Write and publish are serialized with watcher refreshes, preventing
             // an older read from overwriting a newer mutation in either window.
             let snapshot = service.store.snapshot().map_err(backend_error)?;
@@ -549,6 +572,10 @@ impl ProcessService {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
             let result = operation(service.sessions.as_ref()).map_err(backend_error)?;
+            if service.detached {
+                // No sampler here: a sample would also record agent completions.
+                return Ok(result);
+            }
             service.sessions.invalidate_sample();
             // The mutation already succeeded. A failed follow-up inventory
             // must not report failure and invite the caller to create again.
@@ -969,10 +996,56 @@ impl ProcessService {
             stop,
             wake,
             worker: Some(worker),
-            _watcher: watcher,
+            _watcher: Some(watcher),
             last_error,
             observers,
+            detached: false,
         }))
+    }
+
+    /// The backends of [`with_all_backends`](Self::with_all_backends) with no watcher, no
+    /// worker thread and no initial read: every topic is pending and stays so.
+    pub fn detached(
+        home: PathBuf,
+        store: Arc<dyn StoreBackend>,
+        sessions: Arc<dyn SessionsBackend>,
+        tabs: Arc<dyn TabsBackend>,
+    ) -> Result<Arc<Self>> {
+        riwork_core::paths::create_private_dir(&home)?;
+        let home = home.canonicalize()?;
+        // Nobody receives: a wake is dropped, as for a stopped worker.
+        let (wake, _) = mpsc::sync_channel(1);
+        Ok(Arc::new(Self {
+            preferences: PreferenceService::new(home.clone())?,
+            home,
+            store,
+            sessions,
+            store_hub: Arc::new(Hub::pending()),
+            sessions_hub: Arc::new(Hub::pending()),
+            metrics_hub: Arc::new(Hub::new(SessionMetricsSnapshot::default())),
+            tabs,
+            tabs_hubs: Arc::new(Mutex::new(BTreeMap::new())),
+            store_refresh: Arc::new(Mutex::new(())),
+            sessions_refresh: Arc::new(Mutex::new(())),
+            has_shells: Arc::new(AtomicBool::new(false)),
+            stop: Arc::new(AtomicBool::new(true)),
+            wake,
+            worker: None,
+            _watcher: None,
+            last_error: Arc::new(Mutex::new(None)),
+            observers: Observers::default(),
+            detached: true,
+        }))
+    }
+
+    /// One project's tabs as `Tabs.subscribe` first delivers them, read once.
+    pub async fn tabs_snapshot(self: &Arc<Self>, project: String) -> Result<TabsSnapshot, String> {
+        let tabs = self.tabs.clone();
+        blocking(move || {
+            validate_project_id(&project)?;
+            tabs.snapshot(&project).map_err(backend_error)
+        })
+        .await
     }
 
     /// Compatibility constructor: all versions share the same topic coordinator.

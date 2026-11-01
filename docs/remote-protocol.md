@@ -6,6 +6,8 @@ agreement with the iOS worker.
 
 ## Changelog
 
+- 2026-11-01: "Native invoke extension", additive: one new method, `native.invoke` (`{"module","method","args"}` → `{"value"}`, plus `page` for a directory listing), that calls one of the desktop's own `riwork/native` methods from a fixed allowlist (allowlist v1: 33 methods of `Store`, `Sessions`, `Tabs`, `Settings`, `Files`, `Schedules` and `Orchestrators`), so a device's screens get the objects the Mac's own screens get. It is `riwork native invoke MODULE.METHOD --json` with `args` on the CLI's standard input, run by the desktop binary without its home watcher or session sampler. A method that writes runs in the ordered lane and one that reads in a shared slot. `ready.features.native` (`{"v":1,"methods":[…]}`) lists the methods both the connector and the installed desktop binary have (`"native"` in `riwork capabilities --json`); without it the method answers `invalid_request` "unsupported RPC method", as a connector from before it does. Every method's arguments are typed and refuse unknown fields, and each has an argument policy: no method takes a filesystem path the device chose; `Files.*` and `Sessions.openEditor` take a project (and worktree) id and a path relative to it, which the desktop resolves against its own store and walks without following links; policy changes may only narrow; automations may only be listed, paused and deleted; billing, accounts, API keys, project creation at a path, windows and anything that holds state between calls are not on the list. Two new error codes, only from this method: `conflict` (the desktop's data changed underneath, such as a stale automation revision) and `refused` (the desktop's policy or store refused the arguments: a path outside the project, a widening change, a worktree of another project). A value over its method's size limit is `response_too_large`. **This changes the authority statement below**: a paired device can now change projects, folders, tasks, memos and some settings of the desktop, not only its terminals and chats. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged. Needs the iOS worker's agreement; the phone's transport allows the method only for the methods of its own copy of the allowlist (`NativeInvokeRequests` in `ios/Core/RelayClient.swift`). See "Native invoke extension" below.
+- 2026-11-01: "State watch extension", additive: one new method, `state.watch` (`{"since":{TOPIC:REV|null,…},"wait_ms":0..25000}`), that waits until the desktop's data of one of the topics `store`, `sessions`, `tabs` (per project), `settings`, `schedules`, `usage` and `dashboard` changes, and answers `{"changed":[…],"revs":{…}}`, or `{"unchanged":true,"revs":{…}}` when `wait_ms` passed. A revision is an opaque digest of what the topic's reader answers; a null revision is always changed, which is how a client learns the first ones. It is `riwork watch --json` with the request on standard input; with `wait_ms` above 0 it is a long poll, counted with the waits of `shell.output` and `chat.events` (at most two at once), else a read. `ready.features.watch` (`{"v":1,"topics":[…]}`) lists the topics both sides have. No new error code. Only the phone's app issues it (one per desktop), never a screen. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged. Needs the iOS worker's agreement. See "State watch extension" below.
 - 2026-10-16: Additive dashboard fields, with no new method, feature flag, error code or version: optional `decisions` / `decisions_total`, `decision_sources`, `recent_activity` / `recent_activity_total`, and `intelligence`. Actual approval/question cards retain exact chat/request IDs, provider choices and source event identities; coverage and observation times distinguish incomplete or saved state. Each new list is capped at 40 rows. Optional Haiku summaries are separately identified, cite observed events and never create controls. Explicit answers revalidate the same host's current `chat.snapshot` and use existing `chat.command`; an uncertain outcome is never automatically retried. Applies to v1 and v2 sessions; original fixtures and older replies remain valid. See "Observed decisions and optional intelligence" in the Dashboard extension, [dashboard decisions](dashboard-decisions.md), and [Haiku summaries](haiku-dashboard.md). The iOS client implements the same fields and response checks.
 - 2026-10-15 (later): Additive, in the same "Chat extension": `presentation.worker` may also carry `after` (a worker chat's log `seq` when its card was written), and its `final` may carry `turn` and `turn_end` (the worker chat's turn that ended it, and the `seq` of that end in the worker's log) or `done_since` (Unix seconds a terminal's agent became done). They say which card an end belongs to and that it is recorded once; a phone reads none of them, and an older one ignores them. Existing methods, bytes and fixtures are unchanged. See `docs/chat-events.md` "Worker markers".
 - 2026-10-15: Additive, in the same "Chat extension", no new method, no new event and no new error code: chat items may carry optional `presentation.worker`, the record of a terminal or chat that this chat started (its worker): `session_id`, `kind` (`shell|chat`), `title`, and optionally `harness`, `model`, `worktree_id`, `assignment` (the first line of what the chat sent it, at most 240 characters), `noted_at` (Unix seconds), `late` and `follow_up` (present only when true), and `final` (`status` `done|exited|failed|stopped`, `ended_at`, `tail`: the worker's last six lines, at most 2 KiB). Such an item is an ordinary `tool_call` (`server` `riwork`, `tool` `worker`), always `completed`, with id `worker:<session_id>` or `worker:<session_id>:<n>`; the same id is written again when the worker finishes. Live state stays where it was: a client joins `session_id` against `shells.list` (terminals) and `chats.list` (chats). The relay never shortens `session_id`. An older phone shows the plain tool row and ignores the field; a phone decodes it leniently and drops a malformed one. See `docs/chat-events.md` "Worker markers". Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged. Needs the iOS worker's agreement.
@@ -40,15 +42,30 @@ agreement with the iOS worker.
 - 2026-09-30: Additive `shell.keys` and cursor/size fields on `shell.output`, for typing straight into a shell from the phone; see "Direct typing extension" below. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged.
 - 2026-09-29: Protocol v2 is specified in [remote-protocol-v2.md](remote-protocol-v2.md). The v1 bytes in this document are unchanged. `pair` still defaults to v1. v2 is opt-in (`--protocol 2`). A v1 device is not rewritten in place; moving a phone to v2 is revoke plus a new pairing.
 
-v1 has no RPC that creates workers, schedules or tasks. Since 2026-10-01 it can
+v1 has no RPC that creates workers or schedules. Since 2026-10-01 it can
 make a project (`project.create`, "Project creation extension" below, only in the
-desktop's default projects folder), and its only way to change which terminals exist
-is `shell.create` and `shell.close` ("Terminal creation extension" below). Since
+desktop's default projects folder), and its ways to change which terminals exist
+are `shell.create` and `shell.close` ("Terminal creation extension" below) and,
+since 2026-11-01, a subshell of an existing shell or a Vim tab on a file of a project
+(`native.invoke`, below). Since
 2026-10-04 it can also start a chat with Codex or Claude in an existing project or
 worktree and talk to it (`chat.create`, `chat.command`, "Chat extension" below), and
 since 2026-10-05 it can make the global or a project's orchestrator
-(`orchestrator.create`, "Orchestrator creation extension" below);
-everything else works on existing sessions. That is an API-level limit only:
+(`orchestrator.create`, "Orchestrator creation extension" below).
+**Since 2026-11-01 a paired device can also write the desktop's projects, folders,
+tasks and memos** through `native.invoke` ("Native invoke extension" below): rename
+a project and change its folder, memo, notification switch, orchestrator-wake switch
+and orchestrator choice; create, rename, move and remove folders; add tasks, assign
+them to a worktree, unassign them and set their status; refresh and sync a project's
+worktrees from Git; turn **Agent terminals run unrestricted** off and stop fanning
+work out (never the reverse: a change that widens what agents may do is made on the
+Mac); and pause and delete automations (never create, change or resume one). It can
+read files inside the project and worktree roots of the desktop's store, and nothing
+outside them. Assigning a task only records it: it starts no agent and wakes no
+orchestrator. Turning a project's orchestrator wakes on lets that project's existing
+orchestrator be woken, when idle, after one of its workers finishes a turn. It cannot
+create a project at a path, change accounts, billing, the Anthropic API key, windows
+or the status bar. Everything else works on existing sessions. That is an API-level limit only:
 `shell.input` reaches every live project shell and orchestrator, including
 unrestricted harness sessions and editor (Vim) tabs, so a paired device can run
 arbitrary commands as the desktop user and can have a harness create anything it
@@ -209,6 +226,8 @@ unsolicited response except handshake `ready`.
 | `upload.finish` | `{"upload":"UUID"}` (File upload) | `{"upload":"UUID","status":"complete","received":123456,"path":"/…/uploads/UUID/IMG_0001-1a2b3c4d.jpg","name":"IMG_0001-1a2b3c4d.jpg"}` |
 | `upload.cancel` | `{"upload":"UUID"}` (File upload) | `{"upload":"UUID","status":"cancelled","received":0}`, or the `complete` answer for a finished one |
 | `shell.paste` | `{"shell_id":"UUID","batch":"UUID","uploads":["UUID"]}` (File upload) | `{"shell_id":"UUID","batch":"UUID","status":"sent\|duplicate\|uncertain"}` |
+| `native.invoke` | `{"module":"Store","method":"renameProject","args":{"selector":"UUID","name":"New"}}` (Native invoke, with `features.native`) | `{"value":ProjectDto}`; a directory listing adds `"page":{"offset":0,"limit":500,"total":12}` |
+| `state.watch` | `{"since":{"store":"0123456789abcdef","tabs":{"UUID":null}},"wait_ms":25000}` (State watch, with `features.watch`) | `{"changed":["tabs"],"revs":{"store":"0123456789abcdef","tabs":{"UUID":"fedcba9876543210"}}}` or `{"unchanged":true,"revs":{...}}` |
 
 Project fields: `id,name,root` strings; `created_at` Unix seconds number; and, optionally,
 `last_edited_unix`, `last_activity_unix` and `agents` (see "Activity and recency extension").
@@ -226,7 +245,7 @@ versions. Lists expose existing CLI entities; output/input resolve a full shell
 UUID against existing project shells **and** orchestrators that run in a terminal (the id
 of one that runs as a chat is refused, "Chat orchestrators"). Dead/missing sessions
 fail clearly. No project default, tmux attachment or free-form CLI RPC, and no
-creation or close except `shell.create`, `shell.close`, `project.create`, `orchestrator.create`, `chat.create` and `chat.stop`, and no change to a project but its memo (`project.memo.set`). `shell.input` intentionally
+creation or close except `shell.create`, `shell.close`, `project.create`, `orchestrator.create`, `chat.create` and `chat.stop`, and no change to a project but its memo (`project.memo.set`), except the allowlisted `native.invoke` methods (since 2026-11-01, "Native invoke extension"). `shell.input` intentionally
 submits terminal input followed by Return and can run commands in the selected
 shell (an unrestricted harness, a Vim tab, a plain shell prompt); clients must show
 the selected shell before sending. CR, LF, NUL and other
@@ -2294,6 +2313,136 @@ standard input, and, ignored, the real CLI in a throwaway `RIWORK_HOME`); the CL
 `crates/riwork-cli/src/cli/memo.rs`, the store's in `crates/riwork-core/src/store_tests.rs`, the
 phone's in `ios/Tests/ProjectMemoTests.swift` (the same text vectors as the store's) and
 `ios/AppTests/ProjectMemoModelTests.swift`.
+
+### Native invoke extension (v1 and v2, 2026-11-01)
+
+Additive and compatible: one new method, one new `ready` feature and two new error codes that only
+this method answers. No change to the handshake, envelopes, fixtures or any existing method; it
+applies to protocol v1 and v2 sessions alike. A client that never calls the method is unaffected.
+
+**Why.** The Mac's screens read and change the desktop's data through the `riwork/native` module
+(`crates/riwork-nsh-native`). A device that shows the same screens calls the same methods, on the
+Mac, and gets the same objects: no per-screen RPC and no mapper on either side.
+
+**Feature detection.** `ready.features.native` is `{"v":1,"methods":["Store.snapshot",…]}`: the
+methods of allowlist v1 (below) that the installed desktop binary also names in `riwork
+capabilities --json` (`"native":{"v":1,"methods":[…]}`; the standalone `riwork-cli` and a desktop
+from before it name none, and then the feature is left out). The connector asks as it asks for
+`features.chat`. Without the method in that list, `native.invoke` answers `invalid_request`
+"unsupported RPC method", as a connector from before the extension does.
+
+**Request.** `{"module":"Store","method":"renameProject","args":{…}}`: exactly those three keys;
+`module` and `method` name one method of allowlist v1 (anything else is `invalid_request`
+"unsupported native method" before any CLI runs), and `args` is an object whose keys are the
+JavaScript parameter names of that method (`renameProject(selector, name)` takes
+`{"selector":"UUID","name":"New"}`; a method that takes one request object takes
+`{"request":{…}}`). A key the method does not take is `invalid_request`.
+
+**Result.** `{"value":…}`: what the method answers on the Mac, as JavaScript sees it there (camel
+case keys; an optional field the Mac leaves out is left out here too, never `null`; a method with
+no answer has `null`). `Files.listDirectory` adds `"page":{"offset","limit","total"}`: `value` holds
+the entries from `offset`, at most `limit` of them (`args.limit` 1 to 1000, default 500), out of
+`total`.
+
+**How it runs.** `riwork native invoke MODULE.METHOD --json` with `args` on the CLI's standard
+input (never as arguments), answered with one line, `{"v":1,"value":…}` or
+`{"v":1,"error":{"code","message"}}`. The desktop binary runs the method on the same backends and
+checks as its windows, but builds no home watcher and no session sampler, and holds nothing
+between calls. A method that writes runs in the ordered lane, after the device's authorization is
+checked again, and is not cut short when the session ends; one that reads runs in a shared slot.
+A write takes the same cross-process file locks as the desktop app's own writes (each store,
+settings or automation write is a read-modify-write under an exclusive lock), so a write here and
+one in the running app never lose each other; the app's file watcher shows the change.
+
+**Allowlist v1.** `W` writes (ordered lane); the rest read (shared slot).
+
+| Module | Methods and their `args` |
+| --- | --- |
+| `Store` | `snapshot {}`, `search {query}`; W: `renameProject {selector,name}`, `updateProjectMetadata {project,name,folder?}`, `setProjectMemo {project,text}`, `setProjectNotifications {selector,enabled}`, `setProjectOrchestratorWakes {selector,enabled}`, `setProjectOrchestrator {project,choice}`, `setProjectDelegationPolicy {project,patch:{spreadWork:false}}`, `createFolder {name,parent?}`, `renameFolder {selector,name}`, `moveFolder {selector,parent?}`, `removeFolder {selector}`, `moveProjectToFolder {selector,folder?}`, `addTask {project,title,details}`, `assignTasks {worktree,tasks}`, `unassignTasks {tasks}`, `setTaskStatus {selector,status}`, `refreshWorktrees {selector}`, `syncWorktrees {selector}` |
+| `Sessions` | `list {}`; W: `createSubshell {request:{projectId,parentShellId}}`, `openEditor {request:{projectId,worktreeId?,path,line?,identity?}}` (`path` relative) |
+| `Tabs` | `snapshot {projectId}` (what `Tabs.subscribe` first delivers) |
+| `Settings` | `get {}`; W: `set {patch:{agentTerminalsUnrestricted?:false,delegationPatch?:{spreadWork:false}}}` |
+| `Files` | `listDirectory {projectId,worktreeId?,path,showHidden?,offset?,limit?}`, `preview {projectId,worktreeId?,path,identity?,pdfRequested?,page?}`, `readText {projectId,worktreeId?,path,identity}` (`path` relative) |
+| `Schedules` | `list {scope?}`; W: `pause {key,paused:true}`, `delete {key}` |
+| `Orchestrators` | `plan {projectId?}` |
+
+Not on the list, and never reachable this way: creating, adding or inspecting a project at a path;
+a session with a working directory; anything that holds state between calls (subscriptions, chat
+handles, staged memo drafts, decision reviews); billing and account choices
+(`Chat.billingAction`, `Accounts.selectDefault`, `Store.setProjectCodexAccount`); the Anthropic API
+key; Orca import; windows, the status bar and appearance; previews, add-ins and computer use.
+
+**Argument policy.** Ids are canonical UUIDs; names are at most 200 bytes, a task's title 500, a
+memo or a task's details 32768, a search 512. No method takes a filesystem path the device chose.
+`Files.*` and `Sessions.openEditor` take a project id (and optionally one of its worktrees) and a
+`path` relative to that root, which the desktop takes from its own store; an empty `path` is the
+root (listing only). The connector refuses before any CLI runs, and the desktop again, an absolute
+path, NUL, an empty, `.` or `..` component, and a path over 4096 bytes. The desktop then walks the
+root by directory descriptor without following any link: a symbolic link on the way, a root that is
+itself a symbolic link, a file replaced since it was listed (`identity`) and anything that is not
+a regular file are refused. `Sessions.openEditor` opens an existing regular file only.
+`Settings.set` and `Store.setProjectDelegationPolicy` take only changes that narrow what agents may
+do; a widening one is `refused`. `Schedules.pause` takes only `paused: true`: resuming makes an
+automation run unattended again, which is done on the Mac.
+
+**Size.** Each method has a limit on its value's JSON: 2 MiB for `Store.snapshot`, `Store.search`,
+`Sessions.list`, `Tabs.snapshot`, `Schedules.list` and the `Files` reads, 128 KiB for the rest; a
+picture in `Files.preview` (a `dataUrl`) over 96 KiB, which cannot fit one frame even deflated,
+and any value over its limit is `response_too_large` ("Too large to show on the phone"). The reply
+must still fit the session (one 131072-byte frame, or 2 MiB deflated into one when the session
+asked for compression), else it is `response_too_large` as for any method.
+
+Errors (`error.code`): `invalid_request` (malformed request, unknown method or field, a malformed
+id or path, and "unsupported RPC method" without the feature); `not_found` (no such project, or
+the device was revoked); `conflict` (the desktop's data changed underneath, such as an automation
+revision); `refused` (the desktop's policy or store refused the arguments: a path outside the
+project, a widening change, a worktree of another project);
+`response_too_large`; `cli_error` for anything else, with the desktop's message. The connector
+checks the CLI's answer (`"v":1` and a `value`, a well-formed `page`) and passes only `value` and
+`page` on.
+
+The desktop's code is `crates/riwork-nsh-native/src/invoke.rs` (the table, the typed arguments and
+the policies) and `crates/riwork-nsh-native/src/files.rs` (`confined_path`, whose tests hold the
+path cases); the connector's is `remote/src/rpc/native.rs`.
+
+### State watch extension (v1 and v2, 2026-11-01)
+
+Additive and compatible: one new method and one new `ready` feature. No new error code and no
+change to the handshake, envelopes, fixtures or any existing method; it applies to protocol v1 and
+v2 sessions alike.
+
+**Why.** The protocol has no push. A device that shows the desktop's data would otherwise poll
+every screen's reads; one wait per desktop says which topics changed, and the device re-reads only
+those.
+
+**Feature detection.** `ready.features.watch` is `{"v":1,"topics":[…]}`: the topics below that the
+installed desktop binary also names in `riwork capabilities --json` (`"watch":{"v":1,"topics":[…]}`).
+Without it the method answers `invalid_request` "unsupported RPC method", and a client polls.
+
+**Request.** `{"since":{…},"wait_ms":N}`: exactly those two keys; `wait_ms` an integer from 0 to
+25000. `since` names at least one topic, each with the revision the client has, or `null` for none:
+`store`, `sessions`, `settings`, `schedules`, `usage`, `dashboard`, and `tabs`, which maps 1 to 16
+project UUIDs to revisions. A revision is 1 to 64 printable ASCII characters. Anything else is
+`invalid_request` before any CLI runs.
+
+**Result.** As soon as one asked-about revision differs from the desktop's (a `null` always does),
+`{"changed":["store",…],"revs":{"store":"…","tabs":{"UUID":"…"}}}`; when `wait_ms` passes without
+one, `{"unchanged":true,"revs":{…}}`. `revs` holds the current revision of every topic asked
+about. A revision is an opaque digest of what that topic's reader answers (`Store.snapshot`,
+`Sessions.list`, `Tabs.snapshot`, `Settings.get`) or of the files it reads (automations, usage,
+and for `dashboard` the store, shells, automations, usage and chats together), so a file that was
+only touched changes nothing; clients compare revisions for equality only.
+
+**How it runs.** `riwork watch --json` with the request on the CLI's standard input. It watches the
+desktop's RiWork home (registered before the first read, so no change falls between the two) and,
+while `sessions`, `tabs` or `dashboard` are asked about, samples the shells every two seconds
+(tmux writes no file when a shell starts or ends). With `wait_ms` above 0 it is a long poll,
+counted with the waits of `shell.output` and `chat.events` (at most two at once); with 0 it is a
+read. Only the app's own watch sends it, at most one per desktop, never a screen; a screen asks the
+app which topics it follows and re-reads them when they change.
+
+The desktop's code is `crates/riwork-nsh-native/src/state_watch.rs`; the connector's is
+`remote/src/rpc/native.rs`.
 
 ## Fixtures and change log
 

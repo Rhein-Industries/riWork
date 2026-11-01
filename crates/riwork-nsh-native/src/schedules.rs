@@ -807,7 +807,7 @@ async fn process() -> Result<Arc<ScheduleProcess>, String> {
 }
 /// The UI uses the frozen bridge codes, retaining the engine's precise reason
 /// in the message (including revision_conflict so a draft asks to reopen).
-fn bridge_error(error: String) -> String {
+pub(crate) fn bridge_error(error: String) -> String {
     let reason = error.split_once(':').map(|(code, _)| code).unwrap_or("");
     let code = match reason {
         "invalid_argument" => "invalid",

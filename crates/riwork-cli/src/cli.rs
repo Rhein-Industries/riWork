@@ -26,6 +26,12 @@ use crate::{
 // command still finishes with its real exit status.
 static STDOUT_CLOSED: AtomicBool = AtomicBool::new(false);
 
+/// What the binary that embeds this CLI adds to `capabilities --json`, set once before
+/// `run_cli`: the desktop app's `native` and `watch` (its `riwork native invoke` and
+/// `riwork watch`), which the standalone CLI does not have.
+pub static EXTRA_CAPABILITIES: std::sync::OnceLock<serde_json::Map<String, serde_json::Value>> =
+    std::sync::OnceLock::new();
+
 fn write_stdout(args: fmt::Arguments<'_>) {
     if STDOUT_CLOSED.load(Ordering::Relaxed) {
         return;
@@ -1056,7 +1062,7 @@ fn open_command(args: Vec<String>, json: bool, invocation: Invocation) -> Result
 fn capabilities_command(args: Vec<String>, json: bool) -> Result<(), String> {
     ensure_empty(&args)?;
     if json {
-        return print_json(&json!({
+        let mut answer = json!({
             "v": 1,
             "verifies_shell": true,
             "project_create_exclusive": true,
@@ -1072,7 +1078,11 @@ fn capabilities_command(args: Vec<String>, json: bool) -> Result<(), String> {
             "dashboard": true,
             "project_memo": true,
             "preview": true
-        }));
+        });
+        for (key, value) in EXTRA_CAPABILITIES.get().into_iter().flatten() {
+            answer[key.as_str()] = value.clone();
+        }
+        return print_json(&answer);
     }
     println!("verifies_shell yes");
     println!("project_create_exclusive yes");

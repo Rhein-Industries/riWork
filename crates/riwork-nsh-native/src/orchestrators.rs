@@ -32,11 +32,14 @@ pub struct OrchestratorDto {
     pub project_id: Option<String>,
     /// `chat` or `terminal`.
     pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[prop(skip_none)]
     pub chat_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[prop(skip_none)]
     pub shell_id: Option<String>,
     /// A chat's provider (`codex`, `claude`, `muse`); a terminal runs Codex.
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[prop(skip_none)]
     pub provider: Option<String>,
     /// A chat's state word; a terminal's `live` or `exited`.
@@ -46,6 +49,7 @@ pub struct OrchestratorDto {
     /// Made by this request.
     pub created: bool,
     /// What Automatic could not start first, and what runs instead.
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[prop(skip_none)]
     pub fallback: Option<String>,
 }
@@ -56,8 +60,10 @@ pub struct OrchestratorDto {
 pub struct OrchestratorPlanDto {
     /// `automatic`, `terminal` or `chat`.
     pub mode: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[prop(skip_none)]
     pub provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[prop(skip_none)]
     pub model: Option<String>,
     /// Automatic's choices in order: `provider:model`.

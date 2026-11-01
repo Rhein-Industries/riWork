@@ -1255,6 +1255,15 @@ impl Rpc {
                             flag.store(true, Ordering::Relaxed);
                         }
                     }
+                    // `native` and `watch` are lists, not a yes: the desktop binary's own.
+                    let native = super::native::NativeCapabilities::from_reply(&reply);
+                    if !native.methods.is_empty() || !native.topics.is_empty() {
+                        *self
+                            .native_capabilities
+                            .lock()
+                            .expect("native capabilities") = native;
+                        self.native.store(true, Ordering::Relaxed);
+                    }
                 }
                 self.capability_answers.fetch_add(1, Ordering::Release);
                 Ok(flag.load(Ordering::Relaxed))
