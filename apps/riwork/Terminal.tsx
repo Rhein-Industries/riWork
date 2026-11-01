@@ -1,35 +1,11 @@
 // NSH 0.3 consolidates the nsh/native declarations into its nsh export.
-import { Text, View, cleanup, nativeComponent, signal, type YNode } from "nsh";
+import { Text, View, cleanup, signal, type YNode } from "nsh";
 import { Input } from "nsh/base";
 import { DEFAULT_THEME, space, type InterfaceTheme } from "./appearance";
 import { Icon } from "./Icon";
 
-export type TerminalTarget = { kind: "local"; shellId: string } | { kind: "remote"; desktopId: string; shellId: string };
-export type TerminalColors = { source: "ghostty" } | { source: "override"; background: string; foreground: string; palette: string[] };
-export type TerminalState = "detached" | "attaching" | "attached" | "failed" | "claimed" | "reconnecting" | "ended" | "gone";
-export interface TerminalProps {
-  target: TerminalTarget;
-  visible: boolean;
-  pinned: boolean;
-  focusOnAttach: boolean;
-  colors: TerminalColors;
-  frozen: boolean;
-}
-export interface TerminalEvents {
-  state: { state: TerminalState; message?: string; attempts?: number };
-  focusChange: { focused: boolean };
-  linkOpen: { action: "open" | "edit"; kind: "url" | "file" | "folder"; target: string; line?: number; column?: number };
-  drop: { paths: string[]; images: string[]; accepted: boolean; reason?: string };
-  inputRefused: { reason: string };
-  findResult: { total: number; current: number };
-  findOpen: { query: string };
-}
-/** Frozen schema 1. Input, drawing and link detection stay in the native view. */
-export const Terminal = nativeComponent<TerminalProps, TerminalEvents>("riwork.terminal", {
-  props: ["target", "visible", "pinned", "focusOnAttach", "colors", "frozen"],
-  events: ["state", "focusChange", "linkOpen", "drop", "inputRefused", "findResult", "findOpen"],
-});
-export type TerminalCommand = "focus" | "blur" | "reattach" | "copy" | "paste" | "selectAll" | "find" | "findNext" | "findPrevious" | "findClose";
+export * from "./terminal_view";
+import { Terminal, terminalStateMessage, type TerminalColors, type TerminalEvents } from "./terminal_view";
 
 export interface TerminalController {
   finding: () => boolean;
@@ -39,18 +15,6 @@ export interface TerminalController {
   findClose: () => void;
 }
 
-export function terminalStateMessage(state: TerminalEvents["state"]): string {
-  if (state.message) return state.message;
-  switch (state.state) {
-    case "attaching": return "Connecting to session…";
-    case "failed": return "Could not attach to this session.";
-    case "claimed": return "This session is displayed in another window.";
-    case "gone": return "This session has ended.";
-    case "ended": return "Session ended.";
-    case "reconnecting": return "Reconnecting…";
-    default: return "";
-  }
-}
 
 interface LocalTerminalProps {
   theme?: () => InterfaceTheme;
