@@ -561,7 +561,8 @@ become Enter, tabs become Tab, other control characters are dropped.
 **Second key list.** A desktop whose `ready.features.key_names` is 2 (2026-11-01) takes F1–F12, Insert, Space and keys with
 modifiers by name (`docs/remote-protocol.md`, "Second key list"), so a modified key goes as one key (`C-Up`, `S-F5`, `M-x`,
 `C-M-c`), and Ctrl also gives the control characters that are not letters: Ctrl with `\` `]` `/` `_` `^` `@` `?` and the
-digits xterm maps (2 NUL, 3 Esc, 4 FS, 5 GS, 6 RS, 7 US, 8 DEL), from the bar's Ctrl or a hardware keyboard (Ctrl+Space
+digits xterm maps (2 NUL, 3 Esc, 4 FS, 5 GS, 6 RS, 7 US, 8 DEL; Ctrl+Shift+- is Ctrl+_ and Ctrl+Shift+/ is Ctrl+?, DEL, as on a
+US keyboard), from the bar's Ctrl or a hardware keyboard (Ctrl+Space
 from the bar only: on a hardware keyboard it switches the input language). A desktop without it gets what those keys stand
 for in the first list's terms: `Escape` and the rest of the sequence as text (`ESC [1;5A`, `ESC O P` for F1, `ESC [2~` for
 Insert), which the program reads as the same bytes; Ctrl with a non-letter types the character itself there, as before.

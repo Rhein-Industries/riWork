@@ -106,6 +106,7 @@ riwork shell output ID --json [--lines N] [--styled] [--if-changed HASH [--wait-
 riwork shell history ID --end N --lines M [--styled] [--json]   Read a page of older scrollback
 riwork shell send ID TEXT               Paste a complete line and submit once
 riwork shell keys ID [--json] -- ITEM...   Type text and keys into a shell, no Return added
+riwork shell keys --serve               Type batches read as JSON lines (for the remote connector)
 riwork shell paste ID [--json] -- FILE...   Paste file paths as a drop on the terminal does
 riwork shell resize ID --columns N --rows N --owner UUID --lease UUID
 riwork shell resize-clear ID --owner UUID --lease UUID   Restore desktop sizing

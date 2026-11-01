@@ -645,8 +645,8 @@ public struct KeyMapper: Sendable, Equatable {
     /// Escape in front (meta sends escape). A character that cannot travel at all (a control character) gives nothing.
     ///
     /// With the second key list (`keyNames` 2) Ctrl also makes `@`, `\`, `]`, `^`, `_` and Space their control characters (and the
-    /// digits xterm maps to them: 2 NUL, 4 FS, 5 GS, 6 RS, 7 US, and `/` US), and Alt goes with the character as one key (`M-x`,
-    /// `C-M-x`). A character outside printable ASCII still goes as Escape and the text.
+    /// digits xterm maps to them: 2 NUL, 4 FS, 5 GS, 6 RS, 7 US, and `/` US; with Shift, `-` is `_` and `/` is `?`, DEL), and Alt
+    /// goes with the character as one key (`M-x`, `C-M-x`). A character outside printable ASCII still goes as Escape and the text.
     public static func encode(_ character: Character, modifiers: ChordModifiers, keyNames: Int = 1) -> [KeyItem] {
         if keyNames >= 2, let items = secondList(character, modifiers: modifiers) { return items }
         var character = character
@@ -667,6 +667,9 @@ public struct KeyMapper: Sendable, Equatable {
         var character = character
         if modifiers.contains(.shift), TerminalKey.control(forLetter: character) != nil { character = Character(String(character).uppercased()) }
         if modifiers.contains(.control) {
+            // A hardware key command names the key, not what Shift makes of it: Ctrl+Shift+- is Ctrl+_ and Ctrl+Shift+/ is Ctrl+?
+            // (DEL), as on a US keyboard.
+            if modifiers.contains(.shift) { character = ["-": "_", "/": "?"][character] ?? character }
             let base: Character
             switch character {
             case " ": return encode(.space, modifiers: alt ? [.control, .alt] : .control, keyNames: 2)
