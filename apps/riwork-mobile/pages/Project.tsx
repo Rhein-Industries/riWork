@@ -2,7 +2,8 @@
  * its live terminals and `chats.list`), the selected terminal (`riwork.terminal`, the iOS capture terminal),
  * and its actions: New terminal, Open a worker or shell, Move, Close (only after the person confirms), and
  * the project's native screens. A chat tab opens the native chat (`nav.present` `chat`). The app chords work
- * from the page's keymap and, while the terminal holds the keyboard, from its `command` events. */
+ * from the page's keymap, from the terminal's `command` events while it holds the keyboard, and from Swift's
+ * `keyboard.command` (its root key host's Clicks prefix, a chord typed in the native chat). */
 import { Scroll, Text, View, cleanup, computed, effect, keymap, signal, untracked, type YNode } from "nsh";
 import { AlertDialog, Dialog, type AlertDialogAction } from "nsh/base";
 import { APP_CHORDS, appChord, type AppChord } from "../../riwork/app_chords";
@@ -42,6 +43,8 @@ export function ProjectPage(props: { app: MobileApp; ui: Kit; layout: Layout; ro
 
   const tabs = computed(() => workspaceTabs(reply(), shells(), chats()));
   const features = () => app.hosts().find((info) => info.id === hostId)?.features ?? [];
+  /** What the Mac offers, as one value: a change (another connection) reads the tabs again. */
+  const offered = computed(() => features().join(" "));
   const connected = () => app.link(hostId).state === "connected";
   const onScreen = computed(() => props.onTop() && !app.blocked());
   const keysLive = computed(() => onScreen() && !creating() && !picking() && !menuOpen());
@@ -114,6 +117,7 @@ export function ProjectPage(props: { app: MobileApp; ui: Kit; layout: Layout; ro
   // The reads run untracked: what they set must not run this again.
   effect(() => {
     if (!onScreen() || !connected()) return;
+    offered();
     untracked(() => void read());
     const timer = setInterval(() => void read(), POLL_MS);
     return () => clearInterval(timer);
@@ -140,22 +144,28 @@ export function ProjectPage(props: { app: MobileApp; ui: Kit; layout: Layout; ro
   function back() {
     if (props.layout === "pad") app.openDashboard(hostId); else app.back();
   }
+  /** An app chord, from the keymap, the terminal or Swift: only while the page takes keys (no form, picker or menu up). */
   function run(chord: AppChord | null) {
-    if (!chord || !onScreen()) return;
+    if (!chord || !keysLive()) return;
     switch (chord.type) {
       case "select": activate(tabs()[chord.index] ?? null); break;
       case "next": activate(cycled(tabs(), selected(), 1)); break;
       case "previous": activate(cycled(tabs(), selected(), -1)); break;
       case "newTerminal": if (connected()) creating.set(true); break;
       case "back": back(); break;
-      case "openTab": if (reply()) picking.set(true); break;
+      case "projects": app.openProjects(hostId); break;
+      case "display": void app.present({ name: "settings" }); break;
+      case "picker": if (reply()) picking.set(true); break;
     }
   }
   effect(() => {
     if (!keysLive()) return;
     const bindings: Record<string, () => void> = {};
-    for (const [, keys, chord] of APP_CHORDS) bindings[keys] = () => run(chord);
-    return keymap.bind(bindings, { when: "always" });
+    for (const [, keys, chord] of APP_CHORDS) if (keys) bindings[keys] = () => run(chord);
+    const fromSwift = (id: string) => run(appChord(id));
+    app.chords.current = fromSwift;
+    const unbind = keymap.bind(bindings, { when: "always" });
+    return () => { unbind(); if (app.chords.current === fromSwift) app.chords.current = null; };
   });
 
   // MARK: Changes to the shared list
@@ -220,12 +230,14 @@ export function ProjectPage(props: { app: MobileApp; ui: Kit; layout: Layout; ro
     else if (choice === "right" && right) await update(right);
     else if (choice === "close") await requestClose(tab);
   }
-  /** The page's menu: the tab on screen, new tabs, then the project's native screens. */
+  /** The page's menu: the tab on screen and its terminal, new tabs, then the project's native screens. */
   async function pageMenu() {
-    const tab = current(), openable = openableEntries(reply()).length;
+    const tab = current(), openable = openableEntries(reply()).length, live = shellId() != null;
     const actions: AlertDialogAction[] = [{ id: "new", label: "New terminal" }];
     if (reply()) actions.push({ id: "open", label: openable ? `Open a worker or shell… (${openable})` : "Open a worker or shell…" });
     if (tab) actions.push({ id: "tab", label: `${title(tab)}…` });
+    // The terminal's own (schema 1 commands): the capture terminal has no selection, so this is how its text leaves the device.
+    if (live) actions.push({ id: "copy", label: "Copy screen text" }, { id: "reattach", label: "Refresh output" });
     if (features().includes("project_memo")) actions.push({ id: "memo", label: "Memo…" });
     actions.push({ id: "global", label: "Global orchestrator" }, { id: "display", label: "Display settings" }, { id: "refresh", label: "Refresh tabs" });
     actions.push({ id: "cancel", label: "Cancel", role: "cancel" });
@@ -237,6 +249,8 @@ export function ProjectPage(props: { app: MobileApp; ui: Kit; layout: Layout; ro
       case "new": creating.set(true); break;
       case "open": picking.set(true); break;
       case "tab": if (tab) await tabMenu(tab); break;
+      case "copy": terminal?.command("copy"); break;
+      case "reattach": terminal?.command("reattach"); break;
       case "memo": void app.present({ name: "memo", host: hostId, projectId }); break;
       case "global": void app.present({ name: "global", host: hostId }); break;
       case "display": void app.present({ name: "settings" }); break;

@@ -222,11 +222,15 @@ desktop sessions running; revoke the device on the desktop to deny access.
 shared list (visible tabs in shared order, with their titles and states) or, on an older desktop, the live terminals and the chats;
 a terminal tab shows the `riwork.terminal` component, whose key bar, line composer, dictation, viewport lease, history and text size
 are the native terminal's own; a chat tab opens the native chat over the page, which keeps its terminal. ＋ and ⌘N open New
-terminal, ⌘⇧O Open a worker or shell, ⌘1–9 and ⌘⇧[ / ] switch tabs and ⌘⇧P goes back, from the page and from the terminal
-(its `command` event). A long press (or ⋯ → the tab) has Move left, Move right and Close. **Closing always asks first** (Detach,
-or Exit for a project terminal you opened; a worker and an orchestrator only detach; a chat is stopped from its own menu), whatever
-the Tabs setting says. Rename, drag reordering, Edit tabs, focus mode and Session info are not on the TSX page yet. The last tab of
-each project is still `SavedDesktop.projectTabKeys`. The rest of this section describes the native project screen
+terminal, ⌘⇧O Open a worker or shell, ⌘1–9 and ⌘⇧[ / ] switch tabs, ⌘⇧P goes back and ⌘⇧, opens Display settings, from the
+page, from the terminal (its `command` event) and, on a Clicks keyboard, with the Tab prefix (1–9, N, and P for Projects) even
+when no terminal is on screen. In a chat opened from the page the same chords (and Tab 1–9 and N) go back to the page and act
+there; ⌘⇧P is Back to the page. The ids are in `apps/riwork/app_chords.ts` (docs/nsh-ios-migration.md). The ⋯ menu has Copy
+screen text and Refresh output while a terminal is on screen. A long press (or ⋯ → the tab) has Move left, Move right and Close.
+**Closing always asks first** (Detach, or Exit for a project terminal you opened; a worker and an orchestrator only detach; a chat
+is stopped from its own menu), whatever the Tabs setting says; the phone refuses `shell.close` for a worker's shell whatever the
+page asks. Rename, drag reordering, Edit tabs, focus mode, Session info and Jump to latest are not on the TSX page yet. The last
+tab of each project is still `SavedDesktop.projectTabKeys`. The rest of this section describes the native project screen
 (`TerminalTabsView`), which the app no longer opens.
 
 Select a project, then choose a worker, shell or orchestrator tab (an orchestrator the Mac runs as a chat opens as a chat; see Chats).

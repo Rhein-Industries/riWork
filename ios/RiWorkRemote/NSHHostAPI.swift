@@ -133,13 +133,16 @@ import UIKit
         }
     }
 
+    /// The link as the pages see it. A connection is `connected` only once what the Mac offers is known (`capabilitiesKnown`: its
+    /// `ready.features` and first lists): before that a page would read a Mac that shares tabs as one that does not, and offer a
+    /// close that goes straight to `shell.close`.
     private func link(_ id: String) -> [String: Any] {
         guard id == model.selectedDesktopID else {
             if id == bridge.interactiveHostID { return ["state": "connecting", "label": ConnectionState.connecting.label] }
             return ["state": "offline", "label": "Not connected"]
         }
         let state: String = switch model.state {
-        case .connected: "connected"
+        case .connected: model.capabilitiesKnown ? "connected" : "connecting"
         case .connecting: "connecting"
         case .suspended: "suspended"
         case .failed: "failed"
@@ -150,9 +153,9 @@ import UIKit
         return value
     }
 
-    /// What the interactive host's connection announced, by its `ready.features` names.
+    /// What the interactive host's connection announced, by its `ready.features` names; none until the link is `connected`.
     private func features(_ id: String) -> [String] {
-        guard id == model.selectedDesktopID, model.state == .connected else { return [] }
+        guard id == model.selectedDesktopID, model.state == .connected, model.capabilitiesKnown else { return [] }
         let features = model.desktopFeatures
         let flags: [(String, Bool)] = [
             ("deflate", features.deflate), ("chat", features.chat), ("tabs", features.tabs), ("upload", features.upload != nil),
@@ -192,6 +195,8 @@ import UIKit
         guard hostID == model.selectedDesktopID else { throw HostCallError("offline", "Open this desktop first.") }
         guard model.appActive else { throw HostCallError("offline", ConnectionState.suspended.label) }
         guard model.state == .connected else { throw HostCallError("offline", model.state.label) }
+        guard model.capabilitiesKnown else { throw HostCallError("offline", ConnectionState.connecting.label) }
+        if method == "shell.close" { try closable(params) }
         if method == "dashboard.get", !model.desktopFeatures.dashboard || model.dashboardSupport == .unsupported {
             throw HostCallError("unsupported", model.dashboardUnavailableReason ?? "Update RiWork on the Mac to see its dashboard here.")
         }
@@ -212,6 +217,19 @@ import UIKit
             }
             throw HostCallError.from(error, dashboard: method == "dashboard.get")
         }
+    }
+
+    /// `shell.close` from the pages, refused as `RemoteModel.closeTerminal` refuses it: only a project terminal of the project Swift
+    /// follows (the page's), and never a shell this device has ever seen as a shared worker, which is only ever detached.
+    private func closable(_ params: [String: JSONValue]) throws {
+        guard case .string(let id)? = params["shell_id"] else { throw HostCallError("failed", "The request names no terminal.") }
+        if model.everSharedWorkers.contains(id) || model.sharedEntry(ofSession: id)?.isWorker == true {
+            throw HostCallError("failed", "A worker's shell is detached, not closed, from the phone.")
+        }
+        guard let session = model.shells.first(where: { $0.id == id }) ?? model.orchestrators.first(where: { $0.id == id }) else {
+            throw HostCallError("failed", "Still reading this project's terminals. Try again in a moment.")
+        }
+        guard session.kind == "project" else { throw HostCallError("failed", "Orchestrators are closed on the Mac.") }
     }
 
     /// The request may have gone out and its answer did not come back: the link dropped, or the wait ran out.

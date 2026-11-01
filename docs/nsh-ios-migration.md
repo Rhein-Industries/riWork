@@ -118,11 +118,41 @@ restrictions (`shell_create_as_settings`) and otherwise an Unrestricted switch,
 and sends `shell.create` once; a lost answer reads the tabs again. Its "New chat
 or orchestrator…" opens the native New terminal sheet at Chat (`nav.present`
 `newChat`). Open a worker or shell (⌘⇧O) lists the hidden tabs and opens one
-with `tabs.open`. The app chords (⌘1–9, ⌘⇧[ / ], ⌘N, ⌘⇧P back, ⌘⇧O) are the
-page's keymap and, while the terminal holds the keyboard, its `command` event
-(ids in `apps/riwork/app_chords.ts`: `tab.select.1`…`tab.select.9`,
-`tab.previous`, `tab.next`, `terminal.new`, `nav.back`, `tab.open`). With a
-hardware keyboard attached the strip moves to the bottom.
+with `tabs.open`. The page's ⋯ menu also has, while a terminal is on screen,
+Copy screen text (the terminal's `copy`: its screen and scrollback, since the
+capture terminal has no selection) and Refresh output (`reattach`).
+
+The app chords have one table, `apps/riwork/app_chords.ts` (design §2.5's
+`keyboard.ts`; that name is the Mac's command keymap), by the ids the terminal
+component sends (docs/nsh-contracts.md §3): `tab.select.1`…`tab.select.9`
+(⌘1–9, Clicks Tab 1–9), `tab.prev` / `tab.next` (⌘⇧[ / ]), `terminal.new` (⌘N,
+Clicks Tab N), `nav.back` (⌘⇧P), `nav.projects` (Clicks Tab P: the host's
+Projects page; on iPad its column, beside the dashboard), `display.open` (⌘⇧,:
+Display settings) and `picker.open` (⌘⇧O). `chat.model` (Clicks Tab M) is the
+native chat's own. They reach the page three ways, and it acts on them only
+while it takes keys (no form, picker or menu up):
+- its keymap, while TSX holds the keyboard;
+- the terminal's `command` event, while the terminal holds it;
+- Swift's `keyboard.command {id}` event: from the root key host on a Clicks
+  keyboard in its hardware layout, which on a project's page takes the
+  keyboard only when nothing that types holds it (no terminal on screen, as the
+  native project screen's own key host), and then carries the ⌘ chords too
+  (it sits beside the NSH view, so the page's keymap may not be reached while
+  it holds the keyboard; only one of them answers a key); and from the
+  native chat, whose ⌘1–9, ⌘⇧[ / ], ⌘N, ⌘⇧O and Clicks Tab 1–9 and N go back to
+  the page first and are then sent (⌘⇧P there is Back to the page, ⌘⇧, opens
+  Display settings over the chat, Clicks Tab P the Projects page).
+
+⌘R (the page on top's refresh) and ⌘, (Display settings) are the app's keymap
+on every page while no native screen is up, and the root key host's while it
+holds the keyboard (`mobile.command`). With a hardware keyboard attached the
+strip moves to the bottom.
+
+Not on the TSX project page yet, from the native project screen
+(`TerminalTabsView`): Rename, drag reordering, Edit tabs, focus mode, Session
+info, Jump to latest, and the Tabs setting "When closing a tab"
+(`tab_close_behavior`, still in Display settings, which this page does not
+read: closing always asks).
 
 ## Swift host API
 
@@ -146,6 +176,7 @@ and declared in `apps/riwork-mobile/nsh.json` (`relay.*`, `platform.*`,
 | `platform.theme` | event | | `{theme: InterfaceTheme, native, mic, dark}`; the first value is `host.params.theme` |
 | `nav.present` | call | `{name, host?, projectId?, chatId?, start?}` | `{}`; presents a remaining native Swift screen |
 | `nav.open` | event | | `{page, host?, projectId?, name?, tab?, newTerminal?}`: Swift moves the pages (`hosts`, `dashboard`, `projects`, `project`) |
+| `keyboard.command` | event | | `{id}`: an app chord for the project page (`app_chords.ts` ids), from Swift's root key host or the native chat |
 
 ```
 HostInfo  = {id, name, address?, selected: boolean, link: LinkState, features: string[]}
@@ -161,9 +192,16 @@ LinkState = {state: "connected"|"connecting"|"offline"|"failed"|"suspended", lab
   connection. The writes (`tabs.open`, `tabs.update`, `shell.create`,
   `shell.close`, `project.create`) are never repeated; one whose answer was lost
   (the link dropped, the wait ran out) rejects `uncertain`, and the page reads
-  its list again. `HostInfo.features` lists the connection's `ready.features` by
+  its list again. `shell.close` is refused, as `RemoteModel.closeTerminal`
+  refuses it, for anything but a project terminal of the project Swift follows
+  and for a shell this device has ever seen as a shared worker (only ever
+  detached). `HostInfo.features` lists the connection's `ready.features` by
   name, `dashboard` left out for a Mac that refuses it, plus `native` and
   `native:<Module.method>` for each native read the Mac lists.
+- **The link** is `connected` only once what the Mac offers is known
+  (`capabilitiesKnown`: its `ready.features` and first lists); until then it
+  is `connecting`, `features` is empty and `relay.call` answers `offline`. So
+  no page reads a Mac that shares tabs as one that does not.
 - **Decisions** keep the Swift flow the overview's sheet uses.
   `relay.decision.review` reads the request from the host's last parsed
   dashboard (`DashboardDecision`; a request this phone cannot read in full is
@@ -231,7 +269,9 @@ content clear of the keyboard and home indicator.
 Project navigation supports hardware-keyboard movement and opening. The root
 also connects the existing Clicks prefix shortcuts and shortcut guide through a
 native responder beneath the NSH view, without placing an input layer over the
-screen. Native screens keep their own responder ownership.
+screen, on the hosts, a host's dashboard and a project's page (there only when
+no terminal or text field holds the keyboard). Native screens keep their own
+responder ownership.
 
 The outer UIKit navigation controller pushes the existing terminal/chat view
 controllers. Their touch scrolling, text selection, tab gestures, IME input,
@@ -260,6 +300,8 @@ remaining forms. A desktop screen moves by taking its data through the ports in
 `apps/riwork/client` instead of `riwork/native`; the Mac keeps its native
 module behind `adapters/local.ts`. The terminal remains a platform-native
 surface (`riwork.terminal`) while its surrounding controls are TSX. The old
-`RemoteRootView`, `TerminalTabsView`, `NewTerminalSheet`'s terminal kinds and
-`NewProjectSheet` are retained as source (the hosted app tests mount them);
-the app entry no longer reaches them.
+`RemoteRootView`, `TerminalTabsView` and `NewProjectSheet` are retained as
+source (the hosted app tests mount them); the app entry no longer reaches them.
+`NewTerminalSheet` stays in use: `nav.present` `newChat` opens it at Chat, with
+its terminal kinds still offered, and a terminal made there becomes the page's
+tab.

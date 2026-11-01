@@ -1,7 +1,7 @@
 /** The iPhone and iPad app's state above both shells: the device (Swift), the hosts, the theme, the All
  * hosts overview Swift still reads, each host's ports and the navigation. `PhoneShell` and `PadShell` draw
  * the same routes, so resizing across 600 points keeps where the person is. */
-import { cleanup, effect, host, signal, untracked, type Accessor, type Signal } from "nsh";
+import { cleanup, effect, host, keymap, signal, untracked, type Accessor, type Signal } from "nsh";
 import { createNavStack, type NavStackState } from "nsh/base";
 import { PortError, type DeviceTheme, type HostInfo, type LinkState, type PresentRequest, type Services } from "../riwork/client/ports";
 import { createRemoteServices } from "../riwork/client/remote";
@@ -55,6 +55,9 @@ export interface MobileApp {
   back(): void;
   /** The page on top's refresh (⌘R, Swift's refresh command): set while it is on top. */
   refresher: { current: (() => void) | null };
+  /** The project page's app chords from Swift (`keyboard.command`, an `app_chords.ts` id: the root key host's
+   * Clicks prefix and ⌘ chords, or the native chat's): set while that page takes keys. */
+  chords: { current: ((id: string) => void) | null };
   /** Swift asked the project page on screen for a tab or the New terminal form (`nav.open`). */
   projectRequest: Accessor<ProjectRequest | null>;
 }
@@ -84,6 +87,7 @@ export function createMobileApp(): MobileApp {
   void host.call("mobile.snapshot").then(install).catch((error) => { if (alive) failure.set(String(error)); });
 
   const refresher: { current: (() => void) | null } = { current: null };
+  const chords: { current: ((id: string) => void) | null } = { current: null };
   const projectRequest = signal<ProjectRequest | null>(null);
   const nav = createNavStack<Route>([HOSTS]);
   const top = () => { const routes = nav.routes(); return routes[routes.length - 1] ?? HOSTS; };
@@ -159,14 +163,25 @@ export function createMobileApp(): MobileApp {
     said = key;
     void act(action);
   });
+  const refresh = () => { if (refresher.current) refresher.current(); else void act({ type: "refresh" }); };
+  // Swift's root key host sends these while it holds the keyboard (a Clicks keyboard); otherwise the keymap has them.
   cleanup(host.on("mobile.command", (value) => {
     const command = (value ?? {}) as { type?: string; name?: string };
-    if (command.type === "refresh") { if (refresher.current) refresher.current(); else void act({ type: "refresh" }); }
+    if (command.type === "refresh") refresh();
     else if (command.type === "present" && command.name === "settings") void present({ name: "settings" });
+  }));
+  // ⌘R and ⌘, on every page while no native screen is up.
+  effect(() => {
+    if (!loaded() || overview().nativePresented) return;
+    return keymap.bind({ "mod+r": refresh, "mod+,": () => void present({ name: "settings" }) });
+  });
+  cleanup(host.on("keyboard.command", (value) => {
+    const id = (value as { id?: unknown } | null)?.id;
+    if (typeof id === "string") chords.current?.(id);
   }));
 
   return {
-    device, hosts, theme, overview, loaded, failure, nav, top, hostName, act, present, openHost, connect, openDashboard, openProjects, openProject, back, refresher, projectRequest,
+    device, hosts, theme, overview, loaded, failure, nav, top, hostName, act, present, openHost, connect, openDashboard, openProjects, openProject, back, refresher, chords, projectRequest,
     services(hostId) {
       let found = services.get(hostId);
       if (!found) {

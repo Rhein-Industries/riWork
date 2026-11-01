@@ -18,7 +18,17 @@ enum NSHMobilePresentation {
     case newChat(projectID: String)
     case libraryRecovery
     case decision(hostID: String, decision: DashboardDecision)
-    case dismiss
+}
+
+/// A chord of the project page (`apps/riwork/app_chords.ts`): its key, and the id `keyboard.command` sends for it.
+struct NSHAppChord {
+    let input: String
+    let modifiers: UIKeyModifierFlags
+    let id: String
+    let title: String
+    init(_ input: String, _ modifiers: UIKeyModifierFlags, _ id: String, _ title: String) {
+        self.input = input; self.modifiers = modifiers; self.id = id; self.title = title
+    }
 }
 
 /// A projection of RemoteModel, never a second transport or credential store.
@@ -109,12 +119,42 @@ enum NSHMobilePresentation {
         publishAndObserve()
     }
     func nativeDismissed() { setNativePresented(false) }
-    /// The Clicks prefix on the hosts and a host's dashboard; the Projects and project pages bind their own keys in TSX.
+    /// The Clicks prefix on the hosts, a host's dashboard and a project's page (the Projects page binds its own keys in TSX). On the
+    /// project page the root key host takes the keyboard only when nothing that types holds it (`avoidTextInput`): a project with no
+    /// terminal on screen, as the native project screen's own key host did; a terminal that holds it sends the same ids itself.
     var rootShortcutsActive: Bool {
         app != nil && model.appActive && !nativePresented && openingHostID == nil && respondingHostID == nil && !model.loadFailed
-            && (route == "hosts" || route == "dashboard") && model.keyboard.usesClicks && model.keyboard.usesHardwareLayout
+            && (route == "hosts" || route == "dashboard" || route == "project") && model.keyboard.usesClicks && model.keyboard.usesHardwareLayout
+    }
+    /// The project page is on top: the root key host carries its app chords (`projectChords`), which the TSX keymap cannot see
+    /// while that host holds the keyboard.
+    var onProjectPage: Bool { route == "project" }
+    /// The project page's app chords as `apps/riwork/app_chords.ts` ids, for `keyboard.command` (design §2.5). The terminal component
+    /// sends the same ids as its `command` event while it holds the keyboard.
+    static let projectChords: [NSHAppChord] = (1...9).map { NSHAppChord("\($0)", .command, "tab.select.\($0)", "Select tab \($0)") } + [
+        NSHAppChord("[", [.command, .shift], "tab.prev", "Previous tab"),
+        NSHAppChord("]", [.command, .shift], "tab.next", "Next tab"),
+        NSHAppChord("n", .command, "terminal.new", "New terminal"),
+        NSHAppChord("p", [.command, .shift], "nav.back", "Back"),
+        NSHAppChord(",", [.command, .shift], "display.open", "Display settings"),
+        NSHAppChord("o", [.command, .shift], "picker.open", "Open a worker or shell"),
+    ]
+    /// An app chord for the project page (`keyboard.command {id}`), which acts on it only while it takes keys.
+    func sendChord(_ id: String) {
+        guard route == "project", !nativePresented else { return }
+        app?.send("keyboard.command", ["id": id])
     }
     func rootShortcut(_ action: TabShortcutAction) {
+        if route == "project" {
+            guard rootShortcutsActive else { return }
+            switch action {
+            case .selectTab(let number): sendChord("tab.select.\(number)")
+            case .newTerminal: sendChord("terminal.new")
+            case .projects: sendChord("nav.projects")
+            default: break
+            }
+            return
+        }
         // All hosts belongs to no host. Its guide may open, but a command must
         // never reach the desktop that happened to be used previously.
         guard rootShortcutsActive, route == "dashboard", model.selectedDesktopID != nil else { return }
@@ -178,7 +218,7 @@ enum NSHMobilePresentation {
             throw Failure(message: "Invalid mobile action.")
         }
         // Where the pages are is said even under a native screen: Swift's own navigation can move them meanwhile.
-        guard !nativePresented || type == "dismissNative" || type == "navigate" else {
+        guard !nativePresented || type == "navigate" else {
             throw Failure(message: "Close the current native screen first.")
         }
         switch type {
@@ -194,7 +234,6 @@ enum NSHMobilePresentation {
             }
         case "navigate": try navigate(required(data, "page"), hostID: data["hostID"] as? String, projectID: data["projectID"] as? String)
         case "openDashboardRow": try await openRow(required(data, "rowID"))
-        case "dismissNative": present(.dismiss)
         default: throw Failure(message: "Unknown mobile action.")
         }
     }

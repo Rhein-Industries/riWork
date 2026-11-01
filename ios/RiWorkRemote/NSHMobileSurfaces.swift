@@ -16,6 +16,8 @@ import RiWorkCore
     var onGlobalRequested: (() -> Void)?
     /// A native screen asked for a project's page: at a tab (`shell:<id>`), or with New terminal.
     var onProjectPage: ((_ project: RemoteProject, _ tab: String?, _ newTerminal: Bool) -> Void)?
+    /// A project chord typed in the native chat (an `app_chords.ts` id), for the project page once the chat has gone.
+    var onChord: ((String) -> Void)?
     var isDecisionAnswered: ((HostedDashboardDecision) -> Bool)?
     var respondToDecision: ((HostedDashboardDecision, ChatCommand) async throws -> Void)?
 
@@ -30,6 +32,8 @@ import RiWorkCore
     private var afterSheet: (() -> Void)?
     private var canDismissSheet: (() -> Bool)?
     private var newTab: NewTerminalSheetModel?
+    /// A chord the chat handed on: sent when the page is back on top, dropped if the chat stays.
+    private var pendingChord: String?
 
     init(model: RemoteModel) { self.model = model }
 
@@ -89,7 +93,6 @@ import RiWorkCore
             }, hostID: hostID)
         case .libraryRecovery:
             presentSheet(NSHMobileLibraryRecovery(model: model))
-        case .dismiss: dismissNative()
         }
     }
 
@@ -104,18 +107,21 @@ import RiWorkCore
         pairDesktop(text: url.absoluteString, fromLink: true, overPresented: true)
     }
 
-    func dismissNative() {
-        if sheet != nil {
-            dismissSheet { [weak self] in self?.returnToRoot() }
-        } else { returnToRoot() }
-    }
-
     /// A project's chat over its TSX page: Back returns to the page, which still shows the terminal it had.
     private func openChat(project: String, chat: String) {
         let key = "chat:\(model.selectedDesktopID ?? ""):\(chat)"
         guard key != workspaceKey else { return }
         showWorkspace(NSHMobileChatWorkspace(model: model, projectID: project, chatID: chat, back: { [weak self] in self?.pop() },
-                                             projects: { [weak self] in self?.onProjects?(); self?.returnToRoot() }), key: key)
+                                             projects: { [weak self] in self?.onProjects?(); self?.returnToRoot() },
+                                             chord: { [weak self] in self?.chatChord($0) }), key: key)
+    }
+    /// The project's chords in its chat, as the native project screen had them over a chat tab: Display settings opens over the
+    /// chat; the others are the page's (another tab, New terminal, Open a worker or shell), so the chat makes way for it first.
+    private func chatChord(_ id: String) {
+        if id == "display.open" { present(.settings); return }
+        guard let navigation, navigation.viewControllers.count > 1, navigation.transitionCoordinator == nil, sheet == nil else { return }
+        pendingChord = id
+        returnToRoot()
     }
 
     /// The native New terminal sheet at Chat (it also offers terminals and the orchestrators): a chat it made opens over the page,
@@ -299,6 +305,10 @@ import RiWorkCore
             model.keyboard.tabShortcuts.cancel()
         }
         publishVisibility()
+        // After the bridge has said no native screen is up, so the page takes it.
+        let chord = pendingChord
+        pendingChord = nil
+        if let chord, viewController === root { onChord?(chord) }
         showPendingLink()
     }
 
@@ -397,6 +407,8 @@ private struct NSHMobileChatWorkspace: View {
     let chatID: String
     let back: () -> Void
     let projects: () -> Void
+    /// A project chord (`app_chords.ts` id) for the page under the chat.
+    let chord: (String) -> Void
     @Environment(\.desktopStyle) private var style
     @State private var notices = 0
     @State private var settled = false
@@ -431,8 +443,15 @@ private struct NSHMobileChatWorkspace: View {
         .background(style.background.ignoresSafeArea())
         .overlay { TabShortcutGuide(controller: model.keyboard.tabShortcuts) }
         .background {
-            Button("Back", action: back).keyboardShortcut("p", modifiers: [.command, .shift])
-                .frame(width: 0, height: 0).opacity(0).accessibilityHidden(true)
+            Group {
+                Button("Back", action: back).keyboardShortcut("p", modifiers: [.command, .shift])
+                // The project's other chords, as over a chat tab of the native project screen (⌘⇧P stays Back to the page).
+                ForEach(NSHMobileBridge.projectChords.filter { $0.id != "nav.back" }, id: \.id) { entry in
+                    Button(entry.title) { chord(entry.id) }
+                        .keyboardShortcut(KeyEquivalent(Character(entry.input)), modifiers: entry.eventModifiers)
+                }
+            }
+            .frame(width: 0, height: 0).opacity(0).accessibilityHidden(true)
         }
         .task(id: chatID) {
             await model.chooseProject(projectID)
@@ -445,6 +464,8 @@ private struct NSHMobileChatWorkspace: View {
                 switch action {
                 case .projects: projects()
                 case .modelPicker: if model.selectedChat != nil { model.keyboard.requestModelPicker() }
+                case .selectTab(let number): chord("tab.select.\(number)")
+                case .newTerminal: chord("terminal.new")
                 default: break
                 }
             }
@@ -453,6 +474,17 @@ private struct NSHMobileChatWorkspace: View {
             model.keyboard.tabShortcuts.clearAppHandler(owner: shortcutOwner)
             if model.selectedChatID == chatID { model.deselectChat() }
         }
+    }
+}
+
+private extension NSHAppChord {
+    var eventModifiers: EventModifiers {
+        var result: EventModifiers = []
+        if modifiers.contains(.command) { result.insert(.command) }
+        if modifiers.contains(.shift) { result.insert(.shift) }
+        if modifiers.contains(.alternate) { result.insert(.option) }
+        if modifiers.contains(.control) { result.insert(.control) }
+        return result
     }
 }
 

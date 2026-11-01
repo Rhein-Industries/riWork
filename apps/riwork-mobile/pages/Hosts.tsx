@@ -1,7 +1,7 @@
 /** The paired hosts (`relay.hosts`) and, under them, the All hosts overview Swift reads over its own short
  * connections (`mobile.snapshot` `homeDashboard`). Pairing, a host's details and the display settings are
  * native Swift sheets (`nav.present`). */
-import { Scroll, Text, View, effect, keymap, signal } from "nsh";
+import { Scroll, Text, View, effect, signal } from "nsh";
 import type { MobileApp } from "../app_state";
 import { SECTION_LABELS, SECTION_ORDER, type Dashboard, type DashboardFilter, type DashboardRow, type DashboardSection } from "../model";
 import { Symbol } from "../Symbol";
@@ -19,7 +19,6 @@ export function HostsPage(props: { app: MobileApp; ui: Kit; layout: Layout; onTo
     app.refresher.current = refresh;
     return () => { if (app.refresher.current === refresh) app.refresher.current = null; };
   });
-  effect(() => { if (props.onTop() && !blocked()) return keymap.bind("mod+,", () => void app.present({ name: "settings" })); });
 
   function HostRow(rowProps: { id: string; index: number }) {
     const info = () => app.hosts().find((entry) => entry.id === rowProps.id);

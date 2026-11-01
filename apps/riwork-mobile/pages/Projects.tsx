@@ -39,6 +39,8 @@ export function ProjectsPage(props: {
   let alive = true;
   cleanup(() => { alive = false; });
   const connected = () => app.link(hostId).state === "connected";
+  /** The Mac lists its folders' read: when that changes (another connection), the folders are read again. */
+  const folders = computed(() => (app.hosts().find((info) => info.id === hostId)?.features ?? []).includes("native:Store.snapshot"));
   const onScreen = computed(() => props.onTop() && !app.blocked());
   const keysLive = computed(() => onScreen() && (props.keys?.() ?? true));
   const keyboard = () => app.overview().keyboard;
@@ -69,6 +71,7 @@ export function ProjectsPage(props: {
   // The reads run untracked: what they set must not run this again.
   effect(() => {
     if (!onScreen() || !connected()) return;
+    folders();
     untracked(() => void read(true));
     const timer = setInterval(() => void read(false), props.layout === "pad" ? PAD_POLL_MS : PHONE_POLL_MS);
     return () => clearInterval(timer);
