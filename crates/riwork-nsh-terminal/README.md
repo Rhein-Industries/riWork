@@ -29,19 +29,21 @@ and context until all of these steps finish:
    the retained view/context. After two seconds an unfinished disposal stays
    parked, with asynchronous retries and no blocking wait.
 
-A healthy local terminal is not disposed of when its component unmounts (a
-project switch, a closed tab or window): it is kept, out of any window and not
+One unmount is an exception: while the app switches a window's project it
+sets `keepOnUnmount` (contract amendment 1.2), and a healthy local terminal
+that unmounts then is not disposed of. It is kept, out of any window and not
 drawn, at its last size and with its tmux client attached, still holding its
 shell's claim. The component's NSView is a host that fills its terminal view,
 so the next component for the same shell, in any window, takes the kept view
 into its own host and shows it at once, as if it had just attached; an app
 palette change since updates it, Ghostty's own colors or a changed Ghostty
-configuration replace it. At most four are kept process-wide, the most
-recently shown, each for ten minutes after it was last shown. One whose client
-exits or whose configuration goes stale, the surplus and the expired go
-through the ordinary disposal above, at most two per maintenance pass. Remote,
-ended, failed or retrying terminals, and any not attached, are disposed of at
-once as before.
+configuration replace it. The kept view's staged images move with it to that
+component. At most four are kept process-wide, the most recently shown, each
+for ten minutes after it was last shown. One whose client exits or whose
+configuration goes stale, the surplus and the expired go through the ordinary
+disposal above, at most two per maintenance pass. Closing a tab, pane or
+window, and remote, ended, failed or retrying terminals or any not attached,
+are disposed of at once as before.
 
 The host keeps the AppKit loop alive through the last pending disposal on quit,
 and the kept terminals are disposed of then.

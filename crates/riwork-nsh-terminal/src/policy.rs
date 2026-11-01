@@ -154,9 +154,9 @@ pub fn plan(screen: &Screen<'_>) -> Plan {
     }
 }
 
-/// Terminals kept, process-wide, after their component unmounted: a project
-/// switch, a closed tab or window. Each holds its surface and tmux client, so
-/// the next terminal for its shell shows at once instead of attaching anew.
+/// Terminals kept, process-wide, after their component unmounted because its
+/// window switched to another project. Each holds its surface and tmux client,
+/// so the next terminal for its shell shows at once instead of attaching anew.
 pub const POOL_SIZE: usize = 4;
 
 /// One kept terminal, as far as the policy cares.

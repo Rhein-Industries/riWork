@@ -141,6 +141,9 @@ struct Model {
     // compared with the colors of the component that takes it.
     surface_colors: Option<Colors>,
     surface_revision: u64,
+    // The app is switching this window's project, so an unmount now is the
+    // project leaving, not its tab, pane or window closing (`pool`).
+    keep: bool,
 }
 impl Default for Model {
     fn default() -> Self {
@@ -164,6 +167,7 @@ impl Default for Model {
             hidden: Instant::now(),
             surface_colors: None,
             surface_revision: 0,
+            keep: false,
         }
     }
 }
@@ -379,6 +383,11 @@ impl NativeComponent for Terminal {
                 }
                 "pinned" => m.pinned = value.as_bool().unwrap_or(false),
                 "frozen" => m.frozen = value.as_bool().unwrap_or(false),
+                // Read only when the component unmounts: nothing to apply now.
+                "keepOnUnmount" => {
+                    m.keep = value.as_bool().unwrap_or(false);
+                    return;
+                }
                 "focusOnAttach" => m.focus = value.as_bool().unwrap_or(false),
                 "colors" => match serde_json::from_value::<Colors>(value)
                     .and_then(|c| c.validate().map(|_| c).map_err(serde::de::Error::custom))
@@ -493,9 +502,9 @@ fn sync_state(state: &State) {
     unsafe { rw_terminal_set_state(ptr(state), v, f, focus) };
 }
 
-/// A local terminal kept after its component unmounted (a project switch, a
-/// closed tab or window) with its surface and tmux client, so that the next
-/// component for its shell shows it at once instead of attaching anew. Its
+/// A local terminal kept after its component unmounted because the window
+/// switched to another project, with its surface and tmux client, so that the
+/// next component for its shell shows it at once instead of attaching anew. Its
 /// state is dead (not alive, its generation moved on), so work it had in
 /// flight lands nowhere. It keeps the shell's claim until a component takes it
 /// (`adopt`) or the pool lets it go through the ordinary abandon path.
@@ -520,13 +529,18 @@ fn clock_ms() -> u64 {
     START.get_or_init(Instant::now).elapsed().as_millis() as u64
 }
 
-/// Keeps a dropped component's terminal if it shows its local shell and is
-/// healthy: attached, not about to be replaced, its client and session alive
-/// as far as anyone knows, and on screen within `WARM_EXPIRY`. Anything else,
-/// and anything uncertain, is abandoned as before.
+/// Keeps a dropped component's terminal if the app was switching its window's
+/// project (`keepOnUnmount`) and it shows its local shell and is healthy:
+/// attached, not about to be replaced, its client and session alive as far as
+/// anyone knows, and on screen within `WARM_EXPIRY`. A closed tab, pane or
+/// window, anything else and anything uncertain is abandoned as before, so
+/// its client detaches at once (Release = detach).
 fn pool(state: &Arc<State>) -> bool {
     let (shell, shown, colors, revision) = {
         let m = state.model.lock().unwrap();
+        if !m.keep {
+            return false;
+        }
         let Some(shell) = m.target.as_ref().and_then(Target::local) else {
             return false;
         };
@@ -682,7 +696,12 @@ fn adopt(state: Arc<State>, kept: Pooled) {
         &mut *old.images.lock().unwrap(),
         crate::images::Images::new(&old.home),
     );
-    state.adopted_images.lock().unwrap().push(images);
+    let mut adopted = state.adopted_images.lock().unwrap();
+    adopted.push(images);
+    // And those of terminals it took in turn, so that a second switch back
+    // does not delete the first one's images while the same shell runs.
+    adopted.append(&mut old.adopted_images.lock().unwrap());
+    drop(adopted);
     let (recreate, recolor) = {
         let mut m = state.model.lock().unwrap();
         m.active = Some(kept.shell.clone());

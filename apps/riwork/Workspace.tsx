@@ -1099,6 +1099,10 @@ export function Workspace(props: WorkspaceProps) {
                   <LocalTerminal shellId={panel.id.slice(6)} visible={isVisible(panel.id)}
                     pinned={membershipProject(panel.id.slice(6)) ? !panelState.shells().find((shell) => shell.id === panel.id.slice(6))?.alive : false}
                     focusOnAttach={pendingFocus() === panel.id.slice(6)} colors={terminalColors()} frozen={terminalFrozen()} theme={theme}
+                    // The outgoing project's shells unmount while this holds, and are kept for its return.
+                    // It reaches them a turn before (switchTo awaits the switch): a prop set in the turn
+                    // that unmounts its view never arrives, and the shell is then released as before.
+                    keepOnUnmount={switching()}
                     onMount={() => props.onTerminalMount?.(panel.id.slice(6))}
                     onControl={(control) => {
                       terminalControls.set(panel.id, control);

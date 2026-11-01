@@ -14,6 +14,9 @@ export interface TerminalProps {
   frozen: boolean;
   /** Schema 1.1, iOS only: 1 is the device's saved terminal size. */
   fontScale?: number;
+  /** Schema 1.2, Mac local shells only: set while the window switches project, so the terminal an unmount
+   * then removes is kept for the next view of its shell instead of detached. */
+  keepOnUnmount?: boolean;
 }
 export interface TerminalEvents {
   state: { state: TerminalState; message?: string; attempts?: number };
@@ -28,11 +31,11 @@ export interface TerminalEvents {
   /** Schema 1.1, iOS only: the shell's title changed. */
   title: { title: string };
 }
-/** Schema 1, with the dated 1.1 amendment (docs/nsh-contracts.md §3): input, drawing and link detection
- * stay in the native view. The Mac's view ignores `fontScale` and never sends `command` or `title`; the iOS
- * view takes only remote targets. */
+/** Schema 1, with the dated 1.1 and 1.2 amendments (docs/nsh-contracts.md §3): input, drawing and link
+ * detection stay in the native view. The Mac's view ignores `fontScale` and never sends `command` or `title`;
+ * the iOS view takes only remote targets and ignores `keepOnUnmount`. */
 export const Terminal = nativeComponent<TerminalProps, TerminalEvents>("riwork.terminal", {
-  props: ["target", "visible", "pinned", "focusOnAttach", "colors", "frozen", "fontScale"],
+  props: ["target", "visible", "pinned", "focusOnAttach", "colors", "frozen", "fontScale", "keepOnUnmount"],
   events: ["state", "focusChange", "linkOpen", "drop", "inputRefused", "findResult", "findOpen", "command", "title"],
 });
 export type TerminalCommand = "focus" | "blur" | "reattach" | "copy" | "paste" | "selectAll" | "find" | "findNext" | "findPrevious" | "findClose";
