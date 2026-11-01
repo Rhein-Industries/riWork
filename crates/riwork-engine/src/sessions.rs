@@ -11,7 +11,7 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     process::{Command, Output},
-    sync::OnceLock,
+    sync::{Mutex, OnceLock, PoisonError},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use uuid::Uuid;
@@ -1055,15 +1055,21 @@ impl SessionManager {
     }
 
     /// The argument vector of a tmux client attached to shell `id`, after
-    /// checking that it is live and configuring its scrolling. `attach_command`
+    /// checking that it is live and, unless this process already has,
+    /// configuring its scrolling. `attach_command`
     /// is this, quoted for Ghostty to parse; `attach_exec_command` is this,
     /// run by `riwork shell attach ID --exec`.
     pub fn attach_argv(&self, id: &str, options: AttachOptions) -> Result<Vec<String>, String> {
         self.require_live(id)?;
+        self.live_attach_argv(id, options)
+    }
+
+    /// `attach_argv` for a shell the caller has just read as live.
+    fn live_attach_argv(&self, id: &str, options: AttachOptions) -> Result<Vec<String>, String> {
         // Ghostty renders a tmux client: scrollback belongs to tmux, so mouse
         // reporting is needed for wheel/trackpad scrolling and copy mode.
         // Set this per session as well, upgrading sessions made by older builds.
-        let configured = self.configure_scrolling(id);
+        let configured = self.configure_scrolling_once(id);
         self.invalidate_sample();
         configured?;
         let mut argv: Vec<String> = [
@@ -1095,20 +1101,22 @@ impl SessionManager {
     /// client owns the terminal it was started on, which is what a remote
     /// desktop's pseudo-terminal needs.
     pub fn attach_exec_command(&self, id: &str, options: AttachOptions) -> Result<Command, String> {
-        let argv = self.attach_argv(id, options)?;
-        let inherited = env::var_os("TERMINFO").map(PathBuf::from);
-        let terminal = attach_terminal(
-            env::var("TERM").ok().as_deref(),
-            inherited.as_deref(),
-            &bundled_terminfo_dirs(),
-        );
-        let mut command = Command::new(&argv[0]);
-        command.args(&argv[1..]).env("TERM", &terminal.term);
-        match &terminal.terminfo {
-            Some(dir) => command.env("TERMINFO", dir),
-            None => command.env_remove("TERMINFO"),
-        };
-        Ok(command)
+        Ok(exec_attach_command(&self.attach_argv(id, options)?))
+    }
+
+    /// What a desktop terminal surface runs to show shell `id`, the
+    /// `attach_exec_command` client, with the shell's saved row for its working
+    /// directory; `None` when the shell has ended. Clicking a project attaches
+    /// each of its terminals at once, so this asks tmux once whether the shell
+    /// is live, and configures its scrolling only the first time this process
+    /// attaches it.
+    pub fn terminal_attach(&self, id: &str) -> Result<Option<(ShellSession, Command)>, String> {
+        let session = self.get(id)?;
+        if !session.alive {
+            return Ok(None);
+        }
+        let argv = self.live_attach_argv(id, AttachOptions::default())?;
+        Ok(Some((session, exec_attach_command(&argv))))
     }
 
     /// Detach exactly one desktop surface's tty, never all clients or the session.
@@ -1182,16 +1190,22 @@ impl SessionManager {
         Ok(())
     }
 
-    /// Mouse reporting and wheel scrolling for the shell's session, and hyperlinks for the server.
-    /// Done on every attach, so servers and sessions made by older builds catch up.
+    /// Mouse reporting and wheel scrolling for the shell's session, and hyperlinks for the server,
+    /// as one tmux command list. Done when a session is made, and the first time this process
+    /// attaches one (`configure_scrolling_once`), so servers and sessions made by older builds
+    /// catch up.
     fn configure_scrolling(&self, id: &str) -> Result<(), String> {
-        self.tmux_checked(&["set-option", "-t", id, "mouse", "on"])?;
-        self.allow_hyperlinks();
         // RiWork owns this isolated tmux server. A pane on the main screen
         // (a shell, or an agent run inline) and an alternate-screen application
         // without mouse support both scroll through tmux's history.
         // Applications that request mouse events keep receiving their wheel input.
-        self.tmux_checked(&[
+        let scrolling = [
+            "set-option",
+            "-t",
+            id,
+            "mouse",
+            "on",
+            ";",
             "bind-key",
             "-T",
             "root",
@@ -1201,23 +1215,38 @@ impl SessionManager {
             "#{||:#{pane_in_mode},#{mouse_any_flag}}",
             "send-keys -M",
             "copy-mode -e; send-keys -M",
-        ])?;
+        ];
+        // tmux stops a command list at the first command it refuses, so the
+        // hyperlinks go last, and a refused list is sent again without them:
+        // only the scrolling may fail the call.
+        let all: Vec<&str> = scrolling
+            .iter()
+            .copied()
+            .chain([";"])
+            .chain(ALLOW_HYPERLINKS)
+            .collect();
+        if self.tmux_checked(&all).is_err() {
+            self.tmux_checked(&scrolling)?;
+        }
+        configured_scrolling()
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert((self.socket_name.clone(), id.to_owned()));
         Ok(())
     }
 
-    /// Let OSC 8 hyperlinks through tmux to the terminal. Claude Code and Codex print their URLs
-    /// and file names that way, so that Ghostty can open them, but tmux drops them unless the
-    /// client's terminal is declared to support them. A client picks this up when it attaches.
-    ///
-    /// The fixed index makes a repeated call replace the entry, not add another. A tmux that does
-    /// not know the feature refuses it, and the only loss is the pass-through.
-    fn allow_hyperlinks(&self) {
-        let _ = self.tmux_command(&[
-            "set-option",
-            "-s",
-            "terminal-features[100]",
-            "xterm*:hyperlinks",
-        ]);
+    /// `configure_scrolling`, unless this process has already done it for the
+    /// session. What it sets lasts as long as the session, so attaching it again
+    /// would only cost another tmux client.
+    fn configure_scrolling_once(&self, id: &str) -> Result<(), String> {
+        let done = configured_scrolling()
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains(&(self.socket_name.clone(), id.to_owned()));
+        if done {
+            return Ok(());
+        }
+        self.configure_scrolling(id)
     }
 
     /// What clicking a link in the shell's terminal needs, in one tmux call: the pane's size,
@@ -3165,6 +3194,45 @@ mod compat_tests {
         settings("not json");
         assert!(selected_codex_binding(&home.0, None).is_err());
     }
+}
+
+/// Let OSC 8 hyperlinks through tmux to the terminal. Claude Code and Codex print their URLs
+/// and file names that way, so that Ghostty can open them, but tmux drops them unless the
+/// client's terminal is declared to support them. A client picks this up when it attaches.
+///
+/// The fixed index makes a repeated call replace the entry, not add another. A tmux that does
+/// not know the feature refuses it, and the only loss is the pass-through.
+const ALLOW_HYPERLINKS: [&str; 4] = [
+    "set-option",
+    "-s",
+    "terminal-features[100]",
+    "xterm*:hyperlinks",
+];
+
+/// The sessions whose scrolling this process has configured, by tmux server
+/// (its socket name) and session id. One process can use several servers:
+/// tests and isolated homes each have their own.
+fn configured_scrolling() -> &'static Mutex<HashSet<(String, String)>> {
+    static CONFIGURED: OnceLock<Mutex<HashSet<(String, String)>>> = OnceLock::new();
+    CONFIGURED.get_or_init(Default::default)
+}
+
+/// `argv` as the process a tmux client runs in, announcing the terminal type
+/// `attach_terminal` picks for it.
+fn exec_attach_command(argv: &[String]) -> Command {
+    let inherited = env::var_os("TERMINFO").map(PathBuf::from);
+    let terminal = attach_terminal(
+        env::var("TERM").ok().as_deref(),
+        inherited.as_deref(),
+        &bundled_terminfo_dirs(),
+    );
+    let mut command = Command::new(&argv[0]);
+    command.args(&argv[1..]).env("TERM", &terminal.term);
+    match &terminal.terminfo {
+        Some(dir) => command.env("TERMINFO", dir),
+        None => command.env_remove("TERMINFO"),
+    };
+    command
 }
 
 /// The terminal type an attached tmux client announces, and the terminfo

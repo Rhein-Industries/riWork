@@ -9,7 +9,7 @@ use nsh_platform_macos::{
 use riwork_engine::{
     remote_hosts::{self, RemoteCli},
     session_input::Input,
-    sessions::{AttachOptions, SessionManager, quote_arg},
+    sessions::{SessionManager, quote_arg},
     terminal_drop,
     terminal_links::{Bases, Link, PaneView},
 };
@@ -163,6 +163,8 @@ struct State {
     alive: AtomicBool,
     generation: AtomicU64,
     config_epoch: AtomicU64,
+    // A prop change's reconcile is queued on the main loop (`reconcile_soon`).
+    reconcile_queued: AtomicBool,
     link_busy: AtomicBool,
     link_cache: Mutex<Option<(u64, u64, Value)>>,
     link_pending: Mutex<Option<Value>>,
@@ -267,6 +269,7 @@ pub fn register(components: &Components, home: PathBuf) {
                 alive: AtomicBool::new(true),
                 generation: AtomicU64::new(0),
                 config_epoch: AtomicU64::new(0),
+                reconcile_queued: AtomicBool::new(false),
                 link_busy: AtomicBool::new(false),
                 link_cache: Mutex::new(None),
                 link_pending: Mutex::new(None),
@@ -371,7 +374,7 @@ impl NativeComponent for Terminal {
         if update {
             update_config(self.state.clone());
         }
-        reconcile(self.state.clone());
+        reconcile_soon(self.state.clone());
     }
     fn command(&mut self, name: &str, args: &JsonValue) {
         match name {
@@ -615,6 +618,21 @@ fn request_input(state: Arc<State>, payload: Value) {
         });
     });
 }
+/// NSH sets a terminal's props one at a time, in the order the component
+/// declares them, and `visible` comes before `colors`. Reconciling after each
+/// one would start a new terminal's attach with the colors known so far, and
+/// the colors that follow would discard it and start a second. A batch is set
+/// within one main-loop turn, so reconciling once at the end of the turn
+/// prepares once, with the final props.
+fn reconcile_soon(state: Arc<State>) {
+    if state.reconcile_queued.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    dispatch2::DispatchQueue::main().exec_async(move || {
+        state.reconcile_queued.store(false, Ordering::Release);
+        reconcile(state);
+    });
+}
 fn reconcile(state: Arc<State>) {
     if !state.alive.load(Ordering::Acquire) {
         return;
@@ -796,11 +814,9 @@ fn prepare(
     colors: &Colors,
 ) -> Result<(CString, CString, ConfigFile), String> {
     let manager = SessionManager::at(state.home.clone())?;
-    let session = manager.get(shell)?;
-    if !session.alive {
+    let Some((session, command)) = manager.terminal_attach(shell)? else {
         return Err("gone: the tmux session has ended".into());
-    }
-    let command = manager.attach_exec_command(shell, AttachOptions::default())?;
+    };
     let mut argv = vec!["/usr/bin/env".to_owned()];
     // Preserve the engine's TERM/TERMINFO and unset semantics when passing the
     // command to Ghostty's PTY rather than spawning it here.
@@ -893,12 +909,18 @@ fn hang_up_bridge(state: &State, tty: &str) -> Result<(), String> {
     }
 }
 fn update_config(state: Arc<State>) {
-    let (colors, recreate) = {
+    let (colors, recreate, attached) = {
         let m = state.model.lock().unwrap();
-        (m.colors.clone(), m.recreate)
+        (m.colors.clone(), m.recreate, m.active.is_some())
     };
     if recreate {
         reconcile(state);
+        return;
+    }
+    // Without a surface there is nothing to update: the next attach writes its
+    // config with these colors, and one in flight is discarded for them
+    // (`config_epoch`). A new terminal's first colors arrive this way.
+    if !attached {
         return;
     }
     let generation = state.generation.load(Ordering::Acquire);

@@ -429,12 +429,19 @@ bool rw_terminal_read_config_colors(const char *path, uint32_t colors[18]) {
     gridOriginValid = NO;
     if (!surface || closing) return;
     double scale = self.window.backingScaleFactor ?: NSScreen.mainScreen.backingScaleFactor ?: 1;
-    [CATransaction begin]; [CATransaction setDisableActions:YES]; self.layer.contentsScale = scale; [CATransaction commit];
-    ghostty_surface_set_content_scale(surface, scale, scale);
-    ghostty_surface_set_size(surface, (uint32_t)MAX(1, llround(self.bounds.size.width * scale)),
-        (uint32_t)MAX(1, llround(self.bounds.size.height * scale)));
-    NSNumber *display = self.window.screen.deviceDescription[@"NSScreenNumber"];
-    if (display) ghostty_surface_set_display_id(surface, display.unsignedIntValue);
+    long width = llround(self.bounds.size.width * scale), height = llround(self.bounds.size.height * scale);
+    // NSH gives a placed but hidden tab a zero frame, and a view out of its
+    // window has no screen to scale for. Ghostty would clamp either to a
+    // one-cell grid, the tmux client would shrink the shell's window to 1x1,
+    // and showing the tab again would reflow its whole scrollback. Keep the
+    // last real size until the view has an area in a window again.
+    if (self.window && width >= 1 && height >= 1) {
+        [CATransaction begin]; [CATransaction setDisableActions:YES]; self.layer.contentsScale = scale; [CATransaction commit];
+        ghostty_surface_set_content_scale(surface, scale, scale);
+        ghostty_surface_set_size(surface, (uint32_t)width, (uint32_t)height);
+        NSNumber *display = self.window.screen.deviceDescription[@"NSScreenNumber"];
+        if (display) ghostty_surface_set_display_id(surface, display.unsignedIntValue);
+    }
     [self clearLink]; [self syncVisibility];
     ghostty_surface_refresh(surface);
 }
@@ -443,6 +450,15 @@ bool rw_terminal_read_config_colors(const char *path, uint32_t colors[18]) {
     if (app && atomic_exchange(&dirty, false)) { ghostty_app_tick(app); appTicks++; }
     if (!closing || !surface) return;
     if (detachConfirmed && ghostty_surface_process_exited(surface)) {
+        // Freeing joins the surface's threads on this thread. Switching
+        // projects closes the old one's surfaces just as the new one's attach
+        // here, and their timers fire together, so free one per main-loop turn:
+        // the flag clears behind the main queue's waiting work, and the others
+        // try again on their next tick.
+        static BOOL freedThisTurn;
+        if (freedThisTurn) return;
+        freedThisTurn = YES;
+        dispatch_async(dispatch_get_main_queue(), ^{ freedThisTurn = NO; });
         [self diagnostic:@"child-exit-confirmed" fields:@{}]; [self finishShutdown]; return;
     }
     double now = monotonicSeconds();
