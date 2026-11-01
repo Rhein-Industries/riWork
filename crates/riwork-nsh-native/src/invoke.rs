@@ -234,7 +234,30 @@ pub fn invoke(target: &str, input: &[u8]) -> Value {
             }
             out
         }
-        Err(error) => failure(&error),
+        Err(error) => failure(&missing_is_not_found(error)),
+    }
+}
+
+/// A backend's answer that an id names nothing on the Mac, coded `not_found`. The store says
+/// `No project matches '…'` (or worktree, task, project folder, repository), the sessions
+/// registry `unknown shell …` and the sessions backend `unknown project`; they reach here
+/// coded `io` or `refused`, which would read as a failure of the desktop or of its policy.
+fn missing_is_not_found(error: String) -> String {
+    let Some((code, message)) = error.split_once(": ") else {
+        return error;
+    };
+    let missing = match code {
+        "io" => {
+            (message.starts_with("No ") && message.contains(" matches '"))
+                || message.starts_with("unknown shell ")
+        }
+        "refused" => message == "unknown project",
+        _ => false,
+    };
+    if missing {
+        format!("not_found: {message}")
+    } else {
+        error
     }
 }
 

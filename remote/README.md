@@ -321,8 +321,9 @@ true` in `riwork capabilities --json` decides `features.project_memo` in `ready`
 [remote-protocol.md](../docs/remote-protocol.md), "Native invoke extension" and "State watch
 extension"). Only the methods of `rpc::NATIVE_METHODS` (allowlist v1) exist, and of those only the
 ones the installed desktop binary names in `riwork capabilities --json` (`"native"`; the standalone
-`riwork-cli` names none); writes run in the ordered lane, reads in a shared slot, and a waiting
-`state.watch` in the long-poll lane. The connector checks the request's shape and refuses every
+`riwork-cli` names none); writes run in the ordered lane, with their CLI in a task that outlives
+the connection as a creation's does, reads in a shared slot, and a waiting `state.watch` in the
+long-poll lane. The connector checks the request's shape and refuses every
 path that is absolute, leaves the project or holds NUL before any CLI runs; the desktop binary
 (`riwork native invoke MODULE.METHOD --json` and `riwork watch --json`, arguments on standard
 input, `crates/riwork-nsh-native/src/invoke.rs` and `state_watch.rs`) holds the typed arguments and

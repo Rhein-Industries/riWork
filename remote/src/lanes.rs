@@ -18,7 +18,9 @@
 //!   itself is torn down: see `Rpc::create`, `Rpc::create_project`,
 //!   `Rpc::orchestrator_create` and `Rpc::chat_create`.) A message, an approval or a stop for a chat is typing
 //!   of a kind: it is carried out in the order it was sent. A `native.invoke` of a
-//!   method that writes (`rpc::native_is_write`) is ordered too.
+//!   method that writes (`rpc::native_is_write`) is ordered too, and its CLI also
+//!   outlives a torn-down connection (`Rpc::native_invoke`): `Sessions.createSubshell`
+//!   and `Sessions.openEditor` start terminals, as the creations above do.
 //! - `LongPoll`: a `shell.output` that waits for a change, a `chat.events`
 //!   that waits for an event and a `state.watch` that waits (any `wait_ms` above 0).
 //!   At most two.

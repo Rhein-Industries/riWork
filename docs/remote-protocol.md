@@ -2349,7 +2349,11 @@ input (never as arguments), answered with one line, `{"v":1,"value":…}` or
 `{"v":1,"error":{"code","message"}}`. The desktop binary runs the method on the same backends and
 checks as its windows, but builds no home watcher and no session sampler, and holds nothing
 between calls. A method that writes runs in the ordered lane, after the device's authorization is
-checked again, and is not cut short when the session ends; one that reads runs in a shared slot.
+checked again, and is not cut short when the session ends: once its CLI has started it runs to the
+end even when the connection itself is torn down, and only the answer is lost (as for
+`shell.create`), so a device that did not hear back re-reads rather than repeats a write that is
+not idempotent (`Sessions.createSubshell`, `Store.createFolder`, `Store.addTask`). One that
+reads runs in a shared slot.
 A write takes the same cross-process file locks as the desktop app's own writes (each store,
 settings or automation write is a read-modify-write under an exclusive lock), so a write here and
 one in the running app never lose each other; the app's file watcher shows the change.
@@ -2393,8 +2397,9 @@ must still fit the session (one 131072-byte frame, or 2 MiB deflated into one wh
 asked for compression), else it is `response_too_large` as for any method.
 
 Errors (`error.code`): `invalid_request` (malformed request, unknown method or field, a malformed
-id or path, and "unsupported RPC method" without the feature); `not_found` (no such project, or
-the device was revoked); `conflict` (the desktop's data changed underneath, such as an automation
+id or path, and "unsupported RPC method" without the feature); `not_found` (an id that names no
+project, worktree, folder, task, shell or automation on the desktop, such as one removed on the
+Mac, or the device was revoked); `conflict` (the desktop's data changed underneath, such as an automation
 revision); `refused` (the desktop's policy or store refused the arguments: a path outside the
 project, a widening change, a worktree of another project);
 `response_too_large`; `cli_error` for anything else, with the desktop's message. The connector

@@ -6,7 +6,8 @@
 //! `args` on the CLI's standard input, answered `{value}` (and `page` for a directory listing).
 //! Only the methods of [`METHODS`] exist here, and of those only the ones the installed CLI
 //! names in `riwork capabilities --json` (`native.methods`); `ready.features.native` lists what
-//! is left. Writes run in the ordered lane, reads in a shared one ([`is_write`]). The CLI holds
+//! is left. Writes run in the ordered lane, reads in a shared one ([`is_write`]), and a write's
+//! CLI outlives the connection as a creation's does (see `Rpc::native_invoke`). The CLI holds
 //! the typed arguments and the argument policy (`crates/riwork-nsh-native/src/invoke.rs`);
 //! the connector checks the request's shape first, and refuses every path that is absolute,
 //! has a `.`, `..` or empty component, or holds NUL before any CLI runs, so such a request
@@ -385,7 +386,8 @@ impl Rpc {
     }
 
     /// `module.method` with `args`, as `riwork native invoke` answers it. A write may have
-    /// waited in the ordered lane: a device revoked meanwhile changes nothing.
+    /// waited in the ordered lane: a device revoked meanwhile changes nothing. Once a write's
+    /// CLI has started, it runs to the end even when the connection is torn down.
     pub(super) async fn native_invoke(
         &self,
         device: &str,
@@ -407,18 +409,33 @@ impl Rpc {
         }
         let args = serde_json::to_vec(&p.args).map_err(invalid)?;
         let command = vec!["native".into(), "invoke".into(), name, "--json".into()];
-        // A write may scan a repository or start Vim; a read is a read.
-        let limit = if write { CREATE_TIMEOUT } else { CLI_TIMEOUT };
-        let data = self
-            .raw_fed(command, Some(&args), limit, reply_limit + 1024)
+        let cap = reply_limit + 1024;
+        let data = if write {
+            // A write may scan a repository or start Vim, so it gets a creation's time. And
+            // `Sessions.createSubshell` and `Sessions.openEditor` start a tmux session and only
+            // then write it into the registry: a CLI killed in between leaves a session nobody
+            // can see or close. The connection's tasks are dropped (and their CLI processes
+            // killed) when it ends for any reason, revocation and relay errors included, so a
+            // write's CLI runs in a task that outlives the request, as `Rpc::create`'s does: if
+            // the request is dropped, only the answer is lost.
+            let runner = self.detached();
+            tokio::spawn(async move {
+                runner
+                    .raw_fed(command, Some(&args), CREATE_TIMEOUT, cap)
+                    .await
+            })
             .await
-            .map_err(|e| {
-                if e.is::<OutputTooLarge>() {
-                    Fault::new("response_too_large", "Too large to show on the phone")
-                } else {
-                    cli_fault(e)
-                }
-            })?;
+            .map_err(|e| cli_fault(format!("the desktop call was interrupted: {e}")))?
+        } else {
+            self.raw_fed(command, Some(&args), CLI_TIMEOUT, cap).await
+        }
+        .map_err(|e| {
+            if e.is::<OutputTooLarge>() {
+                Fault::new("response_too_large", "Too large to show on the phone")
+            } else {
+                cli_fault(e)
+            }
+        })?;
         invoke_reply(serde_json::from_slice(&data).map_err(cli_fault)?)
     }
 
