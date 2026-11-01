@@ -412,12 +412,15 @@ pub struct CreateSubshellRequest {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct OpenEditorRequest {
     pub project_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[prop(skip_none)]
     pub worktree_id: Option<String>,
     pub path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[prop(skip_none)]
     pub line: Option<u32>,
     /// Opaque listing identity; checked again by the engine before a new launch.
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[prop(skip_none)]
     pub identity: Option<String>,
 }
@@ -532,8 +535,10 @@ snapshot_js_value!(SessionMetricsSnapshot, "SessionMetricsEvent");
 #[serde(rename_all = "camelCase")]
 pub struct ProjectRequest {
     pub root: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[prop(skip_none)]
     pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[prop(skip_none)]
     pub init_git: Option<bool>,
 }

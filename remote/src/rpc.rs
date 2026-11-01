@@ -30,6 +30,7 @@ mod chat_assets;
 mod dashboard;
 mod keys_worker;
 mod memo;
+mod native;
 mod orchestrator;
 mod output_delta;
 mod tabs;
@@ -37,6 +38,10 @@ mod upload;
 
 pub use dashboard::{DASHBOARD_AUTOMATIONS_MAX, DASHBOARD_KEYS, DASHBOARD_LISTS};
 pub use memo::MEMO_MAX_BYTES;
+pub use native::{
+    METHODS as NATIVE_METHODS, NativeCapabilities, WATCH_MAX_MS, WATCH_MAX_TAB_PROJECTS,
+    WATCH_TOPICS, is_write as native_is_write,
+};
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1196,6 +1201,12 @@ pub struct Rpc {
     dashboard: AtomicBool,
     /// Whether the CLI said it has `project memo` (see `project_memo_supported`).
     project_memo: AtomicBool,
+    /// Whether the CLI named `native` methods or `watch` topics (see `native_features`), and
+    /// which: what it and this connector both have.
+    native: AtomicBool,
+    native_capabilities: Mutex<NativeCapabilities>,
+    /// When the CLI last answered that it has neither (see `native_known`).
+    native_no: Mutex<Option<std::time::Instant>>,
     /// Held while the CLI is asked what it can do (`capability_known`), so that two askers at
     /// once run it once.
     asking_chat: tokio::sync::Mutex<()>,
@@ -1240,6 +1251,9 @@ impl Rpc {
             chat_suggestions: AtomicBool::new(false),
             dashboard: AtomicBool::new(false),
             project_memo: AtomicBool::new(false),
+            native: AtomicBool::new(false),
+            native_capabilities: Mutex::new(NativeCapabilities::default()),
+            native_no: Mutex::new(None),
             asking_chat: tokio::sync::Mutex::new(()),
             capability_answers: AtomicU64::new(0),
             shell_paste: AtomicBool::new(false),
@@ -2033,6 +2047,14 @@ impl Rpc {
                 let _: Empty = params(r)?;
                 self.dashboard(reply_limit).await
             }
+            "native.invoke" => {
+                let p = native::invoke_spec(r)?;
+                self.native_invoke(device, p, reply_limit).await
+            }
+            "state.watch" => {
+                let p = native::watch_spec(r)?;
+                self.state_watch(p).await
+            }
             "shell.keys" => {
                 let p: Keys = params(r)?;
                 id(&p.shell_id)?;
@@ -2765,6 +2787,78 @@ mod tests {
             "a\u{85}b",
         ] {
             assert!(!sgr_only(bad), "{bad:?}");
+        }
+    }
+
+    /// `native.invoke`'s paths name a place inside a project; the connector refuses one that
+    /// is absolute, leaves it or holds NUL before any CLI runs (the Mac checks again).
+    #[test]
+    fn native_invoke_paths_stay_inside_the_project() {
+        const PROJECT: &str = "00000000-0000-4000-8000-000000000002";
+        let request = |method: &str, args: Value| Request {
+            v: 1,
+            kind: "request".into(),
+            id: "00000000-0000-4000-8000-000000000001".into(),
+            method: "native.invoke".into(),
+            params: json!({"module": method.split('.').next().unwrap(), "method": method.split('.').nth(1).unwrap(), "args": args}),
+        };
+        let files = |method: &str, path: &str| {
+            request(
+                method,
+                json!({"projectId": PROJECT, "path": path, "identity": "{}"}),
+            )
+        };
+        let editor = |path: &str| {
+            request(
+                "Sessions.openEditor",
+                json!({"request": {"projectId": PROJECT, "path": path}}),
+            )
+        };
+        for good in ["src/main.rs", "a b/ü.txt", "..hidden", ".env"] {
+            for method in ["Files.listDirectory", "Files.preview", "Files.readText"] {
+                assert!(
+                    native::invoke_spec(&files(method, good)).is_ok(),
+                    "{method} {good}"
+                );
+            }
+            assert!(native::invoke_spec(&editor(good)).is_ok(), "{good}");
+        }
+        assert!(native::invoke_spec(&files("Files.listDirectory", "")).is_ok());
+        assert!(native::invoke_spec(&files("Files.readText", "")).is_err());
+        for bad in [
+            "/etc/passwd",
+            "/Users/me/project/a.txt",
+            "../outside",
+            "src/../../outside",
+            "..",
+            "./a",
+            "src//a",
+            "src/",
+            "a\0b",
+        ] {
+            for method in ["Files.listDirectory", "Files.preview", "Files.readText"] {
+                let fault = native::invoke_spec(&files(method, bad)).err().unwrap();
+                assert_eq!(fault.code, "invalid_request", "{method} {bad:?}");
+            }
+            assert!(native::invoke_spec(&editor(bad)).is_err(), "{bad:?}");
+        }
+        for args in [
+            json!({"projectId": PROJECT}),
+            json!({"projectId": PROJECT, "path": 7}),
+        ] {
+            assert!(native::invoke_spec(&request("Files.preview", args)).is_err());
+        }
+        // Not on the list at all: a project at a path, a working directory, billing.
+        for method in [
+            "Store.createProject",
+            "Store.inspectProject",
+            "Sessions.create",
+            "Chat.billingAction",
+        ] {
+            assert!(
+                native::invoke_spec(&request(method, json!({}))).is_err(),
+                "{method}"
+            );
         }
     }
 }

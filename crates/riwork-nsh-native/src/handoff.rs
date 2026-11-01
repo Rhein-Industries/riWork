@@ -18,8 +18,10 @@ pub struct HandoffSourceDto {
     pub askable: bool,
     pub kind: String,
     pub provider: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[prop(skip_none)]
     pub project_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[prop(skip_none)]
     pub worktree_id: Option<String>,
     pub cwd: String,
@@ -31,15 +33,20 @@ pub struct HandoffRequestDto {
     pub source_id: String,
     pub kind: String,
     pub provider: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[prop(skip_none)]
     pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[prop(skip_none)]
     pub effort: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[prop(skip_none)]
     pub account: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[prop(skip_none)]
     pub mode: Option<String>,
     pub context: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[prop(skip_none)]
     pub note: Option<String>,
 }
@@ -49,12 +56,15 @@ pub struct HandoffRequestDto {
 pub struct HandoffResultDto {
     pub id: String,
     pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[prop(skip_none)]
     pub project_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[prop(skip_none)]
     pub worktree_id: Option<String>,
     pub document: String,
     pub context: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[prop(skip_none)]
     pub fallback: Option<String>,
 }

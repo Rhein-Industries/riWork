@@ -332,6 +332,21 @@ before any CLI runs (a canonical project UUID; text of at most `MEMO_MAX_BYTES`,
 true` in `riwork capabilities --json` decides `features.project_memo` in `ready`. The tests are
 `tests/project_memo.rs`.
 
+`native.invoke` and `state.watch` (`src/rpc/native.rs`) call one of the desktop's own
+`riwork/native` methods and wait for the desktop's data to change (the contract is in
+[remote-protocol.md](../docs/remote-protocol.md), "Native invoke extension" and "State watch
+extension"). Only the methods of `rpc::NATIVE_METHODS` (allowlist v1) exist, and of those only the
+ones the installed desktop binary names in `riwork capabilities --json` (`"native"`; the standalone
+`riwork-cli` names none); writes run in the ordered lane, with their CLI in a task that outlives
+the connection as a creation's does, reads in a shared slot, and a waiting `state.watch` in the
+long-poll lane. The connector checks the request's shape and refuses every
+path that is absolute, leaves the project or holds NUL before any CLI runs; the desktop binary
+(`riwork native invoke MODULE.METHOD --json` and `riwork watch --json`, arguments on standard
+input, `crates/riwork-nsh-native/src/invoke.rs` and `state_watch.rs`) holds the typed arguments and
+the argument policy and checks every path again against its own store's roots. A CLI that names
+neither is asked again after ten minutes at most, so a handshake does not ask each time. The path
+cases are in `src/rpc.rs`'s tests and in `crates/riwork-nsh-native/src/files.rs`'s.
+
 ## Pairing another Mac (desktop devices)
 
 A second Mac running RiWork can show this Mac's shells as real terminals (the contract is

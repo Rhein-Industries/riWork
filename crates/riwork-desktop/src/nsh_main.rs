@@ -32,6 +32,15 @@ fn main() {
         }
     }
     let args = std::env::args().skip(1).collect::<Vec<_>>();
+    // A paired device's call into `riwork/native` and its wait for changes, made by the
+    // remote connector: one call each, with no home watcher, sampler or window.
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(code) = riwork_nsh_native::invoke::cli(&args) {
+            std::process::exit(code);
+        }
+        let _ = riwork_cli::cli::EXTRA_CAPABILITIES.set(riwork_nsh_native::invoke::capabilities());
+    }
     match riwork_cli::cli::run_cli(&args) {
         Ok(true) => return,
         Ok(false) => {}

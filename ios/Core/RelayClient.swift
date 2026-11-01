@@ -39,6 +39,8 @@ public enum RequestValidation {
         case "chat.suggestions": required = ["chat_id"]; optional = []
         case "upload.begin", "upload.chunk", "upload.finish", "upload.cancel", "shell.paste":
             (required, optional) = UploadRequests.methods[method] ?? ([], [])
+        case "native.invoke": required = ["module", "method", "args"]; optional = []
+        case "state.watch": required = ["since", "wait_ms"]; optional = []
         default: throw RemoteError.protocolViolation("Unsupported operation.")
         }
         let keys = Set(params.keys)
@@ -46,6 +48,8 @@ public enum RequestValidation {
         for key in ["project_id", "worktree_id", "shell_id", "batch", "chat_id", "upload"] where params[key] != nil { try uuid(params[key]?.string) }
         if method == "tabs.list" || method == "tabs.update" || method == "tabs.open" { try SharedTabsRequests.validate(method: method, params: params) }
         try UploadRequests.validate(method: method, params: params, uuid: uuid)
+        try NativeInvokeRequests.validate(method: method, params: params)
+        try StateWatchRequests.validate(method: method, params: params, uuid: uuid)
         if method == "shell.keys" {
             guard case .array(let raw)? = params["items"] else { throw RemoteError.protocolViolation("Missing key items.") }
             try KeyItem.validate(batch: try raw.map { try KeyItem(json: $0) })
@@ -106,6 +110,122 @@ public enum RequestValidation {
         if method == "shell.resize" {
             for (key, range) in [("columns", 20.0...300.0), ("rows", 8.0...160.0)] {
                 guard case .number(let value) = params[key], range.contains(value), value.rounded() == value else { throw RemoteError.protocolViolation("Invalid terminal cell dimensions.") }
+            }
+        }
+    }
+}
+
+/// `native.invoke` ("Native invoke extension" in `docs/remote-protocol.md`): the Mac's own
+/// `riwork/native` methods. `methods` is a copy of the Mac's allowlist v1
+/// (`crates/riwork-nsh-native/src/invoke.rs`, `remote/src/rpc/native.rs`): each method and whether
+/// it writes. Nothing else is sent; the Mac checks every argument again.
+public enum NativeInvokeRequests {
+    public static let methods: [String: Bool] = [
+        "Store.snapshot": false,
+        "Store.search": false,
+        "Store.renameProject": true,
+        "Store.updateProjectMetadata": true,
+        "Store.setProjectMemo": true,
+        "Store.setProjectNotifications": true,
+        "Store.setProjectOrchestratorWakes": true,
+        "Store.setProjectOrchestrator": true,
+        "Store.setProjectDelegationPolicy": true,
+        "Store.createFolder": true,
+        "Store.renameFolder": true,
+        "Store.moveFolder": true,
+        "Store.removeFolder": true,
+        "Store.moveProjectToFolder": true,
+        "Store.addTask": true,
+        "Store.assignTasks": true,
+        "Store.unassignTasks": true,
+        "Store.setTaskStatus": true,
+        "Store.refreshWorktrees": true,
+        "Store.syncWorktrees": true,
+        "Sessions.list": false,
+        "Sessions.createSubshell": true,
+        "Sessions.openEditor": true,
+        "Tabs.snapshot": false,
+        "Settings.get": false,
+        "Settings.set": true,
+        "Files.listDirectory": false,
+        "Files.preview": false,
+        "Files.readText": false,
+        "Schedules.list": false,
+        "Schedules.pause": true,
+        "Schedules.delete": true,
+        "Orchestrators.plan": false,
+    ]
+
+    /// Whether `module.method` writes; nil for a method the phone never sends.
+    public static func isWrite(module: String, method: String) -> Bool? { methods["\(module).\(method)"] }
+
+    public static func params(module: String, method: String, args: [String: JSONValue]) -> [String: JSONValue] {
+        ["module": .string(module), "method": .string(method), "args": .object(args)]
+    }
+
+    /// A path inside a project: relative, every component a plain name, no NUL.
+    static func relativePath(_ value: JSONValue?, rootAllowed: Bool) throws {
+        guard case .string(let path)? = value else { throw RemoteError.protocolViolation("A file path must be text relative to the project.") }
+        if path.isEmpty {
+            if rootAllowed { return }
+            throw RemoteError.protocolViolation("Name a file inside the project.")
+        }
+        let parts = path.split(separator: "/", omittingEmptySubsequences: false)
+        guard path.utf8.count <= 4096, !path.contains("\u{0}"), !path.hasPrefix("/"),
+              parts.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." })
+        else { throw RemoteError.protocolViolation("A file path must stay inside the project.") }
+    }
+
+    /// The transport's check of every `native.invoke` (`RequestValidation`).
+    static func validate(method: String, params: [String: JSONValue]) throws {
+        guard method == "native.invoke" else { return }
+        guard case .string(let module)? = params["module"], case .string(let name)? = params["method"],
+              isWrite(module: module, method: name) != nil
+        else { throw RemoteError.protocolViolation("Unsupported operation.") }
+        guard case .object(let args)? = params["args"] else { throw RemoteError.protocolViolation("Invalid request parameters.") }
+        switch "\(module).\(name)" {
+        case "Files.listDirectory": try relativePath(args["path"], rootAllowed: true)
+        case "Files.preview", "Files.readText": try relativePath(args["path"], rootAllowed: false)
+        case "Sessions.openEditor":
+            guard case .object(let request)? = args["request"] else { throw RemoteError.protocolViolation("Invalid request parameters.") }
+            try relativePath(request["path"], rootAllowed: false)
+        default: break
+        }
+    }
+}
+
+/// `state.watch` ("State watch extension" in `docs/remote-protocol.md`): one wait for the Mac's
+/// data to change. Only the app's own watch sends it, never a screen.
+public enum StateWatchRequests {
+    public static let topics: Set<String> = ["store", "sessions", "tabs", "settings", "schedules", "usage", "dashboard"]
+    public static let maximumWaitMilliseconds = 25_000
+    public static let maximumTabProjects = 16
+
+    static func revision(_ value: JSONValue) -> Bool {
+        switch value {
+        case .null: true
+        case .string(let rev): LiveSync.isUsableHash(rev)
+        default: false
+        }
+    }
+
+    /// The transport's check of every `state.watch` (`RequestValidation`).
+    static func validate(method: String, params: [String: JSONValue], uuid: (String?) throws -> Void) throws {
+        guard method == "state.watch" else { return }
+        guard case .number(let wait)? = params["wait_ms"], wait >= 0, wait <= Double(maximumWaitMilliseconds), wait.rounded() == wait
+        else { throw RemoteError.protocolViolation("Watch wait_ms must be 0–25000.") }
+        guard case .object(let since)? = params["since"], !since.isEmpty else { throw RemoteError.protocolViolation("A watch names at least one topic.") }
+        for (topic, rev) in since {
+            guard topics.contains(topic) else { throw RemoteError.protocolViolation("Unknown watch topic.") }
+            if topic == "tabs" {
+                guard case .object(let projects) = rev, !projects.isEmpty, projects.count <= maximumTabProjects
+                else { throw RemoteError.protocolViolation("A tabs watch names 1–16 projects.") }
+                for (project, rev) in projects {
+                    try uuid(project)
+                    guard revision(rev) else { throw RemoteError.protocolViolation("A watch revision is null or a short printable string.") }
+                }
+            } else if !revision(rev) {
+                throw RemoteError.protocolViolation("A watch revision is null or a short printable string.")
             }
         }
     }

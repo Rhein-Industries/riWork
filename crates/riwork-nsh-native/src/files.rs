@@ -38,8 +38,10 @@ pub struct FileEntryDto {
     pub path: String,
     pub relative_path: String,
     pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[prop(skip_none)]
     pub identity: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[prop(skip_none)]
     pub git_status: Option<String>,
 }
@@ -53,6 +55,7 @@ pub struct DirectoryListingDto {
     pub entries: Vec<FileEntryDto>,
     pub omitted: usize,
     pub scan_limited: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[prop(skip_none)]
     pub error: Option<String>,
 }
@@ -62,24 +65,33 @@ pub struct DirectoryListingDto {
 pub struct PreviewDto {
     pub schema: u32,
     pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[prop(skip_none)]
     pub text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[prop(skip_none)]
     pub lines: Option<Vec<String>>,
     pub truncated: bool,
     pub markdown: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[prop(skip_none)]
     pub data_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[prop(skip_none)]
     pub mime: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[prop(skip_none)]
     pub width: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[prop(skip_none)]
     pub height: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[prop(skip_none)]
     pub page: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[prop(skip_none)]
     pub pages: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[prop(skip_none)]
     pub message: Option<String>,
 }
@@ -261,6 +273,73 @@ impl Files {
             .await
             .map_err(bridge_error)
     }
+}
+
+/// The Mac's argument policy for a path another device names (`riwork native invoke`): only
+/// a path relative to a project or worktree root that the Mac took from its own store. It
+/// refuses an absolute path, an empty, `.` or `..` component, NUL and an overlong path before
+/// anything is opened; the descriptor walk of the functions below then refuses a symbolic
+/// link on the way, a symbolic-link root and anything that is not what was asked for. The
+/// text is JSON, so it is UTF-8. An empty path is the root itself where `root_allowed`.
+pub fn confined_path(root: &Path, relative: &str, root_allowed: bool) -> Result<PathBuf, String> {
+    if !root.is_absolute() {
+        return Err("refused: the project root is not an absolute path".into());
+    }
+    if relative.len() > 4096 {
+        return Err("invalid: the path is longer than 4096 bytes".into());
+    }
+    if relative.contains('\0') {
+        return Err("refused: the path contains NUL".into());
+    }
+    if relative.starts_with('/') {
+        return Err("refused: send a path relative to the project, not an absolute one".into());
+    }
+    if relative.is_empty() {
+        return if root_allowed {
+            Ok(root.to_owned())
+        } else {
+            Err("refused: name a file inside the project".into())
+        };
+    }
+    if relative
+        .split('/')
+        .any(|part| part.is_empty() || part == "." || part == ".." || part.len() > 255)
+    {
+        return Err("refused: the path leaves the project or is malformed".into());
+    }
+    Ok(root.join(relative))
+}
+
+/// `Files.listDirectory` for another device: `relative` under `root` (see [`confined_path`]).
+pub fn list_relative(
+    root: &Path,
+    relative: &str,
+    show_hidden: bool,
+) -> Result<DirectoryListingDto, String> {
+    let path = confined_path(root, relative, true)?;
+    list_directory(root, &path, show_hidden).map_err(bridge_error)
+}
+
+/// `Files.preview` for another device: `relative` under `root` (see [`confined_path`]).
+pub fn preview_relative(
+    root: &Path,
+    relative: &str,
+    identity: Option<&str>,
+    pdf_requested: bool,
+    page: usize,
+) -> Result<PreviewDto, String> {
+    let path = confined_path(root, relative, false)?;
+    preview_file(root, &path, identity, pdf_requested, page).map_err(bridge_error)
+}
+
+/// `Files.readText` for another device: `relative` under `root` (see [`confined_path`]).
+pub fn read_text_relative(root: &Path, relative: &str, identity: &str) -> Result<String, String> {
+    let path = confined_path(root, relative, false)?;
+    let expected = decode_identity(identity)?;
+    if let Some(message) = file_preview::copy_block(&path, expected) {
+        return Err(bridge_error(message.into()));
+    }
+    file_preview::read_text(root, &path, expected).map_err(bridge_error)
 }
 
 pub fn preview_file(
@@ -1228,6 +1307,92 @@ mod tests {
             0,
             "closed owners release shared watcher"
         );
+    }
+
+    /// `riwork native invoke`'s path policy: another device names a path relative to a root
+    /// the Mac takes from its store, and nothing outside that root is listed, previewed or read.
+    #[test]
+    fn another_devices_paths_stay_inside_the_project_root() {
+        let fixture = Fixture::new();
+        let root = &fixture.root;
+        fs::create_dir(root.join("folder")).unwrap();
+        fs::write(root.join("folder/inside.txt"), "inside").unwrap();
+        symlink(&fixture.outside, root.join("linked")).unwrap();
+        let identity =
+            |path: &Path| encode_identity(FileIdentity::of(&fs::metadata(path).unwrap()));
+        let inside = identity(&root.join("folder/inside.txt"));
+        let secret = identity(&fixture.outside.join("secret"));
+        assert_eq!(
+            read_text_relative(root, "folder/inside.txt", &inside).unwrap(),
+            "inside"
+        );
+        assert_eq!(confined_path(root, "", true).unwrap(), *root);
+        assert!(confined_path(root, "", false).is_err());
+        let absolute = fixture
+            .outside
+            .join("secret")
+            .to_string_lossy()
+            .into_owned();
+        for path in [
+            absolute.as_str(),
+            "/etc/passwd",
+            "../outside/secret",
+            "folder/../../outside/secret",
+            "folder/..",
+            "./folder/inside.txt",
+            "folder//inside.txt",
+            "folder/inside.txt\0",
+            "folder\0/inside.txt",
+            // A link inside the root that points out of it.
+            "linked/secret",
+            "linked",
+        ] {
+            assert!(list_relative(root, path, true).is_err(), "{path:?}");
+            assert!(
+                preview_relative(root, path, Some(&secret), false, 1).is_err(),
+                "{path:?}"
+            );
+            assert!(read_text_relative(root, path, &secret).is_err(), "{path:?}");
+        }
+        // A project root that is itself a symbolic link is refused, as on the Mac's own panel.
+        let alias = root.parent().unwrap().join("alias");
+        symlink(root, &alias).unwrap();
+        assert!(list_relative(&alias, "", true).is_err());
+        assert!(read_text_relative(&alias, "folder/inside.txt", &inside).is_err());
+        assert!(preview_relative(&alias, "folder/inside.txt", Some(&inside), false, 1).is_err());
+        assert!(confined_path(Path::new("relative/root"), "folder", true).is_err());
+
+        // Outside every project: roots come from the store, for its projects and their
+        // worktrees only.
+        let home = root.parent().unwrap().join("home");
+        let store = crate::backend::CoreStoreBackend::new(home);
+        use crate::backend::StoreBackend;
+        let project = store
+            .create_project(crate::dto::ProjectRequest {
+                root: root.to_string_lossy().into_owned(),
+                name: None,
+                init_git: Some(false),
+            })
+            .unwrap();
+        let state = store.snapshot().unwrap();
+        assert_eq!(
+            crate::invoke::project_root(&state, &project.id, None).unwrap(),
+            *root
+        );
+        for (project_id, worktree_id) in [
+            ("00000000-0000-4000-8000-000000000001", None),
+            (
+                project.id.as_str(),
+                Some("00000000-0000-4000-8000-000000000002"),
+            ),
+            ("not-a-uuid", None),
+            (project.id.as_str(), Some("../outside")),
+        ] {
+            assert!(
+                crate::invoke::project_root(&state, project_id, worktree_id).is_err(),
+                "{project_id} {worktree_id:?}"
+            );
+        }
     }
 }
 

@@ -61,9 +61,11 @@ pub struct ProjectOrderDto {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NewChatDefaultsDto {
     pub provider: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[prop(skip_none)]
     #[serde(default)]
     pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[prop(skip_none)]
     #[serde(default)]
     pub effort: Option<String>,
@@ -125,6 +127,7 @@ pub struct SettingsDto {
     /// `right_command`, `right_option` or `off`.
     pub push_to_talk_key: String,
     /// What a New chat tab starts with; none until saved from one.
+    #[serde(skip_serializing_if = "Option::is_none")]
     #[prop(skip_none)]
     pub new_chat_defaults: Option<NewChatDefaultsDto>,
     pub claude_chat_ignores_api_key: bool,

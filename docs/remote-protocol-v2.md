@@ -119,7 +119,9 @@ limits, replay rejection and the RPC bodies are the v1 rules.
 
 Assets are the invite secret, the root key, ephemeral scalars, terminal
 plaintext, and the two relay tokens. The desktop user is the trust boundary:
-anyone who can run `pair` can mint a device. Pairing is full terminal control.
+anyone who can run `pair` can mint a device. Pairing is full terminal control and, since
+2026-11-01, write access to the desktop's projects, folders, tasks and memos through
+`native.invoke` (below).
 
 The phone and the desktop are the only parties that should see plaintext.
 The relay is an untrusted forwarder that also checks route tokens. On `wss`
@@ -192,6 +194,23 @@ the crypto version and apply to v2 sessions exactly as to v1. They add no author
 device lacks: a chat orchestrator is followed and driven with the chat methods of that extension,
 and making an orchestrator starts an agent as the desktop user, as `shell.create` and `chat.create`
 do.
+The 2026-11-01 native invoke extension (`native.invoke` and `features.native` on `ready`, and the
+error codes `conflict` and `refused`, in the same document) and state watch extension
+(`state.watch` and `features.watch` on `ready`, in the same document) are likewise independent of
+the crypto version and apply to v2 sessions exactly as to v1. Unlike the extensions above,
+`native.invoke` adds authority at the API level: besides terminal control, a paired device can now
+write the desktop's own data through a fixed allowlist of its `riwork/native` methods. It can rename
+a project and change its folder, memo, notification switch, orchestrator-wake switch and orchestrator
+choice; create, rename, move and remove folders; add tasks, assign them to a worktree, unassign them
+and set their status; refresh and sync a project's worktrees from Git; open a subshell of an
+existing shell or a Vim tab on a file of a project; narrow what agents may do (turn unrestricted
+agent terminals off, stop fanning work out), never widen it; and pause and delete automations, never
+create, change or resume one. It reads the desktop's store, sessions, tabs, settings, automations
+and orchestrator plan, and files inside the project and worktree roots of the desktop's store, by a
+path relative to that root that the desktop walks without following links; it names no other
+filesystem path. Billing, accounts, the Anthropic API key, project creation at a path and windows
+stay out of reach. `state.watch` is read-only: it discloses only when one of those topics changed,
+as an opaque digest.
 
 ## Desktop devices (2026-10-02)
 

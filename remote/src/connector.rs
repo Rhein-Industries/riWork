@@ -679,6 +679,7 @@ pub(crate) async fn run_device_with(device: &Device, rpc: &Arc<Rpc>, timing: Tim
                     dashboard,
                     project_memo,
                     key_names,
+                    (native, watch),
                 ) = tokio::join!(
                     rpc.chat_supported(),
                     rpc.chat_provider_switch_supported(),
@@ -688,7 +689,8 @@ pub(crate) async fn run_device_with(device: &Device, rpc: &Arc<Rpc>, timing: Tim
                     rpc.shell_create_as_settings_supported(),
                     rpc.dashboard_supported(),
                     rpc.project_memo_supported(),
-                    rpc.key_names_supported()
+                    rpc.key_names_supported(),
+                    rpc.native_features()
                 );
                 // The second key list of `shell.keys` (F-keys, Insert, Space, modifiers), when
                 // the installed CLI takes it; a phone without the flag keeps to the first list.
@@ -724,6 +726,15 @@ pub(crate) async fn run_device_with(device: &Device, rpc: &Arc<Rpc>, timing: Tim
                 }
                 if project_memo {
                     features["project_memo"] = json!(true);
+                }
+                // The desktop's own methods (`native.invoke`) and a wait for its data to
+                // change (`state.watch`): what the installed desktop binary and this connector
+                // both have, `{"v":1,"methods":[...]}` and `{"v":1,"topics":[...]}`.
+                if let Some(native) = native {
+                    features["native"] = native;
+                }
+                if let Some(watch) = watch {
+                    features["watch"] = watch;
                 }
                 // Files from the phone; an older phone ignores it, and a phone that sees none
                 // tells the person that this desktop cannot take files yet.

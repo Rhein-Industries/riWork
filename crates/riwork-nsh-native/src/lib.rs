@@ -19,6 +19,7 @@ pub mod files;
 pub mod host_flush;
 pub mod hub;
 pub mod handoff;
+pub mod invoke;
 mod memo;
 pub mod orchestrators;
 pub mod overview;
@@ -36,6 +37,7 @@ pub mod service;
 pub mod settings;
 pub mod settings_aux;
 pub mod speech;
+pub mod state_watch;
 pub mod tabs;
 #[cfg(feature = "test-support")]
 pub mod testing;
