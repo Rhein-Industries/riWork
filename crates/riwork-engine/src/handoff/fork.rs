@@ -101,7 +101,7 @@ pub fn fork(
         .map(str::trim)
         .filter(|title| !title.is_empty())
         .map(str::to_owned)
-        .unwrap_or_else(|| format!("{} (fork)", source.title.trim()));
+        .unwrap_or_else(|| format!("{} (fork)", super::shown_title(&source).trim()));
     let title = document::clip(&title, 100);
 
     let mut fallback = None;
@@ -142,6 +142,12 @@ pub fn fork(
                 .filter(|_| provider == Provider::Claude),
             origin: Some(origin),
         })?;
+        // A chat host from before forks reads past the origin and makes a fresh chat that
+        // knows nothing of the conversation: it goes too, and the document carries it.
+        let forked = chat
+            .origin
+            .as_ref()
+            .is_some_and(|origin| origin.native.is_some());
         match &chat.state {
             ChatState::Failed { message } => {
                 // Nothing was said in it: it goes, and the fork is made from the transcript.
@@ -151,6 +157,13 @@ pub fn fork(
                     super::provider_name(provider),
                     message.trim()
                 ));
+            }
+            _ if !forked => {
+                let _ = client.delete(&chat.id);
+                fallback = Some(
+                    "The chat host running now is from before forks (a newer one takes over once it has been idle a while), so the fork starts from the conversation as recorded."
+                        .into(),
+                );
             }
             _ => {
                 if let Some(text) = again {

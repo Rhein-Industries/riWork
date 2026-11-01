@@ -4,7 +4,10 @@
 //! chat tab's inline confirmation, which hands off in place: the new chat takes the tab).
 use nsh_core::prelude::*;
 use riwork_engine::{
-    chat::model::{ApprovalMode, ContributorMode, LineageContext, LineageKind, Provider},
+    chat::{
+        client::Client,
+        model::{ApprovalMode, ChatState, ContributorMode, LineageContext, LineageKind, Provider},
+    },
     codex_accounts,
     handoff::{self, Context, Kind, Source, Started},
     sessions::{HarnessKind, ShellKind},
@@ -46,7 +49,8 @@ pub struct HandoffRequestDto {
     /// The item of a chat source to cut its conversation at, that item included.
     #[prop(skip_none)]
     pub at: Option<String>,
-    /// The new chat takes the source's tab: it keeps the source's title.
+    /// The new chat takes the source's tab: it keeps the name the tab showed and the
+    /// source's permission mode, and the source must not be at work.
     #[prop(skip_none)]
     pub in_place: Option<bool>,
 }
@@ -172,8 +176,8 @@ pub async fn fork(request: ForkRequestDto) -> Result<ForkResultDto, String> {
             title: text(request.title, "title", 200)?,
         }, &|_| {})?;
         Ok(ForkResultDto {
+            title: handoff::shown_title(&outcome.chat),
             id: outcome.chat.id,
-            title: outcome.chat.title,
             provider: provider_word(outcome.chat.provider).into(),
             project_id: outcome.chat.project_id,
             worktree_id: outcome.chat.worktree_id,
@@ -211,8 +215,9 @@ impl Handoff {
         crate::service::blocking(move || {
             let backend = crate::chat::service::backend();
             let home = backend.home()?;
-            let source = handoff::resolve_source(&home, &request.source_id)?;
+            let mut source = handoff::resolve_source(&home, &request.source_id)?;
             source_dto(&source)?;
+            let in_place = request.in_place == Some(true) && request.kind == "chat" && matches!(source, Source::Chat(_));
             let kind = match request.kind.as_str() {
                 "shell" => Kind::Shell, "chat" => Kind::Chat,
                 _ => return Err("Choose a shell or chat handoff destination.".into()),
@@ -222,7 +227,7 @@ impl Handoff {
                 "grok" => HarnessKind::Grok, "muse" => HarnessKind::Muse,
                 _ => return Err("Choose Codex, Claude, Grok or Muse.".into()),
             };
-            let mode = mode_of(request.mode.as_deref())?;
+            let mut mode = mode_of(request.mode.as_deref())?;
             let context = match request.context.as_str() {
                 "transcript" => Context::Transcript, "summary" => Context::Summary,
                 _ => return Err("Choose transcript or summary context.".into()),
@@ -232,11 +237,31 @@ impl Handoff {
                 home: &home, ensure: &ensure, account: &codex_accounts::resolve_account,
                 timing: handoff::summary::Timing::DEFAULT,
             };
-            // In place, the new chat takes the source's tab, and so its title.
-            let title = match (&source, request.in_place) {
-                (Source::Chat(chat), Some(true)) => Some(chat.title.clone()),
-                _ => None,
-            };
+            let mut title = None;
+            if let (true, Source::Chat(chat)) = (in_place, &mut source) {
+                // The host's own record: whether a turn runs, and the name the tab shows now.
+                // A chat at work keeps its tab: what it still does would be out of sight.
+                let socket = backend.ensure()?;
+                if let Some(live) = Client::connect(&socket)?.list()?.into_iter().find(|live| live.id == chat.id) {
+                    if matches!(live.state, ChatState::Running | ChatState::Waiting) {
+                        return Err(format!(
+                            "The agent is still at work. Wait for the turn to end, or stop it, then go on with {}.",
+                            handoff::agent_name(provider)
+                        ));
+                    }
+                    *chat = live;
+                }
+                // The new chat takes the tab, so it keeps the tab's name, and the chat's
+                // permissions unless others were chosen. A chat named only for its agent
+                // ("Codex chat") is named for the new one.
+                let shown = handoff::shown_title(chat);
+                title = Some(if handoff::is_default_title(&shown) {
+                    format!("{} chat", handoff::agent_name(provider))
+                } else {
+                    shown
+                });
+                mode = mode.or(Some(chat.approval_mode));
+            }
             let result = handoff::run(&env, handoff::Request {
                 source, kind, provider, model: text(request.model, "model", 100)?,
                 effort: text(request.effort, "effort", 100)?, account: text(request.account, "account", 200)?,

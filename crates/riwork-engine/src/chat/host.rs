@@ -2396,9 +2396,15 @@ fn ensure_running_locked(shared: &Shared, chat: &Arc<Chat>) -> Result<(), String
         Ok(config) => config,
         Err(error) => return fail_start(chat, generation, error),
     };
+    // A native fork's thread is its source's, of the source's provider: a chat that went on
+    // with another agent since (`switch`) has a thread of its own and is never forked again.
     let native = info
         .origin
         .as_ref()
+        .filter(|origin| {
+            origin.provider.as_deref() == Some(super::lineage::provider_word(info.provider))
+                && info.carried_over.is_none()
+        })
         .and_then(|origin| origin.native.clone());
     if config.resume.is_some() || native.is_some() {
         // Opening the prefix is brief. Parsing a long historical log must not
@@ -3554,8 +3560,18 @@ fn switch(
         }
         info.carried_over = Some(CarriedOver {
             document: path,
-            from: crate::handoff::chat_label(before.provider, &before.title, &before.id),
+            from: crate::handoff::chat_label(
+                before.provider,
+                &crate::handoff::shown_title(&before),
+                &before.id,
+            ),
         });
+        // A native fork's thread was its source's provider's: the new agent starts on a
+        // thread of its own, with the conversation (what the fork inherited included) in
+        // its instructions, and never forks that thread.
+        if let Some(origin) = info.origin.as_mut() {
+            origin.native = None;
+        }
         // Muse takes no instructions beside the conversation: the one so far goes with
         // the first message of its new conversation, so the notice says when.
         let text = match (provider, &info.model) {

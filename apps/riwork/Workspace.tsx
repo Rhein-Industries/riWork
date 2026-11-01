@@ -759,7 +759,10 @@ export function Workspace(props: WorkspaceProps) {
         terminalTargets={terminalTargets} onCopyToTerminal={copyToTerminal}
         onLink={(target, line) => openLink({ target, line, kind: "file", action: "open" })}
         onOpenWorker={(id, kind) => { void openWorker(id, kind); }}
+        focusOnAttach={pendingFocus() === chatProps.panelId} onAttached={() => { if (pendingFocus() === chatProps.panelId) pendingFocus.set(null); }}
         onReplace={(id) => {
+          // The new chat's message box takes the focus the confirmation had.
+          pendingFocus.set(`chat:${id}`);
           if (findPanel(snapshot(), chatProps.panelId)) action(() => session.replaceChat(chatProps.panelId, id));
           else showCreatedSession("chat", id);
         }}

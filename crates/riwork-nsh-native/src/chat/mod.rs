@@ -118,14 +118,16 @@ impl Chat {
         .await
     }
 
-    /// The same account-aware catalog used by the original new-chat dialog.
-    pub async fn models(provider: String, project_id: Option<String>) -> Result<dto::ModelCatalogDto, String> {
+    /// The same account-aware catalog used by the original new-chat dialog. `saved` reads
+    /// only what saved chats reported and Muse's last answer (`riwork chat models`), never
+    /// asking an agent: what a chat's menus offer of the other agents.
+    pub async fn models(provider: String, project_id: Option<String>, saved: Option<bool>) -> Result<dto::ModelCatalogDto, String> {
         let provider: Provider = from_wire(&provider)?;
         if let Some(id) = project_id.as_deref() { crate::service::validate_uuid(id)?; }
         blocking(move || {
             let home = service::backend().home()?;
             // A fixture run reads saved catalogs only: Muse's discovery would start a real `muse serve`.
-            let catalog = if service::fixture_run(&home) {
+            let catalog = if saved == Some(true) || service::fixture_run(&home) {
                 riwork_engine::chat::catalog::saved(&home, project_id.as_deref(), provider)
             } else {
                 riwork_engine::chat::catalog::available(&home, project_id.as_deref(), provider)

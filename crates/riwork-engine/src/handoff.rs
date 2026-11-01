@@ -156,7 +156,7 @@ impl Source {
                 Some(harness) => format!("{} terminal {short}", agent_name(harness)),
                 None => format!("terminal shell {short}"),
             },
-            Self::Chat(chat) => chat_label(chat.provider, &chat.title, &chat.id),
+            Self::Chat(chat) => chat_label(chat.provider, &shown_title(chat), &chat.id),
         }
     }
 
@@ -217,7 +217,7 @@ impl Source {
             ),
             Self::Chat(chat) => (
                 SourceKind::Chat,
-                chat.title.clone(),
+                shown_title(chat),
                 Some(lineage::provider_word(chat.provider).to_owned()),
                 chat.model.clone(),
             ),
@@ -252,7 +252,7 @@ fn mark_source(
     let mark = LineageMark {
         kind,
         target_id: target.id.clone(),
-        target_title: target.title.clone(),
+        target_title: shown_title(target),
         provider: Some(lineage::provider_word(target.provider).to_owned()),
         model: target.model.clone(),
         at,
@@ -269,6 +269,21 @@ fn mark_source(
             target.id
         );
     }
+}
+
+/// The name a chat goes by, as its tab shows it (`project_tabs::Session::chat`): the name it
+/// was given, else the provider's, else its first message's, else its title. `ChatInfo::title`
+/// alone is what it was made with, for most chats "Codex chat" or "Claude chat".
+pub fn shown_title(chat: &ChatInfo) -> String {
+    crate::project_tabs::Session::chat(chat).title
+}
+
+/// Whether `title` is only the name a chat of some agent gets when it is given none.
+pub fn is_default_title(title: &str) -> bool {
+    matches!(
+        title.trim(),
+        "Codex chat" | "Claude chat" | "Muse chat" | ""
+    )
 }
 
 /// A chat as the document and the first message name it: `Codex chat "Fix it" (1234abcd)`.

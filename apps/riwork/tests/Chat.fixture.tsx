@@ -4,11 +4,13 @@ import { ChatTab, type ChatDiagnostics } from "../chat/ChatTab";
 
 /** A chat tab on the isolated fixture host. A new chat's working directory
  * names the recorded provider stream it replays; `chatId` reopens one. A
- * handoff in place shows the chat that took the tab, and opening another chat
- * (a fork, the original) shows that one, as a workspace would. */
+ * handoff in place shows the chat that took the tab, with the focus in its
+ * message box, and opening another chat (a fork, the original) shows that one,
+ * as a workspace would. */
 function Fixture() {
   const params = host.params as { recording?: string; chatId?: string };
   const chatId = signal<string | null>(params.chatId ?? null);
+  const focusNext = signal(false);
   const error = signal("");
   let last: ChatDiagnostics | null = null;
   if (!chatId()) {
@@ -48,7 +50,8 @@ function Fixture() {
   return <View style={{ flex: 1 }}>
     {error() !== "" && <Text testID="fixture-error">{error()}</Text>}
     {chatId() && <ChatTab chatId={chatId()!} visible={true} onDiagnostics={(report) => { last = report; }}
-      onReplace={(id) => chatId.set(id)} onOpenWorker={(id, kind) => { if (kind === "chat") chatId.set(id); }} />}
+      focusOnAttach={focusNext()} onAttached={() => focusNext.set(false)}
+      onReplace={(id) => { focusNext.set(true); chatId.set(id); }} onOpenWorker={(id, kind) => { if (kind === "chat") chatId.set(id); }} />}
   </View>;
 }
 

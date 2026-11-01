@@ -2972,8 +2972,11 @@ fn a_switch_goes_on_with_the_other_provider_in_the_same_chat_and_carries_the_con
         .carried_over
         .clone()
         .expect("the conversation is carried");
+    // Named as its tab named it: by its first message, not its default title.
     assert!(
-        carried.from.starts_with("Codex chat \"Codex chat\""),
+        carried
+            .from
+            .starts_with("Codex chat \"remember the blue door\""),
         "{}",
         carried.from
     );

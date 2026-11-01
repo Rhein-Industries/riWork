@@ -23,7 +23,7 @@ import { CodeTerminalRow } from "./CodeTerminalRow";
 import { CodeReader, MAX_SNIPPET, saveSnippet, type CodeSnippet } from "./CodeReader";
 import { SideHeader, escapeWithin, focusWithin, type FocusWithin } from "./SidePanel";
 import { Suggestions, createSuggestions } from "./Suggestions";
-import { ContinueConfirm, agentLabel, createContinue, type ContinueControl } from "./Continue";
+import { AGENTS, ContinueConfirm, agentLabel, createContinue, type ContinueControl } from "./Continue";
 import { utf8Bytes } from "../files_model";
 
 export interface NativeChatUsage {
@@ -46,6 +46,10 @@ export interface ChatTabProps {
   onOpenWorker?: (id: string, kind: "shell" | "chat") => void;
   /** A handoff in place made `id` this tab's chat (Continue with another agent). */
   onReplace?: (id: string) => void;
+  /** The tab was just given this chat (a handoff in place): its message box takes the focus
+   * once it is there, and `onAttached` says so. */
+  focusOnAttach?: boolean;
+  onAttached?: () => void;
   /** The Hand off tab for this chat (the ⋯ menu). */
   onHandoff?: () => void;
   onApiKeySettings?: () => void;
@@ -907,7 +911,7 @@ export function ChatTab(props: ChatTabProps) {
         {continuing.forking() && <Text testID="chat-forking" style={{ ...text(11, theme().palette.working), ...chatColumn(paneWidth(), theme().scale) }}>Forking the conversation…</Text>}
         <Composer panel={panel} handle={handle} theme={theme} notice={notice} visible={interactive} width={paneWidth} billing={billing} continuing={continuing}
           onSent={() => { following.set(true); list?.scrollToEnd(); }} onEditor={(editor) => editors.push(editor)} onEditMemo={props.onEditMemo}
-          onInput={(node) => { composerInput = node; }} onMeasure={(part, height) => { composer[part] = height; report(); }} />
+          onInput={(node) => { composerInput = node; if (props.focusOnAttach && active()) { node.focus(); props.onAttached?.(); } }} onMeasure={(part, height) => { composer[part] = height; report(); }} />
       </View>
     </View>}
   </View>;
@@ -1418,6 +1422,12 @@ function Composer(props: PartProps & { billing: BillingControl; continuing: Cont
       .map((agent) => ({ ...agent, choices: agent.choices.filter((choice) => !query || `${choice.label} ${choice.model ?? ""}`.toLowerCase().includes(query)) }))
       .filter((agent) => agent.choices.length > 0);
   }, { equals: sameContent });
+  // A search that names an agent, or finds only other agents' rows, is not a model of this one.
+  const namesAgent = () => AGENTS.some((agent) => [agent.id, agent.label.toLowerCase()].includes(modelQuery().trim().toLowerCase()));
+  const customModel = computed(() => {
+    const query = modelQuery().trim();
+    return !!query && !options().some((model) => model.id === query) && !namesAgent() && !(options().length === 0 && otherAgents().length > 0);
+  });
   const stopping = computed(() => props.panel().running && (empty() || pending() || incompleteAttachments()));
   const sendDisabled = () => !!memo.preview() || empty() || pending() || incompleteAttachments() || !accepting();
   return <View style={{ ...chatColumn(props.width(), theme().scale), minWidth: 0, flexShrink: 0, paddingTop: 8, paddingBottom: 12 }}>
@@ -1426,7 +1436,7 @@ function Composer(props: PartProps & { billing: BillingControl; continuing: Cont
     onFileDrop={(event) => { draggingFiles.set(false); addAttachments(event.uris); }} style={{ minWidth: 0, padding: 10, gap: 8, borderRadius: 10, borderWidth: 1, borderColor: draggingFiles() ? theme().palette.cyan : theme().palette.divider, backgroundColor: theme().palette.panel }}>
     {memo.preview() && <MemoPreview preview={memo.preview} theme={theme} active={() => props.visible() && accepting()} onInsert={insertMemo} onCancel={closeMemo}
       onEdit={props.onEditMemo ? (projectId) => { memo.close(); props.onEditMemo?.(projectId); } : undefined} />}
-    {confirming() && <ContinueConfirm control={continuing} theme={theme} panel={props.panel} />}
+    {confirming() && <ContinueConfirm control={continuing} theme={theme} panel={props.panel} onCancel={closeContinue} />}
     {saved().map((submission) => <View testID={`chat-saved:${submission.key}`} style={{ gap: 2, paddingBottom: 4 }}>
       <Text style={text(11, theme().palette.gold)}>{submission.status === "refused" ? `Submission refused${submission.error ? `: ${submission.error}` : ""}` : `Submission outcome uncertain${submission.error ? `: ${submission.error}` : ""}`}</Text>
       <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 12 }}>
@@ -1468,8 +1478,10 @@ function Composer(props: PartProps & { billing: BillingControl; continuing: Cont
       <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
         <Input ref={(node) => node.focus()} value={modelQuery()} onChange={(value) => modelQuery.set(value)} onSubmit={() => {
           const first = modelOptions()[0];
+          const agent = otherAgents()[0]?.choices[0];
           if (first) chooseModel(first.id);
-          else if (!toolbar()?.models.length) chooseModel(modelQuery());
+          else if (agent) continueWith(agent);
+          else if (!toolbar()?.models.length && !namesAgent()) chooseModel(modelQuery());
         }}
           placeholder="Search models or enter a model name" accessibilityLabel="Search or enter model" style={{ ...text(12), flex: 1, minWidth: 0, padding: 7, borderWidth: 1, borderColor: theme().palette.divider, borderRadius: 5 }} />
         <View role="button" testID="chat-model-close" focusable={true} tooltip="Close model picker" accessibilityLabel="Close model picker" onPress={() => { modelPicker.set(false); input?.focus(); }}
@@ -1495,7 +1507,7 @@ function Composer(props: PartProps & { billing: BillingControl; continuing: Cont
           </View>))}
         </View>}
       </Scroll>
-      {modelQuery().trim() && !options().some((model) => model.id === modelQuery().trim()) && pill("chat-model-custom", () => `Use “${modelQuery().trim()}”`, () => chooseModel(modelQuery()))}
+      {customModel() && pill("chat-model-custom", () => `Use “${modelQuery().trim()}”`, () => chooseModel(modelQuery()))}
     </View>}
     <DictationStatus controller={dictation} theme={theme} />
     <Suggestions control={suggestions} theme={theme} />

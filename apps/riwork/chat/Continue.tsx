@@ -43,13 +43,13 @@ export function createContinue(options: {
   let alive = true, asked = 0;
   cleanup(() => { alive = false; asked++; });
 
-  /** The saved model lists of every agent (`riwork chat models`): read from saved chats, never
-   * by starting one. */
+  /** The saved model lists of every agent (`riwork chat models`): what saved chats reported and
+   * Muse's last answer, never asking an agent. */
   function loadCatalogs() {
     const token = ++asked;
     const projectId = options.panel().projectId ?? null;
     for (const agent of AGENTS) {
-      void Chat.models(agent.id, projectId).then((catalog) => {
+      void Chat.models(agent.id, projectId, true).then((catalog) => {
         if (!alive || token !== asked) return;
         const seen = new Set<string>();
         const models: AgentModel[] = [];
@@ -90,10 +90,15 @@ export function createContinue(options: {
   function cancel() { if (!pending()) { choice.set(null); error.set(""); } }
   /** A summary is written by the agent when asked, which it can be only while idle. */
   const askable = () => options.panel().state === "idle";
+  /** A chat at work keeps its tab: what it still does, and any approval it asks for, would
+   * go out of sight while another agent starts on the same files. */
+  const atWork = () => options.panel().running;
 
   async function handOff() {
     const chosen = choice();
     if (!chosen || pending()) return;
+    // The confirmation says why it waits (and the host refuses one at work too).
+    if (atWork()) return;
     const text = note().trim();
     if ([...text].length > 2000) { error.set("A note is at most 2000 characters."); return; }
     pending.set(true); error.set("");
@@ -127,37 +132,42 @@ export function createContinue(options: {
     } finally { if (alive) forking.set(false); }
   }
 
-  /** "Fork from here" (or "Fork chat" for the whole), and "Fork with…" another agent or model. */
+  /** "Fork from here" (or "Fork chat" for the whole), and "Fork with…" another agent or model.
+   * This chat's own agent offers its other models (the fork keeps the chat's model unless one is
+   * chosen, which "Fork from here" already does); another agent also its default model. */
   function forkItems(at?: string): MenuItem[] {
     const current = options.panel().provider;
-    const agents: MenuItem[] = AGENTS.map((agent) => ({
-      label: agent.id === current ? `${agent.label} (this agent)` : agent.label,
-      submenu: [
-        { label: "Default model", onSelect: () => void fork(at, { provider: agent.id, label: agent.label }) },
-        ...models(agent.id).slice(0, MODELS_SHOWN).map((model) => ({
-          label: model.label, onSelect: () => void fork(at, { provider: agent.id, model: model.id, label: `${agent.label} · ${model.label}` }),
-        })),
-      ],
-    }));
+    const model = options.panel().toolbar?.model;
+    const agents: MenuItem[] = AGENTS.flatMap((agent) => {
+      const own = agent.id === current;
+      const listed: MenuItem[] = models(agent.id).slice(0, MODELS_SHOWN).map((item) => ({
+        label: item.label, checked: own && item.id === model,
+        onSelect: () => void fork(at, { provider: agent.id, model: item.id, label: `${agent.label} · ${item.label}` }),
+      }));
+      if (own) return listed.length ? [{ label: `${agent.label} (this agent)`, submenu: listed }] : [];
+      return [{ label: agent.label, submenu: [{ label: "Default model", onSelect: () => void fork(at, { provider: agent.id, label: agent.label }) }, ...listed] }];
+    });
     return [
       { label: at ? "Fork from here" : "Fork chat", disabled: forking(), onSelect: () => void fork(at) },
       { label: "Fork with…", disabled: forking(), submenu: agents },
     ];
   }
 
-  return { choice, context, note, pending, error, forking, catalogs, loadCatalogs, models, others, open, cancel, askable, handOff, fork, forkItems };
+  return { choice, context, note, pending, error, forking, catalogs, loadCatalogs, models, others, open, cancel, askable, atWork, handOff, fork, forkItems };
 }
 
 export type ContinueControl = ReturnType<typeof createContinue>;
 
 /** The inline confirmation by the composer: which agent, what it reads, a note, Hand off. */
-export function ContinueConfirm(props: { control: ContinueControl; theme: () => InterfaceTheme; panel: () => ChatPanel; onFocus?: (node: YNode) => void }) {
+export function ContinueConfirm(props: { control: ContinueControl; theme: () => InterfaceTheme; panel: () => ChatPanel; onFocus?: (node: YNode) => void;
+  /** Leaves the confirmation, as ⎋ does: the focus goes back to the message box. */
+  onCancel: () => void }) {
   const control = props.control;
   const palette = () => props.theme().palette;
   const size = (value: number) => space(value, props.theme().scale);
   const text = (muted = false, base = 11) => ({ fontFamily: props.theme().family, fontSize: base * props.theme().scale, color: muted ? palette().muted : palette().text });
   const button = () => ({ minHeight: size(28), paddingHorizontal: size(10), justifyContent: "center" as const, borderRadius: 5 });
-  const busy = computed(() => props.panel().running);
+  const busy = computed(() => control.atWork());
   const pill = (id: string, label: string, selected: boolean, onPress: () => void) =>
     <View testID={id} role="radio" accessibilityLabel={label} accessibilityState={{ checked: selected, disabled: control.pending() }}
       onPress={() => { if (!control.pending()) onPress(); }}
@@ -171,8 +181,8 @@ export function ContinueConfirm(props: { control: ContinueControl; theme: () => 
       <Icon name="worktrees" size={13 * props.theme().scale} color={palette().muted} />
       <Text role="header" numberOfLines={1} style={{ ...text(false, 12), fontWeight: "600", flexShrink: 1 }}>{`Continue with ${control.choice()?.label ?? ""}`}</Text>
     </View>
-    <Text style={text(true)}>{busy()
-      ? "A new chat takes this tab with the conversation so far; the turn still running stays here. This chat stays reachable from the new one."
+    <Text testID="chat-continue-what" style={busy() ? { ...text(), color: palette().gold } : text(true)}>{busy()
+      ? "The agent is still at work. Wait for the turn to end, or stop it, to hand off: a new chat then takes this tab with the conversation so far."
       : "A new chat takes this tab with the conversation so far. This chat stays as it is, reachable from the new one."}</Text>
     <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: size(6) }}>
       <Text style={text(true)}>It reads</Text>
@@ -188,9 +198,9 @@ export function ContinueConfirm(props: { control: ContinueControl; theme: () => 
     {control.pending() && <Text role="text" style={{ ...text(), color: palette().gold }}>{control.context() === "summary" && control.askable() ? "Asking for a summary and starting the new chat…" : "Reading the conversation and starting the new chat…"}</Text>}
     {!!control.error() && <Text testID="chat-continue-error" role="alert" selectable={true} style={{ ...text(), color: palette().danger }}>{control.error()}</Text>}
     <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: size(6) }}>
-      <Button testID="chat-continue-cancel" disabled={control.pending()} onPress={control.cancel} style={button()} focusStyle={{ backgroundColor: palette().panel }}><Text style={text()}>Cancel</Text></Button>
-      <Button testID="chat-continue-start" disabled={control.pending()} onPress={() => void control.handOff()} style={{ ...button(), backgroundColor: palette().panel }} focusStyle={{ backgroundColor: palette().bg }}>
-        <Text style={{ ...text(), fontWeight: "600", color: palette().cyan }}>{control.pending() ? "Handing off…" : "Hand off"}</Text>
+      <Button testID="chat-continue-cancel" disabled={control.pending()} onPress={props.onCancel} style={button()} focusStyle={{ backgroundColor: palette().panel }}><Text style={text()}>Cancel</Text></Button>
+      <Button testID="chat-continue-start" disabled={control.pending() || busy()} onPress={() => void control.handOff()} style={{ ...button(), backgroundColor: palette().panel }} focusStyle={{ backgroundColor: palette().bg }}>
+        <Text style={{ ...text(), fontWeight: "600", color: busy() ? palette().muted : palette().cyan }}>{control.pending() ? "Handing off…" : "Hand off"}</Text>
       </Button>
     </View>
   </View>;
