@@ -904,12 +904,12 @@ font size, IME and the second key list. None of it crosses into JS. There is no 
 
 | Prop | iOS |
 |---|---|
-| `target` | Only `{kind: "remote", desktopId, shellId}`, and only on the interactive host (`relay.select`). The view puts that shell on screen the way its tab is chosen: the global orchestrator's on the Global scope; a project shell after reading its project's lists (found from the lists already read, the dashboard, or each project's `shells.list`). A hidden worker's shared tab is opened (`tabs.open`). It never creates or closes a session. `{kind: "local"}` shows "Local terminals run on the Mac" and emits `state: failed` with that message. |
+| `target` | Only `{kind: "remote", desktopId, shellId}`, and only on the interactive host (`relay.select`). The view puts that shell on screen the way its tab is chosen: the global orchestrator's on the Global scope; a project shell after reading its project's lists (found from the lists already read, the dashboard, or each project's `shells.list`). It never creates or closes a session and never writes the Mac's tab strip: a worker whose shared tab is hidden is not opened (the app opens it through its `tabs` port, then sends `reattach`), and meanwhile `state` is `failed` "Open this worker's tab to see it." `{kind: "local"}` shows "Local terminals run on the Mac" and emits `state: failed` with that message. |
 | `visible` | `true`: the shell is polled (the long poll) and sized (the viewport lease) while it is on screen. `false`: polling stops and the lease is released at once. |
 | `pinned` | Accepted, no effect: the model keeps the last screen of each shell it showed. |
 | `focusOnAttach` | Takes the keyboard once on the first `attached`. Otherwise the device's own focus setting applies (a hardware keyboard may take it). |
 | `colors` | Accepted, not applied: the view draws in the theme `ThemeStore` resolved, the same one `platform.theme` pushes. |
-| `frozen` | Takes no input and gives the keyboard back; it is taken again when thawed if it was held. The view keeps drawing (UIKit overlays draw above it). |
+| `frozen` | Takes no input and gives the keyboard back. Nothing takes it meanwhile: not a tap, the device's focus setting, a hardware keyboard arriving, the app returning, `focus`, `paste` or `selectAll` (`focus` waits for the thaw). When thawed it is taken again if it was held, otherwise the device's focus setting decides, as after a sheet. The view keeps drawing (UIKit overlays draw above it). |
 | `fontScale` (1.1) | `number`, default 1: a factor over the device's saved terminal size (`riwork.terminalFontSize`), for drawing and for the grid the lease asks for. The saved size is not changed; a pinch saves the size it is at scale 1. |
 
 Events:
@@ -917,10 +917,10 @@ Events:
   screen), `reconnecting` (the link went, a scheduled reconnect, or the app paused in the
   background; the last screen stays), `ended` (its process exited), `gone` (closed on the Mac, or
   in no project of the host), `failed` with `message` (not paired, another host is the interactive
-  one, disconnected, or it could not be put on screen after three tries per connection). `detached`
-  with "Shown in another pane." when another `riwork.terminal` on this device is live: the model
-  has one terminal, and the one most recently shown, focused or tapped is live. `claimed` is not
-  used.
+  one, disconnected, its worker tab is hidden, or it could not be put on screen after three tries
+  per connection). `detached` with "Shown in another pane." when another `riwork.terminal` on this
+  device is live: the model has one terminal, and the one most recently shown, focused or tapped is
+  live. `claimed` is not used.
 - **`focusChange`**: the key view or the line composer took or gave up the keyboard.
 - **`linkOpen`**: a tapped link in the output: `{action: "open", kind: "url", target}`. The view
   does not open it; the app does (NSH `openUrl`).
@@ -957,8 +957,9 @@ picture through upload as the key view's paste; into the composer in line-compos
 `findPrevious`, `findClose` (answered with an empty `findResult`).
 
 **While a native Swift screen is up** (`nav.present` project or global, a sheet): the model's
-terminal is that screen's. The view changes nothing then; a pushed screen also takes it off the
-window, and it puts its shell back when it returns.
+terminal is that screen's. The view changes nothing then, and stops putting its shell on screen if
+it was (reading another project's lists, say); a pushed screen also takes it off the window, and it
+puts its shell back when it returns.
 
 
 ---

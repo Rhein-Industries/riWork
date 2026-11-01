@@ -97,9 +97,20 @@ import UIKit
     let shortcutOwner = UUID()
     var freshness: Task<Void, Never>?
     var resolving: Task<Void, Never>?
+    /// The component's hosting controller, a child of the root's controller while its view is in a window.
+    weak var controller: UIViewController?
     func end() {
         freshness?.cancel(); freshness = nil
         resolving?.cancel(); resolving = nil
+        // Out of the root's children and off the container, so the terminal it draws (and what it observes of the model) goes too.
+        if let controller {
+            if controller.parent != nil {
+                controller.willMove(toParent: nil)
+                controller.removeFromParent()
+            }
+            controller.view.removeFromSuperview()
+        }
+        controller = nil
     }
 }
 
@@ -110,6 +121,8 @@ import UIKit
     }
 
     static let localMessage = "Local terminals run on the Mac"
+    /// The Mac's tab strip is the app's (`tabs.open` through its port); this view never opens a hidden tab.
+    static let hiddenMessage = "Open this worker's tab to see it."
     /// Tries to put the target on screen per connection before saying it could not.
     private static let resolveLimit = 3
     /// App chords typed while the terminal holds the keyboard: the TSX shell acts on them (`command`). ⌘K and ⌘/ stay the terminal's
@@ -175,6 +188,7 @@ import UIKit
         hosting.view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         container.clipsToBounds = true
         container.addSubview(hosting.view)
+        lease.controller = hosting
         box.openLink = { [weak self] url in self?.emit("linkOpen", ["action": "open", "kind": "url", "target": url.absoluteString]) }
         box.inputRefused = { [weak self] reason in self?.emit("inputRefused", ["reason": reason]) }
         box.claim = { [weak self] in self?.claim() }
@@ -237,9 +251,10 @@ import UIKit
         case "reattach": reattach()
         // The screen and its scrollback, as the native menu's Copy screen text (the capture terminal has no selection to copy).
         case "copy": if box.face == .console { UIPasteboard.general.string = model.screenTextForCopy }
-        case "paste": paste()
+        // Frozen takes no input: neither puts anything in the shell or the composer, nor takes the keyboard.
+        case "paste": if !frozen { paste() }
         case "selectAll":
-            guard box.face == .console, !model.directTyping, let field = Self.textField(in: container) else { return }
+            guard !frozen, box.face == .console, !model.directTyping, let field = Self.textField(in: container) else { return }
             _ = field.becomeFirstResponder()
             field.selectAll(nil)
         // No search over captured screens yet: a search finds nothing.
@@ -269,10 +284,14 @@ import UIKit
         notFound = false
     }
 
+    /// Frozen: no touches, and the key view takes the keyboard by no path (`KeyFocus.held`: a tap, a ready shell, a hardware keyboard
+    /// arriving, the app coming back, a sheet closing); a text field that takes it anyway gives it back (`updateKeyboard`). Thawed:
+    /// the keyboard comes back if it was held, else the device's focus setting decides, as after a sheet.
     private func setFrozen(_ value: Bool) {
         guard value != frozen else { return }
         frozen = value
         container.isUserInteractionEnabled = !value
+        box.keyFocus.held = value
         if value {
             refocusAfterFreeze = holdsKeyboard
             box.keyFocus.dismiss()
@@ -280,6 +299,8 @@ import UIKit
         } else if refocusAfterFreeze {
             refocusAfterFreeze = false
             pendingFocus = true
+        } else if box.face == .console, model.directTyping, host.isOwner(self), !host.nativePresented {
+            box.keyFocus.autoFocus()
         }
         refresh()
     }
@@ -358,6 +379,8 @@ import UIKit
         var listsReady = false
         var selected = false
         var session: RemoteSession?
+        /// Its shared tab is hidden on the Mac (a worker): not put on screen until the app opens it.
+        var hiddenTab = false
         var missing = false
         var outputIsTarget = false
         var live = false
@@ -398,6 +421,9 @@ import UIKit
         seen.listsReady = model.capabilitiesKnown
         seen.selected = model.sessionID == shellID && !model.terminalCovered
         seen.session = model.sessions.first { $0.id == shellID }
+        if model.scope == .project, seen.session != nil, !model.openSessions.contains(where: { $0.id == shellID }) {
+            seen.hiddenTab = model.sharedTabs?.allEntries.contains { $0.key == "shell:\(shellID)" && $0.hidden } == true
+        }
         seen.missing = model.missingSessionIDs.contains(shellID)
         seen.outputIsTarget = model.outputSessionID == shellID
         seen.live = seen.outputIsTarget && !model.snapshotStale
@@ -442,8 +468,9 @@ import UIKit
             }
         }
         if candidate && owner {
-            // A sheet over the NSH root (Display, a pairing, a decision): everything stays as it is under it.
-            if !native { activate(seen, shellID: shellID) }
+            // A native screen (a project pushed, a sheet over the NSH root): everything stays as it is under it, and a shell being put
+            // on screen is not, so it cannot change the model's project or tab under that screen.
+            if native { cancelResolve() } else { activate(seen, shellID: shellID) }
         } else {
             deactivate()
         }
@@ -477,6 +504,7 @@ import UIKit
         if let session = seen.session {
             if !session.alive { return ("ended", nil) }
             if session.mode == .chat { return ("failed", "This session runs as a chat.") }
+            if seen.hiddenTab { return ("failed", Self.hiddenMessage) }
         } else if notFound || (shellProject != nil && seen.loadedProject == shellProject) {
             return gone
         }
@@ -517,7 +545,7 @@ import UIKit
         }
         guard !seen.selected, seen.listsReady, lease.resolving == nil, resolveAttempts < Self.resolveLimit, !seen.missing, !notFound else { return }
         if let session = seen.session {
-            guard session.alive, session.mode != .chat else { return }
+            guard session.alive, session.mode != .chat, !seen.hiddenTab else { return }
         } else if let project = shellProject, seen.loadedProject == project {
             return
         }
@@ -546,6 +574,19 @@ import UIKit
 
     // MARK: Putting the shell on screen
 
+    /// Stops putting the shell on screen without counting the try: it is made again when the native screen goes.
+    private func cancelResolve() {
+        guard let task = lease.resolving else { return }
+        task.cancel()
+        lease.resolving = nil
+        resolveAttempts = max(0, resolveAttempts - 1)
+    }
+
+    /// The resolve may still change the model: not cancelled, no native screen up, still the live terminal, the same connection.
+    private func mayResolve(_ epoch: Int) -> Bool {
+        !Task.isCancelled && !host.nativePresented && host.isOwner(self) && model.connectionEpoch == epoch && model.state == .connected
+    }
+
     private func resolve(_ shellID: String) {
         resolveAttempts += 1
         let epoch = model.connectionEpoch
@@ -558,11 +599,12 @@ import UIKit
     }
 
     /// Selects the shell the way its tab is chosen: the global orchestrator's on the Global scope; a project's from its project's lists
-    /// (read first when it is another project, then put up as a dashboard row's tab is). A hidden worker's tab is opened. Nothing is
-    /// created.
+    /// (read first when it is another project, or read again when it is this one). Nothing is created, and the Mac's tab strip is not
+    /// written: a worker whose shared tab is hidden stays so (`status` says why) until the app opens its tab. After every wait it looks
+    /// again whether it still may change the model (`mayResolve`).
     private func select(_ shell: String, epoch: Int) async {
         let model = self.model
-        let key = "shell:\(shell)"
+        guard mayResolve(epoch) else { return }
         if OrchestratorScope.globalEntries(model.orchestrators).contains(where: { $0.id == shell }) {
             model.enterGlobal()
             if let session = model.openSessions.first(where: { $0.id == shell }) { await model.chooseSession(session) }
@@ -573,18 +615,20 @@ import UIKit
             await model.chooseSession(session)
             return
         }
-        if model.sessions.contains(where: { $0.id == shell }) {
-            if model.desktopFeatures.tabs, model.sharedTabs?.allEntries.contains(where: { $0.key == key }) == true {
-                try? await model.openTab(key)
-            }
-            return
-        }
+        // One of this project's that is no tab on screen (a hidden worker): the app opens its tab, not this view.
+        if model.sessions.contains(where: { $0.id == shell }) { return }
         switch await project(of: shell, epoch: epoch) {
         case .found(let project):
-            guard !Task.isCancelled, model.connectionEpoch == epoch, model.state == .connected else { return }
+            guard mayResolve(epoch) else { return }
             shellProject = project
-            model.requestProjectTab(project, key: key)
-            await model.chooseProject(project)
+            if model.projectID == project, model.loadedProjectID == project {
+                await model.refreshSessionsQuietly()
+            } else {
+                await model.chooseProject(project)
+            }
+            guard mayResolve(epoch), model.scope == .project, model.projectID == project,
+                  let session = model.openSessions.first(where: { $0.id == shell }) else { return }
+            await model.chooseSession(session)
         case .absent:
             if !Task.isCancelled { notFound = true }
         case .unknown:
@@ -605,7 +649,7 @@ import UIKit
         }
         var complete = true
         for project in model.projects {
-            guard !Task.isCancelled, model.connectionEpoch == epoch, model.state == .connected else { return .unknown }
+            guard mayResolve(epoch) else { return .unknown }
             do {
                 let shells = try await model.rpc("shells.list", ["project_id": .string(project.id)])["shells"].decode([RemoteSession].self)
                 if shells.contains(where: { $0.id == shell }) { return .found(project.id) }
@@ -621,7 +665,13 @@ import UIKit
     /// The terminal holds the keyboard (its key view or its line composer): the Tab prefix's app actions come here, and the root's
     /// stand aside.
     private func updateKeyboard(_ seen: Seen, owner: Bool, native: Bool) {
-        let holds = owner && (seen.keyActive || seen.editing)
+        // Frozen: whatever took the keyboard inside (the dictation review's field, a responder UIKit put back) gives it back, and the
+        // terminal is not said to hold it, so the root's Tab prefix and key host stay the app's.
+        if frozen, seen.keyActive || seen.editing {
+            box.keyFocus.dismiss()
+            container.endEditing(true)
+        }
+        let holds = owner && !frozen && (seen.keyActive || seen.editing)
         if holds != holdsKeyboard {
             holdsKeyboard = holds
             box.holdsKeyboard = holds

@@ -653,9 +653,15 @@ enum TerminalFont {
     @ObservationIgnored private(set) var tracker = ShellFocusTracker()
     @ObservationIgnored private var restoreAfterModal = false
     @ObservationIgnored private var retry: Task<Void, Never>?
+    /// A host froze the terminal (`riwork.terminal`'s `frozen`): nothing here takes the keyboard meanwhile, not a tap, not a sheet
+    /// closing, not the policy. The native screens never set it.
+    @ObservationIgnored var held = false { didSet { if held { retry?.cancel() } } }
 
     // The person's.
-    func focus() { tracker.userFocused(shellID); _ = view?.becomeFirstResponder() }
+    func focus() {
+        guard !held else { return }
+        tracker.userFocused(shellID); _ = view?.becomeFirstResponder()
+    }
     func userDismiss() { noteUserHide(); _ = view?.resignFirstResponder() }
     /// The capture view's own Hide key resigns by itself; this only remembers that the person did it.
     func noteUserHide() { tracker.userDismissed(shellID) }
@@ -671,7 +677,7 @@ enum TerminalFont {
     func restoreAfterModalDismissal() {
         let restore = restoreAfterModal
         restoreAfterModal = false
-        if restore, !tracker.isDismissed(shellID), let view, !Self.isObscured(view) { _ = view.becomeFirstResponder() }
+        if restore, !held, !tracker.isDismissed(shellID), let view, !Self.isObscured(view) { _ = view.becomeFirstResponder() }
         else { autoFocus() }
     }
     func shellReplacedWithoutTap() { tracker.shellReplacedWithoutTap(shellID); dismiss() }
@@ -686,6 +692,7 @@ enum TerminalFont {
     @discardableResult
     func autoFocus(retries: Int = 40) -> KeyboardFocusDecision {
         retry?.cancel()
+        guard !held else { return .skip(.cannotType) }
         let current = policy()
         let context = KeyboardFocusContext(hardwareKeyboard: current.hardware, obscured: Self.isObscured(view),
                                            alreadyFocused: view?.isFirstResponder ?? false, dismissedHere: tracker.isDismissed(shellID),
