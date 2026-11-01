@@ -26,7 +26,7 @@ enum NSHMobilePresentation {
     var onPresentation: ((NSHMobilePresentation) -> Void)?
     var onRootShortcutPolicyChange: ((Bool) -> Void)?
     private weak var app: NshAppView?
-    private let hostDashboards = HostDashboardStore()
+    private let hostDashboards: HostDashboardStore
     /// The host calls the shared TSX screens use (`relay.*`, `platform.*`, `nav.*`).
     private(set) lazy var hostAPI = NSHHostAPI(bridge: self)
     private var route = "hosts"
@@ -63,7 +63,7 @@ enum NSHMobilePresentation {
 
     init(model: RemoteModel) {
         self.model = model
-        hostDashboards.compressTraffic = { [weak model] in model?.compressTraffic ?? true }
+        hostDashboards = HostDashboardStore(connections: model.connections)
     }
 
     func attach(to app: NshAppView) {
@@ -147,13 +147,11 @@ enum NSHMobilePresentation {
         guard openingHostID == nil, respondingHostID == nil else {
             throw Failure(message: "Another desktop operation is still in progress.")
         }
-        let token = UUID(); navigation = token; openingHostID = hostID
+        navigation = UUID(); openingHostID = hostID
         route = "dashboard"; nativePresented = false
+        // The overview stops reading. The model takes the host's one socket
+        // over from it, or from anyone else who has it open (HostConnections).
         publishAndObserve()
-        // The relay permits one mobile socket per pairing. Close overview
-        // clients before handing the selected pairing to RemoteModel.
-        await hostDashboards.stop()
-        guard navigation == token else { openingHostID = nil; publishAndObserve(); return }
         await model.activate(hostID)
         if model.selectedDesktopID == hostID, model.state == .connected {
             await model.refreshDashboardQuietly()
@@ -303,12 +301,14 @@ enum NSHMobilePresentation {
             throw DashboardResponseError.hostUnavailable
         }
         respondingHostID = item.hostID
+        // The overview pauses meanwhile and reads again once this is done.
         defer { respondingHostID = nil; publishAndObserve() }
-        await hostDashboards.stop()
+        publishAndObserve()
         let interactive = activeOverviewHostID == item.hostID
         do {
-            if interactive {
-                if model.state != .connected { await model.activate(item.hostID) }
+            // Over the host's one socket either way: the model's connection when it is connected to that host, else borrowed (and
+            // opened if no one has it open). Answering never switches, connects or disconnects the interactive host.
+            if model.state == .connected, model.selectedDesktopID == item.hostID {
                 try await model.respondToDashboardDecision(item.decision, hostID: item.hostID, command: command)
             } else {
                 try await hostDashboards.respond(to: item.decision, on: desktop, command: command)

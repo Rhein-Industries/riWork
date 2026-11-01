@@ -195,18 +195,18 @@ private actor DashboardLandingTransport: RemoteTransport {
     func testAnotherHostIsAnsweredOverItsOwnConnectionAndTheHostInUseIsLeftAlone() async throws {
         let rig = try await rig(), decision = try decision()
         rig.model.draft = "Unsent draft for the host in use"
-        // The second host's chat, reached only over the overview's kind of temporary connection.
+        // The second host's chat, reached only over that host's own socket, borrowed for the response.
         let otherBase = ChatTransport()
         await otherBase.enableSnapshots()
         let info = ChatInfo(id: chatID, provider: .claude, projectID: projectID, cwd: "/fixture", title: "Preview pipeline", createdAtUnix: 1, state: .waiting)
         await otherBase.append(chatID, [.info(info), .approvalRequested(approval), .state(.waiting)])
         let other = DashboardDecisionTransport(otherBase)
-        let store = HostDashboardStore(refreshInterval: .seconds(3600), transportFactory: { _ in other })
+        let store = HostDashboardStore(connections: HostConnections(idleTimeout: .zero, factory: { _ in other }), refreshInterval: .seconds(3600))
         try await store.respond(to: decision, on: rig.second, command: .approve(requestID: decision.requestID, decision: .accept))
         let writes = await other.writes, connected = await other.isConnected(), interactive = await rig.transport.writes
         XCTAssertEqual(writes.count, 1)
         XCTAssertEqual(writes.first?.0, UploadConnectionIdentity(pairing: rig.second.pairing), "bound to the card's own host")
-        XCTAssertFalse(connected, "the temporary connection is closed afterwards")
+        XCTAssertFalse(connected, "the socket is given back afterwards, and nobody else holds it")
         XCTAssertTrue(interactive.isEmpty)
         XCTAssertEqual(rig.model.selectedDesktopID, rig.first.id)
         XCTAssertEqual(rig.model.state, .connected)
@@ -351,7 +351,7 @@ private actor DashboardLandingTransport: RemoteTransport {
         let first = try desktop(1, name: "MacBook Pro"), second = try desktop(2, name: "Mac Studio")
         let reply = try dashboard(), a = DashboardLandingTransport(reply: reply), b = DashboardLandingTransport(reply: reply)
         let transports = [first.id: a, second.id: b]
-        let store = HostDashboardStore(refreshInterval: .seconds(3600), transportFactory: { transports[$0.id]! })
+        let store = HostDashboardStore(connections: HostConnections(idleTimeout: .zero, factory: { transports[$0]! }), refreshInterval: .seconds(3600))
         store.setVisible(true, desktops: [first, second]); await store.refresh()
         await b.setOffline(); await store.refresh()
         XCTAssertEqual(store.hosts.map(\.state), [.ready, .offline])

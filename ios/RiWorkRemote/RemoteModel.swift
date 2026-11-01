@@ -282,6 +282,9 @@ enum ConnectionState: Equatable {
     var loadFailure: String?
     var loadFailed: Bool { loadFailure != nil }
     @ObservationIgnored private let keychain: KeychainStore
+    /// The phone's relay sockets, one per host; the overview, the decision responder and the shared screens borrow from it too.
+    @ObservationIgnored let connections: HostConnections
+    /// This model's connection: `connections.interactive` (the interactive host's socket), or a test's scripted transport.
     @ObservationIgnored let client: any RemoteTransport
     @ObservationIgnored private let pollInterval: Duration
     @ObservationIgnored var polling: Task<Void, Never>?
@@ -367,7 +370,7 @@ enum ConnectionState: Equatable {
     @ObservationIgnored private var failedViewport: ViewportTarget?
     private struct ViewportTarget: Equatable { let shellID: String; let viewport: TerminalViewport }
 
-    init(client: any RemoteTransport = RelayClient(), keychain: KeychainStore = KeychainStore(), pollInterval: Duration = .seconds(3),
+    init(client: (any RemoteTransport)? = nil, connections: HostConnections? = nil, keychain: KeychainStore = KeychainStore(), pollInterval: Duration = .seconds(3),
          keyFlushInterval: Duration = .milliseconds(40), previewDelay: Duration = .milliseconds(300), reconnectBackoff: Duration = .seconds(1),
          defaults: UserDefaults = .standard, themeRefreshInterval: Duration = .seconds(60), themeMinimumGap: Duration = .seconds(5),
          activityRefreshInterval: Duration = .seconds(4), dashboardRefreshInterval: Duration = .seconds(10), chatWaitMilliseconds: Int = ChatLimits.waitMilliseconds, chatIdleInterval: Duration = .seconds(1),
@@ -378,7 +381,9 @@ enum ConnectionState: Equatable {
         self.liveWaitMilliseconds = liveWaitMilliseconds
         self.linkWatcher = linkWatcher
         self.prefetchEnabled = prefetch
-        self.client = client
+        let connections = connections ?? HostConnections()
+        self.connections = connections
+        self.client = client ?? connections.interactive
         self.keychain = keychain
         self.pollInterval = pollInterval
         self.keyFlushInterval = keyFlushInterval
@@ -414,6 +419,8 @@ enum ConnectionState: Equatable {
         historyMode = HistoryMode(rawValue: defaults.string(forKey: Self.historyModeKey) ?? "") ?? .automatic
         compressTraffic = defaults.object(forKey: Self.compressTrafficKey) == nil ? true : defaults.bool(forKey: Self.compressTrafficKey)
         theme.setScale(interfaceScale)
+        // Every socket opens asking for compression as the person chose it.
+        connections.compressTraffic = { [weak self] in self?.compressTraffic ?? true }
         loadLibrary()
         if let linkWatcher {
             rawLinkConditions = linkWatcher.conditions; linkInterface = linkWatcher.interface
@@ -577,6 +584,7 @@ enum ConnectionState: Equatable {
         let previous = desktops
         desktops.removeAll { $0.id == id }
         do { try persist() } catch { desktops = previous; throw error }
+        connections.forget(id)
         theme.forget(id)
         theme.showInitial(selected: selectedDesktopID, existing: desktops.map(\.id))
     }
@@ -1199,6 +1207,7 @@ enum ConnectionState: Equatable {
     func setAppActive(_ active: Bool) {
         guard appActive != active else { return }
         appActive = active
+        connections.setActive(active)
         if active { wakeLive(); kickPrefetch() }
     }
 }

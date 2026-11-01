@@ -22,15 +22,24 @@ and **Projects** filters keep the host's name on every row. Working agents, atte
 contributed known figures; a missing figure is unknown rather than zero. A host that goes offline keeps its last successful read,
 marked as saved with its age, while other hosts continue updating. Choosing a host or a project opens that exact host.
 
-The overview refreshes about every 15 seconds while visible and active, with at most three temporary host connections at once.
-Leaving it or backgrounding the app closes those connections. The host already connected for interactive work uses that existing
-connection's dashboard; the overview does not take its terminal viewport or open a second mobile connection for the same pairing.
-A new pairing must finish its first explicit connection before the overview can use it. Pairing keys remain in Keychain.
+The overview refreshes about every 15 seconds while visible and active, reading at most three hosts at once, each over that host's
+one connection (see **Connections** below); it opens none of its own. The host already connected for interactive work uses that
+existing connection's dashboard; the overview does not take its terminal viewport. A new pairing must finish its first explicit
+connection before the overview can use it. Pairing keys remain in Keychain.
+
+**Connections.** The app keeps one relay connection per paired desktop, and everything that talks to a desktop shares it: the
+desktop you opened (its lists, terminals and chats), the overview, answering a decision and the shared screens. Opening a desktop the
+overview has just read takes over its connection instead of connecting again. Besides the desktop you opened, at most three
+connections are open at once; one nobody uses closes after 20 seconds, and backgrounding the app closes them all. Each connection has
+at most 12 requests outstanding, of which at most 2 wait for a change (a terminal's or chat's long poll), with 3 always free for
+everything else: the relay drops a connection whose replies back up past 16, so the app never asks for more than it can take at once.
+A request beyond that waits its turn on the phone, and its timeout starts only when it goes out.
 
 **Decisions.** A desktop's dashboard and All hosts show original approval requests and questions from waiting Claude, Codex and Muse
 chats. Tap **Review** to read the request (on a desktop's dashboard it unfolds in its row; on All hosts it opens a sheet) and choose
-an offered approval or answer. Before sending, the app connects to the card's
-exact host and checks a fresh chat snapshot for the same pending request and choices. A resolved or changed request is rejected;
+an offered approval or answer. Before sending, the app reaches the card's
+exact host over its connection (connecting it if needed, without switching the desktop you have open) and checks a fresh chat
+snapshot for the same pending request and choices. A resolved or changed request is rejected;
 viewing a card does not answer it. Responses are sent only after your explicit choice and are never automatically retried after
 an uncertain delivery. Coverage can be partial when a host could not read every chat log; terminal agents keep their existing
 attention rows rather than acquiring invented approval controls.

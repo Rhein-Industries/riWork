@@ -5,11 +5,13 @@ import RiWorkCore
 import UIKit
 
 /// The host calls the shared TSX screens use on iPhone and iPad (`apps/riwork/client`, `apps/riwork-mobile/swift_transport.ts`;
-/// the table is in docs/nsh-ios-migration.md). They run over the existing `RemoteModel` and `NSHMobileBridge`: no second transport,
-/// socket or credential store. JS sees host ids and labels; pairing keys, tokens and URLs with credentials never cross.
+/// the table is in docs/nsh-ios-migration.md). They run over the existing `RemoteModel`, `NSHMobileBridge` and the model's
+/// `HostConnections`: no second socket per host and no second credential store. JS sees host ids and labels; pairing keys, tokens and
+/// URLs with credentials never cross.
 ///
-/// - `relay.call` reaches only the interactive host's connection, only for the methods in `callable`, and through `RequestValidation`.
-///   JS never long-polls (`wait_ms` above 0) or opens `pty.*`.
+/// - `relay.call` reaches any paired host, over that host's one socket: the model's connection for the interactive host, a socket
+///   borrowed from `HostConnections` (opened when no one has it open) for any other. Only the methods in `callable`, through
+///   `RequestValidation` and the socket's request budget. JS never long-polls (`wait_ms` above 0) or opens `pty.*`.
 /// - Decisions go through the tested Swift flow (`NSHMobileBridge.respondToDecision`, `DashboardResponder`): the request is checked
 ///   again, fresh, against the host before one `chat.command` goes out; it is never repeated, and a response already sent (or whose
 ///   delivery is uncertain) from this phone is refused.
@@ -51,6 +53,7 @@ import UIKit
             try await api.bridge.connect(hostID: try Self.string(data, "host"))
             return [String: Any]()
         }
+        // Only the selected host: another host's socket may be in use by the overview or a decision, and closes by itself once idle.
         on("relay.disconnect") { api, data in
             try api.requireNoNativeScreen()
             if try Self.string(data, "host") == api.model.selectedDesktopID { await api.bridge.disconnectInteractive() }
@@ -126,7 +129,13 @@ import UIKit
     private func link(_ id: String) -> [String: Any] {
         guard id == model.selectedDesktopID else {
             if id == bridge.interactiveHostID { return ["state": "connecting", "label": ConnectionState.connecting.label] }
-            return ["state": "offline", "label": "Not connected"]
+            // Any other host: its socket, when the overview, a decision or a shared screen has one open.
+            switch model.connections.links[id] {
+            case .connected?: return ["state": "connected", "label": ConnectionState.connected.label]
+            case .connecting?: return ["state": "connecting", "label": ConnectionState.connecting.label]
+            case .failed(let error)?: return ["state": "failed", "label": ConnectionState.failed.label, "error": error]
+            case nil: return ["state": "offline", "label": "Not connected"]
+            }
         }
         let state: String = switch model.state {
         case .connected: "connected"
@@ -140,17 +149,24 @@ import UIKit
         return value
     }
 
-    /// What the interactive host's connection announced, by its `ready.features` names.
+    /// What the host's connection announced, by its `ready.features` names: the interactive model's, or another host's open socket's (whose
+    /// `dashboard` `HostConnections` already leaves out once that session has refused it).
     private func features(_ id: String) -> [String] {
-        guard id == model.selectedDesktopID, model.state == .connected else { return [] }
-        let features = model.desktopFeatures
+        let features: DesktopFeatures, refusesDashboard: Bool
+        if id == model.selectedDesktopID {
+            guard model.state == .connected else { return [] }
+            features = model.desktopFeatures; refusesDashboard = model.dashboardSupport == .unsupported
+        } else {
+            guard let other = model.connections.features(of: id) else { return [] }
+            features = other; refusesDashboard = false
+        }
         let flags: [(String, Bool)] = [
             ("deflate", features.deflate), ("chat", features.chat), ("tabs", features.tabs), ("upload", features.upload != nil),
             ("orchestrator_create", features.orchestratorCreate), ("shell_create_as_settings", features.shellCreateAsSettings),
             ("chat_provider_switch", features.chatProviderSwitch), ("chat_models", features.chatModels),
             ("chat_suggestions", features.chatSuggestions), ("project_memo", features.projectMemo),
             // A Mac whose connector is newer than its RiWork announces it and then refuses it.
-            ("dashboard", features.dashboard && model.dashboardSupport != .unsupported),
+            ("dashboard", features.dashboard && !refusesDashboard),
         ]
         return flags.filter(\.1).map(\.0)
     }
@@ -166,13 +182,15 @@ import UIKit
             throw HostCallError("failed", "The request's params must be an object.")
         }
         if let wait = params["wait_ms"], wait != .number(0) { throw HostCallError("failed", "Long polls stay in Swift.") }
-        guard hostID == model.selectedDesktopID else { throw HostCallError("offline", "Open this desktop first.") }
+        guard let desktop = model.desktops.first(where: { $0.id == hostID }) else { throw HostCallError("not_found", "This desktop is no longer saved.") }
         guard model.appActive else { throw HostCallError("offline", ConnectionState.suspended.label) }
-        guard model.state == .connected else { throw HostCallError("offline", model.state.label) }
+        let timeout = (data["timeoutMs"] as? NSNumber).map { Duration.milliseconds(max(1_000, min(60_000, $0.intValue))) } ?? .seconds(30)
+        guard hostID == bridge.interactiveHostID else { return try await callOther(desktop, method: method, params: params, timeout: timeout) }
+        // The interactive host: over the model's own connection (a manual disconnect stays disconnected; the model reconnects it).
+        guard hostID == model.selectedDesktopID, model.state == .connected else { throw HostCallError("offline", model.state.label) }
         if method == "dashboard.get", !model.desktopFeatures.dashboard || model.dashboardSupport == .unsupported {
             throw HostCallError("unsupported", model.dashboardUnavailableReason ?? "Update RiWork on the Mac to see its dashboard here.")
         }
-        let timeout = (data["timeoutMs"] as? NSNumber).map { Duration.milliseconds(max(1_000, min(60_000, $0.intValue))) } ?? .seconds(30)
         let relay = model, token = relay.generation
         do {
             let reply = try await Self.within(timeout) { try await relay.rpc(method, params) }
@@ -184,7 +202,32 @@ import UIKit
         }
     }
 
-    /// Waits at most `limit` for `work`; past it the waiter is let go (`RelayClient` abandons it) and the connection stays.
+    /// A host other than the interactive one, over its socket from `HostConnections`: opened for this call when no one has it open (never
+    /// redeeming a pending invite), and given back afterwards.
+    private func callOther(_ desktop: SavedDesktop, method: String, params: [String: JSONValue], timeout: Duration) async throws -> Any? {
+        let connections = model.connections
+        do {
+            let reply = try await Self.within(timeout) { @MainActor in
+                let lease: HostLease
+                do { lease = try await connections.borrow(desktop) }
+                catch is CancellationError { throw CancellationError() }
+                catch { throw HostCallError("offline", RemoteModel.dashboardFailureText(error)) }
+                defer { connections.release(lease) }
+                if method == "dashboard.get", !lease.features.dashboard {
+                    throw HostCallError("unsupported", "Update RiWork on the Mac to see its dashboard here.")
+                }
+                do { return try await lease.transport.request(method: method, params: params, id: UUID().uuidString.lowercased()) }
+                catch {
+                    if method == "dashboard.get", RemoteError.isUnsupportedMethod(error) { connections.dashboardRefused(lease) }
+                    throw error
+                }
+            }
+            return Self.foundation(reply)
+        } catch { throw HostCallError.from(error, dashboard: method == "dashboard.get") }
+    }
+
+    /// Waits at most `limit` for `work`; past it the waiter is let go (`RelayClient` abandons it) and the connection stays. The request keeps
+    /// its place in the socket's budget until the reply comes; one still unanswered at its own timeout ends the connection, as any request does.
     private static func within<T: Sendable>(_ limit: Duration, _ work: @escaping @Sendable () async throws -> T) async throws -> T {
         try await withThrowingTaskGroup(of: T?.self) { group in
             group.addTask { try await work() }

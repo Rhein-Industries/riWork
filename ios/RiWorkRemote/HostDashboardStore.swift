@@ -2,21 +2,16 @@ import Foundation
 import Observation
 import RiWorkCore
 
-/// Independent, read-only overview connections. Never takes the active model's transport, input focus, or terminal viewport.
-/// The relay allows one mobile socket per pairing: the currently active host is mirrored from RemoteModel, not connected twice.
+/// The All hosts overview: each paired host's dashboard, read over that host's one socket, borrowed from `HostConnections` (it opens none
+/// of its own). Never takes the interactive model's input focus or terminal viewport, and never reads the interactive host, whose
+/// dashboard is mirrored from RemoteModel.
 @MainActor @Observable final class HostDashboardStore {
-    typealias TransportFactory = @Sendable (SavedDesktop) -> any RemoteTransport
-    /// One URL session for every temporary socket: a session made for each read would never be invalidated.
-    nonisolated static let sharedConnector = URLSessionConnector()
-
     private(set) var hosts: [HostDashboardEntry] = []
     private(set) var visible = false
     private(set) var sceneActive = true
     var aggregate: HostDashboardAggregate { HostDashboardAggregate(hosts: hosts) }
-    /// The person's "Compress traffic" choice, read as each temporary connection opens, as the interactive one reads it.
-    @ObservationIgnored var compressTraffic: @MainActor () -> Bool = { true }
 
-    @ObservationIgnored private let transportFactory: TransportFactory
+    @ObservationIgnored private let connections: HostConnections
     @ObservationIgnored private let refreshInterval: Duration
     @ObservationIgnored private let maximumConcurrentHosts: Int
     @ObservationIgnored private var desktops: [SavedDesktop] = []
@@ -24,16 +19,16 @@ import RiWorkCore
     @ObservationIgnored private var generation = UUID()
     @ObservationIgnored private var loop: Task<Void, Never>?
     @ObservationIgnored private var round: Task<Void, Never>?
-    @ObservationIgnored private var cleanup: Task<Void, Never>?
-    @ObservationIgnored private var clients: [String: (id: UUID, transport: any RemoteTransport)] = [:]
+    /// The sockets this overview's reads hold, by host: given back after each read, and all at once whenever it stops.
+    @ObservationIgnored private var leases: [String: HostLease] = [:]
 
-    init(refreshInterval: Duration = .seconds(15), maximumConcurrentHosts: Int = 3,
-         transportFactory: @escaping TransportFactory = { _ in RelayClient(connector: HostDashboardStore.sharedConnector) }) {
+    init(connections: HostConnections, refreshInterval: Duration = .seconds(15), maximumConcurrentHosts: Int = HostConnections.maximumOtherSockets) {
+        self.connections = connections
         self.refreshInterval = max(.milliseconds(100), refreshInterval)
-        self.maximumConcurrentHosts = max(1, min(4, maximumConcurrentHosts)); self.transportFactory = transportFactory
+        self.maximumConcurrentHosts = max(1, min(4, maximumConcurrentHosts))
     }
 
-    /// Called when the root host overview enters/leaves the screen. No host connects while it is hidden or the scene is inactive.
+    /// Called when the root host overview enters/leaves the screen. No host is read while it is hidden or the scene is inactive.
     func setVisible(_ visible: Bool, desktops: [SavedDesktop], sceneActive: Bool = true, activeHostID: String? = nil) {
         let changed = self.visible != visible || self.sceneActive != sceneActive
         self.visible = visible; self.sceneActive = sceneActive
@@ -41,9 +36,9 @@ import RiWorkCore
         if changed { reconcileLifecycle() }
     }
 
-    /// Passing the active route prevents duplicate registration against the main model's live connection.
+    /// The active host is the interactive model's: it is mirrored (`updateActiveHost`), never read here.
     func updateDesktops(_ desktops: [SavedDesktop], activeHostID: String? = nil) {
-        // A malformed/duplicated library cannot schedule two clients on the same route.
+        // A malformed/duplicated library cannot schedule two reads of the same host.
         var seen: Set<String> = []
         let unique = desktops.filter { seen.insert($0.id).inserted }
         let changed = unique.map(\.id) != self.desktops.map(\.id)
@@ -89,55 +84,44 @@ import RiWorkCore
         if generation == token { round = nil }
     }
 
-    /// Await before activating a host in RemoteModel: all overview sockets are closed before the main connection registers.
+    /// Stops reading and gives back every socket the overview holds; returns once those that close now (nobody else holds them) are closed.
+    /// A socket another part of the app uses stays open for it.
     func stop() async {
         visible = false
-        reconcileLifecycle()
-        await cleanup?.value
+        for closing in reconcileLifecycle() { await closing.value }
     }
 
-    /// Answers a card over a temporary connection of its own to that exact host, leaving the interactive host alone. The relay allows
-    /// one mobile socket per pairing: call after `stop()`, and only for a host the interactive model holds no connection to.
+    /// Answers a card over its host's socket (opened for it if no one has it open), leaving the interactive host alone. The transport
+    /// binds the command to the host the socket authenticated.
     func respond(to decision: DashboardDecision, on desktop: SavedDesktop, command: ChatCommand) async throws {
         // As for a read: a single-use invite is redeemed only by the explicit connection that saves its key.
         guard desktop.pairing.v == 1 || desktop.pairing.root_key != nil else { throw DashboardResponseError.notSent("Open this desktop once to finish pairing.") }
-        await cleanup?.value
-        let client = transportFactory(desktop)
+        let lease: HostLease
+        do { lease = try await connections.borrow(desktop) }
+        catch { throw DashboardResponseError.notSent(RemoteModel.dashboardFailureText(error)) }
         do {
-            await client.setCompression(compressTraffic())
-            let established: Pairing
-            do { established = try await client.connect(pairing: desktop.pairing, allowLocalDevelopment: desktop.allowLocalDevelopment) }
-            catch { throw DashboardResponseError.notSent(RemoteModel.dashboardFailureText(error)) }
-            guard established == desktop.pairing else { throw DashboardResponseError.notSent("Open this desktop once to finish pairing.") }
-            // The connection is this card's alone; the transport still binds the command to the host it authenticated.
-            try await DashboardResponder.respond(decision, command: command, client: client, identity: UploadConnectionIdentity(pairing: established)) { true }
+            guard lease.pairing == desktop.pairing else { throw DashboardResponseError.notSent("Open this desktop once to finish pairing.") }
+            try await DashboardResponder.respond(decision, command: command, client: lease.transport, identity: UploadConnectionIdentity(pairing: lease.pairing)) {
+                connections.isCurrent(lease)
+            }
         } catch {
-            await client.disconnect()
+            await connections.release(lease)?.value
             throw error
         }
-        await client.disconnect()
+        await connections.release(lease)?.value
     }
 
-    private func reconcileLifecycle() {
+    /// Starts or stops the reads; returns the closes of the sockets it gave back that nobody else held.
+    @discardableResult private func reconcileLifecycle() -> [Task<Void, Never>] {
         generation = UUID()
         loop?.cancel(); loop = nil
         round?.cancel(); round = nil
-        let previousCleanup = cleanup
-        let closing = clients.values.map(\.transport)
-        clients.removeAll()
-        let closed = Task {
-            await previousCleanup?.value
-            await withTaskGroup(of: Void.self) { group in
-                for client in closing { group.addTask { await client.disconnect() } }
-            }
-        }
-        cleanup = closed
-        // On the way to the background iOS may suspend the app before these sockets close, and one left open would still hold this
-        // pairing's registration with the relay when the interactive connection comes back.
-        if !closing.isEmpty { BackgroundGrace.run("RiWork overview close") { await closed.value } }
+        // A read cut short gives its socket back here, even one whose host never answers.
+        let closing = leases.values.compactMap { connections.release($0) }
+        leases.removeAll()
         guard visible, sceneActive else {
             for index in hosts.indices where hosts[index].id != activeHostID { hosts[index].state = .paused }
-            return
+            return closing
         }
         let token = generation
         loop = Task { [weak self, refreshInterval] in
@@ -147,10 +131,10 @@ import RiWorkCore
                 do { try await Task.sleep(for: refreshInterval) } catch { return }
             }
         }
+        return closing
     }
 
     private func readRound(_ pending: [SavedDesktop], token: UUID) async {
-        await cleanup?.value
         guard current(token) else { return }
         await withTaskGroup(of: Void.self) { group in
             var next = 0
@@ -168,7 +152,6 @@ import RiWorkCore
     }
 
     private func current(_ token: UUID) -> Bool { generation == token && visible && sceneActive && !Task.isCancelled }
-    private func checkCurrent(_ token: UUID) throws { guard current(token) else { throw CancellationError() } }
 
     private func read(_ desktop: SavedDesktop, token: UUID) async {
         guard current(token), let index = hosts.firstIndex(where: { $0.id == desktop.id }) else { return }
@@ -180,17 +163,15 @@ import RiWorkCore
         // A host whose last read worked stays current while it is read again; any other shows that it is being read.
         let previous = hosts[index].state
         if previous != .ready { hosts[index].state = .refreshing }
-        let client = transportFactory(desktop), connectionID = UUID()
-        clients[desktop.id] = (connectionID, client)
+        var held: HostLease?
         do {
-            await client.setCompression(compressTraffic())
-            let established = try await client.connect(pairing: desktop.pairing, allowLocalDevelopment: desktop.allowLocalDevelopment)
-            try checkCurrent(token)
-            guard established == desktop.pairing else { throw RemoteError.protocolViolation("Open this desktop once to finish pairing.") }
-            let features = await client.desktopFeatures()
-            try checkCurrent(token)
-            if features.dashboard {
-                let wire = try await client.request(method: "dashboard.get", params: [:], id: UUID().uuidString.lowercased())
+            let lease = try await connections.borrow(desktop)
+            held = lease
+            guard current(token) else { throw CancellationError() }
+            leases[desktop.id] = lease
+            guard lease.pairing == desktop.pairing else { throw RemoteError.protocolViolation("Open this desktop once to finish pairing.") }
+            if lease.features.dashboard {
+                let wire = try await lease.transport.request(method: "dashboard.get", params: [:], id: UUID().uuidString.lowercased())
                 let snapshot = try DashboardSnapshot(wire: wire)
                 if current(token), let index = hosts.firstIndex(where: { $0.id == desktop.id }) {
                     hosts[index].snapshot = snapshot; hosts[index].readAt = .now
@@ -202,12 +183,18 @@ import RiWorkCore
         } catch is CancellationError {
         } catch {
             let unsupported = RemoteError.isUnsupportedMethod(error)
+            // Not asked again on this socket's session (by this overview or `relay.call`), and left out of the host's features.
+            if unsupported, let held { connections.dashboardRefused(held) }
             install(hostID: desktop.id, token: token, state: unsupported ? .unsupported : .offline,
                     failure: unsupported ? "Update RiWork on this host to read its dashboard." : RemoteModel.dashboardFailureText(error))
         }
-        await finish(client, hostID: desktop.id, connectionID: connectionID)
+        // Given back (unless stopping already did); a socket nobody else holds closes as idle sockets do.
+        if let held {
+            if leases[desktop.id]?.id == held.id { leases.removeValue(forKey: desktop.id) }
+            await connections.release(held)?.value
+        }
         // A read that ended without an answer (stopped, replaced, cancelled) leaves the host as it was, not "Reading…" for good.
-        if clients[desktop.id] == nil, let index = hosts.firstIndex(where: { $0.id == desktop.id }), hosts[index].state == .refreshing {
+        if let index = hosts.firstIndex(where: { $0.id == desktop.id }), hosts[index].state == .refreshing {
             hosts[index].state = previous
         }
     }
@@ -215,10 +202,5 @@ import RiWorkCore
     private func install(hostID: String, token: UUID, state: HostDashboardEntry.State, failure: String) {
         guard current(token), let index = hosts.firstIndex(where: { $0.id == hostID }) else { return }
         hosts[index].state = state; hosts[index].failure = failure
-    }
-
-    private func finish(_ client: any RemoteTransport, hostID: String, connectionID: UUID) async {
-        await client.disconnect()
-        if clients[hostID]?.id == connectionID { clients.removeValue(forKey: hostID) }
     }
 }

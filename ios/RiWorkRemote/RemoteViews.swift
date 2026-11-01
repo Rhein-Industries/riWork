@@ -28,7 +28,7 @@ struct RemoteRootView: View {
     @State private var renaming: SavedDesktop?
     @State private var removing: SavedDesktop?
     @State private var newProject: NewProjectSheetModel?
-    @State private var hostDashboards = HostDashboardStore()
+    @State private var hostDashboards: HostDashboardStore
     @State private var openingHostID: String?
     @State private var dashboardDecision: HostedDashboardDecision?
     /// Responses this phone sent or may have sent, and when: the card cannot go out again until a read after that no longer lists it.
@@ -37,6 +37,10 @@ struct RemoteRootView: View {
     private struct SentDecision: Hashable {
         let hostID, chatID, requestID: String
         init(_ item: HostedDashboardDecision) { hostID = item.hostID; chatID = item.decision.chatID; requestID = item.decision.requestID }
+    }
+    init(model: RemoteModel) {
+        self.model = model
+        _hostDashboards = State(initialValue: HostDashboardStore(connections: model.connections))
     }
     // A double Back tap during the pop animation would otherwise pop an empty stack and trap.
     private func pop() { if !path.isEmpty { path.removeLast() } }
@@ -271,7 +275,6 @@ struct RemoteRootView: View {
         }
     }
     private func syncHostDashboards() {
-        hostDashboards.compressTraffic = { [model] in model.compressTraffic }
         hostDashboards.setVisible(path.isEmpty && openingHostID == nil && !model.loadFailed,
                                   desktops: model.desktops, sceneActive: scenePhase == .active, activeHostID: activeOverviewHostID)
         mirrorActiveDashboard()
@@ -287,14 +290,14 @@ struct RemoteRootView: View {
         if model.state == .connected { await model.refreshDashboardQuietly(); mirrorActiveDashboard() }
         await hostDashboards.refresh()
     }
-    /// Close the overview's temporary mobile socket before handing this exact pairing to the interactive model. The overview stays
-    /// paused (and other hosts wait) until the activation is done: it must not register the pairing while the model does.
+    /// Hands this exact pairing to the interactive model, which takes the host's one socket over from the overview if it has it open
+    /// (`HostConnections`). The overview stays paused (and other hosts wait) until the activation is done.
     private func openHost(_ id: String, target: DashboardTarget? = nil) {
         guard openingHostID == nil, model.desktops.contains(where: { $0.id == id }) else { return }
         openingHostID = id
         Task {
             defer { openingHostID = nil; syncHostDashboards() }
-            await hostDashboards.stop()
+            syncHostDashboards()
             // The host's own screen comes up at once and shows the connection's progress there.
             path = [.dashboard(id)]
             await model.activate(id)
@@ -317,20 +320,19 @@ struct RemoteRootView: View {
             }
         }
     }
-    /// The interactive host answers over its own connection; any other host over a temporary one, so answering a card never switches,
-    /// disconnects or clears the host in use. Either way the same checks run (`DashboardResponder`).
+    /// The interactive host answers over the model's connection when it is connected; any host otherwise over its socket borrowed from
+    /// `HostConnections`, so answering a card never switches, connects, disconnects or clears the host in use. Either way the same checks
+    /// run (`DashboardResponder`).
     private func respondToDecision(_ item: HostedDashboardDecision, command: ChatCommand) async throws {
         let key = SentDecision(item)
         guard sentDecisions[key] == nil else { throw DashboardResponseError.alreadySent }
         guard openingHostID == nil, let desktop = model.desktops.first(where: { $0.id == item.hostID }) else { throw DashboardResponseError.hostUnavailable }
         openingHostID = item.hostID
         defer { openingHostID = nil; syncHostDashboards() }
-        // Every overview socket closes first: the response may need this host's one mobile socket.
-        await hostDashboards.stop()
+        syncHostDashboards()
         let interactive = activeOverviewHostID == item.hostID
         do {
-            if interactive {
-                if model.state != .connected { await model.activate(item.hostID) }
+            if model.state == .connected, model.selectedDesktopID == item.hostID {
                 try await model.respondToDashboardDecision(item.decision, hostID: item.hostID, command: command)
             } else {
                 try await hostDashboards.respond(to: item.decision, on: desktop, command: command)

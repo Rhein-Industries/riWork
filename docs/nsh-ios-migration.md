@@ -14,7 +14,8 @@ screens are still native.
 | Host library, All hosts overview, projects | NSH TSX in `apps/riwork-mobile`, native `NavStack`/`NavPage`, over `mobile.snapshot` / `mobile.action` |
 | iOS window, scene lifecycle, runtime loading | `NSHMobileHost.swift` and the thin app entry |
 | Display snapshots and explicit actions | `NSHMobileBridge.swift` over the existing `RemoteModel` |
-| The shared screens' host calls (`relay.*`, `platform.*`, `nav.*`) | `NSHHostAPI.swift` over the same `RemoteModel` and bridge |
+| The shared screens' host calls (`relay.*`, `platform.*`, `nav.*`) | `NSHHostAPI.swift` over the same `RemoteModel`, bridge and `HostConnections` |
+| Relay sockets (one per paired host) and their request budget | `HostConnections.swift`; `RelayClient` and `RequestBudget` in `RiWorkCore` |
 | Pairing, encrypted transport, Keychain, reconnects | Existing Swift model and `RiWorkCore` |
 | Terminal/chat, file previews, pairing and settings forms | Existing native views, presented by `NSHMobileSurfaces.swift` |
 | The terminal inside TSX screens (`riwork.terminal`, `apps/riwork/terminal_view.ts`) | `NSHTerminalComponent.swift`: the same capture terminal over the same `RemoteModel`, remote targets of the interactive host only (`docs/nsh-contracts.md` §3.8) |
@@ -37,10 +38,11 @@ and target; approval responses, from the overview's native sheet or from the
 shared review, go through the existing fresh-request validation and
 uncertain-delivery protection.
 
-The root overview reuses `HostDashboardStore`. Its temporary connections stop
-before the interactive model connects, while native screens are shown, and
-when the scene becomes inactive. Terminal and chat screens continue owning
-their current visibility, subscriptions, drafts, viewport and input lifecycles.
+The root overview reuses `HostDashboardStore`. It reads each host over that
+host's socket from `HostConnections` and stops reading while a host is being
+opened or answered, while native screens are shown, and when the scene becomes
+inactive. Terminal and chat screens continue owning their current visibility,
+subscriptions, drafts, viewport and input lifecycles.
 
 A host's page draws the desktop dashboard in touch density (`touch`: 44-point
 targets, its 11-point text at 15, and below 600 points each project's figures
@@ -58,6 +60,45 @@ projects and its global orchestrator (the snapshot's `global`, from
 The All hosts overview keeps its filters, saved read markers, coverage and
 truncation notices, activity history and Haiku summaries.
 
+## Sockets
+
+`HostConnections` is the only owner of relay sockets, one per paired host (the
+relay allows one mobile socket per pairing). `RemoteModel` (the interactive
+host, through `HostConnections.interactive`, with its terminal reads and
+writes), the All hosts overview, the decision responder and `relay.call` all
+borrow the host's socket; none opens a second one or closes another's.
+
+- The interactive host's socket is held while the model is connected to it.
+  Opening a host takes over the socket it already has (from the overview, a
+  decision or a shared screen) instead of registering again. If that socket
+  ends and is opened again by someone else, the model sees its session as
+  ended and connects afresh. A model that lets go of a socket nobody else
+  holds closes it at once, as a manual disconnect always has.
+- Only that explicit connection may redeem a v2 invite, because it saves the
+  key it establishes; any other borrow of a pairing whose invite is pending is
+  refused ("Open this desktop once to finish pairing").
+- At most three sockets are open to hosts other than the interactive one.
+  Opening another closes the one idle the longest, or waits until one is let
+  go. A socket nobody holds closes after 20 seconds.
+- In the background nothing opens; idle sockets close at once (under a
+  background task) and the rest as soon as they are let go.
+
+Every request on a socket counts against a budget of 12 outstanding requests
+(`RequestBudget`, enforced by `RelayClient`). Each request gets at most one
+reply frame, so this also bounds what the Mac can queue toward the phone; the
+relay closes a socket whose peer queue passes 16 frames. Long polls (a
+`shell.output`, `chat.events` or `state.watch` with `wait_ms` above 0) take at
+most 2; every other request is a call, and calls always have 3 places to
+themselves. A request that does not fit waits its turn in order within its
+kind, unsealed; its timeout starts only when it is sent. It holds its place
+until its reply arrives, even when its caller has let go, or until the session
+ends: the Mac answers every request of a session, so a place never goes back
+while its reply may still come, and a request unanswered when its own timeout
+runs out ends the session whether or not its caller still waits. A request
+still waiting when the session ends was never sent, and fails as
+disconnected. Nothing is retried: creates are never repeated, and an input
+whose delivery is unknown stays uncertain.
+
 ## Swift host API
 
 The calls and events the shared screens use, implemented by `NSHHostAPI.swift`
@@ -71,8 +112,8 @@ and declared in `apps/riwork-mobile/nsh.json` (`relay.*`, `platform.*`,
 | `relay.hosts` | call | — | `{hosts: HostInfo[]}` |
 | `relay.hosts` | event | | `{hosts: HostInfo[]}` whenever the list, the selection or a link changes |
 | `relay.select` | call | `{host}` | `{}`; makes it the interactive host (the overview's connect); `conflict` while a native screen is up |
-| `relay.disconnect` | call | `{host}` | `{}`; `conflict` while a native screen is up |
-| `relay.call` | call | `{host, method, params?, timeoutMs?}` | the RPC's `result`; the interactive host only, `dashboard.get` and `projects.list` only |
+| `relay.disconnect` | call | `{host}` | `{}`; disconnects the selected host; for any other host nothing (its socket closes by itself once nobody uses it); `conflict` while a native screen is up |
+| `relay.call` | call | `{host, method, params?, timeoutMs?}` | the RPC's `result`; any paired host, `dashboard.get` and `projects.list` only |
 | `relay.link` | event | | `{host, link: LinkState}` |
 | `relay.decision.review` | call | `{host, chatId, requestId, kind?}` | `DecisionReviewDto` (`status` `pending`, or `unavailable` / `uncertain` with `error`) |
 | `relay.decision.respond` | call | `{host?, reviewId, decision?, answers?}` | `DecisionReviewDto` with `status` `sent`, `pending` (nothing went out; `error` says why), `unavailable` or `uncertain` |
@@ -85,11 +126,23 @@ HostInfo  = {id, name, address?, selected: boolean, link: LinkState, features: s
 LinkState = {state: "connected"|"connecting"|"offline"|"failed"|"suspended", label, error?, since?}
 ```
 
-- **`relay.call`** goes through `RemoteModel`'s connection to the interactive
-  host and so through `RequestValidation`; JS may not send `wait_ms` above 0 or
-  any `pty.*`. `timeoutMs` (1 to 60 s, 30 s by default) lets go of the wait
-  without closing the connection. `HostInfo.features` lists the connection's
-  `ready.features` by name; `dashboard` is left out for a Mac that refuses it.
+- **`relay.call`** reaches any paired host over its one socket: the
+  interactive host through `RemoteModel`'s connection (`offline` unless it is
+  connected; a manual disconnect stays disconnected), any other host through a
+  socket borrowed from `HostConnections`, opened for the call when no one has
+  it open (`offline` when it cannot be, or while the app is in the background;
+  a pairing whose invite is pending is never opened here). Every call goes
+  through `RequestValidation` and the socket's request budget; JS may not send
+  `wait_ms` above 0 or any `pty.*`. `timeoutMs` (1 to 60 s, 30 s by default)
+  lets go of the wait without closing the connection. An unknown host is
+  `not_found`.
+- **`HostInfo`**: `link` is the model's connection for the interactive host
+  and, for any other host, the state of its socket (`connected` while one is
+  open, `connecting`, `failed` after an attempt failed, else `offline` "Not
+  connected"). `features` lists that connection's `ready.features` by name
+  (empty without one); `dashboard` is left out for a Mac that refuses it (for
+  any other host, once its socket's session has refused a `dashboard.get`,
+  from the overview or `relay.call`; it is not asked again in that session).
 - **Decisions** keep the Swift flow the overview's sheet uses.
   `relay.decision.review` reads the request from the host's last parsed
   dashboard (`DashboardDecision`; a request this phone cannot read in full is

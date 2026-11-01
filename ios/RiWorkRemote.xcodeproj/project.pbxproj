@@ -263,6 +263,7 @@
 		F0C4822F075FE2067F6A72F4 /* RemoteViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52C50600894DE4ADA5E2A637 /* RemoteViews.swift */; };
 		F32BAD326433D8F05C20DF56 /* ChatDiff.swift in Sources */ = {isa = PBXBuildFile; fileRef = F97F8313789F0AC866FEECF0 /* ChatDiff.swift */; };
 		F378C02073272C7DC4BC0130 /* ProjectTabsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 354757C53710F00D16F23CDE /* ProjectTabsTests.swift */; };
+		F4A51189D25676C24766F49E /* HostConnections.swift in Sources */ = {isa = PBXBuildFile; fileRef = 86E779DD6ABADC74ED987D97 /* HostConnections.swift */; };
 		F51C457F2E2398801191DC72 /* NSHMobileBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1886C18D799DB89649F181B7 /* NSHMobileBridge.swift */; };
 		F55E794DBA2716548B168D57 /* StyledScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = F50A3A2530BF4ED68C336A29 /* StyledScreen.swift */; };
 		F56466C83F23FF52042331DA /* ProjectTabs.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF4CB316BF5C6D882BC4177A /* ProjectTabs.swift */; };
@@ -277,6 +278,7 @@
 		FEE8B4C52982B94ED030EAC3 /* TerminalScrollGeometry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6236BA84E7439185B5164A51 /* TerminalScrollGeometry.swift */; };
 		FF3313718A0946B01BC5E9C8 /* AttachmentTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B620C318695DAB885BC0F84C /* AttachmentTests.swift */; };
 		FF37502303E719419C61D622 /* KeyboardSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = D6A7FA7AFDF4729479D6BBB8 /* KeyboardSettings.swift */; };
+		FF40F290D3D912234C82AAE1 /* RequestBudget.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1735D3CE000E6B6D538EF4D5 /* RequestBudget.swift */; };
 		FF4360CDECBBD7F89ECBAA0E /* SpeechVocabularyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D26A762F58B2703531A1E8CB /* SpeechVocabularyTests.swift */; };
 /* End PBXBuildFile section */
 
@@ -379,6 +381,7 @@
 		14BFAF10E68A302B420335AB /* PerformanceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PerformanceTests.swift; sourceTree = "<group>"; };
 		14D16286F92FB983EBC46210 /* ProjectMemoViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectMemoViews.swift; sourceTree = "<group>"; };
 		162011AE3F68D9FDED43798E /* ThemeStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThemeStore.swift; sourceTree = "<group>"; };
+		1735D3CE000E6B6D538EF4D5 /* RequestBudget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RequestBudget.swift; sourceTree = "<group>"; };
 		175E5F38D29C90B84EB5EAF9 /* KeyBarPlacementTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyBarPlacementTests.swift; sourceTree = "<group>"; };
 		1802ED505CDFDCF0A10544C5 /* ScrollTestCase.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScrollTestCase.swift; sourceTree = "<group>"; };
 		1886C18D799DB89649F181B7 /* NSHMobileBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NSHMobileBridge.swift; sourceTree = "<group>"; };
@@ -495,6 +498,7 @@
 		8539F80B196964ADE0493A10 /* TerminalHistory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalHistory.swift; sourceTree = "<group>"; };
 		8675234AB403383A87B72D40 /* QRScanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QRScanner.swift; sourceTree = "<group>"; };
 		86D90499D6AEB6449D0B60EA /* DictationScreenshots.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DictationScreenshots.swift; sourceTree = "<group>"; };
+		86E779DD6ABADC74ED987D97 /* HostConnections.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostConnections.swift; sourceTree = "<group>"; };
 		87216E2F3018C97AC2416AB1 /* RemoteModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteModel.swift; sourceTree = "<group>"; };
 		872E709091F66F082AAFB419 /* ChatElisionCompatibilityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatElisionCompatibilityTests.swift; sourceTree = "<group>"; };
 		8883217D39D9D1526832DE31 /* ChatDraftsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatDraftsTests.swift; sourceTree = "<group>"; };
@@ -774,6 +778,7 @@
 				50D7E9D4618ACF793C35534E /* ProjectSort.swift */,
 				FF4CB316BF5C6D882BC4177A /* ProjectTabs.swift */,
 				4BF5AAB0E69708DB37D89E5A /* RelayClient.swift */,
+				1735D3CE000E6B6D538EF4D5 /* RequestBudget.swift */,
 				B4D6C4FF97DAA3EE2C187D78 /* ScrollBehavior.swift */,
 				DBB58DE07D23757B5555005A /* SessionCrypto.swift */,
 				A8D908B81111C5AD8EF54523 /* SharedTabs.swift */,
@@ -923,6 +928,7 @@
 				F1BBD9DB0F36FC25E37B8E69 /* DesktopStyle.swift */,
 				CEB99533AAFDEB90376743DE /* Dictation.swift */,
 				8FA26E35BA4D4F0849B6A96F /* DisplaySettings.swift */,
+				86E779DD6ABADC74ED987D97 /* HostConnections.swift */,
 				69F825E09C489B1C85CF44D2 /* HostDashboardStore.swift */,
 				1922CC196587F63BC7F07635 /* HostDashboardViews.swift */,
 				005C04299055A741176AF5B5 /* HotkeyEditor.swift */,
@@ -1248,6 +1254,7 @@
 				A4E7261D99B4461278975542 /* DesktopStyle.swift in Sources */,
 				B340838BD68FEB89E11D04CC /* Dictation.swift in Sources */,
 				945D6C8CCD07B5CF3498593B /* DisplaySettings.swift in Sources */,
+				F4A51189D25676C24766F49E /* HostConnections.swift in Sources */,
 				C5EF4D0A8D87C2121BB35A63 /* HostDashboardStore.swift in Sources */,
 				E77FB0C7F48573F852693558 /* HostDashboardViews.swift in Sources */,
 				45AA66D5FCCE8859AAF3AB57 /* HotkeyEditor.swift in Sources */,
@@ -1429,6 +1436,7 @@
 				0C31512EEFCAFD8D80F5000A /* ProjectSort.swift in Sources */,
 				F56466C83F23FF52042331DA /* ProjectTabs.swift in Sources */,
 				5E96AD9651A7BF0B4B2FDCBC /* RelayClient.swift in Sources */,
+				FF40F290D3D912234C82AAE1 /* RequestBudget.swift in Sources */,
 				4DEC39A53302BC30D927E6FD /* ScrollBehavior.swift in Sources */,
 				36B32F622E0F89F229918BDA /* SessionCrypto.swift in Sources */,
 				BDAA390D1790133ADC4F26D2 /* SharedTabStrip.swift in Sources */,

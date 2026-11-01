@@ -44,9 +44,10 @@ the setting does not start agents or migrate conversations.
 
 Each host produces its own summary and source references. The phone combines
 host dashboards locally, keeping their identities, freshness and incomplete
-figures visible. It uses the active host's existing connection and temporary
-read-only connections for other established pairings. Single-use pending
-pairing invites require the normal explicit first connection.
+figures visible. It uses the active host's existing connection, and reads each
+other established pairing over that host's one shared connection
+(`HostConnections`). It never opens one for a pairing whose single-use invite
+is still pending: that needs the normal explicit first connection.
 
 The direct API transport is tested with injected responses and an in-memory key
 store. Tests never read the user's Keychain or make billable requests.
