@@ -275,8 +275,6 @@ async fn keys_validation_matrix_fails_before_any_cli() {
         "enter",
         "ENTER",
         "Return",
-        "Space",
-        "F1",
         "PgUp",
         "PageUp ",
         " Enter",
@@ -288,15 +286,32 @@ async fn keys_validation_matrix_fails_before_any_cli() {
         "C-aa",
         "C--",
         "C-é",
-        "M-a",
         "S-Tab",
         "BSpace",
         "DC",
         "PPage",
         "NPage",
+        "IC",
         "Backspace2",
         "C-a\0",
         "ctrl-a",
+        // The second list's rules: one order of modifiers, only what tmux sends.
+        "F0",
+        "F13",
+        "f1",
+        "M-",
+        "M-é",
+        "S-a",
+        "S-Space",
+        "C-Escape",
+        "C-Backspace",
+        "S-Enter",
+        "C-Tab",
+        "M-C-a",
+        "S-C-Up",
+        "C-C-a",
+        "M-ab",
+        "C-M-1",
     ] {
         bad.push(("bad key", with_items(json!([{"key":key}]))));
     }
@@ -390,6 +405,30 @@ async fn keys_limits_are_inclusive_and_items_reach_the_cli_in_order_verbatim() {
     .iter()
     .map(|s| (*s).to_owned())
     .chain(('a'..='z').map(|c| format!("C-{c}")))
+    // The second key list (`key_names` 2), passed on as given too.
+    .chain(
+        [
+            "Insert",
+            "Space",
+            "F1",
+            "F12",
+            "C-Up",
+            "S-F5",
+            "C-M-S-PageDown",
+            "M-Enter",
+            "M-Backspace",
+            "C-Space",
+            "M-x",
+            "M-;",
+            "C-\\",
+            "C-]",
+            "C-@",
+            "C-?",
+            "C-M-x",
+        ]
+        .iter()
+        .map(|s| (*s).to_owned()),
+    )
     .collect();
     for chunk in names.chunks(20) {
         let items: Vec<Value> = chunk.iter().map(|k| json!({"key":k})).collect();
@@ -869,6 +908,34 @@ async fn the_rpc_validator_agrees_with_the_cli_validator() {
         "Enter ",
         "Enter\n",
         "C-a\0",
+        // The second key list, both ways.
+        "Insert",
+        "Space",
+        "F5",
+        "F12",
+        "F13",
+        "C-Up",
+        "C-M-S-Up",
+        "S-M-Up",
+        "M-Enter",
+        "C-Enter",
+        "M-Escape",
+        "C-Escape",
+        "C-Space",
+        "S-Space",
+        "M-x",
+        "M-X",
+        "M-;",
+        "M-é",
+        "S-x",
+        "C-\\",
+        "C-^",
+        "C-?",
+        "C-M-x",
+        "M-C-x",
+        "C-M-1",
+        "M-",
+        "IC",
     ];
     for key in keys {
         batches.push(single("key", key.to_owned()));
@@ -1009,9 +1076,15 @@ fn the_production_key_module_types_into_a_real_tmux() {
         Item::Key(Key::Enter),
         Item::Key(Key::Ctrl(b'c')),
         Item::Key(Key::Up),
+        // The second key list: an F-key, a modified cursor key, Meta and a non-letter Ctrl,
+        // and a name ending in `;` that must not end tmux's command.
+        Item::Key(Key::parse("F5").unwrap()),
+        Item::Key(Key::parse("C-Up").unwrap()),
+        Item::Key(Key::parse("M-;").unwrap()),
+        Item::Key(Key::parse("C-\\").unwrap()),
     ];
     session_keys::send(home.path(), &id, &batch, &t).unwrap();
-    expected.extend_from_slice(b"ls;\r\x03\x1b[A");
+    expected.extend_from_slice(b"ls;\r\x03\x1b[A\x1b[15~\x1b[1;5A\x1b;\x1c");
     assert_eq!(wait(expected.len()), expected);
     // Input off is refused with its token, and nothing more arrives.
     tmux(&["select-pane", "-d", "-t", &format!("{id}:0.0")]).unwrap();

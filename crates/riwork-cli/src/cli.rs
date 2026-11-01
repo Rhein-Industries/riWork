@@ -106,6 +106,7 @@ riwork shell output ID --json [--lines N] [--styled] [--if-changed HASH [--wait-
 riwork shell history ID --end N --lines M [--styled] [--json]   Read a page of older scrollback
 riwork shell send ID TEXT               Paste a complete line and submit once
 riwork shell keys ID [--json] -- ITEM...   Type text and keys into a shell, no Return added
+riwork shell keys --serve               Type batches read as JSON lines (for the remote connector)
 riwork shell paste ID [--json] -- FILE...   Paste file paths as a drop on the terminal does
 riwork shell resize ID --columns N --rows N --owner UUID --lease UUID
 riwork shell resize-clear ID --owner UUID --lease UUID   Restore desktop sizing
@@ -253,8 +254,11 @@ project_id, worktree_id, kind, cwd, harness, alive, ...). A running RiWork
 window adds a tab for it behind the current one without taking focus.
 shell keys takes 1 to 64 items after `--`: t:TEXT (literal, 1 to 4096 bytes, no
 control characters) or k:KEY, one of Enter Tab BTab Escape Backspace Delete Up
-Down Left Right Home End PageUp PageDown or C-a to C-z. At most 4096 text bytes
-in all. Items go to the pane in order under the shell's input lock, leaving
+Down Left Right Home End PageUp PageDown or C-a to C-z, or Insert Space F1 to F12,
+and with modifiers C- M- S- in that order: any on the cursor and editing keys and
+F-keys (C-Up, S-F5), M- on Enter Tab BTab Escape Backspace and on a printable
+character (M-x, M-.), C- on Space and on a-z @ [ \\ ] ^ _ ? (C-\\, C-M-x). At most
+4096 text bytes in all. Items go to the pane in order under the shell's input lock, leaving
 copy mode first; a key directly after text goes 150 ms later, outside Codex's
 paste detection. An error naming input_unavailable means the pane's input is off.
 shell paste pastes the absolute paths of 1 to 16 existing files after `--` the
@@ -1053,6 +1057,14 @@ fn open_command(args: Vec<String>, json: bool, invocation: Invocation) -> Result
 /// `project_memo`: `project memo show|set ID --json` reads and replaces a project's memo as the
 /// remote connector's `project.memo.get` and `project.memo.set` pass it on (`cli/memo.rs`). An
 /// older CLI has no such command.
+///
+/// `shell_keys_serve`: `shell keys --serve` types batch after batch read as JSON lines from
+/// standard input (`cli/keys_serve.rs`), so the remote connector need not start a process for
+/// every batch a phone types. An older CLI would read `--serve` as a shell ID and refuse it.
+///
+/// `key_names`: the newest key list `shell keys` takes. 2 (since 2026-11-01) adds `Insert`,
+/// `Space`, `F1` to `F12` and names with modifiers (`C-Up`, `M-x`, `C-\`) to the first list
+/// (the 14 named keys and `C-a` to `C-z`), which a CLI that does not say has.
 fn capabilities_command(args: Vec<String>, json: bool) -> Result<(), String> {
     ensure_empty(&args)?;
     if json {
@@ -1071,7 +1083,9 @@ fn capabilities_command(args: Vec<String>, json: bool) -> Result<(), String> {
             "chat_suggestions": true,
             "dashboard": true,
             "project_memo": true,
-            "preview": true
+            "preview": true,
+            "shell_keys_serve": true,
+            "key_names": 2
         }));
     }
     println!("verifies_shell yes");
@@ -1087,6 +1101,8 @@ fn capabilities_command(args: Vec<String>, json: bool) -> Result<(), String> {
     println!("dashboard yes");
     println!("project_memo yes");
     println!("preview yes");
+    println!("shell_keys_serve yes");
+    println!("key_names 2");
     Ok(())
 }
 
@@ -2348,6 +2364,7 @@ fn shell_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
                 println!("{}", page.output);
             }
         }
+        "keys" if args == ["--serve"] => keys_serve::serve(&manager)?,
         "keys" => {
             let (id, items) = parse_keys_arguments(args)?;
             manager.send_keys(&id, &items)?;
@@ -4156,6 +4173,7 @@ fn ensure_empty(args: &[String]) -> Result<(), String> {
 mod addin_cli;
 mod chat_remote;
 mod handoff;
+mod keys_serve;
 mod memo;
 pub(crate) mod preview_cli;
 mod settings_cli;

@@ -73,6 +73,12 @@ public struct DesktopFeatures: Sendable, Equatable {
     /// The desktop reads and saves project memos (`features.project_memo`): `project.memo.get` and `project.memo.set`. Without it the
     /// phone offers no memo and says the Mac needs a newer RiWork.
     public var projectMemo = false
+    /// The newest key list `shell.keys` takes (`features.key_names`): 2 adds Insert, Space, F1 … F12 and keys with modifiers
+    /// (`C-Up`, `M-x`, `C-\`). A desktop that does not say takes the first list, and gets the others as escape sequences.
+    public var keyNames = 1
+    /// `shell.output` answers a request with `delta: true` with the changed rows only, against the screen its `if_changed` names
+    /// (`features.output_delta`). Without it the phone never asks, and every changed screen comes whole.
+    public var outputDelta = false
     public init() {}
     public init(ready: JSONValue) {
         let features = ready["features"]
@@ -95,6 +101,8 @@ public struct DesktopFeatures: Sendable, Equatable {
         if case .bool(true) = features["chat_suggestions"] { chatSuggestions = true }
         if case .bool(true) = features["dashboard"] { dashboard = true }
         if case .bool(true) = features["project_memo"] { projectMemo = true }
+        if let names = count(features["key_names"]), names >= 2 { keyNames = 2 }
+        if case .bool(true) = features["output_delta"] { outputDelta = true }
         if let lines = count(features["history_max_lines"]), lines >= 1 {
             historyMaximumLines = max(HistoryLimits.legacyMaximumPageLines, min(HistoryLimits.maximumPageLines, lines))
         }

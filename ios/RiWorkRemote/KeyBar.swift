@@ -208,6 +208,8 @@ private final class KeyScrollView: UIScrollView {
             add(.shift, title: "Shift", symbol: nil, label: "Shift", role: .plain)
             key(.backTab, named("⇧Tab", "arrow.left.to.line"), "Shift Tab")
             key(.pageUp, named("PgUp", "chevron.up.2"), "Page up"); key(.pageDown, named("PgDn", "chevron.down.2"), "Page down")
+            // Many hardware keyboards for the iPhone and iPad have no function row.
+            for number in 1...12 { key(.function(number), ("F\(number)", nil), "F\(number)") }
             add(.paste, title: nil, symbol: "doc.on.clipboard", label: "Paste", role: .plain)
             add(.attach, title: nil, symbol: "paperclip", label: "Send a photo or file", role: .plain)
             if let paperclip = buttons[.attach] { giveMenu(paperclip) }
@@ -235,6 +237,8 @@ private final class KeyScrollView: UIScrollView {
         key(.backTab, named("⇧Tab", "arrow.left.to.line"), "Shift Tab"); key(.home, named("Home", "arrow.up.left"), "Home"); key(.end, named("End", "arrow.down.right"), "End")
         key(.pageUp, named("PgUp", "chevron.up.2"), "Page up"); key(.pageDown, named("PgDn", "chevron.down.2"), "Page down")
         key(.delete, named("Del", "delete.right"), "Delete"); key(.backspace, (nil, "delete.left"), "Backspace"); key(.enter, (nil, "return"), "Enter")
+        // F1 … F12 (htop, mc, a debugger): their own names to a desktop with the second key list, escape sequences to an older one.
+        for number in 1...12 { key(.function(number), ("F\(number)", nil), "F\(number)") }
         add(.paste, title: nil, symbol: "doc.on.clipboard", label: "Paste", role: .plain)
         add(.attach, title: nil, symbol: "paperclip", label: "Send a photo or file", role: .plain)
         if let paperclip = buttons[.attach] { giveMenu(paperclip) }

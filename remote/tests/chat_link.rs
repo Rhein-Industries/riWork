@@ -57,7 +57,7 @@ echo "$*" >> "$D/calls.log"
 case "$1 $2" in
 'capabilities --json')
   if [ -e "$D/capabilities.unknown" ]; then echo "riwork: Unknown invocation 'capabilities'" >&2; exit 2; fi
-  if [ -e "$D/capabilities.out" ]; then cat "$D/capabilities.out"; else printf '{"v":1,"chat":true,"orchestrator_create":true,"shell_create_as_settings":true,"chat_provider_switch":true,"chat_models":true,"chat_suggestions":true,"dashboard":true,"project_memo":true}'; fi;;
+  if [ -e "$D/capabilities.out" ]; then cat "$D/capabilities.out"; else printf '{"v":1,"chat":true,"orchestrator_create":true,"shell_create_as_settings":true,"chat_provider_switch":true,"chat_models":true,"chat_suggestions":true,"dashboard":true,"project_memo":true,"key_names":2}'; fi;;
 'project show') printf '{"id":"%s"}' "$3";;
 'chat list') echo '[]';;
 'chat events')
@@ -302,6 +302,9 @@ async fn ready_announces_chats_when_the_cli_has_them_and_only_then() {
     assert_eq!(phone.ready["features"]["chat_suggestions"], true);
     // Project memos, by the same one question.
     assert_eq!(phone.ready["features"]["project_memo"], true);
+    // The second key list, by the same one question; changed rows need nothing of the CLI.
+    assert_eq!(phone.ready["features"]["key_names"], 2);
+    assert_eq!(phone.ready["features"]["output_delta"], true);
     assert_eq!(rig.calls("capabilities", "--json"), 1);
     // Believed once it said yes: a second phone does not ask again.
     drop(phone);

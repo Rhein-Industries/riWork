@@ -530,11 +530,17 @@ at. The line composer above stays for older desktops (detected on the first key:
 and can be chosen anyway from the terminal menu. Detection is per connection.
 
 A hidden `UIKeyInput` view captures the keys (autocorrection, smart punctuation and
-prediction off; return key "return"). A key bar sits on the keyboard, always 44 pt tall and exactly where iOS
+prediction off; return key "return"). It offers every keyboard the person has (the default keyboard type, not ASCII only),
+and an input method composes as it does anywhere: Japanese kana before conversion, pinyin or a Hangul syllable is marked
+text, shown underlined in a small chip at the bottom right of the terminal, and only the committed word is typed into the
+shell (as text, through `shell.keys`). While a word is being composed every key is the input method's (arrows choose,
+Return commits, Esc cancels; no hotkey, shortcut or key command takes them), and a word still being composed when the
+keyboard goes away is dropped, never typed half chosen. A key bar sits on the keyboard, always 44 pt tall and exactly where iOS
 puts it: on top of the software keyboard, or alone at the bottom edge when a hardware keyboard is attached. It
 scrolls sideways: Esc, Tab, a sticky Ctrl (armed until the next letter, sent as `C-<letter>`), a sticky Alt (Meta,
-sent as `Escape` followed by the next key or text, readline style), arrows, Shift-Tab, Home, End, PgUp, PgDn, Delete,
-Backspace, Enter (arrows, Backspace, Delete and Page keys repeat while held), Paste and a paperclip (see "Photos and files"), then a ⌘ button that opens the hotkey menu, a ? button that opens the hotkey help and the hotkeys (those that
+sent as `M-<key>` to a desktop with the second key list, otherwise as `Escape` followed by the next key or text, readline
+style), arrows, Shift-Tab, Home, End, PgUp, PgDn, Delete,
+Backspace, Enter (arrows, Backspace, Delete and Page keys repeat while held), F1–F12, Paste and a paperclip (see "Photos and files"), then a ⌘ button that opens the hotkey menu, a ? button that opens the hotkey help and the hotkeys (those that
 want a button), then the
 symbols that are awkward on the iOS keyboard (`` | / \ ~ - _ ` * & $ > < { } [ ] ; : ' " ``), then a "+" that opens the
 hotkey editor. Hide keyboard stays at the right end. Every key is at least 44 pt wide and as tall as the bar. The ends of the row are padded so the first and last key clear
@@ -547,10 +553,23 @@ the same strip. The iPhone is portrait only.
 **Hotkeys** send a fixed sequence of text and special keys, validated against the `shell.keys` contract (text without
 control characters, whitelisted key names only, at most 64 steps). Built in: Ctrl+C, D, Z, L, R, A, E, U, W and Esc Esc.
 Your own (a name of up to 12 characters plus steps, e.g. "/clear" then Enter, or Ctrl+C then "exit" then Enter; up to 64 hotkeys) can be
-added, edited, deleted and reordered in the editor, and are kept on the device (UserDefaults). A hotkey ignores an armed
+added, edited, deleted and reordered in the editor, and are kept on the device (UserDefaults); a key step may also be
+Insert or F1–F12. A hotkey ignores an armed
 Ctrl/Alt. A hardware keyboard sends arrows, Esc, Tab,
-Shift-Tab, Home/End/Page keys, Ctrl-letters and Ctrl-[ (Esc, as in every terminal). Newlines in typed or pasted text
+Shift-Tab, Home/End/Page keys, Insert, F1–F12, Ctrl-letters and Ctrl-[ (Esc, as in every terminal), each with whatever
+Ctrl, Alt and Shift are held. Newlines in typed or pasted text
 become Enter, tabs become Tab, other control characters are dropped.
+
+**Second key list.** A desktop whose `ready.features.key_names` is 2 (2026-11-01) takes F1–F12, Insert, Space and keys with
+modifiers by name (`docs/remote-protocol.md`, "Second key list"), so a modified key goes as one key (`C-Up`, `S-F5`, `M-x`,
+`C-M-c`), and Ctrl also gives the control characters that are not letters: Ctrl with `\` `]` `/` `_` `^` `@` `?` and the
+digits xterm maps (2 NUL, 3 Esc, 4 FS, 5 GS, 6 RS, 7 US, 8 DEL; Ctrl+Shift+- is Ctrl+_ and Ctrl+Shift+/ is Ctrl+?, DEL, as on a
+US keyboard), from the bar's Ctrl or a hardware keyboard (Ctrl+Space
+from the bar only: on a hardware keyboard it switches the input language). A desktop without it gets what those keys stand
+for in the first list's terms: `Escape` and the rest of the sequence as text (`ESC [1;5A`, `ESC O P` for F1, `ESC [2~` for
+Insert), which the program reads as the same bytes; Ctrl with a non-letter types the character itself there, as before.
+Every connection starts on the first list until the desktop's `ready` says otherwise, so keys typed while it reconnects
+go in the form every desktop takes (`KeyMapper.keyNames`, `KeyMapper.compatible`).
 
 **Keyboard first.** The next paragraphs are for typing on a hardware keyboard (the Clicks keyboard case, a Bluetooth keyboard)
 without touching the screen: focus, the hotkey menu, shortcuts, the editor and the Clicks template.
@@ -685,6 +704,13 @@ slots the screen is followed by short reads meanwhile. An older desktop (no `has
 300 ms for 2 s after typing, every 1 s for the next 10 s, then every 3 s, one read in flight at a time. `RelayClient` already
 matches responses to requests by id, so replies may arrive out of order and a pending wait never delays `shell.keys`.
 When `shell.output` carries `cursor`/`rows`, a block cursor is drawn there; `in_mode` shows a COPY MODE badge.
+**Changed rows.** A desktop that announces `features.output_delta` (2026-11-01) is asked with `delta: true` on every read, and
+answers a changed screen with only the rows that differ from the one the phone holds (the one its `if_changed` hash names),
+and how the rest moved when output scrolled (`OutputDelta`, `Core/LiveOutput.swift`). The phone rebuilds the whole screen
+from the one it holds and parses it as before, so an echo costs a row on the link instead of the 200 to 540 lines of the
+screen. Changes for a screen the phone no longer holds, or that do not fit it, are never guessed at: the phone forgets its
+hash and the next read brings the screen in full. The desktop answers in full whenever it cannot be sure, and an older one
+is never asked.
 
 **Colors and symbols.** The styled output holds only SGR sequences (`;` and `:` forms): 16 colors from the synced terminal
 palette (or a built-in set that suits the desktop's light or dark side), xterm-256, truecolor, bold, dim (half opacity over the

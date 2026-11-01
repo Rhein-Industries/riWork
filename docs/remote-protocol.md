@@ -6,6 +6,9 @@ agreement with the iOS worker.
 
 ## Changelog
 
+- 2026-11-01: Additive, in the "Direct typing extension", no new method and no new error code: a second key list for `shell.keys`. Besides the 14 named keys and `C-a` to `C-z`, a key may be `Insert`, `Space`, `F1` to `F12`, or a key with the modifiers `C-` (Control), `M-` (Meta, Alt) and `S-` (Shift), written in that order and each at most once, wherever tmux turns the combination into the bytes a terminal would send: any of them on the cursor and editing keys and the F-keys (`C-Up`, `S-F5`, `C-M-S-End`), `M-` on `Enter`, `Tab`, `BTab`, `Escape` and `Backspace`, `C-` and `M-` on `Space` (`C-Space` is NUL), `M-` on any printable ASCII character other than space (`M-x`, `M-.`), and `C-` on `a`-`z`, `@`, `[`, `\`, `]`, `^`, `_` and `?` (`C-\`, `C-M-x`). Every other spelling is still `invalid_request`, and a first-list key keeps its first-list name (`C-a`, never another spelling). `ready.features.key_names` is `2` when the desktop takes the second list (its `riwork capabilities --json` says `"key_names": 2`); a desktop without it refuses the new names with `invalid_request` before anything is typed, so a client sends them only when it sees the feature, and otherwise the bytes they stand for as `Escape` plus text, as before (Ctrl with a non-letter has no such form). The 150 ms pause before a key that follows text, the batch ledger and the answers are unchanged. Applies to v1 and v2 sessions. Existing names, bytes and fixtures are unchanged. See "Second key list" under "Direct typing extension". Needs the iOS worker's agreement; the iOS side implements the same rules.
+- 2026-11-01: Additive, in the "Live terminal extension", no new method and no new error code: changed rows only. `shell.output` takes an optional `delta` boolean; with `"delta": true` and an `if_changed` whose screen this desktop sent this device, a changed screen may be answered with `delta` (the rows that differ, and how the rest moved) in place of `output`, every other field as in the full answer, its `hash` naming the full screen. The desktop answers in full whenever it does not hold that screen (another device's, a connector restart, an evicted one) or the changes are not much smaller than the screen. `ready.features.output_delta` (`true`) says the connector does it; it needs nothing of the CLI. A client that does not send `delta` gets exactly what it got before, and one that cannot apply the changes (its screen is not the one `base` names) asks again without `if_changed`. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged. See "Changed rows" under "Live terminal extension". Needs the iOS worker's agreement; the iOS side implements the same text.
+- 2026-11-01: No wire change; how the desktop types got cheaper. A connector whose `riwork` CLI says `"shell_keys_serve": true` (`riwork capabilities --json`) no longer starts a `riwork shell keys` process for every `shell.keys` batch: it keeps one `riwork shell keys --serve` per device, which reads batches as JSON lines and types each exactly as that process would (the same item checks, input lock, copy-mode and input-off checks, the pause before a key after text, and error tokens). The batch ledger, its write before typing, the order of a device's batches and every answer and error code are as before; a batch the worker took and never answered is reported like a process that failed after typing began, so a repeat answers `uncertain`, and a worker that cannot be started falls back to a process per batch. `shell.output` still starts one CLI process per request.
 - 2026-10-16: Additive dashboard fields, with no new method, feature flag, error code or version: optional `decisions` / `decisions_total`, `decision_sources`, `recent_activity` / `recent_activity_total`, and `intelligence`. Actual approval/question cards retain exact chat/request IDs, provider choices and source event identities; coverage and observation times distinguish incomplete or saved state. Each new list is capped at 40 rows. Optional Haiku summaries are separately identified, cite observed events and never create controls. Explicit answers revalidate the same host's current `chat.snapshot` and use existing `chat.command`; an uncertain outcome is never automatically retried. Applies to v1 and v2 sessions; original fixtures and older replies remain valid. See "Observed decisions and optional intelligence" in the Dashboard extension, [dashboard decisions](dashboard-decisions.md), and [Haiku summaries](haiku-dashboard.md). The iOS client implements the same fields and response checks.
 - 2026-10-15 (later): Additive, in the same "Chat extension": `presentation.worker` may also carry `after` (a worker chat's log `seq` when its card was written), and its `final` may carry `turn` and `turn_end` (the worker chat's turn that ended it, and the `seq` of that end in the worker's log) or `done_since` (Unix seconds a terminal's agent became done). They say which card an end belongs to and that it is recorded once; a phone reads none of them, and an older one ignores them. Existing methods, bytes and fixtures are unchanged. See `docs/chat-events.md` "Worker markers".
 - 2026-10-15: Additive, in the same "Chat extension", no new method, no new event and no new error code: chat items may carry optional `presentation.worker`, the record of a terminal or chat that this chat started (its worker): `session_id`, `kind` (`shell|chat`), `title`, and optionally `harness`, `model`, `worktree_id`, `assignment` (the first line of what the chat sent it, at most 240 characters), `noted_at` (Unix seconds), `late` and `follow_up` (present only when true), and `final` (`status` `done|exited|failed|stopped`, `ended_at`, `tail`: the worker's last six lines, at most 2 KiB). Such an item is an ordinary `tool_call` (`server` `riwork`, `tool` `worker`), always `completed`, with id `worker:<session_id>` or `worker:<session_id>:<n>`; the same id is written again when the worker finishes. Live state stays where it was: a client joins `session_id` against `shells.list` (terminals) and `chats.list` (chats). The relay never shortens `session_id`. An older phone shows the plain tool row and ignores the field; a phone decodes it leniently and drops a malformed one. See `docs/chat-events.md` "Worker markers". Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged. Needs the iOS worker's agreement.
@@ -183,7 +186,7 @@ unsolicited response except handshake `ready`.
 | `tasks.list` | `{"project_id":"UUID"}` optionally `"worktree_id":"UUID"` | `{"tasks":[Task]}` |
 | `shells.list` | `{"project_id":"UUID"}` | `{"shells":[Session]}` (existing project shells) |
 | `orchestrators.list` | `{}` | `{"orchestrators":[Session]}` (global + project; each runs as a terminal or, since 2026-10-05, as a chat) |
-| `shell.output` | `{"shell_id":"UUID"}` optionally `"lines":200`, and additively `"styled":true`, `"if_changed":"HASH"`, `"wait_ms":5000` (see Live terminal) | `{"shell_id":"UUID","output":"terminal text"}` plus, additively, `"cursor":{"x":0,"y":0},"rows":24,"cols":80,"in_mode":false` (see Direct typing) and `"hash":"0123456789abcdef"`, `"history_size":4991,"alternate":false` (see Deep scrollback); or `{"shell_id":"UUID","unchanged":true,"hash":"0123456789abcdef","history_size":4991,"alternate":false}` (see Live terminal) |
+| `shell.output` | `{"shell_id":"UUID"}` optionally `"lines":200`, and additively `"styled":true`, `"if_changed":"HASH"`, `"wait_ms":5000`, `"delta":true` (with `features.output_delta`) (see Live terminal) | `{"shell_id":"UUID","output":"terminal text"}` plus, additively, `"cursor":{"x":0,"y":0},"rows":24,"cols":80,"in_mode":false` (see Direct typing) and `"hash":"0123456789abcdef"`, `"history_size":4991,"alternate":false` (see Deep scrollback); or `{"shell_id":"UUID","unchanged":true,"hash":"0123456789abcdef","history_size":4991,"alternate":false}` (see Live terminal); or, asked with `delta`, the full answer with `"delta":{"base":"HASH","shift":0,"line_count":225,"changed":[[224,["$ ls"]]]}` in place of `output` (see Changed rows) |
 | `shell.history` | `{"shell_id":"UUID","end":0,"lines":200}` (`lines` 1 to 5000 since 2026-10-01, 1000 before) optionally `"styled":true` (see Deep scrollback, Link extension) | `{"shell_id":"UUID","output":"older lines","line_count":200,"history_size":4991,"complete":false}` |
 | `shell.input` | `{"shell_id":"UUID","line":"one physical line"}` | `{"shell_id":"UUID","status":"sent"}` |
 | `shell.keys` | `{"shell_id":"UUID","batch":"UUID","items":[{"text":"ls"},{"key":"Enter"}]}` (Direct typing) | `{"shell_id":"UUID","batch":"UUID","status":"sent\|duplicate\|uncertain"}` |
@@ -342,7 +345,41 @@ Return and no line: literal text and named keys go to the pane in order.
 - `key` is one of `Enter`, `Tab`, `BTab` (Shift-Tab), `Escape`, `Backspace`,
   `Delete` (forward delete), `Up`, `Down`, `Left`, `Right`, `Home`, `End`,
   `PageUp`, `PageDown`, or `C-a` to `C-z` (Control plus a lowercase letter). Names
-  are case-sensitive.
+  are case-sensitive. Since 2026-11-01 a desktop with `ready.features.key_names`
+  `2` also takes the second key list below.
+
+**Second key list (2026-11-01, `features.key_names` 2).** Additive: a name of the
+first list keeps its meaning and its one spelling. A desktop that announces
+`"key_names": 2` in `ready.features` also takes:
+
+- `Insert`, `Space` and `F1` to `F12`;
+- a key with modifiers: `C-` (Control), `M-` (Meta, Alt), `S-` (Shift), written in
+  that order and each at most once, then a base. Only combinations that tmux turns
+  into the bytes a terminal sends are names:
+  - `Up`, `Down`, `Left`, `Right`, `Home`, `End`, `PageUp`, `PageDown`, `Insert`,
+    `Delete` and `F1` to `F12` take any modifiers (`C-Up` is `ESC [1;5A`, `S-F5`
+    `ESC [15;2~`, `C-M-S-End` `ESC [1;8F`);
+  - `Enter`, `Tab`, `BTab`, `Escape` and `Backspace` take only `M-` (Escape in
+    front: `M-Enter`, `M-Backspace`);
+  - `Space` takes `C-` (`C-Space` is NUL) and `M-`;
+  - one printable ASCII character other than space (`!` to `~`) takes `M-` (`M-x`
+    is Escape then `x`, `M-X` Escape then `X`), and `C-` only when it has a
+    control character: `a` to `z`, `@` (NUL), `[` (ESC), `\` (FS), `]` (GS),
+    `^` (RS), `_` (US), `?` (DEL); `C-M-x` is Escape then ^X. A character needs
+    `C-` or `M-` (a bare one is text) and never takes `S-` (send the shifted
+    character).
+- `C-` plus a lowercase letter is still the first list's `C-a` to `C-z`; there is
+  no second spelling of a first-list key (`C-Enter`, `S-Tab`, `M-C-a`, `F13`,
+  `C-Escape` are `invalid_request`).
+
+A desktop without the feature refuses these names with `invalid_request` before
+anything is typed, and the batch is not recorded. A client sends them only to a
+desktop that announces the feature; to any other it sends what they stand for in
+the first list's terms where there is such a form: `Escape` followed by the rest of
+the sequence as text (`ESC [1;5A`, `ESC O P` for `F1`, `ESC [2~` for `Insert`),
+which reaches the program as the same bytes. Ctrl with a non-letter has no such
+form. Everything else about a batch (limits, order, the pause before a key that
+follows text, the ledger, the answers) is as above.
 
 Result: `{"shell_id":"UUID","batch":"UUID","status":"sent"}`. `status` is
 
@@ -390,6 +427,14 @@ Delivery and retries:
 - Batches that the phone could not deliver are the phone's to buffer; the desktop
   holds nothing. Because typed text may run commands, `shell.keys` has the same
   authority as `shell.input`.
+- Delivery note, not a wire change (2026-11-01): a desktop whose CLI can (`"shell_keys_serve":
+  true` in `riwork capabilities --json`) types a device's batches with one long-lived
+  `riwork shell keys --serve` instead of a process per batch. Each batch is still
+  recorded as pending before it is typed and typed under the same locks, in the same
+  order, with the same pauses, and answered with the same statuses and errors. A
+  batch the worker took and never answered (it died or timed out) may be partly
+  typed: it stays pending, and a repeat answers `uncertain`. A worker that cannot be
+  started types nothing, and the batch is typed by a process of its own.
 
 **`shell.output` additive result fields.** The result gains the four fields below.
 Old clients ignore them.
@@ -510,6 +555,47 @@ a secret and not a proof of anything.
   newline (a line may begin with `ESC [ 0 m`), so a renderer keeps its state from
   one line to the next until it sees a reset. The `hash` of a styled answer covers
   the styled text.
+
+**Changed rows (2026-11-01, `features.output_delta`).** Additive. A client that
+follows a screen asks again the moment it changes, and an echo changes a row or two
+of the hundreds it holds. A desktop whose `ready.features.output_delta` is `true`
+takes one more optional parameter:
+
+- `delta` (boolean, default `false`): answer a changed screen with only the rows that
+  differ from the one `if_changed` names. Anything but a boolean fails
+  `invalid_request`. A desktop without the feature refuses the field (unknown field),
+  so a client sends it only to one that announces it, and then on every request, the
+  first included: the desktop remembers the last few full screens it sent to each
+  device that asked (by their `hash`), so that it can answer the next one with the
+  changes.
+
+With `delta`, a result that would carry `output` may instead carry `delta`, when
+`if_changed` names a screen this desktop sent this device for the same `shell_id`,
+`lines` and `styled`, and the changes are much smaller than the screen. Every other
+field (`hash`, `cursor`, `rows`, `cols`, `in_mode`, `history_size`, `alternate`) is
+as in the full answer, and `hash` names the full screen, so it is the next
+`if_changed`. Otherwise the answer is the full one, as without `delta`; `unchanged`
+is unchanged.
+
+```json
+{"shell_id":"UUID","hash":"89d5fc8360a9ca8e","delta":{"base":"7c53e6ada4d83425","shift":3,"line_count":227,"changed":[[224,["$ ls","a  b",""]]]},"cursor":{"x":2,"y":23},"rows":24,"cols":80,"in_mode":false,"history_size":4994,"alternate":false}
+```
+
+- Split the screen `base` names (the request's `if_changed`) at every `\n`; an output
+  that ends in `\n` gives a last, empty piece. The new screen has `line_count`
+  pieces (at least 1). Piece `i` is the one a `changed` run gives it: a run is
+  `[start, [piece, ...]]`, runs are in order and do not overlap. Every
+  other piece is base piece `i + shift` (`shift` is an integer, negative included:
+  how far the lines moved, for example when output scrolled into the history).
+  Joined with `\n`, the pieces are exactly the `output` the full answer would
+  carry; with `styled`, the SGR sequences are part of the pieces as of the text.
+- A client applies the changes only to the screen whose `hash` it holds and named.
+  If it holds another one, or a run or a shifted line falls outside it, it drops its
+  hash and asks again without `if_changed` (a full answer). It never guesses.
+- The desktop keeps a few screens per device and forgets them when the device is
+  revoked or the connector restarts; a hash it no longer holds is answered in full.
+  The CLI is not involved: it captures the whole screen as before, and only the
+  answer over the link is smaller.
 
 **Concurrency.** Before this extension a device's requests were carried out one at
 a time. They are now carried out concurrently, so that a waiting `shell.output`
@@ -2567,6 +2653,13 @@ ready response. Values are test-only and must never provision production devices
   draft, several per draft, `model_insertions` for the old `removals`, previews that insert,
   `mentionable`, `mention_ranking`, `mention_previews`, providers in `model_details`, and
   `mention_models` in `reply`).
+- 2026-11-01: additive and backward compatible. The second key list of `shell.keys`
+  (`features.key_names` 2: `Insert`, `Space`, `F1`-`F12`, names with `C-`, `M-`, `S-`),
+  and changed rows on `shell.output` (`delta`, `features.output_delta`). A phone that sends
+  neither, and a desktop that announces neither, behave as before; no new method, error
+  code or fixture. Not a wire change: the connector types through one `riwork shell keys
+  --serve` worker per device when its CLI has one. Needs the iOS worker's agreement; the
+  iOS side implements the same rules.
 
 References: [RFC 8439](https://www.rfc-editor.org/rfc/rfc8439),
 [RFC 5869](https://www.rfc-editor.org/rfc/rfc5869),

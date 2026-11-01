@@ -73,8 +73,8 @@ final class HotkeyTests: XCTestCase {
                       .invalidStep(index: 1, reason: "there is more text than one send can carry."))
     }
     func testChoicesAreTheContractKeysAndNothingElse() {
-        XCTAssertEqual(TerminalKey.choices.count, 14 + 26)
-        XCTAssertEqual(Set(TerminalKey.choices.map(\.name)).count, 40)
+        XCTAssertEqual(TerminalKey.choices.count, 14 + 1 + 12 + 26, "the named keys, Insert, F1 … F12, Ctrl and a letter")
+        XCTAssertEqual(Set(TerminalKey.choices.map(\.name)).count, 53)
         XCTAssertEqual(TerminalKey.choices.first, .enter)
         XCTAssertEqual(TerminalKey.control("c").title, "Ctrl+C")
         XCTAssertEqual(TerminalKey.backTab.title, "Shift-Tab")
@@ -105,7 +105,7 @@ final class HotkeyTests: XCTestCase {
     func testStoredHotkeysAreValidatedOnTheWayIn() throws {
         for bad in ["{\"id\":\"\",\"label\":\"x\",\"steps\":[{\"key\":\"Enter\"}]}",
                     "{\"id\":\"a\",\"label\":\"x\",\"steps\":[]}",
-                    "{\"id\":\"a\",\"label\":\"x\",\"steps\":[{\"key\":\"F5\"}]}",
+                    "{\"id\":\"a\",\"label\":\"x\",\"steps\":[{\"key\":\"F13\"}]}",
                     "{\"id\":\"a\",\"label\":\"x\",\"steps\":[{\"text\":\"a\\nb\"}]}",
                     "{\"id\":\"a\",\"label\":\"x\",\"steps\":[{\"text\":\"a\",\"key\":\"Enter\"}]}",
                     "{\"id\":\"a\",\"steps\":[{\"key\":\"Enter\"}]}",
@@ -172,7 +172,7 @@ final class HotkeyTests: XCTestCase {
           {"id":"b","label":"","steps":[{"key":"Enter"}]},
           {"id":"a","label":"Repeat","steps":[{"key":"Tab"}]},
           {"id":"builtin.c-c","label":"Fake","steps":[{"text":"x"}]},
-          {"id":"c","label":"Bad key","steps":[{"key":"F1"}]},
+          {"id":"c","label":"Bad key","steps":[{"key":"F13"}]},
           {"id":"d","label":"Also good","steps":[{"text":"ls"},{"key":"Enter"}]}
         ]}
         """

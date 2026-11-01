@@ -63,6 +63,15 @@ private final class FakeTransport: RemoteTransport, @unchecked Sendable {
             XCTAssertTrue(key.isValid)
             XCTAssertTrue(TerminalKey.isControlLetter(letter))
         }
+        // The second key list (`key_names` 2): one name each, the same as the desktop's.
+        for name in ["Insert", "Space", "F1", "F12", "C-Up", "C-M-S-PageDown", "S-F5", "M-Enter", "M-Backspace", "C-Space", "M-Space",
+                     "M-x", "M-X", "M-;", "C-\\", "C-]", "C-@", "C-^", "C-_", "C-?", "C-M-x", "C-M-\\"] {
+            let key = try XCTUnwrap(TerminalKey(name: name), name)
+            XCTAssertEqual(key.name, name)
+            XCTAssertTrue(key.needsSecondList, name)
+            XCTAssertEqual(try KeyItem(json: .object(["key": .string(name)])), .key(key), name)
+        }
+        XCTAssertEqual(TerminalKey(ModifiedKey(modifiers: .control, base: .character("c"))!), .control("c"), "C-c keeps its first-list name")
         XCTAssertEqual(KeyItem.text("ls -la").json, .object(["text": .string("ls -la")]))
     }
 
@@ -108,7 +117,8 @@ private final class FakeTransport: RemoteTransport, @unchecked Sendable {
         ]
         for value in rejected { assertViolation(try KeyItem(json: value), "\(value)") }
         // The name parser is strict on its own, not only through item validation.
-        for name in ["", "enter", "ENTER", "Return", "C-A", "C-Z", "C-1", "C-", "C-ab", "c-a", "C_a", "C-é", "C-\u{FF41}", "Ctrl-a", " Enter", "Enter ", "F1", "Space", "Insert"] {
+        for name in ["", "enter", "ENTER", "Return", "C-A", "C-Z", "C-1", "C-", "C-ab", "c-a", "C_a", "C-é", "C-\u{FF41}", "Ctrl-a", " Enter", "Enter ", "F13", "F0", "space", "insert",
+                     "M-", "M-C-a", "C-Escape", "C-Backspace", "S-a", "S-Space", "C-M-1", "M-é", "S-C-Up"] {
             XCTAssertNil(TerminalKey(name: name), "\"\(name)\"")
         }
     }

@@ -79,6 +79,15 @@ enum TerminalFont {
     var tabShortcuts: TabShortcutController?
     var isEnabled = true { didSet { if !isEnabled, isFirstResponder { _ = resignFirstResponder() } } }
     private var tapDetector = ModifierTapDetector()
+    /// The newest key list the desktop takes (`features.key_names`, see `KeyMapper.keyNames`).
+    var keyNames = 1 { didSet { if keyNames != oldValue { mapper.keyNames = keyNames } } }
+    /// The word an input method is composing (marked text: kana before conversion, pinyin, a Hangul syllable), nil when none is. It
+    /// is the input method's until it commits it (`unmarkText`, or `insertText` in its place); only then does it go to the shell,
+    /// as typed text. The terminal shows it meanwhile (`onComposition`).
+    private(set) var composition: String? { didSet { if composition != oldValue { onComposition?(composition) } } }
+    /// Where the input method's own selection is within `composition`.
+    private var compositionSelection = NSRange(location: 0, length: 0)
+    var onComposition: ((String?) -> Void)?
 
     // Text input traits: every one of these would change what the shell receives.
     var autocorrectionType: UITextAutocorrectionType = .no
@@ -90,7 +99,9 @@ enum TerminalFont {
     var inlinePredictionType: UITextInlinePredictionType = .no
     var mathExpressionCompletionType: UITextMathExpressionCompletionType = .no
     var writingToolsBehavior: UIWritingToolsBehavior = .none
-    var keyboardType: UIKeyboardType = .asciiCapable
+    /// The person's own keyboards, Japanese, Chinese and Korean included (`.asciiCapable` would leave those out); the traits above
+    /// keep any of them from changing what is typed.
+    var keyboardType: UIKeyboardType = .default
     var keyboardAppearance: UIKeyboardAppearance = .default
     var returnKeyType: UIReturnKeyType = .default
     var enablesReturnKeyAutomatically = false
@@ -118,18 +129,31 @@ enum TerminalFont {
     }
     override func resignFirstResponder() -> Bool {
         let resigned = super.resignFirstResponder()
-        if resigned { mapper.disarmModifiers(); palette.close(); help.close(); tapDetector.reset(); tabShortcuts?.cancelPrefix(); onActiveChange?(false) }
+        if resigned {
+            // A word still being composed when the keyboard goes away is dropped, never typed half chosen.
+            if composition != nil { changeDocument { composition = nil } }
+            mapper.disarmModifiers(); palette.close(); help.close(); tapDetector.reset(); tabShortcuts?.cancelPrefix(); onActiveChange?(false)
+        }
         return resigned
     }
 
     // MARK: UIKeyInput
     /// Always true, or the delete key stops reporting once the (nonexistent) text is empty.
     var hasText: Bool { true }
+    /// Typed text, or what an input method commits in place of the word it was composing.
     func insertText(_ text: String) {
+        composition = nil
         if palette.isOpen { paletteText(text); return }
         emit(mapper.insert(text))
     }
     func deleteBackward() {
+        // An input method edits its word with `setMarkedText`; one that deletes instead takes the last character off it.
+        if var word = composition {
+            word.removeLast()
+            composition = word.isEmpty ? nil : word
+            compositionSelection = NSRange(location: (word as NSString).length, length: 0)
+            return
+        }
         if palette.isOpen { palette.apply(.backspace); return }
         emit(mapper.deleteBackward())
     }
@@ -140,9 +164,12 @@ enum TerminalFont {
 
     // MARK: UITextInput
     // The software keyboard repeats a held delete key only for a `UITextInput` with text before the caret: a bare `UIKeyInput`
-    // gets one `deleteBackward` per press. So the view shows the keyboard a document of one space with the caret after it, and
-    // nothing ever changes it. Every delete, held or not, still arrives as one `deleteBackward` (the keyboard selects the space
-    // first; that selection is ignored), and text still arrives through `insertText`.
+    // gets one `deleteBackward` per press. So the view shows the keyboard a document of one space with the caret after it. Every
+    // delete, held or not, still arrives as one `deleteBackward` (the keyboard selects the space first; that selection is
+    // ignored), and text still arrives through `insertText`.
+    //
+    // An input method (Japanese, Chinese, Korean) composes a word as marked text after that space: the document is then the space
+    // and the word, marked, with the input method's own selection in it. The word reaches the shell only when it is committed.
     private final class Position: UITextPosition {
         let offset: Int
         init(_ offset: Int) { self.offset = offset }
@@ -154,46 +181,74 @@ enum TerminalFont {
         override var end: UITextPosition { Position(to) }
         override var isEmpty: Bool { from == to }
     }
-    private static let document = " "
-    private static let length = (document as NSString).length
-    private static func offset(_ position: UITextPosition) -> Int { min(max((position as? Position)?.offset ?? length, 0), length) }
+    /// The one space before the caret.
+    private static let anchor = " "
+    private static let anchorLength = (anchor as NSString).length
+    private var document: String { Self.anchor + (composition ?? "") }
+    private var length: Int { (document as NSString).length }
+    private func offset(_ position: UITextPosition) -> Int { min(max((position as? Position)?.offset ?? length, 0), length) }
+    /// A change of the document this view makes on its own, which the input method is told about.
+    private func changeDocument(_ change: () -> Void) {
+        inputDelegate?.selectionWillChange(self); inputDelegate?.textWillChange(self)
+        change()
+        inputDelegate?.textDidChange(self); inputDelegate?.selectionDidChange(self)
+    }
 
     func text(in range: UITextRange) -> String? {
-        let from = Self.offset(range.start), to = Self.offset(range.end)
-        return (Self.document as NSString).substring(with: NSRange(location: from, length: to - from))
+        let from = offset(range.start), to = offset(range.end)
+        return (document as NSString).substring(with: NSRange(location: from, length: to - from))
     }
-    /// Only the system's own edits come here (autocorrection and the rest are off): new text is typed text, nothing is replaced.
+    /// Only the system's own edits come here (autocorrection and the rest are off): new text is typed text (or a composed word
+    /// committed in place of its marked text), nothing is replaced.
     func replace(_ range: UITextRange, withText text: String) { if !text.isEmpty { insertText(text) } }
-    var selectedTextRange: UITextRange? { get { Range(Self.length, Self.length) } set {} }
-    // No marked text: what is typed goes to the shell as it is typed.
-    var markedTextRange: UITextRange? { nil }
+    var selectedTextRange: UITextRange? {
+        get {
+            guard composition != nil else { return Range(length, length) }
+            let start = Self.anchorLength + compositionSelection.location
+            return Range(min(start, length), min(start + compositionSelection.length, length))
+        }
+        set {}
+    }
+    var markedTextRange: UITextRange? { composition == nil ? nil : Range(Self.anchorLength, length) }
     var markedTextStyle: [NSAttributedString.Key: Any]? { get { nil } set {} }
-    func setMarkedText(_ markedText: String?, selectedRange: NSRange) {}
-    func unmarkText() {}
+    /// The input method's word as it stands. An empty one ends the composition without committing anything.
+    func setMarkedText(_ markedText: String?, selectedRange: NSRange) {
+        guard let markedText, !markedText.isEmpty else { composition = nil; return }
+        let length = (markedText as NSString).length
+        let location = min(max(selectedRange.location, 0), length)
+        compositionSelection = NSRange(location: location, length: min(max(selectedRange.length, 0), length - location))
+        composition = markedText
+    }
+    /// The input method commits its word as it stands: it goes to the shell as typed text.
+    func unmarkText() {
+        guard let word = composition else { return }
+        insertText(word)
+    }
     var beginningOfDocument: UITextPosition { Position(0) }
-    var endOfDocument: UITextPosition { Position(Self.length) }
-    func textRange(from fromPosition: UITextPosition, to toPosition: UITextPosition) -> UITextRange? { Range(Self.offset(fromPosition), Self.offset(toPosition)) }
+    var endOfDocument: UITextPosition { Position(length) }
+    func textRange(from fromPosition: UITextPosition, to toPosition: UITextPosition) -> UITextRange? { Range(offset(fromPosition), offset(toPosition)) }
     func position(from position: UITextPosition, offset: Int) -> UITextPosition? {
-        let moved = Self.offset(position) + offset
-        return (0...Self.length).contains(moved) ? Position(moved) : nil
+        let moved = self.offset(position) + offset
+        return (0...length).contains(moved) ? Position(moved) : nil
     }
     func position(from position: UITextPosition, in direction: UITextLayoutDirection, offset: Int) -> UITextPosition? {
         self.position(from: position, offset: direction == .left || direction == .up ? -offset : offset)
     }
     func compare(_ position: UITextPosition, to other: UITextPosition) -> ComparisonResult {
-        let a = Self.offset(position), b = Self.offset(other)
+        let a = offset(position), b = offset(other)
         return a < b ? .orderedAscending : a > b ? .orderedDescending : .orderedSame
     }
-    func offset(from: UITextPosition, to toPosition: UITextPosition) -> Int { Self.offset(toPosition) - Self.offset(from) }
+    func offset(from: UITextPosition, to toPosition: UITextPosition) -> Int { offset(toPosition) - offset(from) }
     weak var inputDelegate: UITextInputDelegate?
     lazy var tokenizer: UITextInputTokenizer = UITextInputStringTokenizer(textInput: self)
     func position(within range: UITextRange, farthestIn direction: UITextLayoutDirection) -> UITextPosition? { direction == .left || direction == .up ? range.start : range.end }
-    func characterRange(byExtending position: UITextPosition, in direction: UITextLayoutDirection) -> UITextRange? { Range(Self.offset(position), Self.offset(position)) }
+    func characterRange(byExtending position: UITextPosition, in direction: UITextLayoutDirection) -> UITextRange? { Range(offset(position), offset(position)) }
     func baseWritingDirection(for position: UITextPosition, in direction: UITextStorageDirection) -> NSWritingDirection { .leftToRight }
     func setBaseWritingDirection(_ writingDirection: NSWritingDirection, for range: UITextRange) {}
-    // Nothing is drawn: no caret, no selection, no rectangles for the system to put a menu or a loupe on.
-    func firstRect(for range: UITextRange) -> CGRect { .zero }
-    func caretRect(for position: UITextPosition) -> CGRect { .zero }
+    // Nothing is drawn: no caret, no selection, no rectangles for the system to put a menu or a loupe on. While a word is being
+    // composed the input method gets the view's own rectangle, so a candidate window has somewhere to stand.
+    func firstRect(for range: UITextRange) -> CGRect { composition == nil ? .zero : bounds }
+    func caretRect(for position: UITextPosition) -> CGRect { composition == nil ? .zero : CGRect(x: bounds.maxX, y: bounds.minY, width: 0, height: bounds.height) }
     func selectionRects(for range: UITextRange) -> [UITextSelectionRect] { [] }
     func closestPosition(to point: CGPoint) -> UITextPosition? { endOfDocument }
     func closestPosition(to point: CGPoint, within range: UITextRange) -> UITextPosition? { range.end }
@@ -428,10 +483,21 @@ enum TerminalFont {
     ]
     /// The same for the help: ⌘. closes it (Esc does too, and is a command already). Claimed only while it is open.
     private lazy var helpCommands: [UIKeyCommand] = [Self.command(".", .command, "Close the hotkey help")]
+    /// Ctrl with the keys that have a control character of their own besides the letters (`\` FS, `]` GS, `/` and `_` US, `^` RS,
+    /// `@` NUL, `?` DEL, and the digits xterm maps: 2 NUL, 3 Esc, 4 FS, 5 GS, 6 RS, 7 US, 8 DEL), alone or with Shift and Alt.
+    /// Claimed only when the desktop has names for them (the second key list); Ctrl+Space stays the system's (it switches the input
+    /// language).
+    private static let controlSymbolCommands: [UIKeyCommand] = terminalFlags.filter { $0.contains(.control) }.flatMap { flags in
+        ["\\", "]", "/", "2", "3", "4", "5", "6", "7", "8", "@", "^", "_", "?"].map { command($0, flags) }
+            + (flags.contains(.shift) ? [command("-", flags)] : [])
+    }
     /// Commands for the shortcuts of hotkeys, the menu and the help: the keys a `UIKeyCommand` can name, with priority over the system.
     private var chordCommands: [UIKeyCommand] = []
     override var keyCommands: [UIKeyCommand]? {
-        TabShortcutInput.withoutPrefix(commands + (palette.isOpen ? paletteCommands : []) + (help.isOpen ? helpCommands : []) + chordCommands, tabShortcuts)
+        // While a word is being composed every key is the input method's: arrows choose, Return commits, Esc cancels.
+        guard composition == nil else { return nil }
+        let symbols = keyNames >= 2 ? Self.controlSymbolCommands : []
+        return TabShortcutInput.withoutPrefix(commands + symbols + (palette.isOpen ? paletteCommands : []) + (help.isOpen ? helpCommands : []) + chordCommands, tabShortcuts)
     }
 
     private func refreshShortcuts() {
@@ -479,6 +545,8 @@ enum TerminalFont {
     // keys, a lone modifier such as the Clicks button) still work. Whatever is not used is passed on to the text system.
 
     override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        // While a word is being composed every key goes to the input method.
+        guard composition == nil else { super.pressesBegan(presses, with: event); return }
         let rest = presses.filter { !consume($0, .down) }
         if !rest.isEmpty { super.pressesBegan(Set(rest), with: event) }
     }
@@ -547,13 +615,17 @@ enum TerminalFont {
     }
     /// Forward Delete, and Backspace with Ctrl or Alt held, which the text system would turn into a plain delete or nothing at all
     /// (the view's document is one space with the caret at its end). Matched by their key codes: no `UIKeyCommand` input names
-    /// Backspace for certain. Plain Backspace stays with the text system, which repeats it while held.
+    /// Backspace for certain. Plain Backspace stays with the text system, which repeats it while held. F1 … F12 and Insert, which
+    /// the text system drops, are taken here too (with whatever modifiers are held): a key the person gave a shortcut is that
+    /// shortcut's instead (`handle`).
     private func deleteKey(_ code: Int, _ modifiers: ChordModifiers) -> Bool {
         guard !palette.isOpen, !modifiers.contains(.command) else { return false }
         let key: TerminalKey
         switch code {
         case HIDKey.deleteForward: key = .delete
         case HIDKey.backspace where !modifiers.isDisjoint(with: [.control, .alt]): key = .backspace
+        case HIDKey.f1...HIDKey.f12: key = .function(code - HIDKey.f1 + 1)
+        case HIDKey.insert: key = .insert
         default: return false
         }
         usedPresses.insert(code)
@@ -666,6 +738,10 @@ struct KeyCapture: UIViewRepresentable {
     var onDictate: () -> Void = {}
     var onAttach: (AttachmentChoice) -> Void = { _ in }
     var onPasteFiles: () -> Bool = { false }
+    /// The newest key list the desktop takes (`features.key_names`).
+    var keyNames = 1
+    /// The word an input method is composing, or nil, as it changes.
+    var onComposition: (String?) -> Void = { _ in }
     var onItems: ([KeyItem]) -> Bool
 
     func makeUIView(context: Context) -> KeyCaptureView {
@@ -698,6 +774,8 @@ struct KeyCapture: UIViewRepresentable {
         view.bar.setDictation(dictation)
         view.onAttach = onAttach
         view.onPasteFiles = onPasteFiles
+        view.keyNames = keyNames
+        view.onComposition = onComposition
         focus.view = view
     }
     static func dismantleUIView(_ view: KeyCaptureView, coordinator: ()) {
@@ -709,5 +787,6 @@ struct KeyCapture: UIViewRepresentable {
         view.onKeyEvent = nil
         view.onAttach = nil
         view.onPasteFiles = nil
+        view.onComposition = nil
     }
 }

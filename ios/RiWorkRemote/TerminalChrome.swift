@@ -70,6 +70,24 @@ struct FloatingStatus: View {
     }
 }
 
+/// The word an input method is composing (Japanese kana before conversion, pinyin, a Hangul syllable), shown over the terminal
+/// until it is committed: only then is it typed into the shell. Underlined, as composed text is everywhere on iOS.
+struct CompositionChip: View {
+    @Environment(\.desktopStyle) private var style
+    let text: String
+    var body: some View {
+        Text(text)
+            .font(style.mono(15, relativeTo: .body)).underline().foregroundStyle(style.terminalForeground)
+            .lineLimit(1).truncationMode(.head)
+            .padding(.horizontal, 8).padding(.vertical, 4)
+            .background(style.terminalBackground, in: RoundedRectangle(cornerRadius: 6))
+            .overlay(RoundedRectangle(cornerRadius: 6).stroke(style.accent, lineWidth: 1))
+            .padding(8)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Composing \(text)")
+    }
+}
+
 /// Translucent corner controls in focus mode. Fully visible after a tap, then fades to a faint ghost.
 struct FocusControls: View {
     @Environment(\.desktopStyle) private var style

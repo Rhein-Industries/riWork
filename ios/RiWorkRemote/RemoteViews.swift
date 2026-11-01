@@ -1332,6 +1332,8 @@ struct SessionConsole: View {
     @State private var dictatedLine: String?
     /// The photo or file picker (the key bar's paperclip, or the one beside the keyboard button or Send).
     @State private var picking: AttachmentChoice?
+    /// The word an input method is composing in the key capture view, until it is committed (`CompositionChip`).
+    @State private var composition: String?
     @Environment(\.scenePhase) private var scenePhase
     /// Live pinch scale. A GestureState resets by itself if the gesture is cancelled; the size is committed (and the
     /// grid recomputed) only when the pinch ends.
@@ -1380,6 +1382,7 @@ struct SessionConsole: View {
                                    onKeyEvent: { model.keyboard.events.record($0) },
                                    dictation: DictationController.shared.barState(for: .terminal), onDictate: dictate,
                                    onAttach: openPicker, onPasteFiles: pasteFiles,
+                                   keyNames: model.keyNames, onComposition: { composition = $0 },
                                    onItems: { model.type($0) == .accepted })
                             .frame(width: 1, height: 1).accessibilityHidden(true)
                     }
@@ -1478,6 +1481,10 @@ struct SessionConsole: View {
         // pending-input chip.
         .overlay(alignment: .bottomLeading) {
             if model.keyboard.showKeyEvents { KeyEventOverlay(log: model.keyboard.events).padding(.bottom, floatingInset) }
+        }
+        // A word an input method is still composing: it reaches the shell once it is committed.
+        .overlay(alignment: .bottomTrailing) {
+            if let composition { CompositionChip(text: composition).padding(.bottom, floatingInset) }
         }
         // The hotkey menu (⌘K, or the key bar's ⌘ button): typed into from the keyboard, tapped for touch.
         .overlay(alignment: .top) { HotkeyPaletteView(controller: palette) }
