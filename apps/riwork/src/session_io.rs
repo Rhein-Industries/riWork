@@ -423,7 +423,8 @@ pub fn create(
         TabStore::at(home, project)?.register_created(&shell.inventory())?;
         return Ok(shell);
     }
-    let shell = SessionManager::at(home.to_owned())?.create(project.into(), worktree, cwd, None)?;
+    // The window's ⌘T, Shell and Split: always the person's own shell, whatever environment the app was launched from.
+    let shell = SessionManager::at(home.to_owned())?.for_user().create(project.into(), worktree, cwd, None)?;
     changed();
     Ok(Shell {
         id: shell.id,

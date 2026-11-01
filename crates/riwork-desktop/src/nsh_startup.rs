@@ -29,11 +29,34 @@ mod tests {
     }
 }
 
+/// What a window must not inherit from the shell or agent that launched it (a reload hands the old app's environment to the
+/// new one): RiWork's own shell, chat and orchestrator identity, the tmux client it ran in, and the agent session around it.
+/// With `RIWORK_ORCHESTRATOR_SCOPE` left set, every shell the window makes is saved as an agent's hidden worker.
+const GUI_INHERITED_IDENTITY: &[&str] = &[
+    "RIWORK_CHAT_ID",
+    "RIWORK_SHELL_ID",
+    "RIWORK_ORCHESTRATOR_SCOPE",
+    "RIWORK_PROJECT_ID",
+    "RIWORK_CODEX_SHELL_ID",
+    "TMUX",
+    "TMUX_PANE",
+    "CLAUDECODE",
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDE_CODE_SESSION_ATTENDED",
+    "CLAUDE_CODE_MESSAGING_SOCKET",
+    "CLAUDE_CODE_MESSAGING_TOKEN",
+    "CLAUDE_PID",
+    "CODEX_THREAD_ID",
+    "CODEX_SESSION_ID",
+    "CODEX_CI",
+];
+
 pub(crate) fn scrub_gui_child_ids() {
     // Main calls this before starting threads. CLI dispatch deliberately runs
     // first and preserves the invoking shell/chat identity.
-    unsafe {
-        std::env::remove_var("RIWORK_CHAT_ID");
-        std::env::remove_var("RIWORK_SHELL_ID");
+    for name in GUI_INHERITED_IDENTITY {
+        unsafe { std::env::remove_var(name) };
     }
 }

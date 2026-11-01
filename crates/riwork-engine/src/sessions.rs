@@ -2545,6 +2545,9 @@ impl SessionManager {
         // A server that a chat's agent started must not hand that chat's id to
         // every pane (`riwork handoff` reads it to tell whose conversation it is).
         absent.push("RIWORK_CHAT_ID");
+        // Nor an orchestrator's scope: a pane that has it saves the shells it makes as hidden
+        // workers, in that orchestrator's project. Orchestrators get theirs with `-e` below.
+        absent.extend(["RIWORK_ORCHESTRATOR_SCOPE", "RIWORK_PROJECT_ID"]);
         if harness == Some(HarnessKind::Grok) {
             for name in ["GROK_MCP_STARTUP_TIMEOUT_SECS", "MCP_TIMEOUT"] {
                 if !grok_timeouts.iter().any(|(key, _)| *key == name) {
