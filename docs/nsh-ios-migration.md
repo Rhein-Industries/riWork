@@ -47,9 +47,13 @@ under its name). It reads `dashboard.get` itself every 10 seconds, only while
 it is the screen on top and the host is connected; Swift installs each reply
 into `RemoteModel` as its own read would be, and while that page is up its
 activity loop reads only the projects and orchestrators its rows open with
-(`keepDashboardListsFresh`). A row opens its native screen (`nav.present`), as
-the Mac's global window routes it (`routeTarget`). A Mac whose RiWork predates
-`dashboard.get` is never asked; the page says so and its projects still open.
+(`keepDashboardListsFresh`). Its ↻, ⌘R and the refresh command read
+`dashboard.get` there and the lists in Swift (`mobile.action` `refresh`, which
+on this page leaves `dashboard.get` to it). A row opens its native screen
+(`nav.present`), as the Mac's global window routes it (`routeTarget`). A Mac
+whose RiWork predates `dashboard.get` is never asked; the page says so, and its
+projects and its global orchestrator (the snapshot's `global`, from
+`orchestrators.list`: Open, or Start when there is none) still open.
 The All hosts overview keeps its filters, saved read markers, coverage and
 truncation notices, activity history and Haiku summaries.
 
@@ -65,8 +69,8 @@ and declared in `apps/riwork-mobile/nsh.json` (`relay.*`, `platform.*`,
 | --- | --- | --- | --- |
 | `relay.hosts` | call | — | `{hosts: HostInfo[]}` |
 | `relay.hosts` | event | | `{hosts: HostInfo[]}` whenever the list, the selection or a link changes |
-| `relay.select` | call | `{host}` | `{}`; makes it the interactive host (the overview's connect) |
-| `relay.disconnect` | call | `{host}` | `{}` |
+| `relay.select` | call | `{host}` | `{}`; makes it the interactive host (the overview's connect); `conflict` while a native screen is up |
+| `relay.disconnect` | call | `{host}` | `{}`; `conflict` while a native screen is up |
 | `relay.call` | call | `{host, method, params?, timeoutMs?}` | the RPC's `result`; the interactive host only, `dashboard.get` and `projects.list` only |
 | `relay.link` | event | | `{host, link: LinkState}` |
 | `relay.decision.review` | call | `{host, chatId, requestId, kind?}` | `DecisionReviewDto` (`status` `pending`, or `unavailable` / `uncertain` with `error`) |
@@ -95,8 +99,10 @@ LinkState = {state: "connected"|"connecting"|"offline"|"failed"|"suspended", lab
   out, or whose delivery is uncertain, is remembered (`sentDecisions`): the
   review then answers `uncertain` and nothing is sent again from this phone.
 - **`nav.present`** names: `project` (`projectId`, at the `shellId` or `chatId`
-  tab when given), `global` (the global orchestrator; `start: true` starts it
-  when there is none, an explicit Start only), `projects`, `settings`,
+  tab when given; a project missing from Swift's list reads `projects.list`
+  once before it is called unavailable), `global` (the global orchestrator;
+  `start: true` starts it when there is none, an explicit Start only),
+  `projects`, `settings`,
   `addHost`, `hostDetails` (`host`), `newProject`, `libraryRecovery`.
 - **`platform.theme`** is what `ThemeStore` resolved (the phone's palette
   choice, the desktop's synced palette on iPad, the contrast fixes), with the

@@ -178,7 +178,8 @@ enum NSHMobilePresentation {
                 await hostDashboards.refresh()
             } else {
                 await model.refresh()
-                await model.refreshDashboardQuietly()
+                // A host's own page reads `dashboard.get` itself (the shared DashboardView, over `relay.call`) as it asks for this.
+                if route != "dashboard" { await model.refreshDashboardQuietly() }
             }
         case "showProjects": showProjects()
         case "cycleProjectSort": model.cycleProjectSort()
@@ -290,7 +291,9 @@ enum NSHMobilePresentation {
     func isDecisionAnswered(_ item: HostedDashboardDecision) -> Bool {
         sentDecisions[DecisionKey(hostID: item.hostID, decision: item.decision)] != nil
     }
-    func respondToDecision(_ item: HostedDashboardDecision, command: ChatCommand) async throws {
+    /// - Parameter refresh: read the interactive host's dashboard and lists again once it went out (the overview's sheet); the shared
+    ///   review (`relay.decision.respond`) reads them again itself.
+    func respondToDecision(_ item: HostedDashboardDecision, command: ChatCommand, refresh: Bool = true) async throws {
         let key = DecisionKey(hostID: item.hostID, decision: item.decision)
         guard sentDecisions[key] == nil else { throw DashboardResponseError.alreadySent }
         guard openingHostID == nil, respondingHostID == nil,
@@ -313,7 +316,7 @@ enum NSHMobilePresentation {
             throw error
         }
         sentDecisions[key] = .now
-        if interactive { await model.refreshDashboardQuietly(); mirrorActiveDashboard() }
+        if interactive && refresh { await model.refreshDashboardQuietly(); mirrorActiveDashboard() }
     }
 
     private var activeOverviewHostID: String? {
@@ -430,7 +433,14 @@ enum NSHMobilePresentation {
             "libraryUnavailable": model.loadFailed]
         result["selectedHostID"] = currentHost
         result["error"] = model.loadFailure ?? model.error
+        // The page of a Mac without `dashboard.get` still offers its global orchestrator, as `orchestrators.list` has it.
+        if sameHost, model.selectedDesktopID != nil { result["global"] = globalDTO() }
         return result
+    }
+    private func globalDTO() -> [String: Any] {
+        let status = globalStatus
+        let action: String = switch status.action { case .open: "open"; case .start: "start"; case .unavailable: "unavailable" }
+        return ["summary": status.summary, "action": action, "actionTitle": status.actionTitle]
     }
 
     private var connectionState: String {

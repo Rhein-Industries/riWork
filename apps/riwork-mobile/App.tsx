@@ -56,9 +56,15 @@ function App() {
     catch (error) { if (alive) failure.set(String(error)); }
     finally { if (alive && !navigationOnly) pending.set(false); }
   }
+  /** The refresh of the page on top when it reads its own data (a host's dashboard), else Swift's. */
+  let pageRefresh: (() => void) | null = null;
+  function refresh() {
+    if (pageRefresh) pageRefresh();
+    else void act({ type: "refresh" });
+  }
   cleanup(host.on("mobile.command", (value) => {
     const command = value as { type?: string; name?: string };
-    if (command.type === "refresh") void act({ type: "refresh" });
+    if (command.type === "refresh") refresh();
     else if (command.type === "present" && command.name === "settings") void act({ type: "present", name: "settings" });
   }));
   void read();
@@ -105,7 +111,7 @@ function App() {
   effect(() => {
     if (!loaded() || snapshot().nativePresented) return;
     return keymap.bind({
-      "mod+r": () => void act({ type: "refresh" }),
+      "mod+r": () => refresh(),
       "mod+,": () => void act({ type: "present", name: "settings" }),
     });
   });
@@ -316,8 +322,19 @@ function App() {
       const subscription = services.dashboard.subscribe((next) => dto.set(next));
       return () => subscription.close();
     });
+    /** Everything this page shows, read again: the dashboard here, and in Swift the projects and orchestrators its rows open. */
+    function reload() {
+      if (!unsupported()) void services.dashboard.refresh();
+      void act({ type: "refresh" });
+    }
+    effect(() => {
+      if (!onScreen()) return;
+      pageRefresh = reload;
+      return () => { if (pageRefresh === reload) pageRefresh = null; };
+    });
     let search: { focus: () => void } | undefined;
     effect(() => { if (onScreen() && !unsupported()) return keymap.bind("mod+f", () => search?.focus()); });
+    const global = () => snapshot().selectedHostID === hostID ? snapshot().global : undefined;
     const theme = (): InterfaceTheme => { const current = deviceTheme().theme; return { ...current, scale: current.scale * TOUCH_SCALE }; };
     async function present(request: PresentRequest) {
       notice.set("");
@@ -350,14 +367,24 @@ function App() {
             <Action label="Dismiss" compact={true} action={() => notice.set("")} />
           </Note>}
         </View>
-        {unsupported() ? <View style={{ padding: pt(16), gap: pt(12), backgroundColor: palette().bg, flex: 1 }}>
-          <Note title="Dashboard unavailable" message="The RiWork on your Mac does not send its dashboard yet. Update RiWork on the Mac to see what needs you, what is working, tasks and automations here. Projects still open." />
+        {unsupported() ? <Scroll style={{ flex: 1, backgroundColor: palette().bg }} contentStyle={{ padding: pt(16), gap: pt(12) }}
+          refreshing={snapshot().loading} onRefresh={reload}>
+          <Note title="Dashboard unavailable" message="The RiWork on your Mac does not send its dashboard yet. Update RiWork on the Mac to see what needs you, what is working, tasks and automations here. Projects and the global orchestrator still open." />
+          {global() && <Section title="Global orchestrator">
+            <View style={{ padding: pt(14), gap: pt(8) }}>
+              <Text style={text(14, "muted")}>{global()!.summary}</Text>
+              {/* Start only when the button said so: an explicit tap, never a side effect of Open. */}
+              <Action label={global()!.actionTitle} symbol="globe" prominent={true}
+                disabled={blocked() || !connected() || global()!.action === "unavailable"}
+                action={() => void present({ name: "global", start: global()?.action === "start" })} />
+            </View>
+          </Section>}
           <Action label="All projects" symbol="folder" prominent={true} disabled={blocked()} action={() => void act({ type: "showProjects" })} />
-        </View> : <DashboardView dto={dto} theme={theme} filter={filter} sort={sort} query={query} touch={true}
+        </Scroll> : <DashboardView dto={dto} theme={theme} filter={filter} sort={sort} query={query} touch={true}
           onFilter={(next) => filter.set(next)} onSort={(next) => sort.set(next)} onSearch={(node) => { search = node; }}
           onOpen={open} onPanel={(projectId) => void present({ name: "project", projectId })}
           onGlobalChat={() => void present({ name: "global", start: true })}
-          onRefresh={() => { void services.dashboard.refresh(); }}
+          onRefresh={reload}
           plan={() => null} starting={() => false} decisions={services.dashboard.decisions} />}
       </View>
     </NavPage>;

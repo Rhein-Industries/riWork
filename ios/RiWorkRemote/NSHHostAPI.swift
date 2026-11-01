@@ -45,11 +45,14 @@ import UIKit
             }
         }
         on("relay.hosts") { api, _ in ["hosts": api.hostsPayload()] }
+        // As `mobile.action` `connect` and `disconnect`: never under a native screen, which uses this connection and is not dismissed here.
         on("relay.select") { api, data in
+            try api.requireNoNativeScreen()
             try await api.bridge.connect(hostID: try Self.string(data, "host"))
             return [String: Any]()
         }
         on("relay.disconnect") { api, data in
+            try api.requireNoNativeScreen()
             if try Self.string(data, "host") == api.model.selectedDesktopID { await api.bridge.disconnectInteractive() }
             return [String: Any]()
         }
@@ -251,7 +254,8 @@ import UIKit
             command = .answer(requestID: item.decision.requestID, answers: answers)
         }
         do {
-            try await bridge.respondToDecision(item, command: command)
+            // The shared review reads the dashboard and its lists again itself once it has the answer (`onResponded`).
+            try await bridge.respondToDecision(item, command: command, refresh: false)
             return Self.reviewPayload(reviewID, item.decision, status: "sent", error: nil)
         } catch let failure as DashboardResponseError {
             // Every one of these sent nothing.
@@ -347,20 +351,32 @@ import UIKit
     /// A screen Swift still draws. `project` opens one of the interactive host's projects (at a terminal or chat tab when named);
     /// `global` its global orchestrator (started first only with `start`, an explicit Start); the rest as `mobile.action` presents them.
     private func present(_ data: [String: Any]) async throws {
-        guard !bridge.nativePresented else { throw HostCallError("conflict", "Close the current native screen first.") }
+        try requireNoNativeScreen()
         let name = try Self.string(data, "name"), hostID = data["host"] as? String
-        switch name {
-        case "project", "global":
+        func requireConnected() throws {
             guard let hostID, hostID == model.selectedDesktopID, model.state == .connected else {
                 throw HostCallError("offline", "Connect to this desktop first.")
             }
+        }
+        switch name {
+        case "project", "global":
+            try requireConnected()
             if name == "global" { try await bridge.openGlobal(start: data["start"] as? Bool == true); return }
             let project = try Self.string(data, "projectId")
             let tab = (data["shellId"] as? String).map { "shell:\($0)" } ?? (data["chatId"] as? String).map { "chat:\($0)" }
+            // A dashboard row can name a project newer than the list Swift last read: that list is read once before it says no.
+            if model.project(withID: project) == nil {
+                await model.refreshProjectsQuietly()
+                try requireNoNativeScreen(); try requireConnected()
+            }
             try bridge.openProject(project, tab: tab)
         case "projects": bridge.showProjects()
         default: try bridge.present(named: name, hostID: hostID)
         }
+    }
+
+    private func requireNoNativeScreen() throws {
+        guard !bridge.nativePresented else { throw HostCallError("conflict", "Close the current native screen first.") }
     }
 
     // MARK: JSON

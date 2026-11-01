@@ -38,6 +38,8 @@ export interface MobileSnapshot {
   loading: boolean; error?: string; nativePresented: boolean; libraryUnavailable?: boolean;
   /** A host's own dashboard is the shared DashboardView's (`relay.call` `dashboard.get`); this is the All hosts overview. */
   projects: Project[]; homeDashboard?: Dashboard;
+  /** The selected host's global orchestrator from `orchestrators.list`, for the page of a Mac without `dashboard.get`. */
+  global?: { summary: string; action: "open" | "start" | "unavailable"; actionTitle: string };
   projectSort?: { value: string; title: string; detail?: string };
   theme: MobileTheme; canCreateProject: boolean;
   projectsStale?: boolean;
