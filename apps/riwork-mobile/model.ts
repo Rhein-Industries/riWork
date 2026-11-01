@@ -1,18 +1,8 @@
-/** Sanitized display protocol shared with MobileNshBridge.swift. Pairing keys,
- * connection tokens and credential-bearing URLs never enter this JS engine. */
-export type Page = "hosts" | "dashboard" | "projects";
+/** What Swift still sends as `mobile.snapshot` (`ios/RiWorkRemote/NSHMobileBridge.swift`): the All hosts
+ * overview it reads over its own short connections, and the device state the pages need. The hosts
+ * themselves come from `relay.hosts`, a host's data from `relay.call`. Pairing keys, connection tokens and
+ * credential-bearing URLs never enter this JS engine. */
 export type Tone = "muted" | "working" | "gold" | "error";
-export interface MobilePalette {
-  bg: string; panel: string; panelActive: string; divider: string; text: string;
-  muted: string; cyan: string; gold: string; working: string; magenta: string; error: string;
-}
-export interface MobileTheme { scale: number; fontFamily: "system"; dark: boolean; palette: MobilePalette }
-export interface Desktop {
-  id: string; name: string; address: string; selected: boolean; connection: string; detail?: string;
-}
-export interface Project {
-  id: string; name: string; path: string; selected: boolean; activity?: string; tone: Tone; folder?: string;
-}
 export type DashboardFilter = "all" | "needs_you" | "working" | "projects";
 export type DashboardSection = "decisions" | "attention" | "working" | "finished" | "tasks" | "automations" | "projects" | "history";
 export interface DashboardRow {
@@ -31,41 +21,28 @@ export interface Dashboard {
   /** `automationsError`: the automations could not be read, and why; drawn in the error tone, apart from the muted `notes`. */
   notes?: string[]; automationsError?: string; more?: Partial<Record<DashboardSection, number>>; intelligence?: DashboardIntelligence[];
 }
-export interface MobileSnapshot {
-  schema: 1; revision: number; route: Page; selectedHostID?: string;
-  desktops: Desktop[];
-  connection: { state: "disconnected" | "connecting" | "connected" | "suspended" | "failed"; label: string; error?: string };
-  loading: boolean; error?: string; nativePresented: boolean; libraryUnavailable?: boolean;
-  /** A host's own dashboard is the shared DashboardView's (`relay.call` `dashboard.get`); this is the All hosts overview. */
-  projects: Project[]; homeDashboard?: Dashboard;
-  /** The selected host's global orchestrator from `orchestrators.list`, for the page of a Mac without `dashboard.get`. */
-  global?: { summary: string; action: "open" | "start" | "unavailable"; actionTitle: string };
-  projectSort?: { value: string; title: string; detail?: string };
-  theme: MobileTheme; canCreateProject: boolean;
-  projectsStale?: boolean;
-  keyboard?: { hardware: boolean; clicks: boolean };
+export interface OverviewSnapshot {
+  schema: 2; revision: number;
+  /** A native Swift screen (a chat, the global orchestrator, a sheet) is over the pages. */
+  nativePresented: boolean;
+  /** The saved pairings could not be read: the Hosts page offers recovery. */
+  libraryUnavailable: boolean;
+  loading: boolean; error?: string;
+  /** Per saved host, how fresh the overview's last read of it is ("Updated 2 min ago"). */
+  details: Record<string, string>;
+  /** Across your desktops: every saved host's dashboard, read by Swift. */
+  homeDashboard?: Dashboard;
+  /** A hardware keyboard is attached (arrow keys move through lists), and it is a Clicks keyboard. */
+  keyboard: { hardware: boolean; clicks: boolean };
+  /** The interactive host's global orchestrator from `orchestrators.list`, for the page of a Mac without `dashboard.get`. */
+  global?: { host: string; summary: string; action: "open" | "start" | "unavailable"; actionTitle: string };
 }
-export type MobileAction =
-  | { type: "connect"; hostID: string }
-  | { type: "disconnect" | "refresh" | "showProjects" | "showDashboard" | "openGlobal" | "back" | "cycleProjectSort" }
-  | { type: "navigate"; page: Page }
-  | { type: "openProject" | "newTerminal"; projectID: string; hostID?: string }
-  | { type: "setProjectSort"; value: "recent" | "name" | "dateAdded" }
-  | { type: "openDashboardRow"; rowID: string }
-  | { type: "present"; name: "addHost" | "settings" | "hostDetails" | "newProject" | "libraryRecovery"; hostID?: string };
+/** Where Swift sends the pages (`nav.open`): a host's page after pairing or an overview row, a project at a tab. */
+export interface NavOpen { page: "hosts" | "dashboard" | "projects" | "project"; host?: string; projectId?: string; name?: string; tab?: string; newTerminal?: boolean }
 
-export const EMPTY_DASHBOARD: Dashboard = { available: false, freshness: "Not read", stale: false, summary: [], rows: [] };
-export const INITIAL_SNAPSHOT: MobileSnapshot = {
-  schema: 1, revision: -1, route: "hosts", desktops: [], projects: [],
-  connection: { state: "disconnected", label: "Not connected" }, loading: false, nativePresented: false,
-  canCreateProject: false,
-  // Native in light mode until the host's first snapshot. The state colors are what the bridge sends for Native
-  // (the desktop Native's): working blue, gold for what needs you, error red.
-  theme: { scale: 1, fontFamily: "system", dark: false, palette: {
-    bg: "#ffffff", panel: "#f5f5f7", panelActive: "#e8e8ed", divider: "#d2d2d7",
-    text: "#1d1d1f", muted: "#636366", cyan: "#007aff", gold: "#b34000",
-    working: "#0058d0", magenta: "#3a3a3c", error: "#c80018",
-  } },
+export const EMPTY_OVERVIEW: OverviewSnapshot = {
+  schema: 2, revision: -1, nativePresented: false, libraryUnavailable: false, loading: false, details: {},
+  keyboard: { hardware: false, clicks: false },
 };
 
 export const SECTION_LABELS: Record<DashboardSection, string> = {

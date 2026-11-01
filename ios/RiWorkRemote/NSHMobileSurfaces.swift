@@ -3,9 +3,9 @@ import UIKit
 import NativeShell
 import RiWorkCore
 
-/// NSH owns the hosts, dashboard and project navigation. These are the existing
-/// native workspaces and forms, presented by the same UIKit navigation owner as
-/// the NSH root. There is no nested SwiftUI navigation stack around a terminal.
+/// NSH owns the hosts, dashboards, projects and project pages (and the terminal in them, the `riwork.terminal` component). These are
+/// the native screens that remain: a project's chat, the global orchestrator, the pairing, host, settings, memo and New chat sheets,
+/// presented by the same UIKit navigation owner as the NSH root.
 @MainActor final class NSHMobileSurfaces: NSObject, UINavigationControllerDelegate, UIGestureRecognizerDelegate, UIAdaptivePresentationControllerDelegate {
     let model: RemoteModel
     var onDismiss: (() -> Void)?
@@ -14,7 +14,8 @@ import RiWorkCore
     var onHostAdded: ((String) -> Void)?
     var onHostRemoved: ((String) -> Void)?
     var onGlobalRequested: (() -> Void)?
-    var onProjectCreated: ((RemoteProject) -> Void)?
+    /// A native screen asked for a project's page: at a tab (`shell:<id>`), or with New terminal.
+    var onProjectPage: ((_ project: RemoteProject, _ tab: String?, _ newTerminal: Bool) -> Void)?
     var isDecisionAnswered: ((HostedDashboardDecision) -> Bool)?
     var respondToDecision: ((HostedDashboardDecision, ChatCommand) async throws -> Void)?
 
@@ -28,8 +29,7 @@ import RiWorkCore
     private var pendingLink: URL?
     private var afterSheet: (() -> Void)?
     private var canDismissSheet: (() -> Bool)?
-    private var newProject: NewProjectSheetModel?
-    private var createdProject: RemoteProject?
+    private var newTab: NewTerminalSheetModel?
 
     init(model: RemoteModel) { self.model = model }
 
@@ -67,14 +67,19 @@ import RiWorkCore
         // to the hierarchy that actually exists, even if it did not change.
         defer { publishVisibility(force: true) }
         switch request {
-        case .project(let project): openProject(project)
+        case .chat(let project, let chat): openChat(project: project, chat: chat)
         case .global: openGlobal()
         case .addHost: pairDesktop()
         case .hostDetails(let id):
             guard let desktop = model.desktops.first(where: { $0.id == id }) else { return }
             presentSheet(NSHMobileHostDetails(model: model, desktop: desktop, removed: { [weak self] in self?.onHostRemoved?(id) }), hostID: id)
         case .settings: presentSheet(DisplaySettingsSheet(model: model))
-        case .newProject: openNewProject()
+        case .memo:
+            // Done closes the editor (keeping what the Mac does not have yet); the sheet goes with it. A swipe closes it the same way.
+            let close: () -> Void = { [weak self] in self?.model.closeMemoEditor() }
+            if presentSheet(NSHMobileMemoSheet(model: model, closed: { [weak self] in self?.dismissSheet(close) })) { afterSheet = close }
+            else { close() }
+        case .newChat(let project): openNewChat(project: project)
         case .decision(let hostID, let decision):
             guard let desktop = model.desktops.first(where: { $0.id == hostID }) else { return }
             let item = HostedDashboardDecision(hostID: hostID, hostName: desktop.name, decision: decision)
@@ -105,14 +110,31 @@ import RiWorkCore
         } else { returnToRoot() }
     }
 
-    private func openProject(_ project: RemoteProject) {
-        let key = "project:\(model.selectedDesktopID ?? ""):\(project.id)"
+    /// A project's chat over its TSX page: Back returns to the page, which still shows the terminal it had.
+    private func openChat(project: String, chat: String) {
+        let key = "chat:\(model.selectedDesktopID ?? ""):\(chat)"
         guard key != workspaceKey else { return }
-        let content = TerminalTabsView(model: model, project: project, onBack: { [weak self] in self?.pop() }, onProjects: { [weak self] in
-            self?.onProjects?()
-            self?.returnToRoot()
-        })
-        showWorkspace(content, key: key)
+        showWorkspace(NSHMobileChatWorkspace(model: model, projectID: project, chatID: chat, back: { [weak self] in self?.pop() },
+                                             projects: { [weak self] in self?.onProjects?(); self?.returnToRoot() }), key: key)
+    }
+
+    /// The native New terminal sheet at Chat (it also offers terminals and the orchestrators): a chat it made opens over the page,
+    /// a terminal it made becomes the page's tab, a global orchestrator it opened shows the Global screen.
+    private func openNewChat(project: String) {
+        guard newTab == nil, model.projectID == project, let form = NewTerminalSheetModel(model: model) else { return }
+        if model.chatsOffered { form.select(kind: .chat) }
+        let chat = model.selectedChatID, session = model.sessionID, global = model.globalScreenRequests
+        let finish: () -> Void = { [weak self] in self?.newTabEnded(project: project, chat: chat, session: session, global: global) }
+        form.dismiss = { [weak self] in self?.dismissSheet(finish) }
+        newTab = form
+        guard presentSheet(NewTerminalSheet(sheet: form), canDismiss: { !form.busy }) else { newTab = nil; return }
+        afterSheet = finish
+    }
+    private func newTabEnded(project: String, chat: String?, session: String?, global: Int) {
+        guard model.projectID == project else { return }
+        if model.globalScreenRequests != global { onGlobalRequested?(); return }
+        if let made = model.selectedChatID, made != chat { openChat(project: project, chat: made); return }
+        if let made = model.sessionID, made != session, let info = model.project(withID: project) { onProjectPage?(info, "shell:\(made)", false) }
     }
 
     private func openGlobal() {
@@ -122,8 +144,8 @@ import RiWorkCore
             self?.onProjects?()
             self?.returnToRoot()
         }, newTerminal: { [weak self] project in
-            self?.model.newTerminalRequestedProject = project.id
-            self?.openProject(project)
+            self?.onProjectPage?(project, nil, true)
+            self?.returnToRoot()
         }), key: key)
     }
 
@@ -141,7 +163,7 @@ import RiWorkCore
         let view = NSHMobileThemed(model: model, content: content)
             .environment(\.chatPresentFiles, { [weak self] files, selected in self?.openFiles(files, selected: selected) })
             .onChange(of: model.globalScreenRequests) { [weak self] _, _ in
-                guard let self, self.workspaceKey?.hasPrefix("project:") == true else { return }
+                guard let self, self.workspaceKey?.hasPrefix("chat:") == true else { return }
                 self.onGlobalRequested?()
             }
         let controller = NSHMobileWorkspaceController(rootView: AnyView(view))
@@ -198,24 +220,6 @@ import RiWorkCore
         onHostAdded?(id)
     }
 
-    private func openNewProject() {
-        guard newProject == nil, model.canOpenNewProject else { return }
-        let form = NewProjectSheetModel(model: model)
-        form.onCreated = { [weak self] project in self?.createdProject = project }
-        form.dismiss = { [weak self] in
-            guard let self else { return }
-            let project = self.createdProject
-            self.dismissSheet { [weak self] in
-                guard let self, let project else { return }
-                self.model.newTerminalRequestedProject = project.id
-                self.onProjectCreated?(project)
-                self.openProject(project)
-            }
-        }
-        newProject = form
-        if !presentSheet(NewProjectSheet(sheet: form), canDismiss: { !form.busy }, detents: [.medium(), .large()]) { newProject = nil }
-    }
-
     @discardableResult private func presentSheet<Content: View>(_ content: Content, hostID: String? = nil, canDismiss: (() -> Bool)? = nil,
                                                              overPresented: Bool = false, detents: [UISheetPresentationController.Detent] = [.large()]) -> Bool {
         guard let navigation, var presenter = navigation.topViewController, sheet == nil else { return false }
@@ -259,8 +263,7 @@ import RiWorkCore
         sheet = nil
         sheetHostID = nil
         canDismissSheet = nil
-        newProject = nil
-        createdProject = nil
+        newTab = nil
         let completion = afterSheet
         afterSheet = nil
         publishVisibility()
@@ -382,6 +385,83 @@ private struct NSHMobileGlobalWorkspace: View {
                 }
             }
             .onDisappear { model.keyboard.tabShortcuts.clearAppHandler(owner: shortcutOwner) }
+    }
+}
+
+/// A project's chat, over its TSX page (`nav.present` `chat`): the native transcript, composer, approvals and worker cards, with Back
+/// and the chat's menu. The model follows the project and puts the chat up as a dashboard row's tab request does; the project's lists
+/// are read while it is up (its worker cards follow them), and leaving it puts the terminal back for the page.
+private struct NSHMobileChatWorkspace: View {
+    @Bindable var model: RemoteModel
+    let projectID: String
+    let chatID: String
+    let back: () -> Void
+    let projects: () -> Void
+    @Environment(\.desktopStyle) private var style
+    @State private var notices = 0
+    @State private var settled = false
+    @State private var shortcutOwner = UUID()
+
+    private var chat: ChatInfo? { model.selectedChat.flatMap { $0.id == chatID ? $0 : nil } }
+    private var title: String {
+        guard let chat else { return "Chat" }
+        return model.orchestrator(ofChat: chat.id)?.title ?? ChatTabs.title(model.chatConversations[chat.id]?.transcript.info ?? chat)
+    }
+    var body: some View {
+        VStack(spacing: 0) {
+            WorkspaceBar(title: title, back: back) {
+                if let chat {
+                    Menu { ChatMenuSection(model: model, chat: chat, showNotices: { notices += 1 }) } label: {
+                        Label("More options", systemImage: "ellipsis").labelStyle(.iconOnly)
+                            .frame(width: style.target, height: style.target).contentShape(Rectangle())
+                    }.buttonStyle(.plain)
+                }
+            }
+            if let chat {
+                ChatScreen(model: model, chat: chat, openNotices: notices).id(chat.id)
+            } else {
+                VStack(spacing: 12) {
+                    if settled {
+                        Text("This chat is no longer listed on the Mac.").foregroundStyle(style.muted)
+                        Button("Back", action: back).buttonStyle(DesktopButtonStyle(prominent: true))
+                    } else { ProgressView() }
+                }.frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .background(style.background.ignoresSafeArea())
+        .overlay { TabShortcutGuide(controller: model.keyboard.tabShortcuts) }
+        .background {
+            Button("Back", action: back).keyboardShortcut("p", modifiers: [.command, .shift])
+                .frame(width: 0, height: 0).opacity(0).accessibilityHidden(true)
+        }
+        .task(id: chatID) {
+            await model.chooseProject(projectID)
+            if model.selectedChatID != chatID { model.selectChat(chatID) }
+            settled = true
+        }
+        .task(id: projectID) { await model.keepFresh(.sessions) }
+        .onAppear {
+            model.keyboard.tabShortcuts.setAppHandler(owner: shortcutOwner) { action in
+                switch action {
+                case .projects: projects()
+                case .modelPicker: if model.selectedChat != nil { model.keyboard.requestModelPicker() }
+                default: break
+                }
+            }
+        }
+        .onDisappear {
+            model.keyboard.tabShortcuts.clearAppHandler(owner: shortcutOwner)
+            if model.selectedChatID == chatID { model.deselectChat() }
+        }
+    }
+}
+
+/// The project memo editor as a sheet of its own: it goes when the editor closes (Done), as the native project screen's sheet did.
+private struct NSHMobileMemoSheet: View {
+    @Bindable var model: RemoteModel
+    let closed: () -> Void
+    var body: some View {
+        ProjectMemoSheet(model: model).onChange(of: model.memoEditor == nil) { _, gone in if gone { closed() } }
     }
 }
 

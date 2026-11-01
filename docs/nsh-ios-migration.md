@@ -1,22 +1,34 @@
 # iOS migration to NSH
 
 The `nsh` branch now uses `NSHMobileRoot` as its application entry UI. The
-packaged NSH 0.3.0 bundle in `apps/riwork-mobile` owns the host library, the
-All hosts overview and project search/navigation/sorting, and draws a host's
-own dashboard with the desktop's shared `DashboardView`. The chat and terminal
-screens are still native.
+packaged NSH 0.3.0 bundle in `apps/riwork-mobile` owns the navigation and the
+pages: the hosts and the All hosts overview, a host's dashboard (the desktop's
+shared `DashboardView`), its projects, and a project's page with its tab strip
+and terminal, and the New terminal and New project forms. The window's width
+picks the shell (`App.tsx`, `windowSize()`, never the device): narrower than
+600 points `PhoneShell` (a native `NavStack` of `NavPage`s with swipe back),
+wider `PadShell` (the hosts, then a host's projects in a column beside its
+dashboard or the project chosen there). Both draw the same routes
+(`app_state.ts`), so a window resized across 600 points keeps its place. A
+project's chat, the global orchestrator and the pairing, host, settings, memo
+and New chat sheets are still native Swift screens.
 
 ## Ownership
 
 | Layer | Current owner |
 | --- | --- |
-| A host's own dashboard (and its decision reviews) | The shared desktop `DashboardView` (`apps/riwork/dashboard`), through `createRemoteServices` (`apps/riwork/client/remote.ts`) over `swift_transport.ts` |
-| Host library, All hosts overview, projects | NSH TSX in `apps/riwork-mobile`, native `NavStack`/`NavPage`, over `mobile.snapshot` / `mobile.action` |
+| Navigation, `PhoneShell` and `PadShell` | NSH TSX in `apps/riwork-mobile` (`App.tsx`, `app_state.ts`, `shell/`) |
+| Hosts | `pages/Hosts.tsx`, from `relay.hosts`; pairing, host details, recovery and settings through `nav.present` |
+| All hosts overview | `pages/Hosts.tsx`, drawn from `mobile.snapshot` (Swift's `HostDashboardStore` reads it over its own short connections); a row through `mobile.action` `openDashboardRow` |
+| A host's own dashboard (and its decision reviews) | The shared desktop `DashboardView` (`apps/riwork/dashboard`) in `pages/HostDashboard.tsx`, through `createRemoteServices` (`apps/riwork/client/remote.ts`) over `swift_transport.ts` |
+| Projects (search, order, folders, New project) | `pages/Projects.tsx` and `pages/NewProject.tsx` over the projects port (`projects.list`, `native.invoke` `Store.snapshot`, `project.create`), the tree from the desktop's `project_tree.ts` |
+| A project's page (tab strip, terminal, New terminal, Open a worker or shell, Move, Close) | `pages/Project.tsx` and `pages/NewTerminal.tsx` over the workspace port (`tabs.*`, `shells.list`, `chats.list`, `worktrees.list`, `shell.create`, `shell.close`) |
+| The terminal | `riwork.terminal` (`apps/riwork/terminal_view.ts`, schema 1.1), the Swift capture terminal registered as an NSH component |
 | iOS window, scene lifecycle, runtime loading | `NSHMobileHost.swift` and the thin app entry |
-| Display snapshots and explicit actions | `NSHMobileBridge.swift` over the existing `RemoteModel` |
+| The overview snapshot, where the pages are, Swift's own navigation (`nav.open`) | `NSHMobileBridge.swift` over the existing `RemoteModel` |
 | The shared screens' host calls (`relay.*`, `platform.*`, `nav.*`) | `NSHHostAPI.swift` over the same `RemoteModel` and bridge |
 | Pairing, encrypted transport, Keychain, reconnects | Existing Swift model and `RiWorkCore` |
-| Terminal/chat, file previews, pairing and settings forms | Existing native views, presented by `NSHMobileSurfaces.swift` |
+| A project's chat, the global orchestrator, file previews, pairing, settings, memo and New chat sheets | Existing native views, presented by `NSHMobileSurfaces.swift` |
 
 The shared TSX lives in `apps/riwork`; `apps/riwork-mobile` imports it by
 relative path. Shared code reaches data only through the ports in
@@ -28,13 +40,31 @@ no `riwork/native`, so even a type import fails), and
 `ios/scripts/prepare-nsh.py`, which refuses a built `bundle.js` that names
 `riwork/native`.
 
-`mobile.snapshot` and `mobile.action` still drive navigation and every page
-that has not moved. Snapshots carry a schema and revision; observation
-publishes changes without a JavaScript polling loop. Pairing keys and transport
-tokens stay in Swift. All hosts overview row IDs resolve to their original host
-and target; approval responses, from the overview's native sheet or from the
-shared review, go through the existing fresh-request validation and
-uncertain-delivery protection.
+`mobile.snapshot` (schema 2, `apps/riwork-mobile/model.ts` `OverviewSnapshot`)
+now carries only what Swift still reads for the pages: the All hosts overview,
+how fresh each host's read of it is, whether a native screen is up, the
+pairing library's state, the keyboard (hardware, Clicks) and, for a Mac
+without `dashboard.get`, its global orchestrator. `mobile.action` has three
+actions left: `refresh` (the overview, or the lists of the page on top when it
+has no refresh of its own), `openDashboardRow` and `navigate` (`{page, hostID?,
+projectID?}`: which page is on top). Snapshots carry a schema and revision;
+observation publishes changes without a JavaScript polling loop. Pairing keys
+and transport tokens stay in Swift. All hosts overview row IDs resolve to their
+original host and target; approval responses, from the overview's native sheet
+or from the shared review, go through the existing fresh-request validation
+and uncertain-delivery protection.
+
+The pages own the navigation and tell Swift where they are (`navigate`): the
+overview's connections run only while the hosts are on top, a host's page keeps
+the lists its rows open with, and a project's page makes its project the
+model's (`chooseProject`), as the native project screen did, so the terminal
+component and the native chat follow it, and keeps that project's lists fresh
+(`keepFresh(.sessions)`, which skips a list the page itself has just read: the
+page's `relay.call` reads of a project's lists, the projects and its writes are
+installed into `RemoteModel` as Swift's own would be). When Swift moves the
+pages itself (a host just paired, an overview row, the global orchestrator's
+Projects or ⌘N, a terminal made in the native New chat sheet) it sends
+`nav.open`.
 
 The root overview reuses `HostDashboardStore`. Its temporary connections stop
 before the interactive model connects, while native screens are shown, and
@@ -49,13 +79,50 @@ into `RemoteModel` as its own read would be, and while that page is up its
 activity loop reads only the projects and orchestrators its rows open with
 (`keepDashboardListsFresh`). Its ↻, ⌘R and the refresh command read
 `dashboard.get` there and the lists in Swift (`mobile.action` `refresh`, which
-on this page leaves `dashboard.get` to it). A row opens its native screen
-(`nav.present`), as the Mac's global window routes it (`routeTarget`). A Mac
+on this page leaves `dashboard.get` to it). A row opens the project's page at
+its terminal or chat, as the Mac's global window routes it (`routeTarget`); the
+global orchestrator is a native screen (`nav.present` `global`). A Mac
 whose RiWork predates `dashboard.get` is never asked; the page says so, and its
 projects and its global orchestrator (the snapshot's `global`, from
 `orchestrators.list`: Open, or Start when there is none) still open.
 The All hosts overview keeps its filters, saved read markers, coverage and
 truncation notices, activity history and Haiku summaries.
+
+The Projects page lists `projects.list` (what each project's agents are doing,
+read again every 4 seconds while it is on screen, every 10 in the iPad's
+column) in the person's order (`riwork.projectSort`: Recent, Name, Date added,
+as `ProjectSorting` ordered it), with the Mac's folders when the connection
+lists `native.invoke` `Store.snapshot` (the tree is the desktop Projects
+panel's, `apps/riwork/project_tree.ts`; a search lists its hits flat). New
+project (＋, ⌘⇧N) checks the name as the Mac does and sends `project.create`
+once; a lost answer says the project may have been made and reads the list
+again. A project made here opens its page with New terminal.
+
+A project's page draws the Mac's shared tab list (`tabs.list`, visible entries
+in shared order; `shells.list` says which tab is a project terminal), or on a
+Mac without it the live terminals and the chats (`chats.list`), read again
+every 4 seconds while it is on screen. A terminal tab shows the
+`riwork.terminal` component (`target: {kind: "remote", desktopId, shellId}`);
+a chat tab opens the native chat (`nav.present` `chat`) over the page, which
+keeps its terminal. The tab on screen is remembered per project
+(`platform.prefs` `projectTab.<project>`, the Keychain library's
+`projectTabKeys`). A long press (or ⋯, or VoiceOver's actions) has Move left,
+Move right and Close; closing always asks first: Detach hides the tab (on every
+device), Exit (a project terminal that is not a worker) hides it and then sends
+`shell.close`; a chat is detached here and stopped from its own menu; on a Mac
+without shared tabs, Close terminal sends `shell.close` after the same
+question. New terminal (＋, ⌘N) offers Shell, Codex, Claude, Grok and Muse in
+the project or one of its worktrees, remembers the kind
+(`riwork.newTerminal.kind`), sends `as_settings` on a Mac that decides agents'
+restrictions (`shell_create_as_settings`) and otherwise an Unrestricted switch,
+and sends `shell.create` once; a lost answer reads the tabs again. Its "New chat
+or orchestrator…" opens the native New terminal sheet at Chat (`nav.present`
+`newChat`). Open a worker or shell (⌘⇧O) lists the hidden tabs and opens one
+with `tabs.open`. The app chords (⌘1–9, ⌘⇧[ / ], ⌘N, ⌘⇧P back, ⌘⇧O) are the
+page's keymap and, while the terminal holds the keyboard, its `command` event
+(ids in `apps/riwork/app_chords.ts`: `tab.select.1`…`tab.select.9`,
+`tab.previous`, `tab.next`, `terminal.new`, `nav.back`, `tab.open`). With a
+hardware keyboard attached the strip moves to the bottom.
 
 ## Swift host API
 
@@ -71,13 +138,14 @@ and declared in `apps/riwork-mobile/nsh.json` (`relay.*`, `platform.*`,
 | `relay.hosts` | event | | `{hosts: HostInfo[]}` whenever the list, the selection or a link changes |
 | `relay.select` | call | `{host}` | `{}`; makes it the interactive host (the overview's connect); `conflict` while a native screen is up |
 | `relay.disconnect` | call | `{host}` | `{}`; `conflict` while a native screen is up |
-| `relay.call` | call | `{host, method, params?, timeoutMs?}` | the RPC's `result`; the interactive host only, `dashboard.get` and `projects.list` only |
+| `relay.call` | call | `{host, method, params?, timeoutMs?}` | the RPC's `result`; the interactive host only, and only `dashboard.get`, `projects.list`, `worktrees.list`, `shells.list`, `chats.list`, `tabs.list`, `tabs.open`, `tabs.update`, `shell.create`, `shell.close`, `project.create` and `native.invoke` (`Store.snapshot` only) |
 | `relay.link` | event | | `{host, link: LinkState}` |
 | `relay.decision.review` | call | `{host, chatId, requestId, kind?}` | `DecisionReviewDto` (`status` `pending`, or `unavailable` / `uncertain` with `error`) |
 | `relay.decision.respond` | call | `{host?, reviewId, decision?, answers?}` | `DecisionReviewDto` with `status` `sent`, `pending` (nothing went out; `error` says why), `unavailable` or `uncertain` |
-| `platform.prefs.get` / `.set` | call | `{name}` / `{name, value}` | `{value}` / `{}`; `projectSort` (`riwork.projectSort`) and `newTerminal.kind` (`riwork.newTerminal.kind`) |
+| `platform.prefs.get` / `.set` | call | `{name}` / `{name, value}` | `{value}` / `{}`; `projectSort` (`riwork.projectSort`), `newTerminal.kind` (`riwork.newTerminal.kind`) and `projectTab.<project>` (the interactive host's last tab of a project, `shell:<id>` or `chat:<id>`, in the Keychain library's `projectTabKeys`) |
 | `platform.theme` | event | | `{theme: InterfaceTheme, native, mic, dark}`; the first value is `host.params.theme` |
-| `nav.present` | call | `{name, host?, projectId?, shellId?, chatId?, start?}` | `{}`; presents a remaining native Swift screen |
+| `nav.present` | call | `{name, host?, projectId?, chatId?, start?}` | `{}`; presents a remaining native Swift screen |
+| `nav.open` | event | | `{page, host?, projectId?, name?, tab?, newTerminal?}`: Swift moves the pages (`hosts`, `dashboard`, `projects`, `project`) |
 
 ```
 HostInfo  = {id, name, address?, selected: boolean, link: LinkState, features: string[]}
@@ -86,9 +154,16 @@ LinkState = {state: "connected"|"connecting"|"offline"|"failed"|"suspended", lab
 
 - **`relay.call`** goes through `RemoteModel`'s connection to the interactive
   host and so through `RequestValidation`; JS may not send `wait_ms` above 0 or
-  any `pty.*`. `timeoutMs` (1 to 60 s, 30 s by default) lets go of the wait
-  without closing the connection. `HostInfo.features` lists the connection's
-  `ready.features` by name; `dashboard` is left out for a Mac that refuses it.
+  any `pty.*`, and `native.invoke` only for the reads the pages make
+  (`NSHHostAPI.nativeReads`: `Store.snapshot`) that the Mac lists. `timeoutMs`
+  (1 to 60 s, 30 s by default; up to 100 s, and that by default, for
+  `shell.create` and `project.create`) lets go of the wait without closing the
+  connection. The writes (`tabs.open`, `tabs.update`, `shell.create`,
+  `shell.close`, `project.create`) are never repeated; one whose answer was lost
+  (the link dropped, the wait ran out) rejects `uncertain`, and the page reads
+  its list again. `HostInfo.features` lists the connection's `ready.features` by
+  name, `dashboard` left out for a Mac that refuses it, plus `native` and
+  `native:<Module.method>` for each native read the Mac lists.
 - **Decisions** keep the Swift flow the overview's sheet uses.
   `relay.decision.review` reads the request from the host's last parsed
   dashboard (`DashboardDecision`; a request this phone cannot read in full is
@@ -98,12 +173,16 @@ LinkState = {state: "connected"|"connecting"|"offline"|"failed"|"suspended", lab
   exactly one `chat.command` goes out, never retried. A response that went
   out, or whose delivery is uncertain, is remembered (`sentDecisions`): the
   review then answers `uncertain` and nothing is sent again from this phone.
-- **`nav.present`** names: `project` (`projectId`, at the `shellId` or `chatId`
-  tab when given; a project missing from Swift's list reads `projects.list`
-  once before it is called unavailable), `global` (the global orchestrator;
-  `start: true` starts it when there is none, an explicit Start only),
-  `projects`, `settings`,
-  `addHost`, `hostDetails` (`host`), `newProject`, `libraryRecovery`.
+- **`nav.present`** names: `chat` (`chatId`, and `projectId`, by default the
+  project the pages show: the project's chat, natively, over its page; the model follows the project and puts the chat up
+  as a dashboard row's tab request does, and leaving it gives the page its
+  terminal back), `global` (the global orchestrator; `start: true` starts it
+  when there is none, an explicit Start only), `memo` (`projectId`, on a Mac
+  with `project_memo`), `newChat` (`projectId`: the native New terminal sheet at
+  Chat, for chats and orchestrators; a chat it makes opens, a terminal it makes
+  becomes the page's tab through `nav.open`), `settings`, `addHost`,
+  `hostDetails` (`host`), `libraryRecovery`. The project workspace
+  (`TerminalTabsView`) and the native New project sheet are no longer presented.
 - **`platform.theme`** is what `ThemeStore` resolved (the phone's palette
   choice, the desktop's synced palette on iPad, the contrast fixes), with the
   skin (`native`) and the desktop's `mic` switch; TSX never calls
@@ -175,11 +254,12 @@ generated bundle only after success. Xcode links the static native framework
 and packages the UI; the installed app needs neither a CLI nor a checkout.
 The bundle identifier and Keychain ownership remain `com.riwork.remote`.
 
-The next migration boundaries are the host list and projects (onto
-`relay.hosts`, `relay.select` and the projects port), the chat
-presentation/composer and the remaining forms. A desktop screen moves by taking
-its data through the ports in `apps/riwork/client` instead of `riwork/native`;
-the Mac keeps its native module behind `adapters/local.ts`. The terminal
-remains a platform-native surface while its surrounding controls can move into
-NSH. The old `RemoteRootView` is retained as a source reference; the app entry
-no longer selects it.
+The next migration boundaries are the chat presentation/composer, the
+remaining panels (worktrees, tasks, files, settings, schedules) and the
+remaining forms. A desktop screen moves by taking its data through the ports in
+`apps/riwork/client` instead of `riwork/native`; the Mac keeps its native
+module behind `adapters/local.ts`. The terminal remains a platform-native
+surface (`riwork.terminal`) while its surrounding controls are TSX. The old
+`RemoteRootView`, `TerminalTabsView`, `NewTerminalSheet`'s terminal kinds and
+`NewProjectSheet` are retained as source (the hosted app tests mount them);
+the app entry no longer reaches them.

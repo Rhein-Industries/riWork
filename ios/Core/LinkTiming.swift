@@ -79,6 +79,9 @@ public struct DesktopFeatures: Sendable, Equatable {
     /// `shell.output` answers a request with `delta: true` with the changed rows only, against the screen its `if_changed` names
     /// (`features.output_delta`). Without it the phone never asks, and every changed screen comes whole.
     public var outputDelta = false
+    /// The `riwork/native` methods the desktop answers through `native.invoke` (`features.native`, `{"v":1,"methods":[…]}`), as
+    /// `Module.method`; only those the phone's own allowlist names (`NativeInvokeRequests.methods`). Empty without the feature.
+    public var nativeMethods: Set<String> = []
     public init() {}
     public init(ready: JSONValue) {
         let features = ready["features"]
@@ -103,6 +106,9 @@ public struct DesktopFeatures: Sendable, Equatable {
         if case .bool(true) = features["project_memo"] { projectMemo = true }
         if let names = count(features["key_names"]), names >= 2 { keyNames = 2 }
         if case .bool(true) = features["output_delta"] { outputDelta = true }
+        if case .object(let native) = features["native"], case .number(1) = native["v"] ?? .null, case .array(let methods) = native["methods"] ?? .null {
+            nativeMethods = Set(methods.compactMap(\.string).filter { NativeInvokeRequests.methods[$0] != nil })
+        }
         if let lines = count(features["history_max_lines"]), lines >= 1 {
             historyMaximumLines = max(HistoryLimits.legacyMaximumPageLines, min(HistoryLimits.maximumPageLines, lines))
         }

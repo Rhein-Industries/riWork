@@ -69,12 +69,18 @@ private final class NSHMobileCoordinator {
         surfaces.onDismiss = { [weak bridge] in bridge?.nativeDismissed() }
         surfaces.onProjects = { [weak bridge] in bridge?.showProjects() }
         surfaces.onHostAdded = { [weak bridge, weak model] id in
+            // The pages show the new host's page while it connects.
+            bridge?.openPage(["page": "dashboard", "host": id])
             Task { @MainActor in
                 do { try await bridge?.connect(hostID: id) }
                 catch { model?.error = error.localizedDescription }
             }
         }
-        surfaces.onProjectCreated = { [weak bridge] in bridge?.projectCreated($0) }
+        surfaces.onProjectPage = { [weak bridge] project, tab, newTerminal in
+            var page: [String: Any] = ["page": "project", "projectId": project.id, "name": project.name, "newTerminal": newTerminal]
+            page["tab"] = tab
+            bridge?.openPage(page)
+        }
         surfaces.onGlobalRequested = { [weak bridge] in bridge?.showGlobal() }
         surfaces.isDecisionAnswered = { [weak bridge] in bridge?.isDecisionAnswered($0) ?? false }
         surfaces.respondToDecision = { [weak bridge] item, command in

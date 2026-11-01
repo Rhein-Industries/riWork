@@ -1,11 +1,19 @@
 # RiWork for iPhone and iPad
 
-On the `nsh` branch, the app starts in Native Shell. The host library, the All
-hosts overview and searchable project navigation live in `apps/riwork-mobile`;
-a host's own dashboard is the desktop's shared `DashboardView` from
-`apps/riwork/dashboard`. The existing Swift transport, Keychain storage, terminal
-and chat surfaces remain connected through the native mobile adapter during
-this migration. See [the migration boundary](../docs/nsh-ios-migration.md).
+On the `nsh` branch, the app starts in Native Shell. The pages are TSX in
+`apps/riwork-mobile`: the hosts and the All hosts overview, a host's own
+dashboard (the desktop's shared `DashboardView` from `apps/riwork/dashboard`),
+its projects, a project's page with its tab strip and terminal, and the New
+terminal and New project forms. Narrower than 600 points they are a navigation
+stack with swipe back (`PhoneShell`); wider, on iPad, a host's projects stand in
+a column beside its dashboard or the project chosen there (`PadShell`). The
+terminal is the Swift capture terminal as an NSH component (`riwork.terminal`);
+a project's chat, the global orchestrator and the pairing, host, settings,
+memo and New chat sheets stay native Swift screens. The existing Swift
+transport and Keychain storage serve them all through the host calls of
+`NSHHostAPI.swift`. See [the migration boundary](../docs/nsh-ios-migration.md);
+the sections below describe the native screens as they were, and say where the
+TSX pages differ.
 
 Start with **All hosts** to see work and decisions across your paired RiWork desktops. Choose a desktop to see its own dashboard
 (what needs you and what is working across every project, the global orchestrator, and every project), then a project, and switch between tabs for its
@@ -210,6 +218,17 @@ desktop sessions running; revoke the device on the desktop to deny access.
 
 ## Project and terminal tabs
 
+**The project page is TSX now** (`apps/riwork-mobile/pages/Project.tsx`, docs/nsh-ios-migration.md). Its strip is the desktop's
+shared list (visible tabs in shared order, with their titles and states) or, on an older desktop, the live terminals and the chats;
+a terminal tab shows the `riwork.terminal` component, whose key bar, line composer, dictation, viewport lease, history and text size
+are the native terminal's own; a chat tab opens the native chat over the page, which keeps its terminal. ＋ and ⌘N open New
+terminal, ⌘⇧O Open a worker or shell, ⌘1–9 and ⌘⇧[ / ] switch tabs and ⌘⇧P goes back, from the page and from the terminal
+(its `command` event). A long press (or ⋯ → the tab) has Move left, Move right and Close. **Closing always asks first** (Detach,
+or Exit for a project terminal you opened; a worker and an orchestrator only detach; a chat is stopped from its own menu), whatever
+the Tabs setting says. Rename, drag reordering, Edit tabs, focus mode and Session info are not on the TSX page yet. The last tab of
+each project is still `SavedDesktop.projectTabKeys`. The rest of this section describes the native project screen
+(`TerminalTabsView`), which the app no longer opens.
+
 Select a project, then choose a worker, shell or orchestrator tab (an orchestrator the Mac runs as a chat opens as a chat; see Chats).
 Every kind of tab has the same one-row header (`TabScreenChrome`): Back, the tab strip with one-line tabs, ＋ and a ⋯ menu, all
 44 pt targets, so switching between a terminal and a chat never moves, adds or resizes a bar. The ⋯ menu is the screen's only one,
@@ -272,6 +291,10 @@ the warning. Acknowledgement does not submit or retry anything.
 
 ### Project order and agent activity
 
+The Projects page is TSX now (`apps/riwork-mobile/pages/Projects.tsx`): the same three orders, kept in the same UserDefaults
+key through `platform.prefs`, the same ⌘O, ⌘F, ⌘⇧N, ⌘N and arrow keys, and the Mac's folders (collapsible) when the desktop lists
+`native.invoke` `Store.snapshot`.
+
 **Order.** The project list has a sort menu in the search row (shown when there are two or more projects), and **⌘O** on a hardware
 keyboard steps through the same three orders. ⌘O is live only while the list is the screen on top, like ⌘⇧N, and nothing else uses it
 (⌘K, ⌘, ⌘N, ⌘⇧N, ⌘/, the Clicks template's ⌘ and ⌘⇧ letters and iOS's own ⌘H, ⌘Space and ⌘Tab are taken). The choice is kept in
@@ -313,6 +336,11 @@ counts as exited whatever it last said.
 
 ### New terminal and close
 
+New terminal is a TSX form now (`apps/riwork-mobile/pages/NewTerminal.tsx`): Shell, Codex, Claude, Grok or Muse in the project
+or one of its worktrees, the kind remembered in the same `riwork.newTerminal.kind`, `shell.create` sent once (a lost answer reads
+the tabs again, nothing is sent twice). A chat or an orchestrator is made in this native sheet, which its "New chat or
+orchestrator…" opens at Chat. Closing is on the project page (above). The rest of this section describes the native sheet.
+
 **＋ opens a terminal on the desktop** (`shell.create`, then `shell.close` for closing; see the "Terminal creation extension" in
 `docs/remote-protocol.md`). It is in the terminal screen's header and on the "no open terminals" page, in a project's swipe
 and long-press actions on the project list (that opens the project, then the sheet), and on **⌘N** from a hardware keyboard,
@@ -353,6 +381,10 @@ process and removes it from the Mac's list (a tab the Mac's window still has for
 failed close puts you back where you were; "already gone" counts as closed; a lost answer says the outcome is unknown and is not retried.
 
 ### New project
+
+New project is a TSX form now (`apps/riwork-mobile/pages/NewProject.tsx`) with the same name rules, Git switch, single
+`project.create` and uncertain-outcome message; a project made here opens with New terminal. The rest of this section describes the
+native sheet, which the app no longer opens.
 
 **＋ on the project list creates a project on the desktop** (`project.create`; see the "Project creation extension" in
 `docs/remote-protocol.md`), or **⌘⇧N** from a hardware keyboard while the list is the screen on top. There is a "New project" button in
