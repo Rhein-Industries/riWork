@@ -69,13 +69,21 @@ private final class NSHMobileCoordinator {
         surfaces.onDismiss = { [weak bridge] in bridge?.nativeDismissed() }
         surfaces.onProjects = { [weak bridge] in bridge?.showProjects() }
         surfaces.onHostAdded = { [weak bridge, weak model] id in
+            // The pages show the new host's page while it connects.
+            bridge?.openPage(["page": "dashboard", "host": id])
             Task { @MainActor in
                 do { try await bridge?.connect(hostID: id) }
                 catch { model?.error = error.localizedDescription }
             }
         }
-        surfaces.onProjectCreated = { [weak bridge] in bridge?.projectCreated($0) }
+        surfaces.onProjectPage = { [weak bridge] project, tab, newTerminal in
+            var page: [String: Any] = ["page": "project", "projectId": project.id, "name": project.name, "newTerminal": newTerminal]
+            page["tab"] = tab
+            bridge?.openPage(page)
+        }
         surfaces.onGlobalRequested = { [weak bridge] in bridge?.showGlobal() }
+        // A project chord typed in the native chat, once the chat has made way for its page.
+        surfaces.onChord = { [weak bridge] in bridge?.sendChord($0) }
         surfaces.isDecisionAnswered = { [weak bridge] in bridge?.isDecisionAnswered($0) ?? false }
         surfaces.respondToDecision = { [weak bridge] item, command in
             guard let bridge else { throw MobileHostError.unavailable }
@@ -102,6 +110,8 @@ private final class NSHMobileHostController: UIViewController {
     private var shortcutPolicy = false
     private var rootVisible = false
     private var guideObservation = UUID()
+    /// ⌘R and ⌘, wherever the root key host holds the keyboard (the TSX keymap cannot see them then).
+    private var rootActions: [KeyAction] = []
 
     init(bridge: NSHMobileBridge) {
         self.bridge = bridge
@@ -128,7 +138,7 @@ private final class NSHMobileHostController: UIViewController {
         keyboardHost.isAccessibilityElement = false
         keyboardHost.avoidTextInput = true
         keyboardHost.tabShortcuts = bridge.model.keyboard.tabShortcuts
-        keyboardHost.table.actions = [
+        rootActions = [
             KeyAction(input: "r", modifiers: .command, title: "Refresh", run: { [weak self] in
                 self?.app.send("mobile.command", ["type": "refresh"])
             }),
@@ -136,6 +146,7 @@ private final class NSHMobileHostController: UIViewController {
                 self?.app.send("mobile.command", ["type": "present", "name": "settings"])
             }),
         ]
+        keyboardHost.table.actions = rootActions
         view.addSubview(keyboardHost)
         app.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(app)
@@ -190,6 +201,10 @@ private final class NSHMobileHostController: UIViewController {
 
     private func updateShortcuts() {
         let active = rootVisible && shortcutPolicy && failureView == nil && !terminals.holdsKeyboard
+        // On a project's page the key host also carries its app chords: while it holds the keyboard the page's keymap is not reached.
+        keyboardHost.table.actions = rootActions + (bridge.onProjectPage ? NSHMobileBridge.projectChords.map { chord in
+            KeyAction(input: chord.input, modifiers: chord.modifiers, title: chord.title, run: { [weak bridge] in bridge?.sendChord(chord.id) })
+        } : [])
         keyboardHost.active = active
         if active {
             bridge.model.keyboard.tabShortcuts.setAppHandler(owner: shortcutOwner) { [weak bridge] in bridge?.rootShortcut($0) }

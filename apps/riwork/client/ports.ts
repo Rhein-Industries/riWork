@@ -4,7 +4,9 @@
  * (`adapters/local.ts`); iOS over the encrypted relay (`client/remote.ts`).
  * Every call names its host; no screen holds a credential, a token or an URL. */
 import type { InterfaceTheme } from "../theme";
-import type { ChatDecision, DashboardDto, DecisionReviewDto, ProjectSummary } from "./types";
+import type {
+  ChatDecision, DashboardDto, DecisionReviewDto, HostChat, HostShell, HostWorktree, ProjectSummary, ShellCreate, StoreTree, TabUpdate, TabsReply,
+} from "./types";
 
 export type PortErrorCode = "offline" | "unsupported" | "not_found" | "conflict" | "limit" | "uncertain" | "failed";
 export const PORT_ERROR_CODES: readonly PortErrorCode[] = ["offline", "unsupported", "not_found", "conflict", "limit", "uncertain", "failed"];
@@ -77,6 +79,28 @@ export interface ProjectsPort {
   list(): Promise<ProjectSummary[]>;
   /** The last good list, when it was read, and why a newer read failed. */
   last(): Fresh<ProjectSummary[]>;
+  /** The host's project tree with its folders (`Store.snapshot`); absent on a host that does not offer it. */
+  tree?(): Promise<StoreTree>;
+  /** Makes a project in the host's default projects folder (a Git repository unless `git` is false).
+   * Never repeated: a lost answer rejects `uncertain`, and the caller reads the list again. */
+  create?(name: string, git: boolean): Promise<ProjectSummary>;
+}
+
+/** One project's tabs, shells and chats on a host, and the writes the project page makes. Reads
+ * reject with a PortError; a write whose answer was lost rejects `uncertain` and is never repeated. */
+export interface WorkspacePort {
+  /** The shared tab list; null on a host without one (`features.tabs`): the page then draws the shells and chats. */
+  tabs(projectId: string): Promise<TabsReply | null>;
+  /** Makes a hidden tab visible again (on every device); selection stays the device's. */
+  openTab(projectId: string, key: string): Promise<TabsReply>;
+  updateTabs(projectId: string, update: TabUpdate): Promise<TabsReply>;
+  shells(projectId: string): Promise<HostShell[]>;
+  /** The project's chats; empty on a host without chats. */
+  chats(projectId: string): Promise<HostChat[]>;
+  worktrees(projectId: string): Promise<HostWorktree[]>;
+  createShell(request: ShellCreate): Promise<HostShell>;
+  /** Ends a project terminal and its process on the host. */
+  closeShell(shellId: string): Promise<void>;
 }
 
 export interface LinkPort {
@@ -92,6 +116,10 @@ export interface Services {
   link: LinkPort;
   dashboard: DashboardPort;
   projects: ProjectsPort;
+  /** A project's tabs and the terminals in it (iPhone, iPad). */
+  workspace?: WorkspacePort;
+  /** What the host's connection announced (`ready.features`), by name: what a screen may offer. */
+  features?(): string[];
 }
 
 /** A paired host as the device lists it. `features`: what its connection announced. */
@@ -128,7 +156,9 @@ export interface ThemePort {
   subscribe(listener: (theme: DeviceTheme) => void): Subscription;
 }
 
-/** A screen the device still draws natively (`nav.present`). */
+/** A screen the device still draws natively (`nav.present`): on iOS `chat` (`projectId`, `chatId`),
+ * `global`, `memo` (`projectId`), `newChat` (`projectId`), `settings`, `addHost`, `hostDetails`,
+ * `libraryRecovery`. */
 export interface PresentRequest {
   name: string;
   host?: string;

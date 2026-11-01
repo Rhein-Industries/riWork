@@ -57,4 +57,88 @@ export interface ProjectSummary {
   root: string;
   createdAt?: number;
   lastActivity?: number;
+  /** When the Mac last saw one of its files change (`projects.list` `last_edited_unix`). */
+  lastEdited?: number;
+  /** Its agent shells by state (`projects.list` `agents`). */
+  agents?: { working: number; waiting: number; done?: number };
+}
+
+/** A folder of the host's project tree (`Store.snapshot` `projectFolders`, `FolderDto`). */
+export interface StoreFolder { id: string; name: string; parentId?: string | null; createdAt: number }
+/** A project of the host's store (`Store.snapshot` `projects`): the fields the shared screens read of `ProjectDto`. */
+export interface StoreProject { id: string; name: string; root: string; folderId?: string | null; createdAt: number }
+/** The parts of the host's `Store.snapshot` (`StoreState`) the shared Projects page reads: the
+ * projects, their folders and the last observed file edits (`projectRecency`, Unix seconds). */
+export interface StoreTree {
+  projects: StoreProject[];
+  projectFolders: StoreFolder[];
+  projectRecency: Record<string, number>;
+}
+
+/** One entry of a project's shared tab list (`tabs.list`, `docs/shared-tabs.md`): the Mac owns
+ * membership, order, title and visibility; selection is the device's own. `key` is
+ * `shell:<uuid>` or `chat:<uuid>`; `status` is working, waiting, error, done, idle or stopped. */
+export interface TabEntry {
+  key: string;
+  kind: string;
+  title: string;
+  status: string;
+  hidden: boolean;
+  worker: boolean;
+  order: number;
+  parent: string | null;
+  children: TabEntry[];
+  childCount: number;
+}
+/** `tabs.list`, `tabs.open` and `tabs.update` all answer the whole list. A reply supersedes another of
+ * the same `epoch` only with a revision at least as high; a new epoch always does. */
+export interface TabsReply { epoch: string | null; revision: number | null; entries: TabEntry[] }
+export type TabUpdate =
+  | { action: "hide" | "unhide"; key: string }
+  | { action: "move"; key: string; before: string | null }
+  | { action: "rename"; key: string; title: string };
+
+/** A project's shell or orchestrator (`shells.list` Session). `mode` "chat": an orchestrator that runs
+ * as a chat, opened by its `chatId`. `activity`: working, waiting, done, unknown or exited. */
+export interface HostShell {
+  id: string;
+  projectId: string | null;
+  worktreeId: string | null;
+  kind: string;
+  cwd: string;
+  harness: string | null;
+  alive: boolean;
+  createdAt: number;
+  activity?: string;
+  lastActivity?: number;
+  mode?: string;
+  chatId?: string;
+  provider?: string;
+}
+/** A chat of a project (`chats.list` ChatInfo), as a tab shows it. `state` is starting, idle, running,
+ * waiting, stopped or failed (with `message`). */
+export interface HostChat {
+  id: string;
+  provider: string;
+  title: string;
+  projectId: string | null;
+  worktreeId: string | null;
+  state: string;
+  message?: string;
+  createdAt: number;
+}
+/** A worktree of a project (`worktrees.list`). */
+export interface HostWorktree { id: string; projectId: string; branch: string; path: string; isPrimary: boolean }
+
+/** What `shell.create` starts: a plain shell or an agent. A Mac without Grok or Muse refuses them. */
+export type ShellKind = "shell" | "codex" | "claude" | "grok" | "muse";
+export interface ShellCreate {
+  kind: ShellKind;
+  /** The project's main worktree, or (`worktreeId`) one of its worktrees: exactly one of them. */
+  projectId?: string;
+  worktreeId?: string;
+  /** An agent without approval prompts (never with `asSettings`). */
+  unrestricted?: boolean;
+  /** An agent started as the Mac's "Agent terminals run unrestricted" setting says (`shell_create_as_settings`). */
+  asSettings?: boolean;
 }

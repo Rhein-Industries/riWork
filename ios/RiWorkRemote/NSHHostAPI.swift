@@ -20,8 +20,19 @@ import UIKit
 @MainActor final class NSHHostAPI {
     static let calls = ["relay.hosts", "relay.select", "relay.disconnect", "relay.call", "relay.decision.review", "relay.decision.respond",
                         "platform.prefs.get", "platform.prefs.set", "nav.present"]
-    /// What `relay.call` lets the shared screens ask. Each read is one the Swift screens make too; writes join with the screens that need them.
-    static let callable: Set<String> = ["dashboard.get", "projects.list"]
+    /// What `relay.call` lets the shared screens ask: the reads of the host's dashboard, Projects and project pages, and the writes
+    /// those pages make (tabs, terminals, projects; only to the opened host). Each still passes `RequestValidation`; JS never long-polls
+    /// or opens `pty.*`.
+    static let callable: Set<String> = [
+        "dashboard.get", "projects.list", "worktrees.list", "shells.list", "chats.list", "tabs.list",
+        "tabs.open", "tabs.update", "shell.create", "shell.close", "project.create", "native.invoke",
+    ]
+    /// The writes among them: never repeated, and an answer lost after sending is `uncertain` (the page reads the list again).
+    static let writes: Set<String> = ["tabs.open", "tabs.update", "shell.create", "shell.close", "project.create"]
+    /// The `native.invoke` methods the shared screens read (`Module.method`), each a read of `NativeInvokeRequests.methods`.
+    static let nativeReads: Set<String> = ["Store.snapshot"]
+    /// Creations may take a minute and a half on the Mac (protocol "Terminal creation", "Project creation").
+    static let createTimeout: Duration = .seconds(100)
     /// Reviews kept for a response: the newest of them, by token.
     static let reviewLimit = 32
 
@@ -126,6 +137,9 @@ import UIKit
         }
     }
 
+    /// The link as the pages see it. A connection is `connected` only once what the Mac offers is known (`capabilitiesKnown`: its
+    /// `ready.features` and first lists): before that a page would read a Mac that shares tabs as one that does not, and offer a
+    /// close that goes straight to `shell.close`.
     private func link(_ id: String) -> [String: Any] {
         guard id == model.selectedDesktopID else {
             if id == bridge.interactiveHostID { return ["state": "connecting", "label": ConnectionState.connecting.label] }
@@ -138,7 +152,7 @@ import UIKit
             }
         }
         let state: String = switch model.state {
-        case .connected: "connected"
+        case .connected: model.capabilitiesKnown ? "connected" : "connecting"
         case .connecting: "connecting"
         case .suspended: "suspended"
         case .failed: "failed"
@@ -149,12 +163,12 @@ import UIKit
         return value
     }
 
-    /// What the host's connection announced, by its `ready.features` names: the interactive model's, or another host's open socket's (whose
-    /// `dashboard` `HostConnections` already leaves out once that session has refused it).
+    /// What the host's connection announced, by its `ready.features` names: the interactive model's once its capabilities are known, or
+    /// another host's open socket's (whose `dashboard` `HostConnections` already leaves out once that session has refused it).
     private func features(_ id: String) -> [String] {
         let features: DesktopFeatures, refusesDashboard: Bool
         if id == model.selectedDesktopID {
-            guard model.state == .connected else { return [] }
+            guard model.state == .connected, model.capabilitiesKnown else { return [] }
             features = model.desktopFeatures; refusesDashboard = model.dashboardSupport == .unsupported
         } else {
             guard let other = model.connections.features(of: id) else { return [] }
@@ -167,8 +181,11 @@ import UIKit
             ("chat_suggestions", features.chatSuggestions), ("project_memo", features.projectMemo),
             // A Mac whose connector is newer than its RiWork announces it and then refuses it.
             ("dashboard", features.dashboard && !refusesDashboard),
+            ("native", !features.nativeMethods.isEmpty),
         ]
-        return flags.filter(\.1).map(\.0)
+        // `native:Module.method` for each native read the shared screens may make on this Mac.
+        let native = features.nativeMethods.intersection(Self.nativeReads).sorted().map { "native:\($0)" }
+        return flags.filter(\.1).map(\.0) + native
     }
 
     // MARK: relay.call
@@ -182,12 +199,32 @@ import UIKit
             throw HostCallError("failed", "The request's params must be an object.")
         }
         if let wait = params["wait_ms"], wait != .number(0) { throw HostCallError("failed", "Long polls stay in Swift.") }
+        var native: String?
+        if method == "native.invoke" {
+            // Only the reads the shared screens make, and only those the host lists; `RequestValidation` checks the arguments.
+            guard case .string(let module)? = params["module"], case .string(let name)? = params["method"],
+                  Self.nativeReads.contains("\(module).\(name)"), NativeInvokeRequests.isWrite(module: module, method: name) == false else {
+                throw HostCallError("unsupported", "The shared screens cannot ask for that.")
+            }
+            native = "\(module).\(name)"
+        }
         guard let desktop = model.desktops.first(where: { $0.id == hostID }) else { throw HostCallError("not_found", "This desktop is no longer saved.") }
         guard model.appActive else { throw HostCallError("offline", ConnectionState.suspended.label) }
-        let timeout = (data["timeoutMs"] as? NSNumber).map { Duration.milliseconds(max(1_000, min(60_000, $0.intValue))) } ?? .seconds(30)
-        guard hostID == bridge.interactiveHostID else { return try await callOther(desktop, method: method, params: params, timeout: timeout) }
+        let write = Self.writes.contains(method), creates = method == "shell.create" || method == "project.create"
+        let ceiling = creates ? Self.createTimeout : .seconds(60)
+        let timeout = (data["timeoutMs"] as? NSNumber).map { min(ceiling, Duration.milliseconds(max(1_000, $0.intValue))) } ?? (creates ? ceiling : .seconds(30))
+        guard hostID == bridge.interactiveHostID else {
+            // Writes only reach the opened host: its guards (`closable`) and the lists the replies go into are the model's.
+            guard !write else { throw HostCallError("offline", "Open this desktop first.") }
+            return try await callOther(desktop, method: method, params: params, native: native, timeout: timeout)
+        }
         // The interactive host: over the model's own connection (a manual disconnect stays disconnected; the model reconnects it).
         guard hostID == model.selectedDesktopID, model.state == .connected else { throw HostCallError("offline", model.state.label) }
+        guard model.capabilitiesKnown else { throw HostCallError("offline", ConnectionState.connecting.label) }
+        if let native, !model.desktopFeatures.nativeMethods.contains(native) {
+            throw HostCallError("unsupported", "The RiWork on this Mac does not offer this yet. Update RiWork on the Mac.")
+        }
+        if method == "shell.close" { try closable(params) }
         if method == "dashboard.get", !model.desktopFeatures.dashboard || model.dashboardSupport == .unsupported {
             throw HostCallError("unsupported", model.dashboardUnavailableReason ?? "Update RiWork on the Mac to see its dashboard here.")
         }
@@ -195,16 +232,21 @@ import UIKit
         do {
             let reply = try await Self.within(timeout) { try await relay.rpc(method, params) }
             if method == "dashboard.get" { relay.installDashboard(reply, token: token) }
+            relay.installSharedRead(method, params: params, reply: reply, token: token)
             return Self.foundation(reply)
         } catch {
             if method == "dashboard.get" { await relay.dashboardReadFailed(error, token: token) }
+            // A write that may have reached the Mac is never sent again: the page reads its list instead.
+            if write, Self.answerLost(error) {
+                throw HostCallError("uncertain", "The Mac's answer was lost; it may have done this. Read the list again before trying again.")
+            }
             throw HostCallError.from(error, dashboard: method == "dashboard.get")
         }
     }
 
     /// A host other than the interactive one, over its socket from `HostConnections`: opened for this call when no one has it open (never
     /// redeeming a pending invite), and given back afterwards.
-    private func callOther(_ desktop: SavedDesktop, method: String, params: [String: JSONValue], timeout: Duration) async throws -> Any? {
+    private func callOther(_ desktop: SavedDesktop, method: String, params: [String: JSONValue], native: String?, timeout: Duration) async throws -> Any? {
         let connections = model.connections
         do {
             let reply = try await Self.within(timeout) { @MainActor in
@@ -216,6 +258,9 @@ import UIKit
                 if method == "dashboard.get", !lease.features.dashboard {
                     throw HostCallError("unsupported", "Update RiWork on the Mac to see its dashboard here.")
                 }
+                if let native, !lease.features.nativeMethods.contains(native) {
+                    throw HostCallError("unsupported", "The RiWork on this Mac does not offer this yet. Update RiWork on the Mac.")
+                }
                 do { return try await lease.transport.request(method: method, params: params, id: UUID().uuidString.lowercased()) }
                 catch {
                     if method == "dashboard.get", RemoteError.isUnsupportedMethod(error) { connections.dashboardRefused(lease) }
@@ -226,6 +271,31 @@ import UIKit
         } catch { throw HostCallError.from(error, dashboard: method == "dashboard.get") }
     }
 
+    /// `shell.close` from the pages, refused as `RemoteModel.closeTerminal` refuses it: only a project terminal of the project Swift
+    /// follows (the page's), and never a shell this device has ever seen as a shared worker, which is only ever detached.
+    private func closable(_ params: [String: JSONValue]) throws {
+        guard case .string(let id)? = params["shell_id"] else { throw HostCallError("failed", "The request names no terminal.") }
+        if model.everSharedWorkers.contains(id) || model.sharedEntry(ofSession: id)?.isWorker == true {
+            throw HostCallError("failed", "A worker's shell is detached, not closed, from the phone.")
+        }
+        guard let session = model.shells.first(where: { $0.id == id }) ?? model.orchestrators.first(where: { $0.id == id }) else {
+            throw HostCallError("failed", "Still reading this project's terminals. Try again in a moment.")
+        }
+        guard session.kind == "project" else { throw HostCallError("failed", "Orchestrators are closed on the Mac.") }
+    }
+
+    /// The request may have gone out and its answer did not come back: the link dropped, or the wait ran out.
+    private static func answerLost(_ error: any Error) -> Bool {
+        if error is CancellationError { return true }
+        if let known = error as? HostCallError { return known.code == "failed" && known.message == HostCallError.noAnswer }
+        guard let remote = error as? RemoteError else { return false }
+        switch remote {
+        case .disconnected, .relayClosed, .timeout, .uncertainDelivery: return true
+        case .rpc(let code, _): return code == "outcome_unknown"
+        default: return false
+        }
+    }
+
     /// Waits at most `limit` for `work`; past it the waiter is let go (`RelayClient` abandons it) and the connection stays. The request keeps
     /// its place in the socket's budget until the reply comes; one still unanswered at its own timeout ends the connection, as any request does.
     private static func within<T: Sendable>(_ limit: Duration, _ work: @escaping @Sendable () async throws -> T) async throws -> T {
@@ -234,7 +304,7 @@ import UIKit
             group.addTask { try? await Task.sleep(for: limit); return nil }
             defer { group.cancelAll() }
             guard let first = try await group.next(), let value = first else {
-                throw HostCallError("failed", "The desktop did not answer in time.")
+                throw HostCallError("failed", HostCallError.noAnswer)
             }
             return value
         }
@@ -351,8 +421,10 @@ import UIKit
 
     // MARK: Preferences and theme
 
-    /// Preferences by name, kept where the Swift screens keep them.
+    /// Preferences by name, kept where the Swift screens keep them. `projectTab.<project>`: the interactive host's last tab of a
+    /// project (`SavedDesktop.projectTabKeys`, in the Keychain library), `shell:<id>` or `chat:<id>`.
     private func preference(_ name: String) throws -> Any {
+        if let project = Self.projectTabName(name) { return model.desktop?.projectTabKeys?[project] ?? NSNull() }
         switch name {
         case "projectSort": return model.projectSort.rawValue
         case "newTerminal.kind": return model.lastTerminalKind.rawValue
@@ -360,6 +432,14 @@ import UIKit
         }
     }
     private func setPreference(_ name: String, _ value: Any?) throws {
+        if let project = Self.projectTabName(name) {
+            guard let key = value as? String, let separator = key.firstIndex(of: ":"), ["shell", "chat"].contains(String(key[..<separator])),
+                  Self.isUUID(String(key[key.index(after: separator)...])) else { throw HostCallError("failed", "Unknown tab.") }
+            guard model.desktop != nil, model.desktop?.projectTabKeys?[project] != key else { return }
+            do { try model.updateDesktop { var keys = $0.projectTabKeys ?? [:]; keys[project] = key; $0.projectTabKeys = keys } }
+            catch { throw HostCallError("failed", error.localizedDescription) }
+            return
+        }
         switch name {
         case "projectSort":
             guard let sort = (value as? String).flatMap(ProjectSort.init(rawValue:)) else { throw HostCallError("failed", "Unknown project order.") }
@@ -371,6 +451,12 @@ import UIKit
             model.rememberTerminalKind(kind)
         default: throw HostCallError("unsupported", "No preference is named \(name).")
         }
+    }
+    /// The project of a `projectTab.<project>` preference name (a canonical UUID), else nil.
+    private static func projectTabName(_ name: String) -> String? {
+        guard name.hasPrefix("projectTab.") else { return nil }
+        let project = String(name.dropFirst("projectTab.".count))
+        return isUUID(project) ? project : nil
     }
 
     /// `{theme: InterfaceTheme, native, mic, dark}` (`apps/riwork/theme.ts`), from what `ThemeStore` resolved: the phone's palette
@@ -391,8 +477,10 @@ import UIKit
 
     // MARK: nav.present
 
-    /// A screen Swift still draws. `project` opens one of the interactive host's projects (at a terminal or chat tab when named);
-    /// `global` its global orchestrator (started first only with `start`, an explicit Start); the rest as `mobile.action` presents them.
+    /// A screen Swift still draws, over the shared pages. Of the interactive host: `chat` (`chatId`, and `projectId`, by default the
+    /// project the pages show: the native chat, its project's lists read first), `global` (its global orchestrator, started first only with `start`, an explicit Start), `memo`
+    /// (`projectId`), `newChat` (`projectId`: the native New terminal sheet at Chat, for chats and orchestrators). Any time:
+    /// `settings`, `addHost`, `hostDetails` (`host`), `libraryRecovery`.
     private func present(_ data: [String: Any]) async throws {
         try requireNoNativeScreen()
         let name = try Self.string(data, "name"), hostID = data["host"] as? String
@@ -401,22 +489,34 @@ import UIKit
                 throw HostCallError("offline", "Connect to this desktop first.")
             }
         }
+        func project() throws -> String {
+            let id = try Self.string(data, "projectId")
+            guard Self.isUUID(id) else { throw HostCallError("not_found", "This project is unavailable.") }
+            return id
+        }
         switch name {
-        case "project", "global":
+        case "global":
             try requireConnected()
-            if name == "global" { try await bridge.openGlobal(start: data["start"] as? Bool == true); return }
-            let project = try Self.string(data, "projectId")
-            let tab = (data["shellId"] as? String).map { "shell:\($0)" } ?? (data["chatId"] as? String).map { "chat:\($0)" }
-            // A dashboard row can name a project newer than the list Swift last read: that list is read once before it says no.
-            if model.project(withID: project) == nil {
-                await model.refreshProjectsQuietly()
-                try requireNoNativeScreen(); try requireConnected()
-            }
-            try bridge.openProject(project, tab: tab)
-        case "projects": bridge.showProjects()
+            try await bridge.openGlobal(start: data["start"] as? Bool == true)
+        case "chat":
+            try requireConnected()
+            let chat = try Self.string(data, "chatId")
+            guard Self.isUUID(chat) else { throw HostCallError("not_found", "This chat is unavailable.") }
+            let named: String? = try data["projectId"] == nil ? model.projectID : project()
+            guard let named else { throw HostCallError("not_found", "Open the chat's project first.") }
+            try bridge.openChat(chat, project: named)
+        case "memo":
+            try requireConnected()
+            guard model.desktopFeatures.projectMemo else { throw HostCallError("unsupported", "Update RiWork on the Mac to keep project memos here.") }
+            try bridge.openMemo(project: try project())
+        case "newChat":
+            try requireConnected()
+            try await bridge.openNewChat(project: try project())
         default: try bridge.present(named: name, hostID: hostID)
         }
     }
+
+    private static func isUUID(_ value: String) -> Bool { value.utf8.count == 36 && UUID(uuidString: value)?.uuidString.lowercased() == value }
 
     private func requireNoNativeScreen() throws {
         guard !bridge.nativePresented else { throw HostCallError("conflict", "Close the current native screen first.") }
@@ -461,6 +561,8 @@ import UIKit
 
 /// A host call's rejection, as `"<code>: <message>"` (`PortError.from` reads it back).
 struct HostCallError: LocalizedError, CustomStringConvertible {
+    /// `relay.call` let go of a request whose answer did not come in time.
+    static let noAnswer = "The desktop did not answer in time."
     let code: String
     let message: String
     init(_ code: String, _ message: String) { self.code = code; self.message = message }
@@ -503,6 +605,53 @@ extension RemoteModel {
             if snapshot != dashboard { dashboard = snapshot }
             dashboardReadAt = .now; dashboardFailure = nil; dashboardSupport = .supported
         } catch { dashboardFailure = Self.dashboardFailureText(error) }
+    }
+    /// A read or write of the shared Projects and project pages (`relay.call`), installed as Swift's own would be: the native terminal,
+    /// the native chat and the global screen see the same lists, and the activity loop skips a list the page has just read. Only the
+    /// project Swift follows (the one the page shows, `navigate`) takes a project's lists.
+    func installSharedRead(_ method: String, params: [String: JSONValue], reply: JSONValue, token: UUID) {
+        guard generation == token, state == .connected else { return }
+        switch method {
+        case "projects.list":
+            guard let listed = try? reply["projects"].decode([RemoteProject].self) else { return }
+            if listed != projects { projects = listed }
+            lastListRead[.projects] = .now
+            return
+        case "project.create":
+            projectCreation = .supported
+            guard let project = try? reply["project"].decode(RemoteProject.self) else { return }
+            if !projects.contains(where: { $0.id == project.id }) { projects.append(project) }
+            // Just made: counts as just active until the desktop has a figure for it, as the native sheet's did.
+            touchedProjects[project.id] = project.created_at
+            return
+        case "shell.create":
+            terminalControl = .supported
+            guard let session = try? reply["shell"].decode(RemoteSession.self), session.project_id == projectID, loadedProjectID == projectID else { return }
+            if let index = shells.firstIndex(where: { $0.id == session.id }) { shells[index] = session } else { shells.append(session) }
+            return
+        case "shell.close":
+            terminalControl = .supported
+            if case .string(let id)? = params["shell_id"] { shells.removeAll { $0.id == id } }
+            return
+        default: break
+        }
+        guard case .string(let project)? = params["project_id"], scope == .project, project == projectID, loadedProjectID == project else { return }
+        switch method {
+        case "tabs.list", "tabs.open", "tabs.update":
+            guard let tabs = try? reply.decode(SharedTabsReply.self), acceptSharedTabs(tabs) else { return }
+            reconcileChatSelection()
+            try? reconcileSelectedSession()
+        case "shells.list":
+            guard let listed = try? reply["shells"].decode([RemoteSession].self) else { return }
+            if listed != shells { shells = listed }
+            lastListRead[.sessions] = .now
+        case "chats.list":
+            guard let request = try? ChatListRequest(projectID: project), let listed = try? request.parse(reply) else { return }
+            installChats(listed, project: project)
+        case "worktrees.list":
+            if let listed = try? reply["worktrees"].decode([RemoteWorktree].self), listed != worktrees { worktrees = listed }
+        default: break
+        }
     }
     func dashboardReadFailed(_ error: any Error, token: UUID) async {
         guard generation == token, !(error is CancellationError) else { return }
