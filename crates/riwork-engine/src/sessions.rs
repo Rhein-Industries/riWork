@@ -798,7 +798,11 @@ impl SessionManager {
         if candidates.is_empty() {
             return;
         }
-        let shell = self.default_command_shell();
+        // The server's default shell changes about never: asked for as rarely
+        // as the sample asks (`hide_exited_plain_codex_in`), it saves every
+        // `list` that has such a shell a tmux client.
+        let shell =
+            sample::cache_for(&self.socket_name).default_shell(|| self.default_command_shell());
         let Some(shell) = shell.file_name().and_then(|name| name.to_str()) else {
             return;
         };
@@ -2177,6 +2181,14 @@ impl SessionManager {
     /// discards it. Everything else here always asks tmux.
     pub fn sample(&self, want_metrics: bool) -> Result<SessionSample, String> {
         sample::cache_for(&self.socket_name).get(self, want_metrics)
+    }
+
+    /// `sample`, but of tmux as it is now, as fresh as `list`: its shells are
+    /// the ones `list` would answer. It replaces the shared sample, so a
+    /// `sample` right after it (the tab inventory of a project being opened)
+    /// asks tmux nothing more.
+    pub fn fresh_sample(&self, want_metrics: bool) -> Result<SessionSample, String> {
+        sample::cache_for(&self.socket_name).fresh(self, want_metrics)
     }
 
     /// Called wherever this process changes sessions, so the next `sample` reads
