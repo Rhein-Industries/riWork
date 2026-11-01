@@ -17,6 +17,7 @@ screens are still native.
 | The shared screens' host calls (`relay.*`, `platform.*`, `nav.*`) | `NSHHostAPI.swift` over the same `RemoteModel` and bridge |
 | Pairing, encrypted transport, Keychain, reconnects | Existing Swift model and `RiWorkCore` |
 | Terminal/chat, file previews, pairing and settings forms | Existing native views, presented by `NSHMobileSurfaces.swift` |
+| The terminal inside TSX screens (`riwork.terminal`, `apps/riwork/terminal_view.ts`) | `NSHTerminalComponent.swift`: the same capture terminal over the same `RemoteModel`, remote targets of the interactive host only (`docs/nsh-contracts.md` §3.8) |
 
 The shared TSX lives in `apps/riwork`; `apps/riwork-mobile` imports it by
 relative path. Shared code reaches data only through the ports in

@@ -187,6 +187,8 @@ enum ConnectionState: Equatable {
     /// A `project.create` is on its way: a second one is refused until it answers.
     var creatingProject = false
     var terminalFontSize = TerminalFontSize.standard
+    /// A host's scale over the saved size (`riwork.terminal` `fontScale`); 1 for the native screens. Never saved.
+    var terminalFontScale = 1.0
     // MARK: Scrolling (history paging and the alternate screen: RemoteModel+Scroll.swift)
     /// The lines shown for the selected shell: scrollback and screen, each under an index that does not change while lines are
     /// added above or below it. `output` and `styledOutput` stay the latest live answer alone.

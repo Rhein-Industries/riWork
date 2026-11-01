@@ -176,6 +176,7 @@
 		A3CBA442B6650C5CD4E54D13 /* ChatAttachments.swift in Sources */ = {isa = PBXBuildFile; fileRef = EFFB5B7F4A2FF965EE3BCE0F /* ChatAttachments.swift */; };
 		A4BA6F8FF8D8A7E8D878456B /* TerminalBuffer.swift in Sources */ = {isa = PBXBuildFile; fileRef = E765AAE8C54CBD79052FEB13 /* TerminalBuffer.swift */; };
 		A4E7261D99B4461278975542 /* DesktopStyle.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1BBD9DB0F36FC25E37B8E69 /* DesktopStyle.swift */; };
+		A634C9B17EB791502F8C58B6 /* NSHTerminalComponent.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5FB222FB302DFAAFF342B2D /* NSHTerminalComponent.swift */; };
 		A6A25D7E8B213AAC82BA1CBF /* ChatContributorButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = 907C97D745355C21C95CA002 /* ChatContributorButton.swift */; };
 		A6C4CF7F3A2AD23DCF76E045 /* KeyCaptureTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 09C7B6A5A167FE63C013FADA /* KeyCaptureTests.swift */; };
 		A71461B14C5531CD53EC1DFB /* RemoteModel+NewProject.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8ED396AB74466ADF62467AEC /* RemoteModel+NewProject.swift */; };
@@ -581,6 +582,7 @@
 		E2F7ED752E004AABE7DB4FC4 /* GlobalOrchestratorStatus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlobalOrchestratorStatus.swift; sourceTree = "<group>"; };
 		E4734128BD9FFB9FDA7582D1 /* RemoteModel+Global.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "RemoteModel+Global.swift"; sourceTree = "<group>"; };
 		E54DC3DA440ED72E8A39660B /* RemoteModel+Chat.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "RemoteModel+Chat.swift"; sourceTree = "<group>"; };
+		E5FB222FB302DFAAFF342B2D /* NSHTerminalComponent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NSHTerminalComponent.swift; sourceTree = "<group>"; };
 		E765AAE8C54CBD79052FEB13 /* TerminalBuffer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalBuffer.swift; sourceTree = "<group>"; };
 		E78684A4C26A6FCA10E4BA0B /* WebSocketTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebSocketTransport.swift; sourceTree = "<group>"; };
 		E8E8CF96ACC2C52A883C0351 /* ProjectMemoModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectMemoModelTests.swift; sourceTree = "<group>"; };
@@ -938,6 +940,7 @@
 				1886C18D799DB89649F181B7 /* NSHMobileBridge.swift */,
 				55F4F1223112B91B85898FEC /* NSHMobileHost.swift */,
 				AC4ACB87394B9E824298CC44 /* NSHMobileSurfaces.swift */,
+				E5FB222FB302DFAAFF342B2D /* NSHTerminalComponent.swift */,
 				237C9C07E0BBF49923F04184 /* PairingViews.swift */,
 				56DDF48EFB901CE08EA2B9C3 /* Perf.swift */,
 				143F4BDE6553D255EA25F23C /* PhoneTerminal.swift */,
@@ -1258,6 +1261,7 @@
 				F51C457F2E2398801191DC72 /* NSHMobileBridge.swift in Sources */,
 				0526A3D45B56A262E94926F6 /* NSHMobileHost.swift in Sources */,
 				FA1E13CFA2333EF69E23D75B /* NSHMobileSurfaces.swift in Sources */,
+				A634C9B17EB791502F8C58B6 /* NSHTerminalComponent.swift in Sources */,
 				D7A73BF293931961D274982C /* NewChatModelSection.swift in Sources */,
 				BE9174783655E63938880389 /* NewProjectSheet.swift in Sources */,
 				3FCAC85B264379E6999BD15E /* NewTerminalSheet.swift in Sources */,

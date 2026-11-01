@@ -30,7 +30,9 @@ enum NSHMobilePresentation {
     /// The host calls the shared TSX screens use (`relay.*`, `platform.*`, `nav.*`).
     private(set) lazy var hostAPI = NSHHostAPI(bridge: self)
     private var route = "hosts"
-    private(set) var nativePresented = false
+    private(set) var nativePresented = false { didSet { if nativePresented != oldValue { onNativePresentedChange?() } } }
+    /// A native screen came up over the NSH root or went (`riwork.terminal` leaves the model's terminal to it meanwhile).
+    var onNativePresentedChange: (() -> Void)?
     private var revision = 0
     private var observation = UUID()
     private var navigation = UUID()

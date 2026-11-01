@@ -498,6 +498,11 @@ struct HistoryHeader: Equatable {
     }
 }
 
+extension EnvironmentValues {
+    /// Where a tapped link goes. Nil (the native screens) opens it with the system; `riwork.terminal` reports it to its app instead.
+    @Entry var terminalOpenLink: (@MainActor (URL) -> Void)? = nil
+}
+
 /// The terminal surface for SwiftUI.
 struct TerminalSurface: UIViewRepresentable {
     let model: RemoteModel
@@ -515,7 +520,7 @@ struct TerminalSurface: UIViewRepresentable {
         }
         view.onReader = { [weak model] top, rows in model?.noteReader(top: top, rows: rows) }
         view.onRetry = { [weak model] in model?.retryHistory() }
-        view.onOpenLink = { url in UIApplication.shared.open(url) }
+        view.onOpenLink = Self.opener(context.environment.terminalOpenLink)
         view.onLinkTouch = { [weak model] onLink in model?.linkTouchedAt = onLink ? ProcessInfo.processInfo.systemUptime : nil }
         view.jumpToken = jumpToken
         model.attach(surface: view)
@@ -527,6 +532,11 @@ struct TerminalSurface: UIViewRepresentable {
         view.header = header
         view.configure(look)
         view.jumpToken = jumpToken
+        view.onOpenLink = Self.opener(context.environment.terminalOpenLink)
+    }
+    private static func opener(_ host: (@MainActor (URL) -> Void)?) -> (URL) -> Void {
+        if let host { return { url in host(url) } }
+        return { url in UIApplication.shared.open(url) }
     }
     static func dismantleUIView(_ view: TerminalSurfaceView, coordinator: ()) {
         view.onMetrics = nil; view.onReader = nil; view.onRetry = nil; view.onOpenLink = nil; view.onLinkTouch = nil
