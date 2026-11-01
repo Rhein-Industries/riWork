@@ -815,6 +815,11 @@ fn write(home: &Path, ledger: &Ledger) -> Result<(), String> {
     reject_symlink(&path)?;
     let temporary = home.join(format!(".orchestrator-wakes-{}.tmp", Uuid::new_v4()));
     let result = (|| {
+        // Encode first: serializing straight into the file is one write per
+        // token.
+        let mut data =
+            serde_json::to_vec(ledger).map_err(|_| "Cannot encode orchestrator wakes")?;
+        data.push(b'\n');
         let mut options = OpenOptions::new();
         options.write(true).create_new(true);
         #[cfg(unix)]
@@ -825,8 +830,7 @@ fn write(home: &Path, ledger: &Ledger) -> Result<(), String> {
         let mut file = options
             .open(&temporary)
             .map_err(|_| "Cannot stage orchestrator wakes")?;
-        serde_json::to_writer(&mut file, ledger).map_err(|_| "Cannot encode orchestrator wakes")?;
-        file.write_all(b"\n")
+        file.write_all(&data)
             .and_then(|_| file.sync_all())
             .map_err(|_| "Cannot save orchestrator wakes")?;
         fs::rename(&temporary, path).map_err(|_| "Cannot install orchestrator wakes")

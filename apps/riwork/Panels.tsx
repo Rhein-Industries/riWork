@@ -173,10 +173,14 @@ export function createPanelController(options: PanelOptions) {
   async function activate(project: ProjectDto) {
     if (project.id === options.projectId() || pending()) return;
     await run(async () => {
-      await Store.useProject(project.id);
       const previous = generation;
-      await options.switchProject(project);
-      if (generation === previous) resetProject();
+      // The switch goes first: nothing on it reads the active project, and recording
+      // it is a durable write whose publish every window handles on its JS thread.
+      // The project is recorded as active whether or not the switch succeeds.
+      try {
+        await options.switchProject(project);
+        if (generation === previous) resetProject();
+      } finally { await Store.useProject(project.id); }
     });
   }
   function attach(shell: ShellSessionDto, projectId: string, token: number) {

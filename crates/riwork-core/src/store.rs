@@ -827,6 +827,11 @@ impl Store {
             restore_unknown_state_fields(original, &mut encoded);
         }
         let write = || -> Result<(), String> {
+            // Encode first: pretty printing straight into the file is one
+            // write per token, tens of milliseconds for a large state.
+            let mut data = serde_json::to_vec_pretty(&encoded)
+                .map_err(|error| format!("Cannot encode state: {error}"))?;
+            data.push(b'\n');
             // The state names projects and paths, so keep it owner-only.
             let mut options = OpenOptions::new();
             options.write(true).create_new(true);
@@ -838,9 +843,7 @@ impl Store {
             let mut file = options
                 .open(&tmp)
                 .map_err(|error| format!("Cannot create {}: {error}", tmp.display()))?;
-            serde_json::to_writer_pretty(&mut file, &encoded)
-                .map_err(|error| format!("Cannot encode state: {error}"))?;
-            file.write_all(b"\n")
+            file.write_all(&data)
                 .map_err(|error| format!("Cannot write state: {error}"))?;
             file.sync_all()
                 .map_err(|error| format!("Cannot sync state: {error}"))?;

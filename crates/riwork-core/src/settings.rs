@@ -859,14 +859,17 @@ impl SettingsStore {
         let path = self.dir.join("settings.json");
         let temporary = self.dir.join(format!(".settings-{}.tmp", Uuid::new_v4()));
         let result = (|| {
+            // Encode first: pretty printing straight into the file is one
+            // write per token.
+            let mut data = serde_json::to_vec_pretty(&document)
+                .map_err(|error| format!("Cannot encode settings: {error}"))?;
+            data.push(b'\n');
             let mut file = OpenOptions::new()
                 .write(true)
                 .create_new(true)
                 .open(&temporary)
                 .map_err(|error| format!("Cannot create settings: {error}"))?;
-            serde_json::to_writer_pretty(&mut file, &document)
-                .map_err(|error| format!("Cannot encode settings: {error}"))?;
-            file.write_all(b"\n")
+            file.write_all(&data)
                 .and_then(|_| file.sync_all())
                 .map_err(|error| format!("Cannot save settings: {error}"))?;
             fs::rename(&temporary, &path)
