@@ -79,6 +79,14 @@ pub enum Request {
         chat_id: String,
         note: super::workers::WorkerNote,
     },
+    /// Record in chat `chat_id` that its conversation went on in another chat
+    /// (`lineage::LineageMark`): a handoff or a fork. Never starts the chat's provider. Older
+    /// hosts refuse it as unreadable, which callers treat as nothing recorded.
+    NoteLineage {
+        id: String,
+        chat_id: String,
+        mark: super::lineage::LineageMark,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

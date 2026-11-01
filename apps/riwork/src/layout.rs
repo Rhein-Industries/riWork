@@ -665,6 +665,51 @@ impl LayoutModel {
         Ok(self.dock(self.extent.unwrap_or(DEFAULT_EXTENT)))
     }
 
+    /// Puts chat `chat_id` where the chat tab `panel_id` is, as its pane's active tab if that
+    /// one was: a handoff in place. The old chat is kept and its tab goes as a close leaves it
+    /// (detached), so it reopens like any closed chat. A chat already open elsewhere is
+    /// selected there instead, and the old tab closes.
+    pub fn replace_chat(
+        &mut self,
+        panel_id: &str,
+        chat_id: &str,
+    ) -> Result<DockAreaLayout, String> {
+        if uuid::Uuid::parse_str(chat_id).map_or(true, |id| id.to_string() != chat_id) {
+            return Err("invalid: a chat id is a canonical UUID".into());
+        }
+        let key = self.tab_key(panel_id);
+        let replacement = SavedTab::Chat {
+            chat_id: chat_id.to_owned(),
+        };
+        let replacement_key = replacement.key();
+        if replacement_key == key {
+            return self.select_panel(&key);
+        }
+        if self.panel(&replacement_key).is_some() {
+            self.close_panel(panel_id, true)?;
+            return self.select_panel(&replacement_key);
+        }
+        let mut replaced = None;
+        for pane in self.project.panes.values_mut() {
+            if let Some(tab) = pane.tabs.iter_mut().find(|tab| tab.key() == key) {
+                replaced = Some(std::mem::replace(tab, replacement.clone()));
+                if pane.active_tab_key.as_deref() == Some(&key) {
+                    pane.active_tab_key = Some(replacement_key.clone());
+                }
+            }
+        }
+        let Some(SavedTab::Chat { chat_id: old }) = replaced else {
+            return Err("not_found: chat tab".into());
+        };
+        self.panel_ids.remove(&key);
+        if !self.pending_chats.remove(&key) {
+            self.project.detached_chat_ids.insert(old);
+        }
+        self.project.detached_chat_ids.remove(chat_id);
+        self.project.normalize()?;
+        Ok(self.dock(self.extent.unwrap_or(DEFAULT_EXTENT)))
+    }
+
     pub fn close_panel(&mut self, id: &str, internal: bool) -> Result<DockAreaLayout, String> {
         let key = self.tab_key(id);
         let source = self

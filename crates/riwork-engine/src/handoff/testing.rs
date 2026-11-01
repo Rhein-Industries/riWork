@@ -70,6 +70,7 @@ pub fn chat_info(model: Option<&str>) -> ChatInfo {
         claude_billing: None,
         state: ChatState::Idle,
         carried_over: None,
+        origin: None,
     }
 }
 

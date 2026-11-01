@@ -452,6 +452,7 @@ fn chat_orchestrators_are_found_from_disk_while_no_host_runs() {
         contributor_opt_out: false,
         claude_billing: None,
         carried_over: None,
+        origin: None,
     };
     let plain = ChatInfo {
         id: Uuid::new_v4().to_string(),

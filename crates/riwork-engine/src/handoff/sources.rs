@@ -1,6 +1,9 @@
 //! Reading the conversation of a chat or a terminal into `Entry`s.
 //!
-//! - A chat is its `events.jsonl`, folded with `Transcript` as a chat tab folds it.
+//! - A chat is its `events.jsonl`, folded with `Transcript` as a chat tab folds it. A chat
+//!   forked with the provider's own copy of a thread (`LineageContext::Native`) starts with an
+//!   empty log, so what it inherited is read first from the chat it was forked from, up to
+//!   where it was forked, following forks of forks.
 //! - A terminal's Codex is its rollout, found through the binding RiWork keeps for the pane
 //!   (`activity::bound_rollout`); its Claude is the session transcript at
 //!   `~/.claude/projects/<folder>/<session>.jsonl`, found through the session id that
@@ -18,13 +21,18 @@ use serde_json::Value;
 
 use super::document::{Body, Entry, FileEdit, Mark};
 use crate::{
-    chat::model::{ChangeKind, ItemBody, ItemStatus, NoticeLevel, StepStatus, Transcript},
+    chat::model::{
+        ChangeKind, ChatInfo, ChatOrigin, Item, ItemBody, ItemStatus, LineageContext, NoticeLevel,
+        SourceKind, StepStatus, Transcript,
+    },
     sessions::{HarnessKind, SessionManager, ShellSession},
 };
 
 mod claude;
 mod codex;
 
+/// How many forks back a native fork's inherited conversation is followed.
+const MAX_FORKS: usize = 8;
 /// How many lines of a terminal's scrollback are read; the document keeps what fits.
 const SCROLLBACK_LINES: usize = 5000;
 /// A conversation file bigger than this is read from its end: the newest part is what a
@@ -45,6 +53,65 @@ pub struct Read {
 
 /// The conversation of a chat, from its log on disk.
 pub fn read_chat(home: &Path, chat_id: &str) -> Result<Read, String> {
+    read_chat_through(home, chat_id, None)
+}
+
+/// The conversation of a chat up to and including its item `at`, or the whole of it. The
+/// markers of the chats it went on in (`lineage`) are RiWork's own and never part of it. A
+/// native fork's starts with what it inherited; when that cannot be read, the caveat says so.
+pub fn read_chat_through(home: &Path, chat_id: &str, at: Option<&str>) -> Result<Read, String> {
+    let transcript = fold(home, chat_id)?;
+    let items = match at {
+        Some(at) => {
+            let end = transcript
+                .items
+                .iter()
+                .position(|item| item.id == at)
+                .ok_or_else(|| format!("The chat has no item {at} to cut its conversation at."))?;
+            &transcript.items[..=end]
+        }
+        None => &transcript.items[..],
+    };
+    let mut entries = Vec::new();
+    let mut caveat = None;
+    let mut origin_text = "the chat's event log".to_owned();
+    if let Some(origin) = transcript.info.as_ref().and_then(native_origin) {
+        let resent = first_message(&transcript.items);
+        match inherited(home, chat_id, origin, resent, MAX_FORKS) {
+            Ok((before, missing)) => {
+                entries = before;
+                caveat = missing;
+                origin_text =
+                    "the chat's event log, after that of the chat it was forked from".into();
+            }
+            Err(reason) => {
+                caveat = Some(format!(
+                    "This chat was forked from {} with the agent's own copy of its conversation, and {reason}: what was said before the fork is missing here.",
+                    crate::chat::lineage::quoted(&origin.source_title)
+                ));
+            }
+        }
+        push(
+            &mut entries,
+            Entry::Note(format!(
+                "Forked here from {}: what follows is this chat's own conversation.",
+                crate::chat::lineage::quoted(&origin.source_title)
+            )),
+        );
+    }
+    for entry in conversation(items) {
+        push(&mut entries, entry);
+    }
+    Ok(Read {
+        body: Body::Conversation(entries),
+        model: transcript.info.and_then(|info| info.model),
+        origin: origin_text,
+        caveat,
+    })
+}
+
+/// A chat's log, folded as a chat tab folds it.
+fn fold(home: &Path, chat_id: &str) -> Result<Transcript, String> {
     let dir = crate::chat::log::chat_dir(home, chat_id).ok_or("invalid chat id")?;
     let envelopes = crate::chat::log::read_envelopes(&dir)
         .map_err(|error| format!("Cannot read the chat's event log: {error}"))?;
@@ -52,8 +119,110 @@ pub fn read_chat(home: &Path, chat_id: &str) -> Result<Read, String> {
     for envelope in &envelopes {
         transcript.apply_sequenced(envelope.seq, &envelope.event);
     }
+    Ok(transcript)
+}
+
+/// Where a chat forked with its provider's own copy of a thread came from: what its own log
+/// does not hold.
+fn native_origin(info: &ChatInfo) -> Option<&ChatOrigin> {
+    info.origin.as_ref().filter(|origin| {
+        origin.context == LineageContext::Native && origin.source_kind == SourceKind::Chat
+    })
+}
+
+/// The text of the first message a chat's own conversation opens with, if it opens with one:
+/// a fork at a message that began a turn sends it again (`fork`).
+fn first_message(items: &[Item]) -> Option<&str> {
+    items
+        .iter()
+        .find(|item| {
+            !crate::chat::lineage::is_marker(item)
+                && !crate::chat::workers::is_marker(item)
+                && !matches!(item.body, ItemBody::Notice { .. })
+        })
+        .and_then(|item| match &item.body {
+            ItemBody::UserMessage { text } => Some(text.as_str()),
+            _ => None,
+        })
+}
+
+/// What the fork `fork_id` inherited from the chat `origin` names: that chat's conversation up
+/// to where it was forked (its item `origin.at`, else its marker of the fork, which was written
+/// at its end), after what that chat inherited in turn. A message the fork sent again is the
+/// fork's own. Also says why it may be more or less than that.
+fn inherited(
+    home: &Path,
+    fork_id: &str,
+    origin: &ChatOrigin,
+    resent: Option<&str>,
+    depth: usize,
+) -> Result<(Vec<Entry>, Option<String>), String> {
+    if depth == 0 {
+        return Err("it is a fork of forks too many times over to follow back".into());
+    }
+    let source = fold(home, &origin.source_id)
+        .map_err(|_| "the chat it was forked from cannot be read".to_owned())?;
+    let items = &source.items;
+    let mut caveat = None;
+    let end = match origin.at.as_deref() {
+        Some(at) => {
+            let index = items
+                .iter()
+                .position(|item| item.id == at)
+                .ok_or("the chat it was forked from no longer has the point it was forked at")?;
+            let again = matches!((&items[index].body, resent),
+                (ItemBody::UserMessage { text }, Some(resent)) if text == resent);
+            if again { index } else { index + 1 }
+        }
+        None => {
+            let marker = crate::chat::lineage::id_for(fork_id);
+            items
+                .iter()
+                .position(|item| item.id == marker)
+                .unwrap_or_else(|| {
+                    caveat = Some(
+                        "The chat it was forked from has no record of where it was forked, so what it said after the fork may be in this too."
+                            .to_owned(),
+                    );
+                    items.len()
+                })
+        }
+    };
     let mut entries = Vec::new();
-    for item in &transcript.items {
+    if let Some(before) = source.info.as_ref().and_then(native_origin) {
+        match inherited(
+            home,
+            &origin.source_id,
+            before,
+            first_message(items),
+            depth - 1,
+        ) {
+            Ok((more, missing)) => {
+                entries = more;
+                caveat = caveat.or(missing);
+            }
+            Err(reason) => {
+                caveat = Some(format!(
+                    "What {} inherited from {} is missing: {reason}.",
+                    crate::chat::lineage::quoted(&origin.source_title),
+                    crate::chat::lineage::quoted(&before.source_title)
+                ));
+            }
+        }
+    }
+    for entry in conversation(&items[..end]) {
+        push(&mut entries, entry);
+    }
+    Ok((entries, caveat))
+}
+
+/// The entries of a chat's items: what was said and done, never RiWork's own markers.
+fn conversation(items: &[Item]) -> Vec<Entry> {
+    let mut entries = Vec::new();
+    for item in items {
+        if crate::chat::lineage::is_marker(item) {
+            continue;
+        }
         // A worker this chat started: who, what, and its recorded result.
         if let Some(worker) = crate::chat::workers::of(item) {
             let mut note = crate::chat::workers::summary(worker);
@@ -73,12 +242,7 @@ pub fn read_chat(home: &Path, chat_id: &str) -> Result<Read, String> {
             push(&mut entries, entry);
         }
     }
-    Ok(Read {
-        body: Body::Conversation(entries),
-        model: transcript.info.and_then(|info| info.model),
-        origin: "the chat's event log".into(),
-        caveat: None,
-    })
+    entries
 }
 
 fn chat_entry(body: &ItemBody, status: ItemStatus) -> Option<Entry> {

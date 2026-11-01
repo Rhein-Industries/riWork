@@ -220,6 +220,27 @@ impl Client {
         .map(|_| ())
     }
 
+    /// Records in chat `chat_id` that its conversation went on in another chat
+    /// (`Request::NoteLineage`). A host from before it refuses the request.
+    pub fn note_lineage(
+        &mut self,
+        chat_id: &str,
+        mark: super::lineage::LineageMark,
+    ) -> Result<(), CallError> {
+        let wait = Some(Duration::from_secs(5));
+        let stream = self.stream.get_ref();
+        stream
+            .set_read_timeout(wait)
+            .and_then(|_| stream.set_write_timeout(wait))
+            .map_err(|error| CallError::Broken(error.to_string()))?;
+        self.exchange(Request::NoteLineage {
+            id: new_id(),
+            chat_id: chat_id.into(),
+            mark,
+        })
+        .map(|_| ())
+    }
+
     pub fn list(&mut self) -> Result<Vec<ChatInfo>, String> {
         decode(self.call(Request::List { id: new_id() })?)
     }
@@ -654,7 +675,8 @@ fn request_id(request: &Request) -> &str {
         | Request::Subscribe { id, .. }
         | Request::Close { id, .. }
         | Request::Delete { id, .. }
-        | Request::NoteWorker { id, .. } => id,
+        | Request::NoteWorker { id, .. }
+        | Request::NoteLineage { id, .. } => id,
     }
 }
 
@@ -701,6 +723,7 @@ mod tests {
             contributor_opt_out: false,
             claude_billing: None,
             carried_over: None,
+            origin: None,
         };
         let served = info.clone();
         let host = thread::spawn(move || {
@@ -751,6 +774,7 @@ mod tests {
                 contributor_mode: ContributorMode::Off,
                 contributor_opt_out: false,
                 claude_billing: None,
+                origin: None,
             })
             .unwrap();
         assert_eq!(created, info);
@@ -824,6 +848,7 @@ mod tests {
                     contributor_mode: mode,
                     contributor_opt_out: false,
                     claude_billing: None,
+                    origin: None,
                 });
                 drop(client);
                 let seen = host.join().unwrap();

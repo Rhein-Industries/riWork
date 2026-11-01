@@ -1348,6 +1348,7 @@ fn live_codex_answers_a_trivial_prompt() {
         contributor_mode: Default::default(),
         trust_workspace: false,
         resume: None,
+        fork: None,
         resume_has_history: false,
         reporter: Default::default(),
         outstanding_notices: Default::default(),

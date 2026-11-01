@@ -358,6 +358,7 @@ pub mod fixture {
                 contributor_mode: Default::default(),
                 contributor_opt_out: false,
                 claude_billing: None,
+                origin: None,
             };
             let socket = crate::chat::service::backend().ensure()?;
             let chat = Client::connect(&socket)

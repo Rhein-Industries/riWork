@@ -1348,6 +1348,7 @@ fn a_chat_that_died_in_the_middle_of_a_turn_is_made_tidy_when_the_next_host_load
         contributor_opt_out: false,
         claude_billing: None,
         carried_over: None,
+        origin: None,
     };
     let dir = log::chat_dir(&home, &id).unwrap();
     let chat_log = ChatLog::create(&dir, &info).unwrap();
@@ -1721,6 +1722,7 @@ fn an_idle_host_exits_but_not_while_a_client_is_connected_or_a_chat_is_at_work()
             contributor_mode: Default::default(),
             contributor_opt_out: false,
             claude_billing: None,
+            origin: None,
         })
         .unwrap();
     busy.command(
@@ -2970,8 +2972,11 @@ fn a_switch_goes_on_with_the_other_provider_in_the_same_chat_and_carries_the_con
         .carried_over
         .clone()
         .expect("the conversation is carried");
+    // Named as its tab named it: by its first message, not its default title.
     assert!(
-        carried.from.starts_with("Codex chat \"Codex chat\""),
+        carried
+            .from
+            .starts_with("Codex chat \"remember the blue door\""),
         "{}",
         carried.from
     );

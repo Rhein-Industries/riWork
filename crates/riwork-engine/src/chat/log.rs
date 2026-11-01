@@ -284,11 +284,13 @@ fn is_session_history(event: &ChatEvent) -> bool {
         | ChatEvent::ItemDelta { .. }
         | ChatEvent::ApprovalRequested { .. }
         | ChatEvent::QuestionRequested { .. } => true,
-        // A worker marker is the host's record of a terminal or chat, never the
+        // A worker or lineage marker is the host's record of a terminal or chat, never the
         // provider's own session: it cannot make a new provider look resumable, even in a
         // shape this build cannot read.
         ChatEvent::ItemStarted { item } | ChatEvent::ItemCompleted { item } => {
-            !matches!(item.body, ItemBody::Notice { .. }) && !super::workers::is_marker(item)
+            !matches!(item.body, ItemBody::Notice { .. })
+                && !super::workers::is_marker(item)
+                && !super::lineage::is_marker(item)
         }
         _ => false,
     }
@@ -1170,6 +1172,7 @@ mod tests {
             contributor_opt_out: false,
             claude_billing: None,
             carried_over: None,
+            origin: None,
         }
     }
 

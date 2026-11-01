@@ -415,6 +415,7 @@ fn standin_rig(on_send: OnSend, wait: Duration) -> (PathBuf, ScheduleStore, Chat
         contributor_opt_out: false,
         claude_billing: None,
         carried_over: None,
+        origin: None,
     };
     chat::log::ChatLog::create(&chat::log::chat_dir(&home, &chat.id).unwrap(), &chat).unwrap();
     let stand_in = StandIn::start(&home, &chat, on_send);

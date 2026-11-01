@@ -116,6 +116,7 @@ fn the_whole_command_line_is_read() {
             contributor_on: false,
             context: Context::Summary,
             note: None,
+            at: None,
         }
     );
     // Only the target is required; the rest is the project's, the CLI's and the default.
@@ -133,6 +134,7 @@ fn the_whole_command_line_is_read() {
             contributor_on: false,
             context: Context::Transcript,
             note: None,
+            at: None,
         }
     );
     let to_muse = parse(words("--to chat --provider muse")).unwrap();

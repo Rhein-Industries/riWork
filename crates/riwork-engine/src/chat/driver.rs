@@ -82,6 +82,11 @@ pub struct DriverConfig {
     pub trust_workspace: bool,
     /// Resume this Codex thread or Claude session instead of starting one.
     pub resume: Option<String>,
+    /// Start from a copy of another chat's thread instead of a new one (a native fork,
+    /// `ChatOrigin::native`): Codex `thread/fork` through the turn it names, Claude
+    /// `--resume <session> --fork-session` under a session id of its own. Only with no
+    /// `resume`; the host passes it until the chat has a conversation of its own.
+    pub fork: Option<super::model::NativeFork>,
     /// The current provider session has history (or its emptiness is unknown).
     /// When `resume` is missing from the provider store, fail rather than start
     /// a replacement. False preserves fresh fallback for never-used sessions.
@@ -116,6 +121,7 @@ impl std::fmt::Debug for DriverConfig {
             contributor_mode,
             trust_workspace,
             resume,
+            fork,
             resume_has_history,
             reporter,
             outstanding_notices,
@@ -137,6 +143,7 @@ impl std::fmt::Debug for DriverConfig {
             .field("contributor_mode", contributor_mode)
             .field("trust_workspace", trust_workspace)
             .field("resume", resume)
+            .field("fork", fork)
             .field("resume_has_history", resume_has_history)
             .field("reporter", reporter)
             .field("outstanding_notices", outstanding_notices)

@@ -11,13 +11,13 @@ use super::{
     take_verbatim_option, write_stdout,
 };
 use crate::{
-    chat::model::{ApprovalMode, ContributorMode},
+    chat::model::{ApprovalMode, ContributorMode, LineageKind},
     codex_accounts::CodexAccountBinding,
     handoff::{self, Context, Env, Kind, Request, Started, summary::Timing},
     sessions::HarnessKind,
 };
 
-pub(super) const USAGE: &str = "Usage: riwork handoff [--from SHELL_OR_CHAT_ID] --to shell|chat --provider codex|claude|grok|muse [--model NAME] [--effort LEVEL] [--account LABEL_OR_ID] [--mode supervised|auto-edit|full|plan] [--contributor-on] [--context transcript|summary] [--note TEXT] [--json]";
+pub(super) const USAGE: &str = "Usage: riwork handoff [--from SHELL_OR_CHAT_ID] --to shell|chat --provider codex|claude|grok|muse [--model NAME] [--effort LEVEL] [--account LABEL_OR_ID] [--mode supervised|auto-edit|full|plan] [--contributor-on] [--context transcript|summary] [--at ITEM_ID] [--note TEXT] [--json]";
 
 /// The longest note, in characters.
 const MAX_NOTE_CHARS: usize = 2000;
@@ -36,6 +36,8 @@ pub(super) struct Arguments {
     pub contributor_on: bool,
     pub context: Context,
     pub note: Option<String>,
+    /// The item of a chat to cut its conversation at, that item included.
+    pub at: Option<String>,
 }
 
 pub(super) fn parse(mut args: Vec<String>) -> Result<Arguments, String> {
@@ -83,6 +85,9 @@ pub(super) fn parse(mut args: Vec<String>) -> Result<Arguments, String> {
         Some("summary") => Context::Summary,
         Some(_) => return Err("--context must be transcript or summary".into()),
     };
+    let at = take_verbatim_option(&mut args, "--at")?
+        .map(item_setting)
+        .transpose()?;
     let contributor_on = take_flag(&mut args, "--contributor-on");
     ensure_empty(&args)?;
     if contributor_on && provider != HarnessKind::Muse {
@@ -101,7 +106,17 @@ pub(super) fn parse(mut args: Vec<String>) -> Result<Arguments, String> {
         contributor_on,
         context,
         note,
+        at,
     })
+}
+
+/// An item of a chat's transcript, as `riwork chat history` and the chat tab name it.
+pub(super) fn item_setting(id: String) -> Result<String, String> {
+    let id = id.trim().to_owned();
+    if id.is_empty() || id.len() > 512 || id.chars().any(char::is_control) {
+        return Err("--at must be an item id of at most 512 bytes".into());
+    }
+    Ok(id)
 }
 
 /// A note is one line of text (see `handoff::tidy_note`).
@@ -152,6 +167,9 @@ pub(super) fn output(caller: &Caller<'_>, args: Vec<String>, json: bool) -> Resu
         },
         context: arguments.context,
         note: arguments.note,
+        at: arguments.at,
+        title: None,
+        lineage: LineageKind::Handoff,
     };
     let env = Env {
         home: caller.home,

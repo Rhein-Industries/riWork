@@ -366,6 +366,7 @@ mod tests {
             state: ChatState::Stopped,
             orchestrator: None,
             carried_over: None,
+            origin: None,
         }
     }
 

@@ -6,7 +6,7 @@ use super::{Origin, Request};
 use crate::{
     chat::{
         client::Client,
-        model::{ChatCommand, ChatInfo, ChatState, NewChat, Provider},
+        model::{ChatCommand, ChatInfo, ChatOrigin, ChatState, NewChat, Provider},
     },
     codex_accounts::CodexAccountBinding,
     sessions::{HarnessChoices, HarnessKind, SessionManager, ShellSession},
@@ -33,6 +33,7 @@ pub fn start_chat(
     account: Option<String>,
     title: String,
     message: String,
+    lineage: Option<ChatOrigin>,
 ) -> Result<ChatInfo, String> {
     let mut client = Client::connect(socket)?;
     let chat = client.create(NewChat {
@@ -51,6 +52,7 @@ pub fn start_chat(
         contributor_mode: request.contributor,
         contributor_opt_out: false,
         claude_billing: None,
+        origin: lineage,
     })?;
     // A chat host from before the account could be asked for makes the chat under the
     // project's, which is not what was asked for: take it back before it is sent anything.

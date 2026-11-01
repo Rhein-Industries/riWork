@@ -23,6 +23,10 @@ pub fn lines(transcript: &Transcript) -> Vec<String> {
             ));
             continue;
         }
+        if let Some(mark) = super::lineage::of(item) {
+            lines.push(format!("[lineage] {}", summary(&mark.label())));
+            continue;
+        }
         match &item.body {
             ItemBody::UserMessage { text } => message(&mut lines, "user", text),
             ItemBody::AgentMessage { text } => message(&mut lines, "agent", text),

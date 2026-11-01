@@ -218,6 +218,7 @@ fn a_scheduled_muse_chat_starts_off_and_one_an_older_host_started_otherwise_is_s
                     state: ChatState::Idle,
                     orchestrator: None,
                     carried_over: None,
+                    origin: None,
                 })
                 .unwrap(),
                 Request::Close { .. } => serde_json::Value::Null,
@@ -487,6 +488,7 @@ fn fresh_chat_failed_or_ambiguous_create_send_never_retries_and_claim_precedes_c
                                 state: ChatState::Idle,
                                 orchestrator: None,
                                 carried_over: None,
+                                origin: None,
                             };
                             if matches!(failure, Failure::WrongAccount) {
                                 info.codex_account_id = Some("other-account".into());

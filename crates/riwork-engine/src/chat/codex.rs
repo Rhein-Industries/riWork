@@ -15,7 +15,9 @@
 //! it returns: `initialize` (experimental API on, `turn/diff/updated` and
 //! `item/plan/delta` opted out as large and unused), `initialized`, then
 //! `thread/start`, or `thread/resume` with `excludeTurns` when `config.resume`
-//! is set (the host already has the history). So when `start` returns, the
+//! is set (the host already has the history), or `thread/fork` (`threadId`, `lastTurnId`,
+//! `excludeTurns`) for a chat forked from another (`config.fork`, checked against
+//! codex 0.165's schema). So when `start` returns, the
 //! thread id is known and the events so far are `State { Starting }` and
 //! `State { Idle }`. Right after that the driver asks `model/list` (page after page
 //! while `nextCursor` is set, at most 20) without making the chat wait, and says
@@ -1260,6 +1262,18 @@ impl Codex {
                     }
                     Err(error) => return Err(error),
                 }
+            }
+            // A native fork: a new thread with the source thread's history through the turn
+            // it names (`ChatOrigin::native`). The host already has what the fork keeps.
+            None if config.fork.is_some() => {
+                let fork = config.fork.as_ref().expect("checked");
+                let mut forked = params;
+                forked["threadId"] = json!(fork.thread_id);
+                forked["excludeTurns"] = json!(true);
+                if let Some(turn) = &fork.through_turn {
+                    forked["lastTurnId"] = json!(turn);
+                }
+                self.call("thread/fork", forked, THREAD_TIMEOUT)?
             }
             None => self.call("thread/start", params, THREAD_TIMEOUT)?,
         };

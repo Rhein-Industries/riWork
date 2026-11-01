@@ -74,6 +74,21 @@ impl ChatBackend for ProcessChatBackend {
     }
 }
 
+/// Whether this run's chats are the fixture host's (an isolated `/tmp` home that replays
+/// recorded provider streams): then nothing may start a real provider, not even to read the
+/// models it offers.
+pub fn fixture_run(home: &std::path::Path) -> bool {
+    #[cfg(any(debug_assertions, feature = "test-support"))]
+    {
+        fixture::enabled(home)
+    }
+    #[cfg(not(any(debug_assertions, feature = "test-support")))]
+    {
+        let _ = home;
+        false
+    }
+}
+
 /// The isolated fixture directory a test chat runs in, when fixture mode is on.
 pub fn fixture_directory(name: &str) -> Result<PathBuf, String> {
     #[cfg(any(debug_assertions, feature = "test-support"))]
@@ -139,7 +154,7 @@ pub mod fixture {
     static HOST: OnceLock<Mutex<Option<(PathBuf, Host)>>> = OnceLock::new();
     static PROVIDERS: OnceLock<PathBuf> = OnceLock::new();
 
-    fn enabled(home: &Path) -> bool {
+    pub fn enabled(home: &Path) -> bool {
         std::env::var_os("RIWORK_NSH_CHAT_FIXTURE").as_deref() == Some(std::ffi::OsStr::new("1"))
             && isolated(home)
     }
@@ -312,6 +327,44 @@ pub mod fixture {
             .unwrap_or_default()
     }
 
+    /// The chat a handoff or a fork made from a document starts (`replay_config` picks it by
+    /// the chat's origin): a new thread whose first turn echoes the handoff message and
+    /// answers it.
+    pub fn handoff_target() -> String {
+        use serde_json::json;
+        let started = json!({"id":"turn-1", "items":[], "itemsView":"notLoaded", "status":"inProgress", "error":null});
+        let message = |status: &str| json!({"type":"userMessage", "id":"um-1", "clientId":null, "content":"$input", "status": status});
+        let answer = json!({"type":"agentMessage", "id":"msg-1", "phase":"final_answer", "memoryCitation":null, "delivery":null, "questions":null,
+            "text":"I read the handoff. The build broke on the renamed `Config::load`; I'll pick up from the failing test and keep the API as it was agreed."});
+        let turn = json!({"type":"expect", "frame":{"id":"<any>", "method":"turn/start", "params":{"threadId":"thread-1", "input":"<any>"}},
+            "reply":[
+                {"id":"$id", "result":{"turn":started}},
+                {"method":"turn/started", "params":{"threadId":"thread-1", "turn":started}},
+                {"method":"item/started", "params":{"item":message("inProgress"), "threadId":"thread-1", "turnId":"turn-1", "startedAtMs":1}},
+                {"method":"item/completed", "params":{"item":message("completed"), "threadId":"thread-1", "turnId":"turn-1", "completedAtMs":2}},
+                {"method":"item/completed", "params":{"item":answer, "threadId":"thread-1", "turnId":"turn-1", "completedAtMs":3}},
+                {"method":"turn/completed", "params":{"threadId":"thread-1", "turn":{"id":"turn-1", "items":[], "itemsView":"notLoaded", "status":"completed", "error":null}}}
+            ]});
+        format!("{HANDSHAKE}{turn}\n")
+    }
+
+    /// The chat a native fork starts: Codex copies the source's thread (`thread/fork`).
+    pub fn fork_target() -> String {
+        use serde_json::json;
+        let mut out = String::new();
+        for line in HANDSHAKE.lines() {
+            let mut step: serde_json::Value = serde_json::from_str(line).expect("the handshake is JSON");
+            if step["frame"]["method"] == "thread/start" {
+                step = json!({"type":"expect", "frame":{"id":"<any>", "method":"thread/fork", "params":{"threadId":"thread-1", "excludeTurns":true}},
+                    "reply":[{"id":"$id", "result":{"thread":{"id":"thread-2"}, "model":"gpt-test", "modelProvider":"openai", "cwd":"/work",
+                        "approvalPolicy":"untrusted", "approvalsReviewer":"user", "sandbox":{"type":"readOnly"}}}]});
+            }
+            out.push_str(&step.to_string());
+            out.push('\n');
+        }
+        out
+    }
+
     /// Every recording a fixture chat may name: the engine's, the large turn,
     /// and the refreshed request recordings.
     pub fn recordings() -> Vec<(&'static str, std::borrow::Cow<'static, str>)> {
@@ -322,6 +375,8 @@ pub mod fixture {
                 ("large_turn", std::borrow::Cow::Owned(large_turn())),
                 ("image_turn", std::borrow::Cow::Owned(image_turn())),
                 ("streaming_turn", std::borrow::Cow::Owned(streaming_turn())),
+                ("handoff_target", std::borrow::Cow::Owned(handoff_target())),
+                ("fork_target", std::borrow::Cow::Owned(fork_target())),
                 (
                     REFRESHED[0],
                     std::borrow::Cow::Owned(refreshed(recorded("question"), None)),
@@ -432,12 +487,18 @@ pub mod fixture {
         resume: Option<String>,
     ) -> Result<DriverConfig, String> {
         let providers = PROVIDERS.get().ok_or("no fixture providers")?;
-        let name = info
-            .cwd
-            .file_name()
-            .and_then(|name| name.to_str())
-            .filter(|name| known(name))
-            .unwrap_or("turn");
+        // A chat made from another works in its folder, and replays what such a chat does:
+        // a native fork copies the thread, a handoff answers its first message.
+        let name = match info.origin.as_ref() {
+            Some(origin) if origin.native.is_some() => "fork_target",
+            Some(_) => "handoff_target",
+            None => info
+                .cwd
+                .file_name()
+                .and_then(|name| name.to_str())
+                .filter(|name| known(name))
+                .unwrap_or("turn"),
+        };
         Ok(DriverConfig {
             provider: info.provider,
             program: providers.join(name),
@@ -449,6 +510,7 @@ pub mod fixture {
             contributor_mode: info.contributor_mode,
             trust_workspace: false,
             resume,
+            fork: None,
             resume_has_history: false,
             reporter: Default::default(),
             outstanding_notices: Default::default(),

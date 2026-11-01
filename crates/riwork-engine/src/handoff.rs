@@ -7,6 +7,15 @@
 //! write (`summary`). The target is a new shell or chat, in the same project, worktree and
 //! directory, with the model, effort, permissions and Codex account the request names
 //! (`target`); its first message tells it to read the document. The source is left as it was.
+//!
+//! A chat's conversation can be cut at one of its items (`Request::at`): the document then
+//! holds it up to and including that item. A fork (`fork`) is a new chat that goes on from a
+//! point of a chat's conversation, with the provider's own copy of its thread when that
+//! reproduces the point (`ChatOrigin::native`), else with the document cut there.
+//!
+//! Both sides say what happened: the new chat keeps where it came from in its info
+//! (`ChatInfo::origin`), and a source chat gets a marker in its own log naming the chat that
+//! took the conversation (`chat::lineage`), which the chat host writes.
 
 use std::{
     fs,
@@ -18,7 +27,14 @@ use std::{
 use uuid::Uuid;
 
 use crate::{
-    chat::model::{ApprovalMode, ChatInfo, ContributorMode, Provider},
+    chat::{
+        client::Client,
+        lineage::{self, LineageMark},
+        model::{
+            ApprovalMode, ChatInfo, ChatOrigin, ContributorMode, LineageContext, LineageKind,
+            Provider, SourceKind,
+        },
+    },
     codex_accounts::CodexAccountBinding,
     sessions::{HarnessKind, SessionManager, ShellKind, ShellSession},
     store::Store,
@@ -27,6 +43,7 @@ use document::{BUDGET, Body, Header};
 use summary::{Collected, Timing};
 
 mod document;
+pub mod fork;
 mod sources;
 pub mod summary;
 mod target;
@@ -79,6 +96,14 @@ pub struct Request {
     pub contributor: ContributorMode,
     pub context: Context,
     pub note: Option<String>,
+    /// The item of a chat source to cut its conversation at, that item included (`--at`);
+    /// none for the whole of it. A terminal and a summary are always whole.
+    pub at: Option<String>,
+    /// The new chat's title; none for "Handoff from …".
+    pub title: Option<String>,
+    /// What the new chat is to its source: a handoff, or a fork made from the document
+    /// (`fork`). The new chat's origin and the source's marker say it.
+    pub lineage: LineageKind,
 }
 
 pub enum Started {
@@ -131,7 +156,7 @@ impl Source {
                 Some(harness) => format!("{} terminal {short}", agent_name(harness)),
                 None => format!("terminal shell {short}"),
             },
-            Self::Chat(chat) => chat_label(chat.provider, &chat.title, &chat.id),
+            Self::Chat(chat) => chat_label(chat.provider, &shown_title(chat), &chat.id),
         }
     }
 
@@ -175,6 +200,90 @@ impl Source {
             },
         }
     }
+
+    /// What a chat made from this source keeps of where it came from (`ChatInfo::origin`).
+    fn lineage(
+        &self,
+        kind: LineageKind,
+        at: Option<String>,
+        context: LineageContext,
+    ) -> ChatOrigin {
+        let (source_kind, source_title, provider, model) = match self {
+            Self::Shell(shell) => (
+                SourceKind::Shell,
+                self.label(),
+                shell.harness.map(|harness| harness.program().to_owned()),
+                None,
+            ),
+            Self::Chat(chat) => (
+                SourceKind::Chat,
+                shown_title(chat),
+                Some(lineage::provider_word(chat.provider).to_owned()),
+                chat.model.clone(),
+            ),
+        };
+        ChatOrigin {
+            kind,
+            source_id: self.id().to_owned(),
+            source_kind,
+            source_title: lineage::bounded_title(&source_title),
+            provider,
+            model,
+            at,
+            handoff_id: None,
+            document: None,
+            context,
+            native: None,
+        }
+    }
+}
+
+/// Records in the source chat that its conversation went on in `target` (`chat::lineage`).
+/// A host from before it refuses, and the handoff stands without the marker: the new chat
+/// still says where it came from.
+fn mark_source(
+    socket: &Path,
+    source_id: &str,
+    target: &ChatInfo,
+    kind: LineageKind,
+    at: Option<String>,
+    context: LineageContext,
+) {
+    let mark = LineageMark {
+        kind,
+        target_id: target.id.clone(),
+        target_title: shown_title(target),
+        provider: Some(lineage::provider_word(target.provider).to_owned()),
+        model: target.model.clone(),
+        at,
+        context,
+        noted_at: 0,
+    };
+    if let Err(error) = Client::connect(socket).and_then(|mut client| {
+        client
+            .note_lineage(source_id, mark)
+            .map_err(|error| error.to_string())
+    }) {
+        eprintln!(
+            "riwork handoff: the source chat {source_id} has no marker of chat {}: {error}",
+            target.id
+        );
+    }
+}
+
+/// The name a chat goes by, as its tab shows it (`project_tabs::Session::chat`): the name it
+/// was given, else the provider's, else its first message's, else its title. `ChatInfo::title`
+/// alone is what it was made with, for most chats "Codex chat" or "Claude chat".
+pub fn shown_title(chat: &ChatInfo) -> String {
+    crate::project_tabs::Session::chat(chat).title
+}
+
+/// Whether `title` is only the name a chat of some agent gets when it is given none.
+pub fn is_default_title(title: &str) -> bool {
+    matches!(
+        title.trim(),
+        "Codex chat" | "Claude chat" | "Muse chat" | ""
+    )
 }
 
 /// A chat as the document and the first message name it: `Codex chat "Fix it" (1234abcd)`.
@@ -320,6 +429,25 @@ pub fn check(request: &Request) -> Result<(), String> {
                 .into(),
         );
     }
+    if request.at.is_some() {
+        if matches!(request.source, Source::Shell(_)) {
+            return Err(
+                "Only a chat's conversation can be cut at an item; a terminal hands off all of it. Leave out --at."
+                    .into(),
+            );
+        }
+        if request.context == Context::Summary {
+            return Err(
+                "A summary is of the whole conversation, so it cannot be cut at an item. Use --context transcript with --at."
+                    .into(),
+            );
+        }
+    }
+    if request.lineage == LineageKind::Fork
+        && (request.kind != Kind::Chat || matches!(request.source, Source::Shell(_)))
+    {
+        return Err("A fork is a chat made from a chat.".into());
+    }
     Ok(())
 }
 
@@ -376,7 +504,12 @@ fn run_with_creation(
         Context::Transcript => {
             progress("Reading the conversation…");
             (
-                read_source(&home, &request.source, manager.as_ref())?,
+                read_source_through(
+                    &home,
+                    &request.source,
+                    manager.as_ref(),
+                    request.at.as_deref(),
+                )?,
                 Context::Transcript,
                 None,
             )
@@ -435,10 +568,11 @@ fn run_with_creation(
     let started = match request.kind {
         Kind::Chat => {
             progress("Starting the chat…");
+            let lead = lead(request.lineage, &label);
             let message = if rendered.len() < INLINE_LIMIT {
-                inline_message(&label, &rendered, note)
+                inline_message(&lead, &rendered, note)
             } else {
-                path_message(&label, &document, note)
+                path_message(&lead, &document, note)
             };
             let account = binding.as_ref().map(|binding| {
                 binding
@@ -446,16 +580,51 @@ fn run_with_creation(
                     .clone()
                     .unwrap_or_else(|| crate::codex_accounts::SYSTEM_DEFAULT_ID.to_owned())
             });
-            let title = document::clip(&format!("Handoff from {label}"), 100);
+            let title = request
+                .title
+                .as_deref()
+                .map(str::trim)
+                .filter(|title| !title.is_empty())
+                .map(|title| document::clip(title, 100))
+                .unwrap_or_else(|| document::clip(&format!("Handoff from {label}"), 100));
+            let lineage_context = match context {
+                Context::Transcript => LineageContext::Transcript,
+                Context::Summary => LineageContext::Summary,
+            };
+            let chat_origin = ChatOrigin {
+                handoff_id: Some(handoff_id.clone()),
+                document: Some(document.clone()),
+                ..request
+                    .source
+                    .lineage(request.lineage, request.at.clone(), lineage_context)
+            };
             let socket = (env.ensure)()?;
-            target::start_chat(&socket, &origin, &request, account, title, message)
-                .map(Started::Chat)
-                .map_err(|error| format!("{error} The handoff is in {}.", document.display()))?
+            let chat = target::start_chat(
+                &socket,
+                &origin,
+                &request,
+                account,
+                title,
+                message,
+                Some(chat_origin),
+            )
+            .map_err(|error| format!("{error} The handoff is in {}.", document.display()))?;
+            if let Source::Chat(source) = &request.source {
+                mark_source(
+                    &socket,
+                    &source.id,
+                    &chat,
+                    request.lineage,
+                    request.at.clone(),
+                    lineage_context,
+                );
+            }
+            Started::Chat(chat)
         }
         Kind::Shell => {
             progress("Starting the terminal…");
             let manager = manager.as_ref().ok_or("tmux is required")?;
-            let prompt = path_message(&label, &document, note);
+            let prompt = path_message(&lead(request.lineage, &label), &document, note);
             target::start_shell(manager, &origin, &request, binding, prompt)
                 .map(Started::Shell)
                 .map_err(|error| format!("{error} The handoff is in {}.", document.display()))?
@@ -523,8 +692,18 @@ fn read_source(
     source: &Source,
     manager: Option<&SessionManager>,
 ) -> Result<sources::Read, String> {
+    read_source_through(home, source, manager, None)
+}
+
+/// The source's conversation, a chat's up to and including its item `at` when given.
+fn read_source_through(
+    home: &Path,
+    source: &Source,
+    manager: Option<&SessionManager>,
+    at: Option<&str>,
+) -> Result<sources::Read, String> {
     match (source, manager) {
-        (Source::Chat(chat), _) => sources::read_chat(home, &chat.id),
+        (Source::Chat(chat), _) => sources::read_chat_through(home, &chat.id, at),
         (Source::Shell(shell), Some(manager)) => sources::read_shell(manager, shell),
         (Source::Shell(_), None) => Err("tmux is required to read a terminal".into()),
     }
@@ -602,12 +781,25 @@ fn with_note(mut message: String, note: Option<&str>) -> String {
     message
 }
 
+/// What the first message opens with: who had the conversation, and what the new agent is
+/// to it.
+fn lead(kind: LineageKind, from: &str) -> String {
+    match kind {
+        LineageKind::Fork => format!(
+            "This chat is a fork of a conversation with {from}: it goes on from where the handoff ends, on its own, and the original goes on separately."
+        ),
+        LineageKind::Handoff | LineageKind::Unknown => {
+            format!("You are taking over a conversation from {from}.")
+        }
+    }
+}
+
 /// The first message when the document is read from its file: for a terminal, whose
 /// command line is short, and for a document too long to send whole.
-fn path_message(from: &str, document: &Path, note: Option<&str>) -> String {
+fn path_message(lead: &str, document: &Path, note: Option<&str>) -> String {
     with_note(
         format!(
-            "You are taking over a conversation from {from}. Read the handoff at {} and continue from where it left off.",
+            "{lead} Read the handoff at {} and continue from where it left off.",
             document.display()
         ),
         note,
@@ -615,13 +807,11 @@ fn path_message(from: &str, document: &Path, note: Option<&str>) -> String {
 }
 
 /// The first message with a short document in it.
-fn inline_message(from: &str, document: &str, note: Option<&str>) -> String {
+fn inline_message(lead: &str, document: &str, note: Option<&str>) -> String {
     format!(
         "{}\n\n<handoff>\n{}\n</handoff>",
         with_note(
-            format!(
-                "You are taking over a conversation from {from}. The handoff is below; continue from where it left off."
-            ),
+            format!("{lead} The handoff is below; continue from where it left off."),
             note
         ),
         document.trim_end()
