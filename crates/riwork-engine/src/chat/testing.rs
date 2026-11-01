@@ -317,6 +317,7 @@ pub fn placeholder_info(config: &DriverConfig, thread_id: &str) -> ChatInfo {
         state: ChatState::Idle,
         orchestrator: None,
         carried_over: None,
+        origin: None,
     }
 }
 
@@ -350,6 +351,7 @@ fn fake_config(
         contributor_mode: info.contributor_mode,
         trust_workspace: false,
         resume,
+        fork: None,
         resume_has_history: false,
         reporter: Default::default(),
         outstanding_notices: Default::default(),
@@ -558,6 +560,7 @@ impl TestHost {
             contributor_mode: Default::default(),
             contributor_opt_out: false,
             claude_billing: None,
+            origin: None,
         }
     }
 

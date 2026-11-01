@@ -124,7 +124,12 @@ impl Chat {
         if let Some(id) = project_id.as_deref() { crate::service::validate_uuid(id)?; }
         blocking(move || {
             let home = service::backend().home()?;
-            let catalog = riwork_engine::chat::catalog::available(&home, project_id.as_deref(), provider);
+            // A fixture run reads saved catalogs only: Muse's discovery would start a real `muse serve`.
+            let catalog = if service::fixture_run(&home) {
+                riwork_engine::chat::catalog::saved(&home, project_id.as_deref(), provider)
+            } else {
+                riwork_engine::chat::catalog::available(&home, project_id.as_deref(), provider)
+            };
             Ok(dto::ModelCatalogDto {
                 supported: catalog.supported.into_iter().map(|model| dto::CatalogModelDto {
                     id: model.id, name: model.name, description: model.description,
@@ -169,6 +174,7 @@ impl Chat {
             contributor_mode: Default::default(),
             contributor_opt_out: false,
             claude_billing: None,
+            origin: None,
         };
         blocking(move || {
             let socket = service::backend().ensure()?;
@@ -190,6 +196,17 @@ impl Chat {
             Ok(())
         })
         .await
+    }
+
+    /// Fork a chat: the whole conversation, or up to and including item `at`; with its own
+    /// agent, or another (`riwork chat fork`). The fork says where it came from, and the
+    /// source gets a marker naming it. A chat at work is forked at its last finished item.
+    pub async fn fork(
+        request: crate::handoff::ForkRequestDto,
+    ) -> Result<crate::handoff::ForkResultDto, String> {
+        crate::handoff::fork(request)
+            .await
+            .map_err(|error| with_code(error, "refused"))
     }
 
     /// Follow a chat from its first event. Starts its threads; the work they do

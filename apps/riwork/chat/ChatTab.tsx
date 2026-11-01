@@ -23,6 +23,7 @@ import { CodeTerminalRow } from "./CodeTerminalRow";
 import { CodeReader, MAX_SNIPPET, saveSnippet, type CodeSnippet } from "./CodeReader";
 import { SideHeader, escapeWithin, focusWithin, type FocusWithin } from "./SidePanel";
 import { Suggestions, createSuggestions } from "./Suggestions";
+import { ContinueConfirm, agentLabel, createContinue, type ContinueControl } from "./Continue";
 import { utf8Bytes } from "../files_model";
 
 export interface NativeChatUsage {
@@ -40,7 +41,13 @@ export interface ChatTabProps {
   onUsage?: (usage: NativeChatUsage) => void;
   onClose?: () => void;
   onLink?: (target: string, line?: number) => void;
+  /** Open or focus another session: a worker, a fork beside this tab, the chat or terminal
+   * this one came from, the chat it went on in. */
   onOpenWorker?: (id: string, kind: "shell" | "chat") => void;
+  /** A handoff in place made `id` this tab's chat (Continue with another agent). */
+  onReplace?: (id: string) => void;
+  /** The Hand off tab for this chat (the ⋯ menu). */
+  onHandoff?: () => void;
   onApiKeySettings?: () => void;
   onEditMemo?: (projectId: string) => void;
   terminalTargets?: () => { id: string; label: string }[];
@@ -159,6 +166,34 @@ export function ChatTab(props: ChatTabProps) {
   const mono = (base = 11, color = theme().palette.text) => ({ fontFamily: theme().monoFamily, fontSize: base * theme().scale, color });
   const notice = (message: string) => notices.set([...notices(), message].slice(-3));
   const billing = createBillingControl({ panel, handle, visible: () => props.visible, onError: notice, onNotice: notice, onOpenSettings: () => props.onApiKeySettings?.() });
+  const continuing = createContinue({
+    chatId: props.chatId, panel, notice, onReplace: props.onReplace,
+    onOpen: props.onOpenWorker ? (id) => props.onOpenWorker!(id, "chat") : undefined,
+  });
+  // The other agents' model lists are read when a menu that offers them opens (reading Muse's
+  // asks its CLI), so a fork menu opened again has them.
+  function forkMenu(at?: string) {
+    void Menu.popup(continuing.forkItems(at));
+    continuing.loadCatalogs();
+  }
+  // A handoff's first message (its instructions and document) shows folded until opened.
+  const contextOpen = signal<ReadonlySet<string>>(new Set());
+  function toggleContext(id: string) {
+    const next = new Set(contextOpen());
+    if (next.has(id)) next.delete(id); else next.add(id);
+    contextOpen.set(next);
+  }
+  const origin = computed(() => panel().origin, { equals: sameContent });
+  function openOrigin() {
+    const from = origin();
+    if (from) props.onOpenWorker?.(from.sourceId, from.sourceKind === "shell" ? "shell" : "chat");
+  }
+  function openDocument() {
+    const document = origin()?.document;
+    if (!document) return;
+    if (props.onLink) props.onLink(document);
+    else notice(`Handoff: ${document}`);
+  }
 
   function jumpTo(index: number) {
     if (index < 0 || index >= rows().length) return;
@@ -329,6 +364,9 @@ export function ChatTab(props: ChatTabProps) {
       { label: "Copy chat ID", onSelect: () => void Clipboard.writeText(props.chatId) },
     ];
     if (panel().sessionId) items.push({ label: "Copy provider session ID", onSelect: () => void Clipboard.writeText(panel().sessionId!) });
+    items.push({ type: "separator" }, ...continuing.forkItems());
+    if (props.onHandoff) items.push({ label: "Hand off…", onSelect: () => props.onHandoff?.() });
+    if (origin() && props.onOpenWorker) items.push({ label: "Open original", onSelect: openOrigin });
     items.push({ type: "separator" },
       { label: "Expand all activity", onSelect: () => handle.expandAll(true) },
       { label: "Collapse all activity", onSelect: () => handle.expandAll(false) },
@@ -336,6 +374,7 @@ export function ChatTab(props: ChatTabProps) {
       { type: "separator" },
       { label: "Stop agent process", disabled: panel().state === "stopped", onSelect: () => { void handle.stop().catch((error) => notice(String(error))); } });
     void Menu.popup(items);
+    continuing.loadCatalogs();
   }
 
   function ChatHeader() {
@@ -365,6 +404,13 @@ export function ChatTab(props: ChatTabProps) {
         {iconControl("search", "Find in conversation · ⌘F", findInChat, finding())}
         {iconControl("more", "Conversation options", moreMenu, false, false, (node) => { moreButton = node; })}
       </View>
+      {!!origin() && <View testID="chat-origin" accessibilityLabel={origin()!.label} style={{ flexDirection: "row", alignItems: "center", gap: 6, minWidth: 0 }}>
+        <Icon name="worktrees" size={12} color={theme().palette.muted} />
+        <Text numberOfLines={1} style={{ ...text(11, theme().palette.muted), flexShrink: 1 }}>{origin()!.label}</Text>
+        <View style={{ flex: 1, minWidth: 0 }} />
+        {!!props.onOpenWorker && control("Open original", openOrigin)}
+        {!!origin()!.document && !compact() && control("Handoff document", openDocument)}
+      </View>}
       {showUsage() && hasUsageDetail() && <Text selectable={true} style={mono(10, theme().palette.muted)}>{panel().usageDetail ?? ""}</Text>}
       {several() && <View style={{ flexDirection: "row", alignItems: "center", gap: 2 }}>
         {iconControl("up", "Previous message", () => jumpTo(prompts()[currentPrompt() - 1] ?? -1), false, currentPrompt() === 0)}
@@ -486,13 +532,36 @@ export function ChatTab(props: ChatTabProps) {
     const attachments = computed<NonNullable<ChatRow["attachments"]>>(() => row().attachments ?? [], { equals: sameContent });
     const hasAttachments = computed(() => attachments().length > 0);
     const fileCount = computed(() => row().fileCount ?? 0);
+    // A finished message can be forked from; one still being written cannot.
+    const finished = computed(() => !row().running && !row().provisional && row().status !== "in_progress");
+    const handoffBytes = computed(() => row().handoffBytes);
+    const contextShown = computed(() => contextOpen().has(row().id));
+    const lineageTitle = computed(() => row().kind === "lineage" ? row().title : "");
+    const lineageChat = computed(() => row().lineage?.chatId);
     let reviewFiles: YNode | undefined;
+    const forkButton = () => finished() && iconControl("more", "Fork from here…", () => forkMenu(row().id));
     return () => {
       const shown = kind();
+      if (shown === "user" && handoffBytes() !== undefined) return <View testID={`chat-handoff-context:${row().id}`} style={{ marginTop: space(14, theme().scale), marginBottom: space(10, theme().scale),
+        paddingHorizontal: space(12, theme().scale), paddingVertical: space(8, theme().scale), borderRadius: 10, borderWidth: 1, borderColor: chatHairline(theme()), backgroundColor: theme().palette.panel, gap: 6 }}>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+          <View role="button" testID="chat-handoff-context-toggle" accessibilityLabel={contextShown() ? "Hide handoff context" : "Show handoff context"} accessibilityState={{ expanded: contextShown() }}
+            onPress={() => { following.set(false); toggleContext(row().id); }}
+            style={{ flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", gap: 7, paddingVertical: 3, borderRadius: 5 }}>
+            <Icon name={contextShown() ? "down" : "right"} size={11} color={theme().palette.muted} />
+            <Icon name="worktrees" size={13} color={theme().palette.muted} />
+            <Text numberOfLines={1} style={{ ...text(12), fontWeight: "600", flexShrink: 1 }}>Handoff context</Text>
+            <Text style={text(11, theme().palette.muted)}>{`· ${Math.max(1, Math.round((handoffBytes() ?? 0) / 1024))} KB`}</Text>
+          </View>
+          {iconControl("copy", "Copy handoff context", () => void copy(row().id))}
+        </View>
+        {contextShown() && <Body row={row} />}
+      </View>;
       if (shown === "user") return <View style={{ marginTop: space(14, theme().scale), marginBottom: space(10, theme().scale), padding: space(14, theme().scale), borderRadius: 10,
         borderWidth: 1, borderColor: chatHairline(theme()), backgroundColor: theme().palette.panel }}>
         <View style={{ flexDirection: "row", alignItems: "center", marginTop: -5, marginBottom: 5 }}>
           <Text style={{ ...text(11, theme().palette.muted), fontWeight: "600" }}>You</Text><View style={{ flex: 1 }} />
+          {forkButton()}
           {iconControl("copy", "Copy message", () => void copy(row().id))}
         </View>
         <Body row={row} />
@@ -504,8 +573,16 @@ export function ChatTab(props: ChatTabProps) {
         {shown === "final" && <Text style={{ ...text(11, theme().palette.muted), fontWeight: "600" }}>{row().title || "Assistant"}</Text>}
         <Body row={row} />
         {shown === "final" && <View style={{ flexDirection: "row", alignItems: "center", gap: 4, marginLeft: -5 }}>{iconControl("copy", "Copy answer", () => void copy(row().id))}
+          {forkButton()}
           {fileCount() > 0 && control(`Review ${fileCount()} ${fileCount() === 1 ? "file" : "files"}`, () => openSide({ kind: "review", scope: row().id }, reviewFiles),
             false, false, (node) => { reviewFiles = node; })}</View>}
+      </View>;
+      if (shown === "lineage") return <View testID={`chat-lineage:${row().id}`} accessibilityLabel={lineageTitle()} style={{ flexDirection: "row", alignItems: "center", gap: 8, marginVertical: 3 }}>
+        <View style={{ width: 18, height: 1, backgroundColor: chatHairline(theme()) }} />
+        <Icon name="worktrees" size={12} color={theme().palette.muted} />
+        <Text numberOfLines={1} style={{ ...text(11, theme().palette.muted), flexShrink: 1 }}>{lineageTitle()}</Text>
+        {!!lineageChat() && !!props.onOpenWorker && control("Open", () => props.onOpenWorker!(lineageChat()!, "chat"))}
+        <View style={{ flex: 1, minWidth: 12, height: 1, backgroundColor: chatHairline(theme()) }} />
       </View>;
       if (shown === "compaction") return <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginVertical: 6 }}>
         <View style={{ flex: 1, height: 1, backgroundColor: chatHairline(theme()) }} />
@@ -749,9 +826,11 @@ export function ChatTab(props: ChatTabProps) {
       </View>}
       {welcome() && <>
         <View style={{ alignItems: "flex-start", paddingTop: space(28, theme().scale), gap: 10 }}>
-          <Icon name="chat" size={25} color={theme().palette.muted} />
-          <Text style={{ ...text(19), fontWeight: "600" }}>Start a conversation</Text>
-          <Text style={{ ...text(13, theme().palette.muted), lineHeight: 20 * theme().scale }}>Ask a question, plan a change, or describe what you want to build.</Text>
+          <Icon name={origin() ? "worktrees" : "chat"} size={25} color={theme().palette.muted} />
+          <Text style={{ ...text(19), fontWeight: "600" }}>{origin() ? "Go on from here" : "Start a conversation"}</Text>
+          <Text style={{ ...text(13, theme().palette.muted), lineHeight: 20 * theme().scale }}>{origin()?.context === "native"
+            ? `The agent has the conversation of “${origin()!.sourceTitle}” up to where it was forked. Send a message to go on from there; the original goes on separately.`
+            : origin() ? "The agent is reading the conversation it takes over." : "Ask a question, plan a change, or describe what you want to build."}</Text>
           {hasCwd() && <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginTop: 4 }}>
             <Icon name="folder" size={14} color={theme().palette.muted} />
             <Text selectable={true} numberOfLines={2} style={{ ...mono(11, theme().palette.muted), flexShrink: 1 }}>{panel().cwd}</Text>
@@ -825,7 +904,8 @@ export function ChatTab(props: ChatTabProps) {
         </View>)}
         {stopped() && <Text style={{ ...text(11, theme().palette.muted), ...chatColumn(paneWidth(), theme().scale) }}>Stopped. The chat will resume when you send a message.</Text>}
         {failed() && <Text style={{ ...text(11, theme().palette.danger), ...chatColumn(paneWidth(), theme().scale) }}>{`Failed: ${panel().stateMessage ?? ""}`}</Text>}
-        <Composer panel={panel} handle={handle} theme={theme} notice={notice} visible={interactive} width={paneWidth} billing={billing}
+        {continuing.forking() && <Text testID="chat-forking" style={{ ...text(11, theme().palette.working), ...chatColumn(paneWidth(), theme().scale) }}>Forking the conversation…</Text>}
+        <Composer panel={panel} handle={handle} theme={theme} notice={notice} visible={interactive} width={paneWidth} billing={billing} continuing={continuing}
           onSent={() => { following.set(true); list?.scrollToEnd(); }} onEditor={(editor) => editors.push(editor)} onEditMemo={props.onEditMemo}
           onInput={(node) => { composerInput = node; }} onMeasure={(part, height) => { composer[part] = height; report(); }} />
       </View>
@@ -979,7 +1059,7 @@ function encodeAttachment(bytes: Uint8Array): string {
 
 /** The message box, its send/stop slot and the model, effort, Fast and mode
  * choices. Drafts are saved on every change and restored into an empty box. */
-function Composer(props: PartProps & { billing: BillingControl; width: () => number; visible: () => boolean; onSent: () => void; onEditor: (editor: number) => void; onEditMemo?: (projectId: string) => void;
+function Composer(props: PartProps & { billing: BillingControl; continuing: ContinueControl; width: () => number; visible: () => boolean; onSent: () => void; onEditor: (editor: number) => void; onEditMemo?: (projectId: string) => void;
   onInput?: (node: YNode) => void; onMeasure?: (part: "box" | "input" | "controls", height: number) => void }) {
   const theme = props.theme;
   // One draft editor identity per mounted composer, unique across windows: the
@@ -1217,10 +1297,30 @@ function Composer(props: PartProps & { billing: BillingControl; width: () => num
     return keymap.bind("escape", closeMemo, { when: "always" });
   });
 
+  // ⎋ leaves the inline handoff confirmation, as it leaves the memo preview.
+  const continuing = props.continuing;
+  const confirming = computed(() => !!continuing.choice());
+  function closeContinue() { continuing.cancel(); if (!continuing.choice() && props.visible()) input?.focus(); }
+  effect(() => {
+    if (!props.visible() || !confirming() || continuing.pending()) return;
+    return keymap.bind("escape", closeContinue, { when: "always" });
+  });
+  /** Another agent goes on with this conversation in a new chat that takes this tab: a small
+   * confirmation by the composer says what it reads first. */
+  function continueWith(choice: { provider: "codex" | "claude" | "muse"; model?: string; label: string }) {
+    modelPicker.set(false);
+    memo.close();
+    continuing.open(choice);
+  }
+
   const configure = (request: Parameters<ChatHandle["configure"]>[0]) =>
     void props.handle.configure(request).catch((error) => props.notice(`Could not reach the chat: ${error}`)).finally(() => input?.focus());
 
-  function modelMenu() { modelQuery.set(""); modelPicker.set(!modelPicker()); }
+  function modelMenu() {
+    modelQuery.set("");
+    if (!modelPicker()) continuing.loadCatalogs();
+    modelPicker.set(!modelPicker());
+  }
 
   function chooseModel(model: string) {
     const name = model.trim();
@@ -1236,12 +1336,14 @@ function Composer(props: PartProps & { billing: BillingControl; width: () => num
     return choices.filter((model) => !query || `${model.id} ${model.label} ${model.detail ?? ""}`.toLowerCase().includes(query));
   };
 
+  // Another agent goes on in a new chat (a handoff in place), never by changing this one's.
+  const agentItems = (): MenuItem[] => continuing.others().map((agent) => ({
+    label: `Continue with ${agent.label}…`, onSelect: () => continueWith(agent.choices[0]),
+  }));
+
   function providerMenu() {
-    const bar = toolbar();
-    if (!bar) return;
-    void Menu.popup(bar.providers.map((provider) => ({ label: `Switch to ${provider.label}`, disabled: props.panel().running, onSelect: () => {
-      void props.handle.switchProvider(provider.id, null).catch((error) => props.notice(String(error)));
-    } })));
+    if (!toolbar()) return;
+    void Menu.popup(agentItems());
   }
 
   function effortMenu() {
@@ -1260,11 +1362,7 @@ function Composer(props: PartProps & { billing: BillingControl; width: () => num
     const bar = toolbar();
     const items: MenuItem[] = [];
     if (bar) {
-      items.push({ label: `Provider · ${bar.providerLabel}`, submenu: bar.providers.map((provider) => ({
-        label: provider.label, disabled: props.panel().running, onSelect: () => {
-          void props.handle.switchProvider(provider.id, null).catch((error) => props.notice(String(error)));
-        },
-      })) });
+      items.push({ label: `Agent · ${bar.providerLabel}`, submenu: agentItems() });
       items.push({ label: `Model · ${bar.modelLabel}`, onSelect: modelMenu });
       if (bar.effortAvailable) items.push({ label: `Reasoning · ${bar.effortLabel}`, submenu: bar.efforts.map((effort) => ({ label: effort.label, checked: effort.current, onSelect: () => configure({ effort: effort.id }) })) });
       if (bar.fastAvailable) items.push({ label: "Fast mode", checked: bar.fast, onSelect: () => configure({ fast: !bar.fast }) });
@@ -1313,6 +1411,13 @@ function Composer(props: PartProps & { billing: BillingControl; width: () => num
     return "";
   });
   const options = computed(() => modelOptions(), { equals: sameContent });
+  // The model picker's other section: the other agents, with the models they offer.
+  const otherAgents = computed(() => {
+    const query = modelQuery().trim().toLowerCase();
+    return continuing.others()
+      .map((agent) => ({ ...agent, choices: agent.choices.filter((choice) => !query || `${choice.label} ${choice.model ?? ""}`.toLowerCase().includes(query)) }))
+      .filter((agent) => agent.choices.length > 0);
+  }, { equals: sameContent });
   const stopping = computed(() => props.panel().running && (empty() || pending() || incompleteAttachments()));
   const sendDisabled = () => !!memo.preview() || empty() || pending() || incompleteAttachments() || !accepting();
   return <View style={{ ...chatColumn(props.width(), theme().scale), minWidth: 0, flexShrink: 0, paddingTop: 8, paddingBottom: 12 }}>
@@ -1321,6 +1426,7 @@ function Composer(props: PartProps & { billing: BillingControl; width: () => num
     onFileDrop={(event) => { draggingFiles.set(false); addAttachments(event.uris); }} style={{ minWidth: 0, padding: 10, gap: 8, borderRadius: 10, borderWidth: 1, borderColor: draggingFiles() ? theme().palette.cyan : theme().palette.divider, backgroundColor: theme().palette.panel }}>
     {memo.preview() && <MemoPreview preview={memo.preview} theme={theme} active={() => props.visible() && accepting()} onInsert={insertMemo} onCancel={closeMemo}
       onEdit={props.onEditMemo ? (projectId) => { memo.close(); props.onEditMemo?.(projectId); } : undefined} />}
+    {confirming() && <ContinueConfirm control={continuing} theme={theme} panel={props.panel} />}
     {saved().map((submission) => <View testID={`chat-saved:${submission.key}`} style={{ gap: 2, paddingBottom: 4 }}>
       <Text style={text(11, theme().palette.gold)}>{submission.status === "refused" ? `Submission refused${submission.error ? `: ${submission.error}` : ""}` : `Submission outcome uncertain${submission.error ? `: ${submission.error}` : ""}`}</Text>
       <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 12 }}>
@@ -1370,15 +1476,26 @@ function Composer(props: PartProps & { billing: BillingControl; width: () => num
           style={{ width: 28 * theme().scale, height: 28 * theme().scale, flexShrink: 0, borderRadius: 5, alignItems: "center", justifyContent: "center" }}
           hoverStyle={{ backgroundColor: theme().palette.panelActive }} focusStyle={{ backgroundColor: theme().palette.panelActive }}><Icon name="close" size={12 * theme().scale} color={theme().palette.muted} /></View>
       </View>
-      <Scroll style={{ maxHeight: 200 }}>
+      <Scroll style={{ maxHeight: 260 }}>
         {options().map((model) => <View role="button" accessibilityLabel={model.label} onPress={() => chooseModel(model.id)}
           style={{ padding: 7, gap: 3, borderRadius: 4, backgroundColor: model.current ? theme().palette.panelActive : "transparent" }} hoverStyle={{ backgroundColor: theme().palette.panelActive }}>
           <Text style={text(12)}>{`${model.current ? "✓ " : ""}${model.label}`}</Text>
           {model.detail && <Text numberOfLines={3} style={text(11, theme().palette.muted)}>{model.detail}</Text>}
         </View>)}
+        {!options().length && !modelQuery().trim() && <Text style={{ ...text(11, theme().palette.muted), paddingHorizontal: 7, paddingVertical: 4 }}>Enter the model name supplied by your provider.</Text>}
+        {otherAgents().length > 0 && <View testID="chat-model-agents" style={{ gap: 1, marginTop: 6, paddingTop: 6, borderTopWidth: 1, borderColor: chatHairline(theme()) }}>
+          <Text role="header" style={{ ...text(11, theme().palette.muted), fontWeight: "600", paddingHorizontal: 7, paddingTop: 2 }}>Continue with another agent</Text>
+          <Text style={{ ...text(11, theme().palette.muted), paddingHorizontal: 7, paddingBottom: 4 }}>A new chat takes this tab with the conversation so far; this one stays as it is.</Text>
+          {otherAgents().map((agent) => agent.choices.map((choice) => <View role="button" testID={`chat-continue-with:${choice.provider}:${choice.model ?? "default"}`}
+            accessibilityLabel={`Continue with ${choice.label}`} onPress={() => continueWith(choice)}
+            style={{ paddingHorizontal: 7, paddingVertical: 6, flexDirection: "row", alignItems: "center", gap: 7, borderRadius: 4 }} hoverStyle={{ backgroundColor: theme().palette.panelActive }}>
+            <Icon name="worktrees" size={12 * theme().scale} color={theme().palette.muted} />
+            <Text numberOfLines={1} style={{ ...text(12), flexShrink: 1 }}>{choice.model ? choice.label : `${agentLabel(choice.provider)}`}</Text>
+            {!choice.model && <Text style={text(11, theme().palette.muted)}>default model</Text>}
+          </View>))}
+        </View>}
       </Scroll>
       {modelQuery().trim() && !options().some((model) => model.id === modelQuery().trim()) && pill("chat-model-custom", () => `Use “${modelQuery().trim()}”`, () => chooseModel(modelQuery()))}
-      {!options().length && !modelQuery().trim() && <Text style={text(11, theme().palette.muted)}>Enter the model name supplied by your provider.</Text>}
     </View>}
     <DictationStatus controller={dictation} theme={theme} />
     <Suggestions control={suggestions} theme={theme} />

@@ -1002,6 +1002,10 @@ impl LayoutSession {
     pub fn resolve_pending_chat(&mut self, id: String, chat_id: String) -> Result<Value, String> {
         self.edit(|m| m.resolve_pending_chat(&id, &chat_id).map(|d| (d, true)))
     }
+    /// A chat handed off in place takes its source's tab; the source stays a closed chat.
+    pub fn replace_chat(&mut self, id: String, chat_id: String) -> Result<Value, String> {
+        self.edit(|m| m.replace_chat(&id, &chat_id).map(|d| (d, true)))
+    }
 
     pub async fn new_shell(this: Instance<Self>, request: Value) -> Result<Value, String> {
         let split = request

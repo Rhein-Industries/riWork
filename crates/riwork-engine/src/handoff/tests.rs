@@ -95,6 +95,9 @@ fn request(source: Source, kind: Kind, provider: HarnessKind) -> Request {
         contributor: Default::default(),
         context: Context::Transcript,
         note: None,
+        at: None,
+        title: None,
+        lineage: LineageKind::Handoff,
     }
 }
 

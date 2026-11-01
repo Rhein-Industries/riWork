@@ -235,6 +235,7 @@ fn discovery_config(
         contributor_mode: ContributorMode::Off,
         trust_workspace: false,
         resume: None,
+        fork: None,
         resume_has_history: false,
         reporter: Default::default(),
         outstanding_notices: Default::default(),
@@ -325,6 +326,7 @@ fn assemble(
         contributor_mode: info.contributor_mode,
         trust_workspace: false,
         resume,
+        fork: None,
         resume_has_history: false,
         reporter: Default::default(),
         outstanding_notices: Default::default(),
@@ -382,6 +384,7 @@ mod tests {
             state: ChatState::Stopped,
             orchestrator: None,
             carried_over: None,
+            origin: None,
         }
     }
 

@@ -83,9 +83,50 @@ pub struct RowDto {
     pub status: Option<String>,
     /// The row shows a body (paged separately by viewport).
     pub has_body: bool,
+    /// A `lineage` row: the chat the conversation went on in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lineage: Option<LineageRowDto>,
+    /// A `user` row that is a handoff's first message (its instructions and document):
+    /// shown folded, with its size in bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handoff_bytes: Option<u64>,
 }
 
-const ROW_TS: &str = "export interface ChatRow { artifacts?: {itemId:string;label:string;path?:string|null;line?:number|null;imageIndex?:number|null;inlineImage?:boolean}[]; fileCount?:number; attachments?: ChatAttachment[]; key: string; id: string; kind: 'user' | 'final' | 'commentary' | 'reasoning' | 'shell' | 'read' | 'search' | 'list' | 'web_search' | 'web_fetch' | 'mcp' | 'worker' | 'subagent' | 'other' | 'edit' | 'plan' | 'todo' | 'compaction' | 'notice' | 'request' | 'group' | 'activity'; depth: number; title: string; target?: string; meta?: string; open: boolean; disclosure: boolean; failedCount: number; running: boolean; durationMs?: number; currentLabel?: string; provisional: boolean; requestId?: string; status?: 'in_progress' | 'completed' | 'failed' | 'declined' | 'interrupted'; hasBody: boolean; }";
+/// Where a chat's conversation went on: the chat a `lineage` row opens.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LineageRowDto {
+    /// `handoff` or `fork`.
+    pub kind: String,
+    pub chat_id: String,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+}
+
+/// Where a chat came from, for its header (`ChatInfo::origin`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OriginDto {
+    /// `handoff` or `fork`.
+    pub kind: String,
+    pub source_id: String,
+    /// `chat` or `shell`.
+    pub source_kind: String,
+    pub source_title: String,
+    /// What the header says: "Continued from Claude · opus — “Fix it” · transcript".
+    pub label: String,
+    /// `transcript`, `summary` or `native`.
+    pub context: String,
+    /// The handoff document the chat started from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub document: Option<String>,
+}
+
+const ROW_TS: &str = "export interface ChatRow { artifacts?: {itemId:string;label:string;path?:string|null;line?:number|null;imageIndex?:number|null;inlineImage?:boolean}[]; fileCount?:number; attachments?: ChatAttachment[]; key: string; id: string; kind: 'user' | 'final' | 'commentary' | 'reasoning' | 'shell' | 'read' | 'search' | 'list' | 'web_search' | 'web_fetch' | 'mcp' | 'worker' | 'subagent' | 'other' | 'edit' | 'plan' | 'todo' | 'compaction' | 'notice' | 'request' | 'group' | 'activity' | 'lineage'; depth: number; title: string; target?: string; meta?: string; open: boolean; disclosure: boolean; failedCount: number; running: boolean; durationMs?: number; currentLabel?: string; provisional: boolean; requestId?: string; status?: 'in_progress' | 'completed' | 'failed' | 'declined' | 'interrupted'; hasBody: boolean; lineage?: ChatLineage; handoffBytes?: number; }
+export interface ChatLineage { kind: 'handoff' | 'fork'; chatId: string; title: string; provider?: 'codex' | 'claude' | 'muse'; model?: string; }";
 serde_js!(RowDto, "ChatRow", ROW_TS);
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -267,9 +308,13 @@ pub struct ChatPanelDto {
     pub mode: String,
     /// Commands that could not be delivered since the last delivery (CHATT-012).
     pub failures: Vec<String>,
+    /// Where the chat came from: a handoff or a fork.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<OriginDto>,
 }
 
-const PANEL_TS: &str = "export interface ChatPanel { chatId: string; title: string; provider?: 'codex' | 'claude' | 'muse'; cwd?: string; projectId?: string; worktreeId?: string; state: 'starting' | 'idle' | 'running' | 'waiting' | 'stopped' | 'failed'; stateMessage?: string; link: 'connecting' | 'live' | 'reconnecting' | 'deleted'; running: boolean; empty: boolean; status?: string; approvals: ChatApproval[]; questions: ChatQuestion[]; toolbar?: ChatToolbar; notices: { id: string; level: 'info' | 'warning' | 'error'; text: string }[]; billing?: {selected?: 'subscription'|'api_key';reported?:'subscription'|'api_key';source?:string;limits:{id:string;resetsAt?:number}[]}; fileChanges?: number; workers?: ChatWorker[]; mode: 'normal' | 'verbose'; failures: string[]; sessionId?: string; usageLabel?: string; usageDetail?: string; }
+const PANEL_TS: &str = "export interface ChatPanel { chatId: string; title: string; provider?: 'codex' | 'claude' | 'muse'; cwd?: string; projectId?: string; worktreeId?: string; state: 'starting' | 'idle' | 'running' | 'waiting' | 'stopped' | 'failed'; stateMessage?: string; link: 'connecting' | 'live' | 'reconnecting' | 'deleted'; running: boolean; empty: boolean; status?: string; approvals: ChatApproval[]; questions: ChatQuestion[]; toolbar?: ChatToolbar; notices: { id: string; level: 'info' | 'warning' | 'error'; text: string }[]; billing?: {selected?: 'subscription'|'api_key';reported?:'subscription'|'api_key';source?:string;limits:{id:string;resetsAt?:number}[]}; fileChanges?: number; workers?: ChatWorker[]; mode: 'normal' | 'verbose'; failures: string[]; sessionId?: string; usageLabel?: string; usageDetail?: string; origin?: ChatOrigin; }
+export interface ChatOrigin { kind: 'handoff' | 'fork'; sourceId: string; sourceKind: 'chat' | 'shell'; sourceTitle: string; label: string; context: 'transcript' | 'summary' | 'native'; document?: string; }
 export interface ChatApproval { requestId: string; kind: 'command' | 'file_change' | 'permissions' | 'tool'; heading: string; title: string; detail: string; choices: { decision: ChatDecision; label: string; key?: string }[]; }
 export type ChatDecision = 'accept' | 'accept_for_session' | 'decline' | 'cancel';
 export interface ChatQuestion { requestId: string; prompts: { header?: string; question: string; options: { label: string; description: string }[]; multiSelect: boolean }[]; }

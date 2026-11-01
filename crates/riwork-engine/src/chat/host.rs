@@ -1543,6 +1543,9 @@ fn dispatch(shared: &Shared, request: Request) -> Response {
         Request::NoteWorker { id, chat_id, note } => {
             answer(id, note_worker(shared, &chat_id, note))
         }
+        Request::NoteLineage { id, chat_id, mark } => {
+            answer(id, note_lineage(shared, &chat_id, mark))
+        }
         Request::Subscribe { id, .. } => failure(id, "subscribe takes over a connection".into()),
     }
 }
@@ -1643,6 +1646,49 @@ fn record_worker(
                 "chat {chat_id}: the worker's card could not be written"
             ));
         }
+    }
+    Ok(())
+}
+
+// ---- Lineage ------------------------------------------------------------------------------------
+
+/// Records in `chat_id` that its conversation went on in the chat `mark` names
+/// (`lineage`): one marker per chat, which writing again replaces. The chat that took the
+/// conversation must say it came from here (`ChatInfo::origin`), so a marker never claims
+/// what did not happen. The chat's provider is never started.
+fn note_lineage(
+    shared: &Shared,
+    chat_id: &str,
+    mut mark: super::lineage::LineageMark,
+) -> Result<(), String> {
+    super::lineage::check(&mark)?;
+    let chat = shared.find(chat_id)?;
+    let target = shared.find(&mark.target_id)?.info();
+    if target
+        .origin
+        .as_ref()
+        .is_none_or(|origin| origin.source_id != chat_id)
+    {
+        return Err(format!(
+            "chat {} did not come from chat {chat_id}",
+            mark.target_id
+        ));
+    }
+    mark.target_title = super::lineage::bounded_title(&mark.target_title);
+    if mark.noted_at == 0 {
+        mark.noted_at = now_unix();
+    }
+    let mut inner = lock(&chat.inner);
+    if inner.deleted || inner.broken {
+        return Err(format!("chat {chat_id} cannot be written"));
+    }
+    inner.append(ChatEvent::ItemCompleted {
+        item: super::lineage::item(mark),
+    });
+    if inner.broken {
+        return Err(format!(
+            "chat {chat_id}: the lineage marker could not be written"
+        ));
     }
     Ok(())
 }
@@ -1844,6 +1890,7 @@ fn create_identified(
     // other chat creation waits on it. A scope's existing orchestrator is named without
     // reading quota; the locked check below still decides.
     refuse_second_orchestrator(shared, &new)?;
+    check_origin(shared, &mut new)?;
     let account = (shared.providers.account)(
         &shared.home,
         new.provider,
@@ -1955,6 +2002,10 @@ fn create_identified(
         state: ChatState::Starting,
         orchestrator: new.orchestrator,
         carried_over: None,
+        origin: new.origin.map(|mut origin| {
+            origin.source_title = super::lineage::bounded_title(&origin.source_title);
+            origin
+        }),
     };
     info.settle_contributor();
     let provider = info.provider;
@@ -2038,6 +2089,45 @@ fn create_identified(
     // message is in the chat, and the next message tries again.
     let _ = ensure_running(shared, &chat);
     Ok(chat.info())
+}
+
+/// A chat that says where it came from names its source by a bounded id. A native fork starts
+/// from its source chat's own provider thread, so it must be a chat of the same provider that
+/// has that thread now, and a Codex fork runs under the source's account, whose home keeps the
+/// thread.
+fn check_origin(shared: &Shared, new: &mut NewChat) -> Result<(), String> {
+    let Some(origin) = new.origin.as_ref() else {
+        return Ok(());
+    };
+    let bounded = |text: &str| !text.is_empty() && text.len() <= 512;
+    if !bounded(&origin.source_id)
+        || origin
+            .native
+            .as_ref()
+            .is_some_and(|native| !bounded(&native.thread_id))
+    {
+        return Err("a chat's origin names its source and thread by short ids".into());
+    }
+    let Some(native) = origin.native.clone() else {
+        return Ok(());
+    };
+    let source = shared.find(&origin.source_id)?.info();
+    if source.provider != new.provider
+        || source.provider_thread_id.as_deref() != Some(native.thread_id.as_str())
+    {
+        return Err(
+            "a native fork starts from its source chat's own provider thread, with the same provider"
+                .into(),
+        );
+    }
+    if new.provider == Provider::Codex {
+        new.codex_account_id = Some(
+            source
+                .codex_account_id
+                .unwrap_or_else(|| crate::codex_accounts::SYSTEM_DEFAULT_ID.to_owned()),
+        );
+    }
+    Ok(())
 }
 
 /// The title of a chat that was given none.
@@ -2306,7 +2396,11 @@ fn ensure_running_locked(shared: &Shared, chat: &Arc<Chat>) -> Result<(), String
         Ok(config) => config,
         Err(error) => return fail_start(chat, generation, error),
     };
-    if config.resume.is_some() {
+    let native = info
+        .origin
+        .as_ref()
+        .and_then(|origin| origin.native.clone());
+    if config.resume.is_some() || native.is_some() {
         // Opening the prefix is brief. Parsing a long historical log must not
         // block info/subscription requests, cancellation or worker notices.
         let snapshot = { lock(&chat.inner).log.session_history_snapshot() };
@@ -2315,6 +2409,16 @@ fn ensure_running_locked(shared: &Shared, chat: &Arc<Chat>) -> Result<(), String
             Ok(history) => history,
             Err(error) => return fail_start(chat, generation, error),
         };
+    }
+    // A native fork starts from its source's thread until it has a conversation of its own:
+    // a thread it forked before but never used may not have been kept (Claude saves a session
+    // with its first message), and forking again loses nothing.
+    if let Some(native) = native
+        && (config.resume.is_none() || !config.resume_has_history)
+    {
+        config.resume = None;
+        config.resume_has_history = false;
+        config.fork = Some(native);
     }
     let mut inner = lock(&chat.inner);
     if let Some(run) = inner.run.as_mut() {

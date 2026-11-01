@@ -501,6 +501,7 @@ fn create_chat(
         contributor_mode: crate::chat::model::ContributorMode::Off,
         contributor_opt_out: false,
         claude_billing: None,
+        origin: None,
     });
     let info = match created {
         Ok(info) => info,

@@ -72,6 +72,9 @@ pub enum RowKind {
     Request,
     Group,
     Activity,
+    /// Where the conversation went on: a handoff or fork marker (`lineage`). Shown right
+    /// after the item it was cut at, never inside an activity or a group.
+    Lineage,
 }
 
 /// Reference to an artifact on its source item; never a guess from output text.
@@ -500,7 +503,26 @@ fn project_rows(
     options: &ProjectionOptions,
     mut cache: Option<(&mut ProjectionCache, &HashSet<String>)>,
 ) -> Vec<Row> {
-    let mut rows = Vec::new();
+    // Lineage markers have no turn of their own: each shows right after the item it was cut
+    // at, or at the end of the turn written before it, so it never splits a turn, joins a
+    // turn's work or leaves its place when the turn goes on.
+    let markers = place_markers(unique);
+    let conversation;
+    let unique: &[Cow<'_, Item>] = if markers.is_empty() {
+        unique
+    } else {
+        conversation = unique
+            .iter()
+            .filter(|item| !super::lineage::is_marker(item))
+            .cloned()
+            .collect::<Vec<_>>();
+        &conversation
+    };
+    let mut rows: Vec<Row> = markers
+        .iter()
+        .filter(|(place, _)| matches!(place, Place::Start))
+        .map(|(_, marker)| item_row(marker, options))
+        .collect();
     let mut seen_requests = HashSet::new();
     let mut unplaced: Vec<_> = requests
         .iter()
@@ -638,6 +660,27 @@ fn project_rows(
         };
         // Disclosure changes never require cloning the source item bodies.
         apply_disclosures(&mut turn_rows, options);
+        for (place, marker) in &markers {
+            match place {
+                Place::After(at) if turn_items.iter().any(|item| item.id == *at) => {
+                    let mut index = turn_rows
+                        .iter()
+                        .position(|row| holds(row, at))
+                        .map_or(turn_rows.len(), |index| index + 1);
+                    while turn_rows
+                        .get(index)
+                        .is_some_and(|row| row.kind == RowKind::Lineage)
+                    {
+                        index += 1;
+                    }
+                    turn_rows.insert(index, item_row(marker, options));
+                }
+                Place::EndOfTurnOf(id) if turn_items.iter().any(|item| item.id == *id) => {
+                    turn_rows.push(item_row(marker, options));
+                }
+                _ => {}
+            }
+        }
         rows.extend(turn_rows);
         start = end;
     }
@@ -649,6 +692,52 @@ fn project_rows(
     remaining.sort_by_key(|record| record.requested_seq);
     rows.extend(remaining.into_iter().map(request_row));
     rows
+}
+
+/// Where a lineage marker shows (`project_rows`).
+enum Place<'a> {
+    /// Before everything: nothing was written before it.
+    Start,
+    /// Right after the item it was cut at.
+    After(&'a str),
+    /// At the end of the turn of the item written before it.
+    EndOfTurnOf(&'a str),
+}
+
+fn place_markers<'a>(items: &'a [Cow<'_, Item>]) -> Vec<(Place<'a>, &'a Item)> {
+    if !items.iter().any(|item| super::lineage::is_marker(item)) {
+        return Vec::new();
+    }
+    let said: HashSet<&str> = items
+        .iter()
+        .filter(|item| !super::lineage::is_marker(item))
+        .map(|item| item.id.as_str())
+        .collect();
+    let mut previous: Option<&str> = None;
+    let mut placed = Vec::new();
+    for item in items {
+        if super::lineage::is_marker(item) {
+            let at = super::lineage::of(item)
+                .and_then(|mark| mark.at.as_deref())
+                .filter(|at| said.contains(at));
+            let place = match (at, previous) {
+                (Some(at), _) => Place::After(at),
+                (None, Some(previous)) => Place::EndOfTurnOf(previous),
+                (None, None) => Place::Start,
+            };
+            placed.push((place, item.as_ref()));
+        } else {
+            previous = Some(item.id.as_str());
+        }
+    }
+    placed
+}
+
+/// Whether `row` is the row of item `id`, or holds it.
+fn holds(row: &Row, id: &str) -> bool {
+    row.id == id
+        || row.children.iter().any(|child| holds(child, id))
+        || row.comments.iter().any(|comment| holds(comment, id))
 }
 
 fn project_turn(
@@ -708,6 +797,7 @@ fn project_turn(
                             | RowKind::Notice
                             | RowKind::Worker
                             | RowKind::Subagent
+                            | RowKind::Lineage
                     )
                 })
                 .cloned()
@@ -740,6 +830,7 @@ fn project_turn(
                         | RowKind::Final
                         | RowKind::Worker
                         | RowKind::Subagent
+                        | RowKind::Lineage
                 ) {
                     let mut lifted = Vec::new();
                     retain_card_details(&mut row.children, &mut lifted);
@@ -767,6 +858,7 @@ fn project_turn(
                         | RowKind::Request
                         | RowKind::Compaction
                         | RowKind::Final
+                        | RowKind::Lineage
                 ) {
                     outside(vec![child], lifted);
                 } else {
@@ -801,6 +893,7 @@ fn apply_disclosures(rows: &mut [Row], options: &ProjectionOptions) {
                 | RowKind::Compaction
                 | RowKind::Notice
                 | RowKind::Request
+                | RowKind::Lineage
         ) {
             row.open =
                 options
@@ -831,6 +924,7 @@ fn strip_normal_details(rows: &mut [Row]) {
                     | RowKind::Final
                     | RowKind::Worker
                     | RowKind::Subagent
+                    | RowKind::Lineage
             )
         });
         strip_normal_details(&mut row.children);
@@ -1021,7 +1115,7 @@ fn flush(rows: &mut Vec<Row>, run: &mut Vec<Row>, turn: &str, options: &Projecti
 }
 
 fn eligible(item: &Item, approval_gated: bool) -> bool {
-    if super::workers::is_marker(item) {
+    if super::workers::is_marker(item) || super::lineage::is_marker(item) {
         return false;
     }
     // A forward-compatible hint must never bypass the command-body check.
@@ -1060,6 +1154,9 @@ fn row_kind(item: &Item) -> RowKind {
     }
     if item.presentation.subagent.is_some() {
         return RowKind::Subagent;
+    }
+    if super::lineage::is_marker(item) {
+        return RowKind::Lineage;
     }
     match &item.body {
         ItemBody::UserMessage { .. } => RowKind::User,
@@ -1119,9 +1216,11 @@ fn item_row(item: &Item, options: &ProjectionOptions) -> Row {
         RowKind::Todo => "Todo",
         RowKind::Compaction => "Context compacted",
         RowKind::Notice => "Notice",
+        RowKind::Lineage => "Continued in another chat",
         _ => "Used tool",
     }
     .to_string();
+    let title = super::lineage::of(item).map_or(title, |mark| mark.label_in(options.provider));
     let target = if let ItemBody::Command { command, .. } = &item.body {
         Some(command.clone())
     } else {
@@ -1160,6 +1259,7 @@ fn item_row(item: &Item, options: &ProjectionOptions) -> Row {
                 | RowKind::Commentary
                 | RowKind::Compaction
                 | RowKind::Notice
+                | RowKind::Lineage
         ) && options.disclosure.is_open(&item.id, options.mode, false),
         failed_count: usize::from(failed),
         running,
@@ -1221,6 +1321,7 @@ fn failed(item: &Item) -> bool {
 
 fn is_work(item: &Item) -> bool {
     !super::workers::is_marker(item)
+        && !super::lineage::is_marker(item)
         && !matches!(
             item.body,
             ItemBody::UserMessage { .. }

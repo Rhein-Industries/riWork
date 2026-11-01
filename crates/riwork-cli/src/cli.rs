@@ -126,10 +126,13 @@ riwork chat events CHAT_ID [--since N] [--wait-ms N] [--max N] [--max-bytes N] [
                                         Read a chat's events after N, waiting up to M ms for the first
 riwork chat command CHAT_ID (--command-json JSON | -- JSON) [--json]   Send one chat command (JSON)
 riwork chat stop CHAT_ID                Stop a chat's provider process and keep its history
+riwork chat fork CHAT_ID [--at ITEM_ID] [--provider codex|claude|muse] [--model NAME] [--effort LEVEL]
+                [--mode supervised|auto-edit|full|plan] [--title TEXT] [--json]
+                                        A new chat that goes on from a point of this one
 riwork handoff [--from SHELL_OR_CHAT_ID] --to shell|chat --provider codex|claude|grok|muse
                [--model NAME] [--effort LEVEL] [--account LABEL_OR_ID]
                [--mode supervised|auto-edit|full|plan] [--contributor-on]
-               [--context transcript|summary] [--note TEXT]
+               [--context transcript|summary] [--at ITEM_ID] [--note TEXT]
                                         Pass a conversation to a new shell or chat
 riwork orchestrator [--project ID]       Show the selected orchestrator status
 riwork orchestrator create [--project ID | --cwd PATH] [--command CMD] [--mode automatic|terminal|chat]
@@ -2558,6 +2561,7 @@ fn chat_client_command(
                 Ok(format!("{}\n", socket.display()))
             }
         }
+        "fork" => chat_fork(home, args, json, ensure),
         "open" => {
             let id = take_single(args, "chat open CHAT_ID")?;
             let socket = crate::chat::client::socket_path(home);
@@ -2696,6 +2700,7 @@ fn chat_client_command(
                 contributor_opt_out,
                 // A Claude chat bills as Settings say.
                 claude_billing: None,
+                origin: None,
             })?;
             if let Some(wanted) = account.as_deref()
                 && chat.codex_account_id.as_deref() != Some(wanted)
@@ -3001,6 +3006,119 @@ const CHAT_MODELS_USAGE: &str =
     "Usage: riwork chat models --provider codex|claude|muse [--project ID] [--json]";
 
 const CHAT_NEW_USAGE: &str = "Usage: riwork chat new --provider codex|claude|muse [--project ID | --worktree ID] [--mode supervised|auto-edit|full|plan] [--model NAME] [--effort LEVEL] [--fast] [--contributor-on | --contributor-opt-out] [--title TEXT] [--account LABEL_OR_ID]";
+
+const CHAT_FORK_USAGE: &str = "Usage: riwork chat fork CHAT_ID [--at ITEM_ID] [--provider codex|claude|muse] [--model NAME] [--effort LEVEL] [--mode supervised|auto-edit|full|plan] [--title TEXT] [--json]";
+
+/// `riwork chat fork`: a new chat that goes on from a point of another (`handoff::fork`),
+/// with the provider's own copy of the thread when it reproduces the point, else a handoff
+/// document cut there. Both chats say so: the fork's origin, the source's marker.
+fn chat_fork(
+    home: &Path,
+    mut args: Vec<String>,
+    json: bool,
+    ensure: &dyn Fn(&Path) -> Result<PathBuf, String>,
+) -> Result<String, String> {
+    use crate::{
+        chat::model::{ApprovalMode, LineageContext, Provider},
+        handoff::fork::{ForkRequest, fork},
+    };
+    // Free text first: a title or a model may look like an option.
+    let title = match take_verbatim_option(&mut args, "--title")? {
+        Some(title) => title_setting("--title", title)?,
+        None => None,
+    };
+    let model = take_verbatim_option(&mut args, "--model")?
+        .map(|model| model_setting("--model", model))
+        .transpose()?;
+    let effort = take_verbatim_option(&mut args, "--effort")?
+        .map(|effort| effort_setting("--effort", effort))
+        .transpose()?;
+    let at = take_verbatim_option(&mut args, "--at")?
+        .map(handoff::item_setting)
+        .transpose()?;
+    let provider = match take_option(&mut args, "--provider")?.as_deref() {
+        None => None,
+        Some("codex") => Some(Provider::Codex),
+        Some("claude") => Some(Provider::Claude),
+        Some("muse") => Some(Provider::Muse),
+        Some(_) => return Err(CHAT_FORK_USAGE.to_owned()),
+    };
+    let mode = match take_option(&mut args, "--mode")?.as_deref() {
+        None => None,
+        Some("supervised") => Some(ApprovalMode::Supervised),
+        Some("auto-edit") => Some(ApprovalMode::AutoEdit),
+        Some("full") => Some(ApprovalMode::Full),
+        Some("plan") => Some(ApprovalMode::Plan),
+        Some(_) => return Err("--mode must be supervised, auto-edit, full, or plan".into()),
+    };
+    let selector = take_single(args, CHAT_FORK_USAGE)?;
+    let socket = ensure(home)?;
+    let chat_id = resolve_chat(
+        &mut crate::chat::client::Client::connect(&socket)?,
+        &selector,
+    )?;
+    let ensured = move || Ok(socket.clone());
+    let env = crate::handoff::Env {
+        home,
+        ensure: &ensured,
+        account: &crate::codex_accounts::resolve_account,
+        timing: crate::handoff::summary::Timing::DEFAULT,
+    };
+    let outcome = fork(
+        &env,
+        ForkRequest {
+            chat_id: chat_id.clone(),
+            at,
+            provider,
+            model,
+            effort,
+            mode,
+            title,
+        },
+        &|step| eprintln!("{step}"),
+    )?;
+    let context = match outcome.context {
+        LineageContext::Native => "native",
+        LineageContext::Summary => "summary",
+        _ => "transcript",
+    };
+    if json {
+        let mut value = json!({
+            "id": outcome.chat.id,
+            "source_id": chat_id,
+            "title": outcome.chat.title,
+            "provider": outcome.chat.provider,
+            "model": outcome.chat.model,
+            "context": context,
+            "at": outcome.at,
+            "document": outcome.document,
+        });
+        if let Some(reason) = &outcome.fallback {
+            value["fallback"] = json!(reason);
+        }
+        return json_text(&value);
+    }
+    let mut text = format!(
+        "Forked chat {chat_id} into {} \"{}\" ({})\n",
+        outcome.chat.id,
+        outcome.chat.title,
+        match outcome.context {
+            LineageContext::Native => "the provider's own copy of the thread".to_owned(),
+            _ => format!(
+                "the conversation as recorded, in {}",
+                outcome
+                    .document
+                    .as_ref()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_default()
+            ),
+        }
+    );
+    if let Some(reason) = &outcome.fallback {
+        text.push_str(&format!("{reason}\n"));
+    }
+    Ok(text)
+}
 
 /// A chat's ID as typed: whole, or a unique prefix of at least eight characters.
 fn resolve_chat(

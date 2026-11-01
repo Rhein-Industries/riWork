@@ -759,6 +759,11 @@ export function Workspace(props: WorkspaceProps) {
         terminalTargets={terminalTargets} onCopyToTerminal={copyToTerminal}
         onLink={(target, line) => openLink({ target, line, kind: "file", action: "open" })}
         onOpenWorker={(id, kind) => { void openWorker(id, kind); }}
+        onReplace={(id) => {
+          if (findPanel(snapshot(), chatProps.panelId)) action(() => session.replaceChat(chatProps.panelId, id));
+          else showCreatedSession("chat", id);
+        }}
+        onHandoff={() => { const id = chatId(); if (id && !localOnly() && !busy() && !switching()) openSetup({ kind: "handoff", sourceId: id }); }}
         onApiKeySettings={() => { revealSettingsKey = !settingsControl; action(() => session.openPanel("settings")); settingsControl?.revealApiKey(); }}
         onEditMemo={(owner) => {
           if (owner !== projectId()) { notice.set("Open that chat's project to edit its memo."); return; }

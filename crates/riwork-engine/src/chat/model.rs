@@ -175,6 +175,96 @@ pub struct ChatInfo {
     /// which the agent is given at every start. A chat that never switched has none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub carried_over: Option<CarriedOver>,
+    /// Where the chat came from: the chat or terminal it was handed off from, or the chat it
+    /// was forked from (`handoff`). RiWork's own record, never sent to the provider. A reader
+    /// from before it skips it, and an origin this build cannot read is none: it never makes
+    /// the chat unreadable.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "optional_metadata"
+    )]
+    pub origin: Option<ChatOrigin>,
+}
+
+/// How a chat came from another conversation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LineageKind {
+    /// Taken over by another agent (`riwork handoff`, Continue with another agent).
+    Handoff,
+    /// A copy that goes its own way from a point of the conversation (`riwork chat fork`).
+    Fork,
+    #[serde(other)]
+    Unknown,
+}
+
+/// What the new chat got of the conversation it came from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LineageContext {
+    /// A handoff document with the conversation as it was recorded.
+    Transcript,
+    /// A handoff document with the summary the source agent wrote.
+    Summary,
+    /// The provider's own copy of its thread or session (Codex `thread/fork`, Claude
+    /// `--fork-session`).
+    Native,
+    #[serde(other)]
+    Unknown,
+}
+
+/// What a chat came from, as `ChatInfo::origin` keeps it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceKind {
+    #[default]
+    Chat,
+    Shell,
+    #[serde(other)]
+    Unknown,
+}
+
+/// Where a chat came from (`ChatInfo::origin`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChatOrigin {
+    pub kind: LineageKind,
+    /// The chat's or terminal's id.
+    pub source_id: String,
+    #[serde(default)]
+    pub source_kind: SourceKind,
+    /// Its title when the new chat was made.
+    #[serde(default)]
+    pub source_title: String,
+    /// The agent that had the conversation: `codex`, `claude`, `muse` or `grok`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// The item of the source's transcript the conversation was cut at, that item
+    /// included; none for the whole of it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<String>,
+    /// The handoff document the chat started from (`RIWORK_HOME/handoffs/<id>.md`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handoff_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub document: Option<PathBuf>,
+    pub context: LineageContext,
+    /// A native fork: the provider thread the chat's agent starts from, until the chat has
+    /// a conversation of its own (`host`). None for a chat that started from a document.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native: Option<NativeFork>,
+}
+
+/// The provider thread a forked chat starts from (`ChatOrigin::native`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NativeFork {
+    /// The source's Codex thread or Claude session.
+    pub thread_id: String,
+    /// The last turn the fork keeps (Codex `lastTurnId`); none for the whole thread.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub through_turn: Option<String>,
 }
 
 impl ChatInfo {
@@ -272,6 +362,10 @@ pub struct NewChat {
     /// field and makes the chat follow the Settings default, as chats did then.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub claude_billing: Option<ClaudeBilling>,
+    /// Where the chat comes from (`ChatInfo::origin`): a handoff or a fork. A host from
+    /// before it reads past the field and makes a chat without one, which starts afresh.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<ChatOrigin>,
 }
 
 /// A model the provider offers, as its driver found it out (Codex `model/list`,
@@ -663,6 +757,14 @@ pub struct Presentation {
         deserialize_with = "super::workers::lenient"
     )]
     pub worker: Option<super::workers::WorkerRef>,
+    /// Where this chat's conversation went on in another chat (`lineage`): a handoff or a
+    /// fork. Additive like `worker`, and left out when unreadable.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "optional_metadata"
+    )]
+    pub lineage: Option<super::lineage::LineageMark>,
     #[serde(
         default,
         deserialize_with = "optional_metadata",
@@ -701,6 +803,7 @@ impl Presentation {
         self.tool.is_none()
             && self.subagent.is_none()
             && self.worker.is_none()
+            && self.lineage.is_none()
             && self.phase.is_none()
             && self.images.is_empty()
             && self.attachments.is_empty()
@@ -1916,6 +2019,7 @@ mod tests {
             state: ChatState::Idle,
             orchestrator: None,
             carried_over: None,
+            origin: None,
         };
         let mut t = Transcript::default();
         t.apply(&ChatEvent::Info {

@@ -45,6 +45,12 @@ pub struct Read {
 
 /// The conversation of a chat, from its log on disk.
 pub fn read_chat(home: &Path, chat_id: &str) -> Result<Read, String> {
+    read_chat_through(home, chat_id, None)
+}
+
+/// The conversation of a chat up to and including its item `at`, or the whole of it. The
+/// markers of the chats it went on in (`lineage`) are RiWork's own and never part of it.
+pub fn read_chat_through(home: &Path, chat_id: &str, at: Option<&str>) -> Result<Read, String> {
     let dir = crate::chat::log::chat_dir(home, chat_id).ok_or("invalid chat id")?;
     let envelopes = crate::chat::log::read_envelopes(&dir)
         .map_err(|error| format!("Cannot read the chat's event log: {error}"))?;
@@ -52,8 +58,22 @@ pub fn read_chat(home: &Path, chat_id: &str) -> Result<Read, String> {
     for envelope in &envelopes {
         transcript.apply_sequenced(envelope.seq, &envelope.event);
     }
+    let items = match at {
+        Some(at) => {
+            let end = transcript
+                .items
+                .iter()
+                .position(|item| item.id == at)
+                .ok_or_else(|| format!("The chat has no item {at} to cut its conversation at."))?;
+            &transcript.items[..=end]
+        }
+        None => &transcript.items[..],
+    };
     let mut entries = Vec::new();
-    for item in &transcript.items {
+    for item in items {
+        if crate::chat::lineage::is_marker(item) {
+            continue;
+        }
         // A worker this chat started: who, what, and its recorded result.
         if let Some(worker) = crate::chat::workers::of(item) {
             let mut note = crate::chat::workers::summary(worker);

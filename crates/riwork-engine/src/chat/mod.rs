@@ -22,6 +22,8 @@
 //!   a chat that is not running that provider yet.
 //! - `workers` puts RiWork's own workers (terminals and chats a chat started) in that
 //!   chat's timeline: a marker item the host writes, overlaid with live inventory state.
+//! - `lineage` is the marker the host writes into a chat whose conversation went on in
+//!   another chat (a handoff or a fork); the new chat keeps its origin in its info.
 //! - `suggest` is what a message box offers while a `/` command or an `@` file is
 //!   typed, for the desktop and (through `riwork chat suggestions`) the phone.
 
@@ -43,6 +45,7 @@ pub mod delegation;
 pub mod driver;
 pub mod host;
 pub mod launch;
+pub mod lineage;
 pub mod log;
 pub mod media;
 pub mod model;

@@ -271,6 +271,7 @@ pub fn deliver_new(
             contributor_opt_out: false,
             claude_billing: None,
             orchestrator: None,
+            origin: None,
         },
     ) {
         Ok(chat) => chat,

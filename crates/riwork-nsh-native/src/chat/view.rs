@@ -12,9 +12,11 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use riwork_engine::chat::{
+    lineage,
     model::{
-        Approval, ApprovalKind, ChatEvent, ChatState, Decision, Delta, Item, ItemBody, ItemStatus,
-        NoticeLevel, Provider, Question, StepStatus, Transcript, TurnOutcome,
+        Approval, ApprovalKind, ChatEvent, ChatOrigin, ChatState, Decision, Delta, Item, ItemBody,
+        ItemStatus, LineageContext, LineageKind, NoticeLevel, Provider, Question, SourceKind,
+        StepStatus, Transcript, TurnOutcome,
     },
     projection::{
         self, DisclosureState, DisplayMode, ProjectionCache, ProjectionOptions, Row, RowKind,
@@ -26,9 +28,9 @@ use serde_json::Value;
 use super::{
     activity_summary,
     dto::{
-        AppendDto, ApprovalDto, BodyDto, ChatDelivery, ChatPanelDto, ChoiceDto, NoticeDto,
-        OptionDto, PickRowDto, PromptDto, QuestionDto, RowDto, SpliceDto, StepDto, ToolbarDto,
-        decision_name, wire_name,
+        AppendDto, ApprovalDto, BodyDto, ChatDelivery, ChatPanelDto, ChoiceDto, LineageRowDto,
+        NoticeDto, OptionDto, OriginDto, PickRowDto, PromptDto, QuestionDto, RowDto, SpliceDto,
+        StepDto, ToolbarDto, decision_name, wire_name,
     },
     feed::Link,
     markdown::StreamingDocument,
@@ -278,6 +280,9 @@ pub struct ChatView {
     visible: Vec<Row>,
     rows: Vec<RowDto>,
     worker_rows: Vec<super::workers::ChatWorker>,
+    /// The first message of a chat made from a handoff document (its instructions and the
+    /// document), which shows folded.
+    handoff_message: Option<String>,
     file_counts: super::review::FileCounts,
     /// Stable transcript positions of notices; streaming messages never enter
     /// this index, so banners and billing do not traverse message history.
@@ -312,6 +317,7 @@ impl ChatView {
             visible: Vec::new(),
             rows: Vec::new(),
             worker_rows: Vec::new(),
+            handoff_message: None,
             file_counts: super::review::FileCounts::default(),
             notices: BTreeSet::new(),
             billing: super::billing::Projection::default(),
@@ -579,6 +585,7 @@ impl ChatView {
 
     fn reproject(&mut self, invalidated: &HashSet<String>) {
         self.worker_rows = super::workers::reported(&self.fold.transcript);
+        self.handoff_message = handoff_message(&self.fold.transcript);
         self.stats.projection_runs += 1;
         let options = self.options();
         let mut rows = self
@@ -684,6 +691,19 @@ impl ChatView {
             request_id: row.request_id.clone(),
             status: item.map(|item| wire_name(&item.status)),
             has_body: has_body(row, item),
+            lineage: item.and_then(lineage::of).map(|mark| LineageRowDto {
+                kind: wire_name(&mark.kind),
+                chat_id: mark.target_id.clone(),
+                title: mark.target_title.clone(),
+                provider: mark.provider.clone(),
+                model: mark.model.clone(),
+            }),
+            handoff_bytes: item
+                .filter(|item| self.handoff_message.as_deref() == Some(item.id.as_str()))
+                .and_then(|item| match &item.body {
+                    ItemBody::UserMessage { text } => Some(text.len() as u64),
+                    _ => None,
+                }),
         }
     }
 
@@ -1009,8 +1029,63 @@ impl ChatView {
                 if let Some(cost) = usage.cost_usd { text.push_str(&format!(" · estimated ${cost:.3}")); }
                 text
             }),
+            origin: info.and_then(|info| info.origin.as_ref()).and_then(origin_dto),
         }
     }
+}
+
+/// The first message of a chat made from a handoff document: what `handoff` sends first,
+/// the instructions and the document. A chat forked natively, or made otherwise, has none.
+fn handoff_message(transcript: &Transcript) -> Option<String> {
+    let origin = transcript.info.as_ref()?.origin.as_ref()?;
+    if origin.document.is_none() || origin.native.is_some() {
+        return None;
+    }
+    transcript
+        .items
+        .iter()
+        .find(|item| matches!(item.body, ItemBody::UserMessage { .. }))
+        .map(|item| item.id.clone())
+}
+
+/// What a chat's header says of where it came from.
+fn origin_dto(origin: &ChatOrigin) -> Option<OriginDto> {
+    let kind = match origin.kind {
+        LineageKind::Handoff => "handoff",
+        LineageKind::Fork => "fork",
+        LineageKind::Unknown => return None,
+    };
+    let context = match origin.context {
+        LineageContext::Transcript => "transcript",
+        LineageContext::Summary => "summary",
+        LineageContext::Native => "native",
+        LineageContext::Unknown => "transcript",
+    };
+    let title = lineage::quoted(&origin.source_title);
+    let shell = origin.source_kind == SourceKind::Shell;
+    let agent = lineage::agent_label(origin.provider.as_deref(), origin.model.as_deref());
+    let label = match (origin.kind, shell, agent) {
+        (LineageKind::Fork, ..) if origin.context == LineageContext::Native => {
+            format!("Forked from {title}")
+        }
+        (LineageKind::Fork, _, Some(agent)) => format!("Forked from {title} · {agent} · {context}"),
+        (LineageKind::Fork, _, None) => format!("Forked from {title} · {context}"),
+        (_, true, _) => format!("Continued from {} · {context}", origin.source_title.trim()),
+        (_, false, Some(agent)) => format!("Continued from {agent} — {title} · {context}"),
+        (_, false, None) => format!("Continued from {title} · {context}"),
+    };
+    Some(OriginDto {
+        kind: kind.into(),
+        source_id: origin.source_id.clone(),
+        source_kind: if shell { "shell" } else { "chat" }.into(),
+        source_title: origin.source_title.clone(),
+        label,
+        context: context.into(),
+        document: origin
+            .document
+            .as_ref()
+            .map(|path| path.to_string_lossy().into_owned()),
+    })
 }
 
 fn item_label(item: &Item) -> &'static str {
@@ -1029,6 +1104,9 @@ fn item_label(item: &Item) -> &'static str {
 }
 
 fn item_text(item: &Item) -> String {
+    if let Some(mark) = lineage::of(item) {
+        return mark.label();
+    }
     match &item.body {
         ItemBody::UserMessage { text } => typed_text(text),
         ItemBody::AgentMessage { text } | ItemBody::Reasoning { text } | ItemBody::Notice { text, .. } => text.clone(),
@@ -1061,6 +1139,7 @@ pub fn is_disclosure(kind: RowKind) -> bool {
             | RowKind::Compaction
             | RowKind::Notice
             | RowKind::Request
+            | RowKind::Lineage
     )
 }
 
@@ -1075,7 +1154,7 @@ fn has_body(row: &Row, item: Option<&Item>) -> bool {
         | RowKind::Reasoning
         | RowKind::Notice => true,
         RowKind::Compaction | RowKind::Request | RowKind::Group | RowKind::Activity => false,
-        RowKind::Worker | RowKind::Subagent => false,
+        RowKind::Worker | RowKind::Subagent | RowKind::Lineage => false,
         _ => row.open && !matches!(item.body, ItemBody::Compaction),
     }
 }

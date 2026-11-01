@@ -11,7 +11,11 @@
 //!   --permission-prompt-tool stdio --include-partial-messages
 //!   --allow-dangerously-skip-permissions --permission-mode <mode>
 //!   [--model M] [--effort E] [--settings '{"fastMode":true}'] (--resume ID | --session-id UUID)
+//!   [--resume SOURCE --fork-session]
 //! ```
+//!
+//! The last two are a native fork's (`DriverConfig::fork`): until its session is used, the
+//! process starts as a copy of the source session under a session id of its own.
 //!
 //! with `CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1`, which makes it announce
 //! `running` and `idle`. `idle` is the end-of-turn signal (`result` is missing
@@ -668,6 +672,10 @@ struct Core {
     session_id: String,
     /// Whether the session has a transcript on disk to resume from.
     session_used: bool,
+    /// A native fork's source session (`DriverConfig::fork`): until the session is used, a
+    /// process starts it as a copy of that one (`--resume <source> --fork-session`) under
+    /// `session_id`.
+    fork_from: Option<String>,
     settings: Settings,
     /// The settings the running process is known to have: those it was started
     /// with, and changes it accepted since. A refused change goes back to these.
@@ -749,6 +757,11 @@ impl Core {
             dead: None,
             retiring: None,
             session_used: config.resume.is_some(),
+            fork_from: config
+                .fork
+                .as_ref()
+                .filter(|_| config.resume.is_none())
+                .map(|fork| fork.thread_id.clone()),
             session_id,
             settings: Settings {
                 permission_mode: permission_mode(config.approval_mode).to_owned(),
@@ -2632,6 +2645,11 @@ fn launch_args(core: &Core) -> Vec<String> {
         "--session-id"
     };
     args.extend([flag.into(), core.session_id.clone()]);
+    // A fork not used yet copies its source session into this one: the CLI takes
+    // `--session-id` beside `--resume` only with `--fork-session` (checked in 2.1.316).
+    if let Some(source) = core.fork_from.as_ref().filter(|_| !core.session_used) {
+        args.extend(["--resume".into(), source.clone(), "--fork-session".into()]);
+    }
     args
 }
 
