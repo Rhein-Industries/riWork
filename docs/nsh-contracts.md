@@ -879,6 +879,88 @@ fallback, must therefore:
 
 This keeps the frozen props/events/commands unchanged whichever runtime passes the gate.
 
+### 3.8 Amendment 1.1 (2026-11-01): iPhone and iPad
+
+Schema 1.1 adds what the iOS host needs and changes nothing above: a schema-1 app and the Mac view
+work as before. The declaration lives in `apps/riwork/terminal_view.ts` (it imports nothing
+Mac-only, so the mobile bundle loads it); its lists are now:
+
+```ts
+props:  ["target", "visible", "pinned", "focusOnAttach", "colors", "frozen", "fontScale"],
+events: ["state", "focusChange", "linkOpen", "drop", "inputRefused", "findResult", "findOpen", "command", "title"],
+```
+
+**Mac.** Ignores `fontScale` (its catch-all, `crates/riwork-nsh-terminal/src/macos.rs` `set_prop`)
+and never emits `command` or `title`. Nothing else changes.
+
+**iOS.** `ios/RiWorkRemote/NSHTerminalComponent.swift` registers `riwork.terminal` on the
+`NshAppView`. It hosts the capture terminal the native project screen shows (`SessionConsole`:
+`PhoneTerminal`/`TerminalSurface` on iPhone, its two-axis view on iPad), over the same
+`RemoteModel`: the `shell.output` long poll with `delta`, `shell.keys` through the typing worker,
+the viewport lease and resize, history paging, the line composer with its saved uncertain-outcome
+block, dictation (refused while the Mac's `mic` flag is off), selection and copy, link detection,
+font size, IME and the second key list. None of it crosses into JS. There is no libghostty and no
+`pty.*` on iOS.
+
+| Prop | iOS |
+|---|---|
+| `target` | Only `{kind: "remote", desktopId, shellId}`, and only on the interactive host (`relay.select`). The view puts that shell on screen the way its tab is chosen: the global orchestrator's on the Global scope; a project shell after reading its project's lists (found from the lists already read, the dashboard, or each project's `shells.list`). It never creates or closes a session and never writes the Mac's tab strip: a worker whose shared tab is hidden is not opened (the app opens it through its `tabs` port, then sends `reattach`), and meanwhile `state` is `failed` "Open this worker's tab to see it." `{kind: "local"}` shows "Local terminals run on the Mac" and emits `state: failed` with that message. |
+| `visible` | `true`: the shell is polled (the long poll) and sized (the viewport lease) while it is on screen. `false`: polling stops and the lease is released at once. |
+| `pinned` | Accepted, no effect: the model keeps the last screen of each shell it showed. |
+| `focusOnAttach` | Takes the keyboard once on the first `attached`. Otherwise the device's own focus setting applies (a hardware keyboard may take it). |
+| `colors` | Accepted, not applied: the view draws in the theme `ThemeStore` resolved, the same one `platform.theme` pushes. |
+| `frozen` | Takes no input and gives the keyboard back. Nothing takes it meanwhile: not a tap, the device's focus setting, a hardware keyboard arriving, the app returning, `focus`, `paste` or `selectAll` (`focus` waits for the thaw). When thawed it is taken again if it was held, otherwise the device's focus setting decides, as after a sheet. The view keeps drawing (UIKit overlays draw above it). |
+| `fontScale` (1.1) | `number`, default 1: a factor over the device's saved terminal size (`riwork.terminalFontSize`), for drawing and for the grid the lease asks for. The saved size is not changed; a pinch saves the size it is at scale 1. |
+
+Events:
+- **`state`**: `attaching` (connecting, or putting the shell on screen), `attached` (its live
+  screen), `reconnecting` (the link went, a scheduled reconnect, or the app paused in the
+  background; the last screen stays), `ended` (its process exited), `gone` (closed on the Mac, or
+  in no project of the host), `failed` with `message` (not paired, another host is the interactive
+  one, disconnected, its worker tab is hidden, or it could not be put on screen after three tries
+  per connection). `detached` with "Shown in another pane." when another `riwork.terminal` on this
+  device is live: the model has one terminal, and the one most recently shown, focused or tapped is
+  live. `claimed` is not used.
+- **`focusChange`**: the key view or the line composer took or gave up the keyboard.
+- **`linkOpen`**: a tapped link in the output: `{action: "open", kind: "url", target}`. The view
+  does not open it; the app does (NSH `openUrl`).
+- **`inputRefused`**: typing the shell could not take (`reason`): the input buffer is full, or the
+  terminal takes no input now.
+- **`findResult`**: `{total: 0, current: 0}` in answer to any find command: there is no search
+  over captured screens yet.
+- **`title`** (1.1): `{title}` when the title of the shell on screen changes (as the tab strip
+  shows it).
+- **`command`** (1.1): `{id}`, an app chord typed while the terminal holds the keyboard; the app
+  acts on it. The native project screen's own handling of these does not run for this view.
+
+| Chord | `id` |
+|---|---|
+| ⌘1 … ⌘9, Clicks Tab 1 … 9 | `tab.select.1` … `tab.select.9` |
+| ⌘⇧[ / ⌘⇧] | `tab.prev` / `tab.next` |
+| ⌘N, Clicks Tab N | `terminal.new` |
+| ⌘⇧P | `nav.back` |
+| Clicks Tab P | `nav.projects` |
+| ⌘⇧, | `display.open` |
+| ⌘⇧O | `picker.open` |
+| Clicks Tab M | `chat.model` |
+
+⌘K (the hotkey menu), ⌘/ (the hotkey help), Clicks Tab E, Q, W/A/S/D, K and H, and any custom
+terminal hotkey stay inside the view, as on the native screen; a custom hotkey on one of the
+chords above keeps it and no `command` is sent. `drop` and `findOpen` are not emitted.
+
+Commands: `focus` (also tries again a terminal that could not be put on screen), `blur`,
+`reattach` (reconnects the host, or reads its lists again and puts the shell back on screen),
+`copy` (the screen and its scrollback, as the native menu's Copy screen text: the capture
+terminal has no selection to copy), `paste` (the clipboard into the shell, files and a lone
+picture through upload as the key view's paste; into the composer in line-composer mode),
+`selectAll` (the composer's line; nothing in direct typing), `find`, `findNext`,
+`findPrevious`, `findClose` (answered with an empty `findResult`).
+
+**While a native Swift screen is up** (`nav.present` project or global, a sheet): the model's
+terminal is that screen's. The view changes nothing then, and stops putting its shell on screen if
+it was (reading another project's lists, say); a pushed screen also takes it off the window, and it
+puts its shell back when it returns.
+
 
 ---
 
@@ -1141,6 +1223,10 @@ Decisions the owner has taken since the freeze are recorded, dated, in [§8](#8-
   `Chat.newEditor()`. Composer draft identities come from it instead of a
   per-runtime counter, so two windows can no longer share an owner. No schema,
   wire or draft-file change.
+- 2026-11-01 amendment 1.1: §3.8 adds the iOS host of `riwork.terminal` (remote targets only),
+  the prop `fontScale` and the events `command` and `title`. The Mac ignores `fontScale` and
+  never emits the new events; schema-1 props, events and commands are unchanged. No engine wire
+  or relay protocol changed.
 - v1, 2026-10-27 addendum (task 8fa16659): §8 records three owner decisions (D-OWN-1, D-PERF-1,
   Phase 2 entry gate). No frozen surface, `schema` field or §3.7 metric changed, so there is no
   version bump.

@@ -93,6 +93,8 @@ private enum MobileHostError: LocalizedError {
 private final class NSHMobileHostController: UIViewController {
     private let app = NshAppView()
     private let bridge: NSHMobileBridge
+    /// `riwork.terminal`: the capture terminal for the shared TSX screens.
+    private let terminals: NSHTerminalHost
     private var failureView: UIScrollView?
     private let keyboardHost = KeyCommandHost.HostView()
     private let shortcutOwner = UUID()
@@ -103,6 +105,7 @@ private final class NSHMobileHostController: UIViewController {
 
     init(bridge: NSHMobileBridge) {
         self.bridge = bridge
+        terminals = NSHTerminalHost(model: bridge.model, bridge: bridge)
         super.init(nibName: nil, bundle: nil)
     }
     required init?(coder: NSCoder) { nil }
@@ -167,7 +170,10 @@ private final class NSHMobileHostController: UIViewController {
             self?.shortcutPolicy = eligible
             self?.updateShortcuts()
         }
+        // While a terminal holds the keyboard its Tab prefix, chords and guide are the terminal's (`command` events).
+        terminals.onKeyboardChange = { [weak self] in self?.updateShortcuts() }
         NSHMobileSurfaces.registerSymbols(on: app)
+        terminals.register(on: app)
         loadUI()
     }
 
@@ -183,7 +189,7 @@ private final class NSHMobileHostController: UIViewController {
     }
 
     private func updateShortcuts() {
-        let active = rootVisible && shortcutPolicy && failureView == nil
+        let active = rootVisible && shortcutPolicy && failureView == nil && !terminals.holdsKeyboard
         keyboardHost.active = active
         if active {
             bridge.model.keyboard.tabShortcuts.setAppHandler(owner: shortcutOwner) { [weak bridge] in bridge?.rootShortcut($0) }
@@ -200,7 +206,7 @@ private final class NSHMobileHostController: UIViewController {
         guideObservation = token
         withObservationTracking {
             let model = bridge.model
-            let visible = rootVisible && shortcutPolicy && failureView == nil && model.keyboard.tabShortcuts.guideVisible
+            let visible = rootVisible && shortcutPolicy && failureView == nil && !terminals.holdsKeyboard && model.keyboard.tabShortcuts.guideVisible
             // The guide owns only this bounded panel while visible; its Close
             // button stays usable and the rest of the screen receives touches.
             guide.view.isHidden = !visible

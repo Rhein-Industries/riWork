@@ -70,9 +70,22 @@ extension RemoteModel {
     /// Columns and rows for the current area, layout and font. Requests to the desktop are debounced by `reportViewport`.
     func recomputeViewport() {
         guard let area = terminalArea else { return }
-        let cell = cellMetrics(terminalFontSize)
+        let cell = cellMetrics(shownTerminalFontSize)
         reportViewport(terminalLayout.viewport(width: area.width, height: area.height, cellWidth: cell.width, lineHeight: cell.height))
     }
+    /// The size the terminal is drawn and its grid counted at: the saved size, times a host's `terminalFontScale`.
+    var shownTerminalFontSize: Double {
+        terminalFontScale == 1 ? terminalFontSize : TerminalFontSize.clamped(terminalFontSize * terminalFontScale)
+    }
+    /// `riwork.terminal`'s `fontScale` (1 is the saved size). The saved size itself is not changed.
+    func setTerminalFontScale(_ scale: Double) {
+        let next = scale.isFinite && scale > 0 ? min(4, max(0.25, scale)) : 1
+        guard next != terminalFontScale else { return }
+        terminalFontScale = next
+        recomputeViewport()
+    }
+    /// A size chosen on screen (a pinch) at the current scale, saved as the size it is at scale 1.
+    func setShownTerminalFontSize(_ size: Double) { setTerminalFontSize(terminalFontScale == 1 ? size : size / terminalFontScale) }
     func setTerminalFontSize(_ size: Double) {
         let clamped = TerminalFontSize.clamped(size)
         guard clamped != terminalFontSize else { return }

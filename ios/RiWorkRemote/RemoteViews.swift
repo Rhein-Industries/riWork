@@ -1322,7 +1322,16 @@ struct SessionConsole: View {
     @Environment(\.desktopStyle) private var style
     @Bindable var model: RemoteModel
     @Binding var followOutput: Bool
-    @State private var keyFocus = KeyFocus()
+    /// The keyboard's owner. The project screen keeps its own; `riwork.terminal` passes one so its `focus` and `blur` commands reach it.
+    @State private var keyFocus: KeyFocus
+    /// Typing the shell could not take (a full buffer, a shell that takes no input), for a host that reports it (`riwork.terminal`).
+    private let onInputRefused: (@MainActor (String) -> Void)?
+    init(model: RemoteModel, followOutput: Binding<Bool>, keyFocus: KeyFocus? = nil, onInputRefused: (@MainActor (String) -> Void)? = nil) {
+        _model = Bindable(model)
+        _followOutput = followOutput
+        _keyFocus = State(initialValue: keyFocus ?? KeyFocus())
+        self.onInputRefused = onInputRefused
+    }
     /// The hotkey menu (⌘K) and the editor it leads to.
     @State private var palette = PaletteController()
     /// The hotkey help (⌘/): a reference over the terminal that leaves the keyboard where it is.
@@ -1342,7 +1351,7 @@ struct SessionConsole: View {
     @State private var controlsReveal = 0
     /// The scroll pane's size. The screen is at least this big and pinned top-left, like a real terminal whose empty rows are below.
     @State private var paneSize = CGSize.zero
-    private var fontSize: Double { pinchScale.map { TerminalFontSize.pinched(from: model.terminalFontSize, scale: $0) } ?? model.terminalFontSize }
+    private var fontSize: Double { pinchScale.map { TerminalFontSize.pinched(from: model.shownTerminalFontSize, scale: $0) } ?? model.shownTerminalFontSize }
     private var focused: Bool { model.focusMode }
     private var shellUploadFailed: Bool { model.sessionID.flatMap { model.uploadActivity(for: .shell($0)) }?.failed == true }
     var body: some View {
@@ -1383,7 +1392,7 @@ struct SessionConsole: View {
                                    dictation: DictationController.shared.barState(for: .terminal), onDictate: dictate,
                                    onAttach: openPicker, onPasteFiles: pasteFiles,
                                    keyNames: model.keyNames, onComposition: { composition = $0 },
-                                   onItems: { model.type($0) == .accepted })
+                                   onItems: { typeKeys($0) })
                             .frame(width: 1, height: 1).accessibilityHidden(true)
                     }
                 }
@@ -1494,7 +1503,7 @@ struct SessionConsole: View {
         .animation(.easeInOut(duration: 0.12), value: help.isOpen)
         .overlay(alignment: .topTrailing) {
             if focused {
-                FocusControls(visible: controlsVisible, fontSize: model.terminalFontSize,
+                FocusControls(visible: controlsVisible, fontSize: model.shownTerminalFontSize,
                               smaller: { model.stepTerminalFontSize(-1); revealControls() }, larger: { model.stepTerminalFontSize(1); revealControls() },
                               exit: { model.setFocusMode(false) })
             }
@@ -1511,7 +1520,7 @@ struct SessionConsole: View {
     /// iPhone: vertical only, sticky bottom, history paging, paged swipes for full-screen programs. One scroll view per shell, so
     /// opening or switching to a shell starts at its bottom.
     private var phoneTerminal: some View {
-        PhoneTerminal(model: model, fontSize: fontSize, committedSize: model.terminalFontSize, showCursor: cursorVisible,
+        PhoneTerminal(model: model, fontSize: fontSize, committedSize: model.shownTerminalFontSize, showCursor: cursorVisible,
                       padding: model.terminalLayout.padding)
             .id(model.sessionID)
     }
@@ -1525,7 +1534,7 @@ struct SessionConsole: View {
                         Text(model.lastOutputAt == nil ? "Output will appear when this session is connected." : "The session has no output yet.").foregroundStyle(style.terminalForeground.opacity(0.6)).padding(20)
                     } else {
                         TerminalScreenView(screen: model.styledOutput, showCursor: cursorVisible, fontSize: fontSize,
-                                           committedSize: model.terminalFontSize, boldIsBright: model.boldIsBright)
+                                           committedSize: model.shownTerminalFontSize, boldIsBright: model.boldIsBright)
                             .textSelection(.enabled).padding(model.terminalLayout.padding).accessibilityLabel("Terminal output")
                     }
                     Color.clear.frame(height: 1).id("output-end")
@@ -1543,7 +1552,7 @@ struct SessionConsole: View {
     private var magnify: some Gesture {
         MagnifyGesture()
             .updating($pinchScale) { value, state, _ in state = value.magnification }
-            .onEnded { value in model.setTerminalFontSize(TerminalFontSize.pinched(from: model.terminalFontSize, scale: value.magnification)) }
+            .onEnded { value in model.setShownTerminalFontSize(TerminalFontSize.pinched(from: model.shownTerminalFontSize, scale: value.magnification)) }
     }
     private func revealControls() { controlsReveal += 1 }
     private func terminalTapped() {
@@ -1615,7 +1624,17 @@ struct SessionConsole: View {
     /// A checked dictated line, typed into the shell.
     private func typeDictated(_ line: String, submit: Bool) {
         let items: [KeyItem] = submit ? [.text(line), .key(.enter)] : [.text(line)]
-        if model.type(items) != .accepted { model.error = "The dictated line could not be typed into this terminal." }
+        if !typeKeys(items) { model.error = "The dictated line could not be typed into this terminal." }
+    }
+    /// Keys for the shell; what it cannot take now is reported to a host that asks (`onInputRefused`).
+    private func typeKeys(_ items: [KeyItem]) -> Bool {
+        let acceptance = model.type(items)
+        switch acceptance {
+        case .accepted: return true
+        case .bufferFull: onInputRefused?("Input is waiting to reach the Mac and the buffer is full.")
+        case .unavailable: onInputRefused?("This terminal cannot take input now.")
+        }
+        return false
     }
     private func send() {
         guard let selectedID = model.sessionID else { return }
