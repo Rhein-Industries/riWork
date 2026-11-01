@@ -14,6 +14,23 @@ typedef void (*rw_terminal_detach_cb)(void *, void *, const char *);
 typedef void (*rw_terminal_context_release_cb)(void *);
 void *rw_terminal_new(void *context, rw_terminal_event_cb event,
     rw_terminal_detach_cb detach, rw_terminal_context_release_cb release_context);
+// The view a component gives NSH: an owned NSView that hosts one terminal view
+// at a time, filling it. A Ghostty surface draws into the view it was made
+// with, so a terminal kept for a later component moves between hosts.
+void *rw_terminal_host_new(void);
+// Hosts the terminal view in place of the one hosted before, which the host
+// releases.
+void rw_terminal_host_show(void *host, void *view);
+// Takes an attached terminal whose child still runs out of its host and stops
+// drawing it, keeping its surface, last size and tmux client for a later
+// component. The caller holds its own reference, since the host releases the
+// view. False, changing nothing, when there is no live surface to keep.
+bool rw_terminal_pool(void *);
+// Whether the view has a surface, not closing, whose child still runs.
+bool rw_terminal_live(void *);
+// Exchanges two views' contexts: each then emits to, detaches with and is
+// finally released with the other's.
+void rw_terminal_swap_context(void *, void *);
 bool rw_terminal_attach(void *, const char *command, const char *cwd, const char *config_path);
 void rw_terminal_set_state(void *, bool visible, bool frozen, bool focus_on_attach);
 bool rw_terminal_update_config(void *, const char *config_path);

@@ -24,6 +24,8 @@ interface LocalTerminalProps {
   focusOnAttach: boolean;
   colors: TerminalColors;
   frozen: boolean;
+  /** The window is switching project: see `TerminalProps.keepOnUnmount`. */
+  keepOnUnmount?: boolean;
   onMount?: () => void;
   onControl?: (control: TerminalController) => (() => void) | void;
   onFocus: () => void;
@@ -69,7 +71,7 @@ export function LocalTerminal(props: LocalTerminalProps) {
     <Terminal testID={`terminal:${props.shellId}`} ref={(node) => { view = node; props.onMount?.(); }}
       style={{ flex: 1, minHeight: 0 }} target={{ kind: "local", shellId: props.shellId }}
       visible={props.visible} pinned={props.pinned} focusOnAttach={props.focusOnAttach}
-      colors={props.colors} frozen={props.frozen}
+      colors={props.colors} frozen={props.frozen} keepOnUnmount={props.keepOnUnmount ?? false}
       onState={(next) => { state.set(next); if (next.state === "attached") props.onAttached(); }}
       // AppKit focus notifications can be queued behind a tab selection. A
       // previously shown terminal must not select itself after it was hidden.

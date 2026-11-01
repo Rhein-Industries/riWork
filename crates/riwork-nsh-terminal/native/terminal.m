@@ -99,6 +99,24 @@ static NSDictionary *fixtureRendererContents(CALayer *layer) {
 - (BOOL)pasteBoard:(NSPasteboard *)board drop:(BOOL)drop;
 - (void)showDropOutline:(BOOL)show;
 - (void)findResult;
+- (BOOL)live;
+@end
+
+// The view NSH lays out for one component (`rw_terminal_host_new`). It fills
+// its terminal view, and lets the pointer through wherever that view does not
+// take it (hidden, frozen or closing), as the terminal view alone did.
+@interface RWTerminalHost : NSView
+@end
+@implementation RWTerminalHost
+- (BOOL)isFlipped { return YES; }
+- (void)resizeSubviewsWithOldSize:(NSSize)size {
+    (void)size;
+    for (NSView *view in self.subviews) view.frame = self.bounds;
+}
+- (NSView *)hitTest:(NSPoint)point {
+    NSView *hit = [super hitTest:point];
+    return hit == self ? nil : hit;
+}
 @end
 
 static ghostty_input_mods_e mods(NSEventModifierFlags flags) {
@@ -350,6 +368,7 @@ bool rw_terminal_read_config_colors(const char *path, uint32_t colors[18]) {
 - (BOOL)acceptsFirstResponder { return !abandoned && visible && !frozen && !closing; }
 - (BOOL)acceptsFirstMouse:(NSEvent *)event { (void)event; return YES; }
 - (BOOL)allowsInput { return surface && !closing && !abandoned && visible && !frozen; }
+- (BOOL)live { return surface && !closing && !abandoned && !endedReported && !ghostty_surface_process_exited(surface); }
 - (NSView *)hitTest:(NSPoint)point { return frozen || !visible || closing ? nil : [super hitTest:point]; }
 - (BOOL)becomeFirstResponder {
     if (![self acceptsFirstResponder]) return NO;
@@ -429,12 +448,19 @@ bool rw_terminal_read_config_colors(const char *path, uint32_t colors[18]) {
     gridOriginValid = NO;
     if (!surface || closing) return;
     double scale = self.window.backingScaleFactor ?: NSScreen.mainScreen.backingScaleFactor ?: 1;
-    [CATransaction begin]; [CATransaction setDisableActions:YES]; self.layer.contentsScale = scale; [CATransaction commit];
-    ghostty_surface_set_content_scale(surface, scale, scale);
-    ghostty_surface_set_size(surface, (uint32_t)MAX(1, llround(self.bounds.size.width * scale)),
-        (uint32_t)MAX(1, llround(self.bounds.size.height * scale)));
-    NSNumber *display = self.window.screen.deviceDescription[@"NSScreenNumber"];
-    if (display) ghostty_surface_set_display_id(surface, display.unsignedIntValue);
+    long width = llround(self.bounds.size.width * scale), height = llround(self.bounds.size.height * scale);
+    // NSH gives a placed but hidden tab a zero frame, and a view out of its
+    // window has no screen to scale for. Ghostty would clamp either to a
+    // one-cell grid, the tmux client would shrink the shell's window to 1x1,
+    // and showing the tab again would reflow its whole scrollback. Keep the
+    // last real size until the view has an area in a window again.
+    if (self.window && width >= 1 && height >= 1) {
+        [CATransaction begin]; [CATransaction setDisableActions:YES]; self.layer.contentsScale = scale; [CATransaction commit];
+        ghostty_surface_set_content_scale(surface, scale, scale);
+        ghostty_surface_set_size(surface, (uint32_t)width, (uint32_t)height);
+        NSNumber *display = self.window.screen.deviceDescription[@"NSScreenNumber"];
+        if (display) ghostty_surface_set_display_id(surface, display.unsignedIntValue);
+    }
     [self clearLink]; [self syncVisibility];
     ghostty_surface_refresh(surface);
 }
@@ -443,6 +469,15 @@ bool rw_terminal_read_config_colors(const char *path, uint32_t colors[18]) {
     if (app && atomic_exchange(&dirty, false)) { ghostty_app_tick(app); appTicks++; }
     if (!closing || !surface) return;
     if (detachConfirmed && ghostty_surface_process_exited(surface)) {
+        // Freeing joins the surface's threads on this thread. Switching
+        // projects closes the old one's surfaces just as the new one's attach
+        // here, and their timers fire together, so free one per main-loop turn:
+        // the flag clears behind the main queue's waiting work, and the others
+        // try again on their next tick.
+        static BOOL freedThisTurn;
+        if (freedThisTurn) return;
+        freedThisTurn = YES;
+        dispatch_async(dispatch_get_main_queue(), ^{ freedThisTurn = NO; });
         [self diagnostic:@"child-exit-confirmed" fields:@{}]; [self finishShutdown]; return;
     }
     double now = monotonicSeconds();
@@ -894,6 +929,42 @@ void *rw_terminal_new(void *context, rw_terminal_event_cb event,
     RWTerminalView *view = [[RWTerminalView alloc] initWithFrame:NSMakeRect(0, 0, 640, 400)];
     view->context = context; view->eventCallback = event; view->detachCallback = detach; view->contextRelease = release_context;
     return view;
+}
+void *rw_terminal_host_new(void) {
+    assertMainThread();
+    return [[RWTerminalHost alloc] initWithFrame:NSMakeRect(0, 0, 640, 400)];
+}
+void rw_terminal_host_show(void *raw, void *terminal) {
+    assertMainThread(); RWTerminalHost *host = raw; RWTerminalView *view = terminal;
+    for (NSView *old in [[host.subviews copy] autorelease]) if (old != view) [old removeFromSuperview];
+    if (view.superview == host) return;
+    // Sized before it joins the window, so its surface resizes once, to the
+    // host. Without a window it keeps its last size meanwhile (syncGeometry).
+    view.frame = host.bounds;
+    [host addSubview:view];
+}
+bool rw_terminal_pool(void *raw) {
+    assertMainThread(); RWTerminalView *view = raw;
+    if (![view live]) return false;
+    if (view.window.firstResponder == view) [view.window makeFirstResponder:nil];
+    view->visible = NO; view->focusOnAttach = NO;
+    [view clearLink]; [view unmarkText]; [view showDropOutline:NO];
+    ghostty_surface_mouse_pos(view->surface, -1, -1, GHOSTTY_MODS_NONE);
+    // The component that takes it next starts without a Find bar, so no
+    // search may stay highlighted on its screen.
+    ghostty_surface_binding_action(view->surface, "end_search", strlen("end_search"));
+    view->findTotal = view->findCurrent = -1;
+    // Out of a window it is occluded and keeps its last size (syncGeometry),
+    // so tmux does not reflow the shell while it waits.
+    [view removeFromSuperview];
+    [view syncVisibility];
+    [view diagnostic:@"pooled" fields:@{}];
+    return true;
+}
+bool rw_terminal_live(void *raw) { assertMainThread(); return [(RWTerminalView *)raw live]; }
+void rw_terminal_swap_context(void *a, void *b) {
+    assertMainThread(); RWTerminalView *first = a, *second = b;
+    void *context = first->context; first->context = second->context; second->context = context;
 }
 bool rw_terminal_attach(void *view, const char *command, const char *cwd, const char *path) {
     return [(RWTerminalView *)view attachCommand:command cwd:cwd config:path];

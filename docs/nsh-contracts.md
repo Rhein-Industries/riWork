@@ -961,6 +961,27 @@ terminal is that screen's. The view changes nothing then, and stops putting its 
 it was (reading another project's lists, say); a pushed screen also takes it off the window, and it
 puts its shell back when it returns.
 
+### 3.9 Amendment 1.2 (2026-11-01, awaiting the owner's approval): shells kept across a project switch
+
+Schema 1.2 adds one Mac prop, so that a window switched back to a project shows that project's
+shells at once instead of attaching each anew. Without the prop nothing is kept and every view
+behaves as in schema 1. The declaration's props are now:
+
+```ts
+props:  ["target", "visible", "pinned", "focusOnAttach", "colors", "frozen", "fontScale", "keepOnUnmount"],
+```
+
+| Prop | Meaning |
+|---|---|
+| `keepOnUnmount` (1.2) | `boolean`, default `false`; Mac local shells, ignored on iOS. The app sets it on a window's shell tabs only while it switches that window's project (`Workspace.tsx`, `switching()`). A view that unmounts while it is `true`, attached to its local shell and healthy (not attaching, closing, being replaced, ended, exited, failed, retrying or pinned), is kept instead of released: out of any window, not drawn, at its last size, with its tmux client attached and its shell's claim. The next `riwork.terminal` for that shell, in any window, takes it and reports `attached` with no new client; the kept view's staged images (§3.4) move with it. At most four are kept per process, the most recently shown, each until ten minutes after it was last shown. One whose client exits or whose Ghostty configuration changed, the surplus and the expired go through the §3.7 teardown, at most two per release pass, and all of them on quit. |
+
+This narrows §3.5.2 ("Release = detach") by one case: a view dropped during a project switch keeps
+its client until another view takes it or the pool releases it. Closing a tab, pane or window,
+quit and restart still detach at once, so the §3.7.4 gate (zero leaked clients) and the image
+lifecycle of §3.4 hold for them unchanged. A kept view being released still holds its shell's
+claim until it is freed, as any view in teardown does, so a view of that shell shown meanwhile
+reports `claimed` until then.
+
 
 ---
 
@@ -1227,6 +1248,10 @@ Decisions the owner has taken since the freeze are recorded, dated, in [§8](#8-
   the prop `fontScale` and the events `command` and `title`. The Mac ignores `fontScale` and
   never emits the new events; schema-1 props, events and commands are unchanged. No engine wire
   or relay protocol changed.
+- 2026-11-01 amendment 1.2 (awaiting the owner's approval): §3.9 adds the Mac prop
+  `keepOnUnmount`, set only during a project switch, which keeps healthy local terminals for the
+  project's return. Every other unmount still detaches; no event, command, engine wire or file
+  format changed.
 - v1, 2026-10-27 addendum (task 8fa16659): §8 records three owner decisions (D-OWN-1, D-PERF-1,
   Phase 2 entry gate). No frozen surface, `schema` field or §3.7 metric changed, so there is no
   version bump.
