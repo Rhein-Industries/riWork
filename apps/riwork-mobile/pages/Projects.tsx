@@ -192,9 +192,10 @@ export function ProjectsPage(props: {
     if (features.includes("project_memo")) actions.push({ id: "memo", label: "Memo…" });
     actions.push({ id: "cancel", label: "Cancel", role: "cancel" });
     const choice = await AlertDialog.show({ title: project.name, description: project.root, presentation: "actionSheet", actions }).catch(() => null);
-    if (!alive) return;
+    if (!alive || !choice || choice === "cancel") return;
+    props.onOpen?.();
     if (choice === "new") open(project, true);
-    else if (choice === "open") { props.onOpen?.(); app.openProject(hostId, project, { picker: true }); }
+    else if (choice === "open") app.openProject(hostId, project, { picker: true });
     else if (choice === "chat") void app.present({ name: "newChat", host: hostId, projectId: project.id });
     else if (choice === "memo") void app.present({ name: "memo", host: hostId, projectId: project.id });
   }
@@ -237,7 +238,8 @@ export function ProjectsPage(props: {
       const total = projects().length, hits = query().trim() ? ordered().length : total;
       return `${hits === total ? total : `${hits} of ${total}`} ${total === 1 ? "project" : "projects"}`;
     };
-    const notes = () => !!(app.failure() || failure() || !connected());
+    // What the last call to Swift said is the main area's to show.
+    const notes = () => !!(failure() || !connected());
     return <View testID={`page:projects:${hostId}`} style={{ flex: 1, minHeight: 0, backgroundColor: palette().panel }}>
       <View style={{ minHeight: pt(62), paddingLeft: pt(16), paddingRight: pt(6), flexDirection: "row", alignItems: "center" }}>
         <View style={{ flex: 1, minWidth: 0, gap: pt(1) }}>
@@ -263,7 +265,6 @@ export function ProjectsPage(props: {
         style={{ flex: 1 }} contentStyle={{ paddingHorizontal: pt(8), paddingBottom: keyboardFrame().height + pt(12) }}
         refreshing={loading() && list() == null} onRefresh={refresh} keyboardDismissMode="interactive" keyboardShouldPersistTaps="handled">
         {notes() && <View style={{ paddingHorizontal: pt(4), paddingBottom: pt(10), gap: pt(8) }}>
-          <Failure />
           {failure() && <Note message={list() ? `Saved projects · ${failure()}` : failure()} error={!list()} />}
           {!connected() && <Note message={`${app.link(hostId).label}. ${list() ? "These projects are from the last read." : "Connect to this desktop to list its projects."}`} />}
         </View>}

@@ -54,6 +54,8 @@ export function createPadChrome(app: MobileApp, host: Accessor<string | null>, w
     menuOpen.set(true);
     const choice = await AlertDialog.show({ title: app.hostName(hostId), description: linkText(link), presentation: "actionSheet", actions }).catch(() => null);
     menuOpen.set(false);
+    // Another desktop's window, or All desktops, starts with the sidebar closed over it.
+    if (choice?.startsWith("host:") || choice === "all") overlayOpen.set(false);
     if (choice?.startsWith("host:")) app.openHost(choice.slice("host:".length));
     else if (choice === "all") app.nav.setRoutes([{ page: "hosts" }]);
     else if (choice === "add") void app.present({ name: "addHost" });
@@ -129,7 +131,7 @@ export function HostSwitcher(props: { app: MobileApp; ui: Kit; chrome: PadChrome
     disabled={app.blocked()} onPress={props.chrome.hostMenu} activeStyle={{ backgroundColor: ui.palette().panelActive }}
     style={{ flex: 1, minWidth: 0, height: ui.target(), flexDirection: "row", alignItems: "center", gap: ui.pt(8), paddingHorizontal: ui.pt(10), borderRadius: ui.pt(10) }}>
     <LinkDot ui={ui} link={link()} />
-    <Text numberOfLines={1} style={{ ...ui.text(15), fontWeight: "600", flexShrink: 1 }}>{app.hostName(props.host)}</Text>
+    <Text numberOfLines={1} style={{ ...ui.text(13), fontWeight: "600", flexShrink: 1 }}>{app.hostName(props.host)}</Text>
     <Icon name="down" size={ui.pt(12)} color={ui.palette().muted} />
   </View>;
 }

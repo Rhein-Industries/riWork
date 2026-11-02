@@ -35,8 +35,6 @@ export function PadShell(props: { app: MobileApp; ui: Kit }) {
     const only = hosts.length === 1 ? hosts[0] : selected.length === 1 ? selected[0] : null;
     if (only) untracked(() => app.openHost(only.id));
   });
-  // Open over the main area, the sidebar closes once the main area shows something else.
-  effect(() => { app.top(); untracked(chrome.close); });
 
   function Sidebar(sidebar: { hostId: string }) {
     return <>
