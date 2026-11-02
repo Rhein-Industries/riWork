@@ -27,6 +27,10 @@ struct ChatScreen: View {
     @State private var showNotices = false
     /// Counts requests from the tab row's ⋯ menu to show the notices.
     var openNotices = 0
+    /// The chat is followed (its long poll). The iPad's `riwork.chat` stops it while the page hides the chat, keeping the screen.
+    var follows = true
+    /// The composer may take the keyboard by itself (Settings, "Focus keyboard when a shell opens"): not while the page hides it.
+    var takesFocus = true
     /// The height the screen has now. With the software keyboard up it is under half of the phone, and the bars above the composer must
     /// leave the transcript room, so what they may scroll is a share of it.
     @State private var height: CGFloat = 800
@@ -136,7 +140,7 @@ struct ChatScreen: View {
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height = $0; squeeze = 0 }
         .attachmentPicker($picking, onDone: requestFocus) { model.attach($0, to: .chat(chat.id)) }
         .chatDropTarget(model: model, chat: chat)
-        .task(id: chat.id) { await model.followChat(chat.id) }
+        .task(id: follows ? chat.id : "") { if follows { await model.followChat(chat.id) } }
         .onAppear { requestFocus() }
         .environment(\.chatAssetLoader, { [model, chatID = chat.id] item, reference in
             try await model.loadChatAsset(chatID: chatID, itemID: item, reference: reference)
@@ -226,6 +230,7 @@ struct ChatScreen: View {
     }
     private func interrupt() { Task { await model.interruptChat(chat.id) } }
     private func requestFocus() {
+        guard takesFocus else { return }
         let context = KeyboardFocusContext(hardwareKeyboard: model.keyboard.hardware.isAttached)
         if KeyboardFocusPolicy.decide(setting: model.keyboard.focusSetting, context: context).shouldFocus { focusToken &+= 1 }
     }

@@ -50,18 +50,22 @@ export interface MobileApp {
   connect(hostId: string): void;
   openDashboard(hostId: string): void;
   openProjects(hostId: string): void;
-  openProject(hostId: string, project: { id: string; name: string }, options?: { tab?: string; newTerminal?: boolean }): void;
+  /** Shows the project's page; the page already on screen (the iPad's sidebar) takes the tab, the New terminal
+   * form or the picker of hidden tabs (`picker`, only there) without being made again. */
+  openProject(hostId: string, project: { id: string; name: string }, options?: { tab?: string; newTerminal?: boolean; picker?: boolean }): void;
   /** Leaves the page on top. */
   back(): void;
   /** The page on top's refresh (⌘R, Swift's refresh command): set while it is on top. */
   refresher: { current: (() => void) | null };
-  /** The project page's app chords from Swift (`keyboard.command`, an `app_chords.ts` id: the root key host's
-   * Clicks prefix and ⌘ chords, or the native chat's): set while that page takes keys. */
+  /** The page's app chords from Swift (`keyboard.command`, an `app_chords.ts` id: the root key host's Clicks
+   * prefix and ⌘ chords, or the native chat's): set while a project's page (or the iPad's dashboard) takes keys. */
   chords: { current: ((id: string) => void) | null };
-  /** Swift asked the project page on screen for a tab or the New terminal form (`nav.open`). */
+  /** Swift asked the project page on screen for a tab or the New terminal form (`nav.open`), or the iPad's sidebar did. */
   projectRequest: Accessor<ProjectRequest | null>;
+  /** The iPad opened the only paired desktop at launch, or the person went somewhere first: it is not opened again. */
+  launched: { current: boolean };
 }
-export interface ProjectRequest { projectId: string; tab?: string; newTerminal: boolean; seq: number }
+export interface ProjectRequest { projectId: string; tab?: string; newTerminal: boolean; picker?: boolean; seq: number }
 
 export const HOSTS: Route = { page: "hosts" };
 
@@ -98,7 +102,14 @@ export function createMobileApp(): MobileApp {
     try { install(await host.call("mobile.action", action)); }
     catch (error) { if (alive) failure.set(PortError.from(error).message); }
   }
+  /** The person went somewhere (a page past Hosts, under either shell, or a native screen): the iPad's launch no longer opens a desktop by itself. */
+  const launched = { current: false };
+  effect(() => {
+    const routes = nav.routes();
+    if (routes.length !== 1 || routes[0].page !== "hosts") launched.current = true;
+  });
   async function present(request: PresentRequest): Promise<boolean> {
+    launched.current = true;
     failure.set("");
     try { await device.nav.present(request); return true; }
     catch (error) { if (alive) failure.set(PortError.from(error).message); return false; }
@@ -124,11 +135,18 @@ export function createMobileApp(): MobileApp {
   function openProjects(hostId: string) {
     nav.setRoutes([HOSTS, routesFor(hostId, "dashboard"), routesFor(hostId, "projects")]);
   }
-  function openProject(hostId: string, project: { id: string; name: string }, options: { tab?: string; newTerminal?: boolean } = {}) {
+  /** The project page on screen takes a tab, the form or the picker without being made again. */
+  function request(projectId: string, options: { tab?: string; newTerminal?: boolean; picker?: boolean }) {
+    projectRequest.set({ projectId, tab: options.tab, newTerminal: options.newTerminal === true, picker: options.picker === true, seq: (untracked(projectRequest)?.seq ?? 0) + 1 });
+  }
+  function openProject(hostId: string, project: { id: string; name: string }, options: { tab?: string; newTerminal?: boolean; picker?: boolean } = {}) {
     const current = untracked(top);
-    // The project already on screen (the iPad's column tapped again) stays as it is.
-    if (current.page === "project" && current.host === hostId && current.projectId === project.id && !options.tab && !options.newTerminal) return;
-    const route: ProjectRoute = { page: "project", host: hostId, projectId: project.id, name: project.name, ...options };
+    // The project already on screen (the iPad's sidebar tapped again) stays as it is.
+    if (current.page === "project" && current.host === hostId && current.projectId === project.id) {
+      if (options.tab || options.newTerminal || options.picker) request(project.id, options);
+      return;
+    }
+    const route: ProjectRoute = { page: "project", host: hostId, projectId: project.id, name: project.name, tab: options.tab, newTerminal: options.newTerminal };
     const routes = untracked(() => nav.routes()).filter((entry) => entry.page !== "project");
     const base = routes.some((entry) => entry.page !== "hosts" && entry.host === hostId) ? routes : [HOSTS, routesFor(hostId, "dashboard")];
     nav.setRoutes([...base, route]);
@@ -147,7 +165,7 @@ export function createMobileApp(): MobileApp {
       const current = untracked(top);
       // Already on screen: the page takes the tab (or the form) without being made again.
       if (current.page === "project" && current.host === open.host && current.projectId === open.projectId) {
-        projectRequest.set({ projectId: open.projectId, tab: open.tab, newTerminal: open.newTerminal === true, seq: (untracked(projectRequest)?.seq ?? 0) + 1 });
+        request(open.projectId, { tab: open.tab, newTerminal: open.newTerminal });
       } else openProject(open.host, { id: open.projectId, name: open.name ?? "Project" }, { tab: open.tab, newTerminal: open.newTerminal === true });
     }
   }));
@@ -182,6 +200,7 @@ export function createMobileApp(): MobileApp {
 
   return {
     device, hosts, theme, overview, loaded, failure, nav, top, hostName, act, present, openHost, connect, openDashboard, openProjects, openProject, back, refresher, chords, projectRequest,
+    launched,
     services(hostId) {
       let found = services.get(hostId);
       if (!found) {

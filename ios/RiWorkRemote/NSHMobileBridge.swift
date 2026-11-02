@@ -47,9 +47,13 @@ struct NSHAppChord {
     /// The host of the page on top, and the project of the `project` page: Swift follows it (its lists, the terminal, the native chat).
     private var routeHostID: String?
     private var routeProjectID: String?
-    private(set) var nativePresented = false { didSet { if nativePresented != oldValue { onNativePresentedChange?() } } }
-    /// A native screen came up over the NSH root or went (`riwork.terminal` leaves the model's terminal to it meanwhile).
-    var onNativePresentedChange: (() -> Void)?
+    private(set) var nativePresented = false { didSet { if nativePresented != oldValue { for observer in nativePresentedObservers { observer() } } } }
+    /// Told when a native screen comes up over the NSH root or goes (`riwork.terminal` and `riwork.chat` leave the model to it meanwhile).
+    private var nativePresentedObservers: [() -> Void] = []
+    func observeNativePresented(_ observer: @escaping () -> Void) { nativePresentedObservers.append(observer) }
+    /// How wide the window's own controls are at its top leading corner (iPadOS 26, a resizable window), in points past the safe
+    /// area: `mobile.snapshot` `windowControls`, measured by the root controller.
+    private var windowControls: CGFloat = 0
     private var revision = 0
     private var observation = UUID()
     private var navigation = UUID()
@@ -114,6 +118,13 @@ struct NSHAppChord {
 
     /// Called by the UIView host when light/dark or contrast traits change.
     func traitsChanged() { publishAndObserve() }
+    /// The window's controls changed width (the window was resized, or moved between full screen and a resizable window).
+    func setWindowControls(_ width: CGFloat) {
+        let next = max(0, width.rounded(.up))
+        guard next != windowControls else { return }
+        windowControls = next
+        publishAndObserve()
+    }
 
     func setNativePresented(_ presented: Bool) {
         guard nativePresented != presented else { return }
@@ -128,11 +139,18 @@ struct NSHAppChord {
         app != nil && model.appActive && !nativePresented && openingHostID == nil && respondingHostID == nil && !model.loadFailed
             && (route == "hosts" || route == "dashboard" || route == "project") && model.keyboard.usesClicks && model.keyboard.usesHardwareLayout
     }
-    /// The project page is on top: the root key host carries its app chords (`projectChords`), which the TSX keymap cannot see
-    /// while that host holds the keyboard.
-    var onProjectPage: Bool { route == "project" }
-    /// The project page's app chords as `apps/riwork/app_chords.ts` ids, for `keyboard.command` (design §2.5). The terminal component
-    /// sends the same ids as its `command` event while it holds the keyboard.
+    /// The app chords the root key host carries while it holds the keyboard, which the TSX keymap cannot see then: the project page's
+    /// (`projectChords`), and on a host's dashboard ⌘B, for the iPad's sidebar beside it.
+    var rootChords: [NSHAppChord] {
+        switch route {
+        case "project": Self.projectChords
+        case "dashboard": Self.projectChords.filter { $0.id == Self.sidebarChord }
+        default: []
+        }
+    }
+    /// The project page's app chords as `apps/riwork/app_chords.ts` ids, for `keyboard.command` (design §2.5). The terminal and chat
+    /// components send the same ids as their `command` event while they hold the keyboard. ⌘B shows or hides the iPad's sidebar, as
+    /// the Mac's ⌘B opens its Projects panel.
     static let projectChords: [NSHAppChord] = (1...9).map { NSHAppChord("\($0)", .command, "tab.select.\($0)", "Select tab \($0)") } + [
         NSHAppChord("[", [.command, .shift], "tab.prev", "Previous tab"),
         NSHAppChord("]", [.command, .shift], "tab.next", "Next tab"),
@@ -140,10 +158,13 @@ struct NSHAppChord {
         NSHAppChord("p", [.command, .shift], "nav.back", "Back"),
         NSHAppChord(",", [.command, .shift], "display.open", "Display settings"),
         NSHAppChord("o", [.command, .shift], "picker.open", "Open a worker or shell"),
+        NSHAppChord("b", .command, sidebarChord, "Show or hide the sidebar"),
     ]
-    /// An app chord for the project page (`keyboard.command {id}`), which acts on it only while it takes keys.
+    static let sidebarChord = "sidebar.toggle"
+    /// An app chord for the page on top (`keyboard.command {id}`), which acts on it only while it takes keys: any on the project page,
+    /// the sidebar's on a host's dashboard.
     func sendChord(_ id: String) {
-        guard route == "project", !nativePresented else { return }
+        guard route == "project" || (route == "dashboard" && id == Self.sidebarChord), !nativePresented else { return }
         app?.send("keyboard.command", ["id": id])
     }
     func rootShortcut(_ action: TabShortcutAction) {
@@ -462,8 +483,8 @@ struct NSHAppChord {
     }
 
     /// What the pages still take from Swift (`apps/riwork-mobile/model.ts` `OverviewSnapshot`): the All hosts overview, how fresh
-    /// each host's read of it is, whether a native screen is up, the library's state and the keyboard. The hosts themselves are
-    /// `relay.hosts` (`NSHHostAPI`), a host's data `relay.call`.
+    /// each host's read of it is, whether a native screen is up, the library's state, the keyboard and the window's own controls. The
+    /// hosts themselves are `relay.hosts` (`NSHHostAPI`), a host's data `relay.call`.
     private func snapshot() -> [String: Any] {
         rows.removeAll(keepingCapacity: true)
         // These observed values also drive lifecycle changes with no timer.
@@ -477,6 +498,7 @@ struct NSHAppChord {
         }
         var result: [String: Any] = ["schema": 2, "revision": revision, "nativePresented": nativePresented,
             "libraryUnavailable": model.loadFailed, "loading": model.loading || openingHostID != nil, "details": details,
+            "windowControls": Double(windowControls),
             "keyboard": ["hardware": model.keyboard.usesHardwareLayout, "clicks": model.keyboard.usesClicks],
             "homeDashboard": homeDashboardDTO()]
         result["error"] = model.loadFailure ?? model.error

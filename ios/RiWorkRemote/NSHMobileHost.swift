@@ -82,6 +82,8 @@ private final class NSHMobileCoordinator {
             bridge?.openPage(page)
         }
         surfaces.onGlobalRequested = { [weak bridge] in bridge?.showGlobal() }
+        // A file preview of the chat drawn on the iPad page goes over the pages, as the native chat's do.
+        host.chats.presentFiles = { [weak surfaces] files, selected in surfaces?.openFilesOverPage(files, selected: selected) }
         // A project chord typed in the native chat, once the chat has made way for its page.
         surfaces.onChord = { [weak bridge] in bridge?.sendChord($0) }
         surfaces.isDecisionAnswered = { [weak bridge] in bridge?.isDecisionAnswered($0) ?? false }
@@ -103,6 +105,10 @@ private final class NSHMobileHostController: UIViewController {
     private let bridge: NSHMobileBridge
     /// `riwork.terminal`: the capture terminal for the shared TSX screens.
     private let terminals: NSHTerminalHost
+    /// `riwork.chat`: a project's chat drawn inside the iPad's project page.
+    let chats: NSHChatHost
+    /// Laid out against the safe area that keeps clear of the window's own controls (iPadOS 26), so a change to them lays the view out.
+    private let windowControlsProbe = UIView()
     private var failureView: UIScrollView?
     private let keyboardHost = KeyCommandHost.HostView()
     private let shortcutOwner = UUID()
@@ -116,6 +122,7 @@ private final class NSHMobileHostController: UIViewController {
     init(bridge: NSHMobileBridge) {
         self.bridge = bridge
         terminals = NSHTerminalHost(model: bridge.model, bridge: bridge)
+        chats = NSHChatHost(model: bridge.model, bridge: bridge)
         super.init(nibName: nil, bundle: nil)
     }
     required init?(coder: NSCoder) { nil }
@@ -181,11 +188,46 @@ private final class NSHMobileHostController: UIViewController {
             self?.shortcutPolicy = eligible
             self?.updateShortcuts()
         }
-        // While a terminal holds the keyboard its Tab prefix, chords and guide are the terminal's (`command` events).
+        // While a terminal or a chat holds the keyboard its Tab prefix, chords and guide are its own (`command` events).
         terminals.onKeyboardChange = { [weak self] in self?.updateShortcuts() }
+        chats.onKeyboardChange = { [weak self] in self?.updateShortcuts() }
         NSHMobileSurfaces.registerSymbols(on: app)
         terminals.register(on: app)
+        chats.register(on: app)
+        if #available(iOS 26.0, *) {
+            windowControlsProbe.isHidden = true
+            windowControlsProbe.isUserInteractionEnabled = false
+            windowControlsProbe.translatesAutoresizingMaskIntoConstraints = false
+            view.addSubview(windowControlsProbe)
+            let clear = view.layoutGuide(for: .safeArea(cornerAdaptation: .horizontal))
+            NSLayoutConstraint.activate([
+                windowControlsProbe.leadingAnchor.constraint(equalTo: clear.leadingAnchor),
+                windowControlsProbe.topAnchor.constraint(equalTo: view.topAnchor),
+                windowControlsProbe.widthAnchor.constraint(equalToConstant: 0),
+                windowControlsProbe.heightAnchor.constraint(equalToConstant: 0),
+            ])
+        }
         loadUI()
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        updateWindowControls()
+    }
+    override func viewSafeAreaInsetsDidChange() {
+        super.viewSafeAreaInsetsDidChange()
+        updateWindowControls()
+    }
+    /// How far past the safe area the window's own close, minimize and tile controls reach at the top leading corner (iPadOS 26, a
+    /// resizable window), as SwiftUI's `containerCornerInsets.topLeading` has it (`WindowControlsClearance`): the safe area that keeps
+    /// clear of the corner, less the plain one. Full screen, on iPhone and before iOS 26 there are none.
+    private func updateWindowControls() {
+        guard #available(iOS 26.0, *) else { return }
+        // Off screen (a native screen pushed over the pages) the last width stands.
+        guard view.window != nil else { return }
+        let clear = view.directionalEdgeInsets(for: .safeArea(cornerAdaptation: .horizontal)).leading
+        let plain = view.directionalEdgeInsets(for: .safeArea()).leading
+        bridge.setWindowControls(max(0, clear - plain))
     }
 
     override func viewWillAppear(_ animated: Bool) {
@@ -200,11 +242,12 @@ private final class NSHMobileHostController: UIViewController {
     }
 
     private func updateShortcuts() {
-        let active = rootVisible && shortcutPolicy && failureView == nil && !terminals.holdsKeyboard
-        // On a project's page the key host also carries its app chords: while it holds the keyboard the page's keymap is not reached.
-        keyboardHost.table.actions = rootActions + (bridge.onProjectPage ? NSHMobileBridge.projectChords.map { chord in
+        let active = rootVisible && shortcutPolicy && failureView == nil && !terminals.holdsKeyboard && !chats.holdsKeyboard
+        // On a project's page (and, for ⌘B, a host's dashboard) the key host also carries the app chords: while it holds the keyboard
+        // the page's keymap is not reached.
+        keyboardHost.table.actions = rootActions + bridge.rootChords.map { chord in
             KeyAction(input: chord.input, modifiers: chord.modifiers, title: chord.title, run: { [weak bridge] in bridge?.sendChord(chord.id) })
-        } : [])
+        }
         keyboardHost.active = active
         if active {
             bridge.model.keyboard.tabShortcuts.setAppHandler(owner: shortcutOwner) { [weak bridge] in bridge?.rootShortcut($0) }
@@ -221,7 +264,8 @@ private final class NSHMobileHostController: UIViewController {
         guideObservation = token
         withObservationTracking {
             let model = bridge.model
-            let visible = rootVisible && shortcutPolicy && failureView == nil && !terminals.holdsKeyboard && model.keyboard.tabShortcuts.guideVisible
+            let visible = rootVisible && shortcutPolicy && failureView == nil && !terminals.holdsKeyboard && !chats.holdsKeyboard
+                && model.keyboard.tabShortcuts.guideVisible
             // The guide owns only this bounded panel while visible; its Close
             // button stays usable and the rest of the screen receives touches.
             guide.view.isHidden = !visible

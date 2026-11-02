@@ -1,15 +1,30 @@
 /** The paired hosts (`relay.hosts`) and, under them, the All hosts overview Swift reads over its own short
  * connections (`mobile.snapshot` `homeDashboard`). Pairing, a host's details and the display settings are
- * native Swift sheets (`nav.present`). */
-import { Scroll, Text, View, effect, signal } from "nsh";
+ * native Swift sheets (`nav.present`). On the iPad it is All desktops (the host menu's): the window to
+ * itself, in a centered column of reading width, a desktop opening its window. */
+import { Scroll, Text, View, effect, safeAreaInsets, signal, windowSize } from "nsh";
+import { Icon, type IconName } from "../../riwork/Icon";
 import type { MobileApp } from "../app_state";
 import { SECTION_LABELS, SECTION_ORDER, type Dashboard, type DashboardFilter, type DashboardRow, type DashboardSection } from "../model";
+import { LinkDot } from "../shell/chrome";
 import { Symbol } from "../Symbol";
 import type { Kit, Layout } from "../ui";
+
+/** The iPad's column: no wider than this, centered in the window. */
+const READING_WIDTH = 720;
+
+/** An SF Symbol on the iPhone, the Mac's icon on the iPad. */
+function Glyph(props: { layout: Layout; symbol: string; icon: IconName; color: string; size: number }) {
+  return props.layout === "pad" ? <Icon name={props.icon} color={props.color} size={props.size} /> : <Symbol name={props.symbol} color={props.color} size={props.size} />;
+}
 
 export function HostsPage(props: { app: MobileApp; ui: Kit; layout: Layout; onTop: () => boolean }) {
   const { app, ui } = props;
   const { Action, Section, Divider, Note, Failure, palette, pt, target, text } = ui;
+  const pad = props.layout === "pad";
+  const insets = safeAreaInsets();
+  /** The column's sides: on the iPad what centers a column of `READING_WIDTH` in the window. */
+  const side = () => pad ? Math.max(pt(16), (windowSize().width - insets().left - insets().right - pt(READING_WIDTH)) / 2) : pt(16);
   const filter = signal<DashboardFilter>("all");
   const bottom = ui.bottomInset();
   const blocked = () => !app.loaded() || app.blocked();
@@ -35,27 +50,27 @@ export function HostsPage(props: { app: MobileApp; ui: Kit; layout: Layout; onTo
           disabled={blocked()} disabledStyle={{ opacity: 0.5 }} activeStyle={{ backgroundColor: palette().panelActive }}
           onPress={() => app.openHost(rowProps.id)}
           style={{ flex: 1, minHeight: target(), padding: pt(16), flexDirection: "row", alignItems: "center", gap: pt(13) }}>
-          <Symbol name="desktopcomputer" color={palette().cyan} size={pt(24)} />
+          {pad ? info() && <LinkDot ui={ui} link={info()!.link} /> : <Symbol name="desktopcomputer" color={palette().cyan} size={pt(24)} />}
           <View style={{ flex: 1, gap: pt(4) }}>
             <Text style={{ ...text(16), fontWeight: "600" }}>{info()?.name ?? "Desktop"}</Text>
             {info()?.address && <Text style={text(12, "muted")}>{info()!.address!}</Text>}
             <Text style={text(12, info()?.link.state === "failed" ? "error" : "muted")}>{status()}</Text>
           </View>
-          <Symbol name="chevron.right" color={palette().muted} size={pt(13)} />
+          <Glyph layout={props.layout} symbol="chevron.right" icon="right" color={palette().muted} size={pt(13)} />
         </View>
         <View role="button" accessibilityLabel={`Manage ${info()?.name ?? "desktop"}`} disabled={blocked()}
           onPress={() => void app.present({ name: "hostDetails", host: rowProps.id })}
           activeStyle={{ backgroundColor: palette().panelActive }} style={{ minWidth: target(), minHeight: target(), alignItems: "center", justifyContent: "center", marginRight: pt(4) }}>
-          <Symbol name="ellipsis.circle" color={palette().muted} size={pt(21)} />
+          <Glyph layout={props.layout} symbol="ellipsis.circle" icon="more" color={palette().muted} size={pt(pad ? 18 : 21)} />
         </View>
       </View>
     </>;
   }
 
-  return <ui.Page layout={props.layout} title="RiWork" testID="page:hosts" backTitle="Hosts" addButton={true}
-    right={<Action label="Add desktop" symbol={props.layout === "pad" ? "plus" : undefined} compact={props.layout === "pad"}
+  return <ui.Page layout={props.layout} title={pad ? "All desktops" : "RiWork"} testID="page:hosts" backTitle="Hosts" addButton={true}
+    right={<Action label="Add desktop" icon={pad ? "add" : undefined} compact={pad}
       action={() => void app.present({ name: "addHost" })} disabled={blocked() || app.overview().libraryUnavailable} />}>
-    <Scroll style={{ flex: 1 }} contentStyle={{ padding: pt(16), paddingBottom: Math.max(pt(24), bottom() + pt(16)), gap: pt(20) }}
+    <Scroll style={{ flex: 1 }} contentStyle={{ padding: pt(16), paddingHorizontal: side(), paddingBottom: Math.max(pt(24), bottom() + pt(16)), gap: pt(20) }}
       refreshing={app.overview().loading} onRefresh={refresh} keyboardDismissMode="interactive" keyboardShouldPersistTaps="handled">
       <Failure />
       {app.overview().error && <Note message={app.overview().error!} error={true} />}
@@ -64,16 +79,16 @@ export function HostsPage(props: { app: MobileApp; ui: Kit; layout: Layout; onTo
         <Action label="Recovery options" action={() => void app.present({ name: "libraryRecovery" })} disabled={app.blocked()} />
       </Note> : <>
         {app.loaded() && app.hosts().length === 0 && <Note title="Your desktop, wherever you are" message="Pair your Mac to see its projects, review work, and continue in your chats and terminals.">
-          <Action label="Pair a desktop" symbol="plus" prominent={true} action={() => void app.present({ name: "addHost" })} disabled={blocked()} />
+          <Action label="Pair a desktop" symbol={pad ? undefined : "plus"} icon={pad ? "add" : undefined} prominent={true} action={() => void app.present({ name: "addHost" })} disabled={blocked()} />
         </Note>}
         {app.hosts().length > 0 && <Section title="Desktops">
           {app.hosts().map((info, index) => <HostRow id={info.id} index={index} />)}
         </Section>}
-        {app.overview().homeDashboard && app.hosts().length > 0 && <Overview app={app} ui={ui} dashboard={app.overview().homeDashboard!} filter={filter()}
+        {app.overview().homeDashboard && app.hosts().length > 0 && <Overview app={app} ui={ui} layout={props.layout} dashboard={app.overview().homeDashboard!} filter={filter()}
           onFilter={(value) => filter.set(value)} blocked={blocked()} />}
       </>}
       <Section>
-        <Action label="Display and keyboard settings" symbol="slider.horizontal.3" disabled={app.blocked()} action={() => void app.present({ name: "settings" })} />
+        <Action label="Display and keyboard settings" symbol={pad ? undefined : "slider.horizontal.3"} icon={pad ? "sliders" : undefined} disabled={app.blocked()} action={() => void app.present({ name: "settings" })} />
       </Section>
     </Scroll>
   </ui.Page>;
@@ -81,7 +96,7 @@ export function HostsPage(props: { app: MobileApp; ui: Kit; layout: Layout; onTo
 
 /** Across your desktops: totals, the Haiku overviews and every host's rows, a row opening where it leads
  * (Swift connects to its host first). */
-function Overview(props: { app: MobileApp; ui: Kit; dashboard: Dashboard; filter: DashboardFilter; onFilter: (value: DashboardFilter) => void; blocked: boolean }) {
+function Overview(props: { app: MobileApp; ui: Kit; layout: Layout; dashboard: Dashboard; filter: DashboardFilter; onFilter: (value: DashboardFilter) => void; blocked: boolean }) {
   const { ui } = props;
   const { Action, Section, Divider, Note, palette, pt, target, text } = ui;
   const expanded = signal<DashboardSection[]>([]);
@@ -106,7 +121,7 @@ function Overview(props: { app: MobileApp; ui: Kit; dashboard: Dashboard; filter
         {cell.row.subtitle && <Text style={text(13, "muted")}>{cell.row.subtitle}</Text>}
         {cell.row.status && <Text style={text(12, cell.row.tone)}>{cell.row.status}</Text>}
       </View>
-      {cell.row.enabled && <Symbol name="chevron.right" color={palette().muted} size={pt(13)} />}
+      {cell.row.enabled && <Glyph layout={props.layout} symbol="chevron.right" icon="right" color={palette().muted} size={pt(13)} />}
     </View>;
   }
   return <>
@@ -143,7 +158,7 @@ function Overview(props: { app: MobileApp; ui: Kit; dashboard: Dashboard; filter
         </View>)}
         {report.followups.length > 0 && <Text role="header" style={{ ...text(12, "muted"), fontWeight: "600" }}>Suggested follow-ups</Text>}
         {report.followups.map((line) => <View style={{ flexDirection: "row", gap: pt(8) }}>
-          <Symbol name="arrow.turn.down.right" color={palette().muted} size={pt(15)} /><Text selectable={true} style={{ ...text(14, "muted"), flex: 1 }}>{line}</Text>
+          <Glyph layout={props.layout} symbol="arrow.turn.down.right" icon="right" color={palette().muted} size={pt(15)} /><Text selectable={true} style={{ ...text(14, "muted"), flex: 1 }}>{line}</Text>
         </View>)}
         {report.summary && report.error && <Text style={text(12, "gold")}>{report.error}</Text>}
         <Text style={text(11, "muted")}>{`AI summary of observed activity${report.generatedAt ? ` · ${new Date(report.generatedAt * 1000).toLocaleString()}` : ""}`}</Text>

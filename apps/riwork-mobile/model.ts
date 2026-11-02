@@ -34,6 +34,9 @@ export interface OverviewSnapshot {
   homeDashboard?: Dashboard;
   /** A hardware keyboard is attached (arrow keys move through lists), and it is a Clicks keyboard. */
   keyboard: { hardware: boolean; clicks: boolean };
+  /** How wide the window's own close, minimize and tile controls are at its top leading corner (iPadOS 26, a
+   * resizable window), in points: the top row leaves that much clear. 0 or missing: none. */
+  windowControls?: number;
   /** The interactive host's global orchestrator from `orchestrators.list`, for the page of a Mac without `dashboard.get`. */
   global?: { host: string; summary: string; action: "open" | "start" | "unavailable"; actionTitle: string };
 }

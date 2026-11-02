@@ -136,10 +136,16 @@ import RiWorkCore
         guard presentSheet(NewTerminalSheet(sheet: form), canDismiss: { !form.busy }) else { newTab = nil; return }
         afterSheet = finish
     }
+    /// On iPad (`PadShell`, a window 600 points and wider) a chat made there opens in its tab on the page (`riwork.chat`); on iPhone
+    /// it opens over the page.
     private func newTabEnded(project: String, chat: String?, session: String?, global: Int) {
         guard model.projectID == project else { return }
         if model.globalScreenRequests != global { onGlobalRequested?(); return }
-        if let made = model.selectedChatID, made != chat { openChat(project: project, chat: made); return }
+        if let made = model.selectedChatID, made != chat {
+            if padLayout, let info = model.project(withID: project) { onProjectPage?(info, "chat:\(made)", false) }
+            else { openChat(project: project, chat: made) }
+            return
+        }
         if let made = model.sessionID, made != session, let info = model.project(withID: project) { onProjectPage?(info, "shell:\(made)", false) }
     }
 
@@ -181,9 +187,22 @@ import RiWorkCore
         publishVisibility()
     }
 
+    /// The pages are laid out for iPad: `PadShell` takes a window 600 points and wider.
+    private var padLayout: Bool { (root?.viewIfLoaded?.bounds.width ?? 0) >= 600 }
+
     private func openFiles(_ files: [ChatFileEntry], selected: ChatFileEntry) {
-        guard let navigation, navigation.topViewController === workspace,
-              navigation.presentedViewController == nil,
+        guard let workspace, navigation?.topViewController === workspace else { return }
+        pushFiles(files, selected: selected)
+    }
+    /// A file preview of the chat drawn on the page (`riwork.chat`): pushed over the pages, as the native chat's are over it; Back
+    /// returns to the page.
+    func openFilesOverPage(_ files: [ChatFileEntry], selected: ChatFileEntry) {
+        guard let root, navigation?.topViewController === root, sheet == nil else { return }
+        pushFiles(files, selected: selected)
+        publishVisibility()
+    }
+    private func pushFiles(_ files: [ChatFileEntry], selected: ChatFileEntry) {
+        guard let navigation, navigation.presentedViewController == nil,
               navigation.topViewController?.presentedViewController == nil,
               navigation.transitionCoordinator == nil else { return }
         model.keyboard.tabShortcuts.cancel()
@@ -445,8 +464,9 @@ private struct NSHMobileChatWorkspace: View {
         .background {
             Group {
                 Button("Back", action: back).keyboardShortcut("p", modifiers: [.command, .shift])
-                // The project's other chords, as over a chat tab of the native project screen (⌘⇧P stays Back to the page).
-                ForEach(NSHMobileBridge.projectChords.filter { $0.id != "nav.back" }, id: \.id) { entry in
+                // The project's other chords, as over a chat tab of the native project screen (⌘⇧P stays Back to the page). ⌘B is not
+                // one of them: the sidebar it toggles is the iPad page's, where a chat draws in its tab instead.
+                ForEach(NSHMobileBridge.projectChords.filter { $0.id != "nav.back" && $0.id != NSHMobileBridge.sidebarChord }, id: \.id) { entry in
                     Button(entry.title) { chord(entry.id) }
                         .keyboardShortcut(KeyEquivalent(Character(entry.input)), modifiers: entry.eventModifiers)
                 }
