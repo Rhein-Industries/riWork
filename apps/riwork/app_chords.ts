@@ -12,10 +12,12 @@ export type AppChord =
   | { type: "back" }
   | { type: "projects" }
   | { type: "display" }
-  | { type: "picker" };
+  | { type: "picker" }
+  | { type: "sidebar" };
 
 /** Command id, keystroke (NSH `keymap`; null for a Clicks Tab-prefix action with no ⌘ chord) and what it
- * does. ⌘K, ⌘/ and the hotkeys stay inside the terminal; `chat.model` (Clicks Tab M) is the native chat's. */
+ * does. ⌘K, ⌘/ and the hotkeys stay inside the terminal; `chat.model` (Clicks Tab M) is the native chat's.
+ * `sidebar.toggle` (⌘B, as the Mac's ⌘B opens Projects) shows or hides the iPad's sidebar; the iPhone has none. */
 export const APP_CHORDS: readonly (readonly [id: string, keys: string | null, chord: AppChord])[] = [
   ...[1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => [`tab.select.${n}`, `mod+${n}`, { type: "select", index: n - 1 }] as const),
   ["tab.prev", "mod+shift+[", { type: "previous" }],
@@ -25,6 +27,7 @@ export const APP_CHORDS: readonly (readonly [id: string, keys: string | null, ch
   ["nav.projects", null, { type: "projects" }],
   ["display.open", "mod+shift+,", { type: "display" }],
   ["picker.open", "mod+shift+o", { type: "picker" }],
+  ["sidebar.toggle", "mod+b", { type: "sidebar" }],
 ];
 
 /** The chord a command id stands for; null for one this table does not have. */
