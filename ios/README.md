@@ -5,11 +5,17 @@ On the `nsh` branch, the app starts in Native Shell. The pages are TSX in
 dashboard (the desktop's shared `DashboardView` from `apps/riwork/dashboard`),
 its projects, a project's page with its tab strip and terminal, and the New
 terminal and New project forms. Narrower than 600 points they are a navigation
-stack with swipe back (`PhoneShell`); wider, on iPad, a host's projects stand in
-a column beside its dashboard or the project chosen there (`PadShell`). The
-terminal is the Swift capture terminal as an NSH component (`riwork.terminal`);
-a project's chat, the global orchestrator and the pairing, host, settings,
-memo and New chat sheets stay native Swift screens. The existing Swift
+stack with swipe back (`PhoneShell`); wider, on iPad, the window is the Mac's
+RiWork window in touch density (`PadShell`): one top row with the sidebar
+toggle, Dashboard, the host switcher and the project's tab strip, the host's
+projects as the Mac's Projects panel in a sidebar beside its dashboard or the
+project chosen there (over it in a window narrower than 900 points; ⌘B shows or
+hides it), and a status bar along the bottom. It opens straight into its one
+desktop; All desktops is in the host menu. The terminal is the Swift capture
+terminal as an NSH component (`riwork.terminal`); a project's chat is a native
+screen on iPhone and is drawn in the page on iPad (`riwork.chat`); the global
+orchestrator and the pairing, host, settings, memo and New chat sheets stay
+native Swift screens. The existing Swift
 transport and Keychain storage serve them all through the host calls of
 `NSHHostAPI.swift`. See [the migration boundary](../docs/nsh-ios-migration.md);
 the sections below describe the native screens as they were, and say where the
@@ -230,7 +236,8 @@ desktop sessions running; revoke the device on the desktop to deny access.
 **The project page is TSX now** (`apps/riwork-mobile/pages/Project.tsx`, docs/nsh-ios-migration.md). Its strip is the desktop's
 shared list (visible tabs in shared order, with their titles and states) or, on an older desktop, the live terminals and the chats;
 a terminal tab shows the `riwork.terminal` component, whose key bar, line composer, dictation, viewport lease, history and text size
-are the native terminal's own; a chat tab opens the native chat over the page, which keeps its terminal. ＋ and ⌘N open New
+are the native terminal's own; on iPhone a chat tab opens the native chat over the page, which keeps its terminal, and on iPad it
+is drawn under the strip (`riwork.chat`), which stays at the top of the window, the Mac's, with no title bar. ＋ and ⌘N open New
 terminal, ⌘⇧O Open a worker or shell, ⌘1–9 and ⌘⇧[ / ] switch tabs, ⌘⇧P goes back and ⌘⇧, opens Display settings, from the
 page, from the terminal (its `command` event) and, on a Clicks keyboard, with the Tab prefix (1–9, N, and P for Projects) even
 when no terminal is on screen. In a chat opened from the page the same chords (and Tab 1–9 and N) go back to the page and act

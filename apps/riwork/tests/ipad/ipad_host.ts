@@ -1,6 +1,9 @@
 /** Plays the iOS Swift host (ios/RiWorkRemote/NSHHostAPI.swift) for the iPad preview (iPad.fixture.tsx):
- * one paired, connected Mac with folders, a busy project and its tabs. The calls answer from sample data. */
-import { host } from "nsh";
+ * a paired, connected Mac with folders, a busy project and its tabs, and a second Mac that is offline. The
+ * calls answer from sample data; the theme follows the window's appearance, as Swift's `platform.theme`
+ * does. `host.params` `windowControls` (points) plays an iPadOS 26 window's own controls. */
+import { colorScheme, effect, host, untracked } from "nsh";
+import { NATIVE_PALETTE } from "../../theme";
 import { NOW, WIRE } from "./sample";
 
 const DARK = {
@@ -8,11 +11,14 @@ const DARK = {
   gold: "#ff9f0a", text: "#f5f5f7", muted: "#98989d", focus: "#ffffff", working: "#409cff", danger: "#ff6961",
 };
 export const HOST = "mac-1";
+const given = ((host as unknown as { params?: { windowControls?: number } }).params ?? {});
 const FEATURES = ["dashboard", "tabs", "chat", "project_memo", "native", "native:Store.snapshot", "shell_create_as_settings"];
-const hosts = { hosts: [{ id: HOST, name: "Dominik's MacBook Pro", address: "dominiks-macbook-pro", selected: true,
-  link: { state: "connected", label: "Connected" }, features: FEATURES }] };
+const hosts = { hosts: [
+  { id: HOST, name: "Dominik's MacBook Pro", address: "dominiks-macbook-pro", selected: true, link: { state: "connected", label: "Connected" }, features: FEATURES },
+  { id: "mac-2", name: "Studio Mac", address: "studio-mac", selected: false, link: { state: "offline", label: "Not connected" }, features: [] },
+] };
 const snapshot = { schema: 2, revision: 1, nativePresented: false, libraryUnavailable: false, loading: false,
-  details: { [HOST]: "Updated just now" }, keyboard: { hardware: true, clicks: false } };
+  details: { [HOST]: "Updated just now", "mac-2": "Updated 2 h ago" }, keyboard: { hardware: true, clicks: false }, windowControls: given.windowControls ?? 0 };
 
 const folders = [{ id: "f-work", name: "Work", parentId: null, createdAt: NOW - 90 * 86400 }, { id: "f-tools", name: "Tools", parentId: null, createdAt: NOW - 80 * 86400 }];
 const listed: [string, string, string, string | null, number, number, number, number][] = [
@@ -22,6 +28,10 @@ const listed: [string, string, string, string | null, number, number, number, nu
   ["site", "orca-site", "~/orca/projects/orca-site", null, 0, 0, 2, 7200],
   ["cool365", "cool365-assist", "~/Documents/riwork/cool365-assist", null, 0, 0, 0, 9000],
   ["transcribe", "riTranscribe", "~/orca/projects/riTranscribe", null, 0, 0, 0, 20000],
+  ["paper", "riPaper", "~/orca/projects/riPaper", null, 1, 0, 0, 30000],
+  ["mail", "Jmail", "~/code/jmail", null, 0, 0, 0, 60000],
+  ["museacc", "openmuseacc", "~/code/openmuseacc", null, 0, 0, 3, 90000],
+  ["cad", "CAD Explorer repair", "~/code/cad-explorer", null, 0, 0, 0, 120000],
   ["pixel", "pixel-editor", "~/code/pixel-editor", "f-tools", 0, 0, 0, 259200],
   ["notes", "notes", "~/notes", "f-tools", 0, 0, 0, 900000],
 ];
@@ -63,15 +73,20 @@ const handlers: Record<string, unknown> = {
   "relay.call": relay, "platform.prefs.get": { value: null }, "platform.prefs.set": {}, "nav.present": {},
 };
 export const presented: unknown[] = [];
-const params = { theme: { theme: { palette: DARK, scale: 1, family: "system-ui", monoFamily: "Menlo" }, native: true, mic: false, dark: true } };
+const theme = (scheme: "light" | "dark") => ({ theme: { palette: scheme === "dark" ? DARK : NATIVE_PALETTE, scale: 1, family: "system-ui", monoFamily: "Menlo" },
+  native: true, mic: false, dark: scheme === "dark" });
 const target = host as unknown as Record<string, unknown>;
 const define = (name: string, value: unknown) => Object.defineProperty(target, name, { value, configurable: true, writable: true });
-define("params", params);
+Object.defineProperty(target, "params", { get: () => ({ ...given, theme: theme(untracked(colorScheme)) }), configurable: true });
 define("call", async (name: string, data?: unknown) => {
   if (name === "nav.present") presented.push(data);
   const answer = handlers[name];
   if (answer === undefined) throw new Error(`unsupported: ${name}`);
   return typeof answer === "function" ? (answer as (value: unknown) => unknown)(data) : answer;
 });
-define("on", (_name: string, _listener: (value: unknown) => void) => () => {});
+define("on", (name: string, listener: (value: unknown) => void) => {
+  // Made while the app renders, so it ends with the app.
+  if (name === "platform.theme") effect(() => { const next = theme(colorScheme()); untracked(() => listener(next)); });
+  return () => {};
+});
 define("post", () => {});
