@@ -158,7 +158,7 @@ export function StatusBar(props: { app: MobileApp; ui: Kit; chrome: PadChrome; h
     paddingLeft: ui.pt(16), paddingRight: ui.pt(6), gap: ui.pt(20), backgroundColor: ui.palette().panel, borderTopWidth: 1, borderColor: ui.palette().divider }}>
     <View style={{ height: bar(), flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", gap: ui.pt(20) }}>
       <Text testID="status-project" numberOfLines={1} style={{ ...small("accent"), flexShrink: 0, maxWidth: ui.pt(260) }}>{props.project()?.name ?? "Dashboard"}</Text>
-      {counts() && <Text testID="status-tabs" numberOfLines={1} style={{ ...small((status()?.counts.working ?? 0) > 0 ? "working" : "muted"), flexShrink: 1 }}>{counts()}</Text>}
+      {counts() && <Text testID="status-tabs" numberOfLines={1} style={{ ...small(), flexShrink: 1 }}>{counts()}</Text>}
       <View style={{ flex: 1 }} />
       {status()?.live != null && <Text testID="status-live" numberOfLines={1} style={{ ...small(), fontFamily: app.theme().theme.monoFamily, flexShrink: 0 }}>{`${status()!.live} live`}</Text>}
     </View>

@@ -26,10 +26,8 @@ export function PadShell(props: { app: MobileApp; ui: Kit }) {
 
   // At launch, the one paired desktop (or the one selected) opens at once; All desktops later is the person's choice.
   effect(() => {
-    if (app.launched.current) return;
-    const routes = app.nav.routes(), hosts = app.hosts();
-    if (routes.length !== 1 || routes[0].page !== "hosts") { app.launched.current = true; return; }
-    if (!hosts.length) return;
+    const hosts = app.hosts();
+    if (app.launched.current || !hosts.length) return;
     app.launched.current = true;
     const selected = hosts.filter((info) => info.selected);
     const only = hosts.length === 1 ? hosts[0] : selected.length === 1 ? selected[0] : null;

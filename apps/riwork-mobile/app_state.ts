@@ -102,7 +102,14 @@ export function createMobileApp(): MobileApp {
     try { install(await host.call("mobile.action", action)); }
     catch (error) { if (alive) failure.set(PortError.from(error).message); }
   }
+  /** The person went somewhere (a page past Hosts, under either shell, or a native screen): the iPad's launch no longer opens a desktop by itself. */
+  const launched = { current: false };
+  effect(() => {
+    const routes = nav.routes();
+    if (routes.length !== 1 || routes[0].page !== "hosts") launched.current = true;
+  });
   async function present(request: PresentRequest): Promise<boolean> {
+    launched.current = true;
     failure.set("");
     try { await device.nav.present(request); return true; }
     catch (error) { if (alive) failure.set(PortError.from(error).message); return false; }
@@ -193,7 +200,7 @@ export function createMobileApp(): MobileApp {
 
   return {
     device, hosts, theme, overview, loaded, failure, nav, top, hostName, act, present, openHost, connect, openDashboard, openProjects, openProject, back, refresher, chords, projectRequest,
-    launched: { current: false },
+    launched,
     services(hostId) {
       let found = services.get(hostId);
       if (!found) {

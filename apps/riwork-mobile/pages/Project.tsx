@@ -52,6 +52,9 @@ export function ProjectPage(props: {
   const selected = signal<string | null>(null);
   /** The names the terminals and chats give their tabs (`title` events), by shell or chat id. */
   const titles = signal<Record<string, string>>({}), chatTitles = signal<Record<string, string>>({});
+  /** The chat component's last \`state\` (iPad), with the chat it is about: a new chat says nothing until its own first one. */
+  const chatState = signal<{ chatId: string; state: ChatEvents["state"] } | null>(null);
+  const chatStateOf = (id: string) => { const value = chatState(); return value?.chatId === id ? value.state : null; };
   const state = signal<TerminalEvents["state"] | null>(null);
   const creating = signal(false), picking = signal(false), menuOpen = signal(false);
   let requestedTab = props.route.tab, requestNew = props.route.newTerminal === true;
@@ -273,7 +276,7 @@ export function ProjectPage(props: {
     if (reply()) actions.push({ id: "open", label: openable ? `Open a worker or shell… (${openable})` : "Open a worker or shell…" });
     if (tab) actions.push({ id: "tab", label: `${title(tab)}…` });
     // The chat's own actions (its `menu` command: model, mode, notices, stop), as its ⋯ had them on the native screen.
-    if (chatId() != null) actions.push({ id: "chat", label: "Chat actions…" });
+    if (chatId() != null && chatStateOf(chatId()!)?.state === "ready") actions.push({ id: "chat", label: "Chat actions…" });
     // The terminal's own (schema 1 commands): the capture terminal has no selection, so this is how its text leaves the device.
     if (live) actions.push({ id: "copy", label: "Copy screen text" }, { id: "reattach", label: "Refresh output" });
     if (features().includes("project_memo")) actions.push({ id: "memo", label: "Memo…" });
@@ -335,7 +338,7 @@ export function ProjectPage(props: {
   function TerminalView(view: { shellId: string }) {
     return <Terminal testID={`terminal:${view.shellId}`} ref={(node) => { terminal = node; }} style={{ flex: 1, minHeight: 0 }}
       target={{ kind: "remote", desktopId: hostId, shellId: view.shellId }}
-      visible={onScreen()} pinned={false} focusOnAttach={app.overview().keyboard.hardware} colors={{ source: "ghostty" }} frozen={false}
+      visible={onScreen()} pinned={false} focusOnAttach={app.overview().keyboard.hardware} colors={{ source: "ghostty" }} frozen={pad?.overlay() ?? false}
       onState={(next) => { state.set(next); if (next.state === "ended" || next.state === "gone") void read(); }}
       onCommand={(event) => run(appChord(event.id))}
       onTitle={(event) => titles.set({ ...titles(), [view.shellId]: event.title })}
@@ -344,18 +347,18 @@ export function ProjectPage(props: {
   /** A chat tab on the iPad, drawn in place under the strip (`riwork.chat`): visible while the page takes
    * keys; one the Mac cannot show here says why and still opens as the native screen. */
   function ChatPane(view: { chatId: string }) {
-    const chatState = signal<ChatEvents["state"] | null>(null);
-    const unavailable = () => chatState()?.state === "unavailable";
+    const unavailable = () => chatStateOf(view.chatId)?.state === "unavailable";
+    // The component stays laid out and live while it cannot show the chat, so it says when it can again; the note covers it meanwhile.
     return <View style={{ flex: 1, minHeight: 0 }}>
-      {unavailable() && <View style={{ padding: pt(16) }}>
-        <Note title="This chat does not open here" message={chatState()?.message ?? "The desktop did not give this chat to this device."}>
+      <ChatView testID={`chat:${view.chatId}`} ref={(node) => { chat = node; }} style={{ flex: 1, minHeight: 0 }}
+        target={{ desktopId: hostId, projectId, chatId: view.chatId }} visible={keysLive()} focusOnAttach={app.overview().keyboard.hardware}
+        onState={(next) => chatState.set({ chatId: view.chatId, state: next })} onCommand={(event) => run(appChord(event.id))}
+        onTitle={(event) => chatTitles.set({ ...chatTitles(), [view.chatId]: event.title })} />
+      {unavailable() && <View style={{ position: "absolute", left: 0, top: 0, right: 0, bottom: 0, zIndex: 1, padding: pt(16), backgroundColor: palette().bg }}>
+        <Note title="This chat does not open here" message={chatStateOf(view.chatId)?.message ?? "The desktop did not give this chat to this device."}>
           <Action label="Open as a screen" disabled={app.blocked()} action={() => void app.present({ name: "chat", host: hostId, projectId, chatId: view.chatId })} />
         </Note>
       </View>}
-      <ChatView testID={`chat:${view.chatId}`} ref={(node) => { chat = node; }} style={{ flex: 1, minHeight: 0, display: unavailable() ? "none" : "flex" }}
-        target={{ desktopId: hostId, projectId, chatId: view.chatId }} visible={keysLive() && !unavailable()} focusOnAttach={app.overview().keyboard.hardware}
-        onState={(next) => chatState.set(next)} onCommand={(event) => run(appChord(event.id))}
-        onTitle={(event) => chatTitles.set({ ...chatTitles(), [view.chatId]: event.title })} />
     </View>;
   }
   /** A tab on the iPad as the Mac's strip draws it: its state dot and title, the selected one on the

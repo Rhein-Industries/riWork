@@ -337,7 +337,9 @@ import UIKit
         seen.projectScope = model.scope == .project
         _ = model.connectionEpoch
         seen.loaded = model.projectID == target.projectID && model.loadedProjectID == target.projectID
-        guard seen.loaded, let tab = model.projectTabs.first(where: { $0.chatInfo?.id == target.chatID }) else { return seen }
+        // Looked up whenever the chat's project is the model's: through a reconnect the kept lists still have it, so a chat that is up
+        // stays up (as the native screen does); choosing it waits for fresh lists (`activate`).
+        guard model.projectID == target.projectID, let tab = model.projectTabs.first(where: { $0.chatInfo?.id == target.chatID }) else { return seen }
         seen.chat = tab.chatInfo
         seen.selected = model.projectChatID == target.chatID
         // As the native chat's title: an orchestrator's name, else the chat's own (its transcript's word is fresher than the list's).
@@ -427,7 +429,7 @@ import UIKit
         }
         guard seen.state == .connected, seen.listsReady, seen.projectScope else { return }
         if seen.selected { lease.selected = target.chatID; return }
-        if seen.chat != nil {
+        if seen.chat != nil, seen.loaded {
             model.selectChat(target.chatID)
             if model.projectChatID == target.chatID { lease.selected = target.chatID }
             return
