@@ -174,6 +174,7 @@
 		A2BD8CFB63B55398FC500036 /* LinkFrame.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADCCA49C767C5985A947FCD0 /* LinkFrame.swift */; };
 		A309F31DF25B5FBF1E3C7218 /* TabShortcut.swift in Sources */ = {isa = PBXBuildFile; fileRef = 278CD3EDDD56201C0738E932 /* TabShortcut.swift */; };
 		A3CBA442B6650C5CD4E54D13 /* ChatAttachments.swift in Sources */ = {isa = PBXBuildFile; fileRef = EFFB5B7F4A2FF965EE3BCE0F /* ChatAttachments.swift */; };
+		A41E8965A03A4C089AD7FC33 /* NSHChatComponent.swift in Sources */ = {isa = PBXBuildFile; fileRef = D86EACFD0239B3625210D20C /* NSHChatComponent.swift */; };
 		A4BA6F8FF8D8A7E8D878456B /* TerminalBuffer.swift in Sources */ = {isa = PBXBuildFile; fileRef = E765AAE8C54CBD79052FEB13 /* TerminalBuffer.swift */; };
 		A4E7261D99B4461278975542 /* DesktopStyle.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1BBD9DB0F36FC25E37B8E69 /* DesktopStyle.swift */; };
 		A634C9B17EB791502F8C58B6 /* NSHTerminalComponent.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5FB222FB302DFAAFF342B2D /* NSHTerminalComponent.swift */; };
@@ -574,6 +575,7 @@
 		D558F7B0FE2D8E3DEF243B29 /* ChatPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatPresentation.swift; sourceTree = "<group>"; };
 		D6A7FA7AFDF4729479D6BBB8 /* KeyboardSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardSettings.swift; sourceTree = "<group>"; };
 		D728F2D7B80D93B6A9D85DF5 /* StyledScreenTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StyledScreenTests.swift; sourceTree = "<group>"; };
+		D86EACFD0239B3625210D20C /* NSHChatComponent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NSHChatComponent.swift; sourceTree = "<group>"; };
 		D9BECAC6FFBDE353AD1FB626 /* ChatItemViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatItemViews.swift; sourceTree = "<group>"; };
 		DAF1E80C50A0FC763230C1D3 /* KeyCapture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyCapture.swift; sourceTree = "<group>"; };
 		DB23F2C63B53F67197670104 /* ScriptedScrollback.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScriptedScrollback.swift; sourceTree = "<group>"; };
@@ -942,6 +944,7 @@
 				71324885440C6813FD006380 /* NewChatModelSection.swift */,
 				6820FE00A0EA958D9DDC82B7 /* NewProjectSheet.swift */,
 				05C76C77CC2B8632B9944B5F /* NewTerminalSheet.swift */,
+				D86EACFD0239B3625210D20C /* NSHChatComponent.swift */,
 				711D2B851BFD26AE74CDD642 /* NSHHostAPI.swift */,
 				1886C18D799DB89649F181B7 /* NSHMobileBridge.swift */,
 				55F4F1223112B91B85898FEC /* NSHMobileHost.swift */,
@@ -1264,6 +1267,7 @@
 				FF37502303E719419C61D622 /* KeyboardSettings.swift in Sources */,
 				0EF6BF4E74B55271051B90B9 /* KeyboardUI.swift in Sources */,
 				77CC570DFB25CE216EED6199 /* LinkWatcher.swift in Sources */,
+				A41E8965A03A4C089AD7FC33 /* NSHChatComponent.swift in Sources */,
 				45AB86558C685AE535350BC8 /* NSHHostAPI.swift in Sources */,
 				F51C457F2E2398801191DC72 /* NSHMobileBridge.swift in Sources */,
 				0526A3D45B56A262E94926F6 /* NSHMobileHost.swift in Sources */,

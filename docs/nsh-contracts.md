@@ -982,6 +982,83 @@ lifecycle of §3.4 hold for them unchanged. A kept view being released still hol
 claim until it is freed, as any view in teardown does, so a view of that shell shown meanwhile
 reports `claimed` until then.
 
+### 3.10 Amendment (2026-11-02, for the owner's request that the iPad be more like the desktop): `riwork.chat` on iPad, and ⌘B
+
+The iPad draws a project's chat inside its page, under the tab strip and beside the projects, as
+the Mac's window draws a chat tab, instead of opening it as a native screen over the window. This
+adds one iOS component, `riwork.chat` schema 1, and one app chord. Nothing above changes; the Mac
+neither registers nor uses `riwork.chat`. The iPhone keeps the chat as a native screen over its
+page (`nav.present` `chat`), which also stays the fallback. The declaration lives in
+`apps/riwork-mobile/chat_view.ts`:
+
+```ts
+nativeComponent<ChatProps, ChatEvents>("riwork.chat", {
+  props:  ["target", "visible", "focusOnAttach"],
+  events: ["state", "command", "title"],
+});
+// commands: "focus", "blur", "menu"
+```
+
+`ios/RiWorkRemote/NSHChatComponent.swift` registers it on the `NshAppView` beside
+`riwork.terminal`. It hosts the native chat (`ChatScreen`: the transcript, the composer, approvals
+and questions, worker cards, dictation, the model chip, context ring and mode menu, the provider's
+notices, file previews) over the same `RemoteModel`, with no bar of its own: the page draws the tab
+strip. None of the chat crosses into JS.
+
+| Prop | iOS |
+|---|---|
+| `target` | `{desktopId, projectId, chatId}`, `projectId` and `chatId` lower-case UUIDs. Only a chat of the interactive host is shown. The view puts the chat up the way its tab is chosen: the chat's project becomes the model's (its lists read again when it already is), and the chat is selected once the lists have it, as a dashboard row's tab request does (`requestProjectTab`, `chooseProject`, `selectChat`). It never creates or stops a chat. Another target gives the old chat's selection back first. An invalid target is `state` `unavailable`. |
+| `visible` | `true` (on screen and taking input): the project's lists are read (`keepFresh(.sessions)`) and the chat followed (its `chat.events` long poll). `false` (a form, a menu or a native screen over the page): both stop and the chat gives the keyboard back; what it draws and the model's chat selection stay, so showing it again picks up where it was, and the composer then takes the keyboard back by the device's focus setting, as after a sheet. A chat that could not be put up is tried again. |
+| `focusOnAttach` | Puts the keyboard in the composer once, the first time the chat is `ready`. Otherwise the device's own focus setting applies, as on the native chat. |
+
+Events:
+- **`state`**: `loading` (connecting, or the project's lists being read and the chat put up),
+  `ready` (the chat is up; it stays up through a dropped link and says so itself, and carries on
+  when the link is back), `unavailable` with `message`: the saved pairings could not be read, the
+  desktop is not paired, another host is the interactive one ("Connect to … to see this chat."),
+  disconnected, the Mac no longer lists the chat (after the project's lists were read for it),
+  it could not be put up after three tries per connection, or another `riwork.chat` on this device
+  is live ("Shown in another pane.", with Show here). The model has one chat selection, and the
+  view most recently shown, focused or tapped is live.
+- **`command`**: `{id}`, an app chord typed while the chat holds the keyboard (its composer, or a
+  question's field), and not while an input method composes a word: the ids of §3.8's table, with
+  ⌘⇧P `nav.back` and Clicks Tab 1–9, N and P, plus `sidebar.toggle` below. Clicks Tab M opens the
+  chat's own model picker, and ⌘. (interrupt) and ⌘M (the model picker) stay the chat's.
+- **`title`**: `{title}` when the chat's title changes: the orchestrator's name for an orchestrator
+  that runs as a chat, else the chat's own (shared rename, user, provider, first message).
+
+Commands: `focus` (the composer takes the keyboard once the chat is up; it also makes this view the
+live one), `blur` (gives the keyboard back), `menu` (the chat's own actions, as the native chat's ⋯
+had them: Choose model, Approval mode, Expand and Collapse all activity, Compact context, Jump to
+latest, Notices, Copy session id and Stop agent, as an action sheet from the chat's top trailing
+corner, under the page's ⋯; it does nothing while something else is presented over the window).
+
+**Not a native screen.** The bridge's `nativePresented` stays false while the chat is up, so the
+pages keep their input and their keymap. The chat's own sheets (the model picker, the notices,
+the photo and file pickers, the memo preview) present over the window from the component. A file
+preview is pushed over the pages (`NSHMobileSurfaces.openFilesOverPage`), which is a native screen:
+Back returns to the page and the chat. While a native screen is up the model is that screen's, and
+the view changes nothing.
+
+**Unmount** (or another target) gives the model's chat selection back, as leaving the native chat
+does, unless another live view shows the same chat, and drops a tab request it made that no listing
+has taken yet; the page's `riwork.terminal` then gets its shell back. A view only hidden keeps the
+chat selected; a terminal shown meanwhile puts its shell up as its tab is chosen, which takes the
+selection, and the chat puts itself up again when it is shown. While the chat holds the keyboard
+the root key host, its Clicks Tab prefix and its guide stand aside, as for the terminal.
+
+**Keyboard.** The composer keeps the native chat's handling: a docked software keyboard lifts it
+(SwiftUI's keyboard inset within the component's frame), a floating, split or undocked keyboard and
+a hardware keyboard's shortcut bar leave it at the bottom (`SoftwareKeyboardMonitor.isDocked`),
+Return and the request keys follow the hardware keyboard, an input method's marked text keeps its
+keys, and dictation is the composer's.
+
+**⌘B.** The app chord `sidebar.toggle` (⌘B) shows or hides the iPad's sidebar, as the Mac's ⌘B
+opens its Projects panel. `riwork.terminal` sends it as its `command` event (a custom terminal hotkey
+on ⌘B, such as the Clicks template's PgUp, keeps it, and no `command` is sent), `riwork.chat` as
+its `command` event, and the root key host as `keyboard.command` on a project's page and on a host's
+dashboard. The native chat over the page (`nav.present` `chat`) does not take it.
+
 
 ---
 
@@ -1252,6 +1329,10 @@ Decisions the owner has taken since the freeze are recorded, dated, in [§8](#8-
   `keepOnUnmount`, set only during a project switch, which keeps healthy local terminals for the
   project's return. Every other unmount still detaches; no event, command, engine wire or file
   format changed.
+- 2026-11-02 amendment (owner request: the iPad more like the desktop): §3.10 adds the iOS
+  component `riwork.chat` schema 1 (a project's chat drawn inside the iPad's page) and the app
+  chord `sidebar.toggle` (⌘B) for `riwork.terminal`'s `command` event and `keyboard.command`. The
+  Mac and the `riwork.terminal` schema are unchanged; no engine wire or relay protocol changed.
 - v1, 2026-10-27 addendum (task 8fa16659): §8 records three owner decisions (D-OWN-1, D-PERF-1,
   Phase 2 entry gate). No frozen surface, `schema` field or §3.7 metric changed, so there is no
   version bump.
