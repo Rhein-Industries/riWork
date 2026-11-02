@@ -70,6 +70,12 @@ const SystemSymbol = nativeComponent<{
   props: ["symbol"], events: ["availability"],
 });
 
+// On iOS the same symbols are UIKit's, drawn by the mobile app's own component
+// (`riwork.mobile.symbol`, registered by its Swift host), so the iPad shows the Mac's icons.
+const MobileSymbol = nativeComponent<{ name: string; color: string; size: number }>("riwork.mobile.symbol", {
+  props: ["name", "color", "size"],
+});
+
 // Availability is a property of this AppKit host, not a particular view. A
 // remounted toolbar icon can use its symbol immediately instead of briefly
 // replacing it with the vector fallback while the native event makes a round trip.
@@ -85,10 +91,13 @@ export function Icon(props: { name: IconName; size?: number; color?: string }) {
   const symbol = () => symbols[props.name];
   const ready = signal<string | null>(availableSymbols.has(symbol()) ? symbol() : null);
   // A memo: a parent's getters run again on its every change, which must
-  // not remake the vector fallback when the symbol stays the same.
-  const native = computed(() => platform.os === "macos" && ready() === symbol());
+  // not remake the vector fallback when the symbol stays the same. UIKit has
+  // every symbol of the table on the iOS versions the app supports.
+  const native = computed(() => platform.os === "ios" || (platform.os === "macos" && ready() === symbol()));
   const points = () => side() * (props.name === "focus" || props.name === "restore" || props.name === "layout" ? 0.72 : 0.8);
   return <View pointerEvents="none" accessible={false} style={{ width: side(), height: side(), flexShrink: 0 }}>
+    {platform.os === "ios" && <MobileSymbol pointerEvents="none" accessible={false} name={symbol()} color={props.color ?? "#98989d"} size={points()}
+      style={{ position: "absolute", left: (side() - points()) / 2, top: (side() - points()) / 2, width: points(), height: points() }} />}
     {platform.os === "macos" && <SystemSymbol pointerEvents="none" accessible={false}
       symbol={{ name: symbol(), points: points(), weight: props.name === "check" || props.name === "close" ? "medium" : "regular", color: props.color ?? "#98989d" }}
       onAvailability={(event) => {

@@ -43,8 +43,10 @@ desktops is the Hosts page, a centered column.
 | The shared screens' host calls (`relay.*`, `platform.*`, `nav.*`) | `NSHHostAPI.swift` over the same `RemoteModel`, bridge and `HostConnections` |
 | Relay sockets (one per paired host) and their request budget | `HostConnections.swift`; `RelayClient` and `RequestBudget` in `RiWorkCore` |
 | Pairing, encrypted transport, Keychain, reconnects | Existing Swift model and `RiWorkCore` |
-| A project's chat, the global orchestrator, file previews, pairing, settings, memo and New chat sheets | Existing native views, presented by `NSHMobileSurfaces.swift` |
+| A project's chat on iPhone (`nav.present` `chat`), the global orchestrator, file previews, pairing, settings, memo and New chat sheets | Existing native views, presented by `NSHMobileSurfaces.swift` |
 | The terminal inside TSX screens (`riwork.terminal`, `apps/riwork/terminal_view.ts`) | `NSHTerminalComponent.swift`: the same capture terminal over the same `RemoteModel`, remote targets of the interactive host only (`docs/nsh-contracts.md` §3.8) |
+| A project's chat inside the iPad's page (`riwork.chat`, `apps/riwork-mobile/chat_view.ts`) | `NSHChatComponent.swift`: the native chat (`ChatScreen`) over the same `RemoteModel`, without a bar of its own, chats of the interactive host only; its file previews are pushed by `NSHMobileSurfaces.swift` (`docs/nsh-contracts.md` §3.10) |
+| Symbols on iOS (`Icon` in `apps/riwork/Icon.tsx`, `Symbol` in `apps/riwork-mobile/Symbol.tsx`) | `riwork.mobile.symbol` in `NSHMobileSurfaces.swift`: UIKit's SF Symbols, the same table the Mac draws with AppKit |
 
 The shared TSX lives in `apps/riwork`; `apps/riwork-mobile` imports it by
 relative path. Shared code reaches data only through the ports in
@@ -59,8 +61,13 @@ no `riwork/native`, so even a type import fails), and
 `mobile.snapshot` (schema 2, `apps/riwork-mobile/model.ts` `OverviewSnapshot`)
 now carries only what Swift still reads for the pages: the All hosts overview,
 how fresh each host's read of it is, whether a native screen is up, the
-pairing library's state, the keyboard (hardware, Clicks) and, for a Mac
-without `dashboard.get`, its global orchestrator. `mobile.action` has three
+pairing library's state, the keyboard (hardware, Clicks), `windowControls` (how
+far the window's own close, minimize and tile controls reach past the safe area
+at its top leading corner in an iPadOS 26 resizable window, in points, 0
+without them: the root controller reads UIKit's
+`safeArea(cornerAdaptation: .horizontal)` region and publishes it again when the
+window is resized or changes mode) and, for a Mac without `dashboard.get`, its
+global orchestrator. `mobile.action` has three
 actions left: `refresh` (the overview, or the lists of the page on top when it
 has no refresh of its own), `openDashboardRow` and `navigate` (`{page, hostID?,
 projectID?}`: which page is on top). Snapshots carry a schema and revision;
@@ -160,13 +167,14 @@ component sends (docs/nsh-contracts.md §3): `tab.select.1`…`tab.select.9`
 Clicks Tab N), `nav.back` (⌘⇧P), `nav.projects` (Clicks Tab P: the host's
 Projects page; on iPad its sidebar, beside the dashboard), `display.open` (⌘⇧,:
 Display settings), `picker.open` (⌘⇧O) and `sidebar.toggle` (⌘B: the iPad's
-sidebar, from a project's page or the dashboard; the iPhone ignores it).
-`chat.model` (Clicks Tab M) is the native chat's own. They reach the page
-three ways, and it acts on them only while it takes keys (no form, picker or
-menu up, and on iPad not under the sidebar open over it, which ⌘B closes):
+sidebar, as the Mac's ⌘B opens Projects, from a project's page or the
+dashboard; the iPhone ignores it). `chat.model` (Clicks Tab M) is the native
+chat's own. They reach the page three ways, and it acts on them only while it
+takes keys (no form, picker or menu up, and on iPad not under the sidebar open
+over it, which ⌘B closes):
 - its keymap, while TSX holds the keyboard;
-- the terminal's `command` event, while the terminal holds it (on iPad the
-  chat component's too);
+- the terminal's `command` event, while the terminal holds it, and on iPad the
+  chat's (`riwork.chat`), while its composer holds it;
 - Swift's `keyboard.command {id}` event: from the root key host on a Clicks
   keyboard in its hardware layout, which on a project's page takes the
   keyboard only when nothing that types holds it (no terminal on screen, as the
@@ -248,8 +256,8 @@ and declared in `apps/riwork-mobile/nsh.json` (`relay.*`, `platform.*`,
 | `platform.prefs.get` / `.set` | call | `{name}` / `{name, value}` | `{value}` / `{}`; `projectSort` (`riwork.projectSort`), `newTerminal.kind` (`riwork.newTerminal.kind`) and `projectTab.<project>` (the interactive host's last tab of a project, `shell:<id>` or `chat:<id>`, in the Keychain library's `projectTabKeys`) |
 | `platform.theme` | event | | `{theme: InterfaceTheme, native, mic, dark}`; the first value is `host.params.theme` |
 | `nav.present` | call | `{name, host?, projectId?, chatId?, start?}` | `{}`; presents a remaining native Swift screen |
-| `nav.open` | event | | `{page, host?, projectId?, name?, tab?, newTerminal?}`: Swift moves the pages (`hosts`, `dashboard`, `projects`, `project`) |
-| `keyboard.command` | event | | `{id}`: an app chord for the project page (`app_chords.ts` ids; on iPad the dashboard takes `sidebar.toggle`), from Swift's root key host or the native chat |
+| `nav.open` | event | | `{page, host?, projectId?, name?, tab?, newTerminal?}`: Swift moves the pages (`hosts`, `dashboard`, `projects`, `project`); on iPad a chat made in the native New chat sheet comes back as its project's `tab` `chat:<id>` |
+| `keyboard.command` | event | | `{id}`: an app chord for the project page (`app_chords.ts` ids), from Swift's root key host or the native chat; on iPad a host's dashboard takes `sidebar.toggle` from the root key host |
 
 ```
 HostInfo  = {id, name, address?, selected: boolean, link: LinkState, features: string[]}

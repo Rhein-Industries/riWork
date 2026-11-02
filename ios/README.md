@@ -237,7 +237,8 @@ desktop sessions running; revoke the device on the desktop to deny access.
 shared list (visible tabs in shared order, with their titles and states) or, on an older desktop, the live terminals and the chats;
 a terminal tab shows the `riwork.terminal` component, whose key bar, line composer, dictation, viewport lease, history and text size
 are the native terminal's own; on iPhone a chat tab opens the native chat over the page, which keeps its terminal, and on iPad it
-is drawn under the strip (`riwork.chat`), which stays at the top of the window, the Mac's, with no title bar. ＋ and ⌘N open New
+is drawn under the strip (`riwork.chat`: see "On iPad the chat is part of the page" under Chats), which stays at the top of the
+window, the Mac's, with no title bar. ＋ and ⌘N open New
 terminal, ⌘⇧O Open a worker or shell, ⌘1–9 and ⌘⇧[ / ] switch tabs, ⌘⇧P goes back and ⌘⇧, opens Display settings, from the
 page, from the terminal (its `command` event) and, on a Clicks keyboard, with the Tab prefix (1–9, N, and P for Projects) even
 when no terminal is on screen. In a chat opened from the page the same chords (and Tab 1–9 and N) go back to the page and act
@@ -529,6 +530,14 @@ SwiftUI make room for the keyboard, with the keyboard's motion. A floating, spli
 composer at the bottom of the window; with a hardware keyboard attached the composer drops the iPad's shortcut bar (its assistant item has
 no groups), which would otherwise cover Send. Moving the window to a display of another scale keeps the terminal's rows whole pixels
 (`TerminalFont.pixelsPerPoint` follows the window's `displayScale`).
+
+**On iPad the chat is part of the page** (`NSHChatComponent.swift`, the NSH component `riwork.chat`, docs/nsh-contracts.md §3.10).
+A chat tab draws this same chat under the page's tab strip, beside the projects, as the Mac's window draws one, with no bar of its own;
+the iPhone still opens it over the page. Its actions (model, approval mode, activity, Compact, Jump to latest, notices, Copy session id,
+Stop agent) open from the page's ⋯ as an action sheet. It reads (the chat's long poll and the project's lists) only while it is on
+screen, gives the keyboard back while a form, menu or native screen is over the page, and gives its selection back when another tab is
+chosen, so the terminal returns. The keyboard rules above hold inside it, and its app chords (⌘1–9, ⌘⇧[ / ], ⌘N, ⌘⇧P, ⌘⇧,, ⌘⇧O, ⌘B)
+go to the page as from the terminal. A file preview opens over the page, and Back returns to the chat.
 
 **Keyboard in the model picker** (it holds the keyboard while it is up, like the New terminal sheet; the ring shows from the start with a hardware keyboard): ↑ ↓ (or ⇥ ⇧⇥, ^P ^N) move the ring down the models, then the efforts, then Fast, and wrap; ← → move along the efforts; **⏎ or space chooses** what the ring is on (one `configure`), and ⏎ on what is chosen already closes the sheet (space never does); **⎋, ⌘. and ⌘M close it** (the Clicks keyboard has no Escape). Moving sends nothing. When it closes the composer takes the keyboard back. `ChatModelCursor` is the state machine, tested.
 

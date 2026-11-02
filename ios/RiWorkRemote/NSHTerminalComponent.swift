@@ -28,7 +28,7 @@ import UIKit
     init(model: RemoteModel, bridge: NSHMobileBridge) {
         self.model = model
         self.bridge = bridge
-        bridge.onNativePresentedChange = { [weak self] in
+        bridge.observeNativePresented { [weak self] in
             Task { @MainActor [weak self] in self?.nativeChanged() }
         }
     }
@@ -125,22 +125,10 @@ import UIKit
     static let hiddenMessage = "Open this worker's tab to see it."
     /// Tries to put the target on screen per connection before saying it could not.
     private static let resolveLimit = 3
-    /// App chords typed while the terminal holds the keyboard: the TSX shell acts on them (`command`). ⌘K and ⌘/ stay the terminal's
-    /// own (its hotkey menu and help), and a custom terminal hotkey on one of these keeps priority, as on the native screen.
-    private struct Chord {
-        let input: String
-        let modifiers: UIKeyModifierFlags
-        let id: String
-        let title: String
-    }
-    private static let chords: [Chord] = (1...9).map { Chord(input: "\($0)", modifiers: .command, id: "tab.select.\($0)", title: "Select tab \($0)") } + [
-        Chord(input: "[", modifiers: [.command, .shift], id: "tab.prev", title: "Previous tab"),
-        Chord(input: "]", modifiers: [.command, .shift], id: "tab.next", title: "Next tab"),
-        Chord(input: "n", modifiers: .command, id: "terminal.new", title: "New terminal"),
-        Chord(input: "p", modifiers: [.command, .shift], id: "nav.back", title: "Back"),
-        Chord(input: ",", modifiers: [.command, .shift], id: "display.open", title: "Display settings"),
-        Chord(input: "o", modifiers: [.command, .shift], id: "picker.open", title: "Open a worker or shell"),
-    ]
+    /// App chords typed while the terminal holds the keyboard (`NSHMobileBridge.projectChords`): the TSX shell acts on them
+    /// (`command`). ⌘K and ⌘/ stay the terminal's own (its hotkey menu and help), and a custom terminal hotkey on one of these keeps
+    /// priority, as on the native screen.
+    private static var chords: [NSHAppChord] { NSHMobileBridge.projectChords }
 
     private let context: NshComponentContext
     private let host: NSHTerminalHost
