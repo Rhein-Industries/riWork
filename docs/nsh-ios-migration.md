@@ -7,11 +7,25 @@ shared `DashboardView`), its projects, and a project's page with its tab strip
 and terminal, and the New terminal and New project forms. The window's width
 picks the shell (`App.tsx`, `windowSize()`, never the device): narrower than
 600 points `PhoneShell` (a native `NavStack` of `NavPage`s with swipe back),
-wider `PadShell` (the hosts, then a host's projects in a column beside its
-dashboard or the project chosen there). Both draw the same routes
+wider `PadShell` (the Mac's RiWork window: a host's projects as a sidebar
+beside its dashboard or the project chosen there). Both draw the same routes
 (`app_state.ts`), so a window resized across 600 points keeps its place. A
-project's chat, the global orchestrator and the pairing, host, settings, memo
-and New chat sheets are still native Swift screens.
+project's chat is a native screen on iPhone and a native component drawn in the
+page on iPad (`riwork.chat`); the global orchestrator and the pairing, host,
+settings, memo and New chat sheets are still native Swift screens.
+
+On iPad (`shell/PadShell.tsx`, `shell/chrome.tsx`) a host's window is the Mac's
+in touch density (its text times 15/11, 44-point targets, the Mac's icons from
+`apps/riwork/Icon.tsx`): one top row across [sidebar | main] and a status bar
+along the bottom. The sidebar's part of the row has its toggle, Dashboard and
+the host switcher, whose menu has the other desktops, All desktops, Add desktop,
+the desktop's details, Connect or Disconnect and the settings; the main area's
+part is a project's tab strip, or Dashboard (with the sidebar hidden, its toggle
+and Dashboard start it). The row leaves `mobile.snapshot` `windowControls`
+points clear at its leading edge. The status bar has the project, its tabs by
+state, its live terminals and the link, which opens the host menu. The iPad
+opens straight into its desktop when one is paired (or one is selected); All
+desktops is the Hosts page, a centered column.
 
 ## Ownership
 
@@ -93,23 +107,37 @@ truncation notices, activity history and Haiku summaries.
 
 The Projects page lists `projects.list` (what each project's agents are doing,
 read again every 4 seconds while it is on screen, every 10 in the iPad's
-column) in the person's order (`riwork.projectSort`: Recent, Name, Date added,
+sidebar) in the person's order (`riwork.projectSort`: Recent, Name, Date added,
 as `ProjectSorting` ordered it), with the Mac's folders when the connection
 lists `native.invoke` `Store.snapshot` (the tree is the desktop Projects
 panel's, `apps/riwork/project_tree.ts`; a search lists its hits flat). New
 project (＋, ⌘⇧N) checks the name as the Mac does and sends `project.create`
 once; a lost answer says the project may have been made and reads the list
-again. A project made here opens its page with New terminal.
+again. A project made here opens its page with New terminal. On iPad it is the
+sidebar, drawn as the Mac's Projects panel: Sort and New project in its header,
+then the search, the folders and a row per project of its name and what its
+agents are doing (an idle project is one line; the path is only in its
+VoiceOver label), the project on screen with ＋ and ⋯ (New terminal, New chat or
+orchestrator…, Open a worker or shell…, Memo…). It is 300 points wide, open by
+default beside the main area in a window at least 900 points wide, and narrower
+opens over it, closing once a project or the dashboard is chosen; its toggle
+and ⌘B show or hide it either way.
 
 A project's page draws the Mac's shared tab list (`tabs.list`, visible entries
 in shared order; `shells.list` says which tab is a project terminal), or on a
 Mac without it the live terminals and the chats (`chats.list`), read again
 every 4 seconds while it is on screen. A terminal tab shows the
-`riwork.terminal` component (`target: {kind: "remote", desktopId, shellId}`);
-a chat tab opens the native chat (`nav.present` `chat`) over the page, which
-keeps its terminal. The tab on screen is remembered per project
+`riwork.terminal` component (`target: {kind: "remote", desktopId, shellId}`).
+On iPhone a chat tab opens the native chat (`nav.present` `chat`) over the
+page, which keeps its terminal. On iPad the page has no title bar: its strip is
+the Mac's (a state dot and the title, the selected tab with its close ×, ＋ and
+⋯ at the end) at the top of the window, and a chat tab is drawn under it, the
+`riwork.chat` component (`chat_view.ts`, `target: {desktopId, projectId,
+chatId}`), whose `title` names the tab and whose `command` is an app chord; one
+it calls `unavailable` says why and opens as the native screen, and ⋯ has its
+Chat actions… (`menu`). The tab on screen is remembered per project
 (`platform.prefs` `projectTab.<project>`, the Keychain library's
-`projectTabKeys`). A long press (or ⋯, or VoiceOver's actions) has Move left,
+`projectTabKeys`; on iPad a chat too). A long press (or ⋯, or VoiceOver's actions) has Move left,
 Move right and Close; closing always asks first: Detach hides the tab (on every
 device), Exit (a project terminal that is not a worker) hides it and then sends
 `shell.close`; a chat is detached here and stopped from its own menu; on a Mac
@@ -130,12 +158,15 @@ The app chords have one table, `apps/riwork/app_chords.ts` (design §2.5's
 component sends (docs/nsh-contracts.md §3): `tab.select.1`…`tab.select.9`
 (⌘1–9, Clicks Tab 1–9), `tab.prev` / `tab.next` (⌘⇧[ / ]), `terminal.new` (⌘N,
 Clicks Tab N), `nav.back` (⌘⇧P), `nav.projects` (Clicks Tab P: the host's
-Projects page; on iPad its column, beside the dashboard), `display.open` (⌘⇧,:
-Display settings) and `picker.open` (⌘⇧O). `chat.model` (Clicks Tab M) is the
-native chat's own. They reach the page three ways, and it acts on them only
-while it takes keys (no form, picker or menu up):
+Projects page; on iPad its sidebar, beside the dashboard), `display.open` (⌘⇧,:
+Display settings), `picker.open` (⌘⇧O) and `sidebar.toggle` (⌘B: the iPad's
+sidebar, from a project's page or the dashboard; the iPhone ignores it).
+`chat.model` (Clicks Tab M) is the native chat's own. They reach the page
+three ways, and it acts on them only while it takes keys (no form, picker or
+menu up, and on iPad not under the sidebar open over it, which ⌘B closes):
 - its keymap, while TSX holds the keyboard;
-- the terminal's `command` event, while the terminal holds it;
+- the terminal's `command` event, while the terminal holds it (on iPad the
+  chat component's too);
 - Swift's `keyboard.command {id}` event: from the root key host on a Clicks
   keyboard in its hardware layout, which on a project's page takes the
   keyboard only when nothing that types holds it (no terminal on screen, as the
@@ -148,8 +179,8 @@ while it takes keys (no form, picker or menu up):
 
 ⌘R (the page on top's refresh) and ⌘, (Display settings) are the app's keymap
 on every page while no native screen is up, and the root key host's while it
-holds the keyboard (`mobile.command`). With a hardware keyboard attached the
-strip moves to the bottom.
+holds the keyboard (`mobile.command`). On iPhone, with a hardware keyboard
+attached the strip moves to the bottom; on iPad it stays at the top.
 
 Not on the TSX project page yet, from the native project screen
 (`TerminalTabsView`): Rename, drag reordering, Edit tabs, focus mode, Session
@@ -218,7 +249,7 @@ and declared in `apps/riwork-mobile/nsh.json` (`relay.*`, `platform.*`,
 | `platform.theme` | event | | `{theme: InterfaceTheme, native, mic, dark}`; the first value is `host.params.theme` |
 | `nav.present` | call | `{name, host?, projectId?, chatId?, start?}` | `{}`; presents a remaining native Swift screen |
 | `nav.open` | event | | `{page, host?, projectId?, name?, tab?, newTerminal?}`: Swift moves the pages (`hosts`, `dashboard`, `projects`, `project`) |
-| `keyboard.command` | event | | `{id}`: an app chord for the project page (`app_chords.ts` ids), from Swift's root key host or the native chat |
+| `keyboard.command` | event | | `{id}`: an app chord for the project page (`app_chords.ts` ids; on iPad the dashboard takes `sidebar.toggle`), from Swift's root key host or the native chat |
 
 ```
 HostInfo  = {id, name, address?, selected: boolean, link: LinkState, features: string[]}
