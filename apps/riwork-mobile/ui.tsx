@@ -1,7 +1,10 @@
 /** The touch pieces every iPhone and iPad page is drawn with, in the theme Swift resolved
- * (`platform.theme`): 44-point targets, system text sizes times the display scale, SF Symbols. */
+ * (`platform.theme`): 44-point targets, system text sizes times the display scale, SF Symbols on the
+ * iPhone and the Mac's icons (`Icon`) on the iPad. The iPad draws the Mac's sizes in touch density, as the
+ * shared dashboard's `touch` mode does: its 13-point text at 17, 11 at 15, 10 at 13 and 9 at 12. */
 import { Text, View, safeAreaInsets, type IOSNavPageHostProps, type JSX, type YNode } from "nsh";
 import { NavPage as BaseNavPage, type NavPageProps } from "nsh/base";
+import { Icon, type IconName } from "../riwork/Icon";
 import type { MobileApp } from "./app_state";
 import { Symbol } from "./Symbol";
 
@@ -32,8 +35,11 @@ export function kit(app: MobileApp) {
   };
   const text = (size = 15, tone: Tone = "text") => ({ fontFamily: app.theme().theme.family, fontSize: pt(size), color: color(tone) });
   const dark = () => app.theme().dark;
+  /** How wide the window's own controls are at its top leading corner (iPadOS 26): the top row's first element leaves it clear. */
+  const windowControls = () => Math.max(0, app.overview().windowControls ?? 0);
 
-  function Action(props: { label: string; symbol?: string; action: () => void; disabled?: boolean; prominent?: boolean; compact?: boolean; destructive?: boolean; testID?: string }) {
+  /** A text button; `symbol` an SF Symbol before it (the iPhone), `icon` one of the Mac's (the iPad). */
+  function Action(props: { label: string; symbol?: string; icon?: IconName; action: () => void; disabled?: boolean; prominent?: boolean; compact?: boolean; destructive?: boolean; testID?: string }) {
     const tint = () => props.destructive ? color("error") : color("accent");
     return <View testID={props.testID} role="button" accessibilityLabel={props.label} disabled={props.disabled} onPress={props.action}
       activeStyle={{ backgroundColor: palette().panelActive }} disabledStyle={{ opacity: 0.45 }}
@@ -41,7 +47,18 @@ export function kit(app: MobileApp) {
         paddingHorizontal: pt(props.compact ? 8 : 14), paddingVertical: pt(8), borderRadius: pt(10),
         backgroundColor: props.prominent ? palette().panelActive : "transparent" }}>
       {props.symbol && <Symbol name={props.symbol} color={tint()} size={pt(19)} />}
-      {(!props.compact || !props.symbol) && <Text style={{ ...text(15), color: tint(), fontWeight: props.prominent ? "600" : "400" }}>{props.label}</Text>}
+      {props.icon && <Icon name={props.icon} color={tint()} size={pt(17)} />}
+      {(!props.compact || !(props.symbol || props.icon)) && <Text style={{ ...text(15), color: tint(), fontWeight: props.prominent ? "600" : "400" }}>{props.label}</Text>}
+    </View>;
+  }
+  /** One of the Mac's toolbar buttons in touch size (the iPad): its icon, muted unless `selected`, which also
+   * draws it on the rounded highlight; its label for VoiceOver. */
+  function Tool(props: { label: string; icon: IconName; action: () => void; selected?: boolean; disabled?: boolean; testID?: string }) {
+    return <View testID={props.testID} role="button" accessibilityLabel={props.label} accessibilityState={{ selected: !!props.selected }}
+      disabled={props.disabled} onPress={props.action} activeStyle={{ backgroundColor: palette().panelActive }} disabledStyle={{ opacity: 0.4 }}
+      style={{ width: target(), height: target(), flexShrink: 0, alignItems: "center", justifyContent: "center", borderRadius: pt(10),
+        backgroundColor: props.selected ? palette().panelActive : "transparent" }}>
+      <Icon name={props.icon} color={props.selected ? palette().text : palette().muted} size={pt(18)} />
     </View>;
   }
   /** A symbol-only button with its label for VoiceOver. */
@@ -80,10 +97,11 @@ export function kit(app: MobileApp) {
       style={{ width: pt(7), height: pt(7), borderRadius: pt(4), backgroundColor: color(tone()!) }} />}</>;
   }
   /** One page: on the phone a page of the navigation stack with the system header (and swipe back); on the
-   * iPad a pane with a bar of its own. */
+   * iPad the window under a top row of its own (the Hosts page; a project's page and the dashboard draw
+   * the window's top row themselves, `shell/chrome.tsx`). */
   function Page(props: {
     layout: Layout; title: string; testID?: string; backTitle?: string; right?: JSX.Element; addButton?: boolean;
-    onDismiss?: () => void; onBack?: () => void; children?: JSX.Element;
+    onDismiss?: () => void; children?: JSX.Element;
   }) {
     if (props.layout === "phone") {
       return <NavPage testID={props.testID} title={props.title} headerBackTitle={props.backTitle} onDismiss={props.onDismiss}
@@ -94,10 +112,9 @@ export function kit(app: MobileApp) {
       </NavPage>;
     }
     return <View testID={props.testID} style={{ flex: 1, minWidth: 0, backgroundColor: palette().bg }}>
-      <View style={{ flexDirection: "row", alignItems: "center", minHeight: target(), paddingHorizontal: pt(6), gap: pt(4),
-        borderBottomWidth: 0.5, borderColor: palette().divider }}>
-        {props.onBack && <Action label={props.backTitle ?? "Back"} symbol="chevron.left" compact={true} action={props.onBack} />}
-        <Text role="header" numberOfLines={1} style={{ ...text(17), fontWeight: "600", flex: 1, paddingHorizontal: props.onBack ? 0 : pt(10) }}>{props.title}</Text>
+      <View style={{ flexDirection: "row", alignItems: "center", height: target(), flexShrink: 0, paddingLeft: windowControls() + pt(16), paddingRight: pt(6), gap: pt(4),
+        backgroundColor: palette().panel, borderBottomWidth: 1, borderColor: palette().divider }}>
+        <Text role="header" numberOfLines={1} style={{ ...text(15), fontWeight: "600", flex: 1 }}>{props.title}</Text>
         {props.right}
       </View>
       {props.children}
@@ -121,5 +138,5 @@ export function kit(app: MobileApp) {
   /** The bottom of a scrolling page: clear of the home indicator. */
   function bottomInset() { const insets = safeAreaInsets(); return () => insets().bottom; }
 
-  return { palette, pt, target, color, text, dark, Action, IconButton, Section, Divider, Note, Failure, StatusDot, Toggle, Page, bottomInset };
+  return { palette, pt, target, color, text, dark, windowControls, Action, Tool, IconButton, Section, Divider, Note, Failure, StatusDot, Toggle, Page, bottomInset };
 }

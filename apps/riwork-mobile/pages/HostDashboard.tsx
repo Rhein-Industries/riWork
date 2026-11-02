@@ -1,21 +1,31 @@
 /** One host's dashboard: the desktop's own DashboardView over the relay, read only while this page is on
  * screen. A row opens the project's page at its terminal or chat, as the Mac's global window routes it
- * (`routeTarget`); the global orchestrator is a native Swift screen. */
+ * (`routeTarget`); the global orchestrator is a native Swift screen. On the iPad it is the window's main
+ * area beside the sidebar, under the top row's Dashboard (as the Mac's dashboard tab), with no title bar;
+ * a desktop that is not connected says so there, with Connect. */
 import { Scroll, Text, View, computed, effect, keymap, signal } from "nsh";
+import { appChord } from "../../riwork/app_chords";
+import { Icon } from "../../riwork/Icon";
 import type { DashboardDto } from "../../riwork/client/types";
 import { DashboardView } from "../../riwork/dashboard/Dashboard";
 import { routeTarget, type Filter, type Sort, type Target, type Wire } from "../../riwork/dashboard/model";
 import type { InterfaceTheme } from "../../riwork/theme";
 import type { MobileApp } from "../app_state";
+import { Leading, TopRow, type PadChrome } from "../shell/chrome";
 import { Symbol } from "../Symbol";
 import type { Kit, Layout } from "../ui";
 
 /** The desktop dashboard's sizes at touch density: its 11-point rows become 15. */
 const TOUCH_SCALE = 15 / 11;
 
-export function HostDashboardPage(props: { app: MobileApp; ui: Kit; layout: Layout; host: string; onTop: () => boolean }) {
+export function HostDashboardPage(props: {
+  app: MobileApp; ui: Kit; layout: Layout; host: string; onTop: () => boolean;
+  /** The iPad's window around the page: its sidebar. */
+  pad?: PadChrome;
+}) {
   const { app, ui } = props;
-  const { Action, Section, Note, Failure, palette, pt, text } = ui;
+  const { Action, Section, Note, Failure, palette, pt, target, text } = ui;
+  const pad = props.layout === "pad" ? props.pad ?? null : null;
   const hostId = props.host;
   const services = app.services(hostId);
   const dto = signal<DashboardDto | null>(null);
@@ -43,7 +53,16 @@ export function HostDashboardPage(props: { app: MobileApp; ui: Kit; layout: Layo
     return () => { if (app.refresher.current === reload) app.refresher.current = null; };
   });
   let search: { focus: () => void } | undefined;
-  effect(() => { if (onScreen() && !unsupported()) return keymap.bind("mod+f", () => search?.focus()); });
+  // On the iPad ⌘F searches the projects while the sidebar is up (its field says so), as on the Mac.
+  effect(() => { if (onScreen() && !unsupported() && !(pad && (pad.docked() || pad.overlay()))) return keymap.bind("mod+f", () => search?.focus()); });
+  // ⌘B shows or hides the iPad's sidebar, from the keymap and from Swift's chords.
+  effect(() => {
+    if (!pad || !onScreen() || pad.menuOpen()) return;
+    const fromSwift = (id: string) => { if (appChord(id)?.type === "sidebar") pad.toggle(); };
+    app.chords.current = fromSwift;
+    const unbind = keymap.bind("mod+b", pad.toggle, { when: "always" });
+    return () => { unbind(); if (app.chords.current === fromSwift) app.chords.current = null; };
+  });
   const global = () => app.overview().global?.host === hostId ? app.overview().global : undefined;
   const theme = (): InterfaceTheme => { const current = app.theme().theme; return { ...current, scale: current.scale * TOUCH_SCALE }; };
   const projectName = (id: string) => (dto()?.wire as Wire | null | undefined)?.projects?.find((project) => project.id === id)?.name ?? "Project";
@@ -79,35 +98,66 @@ export function HostDashboardPage(props: { app: MobileApp; ui: Kit; layout: Layo
       {link()?.error && <Text style={text(13, "error")}>{link()!.error!}</Text>}
     </View>;
   }
+  function Notice() {
+    return <>{notice() && <Note message={notice()} error={true}>
+      <Action label="Dismiss" compact={true} action={() => notice.set("")} />
+    </Note>}</>;
+  }
+  /** The dashboard, or on a Mac without one why, with its global orchestrator. */
+  function Body() {
+    return <>{unsupported() ? <Scroll style={{ flex: 1, backgroundColor: palette().bg }} contentStyle={{ padding: pt(16), gap: pt(12) }}
+      refreshing={app.overview().loading} onRefresh={reload}>
+      <Note title="Dashboard unavailable" message="The RiWork on your Mac does not send its dashboard yet. Update RiWork on the Mac to see what needs you, what is working, tasks and automations here. Projects and the global orchestrator still open." />
+      {global() && <Section title="Global orchestrator">
+        <View style={{ padding: pt(14), gap: pt(8) }}>
+          <Text style={text(14, "muted")}>{global()!.summary}</Text>
+          {/* Start only when the button said so: an explicit tap, never a side effect of Open. */}
+          <Action label={global()!.actionTitle} symbol={pad ? undefined : "globe"} icon={pad ? "globe" : undefined} prominent={true}
+            disabled={app.blocked() || !connected() || global()!.action === "unavailable"}
+            action={() => void app.present({ name: "global", host: hostId, start: global()?.action === "start" })} />
+        </View>
+      </Section>}
+      {props.layout === "phone" && <Action label="All projects" symbol="folder" prominent={true} disabled={app.blocked()} action={() => app.openProjects(hostId)} />}
+    </Scroll> : <DashboardView dto={dto} theme={theme} filter={filter} sort={sort} query={query} touch={true}
+      onFilter={(next) => filter.set(next)} onSort={(next) => sort.set(next)} onSearch={(node) => { search = node; }}
+      onOpen={open} onPanel={(projectId) => openProject(projectId)}
+      onGlobalChat={() => void app.present({ name: "global", host: hostId, start: true })}
+      onRefresh={reload}
+      plan={() => null} starting={() => false} decisions={services.dashboard.decisions} />}</>;
+  }
+
+  if (pad) {
+    const link = () => app.link(hostId);
+    const notes = () => !!(app.failure() || notice() || !connected());
+    return <View testID={`page:dashboard:${hostId}`} style={{ flex: 1, minWidth: 0, minHeight: 0, backgroundColor: theme().palette.panel }}>
+      <TopRow ui={ui}>
+        <Leading app={app} ui={ui} chrome={pad} host={hostId} />
+        <View role="header" accessibilityLabel="Dashboard" style={{ height: target() - 1, flexDirection: "row", alignItems: "center", gap: pt(8), paddingHorizontal: pt(16),
+          backgroundColor: palette().bg, borderRightWidth: 1, borderColor: palette().divider }}>
+          <Icon name="globe" size={pt(15)} color={palette().text} />
+          <Text numberOfLines={1} style={{ ...text(13), fontWeight: "500" }}>Dashboard</Text>
+        </View>
+      </TopRow>
+      {notes() && <View style={{ paddingHorizontal: pt(16), paddingVertical: pt(8), gap: pt(8), backgroundColor: palette().bg }}>
+        <Failure />
+        {!connected() && <Note title={app.hostName(hostId)} message={link().error ? `${link().label} · ${link().error}` : link().label}>
+          {link().state !== "connecting" && <Action label="Connect" compact={true} disabled={app.blocked()} action={() => app.connect(hostId)} />}
+        </Note>}
+        <Notice />
+      </View>}
+      <Body />
+    </View>;
+  }
+
   return <ui.Page layout={props.layout} title={app.hostName(hostId)} testID={`page:dashboard:${hostId}`} backTitle="Dashboard"
-    right={props.layout === "phone" ? <Action label="Projects" symbol="folder" compact={true} disabled={app.blocked()} action={() => app.openProjects(hostId)} /> : undefined}>
+    right={<Action label="Projects" symbol="folder" compact={true} disabled={app.blocked()} action={() => app.openProjects(hostId)} />}>
     <View style={{ flex: 1, paddingBottom: bottom(), backgroundColor: theme().palette.panel }}>
       <View style={{ paddingHorizontal: pt(16), paddingVertical: pt(8), gap: pt(8), backgroundColor: palette().bg }}>
         <Failure />
         <Connection />
-        {notice() && <Note message={notice()} error={true}>
-          <Action label="Dismiss" compact={true} action={() => notice.set("")} />
-        </Note>}
+        <Notice />
       </View>
-      {unsupported() ? <Scroll style={{ flex: 1, backgroundColor: palette().bg }} contentStyle={{ padding: pt(16), gap: pt(12) }}
-        refreshing={app.overview().loading} onRefresh={reload}>
-        <Note title="Dashboard unavailable" message="The RiWork on your Mac does not send its dashboard yet. Update RiWork on the Mac to see what needs you, what is working, tasks and automations here. Projects and the global orchestrator still open." />
-        {global() && <Section title="Global orchestrator">
-          <View style={{ padding: pt(14), gap: pt(8) }}>
-            <Text style={text(14, "muted")}>{global()!.summary}</Text>
-            {/* Start only when the button said so: an explicit tap, never a side effect of Open. */}
-            <Action label={global()!.actionTitle} symbol="globe" prominent={true}
-              disabled={app.blocked() || !connected() || global()!.action === "unavailable"}
-              action={() => void app.present({ name: "global", host: hostId, start: global()?.action === "start" })} />
-          </View>
-        </Section>}
-        {props.layout === "phone" && <Action label="All projects" symbol="folder" prominent={true} disabled={app.blocked()} action={() => app.openProjects(hostId)} />}
-      </Scroll> : <DashboardView dto={dto} theme={theme} filter={filter} sort={sort} query={query} touch={true}
-        onFilter={(next) => filter.set(next)} onSort={(next) => sort.set(next)} onSearch={(node) => { search = node; }}
-        onOpen={open} onPanel={(projectId) => openProject(projectId)}
-        onGlobalChat={() => void app.present({ name: "global", host: hostId, start: true })}
-        onRefresh={reload}
-        plan={() => null} starting={() => false} decisions={services.dashboard.decisions} />}
+      <Body />
     </View>
   </ui.Page>;
 }
