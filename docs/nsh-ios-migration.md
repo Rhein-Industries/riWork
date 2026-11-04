@@ -7,7 +7,7 @@ shared `DashboardView`), its projects, and a project's page with its tab strip
 and terminal, and the New terminal and New project forms. The window's width
 picks the shell (`App.tsx`, `windowSize()`, never the device): narrower than
 600 points `PhoneShell` (a native `NavStack` of `NavPage`s with swipe back),
-wider `PadShell` (the Mac's RiWork window: a host's projects as a sidebar
+wider `PadShell` (the Mac's Somtus window: a host's projects as a sidebar
 beside its dashboard or the project chosen there). Both draw the same routes
 (`app_state.ts`), so a window resized across 600 points keeps its place. A
 project's chat is a native screen on iPhone and a native component drawn in the
@@ -106,7 +106,7 @@ activity loop reads only the projects and orchestrators its rows open with
 on this page leaves `dashboard.get` to it). A row opens the project's page at
 its terminal or chat, as the Mac's global window routes it (`routeTarget`); the
 global orchestrator is a native screen (`nav.present` `global`). A Mac
-whose RiWork predates `dashboard.get` is never asked; the page says so, and its
+whose Somtus predates `dashboard.get` is never asked; the page says so, and its
 projects and its global orchestrator (the snapshot's `global`, from
 `orchestrators.list`: Open, or Start when there is none) still open.
 The All hosts overview keeps its filters, saved read markers, coverage and

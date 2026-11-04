@@ -155,7 +155,7 @@ async fn persistent_cached_conflicting_pending_and_capacity_outcomes_never_execu
     assert_eq!(full["error"]["code"], "cache_full");
 }
 
-/// A scripted stand-in for the RiWork CLI that logs every invocation. `shell` is
+/// A scripted stand-in for the Somtus CLI that logs every invocation. `shell` is
 /// the one live shell it reports (until a `dead` file appears beside the log);
 /// its `shell output` floods stdout past the limit.
 #[cfg(unix)]

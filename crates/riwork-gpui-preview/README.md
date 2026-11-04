@@ -1,7 +1,7 @@
 # Windowless GPUI development preview
 
 This opt-in adapter renders a GPUI root in a separate process and streams its
-actual GPU output into a RiWork App Preview tab. It does not create an NSWindow,
+actual GPU output into a Somtus App Preview tab. It does not create an NSWindow,
 desktop surface, or Dock entry. It does not use screen capture or accessibility
 input, so the cooperative mode needs neither permission.
 
@@ -14,12 +14,12 @@ accessibility, and platform IME composition are unavailable in this headless
 platform. Committed Unicode text, GPUI key bindings, pointer events, scrolling,
 and resizing work. Background tasks use GPUI's simulated scheduler, advanced
 from elapsed wall time; native platform integration needs a dedicated adapter.
-RiWork forwards plain text pasted from the host clipboard. Copying text from
+Somtus forwards plain text pasted from the host clipboard. Copying text from
 the preview back to the host clipboard is not yet synchronized.
 
 ## Try the included application
 
-In RiWork, add an **App Preview** tab, select cooperative mode, use this repository
+In Somtus, add an **App Preview** tab, select cooperative mode, use this repository
 as the working directory, and enter:
 
 ```sh
@@ -80,20 +80,20 @@ must be replaced or skipped in preview mode.
 
 ## Wire protocol, version 1
 
-RiWork launches the command with a private `RIWORK_PREVIEW_SOCKET` and a random
+Somtus launches the command with a private `RIWORK_PREVIEW_SOCKET` and a random
 `RIWORK_PREVIEW_TOKEN`. Only the launched process and its owned descendants may
 authenticate. Do not expose or persist the token. Every message is newline
 delimited UTF-8 JSON, bounded at 16 MiB including its newline.
 
 The child sends `{"type":"hello","token":"…","pid":123,"protocol":1}`;
-RiWork replies `{"type":"ready","protocol":1}`. Frames are
+Somtus replies `{"type":"ready","protocol":1}`. Frames are
 `{"type":"frame","png":"<base64 PNG>","width":960,"height":600}`.
 Frame dimensions, pointer coordinates, scroll deltas, and resize dimensions all
 use logical pixels at scale one. The adapter downsamples GPUI's 2x backing image
 before sending it. Each side is limited to 2048 pixels; very large noisy frames
 can also exceed the message limit.
 
-RiWork sends `{"type":"input","input":{"kind":"…",…}}` with:
+Somtus sends `{"type":"input","input":{"kind":"…",…}}` with:
 
 | Input kind | Fields |
 | --- | --- |
@@ -107,7 +107,7 @@ RiWork sends `{"type":"input","input":{"kind":"…",…}}` with:
 
 `{"type":"visibility","visible":false}` pauses frame rendering while the tab
 is hidden; true resumes it. `{"type":"shutdown"}` requests exit. EOF also ends
-the preview. RiWork can terminate the entire owned process group after shutdown.
+the preview. Somtus can terminate the entire owned process group after shutdown.
 The SDK caps visible rendering at 20 fps, suppresses unchanged frames, and holds
 one queued outgoing frame. Input messages have a separate 64 KiB limit and input
 buffering is bounded to 128 messages.

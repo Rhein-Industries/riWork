@@ -5,7 +5,7 @@ import RiWorkCore
     static func main() async {
         do {
             let args = CommandLine.arguments
-            guard args.count >= 2 else { throw RemoteError.remote("Usage: riwork-ios-smoke PAIRING_FILE [--project UUID] [--shell UUID] [--send LINE] [--columns 43 --rows 17] [--local] [--idle-seconds N] [--write-established PATH]") }
+            guard args.count >= 2 else { throw RemoteError.remote("Usage: somtus-ios-smoke PAIRING_FILE [--project UUID] [--shell UUID] [--send LINE] [--columns 43 --rows 17] [--local] [--idle-seconds N] [--write-established PATH]") }
             func value(_ flag: String) -> String? { guard let index = args.firstIndex(of: flag), index + 1 < args.count else { return nil }; return args[index + 1] }
             let local = args.contains("--local")
             var pairing = try Pairing.parse(String(contentsOfFile: args[1], encoding: .utf8), allowLocalDevelopment: local)

@@ -1,5 +1,5 @@
-//! The agent fields of `riwork shell list --json`, `riwork orchestrator list --json` and
-//! `riwork project list --json`, as the remote connector reads them for the phone
+//! The agent fields of `somtus shell list --json`, `somtus orchestrator list --json` and
+//! `somtus project list --json`, as the remote connector reads them for the phone
 //! (`remote/src/rpc.rs`, `SESSION_FIELDS` and `PROJECT_FIELDS`): `activity`,
 //! `activity_since_unix`, `subagents_working` and `subagent_kinds` per shell, and
 //! `last_edited_unix`, `last_activity_unix` and `agents` per project, and `last_activity_unix`
@@ -7,7 +7,7 @@
 //!
 //! Every child runs in a throwaway RIWORK_HOME and HOME with its own tmux server, and the
 //! agents are `sleep` processes dressed up as Claude and Codex by editing the registry. The
-//! hook input goes through the real `riwork agent-hook claude` and the Codex rollouts are
+//! hook input goes through the real `somtus agent-hook claude` and the Codex rollouts are
 //! files this test writes, so nothing of a real installation is read or written and no
 //! model is called.
 
@@ -65,7 +65,7 @@ impl Home {
     }
 
     fn command(&self, args: &[&str]) -> Command {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_riwork-cli"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_somtus-cli"));
         command
             .args(args)
             .current_dir(&self.path)
@@ -273,7 +273,7 @@ fn finish(mut child: Child, what: &[&str]) -> Output {
         if Instant::now() > deadline {
             let _ = child.kill();
             let _ = child.wait();
-            panic!("riwork {what:?} did not exit; it may have started the GUI");
+            panic!("somtus {what:?} did not exit; it may have started the GUI");
         }
         thread::sleep(Duration::from_millis(20));
     };

@@ -25,7 +25,7 @@ def main():
         if args.stage in ("all", "nsh"):
             v.nsh()
         if args.stage in ("all", "review"):
-            v.command(v.cargo("test", "-p", "riwork-desktop", "--bin", "riwork"),
+            v.command(v.cargo("test", "-p", "riwork-desktop", "--bin", "somtus"),
                       "merged-host-tests")
             app = "crates/riwork-nsh-native/tests/app"
             v.command([args.nsh, "check", app, "--tsc", args.tsc], "native-probe-check")

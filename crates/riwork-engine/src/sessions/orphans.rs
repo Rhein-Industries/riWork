@@ -1,5 +1,5 @@
 //! Sessions of a deleted worktree. Closing a tab only detaches its shell, so a
-//! worktree removed outside RiWork (by `git worktree remove`, or the tool that made
+//! worktree removed outside Somtus (by `git worktree remove`, or the tool that made
 //! it) would leave its shells and agents running for good, holding memory, with no
 //! folder left to work in. `reap_orphaned_worktree_sessions` ends them as `close`
 //! does, row and all, once:
@@ -110,15 +110,15 @@ impl SessionManager {
             match self.close(&id) {
                 Ok(()) => {
                     eprintln!(
-                        "riwork sessions: ended {id}, whose worktree {} was deleted",
+                        "somtus sessions: ended {id}, whose worktree {} was deleted",
                         folder.display()
                     );
                     watch.missing.remove(&id);
                     closed.push(id);
                 }
-                // Another RiWork may have ended it first; the next look tries again.
+                // Another Somtus may have ended it first; the next look tries again.
                 Err(error) => eprintln!(
-                    "riwork sessions: could not end {id} of deleted worktree {}: {error}",
+                    "somtus sessions: could not end {id} of deleted worktree {}: {error}",
                     folder.display()
                 ),
             }

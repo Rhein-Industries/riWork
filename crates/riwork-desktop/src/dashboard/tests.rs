@@ -1375,7 +1375,7 @@ fn the_backends_say_what_runs_and_what_a_restart_would_apply_and_offer_no_click(
         assert_eq!(
             backend_label(window, "app"),
             format!(
-                "RiWork, current: running since {} · 3 windows · runs the {} build",
+                "Somtus, current: running since {} · 3 windows · runs the {} build",
                 at(NOW - 600),
                 at(NOW - 7200)
             )

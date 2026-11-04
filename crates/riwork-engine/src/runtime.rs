@@ -42,7 +42,7 @@ const STOP_GRACE: Duration = Duration::from_secs(3);
 /// How long a killed replacement may take to disappear before it is reported
 /// as unstoppable (a process stuck in the kernel ignores even SIGKILL).
 const KILL_WAIT: Duration = Duration::from_secs(1);
-/// How long `riwork reload` and `riwork update` wait for every GUI to answer.
+/// How long `somtus reload` and `somtus update` wait for every GUI to answer.
 /// A GUI answers at most REPLACEMENT_TIMEOUT + STOP_GRACE + KILL_WAIT (plus its
 /// half-second poll) after launching, so the requester outlasts it.
 pub const RELOAD_WAIT: Duration = Duration::from_secs(35);
@@ -315,12 +315,12 @@ impl RuntimeManager {
         Ok(executable_path(&installed.executable).ok())
     }
     pub fn register(&self, state_home: PathBuf) -> Result<RuntimeRegistration, String> {
-        fs::create_dir_all(&state_home).map_err(|e| format!("Cannot create RiWork state: {e}"))?;
+        fs::create_dir_all(&state_home).map_err(|e| format!("Cannot create Somtus state: {e}"))?;
         let state_home = state_home
             .canonicalize()
-            .map_err(|e| format!("Cannot resolve RiWork state: {e}"))?;
+            .map_err(|e| format!("Cannot resolve Somtus state: {e}"))?;
         let identity =
-            process_identity(std::process::id())?.ok_or("Cannot inspect the RiWork GUI process")?;
+            process_identity(std::process::id())?.ok_or("Cannot inspect the Somtus GUI process")?;
         let instance = RuntimeInstance {
             id: Uuid::new_v4().to_string(),
             pid: identity.pid,
@@ -328,7 +328,7 @@ impl RuntimeManager {
             started_token: identity.started_token,
             executable: identity
                 .executable
-                .ok_or("Cannot locate the RiWork GUI executable")?,
+                .ok_or("Cannot locate the Somtus GUI executable")?,
             state_home,
             windows: vec![],
             updated_at: now(),
@@ -422,11 +422,37 @@ impl RuntimeManager {
         }
     }
     pub fn reload_all(&self, replacement: &Path) -> Result<ReloadReport, String> {
+        self.request_reload(replacement, None)
+    }
+    /// Use the ordinary trusted handoff for exactly one registered GUI. Other
+    /// live instances, including those sharing its state home, are not asked
+    /// to reload and do not contribute failures to this report.
+    pub fn reload_instance(
+        &self,
+        instance_id: &str,
+        replacement: &Path,
+    ) -> Result<ReloadReport, String> {
+        self.instance_path(instance_id)?;
+        self.request_reload(replacement, Some(instance_id))
+    }
+    fn request_reload(
+        &self,
+        replacement: &Path,
+        instance_id: Option<&str>,
+    ) -> Result<ReloadReport, String> {
         let replacement = executable_path(replacement)?;
         let _lock = self.lock()?;
         self.prune_leftovers();
-        let (instances, unreadable) = self.live_instances()?;
-        warn_unreadable(unreadable);
+        let (mut instances, mut unreadable) = self.live_instances()?;
+        if let Some(id) = instance_id {
+            instances.retain(|instance| instance.id == id);
+            if instances.is_empty() {
+                return Err(format!("No readable running Somtus instance has ID {id}."));
+            }
+            unreadable = 0;
+        } else {
+            warn_unreadable(unreadable);
+        }
         let request_id = Uuid::new_v4().to_string();
         let mut report = ReloadReport {
             request_id: request_id.clone(),
@@ -534,7 +560,7 @@ impl RuntimeManager {
         match env::var("RIWORK_RESTORE_TICKET") {
             Ok(ticket) => self.restore_ticket(&ticket).map(Some),
             Err(env::VarError::NotPresent) => Ok(None),
-            Err(_) => Err("Invalid RiWork restore ticket".to_owned()),
+            Err(_) => Err("Invalid Somtus restore ticket".to_owned()),
         }
     }
 
@@ -582,13 +608,13 @@ impl RuntimeManager {
         if snapshot.ticket_id != ticket
             || now().saturating_sub(snapshot.created_at) > REQUEST_LIFETIME
         {
-            return Err("RiWork restore ticket is invalid or expired".to_owned());
+            return Err("Somtus restore ticket is invalid or expired".to_owned());
         }
         valid_id(&snapshot.request_id)?;
         valid_id(&snapshot.old_instance_id)?;
         let executable = env::current_exe().map_err(|e| e.to_string())?;
         if executable_path(&executable)? != snapshot.replacement_executable {
-            return Err("Restore ticket belongs to a different RiWork executable".to_owned());
+            return Err("Restore ticket belongs to a different Somtus executable".to_owned());
         }
         validate_windows(&snapshot.windows)?;
         Ok(snapshot)
@@ -628,7 +654,7 @@ impl RuntimeManager {
         let abandoned = read_optional::<Response>(&response_path)?
             .is_some_and(|existing| existing.state == ReloadState::Failed);
         if abandoned || !self.restore_path(&stored.ticket_id)?.exists() {
-            return Err("The previous RiWork gave up on this reload; closing this copy".to_owned());
+            return Err("The previous Somtus gave up on this reload; closing this copy".to_owned());
         }
         write_json(&response_path, &response)?;
         fs::remove_file(self.restore_path(&stored.ticket_id)?)
@@ -691,7 +717,7 @@ impl RuntimeManager {
         valid_id(id)?;
         Ok(self.directory.join("restores").join(format!("{id}.json")))
     }
-    /// One file per launch: every app reloaded by one `riwork reload` shares the
+    /// One file per launch: every app reloaded by one `somtus reload` shares the
     /// request id, and only the ticket id tells their replacements apart.
     fn diagnostic_path(&self, request: &str, ticket: &str) -> Result<PathBuf, String> {
         valid_id(request)?;
@@ -724,7 +750,7 @@ impl RuntimeManager {
         match file.try_lock_exclusive() {
             Ok(()) => Ok(Some(file)),
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
-            Err(e) => Err(format!("Cannot lock RiWork runtime registry: {e}")),
+            Err(e) => Err(format!("Cannot lock Somtus runtime registry: {e}")),
         }
     }
     fn lock(&self) -> Result<File, String> {
@@ -738,7 +764,7 @@ impl RuntimeManager {
                 {
                     thread::sleep(Duration::from_millis(20))
                 }
-                Err(e) => return Err(format!("Cannot lock RiWork runtime registry: {e}")),
+                Err(e) => return Err(format!("Cannot lock Somtus runtime registry: {e}")),
             }
         }
     }
@@ -880,7 +906,7 @@ impl RuntimeRegistration {
                     .restore_path(&request.ticket_id)
                     .unwrap_or_default(),
             );
-            format!("Cannot launch replacement RiWork GUI: {e}")
+            format!("Cannot launch replacement Somtus GUI: {e}")
         })?;
         // Taken before anything else can happen to the child. It is not reaped
         // until the thread below runs, so its pid cannot have been reused yet.
@@ -903,12 +929,13 @@ impl RuntimeRegistration {
     /// Request files live in a user-writable cache directory, so the path in
     /// one is not authority to run it. A GUI only relaunches itself: as the
     /// executable it is already running, its sibling app bundle (the layout the
-    /// CLI falls back to), or the build `riwork update` last recorded.
+    /// CLI falls back to), or the build `somtus update` last recorded.
     fn trusted_replacement(&self, requested: &Path) -> Result<PathBuf, String> {
         let requested = executable_path(requested)?;
         let mut allowed = vec![];
         if let Ok(current) = env::current_exe() {
             if let Some(parent) = current.parent() {
+                allowed.push(parent.join("Somtus.app/Contents/MacOS/somtus"));
                 allowed.push(parent.join("RiWork.app/Contents/MacOS/riwork"));
             }
             allowed.push(current);
@@ -920,7 +947,7 @@ impl RuntimeRegistration {
             .any(|path| path == requested)
         {
             return Err(format!(
-                "Refusing to launch {}: a reload may only use this app's own executable or the build recorded by `riwork update`. Run `riwork update` to install and record that build.",
+                "Refusing to launch {}: a reload may only use this app's own executable or the build recorded by `somtus update`. Run `somtus update` to install and record that build.",
                 requested.display()
             ));
         }
@@ -934,7 +961,7 @@ impl RuntimeRegistration {
                 || metadata.mode() & 0o002 != 0
             {
                 return Err(
-                    "Replacement RiWork executable must be owned by you or root and not world-writable"
+                    "Replacement Somtus executable must be owned by you or root and not world-writable"
                         .to_owned(),
                 );
             }
@@ -977,7 +1004,7 @@ impl RuntimeRegistration {
         // Nothing left to stop. The replacement may have confirmed since the
         // read above; that is decided again under the lock.
         let message =
-            "Replacement RiWork exited before restoring its windows. Existing windows remain open.";
+            "Replacement Somtus exited before restoring its windows. Existing windows remain open.";
         match self.settle_failure(&launch.request, message, Some(launch)) {
             Ok(true) => Ok(true),
             Ok(false) => Err(message.to_owned()),
@@ -1408,7 +1435,7 @@ fn timeout_message(
     diagnostic: Option<(&Path, &ReloadDiagnostic)>,
 ) -> String {
     let mut message = format!(
-        "Replacement RiWork did not confirm restoration within {} seconds",
+        "Replacement Somtus did not confirm restoration within {} seconds",
         REPLACEMENT_TIMEOUT.as_secs()
     );
     if let Some((path, diagnostic)) = diagnostic {
@@ -1494,7 +1521,7 @@ struct ReloadDiagnostic {
     attached: usize,
     last: Option<Breadcrumb>,
 }
-const DIAGNOSTIC_HEADER: &str = "RiWork reload diagnostic";
+const DIAGNOSTIC_HEADER: &str = "Somtus reload diagnostic";
 fn build_label() -> String {
     format!(
         "{} {}",
@@ -1809,7 +1836,7 @@ impl RestoreWatchdog {
             .name("riwork-restore-watchdog".to_owned())
             .spawn(move || watch(&timer_shared, &timer_context, config, on_timeout));
         if let Err(error) = timer {
-            eprintln!("riwork: cannot start the restore watchdog: {error}");
+            eprintln!("somtus: cannot start the restore watchdog: {error}");
         }
         let (mirror_shared, mirror_context) = (shared.clone(), context);
         let mirror_thread = thread::Builder::new()
@@ -1818,7 +1845,7 @@ impl RestoreWatchdog {
                 mirror(&mirror_shared, &mirror_context, config.mirror_interval);
             });
         if let Err(error) = mirror_thread {
-            eprintln!("riwork: cannot record restore breadcrumbs: {error}");
+            eprintln!("somtus: cannot record restore breadcrumbs: {error}");
         }
         Self { shared, progress }
     }
@@ -1978,7 +2005,7 @@ fn older_than(path: &Path, age: Duration) -> bool {
 fn warn_unreadable(count: usize) {
     if count > 0 {
         eprintln!(
-            "riwork: warning: {count} running RiWork app(s) are registered in a format this build cannot read \
+            "somtus: warning: {count} running Somtus app(s) are registered in a format this build cannot read \
              (built from an incompatible version?). They are not listed and cannot be reloaded from here; \
              quit and reopen them."
         );
@@ -1993,15 +2020,15 @@ fn valid_id(id: &str) -> Result<(), String> {
     if Uuid::parse_str(id).is_ok_and(|uuid| uuid.to_string() == id) {
         Ok(())
     } else {
-        Err("Invalid RiWork runtime identifier".to_owned())
+        Err("Invalid Somtus runtime identifier".to_owned())
     }
 }
 fn validate_windows(windows: &[RuntimeWindow]) -> Result<(), String> {
     if windows.len() > 256 {
-        return Err("Too many RiWork windows in restore snapshot".to_owned());
+        return Err("Too many Somtus windows in restore snapshot".to_owned());
     }
     if windows.iter().filter(|window| window.is_global()).count() > 1 {
-        return Err("A RiWork restore snapshot has more than one global window".to_owned());
+        return Err("A Somtus restore snapshot has more than one global window".to_owned());
     }
     for window in windows {
         // The global window is no project's, and a project window has no global state.
@@ -2031,13 +2058,13 @@ fn executable_path(path: &Path) -> Result<PathBuf, String> {
         .metadata()
         .map_err(|e| format!("Cannot read replacement executable {}: {e}", path.display()))?;
     if !metadata.is_file() {
-        return Err("Replacement RiWork executable is not a file".to_owned());
+        return Err("Replacement Somtus executable is not a file".to_owned());
     }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         if metadata.permissions().mode() & 0o111 == 0 {
-            return Err("Replacement RiWork file is not executable".to_owned());
+            return Err("Replacement Somtus file is not executable".to_owned());
         }
     }
     path.canonicalize().map_err(|e| e.to_string())
@@ -2048,7 +2075,7 @@ fn private_directory(path: &Path) -> Result<(), String> {
     {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
         if path.metadata().map_err(|e| e.to_string())?.uid() != current_uid() {
-            return Err("RiWork runtime directory belongs to another user".to_owned());
+            return Err("Somtus runtime directory belongs to another user".to_owned());
         }
         fs::set_permissions(path, fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())?;
     }
@@ -2063,19 +2090,19 @@ fn read_optional<T: DeserializeOwned>(path: &Path) -> Result<Option<T>, String> 
 }
 fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T, String> {
     let data = read_private_file(path, MAX_BYTES)?;
-    serde_json::from_slice(&data).map_err(|e| format!("Invalid RiWork runtime JSON: {e}"))
+    serde_json::from_slice(&data).map_err(|e| format!("Invalid Somtus runtime JSON: {e}"))
 }
 /// A regular file (never a symlink) that belongs to this user, at most `max` bytes.
 fn read_private_file(path: &Path, max: u64) -> Result<Vec<u8>, String> {
     let meta = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
     if !meta.is_file() || meta.len() > max {
-        return Err("Invalid RiWork runtime file".to_owned());
+        return Err("Invalid Somtus runtime file".to_owned());
     }
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
         if meta.uid() != current_uid() {
-            return Err("RiWork runtime file belongs to another user".to_owned());
+            return Err("Somtus runtime file belongs to another user".to_owned());
         }
     }
     let mut data = vec![];
@@ -2085,7 +2112,7 @@ fn read_private_file(path: &Path, max: u64) -> Result<Vec<u8>, String> {
         .read_to_end(&mut data)
         .map_err(|e| e.to_string())?;
     if data.len() as u64 > max {
-        return Err("RiWork runtime file is too large".to_owned());
+        return Err("Somtus runtime file is too large".to_owned());
     }
     Ok(data)
 }
@@ -2098,7 +2125,7 @@ fn write_json(path: &Path, value: &impl Serialize) -> Result<(), String> {
 fn write_json_synced(path: &Path, value: &impl Serialize, sync: bool) -> Result<(), String> {
     let data = serde_json::to_vec(value).map_err(|e| e.to_string())?;
     if data.len() as u64 > MAX_BYTES {
-        return Err("RiWork runtime snapshot is too large".to_owned());
+        return Err("Somtus runtime snapshot is too large".to_owned());
     }
     write_private_file(path, &data, sync)
 }
@@ -2144,11 +2171,11 @@ impl ProcessIdentity {
         }
     }
 }
-/// Where the GUIs of the user's own RiWork register when `RIWORK_RUNTIME_DIR` is unset. A
+/// Where the GUIs of the user's own Somtus register when `RIWORK_RUNTIME_DIR` is unset. A
 /// fixture GUI started with its own `RIWORK_RUNTIME_DIR` registers elsewhere.
 pub(crate) fn default_directory() -> Result<PathBuf, String> {
     let home = PathBuf::from(
-        env::var_os("HOME").ok_or("HOME is unset; cannot locate RiWork runtime registry")?,
+        env::var_os("HOME").ok_or("HOME is unset; cannot locate Somtus runtime registry")?,
     );
     #[cfg(target_os = "macos")]
     let directory = home.join("Library/Caches/riwork/runtime");
@@ -2283,7 +2310,7 @@ fn current_uid() -> u32 {
 /// macOS charges privacy prompts and grants (Documents, Full Disk Access) to
 /// the app responsible for a process, and a child's is its parent's. A
 /// replacement this GUI started would ask as this build for as long as it runs,
-/// though `riwork update` has moved this build aside, and with another
+/// though `somtus update` has moved this build aside, and with another
 /// signature both builds take turns asking for the same folder. So the
 /// replacement disclaims that and answers for itself, as it would when opened
 /// from the Finder.
@@ -2518,7 +2545,7 @@ pub(crate) fn process_identity(pid: u32) -> Result<Option<ProcessIdentity>, Stri
 }
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 pub(crate) fn process_identity(_pid: u32) -> Result<Option<ProcessIdentity>, String> {
-    Err("RiWork GUI reloads are unsupported on this platform".to_owned())
+    Err("Somtus GUI reloads are unsupported on this platform".to_owned())
 }
 
 #[cfg(test)]
@@ -2783,6 +2810,50 @@ mod tests {
         assert_eq!(report.instances[0].state, ReloadState::TimedOut);
         assert!(process_matches(&registration.instance).unwrap());
         assert_eq!(fixture.manager.instances().unwrap().len(), 1);
+    }
+    #[test]
+    fn scoped_reload_queues_only_the_selected_same_home_instance() {
+        let fixture = Fixture::new();
+        let selected = fixture.register("shared-state");
+        let other = fixture.register("shared-state");
+        let executable = env::current_exe().unwrap();
+        let report = fixture
+            .manager
+            .reload_instance(&selected.instance.id, &executable)
+            .unwrap();
+        assert_eq!(report.requested, 1);
+        assert_eq!(report.instances.len(), 1);
+        assert_eq!(report.instances[0].instance_id, selected.instance.id);
+        assert_eq!(report.unreadable_registrations, 0);
+        let request = selected.pending_reload().unwrap().unwrap();
+        assert_eq!(request.request_id, report.request_id);
+        assert!(other.pending_reload().unwrap().is_none());
+        let busy = fixture
+            .manager
+            .reload_instance(&selected.instance.id, &executable)
+            .unwrap();
+        assert_eq!(busy.requested, 0);
+        assert_eq!(busy.instances[0].state, ReloadState::Busy);
+        assert!(other.pending_reload().unwrap().is_none());
+        let finished = fixture
+            .manager
+            .wait_for_reload(report, Duration::ZERO)
+            .unwrap();
+        assert_eq!(finished.instances.len(), 1);
+        assert_eq!(finished.instances[0].state, ReloadState::TimedOut);
+        assert!(process_matches(&selected.instance).unwrap());
+        assert!(process_matches(&other.instance).unwrap());
+    }
+
+    #[test]
+    fn scoped_reload_unknown_or_invalid_instance_never_falls_back_to_all() {
+        let fixture = Fixture::new();
+        let live = fixture.register("state");
+        let executable = env::current_exe().unwrap();
+        for id in ["../invalid".to_owned(), Uuid::new_v4().to_string()] {
+            assert!(fixture.manager.reload_instance(&id, &executable).is_err());
+            assert!(live.pending_reload().unwrap().is_none());
+        }
     }
     #[test]
     fn readiness_requires_correct_child_and_matching_registered_windows() {
@@ -3763,7 +3834,7 @@ mod tests {
             request_id: request.to_owned(),
             ticket_id: ticket.to_owned(),
             pid,
-            executable: PathBuf::from("/Applications/RiWork.app/Contents/MacOS/riwork"),
+            executable: PathBuf::from("/Applications/Somtus.app/Contents/MacOS/somtus"),
             build: "0.1.0 release".to_owned(),
             elapsed: Duration::from_millis(40_250),
             attached: 6,
@@ -3786,12 +3857,12 @@ mod tests {
         assert_eq!(
             text,
             format!(
-                "RiWork reload diagnostic\n\
+                "Somtus reload diagnostic\n\
                  status: watchdog timeout\n\
                  request: {}\n\
                  ticket: {}\n\
                  replacement pid: 777\n\
-                 executable: /Applications/RiWork.app/Contents/MacOS/riwork\n\
+                 executable: /Applications/Somtus.app/Contents/MacOS/somtus\n\
                  build: 0.1.0 release\n\
                  elapsed: 40.2s\n\
                  terminals attached: 6\n\
@@ -3835,7 +3906,7 @@ mod tests {
         // Anything else is not a diagnostic.
         assert!(ReloadDiagnostic::parse("not a diagnostic").is_none());
         assert!(
-            ReloadDiagnostic::parse("RiWork reload diagnostic\nstatus: in progress\n").is_none()
+            ReloadDiagnostic::parse("Somtus reload diagnostic\nstatus: in progress\n").is_none()
         );
     }
 
@@ -3892,7 +3963,7 @@ mod tests {
                 .read_diagnostic(&id(), &ticket, 777)
                 .is_none()
         );
-        // Every app reloaded by one `riwork reload` shares the request id, so
+        // Every app reloaded by one `somtus reload` shares the request id, so
         // a second app's replacement leaves a file of its own, and the first's
         // is neither replaced nor removed by it.
         let second = fixture
@@ -4037,7 +4108,7 @@ mod tests {
         let stopped = timeout_message(777, Some(&StopOutcome::Killed), Some((path, &diagnostic)));
         assert_eq!(
             stopped,
-            "Replacement RiWork did not confirm restoration within 25 seconds: \
+            "Replacement Somtus did not confirm restoration within 25 seconds: \
              stuck attaching terminal for session 0f9c3c1e-session (cwd /Users/me/work tree/α); \
              see /runtime/diagnostics/reload-x.txt. \
              The unresponsive replacement (pid 777) was stopped. Existing windows remain open."
@@ -4045,13 +4116,13 @@ mod tests {
         // Without a diagnostic there is nothing to point at.
         assert_eq!(
             timeout_message(777, Some(&StopOutcome::Terminated), None),
-            "Replacement RiWork did not confirm restoration within 25 seconds. \
+            "Replacement Somtus did not confirm restoration within 25 seconds. \
              The unresponsive replacement (pid 777) was stopped. Existing windows remain open."
         );
         // Without an outcome (the registry was busy) nothing is claimed.
         assert_eq!(
             timeout_message(777, None, None),
-            "Replacement RiWork did not confirm restoration within 25 seconds. Existing windows remain open."
+            "Replacement Somtus did not confirm restoration within 25 seconds. Existing windows remain open."
         );
         diagnostic.last.as_mut().unwrap().step = AttachStep::Done;
         assert!(

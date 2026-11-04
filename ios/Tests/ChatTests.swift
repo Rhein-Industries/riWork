@@ -108,7 +108,7 @@ final class ChatTests: XCTestCase {
         XCTAssertEqual(ChatProvider.codex.chatTitle, "Codex chat")
         XCTAssertEqual(ChatProvider.claude.chatTitle, "Claude chat", "never “Claude Code”")
         XCTAssertEqual(ChatProvider.muse.chatTitle, "Muse chat")
-        XCTAssertEqual(ChatProvider.allCases.map(\.title), ["Codex", "Claude", "Muse"])
+        XCTAssertEqual(ChatProvider.allCases.map(\.title), ["Codex", "Claude", "Muse", "ACP"])
     }
     func testWhatEachEventCarriesIsReadExactly() throws {
         let events = try fixture()["events"].array.map { try $0.decode(ChatEvent.self) }

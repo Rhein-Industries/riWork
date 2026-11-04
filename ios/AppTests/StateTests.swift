@@ -194,7 +194,7 @@ actor FixtureTransport: RemoteTransport {
                 switch oldDesktop {
                 case .no: break
                 case .strictFields: throw RemoteError.rpc(code: "invalid_request", message: "unknown field `styled`, expected `shell_id` or `lines`")
-                case .oldCLI: throw RemoteError.rpc(code: "cli_error", message: "the installed riwork CLI does not support styled output or waiting for changes; update RiWork")
+                case .oldCLI: throw RemoteError.rpc(code: "cli_error", message: "the installed riwork CLI does not support styled output or waiting for changes; update Somtus")
                 }
             }
             if let oversizeAbove, lines > oversizeAbove { throw RemoteError.rpc(code: oversizeCode, message: "reply too large") }
@@ -228,7 +228,7 @@ actor FixtureTransport: RemoteTransport {
             switch historyMode {
             case .ok:
                 // The installed CLI takes fewer lines than the connector announced.
-                if case .number(let n)? = params["lines"], let limit = cliLineLimit, Int(n) > limit { throw RemoteError.rpc(code: "cli_error", message: "RiWork CLI failed: riwork: --lines needs an integer from 1 to \(limit)") }
+                if case .number(let n)? = params["lines"], let limit = cliLineLimit, Int(n) > limit { throw RemoteError.rpc(code: "cli_error", message: "Somtus CLI failed: riwork: --lines needs an integer from 1 to \(limit)") }
             case .unsupported: throw RemoteError.rpc(code: "invalid_request", message: "unsupported RPC method")
             case .rejectsStyled: if params["styled"] != nil { throw RemoteError.rpc(code: "invalid_request", message: "unknown field `styled`") }
             case .tooLarge(let above): if case .number(let n)? = params["lines"], Int(n) > above { throw RemoteError.rpc(code: "response_too_large", message: "reply too large") }

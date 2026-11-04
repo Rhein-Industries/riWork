@@ -1,7 +1,7 @@
 //! Passive, one-time import through Orca's public local CLI.
 //!
 //! The preview freezes both registries. Import rereads Orca, then commits the
-//! additions and receipt in one locked RiWork state transaction.
+//! additions and receipt in one locked Somtus state transaction.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -30,7 +30,7 @@ const COMMAND_TIMEOUT: Duration = Duration::from_secs(15);
 const MAX_STDOUT: usize = 32 * 1024 * 1024;
 const MAX_STDERR: usize = 256 * 1024;
 const REFRESH_MESSAGE: &str =
-    "Orca or RiWork changed since this preview. Refresh the preview before importing.";
+    "Orca or Somtus changed since this preview. Refresh the preview before importing.";
 const NOTHING_TO_IMPORT_MESSAGE: &str = "Orca has no projects or worktrees to import yet. Nothing was recorded, so you can import again once Orca has loaded them.";
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -111,7 +111,7 @@ impl ImportManager {
         // plan. Recording that would report every later import as complete.
         plan.recordable =
             !plan.projects.is_empty() || !plan.worktrees.is_empty() || !warnings.is_empty();
-        warnings.push("Orca's CLI does not export project folder names; imported projects will be unfiled. Existing RiWork folders are preserved.".to_owned());
+        warnings.push("Orca's CLI does not export project folder names; imported projects will be unfiled. Existing Somtus folders are preserved.".to_owned());
         Ok(ImportPreview {
             source,
             project_count: plan.projects.len(),

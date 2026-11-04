@@ -52,7 +52,7 @@ def main():
         try:
             helper = temporary / "bridge"
             subprocess.run(["xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-O2", "-framework", "Foundation", "-framework", "CoreGraphics", "-framework", "ImageIO", "-framework", "IOSurface", str(SOURCE / "main.m"), "-o", str(helper)], check=True)
-            simulator = run("xcrun", "simctl", "create", "RiWork-Bridge-Proof-" + uuid.uuid4().hex[:8], args.device_type, args.runtime)
+            simulator = run("xcrun", "simctl", "create", "Somtus-Bridge-Proof-" + uuid.uuid4().hex[:8], args.device_type, args.runtime)
             run("xcrun", "simctl", "boot", simulator)
             run("xcrun", "simctl", "bootstatus", simulator, "-b")
             subprocess.run(["xcodebuild", "-project", str(SOURCE / "tests/RiWorkPreviewProof.xcodeproj"), "-scheme", "RiWorkPreviewProof", "-configuration", "Debug", "-sdk", "iphonesimulator", "-destination", "id=" + simulator, "-derivedDataPath", str(temporary / "derived"), "CODE_SIGNING_ALLOWED=NO", "build", "-quiet"], check=True)

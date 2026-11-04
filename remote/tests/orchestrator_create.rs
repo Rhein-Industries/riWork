@@ -113,14 +113,14 @@ fn stub_cli(dir: &Path) -> PathBuf {
              printf '\\n' >> \"$d/argv.log\"\n\
              case \"$1 $2\" in\n\
              'capabilities --json')\n\
-               if [ -e \"$d/capabilities.unknown\" ]; then echo \"riwork: Unknown invocation 'capabilities'\" >&2; exit 2; fi\n\
+               if [ -e \"$d/capabilities.unknown\" ]; then echo \"somtus: Unknown invocation 'capabilities'\" >&2; exit 2; fi\n\
                if [ -e \"$d/capabilities.out\" ]; then cat \"$d/capabilities.out\"; else printf '{{\"v\":1,\"chat\":true,\"orchestrator_create\":true}}'; fi;;\n\
              'project show')\n\
-               if [ -e \"$d/show.error\" ]; then printf 'riwork: %s\\n' \"$(cat \"$d/show.error\")\" >&2; exit 2; fi\n\
+               if [ -e \"$d/show.error\" ]; then printf 'somtus: %s\\n' \"$(cat \"$d/show.error\")\" >&2; exit 2; fi\n\
                if [ -e \"$d/show.id\" ]; then printf '{{\"id\":\"%s\"}}' \"$(cat \"$d/show.id\")\"; else printf '{{\"id\":\"%s\"}}' \"$3\"; fi;;\n\
              'orchestrator create')\n\
                touch \"$d/create.ran\"\n\
-               if [ -e \"$d/create.error\" ]; then printf 'riwork: %s\\n' \"$(cat \"$d/create.error\")\" >&2; exit 2; fi\n\
+               if [ -e \"$d/create.error\" ]; then printf 'somtus: %s\\n' \"$(cat \"$d/create.error\")\" >&2; exit 2; fi\n\
                cat \"$d/create.json\";;\n\
              esac\n",
             dir = dir.display()
@@ -461,7 +461,7 @@ async fn a_cli_that_cannot_create_orchestrators_is_not_asked_to() {
         let response = f.create(json!({})).await;
         assert_eq!(code(&response), "cli_error", "{answer:?}: {response}");
         assert!(
-            message(&response).contains("update RiWork"),
+            message(&response).contains("update Somtus"),
             "{answer:?}: {response}"
         );
         assert!(

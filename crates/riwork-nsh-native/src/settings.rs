@@ -55,7 +55,7 @@ pub struct ProjectOrderDto {
     pub descending: bool,
 }
 
-/// What a New chat tab starts with: `provider` codex|claude|muse, `mode`
+/// What a New chat tab starts with: `provider` codex|claude|muse|acp, `mode`
 /// supervised|auto_edit|full|plan.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsObject)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -689,7 +689,7 @@ impl PreferenceService {
         let (settings, error) = match backend.get() {
             Ok(settings) => (settings, None),
             Err(error) => {
-                eprintln!("RiWork settings load: {error}; using defaults");
+                eprintln!("Somtus settings load: {error}; using defaults");
                 (CoreSettings::default(), Some(error))
             }
         };
@@ -914,7 +914,7 @@ snapshot_js_value!(SettingsDto, "SettingsEvent");
 impl JsValue for SettingsPatch {
     fn ts_type(types: &mut TsTypes) -> String {
         types.declare("SettingsPatch", |types| format!(
-            "export interface SettingsPatch {{ theme?: string; nativeTerminalColors?: boolean; useRiworkColors?: boolean; projectOrder?: {{ sort: 'name' | 'last_edited' | 'date_added' | 'live_sessions'; descending: boolean }}; openPreviewOnSelect?: boolean; uiTextSize?: number; uiTextMatchesTerminal?: boolean; interfaceFont?: 'system' | 'system_mono'; rememberWindowSize?: boolean; panelTabIcons?: boolean; tabCloseBehavior?: 'ask' | 'detach' | 'exit'; agentInlineMode?: boolean; agentTerminalsUnrestricted?: boolean; dictationMic?: boolean; dictationModel?: string; pushToTalkKey?: 'right_command' | 'right_option' | 'off'; newChatDefaults?: {{ provider: 'codex' | 'claude' | 'muse'; model?: string | null; effort?: string | null; fast: boolean; mode: 'supervised' | 'auto_edit' | 'full' | 'plan' }} | null; claudeChatIgnoresApiKey?: boolean; codexSubscriptionBalancing?: boolean; dashboardHaikuSummaries?: boolean; orchestratorMode?: 'automatic' | 'terminal' | 'chat'; orchestratorChatProvider?: 'codex' | 'claude' | 'muse'; orchestratorChatModel?: string | null; statusBar?: {}; delegationPatch?: {}; }}",
+            "export interface SettingsPatch {{ theme?: string; nativeTerminalColors?: boolean; useRiworkColors?: boolean; projectOrder?: {{ sort: 'name' | 'last_edited' | 'date_added' | 'live_sessions'; descending: boolean }}; openPreviewOnSelect?: boolean; uiTextSize?: number; uiTextMatchesTerminal?: boolean; interfaceFont?: 'system' | 'system_mono'; rememberWindowSize?: boolean; panelTabIcons?: boolean; tabCloseBehavior?: 'ask' | 'detach' | 'exit'; agentInlineMode?: boolean; agentTerminalsUnrestricted?: boolean; dictationMic?: boolean; dictationModel?: string; pushToTalkKey?: 'right_command' | 'right_option' | 'off'; newChatDefaults?: {{ provider: 'codex' | 'claude' | 'muse' | 'acp'; model?: string | null; effort?: string | null; fast: boolean; mode: 'supervised' | 'auto_edit' | 'full' | 'plan' }} | null; claudeChatIgnoresApiKey?: boolean; codexSubscriptionBalancing?: boolean; dashboardHaikuSummaries?: boolean; orchestratorMode?: 'automatic' | 'terminal' | 'chat'; orchestratorChatProvider?: 'codex' | 'claude' | 'muse'; orchestratorChatModel?: string | null; statusBar?: {}; delegationPatch?: {}; }}",
             StatusBarDto::ts_type(types), DelegationPatch::ts_type(types)))
     }
     fn from_js(value: JsIn<'_>) -> Result<Self, PropError> {

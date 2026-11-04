@@ -1,4 +1,4 @@
-//! Add-ins: TSX extensions of RiWork. An add-in is a folder with an `addin.json` manifest and
+//! Add-ins: TSX extensions of Somtus. An add-in is a folder with an `addin.json` manifest and
 //! NSH TSX sources (`App.tsx`), and optionally native workers: binaries or scripts it ships,
 //! run as processes of their own.
 //!
@@ -6,7 +6,7 @@
 //!   its repository.
 //! - Personal add-ins live in `RIWORK_HOME/addins/<folder>`, for every project.
 //!
-//! An add-in runs in an engine of its own and reaches RiWork only through the add-in API, for
+//! An add-in runs in an engine of its own and reaches Somtus only through the add-in API, for
 //! what its manifest's `permissions` grant. Nothing of an add-in runs until it is trusted. The
 //! grant covers its permissions, network origins, workers, tools and the files its workers
 //! run (`grant_digest`), and is asked for again when any of those change. Its TSX may change
@@ -37,6 +37,15 @@ pub enum Permission {
     /// The project, its worktrees and tasks, and opening its files.
     #[serde(rename = "project.read")]
     ProjectRead,
+    /// The owning window's panes, tabs and selected project context.
+    #[serde(rename = "workspace.read")]
+    WorkspaceRead,
+    /// Read host connection and session metadata across paired hosts.
+    #[serde(rename = "hosts.read")]
+    HostsRead,
+    /// Navigation and layout commands in the owning workspace.
+    #[serde(rename = "workspace.control")]
+    WorkspaceControl,
     /// Adding tasks and changing their status.
     #[serde(rename = "tasks.write")]
     TasksWrite,
@@ -58,6 +67,9 @@ impl Permission {
     pub fn describe(self) -> &'static str {
         match self {
             Self::ProjectRead => "Read the project, its worktrees and tasks, and open its files",
+            Self::HostsRead => "Read connection health, agent status and session titles across all paired hosts",
+            Self::WorkspaceRead => "Read this window's project, pane and tab titles and selection",
+            Self::WorkspaceControl => "Navigate projects and tabs, open views and sessions, and arrange this window's panes",
             Self::TasksWrite => "Add tasks and change their status",
             Self::ShellRun => "Run commands in shell tabs you can see",
             Self::Notify => "Show notifications",
@@ -106,7 +118,7 @@ pub struct WorkerSpec {
     pub description: String,
 }
 
-/// A tool agents can call (through `riwork mcp`): a worker's method.
+/// A tool agents can call (through `somtus mcp`): a worker's method.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ToolSpec {
     pub name: String,
@@ -610,9 +622,26 @@ mod tests {
         more.permissions.insert(Permission::ShellRun);
         fs::write(dir.join("bin/w"), "v1").unwrap();
         assert_ne!(grant_digest(&dir, &more), digest, "a new permission asks again");
+        for permission in [Permission::WorkspaceRead, Permission::WorkspaceControl] {
+            let mut workspace = parsed.clone();
+            workspace.permissions.insert(permission);
+            assert_ne!(grant_digest(&dir, &workspace), digest, "workspace access requires renewed trust");
+        }
         revoke(&home, "personal/acme.security-dashboard").unwrap();
         assert!(!trusted(&home, "personal/acme.security-dashboard", &digest));
         fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn workspace_permissions_are_independent_and_described() {
+        let read = Manifest::parse(&manifest(json!({"permissions": ["workspace.read"]}))).unwrap();
+        assert!(read.allows(Permission::WorkspaceRead));
+        assert!(!read.allows(Permission::WorkspaceControl));
+        let control = Manifest::parse(&manifest(json!({"permissions": ["workspace.control"]}))).unwrap();
+        assert!(control.allows(Permission::WorkspaceControl));
+        assert!(!control.allows(Permission::WorkspaceRead));
+        assert!(Permission::WorkspaceRead.describe().contains("titles"));
+        assert!(Permission::WorkspaceControl.describe().contains("arrange"));
     }
 
     #[test]

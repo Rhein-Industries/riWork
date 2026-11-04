@@ -339,7 +339,7 @@ impl Drop for MemoEditor {
                 self.generation + 1,
             )
         {
-            eprintln!("riwork: the project memo could not be saved: {error}");
+            eprintln!("somtus: the project memo could not be saved: {error}");
         }
     }
 }

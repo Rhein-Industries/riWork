@@ -1,5 +1,5 @@
 //! A desktop device's terminal streams (`pty.*`): a real pseudo-terminal and a
-//! real process against a stand-in RiWork CLI whose `shell attach --exec` runs
+//! real process against a stand-in Somtus CLI whose `shell attach --exec` runs
 //! a few lines of `sh`, first through the RPC layer and then end to end through
 //! a real relay and the real connector binary.
 //!
@@ -74,9 +74,9 @@ case "$1 $2" in
   exit) printf 'bye\n'; exit 0;;
   flood) head -c 200000 /dev/zero | tr '\0' x; echo; echo END; exec cat;;
   ctty) if (exec 3<>/dev/tty) 2>/dev/null; then echo ctty-yes; else echo ctty-no; fi; exec cat;;
-  unknown) echo "riwork: unknown shell $ID" >&2; exit 2;;
-  exited) echo "riwork: shell $ID has exited" >&2; exit 2;;
-  broken) echo "riwork: tmux: server exited unexpectedly" >&2; exit 2;;
+  unknown) echo "somtus: unknown shell $ID" >&2; exit 2;;
+  exited) echo "somtus: shell $ID has exited" >&2; exit 2;;
+  broken) echo "somtus: tmux: server exited unexpectedly" >&2; exit 2;;
   silent) exit 3;;
   tmux-terminal) echo "missing or unsuitable terminal: xterm-ghostty" >&2; exit 1;;
   tmux-session) echo "can't find session: $ID" >&2; exit 1;;
@@ -660,7 +660,7 @@ async fn an_attach_that_cannot_start_is_told_in_the_codes_of_the_other_methods()
     std::fs::write(fresh.dir().join("old-cli"), "").unwrap();
     let reply = fresh.call("pty.open", params(&uuid4())).await;
     assert_eq!(code(&reply), "cli_error", "{reply}");
-    assert!(message(&reply).contains("update RiWork"), "{reply}");
+    assert!(message(&reply).contains("update Somtus"), "{reply}");
     assert!(
         !fresh.dir().join("attach.log").exists(),
         "nothing was started"
@@ -806,7 +806,7 @@ async fn the_client_gets_the_argv_and_the_environment_it_is_allowed() {
 // ---- the command line ------------------------------------------------------
 
 fn remote(home: &Path, args: &[&str]) -> std::process::Output {
-    std::process::Command::new(env!("CARGO_BIN_EXE_riwork-remote"))
+    std::process::Command::new(env!("CARGO_BIN_EXE_somtus-remote"))
         .env("RIWORK_HOME", home)
         .args(args)
         .stdin(Stdio::null())
@@ -911,7 +911,7 @@ impl Rig {
     async fn new(kind: DeviceKind) -> Self {
         Self::with_cli(kind, None).await
     }
-    /// `cli`: a real RiWork CLI instead of the stand-in.
+    /// `cli`: a real Somtus CLI instead of the stand-in.
     async fn with_cli(kind: DeviceKind, cli: Option<PathBuf>) -> Self {
         Self::with_cli_options(kind, cli, false).await
     }
@@ -942,7 +942,7 @@ impl Rig {
             axum::serve(listener, relay.router()).await.unwrap();
         });
         let cli = cli.unwrap_or_else(|| stand_in_cli(dir.path()));
-        let mut command = Command::new(env!("CARGO_BIN_EXE_riwork-remote"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_somtus-remote"));
         command
             .env("RIWORK_HOME", &home)
             .args(["start", "--riwork"])
@@ -1115,7 +1115,7 @@ async fn a_desktop_is_told_streams_exist_opens_one_and_drives_it_over_the_encryp
     assert_eq!(opened["ok"], true, "{opened}");
     assert!(opened["server_ms"].is_u64());
     let stream = opened["result"]["stream"].as_str().unwrap().to_owned();
-    // The client uses the connector's RiWork state, not the default one.
+    // The client uses the connector's Somtus state, not the default one.
     let environment = std::fs::read_to_string(rig.dir.path().join(format!("env.{shell}"))).unwrap();
     assert!(
         environment.contains(&format!("RIWORK_HOME={}\n", rig.home.display())),
@@ -1386,7 +1386,7 @@ async fn connector_death_hangs_up_clients(mut rig: Rig) {
 /// show that the connector and the CLI agree on the state, the arguments and the terminal.
 /// `RIWORK_TEST_CLI=/absolute/path/to/riwork cargo test --locked --package riwork-remote --test pty -- --ignored`
 #[tokio::test]
-#[ignore = "requires RIWORK_TEST_CLI (an absolute RiWork CLI) and tmux; creates only isolated temporary data"]
+#[ignore = "requires RIWORK_TEST_CLI (an absolute Somtus CLI) and tmux; creates only isolated temporary data"]
 async fn the_real_cli_streams_a_real_tmux_shell_and_leaves_it_running() {
     let cli = PathBuf::from(std::env::var_os("RIWORK_TEST_CLI").expect("set RIWORK_TEST_CLI"));
     assert!(cli.is_absolute() && cli.is_file());

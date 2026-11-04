@@ -1,5 +1,5 @@
 //! Opt-in latency and idle-CPU measurement of the path a phone request takes:
-//! mobile socket -> relay process -> connector process -> `riwork` CLI -> tmux.
+//! mobile socket -> relay process -> connector process -> `somtus` CLI -> tmux.
 //!
 //! Every process is a real one and uses a fresh temporary RIWORK_HOME with one
 //! disposable zsh session of its own; nothing outside it is read or written.
@@ -219,7 +219,7 @@ async fn request_latency_and_idle_cpu() -> Result<()> {
     ensure!(cli.is_absolute(), "absolute CLI path required");
     let remote = std::env::var_os("RIWORK_BENCH_REMOTE")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_riwork-remote")));
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_somtus-remote")));
     let rounds = env_number("RIWORK_BENCH_ROUNDS", 40);
     let idle_seconds = env_number("RIWORK_BENCH_IDLE_SECONDS", 20);
     let temp = tempfile::tempdir()?;

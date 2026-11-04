@@ -55,11 +55,11 @@ impl Problem {
     pub fn message(&self) -> String {
         match self {
             Self::MicrophoneDenied => {
-                "Microphone access is off for RiWork. Turn it on in System Settings to dictate."
+                "Microphone access is off for Somtus. Turn it on in System Settings to dictate."
                     .to_owned()
             }
             Self::RecognitionDenied => {
-                "Speech recognition is off for RiWork. Turn it on in System Settings to dictate."
+                "Speech recognition is off for Somtus. Turn it on in System Settings to dictate."
                     .to_owned()
             }
             Self::Unsupported => {
@@ -79,7 +79,7 @@ impl Problem {
                 "Dictation stopped: the microphone went away. What was heard is kept.".to_owned()
             }
             Self::Unavailable => {
-                "Dictation is not available in this build of RiWork (riwork-speech is missing)."
+                "Dictation is not available in this build of Somtus (riwork-speech is missing)."
                     .to_owned()
             }
             Self::Failed(reason) => format!("Dictation stopped: {reason}"),
@@ -1215,7 +1215,7 @@ mod tests {
             })
             .collect();
         items.push(item(ItemBody::Command {
-            command: "cargo test --bin riwork".to_owned(),
+            command: "cargo test --bin somtus".to_owned(),
             cwd: None,
             output: "lots of output".to_owned(),
             exit_code: Some(0),
@@ -1234,7 +1234,7 @@ mod tests {
             &items,
         );
         assert_eq!(sources.names, ["riWork", "mac-chat-mic"]);
-        assert!(sources.text.ends_with("cargo test --bin riwork"));
+        assert!(sources.text.ends_with("cargo test --bin somtus"));
         assert!(!sources.text.contains("old11"), "only the last 40 items");
         assert!(sources.text.contains("old12"));
         assert!(
@@ -1279,7 +1279,7 @@ mod tests {
             "ios-speech-input",
             "RemoteModel+Keys.swift",
             "SessionVocabulary",
-            "RiWork",
+            "Somtus",
             "ChatComposer",
             "Codex",
             "git",
@@ -1306,7 +1306,7 @@ mod tests {
                 "grep for chat composer in the iOS folder",
                 "grep for ChatComposer in the iOS folder",
             ),
-            ("open riwork", "open RiWork"),
+            ("open riwork", "open Somtus"),
             ("ask codex", "ask codex"),
             ("Git status", "Git status"),
             (

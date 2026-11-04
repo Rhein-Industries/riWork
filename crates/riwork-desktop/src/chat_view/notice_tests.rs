@@ -940,7 +940,7 @@ fn the_session_id_card_stays_in_the_row_and_copies_the_whole_id(cx: &mut TestApp
 }
 
 /// Times the ⋯ menu with a chat that has many notices. Run with
-/// `cargo test --bin riwork profile_more_menu -- --ignored --nocapture`.
+/// `cargo test --bin somtus profile_more_menu -- --ignored --nocapture`.
 #[gpui::test]
 #[ignore]
 fn profile_more_menu(cx: &mut TestAppContext) {

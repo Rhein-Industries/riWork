@@ -7,7 +7,7 @@ and `nsh` / M5 `ed1b456340d66d5cc9ead9d60f8c9111e75e1a40`.
 
 `verification_environment = isolated /tmp RIWORK_HOME and RIWORK_RUNTIME_DIR fixtures, windowless NSH engines, and test-owned unshown AppKit objects`
 
-No live RiWork windows or state were used. The AppKit test executable uses
+No live Somtus windows or state were used. The AppKit test executable uses
 activation policy Prohibited, never orders or activates its fixture windows,
 and asserts that all its windows are invisible. No desktop automation, push,
 installation or task-status update was performed.

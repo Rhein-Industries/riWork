@@ -221,7 +221,7 @@ fn status_reports_the_state_of_the_chat_as_a_terminal_reports_its_session() {
     let setup = Setup::new();
     assert_eq!(
         setup.run("status").unwrap(),
-        "No global orchestrator session. Run: riwork orchestrator create\n"
+        "No global orchestrator session. Run: somtus orchestrator create\n"
     );
     assert_eq!(setup.text("status", true).unwrap().trim(), "null");
     setup.choose_chat(Provider::Codex);
@@ -348,7 +348,7 @@ fn send_is_a_chat_message_and_output_is_the_conversation_as_text() {
         setup
             .run("send")
             .unwrap_err()
-            .starts_with("Usage: riwork orchestrator send")
+            .starts_with("Usage: somtus orchestrator send")
     );
 }
 
@@ -404,7 +404,7 @@ fn what_only_a_terminal_has_says_so_for_a_chat_and_the_terminals_commands_are_st
         let error = setup.run(operation).unwrap_err();
         assert!(error.contains("this one runs as a chat"), "{error}");
         assert!(
-            error.contains(&format!("riwork chat events {}", chat.id)),
+            error.contains(&format!("somtus chat events {}", chat.id)),
             "{error}"
         );
     }

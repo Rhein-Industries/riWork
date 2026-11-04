@@ -14,7 +14,7 @@ pub fn load() -> Result<(Bundle, Option<PathBuf>), String> {
         resolve(&source, Some(path))?
     } else {
         let executable = std::env::current_exe()
-            .map_err(|error| format!("NSH bundle: could not locate RiWork executable: {error}"))?;
+            .map_err(|error| format!("NSH bundle: could not locate Somtus executable: {error}"))?;
         resolve_for_executable(&source, &executable)?
     };
     let bundle =
@@ -24,10 +24,10 @@ pub fn load() -> Result<(Bundle, Option<PathBuf>), String> {
 
 fn resolve_for_executable(source: &Path, executable: &Path) -> Result<PathBuf, String> {
     let beside = executable.parent()
-        .ok_or_else(|| "NSH bundle: RiWork executable has no parent directory".to_owned())?;
+        .ok_or_else(|| "NSH bundle: Somtus executable has no parent directory".to_owned())?;
 
     // A macOS Contents/MacOS layout owns both JS and its assets, including a
-    // retained RiWork.app.previous. Missing resources never reach into a checkout.
+    // retained Somtus.app.previous. Missing resources never reach into a checkout.
     if beside.file_name().is_some_and(|name| name == "MacOS")
         && let Some(contents) = beside.parent()
         && contents.file_name().is_some_and(|name| name == "Contents")
@@ -35,13 +35,14 @@ fn resolve_for_executable(source: &Path, executable: &Path) -> Result<PathBuf, S
         return packaged(&contents.join("Resources/riwork-ui/bundle.js"));
     }
 
-    let sibling_app = beside.join("RiWork.app");
-    let sibling = sibling_app.join("Contents/Resources/riwork-ui/bundle.js");
-    if metadata(&sibling_app)?.is_some() {
-        // The updater installs this executable and app together. Its resources
-        // take precedence over loose output from any earlier manual build.
-        // Recognizing the app is enough: missing UI means an incomplete install.
-        return packaged(&sibling);
+    // Prefer the new bundle, while allowing an existing installation's resources
+    // during migration. An incomplete new bundle must never use stale resources.
+    for name in ["Somtus.app", "RiWork.app"] {
+        let sibling_app = beside.join(name);
+        let sibling = sibling_app.join("Contents/Resources/riwork-ui/bundle.js");
+        if metadata(&sibling_app)?.is_some() {
+            return packaged(&sibling);
+        }
     }
     let adjacent = beside.join("riwork-ui/bundle.js");
     if metadata(&adjacent)?.is_some() { return packaged(&adjacent); }
@@ -61,7 +62,7 @@ fn metadata(path: &Path) -> Result<Option<fs::Metadata>, String> {
 
 fn packaged(path: &Path) -> Result<PathBuf, String> {
     path.canonicalize().map_err(|error| format!(
-        "NSH bundle {}: {error}. Rebuild or reinstall RiWork with its riwork-ui resources; or set RIWORK_NSH_BUNDLE to an absolute built bundle.js path",
+        "NSH bundle {}: {error}. Rebuild or reinstall Somtus with its riwork-ui resources; or set RIWORK_NSH_BUNDLE to an absolute built bundle.js path",
         path.display()
     ))
 }
@@ -83,6 +84,29 @@ fn resolve(source: &Path, override_path: Option<&Path>) -> Result<PathBuf, Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn renamed_bundle_wins_and_an_incomplete_install_does_not_use_legacy_resources() {
+        let root = std::env::temp_dir().join(format!("somtus-bundle-{}", uuid::Uuid::new_v4()));
+        let legacy = root.join("RiWork.app/Contents/Resources/riwork-ui/bundle.js");
+        let current = root.join("Somtus.app/Contents/Resources/riwork-ui/bundle.js");
+        fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+        fs::write(&legacy, "legacy").unwrap();
+        let executable = root.join("somtus");
+        let missing_source = root.join("missing-source");
+        assert_eq!(
+            resolve_for_executable(&missing_source, &executable).unwrap(),
+            legacy.canonicalize().unwrap()
+        );
+        fs::create_dir_all(current.parent().unwrap()).unwrap();
+        assert!(resolve_for_executable(&missing_source, &executable).is_err());
+        fs::write(&current, "current").unwrap();
+        assert_eq!(
+            resolve_for_executable(&missing_source, &executable).unwrap(),
+            current.canonicalize().unwrap()
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn missing_real_bundle_reports_the_build_recipe_without_a_bootstrap_fallback() {

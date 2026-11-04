@@ -1,7 +1,7 @@
 #!/usr/bin/python3
 """Prepare a disposable native Cua fixture; never starts an app or provider.
-Usage: /usr/bin/python3 scripts/automations-ui-fixture.py /absolute/path/to/built/riwork
-Launch the resulting unique bundle through RiWork's Cua.ai Driver MCP.
+Usage: /usr/bin/python3 scripts/automations-ui-fixture.py /absolute/path/to/built/somtus
+Launch the resulting unique bundle through Somtus's Cua.ai Driver MCP.
 """
 import json
 import os
@@ -28,20 +28,20 @@ project = json.loads(subprocess.check_output([str(binary), "project", "add", str
 layout = {"layout": {"pane": 1}, "panes": {"1": {"tabs": [{"kind": "panel", "panel": "projects"}], "active_tab_key": "panel:projects"}}, "active_pane": 1, "locked_panes": [], "panels_initialized": True, "sidebar_visible": False, "window_size": {"width": 1100, "height": 1000}}
 (home / "layouts.json").write_text(json.dumps({"schema_version": 1, "projects": {project["id"]: layout}}))
 bundle_id = "dev.riwork.automations.fixture." + uuid.uuid4().hex[:8]
-bundle = Path.home() / "Applications" / ("RiWork Automations Fixture " + bundle_id.rsplit(".", 1)[1] + ".app")
+bundle = Path.home() / "Applications" / ("Somtus Automations Fixture " + bundle_id.rsplit(".", 1)[1] + ".app")
 macos = bundle / "Contents/MacOS"
 macos.mkdir(parents=True)
-shutil.copy2(binary, macos / "riwork-bin")
-wrapper = macos / "riwork"
+shutil.copy2(binary, macos / "somtus-bin")
+wrapper = macos / "somtus"
 wrapper.write_text(f'''#!/bin/sh
 export RIWORK_HOME={shlex.quote(str(home))}
 export RIWORK_RUNTIME_DIR={shlex.quote(str(fixture / "runtime"))}
 unset RIWORK_CHAT_ID RIWORK_SHELL_ID RIWORK_CODEX_SHELL_ID RIWORK_RESTORE_TICKET
-exec {shlex.quote(str(macos / "riwork-bin"))} {shlex.quote(str(root))}
+exec {shlex.quote(str(macos / "somtus-bin"))} {shlex.quote(str(root))}
 ''')
 wrapper.chmod(0o755)
 with (bundle / "Contents/Info.plist").open("wb") as file:
-    plistlib.dump({"CFBundleExecutable": "riwork", "CFBundleIdentifier": bundle_id, "CFBundleName": "Automations Fixture", "CFBundlePackageType": "APPL", "CFBundleVersion": "1", "NSHighResolutionCapable": True}, file)
+    plistlib.dump({"CFBundleExecutable": "somtus", "CFBundleIdentifier": bundle_id, "CFBundleName": "Automations Fixture", "CFBundlePackageType": "APPL", "CFBundleVersion": "1", "NSHighResolutionCapable": True}, file)
 subprocess.run(["codesign", "--force", "--sign", "-", str(bundle)], check=True)
 subprocess.run(["/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister", "-f", str(bundle)], check=True)
 metadata = {"fixture": str(fixture), "home": str(home), "root": str(root), "project_id": project["id"], "bundle": str(bundle), "bundle_id": bundle_id}

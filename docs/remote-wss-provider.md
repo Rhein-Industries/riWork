@@ -9,7 +9,7 @@ stay as recorded there.
 
 ## Cause
 
-`riwork-remote start` against `wss://` builds a rustls `ClientConfig` inside
+`somtus-remote start` against `wss://` builds a rustls `ClientConfig` inside
 tokio-tungstenite 0.28 feature `rustls-tls-native-roots`. rustls 0.23.45 was
 compiled with `default-features = false` and with `ring` and `aws-lc-rs` both
 absent, so `CryptoProvider::get_default_or_install_from_crate_features`

@@ -37,7 +37,7 @@ impl Sandbox {
     }
 
     fn run(&self, args: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_riwork-cli"))
+        Command::new(env!("CARGO_BIN_EXE_somtus-cli"))
             .args(args)
             .current_dir(&self.0)
             .env("RIWORK_HOME", self.0.join("state"))
@@ -524,7 +524,7 @@ fn help_input_errors_and_literal_option_like_strings() {
     assert!(
         sandbox
             .ok(&["help"])
-            .contains("riwork settings set KEY VALUE")
+            .contains("somtus settings set KEY VALUE")
     );
     for args in [
         vec!["settings", "get", "--json"],

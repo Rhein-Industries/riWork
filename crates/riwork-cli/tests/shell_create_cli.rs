@@ -1,4 +1,4 @@
-//! `riwork shell create` as the remote connector drives it for the phone's
+//! `somtus shell create` as the remote connector drives it for the phone's
 //! `shell.create`: the argv shapes it sends, the JSON it reads back (the very
 //! entry `shell list` would show), and the sentences of the failures it turns
 //! into error codes (`remote/src/rpc.rs`, `create_fault`). Each child runs in a
@@ -17,6 +17,36 @@ use uuid::Uuid;
 
 struct Home(PathBuf);
 
+#[test]
+fn osc7501_is_collected_before_first_output_without_an_attached_window() {
+    let home = Home::new();
+    let (project, _, _) = home.project("osc-project");
+    let shell = home.ok(&["shell", "create", "--project", &project, "--command",
+        "printf 'private ordinary output\\033]7501;state=working:app=fixture\\007'; sleep 30", "--json"]);
+    let id = shell["id"].as_str().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let status = loop {
+        if let Some(status) = riwork_engine::program_status::snapshot(&home.0, id)
+            && status.root.is_some() { break status; }
+        assert!(Instant::now() < deadline, "first raw OSC was not collected");
+        thread::sleep(Duration::from_millis(20));
+    };
+    assert!(status.connected);
+    assert_eq!(status.source, "osc7501");
+    assert_eq!(status.root.unwrap().state, riwork_engine::program_status::State::Working);
+    let saved = fs::read_to_string(home.0.join(format!("program-status/{id}.json"))).unwrap();
+    assert!(!saved.contains("private ordinary output"));
+    home.run(&["shell", "close", id]);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let status = riwork_engine::program_status::snapshot(&home.0, id).unwrap();
+        assert_eq!(status.root.unwrap().state, riwork_engine::program_status::State::Working);
+        if !status.connected { break; }
+        assert!(Instant::now() < deadline, "collector did not observe pane EOF");
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
 impl Home {
     fn new() -> Self {
         // macOS temp dirs are symlinks; project roots are stored canonically.
@@ -29,7 +59,7 @@ impl Home {
     }
 
     fn command(&self, args: &[&str]) -> Command {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_riwork-cli"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_somtus-cli"));
         command
             .args(args)
             .env("RIWORK_HOME", &self.0)
@@ -117,7 +147,7 @@ fn finish(mut child: Child, what: &[&str]) -> Output {
         if Instant::now() > deadline {
             let _ = child.kill();
             let _ = child.wait();
-            panic!("riwork {what:?} did not exit; it may have started the GUI");
+            panic!("somtus {what:?} did not exit; it may have started the GUI");
         }
         thread::sleep(Duration::from_millis(20));
     };
@@ -132,7 +162,7 @@ fn git(root: &Path, args: &[&str]) {
     let output = Command::new("git")
         .arg("-C")
         .arg(root)
-        .args(["-c", "user.name=RiWork Tests"])
+        .args(["-c", "user.name=Somtus Tests"])
         .args(["-c", "user.email=riwork-tests@example.invalid"])
         .args([
             "-c",
@@ -336,9 +366,9 @@ fn failures_say_what_the_connector_turns_into_error_codes() {
     };
     // A project or worktree that does not exist: the connector says not_found.
     let message = stderr(&["shell", "create", "--project", &unknown, "--json"]);
-    assert_eq!(message, format!("riwork: No project matches '{unknown}'"));
+    assert_eq!(message, format!("somtus: No project matches '{unknown}'"));
     let message = stderr(&["shell", "create", "--worktree", &unknown, "--json"]);
-    assert_eq!(message, format!("riwork: No worktree matches '{unknown}'"));
+    assert_eq!(message, format!("somtus: No worktree matches '{unknown}'"));
     // The target must belong together.
     let other = home.project("other");
     let message = stderr(&[
@@ -350,7 +380,7 @@ fn failures_say_what_the_connector_turns_into_error_codes() {
         &worktree,
         "--json",
     ]);
-    assert_eq!(message, "riwork: Worktree belongs to another project");
+    assert_eq!(message, "somtus: Worktree belongs to another project");
     // Options that make no sense together, which the connector refuses first.
     assert_eq!(
         stderr(&[
@@ -361,7 +391,7 @@ fn failures_say_what_the_connector_turns_into_error_codes() {
             "--unrestricted",
             "--json"
         ]),
-        "riwork: --unrestricted requires --harness"
+        "somtus: --unrestricted requires --harness"
     );
     assert_eq!(
         stderr(&[
@@ -375,7 +405,7 @@ fn failures_say_what_the_connector_turns_into_error_codes() {
             "ls",
             "--json"
         ]),
-        "riwork: Use either --harness or --command"
+        "somtus: Use either --harness or --command"
     );
     assert_eq!(
         stderr(&[
@@ -387,7 +417,7 @@ fn failures_say_what_the_connector_turns_into_error_codes() {
             "bash",
             "--json"
         ]),
-        "riwork: --harness must be codex, claude, grok, or muse"
+        "somtus: --harness must be codex, claude, grok, or muse"
     );
     // The reason the connector never sends a command that begins with `-`.
     assert_eq!(
@@ -399,7 +429,7 @@ fn failures_say_what_the_connector_turns_into_error_codes() {
             "--command",
             "--json"
         ]),
-        "riwork: --command needs a value"
+        "somtus: --command needs a value"
     );
     assert_eq!(
         stderr(&[
@@ -411,7 +441,7 @@ fn failures_say_what_the_connector_turns_into_error_codes() {
             "--harness",
             "--json"
         ]),
-        "riwork: --command needs a value"
+        "somtus: --command needs a value"
     );
     // A model is for an agent, and is not blank.
     assert_eq!(
@@ -424,7 +454,7 @@ fn failures_say_what_the_connector_turns_into_error_codes() {
             "gpt-6.1-sol",
             "--json"
         ]),
-        "riwork: --model requires --harness"
+        "somtus: --model requires --harness"
     );
     assert_eq!(
         stderr(&[
@@ -438,7 +468,7 @@ fn failures_say_what_the_connector_turns_into_error_codes() {
             " ",
             "--json"
         ]),
-        "riwork: --model must not be blank"
+        "somtus: --model must not be blank"
     );
     // Only Muse has a contributor mode to turn on.
     for harness in [&["--harness", "codex"][..], &["--command", "muse"], &[]] {
@@ -447,7 +477,7 @@ fn failures_say_what_the_connector_turns_into_error_codes() {
         args.extend(["--contributor-on", "--json"]);
         assert_eq!(
             stderr(&args),
-            "riwork: --contributor-on requires --harness muse: only Muse has a contributor mode",
+            "somtus: --contributor-on requires --harness muse: only Muse has a contributor mode",
             "{harness:?}"
         );
     }
@@ -463,7 +493,7 @@ fn failures_say_what_the_connector_turns_into_error_codes() {
             "--contributor-on",
             "--json"
         ]),
-        "riwork: --model requires --harness"
+        "somtus: --model requires --harness"
     );
     assert_eq!(
         stderr(&[
@@ -478,7 +508,7 @@ fn failures_say_what_the_connector_turns_into_error_codes() {
             "--contributor-on",
             "--json"
         ]),
-        "riwork: --contributor-on requires --harness muse: only Muse has a contributor mode"
+        "somtus: --contributor-on requires --harness muse: only Muse has a contributor mode"
     );
     // None of the failures left a terminal behind or started a window.
     assert!(home.shells().is_empty());
@@ -900,11 +930,11 @@ fn the_look_ups_the_connector_makes_before_creating_say_which_id_they_found() {
     for (args, sentence) in [
         (
             ["project", "show", &unknown, "--json"],
-            format!("riwork: No project matches '{unknown}'"),
+            format!("somtus: No project matches '{unknown}'"),
         ),
         (
             ["worktree", "show", &unknown, "--json"],
-            format!("riwork: No worktree matches '{unknown}'"),
+            format!("somtus: No worktree matches '{unknown}'"),
         ),
     ] {
         let output = home.run(&args);

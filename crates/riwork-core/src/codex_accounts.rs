@@ -1,7 +1,7 @@
 //! Saved account discovery without reading, moving, or rewriting credentials.
 //!
 //! Orca's public CLI supplies account metadata. Its managed homes stay owned by
-//! Orca; RiWork only points a newly launched Codex process at the selected home.
+//! Orca; Somtus only points a newly launched Codex process at the selected home.
 
 use std::{
     collections::HashSet,
@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 pub const SYSTEM_DEFAULT_ID: &str = "system-default";
-/// Exported beside CODEX_HOME by account-bound RiWork sessions.
+/// Exported beside CODEX_HOME by account-bound Somtus sessions.
 const PINNED_HOME_VARIABLE: &str = "RIWORK_CODEX_ACCOUNT_HOME";
 const MAX_OUTPUT: usize = 1024 * 1024;
 const MAX_ACCOUNTS: usize = 128;
@@ -487,7 +487,7 @@ fn user_home() -> Result<PathBuf, String> {
 }
 
 /// The user's own Codex home: `CODEX_HOME` from their environment, else
-/// `~/.codex`. A `CODEX_HOME` that RiWork exported into an account-bound
+/// `~/.codex`. A `CODEX_HOME` that Somtus exported into an account-bound
 /// session is not the user's choice and never counts as the system default.
 pub fn default_codex_home() -> Result<PathBuf, String> {
     system_codex_home(
@@ -518,7 +518,7 @@ fn system_codex_home(
     }
 }
 
-/// True when `home` is an Orca-managed account home, which RiWork hands to
+/// True when `home` is an Orca-managed account home, which Somtus hands to
 /// its account-bound sessions (`CODEX_HOME` in Codex panes, their tool
 /// environment, and plain project shells). The system default is never one:
 /// a system-default pane also exports its home as the pinned home, so the pin
@@ -570,8 +570,8 @@ fn abbreviate_home(path: &Path, user_home: Option<&Path>) -> String {
     }
 }
 
-/// Removes the account variables RiWork injected into this process from a
-/// command that starts a new RiWork root (the GUI), so it cannot mistake them
+/// Removes the account variables Somtus injected into this process from a
+/// command that starts a new Somtus root (the GUI), so it cannot mistake them
 /// for the user's own environment or pass them on to its sessions.
 pub fn scrub_injected_environment(command: &mut Command) {
     for name in injected_environment(
@@ -599,7 +599,7 @@ fn injected_environment(
 }
 
 /// This process's `CODEX_HOME` when it is the user's own, that is, not a home
-/// RiWork exported into the session that started it.
+/// Somtus exported into the session that started it.
 pub fn user_codex_home_variable() -> Option<OsString> {
     let home = env::var_os("CODEX_HOME")?;
     let injected = injected_environment(

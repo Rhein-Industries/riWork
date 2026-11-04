@@ -598,20 +598,30 @@ fn create_args(spec: &CreateSpec, as_settings: bool) -> Vec<String> {
     }
     args
 }
-/// What a failed `riwork shell create` says, by the first line of its error
-/// (`riwork: ` already stripped). The wording belongs to the CLI and was
+/// What a failed `somtus shell create` says, by the first line of its error
+/// (`somtus: ` already stripped). The wording belongs to the CLI and was
 /// there before this method; the codes are the connector's.
+// Older installed CLIs keep their original diagnostics while an upgrade is in progress.
+fn cli_failure_detail(message: &str) -> Option<&str> {
+    let detail = message
+        .strip_prefix("Somtus CLI failed: ")
+        .or_else(|| message.strip_prefix("RiWork CLI failed: "))?;
+    detail
+        .strip_prefix("somtus: ")
+        .or_else(|| detail.strip_prefix("riwork: "))
+}
+
 fn create_fault(fault: Fault) -> Fault {
     if fault.code != "cli_error" {
         return fault;
     }
-    if fault.message == "RiWork CLI timeout" {
+    if fault.message == "Somtus CLI timeout" {
         return Fault::new(
             "cli_error",
             "starting the terminal took too long and was stopped; check the terminal list before trying again",
         );
     }
-    let Some(detail) = fault.message.strip_prefix("RiWork CLI failed: riwork: ") else {
+    let Some(detail) = cli_failure_detail(&fault.message) else {
         return fault;
     };
     let line = detail.lines().next().unwrap_or_default();
@@ -627,6 +637,7 @@ fn create_fault(fault: Fault) -> Fault {
     {
         Fault::new("harness_unavailable", line)
     } else if line.starts_with("resolve ")
+        && !line.starts_with("resolve Somtus executable")
         && !line.starts_with("resolve RiWork executable")
         && line.ends_with("No such file or directory (os error 2)")
     {
@@ -660,11 +671,9 @@ fn create_result(spec: &CreateSpec, cli: &Value) -> Option<Value> {
     }
     Some(json!({"shell_id": shell, "shell": session_fields(cli.clone())}))
 }
-/// What a failed `riwork shell close` says.
+/// What a failed `somtus shell close` says.
 fn close_fault(fault: Fault) -> Fault {
-    let unknown = fault
-        .message
-        .strip_prefix("RiWork CLI failed: riwork: ")
+    let unknown = cli_failure_detail(&fault.message)
         .is_some_and(|detail| detail.starts_with("unknown shell "));
     if unknown {
         Fault::new("not_found", SHELL_NOT_FOUND)
@@ -767,21 +776,21 @@ fn project_args(spec: &ProjectSpec) -> Vec<String> {
     args.push("--exclusive".into());
     args
 }
-/// What a failed `riwork project create --exclusive` says, by the first line of its error
-/// (`riwork: ` already stripped). The CLI marks a name, folder or project that is taken with
+/// What a failed `somtus project create --exclusive` says, by the first line of its error
+/// (`somtus: ` already stripped). The CLI marks a name, folder or project that is taken with
 /// the token `already_exists: project ` or `already_exists: folder `; the sentences for the
 /// phone are the connector's own and say nothing about where on the desktop it looked.
 fn project_create_fault(fault: Fault, name: &str) -> Fault {
     if fault.code != "cli_error" {
         return fault;
     }
-    if fault.message == "RiWork CLI timeout" {
+    if fault.message == "Somtus CLI timeout" {
         return Fault::new(
             "cli_error",
             "creating the project took too long and was stopped; check the project list before trying again",
         );
     }
-    let Some(detail) = fault.message.strip_prefix("RiWork CLI failed: riwork: ") else {
+    let Some(detail) = cli_failure_detail(&fault.message) else {
         return fault;
     };
     let line = detail.lines().next().unwrap_or_default();
@@ -947,13 +956,13 @@ fn key_items(items: &[Value]) -> std::result::Result<Vec<String>, Fault> {
     }
     Ok(argv)
 }
-/// What a failed `riwork shell keys` says about the batch. A CLI error that
+/// What a failed `somtus shell keys` says about the batch. A CLI error that
 /// begins with one of its tokens happened before any key was typed, so the
 /// batch can be forgotten and retried; anything else may have typed part of it.
 /// Only the first line of stderr counts: text a shell echoes cannot forge it.
 fn keys_fault(error: &anyhow::Error) -> (Fault, bool) {
     let message = error.to_string();
-    let detail = message.strip_prefix("RiWork CLI failed: riwork: ");
+    let detail = cli_failure_detail(&message);
     let tokens: [(&str, &'static str); 4] = [
         ("input_unavailable: ", "input_unavailable"),
         ("not_found: ", "not_found"),
@@ -966,7 +975,7 @@ fn keys_fault(error: &anyhow::Error) -> (Fault, bool) {
             return (
                 Fault::new(
                     "cli_error",
-                    "the installed riwork CLI does not support shell keys; update RiWork",
+                    "the installed somtus CLI does not support shell keys; update Somtus",
                 ),
                 true,
             );
@@ -990,7 +999,7 @@ fn keys_fault(error: &anyhow::Error) -> (Fault, bool) {
         false,
     )
 }
-/// What a failed `riwork shell history --json` says.
+/// What a failed `somtus shell history --json` says.
 fn history_fault(fault: Fault) -> Fault {
     if fault.code == "response_too_large" {
         return Fault::new(
@@ -1002,7 +1011,7 @@ fn history_fault(fault: Fault) -> Fault {
     if fault.code == "cli_error" && fault.message.contains("Unknown shell command 'history'") {
         return Fault::new(
             "cli_error",
-            "the installed riwork CLI does not support shell history; update RiWork",
+            "the installed somtus CLI does not support shell history; update Somtus",
         );
     }
     fault
@@ -1010,22 +1019,26 @@ fn history_fault(fault: Fault) -> Fault {
 fn appearance_not_published() -> Fault {
     Fault::new("not_found", "appearance not published")
 }
-/// What a failed `riwork appearance --json` says. The CLI reports a missing or
+/// What a failed `somtus appearance --json` says. The CLI reports a missing or
 /// invalid file with one message; output past the document limit is invalid too.
 fn appearance_fault(error: &anyhow::Error) -> Fault {
     if error.is::<OutputTooLarge>() {
         return appearance_not_published();
     }
     let message = error.to_string();
-    if let Some(detail) = message.strip_prefix("RiWork CLI failed: riwork: ") {
-        if detail.starts_with("RiWork has not published its appearance yet") {
+    if let Some(detail) = cli_failure_detail(&message) {
+        if detail.starts_with("Somtus has not published its appearance yet")
+            || detail.starts_with("RiWork has not published its appearance yet")
+        {
             return appearance_not_published();
         }
         // A CLI from before theme sync has no `appearance` command.
-        if detail.starts_with("'appearance' is not a riwork command") {
+        if detail.starts_with("'appearance' is not a somtus command")
+            || detail.starts_with("'appearance' is not a riwork command")
+        {
             return Fault::new(
                 "cli_error",
-                "the installed riwork CLI does not support appearance; update RiWork",
+                "the installed somtus CLI does not support appearance; update Somtus",
             );
         }
     }
@@ -1052,7 +1065,7 @@ fn scrollback_fields(cli: &Value) -> Option<(u32, bool)> {
     let size = cli.get("history_size")?.as_u64()?;
     Some((u32::try_from(size).ok()?, cli.get("alternate")?.as_bool()?))
 }
-/// What `shell.history` answers for the CLI's `riwork shell history --json`
+/// What `shell.history` answers for the CLI's `somtus shell history --json`
 /// page, or `None` if it is not a page of at most `lines` lines: `output` is
 /// the lines joined by newlines, `line_count` of them (none is `""` with a
 /// count of 0, one blank line is `""` with a count of 1).
@@ -1158,10 +1171,7 @@ impl Checked {
         }
         // From `shell output` and `shell history` a failure arrives as the
         // CLI's stderr, from `shell keys` as what follows its `not_found: `.
-        let said = fault
-            .message
-            .strip_prefix("RiWork CLI failed: riwork: ")
-            .unwrap_or(&fault.message);
+        let said = cli_failure_detail(&fault.message).unwrap_or(&fault.message);
         if said == format!("unknown shell {shell}") {
             Fault::new("not_found", SHELL_NOT_FOUND)
         } else if said == format!("shell {shell} has exited") {
@@ -1173,6 +1183,9 @@ impl Checked {
 }
 
 pub struct Rpc {
+    /// Only the stdio server, already running under an authenticated OS/SSH
+    /// account, may authorize its own connection without relay pairing keys.
+    account_session: Option<String>,
     pub cli: PathBuf,
     pub storage: Storage,
     input_locks: Mutex<BTreeMap<String, Weak<tokio::sync::Mutex<()>>>>,
@@ -1231,8 +1244,25 @@ pub struct Rpc {
     screens: output_delta::Screens,
 }
 impl Rpc {
+    pub(crate) fn for_account_session(
+        cli: PathBuf,
+        storage: Storage,
+        device: String,
+    ) -> Result<Self> {
+        crate::crypto::uuid(&device)?;
+        let mut rpc = Self::new(cli, storage);
+        rpc.account_session = Some(device);
+        Ok(rpc)
+    }
+    fn authorized(&self, device: &str) -> Result<bool> {
+        if let Some(expected) = &self.account_session {
+            return Ok(expected == device);
+        }
+        self.storage.authorized(device)
+    }
     pub fn new(cli: PathBuf, storage: Storage) -> Self {
         Self {
+            account_session: None,
             keys_serve: AtomicBool::new(false),
             key_names_2: AtomicBool::new(false),
             keys_workers: keys_worker::KeysWorkers::new(cli.clone()),
@@ -1312,7 +1342,7 @@ impl Rpc {
             .stderr(Stdio::piped())
             .kill_on_drop(true)
             .spawn()
-            .with_context(|| format!("start configured RiWork CLI {}", self.cli.display()))?;
+            .with_context(|| format!("start configured Somtus CLI {}", self.cli.display()))?;
         let stdin = child.stdin.take();
         let stdout = child.stdout.take().context("stdout")?;
         let stderr = child.stderr.take().context("stderr")?;
@@ -1343,12 +1373,12 @@ impl Rpc {
             })?;
             ensure!(
                 status.success(),
-                "RiWork CLI failed: {}",
+                "Somtus CLI failed: {}",
                 String::from_utf8_lossy(&err).trim()
             );
             Ok(out)
         };
-        timeout(limit, run).await.context("RiWork CLI timeout")?
+        timeout(limit, run).await.context("Somtus CLI timeout")?
     }
     /// A list or lookup (projects, worktrees, shells, tasks, `show`). Its raw
     /// output is read under `MAX_LIST_OUTPUT`, not the reply limit: what the
@@ -1412,7 +1442,7 @@ impl Rpc {
         let Some(s) = self.session(shell).await? else {
             return Err(Fault::new("not_found", SHELL_NOT_FOUND));
         };
-        // Before `alive` and before any `riwork shell ...`: a chat has no pane.
+        // Before `alive` and before any `somtus shell ...`: a chat has no pane.
         if runs_as_chat(&s) {
             return Err(chat_orchestrator_fault());
         }
@@ -1440,7 +1470,7 @@ impl Rpc {
         fault
     }
     /// Whether the installed CLI can become a tmux client in place
-    /// (`shell attach ID --exec`, `riwork capabilities`). Only a yes is
+    /// (`shell attach ID --exec`, `somtus capabilities`). Only a yes is
     /// remembered: a CLI updated while the connector runs is believed at once,
     /// and an older one would refuse the flags as a usage error.
     async fn require_attach_exec(&self) -> std::result::Result<(), Fault> {
@@ -1450,7 +1480,7 @@ impl Rpc {
         let too_old = || {
             Fault::new(
                 "cli_error",
-                "the installed riwork CLI cannot open terminal streams; update RiWork",
+                "the installed somtus CLI cannot open terminal streams; update Somtus",
             )
         };
         match self.raw(vec!["capabilities".into(), "--json".into()]).await {
@@ -1466,13 +1496,13 @@ impl Rpc {
                 }
             }
             // It ran and refused the question: a CLI from before capabilities.
-            Err(e) if e.to_string().starts_with("RiWork CLI failed") => Err(too_old()),
+            Err(e) if e.to_string().starts_with("Somtus CLI failed") => Err(too_old()),
             Err(e) => Err(cli_fault(e)),
         }
     }
     /// Whether this CLI checks, before it reads from or types into a shell,
     /// that the shell is a registered, live session, and says so in its own
-    /// words (`riwork capabilities`). A CLI that predates the question, or a
+    /// words (`somtus capabilities`). A CLI that predates the question, or a
     /// stand-in that does not answer it, is taken not to, and that is
     /// remembered like a yes. A CLI that could not be run at all is not
     /// remembered as anything: the next request asks again.
@@ -1485,7 +1515,7 @@ impl Rpc {
                             && reply.get("verifies_shell") == Some(&Value::Bool(true))
                     })),
                     // It ran and refused the question.
-                    Err(e) if e.to_string().starts_with("RiWork CLI failed") => Ok(false),
+                    Err(e) if e.to_string().starts_with("Somtus CLI failed") => Ok(false),
                     Err(_) => Err(()),
                 }
             })
@@ -1609,7 +1639,7 @@ impl Rpc {
             Err(invalid("unsupported request version/type"))
         } else if let Err(e) = id(&request.id) {
             Err(e)
-        } else if !self.storage.authorized(device)? {
+        } else if !self.authorized(device)? {
             return Err(anyhow::anyhow!("device revoked"));
         } else {
             pty::inline(set, &request.method, &request.params).map_err(Fault::from)
@@ -1686,7 +1716,7 @@ impl Rpc {
             Err(invalid("unsupported request version/type"))
         } else if let Err(e) = id(&request.id) {
             Err(e)
-        } else if !self.storage.authorized(device)? {
+        } else if !self.authorized(device)? {
             return Err(anyhow::anyhow!("device revoked"));
         } else {
             // Terminal streams are not recorded, and `pty.read` comes many times a second.
@@ -1839,12 +1869,13 @@ impl Rpc {
                         // A CLI from before styled output and waiting refuses the flags.
                         return Err(
                             if fault.code == "cli_error"
-                                && fault.message.contains("Usage: riwork shell output")
+                                && (fault.message.contains("Usage: somtus shell output")
+                                    || fault.message.contains("Usage: riwork shell output"))
                                 && (styled || p.if_changed.is_some())
                             {
                                 Fault::new(
                                     "cli_error",
-                                    "the installed riwork CLI does not support styled output or waiting for changes; update RiWork",
+                                    "the installed somtus CLI does not support styled output or waiting for changes; update Somtus",
                                 )
                             } else {
                                 fault
@@ -2158,7 +2189,7 @@ impl Rpc {
             _ => Err(invalid("unsupported RPC method")),
         }
     }
-    /// Whether the installed CLI has `shell create --as-settings` (`riwork capabilities --json`
+    /// Whether the installed CLI has `shell create --as-settings` (`somtus capabilities --json`
     /// has `"shell_create_as_settings":true`); it shares its question with `chat_known`.
     async fn shell_create_as_settings_known(
         &self,
@@ -2176,14 +2207,14 @@ impl Rpc {
             .unwrap_or(false)
     }
     /// Start a terminal in a project or worktree that exists on the desktop,
-    /// exactly as `riwork shell create` does: the CLI writes the session down
+    /// exactly as `somtus shell create` does: the CLI writes the session down
     /// and starts it, and the open desktop app picks it up as a tab. Runs in
     /// the ordered lane, which a phone that drops does not cut short, and the
     /// CLI itself runs in a task of its own (see below). Not idempotent: a
     /// repeat starts another terminal.
     async fn create(&self, device: &str, spec: CreateSpec) -> std::result::Result<Value, Fault> {
         // Authorization was checked when the request started; this acts.
-        if !self.storage.authorized(device).map_err(cli_fault)? {
+        if !self.authorized(device).map_err(cli_fault)? {
             return Err(Fault::new("not_found", "device revoked"));
         }
         // An agent the phone left to the desktop runs as its Settings say, when the CLI can
@@ -2222,7 +2253,7 @@ impl Rpc {
         })
     }
     /// Make a new project in the desktop's default projects folder, as
-    /// `riwork project create --name NAME --exclusive` does: the folder (a Git
+    /// `somtus project create --name NAME --exclusive` does: the folder (a Git
     /// repository unless `git` is off) and the project. Nothing that is already
     /// there is touched; a taken name or folder is `already_exists`. Runs in the
     /// ordered lane, which a phone that drops does not cut short, and the CLI
@@ -2234,7 +2265,7 @@ impl Rpc {
         spec: ProjectSpec,
     ) -> std::result::Result<Value, Fault> {
         // Authorization was checked when the request started; this acts.
-        if !self.storage.authorized(device).map_err(cli_fault)? {
+        if !self.authorized(device).map_err(cli_fault)? {
             return Err(Fault::new("not_found", "device revoked"));
         }
         self.require_exclusive_project_create().await?;
@@ -2261,7 +2292,7 @@ impl Rpc {
         let too_old = || {
             Fault::new(
                 "cli_error",
-                "the installed riwork CLI cannot create projects from the phone; update RiWork",
+                "the installed somtus CLI cannot create projects from the phone; update Somtus",
             )
         };
         match self.raw(vec!["capabilities".into(), "--json".into()]).await {
@@ -2276,14 +2307,16 @@ impl Rpc {
                 }
             }
             // It ran and refused the question: a CLI from before capabilities.
-            Err(e) if e.to_string().starts_with("RiWork CLI failed") => Err(too_old()),
+            Err(e) if e.to_string().starts_with("Somtus CLI failed") => Err(too_old()),
             Err(e) => Err(cli_fault(e)),
         }
     }
     /// An `Rpc` for the same CLI and home, to run a call in a task that is not
     /// tied to the request that started it.
     fn detached(&self) -> Rpc {
-        Rpc::new(self.cli.clone(), self.storage.clone())
+        let mut rpc = Rpc::new(self.cli.clone(), self.storage.clone());
+        rpc.account_session = self.account_session.clone();
+        rpc
     }
     /// The project or worktree must exist under exactly this id. The CLI also
     /// matches names, branches, paths and id prefixes, so an id that is nobody's
@@ -2325,7 +2358,7 @@ impl Rpc {
         if found.get("kind").and_then(Value::as_str) != Some("project") {
             return Err(invalid("only a project terminal can be closed"));
         }
-        if !self.storage.authorized(device).map_err(cli_fault)? {
+        if !self.authorized(device).map_err(cli_fault)? {
             return Err(Fault::new("not_found", "device revoked"));
         }
         {
@@ -2431,7 +2464,7 @@ impl Rpc {
         let shell_lock = self.input_lock(&p.shell_id);
         let _shell_guard = shell_lock.lock().await;
         self.selected(&p.shell_id).await?;
-        if !self.storage.authorized(device).map_err(cli_fault)? {
+        if !self.authorized(device).map_err(cli_fault)? {
             return Err(Fault::new("not_found", "device revoked"));
         }
         ledger.entries.insert(
@@ -2509,7 +2542,7 @@ impl Rpc {
         let shell_lock = self.input_lock(&p.shell_id);
         let _shell_guard = shell_lock.lock().await;
         let checked = self.ensure_selected(&p.shell_id).await?;
-        if !self.storage.authorized(device).map_err(cli_fault)? {
+        if !self.authorized(device).map_err(cli_fault)? {
             return Err(Fault::new("not_found", "device revoked"));
         }
         let excess = (ledger.batches.len() + 1).saturating_sub(KEYS_LEDGER_MAX);
@@ -2545,11 +2578,11 @@ impl Rpc {
             }
         }
     }
-    /// Types one batch (`items` in the argv encoding of `riwork shell keys`): with the
+    /// Types one batch (`items` in the argv encoding of `somtus shell keys`): with the
     /// device's typing worker when the CLI has one (`keys_worker`), otherwise, or when no
-    /// worker could take it, with a `riwork shell keys SHELL -- ITEM...` process of its
+    /// worker could take it, with a `somtus shell keys SHELL -- ITEM...` process of its
     /// own. Either way a failure reads as that process's would (`keys_fault`): the CLI's
-    /// error text after `RiWork CLI failed: riwork: `, or, for a batch a worker took and
+    /// error text after `Somtus CLI failed: somtus: `, or, for a batch a worker took and
     /// never answered, an error without it (part of it may be typed).
     async fn type_batch(&self, device: &str, shell: &str, items: Vec<String>) -> Result<()> {
         if self.keys_serve.load(Ordering::Relaxed) {
@@ -2560,7 +2593,7 @@ impl Rpc {
             {
                 keys_worker::Outcome::Sent => return Ok(()),
                 keys_worker::Outcome::Refused(error) => {
-                    anyhow::bail!("RiWork CLI failed: riwork: {error}")
+                    anyhow::bail!("Somtus CLI failed: somtus: {error}")
                 }
                 keys_worker::Outcome::Lost(error) => return Err(error),
                 // Nothing was typed: the process below types it.
@@ -2860,5 +2893,23 @@ mod tests {
                 "{method}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod branding_compatibility_tests {
+    #[test]
+    fn cli_diagnostics_from_both_names_keep_their_meaning() {
+        for app in ["Somtus", "RiWork"] {
+            for command in ["somtus", "riwork"] {
+                assert_eq!(
+                    super::cli_failure_detail(&format!(
+                        "{app} CLI failed: {command}: unknown shell x"
+                    )),
+                    Some("unknown shell x")
+                );
+            }
+        }
+        assert_eq!(super::cli_failure_detail("unrelated error"), None);
     }
 }

@@ -340,7 +340,7 @@
         "name": "memo",
         "summary": "Show this project's memo",
         "argument": null,
-        "sends": "RiWork opens this project's memo above the message box and sends nothing. Insert puts the memo in your draft; Edit opens the memo editor.",
+        "sends": "Somtus opens this project's memo above the message box and sends nothing. Insert puts the memo in your draft; Edit opens the memo editor.",
         "handler": "riwork"
       }
     ],
@@ -349,7 +349,7 @@
         "name": "memo",
         "summary": "Show this project's memo",
         "argument": null,
-        "sends": "RiWork opens this project's memo above the message box and sends nothing. Insert puts the memo in your draft; Edit opens the memo editor.",
+        "sends": "Somtus opens this project's memo above the message box and sends nothing. Insert puts the memo in your draft; Edit opens the memo editor.",
         "handler": "riwork"
       }
     ],
@@ -358,7 +358,7 @@
         "name": "memo",
         "summary": "Show this project's memo",
         "argument": null,
-        "sends": "RiWork opens this project's memo above the message box and sends nothing. Insert puts the memo in your draft; Edit opens the memo editor.",
+        "sends": "Somtus opens this project's memo above the message box and sends nothing. Insert puts the memo in your draft; Edit opens the memo editor.",
         "handler": "riwork"
       }
     ]
@@ -638,7 +638,7 @@
         "name": "memo",
         "summary": "Show this project's memo",
         "argument": null,
-        "sends": "RiWork opens this project's memo above the message box and sends nothing. Insert puts the memo in your draft; Edit opens the memo editor.",
+        "sends": "Somtus opens this project's memo above the message box and sends nothing. Insert puts the memo in your draft; Edit opens the memo editor.",
         "handler": "riwork"
       }
     ],

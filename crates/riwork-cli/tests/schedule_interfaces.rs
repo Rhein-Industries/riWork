@@ -92,7 +92,7 @@ impl Fixture {
     }
 
     fn command(&self, args: &[&str]) -> std::process::Output {
-        Command::new(env!("CARGO_BIN_EXE_riwork-cli"))
+        Command::new(env!("CARGO_BIN_EXE_somtus-cli"))
             .args(args)
             .env("RIWORK_HOME", &self.home)
             .env("RIWORK_RUNTIME_DIR", self.home.join("runtime"))
@@ -122,7 +122,7 @@ impl Fixture {
     }
 
     fn mcp(&self, calls: &[Value]) -> Vec<Value> {
-        let mut process = Command::new(env!("CARGO_BIN_EXE_riwork-cli"))
+        let mut process = Command::new(env!("CARGO_BIN_EXE_somtus-cli"))
             .arg("mcp")
             .env("RIWORK_HOME", &self.home)
             .env("RIWORK_RUNTIME_DIR", self.home.join("runtime"))
@@ -544,7 +544,7 @@ fn two_cli_processes_cannot_apply_the_same_revision() {
         "--json",
     ];
     let spawn = || {
-        Command::new(env!("CARGO_BIN_EXE_riwork-cli"))
+        Command::new(env!("CARGO_BIN_EXE_somtus-cli"))
             .args(args)
             .env("RIWORK_HOME", &fixture.home)
             .env("RIWORK_RUNTIME_DIR", fixture.home.join("runtime"))

@@ -141,14 +141,14 @@ fn stub_cli(dir: &Path, shell: &str) -> PathBuf {
              'shell keys')\n\
                [ -e \"$d/delay\" ] && sleep \"$(cat \"$d/delay\")\"\n\
                case \"$(cat \"$d/mode\" 2>/dev/null)\" in\n\
-                 input_unavailable) echo 'riwork: input_unavailable: terminal input is disabled for this pane' >&2; exit 2;;\n\
-                 not_found) echo 'riwork: not_found: unknown shell' >&2; exit 2;;\n\
-                 invalid) echo 'riwork: invalid_request: bad item' >&2; exit 2;;\n\
-                 not_sent) echo 'riwork: not_sent: tmux did not answer' >&2; exit 2;;\n\
-                 old) printf \"riwork: Unknown shell command 'keys'\\nUsage...\\n\" >&2; exit 2;;\n\
-                 partial) echo 'riwork: tmux send-keys did not finish within 5s' >&2; exit 2;;\n\
+                 input_unavailable) echo 'somtus: input_unavailable: terminal input is disabled for this pane' >&2; exit 2;;\n\
+                 not_found) echo 'somtus: not_found: unknown shell' >&2; exit 2;;\n\
+                 invalid) echo 'somtus: invalid_request: bad item' >&2; exit 2;;\n\
+                 not_sent) echo 'somtus: not_sent: tmux did not answer' >&2; exit 2;;\n\
+                 old) printf \"somtus: Unknown shell command 'keys'\\nUsage...\\n\" >&2; exit 2;;\n\
+                 partial) echo 'somtus: tmux send-keys did not finish within 5s' >&2; exit 2;;\n\
                  forged) printf 'tmux said\\nriwork: not_sent: x\\n' >&2; exit 2;;\n\
-                 embedded) echo 'riwork: send failed near input_unavailable: not_sent: ' >&2; exit 2;;\n\
+                 embedded) echo 'somtus: send failed near input_unavailable: not_sent: ' >&2; exit 2;;\n\
                esac;;\n\
              esac\n",
             dir = dir.display()

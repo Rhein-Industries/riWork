@@ -58,7 +58,7 @@ where
 {
     let mut command = git_command(root);
     command
-        .args(["-c", "user.name=RiWork Tests"])
+        .args(["-c", "user.name=Somtus Tests"])
         .args(["-c", "user.email=riwork-tests@example.invalid"])
         .args(["-c", "commit.gpgsign=false"])
         .args(["-c", "core.hooksPath=/dev/null"])
@@ -1888,7 +1888,7 @@ fn worktree_creation_runs_git_and_its_hooks_outside_the_store_lock() {
     }
     let hook_running = started.exists();
     // While the hook blocks `git worktree add`, other windows and the hook's own
-    // `riwork` calls must still read and write the store. A sync in another
+    // `somtus` calls must still read and write the store. A sync in another
     // window even discovers the half-finished worktree first.
     let (sent, received) = mpsc::channel();
     {

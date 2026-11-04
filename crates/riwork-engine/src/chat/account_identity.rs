@@ -96,7 +96,7 @@ impl Identity {
 fn fields(provider: Provider, value: &Value) -> (Option<String>, Option<String>, Vec<String>) {
     let ids: &[&str] = match provider {
         // Muse reports no account identity surface in v1.
-        Provider::Muse => &[],
+        Provider::Muse | Provider::Acp => &[],
         Provider::Claude => &[
             "/oauthAccount/accountUuid",
             "/account/uuid",
@@ -295,7 +295,7 @@ fn json(path: &Path) -> Option<Value> {
 fn credentials(config: &DriverConfig) -> Vec<Value> {
     let home = env(config, "HOME").map(std::path::PathBuf::from);
     let directory = match config.provider {
-        Provider::Muse => None,
+        Provider::Muse | Provider::Acp => None,
         Provider::Claude => env(config, "CLAUDE_CONFIG_DIR")
             .map(std::path::PathBuf::from)
             .or_else(|| home.as_ref().map(|p| p.join(".claude"))),
@@ -307,7 +307,7 @@ fn credentials(config: &DriverConfig) -> Vec<Value> {
         return vec![];
     };
     let paths = match config.provider {
-        Provider::Muse => vec![],
+        Provider::Muse | Provider::Acp => vec![],
         Provider::Claude => vec![
             Some(directory.join(".credentials.json")),
             Some(directory.join(".claude.json")),

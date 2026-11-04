@@ -517,7 +517,7 @@ public struct DashboardSnapshot: Sendable, Equatable {
         public var errorDescription: String? {
             switch self {
             case .unreadable: "The Mac's dashboard could not be read."
-            case .unsupportedVersion: "The Mac sends a newer dashboard than this iPhone reads. Update RiWork on the iPhone."
+            case .unsupportedVersion: "The Mac sends a newer dashboard than this iPhone reads. Update Somtus on the iPhone."
             }
         }
     }

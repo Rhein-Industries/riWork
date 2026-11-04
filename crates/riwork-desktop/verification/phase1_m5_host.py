@@ -27,7 +27,7 @@ def main():
         if target:
             argv += ["--test", target]
         elif package == "riwork-desktop":
-            argv += ["--bin", "riwork"]
+            argv += ["--bin", "somtus"]
         else:
             argv += ["--lib"]
         if not target:

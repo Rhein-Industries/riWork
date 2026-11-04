@@ -13,29 +13,29 @@ use std::{
 };
 
 const HELP: &str = "\
-riwork preview open --command CMD [--mode cooperative|window_capture] [--cwd PATH] [--project ID] [--background] [--wait] [--timeout-seconds N] [--json]
-riwork preview open --ios [--scheme NAME] [--xcode-project PATH] [--bundle-id ID] [--device-type NAME] [--runtime NAME] [--configuration Debug] [--cwd PATH] [--project ID] [--background] [--wait] [--timeout-seconds N] [--json]
-riwork preview list [--json]
-riwork preview status PREVIEW_UUID [--json]
-riwork preview screenshot PREVIEW_UUID --output FILE.png [--timeout-seconds N] [--json]
-riwork preview input PREVIEW_UUID --input-json '{\"kind\":\"click\",\"x\":100,\"y\":200,\"button\":\"left\"}' [--json]
-riwork preview tap PREVIEW_UUID X Y [--json]
-riwork preview text PREVIEW_UUID --text TEXT [--json]
-riwork preview key PREVIEW_UUID --key KEY [--json]
-riwork preview close PREVIEW_UUID [--json]
+somtus preview open --command CMD [--mode cooperative|window_capture] [--cwd PATH] [--project ID] [--background] [--wait] [--timeout-seconds N] [--json]
+somtus preview open --ios [--scheme NAME] [--xcode-project PATH] [--bundle-id ID] [--device-type NAME] [--runtime NAME] [--configuration Debug] [--cwd PATH] [--project ID] [--background] [--wait] [--timeout-seconds N] [--json]
+somtus preview list [--json]
+somtus preview status PREVIEW_UUID [--json]
+somtus preview screenshot PREVIEW_UUID --output FILE.png [--timeout-seconds N] [--json]
+somtus preview input PREVIEW_UUID --input-json '{\"kind\":\"click\",\"x\":100,\"y\":200,\"button\":\"left\"}' [--json]
+somtus preview tap PREVIEW_UUID X Y [--json]
+somtus preview text PREVIEW_UUID --text TEXT [--json]
+somtus preview key PREVIEW_UUID --key KEY [--json]
+somtus preview close PREVIEW_UUID [--json]
 
 open reuses an identical preview in the current project, selects its tab without
 activating the OS window, and explicitly runs it. --background leaves tab selection
 alone. --wait returns only after an actual frame; its default timeout is 120 seconds.
 Restored tabs remain stopped until Run or an explicit open command. iOS previews
 create an owned simulator and never reuse a user's existing device.
-The project comes from --project, the calling RiWork chat/shell, or the current
+The project comes from --project, the calling Somtus chat/shell, or the current
 working folder. Use --xcode-project for an .xcodeproj or .xcworkspace; --project
-always selects a RiWork project. screenshot wakes the preview and waits for a fresh
+always selects a Somtus project. screenshot wakes the preview and waits for a fresh
 frame. Input coordinates are logical pixels in the original frame. The input
 protocol also supports pointer_down, pointer_move, pointer_up, scroll, key_up,
 resize, and focus. Input acknowledgement means queued, not verified delivery.
-All operations require this project open in an updated RiWork GUI. --json errors
+All operations require this project open in an updated Somtus GUI. --json errors
 have {\"error\":{\"code\",\"message\"}} and exit status 2.
 ";
 
@@ -154,7 +154,7 @@ pub(crate) fn execute(mut args: Vec<String>) -> Result<Value, ControlError> {
             Ok(json!({"v":1,"preview_id":reply.preview_id,"queued":true}))
         }
         _ => Err(invalid(
-            "Unknown preview operation; run riwork preview help.",
+            "Unknown preview operation; run somtus preview help.",
         )),
     }
 }
@@ -269,7 +269,7 @@ fn project_for(home: &Path, explicit: Option<&str>, cwd: &Path) -> Result<String
         .max_by_key(|(path, _)| path.components().count())
         .map(|(_, project)| project.clone());
     by_path
-        .ok_or_else(|| invalid("Cannot infer a RiWork project for this folder; pass --project ID."))
+        .ok_or_else(|| invalid("Cannot infer a Somtus project for this folder; pass --project ID."))
 }
 
 fn input_arguments(

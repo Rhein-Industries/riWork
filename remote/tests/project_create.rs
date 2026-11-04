@@ -70,7 +70,7 @@ impl Fixture {
     fn cli_says(&self, value: Value) {
         self.set("create.json", &value.to_string());
     }
-    /// What `riwork capabilities --json` prints.
+    /// What `somtus capabilities --json` prints.
     fn capabilities(&self, value: &str) {
         self.set("capabilities.out", value);
     }
@@ -132,12 +132,12 @@ fn stub_cli(dir: &Path) -> PathBuf {
              printf '\\n' >> \"$d/argv.log\"\n\
              case \"$1 $2\" in\n\
              'capabilities --json')\n\
-               if [ -e \"$d/capabilities.unknown\" ]; then echo \"riwork: Unknown invocation 'capabilities'\" >&2; exit 2; fi\n\
+               if [ -e \"$d/capabilities.unknown\" ]; then echo \"somtus: Unknown invocation 'capabilities'\" >&2; exit 2; fi\n\
                if [ -e \"$d/capabilities.out\" ]; then cat \"$d/capabilities.out\"; else printf '{{\"v\":1,\"verifies_shell\":true,\"project_create_exclusive\":true}}'; fi;;\n\
              'project create')\n\
                if [ -e \"$d/create.hold\" ]; then i=0; while [ ! -e \"$d/create.gate\" ] && [ $i -lt 400 ]; do sleep 0.05; i=$((i+1)); done; fi\n\
                touch \"$d/create.ran\"\n\
-               if [ -e \"$d/create.error\" ]; then printf 'riwork: %s\\n' \"$(cat \"$d/create.error\")\" >&2; exit 2; fi\n\
+               if [ -e \"$d/create.error\" ]; then printf 'somtus: %s\\n' \"$(cat \"$d/create.error\")\" >&2; exit 2; fi\n\
                cat \"$d/create.json\";;\n\
              'project list') if [ -e \"$d/projects.json\" ]; then cat \"$d/projects.json\"; else echo '[]'; fi;;\n\
              esac\n",
@@ -389,7 +389,7 @@ async fn a_project_that_was_not_asked_for_is_refused() {
 async fn a_cli_that_does_not_know_the_flag_is_never_sent_it() {
     let f = Fixture::new();
     f.cli_says(f.project(&new_uuid(), "Fresh"));
-    let sentence = "the installed riwork CLI cannot create projects from the phone; update RiWork";
+    let sentence = "the installed somtus CLI cannot create projects from the phone; update Somtus";
     for (what, apply) in [
         (
             "from before the command",

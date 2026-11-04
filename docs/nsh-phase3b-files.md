@@ -6,7 +6,7 @@ Branch: `nsh-p3b-files`, based on `nsh` / `7718e60`.
 
 `verification_environment = isolated temporary fixture repositories and RIWORK_HOME/RIWORK_RUNTIME_DIR, native Rust tests and windowless NSH 0.3.0 QuickJS engines on macOS 26.2 (25C56), arm64, Rust/Cargo 1.99.1`
 
-No live windows or RiWork state, installed application, desktop automation,
+No live windows or Somtus state, installed application, desktop automation,
 merge, push, installation or task-status mutation was used. Task status remains
 the orchestrator's responsibility.
 

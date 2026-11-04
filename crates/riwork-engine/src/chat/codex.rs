@@ -1203,7 +1203,7 @@ impl Codex {
             json!({
                 "clientInfo": {
                     "name": "riwork",
-                    "title": "RiWork",
+                    "title": "Somtus",
                     "version": env!("CARGO_PKG_VERSION"),
                 },
                 "capabilities": {
@@ -1952,13 +1952,13 @@ impl Codex {
                             "Codex could not refresh sign-in tokens. Run `codex login` to sign in again.".into());
                     }
                 });
-                json!({"id": id, "error": {"code": -32601, "message": format!("riwork does not handle {method}")}})
+                json!({"id": id, "error": {"code": -32601, "message": format!("somtus does not handle {method}")}})
             }
-            // Requests RiWork cannot serve: tool calls it never registered,
+            // Requests Somtus cannot serve: tool calls it never registered,
             // token refreshes (it does not handle credentials), attestation.
             _ => json!({
                 "id": id,
-                "error": {"code": -32601, "message": format!("riwork does not handle {method}")},
+                "error": {"code": -32601, "message": format!("somtus does not handle {method}")},
             }),
         };
         let _ = self.proc.send(&reply);

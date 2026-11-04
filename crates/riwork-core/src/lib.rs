@@ -1,9 +1,11 @@
-//! Shared RiWork state, persistence, and configuration without UI dependencies.
+//! Shared Somtus state, persistence, and configuration without UI dependencies.
 
 pub mod addins;
 pub mod app_preview;
 pub mod appearance_file;
 pub mod codex_accounts;
+pub mod customization;
+pub mod customization_keys;
 pub mod delegation;
 pub mod global_window;
 pub mod layouts;

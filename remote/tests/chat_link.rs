@@ -56,7 +56,7 @@ D='@DIR@'
 echo "$*" >> "$D/calls.log"
 case "$1 $2" in
 'capabilities --json')
-  if [ -e "$D/capabilities.unknown" ]; then echo "riwork: Unknown invocation 'capabilities'" >&2; exit 2; fi
+  if [ -e "$D/capabilities.unknown" ]; then echo "somtus: Unknown invocation 'capabilities'" >&2; exit 2; fi
   if [ -e "$D/capabilities.out" ]; then cat "$D/capabilities.out"; else printf '{"v":1,"chat":true,"orchestrator_create":true,"shell_create_as_settings":true,"chat_provider_switch":true,"chat_models":true,"chat_suggestions":true,"dashboard":true,"project_memo":true,"key_names":2}'; fi;;
 'project show') printf '{"id":"%s"}' "$3";;
 'chat list') echo '[]';;
@@ -113,7 +113,7 @@ impl Rig {
         // The first run of a new executable can take seconds on a busy Mac; `ready` waits
         // for the CLI only briefly.
         let _ = std::process::Command::new(&cli).arg("warm").output();
-        let connector = Command::new(env!("CARGO_BIN_EXE_riwork-remote"))
+        let connector = Command::new(env!("CARGO_BIN_EXE_somtus-remote"))
             .env("RIWORK_HOME", &home)
             .args(["start", "--riwork"])
             .arg(&cli)
@@ -357,7 +357,7 @@ async fn ready_announces_chats_when_the_cli_has_them_and_only_then() {
             refused.value["error"]["message"]
                 .as_str()
                 .unwrap()
-                .contains("update RiWork")
+                .contains("update Somtus")
         );
     }
 }
@@ -411,7 +411,7 @@ async fn ready_announces_orchestrator_creation_when_the_cli_can_and_only_then() 
             refused.value["error"]["message"]
                 .as_str()
                 .unwrap()
-                .contains("update RiWork")
+                .contains("update Somtus")
         );
         assert_eq!(rig.calls("orchestrator", "create"), 0, "{answer:?}");
     }

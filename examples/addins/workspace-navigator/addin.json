@@ -1,0 +1,9 @@
+{
+  "id": "example.workspace-navigator",
+  "name": "Workspace navigator",
+  "version": "0.1.0",
+  "api": 1,
+  "description": "Shows this window's live panes and tabs, with buttons for navigating and arranging the workspace.",
+  "views": [{ "id": "main", "title": "Workspace" }],
+  "permissions": ["workspace.read", "workspace.control"]
+}

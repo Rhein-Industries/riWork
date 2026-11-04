@@ -1,0 +1,8 @@
+{
+  "name": "Somtus hosts fixtures",
+  "id": "dev.riwork.hosts-fixtures",
+  "version": "0.1.0",
+  "build": 1,
+  "rust": "../../../crates/riwork-nsh-native",
+  "capabilities": { "host": ["app.fixture.*"] }
+}

@@ -8,7 +8,7 @@ use riwork_remote::{
 fn empty_data_home_uses_the_same_default_as_the_main_cli() {
     let home = tempfile::tempdir().unwrap();
     let cwd = tempfile::tempdir().unwrap();
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_riwork-remote"))
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_somtus-remote"))
         .arg("devices")
         .env("RIWORK_HOME", "")
         .env("HOME", home.path())
@@ -28,7 +28,7 @@ fn empty_data_home_uses_the_same_default_as_the_main_cli() {
 fn empty_data_home_and_missing_user_home_never_use_the_working_directory() {
     let cwd = tempfile::tempdir().unwrap();
     for home in [None, Some("")] {
-        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_riwork-remote"));
+        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_somtus-remote"));
         command
             .arg("devices")
             .env("RIWORK_HOME", "")
@@ -77,10 +77,10 @@ fn pairing_is_random_private_separate_from_relay_secrets_and_revocable() {
     r.validate().unwrap();
     assert_eq!(r.routes.len(), 2);
     let link = a.deep_link().unwrap();
-    assert!(link.starts_with("riwork://pair?v=1&data="));
+    assert!(link.starts_with("somtus://pair?v=1&data="));
     assert!(
         !link
-            .strip_prefix("riwork://pair?v=1&data=")
+            .strip_prefix("somtus://pair?v=1&data=")
             .unwrap()
             .contains('=')
     );

@@ -258,6 +258,7 @@ pub struct RemoteShell {
     /// An orchestrator that runs as a chat on its host (`"mode":"chat"`): it has no
     /// terminal to attach to, and its chat is followed on that Mac.
     pub chat: bool,
+    pub chat_id: Option<String>,
     pub harness: Option<String>,
     pub alive: bool,
     pub cwd: String,
@@ -1312,7 +1313,7 @@ fn creation_failure(error: &RemoteError, host: &str, what: &str) -> String {
             "No answer from {host}, so the {what} may exist. Check the list before trying again."
         )
     } else if error.is_unsupported() {
-        format!("{host} runs a RiWork that cannot create a {what} remotely. Update it.")
+        format!("{host} runs a Somtus that cannot create a {what} remotely. Update it.")
     } else {
         error.message()
     }
@@ -1395,6 +1396,7 @@ fn session(value: &Value) -> Option<RemoteShell> {
         worktree_id: text(value, "worktree_id"),
         orchestrator: text(value, "kind").as_deref() == Some("orchestrator"),
         chat: text(value, "mode").as_deref() == Some("chat"),
+        chat_id: text(value, "chat_id"),
         harness: text(value, "harness"),
         alive: value.get("alive").and_then(Value::as_bool).unwrap_or(false),
         cwd: text(value, "cwd").unwrap_or_default(),
@@ -1473,7 +1475,7 @@ mod tests {
             project_id: project.map(str::to_owned),
             worktree_id: worktree.map(str::to_owned),
             orchestrator: false,
-            chat: false,
+            chat: false, chat_id: None,
             harness: None,
             alive: true,
             cwd: "/Users/me/app".to_owned(),

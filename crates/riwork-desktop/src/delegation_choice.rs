@@ -11,7 +11,7 @@ use crate::orchestrator_choice::provider_word;
 pub const SPREAD_TITLE: &str = "Spread work";
 pub const SPREAD_DESCRIPTION: &str = "Orchestrators fan independent tasks out to several worker shells at once instead of working through them one by one. Off, they keep to one worker at a time unless asked.";
 pub const PARALLEL_TITLE: &str = "Parallel worker shells";
-pub const PARALLEL_DESCRIPTION: &str = "A soft target for how many worker shells an orchestrator runs at once when work can be spread. RiWork starts none by itself; the orchestrator decides.";
+pub const PARALLEL_DESCRIPTION: &str = "A soft target for how many worker shells an orchestrator runs at once when work can be spread. Somtus starts none by itself; the orchestrator decides.";
 
 /// What the harness and model of a kind of work are preferred for.
 pub fn route_description(work: Work) -> &'static str {

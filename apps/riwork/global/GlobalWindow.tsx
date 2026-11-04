@@ -1,7 +1,7 @@
 import { Text, View, cleanup, effect, host, keymap, signal } from "nsh";
 import { Window } from "nsh/desktop";
 import { Dashboard, Sessions, Store, type GlobalWindowDto, type SettingsDto } from "riwork/native";
-import { Icon } from "../Icon";
+import { Brand } from "../Brand";
 import { DEFAULT_THEME, type InterfaceTheme } from "../appearance";
 import type { HostParams } from "../model";
 import { createLocalServices } from "../adapters/local";
@@ -9,6 +9,10 @@ import type { DashboardDto } from "../client/types";
 import { DashboardView } from "../dashboard/Dashboard";
 import { routeTarget, type Filter, type Sort, type Target, type Wire } from "../dashboard/model";
 import { GlobalChat, type ChatControl } from "./GlobalChat";
+import { effectiveWindowBindings } from "../keyboard";
+import { useCustomization } from "../customization";
+import { Agents } from "../hosts/Agents";
+import { projectKey, routeStep, type AgentHost, type AgentSession } from "../hosts/model";
 
 export type GlobalView = "dashboard" | "chat";
 export const NO_PROJECT_NOTICE = "Open one of this Mac's projects first.";
@@ -37,6 +41,7 @@ export function GlobalWindow(props: { params: HostParams; theme?: () => Interfac
   const restored = params.restore?.global as Partial<GlobalWindowDto> | undefined;
   const requested = restored?.view ?? params.global?.view;
   const view = signal<GlobalView>(requested === "chat" ? "chat" : "dashboard");
+  const agentsShown = signal(false);
   const dashboardVisited = signal(view() === "dashboard");
   effect(() => { if (view() === "dashboard") dashboardVisited.set(true); });
   const filter = signal<Filter>("active");
@@ -55,7 +60,7 @@ export function GlobalWindow(props: { params: HostParams; theme?: () => Interfac
   // Native host owns the traffic lights; a height here installs an AppKit
   // toolbar that competes with its positioning while the window resizes.
   Window.setTitleBar("hidden");
-  Window.setTitle("RiWork · Global");
+  Window.setTitle("Somtus · Global");
   host.post("window.setDockInfo", { project: "Global", branch: "" });
   cleanup(host.on("window.state", (next) => windowState.set(next as WindowState)));
 
@@ -86,6 +91,7 @@ export function GlobalWindow(props: { params: HostParams; theme?: () => Interfac
   }
   const chat: { control?: ChatControl } = {};
   function show(next: GlobalView, start = false) {
+    agentsShown.set(false);
     view.set(next);
     save();
     if (next === "chat" && start) chat.control?.start();
@@ -101,7 +107,7 @@ export function GlobalWindow(props: { params: HostParams; theme?: () => Interfac
   // Reading is gated by visibility: an occluded window holds no subscription.
   const visible = () => windowState().occluded !== true && windowState().visible !== false;
   effect(() => {
-    if (!visible()) return;
+    if (!visible() || agentsShown()) return;
     const subscription = services.dashboard.subscribe((dto) => dashboard.set(dto));
     return () => subscription.close();
   });
@@ -139,11 +145,21 @@ export function GlobalWindow(props: { params: HostParams; theme?: () => Interfac
       else await host.call("window.open", { kind: "project", projectId: next.projectId });
     }).catch((error: unknown) => notice.set(String(error)));
   }
+  function openAgent(machine: AgentHost, session: AgentSession) {
+    const projectId = projectKey(machine,session);
+    if (!projectId) {
+      if (!machine.connectionId && session.kind === "chat") { show("chat"); return; }
+      notice.set("This session has no project window. Its status is available here."); return;
+    }
+    void host.call("window.route", { projectId, step: routeStep(machine,session) }).catch((error: unknown) => notice.set(String(error)));
+  }
   function openPanel(projectId: string, panel: string) {
     void host.call("window.route", { projectId, step: { kind: "panel", panel } }).catch((error: unknown) => notice.set(String(error)));
   }
 
+  const customization = useCustomization();
   let search: { focus: () => void } | undefined;
+  let agentsSearch: {focus: () => void} | undefined;
   function command(id: string) {
     if (id === "closeTab" || id === "closeWindow") void host.call("window.close", {}).catch(() => {});
     else if (id === "newProjectWindow" || id === "newWindow") newWindow();
@@ -151,16 +167,21 @@ export function GlobalWindow(props: { params: HostParams; theme?: () => Interfac
     else if (id === "openGlobalChat" || id === "openOrchestrator") show("chat", true);
     else if (id === "openSettings") routePanel("settings");
     else if (id === "openSchedules") routePanel("schedules");
-    else if ((id === "search" || id === "find") && view() === "dashboard") search?.focus();
+    else if (id === "openCustomization") void customization.edit();
+    else if (id === "resetCustomization") void customization.reset();
+    else if ((id === "search" || id === "find") && view() === "dashboard") (agentsShown() ? agentsSearch : search)?.focus();
   }
-  for (const [key, id] of [["mod+w", "closeTab"], ["mod+shift+n", "newProjectWindow"], ["mod+,", "openSettings"], ["mod+shift+s", "openSchedules"]] as const) {
-    cleanup(keymap.bind(key, () => command(id), { when: "always" }));
-  }
+  effect(() => {
+    const bindings = effectiveWindowBindings(customization.state().keys)
+      .filter(([, id]) => ["closeTab", "newProjectWindow", "openSettings", "openSchedules", "openCustomization"].includes(id))
+      .map(([key, id]) => keymap.bind(key, () => command(id), { when: "always" }));
+    return () => { for (const unbind of bindings) unbind(); };
+  });
   // ⌘F belongs to the dashboard's search only in the Dashboard view; in Chat it
   // reaches the chat's own find.
   effect(() => {
     if (view() !== "dashboard") return;
-    return keymap.bind("mod+f", () => search?.focus());
+    return keymap.bind("mod+f", () => (agentsShown() ? agentsSearch : search)?.focus());
   });
   cleanup(host.on("command", (data) => {
     const id = (data as { id?: unknown }).id;
@@ -171,7 +192,7 @@ export function GlobalWindow(props: { params: HostParams; theme?: () => Interfac
   const inset = () => windowState().mode === "fullscreen" ? GLOBAL_BAR.inset : GLOBAL_BAR.insetWithControls;
   const font = (size: number) => ({ fontFamily: theme().family, fontSize: size * theme().scale });
   function segment(id: GlobalView, label: string) {
-    const selected = () => view() === id;
+    const selected = () => view() === id && !agentsShown();
     return <View testID={`global-view-${id}`} role="tab" accessibilityLabel={selected() ? `${label}, shown` : label}
       focusable={true} accessibilityState={{ selected: selected() }} onPress={() => show(id)}
       style={{ paddingHorizontal: 10, height: 22, justifyContent: "center", borderRadius: 5, backgroundColor: selected() ? palette().bg : "transparent" }}>
@@ -181,23 +202,30 @@ export function GlobalWindow(props: { params: HostParams; theme?: () => Interfac
   return <View testID="global-window" style={{ flex: 1, backgroundColor: palette().bg }}>
     <View testID="global-bar" desktop={{ windowDrag: true }} style={{ height: GLOBAL_BAR.height, flexDirection: "row", alignItems: "center", gap: 10, paddingLeft: inset(), paddingRight: 10, backgroundColor: palette().panel, borderBottomWidth: 1, borderColor: palette().divider }}>
       <View testID="global-title" style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-        <Icon name="globe" size={12 * theme().scale} color={palette().muted} />
+        <Brand theme={theme} size={18} wordmark={false} />
         <Text style={{ ...font(12), color: palette().text, fontWeight: "600" }}>Global</Text>
       </View>
       <View testID="global-view" role="tablist" accessibilityLabel="Global view" style={{ flexDirection: "row", gap: 2, padding: 2, borderRadius: 7, backgroundColor: palette().panelActive }}>
         {segment("dashboard", "Dashboard")}
         {segment("chat", "Chat")}
+        <View testID="global-view-agents" role="tab" accessibilityLabel="Agents and hosts" focusable accessibilityState={{selected: agentsShown()}} onPress={() => { view.set("dashboard"); agentsShown.set(true); }}
+          style={{paddingHorizontal:10,height:22,justifyContent:"center",borderRadius:5,backgroundColor:agentsShown() ? palette().bg : "transparent"}}>
+          <Text style={{...font(11),color:agentsShown() ? palette().text : palette().muted}}>Agents & hosts</Text>
+        </View>
       </View>
       <View testID="global-drag" desktop={{ windowDrag: true }} style={{ flex: 1, alignSelf: "stretch" }} />
-      <Text style={{ ...font(10), color: palette().muted }}>This Mac · every project</Text>
+      <Text style={{ ...font(10), color: palette().muted }}>{agentsShown() ? "All connected hosts" : "This Mac · every project"}</Text>
     </View>
     <View style={{ flex: 1, minHeight: 0 }}>
-      {dashboardVisited() && <View style={{ flex: 1, minHeight: 0, display: view() === "dashboard" ? "flex" : "none" }}>
+      {dashboardVisited() && <View style={{ flex: 1, minHeight: 0, display: view() === "dashboard" && !agentsShown() ? "flex" : "none" }}>
         <DashboardView dto={dashboard} theme={theme} filter={filter} sort={sort} query={query}
           onFilter={setFilter} onSort={setSort} onSearch={(node) => { search = node; }}
           onOpen={route} onPanel={openPanel} onGlobalChat={() => show("chat", true)}
           onRefresh={() => { void services.dashboard.refresh().catch((error: unknown) => notice.set(String(error))); }}
           plan={() => chat.control?.plan() ?? null} starting={() => chat.control?.starting() ?? false} decisions={services.dashboard.decisions} /></View>}
+      <View style={{flex:1,minHeight:0,display:agentsShown() ? "flex" : "none"}}>
+        <Agents visible={() => visible() && agentsShown()} theme={theme} onOpen={openAgent} onNotice={text => notice.set(text)} onSearch={node => {agentsSearch=node;}} />
+      </View>
       <GlobalChat visible={() => view() === "chat"} global={() => wire()?.global ?? { kind: "unknown" }} theme={theme}
         settings={props.settings} startNow={params.global?.start === true && view() === "chat"}
         onApiKeySettings={() => {

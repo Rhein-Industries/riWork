@@ -16,7 +16,7 @@ export interface ChatControl {
 type Shown = { kind: "chat"; id: string } | { kind: "terminal"; shellId: string } | null;
 
 export const TERMINAL_LABEL = "Terminal orchestrator: the global orchestrator runs in a terminal";
-export const TERMINAL_NOTE = "RiWork keeps this terminal as it is; a chat takes over only after you end it.";
+export const TERMINAL_NOTE = "Somtus keeps this terminal as it is; a chat takes over only after you end it.";
 
 /** The Chat view: the global orchestrator there is, as the last read says.
  * Unknown changes nothing; none lets go of what was shown (SHELL-053..057). */

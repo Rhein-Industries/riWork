@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "name": "Workspace navigator",
+  "root": {
+    "type": "row",
+    "id": "frame",
+    "children": [
+      {
+        "type": "mod",
+        "id": "navigator",
+        "addin": "id:example.workspace-navigator",
+        "view": "main",
+        "size": 300
+      },
+      { "type": "workspace", "id": "workspace" }
+    ]
+  },
+  "tabBar": "hidden",
+  "statusBar": true
+}

@@ -1,5 +1,5 @@
-/** Test support: fixtures that save RiWork settings, layouts or projects run only in a
- * private /tmp RiWork home, never in the person's own. scripts/pane-test.sh and
+/** Test support: fixtures that save Somtus settings, layouts or projects run only in a
+ * private /tmp Somtus home, never in the person's own. scripts/pane-test.sh and
  * scripts/pane-shot.sh give every run one (scripts/pane-env.sh); a verification runner
  * that brings its own /tmp home sets RIWORK_NSH_FILES_FIXTURE=1 too. The check is the one
  * Files.fixtureDirectory already makes: a debug build, RIWORK_NSH_FILES_FIXTURE=1 and a
@@ -13,7 +13,7 @@ function privateHomeRefusal(reason: unknown): string {
   const missing = /Files fixtures are off/.test(text)
     ? "RIWORK_NSH_FILES_FIXTURE=1 is not set (or this is not a debug build)"
     : /isolated \/tmp RIWORK_HOME/.test(text) ? "RIWORK_HOME is not under /tmp" : text;
-  return "Refused: this fixture saves RiWork settings, layouts or projects, so it needs a private "
+  return "Refused: this fixture saves Somtus settings, layouts or projects, so it needs a private "
     + `fixture home (a debug build, RIWORK_NSH_FILES_FIXTURE=1 and a RIWORK_HOME under /tmp). Missing: ${missing}. `
     + "Run its tests with scripts/pane-test.sh NAME (pictures: scripts/pane-shot.sh), never with plain `nsh test`.";
 }
@@ -30,7 +30,7 @@ export async function privateFixtureDirectory(name: string): Promise<string> {
 }
 
 let checked: Promise<void> | undefined;
-/** Resolves once RiWork's home is a private /tmp fixture home, else rejects with the
+/** Resolves once Somtus's home is a private /tmp fixture home, else rejects with the
  * refusal. A fixture awaits it before its first Settings, Store or Layouts write. */
 export function requirePrivateHome(): Promise<void> {
   return checked ??= privateFixtureDirectory("private-home").then(() => undefined);

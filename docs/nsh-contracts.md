@@ -15,7 +15,7 @@ and sign-off from the owners of both sides.
 
 `verification_environment`: code and documentation reading only (this worktree at
 `50b3b41`, NSH 0.3.0 crate sources in the local cargo registry, sibling task details via
-`riwork task show`). Nothing was built, run, or tested in a live window.
+`somtus task show`). Nothing was built, run, or tested in a live window.
 
 NSH references are to the 0.3.0 crates in
 `~/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/` (abbreviated `nsh-core/`, `nsh-base/`,
@@ -27,10 +27,10 @@ NSH references are to the 0.3.0 crates in
 ## 0. Process and layering (frozen)
 
 ```
-┌──────────────────────── RiWork NSH process (AppKit) ────────────────────────┐
+┌──────────────────────── Somtus NSH process (AppKit) ────────────────────────┐
 │ AppKit host (Rust, main thread)                                             │
 │   windows: WindowId → (NSWindow, AppView, HostChannel)                       │
-│   app menu, Dock menu, runtime registry (riwork restart), quit/reopen        │
+│   app menu, Dock menu, runtime registry (somtus restart), quit/reopen        │
 │   process services: StoreHub, SessionSampler, ChatHub, ScheduleTicker, ...   │
 │                                                                             │
 │   AppView #1 (engine thread #1)        AppView #2 (engine thread #2)        │
@@ -64,7 +64,7 @@ NSH references are to the 0.3.0 crates in
   Everything else is reached through `riwork/native`. This keeps one implementation of every
   file format (riwork-core) and makes the TSX layer testable against fake backends.
 - **One NSH process per RIWORK_HOME.** GPUI already runs N windows in one process but has no
-  single-instance lock, so every launch and `riwork open` starts another process and shell
+  single-instance lock, so every launch and `somtus open` starts another process and shell
   claims are per process (parity SHELL “process model”). The NSH host takes
   `RIWORK_HOME/run/desktop.lock`; a second launch forwards its request (`open` project/path,
   or nothing) over `RIWORK_HOME/run/desktop.sock` to the running host and exits. The only
@@ -103,7 +103,7 @@ wake the engine (`nsh-core/src/element/task.rs:1-10`).
 | Kind | Rule |
 |---|---|
 | **Sync** | Only for pure, in-memory work that returns in < 1 ms (formatting, key parsing, layout projection of an already-loaded `LayoutSession`). Never touches disk, sockets, tmux, subprocesses or locks held by other threads. |
-| **Async** | Everything else. The function body only hops: it moves the blocking riwork call to the blocking pool (`tokio::task::spawn_blocking`) and awaits it. Nothing blocks the engine thread. |
+| **Async** | Everything else. The function body only hops: it moves the blocking somtus call to the blocking pool (`tokio::task::spawn_blocking`) and awaits it. Nothing blocks the engine thread. |
 | **Errors** | A rejected Promise carries `Error("<code>: <message>")`. Codes: `refused` (the backend said no and did nothing; maps `CallError::Refused`, `crates/riwork-engine/src/chat/client.rs:25-31`), `broken` (unknown whether it acted; `CallError::Broken`), `not_found`, `invalid`, `conflict` (lost a merge/revision race), `unavailable` (backend not running), `io`. |
 | **Cancellation** | Promises are not cancellable. Long work returns a handle (`ChatHandle`, `Subscription`) whose `close()` ends it. |
 
@@ -202,7 +202,7 @@ listener (no caller re-fetches).
 
 ### 1.6 `Chat`
 
-Backed by the chat host (`riwork chat serve`) over `RIWORK_HOME/run/chat.sock`
+Backed by the chat host (`somtus chat serve`) over `RIWORK_HOME/run/chat.sock`
 (`crates/riwork-engine/src/chat/client.rs:19-21`). The bridge keeps one request client per
 burst and one subscription thread per open chat, exactly as the GPUI window does
 (`client.rs:1-5`). Transcript folding (`Transcript::apply`, `crates/riwork-engine/src/chat/model.rs:1218`)
@@ -228,9 +228,9 @@ TSX receives projected rows.
   reconnects resume with `since = seq` so nothing is replayed twice.
   `Row` is `projection::Row` (`projection.rs:93`) as a DTO; streaming text is sent as `append`
   ops (O(delta) per patch), never by re-sending the whole message.
-- **Markdown, highlighting and diffs are parsed in Rust** with RiWork's rules (single newlines,
+- **Markdown, highlighting and diffs are parsed in Rust** with Somtus's rules (single newlines,
   nesting depth 8, Codex citations; `crates/riwork-desktop/src/chat_view/markdown.rs`,
-  `code_highlight.rs`, `diff.rs`, moved out of the GPUI crate) and sent as RiWork's own blocks
+  `code_highlight.rs`, `diff.rs`, moved out of the GPUI crate) and sent as Somtus's own blocks
   and spans; TSX renders them with `nsh/base` `TextView` (app blocks, `streaming`) and
   `DiffView`. TSX never runs NSH's Markdown parser on transcript text.
 - **Selection and copy are Rust's.** Selection endpoints are `{ leafId, offset }` keyed to the
@@ -421,8 +421,8 @@ remain §1.3 snapshots, with these DTOs in `data`.
 | `Dashboard.saveGlobalWindow(state)` | async | Validate schema/view/filter/sort/size before saving through the same core store. No dashboard activity or chat creation. |
 
 Appearance does not parse Ghostty configuration or write `appearance.json` in
-P1. Follow Ghostty uses the RiWork palette, keeps a diagnostic and has unknown
-terminal colors unless `useRiworkColors` selects the RiWork override.
+P1. Follow Ghostty uses the Somtus palette, keeps a diagnostic and has unknown
+terminal colors unless `useRiworkColors` selects the Somtus override.
 
 W3 also supplies `LayoutSession.openPanel(panel)` and `defaultLayout()` as
 synchronous in-memory edits, scheduling persistence like existing methods.
@@ -536,7 +536,7 @@ are unchanged; `GlobalWindowDto` stays schema 2.
 
 | JS | Kind | Result / rule |
 |---|---|---|
-| `Dashboard.subscribe(listener)` | sync handle | `DashboardEvent { data: DashboardDto }`, schema 3: `{ now, readAt, error, wire, backendLines }`. `wire` is the engine's `dashboard.get` wire v1 (`wire_with_observations` plus `enrich_saved`'s `intelligence`), exactly what `riwork dashboard --json` prints. There is one process reader: none while no window subscribes, a change read at most every 2 s, extras and the heartbeat at most every 10 s. Reading starts no host, chat, shell, orchestrator or tmux server, and makes no model request. |
+| `Dashboard.subscribe(listener)` | sync handle | `DashboardEvent { data: DashboardDto }`, schema 3: `{ now, readAt, error, wire, backendLines }`. `wire` is the engine's `dashboard.get` wire v1 (`wire_with_observations` plus `enrich_saved`'s `intelligence`), exactly what `somtus dashboard --json` prints. There is one process reader: none while no window subscribes, a change read at most every 2 s, extras and the heartbeat at most every 10 s. Reading starts no host, chat, shell, orchestrator or tmux server, and makes no model request. |
 | `Dashboard.refresh()` | async | Forces a read; one requested during a read runs after it. The result arrives on the subscription. |
 | `Dashboard.saveGlobalWindow(state)` | async | Unchanged. TSX owns `view`, `showQuiet`, `dashboardFilter` and `dashboardSort`. The host owns `windowSize` and merges it into the file on flush and runtime publish. |
 | `Orchestrators.find(projectId \| null)` | async | `OrchestratorDto \| null` as `orchestrators::find` answers. Starts nothing. |
@@ -592,7 +592,7 @@ arrives as an event (§2.4).
   "kind": "project",                // "project" | "global"   (runtime::WindowKind, crates/riwork-engine/src/runtime.rs:89-94)
   "projectId": "b1e2…",             // null for the global window; a remote project key for a remote project
   "path": "/Users/…/repo",          // RuntimeWindow.path (runtime.rs:102-104); "<home>/global-window" for the global window (runtime.rs:126)
-  "restore": {                      // present only when this window is restored by `riwork restart`/reload
+  "restore": {                      // present only when this window is restored by `somtus restart`/reload
     "layout": { /* ProjectLayout as on disk, layouts.rs:1036 */ },
     "focusMode": false,
     "focusCentered": false,
@@ -622,7 +622,7 @@ The restore payload is the `RuntimeWindow` the previous GUI published
 | `window.focus` | call | `{ windowId }` → `{}` | |
 | `window.close` | call | `{ windowId? }` → `{}` | Default: this window. The host first flushes this window's `LayoutSession` (§4.5) from Rust. |
 | `window.setDockInfo` | post | `{ project, branch }` | Dock menu entry for this window (today `announce_to_dock`, `main.rs:4497-4520`). |
-| `app.restart` | call | `{ session?: boolean, shellId?: string }` → `{}` | `riwork restart` semantics (`runtime.rs:421-530`). |
+| `app.restart` | call | `{ session?: boolean, shellId?: string }` → `{}` | `somtus restart` semantics (`runtime.rs:421-530`). |
 | `app.quit` | post | `{}` | Host flushes every `LayoutSession` and publishes the runtime registry before quitting. |
 | `app.restoreReady` | post | `{}` | This window finished restoring (feeds `mark_restore_ready`, `runtime.rs:553`). The host confirms the reload when all restored windows posted it. |
 | `system.revealInFinder` | call | `{ path }` → `{}` | |
@@ -649,15 +649,15 @@ Window-local chrome stays on NSH built-ins: `Window.setTitle`, `setTitleBar`, `s
 
 | Event | Data | When |
 |---|---|---|
-| `command` | `{ id, args? }` | An app-menu item, Dock-menu item or global shortcut chose command `id` while this window is key. The **application menu belongs to the host** (it is process-global on macOS); TSX does not call `Menu.setApplicationMenu`. The v1 menu keeps GPUI's RiWork, Edit and View menus and ⌘W closing a tab, never a window (parity SHELL “menus”); adding AppKit's Window/Help menus is a separate product decision. Command ids are the menu items of parity rows SHELL-250 to SHELL-252 and SHELL-299 and the command list under SHELL “Host needs” in `docs/nsh-parity.md`. **Edit menu:** Cut/Copy/Paste/Select All use the standard responder selectors; a native text field or a `riwork.terminal` handles them itself, otherwise the AppView forwards them as `command { id: "copy" }` (etc.) so the transcript can copy its Rust-built selection (parity CHATT “Edit ▸ Copy”). **Key-equivalent order:** when a `riwork.terminal` view is first responder, ⌘=, ⌘- and ⌘0 go to the terminal (Ghostty font size) and are not also dispatched as text-size commands. |
+| `command` | `{ id, args? }` | An app-menu item, Dock-menu item or global shortcut chose command `id` while this window is key. The **application menu belongs to the host** (it is process-global on macOS); TSX does not call `Menu.setApplicationMenu`. The v1 menu keeps GPUI's Somtus, Edit and View menus and ⌘W closing a tab, never a window (parity SHELL “menus”); adding AppKit's Window/Help menus is a separate product decision. Command ids are the menu items of parity rows SHELL-250 to SHELL-252 and SHELL-299 and the command list under SHELL “Host needs” in `docs/nsh-parity.md`. **Edit menu:** Cut/Copy/Paste/Select All use the standard responder selectors; a native text field or a `riwork.terminal` handles them itself, otherwise the AppView forwards them as `command { id: "copy" }` (etc.) so the transcript can copy its Rust-built selection (parity CHATT “Edit ▸ Copy”). **Key-equivalent order:** when a `riwork.terminal` view is first responder, ⌘=, ⌘- and ⌘0 go to the terminal (Ghostty font size) and are not also dispatched as text-size commands. |
 | `window.state` | `{ key, visible, occluded, mode, backingScale, frame, appActive }` | On change. Pauses sampling/metrics subscriptions and idle redraws in occluded or inactive windows (parity SHELL “activation”); terminals read occlusion natively. |
 | `window.willClose` | `{ reason: "user" \| "quit" \| "restart" }` | Informational; persistence does not depend on TSX answering (the host flushes Rust state itself). |
 | `window.closeCancelled` | `{}` | A close, quit or restart failed and the host reopened all affected native layout gates. Quit/restart failure bookkeeping finishes first; one main-thread transition clears the host quit gate, reopens native gates, then notifies surviving Apps, so their one-shot `app.restoreReady` can be accepted. Sent to every surviving window in the cancelled batch, including one whose pending `Layouts.openSession` was rejected by the closing marker. App retries that rejection with at most one open in flight and ignores cancellation once a session is installed. Delivery can precede the rejection reaching JavaScript. Successful teardown never sends this event. |
-| `project.open` | `{ projectId, path? }` | `riwork open PROJECT` (possibly forwarded from a second launch) targeted this window. |
+| `project.open` | `{ projectId, path? }` | `somtus open PROJECT` (possibly forwarded from a second launch) targeted this window. |
 | `route` | `{ step }` | `window.route` chose this window. |
 | `global.show` | `{ view, start }` | Global window only: show Dashboard or Chat. |
 | `notification.activate` | `{ id, target? }` | The user clicked a notification for this window. |
-| `appearance` | `{ appearance }` | The macOS or forced appearance changed (the resolved RiWork theme comes from `Appearance.subscribe`, §1.10). |
+| `appearance` | `{ appearance }` | The macOS or forced appearance changed (the resolved Somtus theme comes from `Appearance.subscribe`, §1.10). |
 
 ### 2.5 What the host owns that TSX never sees
 
@@ -665,7 +665,7 @@ Window-local chrome stays on NSH built-ins: `Window.setTitle`, `setTitleBar`, `s
   publishing windows for reload (`runtime.rs:706`). The host builds each `RuntimeWindow` from
   the window's `LayoutSession` (Rust, in-process) and its NSWindow frame/mode, so no JS round
   trip is needed at quit or restart.
-- Reload choreography (`riwork restart`/`reload`): replacement launch, confirmation, watchdog
+- Reload choreography (`somtus restart`/`reload`): replacement launch, confirmation, watchdog
   (`runtime.rs:1-60`). Before launching the replacement the host flushes chat drafts in Rust
   (`Drafts.flush` with a 5 s limit; today `main.rs:13975-13980`) and every `LayoutSession`, and
   cancels the reload if the draft flush fails.
@@ -674,7 +674,7 @@ Window-local chrome stays on NSH built-ins: `Window.setTitle`, `setTitleBar`, `s
   terminating; no TSX hook is involved.
 - App menu, Dock menu (`crates/riwork-desktop/src/dock_menu.rs`; activating a window and
   “New Window” are handled in the host), single-instance lock and forwarding (§0),
-  `riwork open` routing, quit when the last window closes.
+  `somtus open` routing, quit when the last window closes.
 - Window chrome set at creation: transparent title bar with full-size content, traffic lights
   at (10, 8), minimum size 640 × 400, title-bar double-click honouring the system
   zoom/minimize preference (parity SHELL “window chrome”). TSX marks its own drag regions with
@@ -730,11 +730,11 @@ export const Terminal = nativeComponent<TerminalProps, TerminalEvents>("riwork.t
 
 | Prop | Type | Meaning |
 |---|---|---|
-| `target` | `{ kind: "local", shellId } \| { kind: "remote", desktopId, shellId }` (required) | What to attach. Local: a tmux client of the shell's session on RiWork's isolated socket via `SessionManager::attach_exec_command` (`crates/riwork-engine/src/sessions.rs:1050`), default attach flags (T1); `attach_argv` refuses a dead session, so attaching never creates one (`sessions.rs:1014-1018`). Remote: the remote bridge for the `(desktopId, shellId)` pair, never confused with a local id (R1, T4). Changing `target` detaches the old client and attaches the new one in the same view. |
+| `target` | `{ kind: "local", shellId } \| { kind: "remote", desktopId, shellId }` (required) | What to attach. Local: a tmux client of the shell's session on Somtus's isolated socket via `SessionManager::attach_exec_command` (`crates/riwork-engine/src/sessions.rs:1050`), default attach flags (T1); `attach_argv` refuses a dead session, so attaching never creates one (`sessions.rs:1014-1018`). Remote: the remote bridge for the `(desktopId, shellId)` pair, never confused with a local id (R1, T4). Changing `target` detaches the old client and attaches the new one in the same view. |
 | `visible` | `boolean` | The tab is the selected tab of a shown pane (in focus mode only the active pane's, T2). Only visible views attach (lazy attach, T4); hidden views stop rendering and follow the release policy (§3.5). |
 | `pinned` | `boolean` | Keep the surface (its last screen) even when hidden: set by the app for a local tab whose session is dead or unknown and a remote tab whose bridge ended (T4). Never released. |
 | `focusOnAttach` | `boolean` | Take first responder once attached: true for a tab the user just opened, false for restored, re-shown or re-attached tabs (H3). |
-| `colors` | `{ source: "ghostty" } \| { source: "override", background, foreground, palette: string[16] }` | Resolved by the app from the RiWork theme (H1; today `Appearance::terminal_override`, `crates/riwork-desktop/src/theme.rs:205-216`). An override change applies in place (H3). Switching from `override` to `ghostty`, or a change of Ghostty's own parsed colors while following it, **re-creates the attach client** for the same target, hidden until ready, then swapped in (H3; today `main.rs:2753-2789`); never a new shell. Fonts, padding and the rest come from the user's Ghostty config, loaded and watched once per process (H2, H4). |
+| `colors` | `{ source: "ghostty" } \| { source: "override", background, foreground, palette: string[16] }` | Resolved by the app from the Somtus theme (H1; today `Appearance::terminal_override`, `crates/riwork-desktop/src/theme.rs:205-216`). An override change applies in place (H3). Switching from `override` to `ghostty`, or a change of Ghostty's own parsed colors while following it, **re-creates the attach client** for the same target, hidden until ready, then swapped in (H3; today `main.rs:2753-2789`); never a new shell. Fonts, padding and the rest come from the user's Ghostty config, loaded and watched once per process (H2, H4). |
 | `frozen` | `boolean` | Show a snapshot of the last presented frame instead of the live surface and take no input. GPUI freezes every shown terminal while a tab drag, menu, popover, modal or notice is open because native views draw above GPUI content (T6, parity SHELL-112). The NSView must be a layer-backed subview inside the AppView's layer tree so NSH overlays (Dialog, Popover, Sheet, Tooltip, drag preview) draw above it; if a parity check shows they do not, the app sets `frozen` during overlays exactly as GPUI does. |
 
 No size, scale, focus or lease props. The view sizes itself from its NSH frame and window
@@ -776,7 +776,7 @@ upload-inbox pastes) goes through `Sessions.send*`/`paste*` (§1.7), as it does 
 Key handling: the view receives keys as first responder. The host menu's Edit items use the
 standard responder selectors, which the view implements (Phase 2b ⌘V routes files,
 images and text through the engine's locked paste path); ⌘=, ⌘-, ⌘0 reach Ghostty's font-size bindings and are not
-also dispatched as RiWork text-size commands (§2.4). Phase 2b routes ⌘F to terminal
+also dispatched as Somtus text-size commands (§2.4). Phase 2b routes ⌘F to terminal
 Find when a local terminal tab is active and to its panel's search otherwise;
 ⌘G / ⌘⇧G advance terminal matches. Nested input editors keep normal edit-action priority.
 OSC 52: writes of plain text to the pasteboard are allowed; clipboard reads and any write that
@@ -825,7 +825,7 @@ and bracketed-paste semantics, without an added Return.
    surface stays after its bridge exits (T4).
 5. **Remote recovery** opens a fresh stream for the same shell at the latest size, reports
    `reconnecting` then `attached` even when instant, and discards outage keys (R3).
-6. **Restart** (`riwork restart`): the new process attaches only the views that are shown in
+6. **Restart** (`somtus restart`): the new process attaches only the views that are shown in
    the restored layout; nothing is recreated (T4, P6).
 
 ### 3.6 Other native components (reserved)
@@ -867,7 +867,7 @@ ghostty issue #14245). Every implementation of `riwork.terminal`, including a GP
 fallback, must therefore:
 
 1. On drop/release, first end the attach client from outside the surface: `tmux detach-client`
-   for that client's tty on RiWork's socket (local) or close the bridge stream (remote), off
+   for that client's tty on Somtus's socket (local) or close the bridge stream (remote), off
    the main thread.
 2. Free the libghostty surface only after its PTY child has exited; never call a blocking free
    on the main thread while the child may be alive.
@@ -1066,7 +1066,7 @@ dashboard. The native chat over the page (`nav.present` `chat`) does not take it
 
 ### 4.1 The two models
 
-**RiWork (persisted, unchanged):** `RIWORK_HOME/layouts.json`, schema 1
+**Somtus (persisted, unchanged):** `RIWORK_HOME/layouts.json`, schema 1
 (`layouts.rs:24`), guarded by `layouts.lock` (`layouts.rs:1979-1989`), atomic temp+rename
 writes (`layouts.rs:2033-2064`), entries per project id:
 
@@ -1131,7 +1131,7 @@ the rest equally; when every child is sized, extra room is shared in proportion 
 points from its container's `onLayout`):
 
 1. **Only `center` is used.** `left`, `right`, `bottom` are always absent in v1. The left
-   navigation region stays what it is in RiWork: a locked pane inside the tree.
+   navigation region stays what it is in Somtus: a locked pane inside the tree.
 2. **Panes → tab groups.** `Layout::Pane(id)` → `{ type: "tabs", id, panels, activeIndex }`
    with `id = PaneId` (the PaneId *is* the group's NodeId), `panels` = the pane's tab keys in
    the order the GPUI strip shows them, `activeIndex` = index of `active_tab_key`. With shared
@@ -1228,7 +1228,7 @@ resize already match in the common case (one absorber).
 
 ### 4.6 Ids and limits (frozen)
 
-- `PaneId` ⇔ tab-group `NodeId`. Ids installed from RiWork are adopted by NSH's counter, so
+- `PaneId` ⇔ tab-group `NodeId`. Ids installed from Somtus are adopted by NSH's counter, so
   groups NSH creates later get fresh, larger ids that become new `PaneId`s.
 - PaneIds `> 2^53 − 1` (JS-unsafe) are remapped on load to the smallest free ids; `active_pane`,
   `main_pane`, `locked_panes` and skipped tabs follow the mapping; the remap is persisted on
@@ -1285,7 +1285,7 @@ Plus one NSH-side test per gesture row of §4.4 (DockArea driven headless by `ns
 | Chat streaming cost through List + `TextView streaming` vs GPUI: 475-chunk long answer, two windows, surface p95 3.0-4.7 ms, no retained frame > 16.67 ms; no matched GPUI comparison yet | host spike 2a537a8b | §1.3/§1.6 coalescing (≤ 1 patch per 16 ms per chat); a matched benchmark is a parity port gate |
 | libghostty without GPUI | ghostty spike db4930af: **NO-GO on teardown** (`018a535`), all other gates passed or synthetic-only (display-scale migration unverified) | §3.7 teardown protocol is mandatory for any terminal runtime; the GPUI-host fallback must pass the same disposal test |
 | Exact terminal/layout behaviors (attach, leases, paste/drop, links, restore) | spec task 9770b73c (`docs/nsh-spec-terminal-layout.md`) | §3.5, §4.4 “group disappeared”, §4.5 reconcile |
-| DockArea drop zones differ from RiWork's: 23 % pane-edge zones, 12 pt window-edge strips including a top root edge (parity SHELL “drag and drop”). DockArea splits at group edges by its own geometry and has no root-edge or top targets | upstream NSH request (custom zone thresholds + root-edge targets) | Until then, root-edge drops are a parity gap; when added, a root-edge drop maps to `Split(axis, new, root)` / `Split(axis, root, new)` at the tree root. |
+| DockArea drop zones differ from Somtus's: 23 % pane-edge zones, 12 pt window-edge strips including a top root edge (parity SHELL “drag and drop”). DockArea splits at group edges by its own geometry and has no root-edge or top targets | upstream NSH request (custom zone thresholds + root-edge targets) | Until then, root-edge drops are a parity gap; when added, a root-edge drop maps to `Split(axis, new, root)` / `Split(axis, root, new)` at the tree root. |
 | Pane header inset under the traffic lights, per-group header widths | TSX (`renderTab`/`tabBarStyle` + `titleBar()`) | none |
 | DockNode has no per-child `fixed` flag (ResizablePanel has one, `resizable/panel.rs:235-239`) | upstream NSH request | §4.3 rule 5 covers the one-absorber case; other cases settle one frame later via `setExtent`. |
 
@@ -1421,7 +1421,7 @@ rule, as written: "NO-GO again = stop, no metric relaxation".
 ### 8.4 W3 P1 appearance fallback (2026-10-27)
 
 Task `c62ea465` explicitly directs the P1 implementation to apply the D-THEME-1
-proposal: no Ghostty configuration parsing, the RiWork palette on Follow
+proposal: no Ghostty configuration parsing, the Somtus palette on Follow
 Ghostty, the diagnostic retained, and no `appearance.json` publishing. The
 terminal phase retains ownership of real parsing and publishing. This records
 the assignment’s scope; it does not settle D-PROC-1 or D-COPY-1.
@@ -1430,7 +1430,7 @@ the assignment’s scope; it does not settle D-PROC-1 or D-COPY-1.
 
 Settled by the orchestrator during Phase 5 (task `9a9d3423`). Phase 1 acceptance R-DEFER 5
 listed the files a P1 build may write, while the global window was still a placeholder. The
-Phase 5 dashboard read makes the engine's `riwork dashboard` read, and that creates an empty
+Phase 5 dashboard read makes the engine's `somtus dashboard` read, and that creates an empty
 `schedules.lock`: `ScheduleStore::list` takes the schedule-ledger lock, as the CLI's own test
 `crates/riwork-cli/tests/dashboard_cli.rs` already allows. An empty `schedules.lock` is
 therefore an allowed write on dashboard and global-window paths. Nothing else is: in a
@@ -1448,7 +1448,7 @@ consolidation (task `c12f5e14`) removes that second module: window chrome
 palette (`controlsIsland`, `panelActive`, `divider`, `bg`, `panel`, `text`)
 through the window's resolved interface theme, and text size uses W3 Settings.
 Native and Hermes keep their P-SHELL unpainted controls area. Follow Ghostty
-uses the RiWork palette per §8.4; no `appearance.json` is read or published.
+uses the Somtus palette per §8.4; no `appearance.json` is read or published.
 
 Window size is captured directly from host Rust geometry through
 `HostLayout::observe_window_frame(width, height, ordinary, remember)`; it is not

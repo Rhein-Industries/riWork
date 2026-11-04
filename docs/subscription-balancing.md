@@ -4,16 +4,16 @@
 The same setting is available through the CLI:
 
 ```sh
-riwork settings set codex_subscription_balancing true
+somtus settings set codex_subscription_balancing true
 ```
 
 When enabled, a **new automatic Codex session** chooses among the available saved
-Codex accounts that RiWork discovered through Orca's public account list. This
+Codex accounts that Somtus discovered through Orca's public account list. This
 applies to chat, terminal, orchestrator and `codex` launches in an unpinned plain
 shell, including CLI and paired-device requests that use those common launch paths.
 Refresh accounts in Settings after adding a saved account.
 
-For each account, RiWork takes the smallest remaining percentage across its reported
+For each account, Somtus takes the smallest remaining percentage across its reported
 quota windows. It chooses the account with the largest such percentage: 60% short
 and 40% weekly beats 95% short and 10% weekly. A tie prefers the account selected in
 Settings, then uses a stable account ID order. These are provider-reported
@@ -33,7 +33,7 @@ seconds. At most four readers run in parallel with a ten-second total refresh
 budget, and no read starts with less than two seconds of it left. Accounts whose data
 cannot be read within that budget remain unknown and are excluded; a read cut short by
 the budget keeps the account's previous report, which still qualifies only while fresh.
-The account is chosen before RiWork takes its session-registry and chat-creation locks,
+The account is chosen before Somtus takes its session-registry and chat-creation locks,
 so other sessions are never held up while quota is read. Initial account discovery, if
 needed, has Orca's existing separate five-second bound. UI catalogs only inspect saved
 reports; they never start quota readers. While balancing is on, New Chat still offers

@@ -304,7 +304,7 @@ impl Agent for TerminalAgent {
         self.before = self.idle_token();
         if self.before.is_none() {
             return Err(
-                "The agent is busy, or RiWork cannot tell yet that it is idle (it learns that after a first completed turn). A summary can only be asked of an idle agent; wait for it, or use --context transcript."
+                "The agent is busy, or Somtus cannot tell yet that it is idle (it learns that after a first completed turn). A summary can only be asked of an idle agent; wait for it, or use --context transcript."
                     .into(),
             );
         }

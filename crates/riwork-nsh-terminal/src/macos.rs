@@ -1156,7 +1156,7 @@ fn remote_attach_command(binary: &Path, desktop_id: &str, shell_id: &str) -> Str
         .collect::<Vec<_>>()
         .join(" ")
 }
-/// Located again for every attach, so installing the companion while RiWork
+/// Located again for every attach, so installing the companion while Somtus
 /// runs is enough. The bridge only needs a local directory that exists.
 fn prepare_remote(
     state: &State,
@@ -1266,7 +1266,7 @@ extern "C" fn on_detach(context: *mut c_void, view: *mut c_void, tty: *const c_c
                 }
             });
         if let Err(error) = &result {
-            eprintln!("riwork terminal parked: {error}");
+            eprintln!("somtus terminal parked: {error}");
         }
         dispatch2::DispatchQueue::main().exec_async(move || {
             unsafe { rw_terminal_detach_result(view as *mut c_void, result.is_ok()) };

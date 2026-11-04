@@ -1,10 +1,12 @@
 import { cleanup, effect, host, keymap, signal } from "nsh";
 import type { LayoutSession } from "riwork/native";
-import { commandAllowed, DEFERRED_KEYMAP, PANEL_COMMANDS, WINDOW_KEYMAP } from "./keyboard";
+import { commandAllowed, DEFERRED_KEYMAP, effectiveWindowBindings, PANEL_COMMANDS, type Keybindings } from "./keyboard";
 import { activePane, drawnTabs, type HostParams, type WorkspaceSnapshot } from "./model";
 
 /** Workspace-owned effects that the dispatcher routes but does not implement. */
 export interface CommandHooks {
+  keybindings?: () => Keybindings;
+  customization?: (id: string) => boolean;
   /** The close dialog, rename, panel editors and project switches block window commands. */
   blocked: () => boolean;
   /** Create a local shell, optionally splitting the active pane first. */
@@ -86,6 +88,7 @@ export function workspaceCommands(
     return () => { for (const unbind of bindings) unbind(); };
   });
   function dispatch(id: string, args?: { query?: string }) {
+    if (hooks.customization?.(id)) return;
     const agent = ({ openCodex: "codex", openClaude: "claude", openGrok: "grok", openMuse: "muse" } as Record<string, string>)[id];
     if (agent && !hooks.blocked() && hooks.remoteAgent?.(agent)) { stripOpen.set(false); return; }
     if ((id === "newChat" || id === "handOff") && !hooks.blocked() && hooks.remoteRefusal?.(id)) { stripOpen.set(false); return; }
@@ -121,12 +124,15 @@ export function workspaceCommands(
       void host.call("window.open", { kind: "project", projectId: hooks.projectId() ?? params.projectId }).catch(() => {});
     }
   }
-  for (const [key, id] of WINDOW_KEYMAP) cleanup(keymap.bind(key, () => dispatch(id),
-    id === "nextTab" || id === "previousTab" ? { when: "always" } : undefined));
+  effect(() => {
+    const bindings = effectiveWindowBindings(hooks.keybindings?.()).map(([key, id]) => keymap.bind(key, () => dispatch(id),
+      id === "nextTab" || id === "previousTab" ? { when: "always" } : undefined));
+    return () => { for (const unbind of bindings) unbind(); };
+  });
   // Chat components own their own chords; registering inert window bindings
   // here used to swallow transcript/composer shortcuts before they reached them.
   for (const [key, id, context] of DEFERRED_KEYMAP) {
-    if (context === "window" && key !== "mod+f") cleanup(keymap.bind(key, () => dispatch(id)));
+    if (context === "window" && key !== "mod+f" && id !== "newChat" && id !== "createProject") cleanup(keymap.bind(key, () => dispatch(id)));
   }
   effect(() => {
     // NSH's local monitor consumes bindings before native keyDown. Remove this

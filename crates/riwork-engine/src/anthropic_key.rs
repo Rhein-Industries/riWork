@@ -1,11 +1,11 @@
 //! The Anthropic API key that Claude chats on API key billing get (`ClaudeBilling::ApiKey`).
 //! The key is kept in the login Keychain as one generic password (service `SERVICE`,
-//! account `ACCOUNT`) and RiWork writes it nowhere else: never to `settings.json`, a chat's
+//! account `ACCOUNT`) and Somtus writes it nowhere else: never to `settings.json`, a chat's
 //! info or events, a log or a test. Settings saves and removes it. The chat host reads it
 //! at each start of a Claude chat on API key (never when the host itself starts) and gives
 //! it to that `claude` as `ANTHROPIC_API_KEY` (`chat::launch`), as a key exported in the
 //! shell would be: the commands Claude runs inherit it, so what they print (`env`) is the
-//! agent's output. RiWork processes started from inside such a chat (a chat host, the app,
+//! agent's output. Somtus processes started from inside such a chat (a chat host, the app,
 //! a tmux server) drop it again (`scrub_injected`).
 //!
 //! Everything goes through `KeyStore`, so a test has `MemoryStore`. In a test build
@@ -15,12 +15,12 @@ use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, PoisonError};
 
-/// Set beside `ANTHROPIC_API_KEY` when RiWork gave a Claude chat its saved key: the key in
-/// this environment is RiWork's to hand out, not the user's own.
+/// Set beside `ANTHROPIC_API_KEY` when Somtus gave a Claude chat its saved key: the key in
+/// this environment is Somtus's to hand out, not the user's own.
 pub const INJECTED_MARKER: &str = "RIWORK_ANTHROPIC_KEY_INJECTED";
 
-/// Removes a key RiWork gave a Claude chat (`INJECTED_MARKER`) from a command that starts a
-/// new RiWork root: a chat host, the app or a tmux server started by a command the agent
+/// Removes a key Somtus gave a Claude chat (`INJECTED_MARKER`) from a command that starts a
+/// new Somtus root: a chat host, the app or a tmux server started by a command the agent
 /// ran. They must not take it for the user's own environment, hand it to Claude terminal
 /// tabs, or keep handing it out after the key is removed in Settings. A key the user
 /// exported is left alone.

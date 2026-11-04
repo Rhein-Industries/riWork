@@ -1,4 +1,4 @@
-//! Persistent shell sessions rendered by Ghostty and owned by RiWork.
+//! Persistent shell sessions rendered by Ghostty and owned by Somtus.
 //!
 //! Ghostty renders an ordinary tmux client. The shell itself runs inside a
 //! dedicated tmux server, so dropping a GPUI window only disconnects a client.
@@ -35,14 +35,14 @@ pub(crate) const ORCHESTRATOR_BOUNDARIES: &str = "Hard boundaries (the skill's f
     verify only by reading evidence from isolated runs, else mark it unverified; restart or \
     update nothing that can interrupt sessions without the user's approval this turn naming it.";
 /// Additive session guidance shared by the supported coding harnesses.
-const CUA_GUIDANCE: &str = "RiWork provides Cua.ai Driver through the cua-driver MCP server. \
+const CUA_GUIDANCE: &str = "Somtus provides Cua.ai Driver through the cua-driver MCP server. \
     Use this server for desktop screenshots, application inspection, and desktop interaction. \
-    This is the Cua.ai product installed by RiWork setup. Keep this desktop automation \
+    This is the Cua.ai product installed by Somtus setup. Keep this desktop automation \
     preference for the entire session and any delegated work. If the driver is unavailable \
     or reports missing macOS permissions, explain the reported problem and direct the user \
-    to RiWork's Cua setup; do not silently switch to another computer-use provider. \
+    to Somtus's Cua setup; do not silently switch to another computer-use provider. \
     Read the driver's tool descriptions and current state before interacting. \
-    RiWork's server refuses input to RiWork's own live windows and, while RiWork runs, \
+    Somtus's server refuses input to Somtus's own live windows and, while Somtus runs, \
     input that names no target app, so pass the target's `pid` on every input call. \
     These instructions choose a desktop automation provider; they do not authorize new \
     tasks or change the user's permission policy.";
@@ -171,7 +171,7 @@ pub struct SessionMetrics {
     pub process_count: usize,
 }
 
-/// The sessions this build can represent. Other RiWork builds share the file,
+/// The sessions this build can represent. Other Somtus builds share the file,
 /// so `read_registry` skips entries it cannot parse (for example a harness a
 /// newer build added) instead of failing, and `write_registry` carries those
 /// entries, unknown session fields, and unknown top-level fields through from
@@ -296,7 +296,7 @@ impl SessionManager {
         drop(_lock);
         if let Some(project) = &session.project_id {
             if let Err(error) = crate::project_tabs::register_shell(&self.home, &session, project) {
-                eprintln!("riwork tabs: {error}");
+                eprintln!("somtus tabs: {error}");
             }
         }
         Ok(session)
@@ -319,7 +319,7 @@ impl SessionManager {
             validate_uuid(id)?;
         }
         let path = crate::file_preview::validated_editor_path(&root, &path, expected)?;
-        let vim = find_vim().ok_or("Vim is required to edit files in RiWork.")?;
+        let vim = find_vim().ok_or("Vim is required to edit files in Somtus.")?;
         let command = editor_command(&vim, &path, line)?;
         self.create_inner(
             Some(project_id),
@@ -375,7 +375,7 @@ impl SessionManager {
         }
         if choices.binding.is_some() && harness != HarnessKind::Codex {
             return Err(format!(
-                "{} has no RiWork-managed accounts",
+                "{} has no Somtus-managed accounts",
                 harness.program()
             ));
         }
@@ -404,7 +404,7 @@ impl SessionManager {
         }
         if let Some(project) = &session.project_id {
             if let Err(error) = crate::project_tabs::register_shell(&self.home, &session, project) {
-                eprintln!("riwork tabs: {error}");
+                eprintln!("somtus tabs: {error}");
             }
         }
         Ok(session)
@@ -492,7 +492,7 @@ impl SessionManager {
             let cua = crate::cua::CuaManager::at(self.home.clone())?;
             cua.driver_path()?;
             let executable = env::current_exe()
-                .map_err(|error| format!("resolve RiWork executable: {error}"))?;
+                .map_err(|error| format!("resolve Somtus executable: {error}"))?;
             let shim_directory = cua.ensure_harness_shims(&executable)?;
             let skill_path = if project_id.is_none() {
                 self.orchestrator_skill_path()?
@@ -551,7 +551,7 @@ impl SessionManager {
         drop(lock);
         if let Some(project) = &session.project_id {
             if let Err(error) = crate::project_tabs::register_shell(&self.home, &session, project) {
-                eprintln!("riwork tabs: {error}");
+                eprintln!("somtus tabs: {error}");
             }
         }
         Ok(session)
@@ -626,7 +626,7 @@ impl SessionManager {
             .find(|session| matches_orchestrator_scope(session, Some(project_id))))
     }
 
-    /// Install RiWork's shipped skill in the orchestrator's own context. The
+    /// Install Somtus's shipped skill in the orchestrator's own context. The
     /// executable embeds the resource, so a bundled app needs no repository.
     pub fn orchestrator_skill_path(&self) -> Result<PathBuf, String> {
         self.orchestrator_skill_path_scoped(None)
@@ -711,7 +711,7 @@ impl SessionManager {
         }
         let skill_path = self.orchestrator_skill_path_scoped(session.project_id.as_deref())?;
         let executable =
-            env::current_exe().map_err(|error| format!("resolve RiWork executable: {error}"))?;
+            env::current_exe().map_err(|error| format!("resolve Somtus executable: {error}"))?;
         self.paste_and_submit(
             id,
             &orchestrator_prompt(
@@ -1019,22 +1019,27 @@ impl SessionManager {
             .find(|session| session.id == id)
             .ok_or_else(|| format!("unknown shell {id}"))?;
         if session.harness != Some(HarnessKind::Codex) || !self.is_alive(id)? {
-            return Err("session reload requires a live RiWork Codex pane".to_owned());
+            return Err("session reload requires a live Somtus Codex pane".to_owned());
         }
         let cwd = self.current_directory(id)?;
         let executable =
-            env::current_exe().map_err(|error| format!("resolve RiWork executable: {error}"))?;
+            env::current_exe().map_err(|error| format!("resolve Somtus executable: {error}"))?;
         let cua = crate::cua::CuaManager::at(self.home.clone())?;
         cua.driver_path()?;
         let shims = cua.ensure_harness_shims(&executable)?;
         let managed_path = path_with_harness_shims(&shims, login_shell_dirs())?;
+        let generation = crate::program_status::prepare(&self.home, id)?;
+        let monitored = status_launch_command(
+            &self.tmux, &self.socket_name, &executable, &self.home, id,
+            &generation, &self.default_command_shell(), Some(command),
+        );
         let args = respawn_arguments(
             id,
             &cwd.to_string_lossy(),
             &self.home,
             &managed_path,
             session.codex_home.as_deref(),
-            command,
+            &monitored,
         );
         let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
         self.tmux_checked(&borrowed)?;
@@ -1062,7 +1067,7 @@ impl SessionManager {
     /// checking that it is live and, unless this process already has,
     /// configuring its scrolling. `attach_command`
     /// is this, quoted for Ghostty to parse; `attach_exec_command` is this,
-    /// run by `riwork shell attach ID --exec`.
+    /// run by `somtus shell attach ID --exec`.
     pub fn attach_argv(&self, id: &str, options: AttachOptions) -> Result<Vec<String>, String> {
         self.require_live(id)?;
         self.live_attach_argv(id, options)
@@ -1070,6 +1075,10 @@ impl SessionManager {
 
     /// `attach_argv` for a shell the caller has just read as live.
     fn live_attach_argv(&self, id: &str, options: AttachOptions) -> Result<Vec<String>, String> {
+        // Upgrade older panes without replacing a user's existing output pipe.
+        // This observes future raw bytes only; captured screen text is never
+        // retrospectively interpreted as status.
+        let _ = self.ensure_program_status(id);
         // Ghostty renders a tmux client: scrollback belongs to tmux, so mouse
         // reporting is needed for wheel/trackpad scrolling and copy mode.
         // Set this per session as well, upgrading sessions made by older builds.
@@ -1099,7 +1108,19 @@ impl SessionManager {
         Ok(argv)
     }
 
-    /// The process `riwork shell attach ID --exec` turns into: `attach_argv`
+    fn ensure_program_status(&self, id: &str) -> Result<(), String> {
+        let target = pane_target(id);
+        if self.tmux_text(&["display-message", "-p", "-t", &target, "#{pane_pipe}"])?.trim() != "0" {
+            return Ok(());
+        }
+        let executable = env::current_exe().map_err(|e| e.to_string())?;
+        let generation = crate::program_status::prepare(&self.home, id)?;
+        let collector = status_collector_command(&executable, &self.home, id, &generation);
+        self.tmux_checked(&["pipe-pane", "-IO", "-o", "-t", &target, &collector])?;
+        Ok(())
+    }
+
+    /// The process `somtus shell attach ID --exec` turns into: `attach_argv`
     /// with the terminal type its tmux client should announce (see
     /// `attach_terminal`). The caller replaces itself with it, so the tmux
     /// client owns the terminal it was started on, which is what a remote
@@ -1199,7 +1220,7 @@ impl SessionManager {
     /// attaches one (`configure_scrolling_once`), so servers and sessions made by older builds
     /// catch up.
     fn configure_scrolling(&self, id: &str) -> Result<(), String> {
-        // RiWork owns this isolated tmux server. A pane on the main screen
+        // Somtus owns this isolated tmux server. A pane on the main screen
         // (a shell, or an agent run inline) and an alternate-screen application
         // without mouse support both scroll through tmux's history.
         // Applications that request mouse events keep receiving their wheel input.
@@ -1572,7 +1593,7 @@ impl SessionManager {
         )
     }
 
-    /// A pane identity changes on respawn, even when its RiWork UUID is retained.
+    /// A pane identity changes on respawn, even when its Somtus UUID is retained.
     pub(crate) fn schedule_pane_identity(&self, id: &str) -> Result<String, String> {
         validate_uuid(id)?;
         self.tmux_text(&[
@@ -1604,7 +1625,7 @@ impl SessionManager {
             Some(HarnessKind::Codex) => {
                 let tracker = crate::activity::ActivityTracker::at(self.home.clone());
                 let bound = tracker.schedule_identity(shell);
-                // Normal RiWork launches exec Codex in the pane. A stale binding
+                // Normal Somtus launches exec Codex in the pane. A stale binding
                 // is not evidence that Codex is still running: without a live
                 // descriptor proof (Codex exited to a shell, a wrapper or shared
                 // server) the identity stays unknown.
@@ -1635,7 +1656,7 @@ impl SessionManager {
                         .bind_schedule_rollout(shell, &path)
                         .map_err(Unproven),
                     (None, None) => Err(Unproven(
-                        "Codex thread identity is not yet known; complete a turn or use a directly launched RiWork Codex pane".into(),
+                        "Codex thread identity is not yet known; complete a turn or use a directly launched Somtus Codex pane".into(),
                     )),
                 }
             }
@@ -1699,7 +1720,7 @@ impl SessionManager {
         codex_open_rollout(&self.schedule_lsof(), &pid).map(Some)
     }
 
-    /// The registry lock excludes RiWork close/respawn for the whole attempt.
+    /// The registry lock excludes Somtus close/respawn for the whole attempt.
     /// The readiness sample and the submission also share `send`'s input lock.
     /// Only a target that is truly gone or demonstrably different fails (and
     /// pauses); a check that could not be completed defers and is retried.
@@ -2026,7 +2047,7 @@ impl SessionManager {
     /// Paste the paths of existing files into a live shell the way a drop of them on its terminal
     /// does (`terminal_drop::path_input`, chosen by the program in front), without Return. Errors
     /// that begin with a `session_keys` token happened before anything was pasted; any other error
-    /// may have pasted part of it. Used by `riwork shell paste` for files sent from a phone.
+    /// may have pasted part of it. Used by `somtus shell paste` for files sent from a phone.
     pub fn paste_files(&self, id: &str, paths: &[PathBuf]) -> Result<(), String> {
         use crate::session_keys::{INPUT_UNAVAILABLE, INVALID_REQUEST, NOT_FOUND, NOT_SENT};
         crate::terminal_drop::validate_paths(paths)
@@ -2250,7 +2271,7 @@ impl SessionManager {
             if let Err(error) = crate::project_tabs::TabStore::at(&self.home, &project)
                 .and_then(|store| store.forget(&format!("shell:{id}")))
             {
-                eprintln!("riwork tabs: {error}");
+                eprintln!("somtus tabs: {error}");
             }
         }
         // Files a phone sent to this shell (see `upload_inbox`) go with it.
@@ -2297,7 +2318,7 @@ impl SessionManager {
         }
         if let Some(project) = &session.project_id {
             if let Err(error) = crate::project_tabs::register_shell(&self.home, &session, project) {
-                eprintln!("riwork tabs: {error}");
+                eprintln!("somtus tabs: {error}");
             }
         }
         Ok(session)
@@ -2392,7 +2413,7 @@ impl SessionManager {
             ("GROK_HOME", env::var_os("GROK_HOME")),
         ];
         let executable =
-            env::current_exe().map_err(|error| format!("resolve RiWork executable: {error}"))?;
+            env::current_exe().map_err(|error| format!("resolve Somtus executable: {error}"))?;
         let cua = crate::cua::CuaManager::at(self.home.clone())?;
         let shim_directory = cua.ensure_harness_shims(&executable)?;
         // A plain shell's login startup files build its PATH; a harness runs
@@ -2543,7 +2564,7 @@ impl SessionManager {
             args.push("-e".to_owned());
             args.push(format!("RIWORK_CUA_DRIVER={}", driver.to_string_lossy()));
         }
-        // So is the opt-in that turns off the Cua guard on input to RiWork's own windows:
+        // So is the opt-in that turns off the Cua guard on input to Somtus's own windows:
         // it must come from this launch, never linger in the server from an earlier one.
         let allow_riwork_input = crate::cua::riwork_input_allowed();
         if allow_riwork_input {
@@ -2571,8 +2592,19 @@ impl SessionManager {
             if command.trim().is_empty() {
                 return Err("shell command cannot be empty".to_owned());
             }
-            args.push(command.clone());
         }
+        // Install the raw-byte collector inside the pane before the command's
+        // first write. A command queued after new-session can miss early OSCs.
+        // Keep the stored command unchanged for attribution/resume consumers.
+        let generation = crate::program_status::prepare(&self.home, &id)?;
+        let default_command = command.is_none().then(|| {
+            self.tmux_text(&["show-options", "-gqv", "default-command"])
+                .unwrap_or_default().trim_end_matches('\n').to_owned()
+        }).filter(|value| !value.is_empty());
+        args.push(status_launch_command(
+            &self.tmux, &self.socket_name, &executable, &self.home, &id,
+            &generation, &shell, command.as_deref().or(default_command.as_deref()),
+        ));
         // Variables absent from this launch must not come back from the server's
         // environment. Clearing them there, and not with `env -u` in the command,
         // leaves the user's own startup files free to set them.
@@ -2584,7 +2616,7 @@ impl SessionManager {
             absent.push(crate::cua::ALLOW_RIWORK_INPUT);
         }
         // A server that a chat's agent started must not hand that chat's id to
-        // every pane (`riwork handoff` reads it to tell whose conversation it is).
+        // every pane (`somtus handoff` reads it to tell whose conversation it is).
         absent.push("RIWORK_CHAT_ID");
         // Nor an orchestrator's scope: a pane that has it saves the shells it makes as hidden
         // workers, in that orchestrator's project. Orchestrators get theirs with `-e` below.
@@ -2695,7 +2727,7 @@ impl SessionManager {
     /// The sessions the server has, each with the Unix second its window last
     /// had output, or `None` when tmux gave no time. One `list-sessions` answers
     /// both. `#{window_activity}` is the session's current window, which is its
-    /// only one: RiWork never makes another. It moves when the pane prints,
+    /// only one: Somtus never makes another. It moves when the pane prints,
     /// which covers an agent working with no client attached and text sent by
     /// `shell send`, `shell keys` or the phone, once the shell echoes it.
     /// `#{session_activity}` is not used: tmux moves it for what an attached
@@ -3261,7 +3293,7 @@ struct AttachTerminal {
 /// `xterm-ghostty` or `xterm-256color` and the display there is a Ghostty.
 ///
 /// - `xterm-ghostty` is kept when its terminfo can be found: in the app
-///   bundle (`bundled`: `Contents/Resources/terminfo`, which RiWork ships
+///   bundle (`bundled`: `Contents/Resources/terminfo`, which Somtus ships
 ///   because the system has no entry for it) or in the `inherited` `TERMINFO`
 ///   (a Ghostty that started this). `TERMINFO` is then set to that directory.
 ///   Without one tmux would refuse the terminal, so it becomes
@@ -3317,8 +3349,8 @@ fn terminfo_entry(dir: &Path, term: &str) -> bool {
 }
 
 /// Where this executable's app bundle keeps Ghostty's terminfo: next to the
-/// executable inside `RiWork.app/Contents/MacOS`, or, for a build that sits
-/// beside the app (a `target/release/riwork` next to a packaged `RiWork.app`),
+/// executable inside `Somtus.app/Contents/MacOS`, or, for a build that sits
+/// beside the app (a `target/release/riwork` next to a packaged `Somtus.app`),
 /// inside that app.
 fn bundled_terminfo_dirs() -> Vec<PathBuf> {
     let Ok(exe) = env::current_exe() else {
@@ -3333,6 +3365,7 @@ fn bundled_terminfo_dirs() -> Vec<PathBuf> {
         .map(|contents| contents.join("Resources/terminfo"))
         .into_iter()
         .collect();
+    dirs.push(dir.join("Somtus.app/Contents/Resources/terminfo"));
     dirs.push(dir.join("RiWork.app/Contents/Resources/terminfo"));
     dirs
 }
@@ -3474,7 +3507,7 @@ fn respawn_arguments(
 /// What a harness launch asks for beyond the program and the profile.
 #[derive(Clone, Copy)]
 struct HarnessOptions<'a> {
-    /// The canonical folder the agent starts in, which RiWork trusts it in: the
+    /// The canonical folder the agent starts in, which Somtus trusts it in: the
     /// user chose to run the agent there by creating the session.
     cwd: &'a Path,
     /// Skip the CLI's permission prompts, as the caller asked.
@@ -3486,7 +3519,7 @@ struct HarnessOptions<'a> {
 
 /// What a launch chooses besides the agent: its model and reasoning effort, how much
 /// it may do without asking, the message it starts with, a Codex account picked by
-/// name, and Muse's contributor mode. A terminal that `riwork handoff` starts uses all of
+/// name, and Muse's contributor mode. A terminal that `somtus handoff` starts uses all of
 /// them; the New Tab menu uses none and gets the CLI's own defaults, but for contributor
 /// mode, which is off unless asked on.
 #[derive(Clone, Debug, Default)]
@@ -3664,7 +3697,7 @@ fn harness_command(
         }
         HarnessKind::Grok => {
             // The active agent's frontmatter is per invocation. Keep hooks
-            // beside RiWork state, never in ~/.grok or the project checkout.
+            // beside Somtus state, never in ~/.grok or the project checkout.
             if let Some(index) = arguments.iter().position(|arg| arg == "--agent") {
                 arguments[index + 1] = grok_shell_agent_path(state_home, shell_id)
                     .to_string_lossy()
@@ -3714,7 +3747,7 @@ pub(crate) struct ChatLaunch {
     pub program: PathBuf,
     /// Goes before the harness's own arguments.
     pub arguments: Vec<String>,
-    /// RiWork's harness shims first, then the login shell's directories, so the
+    /// Somtus's harness shims first, then the login shell's directories, so the
     /// agent's own commands find what a terminal's would.
     pub path: std::ffi::OsString,
 }
@@ -3728,9 +3761,9 @@ pub(crate) fn chat_launch(
     cua.driver_path()?;
     let state_home = state_home
         .canonicalize()
-        .map_err(|error| format!("resolve RiWork state: {error}"))?;
+        .map_err(|error| format!("resolve Somtus state: {error}"))?;
     let executable =
-        env::current_exe().map_err(|error| format!("resolve RiWork executable: {error}"))?;
+        env::current_exe().map_err(|error| format!("resolve Somtus executable: {error}"))?;
     let shim_directory = cua.ensure_harness_shims(&executable)?;
     let program =
         find_harness_program(harness, &shim_directory).ok_or_else(|| harness_missing(harness))?;
@@ -3755,12 +3788,12 @@ pub(crate) fn chat_launch(
 }
 
 /// Claude Code reads this ahead of its own `tui` setting, so a user who has
-/// chosen the fullscreen renderer still gets the main screen when RiWork asks
+/// chosen the fullscreen renderer still gets the main screen when Somtus asks
 /// for inline agents.
 const CLAUDE_MAIN_SCREEN: (&str, &str) = ("CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN", "1");
 
 /// The flags that keep an agent off the terminal's alternate screen. On the
-/// main screen its transcript scrolls into tmux's history, which RiWork can
+/// main screen its transcript scrolls into tmux's history, which Somtus can
 /// capture and a remote viewer can page through; on the alternate screen tmux
 /// keeps no history at all. Claude Code has no such flag: see `CLAUDE_MAIN_SCREEN`.
 ///
@@ -3847,7 +3880,7 @@ fn inline_environment(
 
 fn cua_startup_prompt() -> String {
     format!(
-        "Load the following RiWork desktop automation guidance for this session. \
+        "Load the following Somtus desktop automation guidance for this session. \
          This startup message only loads guidance. Briefly acknowledge readiness \
          and wait for the user's objective.\n\n{CUA_GUIDANCE}"
     )
@@ -3870,9 +3903,9 @@ pub(crate) fn cua_harness_arguments(
 }
 
 /// The harnesses filter their MCP servers' environments, so a custom driver
-/// that the launcher accepted reaches `riwork cua mcp` only if named here, and so
+/// that the launcher accepted reaches `somtus cua mcp` only if named here, and so
 /// does `RIWORK_CUA_ALLOW_RIWORK_INPUT=1` when the launch has it (`allow_riwork_input`),
-/// which turns off the proxy's guard on input to RiWork's own windows.
+/// which turns off the proxy's guard on input to Somtus's own windows.
 fn cua_harness_arguments_with(
     harness: HarnessKind,
     executable: &Path,
@@ -3953,7 +3986,7 @@ fn cua_harness_arguments_with(
             // map is refused, one server's JSON value is not. Env values are
             // secret leaves to Muse's config: each must be one whole-value
             // `${VAR}` naming a variable set in Muse's own environment
-            // (a RiWork pane and a chat both carry RIWORK_HOME), never a
+            // (a Somtus pane and a chat both carry RIWORK_HOME), never a
             // literal path — a literal is refused at startup.
             let _ = state_home;
             let mut environment = serde_json::json!({ "RIWORK_HOME": "${RIWORK_HOME}" });
@@ -3975,7 +4008,7 @@ fn cua_harness_arguments_with(
 }
 
 /// Launches with different custom drivers, or with and without the guard on input to
-/// RiWork's windows, must not overwrite one another's definition.
+/// Somtus's windows, must not overwrite one another's definition.
 fn grok_agent_path(
     state_home: &Path,
     executable: &Path,
@@ -4002,7 +4035,7 @@ fn grok_shell_agent_path(home: &Path, shell: &str) -> PathBuf {
 }
 
 /// Grok's active agent can supply an MCP server for this session. An agent
-/// definition in RiWork state avoids modifying the user's Grok config or the
+/// definition in Somtus state avoids modifying the user's Grok config or the
 /// project repository, while its ordinary config and login remain available.
 /// Grok documents `startup_timeout_sec` for `config.toml` servers. Adding it
 /// to this frontmatter does not change the handshake limit, so the definition
@@ -4033,7 +4066,7 @@ fn grok_agent_definition(
         concat!(
             "---\n",
             "name: riwork-cua\n",
-            "description: Grok Build with RiWork desktop automation\n",
+            "description: Grok Build with Somtus desktop automation\n",
             "mcpServers:\n",
             "  - name: cua-driver\n",
             "    command: {}\n",
@@ -4074,7 +4107,7 @@ fn env_text(name: &str) -> EnvText {
     }
 }
 
-/// Environment for a RiWork-launched Grok. `MCP_TIMEOUT` (milliseconds) is
+/// Environment for a Somtus-launched Grok. `MCP_TIMEOUT` (milliseconds) is
 /// Grok's overriding default when both it and `GROK_MCP_STARTUP_TIMEOUT_SECS`
 /// are set, so a user value is passed through and the 120-second budget is
 /// added only when neither is set. A per-server `startup_timeout_sec` in the
@@ -4198,7 +4231,7 @@ fn toml_string(value: &str) -> String {
 }
 
 /// Bind tools to the launching client even when Codex reuses an app server
-/// whose process environment belongs to a different RiWork pane. Dotted
+/// whose process environment belongs to a different Somtus pane. Dotted
 /// overrides retain the user's remaining environment settings. The marker is
 /// deliberately a thread config value, never a daemon environment variable.
 fn codex_shell_environment_arguments(state_home: &Path, shell_id: Option<&str>) -> Vec<String> {
@@ -4521,14 +4554,14 @@ pub(crate) fn orchestrator_prompt(
     };
     let (load, skill) = if inline_skill {
         (
-            "Load the complete riwork-orchestrator skill below for this RiWork orchestrator session.",
+            "Load the complete riwork-orchestrator skill below for this Somtus orchestrator session.",
             format!(
                 "<riwork-orchestrator-skill>\n{ORCHESTRATOR_SKILL}\n</riwork-orchestrator-skill>\n\n"
             ),
         )
     } else {
         (
-            "Load the complete riwork-orchestrator skill for this RiWork orchestrator session: \
+            "Load the complete riwork-orchestrator skill for this Somtus orchestrator session: \
              read its installed SKILL.md in full now, and follow it for the whole session.",
             String::new(),
         )
@@ -4536,8 +4569,8 @@ pub(crate) fn orchestrator_prompt(
     format!(
         "$riwork-orchestrator\n\n\
          {load} \
-         Its installed source is {}. The installed RiWork CLI is {}: use this executable \
-         for `riwork` commands if PATH does not resolve it, and retain RIWORK_HOME. \
+         Its installed source is {}. The installed Somtus CLI is {}: use this executable \
+         for `somtus` commands if PATH does not resolve it, and retain RIWORK_HOME. \
          {} {} \
          This startup message only loads the skill. Do not inspect projects, create tasks, \
          modify repositories, delegate work, submit input to other harnesses, or create schedules. \
@@ -4557,9 +4590,9 @@ pub(crate) fn orchestrator_prompt(
 /// explains.
 fn delegation_brief(policy: &Delegation, project: bool) -> String {
     let source = if project {
-        "this project's override, else Settings, else RiWork's default"
+        "this project's override, else Settings, else Somtus's default"
     } else {
-        "Settings, else RiWork's default"
+        "Settings, else Somtus's default"
     };
     format!(
         "Delegation policy for this scope ({source}, as they stood when this message was written): \
@@ -4636,7 +4669,7 @@ fn orchestrator_command(
     }
 }
 
-/// Run `command` without the named variables, for ones RiWork itself exports.
+/// Run `command` without the named variables, for ones Somtus itself exports.
 /// This applies after the shell's startup files, so it must not name a
 /// variable the user may set there.
 fn unset_in_command(command: &str, variables: &[&str]) -> String {
@@ -4696,7 +4729,7 @@ fn effective_path() -> std::ffi::OsString {
 }
 
 /// The runtime PATH a standalone harness gets, including version-manager runtimes
-/// from the login shell. Unlike a normal chat launch, this adds no RiWork Cua shims.
+/// from the login shell. Unlike a normal chat launch, this adds no Somtus Cua shims.
 pub(crate) fn unmanaged_harness_path() -> Result<std::ffi::OsString, String> {
     joined_harness_path(login_shell_dirs().iter().cloned().chain(executable_dirs()))
 }
@@ -4710,10 +4743,10 @@ fn joined_harness_path(
             unique.push(directory);
         }
     }
-    env::join_paths(unique).map_err(|error| format!("construct RiWork harness PATH: {error}"))
+    env::join_paths(unique).map_err(|error| format!("construct Somtus harness PATH: {error}"))
 }
 
-/// The RiWork shim directory comes first, then the login shell's directories in
+/// The Somtus shim directory comes first, then the login shell's directories in
 /// the user's order, then this process's own.
 fn path_with_harness_shims(
     shim_directory: &Path,
@@ -4870,7 +4903,7 @@ else
 fi
 "#;
     for stage in [".zshenv", ".zprofile", ".zshrc", ".zlogin"] {
-        let mut content = format!("# RiWork session-scoped zsh startup forwarding\n{restore}");
+        let mut content = format!("# Somtus session-scoped zsh startup forwarding\n{restore}");
         if stage == ".zshrc" {
             // Apple's /etc/zshrc derives its default history location from
             // ZDOTDIR before this file runs. Preserve that original default.
@@ -4930,7 +4963,7 @@ fn find_harness_program(harness: HarnessKind, shim_directory: &Path) -> Option<P
     })
 }
 
-/// The official Grok CLI, for reading its own reports. RiWork's launcher shims
+/// The official Grok CLI, for reading its own reports. Somtus's launcher shims
 /// are skipped by their marker wherever they live, so this never runs one.
 pub(crate) fn find_grok_program() -> Option<PathBuf> {
     find_harness_program(
@@ -4953,7 +4986,7 @@ pub enum ProgramLookup {
 /// The CLI a launch of `harness` would run, found without starting anything: the
 /// directories `find_harness_program` searches, the login shell's only when this process
 /// has already read them (the GUI does at startup; asking the shell starts a process).
-/// RiWork's own launcher shims are skipped by their marker wherever they live.
+/// Somtus's own launcher shims are skipped by their marker wherever they live.
 pub fn installed_harness_program(harness: HarnessKind) -> ProgramLookup {
     let shims = Path::new("/nonexistent/riwork-harness-bin");
     if let Some(program) = find_harness_program_in(harness, shims, executable_dirs()) {
@@ -4978,7 +5011,7 @@ fn find_harness_program_via(
 
 /// The path returned is the one found in the directory, not what it resolves
 /// to: multi-call shims (mise, Volta) choose the program by the name they were
-/// started under. Resolution serves only to recognise RiWork's own launchers.
+/// started under. Resolution serves only to recognise Somtus's own launchers.
 fn find_harness_program_in(
     harness: HarnessKind,
     shim_directory: &Path,
@@ -4993,13 +5026,15 @@ fn find_harness_program_in(
         if !executable_file(&resolved) || resolved.parent() == Some(shim_directory.as_path()) {
             return None;
         }
-        // Ignore wrappers from another RiWork state directory as well. Read
+        // Ignore wrappers from another Somtus state directory as well. Read
         // only a small prefix, never an entire official CLI binary.
         use std::io::Read;
         let mut prefix = [0; 512];
         if let Ok(mut file) = File::open(&resolved)
             && let Ok(length) = file.read(&mut prefix)
-            && String::from_utf8_lossy(&prefix[..length]).contains("# RiWork Cua harness shim")
+            && ["# Somtus Cua harness shim", "# RiWork Cua harness shim"]
+                .iter()
+                .any(|marker| String::from_utf8_lossy(&prefix[..length]).contains(marker))
         {
             return None;
         }
@@ -5161,7 +5196,7 @@ fn codex_home_mutation(arguments: &[String]) -> Option<String> {
 }
 
 /// Utility commands skip account binding, so they act on whatever `CODEX_HOME`
-/// the shell exports. In a shell RiWork bound to a saved account that is
+/// the shell exports. In a shell Somtus bound to a saved account that is
 /// Orca's managed home, and `logout` or a second `login` would silently change
 /// that account's credentials for every session that uses it.
 fn managed_home_refusal(command: &str, home: &Path) -> String {
@@ -5211,7 +5246,7 @@ fn cua_proxy_arguments(
                 .iter()
                 .position(|argument| argument == "--")
                 .unwrap_or(arguments.len());
-            // Preserve explicit user hooks in the session-flags layer. RiWork's
+            // Preserve explicit user hooks in the session-flags layer. Somtus's
             // hook table goes first; Cua transport overrides remain innermost.
             let mut result = codex_activity_arguments(executable, home, shell_id);
             result.extend_from_slice(&arguments[..separator]);
@@ -5234,9 +5269,9 @@ fn cua_proxy_arguments(
     result
 }
 
-/// Says `--contributor-mode off` in a Muse launch through RiWork's `muse` wrapper whose
+/// Says `--contributor-mode off` in a Muse launch through Somtus's `muse` wrapper whose
 /// `arguments` (at `offset` in `result`) start a session without saying a contributor mode,
-/// so it starts off, as every Muse RiWork starts unless asked on. See
+/// so it starts off, as every Muse Somtus starts unless asked on. See
 /// `muse_contributor_default`.
 fn with_muse_contributor_default(result: &mut Vec<String>, arguments: &[String], offset: usize) {
     if let Some(index) = muse_contributor_default(arguments) {
@@ -5423,7 +5458,7 @@ pub fn run_cua_harness(harness: HarnessKind, arguments: &[String]) -> Result<(),
             .iter()
             .any(|argument| argument.starts_with("mcpServers.cua-driver"))
     {
-        return Err("RiWork's Muse launcher sets mcpServers.cua-driver for its Cua connection; a second one cannot be combined with it".to_owned());
+        return Err("Somtus's Muse launcher sets mcpServers.cua-driver for its Cua connection; a second one cannot be combined with it".to_owned());
     }
     if harness == HarnessKind::Grok
         && !harness_utility_invocation(harness, arguments)
@@ -5431,7 +5466,7 @@ pub fn run_cua_harness(harness: HarnessKind, arguments: &[String]) -> Result<(),
             .iter()
             .any(|argument| argument == "--agent" || argument.starts_with("--agent="))
     {
-        return Err("RiWork's Grok launcher uses --agent for its Cua connection; a second --agent cannot be combined with it".to_owned());
+        return Err("Somtus's Grok launcher uses --agent for its Cua connection; a second --agent cannot be combined with it".to_owned());
     }
     if harness == HarnessKind::Codex
         && let Some((command, home)) =
@@ -5443,13 +5478,13 @@ pub fn run_cua_harness(harness: HarnessKind, arguments: &[String]) -> Result<(),
     let cua = crate::cua::CuaManager::at(home.clone())?;
     let home = home
         .canonicalize()
-        .map_err(|error| format!("resolve RiWork state: {error}"))?;
+        .map_err(|error| format!("resolve Somtus state: {error}"))?;
     let executable =
-        env::current_exe().map_err(|error| format!("resolve RiWork executable: {error}"))?;
+        env::current_exe().map_err(|error| format!("resolve Somtus executable: {error}"))?;
     let shim_directory = cua.ensure_harness_shims(&executable)?;
     let program = find_harness_program(harness, &shim_directory).ok_or_else(|| {
         format!(
-            "{} is not installed or is not on PATH outside RiWork's Cua wrappers",
+            "{} is not installed or is not on PATH outside Somtus's Cua wrappers",
             harness.program()
         )
     })?;
@@ -6048,6 +6083,32 @@ pub fn quote_arg(argument: &str) -> String {
     }
 }
 
+fn status_collector_command(executable: &Path, home: &Path, id: &str, generation: &str) -> String {
+    format!("exec {} program-status-collect {} {} {}",
+        quote_arg(&executable.to_string_lossy()), quote_arg(&home.to_string_lossy()),
+        quote_arg(id), quote_arg(generation))
+}
+
+fn status_launch_command(
+    tmux: &Path, socket: &str, executable: &Path, home: &Path, id: &str,
+    generation: &str, shell: &Path, command: Option<&str>,
+) -> String {
+    let collector = status_collector_command(executable, home, id, generation);
+    let run = match command {
+        Some(command) => format!("exec {} -c {}", quote_arg(&shell.to_string_lossy()), quote_arg(command)),
+        None => format!("exec {} -l", quote_arg(&shell.to_string_lossy())),
+    };
+    // -o is atomic: never replace another pipe. An old collector retained by
+    // respawn reads the generation boundary before the replacement program.
+    // These are protocol bytes, not keyboard input or a GUI action.
+    let bootstrap = format!(
+        "{} -u -L {} pipe-pane -IO -o -t \"$TMUX_PANE\" {} >/dev/null 2>&1; \
+         printf '\\033]7501;state=clear:somtus={}\\033\\\\'; {run}",
+        quote_arg(&tmux.to_string_lossy()), quote_arg(socket), quote_arg(&collector), generation,
+    );
+    format!("exec /bin/sh -c {}", quote_arg(&bootstrap))
+}
+
 fn stable_hash(bytes: &[u8]) -> u64 {
     let mut hash = 0xcbf29ce484222325u64;
     for byte in bytes {
@@ -6601,7 +6662,7 @@ mod tests {
                 )
                 .env("PATH", path)
                 .env("RIWORK_CUA_DRIVER", self.0.join("fake-cua-driver"))
-                // A test may itself run inside a RiWork Codex session.
+                // A test may itself run inside a Somtus Codex session.
                 .env_remove("CODEX_HOME")
                 .env_remove("RIWORK_CODEX_ACCOUNT_HOME");
             for (variable, value) in changes {
@@ -7470,8 +7531,8 @@ mod tests {
     #[test]
     fn codex_permission_bypass_requires_explicit_selection() {
         let program = Path::new("/Applications/Codex CLI/codex");
-        let executable = Path::new("/Applications/RiWork's App/riwork");
-        let home = Path::new("/Users/test/RiWork's State");
+        let executable = Path::new("/Applications/Somtus's App/riwork");
+        let home = Path::new("/Users/test/Somtus's State");
         for unrestricted in [false, true] {
             let command = harness_command(
                 HarnessKind::Codex,
@@ -7511,8 +7572,8 @@ mod tests {
 
     #[test]
     fn inline_agents_get_the_screen_flag_before_their_startup_prompt() {
-        let executable = Path::new("/Applications/RiWork's App/riwork");
-        let home = Path::new("/Users/test/RiWork's State");
+        let executable = Path::new("/Applications/Somtus's App/riwork");
+        let home = Path::new("/Users/test/Somtus's State");
         for harness in [
             HarnessKind::Codex,
             HarnessKind::Grok,
@@ -7671,8 +7732,8 @@ mod tests {
     fn wrappers_flag_the_arguments_they_finally_pass_on() {
         // The flag goes into the list the wrapper builds, so it follows the
         // wrapper's own options and the startup prompt it supplies.
-        let executable = Path::new("/Applications/RiWork/riwork");
-        let home = Path::new("/Users/test/RiWork State");
+        let executable = Path::new("/Applications/Somtus/riwork");
+        let home = Path::new("/Users/test/Somtus State");
         let original = vec!["resume".to_owned(), "--last".to_owned()];
         let proxied = with_inline_arguments(
             HarnessKind::Codex,
@@ -7724,7 +7785,7 @@ mod tests {
     #[test]
     fn claude_settings_keep_telemetry_bound_to_the_shell() {
         let program = Path::new("/Users/test/Claude CLI/claude");
-        let telemetry = Path::new("/Users/test/RiWork's App/riwork");
+        let telemetry = Path::new("/Users/test/Somtus's App/riwork");
         let id = "00000000-0000-4000-8000-000000000002";
         for unrestricted in [false, true] {
             let command = harness_command(
@@ -7737,7 +7798,7 @@ mod tests {
                 },
                 program,
                 telemetry,
-                Path::new("/Users/test/RiWork's State"),
+                Path::new("/Users/test/Somtus's State"),
                 id,
                 None,
             )
@@ -7769,7 +7830,7 @@ mod tests {
             );
             assert_eq!(
                 mcp["mcpServers"]["cua-driver"]["env"]["RIWORK_HOME"],
-                "/Users/test/RiWork's State"
+                "/Users/test/Somtus's State"
             );
             let prompt_index = arguments
                 .iter()
@@ -7799,7 +7860,7 @@ mod tests {
                         telemetry.to_string_lossy().into_owned(),
                         "agent-hook".into(),
                         "claude".into(),
-                        "/Users/test/RiWork's State".into(),
+                        "/Users/test/Somtus's State".into(),
                         id.into()
                     ]
                 );
@@ -7878,7 +7939,7 @@ mod tests {
 
     #[test]
     fn cua_configuration_survives_shell_and_toml_quoting() {
-        let executable = Path::new("/Applications/RiWork's $App/\"quoted\"/riwork");
+        let executable = Path::new("/Applications/Somtus's $App/\"quoted\"/riwork");
         let home = Path::new("/Users/test/line\nbreak\\state $(false)");
         for harness in [HarnessKind::Codex, HarnessKind::Claude] {
             let command = harness_command(
@@ -7921,8 +7982,8 @@ mod tests {
 
     #[test]
     fn a_custom_cua_driver_reaches_every_harness_mcp_server() {
-        let executable = Path::new("/Applications/RiWork's App/riwork");
-        let home = Path::new("/Users/test/RiWork State");
+        let executable = Path::new("/Applications/Somtus's App/riwork");
+        let home = Path::new("/Users/test/Somtus State");
         let driver = Path::new("/Users/test/dev \"cua\"\\driver/cua-driver");
         let key = "mcp_servers.cua-driver.env.RIWORK_CUA_DRIVER=";
         let codex = |custom: Option<&Path>| {
@@ -7980,12 +8041,12 @@ mod tests {
     }
 
     /// `RIWORK_CUA_ALLOW_RIWORK_INPUT=1` at launch, and only then, reaches each harness's
-    /// `riwork cua mcp`, whose environment the harness filters: it is the one way to turn the
-    /// proxy's guard on input to RiWork's own windows off for a session.
+    /// `somtus cua mcp`, whose environment the harness filters: it is the one way to turn the
+    /// proxy's guard on input to Somtus's own windows off for a session.
     #[test]
     fn the_riwork_input_opt_in_reaches_every_harness_mcp_server_only_when_set() {
-        let executable = Path::new("/Applications/RiWork/riwork");
-        let home = Path::new("/Users/test/RiWork State");
+        let executable = Path::new("/Applications/Somtus/riwork");
+        let home = Path::new("/Users/test/Somtus State");
         let key = "mcp_servers.cua-driver.env.RIWORK_CUA_ALLOW_RIWORK_INPUT=";
         let codex = |allow: bool| {
             cua_harness_arguments_with(HarnessKind::Codex, executable, home, None, allow)
@@ -8082,8 +8143,8 @@ mod tests {
 
     #[test]
     fn the_muse_wrapper_says_contributor_mode_off_once_where_muse_reads_it_unless_the_user_did() {
-        let executable = Path::new("/Applications/RiWork's App/riwork");
-        let home = Path::new("/Users/test/RiWork State");
+        let executable = Path::new("/Applications/Somtus's App/riwork");
+        let home = Path::new("/Users/test/Somtus State");
         let args = |values: &[&str]| values.iter().map(|v| (*v).to_owned()).collect::<Vec<_>>();
         let cua = cua_harness_arguments(HarnessKind::Muse, executable, home);
         let off = args(&["--contributor-mode", "off"]);
@@ -8098,7 +8159,7 @@ mod tests {
             )
         };
         // The interactive screen, bare, with a prompt or options, or a prompt after `--`: off in
-        // front of what the user typed, after RiWork's Cua options.
+        // front of what the user typed, after Somtus's Cua options.
         for original in [
             &[][..],
             &["fix the failing test"],
@@ -8115,14 +8176,14 @@ mod tests {
             assert_eq!(proxied(original), expected, "{original:?}");
         }
         // Muse 1.4.7 has no `help` subcommand: it is a prompt for the interactive screen, which
-        // RiWork leaves without Cua as before.
+        // Somtus leaves without Cua as before.
         assert_eq!(
             proxied(&["help"]),
             args(&["--contributor-mode", "off", "help"])
         );
         // A subcommand that starts a session takes it right after itself, since Muse reads
         // options before one as the interactive screen's: `resume` beside the Cua options, `exec`
-        // and `serve`, which RiWork otherwise leaves as typed, alone.
+        // and `serve`, which Somtus otherwise leaves as typed, alone.
         for (original, with_cua) in [
             (&["resume"][..], true),
             (&["resume", "--last"], true),
@@ -8196,8 +8257,8 @@ mod tests {
 
     #[test]
     fn grok_launch_uses_a_session_scoped_cua_agent() {
-        let executable = Path::new("/Applications/RiWork's App/riwork");
-        let home = Path::new("/Users/test/RiWork State");
+        let executable = Path::new("/Applications/Somtus's App/riwork");
+        let home = Path::new("/Users/test/Somtus State");
         for unrestricted in [false, true] {
             let command = harness_command(
                 HarnessKind::Grok,
@@ -8242,8 +8303,8 @@ mod tests {
 
     #[test]
     fn muse_launch_wires_cua_as_a_config_server_and_carries_guidance_in_the_prompt() {
-        let executable = Path::new("/Applications/RiWork's App/riwork");
-        let home = Path::new("/Users/test/RiWork State");
+        let executable = Path::new("/Applications/Somtus's App/riwork");
+        let home = Path::new("/Users/test/Somtus State");
         // Every `--contributor-mode` value, in order.
         let contributor = |arguments: &[String]| {
             arguments
@@ -8335,7 +8396,7 @@ mod tests {
                 .windows(2)
                 .any(|pair| pair[0] == "--reasoning-effort" && pair[1] == "low")
         );
-        // Asked on, it says on, once, and the real Muse is started, not RiWork's wrapper.
+        // Asked on, it says on, once, and the real Muse is started, not Somtus's wrapper.
         assert_eq!(contributor(&arguments), ["on"]);
         assert_eq!(arguments[0], "/bin/muse");
         let last = arguments.last().unwrap();
@@ -8515,8 +8576,8 @@ else:
 
     #[test]
     fn codex_proxy_places_mcp_options_with_local_subcommand_overrides() {
-        let executable = Path::new("/Applications/RiWork's App/riwork");
-        let home = Path::new("/Users/test/RiWork State");
+        let executable = Path::new("/Applications/Somtus's App/riwork");
+        let home = Path::new("/Users/test/Somtus State");
         for original in [
             vec![
                 "exec",
@@ -8589,8 +8650,8 @@ else:
 
     #[test]
     fn codex_proxy_binds_frontend_without_replacing_user_environment_settings() {
-        let executable = Path::new("/Applications/RiWork/riwork");
-        let home = Path::new("/Users/test/RiWork's \"State\"\n");
+        let executable = Path::new("/Applications/Somtus/riwork");
+        let home = Path::new("/Users/test/Somtus's \"State\"\n");
         let shell_id = "pane-'quoted'-\"id\"\n";
         let original = [
             "exec",
@@ -9007,7 +9068,7 @@ else:
                 .map(String::as_str)
                 .collect::<Vec<_>>()
         ));
-        // RiWork's own context folder is no project to Codex: the global
+        // Somtus's own context folder is no project to Codex: the global
         // orchestrator keeps the user's approvals exactly.
         let plain = command(&root.join("plain"));
         assert!(
@@ -9060,10 +9121,10 @@ else:
 
     #[test]
     fn orchestrator_startup_points_at_the_installed_skill_and_stays_small() {
-        let context = Path::new("/Users/test/RiWork's State/orchestrator");
+        let context = Path::new("/Users/test/Somtus's State/orchestrator");
         let state_home = context.parent().unwrap();
         let skill = context.join(".agents/skills/riwork-orchestrator/SKILL.md");
-        let executable = Path::new("/Applications/RiWork App/Contents/MacOS/riwork");
+        let executable = Path::new("/Applications/Somtus App/Contents/MacOS/somtus");
         let command = orchestrator_command(
             Path::new("/opt/bin/codex"),
             context,
@@ -9101,7 +9162,7 @@ else:
         assert!(prompt.contains("Scope: global."));
         assert!(prompt.contains("You have no project or worktree ownership."));
         assert!(prompt.contains(
-            "Delegation policy for this scope (Settings, else RiWork's default, as they stood \
+            "Delegation policy for this scope (Settings, else Somtus's default, as they stood \
              when this message was written): spread work on; about 4 parallel worker shells; \
              design work on claude, model opus; workhorse work on codex, model gpt-6.1-sol. \
              Apply it as the skill's Fan out and relay section says."
@@ -9260,7 +9321,7 @@ else:
     }
 
     /// Both scopes read, after the mandate, how to spread work by their delegation policy and
-    /// how status travels down and up the chain, through the transports RiWork already has.
+    /// how status travels down and up the chain, through the transports Somtus already has.
     #[test]
     fn the_embedded_skill_fans_work_out_and_relays_through_the_chain() {
         let mandate = ORCHESTRATOR_SKILL
@@ -9280,7 +9341,7 @@ else:
             "the tasks it depends on or blocks",
             "Relay down the chain, global orchestrator → project orchestrator → worker shells",
             "Relay up the chain",
-            "`RiWork check-in`",
+            "`Somtus check-in`",
             "Dashboard briefs",
             "gathers project state through them",
             "never by steering, sending to, or creating a project's workers",
@@ -9305,7 +9366,7 @@ else:
             .unwrap();
         assert_eq!(first_section, "## Hard boundaries");
         let boundaries = ORCHESTRATOR_SKILL.find("## Hard boundaries").unwrap();
-        let intro = ORCHESTRATOR_SKILL.find("RiWork has one global orchestrator");
+        let intro = ORCHESTRATOR_SKILL.find("Somtus has one global orchestrator");
         let mandate = ORCHESTRATOR_SKILL.find("## Delegate; do not implement");
         assert!(boundaries < intro.unwrap());
         let section = &ORCHESTRATOR_SKILL[boundaries..mandate.unwrap()];
@@ -9474,7 +9535,7 @@ else:
 
     #[test]
     fn project_context_prompt_environment_and_unrestricted_mode_are_distinct_from_global() {
-        let home = Path::new("/Users/test/RiWork's State");
+        let home = Path::new("/Users/test/Somtus's State");
         let alpha = "00000000-0000-4000-8000-000000000010";
         let beta = "00000000-0000-4000-8000-000000000011";
         assert_eq!(orchestrator_context(home, None), home.join("orchestrator"));
@@ -9489,7 +9550,7 @@ else:
             &context,
             home,
             &skill,
-            Path::new("/Applications/RiWork App/Contents/MacOS/riwork"),
+            Path::new("/Applications/Somtus App/Contents/MacOS/somtus"),
             Some(alpha),
             Some(project_root),
             &Delegation {
@@ -9514,7 +9575,7 @@ else:
         );
         assert_codex_cua_arguments(
             &arguments,
-            Path::new("/Applications/RiWork App/Contents/MacOS/riwork"),
+            Path::new("/Applications/Somtus App/Contents/MacOS/somtus"),
             home,
         );
         assert_codex_shell_environment(&arguments, home, "project-orchestrator-pane");
@@ -9534,7 +9595,7 @@ else:
         assert!(
             prompt.contains(
                 "Delegation policy for this scope (this project's override, else Settings, \
-                 else RiWork's default, as they stood when this message was written): \
+                 else Somtus's default, as they stood when this message was written): \
                  spread work off; about 2 parallel worker shells; design work on claude, \
                  model opus; workhorse work on codex, model gpt-6.1-sol."
             ),
@@ -9702,15 +9763,15 @@ else:
             Some(real.join("codex"))
         );
 
-        // A directory, a link to RiWork's own launcher and another state
+        // A directory, a link to Somtus's own launcher and another state
         // directory's launcher are not the CLI.
         let folder = directory("folder");
         fs::create_dir(folder.join("codex")).unwrap();
-        executable_script(&shims.join("codex"), "# RiWork Cua harness shim");
+        executable_script(&shims.join("codex"), "# Somtus Cua harness shim");
         let linked = directory("linked");
         symlink(shims.join("codex"), linked.join("codex")).unwrap();
         let foreign = directory("foreign");
-        executable_script(&foreign.join("codex"), "# RiWork Cua harness shim\nexit 1");
+        executable_script(&foreign.join("codex"), "# Somtus Cua harness shim\nexit 1");
         assert_eq!(
             find_harness_program_in(
                 HarnessKind::Codex,
@@ -9810,7 +9871,7 @@ else:
         fs::remove_dir_all(root).unwrap();
     }
 
-    /// Runs the real zsh the way RiWork does: no terminal, login, interactive.
+    /// Runs the real zsh the way Somtus does: no terminal, login, interactive.
     #[cfg(unix)]
     #[test]
     #[ignore = "slow: real login zsh, depends on the machine startup files"]
@@ -9908,7 +9969,7 @@ else:
     #[test]
     fn grok_agent_install_cleans_up_a_failed_write_and_prunes_old_definitions() {
         let root = scratch("grok-agent");
-        let executable = Path::new("/Applications/RiWork/riwork");
+        let executable = Path::new("/Applications/Somtus/riwork");
         let directory = root.join("cua");
         let current = grok_agent_path(&root, executable, None, false);
         let names = |suffix: &str| -> Vec<String> {

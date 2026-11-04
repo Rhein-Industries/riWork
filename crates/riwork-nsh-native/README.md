@@ -48,7 +48,7 @@ Implemented JavaScript surface:
   Detach, while Exit still requires a successful hide.
 - `Settings.get/set/changeTextSize` and status-bar item mutations use the core
   settings lock. `Settings.subscribe` and `Appearance.subscribe` share the same
-  home watcher. `Appearance.resolve(theme, systemDark)` returns the RiWork
+  home watcher. `Appearance.resolve(theme, systemDark)` returns the Somtus
   palette, terminal override, diff colors and diagnostics. Every Appearance
   payload also carries the terminal phase's `terminalLight`/`terminalDark`
   projection (`null` follows Ghostty) and `tabCloseBehavior`. Phase 1 does not
@@ -152,7 +152,7 @@ seven P1 modules and prove Add folder broadcasts through the real native bridge.
 The 60-second idle guard watches Store, Sessions, Tabs, Settings and Appearance
 and asserts no deliveries, no repeated empty-session sample and no presence poll.
 Fixtures inject session data; they never start tmux, launch app windows or touch
-live RiWork data. The remaining contract modules are left for their port phases.
+live Somtus data. The remaining contract modules are left for their port phases.
 
 `Chat`/`ChatHandle` (Phase 4a, `src/chat/`) follow the existing chat host over
 its socket: a follower and an ordered deliverer thread per open handle, and a
@@ -179,7 +179,7 @@ cargo run --locked --offline -p riwork-nsh-native --features test-support \
 
 `p1-restore` additionally creates a production-format private ticket under
 `$FIX/run/restores`, for Alpha windowed, Beta maximized in focus mode, and Global.
-Pass `--executable /absolute/path/to/riwork` to bind it to the host being tested;
+Pass `--executable /absolute/path/to/somtus` to bind it to the host being tested;
 without that option the example selects the sibling host binary in its Cargo
 profile directory. Start the host within five minutes, using the manifest's
 `restore_ticket` as `RIWORK_RESTORE_TICKET` and its `runtime` as

@@ -33,9 +33,9 @@
 //! receipt acknowledges presentation only; the decision travels as its own
 //! command, and the prompt closes when the server folds `approval/resolved` —
 //! never on our decide ack. A choice that would save a rule
-//! (`localPersistent`) is never sent for a RiWork decision.
+//! (`localPersistent`) is never sent for a Somtus decision.
 //!
-//! RiWork's Cua.ai Driver reaches the session as a session-only MCP server
+//! Somtus's Cua.ai Driver reaches the session as a session-only MCP server
 //! (`config.mcpServers` on `session/start` and `session/resume`, granted by
 //! the `sessionMcp` capability), never through Muse's settings. The
 //! conversation a chat had before it switched provider rides the first turn
@@ -136,11 +136,11 @@ fn command_id() -> String {
     Uuid::now_v7().to_string()
 }
 
-/// RiWork's Cua.ai Driver as Muse's `SessionConfig.mcpServers`: `executable
-/// cua mcp` with the chat's RiWork state, the same server a terminal launch
+/// Somtus's Cua.ai Driver as Muse's `SessionConfig.mcpServers`: `executable
+/// cua mcp` with the chat's Somtus state, the same server a terminal launch
 /// names with `-c`, but for this session only and with literal values (a
 /// session server's environment is its own, not Muse's `${VAR}` settings).
-/// `None` without a RiWork home to point it at.
+/// `None` without a Somtus home to point it at.
 fn cua_servers(
     config: &DriverConfig,
     executable: &Path,
@@ -156,7 +156,7 @@ fn cua_servers(
     if let Some(driver) = custom_driver {
         env["RIWORK_CUA_DRIVER"] = json!(driver.to_string_lossy());
     }
-    // Turns off the proxy's guard on input to RiWork's own windows (`cua::guard`).
+    // Turns off the proxy's guard on input to Somtus's own windows (`cua::guard`).
     if allow_riwork_input {
         env[crate::cua::ALLOW_RIWORK_INPUT] = json!("1");
     }
@@ -182,7 +182,7 @@ pub fn start(config: DriverConfig, events: Sender<ChatEvent>) -> Result<Box<dyn 
 }
 
 /// `start` with `servers` as the session's MCP servers; a live test names a
-/// private stand-in for `riwork cua mcp` here.
+/// private stand-in for `somtus cua mcp` here.
 fn start_with(
     config: DriverConfig,
     events: Sender<ChatEvent>,
@@ -343,7 +343,7 @@ impl Drop for MuseDriver {
 
 struct Muse {
     proc: Arc<Proc>,
-    /// `SessionConfig.mcpServers` for start and resume (RiWork's Cua.ai Driver).
+    /// `SessionConfig.mcpServers` for start and resume (Somtus's Cua.ai Driver).
     servers: Option<Value>,
     session: Mutex<Session>,
 }
@@ -380,7 +380,7 @@ impl Muse {
             match failed.text {
                 Some(text) if failed.partial => session.undelivered(
                     &format!(
-                        "RiWork's write to muse broke off ({}); this message may have reached it, so check the transcript before sending it again:",
+                        "Somtus's write to muse broke off ({}); this message may have reached it, so check the transcript before sending it again:",
                         failed.error
                     ),
                     &[text],
@@ -392,11 +392,11 @@ impl Muse {
                 session.notice(
                     NoticeLevel::Error,
                     notice_kind::SETTING_REFUSED,
-                    format!("RiWork could not write to muse ({}).", failed.error),
+                    format!("Somtus could not write to muse ({}).", failed.error),
                 );
             } else {
                 session.undelivered(
-                    &format!("RiWork could not write to muse ({}); not sent:", failed.error),
+                    &format!("Somtus could not write to muse ({}); not sent:", failed.error),
                     &unsent,
                 );
             }
@@ -503,7 +503,7 @@ impl Muse {
             .proc
             .send(&json!({"jsonrpc": "2.0", "method": "initialized"}));
         // Session MCP servers are refused without the grant; a Muse that does
-        // not give it runs the chat without RiWork's Cua.ai Driver, and says so.
+        // not give it runs the chat without Somtus's Cua.ai Driver, and says so.
         let session_mcp = initialized["grantedCapabilities"]
             .as_array()
             .is_some_and(|granted| granted.iter().any(|name| name == "sessionMcp"));
@@ -575,7 +575,7 @@ impl Muse {
                 session.notice(
                     NoticeLevel::Warning,
                     notice_kind::PROVIDER_WARNING,
-                    "This Muse does not take MCP servers for one session, so RiWork's Cua.ai Driver is not connected to this chat.".to_owned(),
+                    "This Muse does not take MCP servers for one session, so Somtus's Cua.ai Driver is not connected to this chat.".to_owned(),
                 );
             }
             if let Some(name) = &name
@@ -808,7 +808,7 @@ impl Muse {
                 frames.push(json!({
                     "jsonrpc": "2.0",
                     "id": id,
-                    "error": {"code": -32602, "message": "riwork serves another session on this connection"},
+                    "error": {"code": -32602, "message": "somtus serves another session on this connection"},
                 }));
             }
             "approval/request" | "userInput/request" => {
@@ -818,7 +818,7 @@ impl Muse {
             _ => frames.push(json!({
                 "jsonrpc": "2.0",
                 "id": id,
-                "error": {"code": -32601, "message": format!("riwork does not handle {method}")},
+                "error": {"code": -32601, "message": format!("somtus does not handle {method}")},
             })),
         }
         self.send_all(frames);
@@ -2008,7 +2008,7 @@ impl Muse {
                         if for_session {
                             "Muse offers no one-time approval here; choose “for this session” to grant it, or decline.".to_owned()
                         } else {
-                            "Muse offers only an approval that saves a lasting rule here, which RiWork does not give; decline it, or decide in Muse itself.".to_owned()
+                            "Muse offers only an approval that saves a lasting rule here, which Somtus does not give; decline it, or decide in Muse itself.".to_owned()
                         },
                     );
                 });
@@ -2451,7 +2451,7 @@ impl Session {
             self.notice(
                 NoticeLevel::Warning,
                 notice_kind::PROVIDER_WARNING,
-                "Muse asked for an approval RiWork cannot answer without saving a rule; interrupt the turn, or decide in Muse itself.".to_owned(),
+                "Muse asked for an approval Somtus cannot answer without saving a rule; interrupt the turn, or decide in Muse itself.".to_owned(),
             );
             return;
         }
@@ -2489,7 +2489,7 @@ impl Session {
         };
         let fresh = wire_choices(params);
         let offered = offered_of(&fresh);
-        // A stage RiWork cannot answer: the old buttons would aim old choices
+        // A stage Somtus cannot answer: the old buttons would aim old choices
         // at the new requirement, so the prompt closes here and says why;
         // Muse's turn waits for an interrupt or a decision in Muse itself.
         if params["availableChoices"].is_array()
@@ -2502,7 +2502,7 @@ impl Session {
             self.notice(
                 NoticeLevel::Warning,
                 notice_kind::PROVIDER_WARNING,
-                "Muse's approval moved to a step RiWork cannot answer without saving a rule; interrupt the turn, or decide in Muse itself.".to_owned(),
+                "Muse's approval moved to a step Somtus cannot answer without saving a rule; interrupt the turn, or decide in Muse itself.".to_owned(),
             );
             self.close_approval(approval_id, Decision::Cancel);
             return;
@@ -3160,7 +3160,7 @@ fn describe(params: &Value) -> (ApprovalKind, String, String) {
             }
         }
     }
-    // The rule a choice adds, for the choices RiWork can make (never a saved one).
+    // The rule a choice adds, for the choices Somtus can make (never a saved one).
     for choice in params["availableChoices"].as_array().into_iter().flatten() {
         if choice["scope"].as_str() == Some("localPersistent") {
             continue;
@@ -3214,9 +3214,9 @@ fn wire_choices(params: &Value) -> Vec<Choice> {
         .unwrap_or_default()
 }
 
-/// The MSP (decision, scope) pairs that carry out a RiWork decision, best
+/// The MSP (decision, scope) pairs that carry out a Somtus decision, best
 /// first. A `localPersistent` choice saves a rule beyond this session and a
-/// policy-amendment denial saves a refusal; RiWork has no decision that asks
+/// policy-amendment denial saves a refusal; Somtus has no decision that asks
 /// for either, so neither is ever sent.
 fn carries(decision: Decision) -> &'static [(&'static str, &'static str)] {
     match decision {
@@ -3241,7 +3241,7 @@ fn pick(choices: &[Choice], decision: Decision) -> Option<&Choice> {
     })
 }
 
-/// The RiWork decisions the offered choices can carry out, in RiWork's order.
+/// The Somtus decisions the offered choices can carry out, in Somtus's order.
 fn offered_of(choices: &[Choice]) -> Vec<Decision> {
     [
         Decision::Accept,

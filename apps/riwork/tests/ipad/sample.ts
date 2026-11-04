@@ -15,7 +15,7 @@ const PROJECTS: ProjectRow[] = [
     tasks: tasks(4, 2, 11), worktrees: 3, attention: 2, orchestrator: { mode: "chat", provider: "claude", chat_state: "running" }, last_activity: ago(20) },
   { id: "nsh", name: "nsh", folder: "~/orca/projects/nsh", agents: agents({ working: 1 }), live_shells: 1, live_chats: 1,
     tasks: tasks(2, 1, 7), worktrees: 1, attention: 0, orchestrator: { mode: "terminal", activity: "working" }, last_activity: ago(95) },
-  { id: "ios", name: "RiWork companion for iPhone and iPad", folder: "~/orca/projects/riWork/ios", agents: agents({ waiting: 1 }), live_shells: 0, live_chats: 1,
+  { id: "ios", name: "Somtus companion for iPhone and iPad", folder: "~/orca/projects/riWork/ios", agents: agents({ waiting: 1 }), live_shells: 0, live_chats: 1,
     tasks: tasks(3, 0, 2), worktrees: 0, attention: 1, last_activity: ago(14 * 60) },
   { id: "site", name: "orca-site", folder: "~/orca/projects/orca-site", agents: agents({ done: 2 }), live_shells: 1, live_chats: 0,
     tasks: tasks(0, 1, 5), worktrees: 2, attention: 0, last_activity: ago(2 * 3600) },
@@ -26,7 +26,7 @@ const PROJECTS: ProjectRow[] = [
 ];
 
 const BUILDER = chat("chat-builder", "riwork", "riWork", "Dashboard polish", "panel/dashboard");
-const PLANNER = chat("chat-planner", "ios", "RiWork companion for iPhone and iPad", "Sync plan");
+const PLANNER = chat("chat-planner", "ios", "Somtus companion for iPhone and iPad", "Sync plan");
 const DECISIONS: DecisionRow[] = [
   { id: "approval-1", chat_id: "chat-builder", request_id: "request-1", session: BUILDER, observed_at: ago(40), kind: "approval" },
   { id: "question-1", chat_id: "chat-planner", request_id: "request-2", session: PLANNER, observed_at: ago(6 * 60), kind: "question" },
@@ -39,7 +39,7 @@ export const WIRE: Wire = {
   projects: PROJECTS, projects_total: PROJECTS.length,
   attention: [
     { kind: "waiting", target: BUILDER.target, session: BUILDER, project_id: "riwork", project_name: "riWork", at: ago(40) },
-    { kind: "waiting", target: PLANNER.target, session: PLANNER, project_id: "ios", project_name: "RiWork companion for iPhone and iPad", at: ago(6 * 60) },
+    { kind: "waiting", target: PLANNER.target, session: PLANNER, project_id: "ios", project_name: "Somtus companion for iPhone and iPad", at: ago(6 * 60) },
     { kind: "chat_failed", target: { type: "chat", id: "chat-docs", project_id: "riwork" }, session: chat("chat-docs", "riwork", "riWork", "Docs pass", undefined, "codex"),
       project_id: "riwork", project_name: "riWork", at: ago(22 * 60), message: "The provider stopped: rate limit reached for gpt-6.1-sol, try again in 4 minutes" },
     { kind: "automation", target: { type: "automations", project_id: "site" }, project_id: "site", project_name: "orca-site", title: "Nightly link check", outcome: "missed", at: ago(5 * 3600) },

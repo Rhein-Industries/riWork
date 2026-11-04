@@ -132,7 +132,7 @@ Alpha/Beta home with fake sessions, debug build, clean environment,
 windows registered under that one PID. Cua.ai Driver was used read-only and
 only on that PID; no input calls were made ([cua.json](verification/nsh-p1-consolidation/fixture/cua.json)).
 
-- **Windows:** `RiWork · Alpha` and `RiWork · Beta`, both 1220×780. Beta is offset (22,22) from Alpha.
+- **Windows:** `Somtus · Alpha` and `Somtus · Beta`, both 1220×780. Beta is offset (22,22) from Alpha.
 - **Close control:** its AX offset is (9,7), within ±1 of (10,8).
 - **Alpha:** the shared strip lists panels first, then named sessions including `Chat 2, waiting`. W1 pane controls, the panels, the toolbar and the W3 status bar render as expected ([screenshot](verification/nsh-p1-consolidation/fixture/cua-alpha.png)).
 - **Beta:** keeps classic strips ([screenshot](verification/nsh-p1-consolidation/fixture/cua-beta.png)).

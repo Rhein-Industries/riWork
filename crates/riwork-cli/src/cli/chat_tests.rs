@@ -23,6 +23,21 @@ fn listed(host: &TestHost) -> Vec<ChatInfo> {
 }
 
 #[test]
+fn acp_configuration_is_literal_and_does_not_start_a_chat_host() {
+    let home = crate::chat::testing::short_home();
+    std::fs::create_dir_all(&home).unwrap();
+    let result = chat_client_command(&home,
+        ["acp", "configure", "--command", "/bin/echo", "--arg", "a b", "--arg", "$(touch never)", "--arg", "--json"].into_iter().map(str::to_owned).collect(),
+        false, &|_| panic!("configuration must not start a host")).unwrap();
+    let config: serde_json::Value = serde_json::from_str(&result).unwrap();
+    assert_eq!(config["args"], json!(["a b", "$(touch never)", "--json"]));
+    let shown = chat_client_command(&home, vec!["acp".into(), "show".into()], false, &|_| panic!("show must not start a host")).unwrap();
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&shown).unwrap(), config);
+    assert!(!home.join("chats").exists());
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+#[test]
 fn list_shows_every_chat_on_a_line_and_as_json() {
     let host = TestHost::new();
     assert_eq!(run(&host, "list").unwrap(), "");
@@ -195,8 +210,8 @@ fn new_starts_a_muse_chat_with_contributor_mode_off_unless_asked_on() {
 fn new_refuses_what_it_cannot_understand() {
     let host = TestHost::new();
     let usage = |line: &str| run(&host, line).unwrap_err();
-    assert!(usage("new").starts_with("Usage: riwork chat new"));
-    assert!(usage("new --provider gemini").starts_with("Usage: riwork chat new"));
+    assert!(usage("new").starts_with("Usage: somtus chat new"));
+    assert!(usage("new --provider gemini").starts_with("Usage: somtus chat new"));
     assert!(usage("new --provider codex --mode reckless").contains("--mode must be"));
     assert!(usage("new --provider codex extra").contains("Unexpected arguments"));
     // With no project to start in, like `shell create`.
@@ -250,7 +265,7 @@ fn send_and_stop_say_what_is_wrong_with_the_chat_they_were_given() {
     assert!(
         run(&host, "send")
             .unwrap_err()
-            .starts_with("Usage: riwork chat send")
+            .starts_with("Usage: somtus chat send")
     );
     assert!(
         run(&host, &format!("send {}", chat.id))
@@ -270,7 +285,7 @@ fn send_and_stop_say_what_is_wrong_with_the_chat_they_were_given() {
     assert!(
         run(&host, "stop")
             .unwrap_err()
-            .starts_with("Usage: riwork chat stop")
+            .starts_with("Usage: somtus chat stop")
     );
     assert!(
         run(&host, "stop 00000000")
@@ -280,7 +295,7 @@ fn send_and_stop_say_what_is_wrong_with_the_chat_they_were_given() {
     assert!(
         run(&host, "frobnicate")
             .unwrap_err()
-            .starts_with("Usage: riwork chat")
+            .starts_with("Usage: somtus chat")
     );
 }
 

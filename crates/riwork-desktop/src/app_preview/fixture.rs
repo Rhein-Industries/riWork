@@ -38,7 +38,7 @@ fn fixture_state() -> PreviewState {
                 stderr: false,
             },
             PreviewLog {
-                text: "Connected to RiWork · rendering without a desktop window".into(),
+                text: "Connected to Somtus · rendering without a desktop window".into(),
                 stderr: false,
             },
         ],
@@ -87,7 +87,7 @@ impl Render for Demo {
                     .bg(rgb(0x3e72e6))
                     .p_4()
                     .w(px(240.))
-                    .child("Click and type in RiWork"),
+                    .child("Click and type in Somtus"),
             )
     }
 }

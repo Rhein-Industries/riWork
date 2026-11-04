@@ -63,7 +63,7 @@ impl ThemeChoice {
 
     pub fn description(self) -> &'static str {
         match self {
-            Self::Ghostty => "Use your Ghostty colors throughout RiWork. Configuration changes sync automatically.",
+            Self::Ghostty => "Use your Ghostty colors throughout Somtus. Configuration changes sync automatically.",
             Self::Native => "Black on white, or white on black when macOS is dark. Follows the system appearance.",
             _ => &fixed_palette(self).description,
         }
@@ -275,7 +275,7 @@ impl Appearance {
     }
 
     /// Resolve with effective colors supplied by the native terminal owner.
-    /// Without them, Follow Ghostty uses the original RiWork fallback palette;
+    /// Without them, Follow Ghostty uses the original Somtus fallback palette;
     /// callers must explain that its configuration could not be resolved.
     pub fn resolve_with_ghostty(
         choice: ThemeChoice,
@@ -300,7 +300,7 @@ impl Appearance {
 
     /// Native follows its independent matching option. Colorful presets always
     /// apply their palette. Follow Ghostty keeps its own configuration unless
-    /// the separate RiWork terminal-colors option is explicitly selected.
+    /// the separate Somtus terminal-colors option is explicitly selected.
     pub fn terminal_override(&self, force: bool) -> Option<TerminalTheme> {
         match self.selected {
             ThemeChoice::Native => force.then_some(self.terminal),
@@ -426,6 +426,15 @@ fn readable(foreground: u32, background: u32) -> u32 {
 mod tests {
     use super::*;
     use crate::settings::Settings;
+
+    #[test]
+    fn somtus_palette_keeps_the_saved_theme_id() {
+        let theme: ThemeChoice = serde_json::from_str("\"ri_work\"").unwrap();
+        assert_eq!(theme, ThemeChoice::RiWork);
+        assert_eq!(theme.label(), "Somtus");
+        assert_eq!(theme.id(), "ri_work");
+        assert_eq!(serde_json::to_string(&theme).unwrap(), "\"ri_work\"");
+    }
 
     #[test]
     fn every_removed_theme_name_reads_as_native_and_round_trips_untouched() {

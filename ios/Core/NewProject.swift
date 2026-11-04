@@ -142,7 +142,7 @@ public enum ProjectCreateError: Error, Equatable, Sendable, LocalizedError {
     case busy
     case failed(String)
 
-    public static let unsupportedMessage = "Update RiWork on your Mac to create projects from the phone."
+    public static let unsupportedMessage = "Update Somtus on your Mac to create projects from the phone."
 
     public var errorDescription: String? { message }
     public var message: String {

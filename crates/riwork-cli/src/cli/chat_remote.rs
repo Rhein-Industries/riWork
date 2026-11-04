@@ -41,9 +41,9 @@ const MAX_MODEL_CHARS: usize = 100;
 const MAX_EFFORT_CHARS: usize = 32;
 const MAX_TITLE_CHARS: usize = 200;
 
-pub(super) const EVENTS_USAGE: &str = "Usage: riwork chat events CHAT_ID [--since N] [--wait-ms N] [--max N] [--max-bytes N] [--json]";
+pub(super) const EVENTS_USAGE: &str = "Usage: somtus chat events CHAT_ID [--since N] [--wait-ms N] [--max N] [--max-bytes N] [--json]";
 pub(super) const COMMAND_USAGE: &str =
-    "Usage: riwork chat command CHAT_ID (--command-json JSON | -- JSON) [--json]";
+    "Usage: somtus chat command CHAT_ID (--command-json JSON | -- JSON) [--json]";
 
 /// A refusal of what the caller sent, as the connector tells it from a failure
 /// of the host: it starts with this token.
@@ -462,11 +462,11 @@ pub(super) fn parse_command(text: &str) -> Result<ChatCommand, String> {
             contributor_opt_out,
             claude_billing,
         } => {
-            // Who a Claude chat bills is the person's choice in RiWork's window on the Mac,
+            // Who a Claude chat bills is the person's choice in Somtus's window on the Mac,
             // where its key is: never a command's, a paired device's or an agent's.
             if claude_billing.is_some() {
                 return Err(invalid(
-                    "a chat's billing is chosen in RiWork's window on the Mac, not by a command",
+                    "a chat's billing is chosen in Somtus's window on the Mac, not by a command",
                 ));
             }
             if model.is_none()

@@ -64,7 +64,7 @@ export function NewTerminalForm(props: {
       if (failure.code === "uncertain") {
         message.set("The Mac may have opened this terminal, but its answer was lost. The tabs were read again: look for it there before opening another.");
         props.onUncertain();
-      } else if (failure.code === "unsupported") message.set("Update RiWork on the Mac to open terminals from here.");
+      } else if (failure.code === "unsupported") message.set("Update Somtus on the Mac to open terminals from here.");
       else message.set(failure.message);
     }
   }

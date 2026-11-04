@@ -186,7 +186,7 @@ impl Target {
             shell_id: Uuid::new_v4().to_string(),
             created_at: now(),
             command: None,
-            harness: chat_harness(provider),
+            harness: chat_harness(provider)?,
             codex_home,
             pane_identity: String::new(),
             provider_session: String::new(),
@@ -240,7 +240,7 @@ impl Target {
         };
         if account != fresh.codex_account_id
             || binding != self.codex_home
-            || self.harness != chat_harness(fresh.provider)
+            || self.harness != chat_harness(fresh.provider)?
             || self.chat.is_some()
             || self.shell_kind.is_some()
         {
@@ -280,11 +280,12 @@ pub struct ChatTarget {
     pub codex_account_id: Option<String>,
 }
 /// The harness a chat's agent is, for the targets and lists that name one.
-pub fn chat_harness(provider: Provider) -> HarnessKind {
+pub fn chat_harness(provider: Provider) -> Result<HarnessKind, String> {
     match provider {
-        Provider::Codex => HarnessKind::Codex,
-        Provider::Claude => HarnessKind::Claude,
-        Provider::Muse => HarnessKind::Muse,
+        Provider::Codex => Ok(HarnessKind::Codex),
+        Provider::Claude => Ok(HarnessKind::Claude),
+        Provider::Muse => Ok(HarnessKind::Muse),
+        Provider::Acp => Err("ACP scheduling is not supported; use an interactive ACP chat".into()),
     }
 }
 fn refuse_unschedulable(harness: HarnessKind) -> Result<(), String> {
@@ -367,7 +368,7 @@ impl Target {
             shell_id: chat.id.clone(),
             created_at: chat.created_at_unix,
             command: None,
-            harness: chat_harness(chat.provider),
+            harness: chat_harness(chat.provider)?,
             codex_home: None,
             pane_identity: String::new(),
             provider_session: String::new(),
@@ -398,7 +399,7 @@ impl Target {
             pinned.codex_account_id == chat.codex_account_id
                 && self.shell_id == chat.id
                 && self.created_at == chat.created_at_unix
-                && self.harness == chat_harness(chat.provider)
+                && chat_harness(chat.provider).is_ok_and(|harness| self.harness == harness)
                 && self.scope.matches_chat(state, chat)
         })
     }
@@ -901,7 +902,7 @@ impl ScheduleStore {
             // returning it here would retry this oldest schedule every second,
             // starving the rest until it aged into Missed. Record it and back off.
             Err(error) if !claim_write_started => {
-                eprintln!("riwork schedules: cannot check {}: {error}", s.id);
+                eprintln!("somtus schedules: cannot check {}: {error}", s.id);
                 Delivery::Deferred(format!("Delivery check failed; will retry: {error}"))
             }
             Err(error) => return Err(error),

@@ -1,4 +1,4 @@
-//! Resume the exact Codex conversation in its existing RiWork pane after a
+//! Resume the exact Codex conversation in its existing Somtus pane after a
 //! persisted turn completion. Any observed newer turn cancels the reload.
 
 use crate::sessions::{HarnessKind, SessionManager};
@@ -102,7 +102,7 @@ enum Lifecycle {
 }
 
 /// Target an explicitly selected frontend when a shared Codex backend's
-/// inherited shell ID belongs to a different RiWork pane. Without an explicit
+/// inherited shell ID belongs to a different Somtus pane. Without an explicit
 /// target, use the current thread's bound pane marker. Wait for completion
 /// before replacing the selected pane's CLI.
 pub fn queue_reload_for_shell(
@@ -285,7 +285,7 @@ fn log_tail(path: &Path) -> String {
 /// This does not create a receipt or worker.
 pub fn validate_reload_for_shell(shell_id: Option<&str>) -> Result<(), String> {
     let executable = env::current_exe()
-        .map_err(|error| format!("Cannot locate the RiWork executable: {error}"))?;
+        .map_err(|error| format!("Cannot locate the Somtus executable: {error}"))?;
     current_request(&executable, shell_id).map(|_| ())
 }
 
@@ -295,7 +295,7 @@ fn current_request(
 ) -> Result<ReloadRequest, String> {
     let home = PathBuf::from(
         env::var_os("RIWORK_HOME")
-            .ok_or("Run --session from a RiWork Codex terminal (RIWORK_HOME is missing)")?,
+            .ok_or("Run --session from a Somtus Codex terminal (RIWORK_HOME is missing)")?,
     )
     .canonicalize()
     .map_err(|error| format!("Cannot resolve RIWORK_HOME: {error}"))?;
@@ -307,14 +307,14 @@ fn current_request(
     let manager = SessionManager::at(home.clone())?;
     let session = manager.get(&shell_id)?;
     if !session.alive || session.harness != Some(HarnessKind::Codex) {
-        return Err("The current RiWork shell must be a live Codex session".to_owned());
+        return Err("The current Somtus shell must be a live Codex session".to_owned());
     }
     crate::cua::CuaManager::at(home.clone())?.driver_path()?;
     let executable = riwork_exe
         .canonicalize()
-        .map_err(|error| format!("Cannot resolve RiWork executable: {error}"))?;
+        .map_err(|error| format!("Cannot resolve Somtus executable: {error}"))?;
     if !executable.is_file() {
-        return Err("The RiWork executable is not a file".to_owned());
+        return Err("The Somtus executable is not a file".to_owned());
     }
     let codex_home = frozen_codex_home(&session)?;
     let log_home = match &codex_home {
@@ -325,13 +325,13 @@ fn current_request(
     let snapshot = snapshot(&log_path)?;
     if snapshot.subagent {
         return Err(
-            "Run --session from the main RiWork Codex conversation, not a delegated agent"
+            "Run --session from the main Somtus Codex conversation, not a delegated agent"
                 .to_owned(),
         );
     }
     if snapshot.noninteractive {
         return Err(
-            "Run --session from the interactive RiWork Codex conversation, not a codex exec child"
+            "Run --session from the interactive Somtus Codex conversation, not a codex exec child"
                 .to_owned(),
         );
     }
@@ -395,7 +395,7 @@ pub fn run_reload_worker(request_path: &Path) -> Result<(), String> {
             &receipt,
             &request,
             "completed",
-            "Resumed the exact Codex conversation in the original RiWork pane",
+            "Resumed the exact Codex conversation in the original Somtus pane",
         )?,
         Err(message) => write_receipt(&receipt, &request, "failed", message)?,
     }
@@ -610,7 +610,7 @@ fn find_rollout(directory: &Path, thread_id: &str) -> Result<PathBuf, String> {
 
 fn required_uuid(variable: &str) -> Result<String, String> {
     let value = env::var(variable).map_err(|_| {
-        format!("{variable} is missing; run --session from the current RiWork Codex conversation")
+        format!("{variable} is missing; run --session from the current Somtus Codex conversation")
     })?;
     validate_uuid(&value)?;
     Ok(value)
@@ -681,7 +681,7 @@ fn validate_request(path: &Path, request: &ReloadRequest) -> Result<(), String> 
         || !request.executable.is_absolute()
         || !request.executable.is_file()
     {
-        return Err("Invalid RiWork session reload request".to_owned());
+        return Err("Invalid Somtus session reload request".to_owned());
     }
     Ok(())
 }
@@ -1232,10 +1232,10 @@ mod tests {
         assert!(stored.message.contains("unrecognized command"));
 
         // An unrelated program that exits 0 with unexpected output.
-        let worker = Worker::new(&temporary, "echo 'RiWork 0.0.1 usage: riwork open'\nexit 0");
+        let worker = Worker::new(&temporary, "echo 'Somtus 0.0.1 usage: somtus open'\nexit 0");
         let error = worker.launch(Duration::from_secs(5)).unwrap_err();
         assert!(error.contains("before recording progress"), "{error}");
-        assert!(error.contains("usage: riwork open"), "{error}");
+        assert!(error.contains("usage: somtus open"), "{error}");
         assert_eq!(worker.status().status, "failed");
 
         // One that never comes up is stopped and reported.

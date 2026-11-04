@@ -285,7 +285,7 @@ actor UploadTransport: RemoteTransport {
         model.attach([.camera(photo())], to: .shell(shell))
         let activity = try XCTUnwrap(model.uploadActivity(for: .shell(shell)))
         guard case .failed(let message) = activity.phase else { return XCTFail("\(activity)") }
-        XCTAssertTrue(message.contains("Update RiWork on the Mac"), message)
+        XCTAssertTrue(message.contains("Update Somtus on the Mac"), message)
         let methods = await transport.methods()
         XCTAssertTrue(methods.isEmpty)
         model.dismissUploadFailure()

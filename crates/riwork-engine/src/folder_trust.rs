@@ -1,4 +1,4 @@
-//! Folder trust for the agent sessions RiWork starts. Creating a session in a
+//! Folder trust for the agent sessions Somtus starts. Creating a session in a
 //! folder is the user's decision to run that agent there, so the vendor's own
 //! "trust this folder?" gate is settled for exactly that folder, through the
 //! harness's own mechanism, before the agent starts. Approval and sandbox
@@ -37,7 +37,7 @@ const MAX_CONFIG_BYTES: u64 = 64 * 1024 * 1024;
 /// How long to wait for a harness that is saving its own configuration.
 const LOCK_WAIT: Duration = Duration::from_secs(1);
 
-/// Whether RiWork may trust `cwd` on the user's behalf: an absolute folder
+/// Whether Somtus may trust `cwd` on the user's behalf: an absolute folder
 /// that is neither the file system root nor the home directory, which every
 /// harness would read as trust in far more than one project.
 fn trustable(cwd: &Path) -> bool {
@@ -121,7 +121,7 @@ pub(crate) fn trust_for_claude(cwd: &Path, config_dir: Option<&OsStr>) {
     let folder: String = folder.nfc().collect();
     if let Err(error) = trust_claude_folder(&file, &folder, LOCK_WAIT) {
         eprintln!(
-            "riwork: could not pre-trust {folder} for Claude Code in {}: {error}",
+            "somtus: could not pre-trust {folder} for Claude Code in {}: {error}",
             file.display()
         );
     }
@@ -215,7 +215,7 @@ pub(crate) fn trust_for_grok(cwd: &Path, grok_home: Option<&OsStr>) {
         .as_secs();
     if let Err(error) = trust_grok_folder(&file, folder, now, LOCK_WAIT) {
         eprintln!(
-            "riwork: could not pre-trust {folder} for Grok in {}: {error}",
+            "somtus: could not pre-trust {folder} for Grok in {}: {error}",
             file.display()
         );
     }

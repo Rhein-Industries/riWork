@@ -100,15 +100,15 @@ public struct Pairing: Codable, Sendable, Equatable {
         guard input.utf8.count <= 16384 else { throw RemoteError.invalidPairing("Code is too large.") }
         let data: Data
         var linkVersion: Int?
-        // Any case reaches the link parser so an uppercase scheme fails with a clear message, not a JSON one.
-        if input.lowercased().hasPrefix("riwork:") {
+        // Keep legacy pairing links valid. Any case reaches this parser so an uppercase scheme gets a clear link error.
+        if input.lowercased().hasPrefix("somtus:") || input.lowercased().hasPrefix("riwork:") {
             // Reject anything a differential parser could read differently: userinfo, port, percent-encoded host, path or query names.
-            guard let components = URLComponents(string: input), components.scheme == "riwork", components.percentEncodedHost == "pair",
+            guard let components = URLComponents(string: input), ["somtus", "riwork"].contains(components.scheme ?? ""), components.percentEncodedHost == "pair",
                   components.user == nil, components.password == nil, components.port == nil,
                   components.percentEncodedPath == "" || components.percentEncodedPath == "/", components.fragment == nil,
                   let items = components.percentEncodedQueryItems, items.count == 2, !items.contains(where: { $0.name.contains("%") || ($0.value ?? "").contains("%") }),
                   items.filter({ $0.name == "v" }).count == 1, let version = items.first(where: { $0.name == "v" })?.value, version == "1" || version == "2",
-                  items.filter({ $0.name == "data" }).count == 1, let value = items.first(where: { $0.name == "data" })?.value else { throw RemoteError.invalidPairing("Expected riwork://pair?v=1&data=… or v=2.") }
+                  items.filter({ $0.name == "data" }).count == 1, let value = items.first(where: { $0.name == "data" })?.value else { throw RemoteError.invalidPairing("Expected somtus://pair?v=1&data=… or v=2.") }
             linkVersion = Int(version)
             data = try Base64URL.decode(value)
         } else { data = Data(input.utf8) }

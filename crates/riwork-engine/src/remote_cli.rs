@@ -16,8 +16,11 @@ pub fn resolve(executable: &Path, configured: Option<PathBuf>) -> Result<PathBuf
     } else {
         let dir = exe
             .parent()
-            .ok_or("Cannot locate RiWork executable directory")?;
+            .ok_or("Cannot locate Somtus executable directory")?;
         vec![
+            dir.join("somtus-remote"),
+            dir.join("Somtus.app/Contents/MacOS/somtus-remote"),
+            // Existing installations remain usable during the name migration.
             dir.join("riwork-remote"),
             dir.join("RiWork.app/Contents/MacOS/riwork-remote"),
         ]
@@ -26,7 +29,7 @@ pub fn resolve(executable: &Path, configured: Option<PathBuf>) -> Result<PathBuf
         return Ok(path.clone());
     }
     Err(format!(
-        "Missing standalone remote binary at {}. Run `riwork update --source /path/to/riWork --no-reload` to build and package it, or `cargo build --locked --release --manifest-path /path/to/riWork/remote/Cargo.toml` and set RIWORK_REMOTE_BIN=/path/to/riWork/target/release/riwork-remote.",
+        "Missing standalone remote binary at {}. Run `somtus update --source /path/to/riWork --no-reload` to build and package it, or `cargo build --locked --release --manifest-path /path/to/riWork/remote/Cargo.toml` and set RIWORK_REMOTE_BIN=/path/to/riWork/target/release/somtus-remote.",
         candidates
             .iter()
             .map(|p| p.display().to_string())
@@ -37,7 +40,7 @@ pub fn resolve(executable: &Path, configured: Option<PathBuf>) -> Result<PathBuf
 
 /// Forward verbatim before generic CLI flag parsing; retain RIWORK_HOME.
 pub fn forward(args: &[String]) -> Result<(), String> {
-    let exe = env::current_exe().map_err(|e| format!("Cannot locate RiWork executable: {e}"))?;
+    let exe = env::current_exe().map_err(|e| format!("Cannot locate Somtus executable: {e}"))?;
     let binary = resolve(&exe, env::var_os("RIWORK_REMOTE_BIN").map(PathBuf::from))?;
     let mut command = Command::new(&binary);
     command.args(args);
@@ -57,7 +60,33 @@ pub fn forward(args: &[String]) -> Result<(), String> {
         if status.success() {
             Ok(())
         } else {
-            Err(format!("riwork-remote exited with {status}"))
+            Err(format!("somtus-remote exited with {status}"))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn companion_discovery_prefers_somtus_and_keeps_legacy_installations_usable() {
+        let root =
+            env::temp_dir().join(format!("somtus-remote-resolution-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        let executable = root.join("somtus");
+        std::fs::write(&executable, "desktop").unwrap();
+        let legacy = root.join("RiWork.app/Contents/MacOS/riwork-remote");
+        std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+        std::fs::write(&legacy, "legacy companion").unwrap();
+        assert_eq!(resolve(&executable, None).unwrap(), legacy);
+        let branded = root.join("Somtus.app/Contents/MacOS/somtus-remote");
+        std::fs::create_dir_all(branded.parent().unwrap()).unwrap();
+        std::fs::write(&branded, "companion").unwrap();
+        assert_eq!(resolve(&executable, None).unwrap(), branded);
+        assert_eq!(resolve(&executable, Some(legacy.clone())).unwrap(), legacy);
+        assert!(resolve(&executable, Some(root.join("missing"))).is_err());
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

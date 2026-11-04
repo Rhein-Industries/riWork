@@ -110,7 +110,7 @@ The accepted drag-geometry difference remains 35% native edge zones instead of d
 
 ## Read-only desktop evidence
 
-RiWork's **cua-driver MCP** was the only desktop provider. Accessibility and Screen Recording were granted. No desktop input calls were made. Every read names the isolated fixture PID and window. Seven generated theme configurations were launched with `--workspace-fixture --theme <theme>`: `native`, `ri_work`, `ghostty`, `catppuccin`, `tokyo_night`, `gruvbox_light`, `hermes`. All seven launch/write/tmux audits passed and each registered Alpha and Beta under one PID. Exact process environments, arguments and cleanup outcomes are in the JSON record.
+Somtus's **cua-driver MCP** was the only desktop provider. Accessibility and Screen Recording were granted. No desktop input calls were made. Every read names the isolated fixture PID and window. Seven generated theme configurations were launched with `--workspace-fixture --theme <theme>`: `native`, `ri_work`, `ghostty`, `catppuccin`, `tokyo_night`, `gruvbox_light`, `hermes`. All seven launch/write/tmux audits passed and each registered Alpha and Beta under one PID. Exact process environments, arguments and cleanup outcomes are in the JSON record.
 
 For each Alpha window the call was `get_window_state({pid, window_id, session:"w1-workspace", query:"waiting", max_elements:300, screenshot_out_file:"/tmp/riwork-w1-final/<theme>.png"})`. The explicit Native-window `verify_state` predicate `element.exists=true, selector.label_contains=", waiting"` returned **satisfied**. These results and exact targets are retained in [the Cua record](nsh-phase1-w1-cua.json).
 

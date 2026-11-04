@@ -137,7 +137,7 @@ The root runner's completed `/private/tmp/riwork-p1-m5-f6975181/fixture-5gf4wtii
 
 ```sh
 cargo run -p riwork-nsh-workspace --example integration_fixture --locked --offline -- /private/tmp/rwm5-u3qi2ooy --appearance
-/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/riwork /private/tmp/rwm5-u3qi2ooy/repos/Alpha
+/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/somtus /private/tmp/rwm5-u3qi2ooy/repos/Alpha
 ```
 
 ## Cross-owner idle route

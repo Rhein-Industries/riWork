@@ -1506,7 +1506,7 @@ impl Core {
             .map(|waiting| waiting.reporter)
     }
 
-    /// Tell `reporter` what `field` is now. A permission mode RiWork has no name
+    /// Tell `reporter` what `field` is now. A permission mode Somtus has no name
     /// for is not reported.
     fn report_field(&self, field: Field, reporter: &DriverReporter) {
         let mut report = DriverReport::default();
@@ -1833,7 +1833,7 @@ impl Core {
     }
 
     /// The permission mode the CLI says it is in, which an approval "for the
-    /// session" can change on its own. RiWork's name for it is reported; one it has
+    /// session" can change on its own. Somtus's name for it is reported; one it has
     /// no name for is kept as the CLI's and not reported.
     fn observe_mode(&mut self, mode: &str) {
         if self.unsettled.contains_key(&Field::Mode) {
@@ -2971,8 +2971,8 @@ fn supervise(shared: Weak<Shared>) {
 
 // Translation.
 
-/// RiWork's name for a permission mode the CLI reports, when it has one. `manual`
-/// is how newer CLIs list `default`; `auto` and `dontAsk` have no RiWork mode.
+/// Somtus's name for a permission mode the CLI reports, when it has one. `manual`
+/// is how newer CLIs list `default`; `auto` and `dontAsk` have no Somtus mode.
 fn approval_mode_of(mode: &str) -> Option<ApprovalMode> {
     match mode {
         "default" | "manual" => Some(ApprovalMode::Supervised),

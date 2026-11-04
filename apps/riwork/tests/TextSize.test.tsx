@@ -29,7 +29,7 @@ test("P1-TXT-03: every palette uses the interface font's system text and its acc
     expect(tabSize(app)).toBe(11.82);
     await settings(app, { interfaceFont: "system" });
     await app.waitUntil(() => app.texts().includes("family:system-ui mono:system-ui"));
-    // A palette changes colors only: Hermes and RiWork keep the interface font and its size.
+    // A palette changes colors only: Hermes and Somtus keep the interface font and its size.
     await settings(app, { theme: "hermes", uiTextMatchesTerminal: false });
     await app.waitUntil(() => app.spanStyle("id:tab:panel:files >> text:Files").color === "#ecdcc7ff");
     expect(tabSize(app)).toBe(11.82);

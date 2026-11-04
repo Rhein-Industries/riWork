@@ -1,5 +1,5 @@
-# Sourced by pane-shot.sh and pane-test.sh. Finds RiWork's nsh 0.3 and, unless RIWORK_HOME is
-# already a /tmp fixture home, gives the run a private RiWork home, runtime folder and tmux
+# Sourced by pane-shot.sh and pane-test.sh. Finds Somtus's nsh 0.3 and, unless RIWORK_HOME is
+# already a /tmp fixture home, gives the run a private Somtus home, runtime folder and tmux
 # folder, so a fixture or a test can never change the person's own settings, layouts, projects
 # or Keychain key, nor read their Orca profile. RIWORK_NSH_FILES_FIXTURE=1 selects the fixture
 # services such homes allow (an in-memory API key store, fixture folders) and
@@ -25,7 +25,7 @@ case ${RIWORK_HOME:-} in
 	;;
 esac
 # Codex accounts are read from Orca's profile, ~/Library/Application Support/orca unless
-# ORCA_USER_DATA_PATH says otherwise: give the run its own, beside its RiWork home.
+# ORCA_USER_DATA_PATH says otherwise: give the run its own, beside its Somtus home.
 case ${ORCA_USER_DATA_PATH:-} in
 /tmp/* | /private/tmp/*) ;;
 *) export ORCA_USER_DATA_PATH="${RIWORK_HOME%/}-orca" ;;

@@ -39,6 +39,7 @@ pub fn efforts(provider: Provider) -> &'static [&'static str] {
         Provider::Codex => &["low", "medium", "high", "xhigh"],
         Provider::Claude => &["low", "medium", "high", "xhigh", "max"],
         Provider::Muse => &["low", "medium", "high", "xhigh"],
+        Provider::Acp => &[],
     }
 }
 
@@ -49,7 +50,7 @@ pub fn model_suggestions(provider: Provider) -> &'static [&'static str] {
     match provider {
         Provider::Codex => &[],
         Provider::Claude => &["opus", "sonnet", "haiku"],
-        Provider::Muse => &[],
+        Provider::Muse | Provider::Acp => &[],
     }
 }
 
@@ -234,7 +235,7 @@ pub fn contributor_label(on: bool) -> &'static str {
     }
 }
 
-/// What the toggle says of a chat a chat host from before RiWork's off by default reports with
+/// What the toggle says of a chat a chat host from before Somtus's off by default reports with
 /// neither (`ChatInfo::reported_contributor_mode`): the user's Muse settings decide there,
 /// until the chat is turned off or that host is replaced.
 pub const CONTRIBUTOR_SETTINGS_LABEL: &str = "Contributor: Muse settings";

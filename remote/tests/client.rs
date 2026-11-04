@@ -296,10 +296,10 @@ async fn a_used_or_malformed_link_is_refused_and_leaves_no_host() {
     for bad in [
         "not a link",
         "https://example.com/pair?v=2&data=AA",
-        "riwork://pair?v=2",
-        "riwork://pair?v=2&data=%41%41",
-        "riwork://other?v=2&data=AA",
-        "riwork://pair?v=3&data=AA",
+        "somtus://pair?v=2",
+        "somtus://pair?v=2&data=%41%41",
+        "somtus://other?v=2&data=AA",
+        "somtus://pair?v=3&data=AA",
     ] {
         let out = rig
             .run(&["hosts", "add", "--link", bad, "--allow-insecure-loopback"])
@@ -309,7 +309,7 @@ async fn a_used_or_malformed_link_is_refused_and_leaves_no_host() {
     }
     // A phone's protocol 1 link is not for this.
     let v1 = rig
-        .run(&["hosts", "add", "--link", "riwork://pair?v=1&data=AA"])
+        .run(&["hosts", "add", "--link", "somtus://pair?v=1&data=AA"])
         .await;
     assert!(
         text(&v1.stderr).contains("protocol 1"),

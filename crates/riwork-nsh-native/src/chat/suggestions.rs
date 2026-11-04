@@ -74,7 +74,7 @@ pub fn read(home: PathBuf, info: ChatInfo, own_models: Vec<ModelOption>, text: S
         Sigil::Slash => {
             let mut items: Vec<ChatSuggestion> = suggest::rank_commands(&trigger.query, &suggest::commands(info.provider))
                 .into_iter().map(|command| item(suggest::command_preview(command, info.provider), command.summary.clone(), "command")).collect();
-            // The skills Claude finds for this chat, after RiWork's own commands.
+            // The skills Claude finds for this chat, after Somtus's own commands.
             let skills = suggest::skills(info.provider, &info.cwd);
             items.extend(suggest::rank_commands(&trigger.query, &skills).into_iter().take(suggest::SHOWN).map(|skill| {
                 let preview = suggest::Preview { kind: "Claude skill".into(), ..suggest::command_preview(skill, info.provider) };
@@ -121,4 +121,44 @@ pub fn read(home: PathBuf, info: ChatInfo, own_models: Vec<ModelOption>, text: S
         end: text[..trigger.end].encode_utf16().count() as u32,
         sigil: trigger.sigil.char().to_string(), root: info.cwd.to_string_lossy().into_owned(), items, truncated,
     }))
+}
+
+/// Rank an already validated host catalog without touching this Mac's filesystem.
+pub fn from_remote(value: serde_json::Value, info: &ChatInfo, text: &str, caret: u32) -> Result<Option<ChatSuggestionResult>, String> {
+    let Some(caret) = byte_at_utf16(text, caret) else { return Ok(None); };
+    let Some(trigger) = suggest::trigger(text, caret) else { return Ok(None); };
+    if value["chat_id"].as_str() != Some(&info.id) || value["provider"] != serde_json::to_value(info.provider).map_err(|e| e.to_string())? {
+        return Err("broken: The host returned suggestions for another chat".into());
+    }
+    let root = value["root"].as_str().ok_or("broken: missing host suggestion root")?.to_owned();
+    let decode = |key: &str| value.get(key).cloned().unwrap_or_else(|| serde_json::json!([]));
+    let mut truncated = false;
+    let items = match trigger.sigil {
+        Sigil::Slash => {
+            let commands: Vec<suggest::Command> = serde_json::from_value(decode("commands")).map_err(|e| format!("broken: {e}"))?;
+            suggest::rank_commands(&trigger.query, &commands).into_iter().map(|command| item(suggest::command_preview(command, info.provider), command.summary.clone(), "command")).collect()
+        }
+        Sigil::Mention => {
+            let files: Vec<suggest::FileEntry> = serde_json::from_value(value["files"]["entries"].clone()).map_err(|e| format!("broken: {e}"))?;
+            truncated = value["files"]["truncated"].as_bool().unwrap_or(false);
+            suggest::rank_files(&trigger.query, &files, suggest::SHOWN).into_iter().map(|file| {
+                let preview = suggest::file_preview(file, None);
+                let detail = preview.kind.clone();
+                item(preview, detail, if file.dir { "folder" } else { "file" })
+            }).collect()
+        }
+        Sigil::Model => {
+            let mut models: Vec<suggest::ModelEntry> = serde_json::from_value(decode("mention_models")).map_err(|e| format!("broken: {e}"))?;
+            if models.is_empty() {
+                models = serde_json::from_value(decode("models")).map_err(|e| format!("broken: {e}"))?;
+                for model in &mut models { model.provider = Some(info.provider); }
+            }
+            let current = suggest::current_model(&models, info.provider, info.model.as_deref());
+            suggest::rank_models(&trigger.query, &models).into_iter().take(suggest::SHOWN).map(|model| {
+                let selected = model.provider == Some(info.provider) && current == Some(model.id.as_str());
+                item(suggest::model_preview(model, selected, info.provider), suggest::model_detail(model, selected), "model")
+            }).collect()
+        }
+    };
+    Ok(Some(ChatSuggestionResult { start: text[..trigger.start].encode_utf16().count() as u32, end: text[..trigger.end].encode_utf16().count() as u32, sigil: trigger.sigil.char().to_string(), root, items, truncated }))
 }

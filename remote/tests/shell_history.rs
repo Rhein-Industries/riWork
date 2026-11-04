@@ -116,8 +116,8 @@ fn stub_cli(dir: &Path, shell: &str) -> PathBuf {
              'orchestrator list') echo '[]';;\n\
              'shell history')\n\
                case \"$(cat \"$d/mode\" 2>/dev/null)\" in\n\
-                 old) echo \"riwork: Unknown shell command 'history'\" >&2; exit 2;;\n\
-                 fail) echo 'riwork: tmux: no server running' >&2; exit 2;;\n\
+                 old) echo \"somtus: Unknown shell command 'history'\" >&2; exit 2;;\n\
+                 fail) echo 'somtus: tmux: no server running' >&2; exit 2;;\n\
                esac\n\
                cat \"$d/history.json\";;\n\
              esac\n",
@@ -407,13 +407,13 @@ async fn cli_failures_are_cli_errors_and_an_old_cli_is_named() {
     let response = f.history(json!({"end":0,"lines":5})).await;
     assert_eq!(code(&response), "cli_error");
     let message = response["error"]["message"].as_str().unwrap();
-    assert!(message.contains("update RiWork"), "{message}");
+    assert!(message.contains("update Somtus"), "{message}");
     f.set("mode", "fail");
     let response = f.history(json!({"end":0,"lines":5})).await;
     assert_eq!(code(&response), "cli_error");
     let message = response["error"]["message"].as_str().unwrap();
     assert!(
-        message.contains("no server running") && !message.contains("update RiWork"),
+        message.contains("no server running") && !message.contains("update Somtus"),
         "{message}"
     );
     // A CLI that cannot even be started.

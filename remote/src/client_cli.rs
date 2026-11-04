@@ -1,5 +1,5 @@
 //! The subcommands that use another Mac as a client: `hosts`, `client`, `call`,
-//! `status` and `attach`. They are flattened into `riwork-remote`'s own, so the
+//! `status` and `attach`. They are flattened into `somtus-remote`'s own, so the
 //! parser lives here and `main.rs` only dispatches.
 use crate::{
     bridge,
@@ -66,7 +66,23 @@ pub enum ClientCommand {
 
 #[derive(Subcommand)]
 pub enum HostsCommand {
-    /// Pair with a host from the riwork://pair?v=2 link `pair --protocol 2 --kind desktop` printed there.
+    /// Add an existing Somtus installation through SSH. Does not install software.
+    AddSsh {
+        #[arg(long)]
+        target: String,
+        #[arg(long, default_value = "somtus-remote")]
+        remote_bin: String,
+        #[arg(long)]
+        somtus: Option<String>,
+        /// The remote RIWORK_HOME, if it differs from that account's default.
+        #[arg(long)]
+        home: Option<String>,
+        #[arg(long)]
+        label: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Pair with a host from the somtus://pair?v=2 link `pair --protocol 2 --kind desktop` printed there.
     Add {
         /// The link, or `-` to read it from stdin, which keeps the secret out of `ps`.
         #[arg(long)]
@@ -158,12 +174,40 @@ fn read_link_from_stdin() -> Result<String> {
 }
 
 fn current_exe() -> Result<PathBuf> {
-    std::env::current_exe().context("cannot find the riwork-remote executable")
+    std::env::current_exe().context("cannot find the somtus-remote executable")
 }
 
 async fn hosts(action: HostsCommand) -> Result<()> {
     let storage = Storage::from_env()?;
     match action {
+        HostsCommand::AddSsh {
+            target,
+            remote_bin,
+            somtus,
+            home,
+            label,
+            json,
+        } => {
+            let route = crate::ssh::Route {
+                target,
+                remote_bin,
+                somtus,
+                home,
+                host_id: String::new(),
+                client_id: uuid::Uuid::new_v4().to_string(),
+            };
+            let host = crate::ssh::add(&storage, route, label).await?;
+            if json {
+                println!("{}", serde_json::to_string(&host)?);
+            } else {
+                println!(
+                    "Added SSH route {} (\"{}\") to host {}.",
+                    host.id,
+                    host.label,
+                    host.host_id.as_deref().unwrap_or("")
+                );
+            }
+        }
         HostsCommand::Add {
             link,
             label,
@@ -199,7 +243,7 @@ async fn hosts(action: HostsCommand) -> Result<()> {
             if json {
                 println!("{}", serde_json::to_string_pretty(&hosts)?);
             } else if hosts.is_empty() {
-                println!("No hosts. Add one with `hosts add --link 'riwork://pair?v=2&…'`.");
+                println!("No hosts. Add one with `hosts add --link 'somtus://pair?v=2&…'`.");
             } else {
                 for host in hosts {
                     println!("{}  {}  {}", host.id, host.label, host.relay);

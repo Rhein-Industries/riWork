@@ -74,10 +74,11 @@ fn text(value: &Value) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// A user message that RiWork or Codex put there, not the person.
+/// A user message that Somtus or Codex put there, not the person.
 fn injected(text: &str) -> bool {
     let start = text.trim_start();
-    start.starts_with("Load the following RiWork desktop automation guidance")
+    start.starts_with("Load the following Somtus desktop automation guidance")
+        || start.starts_with("Load the following RiWork desktop automation guidance")
         || [
             "<environment_context>",
             "<user_instructions>",

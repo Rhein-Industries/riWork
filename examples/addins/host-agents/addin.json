@@ -1,0 +1,9 @@
+{
+  "id": "example.host-agents",
+  "name": "Agents across hosts",
+  "version": "1.0.0",
+  "api": 1,
+  "description": "Live connection health and agent status across your local and paired hosts.",
+  "views": [{ "id": "main", "title": "Agents across hosts" }],
+  "permissions": ["hosts.read"]
+}

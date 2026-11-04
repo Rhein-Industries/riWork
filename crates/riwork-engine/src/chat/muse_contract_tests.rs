@@ -335,7 +335,7 @@ fn model_discovery_reads_the_provider_without_creating_a_session_or_attaching_cu
     }))]));
     let fake = Fake::new(&[&steps(script)]);
     let models = discover_models(fake.config(Provider::Muse)).unwrap();
-    // No chat chose a contributor mode: off, as every Muse RiWork starts unless asked on.
+    // No chat chose a contributor mode: off, as every Muse Somtus starts unless asked on.
     assert_eq!(
         fake.starts()[0]["argv"],
         json!(["serve", "--contributor-mode", "off"])

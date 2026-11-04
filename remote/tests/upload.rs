@@ -153,10 +153,10 @@ fn stub_cli(dir: &Path, shell: &str) -> PathBuf {
              'orchestrator list') echo '[]';;\n\
              'shell paste')\n\
                case \"$(cat \"$d/mode\" 2>/dev/null)\" in\n\
-                 input_unavailable) echo 'riwork: input_unavailable: terminal input is disabled for this pane' >&2; exit 2;;\n\
-                 not_sent) echo 'riwork: not_sent: tmux did not answer' >&2; exit 2;;\n\
-                 old) printf \"riwork: Unknown shell command 'paste'\\nUsage...\\n\" >&2; exit 2;;\n\
-                 partial) echo 'riwork: paste-buffer failed' >&2; exit 2;;\n\
+                 input_unavailable) echo 'somtus: input_unavailable: terminal input is disabled for this pane' >&2; exit 2;;\n\
+                 not_sent) echo 'somtus: not_sent: tmux did not answer' >&2; exit 2;;\n\
+                 old) printf \"somtus: Unknown shell command 'paste'\\nUsage...\\n\" >&2; exit 2;;\n\
+                 partial) echo 'somtus: paste-buffer failed' >&2; exit 2;;\n\
                esac;;\n\
              esac\n",
             dir = dir.display()
@@ -571,7 +571,7 @@ async fn a_shell_upload_needs_a_live_shell_and_a_cli_that_pastes() {
         answer["error"]["message"]
             .as_str()
             .unwrap()
-            .contains("update RiWork")
+            .contains("update Somtus")
     );
     std::fs::remove_file(f.stub.path().join("old")).unwrap();
     f.set("dead", "");

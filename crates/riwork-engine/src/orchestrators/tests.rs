@@ -872,7 +872,7 @@ fn a_project_choice_applies_to_its_own_orchestrator_only_and_inherit_follows_set
 }
 
 /// Each scope is told the delegation policy it resolves to when it starts and when it
-/// loads its skill: a project's own choices over Settings' over RiWork's, field by field.
+/// loads its skill: a project's own choices over Settings' over Somtus's, field by field.
 /// A change reaches no running conversation until LOAD SKILL.
 #[test]
 fn each_scope_is_told_its_resolved_delegation_policy_at_start_and_on_load_skill() {
@@ -886,7 +886,7 @@ fn each_scope_is_told_its_resolved_delegation_policy_at_start_and_on_load_skill(
     fs::create_dir_all(&theirs).unwrap();
     let mine = store.add_project(&mine, Some("Mine")).unwrap();
     let theirs = store.add_project(&theirs, Some("Theirs")).unwrap();
-    // Nothing chosen anywhere: RiWork's own policy, today's routing.
+    // Nothing chosen anywhere: Somtus's own policy, today's routing.
     assert_eq!(delegation(&host.home, None), Delegation::built_in());
     assert_eq!(
         delegation(&host.home, Some(&mine.id)),
@@ -913,16 +913,16 @@ fn each_scope_is_told_its_resolved_delegation_policy_at_start_and_on_load_skill(
                 .unwrap();
         })
         .unwrap();
-    let global_policy = "Delegation policy for this scope (Settings, else RiWork's default, \
+    let global_policy = "Delegation policy for this scope (Settings, else Somtus's default, \
                          as they stood when this message was written): spread work off; \
                          about 6 parallel worker shells; design work on claude, model opus; \
                          workhorse work on muse, model muse-wonder-full-1.0.";
     let mine_policy = "Delegation policy for this scope (this project's override, else Settings, \
-                       else RiWork's default, as they stood when this message was written): \
+                       else Somtus's default, as they stood when this message was written): \
                        spread work on; about 2 parallel worker shells; design work on codex, \
                        model gpt-6.1-sol; workhorse work on muse, model muse-wonder-full-1.0.";
     let theirs_policy = "Delegation policy for this scope (this project's override, else \
-                         Settings, else RiWork's default, as they stood when this message was \
+                         Settings, else Somtus's default, as they stood when this message was \
                          written): spread work off; about 6 parallel worker shells; design \
                          work on claude, model opus; workhorse work on muse, model \
                          muse-wonder-full-1.0.";
@@ -994,7 +994,7 @@ fn each_scope_is_told_its_resolved_delegation_policy_at_start_and_on_load_skill(
         assert!(loaded.contains("<riwork-orchestrator-skill>"));
     }
 
-    // Settings this build cannot read are RiWork's own policy, and never an error.
+    // Settings this build cannot read are Somtus's own policy, and never an error.
     fs::write(host.home.join("settings.json"), "{not json").unwrap();
     assert_eq!(delegation(&host.home, None), Delegation::built_in());
     assert_eq!(
@@ -1043,10 +1043,10 @@ fn both_scopes_are_given_the_skill_with_model_routing_and_dashboard_briefs() {
         "`muse`, `muse-wonder-full-1.0`",
         "`claude`, `opus`",
         "`codex`, `gpt-6.1-sol`",
-        "riwork chat new --provider",
-        "riwork shell create --worktree WORKTREE_ID --harness codex|claude|muse|grok --model MODEL",
-        "riwork handoff --from SHELL_OR_CHAT_ID",
-        "riwork chat list --project PROJECT_ID --json",
+        "somtus chat new --provider",
+        "somtus shell create --worktree WORKTREE_ID --harness codex|claude|muse|grok --model MODEL",
+        "somtus handoff --from SHELL_OR_CHAT_ID",
+        "somtus chat list --project PROJECT_ID --json",
         "Never fall back silently",
         "## Dashboard briefs",
         "RIWORK BRIEF REQUEST",

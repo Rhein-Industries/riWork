@@ -234,7 +234,7 @@ python3 "$R/run.py" fresh-audit-final "$C" test --locked --offline --jobs 2 -p r
 python3 "$R/run.py" schedules-ui-red python3 crates/riwork-desktop/verification/phase6b_panels.py --root "$R/ui-red" --target-dir "$T" --nsh "$N" --tsc "$TS" --command-log "$R/commands.jsonl" --filter P6B-SCHED-PARITY
 python3 "$R/run.py" schedules-ui-green python3 crates/riwork-desktop/verification/phase6b_panels.py --root "$R/ui-green" --target-dir "$T" --nsh "$N" --tsc "$TS" --command-log "$R/commands.jsonl" --filter P6B-SCHED
 python3 "$R/run.py" native-workspace "$C" test --locked --offline --jobs 2 -p riwork-nsh-native -p riwork-nsh-workspace --features riwork-nsh-native/test-support -- --test-threads=1
-python3 "$R/run.py" desktop-headless "$C" test --locked --offline --jobs 2 -p riwork-desktop --bin riwork -- --test-threads=1
+python3 "$R/run.py" desktop-headless "$C" test --locked --offline --jobs 2 -p riwork-desktop --bin somtus -- --test-threads=1
 python3 "$R/run.py" engine-fresh-existing "$C" test --locked --offline --jobs 2 -p riwork-engine schedule_chat::fresh_tests -- --nocapture --test-threads=1
 python3 "$R/run.py" fmt-check "$C" fmt --all -- --check
 python3 "$R/run.py" polling sh apps/riwork/check-polling.sh

@@ -1,4 +1,4 @@
-/** RiWork on iPhone and iPad: the shared screens over the Swift host (`ios/RiWorkRemote/NSHHostAPI.swift`).
+/** Somtus on iPhone and iPad: the shared screens over the Swift host (`ios/RiWorkRemote/NSHHostAPI.swift`).
  * The window's width picks the shell, never the device: narrower than 600 points the phone's navigation
  * stack (`PhoneShell`), wider the iPad's columns (`PadShell`); both draw the same routes. */
 import { View, computed, mount, windowSize } from "nsh";

@@ -90,7 +90,7 @@ fn ensure_initialized() -> Result<Arc<ProcessService>, String> {
     Ok(service)
 }
 
-/// A service for one call from another process (`riwork native invoke`): the same
+/// A service for one call from another process (`somtus native invoke`): the same
 /// backends and validation as [`initialize`], but no home watcher, no session sampler and no
 /// hub publication. It is installed as this process's service, so a module function that
 /// asks [`initialize`] gets it and never starts either. A process holds one service; the host

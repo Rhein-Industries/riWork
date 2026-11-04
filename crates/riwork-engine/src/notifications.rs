@@ -2,7 +2,7 @@
 //! The same completions also queue orchestrator wakes (`orchestrator_wakes`).
 //!
 //! A durable claim prevents multiple windows/processes from notifying twice.
-//! Native delivery stays in the GUI process so notifications belong to RiWork.
+//! Native delivery stays in the GUI process so notifications belong to Somtus.
 //! Only an app-bundle process claims alerts: macOS refuses to post from any
 //! other binary, so an unbundled dev build sharing RIWORK_HOME would consume
 //! alerts that nothing can show.
@@ -726,16 +726,16 @@ mod tests {
     #[test]
     fn only_an_app_bundle_process_claims_alerts() {
         assert!(in_app_bundle(Path::new(
-            "/Applications/RiWork.app/Contents/MacOS/riwork"
+            "/Applications/Somtus.app/Contents/MacOS/somtus"
         )));
         assert!(in_app_bundle(Path::new(
-            "/tmp/target/debug/RiWork.app/Contents/MacOS/riwork"
+            "/tmp/target/debug/Somtus.app/Contents/MacOS/somtus"
         )));
         assert!(!in_app_bundle(Path::new("/tmp/target/debug/riwork")));
         assert!(!in_app_bundle(Path::new(
-            "/tmp/target/debug/RiWork.app/riwork"
+            "/tmp/target/debug/Somtus.app/riwork"
         )));
-        assert!(!in_app_bundle(Path::new("/tmp/Contents/MacOS/riwork")));
+        assert!(!in_app_bundle(Path::new("/tmp/Contents/MacOS/somtus")));
         assert!(!in_app_bundle(Path::new("riwork")));
     }
 

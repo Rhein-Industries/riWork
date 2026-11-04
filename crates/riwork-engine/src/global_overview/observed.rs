@@ -28,7 +28,7 @@ const TOTAL_BYTES: u64 = 12 * 1024 * 1024;
 const CACHE_BYTES: u64 = 256 * 1024;
 const REQUEST_BYTES: usize = 24 * 1024;
 /// Bumped when what a cached snapshot says changes: 2 names the files a message cites.
-const CACHE_VERSION: u8 = 2;
+const CACHE_VERSION: u8 = 3;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Source {
@@ -90,6 +90,15 @@ pub struct Activity {
     pub log_updated_at: u64,
 }
 
+/// Exact terminal turn evidence, independent of the human-readable recent item.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CompletedTurn {
+    pub source: Source,
+    pub outcome: String,
+    /// Host-captured event timestamp in milliseconds, absent in legacy logs.
+    pub ended_at: Option<u64>,
+}
+
 #[derive(Default, Debug)]
 pub struct Observations {
     pub sampled_at: u64,
@@ -98,6 +107,7 @@ pub struct Observations {
     pub chats_complete: usize,
     pub decisions: Vec<Decision>,
     pub recent_activity: Vec<Activity>,
+    pub completed_turns: Vec<CompletedTurn>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -136,6 +146,8 @@ struct Cached {
     complete: bool,
     pending: Vec<Pending>,
     recent: Option<Recent>,
+    #[serde(default)]
+    completion: Option<CompletedTurn>,
     /// This exact log could not be folded (a malformed record, a gap, too many requests):
     /// it is not read again until it changes.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -193,6 +205,9 @@ pub fn read(home: &Path, state: &State, chats: Option<&[ChatInfo]>, now: u64) ->
                     request: pending.request,
                 });
             }
+        }
+        if let Some(completion) = cached.completion {
+            result.completed_turns.push(completion);
         }
         if let Some(recent) = cached.recent {
             result.recent_activity.push(Activity {
@@ -306,6 +321,7 @@ fn observe(home: &Path, chat_id: &str, remaining: &mut u64) -> Option<Cached> {
                 complete: false,
                 pending: Vec::new(),
                 recent: None,
+                completion: None,
                 unreadable: true,
             };
             write_cache(&cache_dir, &cache_path, &unreadable);
@@ -350,6 +366,7 @@ fn write_cache(dir: &Path, path: &Path, cached: &Cached) {
 fn fold(chat_id: &str, fingerprint: Fingerprint, bytes: &[u8], at_head: bool) -> Option<Cached> {
     let mut pending = BTreeMap::new();
     let mut recent: Option<Recent> = None;
+    let mut completion = None;
     // The item `recent` describes, so a later record of the same item can update it.
     let mut recent_item: Option<String> = None;
     let mut complete = at_head;
@@ -389,8 +406,14 @@ fn fold(chat_id: &str, fingerprint: Fingerprint, bytes: &[u8], at_head: bool) ->
             ChatEvent::TurnStarted { .. } => {
                 recent = None;
                 recent_item = None;
+                completion = None;
             }
-            ChatEvent::TurnCompleted { outcome, .. } => {
+            ChatEvent::TurnCompleted { outcome, ended_at, .. } => {
+                completion = Some(CompletedTurn {
+                    source: source.clone(),
+                    outcome: match outcome { TurnOutcome::Completed => "completed", TurnOutcome::Interrupted => "interrupted", TurnOutcome::Failed { .. } => "failed" }.into(),
+                    ended_at,
+                });
                 pending.clear();
                 complete = true;
                 // Keep the concrete finding or final response, with its own source event,
@@ -506,6 +529,7 @@ fn fold(chat_id: &str, fingerprint: Fingerprint, bytes: &[u8], at_head: bool) ->
         complete,
         pending,
         recent,
+        completion,
         unreadable: false,
     })
 }
@@ -635,6 +659,17 @@ mod tests {
     }
     fn folded(lines: &[Vec<u8>], at_head: bool) -> Cached {
         fold(CHAT, fingerprint(), &lines.concat(), at_head).unwrap()
+    }
+    #[test]
+    fn completion_evidence_is_a_terminal_turn_not_an_item_or_observation_time() {
+        let message=event(1,json!({"event":"item_completed","item":{"id":"message","status":"completed","body":{"type":"agent_message","text":"Answer"}}}));
+        assert!(folded(&[message.clone()],true).completion.is_none());
+        let end=event(2,json!({"event":"turn_completed","turn_id":"t","outcome":{"outcome":"completed"},"ended_at":123456000}));
+        let cached=folded(&[message.clone(),end.clone()],true);
+        assert_eq!(cached.recent.as_ref().unwrap().source.event_seq,1,"recent presentation retains its original item source");
+        let completed=cached.completion.unwrap();assert_eq!(completed.source.event_seq,2);assert_eq!(completed.ended_at,Some(123456000));assert_eq!(completed.outcome,"completed");
+        let begin=event(3,json!({"event":"turn_started","turn_id":"new"}));
+        assert!(folded(&[message,end,begin],true).completion.is_none());
     }
     fn chat(state: &str) -> ChatInfo {
         serde_json::from_value(json!({"id":CHAT,"provider":"claude","cwd":"/work","title":"Publish","created_at_unix":1,"state":{"state":state}})).unwrap()

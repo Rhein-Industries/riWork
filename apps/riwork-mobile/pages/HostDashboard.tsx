@@ -34,7 +34,7 @@ export function HostDashboardPage(props: {
   const bottom = ui.bottomInset();
   const info = () => app.hosts().find((entry) => entry.id === hostId);
   const connected = () => info()?.link.state === "connected";
-  // A Mac whose RiWork predates `dashboard.get` is never asked; its projects still open.
+  // A Mac whose Somtus predates `dashboard.get` is never asked; its projects still open.
   const unsupported = computed(() => connected() && !info()!.features.includes("dashboard"));
   const onScreen = computed(() => props.onTop() && !app.blocked());
   effect(() => {
@@ -107,7 +107,7 @@ export function HostDashboardPage(props: {
   function Body() {
     return <>{unsupported() ? <Scroll style={{ flex: 1, backgroundColor: palette().bg }} contentStyle={{ padding: pt(16), gap: pt(12) }}
       refreshing={app.overview().loading} onRefresh={reload}>
-      <Note title="Dashboard unavailable" message="The RiWork on your Mac does not send its dashboard yet. Update RiWork on the Mac to see what needs you, what is working, tasks and automations here. Projects and the global orchestrator still open." />
+      <Note title="Dashboard unavailable" message="The Somtus on your Mac does not send its dashboard yet. Update Somtus on the Mac to see what needs you, what is working, tasks and automations here. Projects and the global orchestrator still open." />
       {global() && <Section title="Global orchestrator">
         <View style={{ padding: pt(14), gap: pt(8) }}>
           <Text style={text(14, "muted")}>{global()!.summary}</Text>
@@ -132,7 +132,7 @@ export function HostDashboardPage(props: {
     return <View testID={`page:dashboard:${hostId}`} style={{ flex: 1, minWidth: 0, minHeight: 0, backgroundColor: theme().palette.panel }}>
       <TopRow ui={ui}>
         <Leading app={app} ui={ui} chrome={pad} host={hostId} />
-        <View role="header" accessibilityLabel="Dashboard" style={{ height: target() - 1, flexDirection: "row", alignItems: "center", gap: pt(8), paddingHorizontal: pt(16),
+        <View role="header" accessibilityLabel="Dashboard" style={{ height: ui.bar() - 1, flexDirection: "row", alignItems: "center", gap: pt(6), paddingHorizontal: pt(12),
           backgroundColor: palette().bg, borderRightWidth: 1, borderColor: palette().divider }}>
           <Icon name="globe" size={pt(15)} color={palette().text} />
           <Text numberOfLines={1} style={{ ...text(13), fontWeight: "500" }}>Dashboard</Text>

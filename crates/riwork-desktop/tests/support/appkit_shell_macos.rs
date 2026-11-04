@@ -71,7 +71,7 @@ fn window_chrome(mtm: MainThreadMarker, _: &NSMenu, _: &nsh_menus::HostMenus) {
 }
 
 fn app_menu_matches_gpui(_: MainThreadMarker, menu: &NSMenu, _: &nsh_menus::HostMenus) {
-    assert_eq!(labels(menu), ["RiWork", "Edit", "View"]);
+    assert_eq!(labels(menu), ["Somtus", "Edit", "View"]);
     let app = submenu(menu, 0);
     assert_eq!(
         labels(&app),
@@ -80,7 +80,7 @@ fn app_menu_matches_gpui(_: MainThreadMarker, menu: &NSMenu, _: &nsh_menus::Host
             "Project Settings…",
             "Automations",
             "---",
-            "Quit RiWork"
+            "Quit Somtus"
         ]
     );
     let cmd = NSEventModifierFlags::Command;
@@ -147,6 +147,7 @@ fn view_menu_matches_gpui(_: MainThreadMarker, menu: &NSMenu, _: &nsh_menus::Hos
         [
             "Global Dashboard",
             "Global Chat",
+            "Project Orchestrator",
             "---",
             "New chat…",
             "App preview…",
@@ -165,29 +166,18 @@ fn view_menu_matches_gpui(_: MainThreadMarker, menu: &NSMenu, _: &nsh_menus::Hos
             "Actual Size"
         ]
     );
-    for index in [3, 5, 11, 12, 13] {
-        assert!(
-            !view.itemAtIndex(index).unwrap().isEnabled(),
-            "deferred row {index} must stay disabled"
-        );
-    }
-    for index in [0, 1, 4, 6, 7, 8, 9, 15, 16, 17] {
-        assert!(view.itemAtIndex(index).unwrap().isEnabled());
-    }
-    // AppKit must not silently re-enable deferred commands during validation.
     view.update();
-    for index in [3, 5, 11, 12, 13] {
-        assert!(!view.itemAtIndex(index).unwrap().isEnabled());
+    for index in 0..view.numberOfItems() {
+        let item = view.itemAtIndex(index).unwrap();
+        if !item.isSeparatorItem() {
+            assert!(item.isEnabled(), "{} must be available", item.title());
+        }
     }
-    assert!(
-        view.itemAtIndex(4).unwrap().isEnabled(),
-        "Phase 6c App preview is implemented"
-    );
 }
 
 fn view_menu_text_size_items(_: MainThreadMarker, menu: &NSMenu, _: &nsh_menus::HostMenus) {
     let view = submenu(menu, 2);
-    for (index, text) in [(15, "="), (16, "-"), (17, "0")] {
+    for (index, text) in [(16, "="), (17, "-"), (18, "0")] {
         key(
             &view.itemAtIndex(index).unwrap(),
             text,
@@ -300,6 +290,7 @@ pub fn run() {
     let menu = app.mainMenu().unwrap();
     type Check = fn(MainThreadMarker, &NSMenu, &nsh_menus::HostMenus);
     let cases: &[(&str, Check)] = &[
+        ("customized_native_accelerators_update_and_restore", customized_native_accelerators_update_and_restore),
         ("window_chrome", window_chrome),
         (
             "control_tab_reaches_the_nsh_keymap_once",
@@ -352,6 +343,36 @@ pub fn run() {
     );
     assert_eq!(failed, 0);
     assert!(app.windows().iter().all(|window| !window.isVisible()));
+}
+
+fn customized_native_accelerators_update_and_restore(mtm: MainThreadMarker, original: &NSMenu, _: &nsh_menus::HostMenus) {
+    use nsh_platform_macos::{objc2_app_kit::{NSEvent, NSEventType}, objc2_foundation::NSString};
+    use std::{collections::BTreeMap, sync::Mutex};
+    let app = NSApplication::sharedApplication(mtm);
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let output = captured.clone();
+    let mut menus = nsh_menus::HostMenus::install(mtm, Arc::new(move |action| output.lock().unwrap().push(action.command)));
+    let press = |menu: &NSMenu, key: &str, flags| {
+        let text = NSString::from_str(key);
+        let event = NSEvent::keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode(
+            NSEventType::KeyDown, NSPoint::new(0.,0.), flags, 0.,0,None,&text,&text,false,0).unwrap();
+        menu.performKeyEquivalent(&event)
+    };
+    menus.update_bindings(BTreeMap::from([("quit".into(), Some("ctrl+alt+k".into())), ("openSettings".into(), None)]));
+    let menu = app.mainMenu().unwrap();
+    key(&submenu(&menu, 0).itemAtIndex(4).unwrap(), "k", NSEventModifierFlags::Control | NSEventModifierFlags::Option);
+    assert_eq!(submenu(&menu, 0).itemAtIndex(0).unwrap().keyEquivalent().to_string(), "");
+    assert!(!press(&menu, "q", NSEventModifierFlags::Command));
+    assert!(!press(&menu, ",", NSEventModifierFlags::Command));
+    assert!(press(&menu, "k", NSEventModifierFlags::Control | NSEventModifierFlags::Option));
+    assert_eq!(*captured.lock().unwrap(), ["quit"]);
+    menus.update_bindings(BTreeMap::new());
+    let restored = app.mainMenu().unwrap();
+    assert!(!press(&restored, "k", NSEventModifierFlags::Control | NSEventModifierFlags::Option));
+    assert!(press(&restored, "q", NSEventModifierFlags::Command));
+    assert_eq!(*captured.lock().unwrap(), ["quit", "quit"]);
+    drop(menus);
+    app.setMainMenu(Some(original));
 }
 
 // Exercise NSH's actual in-content windowDrag handler without ordering a

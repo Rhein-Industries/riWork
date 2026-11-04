@@ -151,7 +151,7 @@ fn a_scheduled_muse_chat_starts_off_and_one_an_older_host_started_otherwise_is_s
         wire::{Request, Response},
     };
     use std::io::{BufRead, BufReader, Write};
-    // This host: off, as every Muse RiWork starts unless asked on, and sent its prompt.
+    // This host: off, as every Muse Somtus starts unless asked on, and sent its prompt.
     let (mut host, store, _) = setup_with(Provider::Muse, false, false);
     store.tick(100).unwrap();
     let run = row(&store).last_run.unwrap();
@@ -245,7 +245,7 @@ fn a_scheduled_muse_chat_starts_off_and_one_an_older_host_started_otherwise_is_s
     assert_eq!(run.outcome, Outcome::Failed, "{run:?}");
     let message = format!("{run:?}");
     assert!(
-        message.contains("predates RiWork's contributor mode off by default")
+        message.contains("predates Somtus's contributor mode off by default")
             && message.contains("it was stopped"),
         "{message}"
     );

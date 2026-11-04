@@ -28,7 +28,7 @@ public struct SpeechVocabulary: Sendable, Equatable {
     /// Only the end of the screen's text is read.
     public static let textWindow = 8_000
     /// The agents and the app, which are said all the time and recognized badly without help.
-    public static let agents = ["Claude", "Codex", "RiWork", "Claude Code"]
+    public static let agents = ["Claude", "Codex", "Somtus", "Claude Code"]
     /// Words of the command line that a general recognizer gets wrong or spells otherwise.
     public static let commandLine = [
         "git", "npm", "pnpm", "npx", "yarn", "cargo", "rustc", "swift", "xcodebuild", "xcrun", "simctl", "kubectl", "docker", "tmux", "ssh",

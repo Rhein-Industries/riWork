@@ -1,7 +1,7 @@
 # Desktop Native performance investigation — 2026-10-05
 
 Settings repeatedly measured its entire content during the workspace's intrinsic-size
-layout passes. It exceeded a 60 Hz frame budget in both Native and RiWork. A definite-size
+layout passes. It exceeded a 60 Hz frame budget in both Native and Somtus. A definite-size
 GPUI cached view now lays Settings out at its pane size and reuses it on unrelated workspace
 redraws. Settings notifications, bounds, inherited text style and global window refreshes
 invalidate that cache. No typography, colors, control styling or terminal code changed.
@@ -22,10 +22,10 @@ default 13 pt displayed interface text, labels enabled. Other busy apps stayed r
 | Warm Settings scrolling | Before median / p95 | After median / p95 | Frames before / after |
 | --- | --- | --- | --- |
 | Native | 40.638 / 51.554 ms | 14.630 / 19.673 ms | 51 / 65 |
-| RiWork | 36.608 / 47.856 ms | 14.860 / 20.958 ms | 60 / 66 |
+| Somtus | 36.608 / 47.856 ms | 14.860 / 20.958 ms | 60 / 66 |
 
 Native's median fell 64%; its frames over 16.67 ms fell from 51/51 to 7/65.
-RiWork's median fell 59%; over-budget frames fell from 60/60 to 8/66.
+Somtus's median fell 59%; over-budget frames fell from 60/60 to 8/66.
 A separate initial Native run measured 39.397 ms median before the change, corroborating
 the repeat. The sampler was **off** for the final timing runs.
 
@@ -41,7 +41,7 @@ These are single short, contended samples, not a statistically established idle 
 A 5-second initial idle sample spent 4,219/4,234 main-thread samples waiting on Mach messages.
 
 A saved synthetic chat with 120 Markdown messages (paragraphs, code, lists) scrolled at
-4.090 ms median / 4.671 ms p95 under Native (62 frames) and 4.301 / 5.609 ms under RiWork
+4.090 ms median / 4.671 ms p95 under Native (62 frames) and 4.301 / 5.609 ms under Somtus
 (66 frames); neither run exceeded 16.67 ms. The existing virtualized chat was left alone.
 No provider or paid agent was started for this fixture.
 
@@ -63,13 +63,13 @@ iOS was not changed or profiled.
 ## Repeat the measurements
 
 1. Build the baseline and candidate in isolated target directories with the README's Zig
-   0.16 toolchain. Preserve copies of each executable. Do not use `riwork update` or reload.
+   0.16 toolchain. Preserve copies of each executable. Do not use `somtus update` or reload.
 2. Make a disposable `.app` wrapper whose executable exports a **new** `RIWORK_HOME`, a
    **new** `RIWORK_RUNTIME_DIR`, `RIWORK_APPEARANCE=light`, `ZED_MEASUREMENTS=1`, and
    `GHOSTTY_RESOURCES_DIR` pointing to a bundled Ghostty resources directory, then execs
    the selected binary with a disposable project path. Redirect stderr/stdout to a log.
    Retain HOME; do not copy real sessions, settings or credentials into the fixture.
-3. Register the wrapper under a unique bundle id and launch it using RiWork cua-driver MCP
+3. Register the wrapper under a unique bundle id and launch it using Somtus cua-driver MCP
    `launch_app`, in the background. This run used `dev.riwork.perf-native` and a temporary
    symlink in `~/Applications`. Inspect its exact pid/window with `list_windows` and
    `get_window_state` before input. Do not operate the installed app's windows.
@@ -103,10 +103,10 @@ The initial experimental cache and transitions are excluded from the committed l
 ## Verification and integration
 
 - Settings tests: 25 passed; theme tests: 19 passed; ui_text tests: 12 passed;
-  remote_tree tests: 38 passed, all with `cargo test --locked --release --bin riwork FILTER`.
+  remote_tree tests: 38 passed, all with `cargo test --locked --release --bin somtus FILTER`.
 - `cargo fmt --check`, `git diff --check`, parser units/phase-boundary sanity check passed.
 - Final release build passed. `scripts/bundle-macos.sh release` passed with Zig 0.16.0;
-  deep/strict codesign verification and both binary/bundled `riwork help` checks passed.
+  deep/strict codesign verification and both binary/bundled `somtus help` checks passed.
   Bundling emitted the existing older-tic description warning.
 - Cua verified Native light/dark, theme polling, scrolling, 700/1220/2000-point widths
   (narrow/medium/wide layouts), centered focus and restore. Clicking text size changed

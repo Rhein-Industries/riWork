@@ -70,6 +70,7 @@ pub fn provider_label(provider: Provider) -> &'static str {
         Provider::Codex => "Codex",
         Provider::Claude => "Claude",
         Provider::Muse => "Muse",
+        Provider::Acp => "ACP",
     }
 }
 

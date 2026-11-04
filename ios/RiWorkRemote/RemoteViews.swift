@@ -169,7 +169,7 @@ struct RemoteRootView: View {
     }
     private var landingContent: some View {
         VStack(spacing: 0) {
-            WorkspaceBar(title: style.cased("RiWork")) {
+            WorkspaceBar(title: "SOMTUS") {
                 Button("Display settings", systemImage: "textformat.size") { showingDisplay = true }.labelStyle(.iconOnly)
                 Button("Add desktop", systemImage: "plus") { pairingRequest = PairingRequest(text: "") }.labelStyle(.iconOnly).disabled(model.loadFailed)
             }
@@ -1238,7 +1238,7 @@ struct NoteLine: View {
     }
 }
 
-/// In place of an orchestrator that runs as a chat when there is no chat to open: the RiWork on the Mac has none to offer
+/// In place of an orchestrator that runs as a chat when there is no chat to open: the Somtus on the Mac has none to offer
 /// ("Update the Mac to open this orchestrator"), or the entry did not say which chat it is. The terminal is not tried.
 struct OrchestratorNotice: View {
     @Environment(\.desktopStyle) private var style

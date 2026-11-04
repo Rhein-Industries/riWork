@@ -1,7 +1,7 @@
 //! App previews own a development process and stream its frames into a tab.
 //!
 //! Cooperative previews use an authenticated local socket and create no desktop
-//! window. The explicit capture fallback talks only to RiWork's guarded Cua MCP
+//! window. The explicit capture fallback talks only to Somtus's guarded Cua MCP
 //! server and binds one window of the process group that this launcher owns.
 
 use std::{
@@ -182,7 +182,7 @@ impl AppPreview {
             self.state.lock().unwrap_or_else(|e| e.into_inner()).warning = Some(message);
             return;
         }
-        // A stalled app cannot grow the event queue or stall RiWork's UI.
+        // A stalled app cannot grow the event queue or stall Somtus's UI.
         if let Err(mpsc::TrySendError::Full(_)) = self.input.try_send(input) {
             self.state.lock().unwrap_or_else(|e| e.into_inner()).warning =
                 Some("Preview is busy; input queue is full.".into());
@@ -562,7 +562,7 @@ fn worker(
                         &state,
                         PreviewPhase::WaitingForWindow,
                         match spec.mode {
-                            PreviewMode::Cooperative => "Waiting for the app's RiWork preview SDK…",
+                            PreviewMode::Cooperative => "Waiting for the app's Somtus preview SDK…",
                             PreviewMode::WindowCapture => "Waiting for the launched app's window…",
                             PreviewMode::IosSimulator => {
                                 "Waiting for the iOS simulator's first frame…"

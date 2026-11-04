@@ -87,14 +87,14 @@ compiles, and Keychain then returns `-34018`.
 ## Isolated continuation
 
 Project and shell commands used
-`/Users/dominik/orca/projects/riWork/target/debug/riwork`. Pair, relay, revoke,
-and the connector used this worktree's `remote/target/debug/riwork-remote`.
+`/Users/dominik/orca/projects/riWork/target/debug/somtus`. Pair, relay, revoke,
+and the connector used this worktree's `remote/target/debug/somtus-remote`.
 The phone was `ios/.build/debug/riwork-ios-smoke`.
 
 ```sh
 python3 ios/scripts/local-smoke.py \
-  --relay-binary remote/target/debug/riwork-remote \
-  --riwork /Users/dominik/orca/projects/riWork/target/debug/riwork \
+  --relay-binary remote/target/debug/somtus-remote \
+  --somtus /Users/dominik/orca/projects/riWork/target/debug/somtus \
   --smoke-binary ios/.build/debug/riwork-ios-smoke \
   --protocol 2
 ```
@@ -117,8 +117,8 @@ not masquerade as a successful revocation.
 
 ```sh
 python3 ios/scripts/local-smoke.py \
-  --relay-binary remote/target/debug/riwork-remote \
-  --riwork /Users/dominik/orca/projects/riWork/target/debug/riwork \
+  --relay-binary remote/target/debug/somtus-remote \
+  --somtus /Users/dominik/orca/projects/riWork/target/debug/somtus \
   --smoke-binary ios/.build/debug/riwork-ios-smoke \
   --protocol 1
 ```

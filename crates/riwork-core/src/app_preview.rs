@@ -27,7 +27,7 @@ pub struct PreviewSpec {
     pub ios: Option<IosPreviewSpec>,
 }
 
-/// A local Xcode simulator build. RiWork always creates a separate device; a
+/// A local Xcode simulator build. Somtus always creates a separate device; a
 /// user's existing booted simulator is never selected or shut down.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct IosPreviewSpec {

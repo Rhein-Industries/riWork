@@ -24,7 +24,7 @@ mod lifecycle;
 pub(crate) use lifecycle::{codex_arguments, grok_hooks, harness_snapshot, settle_rollout};
 pub use lifecycle::{harness_state, record_harness_hook};
 
-/// Events RiWork hooks into every Claude launch, through per-invocation
+/// Events Somtus hooks into every Claude launch, through per-invocation
 /// `--settings` only. Stop and UserPromptSubmit track the turn; SessionStart
 /// rebinds the identity after /clear or /resume; SubagentStart and
 /// SubagentStop pair up by `agent_id` to count the subagents a turn is
@@ -569,7 +569,7 @@ pub(crate) fn schedule_state(home: &Path, shell_id: &str) -> Option<(String, Opt
 /// its session yet). See `ClaudeTurnCursor::state`.
 pub(crate) fn claude_state(home: &Path, shell_id: &str, now: u64) -> Option<AgentState> {
     let cursor = read_cursor(home, shell_id)?;
-    // The status line RiWork gives every launch writes its usage cache on each
+    // The status line Somtus gives every launch writes its usage cache on each
     // refresh, so the cache's time says when Claude last drew a message.
     let status_line = crate::usage::read_claude_usage_at(home, shell_id)
         .ok()

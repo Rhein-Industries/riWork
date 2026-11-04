@@ -65,6 +65,12 @@ pub(crate) fn shell(desktop_id: String, shell_id: String) -> Result<SavedTab, St
     })
 }
 
+pub(crate) fn chat(desktop_id: String, chat_id: String) -> Result<SavedTab, String> {
+    identifier(&desktop_id)?;
+    crate::validate_id(&chat_id)?;
+    Ok(SavedTab::RemoteChat { desktop_id, chat_id })
+}
+
 fn identifier(id: &str) -> Result<(), String> {
     if id.is_empty()
         || id.len() > 256

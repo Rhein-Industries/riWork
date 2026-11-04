@@ -1,4 +1,4 @@
-# RiWork for iPhone and iPad
+# Somtus for iPhone and iPad
 
 On the `nsh` branch, the app starts in Native Shell. The pages are TSX in
 `apps/riwork-mobile`: the hosts and the All hosts overview, a host's own
@@ -6,7 +6,7 @@ dashboard (the desktop's shared `DashboardView` from `apps/riwork/dashboard`),
 its projects, a project's page with its tab strip and terminal, and the New
 terminal and New project forms. Narrower than 600 points they are a navigation
 stack with swipe back (`PhoneShell`); wider, on iPad, the window is the Mac's
-RiWork window in touch density (`PadShell`): one top row with the sidebar
+Somtus window in touch density (`PadShell`): one top row with the sidebar
 toggle, Dashboard, the host switcher and the project's tab strip, the host's
 projects as the Mac's Projects panel in a sidebar beside its dashboard or the
 project chosen there (over it in a window narrower than 900 points; ⌘B shows or
@@ -21,7 +21,7 @@ transport and Keychain storage serve them all through the host calls of
 the sections below describe the native screens as they were, and say where the
 TSX pages differ.
 
-Start with **All hosts** to see work and decisions across your paired RiWork desktops. Choose a desktop to see its own dashboard
+Start with **All hosts** to see work and decisions across your paired Somtus desktops. Choose a desktop to see its own dashboard
 (what needs you and what is working across every project, the global orchestrator, and every project), then a project, and switch between tabs for its
 open terminals and chats, or open a new shell, agent or chat on the desktop with ＋. One terminal
 fills the screen at a time. The app never splits or replaces a desktop session; it
@@ -89,7 +89,7 @@ before saying the project is unavailable. The dashboard is read only while it is
 every 10 s, and `projects.list` and `orchestrators.list` at the same pace for the screens its rows open. Its **↻** (or ⌘R) reads all
 three at once; the page has no pull to refresh.
 **An older Mac** does not announce the method and is never asked (one that announces it and then refuses it is not asked again): the
-page says RiWork on the Mac needs an update for its dashboard, and still offers the global orchestrator from `orchestrators.list`
+page says Somtus on the Mac needs an update for its dashboard, and still offers the global orchestrator from `orchestrators.list`
 (its state, with Open, or Start when there is none), **All projects**, and pull to refresh.
 
 **The global orchestrator belongs to no project.** It is never a tab of a project (the earlier strip or the shared one, even if a
@@ -105,7 +105,7 @@ Global screen (the sheet starts it first if the Mac has none).
 On iPhone, **Display → Color palette** offers **Native** (the default, following
 the phone's light/dark setting), the same 12 fixed desktop palettes offline, and
 **Follow desktop**. The fixed palettes come from the shared
-[color-palettes.json](../crates/riwork-core/color-palettes.json): RiWork, Catppuccin Mocha,
+[color-palettes.json](../crates/riwork-core/color-palettes.json): Somtus, Catppuccin Mocha,
 Tokyo Night, Gruvbox Light, Hermes, Dracula, Monokai, Nord, Solarized Light,
 Solarized Dark, One Dark and Gruvbox Dark. The choice is saved locally on the
 phone and does not change its Mac. Each fixed palette's `working` colors agents at work (its accent in a catalog
@@ -138,7 +138,7 @@ an unreadable palette (invalid hex, wrong count, `v` other than 1) is ignored. `
 checks it: a desktop from before it leaves it out (or null) and errors keep the app's own error color, as before; any
 other value than `#rrggbb` makes the document invalid. A synced text/background pair below a
 3:1 contrast ratio falls back to the built-in pair for that element. Without a palette, iPad keeps its
-built-in Gruvbox Light / RiWork fallback; iPhone's Follow desktop choice uses Native until colors are available.
+built-in Gruvbox Light / Somtus fallback; iPhone's Follow desktop choice uses Native until colors are available.
 The phone still reads the microphone preference regardless of its local palette choice.
 Terminal applications can still emit their own explicit colors.
 
@@ -200,13 +200,13 @@ Release builds keep default App Transport Security and hide the local-relay swit
 
 Follow `remote/README.md` and `docs/remote-deployment.md` in the combined repository.
 Create a device pairing, provision its route hashes on the relay, and run the
-desktop connector with the rebuilt RiWork CLI and its existing `RIWORK_HOME`.
+desktop connector with the rebuilt Somtus CLI and its existing `RIWORK_HOME`.
 Terminal fitting requires the published `shell.resize` extension and the new
 desktop CLI's `shell resize` / `shell resize-clear` commands. An older installed
 CLI can list/read sessions but cannot fit them; update both desktop and connector.
 
 Tap **Add desktop**, enter a name, and paste the complete pairing JSON or
-`riwork://pair?v=1&data=…` link. The code field is a UIKit text view with smart
+`somtus://pair?v=1&data=…` link (legacy `riwork://` links still work). The code field is a UIKit text view with smart
 punctuation, predictions and writing tools off, so a pasted or typed quote or hyphen
 is stored unchanged. The form shows the parsed relay host, device name
 and desktop ID before anything is saved. Tap **Save pairing & connect**. Opening a
@@ -385,7 +385,7 @@ also in focus mode. The sheet is a medium-height sheet with big rows and Create 
   ignored, and a lost answer (timeout, dropped link) is **not retried**: the sheet stays and says "the terminal may or may not have
   been created. Check the terminal list before trying again", the button then reads "Try again". Request timeout: 90 s (an agent can
   take 20 to 30 s to start).
-- **Errors are inline and the sheet stays open:** an older desktop ("Update RiWork on your Mac to open terminals from the phone."; found
+- **Errors are inline and the sheet stays open:** an older desktop ("Update Somtus on your Mac to open terminals from the phone."; found
   from the first answer `invalid_request` "unsupported RPC method", kept for the connection, and reset by every new connection, so ＋
   is dimmed and Create is off, and ⌘N does nothing), a project or worktree that no longer exists, an agent that is not installed
   ("Codex isn’t installed on the Mac (or isn’t on its PATH)."), a terminal that exited right away, or the desktop's own message.
@@ -427,7 +427,7 @@ template's ⌘ and ⌘⇧ letters, none of which is N) is not on screen, so it c
 - **Errors are inline and the sheet stays open, the name is kept:** the desktop's own sentence for `already_exists` (a project of that
   name, compared ignoring case, or a folder of that name in the Mac’s projects folder, which it never reuses; for example "A project
   named "x" already exists on the desktop"), an
-  older desktop ("Update RiWork on your Mac to create projects from the phone."; found from the first answer `invalid_request`
+  older desktop ("Update Somtus on your Mac to create projects from the phone."; found from the first answer `invalid_request`
   "unsupported RPC method", kept for the connection and reset by every new connection, so ＋ and ⌘⇧N disappear and the open sheet
   explains), or the desktop's own message (git failing, a CLI too old to create projects from the phone). Editing the name takes a
   message down.
@@ -457,7 +457,7 @@ defaults) and saved again when the Mac reconnects or the memo is opened again (*
 refusal). At most 32 KB; the last save wins, from the Mac or the phone. Kept text is sent again only
 over the memo it was written on; if the Mac's memo changed meanwhile, nothing is sent until the
 editor's **Keep mine** or **Use the Mac’s**. A save on its way is never cancelled, also when the sheet
-closes. A Mac without the extension is never asked and the sheet says to update RiWork there.
+closes. A Mac without the extension is never asked and the sheet says to update Somtus there.
 
 `/memo` as the last word of a chat's message, then Return or Send, sends nothing: the project's memo
 comes up with **Insert into composer** (it goes after the draft, unsent) and **Edit** (the memo
@@ -466,7 +466,7 @@ there is no project memo there.
 
 ### Chats
 
-A desktop that says `ready.features.chat` (the `riwork` CLI reports `"chat": true`) has native chat tabs, one kind for Codex and Claude, which drive the agents through their structured protocols instead of a terminal. The phone shows them in the project's tab strip, next to the shells, and talks to them with five additive RPCs (`chats.list`, `chat.create`, `chat.events`, `chat.command`, `chat.stop`; see the chat extension of `docs/remote-protocol.md`). A desktop without the feature is never asked: there are no chat tabs and the New terminal sheet offers its four kinds as before; one that refuses a chat request ("unsupported RPC method") is treated the same for the rest of the connection, and every new connection reads `features.chat` again.
+A desktop that says `ready.features.chat` (the `somtus` CLI reports `"chat": true`) has native chat tabs, one kind for Codex and Claude, which drive the agents through their structured protocols instead of a terminal. The phone shows them in the project's tab strip, next to the shells, and talks to them with five additive RPCs (`chats.list`, `chat.create`, `chat.events`, `chat.command`, `chat.stop`; see the chat extension of `docs/remote-protocol.md`). A desktop without the feature is never asked: there are no chat tabs and the New terminal sheet offers its four kinds as before; one that refuses a chat request ("unsupported RPC method") is treated the same for the rest of the connection, and every new connection reads `features.chat` again.
 
 **Wire.** The JSON is the serde form of `crates/riwork-engine/src/chat/model.rs` (`Core/Chat.swift`): `ChatEvent` is tagged `event`, `ChatItemBody` `type`, `ChatState` `state`, `ChatDelta` `kind` (text under `text`), `ChatTurnOutcome` `outcome` and `ChatCommand` `command`; words are snake_case. It is read leniently: an event, an item or a delta the phone has never heard of is skipped (its sequence number still counts, so it is not asked for again) and never fails the page; an unknown word inside a known thing (an approval mode, a step status, a decision) is read as its nearest harmless meaning, because dropping the event would drop what it carries (a request that was answered). The `models` event (the provider's list of `ModelOption`s, each replacing the last), `ChatInfo.fast` and `Configure.fast` are additive: a desktop that predates them sends none, which reads as no list and Fast off, and `fast` is sent to the desktop only when it is on (`chat.create`) or being changed (`Configure`). `Tests/Fixtures/chat-serde.json` is written by `scripts/gen-chat-fixtures.sh` from the real Rust types, so the decoder is tested against what the host sends and the encoder against what it accepts. `ChatTranscript.apply` is `Transcript::apply` line for line (`Core/ChatTranscript.swift`), with the same tests.
 
@@ -492,13 +492,13 @@ A desktop that says `ready.features.chat` (the `riwork` CLI reports `"chat": tru
 
 **Going on with the other provider.** On a desktop that says `ready.features.chat_provider_switch`, the model sheet of an open chat ends with **Continue with Claude** (or Codex): that provider's Default and its models (`chat.models`, or the cached or bundled list until it answers). Choosing one sends `chat.command` `{"command":"switch","provider",…,"model"?}` once and closes the sheet: the chat keeps its id, its tab and its transcript, and the Mac starts the other provider's agent with the conversation so far. The log says so with an `info` naming the new provider (and `carried_over`, who had the conversation and where the Mac keeps it) and a notice, "Continued with Claude (opus), which has the conversation so far.", drawn like any notice. `ChatTranscript.apply` then drops the old provider's models and usage, as the Mac's does, the picker shows the new provider's models, and the tab takes its glyph and name at once. While a turn runs or waits for an answer the rows are dimmed with "Finish or interrupt the turn first." (the Mac refuses a switch then); ↑ ↓ reach the rows after Fast only when they can be chosen. An older desktop shows no such section.
 
-**`/` commands and `@` files** (`Core/ComposerSuggestions.swift`, tested against `Tests/Fixtures/composer-suggestions.json`, which the engine's `suggest.rs` tests check too; `ComposerSuggestionViews.swift`, `RemoteModel+Suggestions.swift`). On a desktop that says `ready.features.chat_suggestions`, typing `/` at the start of the draft or `@` at the start of a word opens a list above the composer field: the chat's commands (RiWork's `/memo`, and Claude's `/compact` in Claude chats), or its folder's files and folders (shallowest first, at most 50 shown). The catalog comes from `chat.suggestions {chat_id}` the first time a list opens in a chat, is kept for 30 s (read again after, the old one shown meanwhile; one read per chat at a time; 6 chats kept), and is filtered on the phone, so typing never waits; `@` says "Listing files…" until the first read is in. The highlighted row has a card: what it is ("Claude command", "File · 2 KB"), what it does, and what sending does ("Sending: …", or that only the path goes in). A tap highlights a row; a tap on the highlighted row, or the card's **Insert**, puts it in (`/compact `, `src/main.rs `, a folder with `/`, a path with spaces in backticks); × closes the list until that word is gone. With a keyboard: ↑ ↓ move (around at the ends), ⏎ and ⇥ put the row in, ⎋ closes. Nothing is ever sent from the list: ⏎ sends only once it is gone. An older desktop shows no list and is never asked.
+**`/` commands and `@` files** (`Core/ComposerSuggestions.swift`, tested against `Tests/Fixtures/composer-suggestions.json`, which the engine's `suggest.rs` tests check too; `ComposerSuggestionViews.swift`, `RemoteModel+Suggestions.swift`). On a desktop that says `ready.features.chat_suggestions`, typing `/` at the start of the draft or `@` at the start of a word opens a list above the composer field: the chat's commands (Somtus's `/memo`, and Claude's `/compact` in Claude chats), or its folder's files and folders (shallowest first, at most 50 shown). The catalog comes from `chat.suggestions {chat_id}` the first time a list opens in a chat, is kept for 30 s (read again after, the old one shown meanwhile; one read per chat at a time; 6 chats kept), and is filtered on the phone, so typing never waits; `@` says "Listing files…" until the first read is in. The highlighted row has a card: what it is ("Claude command", "File · 2 KB"), what it does, and what sending does ("Sending: …", or that only the path goes in). A tap highlights a row; a tap on the highlighted row, or the card's **Insert**, puts it in (`/compact `, `src/main.rs `, a folder with `/`, a path with spaces in backticks); × closes the list until that word is gone. With a keyboard: ↑ ↓ move (around at the ends), ⏎ and ⇥ put the row in, ⎋ closes. Nothing is ever sent from the list: ⏎ sends only once it is gone. An older desktop shows no list and is never asked.
 
 **`&` models**, from the same reply (`mention_models`): a writing helper for telling an orchestrator which model you would like for the work a message hands out, whichever provider runs it (`&opus design the API, then &gpt-6.1-sol implement it`, in a Muse or Codex chat as well). `&` at the start of a word, anywhere in the draft and as often as you like, lists every provider's models (Codex, Claude and Muse, as the Mac knows them from its saved chats, the chat's own list first), each row saying its provider, the most used first across providers (how many of the person's own chats of that provider are set to each, as the Mac counts them; ties and unused ones in the Mac's order), the chat's own model marked but as selectable as the rest, filtered as the person types. Claude's `default` entry is not offered: it is the Claude CLI's own choice and names no model. The card shows the mention, the model's provider, name and description and the count, and says "Inserts `&<id>` in the message. It does not switch this chat; the orchestrator still decides." A tap on the highlighted row, the card's **Insert**, ⏎ or Tab puts in `&` and the model's id (`&opus `, `&gpt-6.1-sol `, a space after it as for the other rows) in place of the typed word, keeping the text around it. That is all it does: the mention is ordinary text, sent only with the message by the person's own Send; nothing switches the chat's model, effort or provider, and no `chat.command` goes out. The orchestrator reads the mention as a preference and still decides. A desktop before `mention_models` sends only the chat's provider's `models`, which are offered then (without `default`); a phone built before them keeps reading `models` alone, so it never sees another provider's models. A desktop before `&` sends no models, and no `&` list opens.
 
 **The screen** (`ChatView.swift`, under the tab strip):
 - A **row of its own under the tab row**, with no ⋯ of its own: the **model chip** (above), the **usage ring** and the **approval mode** chip (Supervised, Auto-edit, Full, Plan; `chat.command` `configure`, shown at once and taken back if refused). The ring fills with how full the context is (gold above 80 %, red above 95 %) with the percent beside it ("Tokens" alone when the window is not known); a tap or long press shows "42% · 84k / 200k tokens" and Claude's cost as "≈ $0.42 (estimate)", never as a price, and it follows the chat's usage as it comes. The same detail lists the provider's **usage windows** (`Core/ChatUsageLimits.swift`, tested): the `rate_limits` windows (a control event, also in the first snapshot page's `controls`, each replacing the last), fullest first, each with its percent (in the warning tone from its own `warn_at`, Claude 70 %, Codex 75 % or 50 %; bold from 90 %) and when it resets. There is no usage chip in the row, and a window is never a banner. The row is one line at any width with default text: [model ⌄] [ring] … [mode ⌄]. The chat's actions are the first section of the tab row's ⋯ menu: Compact conversation, Jump to latest, Notices…, Copy session id and Stop agent (the model and the usage are the row's, not the menu's).
-- **The banner row**, directly above the composer, is the one place a chat says something for a moment (`ChatNoticeBanners`, `Core/ChatNotices.swift`, tested): no link ("Not connected" with Reconnect; the transcript is kept and reading carries on from where it was), a chat that is gone from the Mac (Back), Starting, Stopped ("Your next message starts it again"), Failed with **Retry** (which sends the last message again, only when asked, and only when there was one), a transcript that cannot be read right now, what went wrong with the last command, what an older desktop cannot do ("Update RiWork on the Mac for recent-first loading"), and the **provider's notices**. Every line has × (a 44 pt target) and goes by itself when its cause is resolved (the link back, a read or snapshot that succeeds, the older history loaded, the next command that goes through); the phone's own messages are one line per source, so one that recurs updates its line ("×3") instead of adding one. The provider's notices (Claude's rate and usage limits and API retries, Codex's errors, warnings, config warnings and "Reconnecting… n/5") are not transcript rows: the latest of each kind since the person last sent something is one line (the host's `kind` on the notice, e.g. `rate_limit:seven_day`, `api_retry`, `reconnecting`, the key the Mac groups by too; a notice without one, from an older host, is a line of its own), closed until the provider says it again, gone when `resolved` or when its `resets_at` has passed, and the rest of a long row is "n more". A **reached usage limit** (`rate_limit:*` at error level; a usage warning is never a banner) and a **sign-in** (`auth_required`) are sticky: they stay from any turn until resolved, reset or closed; a limit says when it resets and offers **Usage**, which opens the ring's detail. Closing one of those also sends `chat.command` `dismiss_notice {item_id}`, so the host keeps it closed on every device; a notice the host flags `dismissed`, or that a key of the snapshot's `dismissed_notices` covers (`…|kind@resets_at`, `…|kind#item id`), is not shown (docs/chat-notices.md). Every notice of the chat is in a history ("n notices" in the row, or ⋯ → Notices…). Most severe first: error, warning, note. A shell's errors use the same line above its input, in focus mode too.
+- **The banner row**, directly above the composer, is the one place a chat says something for a moment (`ChatNoticeBanners`, `Core/ChatNotices.swift`, tested): no link ("Not connected" with Reconnect; the transcript is kept and reading carries on from where it was), a chat that is gone from the Mac (Back), Starting, Stopped ("Your next message starts it again"), Failed with **Retry** (which sends the last message again, only when asked, and only when there was one), a transcript that cannot be read right now, what went wrong with the last command, what an older desktop cannot do ("Update Somtus on the Mac for recent-first loading"), and the **provider's notices**. Every line has × (a 44 pt target) and goes by itself when its cause is resolved (the link back, a read or snapshot that succeeds, the older history loaded, the next command that goes through); the phone's own messages are one line per source, so one that recurs updates its line ("×3") instead of adding one. The provider's notices (Claude's rate and usage limits and API retries, Codex's errors, warnings, config warnings and "Reconnecting… n/5") are not transcript rows: the latest of each kind since the person last sent something is one line (the host's `kind` on the notice, e.g. `rate_limit:seven_day`, `api_retry`, `reconnecting`, the key the Mac groups by too; a notice without one, from an older host, is a line of its own), closed until the provider says it again, gone when `resolved` or when its `resets_at` has passed, and the rest of a long row is "n more". A **reached usage limit** (`rate_limit:*` at error level; a usage warning is never a banner) and a **sign-in** (`auth_required`) are sticky: they stay from any turn until resolved, reset or closed; a limit says when it resets and offers **Usage**, which opens the ring's detail. Closing one of those also sends `chat.command` `dismiss_notice {item_id}`, so the host keeps it closed on every device; a notice the host flags `dismissed`, or that a key of the snapshot's `dismissed_notices` covers (`…|kind@resets_at`, `…|kind#item id`), is not shown (docs/chat-notices.md). Every notice of the chat is in a history ("n notices" in the row, or ⋯ → Notices…). Most severe first: error, warning, note. A shell's errors use the same line above its input, in focus mode too.
 - The **transcript**, newest at the bottom. It follows the bottom while a reply streams, unless the reader scrolled up (the terminal's `StickyBottom` rule); then a "↓ Latest · N new" pill over the transcript's bottom edge takes the reader back (it has no row of its own, so the transcript reaches the composer and showing the pill resizes nothing). It is a `LazyVStack` of `Equatable` rows, so a message that streams rebuilds only itself; which cards are open is kept in the conversation, because rows come and go as the list scrolls.
 - **User messages** are right-aligned rounded bubbles, with an accent tint from the chosen palette. **Agent messages** are markdown (`Core/ChatMarkdown.swift`, pure and tested): headings, paragraphs, lists (nested, ordered, task), quotes, tables and rules are laid out here, and the inline syntax is `AttributedString(markdown:)`; only `http` and `https` links stay links (agent text is untrusted). A Codex file citation (`:codex-file-citation{path="…"}`) on a line of its own is the file's chip, which opens the file viewer; one inside a sentence reads as the file's name. Text is selectable; **code blocks** scroll sideways and have **Copy**. Parsing is safe on a streamed prefix (a fence not yet closed is a code block still arriving).
 - **Reasoning** is one collapsed line. Every **card** is one header row while closed: the status, what it is in bold, what it was about after it (cut to the line), counts or the exit code, and one chevron; opened, its body follows under a hairline with tight insets, and Copy is a glyph in the header. **Commands** show `$ command`, a status glyph and the exit code; opened, their working directory and the last 80 lines of output (and how many were left out); a running command shows its last three lines without opening. **Edits** show the path (or the first and how many more) with +/- counts; one file opens straight to its **diff**, several open to a row per file that opens its own; the diff is flush with the card (no frame of its own), a long press copies it, and it is a monospace **diff** (added green, removed red, hunk headers muted, from the active terminal palette) of at most 2000 lines. **Tools** show `server · tool` and the most telling input; opened, the input and the result. **Plans** and **to-dos** are checklists. **Web searches**, the **compaction** divider and **notices** (info, warning, error) are single rows.
@@ -578,7 +578,7 @@ dropped on the Mac's terminal (`Core/FileUpload.swift`, `RiWorkRemote/RemoteMode
   reason and **Dismiss**. One sending at a time, at most 16 files. Chunks of 90 KiB go one after another; a link that
   drops is waited for (up to 30 s) and the upload goes on where the Mac got to. A paste asked again after a lost answer
   carries the same batch, so it never types twice; an `uncertain` one says to look at the terminal first.
-- **An older Mac.** A Mac whose `ready` has no `features.upload` is never sent anything: the line says RiWork on the Mac
+- **An older Mac.** A Mac whose `ready` has no `features.upload` is never sent anything: the line says Somtus on the Mac
   needs an update. One that refuses the methods ("unsupported RPC method") is told apart the same way, and one whose
   CLI cannot paste yet says so before the first byte.
 
@@ -955,8 +955,8 @@ pictures of the chat screens there.
 swift test --package-path ios
 swift build --package-path ios
 python3 ios/scripts/local-smoke.py \
-  --relay-binary /absolute/path/to/riWork/target/release/riwork-remote \
-  --riwork /absolute/path/to/rebuilt/riwork --viewport
+  --relay-binary /absolute/path/to/riWork/target/release/somtus-remote \
+  --somtus /absolute/path/to/rebuilt/somtus --viewport
 ```
 
 The runner creates a temporary registry, Git project, task, zsh shell and
@@ -978,7 +978,7 @@ revocation and clean up; Ctrl-C also cleans up its recorded sessions/processes.
 For a pre-existing isolated fixture:
 
 ```sh
-swift run --package-path ios riwork-ios-smoke /secure/fixture.pairing.json \
+swift run --package-path ios somtus-ios-smoke /secure/fixture.pairing.json \
   --local --project FULL_PROJECT_UUID --shell FULL_SHELL_UUID \
   --columns 43 --rows 17 --send 'printf "explicit isolated continuation\n"'
 ```

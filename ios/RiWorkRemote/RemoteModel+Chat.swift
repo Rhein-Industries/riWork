@@ -471,7 +471,7 @@ extension RemoteModel {
                     if RemoteError.isUnsupportedMethod(error) {
                         conversation.snapshotUnavailableGeneration = connection
                         conversation.legacyLoading = true
-                        conversation.alerts.show(.desktop, "Update RiWork on the Mac for recent-first loading. Loading older desktop history…", level: .info)
+                        conversation.alerts.show(.desktop, "Update Somtus on the Mac for recent-first loading. Loading older desktop history…", level: .info)
                     } else {
                         let failure = ChatControlError.from(error, operation: .events)
                         if case .notFound = failure {
@@ -531,7 +531,7 @@ extension RemoteModel {
                 if !reply.more {
                     if listing != nil { conversation.contributorState.caughtUp(after: listing) }
                     // The older desktop's history is in: the note about loading it has done its work.
-                    if conversation.legacyLoading, conversation.alerts.text(.desktop)?.hasPrefix("Update RiWork") == true { conversation.alerts.clear(.desktop) }
+                    if conversation.legacyLoading, conversation.alerts.text(.desktop)?.hasPrefix("Update Somtus") == true { conversation.alerts.clear(.desktop) }
                     conversation.legacyLoading = false
                 }
                 // A chat that went on with the other provider: its tab shows the new one's mark and name at once.
@@ -558,7 +558,7 @@ extension RemoteModel {
                 guard generation == connection, conversation.follower == token else { continue }
                 if conversation.feed.degradedReplay {
                     conversation.resourceBlockedGeneration = connection
-                    conversation.readError = .failed("Update RiWork on the Mac to recover this large chat."); return
+                    conversation.readError = .failed("Update Somtus on the Mac to recover this large chat."); return
                 }
                 chatSupport = .unsupported
                 return

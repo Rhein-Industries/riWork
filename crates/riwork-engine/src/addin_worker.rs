@@ -1,5 +1,5 @@
 //! Runs an add-in's workers: the native part an add-in ships (an optimized GPU kernel, a Python
-//! model), each a process of its own beside RiWork.
+//! model), each a process of its own beside Somtus.
 //!
 //! A worker is declared in the add-in's `addin.json` (`workers`): `command[0]` is a file in the
 //! add-in's folder, run with the rest of `command` as its arguments, in that folder. It runs
@@ -12,20 +12,20 @@
 //!
 //! JSON lines on the worker's stdin and stdout, UTF-8, one object per line:
 //!
-//! - RiWork to the worker, a request: `{"id": <u64>, "method": "<name>", "params": <any JSON>}`
-//! - the worker to RiWork, its response: `{"id": <u64>, "result": <any>}`, or
+//! - Somtus to the worker, a request: `{"id": <u64>, "method": "<name>", "params": <any JSON>}`
+//! - the worker to Somtus, its response: `{"id": <u64>, "result": <any>}`, or
 //!   `{"id": <u64>, "error": {"message": "<text>"}}`
-//! - the worker to RiWork, an event (no id): `{"event": "<name>", "data": <any>}`
+//! - the worker to Somtus, an event (no id): `{"event": "<name>", "data": <any>}`
 //!
 //! Several requests may be in flight at once; responses may come in any order and are matched
 //! by their id. Lines that are not JSON objects are ignored. The worker exits when its stdin
-//! closes. Its stderr is for diagnostics: it goes to a log file, never to RiWork's output.
+//! closes. Its stderr is for diagnostics: it goes to a log file, never to Somtus's output.
 //!
 //! The worker runs in a process group of its own, in an environment of its own: PATH, HOME,
-//! TMPDIR, USER, LANG and LC_* of RiWork's, nothing that looks like a secret (a name with
+//! TMPDIR, USER, LANG and LC_* of Somtus's, nothing that looks like a secret (a name with
 //! SECRET, TOKEN, KEY or PASSWORD, or any ANTHROPIC_, OPENAI_ or RIWORK_ variable), and
 //! `RIWORK_ADDIN_DIR`, its folder. Stopping it closes its stdin, gives it 2 s, then kills its
-//! group. Its stdin is a pipe only RiWork holds, so when RiWork dies, however it dies, the
+//! group. Its stdin is a pipe only Somtus holds, so when Somtus dies, however it dies, the
 //! worker reads EOF: its signal to exit.
 use std::{
     collections::HashMap,
@@ -277,7 +277,7 @@ fn program(dir: &Path, spec: &WorkerSpec) -> Result<(PathBuf, PathBuf), String> 
     }
 }
 
-/// Whether a worker gets this variable of RiWork's environment: the basics a program needs, and
+/// Whether a worker gets this variable of Somtus's environment: the basics a program needs, and
 /// never one that looks like a secret.
 fn kept(name: &str) -> bool {
     let upper = name.to_ascii_uppercase();

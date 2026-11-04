@@ -54,7 +54,7 @@ case "$1 $2" in
   echo "$*" >> "$D/history.log"
   M=''; P=''; for A in "$@"; do if [ "$P" = '--lines' ]; then M="$A"; fi; P="$A"; done
   if [ -e "$D/cli-limit" ] && [ "$M" -gt "$(cat "$D/cli-limit")" ]; then
-    echo "riwork: --lines needs an integer from 1 to $(cat "$D/cli-limit")" >&2; exit 2
+    echo "somtus: --lines needs an integer from 1 to $(cat "$D/cli-limit")" >&2; exit 2
   fi
   if [ -e "$D/slow" ]; then sleep 1; fi
   cat "$D/history.json";;
@@ -93,7 +93,7 @@ impl Rig {
         });
         let shell = Uuid::new_v4().to_string();
         let cli = stand_in_cli(dir.path(), &shell);
-        let connector = Command::new(env!("CARGO_BIN_EXE_riwork-remote"))
+        let connector = Command::new(env!("CARGO_BIN_EXE_somtus-remote"))
             .env("RIWORK_HOME", &home)
             .args(["start", "--riwork"])
             .arg(&cli)

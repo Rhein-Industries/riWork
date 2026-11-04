@@ -2,7 +2,7 @@
 //! `chat.create`, `chat.events`, `chat.command`, `chat.stop`, `chat.models` and
 //! `chat.suggestions`.
 //!
-//! Each is one call of the installed CLI (`riwork chat ...`), which talks to the chat host.
+//! Each is one call of the installed CLI (`somtus chat ...`), which talks to the chat host.
 //! The connector validates the params before any CLI runs, builds the argument vector from
 //! the validated values (one argument per value, never a shell string), and checks what the
 //! CLI answers before it reaches the phone. The chat JSON itself (`ChatInfo`, `ChatEvent`,
@@ -229,7 +229,8 @@ pub(super) fn new_spec(params: &Value) -> std::result::Result<NewSpec, Fault> {
         "codex" => "codex",
         "claude" => "claude",
         "muse" => "muse",
-        _ => return Err(invalid("provider must be codex, claude or muse")),
+        "acp" => "acp",
+        _ => return Err(invalid("provider must be codex, claude, muse or acp")),
     };
     let target = match (
         uuid_field(object, "project_id")?,
@@ -431,7 +432,8 @@ pub(super) fn models_spec(params: &Value) -> std::result::Result<ModelsSpec, Fau
         "codex" => "codex",
         "claude" => "claude",
         "muse" => "muse",
-        _ => return Err(invalid("provider must be codex, claude or muse")),
+        "acp" => "acp",
+        _ => return Err(invalid("provider must be codex, claude, muse or acp")),
     };
     Ok(ModelsSpec {
         provider,
@@ -495,7 +497,7 @@ fn suggestions_result(chat: &str, cli: &Value) -> Option<Value> {
     let provider = cli
         .get("provider")?
         .as_str()
-        .filter(|provider| ["codex", "claude", "muse"].contains(provider))?;
+        .filter(|provider| ["codex", "claude", "muse", "acp"].contains(provider))?;
     let commands = cli.get("commands")?.as_array()?;
     let files = cli.get("files")?;
     let entries = files.get("entries")?.as_array()?;
@@ -532,7 +534,7 @@ fn suggestions_result(chat: &str, cli: &Value) -> Option<Value> {
 /// in a mention (no blank space inside), a one-line name of at most `SUGGESTED_MODEL_TEXT_MAX`
 /// characters, its description when that is such a line too (else `""`, rather than leave the
 /// model out), whether it is the provider's default, and how many chats use it. `with_provider`:
-/// one of `mention_models`, which names the provider that offers it (one RiWork knows, or the
+/// one of `mention_models`, which names the provider that offers it (one Somtus knows, or the
 /// model is left out); a `models` entry never carries one, as an older phone reads them.
 fn suggested_model(model: &Value, with_provider: bool) -> Option<Value> {
     let line = |text: &str, max: usize| text.chars().count() <= max && !has_control(text);
@@ -569,7 +571,7 @@ fn suggested_model(model: &Value, with_provider: bool) -> Option<Value> {
             model
                 .get("provider")?
                 .as_str()
-                .filter(|provider| ["codex", "claude", "muse"].contains(provider))?
+                .filter(|provider| ["codex", "claude", "muse", "acp"].contains(provider))?
         );
     }
     Some(out)
@@ -748,7 +750,8 @@ fn command_json(command: &Value) -> std::result::Result<Value, Fault> {
                 "codex" => "codex",
                 "claude" => "claude",
                 "muse" => "muse",
-                _ => return Err(invalid("provider must be codex, claude or muse")),
+                "acp" => "acp",
+                _ => return Err(invalid("provider must be codex, claude, muse or acp")),
             };
             let mut switch = Map::from_iter([
                 ("command".to_owned(), json!("switch")),
@@ -834,7 +837,7 @@ pub(super) fn stop_spec(params: &Value) -> std::result::Result<StopSpec, Fault> 
 
 // ---- What the CLI says -------------------------------------------------------------------------
 
-/// What a failed `riwork chat ...` says, by the first line of its error (`riwork: ` already
+/// What a failed `somtus chat ...` says, by the first line of its error (`somtus: ` already
 /// stripped). The wording belongs to the CLI and was there before these methods; the codes
 /// are the connector's.
 fn chat_fault(fault: Fault) -> Fault {
@@ -847,7 +850,7 @@ fn chat_fault(fault: Fault) -> Fault {
     if fault.code != "cli_error" {
         return fault;
     }
-    let Some(detail) = fault.message.strip_prefix("RiWork CLI failed: riwork: ") else {
+    let Some(detail) = super::cli_failure_detail(&fault.message) else {
         return fault;
     };
     let line = detail.lines().next().unwrap_or_default();
@@ -865,6 +868,7 @@ fn chat_fault(fault: Fault) -> Fault {
     {
         Fault::new("harness_unavailable", line)
     } else if line.starts_with("resolve ")
+        && !line.starts_with("resolve Somtus executable")
         && !line.starts_with("resolve RiWork executable")
         && line.ends_with("No such file or directory (os error 2)")
     {
@@ -876,10 +880,10 @@ fn chat_fault(fault: Fault) -> Fault {
         Fault::new("cli_error", line)
     }
 }
-/// What a failed `riwork chat command` says. The command may have been taken even so, when
+/// What a failed `somtus chat command` says. The command may have been taken even so, when
 /// the connector stopped waiting for the CLI.
 fn command_fault(fault: Fault) -> Fault {
-    if fault.code == "cli_error" && fault.message == "RiWork CLI timeout" {
+    if fault.code == "cli_error" && fault.message == "Somtus CLI timeout" {
         return Fault::new(
             "cli_error",
             "the chat took too long to answer and was left; read its events before trying again",
@@ -887,10 +891,10 @@ fn command_fault(fault: Fault) -> Fault {
     }
     chat_fault(fault)
 }
-/// What a failed `riwork chat new` says. The chat may exist even so, when the connector
+/// What a failed `somtus chat new` says. The chat may exist even so, when the connector
 /// stopped waiting for the CLI.
 fn create_chat_fault(fault: Fault) -> Fault {
-    if fault.code == "cli_error" && fault.message == "RiWork CLI timeout" {
+    if fault.code == "cli_error" && fault.message == "Somtus CLI timeout" {
         return Fault::new(
             "cli_error",
             "starting the chat took too long and was stopped; check the chat list before trying again",
@@ -903,7 +907,7 @@ fn create_chat_fault(fault: Fault) -> Fault {
 fn chat_info(value: &Value) -> bool {
     let text = |name: &str| value.get(name).and_then(Value::as_str);
     text("id").is_some_and(|chat| id(chat).is_ok())
-        && matches!(text("provider"), Some("codex" | "claude" | "muse"))
+        && matches!(text("provider"), Some("codex" | "claude" | "muse" | "acp"))
         && text("title").is_some()
         && text("cwd").is_some()
         && value.get("created_at_unix").is_some_and(Value::is_u64)
@@ -1197,7 +1201,7 @@ fn fit_suggestions(
 // ---- The methods -------------------------------------------------------------------------------
 
 impl Rpc {
-    /// Whether the installed CLI has the chat commands (`riwork capabilities --json` has
+    /// Whether the installed CLI has the chat commands (`somtus capabilities --json` has
     /// `"chat":true`): `Ok(false)` if it ran and did not say so (an older CLI refuses the
     /// question), an error if it could not be run or took longer than `limit` in all. Only a
     /// yes is remembered: a CLI updated while the connector runs is believed at once. Askers
@@ -1207,7 +1211,7 @@ impl Rpc {
         self.capability_known(&self.chat, limit).await
     }
     /// Whether `flag`, one of the booleans of this `Rpc` that remember a yes from
-    /// `riwork capabilities --json`, is set, asking the CLI if it is not (see `chat_known`).
+    /// `somtus capabilities --json`, is set, asking the CLI if it is not (see `chat_known`).
     /// One answer sets every flag it says yes to, so the questions of a handshake cost one
     /// run of the CLI between them.
     pub(super) async fn capability_known(
@@ -1221,7 +1225,7 @@ impl Rpc {
         let started = std::time::Instant::now();
         let answers = self.capability_answers.load(Ordering::Acquire);
         let Ok(_asking) = timeout(limit, self.asking_chat.lock()).await else {
-            return Err(cli_fault("RiWork CLI timeout"));
+            return Err(cli_fault("Somtus CLI timeout"));
         };
         // Answered while this one waited (a handshake asks about several at once): that
         // answer stands, a no as much as a yes.
@@ -1278,7 +1282,7 @@ impl Rpc {
                 Ok(flag.load(Ordering::Relaxed))
             }
             // It ran and refused the question: a CLI from before `capabilities`.
-            Err(e) if e.to_string().starts_with("RiWork CLI failed") => {
+            Err(e) if e.to_string().starts_with("Somtus CLI failed") => {
                 self.capability_answers.fetch_add(1, Ordering::Release);
                 Ok(false)
             }
@@ -1326,14 +1330,14 @@ impl Rpc {
         } else {
             Err(Fault::new(
                 "cli_error",
-                "the installed riwork CLI does not support chats; update RiWork",
+                "the installed somtus CLI does not support chats; update Somtus",
             ))
         }
     }
     /// The device may still act: it was authorized when the request started, and a request
     /// that waited in the ordered lane may have been revoked since.
     pub(super) fn still_authorized(&self, device: &str) -> std::result::Result<(), Fault> {
-        if self.storage.authorized(device).map_err(cli_fault)? {
+        if self.authorized(device).map_err(cli_fault)? {
             Ok(())
         } else {
             Err(Fault::new("not_found", "device revoked"))
@@ -1384,7 +1388,7 @@ impl Rpc {
         Ok(json!({ "chats": chats }))
     }
 
-    /// The models a chat of a provider can be set to, as `riwork chat models` reads them
+    /// The models a chat of a provider can be set to, as `somtus chat models` reads them
     /// from saved chats: for a chat that does not run that provider yet. Starts no host and
     /// no agent.
     pub(super) async fn chat_models(
@@ -1399,7 +1403,7 @@ impl Rpc {
         {
             return Err(Fault::new(
                 "cli_error",
-                "the installed riwork CLI cannot list saved chat models; update RiWork",
+                "the installed somtus CLI cannot list saved chat models; update Somtus",
             ));
         }
         let mut args: Vec<String> = vec![
@@ -1421,7 +1425,7 @@ impl Rpc {
             .ok_or_else(|| cli_fault("CLI returned models that do not fit the request"))
     }
 
-    /// What a chat's message box offers for `/` and `@`, as `riwork chat suggestions` reads it:
+    /// What a chat's message box offers for `/` and `@`, as `somtus chat suggestions` reads it:
     /// the chat's commands and the files and folders of its folder, from one bounded walk. Starts
     /// no host and no agent. `request` is the id of the request, for sizing the reply;
     /// `reply_limit` tells whether the session deflates its replies.
@@ -1438,7 +1442,7 @@ impl Rpc {
         {
             return Err(Fault::new(
                 "cli_error",
-                "the installed riwork CLI cannot list chat suggestions; update RiWork",
+                "the installed somtus CLI cannot list chat suggestions; update Somtus",
             ));
         }
         // A big folder's listing is bigger than a frame; `fit_suggestions` cuts what is sent.
@@ -1462,7 +1466,7 @@ impl Rpc {
         .map_err(|e| cli_fault(format!("fitting the suggestions was interrupted: {e}")))?
     }
 
-    /// Start a chat in a project or worktree that exists on the desktop, as `riwork chat
+    /// Start a chat in a project or worktree that exists on the desktop, as `somtus chat
     /// new` does: the chat host records the chat and starts its agent. Runs in the ordered
     /// lane, which a phone that drops does not cut short, and the CLI itself runs in a task of
     /// its own (see below). Not idempotent: a repeat starts another chat. A chat whose agent
@@ -1539,7 +1543,8 @@ impl Rpc {
             .await
             .map_err(|fault| {
                 if fault.message.contains("Unknown chat command")
-                    || fault.message.contains("Usage: riwork chat")
+                    || (fault.message.contains("Usage: somtus chat")
+                        || fault.message.contains("Usage: riwork chat"))
                 {
                     Fault::new(
                         "invalid_request",
@@ -1608,7 +1613,7 @@ impl Rpc {
         .map_err(|e| cli_fault(format!("fitting the snapshot was interrupted: {e}")))?
     }
 
-    /// A page of a chat's events after `since`, as `riwork chat events` collects it. `request`
+    /// A page of a chat's events after `since`, as `somtus chat events` collects it. `request`
     /// is the id of the request, for sizing the reply; `reply_limit` tells whether the session
     /// deflates its replies.
     pub(super) async fn chat_events(
@@ -1691,7 +1696,7 @@ impl Rpc {
         {
             return Err(Fault::new(
                 "cli_error",
-                "the installed riwork CLI cannot move a chat to another provider; update RiWork",
+                "the installed somtus CLI cannot move a chat to another provider; update Somtus",
             ));
         }
         self.still_authorized(device)?;
@@ -1726,9 +1731,7 @@ impl Rpc {
             Ok(done) if done.get("id").and_then(Value::as_str) == Some(spec.chat.as_str()) => {}
             Ok(_) => return Err(cli_fault("CLI answered for another chat")),
             Err(fault) => {
-                let no_host = fault
-                    .message
-                    .strip_prefix("RiWork CLI failed: riwork: ")
+                let no_host = super::cli_failure_detail(&fault.message)
                     .is_some_and(|detail| detail.starts_with("No chat host is running"));
                 if !no_host {
                     return Err(command_fault(fault));
@@ -1948,6 +1951,24 @@ mod tests {
                 fault.message
             );
         }
+    }
+
+    #[test]
+    fn acp_chat_metadata_creation_models_and_switch_keep_the_provider_identity() {
+        let spec = new_spec(&json!({"provider":"acp","project_id":PROJECT})).unwrap();
+        let mut info = json!({"id":"11111111-2222-4333-8444-666666666666","provider":"acp","project_id":PROJECT,
+            "approval_mode":"supervised","title":"ACP chat","cwd":"/remote/project","created_at_unix":1,"state":{"state":"idle"}});
+        assert!(chat_info(&info));
+        assert!(new_result(&spec, &info).is_some());
+        assert!(models_spec(&json!({"provider":"acp","project_id":PROJECT})).is_ok());
+        assert_eq!(
+            command_json(&json!({"command":"switch","provider":"acp"})).unwrap()["provider"],
+            "acp"
+        );
+        info["provider"] = json!("codex");
+        assert!(new_result(&spec, &info).is_none());
+        info["provider"] = json!("unknown-provider");
+        assert!(!chat_info(&info));
     }
 
     #[test]

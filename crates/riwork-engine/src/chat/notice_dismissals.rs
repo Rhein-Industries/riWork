@@ -38,6 +38,7 @@ fn prefix(provider: Provider, account: Option<&str>) -> String {
         Provider::Claude => "claude",
         Provider::Codex => "codex",
         Provider::Muse => "muse",
+        Provider::Acp => "acp",
     };
     format!("{provider}:{}|", account.unwrap_or("default"))
 }
@@ -372,7 +373,7 @@ impl Dismissals {
                     if targets.len() != 1 || unresolved.contains(old_scope) {
                         if warned.insert(old_scope.to_owned()) {
                             eprintln!(
-                                "riwork chat: warning: dropping notice dismissals for ambiguous managed Codex account scope ({})",
+                                "somtus chat: warning: dropping notice dismissals for ambiguous managed Codex account scope ({})",
                                 targets.len()
                             );
                         }

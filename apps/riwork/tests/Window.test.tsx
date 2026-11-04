@@ -18,7 +18,7 @@ test("P1-WIN-05 stored project labels and remote metadata update a title only on
   const calls:string[]=[]; const update=createTitleUpdater((title)=>calls.push(title));
   update(windowTitle("Alpha")); update(windowTitle("Alpha"));
   update(windowTitle("Alpha","Studio")); update(windowTitle(null,null,"global"));
-  expect(calls).toEqual(["RiWork · Alpha","RiWork · Alpha (on Studio)","RiWork · Global"]);
+  expect(calls).toEqual(["Somtus · Alpha","Somtus · Alpha (on Studio)","Somtus · Global"]);
 });
 
 test("P1-PROC-04 fallback notice is exposed as an accessible alert", async () => {

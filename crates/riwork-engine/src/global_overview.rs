@@ -1,13 +1,13 @@
 //! The global dashboard's picture of the work on this Mac, across every project.
 //!
-//! Everything here is derived from records RiWork already keeps: the store's projects,
+//! Everything here is derived from records Somtus already keeps: the store's projects,
 //! worktrees and tasks, the sessions tmux has, the agent activity the window samples, the
 //! chats the chat host (or, with no host running, the saved chats) knows, and the
 //! automations' ledger. Nothing is estimated, and arranging reads no file and starts no
 //! process: the caller samples, `build` only arranges. The readers here, `read_extras`
 //! (the automations and the chat logs' times) and `read_backends` (the app, the chat host
 //! and the providers' CLIs on disk, `backends`), are shared by the desktop windows and
-//! `riwork dashboard`, so both sample alike. Looking never starts an agent, a provider CLI
+//! `somtus dashboard`, so both sample alike. Looking never starts an agent, a provider CLI
 //! or a chat host.
 //!
 //! `wire` is the dashboard as the phone reads it (`dashboard.get`).
@@ -185,7 +185,7 @@ pub enum ProjectOrchestrator {
 pub struct ProjectOverview {
     pub id: String,
     pub name: String,
-    /// Its group in RiWork, if it is in one.
+    /// Its group in Somtus, if it is in one.
     pub folder: Option<String>,
     pub root: PathBuf,
     /// Agents in its shells and chats, by what they are doing.
@@ -197,7 +197,7 @@ pub struct ProjectOverview {
     /// Rows of this project in the attention list.
     pub attention: usize,
     pub orchestrator: Option<ProjectOrchestrator>,
-    /// The latest thing RiWork recorded happening in it (Unix seconds): a task changed, one
+    /// The latest thing Somtus recorded happening in it (Unix seconds): a task changed, one
     /// of its live agents began what it is doing, or one of its chats' logs grew as far as
     /// that was read. `None` when nothing recorded a time.
     pub last_activity: Option<u64>,
@@ -370,6 +370,7 @@ fn provider_agent(provider: Provider) -> &'static str {
         Provider::Codex => "Codex",
         Provider::Claude => "Claude",
         Provider::Muse => "Muse",
+        Provider::Acp => "ACP",
     }
 }
 

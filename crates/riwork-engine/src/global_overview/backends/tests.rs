@@ -241,7 +241,7 @@ fn guis_of_this_home_and_each_clis_version_on_disk_are_read_without_running_anyt
     executable(&grok, "grok");
     link(&grok, &root.join("grok-bin/grok"));
 
-    let gui = root.join("RiWork.app/Contents/MacOS/riwork");
+    let gui = root.join("Somtus.app/Contents/MacOS/somtus");
     executable(&gui, "gui");
     let mut fake = Fake::default();
     fake.guis = vec![
@@ -660,7 +660,7 @@ fn the_rows_say_what_runs_and_what_a_restart_would_apply() {
     assert_eq!(keys, ["app", "chat-host", "codex", "claude", "muse"]);
     let at = |at: u64| local_time(at, now);
 
-    assert_eq!(lines[0].title, "RiWork");
+    assert_eq!(lines[0].title, "Somtus");
     assert_eq!(
         lines[0].detail,
         format!(

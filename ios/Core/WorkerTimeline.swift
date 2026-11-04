@@ -1,6 +1,6 @@
 import Foundation
 
-// RiWork's own workers (a worker shell or a worker chat) as cards in the transcript of the chat that started them. The desktop's chat
+// Somtus's own workers (a worker shell or a worker chat) as cards in the transcript of the chat that started them. The desktop's chat
 // host writes a marker item into that chat's log when the chat starts a worker, and writes the same item again (same id) with the
 // worker's final snapshot when it ends: the phone gets both through `chat.events` / `chat.snapshot`, like any other item. While a
 // worker runs, its state comes from the lists the phone already reads (`shells.list`, `chats.list`), joined by the marker's session id.

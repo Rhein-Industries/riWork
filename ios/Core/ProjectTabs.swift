@@ -25,7 +25,7 @@ public enum SessionOpening: Sendable, Hashable {
     case terminal
     /// The chat screen (`chat.events` and `chat.command` of this chat id).
     case chat(String)
-    /// It runs as a chat and the desktop has none to offer this phone (an older RiWork): there is nothing to open.
+    /// It runs as a chat and the desktop has none to offer this phone (an older Somtus): there is nothing to open.
     case needsUpdate
     /// It runs as a chat but did not say which one, so there is nothing to open yet.
     case notReady
@@ -34,7 +34,7 @@ public enum SessionOpening: Sendable, Hashable {
     public var notice: (headline: String, detail: String)? {
         switch self {
         case .terminal, .chat: nil
-        case .needsUpdate: ("Update the Mac to open this orchestrator", "It runs as a chat, which the RiWork on your Mac does not offer yet.")
+        case .needsUpdate: ("Update the Mac to open this orchestrator", "It runs as a chat, which the Somtus on your Mac does not offer yet.")
         case .notReady: ("This orchestrator’s chat isn’t ready", "Refresh the tabs in a moment.")
         }
     }
@@ -43,7 +43,7 @@ public enum SessionOpening: Sendable, Hashable {
     public var globalNotice: (headline: String, detail: String)? {
         switch self {
         case .terminal, .chat: nil
-        case .needsUpdate: ("Update the Mac to open the global orchestrator", "It runs as a chat, which the RiWork on your Mac does not offer yet.")
+        case .needsUpdate: ("Update the Mac to open the global orchestrator", "It runs as a chat, which the Somtus on your Mac does not offer yet.")
         case .notReady: ("The global orchestrator’s chat isn’t ready", "Refresh in a moment.")
         }
     }

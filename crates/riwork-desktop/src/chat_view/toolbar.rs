@@ -389,7 +389,7 @@ pub fn billing_control(
         ),
         (ApiKey, Subscription) => (
             format!(
-                "Set to Subscription, but Claude still bills an API key ({}) that RiWork does not remove, such as an apiKeyHelper in Claude's own settings.",
+                "Set to Subscription, but Claude still bills an API key ({}) that Somtus does not remove, such as an apiKeyHelper in Claude's own settings.",
                 source.unwrap_or("of its own")
             ),
             true,

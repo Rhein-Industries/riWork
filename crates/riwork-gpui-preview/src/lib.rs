@@ -258,7 +258,7 @@ fn validate_size(width: u32, height: u32) -> Result<()> {
     Ok(())
 }
 
-/// Runs until RiWork closes the preview or disconnects. Frames are capped at
+/// Runs until Somtus closes the preview or disconnects. Frames are capped at
 /// 20fps, unchanged frames are suppressed, and the send queue holds one frame.
 pub fn run<V: Render + 'static>(
     build_root: impl FnOnce(&mut Window, &mut App) -> Entity<V>,
@@ -271,10 +271,10 @@ pub fn run_with_assets<V: Render + 'static>(
     build_root: impl FnOnce(&mut Window, &mut App) -> Entity<V>,
 ) -> Result<()> {
     let socket = std::env::var_os("RIWORK_PREVIEW_SOCKET").context(
-        "RIWORK_PREVIEW_SOCKET is missing; launch this command from a RiWork App Preview tab",
+        "RIWORK_PREVIEW_SOCKET is missing; launch this command from a Somtus App Preview tab",
     )?;
     let token = std::env::var("RIWORK_PREVIEW_TOKEN").context("RIWORK_PREVIEW_TOKEN is missing")?;
-    let mut stream = UnixStream::connect(socket).context("Connecting to RiWork preview")?;
+    let mut stream = UnixStream::connect(socket).context("Connecting to Somtus preview")?;
     stream.set_write_timeout(Some(Duration::from_secs(2)))?;
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     write_message(
@@ -290,7 +290,7 @@ pub fn run_with_assets<V: Render + 'static>(
         Some(PreviewHostMessage::Ready {
             protocol: PREVIEW_PROTOCOL_VERSION,
         }) => {}
-        _ => bail!("RiWork did not acknowledge preview protocol {PREVIEW_PROTOCOL_VERSION}"),
+        _ => bail!("Somtus did not acknowledge preview protocol {PREVIEW_PROTOCOL_VERSION}"),
     }
     stream.set_read_timeout(None)?;
 

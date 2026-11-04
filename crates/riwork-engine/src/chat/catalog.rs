@@ -34,7 +34,7 @@ pub struct Catalog {
     /// Model ids chats were set to that the list does not have (typed by hand, or from an
     /// older list), newest first. Never claimed to be supported.
     pub configured: Vec<String>,
-    /// The Codex account the list is for (a RiWork account id; none for the system default
+    /// The Codex account the list is for (a Somtus account id; none for the system default
     /// and for Claude).
     pub account: Option<String>,
     /// That account as the person knows it.
@@ -139,7 +139,7 @@ fn reported(home: &Path, id: &str, provider: Provider) -> Option<Vec<ModelOption
 
 /// The models chat `info`'s provider offers it, as its `&` list shows them: the newest list its
 /// own driver reported, as its model menu shows it, else what a new chat of its project would
-/// be offered (`saved`, as `riwork chat models` reads it). Saved metadata only: no host, no
+/// be offered (`saved`, as `somtus chat models` reads it). Saved metadata only: no host, no
 /// provider.
 pub fn chat_models(home: &Path, info: &ChatInfo) -> Vec<ModelOption> {
     let models = reported(home, &info.id, info.provider)
@@ -150,7 +150,7 @@ pub fn chat_models(home: &Path, info: &ChatInfo) -> Vec<ModelOption> {
         .collect()
 }
 
-/// What each provider offers a chat of `project`, as `saved` reads it (what `riwork chat models`
+/// What each provider offers a chat of `project`, as `saved` reads it (what `somtus chat models`
 /// lists), in `suggest::PROVIDERS` order: the lists `&` offers mentions of. `infos` are the
 /// chats' info as `log::read_infos` read it. A provider that cannot be offered (a Codex account
 /// that cannot be used) lists nothing. Saved metadata only.
@@ -189,6 +189,12 @@ fn saved_among(
     project: Option<&str>,
     provider: Provider,
 ) -> Catalog {
+    let acp_config = if provider == Provider::Acp {
+        match super::acp_config::load(home) {
+            Ok(config) => Some(config),
+            Err(error) => return Catalog { error: Some(error), ..Default::default() },
+        }
+    } else { None };
     let balanced = provider == Provider::Codex && crate::codex_balancing::balances(home, project);
     let binding = match provider {
         Provider::Codex => match sessions::selected_codex_binding(home, project) {
@@ -204,7 +210,7 @@ fn saved_among(
             }
         },
         Provider::Claude => None,
-        Provider::Muse => None,
+        Provider::Muse | Provider::Acp => None,
     };
     let mut result = Catalog {
         account: binding.as_ref().and_then(|binding| binding.id.clone()),
@@ -218,6 +224,7 @@ fn saved_among(
         .iter()
         .rev()
         .filter(|info| eligible(info, provider, result.account.as_deref()))
+        .filter(|info| acp_config.as_ref().is_none_or(|config| super::acp_config::bound(home, &info.id).as_ref() == Some(config)))
         .take(CHATS)
     {
         if let Some(id) = &info.model

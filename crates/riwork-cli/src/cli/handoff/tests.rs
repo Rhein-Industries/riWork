@@ -1,4 +1,4 @@
-//! `riwork handoff`: the command line, the caller as the source, and what is printed,
+//! `somtus handoff`: the command line, the caller as the source, and what is printed,
 //! against the in-process chat host.
 
 use std::time::Duration;
@@ -199,7 +199,7 @@ fn what_cannot_be_understood_is_refused_with_the_usage() {
     let refused = |line: &str| parse(words(line)).unwrap_err();
     assert!(
         refused("--provider codex")
-            .starts_with("--to must be shell or chat\nUsage: riwork handoff")
+            .starts_with("--to must be shell or chat\nUsage: somtus handoff")
     );
     assert!(refused("--to robot --provider codex").starts_with("--to must be shell or chat"));
     assert!(refused("--to chat").starts_with("--provider must be codex, claude, grok or muse"));
@@ -451,7 +451,7 @@ fn an_account_is_by_label_and_a_claude_target_has_none() {
         )
         .unwrap_err();
     assert!(
-        error.starts_with("Claude has no RiWork-managed accounts"),
+        error.starts_with("Claude has no Somtus-managed accounts"),
         "{error}"
     );
     let error = rig

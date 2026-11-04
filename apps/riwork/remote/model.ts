@@ -14,7 +14,7 @@ export interface RemoteWorktree { id: string; branch: string; path: string; prim
 export interface RemoteTask { id: string; title: string; details: string; status: string; worktreeId: string | null }
 export interface RemoteShell {
   id: string; projectId: string | null; worktreeId: string | null; orchestrator: boolean;
-  chat: boolean; harness: string | null; alive: boolean; cwd: string; display: string;
+  chat: boolean; chatId?: string | null; harness: string | null; alive: boolean; cwd: string; display: string;
 }
 export interface RemoteLists {
   key: string; host: string; project: string; hostLabel: string; projectName: string; link: RemoteLink; unpaired: boolean;
@@ -55,7 +55,7 @@ export const REMOTE_UNPAIRED = "This Mac is no longer paired. Add it again in Se
  * recipe) stays available as its detail instead of a paragraph. */
 export function remoteErrorNotice(error: string): { summary: string; detail: string | null } {
   if (error.startsWith("Missing standalone remote binary")) {
-    return { summary: "Other Macs need the riwork-remote helper, which is not installed. Build it with riwork update.", detail: error };
+    return { summary: "Other Macs need the somtus-remote helper, which is not installed. Build it with somtus update.", detail: error };
   }
   const end = error.indexOf(". ");
   return end > 0 ? { summary: error.slice(0, end + 1), detail: error } : { summary: error, detail: null };
@@ -134,14 +134,15 @@ export function projectConnectionNote(project: RemoteLists): string | null {
   return null;
 }
 export function shellOpenRefusal(shell: RemoteShell, host: string): string | null {
-  if (shell.chat) return `${shell.display} runs as a chat on ${host}; chats run on that Mac. Open it there, or in the iOS app.`;
+  if (shell.chat && !shell.chatId) return `${shell.display} is a chat on ${host}, but this host did not report its chat ID. Refresh or update the host.`;
+  if (shell.chat) return null;
   if (!shell.alive) return `${shell.display} has ended on ${host}`;
   return null;
 }
 export function checkPairingLink(text: string): string | null {
   const link = text.trim();
   if (!link) return "Paste the pairing link from the other Mac.";
-  if (!link.startsWith("riwork://pair?") || /\s/u.test(link)) return "That is not a RiWork pairing link.";
+  if (!(link.startsWith("somtus://pair?") || link.startsWith("riwork://pair?")) || /\s/u.test(link)) return "That is not a Somtus pairing link.";
   return null;
 }
 export function maskedPairingLink(link: string): string {

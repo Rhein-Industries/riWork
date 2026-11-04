@@ -41,7 +41,7 @@ export function speechModelState(model: SpeechModel): string {
   }
 }
 
-/** Dictation's speech model: Apple's on-device speech, or a local MLX model RiWork downloads.
+/** Dictation's speech model: Apple's on-device speech, or a local MLX model Somtus downloads.
  * Choosing and downloading are separate, so one click never starts a download of many gigabytes. */
 export function SpeechModelPicker(props: { selected: () => string; onChoose: (key: string) => void; theme: Theme; service?: SpeechModelService; onError?: (reason: unknown) => void }) {
   const theme = props.theme, service = props.service ?? nativeService;
@@ -86,7 +86,7 @@ export function SpeechModelPicker(props: { selected: () => string; onChoose: (ke
 
   return <View testID="speech-models" style={{ gap: 4, paddingVertical: space(7, theme().scale) }}>
     <Text style={textStyle(theme)}>Dictation model</Text>
-    <Text style={{ ...muted(), maxWidth: 560 }}>Every model runs on this Mac; audio never leaves it. Local models download from Hugging Face into its shared cache, so a model another app such as riTranscribe downloaded is used as it is. The first one also sets up a Python runtime (about 450 MB) in RiWork's data folder.</Text>
+    <Text style={{ ...muted(), maxWidth: 560 }}>Every model runs on this Mac; audio never leaves it. Local models download from Hugging Face into its shared cache, so a model another app such as riTranscribe downloaded is used as it is. The first one also sets up a Python runtime (about 450 MB) in Somtus's data folder.</Text>
     {catalog()?.models.map(row)}
     {!catalog() && <Text style={muted()}>Checking which models are on this Mac…</Text>}
     {catalog() && !catalog()!.runtime.uv && !catalog()!.runtime.ready && <Text testID="speech-models-uv" style={{ ...muted(), color: theme().palette.gold }}>Local models need uv to set up their runtime. Install it with `brew install uv`, then come back here.</Text>}

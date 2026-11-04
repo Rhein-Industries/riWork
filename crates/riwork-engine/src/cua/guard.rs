@@ -1,18 +1,18 @@
-//! RiWork's guard on Cua input to its own live windows.
+//! Somtus's guard on Cua input to its own live windows.
 //!
-//! An agent that drives the RiWork app it runs under changes what the user is working in:
+//! An agent that drives the Somtus app it runs under changes what the user is working in:
 //! an orchestrator once tested a feature in its own chat window, changing its layout,
-//! opening a destructive dialog and typing into its find bar. So `riwork cua mcp` refuses,
-//! by default, the tool calls that would send input to a live RiWork app, and passes every
+//! opening a destructive dialog and typing into its find bar. So `somtus cua mcp` refuses,
+//! by default, the tool calls that would send input to a live Somtus app, and passes every
 //! other call through untouched:
 //!
 //! - Read-only tools (window state, screenshots, lists, health) always pass.
-//! - A call that names a live RiWork app's pid (`pid` or `target.pid`) is refused, whatever
+//! - A call that names a live Somtus app's pid (`pid` or `target.pid`) is refused, whatever
 //!   the tool.
-//! - While a RiWork app runs, an input tool that is not aimed at one app's window is refused
+//! - While a Somtus app runs, an input tool that is not aimed at one app's window is refused
 //!   too: desktop-scope and frontmost-app input, a bare element token and a replayed
-//!   trajectory could all land in RiWork. Naming the intended app's `pid` lets it through.
-//! - Launching RiWork itself is refused while one runs.
+//!   trajectory could all land in Somtus. Naming the intended app's `pid` lets it through.
+//! - Launching Somtus itself is refused while one runs.
 //!
 //! Live means registered in the user's own runtime registry (`runtime::default_directory`)
 //! and running. A fixture app started with its own `RIWORK_RUNTIME_DIR` (and `RIWORK_HOME`)
@@ -22,7 +22,7 @@
 //! registry records.
 //!
 //! `RIWORK_CUA_ALLOW_RIWORK_INPUT=1` in the proxy's environment turns the guard off for that
-//! proxy. The harnesses filter their MCP servers' environments, so a terminal session RiWork
+//! proxy. The harnesses filter their MCP servers' environments, so a terminal session Somtus
 //! launches has it forwarded, on its own pane, when it is set where the session is launched;
 //! the tmux server and the chat host, which outlive any one launch, never keep it, so chats
 //! (orchestrators included) are always guarded. Nothing the agent does later reaches the
@@ -31,10 +31,10 @@
 
 use serde_json::Value;
 
-/// The variable that, set to `1` in the environment of `riwork cua mcp`, turns the guard off.
+/// The variable that, set to `1` in the environment of `somtus cua mcp`, turns the guard off.
 pub const ALLOW_RIWORK_INPUT: &str = "RIWORK_CUA_ALLOW_RIWORK_INPUT";
 
-/// The bundle identifier `scripts/bundle-macos.sh` gives RiWork.
+/// The bundle identifier `scripts/bundle-macos.sh` gives Somtus.
 const RIWORK_BUNDLE_ID: &str = "dev.riwork.shell";
 
 /// Whether this process's environment turns the guard off.
@@ -73,9 +73,9 @@ const READ_ONLY: &[&str] = &[
     "zoom",
 ];
 
-/// Tools that send input to an app's windows, the frontmost app or the desktop. While RiWork
+/// Tools that send input to an app's windows, the frontmost app or the desktop. While Somtus
 /// runs, a call of one of these must name the process it means. The browser tools are not
-/// among them: they drive pages over the DevTools protocol, which RiWork's windows do not
+/// among them: they drive pages over the DevTools protocol, which Somtus's windows do not
 /// serve. `move_cursor` counts only when it moves the real pointer (`moves_real_pointer`).
 const INPUT: &[&str] = &[
     "bring_to_front",
@@ -101,7 +101,7 @@ pub(crate) enum Verdict {
 }
 
 /// Whether the call of `tool` with `arguments` may reach the driver. `live_apps` gives the
-/// pids of the user's running RiWork apps; it is asked only for a call that is not read-only.
+/// pids of the user's running Somtus apps; it is asked only for a call that is not read-only.
 pub(crate) fn verdict(
     tool: &str,
     arguments: &Value,
@@ -117,28 +117,28 @@ pub(crate) fn verdict(
     let named = named_pids(arguments);
     if let Some(pid) = named.iter().find(|pid| live.contains(pid)) {
         return Verdict::Refuse(format!(
-            "RiWork refused `{tool}`: pid {pid} is the user's running RiWork app, whose \
+            "Somtus refused `{tool}`: pid {pid} is the user's running Somtus app, whose \
              windows hold their orchestrator chats and terminals and their work. Agents do not \
-             send input to RiWork's own live windows (the riwork-orchestrator skill's Hard \
+             send input to Somtus's own live windows (the riwork-orchestrator skill's Hard \
              boundaries); read-only tools such as get_window_state still work. Check UI in a \
-             fixture RiWork with its own RIWORK_HOME and RIWORK_RUNTIME_DIR, or ask the user \
+             fixture Somtus with its own RIWORK_HOME and RIWORK_RUNTIME_DIR, or ask the user \
              to look. Only the user can lift this, when they start a session."
         ));
     }
     if tool == "launch_app" && launches_riwork(arguments) {
         return Verdict::Refuse(
-            "RiWork refused `launch_app`: the user's RiWork app is running, and launching \
-             RiWork would act on it and its live state. Start a fixture RiWork with its own \
+            "Somtus refused `launch_app`: the user's Somtus app is running, and launching \
+             Somtus would act on it and its live state. Start a fixture Somtus with its own \
              RIWORK_HOME and RIWORK_RUNTIME_DIR instead."
                 .to_owned(),
         );
     }
     if sends_input(tool, arguments) && (named.is_empty() || desktop_scoped(arguments)) {
         return Verdict::Refuse(format!(
-            "RiWork refused `{tool}`: the call is not aimed at one app's window (desktop \
+            "Somtus refused `{tool}`: the call is not aimed at one app's window (desktop \
              scope, the frontmost app, a bare element token or a replay), so with the user's \
-             RiWork app running it could land in a RiWork window. Address the app you mean \
-             by its `pid` (or a window `target`), without desktop scope; input to RiWork's \
+             Somtus app running it could land in a Somtus window. Address the app you mean \
+             by its `pid` (or a window `target`), without desktop scope; input to Somtus's \
              own windows stays refused."
         ));
     }
@@ -182,7 +182,9 @@ fn launches_riwork(arguments: &Value) -> bool {
     match text("bundle_id").filter(|id| !id.is_empty()) {
         Some(bundle_id) => bundle_id.eq_ignore_ascii_case(RIWORK_BUNDLE_ID),
         None => text("name").is_some_and(|name| {
-            name.eq_ignore_ascii_case("RiWork") || name.eq_ignore_ascii_case("RiWork.app")
+            ["Somtus", "Somtus.app", "RiWork", "RiWork.app"]
+                .iter()
+                .any(|candidate| name.eq_ignore_ascii_case(candidate))
         }),
     }
 }
@@ -192,7 +194,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    /// A RiWork app runs as pid 4242; pid 77 is another app.
+    /// A Somtus app runs as pid 4242; pid 77 is another app.
     const RIWORK: u32 = 4242;
     const OTHER: u32 = 77;
 
@@ -253,7 +255,7 @@ mod tests {
             ),
             // A pid as text is still that pid.
             ("click", json!({"pid": RIWORK.to_string(), "x": 1, "y": 1})),
-            // A tool this list does not know, aimed at RiWork.
+            // A tool this list does not know, aimed at Somtus.
             ("some_future_input", json!({"pid": RIWORK})),
         ] {
             let reason = refused(tool, arguments);
@@ -295,7 +297,7 @@ mod tests {
             ("launch_app", json!({"name": "Calculator"})),
             // Moving the agent's own cursor overlay is no input.
             ("move_cursor", json!({"x": 5, "y": 5})),
-            // Browser tools drive pages over CDP, which RiWork windows do not serve.
+            // Browser tools drive pages over CDP, which Somtus windows do not serve.
             (
                 "browser_click",
                 json!({"target_id": "t", "tab_id": "b", "session": "s", "ref": "r"}),
@@ -355,15 +357,17 @@ mod tests {
         for arguments in [
             json!({"bundle_id": "dev.riwork.shell"}),
             json!({"bundle_id": "DEV.RIWORK.SHELL", "creates_new_application_instance": true}),
+            json!({"name": "Somtus"}),
+            json!({"name": " SOMTUS.APP "}),
             json!({"name": "RiWork"}),
             json!({"name": " riwork.app "}),
         ] {
-            assert!(refused("launch_app", arguments).contains("fixture RiWork"));
+            assert!(refused("launch_app", arguments).contains("fixture Somtus"));
         }
         // A bundle id wins over the name, as the driver reads them.
         assert!(allowed(
             "launch_app",
-            json!({"bundle_id": "com.apple.calculator", "name": "RiWork"})
+            json!({"bundle_id": "com.apple.calculator", "name": "Somtus"})
         ));
     }
 

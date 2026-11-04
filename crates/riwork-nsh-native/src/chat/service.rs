@@ -1,8 +1,8 @@
-//! How the bridge reaches this home's chat host (`riwork chat serve`).
+//! How the bridge reaches this home's chat host (`somtus chat serve`).
 //!
 //! Following history only resolves the socket; explicit work (create, send)
-//! ensures the host. Only the RiWork desktop executable may start a host: its
-//! `nsh_host` calls [`allow_host_start`], because `riwork chat ensure` runs the
+//! ensures the host. Only the Somtus desktop executable may start a host: its
+//! `nsh_host` calls [`allow_host_start`], because `somtus chat ensure` runs the
 //! current executable, which in a test runner is the test harness. Tests install
 //! their own backend; debug/test-support builds may opt into an in-process
 //! fixture host on an isolated `/tmp` home that replays recorded provider
@@ -32,7 +32,7 @@ pub trait ChatBackend: Send + Sync {
 static BACKEND: OnceLock<Arc<dyn ChatBackend>> = OnceLock::new();
 static HOST_START: AtomicBool = AtomicBool::new(false);
 
-/// Called once by the desktop host: this executable answers `riwork chat ensure`.
+/// Called once by the desktop host: this executable answers `somtus chat ensure`.
 pub fn allow_host_start() {
     HOST_START.store(true, Ordering::SeqCst);
 }

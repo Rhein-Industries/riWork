@@ -7,7 +7,7 @@ export function settingsLayout(width: number) {
     gap: kind === "wide" ? 16 : kind === "medium" ? 14 : 10 };
 }
 export const SETTINGS_SECTIONS = [
-  { number: "01", title: "Computer use", description: "Let RiWork agents operate desktop apps through Cua.ai." },
+  { number: "01", title: "Computer use", description: "Let Somtus agents operate desktop apps through Cua.ai." },
   { number: "02", title: "Codex accounts", description: "The account new Codex sessions start with." },
   { number: "03", title: "Appearance", description: "Theme, terminal colors, interface font and text size." },
   { number: "04", title: "Files", description: "How the Files tree and its Preview pane open together." },

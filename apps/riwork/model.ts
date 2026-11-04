@@ -19,7 +19,7 @@ export interface HostParams {
   build?: { version: string; commit: string; debug: boolean };
 }
 
-export type PanelKind = "shell" | "remote_shell" | "panel" | "chat" | "app_preview" | "addin" | "empty";
+export type PanelKind = "shell" | "remote_shell" | "remote_chat" | "panel" | "chat" | "app_preview" | "addin" | "empty";
 export type PanelStatus = "working" | "waiting" | "error" | "done" | "idle" | "stopped";
 
 /** View data from Rust; id is the stable DockArea key, not a display label. */
@@ -88,8 +88,8 @@ export function windowTitle(
   remoteHost?: string | null,
   kind: "project" | "global" = "project",
 ): string {
-  if (kind === "global") return "RiWork · Global";
-  const title = projectName ? `RiWork · ${projectName}` : "RiWork";
+  if (kind === "global") return "Somtus · Global";
+  const title = projectName ? `Somtus · ${projectName}` : "Somtus";
   return remoteHost ? `${title} (on ${remoteHost})` : title;
 }
 

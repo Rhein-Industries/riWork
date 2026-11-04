@@ -77,7 +77,7 @@ final class ComposerSuggestionsTests: XCTestCase {
         XCTAssertEqual(claude.first?.handler, .provider)
         XCTAssertNil(claude.first?.argument)
         XCTAssertEqual(claude.first?.insertion, "/compact")
-        XCTAssertEqual(try fixture["commands"]["codex"].decode([ComposerCommand].self).map(\.name), ["memo"], "Codex reads a typed /compact as words, but /memo is RiWork's")
+        XCTAssertEqual(try fixture["commands"]["codex"].decode([ComposerCommand].self).map(\.name), ["memo"], "Codex reads a typed /compact as words, but /memo is Somtus's")
         XCTAssertEqual(try fixture["commands"]["muse"].decode([ComposerCommand].self).map(\.name), ["memo"])
     }
     func testCommandsRankAsTheSharedVectorsSay() throws {
@@ -403,7 +403,7 @@ final class ComposerSuggestionsTests: XCTestCase {
         XCTAssertEqual(preview.inserts, "/compact")
         XCTAssertTrue(preview.effect.hasPrefix("Sending: Goes to Claude as typed."))
         let memo = ComposerCommand(name: "memo", summary: "s", argument: "TEXT", sends: "x", handler: .riwork)
-        XCTAssertEqual(ComposerPreview(command: memo, provider: .codex).kind, "RiWork command")
+        XCTAssertEqual(ComposerPreview(command: memo, provider: .codex).kind, "Somtus command")
         XCTAssertEqual(ComposerPreview(command: memo, provider: .codex).body[1], "Takes TEXT")
         XCTAssertEqual(ComposerPreview(command: compact, provider: .muse).kind, "Muse command")
         let file = ComposerPreview(file: ComposerFileEntry(path: "docs/my notes.md", bytes: 2048))

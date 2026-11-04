@@ -73,7 +73,7 @@ pub struct Header {
     /// The conversation's origin, such as `Codex chat "Fix the build" (1234abcd)`.
     pub from: String,
     pub model: Option<String>,
-    /// The project's name and the worktree's branch, when RiWork knows them.
+    /// The project's name and the worktree's branch, when Somtus knows them.
     pub project: Option<String>,
     pub worktree: Option<String>,
     pub directory: PathBuf,
@@ -148,7 +148,7 @@ fn header_len(header: &Header) -> usize {
 
 fn header_text(header: &Header, contents: &str) -> String {
     let mut text = String::from("# Handoff\n\n");
-    text.push_str("Written by RiWork (`riwork handoff`) so that a new agent can take over this conversation.\n\n");
+    text.push_str("Written by Somtus (`somtus handoff`) so that a new agent can take over this conversation.\n\n");
     text.push_str(&format!("- **From:** {}\n", header.from));
     if let Some(model) = &header.model {
         text.push_str(&format!("- **Model:** {model}\n"));

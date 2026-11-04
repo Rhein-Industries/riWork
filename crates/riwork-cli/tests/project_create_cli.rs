@@ -1,4 +1,4 @@
-//! `riwork project create --exclusive` as the remote connector drives it for the phone's
+//! `somtus project create --exclusive` as the remote connector drives it for the phone's
 //! `project.create`: the argv it sends, the JSON it reads back (the project `project list` shows),
 //! the `already_exists:` tokens it turns into an error code (`remote/src/rpc.rs`,
 //! `project_create_fault`) and what the flag promises never to touch. Every child runs with a
@@ -48,7 +48,7 @@ impl Sandbox {
     }
 
     fn run(&self, args: &[&str]) -> Output {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_riwork-cli"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_somtus-cli"));
         command
             .args(args)
             .current_dir(self.cwd())
@@ -171,7 +171,7 @@ fn finish(mut child: Child, what: &[&str]) -> Output {
         if Instant::now() > deadline {
             let _ = child.kill();
             let _ = child.wait();
-            panic!("riwork {what:?} did not exit; it may have started the GUI");
+            panic!("somtus {what:?} did not exit; it may have started the GUI");
         }
         thread::sleep(Duration::from_millis(20));
     };
@@ -282,7 +282,7 @@ fn a_folder_that_is_there_is_refused_untouched() {
     for name in ["Mine", "AFile"] {
         let line = sandbox.refused(name);
         assert!(
-            line.starts_with("riwork: already_exists: folder "),
+            line.starts_with("somtus: already_exists: folder "),
             "{name}: {line}"
         );
     }
@@ -309,7 +309,7 @@ fn a_project_of_that_name_is_refused_whatever_the_case_and_a_repeat_is_refused_t
     for name in ["Taken", "taken", "TAKEN"] {
         let line = sandbox.refused(name);
         assert!(
-            line.starts_with("riwork: already_exists: project "),
+            line.starts_with("somtus: already_exists: project "),
             "{name}: {line}"
         );
         assert!(!sandbox.projects().join(name).exists(), "{name} was made");
@@ -318,7 +318,7 @@ fn a_project_of_that_name_is_refused_whatever_the_case_and_a_repeat_is_refused_t
     sandbox.created("Once", true);
     let line = sandbox.refused("Once");
     assert!(
-        line.starts_with("riwork: already_exists: project "),
+        line.starts_with("somtus: already_exists: project "),
         "{line}"
     );
     assert_eq!(sandbox.projects_listed().len(), 2);
@@ -339,7 +339,7 @@ fn a_registered_folder_is_never_renamed_by_a_new_project() {
     ]);
     let line = sandbox.refused("renamed");
     assert!(
-        line.starts_with("riwork: already_exists: folder "),
+        line.starts_with("somtus: already_exists: folder "),
         "{line}"
     );
     let listed = sandbox.projects_listed();
@@ -352,11 +352,11 @@ fn the_flag_belongs_to_create_and_is_never_read_as_a_path() {
     let sandbox = Sandbox::new();
     // `add` has no such flag; the usage error leaves the working directory as it was.
     let line = sandbox.failure(&["project", "add", "--exclusive"]);
-    assert!(line.contains("Usage: riwork project add PATH"), "{line}");
+    assert!(line.contains("Usage: somtus project add PATH"), "{line}");
     assert_eq!(sandbox.tree(), ["cwd", "home"]);
     // Without a name or a path there is nothing to create.
     let line = sandbox.failure(&["project", "create", "--exclusive"]);
-    assert!(line.contains("Usage: riwork project create"), "{line}");
+    assert!(line.contains("Usage: somtus project create"), "{line}");
     assert_eq!(sandbox.tree(), ["cwd", "home"]);
     // With an explicit PATH it is still exclusive, and still its own flag.
     let path = sandbox.root.join("explicit");
@@ -376,5 +376,5 @@ fn the_flag_belongs_to_create_and_is_never_read_as_a_path() {
         "--exclusive",
         "--json",
     ]);
-    assert!(line.starts_with("riwork: already_exists: "), "{line}");
+    assert!(line.starts_with("somtus: already_exists: "), "{line}");
 }

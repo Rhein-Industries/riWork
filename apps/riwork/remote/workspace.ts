@@ -13,7 +13,7 @@ export interface WorkspaceRemoteApi {
 const reason = (error: unknown) => String(error).replace(/^(?:Error: )?(?:invalid|io|refused|broken|unavailable|conflict): /u, "");
 export function workspaceRemote(options: {
   api: WorkspaceRemoteApi;
-  session: Pick<LayoutSession, "openRemoteShell" | "selectPane" | "selectPanel">;
+  session: Pick<LayoutSession, "openRemoteShell" | "openRemoteChat" | "selectPane" | "selectPanel">;
   projectId: () => string;
   snapshot: () => WorkspaceSnapshot;
   data: () => RemoteSnapshot;
@@ -31,11 +31,11 @@ export function workspaceRemote(options: {
   // An open tab is brought up before anything else, even if its shell has ended
   // or is a chat on the host since; only a new tab is refused for those.
   function open(host: string, shell: RemoteShell) {
-    const key = `remote:${host}:${shell.id}`;
+    const key = shell.chat && shell.chatId ? `remote-chat:${host}:${shell.chatId}` : `remote:${host}:${shell.id}`;
     const label = options.data().hosts.find((row) => row.id === host)?.label ?? "the host";
     const refusal = options.snapshot().panes.some((pane) => pane.tabs.some((tab) => tab.id === key)) ? null : shellOpenRefusal(shell, label);
     if (refusal) { options.notice(refusal); return; }
-    options.install(options.session.openRemoteShell(host, shell.id));
+    options.install(shell.chat && shell.chatId ? options.session.openRemoteChat(host, shell.chatId) : options.session.openRemoteShell(host, shell.id));
     options.focus(key);
   }
   // Record the destination pane before dispatch. If it closed, core chooses the

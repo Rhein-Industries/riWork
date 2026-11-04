@@ -1,7 +1,7 @@
-# RiWork remote protocol v2
+# Somtus remote protocol v2
 
 Dated 2026-09-29. v1 in [remote-protocol.md](remote-protocol.md) stays frozen.
-`riwork remote pair` still writes a v1 device. v2 is `pair --protocol 2`.
+`somtus remote pair` still writes a v1 device. v2 is `pair --protocol 2`.
 A phone moves to v2 by revoking the old device and pairing again. v1 and v2
 devices share `devices.json` and the same relay. The relay registration window,
 ping, duplicate-socket and route-hash rules are unchanged.
@@ -28,7 +28,7 @@ v2 JSON omits `pairing_secret`. Pending:
 ```
 
 `expires_at` is Unix seconds. Lifetime at mint is 30 to 3600 seconds (default
-600). The deep link is `riwork://pair?v=2&data=BASE64URL_UTF8_JSON`. The link
+600). The deep link is `somtus://pair?v=2&data=BASE64URL_UTF8_JSON`. The link
 version and the JSON `v` must match. After redeem the record is `established`,
 `invite_secret` is absent, and `root_key` is the 32-byte root. `expired` keeps
 neither secret. A v1 record must not contain invite fields.
@@ -215,7 +215,7 @@ as an opaque digest.
 ## Desktop devices (2026-10-02)
 
 A paired device is either a phone (the default) or a *desktop*: another Mac
-running RiWork that shows this Mac's shells as terminals. `riwork remote pair
+running Somtus that shows this Mac's shells as terminals. `somtus remote pair
 --protocol 2 --kind desktop` mints the invite for a desktop; `--kind desktop`
 with `--protocol 1` is refused, because the extra capability (terminal streams,
 `pty.*` in [remote-protocol.md](remote-protocol.md), "Desktop terminal

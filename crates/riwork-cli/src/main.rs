@@ -4,7 +4,7 @@ fn main() {
         Ok(status) => std::process::exit(status),
         Err(error) => {
             if !error.is_empty() {
-                eprintln!("riwork: {error}");
+                eprintln!("somtus: {error}");
             }
             std::process::exit(2);
         }

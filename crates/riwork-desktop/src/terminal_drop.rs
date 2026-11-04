@@ -213,7 +213,7 @@ impl Workspace {
                 input(program(harness, command, || foreground_names(tty)))
             });
             if let Err(error) = result {
-                eprintln!("riwork: {what} not pasted into {shell_id}: {error}");
+                eprintln!("somtus: {what} not pasted into {shell_id}: {error}");
             }
         });
     }

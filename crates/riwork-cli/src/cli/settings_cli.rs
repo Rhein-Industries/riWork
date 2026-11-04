@@ -6,19 +6,19 @@ use super::{print_json, write_stdout};
 use crate::settings::SettingsStore;
 
 const HELP: &str = "\
-riwork settings list [--json]          List every known top-level key, sorted
-riwork settings get KEY [--json]       Read a typed value
-riwork settings set KEY VALUE [--json]   Save and print the effective typed value
-riwork settings set KEY --json JSON    The same command with structured output
+somtus settings list [--json]          List every known top-level key, sorted
+somtus settings get KEY [--json]       Read a typed value
+somtus settings set KEY VALUE [--json]   Save and print the effective typed value
+somtus settings set KEY --json JSON    The same command with structured output
 
 Global settings live in RIWORK_HOME/settings.json, or ~/.local/share/riwork/settings.json.
 Keys are top-level saved names, with no dotted paths or project overrides. VALUE is one
 JSON value (quote objects for the shell), or a bare string such as detach. --json
 selects output, not input; JSON input works without it too. Use -- before a value that
 starts with --, or JSON-quote the string. Examples:
-  riwork settings set dictation_mic true
-  riwork settings set tab_close_behavior detach
-  riwork settings set status_bar --json '{\"usage_mode\":\"all_accounts\"}'
+  somtus settings set dictation_mic true
+  somtus settings set tab_close_behavior detach
+  somtus settings set status_bar --json '{\"usage_mode\":\"all_accounts\"}'
 Object values replace known preferences in that object; omitted fields use model defaults.
 The store preserves unknown top-level fields and unchanged future values; replacing an
 object has the store's existing whole-object semantics (chat_display_modes patches known
@@ -71,7 +71,7 @@ fn result(args: Vec<String>) -> Result<Value, Refusal> {
     let invalid = |message: String| ("invalid_request", message);
     let internal = |message: String| ("cli_error", message);
     let usage = || {
-        invalid("Usage: riwork settings list | get KEY | set KEY VALUE [--json]; run riwork settings help".to_owned())
+        invalid("Usage: somtus settings list | get KEY | set KEY VALUE [--json]; run somtus settings help".to_owned())
     };
     let (operation, key, input) = match args.as_slice() {
         [op] if op == "list" => (op.as_str(), None, None),
@@ -95,7 +95,7 @@ fn result(args: Vec<String>) -> Result<Value, Refusal> {
         && !known.contains_key(key)
     {
         return Err(invalid(format!(
-            "'{key}' is not a known setting; run riwork settings list"
+            "'{key}' is not a known setting; run somtus settings list"
         )));
     }
     let input = input.map(parse_value).transpose().map_err(invalid)?;

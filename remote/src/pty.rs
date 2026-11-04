@@ -1,9 +1,9 @@
 //! Terminal streams for a paired desktop ("Desktop terminal extension" in
 //! `docs/remote-protocol.md`).
 //!
-//! Another Mac running RiWork shows this Mac's shells as real terminals. The
+//! Another Mac running Somtus shows this Mac's shells as real terminals. The
 //! shell itself keeps living in tmux; what travels is a tmux *client*. A stream
-//! is `riwork shell attach SHELL --exec` running on a pseudo-terminal this
+//! is `somtus shell attach SHELL --exec` running on a pseudo-terminal this
 //! connector owns, so the bytes are exactly what a Ghostty window here would
 //! have been sent: redraws, the alternate screen, mouse and cursor modes, copy
 //! mode and the repaint a new client gets, all from tmux. Closing the master
@@ -80,7 +80,7 @@ const REFUSAL_WAIT: Duration = Duration::from_secs(2);
 const PLAIN_TEXT_WAIT: Duration = Duration::from_millis(400);
 /// What the CLI's own refusals begin with (they arrive on the terminal). tmux
 /// starts with an escape sequence, never with this.
-const REFUSAL_PREFIX: &[u8] = b"riwork: ";
+const REFUSAL_PREFIXES: [&[u8]; 2] = [b"somtus: ", b"riwork: "];
 
 /// What `ready` announces to a desktop device (`features.pty`).
 pub fn features() -> Value {
@@ -216,7 +216,7 @@ pub fn attach_args(spec: &OpenSpec) -> Vec<String> {
 /// business: no `TMUX` (the CLI would be refused as nested), no tokens.
 ///
 /// - `PATH`, `HOME`, `LANG`, `LC_*`, and the two variables that point the CLI at
-///   the same RiWork state as the connector (`RIWORK_HOME`, `RIWORK_RUNTIME_DIR`);
+///   the same Somtus state as the connector (`RIWORK_HOME`, `RIWORK_RUNTIME_DIR`);
 /// - `TERM` as asked (one of the two allowed values) and `COLORTERM=truecolor`,
 ///   because the display is a Ghostty; `TERMINFO` only if the connector has one
 ///   (the CLI decides whether `xterm-ghostty` can be used here, see
@@ -263,10 +263,13 @@ pub fn environment(
 }
 
 /// The error for an attach that ended before it drew anything. `refusal` is what
-/// it printed on the terminal, which is the CLI's `riwork: ...` line.
+/// it printed on the terminal, which is the CLI's `somtus: ...` line.
 pub fn refusal_fault(refusal: &str, shell: &str) -> PtyFault {
     let line = refusal.lines().next().unwrap_or_default().trim();
-    let detail = line.strip_prefix("riwork: ").unwrap_or(line);
+    let detail = line
+        .strip_prefix("somtus: ")
+        .or_else(|| line.strip_prefix("riwork: "))
+        .unwrap_or(line);
     if detail == format!("unknown shell {shell}") {
         PtyFault::new("not_found", "existing shell ID not found")
     } else if detail == format!("shell {shell} has exited") {
@@ -278,13 +281,14 @@ pub fn refusal_fault(refusal: &str, shell: &str) -> PtyFault {
     {
         // tmux's own words: the session went away between the CLI's check and tmux's.
         PtyFault::new("not_found", "selected shell is not alive")
-    } else if detail.starts_with("Usage: riwork shell attach")
+    } else if detail.starts_with("Usage: somtus shell attach")
+        || detail.starts_with("Usage: riwork shell attach")
         || detail.starts_with("Unexpected arguments")
     {
         // A CLI from before `--exec`; `capabilities` normally says so first.
         PtyFault::new(
             "cli_error",
-            "the installed riwork CLI cannot open terminal streams; update RiWork",
+            "the installed somtus CLI cannot open terminal streams; update Somtus",
         )
     } else if detail.is_empty() {
         PtyFault::new("cli_error", "the terminal ended before it drew anything")
@@ -654,7 +658,7 @@ impl Stream {
     /// Waits for what the attach does first: draws, or says why it will not.
     ///
     /// A tmux client starts with an escape sequence, so one that does is open
-    /// at once. The CLI's own refusals begin `riwork: ` and tmux's own errors
+    /// at once. The CLI's own refusals begin `somtus: ` and tmux's own errors
     /// ("can't find session", "missing or unsuitable terminal") are plain text:
     /// those the client prints and exits, so after plain text it is given a
     /// moment to end, and if it does, that text is the answer.
@@ -663,15 +667,11 @@ impl Stream {
         let head = loop {
             {
                 let state = self.shared.lock();
-                let head: Vec<u8> = state
-                    .output
-                    .iter()
-                    .take(REFUSAL_PREFIX.len())
-                    .copied()
-                    .collect();
+                let head: Vec<u8> = state.output.iter().take(8).copied().collect();
                 let partial = !head.is_empty()
-                    && head.len() < REFUSAL_PREFIX.len()
-                    && REFUSAL_PREFIX.starts_with(&head);
+                    && REFUSAL_PREFIXES
+                        .iter()
+                        .any(|prefix| head.len() < prefix.len() && prefix.starts_with(&head));
                 if head.first() == Some(&0x1b) {
                     return Ok(());
                 }
@@ -684,7 +684,10 @@ impl Stream {
         };
         // How long to give it to finish what it is printing before taking it
         // for a screen: the CLI's refusal is one line, then it exits.
-        let patience = if head.starts_with(REFUSAL_PREFIX) {
+        let patience = if REFUSAL_PREFIXES
+            .iter()
+            .any(|prefix| head.starts_with(prefix))
+        {
             REFUSAL_WAIT
         } else {
             PLAIN_TEXT_WAIT
@@ -702,7 +705,10 @@ impl Stream {
         if timeout(patience, ended).await.is_err() {
             // Still running after plain text: a screen that does not start
             // with an escape. The CLI's refusal always ends.
-            return if head.starts_with(REFUSAL_PREFIX) {
+            return if REFUSAL_PREFIXES
+                .iter()
+                .any(|prefix| head.starts_with(prefix))
+            {
                 Err(refusal_fault(&self.printed(), shell))
             } else {
                 Ok(())
@@ -822,7 +828,7 @@ impl Drop for Reservation {
 
 // ---- the five methods -----------------------------------------------------
 
-/// `pty.open`. `cli` is the RiWork executable the connector was given.
+/// `pty.open`. `cli` is the Somtus executable the connector was given.
 pub async fn open(set: &Arc<PtySet>, cli: &Path, spec: OpenSpec) -> Result<Value, PtyFault> {
     let reservation = set.reserve()?;
     let env = environment(spec.term, std::env::vars_os());
@@ -836,7 +842,7 @@ pub async fn open(set: &Arc<PtySet>, cli: &Path, spec: OpenSpec) -> Result<Value
     .map_err(|e| {
         PtyFault::new(
             "cli_error",
-            format!("start configured RiWork CLI {}: {e}", cli.display()),
+            format!("start configured Somtus CLI {}: {e}", cli.display()),
         )
     })?;
     match timeout(OPEN_TIMEOUT, stream.settle(&spec.shell)).await {
@@ -1405,24 +1411,28 @@ mod tests {
         let shell = uuid4();
         let said = |line: &str| refusal_fault(line, &shell);
         assert_eq!(
-            said(&format!("riwork: unknown shell {shell}\r\n")),
+            said(&format!("somtus: unknown shell {shell}\r\n")),
             PtyFault::new("not_found", "existing shell ID not found")
         );
         assert_eq!(
-            said(&format!("riwork: shell {shell} has exited\r\n")),
+            said(&format!("somtus: shell {shell} has exited\r\n")),
             PtyFault::new("not_found", "selected shell is not alive")
         );
         // Another shell's id is not this one's.
-        let other = said(&format!("riwork: unknown shell {}\r\n", uuid4()));
+        assert_eq!(
+            said(&format!("riwork: unknown shell {shell}\r\n")),
+            said(&format!("somtus: unknown shell {shell}\r\n"))
+        );
+        let other = said(&format!("somtus: unknown shell {}\r\n", uuid4()));
         assert_eq!(other.code, "cli_error");
         assert_eq!(
-            said("riwork: Usage: riwork shell attach ID").code,
+            said("somtus: Usage: somtus shell attach ID").code,
             "cli_error"
         );
         assert!(
-            said("Usage: riwork shell attach ID\r\n")
+            said("Usage: somtus shell attach ID\r\n")
                 .message
-                .contains("update RiWork")
+                .contains("update Somtus")
         );
         assert_eq!(
             said("").message,
@@ -1446,7 +1456,7 @@ mod tests {
             PtyFault::new("cli_error", "missing or unsuitable terminal: xterm-ghostty")
         );
         // Only the first line, without control characters.
-        let long = said("riwork: tmux: server\u{1b}[31m failed\r\nsecond line\r\n");
+        let long = said("somtus: tmux: server\u{1b}[31m failed\r\nsecond line\r\n");
         assert_eq!(long.code, "cli_error");
         assert!(
             !long.message.contains('\u{1b}') && !long.message.contains("second"),

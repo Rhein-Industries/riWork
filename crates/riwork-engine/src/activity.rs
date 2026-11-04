@@ -1,10 +1,11 @@
 //! Agent activity: Codex and Grok from invocation-scoped lifecycle hooks,
 //! with exact Codex pane/thread rollouts as a fallback; Claude from the turn cursor its hooks keep (see
 //! `agent_hooks`). No CPU, terminal output, prompts, tool results, or message
-//! bodies are used.
+//! bodies are used. Explicit OSC 7501 records are read from the raw-PTY
+//! collector and take precedence while its stream is available.
 //!
 //! Nothing here depends on the GUI. The desktop window keeps one tracker alive
-//! and follows each rollout incrementally; `riwork shell list --json` builds a
+//! and follows each rollout incrementally; `somtus shell list --json` builds a
 //! fresh one per call (`sample_once`) and reads the same files cold.
 
 use std::{
@@ -751,6 +752,33 @@ impl ActivityTracker {
             }
             result.insert(shell.id.clone(), state);
         }
+        // Apply only explicit reports from a current, connected collector.
+        // Transport loss is not an agent completion; hook/rollout facts remain
+        // the fallback. A clear record likewise restores the existing source.
+        for shell in shells {
+            let Some(reported) = crate::program_status::snapshot(&self.home, &shell.id) else { continue };
+            let Some(root) = reported.root.as_ref() else { continue };
+            if !shell.alive {
+                result.insert(shell.id.clone(), AgentState::plain(AgentActivity::Exited));
+            } else if reported.connected {
+                use crate::program_status::State;
+                let activity = match root.state {
+                    State::Working => AgentActivity::Working,
+                    State::Done => AgentActivity::Done,
+                    State::Idle | State::Blocked | State::Error => AgentActivity::Waiting,
+                };
+                result.insert(shell.id.clone(), AgentState {
+                    activity, since_unix: Some(root.since_unix), subagents: Subagents::default(),
+                });
+            } else if !result.get(&shell.id).is_some_and(|fallback| {
+                fallback.since_unix.is_some_and(|since| since > reported.observed_at_unix)
+            }) {
+                // A stale hook completion must not become current merely
+                // because a newer working report lost its transport. Only a
+                // newer explicit fallback fact can supersede that report.
+                result.insert(shell.id.clone(), AgentState::plain(AgentActivity::Unknown));
+            }
+        }
         result
     }
 
@@ -887,11 +915,11 @@ fn flag_missing_codex_hooks(home: &Path, shell: &ShellSession, rollout: bool, ho
     }
     if let Ok(mut file) = OpenOptions::new().write(true).create_new(true).open(path) {
         let message = format!(
-            "Codex shell {} has a rollout but lifecycle hooks have never reported; relaunch with updated RiWork and review hook policy.\n",
+            "Codex shell {} has a rollout but lifecycle hooks have never reported; relaunch with updated Somtus and review hook policy.\n",
             shell.id
         );
         let _ = file.write_all(message.as_bytes());
-        eprintln!("riwork activity: {message}");
+        eprintln!("somtus activity: {message}");
     }
 }
 
@@ -2694,7 +2722,7 @@ mod tests {
         let quiet = state(&mut tracker, 4_600);
         assert_eq!(quiet.activity, AgentActivity::Waiting);
         assert_eq!(quiet.since_unix, Some(1_000));
-        // The status line RiWork gives the launch writes this cache on every refresh.
+        // The status line Somtus gives the launch writes this cache on every refresh.
         let usage = fixture.home.join("usage");
         fs::create_dir_all(&usage).unwrap();
         fs::write(

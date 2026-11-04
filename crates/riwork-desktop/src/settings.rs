@@ -469,7 +469,7 @@ impl Section {
 
     fn description(self) -> &'static str {
         match self {
-            Self::Cua => "Let RiWork agents operate desktop apps through Cua.ai.",
+            Self::Cua => "Let Somtus agents operate desktop apps through Cua.ai.",
             Self::Codex => "The account new Codex sessions start with.",
             Self::Appearance => "Choose the text size, the interface font and terminal colors.",
             Self::Files => "How the Files tree and its Preview pane open together.",
@@ -773,7 +773,7 @@ impl OrcaImportOffer {
 
     fn hint(self) -> &'static str {
         match self {
-            Self::Import => "These records will be added to RiWork when you import.",
+            Self::Import => "These records will be added to Somtus when you import.",
             Self::Finish => "Nothing new to add. Finish to save the one-time import receipt.",
             Self::NothingYet => {
                 "Orca has no projects or worktrees to import yet. Once Orca has loaded them, choose PREVIEW IMPORT again."
@@ -1555,7 +1555,7 @@ impl SettingsPanel {
                     .text_size(ui_text::text(11.0))
                     .text_color(rgb(colors.muted))
                     .child(if receipt.is_some() {
-                        "Import completed. This receipt is saved across RiWork restarts."
+                        "Import completed. This receipt is saved across Somtus restarts."
                     } else {
                         "Import projects and local worktrees through Orca CLI. Matching paths are skipped."
                     }),
@@ -1990,7 +1990,7 @@ impl SettingsPanel {
             .map(str::to_owned)
             .or_else(|| state.error.clone())
             .or_else(|| status.map(|status| status.message.clone()))
-            .unwrap_or_else(|| "Cua.ai controls desktop apps for every RiWork agent.".to_owned());
+            .unwrap_or_else(|| "Cua.ai controls desktop apps for every Somtus agent.".to_owned());
         let access = status.filter(|status| status.installed).map(|status| {
             div()
                 .flex()
@@ -2212,7 +2212,7 @@ impl SettingsPanel {
                 "orchestrator-mode",
                 &self.orchestrator_mode_focus,
                 "Orchestrator runs as",
-                "Automatic lets RiWork choose: a Muse chat on Wonder Full, or a Codex chat on GPT-6.1-Sol when Muse cannot start. Terminal runs the global and project orchestrators as Codex in a terminal tab. Chat runs them as a native chat tab of the provider and model below. The iOS app can follow a chat too.",
+                "Automatic lets Somtus choose: a Muse chat on Wonder Full, or a Codex chat on GPT-6.1-Sol when Muse cannot start. Terminal runs the global and project orchestrators as Codex in a terminal tab. Chat runs them as a native chat tab of the provider and model below. The iOS app can follow a chat too.",
                 settings.orchestrator_mode,
                 OrchestratorMode::ALL
                     .map(|mode| {
@@ -2283,7 +2283,7 @@ impl SettingsPanel {
                     "orchestrator-model",
                     &self.orchestrator_model_focus,
                     "Chat model",
-                    "The model a chat orchestrator starts on. The recommended one is what RiWork's routing prefers for this provider: Wonder Full for Muse, Opus 5.5 for Claude, GPT-6.1-Sol for Codex.",
+                    "The model a chat orchestrator starts on. The recommended one is what Somtus's routing prefers for this provider: Wonder Full for Muse, Opus 5.5 for Claude, GPT-6.1-Sol for Codex.",
                     selected,
                     rows,
                     move |settings: &mut Settings, index: usize| {
@@ -2678,7 +2678,7 @@ impl SettingsPanel {
                             .max_w(ui_text::space(DESCRIPTION_MAX_WIDTH))
                             .text_size(ui_text::text(10.0))
                             .text_color(rgb(colors.muted))
-                            .child("Type a model ID the provider knows, such as fable or gpt-6-astra, and press Return. riwork chat models --provider lists what its chats reported."),
+                            .child("Type a model ID the provider knows, such as fable or gpt-6-astra, and press Return. somtus chat models --provider lists what its chats reported."),
                     )
                     .children(self.orchestrator_model_error.clone().map(|error| {
                         div()
@@ -3527,7 +3527,7 @@ mod tests {
         assert_eq!(file["interface_font"], "system");
         assert_eq!(store.load().unwrap(), saved);
 
-        // Following Ghostty, the same row is "Use RiWork terminal colors" again.
+        // Following Ghostty, the same row is "Use Somtus terminal colors" again.
         let saved = store
             .update(|settings| {
                 settings.theme = ThemeChoice::Ghostty;

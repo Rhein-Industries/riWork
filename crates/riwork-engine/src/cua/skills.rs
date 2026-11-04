@@ -1,14 +1,14 @@
-//! Cua Driver's skill pack as the `cua-driver` skill of every agent CLI RiWork
+//! Cua Driver's skill pack as the `cua-driver` skill of every agent CLI Somtus
 //! launches.
 //!
-//! Cua Driver keeps one pack (`cua-driver skills path`). RiWork links that
+//! Cua Driver keeps one pack (`cua-driver skills path`). Somtus links that
 //! directory into the user skill directory each CLI reads. These were checked
 //! against the installed CLIs, each listing a linked pack from a throwaway home:
 //!
 //! - Claude Code reads `$CLAUDE_CONFIG_DIR/skills`, else `~/.claude/skills`,
 //!   and not `~/.agents/skills`.
 //! - Codex reads `~/.agents/skills` from `HOME` whatever `CODEX_HOME` is, so
-//!   one link serves the system home and every Orca account home RiWork binds.
+//!   one link serves the system home and every Orca account home Somtus binds.
 //!   Those homes belong to Orca and are never written.
 //! - Grok reads `$GROK_HOME/skills`, else `~/.grok/skills`.
 //! - Muse reads `$XDG_CONFIG_HOME/muse/skills`, else `~/.config/muse/skills`.
@@ -18,9 +18,9 @@
 //! a pack they find twice is still one skill.
 //!
 //! Reading the state never writes. Only explicit setup links: it creates a
-//! missing link, repoints a link RiWork made when the pack has moved, and
-//! leaves every other file, directory and link alone. A link is RiWork's only
-//! while it is the very link RiWork recorded: same path, target and inode.
+//! missing link, repoints a link Somtus made when the pack has moved, and
+//! leaves every other file, directory and link alone. A link is Somtus's only
+//! while it is the very link Somtus recorded: same path, target and inode.
 
 use std::{
     collections::BTreeMap,
@@ -34,7 +34,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 const SKILL_NAME: &str = "cua-driver";
-/// Links RiWork made, under `RIWORK_HOME`, so setup only ever repoints its own.
+/// Links Somtus made, under `RIWORK_HOME`, so setup only ever repoints its own.
 pub(crate) const MANIFEST: &str = "cua/skill-links.json";
 const SKILL_FILE_LIMIT: u64 = 1024 * 1024;
 /// A link being swapped into place; one left by an interrupted setup is removed.
@@ -67,9 +67,9 @@ pub enum SkillLinkState {
     Linked,
     /// Nothing is there yet; setup links it.
     Missing,
-    /// A link RiWork made to where the pack used to be; setup repoints it.
+    /// A link Somtus made to where the pack used to be; setup repoints it.
     Stale,
-    /// A file, a directory, or a link RiWork did not make, at the path or in
+    /// A file, a directory, or a link Somtus did not make, at the path or in
     /// place of its directory; setup leaves it.
     BlockedByForeignPath,
     /// There is no pack to link to.
@@ -77,7 +77,7 @@ pub enum SkillLinkState {
     /// None of the CLI's homes exists, so it is not set up for this user and
     /// setup does not create one.
     HomeAbsent,
-    /// RiWork cannot tell where the CLI reads skills: the variable that moves
+    /// Somtus cannot tell where the CLI reads skills: the variable that moves
     /// its home is a relative path, which each session resolves on its own.
     Unsupported,
 }
@@ -104,14 +104,14 @@ pub struct SkillTarget {
     /// The `cua-driver` entry in the skills directory the CLI reads.
     pub path: PathBuf,
     pub state: SkillLinkState,
-    /// The variable that moved this home, as RiWork's launches inherit it.
+    /// The variable that moved this home, as Somtus's launches inherit it.
     pub variable: Option<&'static str>,
     /// The CLI homes whose sessions read `path`.
     pub homes: Vec<PathBuf>,
     pub detail: Option<String>,
 }
 
-/// Whether the skill can be found by sessions RiWork starts. A linked skill is
+/// Whether the skill can be found by sessions Somtus starts. A linked skill is
 /// discovered when a session starts; running sessions are not reloaded.
 #[derive(Clone, Debug, Serialize)]
 pub struct CuaSkills {
@@ -135,15 +135,15 @@ impl CuaSkills {
     }
 }
 
-/// The skill homes RiWork's launches use, from the environment they inherit:
-/// sessions receive RiWork's `CLAUDE_CONFIG_DIR` and `GROK_HOME`, Muse follows
+/// The skill homes Somtus's launches use, from the environment they inherit:
+/// sessions receive Somtus's `CLAUDE_CONFIG_DIR` and `GROK_HOME`, Muse follows
 /// `XDG_CONFIG_HOME`, and each Codex launch gets its bound account's home.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct LaunchHomes {
     pub(crate) claude_config_dir: Option<PathBuf>,
     pub(crate) grok_home: Option<PathBuf>,
     pub(crate) xdg_config_home: Option<PathBuf>,
-    /// `None` reads the Codex homes from RiWork's saved accounts when needed.
+    /// `None` reads the Codex homes from Somtus's saved accounts when needed.
     pub(crate) codex_homes: Option<Vec<PathBuf>>,
 }
 
@@ -230,7 +230,7 @@ struct Location {
     homes: Vec<PathBuf>,
 }
 
-/// Each CLI's default home, plus the one its variable names when RiWork's
+/// Each CLI's default home, plus the one its variable names when Somtus's
 /// launches inherit it: an app opened from the Dock starts its sessions
 /// without the variables a terminal has.
 fn locations(user_home: &Path, homes: &LaunchHomes, codex_homes: Vec<PathBuf>) -> Vec<Location> {
@@ -291,7 +291,7 @@ fn locations(user_home: &Path, homes: &LaunchHomes, codex_homes: Vec<PathBuf>) -
     locations
 }
 
-/// A link RiWork made, as recorded when it made it.
+/// A link Somtus made, as recorded when it made it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct ManagedLink {
     target: PathBuf,
@@ -387,7 +387,7 @@ fn inspect(
         };
         return (
             SkillLinkState::BlockedByForeignPath,
-            Some(format!("{kind} RiWork did not create")),
+            Some(format!("{kind} Somtus did not create")),
         );
     }
     let target = fs::read_link(&location.path).ok();
@@ -411,8 +411,8 @@ fn inspect(
     (
         SkillLinkState::BlockedByForeignPath,
         Some(match target {
-            Some(target) => format!("a link to {} that RiWork did not create", target.display()),
-            None => "a link RiWork did not create".to_owned(),
+            Some(target) => format!("a link to {} that Somtus did not create", target.display()),
+            None => "a link Somtus did not create".to_owned(),
         }),
     )
 }
@@ -462,7 +462,7 @@ fn report_with(
     errors: &BTreeMap<PathBuf, String>,
 ) -> CuaSkills {
     let Some(user_home) = user_home else {
-        let no_home = "HOME is not set, so RiWork cannot find the agent CLIs' skill directories.";
+        let no_home = "HOME is not set, so Somtus cannot find the agent CLIs' skill directories.";
         return CuaSkills {
             pack: pack.path().map(Path::to_path_buf),
             pack_installed: matches!(pack, Pack::Installed(_)),
@@ -500,7 +500,7 @@ fn report_with(
     }
 }
 
-/// Explicit setup only: create missing links, repoint stale ones RiWork made,
+/// Explicit setup only: create missing links, repoint stale ones Somtus made,
 /// and record them. A target that cannot be linked keeps its reason.
 pub(crate) fn link(
     user_home: Option<&Path>,
@@ -533,7 +533,7 @@ pub(crate) fn link(
             }
         }
     }
-    // A recorded link someone has since replaced or made again is not RiWork's.
+    // A recorded link someone has since replaced or made again is not Somtus's.
     managed.retain(|path, link| link.is_at(path));
     if let Err(error) = write_manifest(manifest, &managed) {
         errors.insert(manifest.to_path_buf(), error);
@@ -638,7 +638,7 @@ fn swap_in(link: &Path, temporary: &Path, recorded: &ManagedLink) -> Result<(), 
     result
 }
 
-/// Links an interrupted setup left while swapping. Only links with RiWork's
+/// Links an interrupted setup left while swapping. Only links with Somtus's
 /// own prefix are removed, never what they point to.
 fn remove_interrupted_links(directory: &Path) {
     let Ok(entries) = fs::read_dir(directory) else {
@@ -661,7 +661,7 @@ struct Manifest {
     links: Managed,
 }
 
-/// An unreadable manifest proves nothing is RiWork's, so nothing is repointed.
+/// An unreadable manifest proves nothing is Somtus's, so nothing is repointed.
 fn read_manifest(path: &Path) -> Managed {
     fs::read(path)
         .ok()
@@ -740,13 +740,13 @@ fn summary(pack: &Pack, targets: &[SkillTarget]) -> String {
     }
     if let Some(names) = names(&[SkillLinkState::Missing, SkillLinkState::Stale]) {
         parts.push(format!(
-            "Run `riwork setup` to link {} for {names}.",
+            "Run `somtus setup` to link {} for {names}.",
             path.display()
         ));
     }
     if let Some(names) = names(&[SkillLinkState::BlockedByForeignPath]) {
         parts.push(format!(
-            "Something RiWork did not create is in the way for {names}; RiWork leaves it alone."
+            "Something Somtus did not create is in the way for {names}; Somtus leaves it alone."
         ));
     }
     if let Some(names) = names(&[SkillLinkState::HomeAbsent]) {
@@ -754,7 +754,7 @@ fn summary(pack: &Pack, targets: &[SkillTarget]) -> String {
     }
     if let Some(names) = names(&[SkillLinkState::Unsupported]) {
         parts.push(format!(
-            "RiWork cannot tell where {names} reads skills because its home variable is a relative path."
+            "Somtus cannot tell where {names} reads skills because its home variable is a relative path."
         ));
     }
     parts.join(" ")
@@ -920,7 +920,7 @@ mod tests {
         assert_eq!(states(&skills), all(SkillLinkState::Missing));
         assert!(skills.setup_needed());
         assert!(
-            skills.message.contains("Run `riwork setup`"),
+            skills.message.contains("Run `somtus setup`"),
             "{}",
             skills.message
         );
@@ -952,7 +952,7 @@ mod tests {
             fs::read_link(fixture.path(".claude")).unwrap(),
             Path::new("../../../pack/cua-driver")
         );
-        // Only the links RiWork made are recorded as its own.
+        // Only the links Somtus made are recorded as its own.
         let managed = read_manifest(&fixture.manifest);
         assert_eq!(
             managed.keys().cloned().collect::<Vec<_>>(),
@@ -1000,13 +1000,13 @@ mod tests {
             .collect();
         assert_eq!(
             details[0].as_deref(),
-            Some("a directory RiWork did not create")
+            Some("a directory Somtus did not create")
         );
-        assert_eq!(details[2].as_deref(), Some("a file RiWork did not create"));
+        assert_eq!(details[2].as_deref(), Some("a file Somtus did not create"));
         assert_eq!(
             details[3],
             Some(format!(
-                "a link to {} that RiWork did not create",
+                "a link to {} that Somtus did not create",
                 theirs.display()
             ))
         );
@@ -1028,7 +1028,7 @@ mod tests {
         );
         assert_eq!(fs::read_to_string(fixture.path(".grok")).unwrap(), "a file");
         assert_eq!(fs::read_link(fixture.path(".config/muse")).unwrap(), theirs);
-        // Links that are no longer RiWork's are no longer recorded as its own.
+        // Links that are no longer Somtus's are no longer recorded as its own.
         assert_eq!(
             read_manifest(&fixture.manifest)
                 .into_iter()

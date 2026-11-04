@@ -8,7 +8,7 @@ use std::{net::SocketAddr, path::PathBuf};
 
 #[derive(Parser)]
 #[command(
-    name = "riwork-remote",
+    name = "somtus-remote",
     version,
     about = "Encrypted relay and outbound desktop connector (standalone; no GPUI)"
 )]
@@ -18,6 +18,11 @@ struct Cli {
 }
 #[derive(Subcommand)]
 enum Action {
+    /// Serve the existing RPC API over this account's stdin/stdout (for SSH).
+    Connect {
+        #[arg(long, visible_alias = "riwork")]
+        somtus: Option<PathBuf>,
+    },
     /// Run blind plaintext router on loopback; terminate TLS at a reverse proxy.
     Relay {
         #[arg(long, default_value = "127.0.0.1:8787")]
@@ -48,7 +53,7 @@ enum Action {
         /// v2 invite lifetime in seconds (30..=3600). Ignored for protocol 1.
         #[arg(long, default_value_t = 600)]
         ttl_seconds: u64,
-        /// `mobile` (a phone, the default) or `desktop` (another Mac running RiWork, which may also
+        /// `mobile` (a phone, the default) or `desktop` (another Mac running Somtus, which may also
         /// open terminal streams). `desktop` requires `--protocol 2`.
         #[arg(long, default_value = "mobile", value_parser = ["mobile", "desktop"])]
         kind: String,
@@ -59,8 +64,8 @@ enum Action {
     Devices,
     /// Maintain outbound per-device connections; inherits RIWORK_HOME unchanged.
     Start {
-        #[arg(long)]
-        riwork: Option<PathBuf>,
+        #[arg(long, visible_alias = "riwork")]
+        somtus: Option<PathBuf>,
     },
     /// Use another Mac as a client (hosts, call, status, attach).
     #[cfg(unix)]
@@ -70,13 +75,32 @@ enum Action {
 #[tokio::main]
 async fn main() -> Result<()> {
     match Cli::parse().command {
+        Action::Connect { somtus } => {
+            let path = somtus
+                .or_else(|| {
+                    std::env::var_os("SOMTUS_CLI")
+                        .or_else(|| std::env::var_os("RIWORK_CLI"))
+                        .map(PathBuf::from)
+                })
+                .or_else(|| {
+                    std::env::current_exe().ok().and_then(|exe| {
+                        let dir = exe.parent()?;
+                        ["somtus", "somtus-cli", "riwork", "riwork-cli"]
+                            .into_iter()
+                            .map(|name| dir.join(name))
+                            .find(|p| p.is_file())
+                    })
+                })
+                .context("pass --somtus /absolute/path/to/somtus")?;
+            riwork_remote::ssh::serve(Storage::from_env()?, path).await?;
+        }
         Action::Relay {
             bind,
             routes,
             max_connections,
         } => {
             let routes: Routes = private_read(&routes, 1024 * 1024)?;
-            eprintln!("RiWork blind relay listening on {bind}; no payload logging.");
+            eprintln!("Somtus blind relay listening on {bind}; no payload logging.");
             Relay::new(routes, max_connections)?.serve(bind).await?
         }
         Action::Pair {
@@ -110,7 +134,7 @@ async fn main() -> Result<()> {
                 println!("{}", p.deep_link()?);
             }
             println!(
-                "Provision the relay route hashes and start/restart the relay; then run riwork remote start."
+                "Provision the relay route hashes and start/restart the relay; then run somtus remote start."
             );
         }
         Action::Revoke { device_id } => {
@@ -125,19 +149,41 @@ async fn main() -> Result<()> {
             // device that never completed a handshake has never authenticated.
             println!("{}",serde_json::to_string_pretty(&c.devices.iter().map(|d|serde_json::json!({"device_id":d.pairing.device_id,"device_name":d.pairing.device_name,"route_id":d.pairing.route_id,"revoked":d.revoked,"kind":d.kind,"protocol":d.pairing.v,"invite_state":d.pairing.invite_state,"expires_at":d.pairing.expires_at,"paired_at_unix":d.paired_at_unix,"first_authenticated_unix":d.first_authenticated_unix,"last_authenticated_unix":d.last_authenticated_unix})).collect::<Vec<_>>())?);
         }
-        Action::Start { riwork } => {
-            let path = riwork
+        Action::Start { somtus } => {
+            let path = somtus
+                .or_else(|| std::env::var_os("SOMTUS_CLI").map(PathBuf::from))
                 .or_else(|| std::env::var_os("RIWORK_CLI").map(PathBuf::from))
                 .or_else(|| {
                     std::env::current_exe()
                         .ok()
-                        .and_then(|p| p.parent().map(|d| d.join("riwork")))
+                        .and_then(|p| {
+                            let directory = p.parent()?;
+                            ["somtus", "somtus-cli", "riwork", "riwork-cli"]
+                                .into_iter()
+                                .map(|name| directory.join(name))
+                                .find(|path| path.is_file())
+                        })
                 })
-                .context("pass --riwork /absolute/path/to/riwork or set RIWORK_CLI")?;
+                .context("pass --somtus /absolute/path/to/somtus or set SOMTUS_CLI (RIWORK_CLI is also supported)")?;
             riwork_remote::connector::start(Storage::from_env()?, path).await?;
         }
         #[cfg(unix)]
         Action::Mac(command) => riwork_remote::client_cli::run(command).await?,
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn connector_accepts_new_and_legacy_executable_options() {
+        for option in ["--somtus", "--riwork"] {
+            let cli =
+                Cli::try_parse_from(["somtus-remote", "start", option, "/tmp/somtus"]).unwrap();
+            assert!(
+                matches!(cli.command, Action::Start { somtus: Some(path) } if path == PathBuf::from("/tmp/somtus"))
+            );
+        }
+    }
 }

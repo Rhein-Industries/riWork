@@ -21,14 +21,14 @@ use crate::{
     store::{SearchHit, State, Store, Task, TaskStatus, Worktree},
 };
 
-// std's print macros panic when stdout is a closed pipe (`riwork shell output
+// std's print macros panic when stdout is a closed pipe (`somtus shell output
 // ID | head`). Everything in this module prints through these instead, and the
 // command still finishes with its real exit status.
 static STDOUT_CLOSED: AtomicBool = AtomicBool::new(false);
 
 /// What the binary that embeds this CLI adds to `capabilities --json`, set once before
-/// `run_cli`: the desktop app's `native` and `watch` (its `riwork native invoke` and
-/// `riwork watch`), which the standalone CLI does not have.
+/// `run_cli`: the desktop app's full `native` method table and `watch`. The
+/// standalone CLI advertises only its headless `Hosts.local` native method.
 pub static EXTRA_CAPABILITIES: std::sync::OnceLock<serde_json::Map<String, serde_json::Value>> =
     std::sync::OnceLock::new();
 
@@ -39,7 +39,7 @@ fn write_stdout(args: fmt::Arguments<'_>) {
     if let Err(error) = io::stdout().lock().write_fmt(args) {
         STDOUT_CLOSED.store(true, Ordering::Relaxed);
         if error.kind() != io::ErrorKind::BrokenPipe {
-            eprintln!("riwork: cannot write output: {error}");
+            eprintln!("somtus: cannot write output: {error}");
         }
     }
 }
@@ -54,106 +54,107 @@ macro_rules! println {
 }
 
 const HELP: &str = "\
-riwork [PROJECT_PATH]                  Open the GPUI workspace
-riwork open [PROJECT_OR_PATH]           Open an independent project window
-riwork restart [--session] [--shell ID]  Restart all RiWork apps and restore their windows
-riwork reload [--all] [--session] [--shell ID]   Alias of restart; optionally resume a Codex session
-riwork update [--source PATH] [--release | --debug] [--no-reload]   Build release by default, install, and reload all windows
-riwork instances                        List running RiWork apps and their windows
-riwork usage [--shell ID]               Read harness usage (Grok: session tokens and cost)
-riwork appearance [--json]              Show the colors RiWork publishes to the phone companion
-riwork settings list [--json]          List global settings and their typed values
-riwork settings get KEY [--json]       Read one known global setting
-riwork settings set KEY VALUE [--json]   Validate, save, and print the effective value
-riwork settings help                   Show settings input rules and reload behavior
-riwork addin list [--json]              List this folder's project's add-ins and your personal ones
-riwork addin new NAME [--personal] [--id ID]   Make an add-in from the template
-riwork addin trust|revoke KEY           Grant an add-in what it asks for, or take that back
-riwork addin tool KEY TOOL [JSON]       Run an add-in's agent tool as riwork mcp does
-riwork addin help                       Show where add-ins live and what trust covers
-riwork setup                            Install and start Cua.ai Driver; link its skill into each CLI
-riwork cua setup|status|permissions      Manage native computer use (status only reads)
-riwork cua mcp                          Serve Cua.ai Driver over MCP stdio
-riwork cua harness codex|claude|grok|muse -- ARG...   Start a harness with shared Cua
-riwork import orca [--preview]          Import local Orca projects and worktrees once
-riwork project add PATH [--name NAME]   Register a project and its root worktree
-riwork project create [PATH] [--name NAME] [--no-git] [--exclusive]   Create a project (Git by default)
-riwork project inspect PATH            Inspect contained repositories
-riwork project list|show|use [ID]       List, inspect, or switch projects
-riwork project update ID [--name NAME] [--folder ID | --ungrouped]   Edit project display metadata
-riwork project folder create NAME [--parent ID]   Create a virtual folder or subfolder
-riwork project folder move ID (--parent ID | --root)   Move a virtual folder
-riwork project folder list|rename|remove   Manage virtual project folders
-riwork project tasks [ID]              Show tasks for a project
-riwork project memo show|set ID         Print a project's Markdown memo, or replace it from stdin
-riwork worktree create BRANCH [--project ID] [--repo PATH] [--path PATH] [--base REF]   --base only applies to a new branch
-riwork worktree list [--project ID] [--all]
-riwork worktree tasks ID                Show tasks assigned to a worktree
-riwork worktree forget ID               Forget a missing worktree with no tasks or shells
-riwork task add TITLE [--project ID] [--details TEXT]
-riwork task list [--project ID | --worktree ID | --all]
-riwork task assign WORKTREE_ID TASK_ID...    Assign tasks as one batch
-riwork task unassign TASK_ID...         Remove worktree assignment
-riwork task status TASK_ID todo|in_progress|done
-riwork search QUERY                     Search projects, worktrees, and tasks
-riwork dashboard [--json]               The global dashboard: what needs you, what works, every project
-riwork mcp                              Serve workspace tools over MCP stdio
-riwork preview open|list|status|screenshot|input|tap|text|key|close   Control development preview tabs
-riwork preview help                     Show iOS build/stream and agent testing options
-riwork version | --version              Print the RiWork version
-riwork remote pair|revoke|devices|start|relay   Encrypted mobile access (standalone binary)
-riwork remote --help                    Pairing, relay and connector command options
-riwork shell create [--project ID | --worktree ID] [--command CMD] [--no-parent]
-riwork shell create [--worktree ID] --harness codex|claude|grok|muse [--model NAME] [--account LABEL_OR_ID] [--unrestricted | --as-settings]
+somtus [PROJECT_PATH]                  Open the GPUI workspace
+somtus open [PROJECT_OR_PATH]           Open an independent project window
+somtus restart [--instance ID] [--session] [--shell ID]  Restart all apps or one selected instance
+somtus reload [--all | --instance ID] [--session] [--shell ID]   Alias of restart; restore windows
+somtus update [--source PATH] [--release | --debug] [--no-reload]   Build release by default, install, and reload all windows
+somtus instances                        List running Somtus apps and their windows
+somtus usage [--shell ID]               Read harness usage (Grok: session tokens and cost)
+somtus appearance [--json]              Show the colors Somtus publishes to the phone companion
+somtus settings list [--json]          List global settings and their typed values
+somtus settings get KEY [--json]       Read one known global setting
+somtus settings set KEY VALUE [--json]   Validate, save, and print the effective value
+somtus settings help                   Show settings input rules and reload behavior
+somtus customization help              Customize UI layouts, panels, and shortcuts
+somtus addin list [--json]              List this folder's project's add-ins and your personal ones
+somtus addin new NAME [--personal] [--id ID]   Make an add-in from the template
+somtus addin trust|revoke KEY           Grant an add-in what it asks for, or take that back
+somtus addin tool KEY TOOL [JSON]       Run an add-in's agent tool as somtus mcp does
+somtus addin help                       Show where add-ins live and what trust covers
+somtus setup                            Install and start Cua.ai Driver; link its skill into each CLI
+somtus cua setup|status|permissions      Manage native computer use (status only reads)
+somtus cua mcp                          Serve Cua.ai Driver over MCP stdio
+somtus cua harness codex|claude|grok|muse -- ARG...   Start a harness with shared Cua
+somtus import orca [--preview]          Import local Orca projects and worktrees once
+somtus project add PATH [--name NAME]   Register a project and its root worktree
+somtus project create [PATH] [--name NAME] [--no-git] [--exclusive]   Create a project (Git by default)
+somtus project inspect PATH            Inspect contained repositories
+somtus project list|show|use [ID]       List, inspect, or switch projects
+somtus project update ID [--name NAME] [--folder ID | --ungrouped]   Edit project display metadata
+somtus project folder create NAME [--parent ID]   Create a virtual folder or subfolder
+somtus project folder move ID (--parent ID | --root)   Move a virtual folder
+somtus project folder list|rename|remove   Manage virtual project folders
+somtus project tasks [ID]              Show tasks for a project
+somtus project memo show|set ID         Print a project's Markdown memo, or replace it from stdin
+somtus worktree create BRANCH [--project ID] [--repo PATH] [--path PATH] [--base REF]   --base only applies to a new branch
+somtus worktree list [--project ID] [--all]
+somtus worktree tasks ID                Show tasks assigned to a worktree
+somtus worktree forget ID               Forget a missing worktree with no tasks or shells
+somtus task add TITLE [--project ID] [--details TEXT]
+somtus task list [--project ID | --worktree ID | --all]
+somtus task assign WORKTREE_ID TASK_ID...    Assign tasks as one batch
+somtus task unassign TASK_ID...         Remove worktree assignment
+somtus task status TASK_ID todo|in_progress|done
+somtus search QUERY                     Search projects, worktrees, and tasks
+somtus dashboard [--json]               The global dashboard: what needs you, what works, every project
+somtus mcp                              Serve workspace tools over MCP stdio
+somtus preview open|list|status|screenshot|input|tap|text|key|close   Control development preview tabs
+somtus preview help                     Show iOS build/stream and agent testing options
+somtus version | --version              Print the Somtus version
+somtus remote pair|revoke|devices|start|relay   Encrypted mobile access (standalone binary)
+somtus remote --help                    Pairing, relay and connector command options
+somtus shell create [--project ID | --worktree ID] [--command CMD] [--no-parent]
+somtus shell create [--worktree ID] --harness codex|claude|grok|muse [--model NAME] [--account LABEL_OR_ID] [--unrestricted | --as-settings]
                     [--contributor-on]   Muse runs with contributor mode off unless --contributor-on
-riwork shell list [--project ID | --all]
-riwork shell output ID [--lines N] [--styled]   Read current shell output by UUID
-riwork shell output ID --json [--lines N] [--styled] [--if-changed HASH [--wait-ms N]]
-riwork shell history ID --end N --lines M [--styled] [--json]   Read a page of older scrollback
-riwork shell send ID TEXT               Paste a complete line and submit once
-riwork shell keys ID [--json] -- ITEM...   Type text and keys into a shell, no Return added
-riwork shell keys --serve               Type batches read as JSON lines (for the remote connector)
-riwork shell paste ID [--json] -- FILE...   Paste file paths as a drop on the terminal does
-riwork shell resize ID --columns N --rows N --owner UUID --lease UUID
-riwork shell resize-clear ID --owner UUID --lease UUID   Restore desktop sizing
-riwork shell cwd|metrics|attach|close ID
-riwork shell attach ID --exec [--ignore-size] [--read-only]   Become a tmux client of the shell (for remote terminals)
-riwork chat serve [--idle-seconds N]    Run the chat host in the foreground (exits after 15 idle minutes by default)
-riwork chat ensure                      Start the chat host if it is not running; print its socket
-riwork chat list [--project ID] [--json]   List Codex, Claude and Muse chats, running or not
-riwork chat open CHAT_ID                 Reopen an ordinary chat in its Mac project window
-riwork chat new --provider codex|claude|muse [--project ID | --worktree ID] [--mode supervised|auto-edit|full|plan]
+somtus shell list [--project ID | --all]
+somtus shell output ID [--lines N] [--styled]   Read current shell output by UUID
+somtus shell output ID --json [--lines N] [--styled] [--if-changed HASH [--wait-ms N]]
+somtus shell history ID --end N --lines M [--styled] [--json]   Read a page of older scrollback
+somtus shell send ID TEXT               Paste a complete line and submit once
+somtus shell keys ID [--json] -- ITEM...   Type text and keys into a shell, no Return added
+somtus shell keys --serve               Type batches read as JSON lines (for the remote connector)
+somtus shell paste ID [--json] -- FILE...   Paste file paths as a drop on the terminal does
+somtus shell resize ID --columns N --rows N --owner UUID --lease UUID
+somtus shell resize-clear ID --owner UUID --lease UUID   Restore desktop sizing
+somtus shell cwd|metrics|attach|close ID
+somtus shell attach ID --exec [--ignore-size] [--read-only]   Become a tmux client of the shell (for remote terminals)
+somtus chat serve [--idle-seconds N]    Run the chat host in the foreground (exits after 15 idle minutes by default)
+somtus chat ensure                      Start the chat host if it is not running; print its socket
+somtus chat list [--project ID] [--json]   List Codex, Claude and Muse chats, running or not
+somtus chat open CHAT_ID                 Reopen an ordinary chat in its Mac project window
+somtus chat new --provider codex|claude|muse|acp [--project ID | --worktree ID] [--mode supervised|auto-edit|full|plan]
                 [--model NAME] [--effort LEVEL] [--fast] [--contributor-on | --contributor-opt-out]
                 [--title TEXT] [--account LABEL_OR_ID]
-riwork chat models --provider codex|claude|muse [--project ID] [--json]
+somtus chat models --provider codex|claude|muse|acp [--project ID] [--json]
                                         The models chats of that provider reported, read from saved chats
-riwork chat suggestions CHAT_ID [--json]   The / commands, @ files and & models a chat's message box offers
-riwork chat send CHAT_ID TEXT           Send a message; a stopped chat is resumed first
-riwork chat events CHAT_ID [--since N] [--wait-ms N] [--max N] [--max-bytes N] [--json]
+somtus chat suggestions CHAT_ID [--json]   The / commands, @ files and & models a chat's message box offers
+somtus chat send CHAT_ID TEXT           Send a message; a stopped chat is resumed first
+somtus chat events CHAT_ID [--since N] [--wait-ms N] [--max N] [--max-bytes N] [--json]
                                         Read a chat's events after N, waiting up to M ms for the first
-riwork chat command CHAT_ID (--command-json JSON | -- JSON) [--json]   Send one chat command (JSON)
-riwork chat stop CHAT_ID                Stop a chat's provider process and keep its history
-riwork chat fork CHAT_ID [--at ITEM_ID] [--provider codex|claude|muse] [--model NAME] [--effort LEVEL]
+somtus chat command CHAT_ID (--command-json JSON | -- JSON) [--json]   Send one chat command (JSON)
+somtus chat stop CHAT_ID                Stop a chat's provider process and keep its history
+somtus chat fork CHAT_ID [--at ITEM_ID] [--provider codex|claude|muse] [--model NAME] [--effort LEVEL]
                 [--mode supervised|auto-edit|full|plan] [--title TEXT] [--json]
                                         A new chat that goes on from a point of this one
-riwork handoff [--from SHELL_OR_CHAT_ID] --to shell|chat --provider codex|claude|grok|muse
+somtus handoff [--from SHELL_OR_CHAT_ID] --to shell|chat --provider codex|claude|grok|muse
                [--model NAME] [--effort LEVEL] [--account LABEL_OR_ID]
                [--mode supervised|auto-edit|full|plan] [--contributor-on]
                [--context transcript|summary] [--at ITEM_ID] [--note TEXT]
                                         Pass a conversation to a new shell or chat
-riwork orchestrator [--project ID]       Show the selected orchestrator status
-riwork orchestrator create [--project ID | --cwd PATH] [--command CMD] [--mode automatic|terminal|chat]
+somtus orchestrator [--project ID]       Show the selected orchestrator status
+somtus orchestrator create [--project ID | --cwd PATH] [--command CMD] [--mode automatic|terminal|chat]
                 [--provider codex|claude|muse] [--model NAME]
-riwork orchestrator list [--project ID]   List global and project orchestrators, terminals and chats
-riwork orchestrator status|output|cwd|metrics|attach|close [--project ID]
-riwork orchestrator send [--project ID] TEXT   Send a line (a chat message) to the selected orchestrator
-riwork orchestrator load-skill [--project ID]   Load its workspace skill
-riwork schedule list [--scope app|project|workspace] [--project UUID] [--worktree UUID]
-riwork schedule show SCHEDULE_UUID
-riwork schedule create --scope SCOPE [--project UUID] [--worktree UUID] --shell UUID --title TITLE --prompt TEXT --at RFC3339 [--every-minutes N]
-riwork schedule update SCHEDULE_UUID --revision N --scope SCOPE [--project UUID] [--worktree UUID] --shell UUID --at RFC3339 [--title TITLE] [--prompt TEXT] [--every-minutes N | --once]
-riwork schedule pause|resume|delete SCHEDULE_UUID --revision N --scope SCOPE [--project UUID] [--worktree UUID] --shell UUID
-riwork schedule help                    Show schedule contract and examples
+somtus orchestrator list [--project ID]   List global and project orchestrators, terminals and chats
+somtus orchestrator status|output|cwd|metrics|attach|close [--project ID]
+somtus orchestrator send [--project ID] TEXT   Send a line (a chat message) to the selected orchestrator
+somtus orchestrator load-skill [--project ID]   Load its workspace skill
+somtus schedule list [--scope app|project|workspace] [--project UUID] [--worktree UUID]
+somtus schedule show SCHEDULE_UUID
+somtus schedule create --scope SCOPE [--project UUID] [--worktree UUID] --shell UUID --title TITLE --prompt TEXT --at RFC3339 [--every-minutes N]
+somtus schedule update SCHEDULE_UUID --revision N --scope SCOPE [--project UUID] [--worktree UUID] --shell UUID --at RFC3339 [--title TITLE] [--prompt TEXT] [--every-minutes N | --once]
+somtus schedule pause|resume|delete SCHEDULE_UUID --revision N --scope SCOPE [--project UUID] [--worktree UUID] --shell UUID
+somtus schedule help                    Show schedule contract and examples
 
 Add --json to read commands for structured output. Project, worktree, task, and
 chat IDs accept a unique UUID prefix of at least eight characters; shell IDs
@@ -259,7 +260,7 @@ Claude and Muse --model, as handoff does); without it the CLI's own default runs
 also says its contributor mode once, off unless --contributor-on, with or without --model.
 shell create --account LABEL_OR_ID pins a Codex subscription (or system-default); needs --harness codex.
 shell create --json prints the new session as `shell list --json` shows it (id,
-project_id, worktree_id, kind, cwd, harness, alive, ...). A running RiWork
+project_id, worktree_id, kind, cwd, harness, alive, ...). A running Somtus
 window adds a tab for it behind the current one without taking focus.
 shell keys takes 1 to 64 items after `--`: t:TEXT (literal, 1 to 4096 bytes, no
 control characters) or k:KEY, one of Enter Tab BTab Escape Backspace Delete Up
@@ -315,7 +316,7 @@ status --json give every orchestrator a \"mode\" (\"terminal\" or \"chat\"); a c
 orchestrator's entry has the usual fields and \"chat_id\", \"provider\", \"model\" (null:
 the provider's default) and \"state\"
 (starting, idle, running, waiting, stopped or failed), and its \"id\" is its chat's
-id, which riwork chat events and riwork chat command take as well. For a chat,
+id, which somtus chat events and somtus chat command take as well. For a chat,
 send is a chat message (a stopped chat is resumed), output --lines N is the
 conversation as plain text (messages whole, one line for each command, edit and
 tool call, and what waits for approval last), load-skill sends the whole skill as
@@ -331,8 +332,8 @@ The remote connector creates the phone's projects this way.
 
 const SCHEDULE_HELP: &str = "\
 Automations (schedule and automation are aliases):
-  riwork automation create --new-chat --scope project --project UUID --title TITLE --prompt TEXT --at RFC3339 [--provider codex|claude|muse] [--model MODEL] [--effort EFFORT] [--fast] [--permission supervised|auto-edit|full|plan] [--account ID] [--every-minutes N]
-  riwork automation create --existing-shell --scope app|project|workspace --shell UUID --title TITLE --prompt TEXT --at RFC3339 [--project UUID] [--worktree UUID] [--every-minutes N]
+  somtus automation create --new-chat --scope project --project UUID --title TITLE --prompt TEXT --at RFC3339 [--provider codex|claude|muse] [--model MODEL] [--effort EFFORT] [--fast] [--permission supervised|auto-edit|full|plan] [--account ID] [--every-minutes N]
+  somtus automation create --existing-shell --scope app|project|workspace --shell UUID --title TITLE --prompt TEXT --at RFC3339 [--project UUID] [--worktree UUID] [--every-minutes N]
 Explicit existing-shell mode pins the selected shell kind; project scope also
  accepts an ordinary project-root AI shell. Omitted preserves legacy semantics.
 New chat runs create an ordinary project chat each occurrence. Permission defaults
@@ -340,11 +341,11 @@ New chat runs create an ordinary project chat each occurrence. Permission defaul
  revision-checked commands; results include last_run.created_chat_id.
 
 Schedule management (add --json to any command for structured stdout):
-  riwork schedule list [--scope app|project|workspace] [--project UUID] [--worktree UUID]
-  riwork schedule show SCHEDULE_UUID
-  riwork schedule create --scope app|project|workspace --shell UUID --title TITLE --prompt TEXT --at RFC3339 [--every-minutes N]
-  riwork schedule update SCHEDULE_UUID --revision N --scope SCOPE --shell UUID --at RFC3339 [--title TITLE] [--prompt TEXT] [--every-minutes N | --once]
-  riwork schedule pause|resume|delete SCHEDULE_UUID --revision N --scope SCOPE --shell UUID
+  somtus schedule list [--scope app|project|workspace] [--project UUID] [--worktree UUID]
+  somtus schedule show SCHEDULE_UUID
+  somtus schedule create --scope app|project|workspace --shell UUID --title TITLE --prompt TEXT --at RFC3339 [--every-minutes N]
+  somtus schedule update SCHEDULE_UUID --revision N --scope SCOPE --shell UUID --at RFC3339 [--title TITLE] [--prompt TEXT] [--every-minutes N | --once]
+  somtus schedule pause|resume|delete SCHEDULE_UUID --revision N --scope SCOPE --shell UUID
 
 For project scope add --project PROJECT_UUID. For workspace scope add both
 --project PROJECT_UUID and --worktree WORKTREE_UUID. All UUIDs must be full,
@@ -358,15 +359,15 @@ failed/uncertain schedule. Read its latest revision first. The desktop app
 must be open to dispatch; these commands never launch a session or agent.
 
 Examples (replace UUIDs and future time with values from your own fixture):
-  riwork schedule create --scope app --shell SHELL_UUID --title Check --prompt 'Review status' --at 2026-10-05T09:00:00+02:00 --json
-  riwork schedule create --scope project --project PROJECT_UUID --shell SHELL_UUID --title Check --prompt 'Review status' --at 2026-10-05T09:00:00+02:00
-  riwork schedule create --scope workspace --project PROJECT_UUID --worktree WORKTREE_UUID --shell SHELL_UUID --title Check --prompt 'Review status' --at 2026-10-05T09:00:00+02:00 --every-minutes 60
-  riwork schedule pause SCHEDULE_UUID --revision 1 --scope workspace --project PROJECT_UUID --worktree WORKTREE_UUID --shell SHELL_UUID --json
+  somtus schedule create --scope app --shell SHELL_UUID --title Check --prompt 'Review status' --at 2026-10-05T09:00:00+02:00 --json
+  somtus schedule create --scope project --project PROJECT_UUID --shell SHELL_UUID --title Check --prompt 'Review status' --at 2026-10-05T09:00:00+02:00
+  somtus schedule create --scope workspace --project PROJECT_UUID --worktree WORKTREE_UUID --shell SHELL_UUID --title Check --prompt 'Review status' --at 2026-10-05T09:00:00+02:00 --every-minutes 60
+  somtus schedule pause SCHEDULE_UUID --revision 1 --scope workspace --project PROJECT_UUID --worktree WORKTREE_UUID --shell SHELL_UUID --json
 ";
 
 /// Returns `false` when the arguments should launch the graphical workspace.
 /// Anything else that is not a command is an error, so a typo or a headless
-/// agent's `riwork --version` never starts (and registers) a GUI instance.
+/// agent's `somtus --version` never starts (and registers) a GUI instance.
 pub fn run_cli(args: &[String]) -> Result<bool, String> {
     run_cli_with_invocation(args, Invocation::Desktop)
 }
@@ -416,11 +417,12 @@ fn run_cli_with_invocation(args: &[String], invocation: Invocation) -> Result<bo
         args.first().map(String::as_str),
         Some("shell" | "orchestrator" | "chat")
     ) && args.get(1).map(String::as_str) == Some("send")
+        || matches!(args.get(..2), Some([chat, acp]) if chat == "chat" && acp == "acp")
         || args.first().map(String::as_str) == Some("cua")
             && args.get(1).map(String::as_str) == Some("harness")
         || matches!(
             args.first().map(String::as_str),
-            Some("agent-notify" | "agent-hook")
+            Some("agent-notify" | "agent-hook" | "program-status-collect")
         );
     let json = if args.first().map(String::as_str) == Some("settings")
         || matches!(args.get(..2), Some([shell, keys]) if shell == "shell" && (keys == "keys" || keys == "paste"))
@@ -464,11 +466,14 @@ fn run_cli_with_invocation(args: &[String], invocation: Invocation) -> Result<bo
             | "usage"
             | "appearance"
             | "settings"
+            | "customization"
             | "addin"
             | "capabilities"
+            | "native"
             | "telemetry"
             | "agent-notify"
             | "agent-hook"
+            | "program-status-collect"
             | "mcp"
             | "setup"
             | "cua"
@@ -499,7 +504,7 @@ fn run_cli_with_invocation(args: &[String], invocation: Invocation) -> Result<bo
             if json {
                 print_json(&json!({"version": env!("CARGO_PKG_VERSION")}))?;
             } else {
-                println!("riwork {}", env!("CARGO_PKG_VERSION"));
+                println!("somtus {}", env!("CARGO_PKG_VERSION"));
             }
         }
         "open" => open_command(args, json, invocation)?,
@@ -528,8 +533,10 @@ fn run_cli_with_invocation(args: &[String], invocation: Invocation) -> Result<bo
         "usage" => usage_command(args, json)?,
         "appearance" => appearance_command(args, json)?,
         "settings" => settings_cli::command(args, json)?,
+        "customization" => customization_cli::command(args, json)?,
         "addin" => addin_cli::command(args, json)?,
         "capabilities" => capabilities_command(args, json)?,
+        "native" => native_hosts::command(&args, json)?,
         "setup" => {
             ensure_empty(&args)?;
             print_cua_status(&CuaManager::open_default()?.setup()?, json)?;
@@ -538,9 +545,19 @@ fn run_cli_with_invocation(args: &[String], invocation: Invocation) -> Result<bo
         "import" => import_command(args, json)?,
         "telemetry" => telemetry_command(args)?,
         "agent-hook" => agent_hook_command(args, io::stdin().lock())?,
+        "program-status-collect" => {
+            if let [home, shell, generation] = args.as_slice() {
+                riwork_engine::program_status::collect(
+                    std::path::Path::new(home), shell, generation,
+                    io::stdin().lock(), io::stdout().lock(),
+                )?;
+            } else {
+                return Err("program-status-collect requires HOME SHELL GENERATION".into());
+            }
+        }
         "agent-notify" => {
             if args.len() != 3 {
-                return Err("Usage: riwork agent-notify STATE_HOME SHELL_UUID JSON".to_owned());
+                return Err("Usage: somtus agent-notify STATE_HOME SHELL_UUID JSON".to_owned());
             }
             crate::activity::record_codex_notification(
                 std::path::Path::new(&args[0]),
@@ -570,7 +587,7 @@ fn run_cli_with_invocation(args: &[String], invocation: Invocation) -> Result<bo
 }
 
 /// The GUI's own startup forms: no arguments, or one project directory, which
-/// is how `riwork open`, reload restore, and the shell launchers start it.
+/// is how `somtus open`, reload restore, and the shell launchers start it.
 /// Older macOS may add a `-psn_` process serial number when launching a bundle.
 fn opens_workspace(args: &[String]) -> bool {
     let mut args = args.iter().filter(|arg| !arg.starts_with("-psn_"));
@@ -586,17 +603,17 @@ fn unknown_invocation(args: &[String]) -> String {
     let problem = if first.starts_with('-') {
         format!("Unknown option '{first}'")
     } else {
-        format!("'{first}' is not a riwork command or an existing project directory")
+        format!("'{first}' is not a somtus command or an existing project directory")
     };
     format!(
-        "{problem}\nUsage: riwork [PROJECT_DIR] | riwork COMMAND [ARGS...]\nRun `riwork help` for all commands."
+        "{problem}\nUsage: somtus [PROJECT_DIR] | somtus COMMAND [ARGS...]\nRun `somtus help` for all commands."
     )
 }
 
 fn import_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
     let preview_only = take_flag(&mut args, "--preview");
     if args.first().map(String::as_str) != Some("orca") {
-        return Err("Usage: riwork import orca [--preview] [--json]".to_owned());
+        return Err("Usage: somtus import orca [--preview] [--json]".to_owned());
     }
     args.remove(0);
     ensure_empty(&args)?;
@@ -637,7 +654,7 @@ fn import_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
 }
 
 fn gui_executable(invocation: Invocation) -> Result<PathBuf, String> {
-    let current = env::current_exe().map_err(|error| format!("Cannot locate RiWork: {error}"))?;
+    let current = env::current_exe().map_err(|error| format!("Cannot locate Somtus: {error}"))?;
     let current_identity = current.canonicalize().unwrap_or_else(|_| current.clone());
     let is_candidate = |path: &Path| {
         path.is_file()
@@ -651,14 +668,21 @@ fn gui_executable(invocation: Invocation) -> Result<PathBuf, String> {
         return Ok(executable);
     }
     if let Some(parent) = current.parent() {
-        let bundle = parent.join("RiWork.app/Contents/MacOS/riwork");
-        if is_candidate(&bundle) {
-            return Ok(bundle);
+        for relative in [
+            "Somtus.app/Contents/MacOS/somtus",
+            "RiWork.app/Contents/MacOS/riwork",
+        ] {
+            let bundle = parent.join(relative);
+            if is_candidate(&bundle) {
+                return Ok(bundle);
+            }
         }
         if invocation == Invocation::Headless {
-            let sibling = parent.join(desktop_binary_name());
-            if is_candidate(&sibling) {
-                return Ok(sibling);
+            for name in desktop_binary_names() {
+                let sibling = parent.join(name);
+                if is_candidate(&sibling) {
+                    return Ok(sibling);
+                }
             }
         }
     }
@@ -667,25 +691,36 @@ fn gui_executable(invocation: Invocation) -> Result<PathBuf, String> {
     }
     if let Some(path) = env::var_os("PATH") {
         for directory in env::split_paths(&path) {
-            let executable = directory.join(desktop_binary_name());
-            if is_candidate(&executable) {
-                return Ok(executable);
+            for name in desktop_binary_names() {
+                let executable = directory.join(name);
+                if is_candidate(&executable) {
+                    return Ok(executable);
+                }
             }
         }
     }
-    Err("Cannot locate the RiWork desktop executable. Install RiWork or put its `riwork` executable beside riwork-cli or on PATH.".to_owned())
+    Err("Cannot locate the Somtus desktop executable. Install Somtus or put its `somtus` executable beside somtus-cli or on PATH.".to_owned())
 }
 
-fn desktop_binary_name() -> &'static str {
+fn desktop_binary_names() -> [&'static str; 2] {
     if cfg!(windows) {
-        "riwork.exe"
+        ["somtus.exe", "riwork.exe"]
     } else {
-        "riwork"
+        ["somtus", "riwork"]
     }
 }
 
+fn take_reload_instance(args: &mut Vec<String>) -> Result<Option<String>, String> {
+    let all = take_flag(args, "--all");
+    let instance = take_option(args, "--instance")?;
+    if all && instance.is_some() {
+        return Err("--all and --instance cannot be used together".to_owned());
+    }
+    Ok(instance)
+}
+
 fn reload_command(mut args: Vec<String>, json: bool, invocation: Invocation) -> Result<(), String> {
-    take_flag(&mut args, "--all");
+    let instance = take_reload_instance(&mut args)?;
     let session = take_flag(&mut args, "--session");
     let shell = take_option(&mut args, "--shell")?;
     ensure_empty(&args)?;
@@ -697,7 +732,10 @@ fn reload_command(mut args: Vec<String>, json: bool, invocation: Invocation) -> 
     }
     let executable = gui_executable(invocation)?;
     let manager = crate::runtime::RuntimeManager::open_default()?;
-    let report = manager.reload_all(&executable)?;
+    let report = match instance {
+        Some(instance) => manager.reload_instance(&instance, &executable)?,
+        None => manager.reload_all(&executable)?,
+    };
     let report = manager.wait_for_reload(report, crate::runtime::RELOAD_WAIT)?;
     if report.failed > 0 || report.pending > 0 {
         if json {
@@ -742,11 +780,11 @@ fn update_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
     let no_reload = take_flag(&mut args, "--no-reload");
     ensure_empty(&args)?;
     let source = crate::update::resolve_source(source.as_deref())?;
-    eprintln!("Building RiWork from {}…", source.display());
+    eprintln!("Building Somtus from {}…", source.display());
     let build = crate::update::build_update(&source, profile)?;
     let reload_result = (|| {
         let manager = crate::runtime::RuntimeManager::open_default()?;
-        let executable = build.bundle.join("Contents/MacOS/riwork");
+        let executable = build.bundle.join("Contents/MacOS/somtus");
         manager.record_installed_build(&executable)?;
         if no_reload {
             return Ok(None);
@@ -778,7 +816,7 @@ fn update_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
             // An app's own reason already ends in a full stop.
             let error = error.trim_end_matches('.');
             return Err(format!(
-                "Installed {}, but reload failed: {error}. Retry `riwork reload`.{rollback} Build log: {}",
+                "Installed {}, but reload failed: {error}. Retry `somtus reload`.{rollback} Build log: {}",
                 build.bundle.display(),
                 build.log_path.display()
             ));
@@ -817,7 +855,7 @@ fn reload_failure_details(report: &crate::runtime::ReloadReport) -> String {
         })
         .map(|instance| {
             format!(
-                "\nRiWork app (pid {}): {}",
+                "\nSomtus app (pid {}): {}",
                 instance.pid,
                 terminal_safe(&instance.message)
             )
@@ -848,13 +886,13 @@ fn reload_summary(report: &crate::runtime::ReloadReport) -> String {
             .map(|instance| instance.window_count)
             .sum();
         format!(
-            "Reloaded {} RiWork apps ({} windows). Running shells and agents were preserved.",
+            "Reloaded {} Somtus apps ({} windows). Running shells and agents were preserved.",
             report.reloaded, windows
         )
     } else if report.unreadable_registrations > 0 {
-        "No readable RiWork apps were reloaded.".to_owned()
+        "No readable Somtus apps were reloaded.".to_owned()
     } else {
-        "No registered RiWork apps are open.".to_owned()
+        "No registered Somtus apps are open.".to_owned()
     }
 }
 
@@ -869,8 +907,8 @@ fn unreadable_reload_error(report: &crate::runtime::ReloadReport) -> Option<Stri
     };
     (count > 0).then(|| {
         format!(
-            "{count} running RiWork {noun} from another build could not be reloaded. \
-             Quit {pronoun}, or run `riwork reload` from the build that started {pronoun}."
+            "{count} running Somtus {noun} from another build could not be reloaded. \
+             Quit {pronoun}, or run `somtus reload` from the build that started {pronoun}."
         )
     })
 }
@@ -887,7 +925,7 @@ fn cua_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
             Some("grok") => HarnessKind::Grok,
             Some("muse") => HarnessKind::Muse,
             _ => {
-                return Err("Usage: riwork cua harness codex|claude|grok|muse -- ARG...".to_owned());
+                return Err("Usage: somtus cua harness codex|claude|grok|muse -- ARG...".to_owned());
             }
         };
         args.remove(0);
@@ -903,7 +941,7 @@ fn cua_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
         "status" => print_cua_status(&manager.status()?, json),
         "permissions" => print_cua_status(&manager.request_permissions()?, json),
         "mcp" => manager.run_mcp(),
-        _ => Err("Usage: riwork cua setup|status|permissions|mcp [--json]".to_owned()),
+        _ => Err("Usage: somtus cua setup|status|permissions|mcp [--json]".to_owned()),
     }
 }
 
@@ -1094,7 +1132,8 @@ fn capabilities_command(args: Vec<String>, json: bool) -> Result<(), String> {
             "project_memo": true,
             "preview": true,
             "shell_keys_serve": true,
-            "key_names": 2
+            "key_names": 2,
+            "native": {"v": 1, "methods": ["Hosts.local"]}
         });
         for (key, value) in EXTRA_CAPABILITIES.get().into_iter().flatten() {
             answer[key.as_str()] = value.clone();
@@ -1119,7 +1158,7 @@ fn capabilities_command(args: Vec<String>, json: bool) -> Result<(), String> {
     Ok(())
 }
 
-/// `riwork dashboard [--json]`: the desktop's global dashboard, sampled here as the desktop
+/// `somtus dashboard [--json]`: the desktop's global dashboard, sampled here as the desktop
 /// samples it, and `--json` the remote connector's `dashboard.get` reply
 /// (`global_overview::wire`). Reading starts nothing: no chat host (a running one is asked
 /// for its chats, else the saved chats are read), chat, shell, orchestrator or tmux server.
@@ -1151,7 +1190,7 @@ fn dashboard_command(args: Vec<String>, json: bool) -> Result<(), String> {
     Ok(())
 }
 
-/// `riwork dashboard --refresh-summary`: internal, the process `spawn_summary_refresh` starts.
+/// `somtus dashboard --refresh-summary`: internal, the process `spawn_summary_refresh` starts.
 const SUMMARY_REFRESH: &str = "--refresh-summary";
 
 /// Ask for a due Haiku summary in a detached process that reads `evidence` from stdin.
@@ -1292,6 +1331,7 @@ fn dashboard_summary(overview: &crate::global_overview::Overview, now: u64) -> S
                 crate::provider::Provider::Codex => "Codex",
                 crate::provider::Provider::Claude => "Claude",
                 crate::provider::Provider::Muse => "Muse",
+                crate::provider::Provider::Acp => "ACP",
             },
             chat_state_word(state)
         ),
@@ -1480,7 +1520,7 @@ fn usage_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
         }
     } else {
         let manager = SessionManager::open_default()?;
-        // A RiWork shell reports its own account, not the app-wide choice. The
+        // A Somtus shell reports its own account, not the app-wide choice. The
         // listing drops the account of a plain shell that is not running Codex.
         let shell = match env::var("RIWORK_SHELL_ID") {
             Ok(id) if !id.is_empty() => Some(
@@ -1527,7 +1567,7 @@ fn usage_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
             println!("{}: {:.0}% remaining{reset}", window.label, remaining);
         }
         if usage.provider == "grok" {
-            println!("Account allowance: not available to RiWork; open /usage in Grok.");
+            println!("Account allowance: not available to Somtus; open /usage in Grok.");
         } else if usage.windows.is_empty() {
             println!("Subscription quota is not reported for this account.");
         }
@@ -1583,7 +1623,7 @@ fn print_grok_session(session: &crate::usage::SessionUsage) {
     }
 }
 
-/// The account `riwork usage` reports without `--shell`: the calling shell's
+/// The account `somtus usage` reports without `--shell`: the calling shell's
 /// own frozen home, else its project's choice, else the app-wide choice.
 fn scoped_codex_usage_home(
     state_home: &Path,
@@ -1677,7 +1717,7 @@ fn agent_hook_command(args: Vec<String>, input: impl io::Read) -> Result<(), Str
 fn telemetry_command(mut args: Vec<String>) -> Result<(), String> {
     let provider = pop_command(&mut args, "");
     if provider != "claude" {
-        return Err("Usage: riwork telemetry claude SHELL_UUID (JSON on stdin)".to_owned());
+        return Err("Usage: somtus telemetry claude SHELL_UUID (JSON on stdin)".to_owned());
     }
     let shell_id = take_single(args, "telemetry claude SHELL_UUID")?;
     let mut input = String::new();
@@ -1705,7 +1745,7 @@ fn project_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
             let no_git = operation == "create" && take_flag(&mut args, "--no-git");
             let exclusive = operation == "create" && take_flag(&mut args, "--exclusive");
             let path = if operation == "create" && args.is_empty() {
-                let name = name.as_deref().ok_or("Usage: riwork project create PATH [--name NAME] [--no-git] [--exclusive], or riwork project create --name NAME [--no-git] [--exclusive]")?;
+                let name = name.as_deref().ok_or("Usage: somtus project create PATH [--name NAME] [--no-git] [--exclusive], or somtus project create --name NAME [--no-git] [--exclusive]")?;
                 crate::paths::default_new_project_path(name)?
             } else {
                 PathBuf::from(take_single(args, &format!("project {operation} PATH"))?)
@@ -1907,7 +1947,7 @@ fn project_folder_command(store: &Store, mut args: Vec<String>, json: bool) -> R
                 }
             } else {
                 if args.len() != 2 {
-                    return Err("Usage: riwork project folder rename ID NAME".to_owned());
+                    return Err("Usage: somtus project folder rename ID NAME".to_owned());
                 }
                 store.rename_project_folder(&args[0], &args[1])?
             };
@@ -2106,7 +2146,7 @@ fn task_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
         }
         "assign" => {
             if args.len() < 2 {
-                return Err("Usage: riwork task assign WORKTREE_ID TASK_ID...".to_owned());
+                return Err("Usage: somtus task assign WORKTREE_ID TASK_ID...".to_owned());
             }
             let worktree = args.remove(0);
             let tasks = store.assign_tasks(&worktree, &args)?;
@@ -2130,7 +2170,7 @@ fn task_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
         }
         "status" => {
             if args.len() != 2 {
-                return Err("Usage: riwork task status TASK_ID todo|in_progress|done".to_owned());
+                return Err("Usage: somtus task status TASK_ID todo|in_progress|done".to_owned());
             }
             let status = TaskStatus::parse(&args[1])?;
             let task = store.set_task_status(&args[0], status)?;
@@ -2215,7 +2255,7 @@ fn creation_account(
         harness.ok_or("--account requires --harness codex: only Codex accounts can be chosen")?;
     if harness != HarnessKind::Codex {
         return Err(format!(
-            "{} has no RiWork-managed accounts: it always uses the login of the system. Leave out --account; only Codex accounts can be chosen.",
+            "{} has no Somtus-managed accounts: it always uses the login of the system. Leave out --account; only Codex accounts can be chosen.",
             crate::handoff::agent_name(harness)
         ));
     }
@@ -2434,7 +2474,7 @@ fn shell_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
         }
         "send" => {
             if args.len() < 2 {
-                return Err("Usage: riwork shell send ID TEXT".to_owned());
+                return Err("Usage: somtus shell send ID TEXT".to_owned());
             }
             let id = args.remove(0);
             let input = args.join(" ");
@@ -2558,7 +2598,7 @@ fn chat_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
     }
     let ensure = |home: &Path| {
         let executable =
-            env::current_exe().map_err(|error| format!("Cannot locate RiWork: {error}"))?;
+            env::current_exe().map_err(|error| format!("Cannot locate Somtus: {error}"))?;
         crate::chat::host::ensure(home, &executable)
     };
     print!("{}", chat_client_command(&home, args, json, &ensure)?);
@@ -2579,6 +2619,31 @@ fn chat_client_command(
     };
     let operation = pop_command(&mut args, "list");
     match operation.as_str() {
+        "acp" => {
+            let operation = pop_command(&mut args, "show");
+            match operation.as_str() {
+                "show" => {
+                    ensure_empty(&args)?;
+                    json_text(&crate::chat::acp_config::load(home)?)
+                }
+                "configure" => {
+                    let mut command = None;
+                    let mut arguments = Vec::new();
+                    let mut values = args.into_iter();
+                    while let Some(flag) = values.next() {
+                        match flag.as_str() {
+                            "--command" if command.is_none() => command = Some(PathBuf::from(values.next().ok_or("--command needs an absolute executable path")?)),
+                            "--arg" => arguments.push(values.next().ok_or("--arg needs one literal argument")?),
+                            _ => return Err("Usage: somtus chat acp configure --command /absolute/path [--arg VALUE ...]".into()),
+                        }
+                    }
+                    let config = crate::chat::acp_config::Config { command: command.ok_or("--command is required")?, args: arguments };
+                    crate::chat::acp_config::save(home, &config)?;
+                    json_text(&config)
+                }
+                _ => Err("Usage: somtus chat acp show | configure --command /absolute/path [--arg VALUE ...]".into()),
+            }
+        }
         "ensure" => {
             ensure_empty(&args)?;
             let socket = ensure(home)?;
@@ -2666,6 +2731,7 @@ fn chat_client_command(
                 Some("codex") => crate::chat::model::Provider::Codex,
                 Some("claude") => crate::chat::model::Provider::Claude,
                 Some("muse") => crate::chat::model::Provider::Muse,
+                Some("acp") => crate::chat::model::Provider::Acp,
                 _ => return Err(CHAT_NEW_USAGE.to_owned()),
             };
             let project = take_option(&mut args, "--project")?;
@@ -2691,11 +2757,12 @@ fn chat_client_command(
                 );
             }
             let harness = match provider {
-                crate::chat::model::Provider::Codex => HarnessKind::Codex,
-                crate::chat::model::Provider::Claude => HarnessKind::Claude,
-                crate::chat::model::Provider::Muse => HarnessKind::Muse,
+                crate::chat::model::Provider::Codex => Some(HarnessKind::Codex),
+                crate::chat::model::Provider::Claude => Some(HarnessKind::Claude),
+                crate::chat::model::Provider::Muse => Some(HarnessKind::Muse),
+                crate::chat::model::Provider::Acp => None,
             };
-            let account = creation_account(home, Some(harness), account.as_deref())?
+            let account = creation_account(home, harness, account.as_deref())?
                 .map(|binding| binding.id.unwrap_or_else(|| crate::codex_accounts::SYSTEM_DEFAULT_ID.into()));
             let state = Store::open(home)?.snapshot()?;
             let (project_id, worktree_id, cwd) =
@@ -2873,7 +2940,7 @@ fn chat_client_command(
         }
         "send" => {
             if args.len() < 2 {
-                return Err("Usage: riwork chat send CHAT_ID TEXT".to_owned());
+                return Err("Usage: somtus chat send CHAT_ID TEXT".to_owned());
             }
             let selector = args.remove(0);
             let text = args.join(" ");
@@ -2922,6 +2989,7 @@ fn chat_client_command(
                 Some("codex") => crate::chat::model::Provider::Codex,
                 Some("claude") => crate::chat::model::Provider::Claude,
                 Some("muse") => crate::chat::model::Provider::Muse,
+                Some("acp") => crate::chat::model::Provider::Acp,
                 _ => return Err(CHAT_MODELS_USAGE.to_owned()),
             };
             let project = take_option(&mut args, "--project")?;
@@ -3023,20 +3091,20 @@ fn chat_client_command(
             Ok(text)
         }
         _ => Err(
-            "Usage: riwork chat serve|ensure|list|new|models|suggestions|snapshot|events|command|send|stop (riwork help)"
+            "Usage: somtus chat serve|ensure|list|new|models|suggestions|snapshot|events|command|send|stop (somtus help)"
                 .to_owned(),
         ),
     }
 }
 
 const CHAT_MODELS_USAGE: &str =
-    "Usage: riwork chat models --provider codex|claude|muse [--project ID] [--json]";
+    "Usage: somtus chat models --provider codex|claude|muse|acp [--project ID] [--json]";
 
-const CHAT_NEW_USAGE: &str = "Usage: riwork chat new --provider codex|claude|muse [--project ID | --worktree ID] [--mode supervised|auto-edit|full|plan] [--model NAME] [--effort LEVEL] [--fast] [--contributor-on | --contributor-opt-out] [--title TEXT] [--account LABEL_OR_ID]";
+const CHAT_NEW_USAGE: &str = "Usage: somtus chat new --provider codex|claude|muse|acp [--project ID | --worktree ID] [--mode supervised|auto-edit|full|plan] [--model NAME] [--effort LEVEL] [--fast] [--contributor-on | --contributor-opt-out] [--title TEXT] [--account LABEL_OR_ID]";
 
-const CHAT_FORK_USAGE: &str = "Usage: riwork chat fork CHAT_ID [--at ITEM_ID] [--provider codex|claude|muse] [--model NAME] [--effort LEVEL] [--mode supervised|auto-edit|full|plan] [--title TEXT] [--json]";
+const CHAT_FORK_USAGE: &str = "Usage: somtus chat fork CHAT_ID [--at ITEM_ID] [--provider codex|claude|muse] [--model NAME] [--effort LEVEL] [--mode supervised|auto-edit|full|plan] [--title TEXT] [--json]";
 
-/// `riwork chat fork`: a new chat that goes on from a point of another (`handoff::fork`),
+/// `somtus chat fork`: a new chat that goes on from a point of another (`handoff::fork`),
 /// with the provider's own copy of the thread when it reproduces the point, else a handoff
 /// document cut there. Both chats say so: the fork's origin, the source's marker.
 fn chat_fork(
@@ -3068,6 +3136,7 @@ fn chat_fork(
         Some("codex") => Some(Provider::Codex),
         Some("claude") => Some(Provider::Claude),
         Some("muse") => Some(Provider::Muse),
+        Some("acp") => Some(Provider::Acp),
         Some(_) => return Err(CHAT_FORK_USAGE.to_owned()),
     };
     let mode = match take_option(&mut args, "--mode")?.as_deref() {
@@ -3194,6 +3263,7 @@ fn chat_line(chat: &crate::chat::model::ChatInfo) -> String {
             Provider::Codex => "codex",
             Provider::Claude => "claude",
             Provider::Muse => "muse",
+            Provider::Acp => "acp",
         },
         state,
         terminal_safe(&chat.title),
@@ -3249,7 +3319,7 @@ fn orchestrator_client_command(
     };
     let selector = take_orchestrator_project(&mut args, &operation)?;
     if operation == "send" && args.is_empty() {
-        return Err("Usage: riwork orchestrator send [--project ID] TEXT".to_owned());
+        return Err("Usage: somtus orchestrator send [--project ID] TEXT".to_owned());
     }
     let project = selector
         .as_deref()
@@ -3263,10 +3333,10 @@ fn orchestrator_client_command(
     let scope = orchestrators::scope_of(project.as_ref().map(|project| project.id.as_str()));
     let missing = match &project {
         Some(project) => format!(
-            "No project orchestrator session. Run: riwork orchestrator create --project {}",
+            "No project orchestrator session. Run: somtus orchestrator create --project {}",
             project.id
         ),
-        None => "No global orchestrator session. Run: riwork orchestrator create".to_owned(),
+        None => "No global orchestrator session. Run: somtus orchestrator create".to_owned(),
     };
     let text =
         |text: String| -> Result<OrchestratorOutput, String> { Ok(OrchestratorOutput::Text(text)) };
@@ -3283,6 +3353,7 @@ fn orchestrator_client_command(
                     "codex" => Ok(crate::chat::model::Provider::Codex),
                     "claude" => Ok(crate::chat::model::Provider::Claude),
                     "muse" => Ok(crate::chat::model::Provider::Muse),
+                    "acp" => Ok(crate::chat::model::Provider::Acp),
                     _ => Err("--provider must be codex, claude or muse".to_owned()),
                 })
                 .transpose()?;
@@ -3590,7 +3661,7 @@ fn chat_orchestrator_operation(
             }
         }
         other => Err(format!(
-            "{other} is for terminal orchestrators; this one runs as a chat (open it as a chat tab, or use `riwork chat events {}`)",
+            "{other} is for terminal orchestrators; this one runs as a chat (open it as a chat tab, or use `somtus chat events {}`)",
             chat.id
         )),
     }
@@ -3799,7 +3870,7 @@ fn schedule_command_inner(
             Ok(json!({"deleted":true,"schedule":service.delete(&key)?}))
         }
         _ => Err(schedule_cli_error(format!(
-            "Unknown schedule command '{operation}'. Run `riwork schedule help`."
+            "Unknown schedule command '{operation}'. Run `somtus schedule help`."
         ))),
     }
 }
@@ -4013,7 +4084,7 @@ fn project_id(state: &State, selector: Option<&str>) -> Result<String, String> {
         None => state
             .active_project_id
             .clone()
-            .ok_or_else(|| "No active project. Run: riwork project add PATH".to_owned()),
+            .ok_or_else(|| "No active project. Run: somtus project add PATH".to_owned()),
     }
 }
 
@@ -4116,7 +4187,7 @@ struct HistoryArguments {
 const HISTORY_USAGE: &str = "shell history ID --end N --lines M [--styled] [--json]";
 
 fn parse_history_arguments(mut args: Vec<String>) -> Result<HistoryArguments, String> {
-    let usage = || format!("Usage: riwork {HISTORY_USAGE}");
+    let usage = || format!("Usage: somtus {HISTORY_USAGE}");
     let end = take_option(&mut args, "--end")?
         .ok_or_else(usage)?
         .parse::<u32>()
@@ -4200,7 +4271,7 @@ fn parse_keys_arguments(
     mut args: Vec<String>,
 ) -> Result<(String, Vec<crate::session_keys::Item>), String> {
     const USAGE: &str = "shell keys ID [--json] -- ITEM...  (ITEM is t:TEXT or k:KEY)";
-    let usage = || format!("Usage: riwork {USAGE}");
+    let usage = || format!("Usage: somtus {USAGE}");
     let separator = args.iter().position(|arg| arg == "--").ok_or_else(usage)?;
     let items = args.split_off(separator + 1);
     args.pop();
@@ -4217,7 +4288,7 @@ fn parse_paste_arguments(mut args: Vec<String>) -> Result<(String, Vec<PathBuf>)
     const USAGE: &str = "shell paste ID [--json] -- FILE...";
     let usage = || {
         format!(
-            "{}Usage: riwork {USAGE}",
+            "{}Usage: somtus {USAGE}",
             crate::session_keys::INVALID_REQUEST
         )
     };
@@ -4270,7 +4341,7 @@ fn take_single(args: Vec<String>, usage: &str) -> Result<String, String> {
     if args.len() == 1 && !args[0].starts_with("--") {
         Ok(args.into_iter().next().unwrap())
     } else {
-        Err(format!("Usage: riwork {usage}"))
+        Err(format!("Usage: somtus {usage}"))
     }
 }
 
@@ -4284,7 +4355,7 @@ fn optional_single(args: Vec<String>, usage: &str) -> Result<Option<String>, Str
 
 fn join_nonempty(args: Vec<String>, usage: &str) -> Result<String, String> {
     if args.is_empty() || args.iter().any(|arg| arg.starts_with("--")) {
-        Err(format!("Usage: riwork {usage}"))
+        Err(format!("Usage: somtus {usage}"))
     } else {
         Ok(args.join(" "))
     }
@@ -4303,8 +4374,10 @@ mod chat_remote;
 mod handoff;
 mod keys_serve;
 mod memo;
+mod native_hosts;
 pub(crate) mod preview_cli;
 mod settings_cli;
+mod customization_cli;
 use chat_remote::{
     effort_setting, model_setting, parse_events_arguments, take_verbatim_option, title_setting,
 };
@@ -4325,7 +4398,7 @@ mod tests {
         opens_workspace, output_json, parse_history_arguments, parse_keys_arguments,
         parse_output_arguments, reload_failure_details, reload_summary, schedule_line,
         scoped_codex_usage_home, take_flag_before_separator, take_orchestrator_project,
-        take_update_profile, terminal_safe, unreadable_reload_error,
+        take_reload_instance, take_update_profile, terminal_safe, unreadable_reload_error,
     };
     use crate::sessions::ShellSession;
     use crate::store::{State, Store};
@@ -4335,6 +4408,22 @@ mod tests {
         line.split_whitespace().map(str::to_owned).collect()
     }
     const SHELL: &str = "11111111-1111-4111-8111-111111111111";
+
+    #[test]
+    fn scoped_reload_arguments_select_one_instance_or_all_without_ambiguity() {
+        let mut selected = words("--instance app-id --session");
+        assert_eq!(
+            take_reload_instance(&mut selected).unwrap().as_deref(),
+            Some("app-id")
+        );
+        assert_eq!(selected, words("--session"));
+        let mut all = words("--all");
+        assert_eq!(take_reload_instance(&mut all).unwrap(), None);
+        assert!(all.is_empty());
+        assert_eq!(take_reload_instance(&mut vec![]).unwrap(), None);
+        assert!(take_reload_instance(&mut words("--instance")).is_err());
+        assert!(take_reload_instance(&mut words("--all --instance app-id")).is_err());
+    }
 
     #[test]
     fn chat_open_queues_an_existing_stopped_chat_without_changing_shared_inventory() {
@@ -4595,7 +4684,7 @@ mod tests {
             parse_history_arguments(words(&format!("{SHELL} {SHELL} --end 0 --lines 1"))).is_err()
         );
         let usage = parse("").unwrap_err();
-        assert!(usage.contains("Usage: riwork shell history"), "{usage}");
+        assert!(usage.contains("Usage: somtus shell history"), "{usage}");
     }
 
     #[test]
@@ -5087,23 +5176,23 @@ mod tests {
         let clean = reload_report(0, &[]);
         assert_eq!(
             reload_summary(&clean),
-            "No registered RiWork apps are open."
+            "No registered Somtus apps are open."
         );
         assert_eq!(unreadable_reload_error(&clean), None);
 
         let stranded = reload_report(2, &[]);
         assert_eq!(
             reload_summary(&stranded),
-            "No readable RiWork apps were reloaded."
+            "No readable Somtus apps were reloaded."
         );
         let error = unreadable_reload_error(&stranded).unwrap();
-        assert!(error.starts_with("2 running RiWork processes from another build"));
+        assert!(error.starts_with("2 running Somtus processes from another build"));
         assert!(error.contains("Quit them"), "{error}");
-        assert!(error.contains("`riwork reload`"), "{error}");
+        assert!(error.contains("`somtus reload`"), "{error}");
         assert!(
             unreadable_reload_error(&reload_report(1, &[]))
                 .unwrap()
-                .contains("1 running RiWork process from another build")
+                .contains("1 running Somtus process from another build")
         );
         // The count travels in --json output too.
         assert_eq!(
@@ -5121,7 +5210,7 @@ mod tests {
             (
                 ReloadState::Failed,
                 11,
-                "Replacement RiWork did not confirm restoration within 25 seconds: stuck attaching terminal for session abc (cwd /work/x); see /runtime/diagnostics/reload-1.txt. The unresponsive replacement (pid 99) was stopped. Existing windows remain open.",
+                "Replacement Somtus did not confirm restoration within 25 seconds: stuck attaching terminal for session abc (cwd /work/x); see /runtime/diagnostics/reload-1.txt. The unresponsive replacement (pid 99) was stopped. Existing windows remain open.",
             ),
             (ReloadState::TimedOut, 12, "GUI has not confirmed restoration; its existing windows were left running."),
             (ReloadState::Busy, 13, "A reload is already in progress for this GUI."),
@@ -5135,9 +5224,9 @@ mod tests {
             details.lines().collect::<Vec<_>>(),
             vec![
                 "",
-                "RiWork app (pid 11): Replacement RiWork did not confirm restoration within 25 seconds: stuck attaching terminal for session abc (cwd /work/x); see /runtime/diagnostics/reload-1.txt. The unresponsive replacement (pid 99) was stopped. Existing windows remain open.",
-                "RiWork app (pid 12): GUI has not confirmed restoration; its existing windows were left running.",
-                "RiWork app (pid 13): A reload is already in progress for this GUI.",
+                "Somtus app (pid 11): Replacement Somtus did not confirm restoration within 25 seconds: stuck attaching terminal for session abc (cwd /work/x); see /runtime/diagnostics/reload-1.txt. The unresponsive replacement (pid 99) was stopped. Existing windows remain open.",
+                "Somtus app (pid 12): GUI has not confirmed restoration; its existing windows were left running.",
+                "Somtus app (pid 13): A reload is already in progress for this GUI.",
             ]
         );
         // Nothing to add when everything reloaded.
@@ -5283,7 +5372,7 @@ fn tabs_result(
             update.validate().map_err(invalid)?;
             Some(update)
         }
-        _ => return Err(invalid("Usage: riwork tabs (list|update|open) --project UUID [--update-json JSON | --key KIND:UUID]".into())),
+        _ => return Err(invalid("Usage: somtus tabs (list|update|open) --project UUID [--update-json JSON | --key KIND:UUID]".into())),
     };
     let store = crate::project_tabs::TabStore::at(home, &project).map_err(invalid)?;
     let projects = Store::open(home)

@@ -109,7 +109,7 @@ export function AddinsPanel(props: {
         <View style={{ flex: 1 }} />
         {pill("Create", () => void create(), "addin-create", true)}
       </View>
-      <Text style={text(10, theme().palette.muted)}>{personal() ? "Kept with your RiWork data, for every project." : "Kept in the project's .ontack/addins, with its code."}</Text>
+      <Text style={text(10, theme().palette.muted)}>{personal() ? "Kept with your Somtus data, for every project." : "Kept in the project's .ontack/addins, with its code."}</Text>
     </View>}
     <List each={addins()} keyExtractor={(addin) => addin.key} estimatedItemSize={space(56, theme().scale)} style={{ flex: 1, minHeight: 0 }}
       contentStyle={{ paddingHorizontal: space(6, theme().scale), paddingBottom: 8 }}

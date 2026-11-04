@@ -1,4 +1,4 @@
-//! `riwork-remote attach --desktop ID --shell UUID`: the child process of a Ghostty
+//! `somtus-remote attach --desktop ID --shell UUID`: the child process of a Ghostty
 //! surface that shows a shell of another Mac.
 //!
 //! Ghostty draws whatever its child writes, so this process is a pipe with a few

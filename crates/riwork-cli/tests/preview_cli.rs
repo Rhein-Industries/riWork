@@ -49,7 +49,7 @@ impl Fixture {
         }
     }
     fn command(&self, args: &[&str]) -> Command {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_riwork-cli"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_somtus-cli"));
         command
             .args(args)
             .current_dir(self.root.join("project"))

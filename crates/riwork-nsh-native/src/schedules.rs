@@ -335,6 +335,7 @@ pub fn schedule_dto(row: &Schedule) -> ScheduleDto {
                     .unwrap_or_else(|| "System default".into()),
                 Provider::Claude => "Claude system login".into(),
                 Provider::Muse => "Muse system login".into(),
+                Provider::Acp => "Configured ACP agent".into(),
             })
             .unwrap_or_else(|| "Pinned with target".into()),
         first_at: row.timing.first(),
@@ -627,7 +628,7 @@ impl EngineSchedules {
                         },
                         label: format!(
                             "{} chat · {}",
-                            engine::chat_harness(chat.provider).program(),
+                            engine::chat_harness(chat.provider).map(|h| h.program()).unwrap_or("acp"),
                             chat.id
                         ),
                     });

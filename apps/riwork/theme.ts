@@ -1,4 +1,4 @@
-/** The look every RiWork screen shares, on the Mac, the iPad and the iPhone: the
+/** The look every Somtus screen shares, on the Mac, the iPad and the iPhone: the
  * palette's shape, the interface theme and the spacing rule. Shared code: it
  * imports nothing native. Each host resolves the theme its own way (the Mac
  * in `appearance.ts`, iOS in Swift, pushed as `platform.theme`). */

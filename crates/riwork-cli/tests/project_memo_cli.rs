@@ -1,4 +1,4 @@
-//! `riwork project memo show|set ID` from a shell: what `show` writes to a pipe or a file is the
+//! `somtus project memo show|set ID` from a shell: what `show` writes to a pipe or a file is the
 //! memo byte for byte, so `show > file` and `set < file` round-trip it, even a full 32 KiB memo
 //! that does not end in a line break. Every child runs with a throwaway RIWORK_HOME and HOME.
 
@@ -31,7 +31,7 @@ impl Sandbox {
     }
 
     fn run(&self, args: &[&str], input: &[u8]) -> Output {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_riwork-cli"))
+        let mut child = Command::new(env!("CARGO_BIN_EXE_somtus-cli"))
             .args(args)
             .current_dir(&self.root)
             .env("HOME", self.root.join("home"))

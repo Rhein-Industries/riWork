@@ -39,6 +39,8 @@ pub fn account_for(
             Err("a Muse chat has no Codex account; it uses the system login".into())
         }
         (Provider::Muse, None) => Ok(None),
+        (Provider::Acp, Some(_)) => Err("an ACP chat uses its agent's own login, not a Codex account".into()),
+        (Provider::Acp, None) => Ok(None),
     }
 }
 
@@ -62,7 +64,12 @@ pub(crate) fn driver_config_with(
 ) -> Result<DriverConfig, String> {
     let home = home
         .canonicalize()
-        .map_err(|error| format!("resolve RiWork state: {error}"))?;
+        .map_err(|error| format!("resolve Somtus state: {error}"))?;
+    if info.provider == Provider::Acp {
+        let binding = super::acp_config::for_chat(&home, &info.id, resume.is_some())?;
+        return Ok(assemble(info, resume, binding.command, binding.args,
+            sessions::unmanaged_harness_path()?, &home, None, ApiKeyEnv::Inherit));
+    }
     let (harness, codex_home) = match info.provider {
         Provider::Codex => {
             let binding = crate::codex_accounts::resolve_launch_binding(
@@ -73,6 +80,7 @@ pub(crate) fn driver_config_with(
         }
         Provider::Claude => (HarnessKind::Claude, None),
         Provider::Muse => (HarnessKind::Muse, None),
+        Provider::Acp => unreachable!("ACP launch resolved above"),
     };
     let launch = sessions::chat_launch(harness, &home, codex_home.as_deref())?;
     let api_key = api_key_for(&home, info, keys)?;
@@ -176,7 +184,7 @@ pub(crate) fn api_key_for(
             Ok(false) => None,
             Err(error) => {
                 eprintln!(
-                    "riwork chat: {}: cannot tell whether an Anthropic API key is saved ({error}); \
+                    "somtus chat: {}: cannot tell whether an Anthropic API key is saved ({error}); \
                      the chat starts with the environment as it is",
                     info.id
                 );
@@ -200,7 +208,7 @@ fn trust_folder(config: &mut DriverConfig) {
             .extra_args
             .extend(crate::folder_trust::codex_arguments(&folder)),
         Provider::Muse => config.trust_workspace = crate::folder_trust::muse_may_trust(&folder),
-        Provider::Claude => {}
+        Provider::Claude | Provider::Acp => {}
     }
 }
 
@@ -231,7 +239,7 @@ fn discovery_config(
         model: None,
         effort: None,
         fast: false,
-        // No chat chose it: off, as every Muse RiWork starts unless asked on.
+        // No chat chose it: off, as every Muse Somtus starts unless asked on.
         contributor_mode: ContributorMode::Off,
         trust_workspace: false,
         resume: None,
@@ -280,7 +288,7 @@ fn assemble(
         OsString::from("RIWORK_SHELL_ID"),
         OsString::from("RIWORK_CODEX_SHELL_ID"),
     ];
-    // The chat's own agent finds itself by this id: `riwork handoff` with no
+    // The chat's own agent finds itself by this id: `somtus handoff` with no
     // `--from` hands off the chat that runs it. Codex builds the environment of
     // the commands it runs from a policy of its own, which a user's config can
     // narrow, so the id is named there too, as a terminal's pane id is.
@@ -346,7 +354,7 @@ pub(crate) fn instructions(info: &ChatInfo) -> Option<String> {
     let instructions = crate::handoff::carried_over_instructions(&carried.from, &carried.document);
     if instructions.is_none() {
         eprintln!(
-            "riwork chat: {}: cannot read {}; the agent starts without the earlier conversation",
+            "somtus chat: {}: cannot read {}; the agent starts without the earlier conversation",
             info.id,
             carried.document.display()
         );
@@ -401,7 +409,7 @@ mod tests {
         use crate::codex_accounts::SYSTEM_DEFAULT_ID;
         let home = std::env::temp_dir().join(format!("riwork-launch-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&home).unwrap();
-        // The system default is no account of RiWork's.
+        // The system default is no account of Somtus's.
         assert_eq!(
             account_for(&home, Provider::Codex, None, Some(SYSTEM_DEFAULT_ID)),
             Ok(None)
@@ -723,7 +731,7 @@ mod tests {
         };
         let set = start(ApiKeyEnv::Set(SAVED.into()));
         assert_eq!(value(&set, "ANTHROPIC_API_KEY").unwrap(), SAVED);
-        // Marked as RiWork's, so a RiWork process the agent starts drops it again.
+        // Marked as Somtus's, so a Somtus process the agent starts drops it again.
         assert_eq!(
             value(&set, crate::anthropic_key::INJECTED_MARKER).unwrap(),
             "1"

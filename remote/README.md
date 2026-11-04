@@ -1,4 +1,4 @@
-# RiWork encrypted remote access
+# Somtus encrypted remote access
 
 This headless workspace member builds the blind relay and the outbound desktop
 connector without GPUI/Ghostty native dependencies. The mobile client uses the
@@ -17,17 +17,17 @@ compatibility tests, not dependencies of the deployed connector or relay.
 cargo build --locked --release --package riwork-remote
 ```
 
-Use `target/release/riwork-remote` directly. With a rebuilt desktop CLI,
-`riwork remote ...` forwards arguments unchanged to a sibling `riwork-remote`,
-the companion inside an adjacent `RiWork.app`, or `RIWORK_REMOTE_BIN`. PATH
-symlinks to `target/{debug,release}/riwork` resolve that packaged companion too:
+Use `target/release/somtus-remote` directly. With a rebuilt desktop CLI,
+`somtus remote ...` forwards arguments unchanged to a sibling `somtus-remote`,
+the companion inside an adjacent `Somtus.app`, or `RIWORK_REMOTE_BIN`. The previous `--riwork` option remains an alias for `--somtus`. Both `somtus://` and `riwork://` pairing links are accepted. PATH
+symlinks to `target/{debug,release}/somtus` resolve that packaged companion too:
 
 ```sh
-export RIWORK_REMOTE_BIN="$PWD/target/release/riwork-remote"
-riwork remote --help
+export RIWORK_REMOTE_BIN="$PWD/target/release/somtus-remote"
+somtus remote --help
 ```
 
-`riwork update` builds the companion from `remote/Cargo.toml` into its disposable
+`somtus update` builds the companion from `remote/Cargo.toml` into its disposable
 staging directory, requires it in the bundle, then installs the executable/app
 atomically. A companion build or validation failure keeps the previous install.
 The direct macOS bundling script includes the standalone binary when built in
@@ -38,7 +38,7 @@ all CLI subprocesses and is never changed by forwarding/start.
 
 ## Pair, provision and start
 
-Run these from the desktop as its normal RiWork user. Pairing grants access to
+Run these from the desktop as its normal Somtus user. Pairing grants access to
 all existing projects and sessions in that desktop's `RIWORK_HOME`, and because
 `shell.input` types into any live shell, unrestricted harness or editor tab, a
 paired phone can run arbitrary commands as you. Each phone
@@ -47,15 +47,15 @@ phone; do not share a pairing export between devices.
 
 ```sh
 RIWORK_PAIR_DIR=$(mktemp -d "${TMPDIR:-/tmp}/riwork-pair.XXXXXX")
-riwork remote pair --relay wss://relay.example.com/v1/ws --name 'My iPhone' \
+somtus remote pair --relay wss://relay.example.com/v1/ws --name 'My iPhone' \
   --out "$RIWORK_PAIR_DIR/phone.pairing.json" \
   --relay-routes "$RIWORK_PAIR_DIR/relay-routes.json" --show-link
 ```
 
 Import `phone.pairing.json` in the iOS app or open/scan the printed
-`riwork://pair?v=1&data=...` link. The export/link contains secrets; share it only
+`somtus://pair?v=1&data=...` link. The export/link contains secrets; share it only
 with that phone and remove the export after import. `--protocol 2` mints a
-single-use invite (`riwork://pair?v=2&data=...`) that expires (`--ttl-seconds`,
+single-use invite (`somtus://pair?v=2&data=...`) that expires (`--ttl-seconds`,
 30 to 3600, default 600) and is replaced by a forward-secret session root. The
 default remains protocol 1, and an existing v1 device is left as-is. The v2
 contract and threat model are in [remote-protocol-v2.md](../docs/remote-protocol-v2.md).
@@ -75,14 +75,14 @@ uses a loopback relay behind Caddy. The desktop connector installs rustls's ring
 CryptoProvider and checks that certificate against the operating-system root store.
 
 ```sh
-riwork-remote relay --routes /etc/riwork-relay/routes.json --bind 127.0.0.1:8787
-riwork remote start --riwork /absolute/path/to/RiWork.app/Contents/MacOS/riwork
-riwork remote devices
-riwork remote revoke DEVICE_UUID
+somtus-remote relay --routes /etc/riwork-relay/routes.json --bind 127.0.0.1:8787
+somtus remote start --somtus /absolute/path/to/Somtus.app/Contents/MacOS/somtus
+somtus remote devices
+somtus remote revoke DEVICE_UUID
 ```
 
 `start` is a foreground process with automatic reconnects; leave it running while
-remote access is needed. If forwarded through `riwork remote`, `--riwork` normally
+remote access is needed. If forwarded through `somtus remote`, `--somtus` normally
 can be omitted because forwarding supplies `RIWORK_CLI`. The connector logs to
 stderr when it starts serving a device, when a device authenticates (flagging its
 first time) and why a connection dropped; `devices` prints, per device, JSON
@@ -104,8 +104,8 @@ the grid rendered by Ghostty, not the physical macOS window geometry. The CLI
 commands are:
 
 ```sh
-riwork shell resize SHELL_UUID --columns 43 --rows 17 --owner DEVICE_UUID --lease CONNECTION_UUID --json
-riwork shell resize-clear SHELL_UUID --owner DEVICE_UUID --lease CONNECTION_UUID --json
+somtus shell resize SHELL_UUID --columns 43 --rows 17 --owner DEVICE_UUID --lease CONNECTION_UUID --json
+somtus shell resize-clear SHELL_UUID --owner DEVICE_UUID --lease CONNECTION_UUID --json
 ```
 
 The connector supplies owner/connection UUIDs internally; mobile RPCs never supply
@@ -123,13 +123,13 @@ Return is sent automatically if an outcome is uncertain.
 `shell.keys` types into the shell as it happens, without a line or a Return of
 its own: an ordered batch of literal `text` and named `key` items (the contract is
 in [remote-protocol.md](../docs/remote-protocol.md)), delivered by
-`riwork shell keys SHELL_UUID -- t:TEXT k:KEY...` under the same per-shell lock as
+`somtus shell keys SHELL_UUID -- t:TEXT k:KEY...` under the same per-shell lock as
 `shell.input`. Each batch UUID is recorded in a write-ahead ledger of the 4096 most
 recent batches per device (`keys-DEVICE_UUID.json`, mode 600, separate from the
 input outcomes), so a retry with a new request ID answers `duplicate` or
 `uncertain` instead of typing twice. When the CLI says `"shell_keys_serve": true`,
 the connector does not start that process for every batch: `rpc/keys_worker.rs`
-keeps one `riwork shell keys --serve` per device (started on its first batch, replaced
+keeps one `somtus shell keys --serve` per device (started on its first batch, replaced
 after ten idle minutes or when it dies) and hands it each batch as a JSON line; the
 worker types it exactly as the process would and answers with the same error text, so
 the ledger, the locks, the order and `keys_fault` are untouched. A batch the worker
@@ -146,7 +146,7 @@ is arbitrary command execution as the desktop user.
 [remote-protocol.md](../docs/remote-protocol.md)). `styled` keeps the colors and
 attributes as SGR sequences and removes every other escape (the CLI filters, and the
 connector refuses to pass on anything else). `if_changed` with a `hash` from an
-earlier result and `wait_ms` (0 to 10000) makes the one `riwork shell output ...
+earlier result and `wait_ms` (0 to 10000) makes the one `somtus shell output ...
 --if-changed=HASH --wait-ms N` process capture again when tmux says the pane changed
 (about every 80 ms where it cannot say) and answer `{"shell_id","unchanged":true,"hash"}` if nothing changed in time.
 `delta` (announced as `features.output_delta`) has the connector answer a changed screen
@@ -166,7 +166,7 @@ offline or the device is revoked (checked every 250 ms while requests are pendin
 [remote-protocol.md](../docs/remote-protocol.md)): `end` lines skipped above the
 screen, then `lines` (1 to 5000; 1000 until 2026-10-01) older ones, optionally `styled`, answered as
 `{"shell_id","output","line_count","history_size","complete"}` from
-`riwork shell history SHELL_UUID --end N --lines M [--styled] --json`. The connector
+`somtus shell history SHELL_UUID --end N --lines M [--styled] --json`. The connector
 validates the request before anything runs, checks the shell like `shell.output`
 (`not_found` for an unknown or dead one) and refuses a CLI page that does not match
 what it asked for, or whose styled text holds anything but SGR. It never waits, so
@@ -191,7 +191,7 @@ stand-in CLI; `fixtures/link.json` (see `fixtures/generate_link.py`) is shared w
 
 `appearance.get` returns the colors the desktop published, so the phone can match its
 theme (the contract is in [remote-protocol.md](../docs/remote-protocol.md)). It runs
-`riwork appearance --json` (no shell selection, no ledger), re-validates the output
+`somtus appearance --json` (no shell selection, no ledger), re-validates the output
 (version 1, lowercase `#rrggbb` colors, exactly 16 terminal colors, the optional
 `native` and `mic` flags as booleans and passed on only when true, at most 16 KiB)
 and answers `not_found` "appearance not published" when the desktop app has not
@@ -203,10 +203,10 @@ Codex, Claude or Grok, optionally with the agent's `unrestricted` flag or a comm
 a plain shell) and `shell.close` ends one (the contract is in
 [remote-protocol.md](../docs/remote-protocol.md)). An agent whose request has
 `"as_settings": true` gets `--as-settings`, so the desktop's **Agent terminals run
-unrestricted** decides, when `riwork capabilities --json` says `"shell_create_as_settings":
+unrestricted** decides, when `somtus capabilities --json` says `"shell_create_as_settings":
 true` (asked with the chat and orchestrator questions, announced as
 `features.shell_create_as_settings`); an older CLI starts it restricted, as before. The connector validates every field
-before anything runs, builds the argument vector of `riwork shell create ... --json`
+before anything runs, builds the argument vector of `somtus shell create ... --json`
 itself (one argument per value, nothing through a shell string), maps the CLI's
 "No project matches", "No worktree matches" and "... is not installed or is not on PATH"
 sentences to `not_found` and `harness_unavailable`, and refuses a session that is not
@@ -222,9 +222,9 @@ and an ignored test drives the real CLI with `RIWORK_TEST_CLI`.
 [remote-protocol.md](../docs/remote-protocol.md)). The phone sends a `name` and optionally `git`
 and never a path. The connector validates both before anything runs (one folder name of at most 100
 characters and 255 bytes, no control characters, no `/` or `\`, no leading `.` or `-`, no
-whitespace at either end), builds the argument vector of `riwork project create --name NAME
+whitespace at either end), builds the argument vector of `somtus project create --name NAME
 [--no-git] --exclusive --json` itself (the name is one argument, nothing goes through a shell
-string), and only sends `--exclusive` after `riwork capabilities --json` said
+string), and only sends `--exclusive` after `somtus capabilities --json` said
 `project_create_exclusive` (an older CLI would read the flag as a PATH). `--exclusive` makes the CLI
 refuse a name or folder that exists instead of registering it, and the connector turns the CLI's
 `already_exists: project …` / `already_exists: folder …` into the code `already_exists` with a
@@ -238,13 +238,13 @@ drives the real CLI with `RIWORK_TEST_CLI` the same way.
 
 `chats.list`, `chat.create`, `chat.events`, `chat.command` and `chat.stop` let the phone follow and drive the
 desktop's Codex and Claude chats (the contract is in [remote-protocol.md](../docs/remote-protocol.md), "Chat
-extension"; the code is `src/rpc/chat.rs`). Each is one call of the installed CLI (`riwork chat list|new|events|
+extension"; the code is `src/rpc/chat.rs`). Each is one call of the installed CLI (`somtus chat list|new|events|
 command|stop ... --json`) with an argument vector built from validated values; the chat JSON itself is the
 engine's `chat::model` API, passed on as printed, after the connector checked its envelope (a chat has a
 canonical id, a known provider and a state; a page of events has `{seq, event}` entries in rising order after
-`since`). A project or worktree is looked up by its exact id first, like `shell.create`. `riwork capabilities
+`since`). A project or worktree is looked up by its exact id first, like `shell.create`. `somtus capabilities
 --json` says whether the CLI has chats (`"chat":true`): it decides `features.chat` in `ready` (asked once per
-connection while the answer is no, and remembered once it is yes) and each method refuses with "update RiWork"
+connection while the answer is no, and remembered once it is yes) and each method refuses with "update Somtus"
 without it. `chat.create`, `chat.command` and `chat.stop` are in the ordered lane; a creation's CLI runs in a
 task of its own, like `shell.create`'s. `chat.events` is a long poll of up to 25 seconds: the CLI subscribes to the
 chat host from `since`, waits for the first event, collects for 50 ms and prints a page. The connector asks it for
@@ -267,8 +267,8 @@ hourly, and for a device before each new upload) removes partial uploads idle fo
 day, everything of a device that is revoked or gone (also `revoke` itself and a running connector within a tick)
 and day-old files no ledger knows. The desktop removes a shell's inbox when the shell is closed and a chat's when
 it is deleted. A begin for a shell checks first that the CLI has `shell paste` (`"shell_paste": true` in
-`riwork capabilities --json`, remembered once it says yes) and that the shell is alive. `shell.paste` runs
-`riwork shell paste SHELL -- FILE...` for this device's finished uploads for that shell, with the batch ledger,
+`somtus capabilities --json`, remembered once it says yes) and that the shell is alive. `shell.paste` runs
+`somtus shell paste SHELL -- FILE...` for this device's finished uploads for that shell, with the batch ledger,
 locks and `sent|duplicate|uncertain` answers of `shell.keys`, and the same reading of the CLI's error tokens. The
 upload steps are reads in `lanes.rs` (a shared slot each, so an upload never holds up typing); `shell.paste` is
 ordered. Nothing logs, opens or runs a file. The tests are `tests/upload.rs` (a stub CLI: validation, traversal
@@ -278,7 +278,7 @@ names, resume, damaged files, limits, exactly-once paste, sweep and revocation) 
 `projects.list`, `shells.list` and `orchestrators.list` also carry what the desktop knows about
 recency and agent activity (the contract is in [remote-protocol.md](../docs/remote-protocol.md),
 "Activity and recency extension"). The connector computes none of it: the CLI answers
-`riwork project list --json`, `shell list --json` and `orchestrator list --json` with the optional
+`somtus project list --json`, `shell list --json` and `orchestrator list --json` with the optional
 `last_edited_unix`, `last_activity_unix` and `agents` (projects) and `last_activity_unix`,
 `activity`, `activity_since_unix`, `subagents_working` and `subagent_kinds` (shells), and
 `PROJECT_FIELDS` and `SESSION_FIELDS` in `src/rpc.rs` let them through. Unlike the older fields, each of these is checked for its shape
@@ -295,22 +295,22 @@ in the protocol document). `orchestrator list --json` then also carries `mode` (
 `chat`) and, for a chat, `chat_id` (the entry's own `id`) and `provider` (`codex`, `claude` or `muse`); they
 are in `SESSION_FIELDS` with the same shape checks, and `chat_id` and `provider` are passed on only for
 an entry whose own `mode` is `chat` (`session_fields`). The `shell.*` methods refuse a chat
-orchestrator's id with `invalid_request` before any `riwork shell ...` runs: `Rpc::selected` looks
+orchestrator's id with `invalid_request` before any `somtus shell ...` runs: `Rpc::selected` looks
 the session up and stops at `mode` `chat`; where the CLI checks shells itself (no lookup first, for
 speed), `Rpc::explain` looks only after that CLI refused the id as unknown. `tests/chat_orchestrator.rs`
 pins it against a stub CLI.
 
 `orchestrator.create` (`src/rpc/orchestrator.rs`) makes the global orchestrator or a project's, or
-returns the one that exists: `riwork orchestrator create [--project ID] --json`, which prints a list
+returns the one that exists: `somtus orchestrator create [--project ID] --json`, which prints a list
 entry plus a boolean `created`. The connector forwards optional `mode` as `--mode terminal|chat`; omitted mode uses what the desktop would choose (the project's own orchestrator choice, else its "Orchestrator runs as" setting, Automatic by default), and `chat` is the chat that would be chosen (Automatic's on Automatic) or else the desktop's chat provider and model, looks the project up by exact id first like `shell.create`, runs in the
 ordered lane with the CLI in a task of its own, and refuses a `created` that is not a boolean or an
-entry of another scope. `"orchestrator_create": true` in `riwork capabilities --json` decides
+entry of another scope. `"orchestrator_create": true` in `somtus capabilities --json` decides
 `features.orchestrator_create` in `ready`; the same answer serves `features.chat`. The tests are
 `tests/orchestrator_create.rs` (a stub CLI) and `tests/chat_link.rs` (the real connector).
 
 `dashboard.get` (`src/rpc/dashboard.rs`) answers the desktop's global dashboard in one read (the
 contract is in [remote-protocol.md](../docs/remote-protocol.md), "Dashboard extension"). Its params
-are exactly `{}`, checked before any CLI runs; it is `riwork dashboard --json`, which samples what
+are exactly `{}`, checked before any CLI runs; it is `somtus dashboard --json`, which samples what
 the desktop's dashboard samples and starts nothing (no chat host, chat, shell or tmux server), and
 it runs in a shared read slot. The CLI arranges, orders and cuts the reply
 (`riwork_engine::global_overview::wire`); the connector only checks it: version 1, the contract's
@@ -326,22 +326,22 @@ real connector) and `../crates/riwork-cli/tests/dashboard_cli.rs` (the real CLI 
 the person's own Markdown notes for it (the contract is in
 [remote-protocol.md](../docs/remote-protocol.md), "Project memo extension"). Params are checked
 before any CLI runs (a canonical project UUID; text of at most `MEMO_MAX_BYTES`, 32 KiB). They are
-`riwork project memo show|set ID --json`; a save's text reaches the CLI on its standard input
-(`Rpc::raw_fed`), never as an argument, in the ordered lane, and only once `riwork project show ID
+`somtus project memo show|set ID --json`; a save's text reaches the CLI on its standard input
+(`Rpc::raw_fed`), never as an argument, in the ordered lane, and only once `somtus project show ID
 --json` found the project under exactly that id. The last save wins. `"project_memo":
-true` in `riwork capabilities --json` decides `features.project_memo` in `ready`. The tests are
+true` in `somtus capabilities --json` decides `features.project_memo` in `ready`. The tests are
 `tests/project_memo.rs`.
 
 `native.invoke` and `state.watch` (`src/rpc/native.rs`) call one of the desktop's own
 `riwork/native` methods and wait for the desktop's data to change (the contract is in
 [remote-protocol.md](../docs/remote-protocol.md), "Native invoke extension" and "State watch
 extension"). Only the methods of `rpc::NATIVE_METHODS` (allowlist v1) exist, and of those only the
-ones the installed desktop binary names in `riwork capabilities --json` (`"native"`; the standalone
+ones the installed desktop binary names in `somtus capabilities --json` (`"native"`; the standalone
 `riwork-cli` names none); writes run in the ordered lane, with their CLI in a task that outlives
 the connection as a creation's does, reads in a shared slot, and a waiting `state.watch` in the
 long-poll lane. The connector checks the request's shape and refuses every
 path that is absolute, leaves the project or holds NUL before any CLI runs; the desktop binary
-(`riwork native invoke MODULE.METHOD --json` and `riwork watch --json`, arguments on standard
+(`somtus native invoke MODULE.METHOD --json` and `somtus watch --json`, arguments on standard
 input, `crates/riwork-nsh-native/src/invoke.rs` and `state_watch.rs`) holds the typed arguments and
 the argument policy and checks every path again against its own store's roots. A CLI that names
 neither is asked again after ten minutes at most, so a handshake does not ask each time. The path
@@ -349,28 +349,28 @@ cases are in `src/rpc.rs`'s tests and in `crates/riwork-nsh-native/src/files.rs`
 
 ## Pairing another Mac (desktop devices)
 
-A second Mac running RiWork can show this Mac's shells as real terminals (the contract is
+A second Mac running Somtus can show this Mac's shells as real terminals (the contract is
 in [remote-protocol.md](../docs/remote-protocol.md), "Desktop terminal extension"). It is paired as a
 *desktop* device, on protocol 2 only:
 
 ```sh
-riwork remote pair --relay wss://relay.example.com/v1/ws --protocol 2 --kind desktop \
+somtus remote pair --relay wss://relay.example.com/v1/ws --protocol 2 --kind desktop \
   --name 'Studio Mac' --out "$RIWORK_PAIR_DIR/studio.pairing.json" \
   --relay-routes "$RIWORK_PAIR_DIR/relay-routes.json" --show-link
-riwork remote devices   # each device now says "kind": "mobile" or "desktop"
+somtus remote devices   # each device now says "kind": "mobile" or "desktop"
 ```
 
 `--kind` is `mobile` (the default) or `desktop`; `--kind desktop` without `--protocol 2` is refused.
-Import the printed `riwork://pair?v=2&data=...` link on the other Mac, then provision the relay route
+Import the printed `somtus://pair?v=2&data=...` link on the other Mac, then provision the relay route
 and start the connector exactly as for a phone. The kind is stored in the host's `devices.json` only
 (the field is left out for a phone, so a config of phones is unchanged byte for byte), and only a
 desktop on a v2 session is told in `ready` (`features.pty`) that terminal streams exist. Revoke it
-like any device; its streams end within a second. Do not downgrade `riwork-remote` once a desktop is
+like any device; its streams end within a second. Do not downgrade `somtus-remote` once a desktop is
 paired: an older build refuses a `devices.json` with a `kind` it does not know, rather than treating
 the desktop as a phone.
 
-`pty.open` runs `riwork shell attach SHELL_UUID --exec [--ignore-size]` (which needs a `riwork` that
-reports `shell_attach_exec` in `riwork capabilities --json`) on a pseudo-terminal the connector owns
+`pty.open` runs `somtus shell attach SHELL_UUID --exec [--ignore-size]` (which needs a `somtus` that
+reports `shell_attach_exec` in `somtus capabilities --json`) on a pseudo-terminal the connector owns
 (`src/pty.rs`: `openpty`, a session of its own with the terminal as controlling terminal, an
 allowlisted environment, and the process killed and reaped when the stream, the session or the
 connector ends). The connector's `lanes.rs` gives `pty.open` a lane of its own (one at a time) and
@@ -387,7 +387,7 @@ flight cannot be undone.
 
 ## Using another Mac as a client
 
-Another Mac running RiWork can control this Mac's shells the way a phone does, through the same
+Another Mac running Somtus can control this Mac's shells the way a phone does, through the same
 blind relay and the same end-to-end encryption, and show them in real terminals. The shell stays
 a tmux session on the host; the client runs a bridge process whose child is a Ghostty surface, and
 the bytes of a `tmux attach` that the host runs in a pseudo-terminal travel over the `pty.*` RPCs
@@ -399,16 +399,16 @@ pairing is refused `pty.*` ("unsupported RPC method").
 
 ```sh
 # On the host (the Mac whose shells are shown); see "Pair, provision and start".
-riwork remote pair --protocol 2 --kind desktop --relay wss://relay.example.com/v1/ws \
+somtus remote pair --protocol 2 --kind desktop --relay wss://relay.example.com/v1/ws \
   --name 'My MacBook' --out "$RIWORK_PAIR_DIR/macbook.pairing.json" \
   --relay-routes "$RIWORK_PAIR_DIR/relay-routes.json" --show-link
 # On the client, within the invite's lifetime, with the host's connector and relay running:
-riwork-remote hosts add --link 'riwork://pair?v=2&data=...' --label 'Studio'   # or --link - to read it from stdin
-riwork-remote hosts list [--json]
-riwork-remote status --desktop DESKTOP_ID [--watch] [--json]
-riwork-remote call --desktop DESKTOP_ID projects.list
-riwork-remote attach --desktop DESKTOP_ID --shell SHELL_UUID [--ignore-size]
-riwork-remote hosts remove DESKTOP_ID
+somtus-remote hosts add --link 'somtus://pair?v=2&data=...' --label 'Studio'   # or --link - to read it from stdin
+somtus-remote hosts list [--json]
+somtus-remote status --desktop DESKTOP_ID [--watch] [--json]
+somtus-remote call --desktop DESKTOP_ID projects.list
+somtus-remote attach --desktop DESKTOP_ID --shell SHELL_UUID [--ignore-size]
+somtus-remote hosts remove DESKTOP_ID
 ```
 
 **Registry.** `hosts add` redeems the invite at once (`pair_hello`, `pair_accept`, `pair_finish` of
@@ -423,7 +423,7 @@ host from a link only; the link, the export file and any terminal scrollback tha
 secret as the invite until it is redeemed (`--link -` reads it from standard input, which keeps it out of
 the process list).
 
-**One process per host.** The relay lets one socket per role hold a route, so `riwork-remote client serve
+**One process per host.** The relay lets one socket per role hold a route, so `somtus-remote client serve
 --desktop ID` owns the connection (role "mobile", the v2 handshake, deflate when the host offers it, a
 ping and a probe every 10 s, reconnects with backoff of 0.5 to 15 s) and everything else on this Mac
 talks to it over a Unix socket. `client ensure --desktop ID` starts it detached unless one answers
@@ -479,14 +479,14 @@ Use an iOS simulator on the relay host, or TLS for a physical device.
 
 ```sh
 RIWORK_PAIR_DIR=$(mktemp -d "${TMPDIR:-/tmp}/riwork-pair.XXXXXX")
-target/release/riwork-remote pair --relay ws://127.0.0.1:8787/v1/ws \
+target/release/somtus-remote pair --relay ws://127.0.0.1:8787/v1/ws \
   --allow-insecure-loopback --name 'Simulator' \
   --out "$RIWORK_PAIR_DIR/simulator.pairing.json" \
   --relay-routes "$RIWORK_PAIR_DIR/routes.json"
-target/release/riwork-remote relay --bind 127.0.0.1:8787 \
+target/release/somtus-remote relay --bind 127.0.0.1:8787 \
   --routes "$RIWORK_PAIR_DIR/routes.json"
 # In another terminal, retaining the same RIWORK_HOME:
-target/release/riwork-remote start --riwork /absolute/path/to/riwork
+target/release/somtus-remote start --somtus /absolute/path/to/somtus
 ```
 
 For isolated manual testing, explicitly set a temporary `RIWORK_HOME` on **each**
@@ -505,7 +505,7 @@ RIWORK_TEST_CLI=/absolute/path/to/installed/riwork \
 ```
 
 The opt-in integration tests start a real relay and connector and invoke a newly
-rebuilt RiWork CLI with temporary `RIWORK_HOME` directories. They create only their
+rebuilt Somtus CLI with temporary `RIWORK_HOME` directories. They create only their
 own project, task, zsh shell and zsh-backed project orchestrator, submits only to
 their recorded UUIDs, and closes those sessions at cleanup. It checks list/output
 RPCs, input exactly once across reconnect/restart, preserved shell variables,

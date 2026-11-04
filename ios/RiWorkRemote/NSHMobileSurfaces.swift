@@ -99,7 +99,7 @@ import RiWorkCore
     /// Pairing material stays in Swift. The existing details/confirmation flow
     /// also applies when a URL arrives while a native workspace is on screen.
     func handleOpenURL(_ url: URL) {
-        guard url.scheme?.lowercased() == "riwork" else { return }
+        guard ["somtus", "riwork"].contains(url.scheme?.lowercased() ?? "") else { return }
         guard sheet == nil, navigation?.transitionCoordinator == nil, navigation?.viewIfLoaded?.window != nil else {
             pendingLink = url
             return

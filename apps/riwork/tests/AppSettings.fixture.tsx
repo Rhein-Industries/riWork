@@ -22,7 +22,7 @@ function Fixture() {
       preview: async () => ({ id: `fixture-preview-${++previewSequence}`, source: "/isolated/fixture/orca", projectCount: 2, folderCount: 0, worktreeCount: 3, alreadyImported: imported, recordable: true, warnings: ["Fixture warning: projects will be unfiled."] }),
       run: async () => {
         const attempt = importAttempts() + 1; importAttempts.set(attempt);
-        if (params.importScenario === "stale" && attempt === 1) throw new Error("Orca or RiWork changed since this preview. Refresh the preview before importing.");
+        if (params.importScenario === "stale" && attempt === 1) throw new Error("Orca or Somtus changed since this preview. Refresh the preview before importing.");
         imported = { source: "/isolated/fixture/orca", projectCount: 2, folderCount: 0, worktreeCount: 3, completedAt: 1 };
         return imported;
       },

@@ -1,6 +1,6 @@
-# RiWork chat improvement roadmap
+# Somtus chat improvement roadmap
 
-Improve the reading, review, and continuation of agent work in RiWork. Deliver the desktop output improvements first, then conversation workflows, durable worker coordination, and mobile parity. Keep the existing native UI, chat host, operation receipts, and provider adapters.
+Improve the reading, review, and continuation of agent work in Somtus. Deliver the desktop output improvements first, then conversation workflows, durable worker coordination, and mobile parity. Keep the existing native UI, chat host, operation receipts, and provider adapters.
 
 Updated: 2026-10-19. The user authorized recording this roadmap and starting implementation. Status records completed behavior, not merely code being drafted. Each item remains open until its acceptance checks pass.
 
@@ -62,7 +62,7 @@ Acceptance: incremental output equals a full parse across headings, lists, quote
 
 **5. Structured reply references.** Upgrade plain quoted draft context into editable/removable source chips with Go to source. Preserve exact source identity and revision, support several references in one draft, and serialize readable text for providers. Add saved inline review comments associated with the file and revision; handle stale sources explicitly.
 
-Acceptance: references and comments survive draft recovery, remain navigable, and preserve attachments and existing writing. Removing/editing a reference affects only that reference. No action sends a message unless the user invokes Send. Durable comment persistence and revision re-anchoring are RiWork extensions.
+Acceptance: references and comments survive draft recovery, remain navigable, and preserve attachments and existing writing. Removing/editing a reference affects only that reference. No action sends a message unless the user invokes Send. Durable comment persistence and revision re-anchoring are Somtus extensions.
 
 **6. Focused file review.** Group changed files by folder, offer expand/collapse-all, navigate between files and hunks in a focused review surface, and collect comments. Keep reported changes distinct from actual net workspace changes until item 16 provides snapshots.
 
@@ -74,7 +74,7 @@ Acceptance: many files remain usable, renamed/deleted files are represented hone
 
 **8. Code block actions.** Add Save snippet and a larger code reader/editor. Offer a deliberate handoff of a completed shell snippet to a chosen terminal. Preserve the existing filename/language caption, highlighting, Copy, and Wrap; never execute merely because a block appeared.
 
-**9. File and image actions.** Add relative/full-path copy, Reveal in Finder, opening in the system's preferred application, Save image, Copy image, and Open original where access is available. Reuse existing path scopes and surface missing or changed files clearly. The system file association chooses the editor/application; this delivery does not add a separate RiWork editor preference.
+**9. File and image actions.** Add relative/full-path copy, Reveal in Finder, opening in the system's preferred application, Save image, Copy image, and Open original where access is available. Reuse existing path scopes and surface missing or changed files clearly. The system file association chooses the editor/application; this delivery does not add a separate Somtus editor preference.
 
 **10. Long document navigation.** Add heading anchors, native collapsible Markdown sections, and an optional per-answer contents menu. Include rich clipboard HTML alongside the plain-text fallback where it preserves the selected content accurately. Integrate headings and disclosures with Find and keyboard navigation.
 
@@ -124,17 +124,17 @@ Acceptance across items 21–25: host identities never mix, cached content recon
 
 ## Implementation references
 
-T3 references are pinned to the reviewed revision `a356999dbf632f17029aa62724e4f47541153a71`. Adapt the behavior into RiWork's Rust/GPUI and Swift architecture.
+T3 references are pinned to the reviewed revision `a356999dbf632f17029aa62724e4f47541153a71`. Adapt the behavior into Somtus's Rust/GPUI and Swift architecture.
 
 - Output: [command logs](https://github.com/pingdotgg/t3code/blob/a356999dbf632f17029aa62724e4f47541153a71/apps/web/src/components/chat/CommandOutputPanel.tsx), [plans](https://github.com/pingdotgg/t3code/blob/a356999dbf632f17029aa62724e4f47541153a71/apps/web/src/components/chat/ProposedPlanCard.tsx), [incremental Markdown](https://github.com/pingdotgg/t3code/blob/a356999dbf632f17029aa62724e4f47541153a71/apps/web/src/markdown-incremental.ts), [citation chips](https://github.com/pingdotgg/t3code/blob/a356999dbf632f17029aa62724e4f47541153a71/apps/web/src/components/chat/AssistantCitationChip.tsx), [changed files](https://github.com/pingdotgg/t3code/blob/a356999dbf632f17029aa62724e4f47541153a71/apps/web/src/components/chat/ChangedFilesTree.tsx).
-- Rich content: [Mermaid](https://github.com/pingdotgg/t3code/blob/a356999dbf632f17029aa62724e4f47541153a71/apps/web/src/components/chat/MermaidDiagram.tsx), [Markdown behavior](https://github.com/pingdotgg/t3code/blob/a356999dbf632f17029aa62724e4f47541153a71/apps/web/src/components/ChatMarkdown.tsx), [HTML previews](https://github.com/pingdotgg/t3code/blob/a356999dbf632f17029aa62724e4f47541153a71/apps/web/src/components/chat/HtmlRenderFrame.tsx). Generic Save/Expand code actions and an answer contents menu are RiWork additions.
+- Rich content: [Mermaid](https://github.com/pingdotgg/t3code/blob/a356999dbf632f17029aa62724e4f47541153a71/apps/web/src/components/chat/MermaidDiagram.tsx), [Markdown behavior](https://github.com/pingdotgg/t3code/blob/a356999dbf632f17029aa62724e4f47541153a71/apps/web/src/components/ChatMarkdown.tsx), [HTML previews](https://github.com/pingdotgg/t3code/blob/a356999dbf632f17029aa62724e4f47541153a71/apps/web/src/components/chat/HtmlRenderFrame.tsx). Generic Save/Expand code actions and an answer contents menu are Somtus additions.
 - Workflows: [queue controls](https://github.com/pingdotgg/t3code/blob/a356999dbf632f17029aa62724e4f47541153a71/apps/web/src/components/chat/QueuedRunsControl.tsx), [forks](https://github.com/pingdotgg/t3code/blob/a356999dbf632f17029aa62724e4f47541153a71/apps/server/src/orchestration-v2/ThreadForkService.ts), [checkpoint safety](https://github.com/pingdotgg/t3code/blob/a356999dbf632f17029aa62724e4f47541153a71/apps/server/src/orchestration-v2/CheckpointRestoreSafety.ts).
 - Coordination: [background work](https://github.com/pingdotgg/t3code/blob/a356999dbf632f17029aa62724e4f47541153a71/apps/server/src/orchestration-v2/EffectWorker.ts), [delegated questions](https://github.com/pingdotgg/t3code/blob/a356999dbf632f17029aa62724e4f47541153a71/apps/server/src/orchestration-v2/DelegatedTaskQuestionReactor.ts), [handoffs](https://github.com/pingdotgg/t3code/blob/a356999dbf632f17029aa62724e4f47541153a71/apps/server/src/orchestration-v2/ContextHandoffService.ts), [workflow inspection](https://github.com/pingdotgg/t3code/blob/a356999dbf632f17029aa62724e4f47541153a71/apps/web/src/components/chat/WorkflowOpeningBlock.tsx).
-- Mobile: [outbox](https://github.com/pingdotgg/t3code/blob/a356999dbf632f17029aa62724e4f47541153a71/apps/mobile/src/state/thread-outbox-model.ts), [environment cache](https://github.com/pingdotgg/t3code/blob/a356999dbf632f17029aa62724e4f47541153a71/apps/mobile/src/connection/environment-cache-store.ts). Native VoiceOver navigation is a RiWork addition.
+- Mobile: [outbox](https://github.com/pingdotgg/t3code/blob/a356999dbf632f17029aa62724e4f47541153a71/apps/mobile/src/state/thread-outbox-model.ts), [environment cache](https://github.com/pingdotgg/t3code/blob/a356999dbf632f17029aa62724e4f47541153a71/apps/mobile/src/connection/environment-cache-store.ts). Native VoiceOver navigation is a Somtus addition.
 
 ## Verification and delivery
 
-Use isolated stores and in-memory native fixtures for functional checks. Any desktop interaction uses RiWork's Cua.ai Driver MCP with an explicit target pid and a separate fixture home/runtime. Live user chats, terminals, and orchestrator windows are not test fixtures.
+Use isolated stores and in-memory native fixtures for functional checks. Any desktop interaction uses Somtus's Cua.ai Driver MCP with an explicit target pid and a separate fixture home/runtime. Live user chats, terminals, and orchestrator windows are not test fixtures.
 
 Run meaningful parser/state/native interaction tests for changed behavior, `cargo fmt --all --check`, and `git diff --check`. Centralize Cargo runs while agents edit disjoint files. Build and package after integration; record test counts, performance evidence, limitations, and remaining work here. Restarting the live app is a separate explicit action.
 
@@ -143,7 +143,7 @@ Run meaningful parser/state/native interaction tests for changed behavior, `carg
 - 2026-10-19: Recorded all 25 authorized roadmap items. Started the first delivery, items 1–4. Items 5–25 remain planned.
 - 2026-10-19: Implemented items 1–4: command paging/color/independent following, expandable and exportable plan documents, hidden-content Find, completed-prefix Markdown caching, and asynchronous attachment verification. Fixed the plan expansion scroll jump, an older display fixture's unintended feed threads, and a stale-window attachment retry that could overwrite another window's draft.
 - Verification: the full desktop suite passed **676 tests, 0 failures, 8 ignored**. The normally ignored long selection test also passed separately. Both optimized performance fixtures below passed. Formatting and whitespace checks passed. Native interaction tests ran in in-memory GPUI windows with isolated stores; no live sessions were used for testing.
-- Build: the locked desktop release build passed. A separate local preview was packaged at `target/chat-ui-preview/RiWork.app`; its deep/strict code-signature verification passed. The running app was not restarted. Source changes remain in the current working tree.
+- Build: the locked desktop release build passed. A separate local preview was packaged at `target/chat-ui-preview/Somtus.app`; its deep/strict code-signature verification passed. The running app was not restarted. Source changes remain in the current working tree.
 
 Current bounds: command logs retain up to 128 KiB / 4,000 rendered lines from the last 256 KiB of raw output; each page mounts at most 200 lines / 32 KiB. Find searches the current command page and retained tool/diff previews, and reveals its scope in the bar. The log reader handles ANSI styling and common progress controls; it is not a full terminal emulator. Ready attachments require successful verification, and recovery metadata remains saved while checks are pending or unavailable.
 
@@ -159,7 +159,7 @@ Completed deliveries: items 1–9. The remaining roadmap starts at item 10 and c
 
 The integrated desktop suite passed **713 tests, 0 failures, 8 ignored**. This includes reference recovery and newer-draft receipt ownership, reader/IME/clipboard/export interactions, stale source and patch changes, scoped file actions, image snapshot exports, modal cancellation, and focused review selection/scroll restoration. Tests use isolated stores and in-memory native windows; the Mermaid fixture opens no app window.
 
-The normally ignored long virtualized-selection fixture passed separately. Formatting and whitespace checks passed. The locked offline release build passed; the optimized Mermaid helper passed the same eight-family and network-isolation harness. A new, separate preview is packaged at `target/chat-next-five-preview/RiWork.app`, including the signed diagram helper and upstream license notices. Deep/strict signature verification passed. The running app was not restarted; source changes remain in the working tree.
+The normally ignored long virtualized-selection fixture passed separately. Formatting and whitespace checks passed. The locked offline release build passed; the optimized Mermaid helper passed the same eight-family and network-isolation harness. A new, separate preview is packaged at `target/chat-next-five-preview/Somtus.app`, including the signed diagram helper and upstream license notices. Deep/strict signature verification passed. The running app was not restarted; source changes remain in the working tree.
 
 ### Performance evidence
 

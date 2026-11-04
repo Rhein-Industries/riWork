@@ -62,10 +62,32 @@ export const HOST_KEYMAP = [
   ["mod+0", "actualSize"],
 ] as const;
 
+export type Keybindings = Readonly<Record<string, string | null>>;
+export const CUSTOMIZATION_RESET_CHORD = "ctrl+alt+shift+escape";
+const EXTRA_COMMANDS = new Set([
+  "newShell", "newSubshell", "openVim", "appPreview", "openTasks", "openUsage",
+  "openAddins", "openCustomization", "focusCentered", "openGlobalOrchestrator",
+]);
+
+/** An override replaces every default alias; null removes them all. Host keys
+ * stay native so they still work without a workspace or with a native editor. */
+export function effectiveWindowBindings(overrides: Keybindings = {}): [string, string][] {
+  const defaults: [string, string][] = [
+    ...WINDOW_KEYMAP.map(([key, id]) => [key, id] as [string, string]),
+    ...DEFERRED_KEYMAP.filter(([, id, context]) => context === "window" && ["newChat", "createProject"].includes(id))
+      .map(([key, id]) => [key, id] as [string, string]),
+  ];
+  const supported = new Set([...defaults.map(([, id]) => id), ...EXTRA_COMMANDS]);
+  return defaults.filter(([, id]) => !Object.prototype.hasOwnProperty.call(overrides, id))
+    .concat(Object.entries(overrides).filter(([id, chord]) => supported.has(id) && chord !== null)
+      .map(([id, chord]) => [chord!, id]));
+}
+
 export const PANEL_COMMANDS: Readonly<Record<string, string>> = {
   openProjects: "projects", openFiles: "files", openPreview: "preview",
   openSessions: "shells", openSchedules: "schedules", openSettings: "settings",
   openProjectSettings: "project_settings",
+  openTasks: "tasks", openUsage: "usage", openAddins: "addins",
 };
 
 /** A strip menu dismisses before a modifier command. Modal actions stay inert. */

@@ -106,8 +106,8 @@ fn check_link(text: &str) -> Result<String, String> {
     if link.is_empty() {
         return Err("Paste the pairing link from the other Mac.".to_owned());
     }
-    if !link.starts_with("riwork://pair?") || link.contains(char::is_whitespace) {
-        return Err("That is not a RiWork pairing link.".to_owned());
+    if !(link.starts_with("somtus://pair?") || link.starts_with("riwork://pair?")) || link.contains(char::is_whitespace) {
+        return Err("That is not a Somtus pairing link.".to_owned());
     }
     Ok(link.to_owned())
 }

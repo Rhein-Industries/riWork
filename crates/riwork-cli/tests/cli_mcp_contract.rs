@@ -27,7 +27,7 @@ impl Home {
     }
 
     fn command(&self, args: &[&str]) -> Command {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_riwork-cli"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_somtus-cli"));
         command
             .args(args)
             .env("RIWORK_HOME", &self.0)
@@ -122,7 +122,7 @@ fn finish(mut child: Child, what: &[&str]) -> Output {
         if Instant::now() > deadline {
             let _ = child.kill();
             let _ = child.wait();
-            panic!("riwork {what:?} did not exit; it may have started the GUI");
+            panic!("somtus {what:?} did not exit; it may have started the GUI");
         }
         thread::sleep(Duration::from_millis(20));
     };
@@ -137,7 +137,7 @@ fn git(root: &Path, args: &[&str]) {
     let output = Command::new("git")
         .arg("-C")
         .arg(root)
-        .args(["-c", "user.name=RiWork Tests"])
+        .args(["-c", "user.name=Somtus Tests"])
         .args(["-c", "user.email=riwork-tests@example.invalid"])
         .args([
             "-c",
@@ -170,7 +170,7 @@ fn ping() -> String {
 #[test]
 fn version_prints_the_crate_version_and_never_starts_the_gui() {
     let home = Home::new();
-    let expected = format!("riwork {}\n", env!("CARGO_PKG_VERSION"));
+    let expected = format!("somtus {}\n", env!("CARGO_PKG_VERSION"));
     for args in [&["--version"][..], &["version"], &["-V"]] {
         let output = home.run(args);
         assert!(output.status.success(), "{args:?}");
@@ -201,7 +201,7 @@ fn unknown_arguments_fail_with_usage_instead_of_opening_the_workspace() {
         assert_eq!(output.status.code(), Some(2), "{args:?}");
         assert!(output.stdout.is_empty(), "{args:?}");
         let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(stderr.contains("Usage: riwork"), "{args:?}: {stderr}");
+        assert!(stderr.contains("Usage: somtus"), "{args:?}: {stderr}");
     }
     assert!(!home.runtime().exists(), "a GUI instance was registered");
 }
@@ -444,7 +444,7 @@ fn grok_shell_usage_reports_the_session_grok_lists_for_the_panes_process() {
     let running = home.0.join("running");
     fs::create_dir_all(&running).unwrap();
     let grok_process = running.join("grok");
-    fs::copy(env!("CARGO_BIN_EXE_riwork-cli"), &grok_process).unwrap();
+    fs::copy(env!("CARGO_BIN_EXE_somtus-cli"), &grok_process).unwrap();
     let pid_file = home.0.join("pane.pid");
     let live = home.ok(&[
         "shell",
@@ -668,7 +668,7 @@ fn shell_keys_rejects_bad_invocations_before_reaching_any_shell() {
         assert!(output.stdout.is_empty(), "{args:?}");
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
-            stderr.contains("Usage: riwork shell keys") || stderr.contains("invalid_request: "),
+            stderr.contains("Usage: somtus shell keys") || stderr.contains("invalid_request: "),
             "{args:?}: {stderr}"
         );
     }

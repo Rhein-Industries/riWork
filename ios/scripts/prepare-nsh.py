@@ -25,7 +25,7 @@ if not cli.is_file() or not os.access(cli, os.X_OK):
     raise SystemExit(f"NSH_CLI is not executable: {cli}")
 version = subprocess.check_output([str(cli), "--version"], text=True).strip()
 if not re.match(r"^nsh " + re.escape(VERSION) + r"(?:\s|$)", version):
-    raise SystemExit(f"RiWork iOS requires NSH {VERSION}; selected {version}. Set NSH_CLI to the matching release.")
+    raise SystemExit(f"Somtus iOS requires NSH {VERSION}; selected {version}. Set NSH_CLI to the matching release.")
 sdk = Path(os.environ.get("NSH_IOS_SDK", str(cli.parent.parent / "embed/ios/NativeShell.xcframework"))).expanduser().resolve()
 for platform in ("ios-arm64", "ios-arm64-simulator"):
     if not (sdk / platform / "NativeShell.framework/NativeShell").is_file():
@@ -33,7 +33,7 @@ for platform in ("ios-arm64", "ios-arm64-simulator"):
     with (sdk / platform / "NativeShell.framework/Info.plist").open("rb") as file:
         sdk_version = plistlib.load(file).get("CFBundleShortVersionString")
     if sdk_version != VERSION:
-        raise SystemExit(f"RiWork iOS requires the NSH {VERSION} runtime; {platform} contains {sdk_version}.")
+        raise SystemExit(f"Somtus iOS requires the NSH {VERSION} runtime; {platform} contains {sdk_version}.")
 
 generated = IOS / "Generated"
 generated.mkdir(exist_ok=True)
@@ -75,4 +75,4 @@ try:
     remembered.write_text(str(cli) + "\n")
 finally:
     shutil.rmtree(stage)
-print(f"Prepared RiWork mobile UI with NSH {VERSION}.")
+print(f"Prepared Somtus mobile UI with NSH {VERSION}.")

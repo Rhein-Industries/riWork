@@ -67,7 +67,7 @@ export function HostsPage(props: { app: MobileApp; ui: Kit; layout: Layout; onTo
     </>;
   }
 
-  return <ui.Page layout={props.layout} title={pad ? "All desktops" : "RiWork"} testID="page:hosts" backTitle="Hosts" addButton={true}
+  return <ui.Page layout={props.layout} title={pad ? "All desktops" : "SOMTUS"} testID="page:hosts" backTitle="Hosts" addButton={true}
     right={<Action label="Add desktop" icon={pad ? "add" : undefined} compact={pad}
       action={() => void app.present({ name: "addHost" })} disabled={blocked() || app.overview().libraryUnavailable} />}>
     <Scroll style={{ flex: 1 }} contentStyle={{ padding: pt(16), paddingHorizontal: side(), paddingBottom: Math.max(pt(24), bottom() + pt(16)), gap: pt(20) }}

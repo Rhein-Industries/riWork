@@ -116,7 +116,7 @@ impl Pairing {
     pub fn deep_link(&self) -> Result<String> {
         ensure!(self.v == 1 || self.v == 2, "unsupported pairing version");
         Ok(format!(
-            "riwork://pair?v={}&data={}",
+            "somtus://pair?v={}&data={}",
             self.v,
             b64(&serde_json::to_vec(self)?)
         ))
@@ -124,7 +124,7 @@ impl Pairing {
 }
 /// What a paired device is. A phone (the default, and what every config written
 /// before kinds existed holds) drives terminals through the request/response RPCs;
-/// a desktop, another Mac running RiWork, may also open a terminal stream
+/// a desktop, another Mac running Somtus, may also open a terminal stream
 /// (`pty.*`, "Desktop terminal extension" in `docs/remote-protocol.md`). It is the
 /// desktop's decision, made at pairing, and the device cannot change it: a v2
 /// invite is bound to the device record that carries it.

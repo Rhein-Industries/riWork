@@ -375,7 +375,7 @@ import RiWorkCore
         let asked = await rig.transport.count("dashboard.get")
         XCTAssertEqual(asked, 0, "a desktop that does not announce it is never asked")
         XCTAssertNotNil(model.dashboardUnavailableReason)
-        XCTAssertTrue(model.dashboardUnavailableReason?.contains("Update RiWork on the Mac") == true)
+        XCTAssertTrue(model.dashboardUnavailableReason?.contains("Update Somtus on the Mac") == true)
         XCTAssertEqual(model.projects.map(\.id), [project], "the projects are listed")
         // The global orchestrator's row still works from the orchestrator list.
         XCTAssertEqual(GlobalOrchestratorStatus.decide(entry: model.globalOrchestrators.first, dashboard: nil, canStart: model.orchestratorsOffered).action, .open)

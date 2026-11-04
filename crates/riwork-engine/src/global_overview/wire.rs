@@ -1,4 +1,4 @@
-//! The dashboard as the phone reads it: `riwork dashboard --json`, which the remote connector
+//! The dashboard as the phone reads it: `somtus dashboard --json`, which the remote connector
 //! answers `dashboard.get` with ("Dashboard extension" in docs/remote-protocol.md).
 //!
 //! A projection of an `Overview`, nothing more: the same rows in the same order, cut after
@@ -30,7 +30,7 @@ pub const WIRE_MAX_FINISHED: usize = 20;
 pub const WIRE_MAX_PROJECTS: usize = 150;
 pub const WIRE_MAX_TASKS_IN_PROGRESS: usize = 50;
 pub const WIRE_MAX_AUTOMATIONS: usize = 30;
-/// `backends.providers`: every provider RiWork knows fits.
+/// `backends.providers`: every provider Somtus knows fits.
 pub const WIRE_MAX_PROVIDERS: usize = 8;
 /// JSON bytes of decision cards a reply carries; the rest are counted in `decisions_total`.
 pub const WIRE_DECISION_BYTES: usize = 64 * 1024;
@@ -250,6 +250,7 @@ fn provider(provider: Provider) -> &'static str {
         Provider::Codex => "codex",
         Provider::Claude => "claude",
         Provider::Muse => "muse",
+        Provider::Acp => "acp",
     }
 }
 

@@ -15,8 +15,8 @@ public enum DictationProblem: Error, Sendable, Equatable {
 
     public var message: String {
         switch self {
-        case .microphoneDenied: "Microphone access is off for RiWork. Turn it on in Settings to dictate."
-        case .recognitionDenied: "Speech recognition is off for RiWork. Turn it on in Settings to dictate."
+        case .microphoneDenied: "Microphone access is off for Somtus. Turn it on in Settings to dictate."
+        case .recognitionDenied: "Speech recognition is off for Somtus. Turn it on in Settings to dictate."
         case .unsupported: "On-device dictation is not available for this language on this iPhone."
         case .modelUnavailable: "The speech model could not be installed. Check the connection and try again."
         case .microphoneBusy(let reason): "The microphone could not be opened: \(reason)"

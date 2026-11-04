@@ -88,7 +88,7 @@ pub fn generate(
         let executable = executable.ok_or("p1-restore requires --executable <built riwork>")?;
         if !executable.is_file() {
             return Err(format!(
-                "Build riwork first, or pass --executable: {}",
+                "Build somtus first, or pass --executable: {}",
                 executable.display()
             ));
         }

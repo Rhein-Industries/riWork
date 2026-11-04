@@ -37,7 +37,7 @@ export interface Editor {
 }
 export const QUICK_TIMES = [[600, "In 10 min"], [1800, "In 30 min"], [3600, "In 1 hour"], [86400, "In 1 day"]] as const;
 export const PERMISSIONS = [["supervised", "Supervised"], ["auto-edit", "Auto edit"], ["full", "Full access"], ["plan", "Plan"]] as const;
-export const FOOTNOTE = "Runs while RiWork is open. Busy/blocked targets defer for up to 5 min; older runs are skipped. At most 4 attempts/min. Uncertain sends pause without retry. Edit and save a future run to resume after review.";
+export const FOOTNOTE = "Runs while Somtus is open. Busy/blocked targets defer for up to 5 min; older runs are skipped. At most 4 attempts/min. Uncertain sends pause without retry. Edit and save a future run to resume after review.";
 export const KEYS = "⌘S saves · Esc cancels";
 export const EMPTY = "No automations yet. Schedule a prompt to start a new project chat, or select an existing AI shell.";
 export const EMPTY_TARGETS = "No live Codex or Claude session in this scope. Open one separately, complete a turn, then return here.";

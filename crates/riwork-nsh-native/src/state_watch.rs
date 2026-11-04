@@ -1,4 +1,4 @@
-//! `riwork watch --json`: wait until a topic of the desktop's data changes, for the remote
+//! `somtus watch --json`: wait until a topic of the desktop's data changes, for the remote
 //! connector's `state.watch` (`docs/remote-protocol.md`). One call per wait, from another
 //! process: the desktop app's own watcher and hubs are not reachable from here.
 //!
@@ -357,7 +357,7 @@ fn affected(path: &Path, home: &Path) -> u8 {
     }
 }
 
-/// The answer to one `riwork watch --json` request, as the line it prints.
+/// The answer to one `somtus watch --json` request, as the line it prints.
 pub fn run(input: &[u8]) -> Value {
     match watch(input) {
         Ok(answer) => answer,
@@ -390,11 +390,11 @@ fn watch(input: &[u8]) -> Result<Value, String> {
             let _ = events.send(bits);
         }
     })
-    .map_err(|error| format!("io: cannot watch the RiWork home: {error}"))?;
+    .map_err(|error| format!("io: cannot watch the Somtus home: {error}"))?;
     if request.wait > Duration::ZERO {
         watcher
             .watch(&home, RecursiveMode::Recursive)
-            .map_err(|error| format!("io: cannot watch the RiWork home: {error}"))?;
+            .map_err(|error| format!("io: cannot watch the Somtus home: {error}"))?;
     }
     let deadline = Instant::now() + request.wait;
     let mut revs = Revs::default();
@@ -433,7 +433,7 @@ fn watch(input: &[u8]) -> Result<Value, String> {
             }
             Err(mpsc::RecvTimeoutError::Timeout) => 0,
             Err(mpsc::RecvTimeoutError::Disconnected) => {
-                return Err("io: the RiWork home watcher stopped".into());
+                return Err("io: the Somtus home watcher stopped".into());
             }
         };
         if sampled && Instant::now() >= next_sample {

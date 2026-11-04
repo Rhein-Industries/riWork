@@ -1,6 +1,6 @@
 //! Opt-in proof of exact-tty detach against real clients on a private server.
 //! Run only with RIWORK_HOME set to a fresh temp directory whose basename starts
-//! with `riwork-terminal-detach-`; no default/live RiWork state is consulted.
+//! with `riwork-terminal-detach-`; no default/live Somtus state is consulted.
 #![cfg(unix)]
 
 use riwork_engine::sessions::{AttachOptions, SessionManager};

@@ -275,11 +275,11 @@ import RiWorkCore
 
     func testWhatAnErrorSaysAboutTheLinesAPageMayHave() {
         let reject = RemoteModel.rejectedPageLines
-        XCTAssertEqual(reject("cli_error", "RiWork CLI failed: riwork: --lines needs an integer from 1 to 1000", 3000), 1000)
-        XCTAssertEqual(reject("cli_error", "RiWork CLI failed: riwork: --lines needs an integer from 1 to 2000", 4000), 2000)
+        XCTAssertEqual(reject("cli_error", "Somtus CLI failed: riwork: --lines needs an integer from 1 to 1000", 3000), 1000)
+        XCTAssertEqual(reject("cli_error", "Somtus CLI failed: riwork: --lines needs an integer from 1 to 2000", 4000), 2000)
         XCTAssertEqual(reject("invalid_request", "lines must be 1..=1000", 2000), 1000, "a connector from before the larger pages")
-        XCTAssertEqual(reject("cli_error", "RiWork CLI failed: riwork: --lines needs an integer", 2000), 1000, "no number: the old limit")
-        XCTAssertNil(reject("cli_error", "RiWork CLI failed: riwork: --lines needs an integer from 1 to 1000", 800), "a page that small was not too long")
+        XCTAssertEqual(reject("cli_error", "Somtus CLI failed: riwork: --lines needs an integer", 2000), 1000, "no number: the old limit")
+        XCTAssertNil(reject("cli_error", "Somtus CLI failed: riwork: --lines needs an integer from 1 to 1000", 800), "a page that small was not too long")
         XCTAssertNil(reject("cli_error", "tmux said no", 3000))
         XCTAssertNil(reject("response_too_large", "lines must be 1..=1000", 3000))
         XCTAssertNil(reject("not_found", "--lines", 3000))

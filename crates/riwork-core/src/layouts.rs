@@ -986,13 +986,15 @@ pub enum SavedTab {
     Panel {
         panel: PanelKind,
     },
-    /// A shell of another Mac's RiWork, reached through the paired host `desktop_id`. The
+    /// A shell of another Mac's Somtus, reached through the paired host `desktop_id`. The
     /// shell belongs to that Mac, so it is never one of this Mac's `shell_ids`.
     RemoteShell {
         desktop_id: String,
         shell_id: String,
     },
-    /// A Codex or Claude chat, kept by the chat host (`riwork chat serve`). Closing the tab
+    /// A chat owned by another paired host; never looked up in local inventories.
+    RemoteChat { desktop_id: String, chat_id: String },
+    /// A Codex or Claude chat, kept by the chat host (`somtus chat serve`). Closing the tab
     /// leaves the chat there, and a restored layout subscribes to it again by this id.
     Chat {
         chat_id: String,
@@ -1025,6 +1027,7 @@ impl SavedTab {
                 desktop_id,
                 shell_id,
             } => format!("remote:{desktop_id}:{shell_id}"),
+            Self::RemoteChat { desktop_id, chat_id } => format!("remote-chat:{desktop_id}:{chat_id}"),
             Self::Chat { chat_id } => format!("chat:{chat_id}"),
             Self::AppPreview { preview_id, .. } => format!("app_preview:{preview_id}"),
             Self::Addin { instance_id, .. } => format!("addin:{instance_id}"),
@@ -1046,7 +1049,7 @@ pub struct SavedPane {
     pub tabs: Vec<SavedTab>,
     pub active_tab_key: Option<String>,
     pub tab_edge: TabEdge,
-    /// Kept in sync for layouts written by older RiWork builds.
+    /// Kept in sync for layouts written by older Somtus builds.
     pub shell_ids: Vec<String>,
     pub active_shell_id: Option<String>,
 }
@@ -1209,7 +1212,7 @@ impl ProjectLayout {
                 pane.tabs.iter().filter_map(|tab| match tab {
                     SavedTab::Shell { shell_id } => Some(shell_id.clone()),
                     SavedTab::Panel { .. }
-                    | SavedTab::RemoteShell { .. }
+                    | SavedTab::RemoteShell { .. } | SavedTab::RemoteChat { .. }
                     | SavedTab::Chat { .. }
                     | SavedTab::AppPreview { .. }
                     | SavedTab::Addin { .. } => None,
@@ -1372,6 +1375,10 @@ impl ProjectLayout {
                         && !shell_id.is_empty()
                         && remote_shells.insert((desktop_id.clone(), shell_id.clone()))
                 }
+                SavedTab::RemoteChat { desktop_id, chat_id } => {
+                    !desktop_id.is_empty() && Uuid::parse_str(chat_id).is_ok()
+                        && chats.insert(format!("remote-chat:{desktop_id}:{chat_id}"))
+                }
                 // A chat shows in one tab; a tab that is still being created has no id yet.
                 SavedTab::Chat { chat_id } => !chat_id.is_empty() && chats.insert(chat_id.clone()),
                 SavedTab::AppPreview { preview_id, .. } => {
@@ -1394,7 +1401,7 @@ impl ProjectLayout {
                 .filter_map(|tab| match tab {
                     SavedTab::Shell { shell_id } => Some(shell_id.clone()),
                     SavedTab::Panel { .. }
-                    | SavedTab::RemoteShell { .. }
+                    | SavedTab::RemoteShell { .. } | SavedTab::RemoteChat { .. }
                     | SavedTab::Chat { .. }
                     | SavedTab::AppPreview { .. }
                     | SavedTab::Addin { .. } => None,
@@ -1573,7 +1580,7 @@ fn sync_saved_pane(pane: &mut SavedPane) {
         .filter_map(|tab| match tab {
             SavedTab::Shell { shell_id } => Some(shell_id.clone()),
             SavedTab::Panel { .. }
-            | SavedTab::RemoteShell { .. }
+            | SavedTab::RemoteShell { .. } | SavedTab::RemoteChat { .. }
             | SavedTab::Chat { .. }
             | SavedTab::AppPreview { .. }
             | SavedTab::Addin { .. } => None,
@@ -1704,7 +1711,7 @@ impl SavedEntry {
 /// Reads an optional layout as the store does: a tab this build cannot read (a panel kind it
 /// does not have, from an older or newer build) is left out instead of failing the whole
 /// layout. For layouts that pass between builds outside the store, such as the windows a
-/// running RiWork registers for a reload.
+/// running Somtus registers for a reload.
 pub fn deserialize_lenient<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<ProjectLayout>, D::Error> {
     let Some(raw) = Option::<Value>::deserialize(deserializer)? else { return Ok(None) };
     if let Ok(layout) = ProjectLayout::deserialize(&raw) {
@@ -1742,7 +1749,7 @@ fn take_unreadable_tabs(layout: &mut Value) -> SkippedTabs {
 fn unreadable_entry_message(reason: &str) -> String {
     format!(
         "The saved layout for this project cannot be read ({reason}); it may come from a newer \
-         RiWork and is left unchanged"
+         Somtus and is left unchanged"
     )
 }
 
@@ -3252,7 +3259,7 @@ mod tests {
             !layout.panes[&8]
                 .tabs
                 .iter()
-                .any(|tab| matches!(tab, SavedTab::RemoteShell { .. }))
+                .any(|tab| matches!(tab, SavedTab::RemoteShell { .. } | SavedTab::RemoteChat { .. }))
         );
     }
 

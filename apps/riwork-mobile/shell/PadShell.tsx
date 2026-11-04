@@ -1,4 +1,4 @@
-/** 600 points and wider (iPad): the Mac's RiWork window in touch density. A host's window is [sidebar | main]
+/** 600 points and wider (iPad): the Mac's Somtus window in touch density. A host's window is [sidebar | main]
  * under one top row, with a status bar along the bottom (`chrome.tsx`): the sidebar is the Mac's Projects
  * panel (`ProjectsPage`) under the sidebar toggle, Dashboard and the host switcher; the main area is the
  * project chosen there, under its tab strip, or the host's dashboard. From `DOCKED_WIDTH` the sidebar stands

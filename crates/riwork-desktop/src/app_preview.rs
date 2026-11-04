@@ -1063,7 +1063,7 @@ impl Render for AppPreviewView {
                 .child(div().flex_1().min_w(ui_text::space(180.)).text_size(ui_text::text(10.)).text_color(rgb(colors.muted)).child(
                     if mode == PreviewMode::IosSimulator { "Tap and drag on the device to interact. The simulator belongs to this preview." }
                     else if mode == PreviewMode::Cooperative { "Click the preview to type. Capture pauses while the tab or window is inactive." }
-                    else { "Input targets only the app launched here. RiWork Cua setup supplies capture and input permissions." },
+                    else { "Input targets only the app launched here. Somtus Cua setup supplies capture and input permissions." },
                 )))
             .when(self.show_logs, |view| view.child(div().id("app-preview-log-output")
                 .flex_none().h(ui_text::space(160.)).max_h(ui_text::space(180.)).min_h_0().overflow_y_scroll()

@@ -2278,7 +2278,7 @@ mod tests {
     /// file lists are remembered, which is what every scan but the first costs.
     ///
     ///   RIWORK_BENCH_STATE=~/.local/share/riwork/state.json \
-    ///     cargo test --release --bin riwork scan_cost -- --ignored --nocapture
+    ///     cargo test --release --bin somtus scan_cost -- --ignored --nocapture
     ///
     /// Reads the registry and stats the files; changes nothing.
     #[test]

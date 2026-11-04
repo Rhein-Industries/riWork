@@ -21,7 +21,7 @@ public struct ChatContributorChoice: Sendable, Equatable {
         switch mode {
         case .on: "Turn contributor mode off for this chat. Muse restarts on the same conversation."
         case .off: "Turn contributor mode on for this chat. Muse restarts on the same conversation."
-        case nil: "This Mac has not reported an on or off mode. Turn it off; update RiWork on the Mac if it is refused."
+        case nil: "This Mac has not reported an on or off mode. Turn it off; update Somtus on the Mac if it is refused."
         }
     }
     public var nextMode: ChatContributorMode { mode == .off ? .on : .off }

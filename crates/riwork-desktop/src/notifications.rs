@@ -101,16 +101,16 @@ mod tests {
     #[test]
     fn only_an_app_bundle_process_claims_alerts() {
         assert!(in_app_bundle(Path::new(
-            "/Applications/RiWork.app/Contents/MacOS/riwork"
+            "/Applications/Somtus.app/Contents/MacOS/somtus"
         )));
         assert!(in_app_bundle(Path::new(
-            "/tmp/target/debug/RiWork.app/Contents/MacOS/riwork"
+            "/tmp/target/debug/Somtus.app/Contents/MacOS/somtus"
         )));
         assert!(!in_app_bundle(Path::new("/tmp/target/debug/riwork")));
         assert!(!in_app_bundle(Path::new(
-            "/tmp/target/debug/RiWork.app/riwork"
+            "/tmp/target/debug/Somtus.app/riwork"
         )));
-        assert!(!in_app_bundle(Path::new("/tmp/Contents/MacOS/riwork")));
+        assert!(!in_app_bundle(Path::new("/tmp/Contents/MacOS/somtus")));
         assert!(!in_app_bundle(Path::new("riwork")));
     }
 }

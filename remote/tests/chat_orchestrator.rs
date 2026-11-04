@@ -191,12 +191,12 @@ fn stub_cli(dir: &Path, capabilities: Capabilities) -> PathBuf {
              for a in \"$@\"; do printf '%s\\037' \"$a\"; done >> \"$d/argv.log\"\n\
              printf '\\n' >> \"$d/argv.log\"\n\
              list() {{\n\
-               if [ -e \"$d/fail-lists\" ]; then echo 'riwork: list failed' >&2; exit 1; fi\n\
+               if [ -e \"$d/fail-lists\" ]; then echo 'somtus: list failed' >&2; exit 1; fi\n\
                if [ -e \"$d/$1\" ]; then cat \"$d/$1\"; else echo '[]'; fi\n\
              }}\n\
              refuse() {{\n\
                token=''; [ \"$1\" = keys ] && token='not_found: '\n\
-               if ! grep -qx \"$2\" \"$d/live\" 2>/dev/null; then echo \"riwork: ${{token}}unknown shell $2\" >&2; exit 2; fi\n\
+               if ! grep -qx \"$2\" \"$d/live\" 2>/dev/null; then echo \"somtus: ${{token}}unknown shell $2\" >&2; exit 2; fi\n\
              }}\n\
              case \"$1 $2\" in\n\
              capabilities*) {capabilities};;\n\

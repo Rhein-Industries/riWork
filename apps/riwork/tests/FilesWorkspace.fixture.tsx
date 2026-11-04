@@ -23,7 +23,7 @@ function Fixture() {
     if (alive) ready.set({ session, projectId: project.id }); else session.dispose();
   })().catch((reason) => { if (alive) error.set(String(reason)); });
   return <View style={{ flex: 1 }}>{ready() ? <Workspace session={ready()!.session} projectId={ready()!.projectId}
-    title="RiWork · Files fixture" projectLabel="Files fixture"
+    title="Somtus · Files fixture" projectLabel="Files fixture"
     onChange={(snapshot) => host.post("app.fixture.state", snapshot)} /> : <Text>{error() || "Preparing files workspace…"}</Text>}</View>;
 }
 mount(Fixture);

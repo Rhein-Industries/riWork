@@ -3,7 +3,7 @@
 
 Example (after building the branch, never an installed binary):
   python3 crates/riwork-desktop/verification/gui_acceptance.py \
-    --binary target/debug/riwork --linger-seconds 90
+    --binary target/debug/somtus --linger-seconds 90
 
 The script prints a ready record containing the fixture PID and manifest path.
 Inspect only that PID with RiWork's cua-driver MCP while both windows linger.

@@ -350,7 +350,7 @@ export function chatCopy(global: GlobalOrchestrator, plan: Plan | null, starting
           : global.chat_state === "stopped" ? "Stopped; the next message resumes it." : undefined, false);
     case "terminal":
       return copy("Open terminal orchestrator", `Runs in a terminal · ${activityWord(global.activity)}`,
-        "RiWork keeps this terminal as it is; a chat takes over only after you end it.", false);
+        "Somtus keeps this terminal as it is; a chat takes over only after you end it.", false);
     case "none": {
       const status = global.exited_terminal ? "No global orchestrator · its last terminal has exited" : "No global orchestrator yet";
       const mode = plan?.mode ?? "automatic";
@@ -414,7 +414,7 @@ export function routeTarget(target: Target, wire: Wire, shells: Record<string, s
     case "chat":
       if (target.orchestrator === "global") return { kind: "chat" };
       return target.project_id ? { kind: "project", projectId: target.project_id, step: { kind: "chat", chatId: target.id } }
-        : { kind: "notice", text: "This chat belongs to no project; open it with riwork chat." };
+        : { kind: "notice", text: "This chat belongs to no project; open it with somtus chat." };
     case "project":
       return (wire.projects ?? []).some((project) => project.id === target.id) ? { kind: "project", projectId: target.id! } : { kind: "notice", text: "That project is gone." };
     case "task": {

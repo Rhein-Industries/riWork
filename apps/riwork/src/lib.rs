@@ -592,7 +592,7 @@ impl LayoutSession {
             .strip_prefix("shell:")
             .and_then(|id| self.data.shells.as_ref()?.iter().find(|s| s.id == id));
         json!({"id":self.model.panel_id(tab),"key":key,
-            "kind":match tab {SavedTab::Shell{..}=>"shell",SavedTab::Panel{..}=>"panel",SavedTab::RemoteShell{..}=>"remote_shell",SavedTab::Chat{..}=>"chat",SavedTab::AppPreview{..}=>"app_preview",SavedTab::Addin{..}=>"addin"},
+            "kind":match tab {SavedTab::Shell{..}=>"shell",SavedTab::Panel{..}=>"panel",SavedTab::RemoteShell{..}=>"remote_shell",SavedTab::RemoteChat{..}=>"remote_chat",SavedTab::Chat{..}=>"chat",SavedTab::AppPreview{..}=>"app_preview",SavedTab::Addin{..}=>"addin"},
             "title":entry.map(|e|e.title.clone()).unwrap_or_else(||tab_title(tab)),
             "shared":entry.is_some(),"status":entry.map(|e|e.status.clone()),"worker":entry.is_some_and(|e|e.worker)||shell.is_some_and(|s|s.worker()),
             "parent":entry.and_then(|e|e.parent.clone()),
@@ -722,6 +722,12 @@ impl LayoutSession {
         shell_id: String,
     ) -> Result<Value, String> {
         let tab = remote::shell(desktop_id, shell_id)?;
+        self.edit(|model| model.open_tab(tab).map(|next| (next, true)))
+    }
+
+    /// Place/select a remote chat without consulting the local chat host.
+    pub fn open_remote_chat(&mut self, desktop_id: String, chat_id: String) -> Result<Value, String> {
+        let tab = remote::chat(desktop_id, chat_id)?;
         self.edit(|model| model.open_tab(tab).map(|next| (next, true)))
     }
 
@@ -1067,6 +1073,10 @@ impl LayoutSession {
     }
     pub fn resolve_pending_chat(&mut self, id: String, chat_id: String) -> Result<Value, String> {
         self.edit(|m| m.resolve_pending_chat(&id, &chat_id).map(|d| (d, true)))
+    }
+    pub fn resolve_pending_remote_chat(&mut self, id: String, desktop_id: String, chat_id: String) -> Result<Value, String> {
+        let tab = remote::chat(desktop_id, chat_id)?;
+        self.edit(|m| m.resolve_pending_tab(&id, tab).map(|d| (d, true)))
     }
     /// A chat handed off in place takes its source's tab; the source stays a closed chat.
     pub fn replace_chat(&mut self, id: String, chat_id: String) -> Result<Value, String> {
@@ -1462,6 +1472,7 @@ fn tab_title(tab: &SavedTab) -> String {
             desktop_id,
             shell_id,
         } => format!("{shell_id} · {desktop_id}"),
+        SavedTab::RemoteChat { desktop_id, chat_id } => format!("Chat · {chat_id} · {desktop_id}"),
         SavedTab::Chat { chat_id } => format!("Chat · {chat_id}"),
         SavedTab::AppPreview { spec, .. } => spec
             .cwd

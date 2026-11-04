@@ -10,7 +10,7 @@ function Fixture() {
   void requirePrivateHome()
     .then(() => Layouts.openSession({ windowId: `remote-routing-${(host.params as { key: string }).key}`, projectId: "remote:fixture-mac:fixture-project" }))
     .then((value) => { if (alive) session.set(value); else value.dispose(); }).catch((reason) => error.set(String(reason)));
-  return <View style={{ flex: 1 }}>{session() ? <Workspace session={session()!} projectId="remote:fixture-mac:fixture-project" projectLabel="Remote fixture" title="RiWork · Remote fixture"
+  return <View style={{ flex: 1 }}>{session() ? <Workspace session={session()!} projectId="remote:fixture-mac:fixture-project" projectLabel="Remote fixture" title="Somtus · Remote fixture"
     onChange={(snapshot) => host.post("app.fixture.state", snapshot)} /> : <Text>{error() || "Loading…"}</Text>}</View>;
 }
 mount(Fixture);

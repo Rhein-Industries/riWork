@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use uuid::Uuid;
 
-/// Where the chat host listens for `home` (a RiWork data directory).
+/// Where the chat host listens for `home` (a Somtus data directory).
 pub fn socket_path(home: &Path) -> PathBuf {
     home.join("run").join("chat.sock")
 }
@@ -124,9 +124,9 @@ impl Client {
         {
             let removed = self.delete(&info.id);
             return Err(format!(
-                "The running chat host predates RiWork's contributor mode off by default, so \
+                "The running chat host predates Somtus's contributor mode off by default, so \
                  chat {} started {} instead of contributor mode {}{}. Try again once the chat \
-                 host runs this version of RiWork.",
+                 host runs this version of Somtus.",
                 info.id,
                 running_with(&info),
                 mode.as_str(),
@@ -309,7 +309,7 @@ impl Client {
             Some(info) if info.claude_billing != Some(billing) => Err(format!(
                 "The running chat host predates choosing a Claude chat's billing, so the chat \
                  still bills as Settings said when it started{}. Try again once the chat host \
-                 runs this version of RiWork.",
+                 runs this version of Somtus.",
                 match stopped.then(|| self.close(chat_id)) {
                     None => String::new(),
                     Some(Ok(())) => "; the chat it started for this is stopped again".to_owned(),
@@ -339,7 +339,7 @@ impl Client {
             Some(info) if info.reported_contributor_mode() != Some(mode) => Err(format!(
                 "The running chat host predates turning Muse contributor mode {} in a chat, so \
                  the chat still runs {}{}. Try again once the chat host runs this version of \
-                 RiWork.",
+                 Somtus.",
                 mode.as_str(),
                 running_with(info),
                 match stopped.then(|| self.close(chat_id)) {
@@ -624,6 +624,11 @@ impl SubscriptionCloser {
 /// Only a matched negative response establishes that a legacy host did nothing.
 /// Transport failures, malformed replies and unknown submissions stay Broken.
 fn attachment_refusal(message: String, variant: Option<&str>) -> CallError {
+    if message.starts_with("unreadable request: unknown variant `acp`") {
+        return CallError::Refused(format!(
+            "The running chat backend predates ACP support. This request was refused; no agent was started. Existing chats keep running. Start ACP after the chat backend has restarted on the updated Somtus build. Host refusal: {message}"
+        ));
+    }
     if variant.is_some_and(|variant| {
         message.starts_with(&format!("unreadable request: unknown variant `{variant}`"))
     }) {
@@ -633,6 +638,15 @@ fn attachment_refusal(message: String, variant: Option<&str>) -> CallError {
     } else {
         CallError::Refused(message)
     }
+}
+
+#[cfg(test)]
+#[test]
+fn legacy_acp_backend_refusal_does_not_suggest_automatic_retry_or_interrupt_chats() {
+    let CallError::Refused(message) = attachment_refusal("unreadable request: unknown variant `acp`, expected codex or claude".into(),None) else { panic!("an explicit decode refusal is not an uncertain write") };
+    assert!(message.contains("predates ACP"));
+    assert!(message.contains("Existing chats keep running"));
+    assert!(message.contains("no agent was started"));
 }
 
 /// Sets a Muse chat's off the older way too (`NewChat::contributor_opt_out`), so a host from
@@ -872,7 +886,7 @@ mod tests {
                 } else {
                     let error = created.unwrap_err();
                     assert!(
-                        error.contains("predates RiWork's contributor mode off by default")
+                        error.contains("predates Somtus's contributor mode off by default")
                             && error.contains("with your Muse settings")
                             && error.contains(&format!(
                                 "instead of contributor mode {}",

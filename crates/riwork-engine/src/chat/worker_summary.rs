@@ -257,7 +257,7 @@ fn command(home: &Path, parent: &ChatInfo, scratch: &Path) -> Result<Command, St
         Provider::Claude => HarnessKind::Claude,
         // Muse's CLI cannot clear inherited MCP servers (whole-map overrides are refused).
         // Keep the honest output preview until it has an isolated inference interface.
-        Provider::Muse => return Err("Isolated worker summaries are unavailable for Muse.".into()),
+        Provider::Muse | Provider::Acp => return Err("Isolated worker summaries are unavailable for this provider.".into()),
     };
     let runtime_path = crate::sessions::unmanaged_harness_path()?;
     let program = match crate::sessions::installed_harness_program(harness) {
@@ -309,7 +309,7 @@ fn command(home: &Path, parent: &ChatInfo, scratch: &Path) -> Result<Command, St
             // The wrapper's default stream mode is never used; this is one print request.
             command.env("CLAUDE_CODE_MAX_OUTPUT_TOKENS", "2048");
         }
-        Provider::Muse => unreachable!(),
+        Provider::Muse | Provider::Acp => unreachable!(),
     }
     command.args(["--model", model]);
     if parent.provider == Provider::Claude {
@@ -566,7 +566,7 @@ fn response_text(provider: Provider, value: &Value) -> Result<Option<String>, St
             }
             Ok(value["result"].as_str().map(str::to_owned))
         }
-        Provider::Muse => Err("Isolated worker summaries are unavailable for Muse.".into()),
+        Provider::Muse | Provider::Acp => Err("Isolated worker summaries are unavailable for this provider.".into()),
     }
 }
 

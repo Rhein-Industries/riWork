@@ -96,7 +96,7 @@ impl DesktopInstance {
             instance.handoff = try_lock(&handoff_path)?;
             if instance.handoff.is_none() {
                 return Err(
-                    "Another RiWork replacement already owns the desktop handoff".to_owned(),
+                    "Another Somtus replacement already owns the desktop handoff".to_owned(),
                 );
             }
             return Ok(InstanceStart::Replacement(instance));
@@ -116,7 +116,7 @@ impl DesktopInstance {
                 Ok(()) => return Ok(InstanceStart::Forwarded),
                 Err(error) if Instant::now() >= deadline => {
                     return Err(format!(
-                        "RiWork is already starting or running, but its desktop socket did not accept the open request: {error}"
+                        "Somtus is already starting or running, but its desktop socket did not accept the open request: {error}"
                     ));
                 }
                 Err(_) => thread::sleep(Duration::from_millis(25)),

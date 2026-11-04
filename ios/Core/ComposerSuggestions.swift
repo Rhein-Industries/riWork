@@ -228,7 +228,7 @@ public enum ComposerSuggestions {
 public enum ComposerCommandHandler: String, Sendable, Equatable, Hashable, Codable {
     /// The text goes to the provider as typed and the provider runs the command.
     case provider
-    /// RiWork acts on it before anything reaches the provider.
+    /// Somtus acts on it before anything reaches the provider.
     case riwork
 }
 
@@ -382,7 +382,7 @@ public struct ComposerPreview: Sendable, Equatable {
     /// The preview of a command offered to a chat of `provider` (`command_preview`).
     public init(command: ComposerCommand, provider: ChatProvider) {
         self.init(title: command.insertion,
-                  kind: command.handler == .provider ? "\(provider.title) command" : "RiWork command",
+                  kind: command.handler == .provider ? "\(provider.title) command" : "Somtus command",
                   body: [command.summary, command.argument.map { "Takes \($0)" } ?? "Takes no argument"],
                   inserts: command.insertion, effect: "Sending: \(command.sends)")
     }

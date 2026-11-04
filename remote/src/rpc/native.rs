@@ -2,10 +2,10 @@
 //! `docs/remote-protocol.md`): the desktop's own `riwork/native` methods and a wait for their
 //! data to change, so a paired device's screens get what the Mac's screens get.
 //!
-//! `native.invoke {module, method, args}` is `riwork native invoke MODULE.METHOD --json` with
+//! `native.invoke {module, method, args}` is `somtus native invoke MODULE.METHOD --json` with
 //! `args` on the CLI's standard input, answered `{value}` (and `page` for a directory listing).
 //! Only the methods of [`METHODS`] exist here, and of those only the ones the installed CLI
-//! names in `riwork capabilities --json` (`native.methods`); `ready.features.native` lists what
+//! names in `somtus capabilities --json` (`native.methods`); `ready.features.native` lists what
 //! is left. Writes run in the ordered lane, reads in a shared one ([`is_write`]), and a write's
 //! CLI outlives the connection as a creation's does (see `Rpc::native_invoke`). The CLI holds
 //! the typed arguments and the argument policy (`crates/riwork-nsh-native/src/invoke.rs`);
@@ -13,7 +13,7 @@
 //! has a `.`, `..` or empty component, or holds NUL before any CLI runs, so such a request
 //! never reaches the Mac's store.
 //!
-//! `state.watch {since, wait_ms}` is `riwork watch --json` with the request on standard input:
+//! `state.watch {since, wait_ms}` is `somtus watch --json` with the request on standard input:
 //! it answers `{changed, revs}` as soon as a topic the device follows changed, or
 //! `{unchanged:true, revs}` after `wait_ms`. A wait runs in the long-poll lane.
 use super::*;
@@ -47,6 +47,7 @@ pub const METHODS: &[(&str, bool)] = &[
     ("Sessions.openEditor", true),
     ("Tabs.snapshot", false),
     ("Settings.get", false),
+    ("Hosts.local", false),
     ("Settings.set", true),
     ("Files.listDirectory", false),
     ("Files.preview", false),
@@ -201,7 +202,7 @@ pub(super) fn watch_spec(r: &Request) -> std::result::Result<Watch, Fault> {
 }
 
 /// What the installed CLI said it has: `native.methods` and `watch.topics` of
-/// `riwork capabilities --json`, each kept to what this connector also has.
+/// `somtus capabilities --json`, each kept to what this connector also has.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct NativeCapabilities {
     pub methods: Vec<&'static str>,
@@ -267,7 +268,7 @@ fn cli_refusal(cli: &Value) -> Option<Fault> {
     ))
 }
 
-/// What the device is sent of `riwork native invoke`'s answer.
+/// What the device is sent of `somtus native invoke`'s answer.
 fn invoke_reply(cli: Value) -> std::result::Result<Value, Fault> {
     if let Some(fault) = cli_refusal(&cli) {
         return Err(fault);
@@ -292,7 +293,7 @@ fn invoke_reply(cli: Value) -> std::result::Result<Value, Fault> {
     Ok(out)
 }
 
-/// What the device is sent of `riwork watch`'s answer, for the request `asked`.
+/// What the device is sent of `somtus watch`'s answer, for the request `asked`.
 fn watch_reply(cli: Value, asked: &Watch) -> std::result::Result<Value, Fault> {
     if let Some(fault) = cli_refusal(&cli) {
         return Err(fault);
@@ -385,7 +386,7 @@ impl Rpc {
             .clone())
     }
 
-    /// `module.method` with `args`, as `riwork native invoke` answers it. A write may have
+    /// `module.method` with `args`, as `somtus native invoke` answers it. A write may have
     /// waited in the ordered lane: a device revoked meanwhile changes nothing. Once a write's
     /// CLI has started, it runs to the end even when the connection is torn down.
     pub(super) async fn native_invoke(
@@ -439,7 +440,7 @@ impl Rpc {
         invoke_reply(serde_json::from_slice(&data).map_err(cli_fault)?)
     }
 
-    /// Waits as `riwork watch` does for one of the topics of `p` to change.
+    /// Waits as `somtus watch` does for one of the topics of `p` to change.
     pub(super) async fn state_watch(&self, p: Watch) -> std::result::Result<Value, Fault> {
         let caps = self.native_known(CLI_TIMEOUT).await?;
         if caps.topics.is_empty() {

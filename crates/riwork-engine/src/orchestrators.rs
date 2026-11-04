@@ -17,7 +17,7 @@
 //!
 //! **A chat orchestrator** is an ordinary chat that the host knows by its
 //! `orchestrator` scope (`ChatInfo`). Its id is the chat's id, which is also the
-//! `id` of its entry in `riwork orchestrator list --json`, so one UUID names it
+//! `id` of its entry in `somtus orchestrator list --json`, so one UUID names it
 //! everywhere (`chat_id` repeats it for readers that look for the chat). It
 //! works in the same folder as a terminal orchestrator
 //! (`RIWORK_HOME/orchestrator`, `RIWORK_HOME/orchestrators/projects/ID`), with
@@ -65,7 +65,7 @@ use uuid::Uuid;
 /// How orchestrator code reaches the chat host.
 #[derive(Clone, Copy)]
 pub struct ChatHost<'a> {
-    /// The RiWork data directory the host serves.
+    /// The Somtus data directory the host serves.
     pub home: &'a Path,
     /// Makes sure a host runs and returns its socket: `system_ensure`, or, in a
     /// test, the socket of the in-process host.
@@ -95,7 +95,7 @@ pub fn system_ensure(home: &Path) -> Result<PathBuf, String> {
         return Err("a test build never starts a chat host from its own executable".into());
     }
     let executable = env::current_exe()
-        .map_err(|error| format!("Cannot locate the RiWork executable: {error}"))?;
+        .map_err(|error| format!("Cannot locate the Somtus executable: {error}"))?;
     chat::host::ensure(home, &executable)
 }
 
@@ -133,7 +133,7 @@ pub fn chat_title(scope: &OrchestratorScope) -> &'static str {
     }
 }
 
-/// The fixed name behind any title an orchestrator chat was given by RiWork rather than
+/// The fixed name behind any title an orchestrator chat was given by Somtus rather than
 /// by the user: its tab label or its name.
 pub fn fixed_title(title: &str) -> Option<&'static str> {
     [
@@ -230,7 +230,7 @@ pub enum PlanSource {
     Settings,
     /// The project's own choice in Project Settings.
     Project,
-    /// The command that creates it (`riwork orchestrator create --mode …`).
+    /// The command that creates it (`somtus orchestrator create --mode …`).
     Request,
 }
 
@@ -294,7 +294,7 @@ pub fn plan(home: &Path, project_id: Option<&str>) -> Result<Plan, String> {
 }
 
 /// The delegation policy of `project`'s orchestrator (none: the global one's): the
-/// project's own choices, then Settings', then RiWork's, field by field. The global
+/// project's own choices, then Settings', then Somtus's, field by field. The global
 /// orchestrator follows Settings.
 pub fn delegation_for(settings: &Settings, project: Option<&Project>) -> Delegation {
     delegation::resolve(
@@ -467,7 +467,7 @@ fn create_chat(
     let project_id = scope.project_id();
     let skill = sessions.orchestrator_skill_path_scoped(project_id)?;
     let executable =
-        env::current_exe().map_err(|error| format!("resolve RiWork executable: {error}"))?;
+        env::current_exe().map_err(|error| format!("resolve Somtus executable: {error}"))?;
     let root = project_root
         .map(|root| {
             root.canonicalize()
@@ -497,7 +497,7 @@ fn create_chat(
         codex_account_id: None,
         orchestrator: Some(scope.clone()),
         fast: false,
-        // An orchestrator chat starts off, as every Muse RiWork starts unless asked on.
+        // An orchestrator chat starts off, as every Muse Somtus starts unless asked on.
         contributor_mode: crate::chat::model::ContributorMode::Off,
         contributor_opt_out: false,
         claude_billing: None,
@@ -580,7 +580,7 @@ pub fn load_chat_skill(
     let project_id = chat.project_id.as_deref();
     let skill = sessions.orchestrator_skill_path_scoped(project_id)?;
     let executable =
-        env::current_exe().map_err(|error| format!("resolve RiWork executable: {error}"))?;
+        env::current_exe().map_err(|error| format!("resolve Somtus executable: {error}"))?;
     let message = orchestrator_prompt(&skill, &executable, project_id, project_root, &policy, true);
     client.command(&chat.id, ChatCommand::Send { text: message })?;
     record_chat_skill(host.home, &chat, &policy)?;
@@ -718,6 +718,7 @@ pub fn provider_word(provider: Provider) -> &'static str {
         Provider::Codex => "codex",
         Provider::Claude => "claude",
         Provider::Muse => "muse",
+        Provider::Acp => "acp",
     }
 }
 
@@ -759,7 +760,7 @@ pub fn entry(home: &Path, orchestrator: &Orchestrator) -> Value {
     }
 }
 
-/// A chat orchestrator as `riwork orchestrator list --json` and `status --json`
+/// A chat orchestrator as `somtus orchestrator list --json` and `status --json`
 /// show it: the fields of a terminal orchestrator that mean something for a
 /// chat, with the three that tell the readers it is one (`mode`, `chat_id`,
 /// `provider`), its `model` (null: the provider's default) and its state. `id` is the chat's id. `alive` is true for as long
@@ -798,7 +799,7 @@ pub fn chat_entry(home: &Path, chat: &ChatInfo) -> Value {
     entry
 }
 
-/// What a chat orchestrator adds to its project's row in `riwork project list --json`.
+/// What a chat orchestrator adds to its project's row in `somtus project list --json`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProjectFact {
     pub project_id: String,

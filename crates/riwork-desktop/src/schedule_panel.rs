@@ -1293,7 +1293,7 @@ impl Render for SchedulePanel {
                     choices = choices.child(self.button(
                         format!(
                             "{} chat · {}",
-                            schedules::chat_harness(chat.provider).program(),
+                            schedules::chat_harness(chat.provider).map(|h| h.program()).unwrap_or("acp"),
                             chat.id
                         ),
                         Control::Target(ExistingTarget::LegacyChat(chat.id.clone())),
@@ -1600,7 +1600,7 @@ impl Render for SchedulePanel {
                     .child(ui_text::quiet(format!("SCHEDULER ERROR  /  {error}"))),
             );
         }
-        body = body.child(div().text_color(rgb(colors.muted)).text_size(ui_text::text(9.0)).when(native, |note| note.px(ui_text::space(controls::PANEL_INSET - controls::LIST_MARGIN))).child(if self.pending {ui_text::cased("Saving…")} else {"Runs while RiWork is open. Busy/blocked targets defer for up to 5 min; older runs are skipped. At most 4 attempts/min. Uncertain sends pause without retry. Edit and save a future run to resume after review. TAB / ENTER · CMD+S to save.".into()}));
+        body = body.child(div().text_color(rgb(colors.muted)).text_size(ui_text::text(9.0)).when(native, |note| note.px(ui_text::space(controls::PANEL_INSET - controls::LIST_MARGIN))).child(if self.pending {ui_text::cased("Saving…")} else {"Runs while Somtus is open. Busy/blocked targets defer for up to 5 min; older runs are skipped. At most 4 attempts/min. Uncertain sends pause without retry. Edit and save a future run to resume after review. TAB / ENTER · CMD+S to save.".into()}));
         if let Some(control) = focused_control
             && let Some(index) = self.controls.iter().position(|c| c == &control)
         {

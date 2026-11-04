@@ -8,7 +8,7 @@ requested merge parent. Task status remains with the orchestrator.
 
 `verification_environment = macOS arm64; disposable HOME, RIWORK_HOME, runtime,
 config, project directories and tmux fixtures; windowless NSH engines; no live
-RiWork state, desktop input, installation or push.`
+Somtus state, desktop input, installation or push.`
 
 ## Conflicts and choices
 
@@ -42,7 +42,7 @@ tests/native_headless.rs,tests/services.rs}`. All are resolved.
   outgoing edit and continued use of the outgoing writer after refusal.
 - Keep W3 default layout/tab preservation and incoming panel placement in the
   active pane. Core/engine persistence serde formats are unchanged. Follow
-  Ghostty keeps the RiWork palette and diagnostic, with no configuration parser
+  Ghostty keeps the Somtus palette and diagnostic, with no configuration parser
   or reachable appearance publisher; fixtures create no `appearance.json`.
 - `Cargo.lock` combines the existing workspace dependencies, including the
   incoming workspace UUID dependency. Locked/offline execution required no
@@ -62,7 +62,7 @@ superseded evidence; they are excluded from the final counts below.
 | `cargo test -p riwork-nsh-native -p riwork-nsh-workspace --locked --offline` | Native 38 + workspace 48 = **86 passed**, zero failures/ignored; external settings writer child also passed |
 | `nsh check apps/riwork --tsc …` | Passed Rust and TypeScript checks |
 | `nsh test apps/riwork --junit …` | **43 passed**, zero failures, including panel workflows and all W3 UI regressions |
-| `cargo test -p riwork-desktop --bin riwork --locked --offline` | **29 passed**, including switched-project host metadata |
+| `cargo test -p riwork-desktop --bin somtus --locked --offline` | **29 passed**, including switched-project host metadata |
 | Native probe `nsh check` / `nsh test` | Passed; **1 bridge test** imports all seven modules and updates two engines |
 | Native quiet guard | **60 actual seconds**, five subscribed topics, no quiet deliveries, one initial empty session sample, zero presence polls |
 | NSH idle guard | 60,000 virtual milliseconds with unchanged host calls/posts |

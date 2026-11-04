@@ -1,8 +1,8 @@
-//! The typing worker: one long-lived `riwork shell keys --serve` per device.
+//! The typing worker: one long-lived `somtus shell keys --serve` per device.
 //!
-//! A `shell.keys` batch used to start its own `riwork shell keys SHELL -- ITEM...`
+//! A `shell.keys` batch used to start its own `somtus shell keys SHELL -- ITEM...`
 //! process, so a phone typing a word cost a process start per batch. When the CLI
-//! says it can (`shell_keys_serve` in `riwork capabilities --json`), `Rpc::keys`
+//! says it can (`shell_keys_serve` in `somtus capabilities --json`), `Rpc::keys`
 //! hands the batch to this device's worker instead, which types it exactly as that
 //! process would (`crates/riwork-cli/src/cli/keys_serve.rs`). Everything around the
 //! typing stays in `Rpc::keys` as it was: the batch ledger written before anything is
@@ -53,7 +53,7 @@ const MAX_ANSWER: u64 = 64 * 1024;
 pub(super) enum Outcome {
     /// Typed.
     Sent,
-    /// Refused with the CLI's own error text (what `riwork: ` would precede):
+    /// Refused with the CLI's own error text (what `somtus: ` would precede):
     /// a token first when nothing was typed.
     Refused(String),
     /// No worker had it: nothing was typed.
@@ -158,7 +158,7 @@ impl KeysWorkers {
             let answer = match timeout(remaining, worker.line()).await {
                 Ok(Ok(answer)) => answer,
                 Ok(Err(error)) => return Outcome::Lost(error),
-                Err(_) => return Outcome::Lost(anyhow!("RiWork CLI timeout")),
+                Err(_) => return Outcome::Lost(anyhow!("Somtus CLI timeout")),
             };
             if answer.get("n") != Some(&json!(n)) {
                 return Outcome::Lost(anyhow!("the typing worker answered another request"));
@@ -193,7 +193,7 @@ impl KeysWorkers {
             .stderr(Stdio::null())
             .kill_on_drop(true)
             .spawn()
-            .with_context(|| format!("start configured RiWork CLI {}", self.cli.display()))?;
+            .with_context(|| format!("start configured Somtus CLI {}", self.cli.display()))?;
         let stdin = child.stdin.take().context("stdin")?;
         let stdout = BufReader::new(child.stdout.take().context("stdout")?);
         let mut worker = Worker {

@@ -7,7 +7,7 @@ edition = "2024"
 path = "src/lib.rs"
 
 [[bin]]
-name = "riwork-cli"
+name = "somtus-cli"
 path = "src/main.rs"
 
 [dependencies]

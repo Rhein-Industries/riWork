@@ -40,7 +40,7 @@ pub fn short_dir(prefix: &str) -> tempfile::TempDir {
         .unwrap()
 }
 
-pub const REMOTE: &str = env!("CARGO_BIN_EXE_riwork-remote");
+pub const REMOTE: &str = env!("CARGO_BIN_EXE_somtus-remote");
 
 /// Polls until `condition` holds, or fails after `seconds`.
 pub async fn eventually(seconds: u64, what: &str, mut condition: impl FnMut() -> bool) {

@@ -184,7 +184,7 @@ pub fn refresh_terminal_font_size(cx: &mut App) {
         return;
     }
     let size = theme::read_ghostty_font_size().unwrap_or_else(|error| {
-        eprintln!("riwork: {error}");
+        eprintln!("somtus: {error}");
         GHOSTTY_DEFAULT_FONT_SIZE
     });
     cx.set_global(TerminalFontSize { stamp, size });
@@ -218,7 +218,7 @@ fn ghostty_font_size_now(cx: &mut App) -> f32 {
         return font.size;
     }
     let size = theme::read_ghostty_font_size().unwrap_or_else(|error| {
-        eprintln!("riwork: {error}");
+        eprintln!("somtus: {error}");
         GHOSTTY_DEFAULT_FONT_SIZE
     });
     cx.set_global(TerminalFontSize { stamp, size });
@@ -255,7 +255,7 @@ pub fn init(cx: &mut App) {
 pub fn change(change: SizeChange, cx: &mut App) {
     match SettingsStore::open_default().and_then(|store| save(&store, change, cx)) {
         Ok(settings) => cx.set_global(settings),
-        Err(error) => eprintln!("riwork: {error}"),
+        Err(error) => eprintln!("somtus: {error}"),
     }
 }
 

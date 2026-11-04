@@ -24,16 +24,16 @@ pub enum ApprovalMode {
     /// `workspaceWrite`. Claude: `acceptEdits`.
     AutoEdit,
     /// Never ask. Codex: `never` with `dangerFullAccess`. Claude:
-    /// `bypassPermissions`. RiWork's "unrestricted" launches map here.
+    /// `bypassPermissions`. Somtus's "unrestricted" launches map here.
     Full,
     /// Plan first, change nothing. Codex: collaboration mode `plan`. Claude:
     /// permission mode `plan`.
     Plan,
 }
 
-/// Muse's contributor mode, which RiWork passes to every Muse it starts
+/// Muse's contributor mode, which Somtus passes to every Muse it starts
 /// (`--contributor-mode off|on`, a per-process override Muse never saves). Off unless the user
-/// turns it on for one chat or one launch: RiWork never leaves it to the user's Muse settings.
+/// turns it on for one chat or one launch: Somtus never leaves it to the user's Muse settings.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ContributorMode {
@@ -56,7 +56,7 @@ impl ContributorMode {
     }
 }
 
-/// Which orchestrator a chat is. RiWork has one global orchestrator and one for
+/// Which orchestrator a chat is. Somtus has one global orchestrator and one for
 /// each project; the host keeps at most one chat per scope, and the CLI, the MCP
 /// tools, the scheduler and the apps find an orchestrator in chat mode by this
 /// mark. A chat without it is an ordinary chat.
@@ -99,9 +99,9 @@ pub enum ChatState {
 /// One chat, as the host knows it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ChatInfo {
-    /// RiWork's own id for the chat (a UUID), stable across resumes.
+    /// Somtus's own id for the chat (a UUID), stable across resumes.
     pub id: String,
-    /// RiWork session UUID of the caller, across chat and shell kinds.
+    /// Somtus session UUID of the caller, across chat and shell kinds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_id: Option<String>,
     /// Explicit user name, distinct from provider-generated titles.
@@ -162,7 +162,7 @@ pub struct ChatInfo {
     pub claude_billing: Option<ClaudeBilling>,
     #[serde(default)]
     pub approval_mode: ApprovalMode,
-    /// The Codex account (RiWork's account id) the chat runs under.
+    /// The Codex account (Somtus's account id) the chat runs under.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub codex_account_id: Option<String>,
     #[serde(default)]
@@ -176,7 +176,7 @@ pub struct ChatInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub carried_over: Option<CarriedOver>,
     /// Where the chat came from: the chat or terminal it was handed off from, or the chat it
-    /// was forked from (`handoff`). RiWork's own record, never sent to the provider. A reader
+    /// was forked from (`handoff`). Somtus's own record, never sent to the provider. A reader
     /// from before it skips it, and an origin this build cannot read is none: it never makes
     /// the chat unreadable.
     #[serde(
@@ -191,9 +191,9 @@ pub struct ChatInfo {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LineageKind {
-    /// Taken over by another agent (`riwork handoff`, Continue with another agent).
+    /// Taken over by another agent (`somtus handoff`, Continue with another agent).
     Handoff,
-    /// A copy that goes its own way from a point of the conversation (`riwork chat fork`).
+    /// A copy that goes its own way from a point of the conversation (`somtus chat fork`).
     Fork,
     #[serde(other)]
     Unknown,
@@ -303,7 +303,7 @@ pub const CONTRIBUTOR_CONTRADICTION: &str =
 
 /// Refused: the false of `contributor_opt_out`, which asked for the user's Muse settings.
 pub const CONTRIBUTOR_SETTINGS_GONE: &str = "Contributor mode no longer follows your Muse \
-     settings: RiWork keeps it off unless it is turned on for a chat (contributor_mode on).";
+     settings: Somtus keeps it off unless it is turned on for a chat (contributor_mode on).";
 
 /// What a chat that switched provider passes on to its new agent.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -325,7 +325,7 @@ pub struct NewChat {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_id: Option<String>,
     pub cwd: PathBuf,
-    /// Run a Codex chat under this saved account (a RiWork account id, as
+    /// Run a Codex chat under this saved account (a Somtus account id, as
     /// `ChatInfo::codex_account_id` keeps it) instead of the project's or the
     /// app's selection. A Claude chat has no such account and is refused.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -749,7 +749,7 @@ pub struct Presentation {
     /// Exact provider-reported delegation, additive for older transcript readers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subagent: Option<super::subagents::Subagent>,
-    /// One of RiWork's own workers this chat started (`workers`), additive like `subagent`.
+    /// One of Somtus's own workers this chat started (`workers`), additive like `subagent`.
     /// A marker no reader can understand is left out rather than failing the item.
     #[serde(
         default,
@@ -1106,7 +1106,7 @@ pub enum ChatCommand {
         contributor_mode: Option<ContributorMode>,
         /// What clients before `contributor_mode` sent: true asks for off, as
         /// `contributor_mode` off does, and the client sends it beside that, so a host that reads
-        /// only this turns it off too. False asked for the user's Muse settings, which RiWork no
+        /// only this turns it off too. False asked for the user's Muse settings, which Somtus no
         /// longer follows, and is refused (`ChatCommand::requested_contributor_mode`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         contributor_opt_out: Option<bool>,
@@ -1140,7 +1140,7 @@ pub enum ChatCommand {
 impl ChatCommand {
     /// What a Configure asks of contributor mode: `contributor_mode`, or the off an older
     /// client says with `contributor_opt_out` true. That field never turns it on: its false
-    /// asked for the user's Muse settings, which RiWork no longer follows, and is refused, as
+    /// asked for the user's Muse settings, which Somtus no longer follows, and is refused, as
     /// is on together with an off.
     pub fn requested_contributor_mode(&self) -> Result<Option<ContributorMode>, String> {
         let ChatCommand::Configure {

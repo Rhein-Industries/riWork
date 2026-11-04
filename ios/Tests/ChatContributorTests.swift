@@ -37,7 +37,7 @@ final class ChatContributorTests: XCTestCase {
             XCTAssertNil(choice.mode)
             XCTAssertEqual(choice.title, "Contributor unknown")
             XCTAssertEqual(choice.command, .configure(contributorMode: .off))
-            XCTAssertTrue(choice.detail.contains("update RiWork"))
+            XCTAssertTrue(choice.detail.contains("update Somtus"))
         }
     }
 

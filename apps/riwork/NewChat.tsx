@@ -39,12 +39,16 @@ export interface NewChatProps {
   provider?: Provider;
   unrestricted?: boolean;
   /** A catalog read supplies capabilities; saved chat names alone never do. */
+  /** Remote hosts validate their own project/worktree and create exactly once. */
+  createChat?: (request: NewChatRequest) => Promise<{ id: string }>;
+  openChat?: (id: string) => ReturnType<typeof Chat.open>;
+  remote?: boolean;
   modelCatalog?: (provider: Provider, projectId: string, cwd: string) => Promise<NewChatCatalog>;
 }
 
 type NewChatDefaults = NonNullable<SettingsPatch["newChatDefaults"]>;
-const PROVIDERS: Provider[] = ["codex", "claude", "muse"];
-const providerName = (provider: Provider) => provider[0].toUpperCase() + provider.slice(1);
+const PROVIDERS: Provider[] = ["codex", "claude", "muse", "acp"];
+const providerName = (provider: Provider) => provider === "acp" ? "ACP" : provider[0].toUpperCase() + provider.slice(1);
 const MODES: { id: Mode; label: string; description: string }[] = [
   { id: "supervised", label: "Supervised", description: "Asks before commands and edits" },
   { id: "auto_edit", label: "Auto-edit", description: "Edits the workspace freely, asks for the rest" },
@@ -97,7 +101,7 @@ export function NewChat(props: NewChatProps) {
           const result = await readCatalog(kind, projectId, location().cwd);
           if (alive) catalogs.set({ ...catalogs(), [kind]: result });
         } catch (reason) {
-          const saved = await Chat.list().catch(() => []);
+          const saved = props.remote ? [] : await Chat.list().catch(() => []);
           if (alive) catalogs.set({ ...catalogs(), [kind]: { supported: [], configured: [...new Set(saved.filter((chat) => chat.provider === kind && !!chat.model).map((chat) => chat.model!))], warning: `Model catalog unavailable: ${reason}` } });
         }
       }));
@@ -110,7 +114,7 @@ export function NewChat(props: NewChatProps) {
   function chooseModel(value: string) { if (pending()) return; model.set(value); effort.set(null); fast.set(false); error.set(""); }
   function chooseProvider(value: Provider) {
     if (pending() || value === provider()) return;
-    provider.set(value); query.set(""); chooseModel("");
+    provider.set(value); if (value === "acp" && mode() === "plan") mode.set("supervised"); query.set(""); chooseModel("");
   }
   function cancel() { if (pending() || submitted) return; submitted = true; props.onCancel(); }
   async function create() {
@@ -121,17 +125,19 @@ export function NewChat(props: NewChatProps) {
     if (catalog()?.error) { error.set(catalog()!.error!); return; }
     pending.set(true); error.set("");
     const destination = location();
-    const request: NewChatRequest = { provider: provider(), projectId, worktreeId: destination.worktreeId, cwd: destination.cwd, approvalMode: mode(),
-      model: id || null, title: name || null, effort: effort() && metadata?.efforts.includes(effort()!) ? effort() : null,
-      fast: fast() && metadata?.supportsFast === true };
+    const request: NewChatRequest = { provider: provider(), projectId, worktreeId: destination.worktreeId, cwd: destination.cwd, approvalMode: provider() === "acp" && mode() === "plan" ? "supervised" : mode(),
+      model: id || null, title: name || null, effort: provider() !== "acp" && effort() && metadata?.efforts.includes(effort()!) ? effort() : null,
+      fast: provider() !== "acp" && fast() && metadata?.supportsFast === true };
     try {
+      if (!props.remote) {
       const current = await Store.snapshot();
       const project = current.projects.find((item) => item.id === projectId);
       const worktree = destination.worktreeId ? current.worktrees.find((item) => item.id === destination.worktreeId && item.projectId === projectId) : null;
       if (!project || (destination.worktreeId ? !worktree?.present || worktree.path !== destination.cwd : project.root !== destination.cwd)) {
         throw new Error("The chat's project or worktree changed. Open New chat again.");
       }
-      const chat = await Chat.create(request);
+      }
+      const chat = await (props.createChat ?? Chat.create)(request);
       submitted = true;
       const first = message().trim();
       if (first) await sendFirst(chat.id, first);
@@ -155,7 +161,7 @@ export function NewChat(props: NewChatProps) {
   }
   /** The first message starts the chat's first turn; one that is not sent stays as its draft. */
   async function sendFirst(chatId: string, text: string) {
-    const handle = Chat.open(chatId), editor = Chat.newEditor();
+    const handle = (props.openChat ?? Chat.open)(chatId), editor = Chat.newEditor();
     try {
       const receipt = await handle.submit({ text, editor, generation: 1 });
       if (receipt.status !== "submitted") {
@@ -187,7 +193,7 @@ export function NewChat(props: NewChatProps) {
     <Text selectable={true} style={{ ...text(10, true), fontFamily: theme().monoFamily }}>{location().cwd}</Text>
     <Text style={{ ...text(10, true), fontWeight: "600" }}>Permissions</Text>
     <View role="radiogroup" accessibilityLabel="Permissions" style={{ flexDirection: "row", flexWrap: "wrap", gap: 2, padding: 2, borderRadius: 8, backgroundColor: theme().palette.panelActive }}>
-      {MODES.map((item) => choice(`new-chat-mode-${item.id}`, item.label, mode() === item.id, () => mode.set(item.id)))}
+      {MODES.filter((item) => provider() !== "acp" || item.id !== "plan").map((item) => choice(`new-chat-mode-${item.id}`, item.label, mode() === item.id, () => mode.set(item.id)))}
     </View>
     <Text style={text(10, true)}>{MODES.find((item) => item.id === mode())!.description}</Text>
     <View role="radiogroup" accessibilityLabel="Provider" style={{ flexDirection: "row", alignSelf: "flex-start", gap: 2, padding: 2, borderRadius: 8, backgroundColor: theme().palette.panelActive }}>
@@ -207,14 +213,14 @@ export function NewChat(props: NewChatProps) {
     <Input testID="new-chat-model-input" accessibilityLabel="Model ID" placeholder="Or type a model ID" value={model()} onChange={chooseModel} disabled={pending()} style={field()} />
     <Text style={text(10, true)}>{loading() ? "Reading saved model choices…" : catalog()?.warning || (catalog()?.supported.length ? `A typed ID is a ${providerName(provider())} model. Availability is checked when the chat starts.` : `Use ${providerName(provider())}'s default, a saved choice, or type a model ID.`)}</Text>
     {provider() === "codex" && catalog()?.accountLabel && <Text style={text(10, true)}>{`Codex account · ${catalog()?.balanced ? "balanced at start (now " : ""}${catalog()!.accountLabel}${catalog()?.balanced ? ")" : ""}`}</Text>}
-    {!!selected()?.efforts.length && <View style={{ gap: 5 }}>
+    {provider() !== "acp" && !!selected()?.efforts.length && <View style={{ gap: 5 }}>
       <Text style={{ ...text(10, true), fontWeight: "600" }}>Reasoning</Text>
       <View role="radiogroup" accessibilityLabel="Reasoning effort" style={{ flexDirection: "row", flexWrap: "wrap", gap: 2, padding: 2, borderRadius: 8, backgroundColor: theme().palette.panelActive }}>
         {choice("new-chat-effort-default", "Default effort", effort() === null, () => effort.set(null))}
         {selected()!.efforts.map((value) => choice(`new-chat-effort-${value}`, value, effort() === value, () => effort.set(value)))}
       </View>
     </View>}
-    {selected()?.supportsFast && <View testID="new-chat-fast" role="checkbox" accessibilityLabel="Fast mode" accessibilityState={{ checked: fast() }} disabled={pending()} onPress={() => fast.set(!fast())} style={{ flexDirection: "row", alignItems: "center", gap: 7 }}><Icon name={fast() ? "check" : "add"} size={12 * theme().scale} color={theme().palette.muted} /><Text style={text()}>Fast mode</Text></View>}
+    {provider() !== "acp" && selected()?.supportsFast && <View testID="new-chat-fast" role="checkbox" accessibilityLabel="Fast mode" accessibilityState={{ checked: fast() }} disabled={pending()} onPress={() => fast.set(!fast())} style={{ flexDirection: "row", alignItems: "center", gap: 7 }}><Icon name={fast() ? "check" : "add"} size={12 * theme().scale} color={theme().palette.muted} /><Text style={text()}>Fast mode</Text></View>}
     <Input testID="new-chat-title" accessibilityLabel="Chat title" placeholder="Title (optional)" value={title()} onChange={(value) => title.set(value)} disabled={pending()} style={field()} />
     <Text style={{ ...text(10, true), fontWeight: "600" }}>First message</Text>
     <Input testID="new-chat-message" accessibilityLabel="First message" placeholder="Optional: what the chat starts with" multiline={true} autoCorrect={false}

@@ -1,4 +1,4 @@
-//! Main-thread GPU work belongs to the demo child; this test drives RiWork's
+//! Main-thread GPU work belongs to the demo child; this test drives Somtus's
 //! actual process supervisor, authenticated socket and frame/input lifecycle.
 //!
 //! cargo build -p riwork-gpui-preview --example counter

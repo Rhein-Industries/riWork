@@ -96,7 +96,7 @@ pub fn provider_word(provider: Provider) -> &'static str {
     match provider {
         Provider::Codex => "codex",
         Provider::Claude => "claude",
-        Provider::Muse => "muse",
+        Provider::Acp => "acp", Provider::Muse => "muse",
     }
 }
 pub(crate) fn parse_provider(provider: &str) -> Result<Provider, String> {

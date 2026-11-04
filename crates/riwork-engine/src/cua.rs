@@ -1,4 +1,4 @@
-//! RiWork's shared Cua.ai Driver installation and app-owned desktop runtime.
+//! Somtus's shared Cua.ai Driver installation and app-owned desktop runtime.
 
 use std::{
     env,
@@ -28,7 +28,7 @@ pub use skills::{CuaSkills, SkillCli, SkillLinkState, SkillTarget};
 
 const INSTALLER_URL: &str = "https://cua.ai/driver/install.sh";
 const APP_PATH: &str = "/Applications/CuaDriver.app";
-/// Identity RiWork pins for the managed app: Cua AI, Inc.'s Developer ID.
+/// Identity Somtus pins for the managed app: Cua AI, Inc.'s Developer ID.
 const APP_BUNDLE_ID: &str = "com.trycua.driver";
 const APP_TEAM_ID: &str = "YCK386LBJ7";
 const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
@@ -117,7 +117,7 @@ impl CuaManager {
         Ok(Self {
             home,
             override_driver: driver_override(),
-            // A relative HOME would put user paths under whatever directory RiWork runs in.
+            // A relative HOME would put user paths under whatever directory Somtus runs in.
             user_home: non_empty_path(env::var_os("HOME")).filter(|home| home.is_absolute()),
             search_path: env::var_os("PATH")
                 .map(|value| search_directories(&value))
@@ -131,7 +131,7 @@ impl CuaManager {
     /// Resolve an installed executable without downloading or changing agent configuration.
     pub fn driver_path(&self) -> Result<PathBuf, String> {
         self.find_driver()?.ok_or_else(|| {
-            "Cua Driver is not installed. Open RiWork Settings → Computer Use and select Set up Cua, or run `riwork setup`.".to_owned()
+            "Cua Driver is not installed. Open Somtus Settings → Computer Use and select Set up Cua, or run `somtus setup`.".to_owned()
         })
     }
 
@@ -231,7 +231,7 @@ impl CuaManager {
                 direct_capture_verified: false,
                 running: false,
                 ready: false,
-                message: "Cua Driver is not installed. Select Set up Cua or run `riwork setup`."
+                message: "Cua Driver is not installed. Select Set up Cua or run `somtus setup`."
                     .to_owned(),
                 skills: linked.unwrap_or_else(|| {
                     self.skills_report(&skills::Pack::Unknown(
@@ -289,7 +289,7 @@ impl CuaManager {
             && direct_capture_verified;
         let message = if let Err(error) = &version {
             format!(
-                "Cua Driver could not report its version: {error}. Run `riwork setup` to repair the installation."
+                "Cua Driver could not report its version: {error}. Run `somtus setup` to repair the installation."
             )
         } else if let Some(diagnostic) = diagnostic {
             format!("Cua Driver permissions could not be checked: {diagnostic}")
@@ -302,14 +302,14 @@ impl CuaManager {
                 _ => "Screen Recording",
             };
             format!(
-                "Enable {missing} for CuaDriver in macOS System Settings. Select Open permissions or run `riwork cua permissions`."
+                "Enable {missing} for CuaDriver in macOS System Settings. Select Open permissions or run `somtus cua permissions`."
             )
         } else if !direct_capture_verified {
-            "macOS access is enabled. Select Verify screen capture or run `riwork cua permissions` to verify CuaDriver's screen capture access.".to_owned()
+            "macOS access is enabled. Select Verify screen capture or run `somtus cua permissions` to verify CuaDriver's screen capture access.".to_owned()
         } else if self.override_driver.is_some() {
-            "Cua Driver is ready (custom driver from RIWORK_CUA_DRIVER; its signature is not verified). RiWork harnesses share its desktop service.".to_owned()
+            "Cua Driver is ready (custom driver from RIWORK_CUA_DRIVER; its signature is not verified). Somtus harnesses share its desktop service.".to_owned()
         } else {
-            "Cua Driver is ready. RiWork harnesses share its desktop service.".to_owned()
+            "Cua Driver is ready. Somtus harnesses share its desktop service.".to_owned()
         };
         let skills = linked.unwrap_or_else(|| {
             // A driver that cannot report its version is not asked anything else.
@@ -334,7 +334,7 @@ impl CuaManager {
         })
     }
 
-    /// A status for a driver RiWork refuses to run, so nothing probes it.
+    /// A status for a driver Somtus refuses to run, so nothing probes it.
     fn blocked_status(
         &self,
         driver: PathBuf,
@@ -354,13 +354,13 @@ impl CuaManager {
             message,
             skills: linked.unwrap_or_else(|| {
                 self.skills_report(&skills::Pack::Unknown(
-                    "RiWork asks Cua Driver where its pack is only after the driver passes RiWork's identity check.".to_owned(),
+                    "Somtus asks Cua Driver where its pack is only after the driver passes Somtus's identity check.".to_owned(),
                 ))
             }),
         }
     }
 
-    /// The Codex homes RiWork's launches bind: the system default and each
+    /// The Codex homes Somtus's launches bind: the system default and each
     /// saved Orca account. Reading them runs nothing and writes nothing.
     fn codex_homes(&self) -> Vec<PathBuf> {
         if let Some(homes) = &self.launch_homes.codex_homes {
@@ -461,7 +461,7 @@ impl CuaManager {
         // Whatever the installer left must pass the same check before anything runs it.
         let driver = self.trusted_driver()?;
         let executable = env::current_exe()
-            .map_err(|error| format!("Cannot locate the RiWork executable: {error}"))?;
+            .map_err(|error| format!("Cannot locate the Somtus executable: {error}"))?;
         self.ensure_harness_shims(&executable)?;
         // Setup is the only step that writes into the CLIs' skill directories.
         let skills = self.link_skills(&driver);
@@ -484,7 +484,7 @@ impl CuaManager {
             )),
             // A driver that is merely slow is not broken, and a reinstall stops the shared daemon.
             Err(error) if is_timeout_error(&error) => Err(format!(
-                "Cua Driver did not answer its version check ({error}). RiWork did not reinstall it because a slow first start is common; retry in a moment. If it keeps failing, delete {} and run `riwork setup`.",
+                "Cua Driver did not answer its version check ({error}). Somtus did not reinstall it because a slow first start is common; retry in a moment. If it keeps failing, delete {} and run `somtus setup`.",
                 self.app_path.display()
             )),
             Err(error) => Ok(DriverHealth::Broken(error)),
@@ -536,7 +536,7 @@ impl CuaManager {
     }
 
     /// The vendor installer runs with a scrubbed environment: it is third-party
-    /// code that needs neither RiWork's credentials nor its API keys.
+    /// code that needs neither Somtus's credentials nor its API keys.
     fn installer_command(
         &self,
         shell: &Path,
@@ -659,7 +659,7 @@ impl CuaManager {
 
     fn record_driver_log(&self, message: &str) {
         if let Ok(mut log) = self.log_file("driver.log") {
-            let _ = writeln!(log, "riwork: {message}");
+            let _ = writeln!(log, "somtus: {message}");
         }
     }
 
@@ -686,7 +686,7 @@ impl CuaManager {
             }
             if Instant::now() >= deadline {
                 return Err(format!(
-                    "Another Cua launch held the desktop service lock and the service did not start within {} seconds. Run `riwork cua status` and retry.",
+                    "Another Cua launch held the desktop service lock and the service did not start within {} seconds. Run `somtus cua status` and retry.",
                     (lock_wait + start_wait).as_secs()
                 ));
             }
@@ -764,7 +764,7 @@ impl CuaManager {
             }
         });
         let mut status = self.status()?;
-        status.message = "Cua Driver's permission helper is open. Approve the macOS prompts and enable CuaDriver under Accessibility and Screen Recording. Return to RiWork to check readiness.".to_owned();
+        status.message = "Cua Driver's permission helper is open. Approve the macOS prompts and enable CuaDriver under Accessibility and Screen Recording. Return to Somtus to check readiness.".to_owned();
         Ok(status)
     }
 
@@ -776,15 +776,15 @@ impl CuaManager {
     /// with it for good. The proxy restarts the service and the driver, replays
     /// the agent's handshake and carries on. Grok launches call
     /// `prepare_for_grok` first, so the first start is not racing Grok's
-    /// 30-second limit. Codex and a direct `riwork cua mcp` still start the
+    /// 30-second limit. Codex and a direct `somtus cua mcp` still start the
     /// service here.
     ///
-    /// Input to the user's own live RiWork app is refused unless this process's
+    /// Input to the user's own live Somtus app is refused unless this process's
     /// environment has `RIWORK_CUA_ALLOW_RIWORK_INPUT=1` (`guard`).
     pub fn run_mcp(&self) -> Result<(), String> {
         if riwork_input_allowed() {
             self.record_driver_log(&format!(
-                "MCP proxy: {ALLOW_RIWORK_INPUT}=1, so input to RiWork's own windows is not refused"
+                "MCP proxy: {ALLOW_RIWORK_INPUT}=1, so input to Somtus's own windows is not refused"
             ));
         }
         self.run_mcp_with(
@@ -816,7 +816,7 @@ impl CuaManager {
     pub fn ensure_harness_shims(&self, riwork_executable: &Path) -> Result<PathBuf, String> {
         let executable = executable_path(riwork_executable).ok_or_else(|| {
             format!(
-                "RiWork is not an executable file: {}",
+                "Somtus is not an executable file: {}",
                 riwork_executable.display()
             )
         })?;
@@ -896,9 +896,9 @@ enum AppProblem {
 impl AppProblem {
     fn describe(&self, app: &Path) -> String {
         match self {
-            Self::Missing => "CuaDriver.app is missing. Run `riwork setup` to install its signed desktop service.".to_owned(),
+            Self::Missing => "CuaDriver.app is missing. Run `somtus setup` to install its signed desktop service.".to_owned(),
             Self::Untrusted(reason) => format!(
-                "CuaDriver.app failed RiWork's identity check ({reason}). RiWork only runs {} when it is signed by Cua AI, Inc. (Team ID {APP_TEAM_ID}) and notarized by Apple. Move it to the Trash and run `riwork setup` to reinstall it, or set RIWORK_CUA_DRIVER to a developer build.",
+                "CuaDriver.app failed Somtus's identity check ({reason}). Somtus only runs {} when it is signed by Cua AI, Inc. (Team ID {APP_TEAM_ID}) and notarized by Apple. Move it to the Trash and run `somtus setup` to reinstall it, or set RIWORK_CUA_DRIVER to a developer build.",
                 app.display()
             ),
         }
@@ -1062,20 +1062,20 @@ fn is_timeout_error(error: &str) -> bool {
     error.starts_with(TIMED_OUT)
 }
 
-/// A shim runs the harness through RiWork, but a moved or cleaned checkout must
-/// not leave every `codex`, `claude`, and `grok` in a RiWork shell broken.
+/// A shim runs the harness through Somtus, but a moved or cleaned checkout must
+/// not leave every `codex`, `claude`, and `grok` in a Somtus shell broken.
 fn harness_shim(harness: &str, executable: &Path, shim_directory: &Path) -> String {
     let executable = shell_quote(&executable.to_string_lossy());
     let shim_directory = shell_quote(&shim_directory.to_string_lossy());
     format!(
         "#!/bin/sh\n\
-# RiWork Cua harness shim\n\
+# Somtus Cua harness shim\n\
 riwork_bin={executable}\n\
 shim_dir={shim_directory}\n\
 if [ -f \"$riwork_bin\" ] && [ -x \"$riwork_bin\" ]; then\n\
   exec \"$riwork_bin\" cua harness {harness} -- \"$@\"\n\
 fi\n\
-echo \"riwork: $riwork_bin is missing; starting {harness} without RiWork's Cua connection. Open RiWork to repair its launchers.\" >&2\n\
+echo \"somtus: $riwork_bin is missing; starting {harness} without Somtus's Cua connection. Open Somtus to repair its launchers.\" >&2\n\
 set -f\n\
 old_ifs=$IFS\n\
 IFS=:\n\
@@ -1088,7 +1088,7 @@ for dir in $PATH; do\n\
   fi\n\
 done\n\
 IFS=$old_ifs\n\
-echo \"riwork: {harness} is not installed on PATH outside RiWork's launchers.\" >&2\n\
+echo \"somtus: {harness} is not installed on PATH outside Somtus's launchers.\" >&2\n\
 exit 127\n"
     )
 }
@@ -1122,14 +1122,14 @@ fn wait_for_daemon(driver: &Path) -> Result<(), String> {
         thread::sleep(Duration::from_millis(100));
     }
     Err(
-        "Cua Driver's desktop service did not start. Run `riwork cua status` and retry setup."
+        "Cua Driver's desktop service did not start. Run `somtus cua status` and retry setup."
             .to_owned(),
     )
 }
 
 fn explain_grok_preflight(cause: &str, elapsed: Duration, log: &Path) -> String {
     format!(
-        "{cause} RiWork starts Cua Driver and completes its MCP handshake before launching Grok, because Grok's default MCP startup limit is 30 seconds. This check took {:.1} seconds. Log: {}. Run `riwork cua status`.",
+        "{cause} Somtus starts Cua Driver and completes its MCP handshake before launching Grok, because Grok's default MCP startup limit is 30 seconds. This check took {:.1} seconds. Log: {}. Run `somtus cua status`.",
         elapsed.as_secs_f32(),
         log.display()
     )
@@ -1680,7 +1680,7 @@ impl Drop for TemporaryDirectory {
 
 // The MCP stdio proxy.
 //
-// `riwork cua mcp` sits between an agent and `cua-driver mcp`. MCP stdio is
+// `somtus cua mcp` sits between an agent and `cua-driver mcp`. MCP stdio is
 // newline-delimited JSON-RPC, so the proxy forwards whole lines verbatim, in
 // order, and looks inside them only to keep the bookkeeping a restart needs:
 // which client requests have no answer yet, the client's `initialize`
@@ -1724,7 +1724,7 @@ struct McpPolicy {
     /// How long a new driver has to answer the replayed `initialize`.
     replay_timeout: Duration,
     line_limit: usize,
-    /// The guard on input to RiWork's own live windows; `None` forwards every call.
+    /// The guard on input to Somtus's own live windows; `None` forwards every call.
     guard: Option<McpGuard>,
 }
 
@@ -1748,7 +1748,7 @@ impl McpPolicy {
     }
 }
 
-/// Where the proxy learns the pids of the user's running RiWork apps, which the guard
+/// Where the proxy learns the pids of the user's running Somtus apps, which the guard
 /// keeps tool calls from sending input to (`guard`).
 #[derive(Clone)]
 struct McpGuard(Arc<dyn Fn() -> Vec<u32> + Send + Sync>);
@@ -2052,7 +2052,7 @@ fn run_mcp_proxy(
 impl McpProxy {
     fn note(&self, message: &str) {
         (self.on_note)(message);
-        self.write_stderr(&format!("riwork: {message}\n"));
+        self.write_stderr(&format!("somtus: {message}\n"));
     }
 
     /// Text the driver put on stdout that is not an MCP message must not
@@ -2060,7 +2060,7 @@ impl McpProxy {
     fn stray_output(&self, line: &[u8]) {
         let text = String::from_utf8_lossy(line);
         self.write_stderr(&format!(
-            "riwork: ignored non-MCP output from Cua Driver: {}\n",
+            "somtus: ignored non-MCP output from Cua Driver: {}\n",
             snippet(&text)
         ));
     }
@@ -2253,7 +2253,7 @@ impl McpProxy {
                 _ => answers.push(error_line(
                     id,
                     MCP_PROXY_ERROR,
-                    "Not sent to Cua Driver: RiWork refused another call in this batch",
+                    "Not sent to Cua Driver: Somtus refused another call in this batch",
                 )),
             }
         }
@@ -2261,7 +2261,7 @@ impl McpProxy {
             return None;
         }
         self.note(&format!(
-            "refused input to RiWork's own windows: {}",
+            "refused input to Somtus's own windows: {}",
             refused.join(", ")
         ));
         Some(answers)
@@ -2552,7 +2552,7 @@ impl McpProxy {
                     // Only a driver that has not been reaped: a reaped pid may
                     // already belong to someone else.
                     terminate_child(&mut child.process);
-                    break "stopped by RiWork".to_owned();
+                    break "stopped by Somtus".to_owned();
                 }
             }
         };
@@ -2892,7 +2892,7 @@ mod tests {
     #[ignore = "slow: runs the generated shims as real processes"]
     fn shims_forward_literal_arguments_and_quote_executable_path() {
         let temp = TemporaryDirectory::new(&env::temp_dir(), "riwork-cua-test").unwrap();
-        let executable = temp.path.join("RiWork 'test'/riwork");
+        let executable = temp.path.join("Somtus 'test'/riwork");
         fake_driver(&executable, "printf '%s\\n' \"$@\"");
         let manager = manager(temp.path.clone());
         let bin = manager.ensure_harness_shims(&executable).unwrap();
@@ -2910,7 +2910,7 @@ mod tests {
         assert!(
             fs::read_to_string(bin.join("claude"))
                 .unwrap()
-                .contains("# RiWork Cua harness shim")
+                .contains("# Somtus Cua harness shim")
         );
     }
 
@@ -3032,7 +3032,7 @@ mod tests {
             assert!(error.contains(detail), "{error}");
             assert!(error.contains(&format!("{tool} says no")), "{error}");
             assert!(error.contains("YCK386LBJ7"), "{error}");
-            assert!(error.contains("riwork setup"), "{error}");
+            assert!(error.contains("somtus setup"), "{error}");
             // A refusal is never cached.
             assert!(manager.trusted_driver().is_err());
             let checks = fake.tool_calls().len();
@@ -3051,7 +3051,7 @@ mod tests {
         manager.trusted_driver().unwrap();
         let first = fake.tool_calls().len();
         assert_eq!(first, 2);
-        // The cache survives a new manager, as it does across `riwork cua mcp` launches.
+        // The cache survives a new manager, as it does across `somtus cua mcp` launches.
         fake.manager(&temp.path.join("home"))
             .trusted_driver()
             .unwrap();
@@ -3476,7 +3476,7 @@ else:
         let error = manager.prepare_for_grok().unwrap_err();
         assert!(error.contains("not an executable"), "{error}");
         assert!(error.contains("30 seconds"), "{error}");
-        assert!(error.contains("riwork cua status"), "{error}");
+        assert!(error.contains("somtus cua status"), "{error}");
     }
 
     #[test]
@@ -3484,7 +3484,7 @@ else:
     fn shims_fall_back_to_the_next_cli_when_the_riwork_binary_is_gone() {
         let temp = TemporaryDirectory::new(&env::temp_dir(), "riwork-cua-test").unwrap();
         let executable = temp.path.join("moved checkout/riwork");
-        fake_driver(&executable, "echo riwork \"$@\"");
+        fake_driver(&executable, "echo somtus \"$@\"");
         let manager = manager(temp.path.join("home"));
         let bin = manager.ensure_harness_shims(&executable).unwrap();
         for harness in ["codex", "claude", "grok", "muse"] {
@@ -3509,7 +3509,7 @@ else:
                 .unwrap()
         };
         let present = run("codex", &search);
-        assert!(String::from_utf8_lossy(&present.stdout).starts_with("riwork cua harness codex"));
+        assert!(String::from_utf8_lossy(&present.stdout).starts_with("somtus cua harness codex"));
         fs::remove_file(&executable).unwrap();
         for harness in ["codex", "claude", "grok", "muse"] {
             let output = run(harness, &search);
@@ -3560,7 +3560,7 @@ else:
     }
     // ---- MCP stdio proxy ----
 
-    /// A driver double for `riwork cua mcp`: `status`/`serve` behave like the
+    /// A driver double for `somtus cua mcp`: `status`/`serve` behave like the
     /// daemon (a marker file), and `mcp` speaks enough MCP to be supervised.
     /// Each `mcp` start consumes the next word of the `plan` file, which picks
     /// how that process misbehaves: `ok`, `noisy`, `stubborn` (ignores EOF and
@@ -3960,7 +3960,7 @@ else:
         serde_json::json!({ "name": name, "arguments": arguments })
     }
 
-    /// A RiWork app that the guard's registry says is running.
+    /// A Somtus app that the guard's registry says is running.
     const LIVE_RIWORK: u32 = 4242;
 
     fn live_riwork() -> Option<McpGuard> {
@@ -4024,7 +4024,7 @@ else:
         assert!((McpGuard::reading(false, None).unwrap().0)().is_empty());
     }
 
-    /// Input aimed at a live RiWork app is answered by the proxy as a tool error and never
+    /// Input aimed at a live Somtus app is answered by the proxy as a tool error and never
     /// sent on; read-only calls, input to other apps, and every call once the guard is off
     /// go to the driver as before. Fakes only: no driver, no window.
     #[test]
@@ -4040,7 +4040,7 @@ else:
         assert_eq!(refused[0]["id"], 7);
         assert_eq!(refused[0]["result"]["isError"], true);
         let text = refused[0]["result"]["content"][0]["text"].as_str().unwrap();
-        assert!(text.contains("RiWork refused `click`"), "{text}");
+        assert!(text.contains("Somtus refused `click`"), "{text}");
         assert!(text.contains(&format!("pid {LIVE_RIWORK}")), "{text}");
         assert!(locked(&proxy.state).in_flight.is_empty());
 
@@ -4094,7 +4094,7 @@ else:
         assert!(output.text().is_empty());
         assert_eq!(locked(&open.state).in_flight, vec![serde_json::json!(7)]);
 
-        // And with no RiWork app running, nothing is refused.
+        // And with no Somtus app running, nothing is refused.
         let (idle, output) = driverless_proxy(Some(McpGuard(Arc::new(Vec::new))));
         idle.forward_client_line(&call_line(
             7,
@@ -4431,7 +4431,7 @@ else:
             client
                 .stderr
                 .text()
-                .contains("refused input to RiWork's own windows: press_key")
+                .contains("refused input to Somtus's own windows: press_key")
         );
         assert_eq!(client.finish(), Ok(()));
     }

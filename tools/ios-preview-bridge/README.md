@@ -1,12 +1,12 @@
-# RiWork iOS Simulator device bridge
+# Somtus iOS Simulator device bridge
 
-This helper connects RiWork's authenticated App Preview socket directly to one
+This helper connects Somtus's authenticated App Preview socket directly to one
 booted CoreSimulator device. Simulator.app stays closed: frames come from the
 device's IOSurface framebuffer, and touches go to its persistent HID connection.
 It does not capture the Mac desktop, synthesize Mac input, or require Accessibility
 or Screen Recording permission.
 
-RiWork's engine creates and owns the device, builds and installs the requested
+Somtus's engine creates and owns the device, builds and installs the requested
 app, then starts this helper with its exact UUID. The helper never chooses a
 device implicitly, launches a Simulator window, or changes device lifecycle.
 
@@ -43,7 +43,7 @@ and closes only this helper's connections; the engine owns Simulator cleanup.
 
 Input coordinates refer to received frame pixels with a top-left origin. They are
 normalized against that frame before native touch delivery, so downscaling and
-RiWork's aspect-fit display do not change the intended target. A left pointer
+Somtus's aspect-fit display do not change the intended target. A left pointer
 press, move, and release form one continuous finger contact with a stable ID.
 Touches starting at an outer edge retain an edge tag for iOS system gestures.
 Scroll input produces a short continuous finger drag. Home is `key: "home"`.

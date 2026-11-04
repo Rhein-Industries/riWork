@@ -17,12 +17,12 @@ The list shows the next run, last outcome, prompt and effective settings. Edit, 
 `automation` and `schedule` are aliases. Existing schedule commands and MCP tool names remain available. Fresh chat creation uses the same schedule service and ledger:
 
 ```sh
-riwork automation create --new-chat --scope project --project PROJECT_UUID \
+somtus automation create --new-chat --scope project --project PROJECT_UUID \
   --title 'Daily review' --prompt 'Review the project status' \
   --at FUTURE_RFC3339 --every-minutes 1440 \
   --provider codex --permission supervised --model MODEL --effort high --fast --json
 
-riwork automation create --existing-shell --scope project --project PROJECT_UUID \
+somtus automation create --existing-shell --scope project --project PROJECT_UUID \
   --shell LIVE_SHELL_UUID --title 'Shell review' --prompt 'Review the project status' \
   --at FUTURE_RFC3339 --json
 ```
@@ -35,7 +35,7 @@ The new destination/provider/model/effort/fast/permission/account fields are cre
 
 ## Dispatch and compatibility
 
-RiWork's existing desktop scheduler runs while the app is open. It skips missed occurrences beyond the five-minute grace window, backs off unavailable/busy targets, and admits at most four claimed attempts per minute.
+Somtus's existing desktop scheduler runs while the app is open. It skips missed occurrences beyond the five-minute grace window, backs off unavailable/busy targets, and admits at most four claimed attempts per minute.
 
 Before claiming a fresh-chat occurrence, the client sends a non-mutating `capabilities` operation to the same host connection that will create the chat. Only an affirmative boolean `identified_create: true` permits creation. Old hosts, absent/false/malformed responses, refusals, disconnects and bounded timeouts defer without Create, Command, a durable dispatch claim or a consumed rate slot. No running host is automatically replaced or restarted.
 

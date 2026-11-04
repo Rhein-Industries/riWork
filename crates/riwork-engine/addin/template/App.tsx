@@ -2,8 +2,8 @@ import { Text, View, mount, signal } from "nsh";
 import { Button } from "nsh/base";
 import { info, project, tasks, type Project, type Task } from "./addin-api";
 
-// An add-in is an NSH app in a tab of its own. It reaches RiWork through ./addin-api, which
-// RiWork writes into every build; addin.json says what it may do.
+// An add-in is an NSH app in a tab of its own. It reaches Somtus through ./addin-api, which
+// Somtus writes into every build; addin.json says what it may do.
 function App() {
   const current = signal<Project | null>(null), open = signal<Task[]>([]), error = signal("");
   const load = () => Promise.all([project.get(), tasks.list()])

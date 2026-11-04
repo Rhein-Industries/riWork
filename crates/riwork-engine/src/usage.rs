@@ -110,7 +110,7 @@ pub struct UsageWindow {
 
 /// Seconds before an account's quota is read again. An account that keeps
 /// failing (signed out, offline, broken install) would otherwise start a
-/// `codex app-server` every minute for as long as RiWork is open, so each
+/// `codex app-server` every minute for as long as Somtus is open, so each
 /// consecutive failure doubles the wait up to a cap. A forced refresh ignores
 /// this, and any success starts over.
 pub fn codex_refresh_interval(has_snapshot: bool, failures: u32) -> u64 {
@@ -151,7 +151,7 @@ fn read_codex_usage_with(
         "id": 1,
         "method": "initialize",
         "params": {
-            "clientInfo": { "name": "riwork_usage", "title": "RiWork usage", "version": env!("CARGO_PKG_VERSION") },
+            "clientInfo": { "name": "riwork_usage", "title": "Somtus usage", "version": env!("CARGO_PKG_VERSION") },
             "capabilities": { "experimentalApi": false }
         }
     }))?;
@@ -532,7 +532,7 @@ pub fn read_grok_usages(
 struct GrokReader<'a> {
     /// Where Grok keeps `active_sessions.json`.
     home: Result<PathBuf, String>,
-    /// The official CLI, never RiWork's launcher.
+    /// The official CLI, never Somtus's launcher.
     executable: Result<PathBuf, String>,
     timeout: Duration,
     cache: &'a GrokUsageCache,
@@ -687,7 +687,7 @@ fn keep_stale(
     }
 }
 
-/// The `ProviderUsage` shape for a Grok tab, as `riwork usage` prints it. The
+/// The `ProviderUsage` shape for a Grok tab, as `somtus usage` prints it. The
 /// account allowance is unknown: only Grok's own `/usage` screen shows it.
 pub fn grok_provider_usage(tab: &GrokTabUsage) -> ProviderUsage {
     ProviderUsage {
@@ -948,7 +948,7 @@ fn is_grok_executable(path: &Path) -> bool {
         .is_some_and(|name| name == "grok" || name.starts_with("grok-"))
 }
 
-/// The Grok session a tab's pane hosts, or why none can be named. RiWork execs
+/// The Grok session a tab's pane hosts, or why none can be named. Somtus execs
 /// Grok as the pane's process, so that pid is the one Grok lists; only when the
 /// pane runs something else (a wrapper) are its direct children considered.
 /// Grok's list also keeps entries whose pid has since been reused, so a listed

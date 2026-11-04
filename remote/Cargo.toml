@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT"
 
+[[bin]]
+name = "somtus-remote"
+path = "src/main.rs"
+
 # Headless workspace member: deliberately does not depend on the desktop crate.
 
 [dependencies]

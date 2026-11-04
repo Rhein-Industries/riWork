@@ -370,14 +370,14 @@ export function ProjectPage(props: {
       onAccessibilityAction={(event) => { if (event.actionName === "close") void requestClose(cell.tab); else void tabMenu(cell.tab); }}
       disabled={app.blocked()} onPress={() => activate(cell.tab)} onLongPress={() => void tabMenu(cell.tab)}
       activeStyle={{ backgroundColor: palette().panelActive }}
-      style={{ height: target() - 1, maxWidth: pt(300), flexShrink: 0, flexDirection: "row", alignItems: "center", gap: pt(8), paddingLeft: pt(14),
-        paddingRight: isSelected() ? 0 : pt(16), borderRightWidth: 1, borderColor: palette().divider, backgroundColor: isSelected() ? palette().bg : palette().panel }}>
+      style={{ height: ui.bar() - 1, maxWidth: pt(280), flexShrink: 0, flexDirection: "row", alignItems: "center", gap: pt(6), paddingLeft: pt(10),
+        paddingRight: isSelected() ? 0 : pt(12), borderRightWidth: 1, borderColor: palette().divider, backgroundColor: isSelected() ? palette().bg : palette().panel }}>
       <TabDot ui={ui} status={cell.tab.status} />
       <Text numberOfLines={1} style={{ ...text(13, isSelected() ? "text" : "muted"), fontWeight: isSelected() ? "500" : "400", flexShrink: 1 }}>{title(cell.tab)}</Text>
       {isSelected() && <View testID={`tab-close:${cell.tab.key}`} role="button" accessibilityLabel={`Close ${title(cell.tab)}`} disabled={app.blocked()}
         onPress={() => void requestClose(cell.tab)} activeStyle={{ backgroundColor: palette().panelActive }}
-        style={{ width: target(), height: "100%", alignItems: "center", justifyContent: "center" }}>
-        <Icon name="close" size={pt(12)} color={palette().muted} />
+        style={{ width: pt(28), height: "100%", alignItems: "center", justifyContent: "center" }}>
+        <Icon name="close" size={pt(11)} color={palette().muted} />
       </View>}
     </View>;
   }

@@ -1,4 +1,4 @@
-//! The per-host client daemon: `riwork-remote client serve --desktop ID`.
+//! The per-host client daemon: `somtus-remote client serve --desktop ID`.
 //!
 //! The relay lets one socket per role hold a route, so one process per host owns
 //! the [`Link`] and everything on this Mac that talks to the host (the app's
@@ -538,7 +538,7 @@ pub async fn serve(storage: Storage, desktop_id: &str, idle: Duration) -> Result
     let paths = daemon_paths(&storage, desktop_id)?;
     prepare_run_dir(&paths.dir)?;
     let Some(_running) = try_lock(&paths.lock)? else {
-        eprintln!("riwork-remote client: a daemon already runs for this host.");
+        eprintln!("somtus-remote client: a daemon already runs for this host.");
         return Ok(());
     };
     // The lock is ours, so a socket that is still there is a dead daemon's.
@@ -567,7 +567,7 @@ pub async fn serve(storage: Storage, desktop_id: &str, idle: Duration) -> Result
         quit: Notify::new(),
     });
     eprintln!(
-        "riwork-remote client: serving \"{}\" on {} (exits after {} s without clients).",
+        "somtus-remote client: serving \"{}\" on {} (exits after {} s without clients).",
         log_safe(&daemon.label),
         paths.socket.display(),
         idle.as_secs()
@@ -584,11 +584,11 @@ pub async fn serve(storage: Storage, desktop_id: &str, idle: Duration) -> Result
                 Err(e) => break Err(anyhow::Error::from(e).context("accept")),
             },
             () = idle_wait(clients_rx.clone(), idle) => {
-                eprintln!("riwork-remote client: no clients for {} s; exiting.", idle.as_secs());
+                eprintln!("somtus-remote client: no clients for {} s; exiting.", idle.as_secs());
                 break Ok(());
             }
             () = daemon.quit.notified() => {
-                eprintln!("riwork-remote client: asked to quit.");
+                eprintln!("somtus-remote client: asked to quit.");
                 break Ok(());
             }
             _ = terminate.recv() => break Ok(()),
@@ -1444,7 +1444,7 @@ fn log_tail(path: &Path) -> String {
 
 /// Makes sure a daemon serves the host and returns its socket path. Idempotent
 /// and safe to run concurrently: a lock makes the callers take turns, and the
-/// first one to find no daemon starts it. `exe` is the `riwork-remote` to run.
+/// first one to find no daemon starts it. `exe` is the `somtus-remote` to run.
 pub async fn ensure(storage: &Storage, desktop_id: &str, exe: &Path) -> Result<PathBuf> {
     load_host(storage, desktop_id)?;
     let paths = daemon_paths(storage, desktop_id)?;

@@ -103,7 +103,7 @@ final class LiveOutputTests: XCTestCase {
 
     func testWhatCountsAsADesktopThatDoesNotKnowTheNewParameters() {
         XCTAssertTrue(LiveSync.rejectsNewParameters(code: "invalid_request", message: "unknown field `styled`, expected `shell_id` or `lines`"))
-        XCTAssertTrue(LiveSync.rejectsNewParameters(code: "cli_error", message: "the installed riwork CLI does not support styled output or waiting for changes; update RiWork"))
+        XCTAssertTrue(LiveSync.rejectsNewParameters(code: "cli_error", message: "the installed riwork CLI does not support styled output or waiting for changes; update Somtus"))
         XCTAssertFalse(LiveSync.rejectsNewParameters(code: "cli_error", message: "reply too large"))
         XCTAssertFalse(LiveSync.rejectsNewParameters(code: "not_found", message: "Selected session is unavailable."))
         XCTAssertFalse(LiveSync.rejectsNewParameters(code: "response_too_large", message: "styled"))

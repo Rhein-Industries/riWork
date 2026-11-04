@@ -1,6 +1,6 @@
 #!/bin/sh
 # Runs the app's tests whose names hold each NAME (`nsh test apps/riwork --filter NAME`) in a
-# private RiWork home (scripts/pane-env.sh), so they never change the person's own data. Some
+# private Somtus home (scripts/pane-env.sh), so they never change the person's own data. Some
 # tests open the whole app and save settings, layouts or an API key: never run them otherwise.
 # Each NAME gets a fresh home, seeded as phase1_integration.py seeds the suite's: the p1-layouts
 # projects and layouts (fixtures.json) the named workspace fixtures open, and fake sessions for

@@ -568,7 +568,7 @@ struct ChatNoticeBanners: View {
     /// A failed dictation of `owner`, as a banner line: its reason, Open Settings when permission is the way out, × to put it away.
     static func dictationLine(_ owner: DictationOwner, controller: DictationController = .shared) -> Line? {
         guard case .failed(let problem) = controller.phase(for: owner) else { return nil }
-        let settings: (title: String, hint: String, enabled: Bool, run: () -> Void)? = problem.opensSettings ? ("Open Settings", "Opens RiWork's settings", true, {
+        let settings: (title: String, hint: String, enabled: Bool, run: () -> Void)? = problem.opensSettings ? ("Open Settings", "Opens Somtus's settings", true, {
             controller.dismiss()
             if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
         }) : nil

@@ -83,7 +83,7 @@ No installation, reload, push, merge into `nsh`, network, Docker, operation of l
 real settings/account discovery or real credential access occurred.
 
 The committed `phase6a_settings.py` runner creates a fresh `/tmp` fixture root,
-sets a private OS HOME and RiWork home/runtime/tmp/tmux directories, strips injected
+sets a private OS HOME and Somtus home/runtime/tmp/tmux directories, strips injected
 provider/home variables, seeds only invented account metadata and managed directories,
 and enables native `test-support` only for its headless runner. That feature selects
 MemoryStore for API keys and refuses actual Orca import. Ordinary debug builds

@@ -210,7 +210,7 @@ Visual equivalence, complete remote keyboard behavior and exact custom traversal
 are not inferred from type checking or fake interaction tests.
 
 The user has dropped the six non-Native ThemeChoice styles from migration:
-Ghostty, RiWork, Catppuccin, TokyoNight, GruvboxLight and Hermes
+Ghostty, Somtus, Catppuccin, TokyoNight, GruvboxLight and Hermes
 (`crates/riwork-core/src/theme.rs:7`).
 For theme variants of the surfaces above, **Native remains the target;
 non-Native variants are dropped by decision**, rather than open migration

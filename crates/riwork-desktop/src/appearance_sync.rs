@@ -47,7 +47,7 @@ fn publish(home: &Path, cx: &mut App) {
     match appearance_file::publish(home, &snapshot, unix_now()) {
         Ok(_) => cx.set_global(Sent(Some(snapshot))),
         // Retried at the next change.
-        Err(error) => eprintln!("riwork appearance: {error}"),
+        Err(error) => eprintln!("somtus appearance: {error}"),
     }
 }
 

@@ -13,8 +13,9 @@ export interface AddinInfo {
   settings?: { key: string; label: string; type: "string" | "number" | "boolean"; description: string; value: unknown }[];
 }
 
-/** What an add-in asks its tab to do: RiWork does it, where the person sees it. */
+/** What an add-in asks its tab to do: Somtus does it, where the person sees it. */
 export type AddinAction =
+  | { type: "command"; id: string; args?: Record<string, unknown> }
   | { type: "shell"; command: string; cwd: string; worktree?: string | null; title?: string }
   | { type: "file"; path: string }
   | { type: "view"; addin: string; view: string; title?: string | null; args: unknown }
@@ -24,16 +25,18 @@ export type AddinAction =
 interface AddinState { status: "loading" | "untrusted" | "failed" | "build-failed" | "running"; error?: string; key?: string }
 
 const AddinSurface = nativeComponent<
-  { addin: string; view: string; project: string; args: unknown; palette: unknown },
+  { addin: string; view: string; project: string; args: unknown; palette: unknown; context: unknown },
   { state: AddinState; action: AddinAction }
->("riwork.addin", { props: ["addin", "view", "project", "args", "palette"], events: ["state", "action"] });
+>("riwork.addin", { props: ["addin", "view", "project", "args", "palette", "context"], events: ["state", "action"] });
 
 const list = (projectId: string) => (Addins.list(projectId) as Promise<unknown>) as Promise<AddinInfo[]>;
 
-/** An add-in's view in a tab: its own engine (riwork.addin), and what RiWork says around it. */
+/** An add-in's view in a tab: its own engine (riwork.addin), and what Somtus says around it. */
 export function AddinTab(props: {
   addin: { key: string; view: string; args: unknown }; projectId: () => string; theme: () => InterfaceTheme;
   visible: () => boolean; onAction: (key: string, action: AddinAction) => void; onFocus?: () => void;
+  /** Native code projects only the granted workspace fields into the add-in. */
+  workspace?: () => unknown;
 }) {
   const theme = props.theme;
   const state = signal<AddinState>({ status: "loading" });
@@ -43,7 +46,7 @@ export function AddinTab(props: {
   let alive = true;
   cleanup(() => { alive = false; });
   const refresh = () => void list(props.projectId()).then((addins) => {
-    if (alive) info.set(addins.find((addin) => addin.key === props.addin.key) ?? null);
+    if (alive) info.set(addins.find((addin) => addin.key === props.addin.key || props.addin.key === `id:${addin.id}`) ?? null);
   }).catch(() => {});
   refresh();
   const changes = Addins.subscribe(() => refresh());
@@ -82,7 +85,7 @@ export function AddinTab(props: {
     </View>}
     <View style={{ flex: 1, minHeight: 0 }}>
       <AddinSurface ref={(node) => { surface = node; }} addin={props.addin.key} view={props.addin.view} project={props.projectId()}
-        args={props.addin.args ?? null} palette={theme().palette}
+        args={props.addin.args ?? null} palette={theme().palette} context={props.workspace?.() ?? null}
         onState={(next) => { state.set(next); if (next.status === "running" || next.status === "untrusted") refresh(); }}
         onAction={(action) => props.onAction(props.addin.key, action)}
         style={{ flex: 1, opacity: state().status === "running" || state().status === "build-failed" ? 1 : 0 }} />

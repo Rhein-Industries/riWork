@@ -141,7 +141,7 @@ final class NewOrchestratorTests: XCTestCase {
         for sure in [OrchestratorControlError.unsupported, .notFound, .invalid("x"), .exitedRightAway, .notConnected, .busy, .failed("x")] {
             XCTAssertFalse(sure.outcomeIsUncertain, "\(sure)")
         }
-        XCTAssertEqual(OrchestratorControlError.unsupported.message, "Update RiWork on your Mac to open orchestrators from the phone.")
+        XCTAssertEqual(OrchestratorControlError.unsupported.message, "Update Somtus on your Mac to open orchestrators from the phone.")
         XCTAssertTrue(OrchestratorControlError.outcomeUnknown.message.contains("Check the tab list before trying again"))
     }
 

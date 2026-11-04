@@ -1,4 +1,4 @@
-//! Opt-in real installed RiWork/tmux integration. Every process receives a fresh
+//! Opt-in real installed Somtus/tmux integration. Every process receives a fresh
 //! temporary RIWORK_HOME; only UUIDs created by this test are ever sent/closed.
 use anyhow::{Context, Result, ensure};
 use futures_util::SinkExt;
@@ -98,7 +98,7 @@ impl Fixture {
     }
     async fn start_connector(&mut self) -> Result<()> {
         self.connector = Some(
-            Command::new(env!("CARGO_BIN_EXE_riwork-remote"))
+            Command::new(env!("CARGO_BIN_EXE_somtus-remote"))
                 .env("RIWORK_HOME", &self.home)
                 .args(["start", "--riwork"])
                 .arg(&self.cli)
@@ -229,7 +229,7 @@ async fn marker_count(path: &Path, n: usize) -> Result<()> {
 }
 
 #[tokio::test]
-#[ignore = "requires RIWORK_TEST_CLI absolute installed RiWork CLI and tmux; creates only isolated temporary data"]
+#[ignore = "requires RIWORK_TEST_CLI absolute installed Somtus CLI and tmux; creates only isolated temporary data"]
 async fn real_relay_connector_persistent_shell_retry_restart_and_revocation() -> Result<()> {
     let cli = std::env::var_os("RIWORK_TEST_CLI")
         .map(PathBuf::from)

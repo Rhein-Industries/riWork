@@ -3,11 +3,11 @@
 //!
 //! The new chat says where it came from in its own info (`ChatInfo::origin`); the chat it
 //! came from gets this marker in its log, so that its transcript says, at the point it was
-//! cut, that the conversation goes on elsewhere. It is RiWork's own record: never sent to the
+//! cut, that the conversation goes on elsewhere. It is Somtus's own record: never sent to the
 //! provider, never read into a handoff document, and never the provider session's history.
 //!
 //! Like a worker card (`workers`), a marker is an ordinary completed `tool_call` (server
-//! `riwork`, tool `lineage`) with an additive `presentation.lineage`, written as one
+//! `somtus`, tool `lineage`) with an additive `presentation.lineage`, written as one
 //! `ItemCompleted` with no turn: a reader from before it (an older desktop, the phone) draws a
 //! plain tool row at the end of the transcript, and no reader has to skip an event type it
 //! does not know (`ChatEvent` is closed: an unknown event stops `log::read_envelopes`, fails a
@@ -97,7 +97,7 @@ pub fn agent_label(provider: Option<&str>, model: Option<&str>) -> Option<String
     }
 }
 
-/// The name a person knows an agent by, from the word RiWork keeps for it.
+/// The name a person knows an agent by, from the word Somtus keeps for it.
 pub fn provider_label(word: &str) -> &str {
     match word {
         "codex" => "Codex",
@@ -108,12 +108,13 @@ pub fn provider_label(word: &str) -> &str {
     }
 }
 
-/// The word RiWork keeps for a chat's provider.
+/// The word Somtus keeps for a chat's provider.
 pub fn provider_word(provider: Provider) -> &'static str {
     match provider {
         Provider::Codex => "codex",
         Provider::Claude => "claude",
         Provider::Muse => "muse",
+        Provider::Acp => "acp",
     }
 }
 

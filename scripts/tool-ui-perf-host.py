@@ -3,11 +3,11 @@
 
 Start before the debug app:
   python3 scripts/tool-ui-perf-host.py --home /tmp/riwork-perf-home
-  RIWORK_HOME=/tmp/riwork-perf-home ZED_MEASUREMENTS=1 target/debug/riwork /tmp/riwork-perf-project
+  RIWORK_HOME=/tmp/riwork-perf-home ZED_MEASUREMENTS=1 target/debug/somtus /tmp/riwork-perf-project
 Then stream (or send any message in the fixture app):
   python3 scripts/tool-ui-perf-host.py --home /tmp/riwork-perf-home --trigger --tokens 600 --rate 30
 
-The fixture host implements RiWork's List/Subscribe/Command wire protocol so token
+The fixture host implements Somtus's List/Subscribe/Command wire protocol so token
 updates take the normal desktop subscription path. Streaming changes stay in
 memory; restarting this server restores the identical fixture. Ctrl-C stops only
 this foreground fixture host. Main-thread timings belong to the debug app.

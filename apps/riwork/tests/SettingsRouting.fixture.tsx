@@ -12,7 +12,7 @@ function Body(props: { projectId: string; session: LayoutSession }) {
     });
   }));
   return <View style={{ flex: 1 }}>{ui.ready() && <Workspace session={props.session} projectId={props.projectId}
-    projectLabel="Settings routing" title="RiWork · Settings fixture" settings={ui.settings} theme={ui.theme}
+    projectLabel="Settings routing" title="Somtus · Settings fixture" settings={ui.settings} theme={ui.theme}
     onChange={(snapshot) => host.post("app.fixture.state", snapshot)} />}</View>;
 }
 function Fixture() {

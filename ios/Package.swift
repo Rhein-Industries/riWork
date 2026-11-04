@@ -5,7 +5,7 @@ let package = Package(
     name: "RiWorkRemote",
     platforms: [.macOS(.v14), .iOS(.v18)],
     products: [.library(name: "RiWorkCore", targets: ["RiWorkCore"]),
-               .executable(name: "riwork-ios-smoke", targets: ["RiWorkSmoke"])],
+               .executable(name: "somtus-ios-smoke", targets: ["RiWorkSmoke"])],
     targets: [
         .target(name: "RiWorkCore", path: "Core"),
         .executableTarget(name: "RiWorkSmoke", dependencies: ["RiWorkCore"], path: "Smoke"),

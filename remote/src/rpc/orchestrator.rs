@@ -1,7 +1,7 @@
 //! `orchestrator.create` ("Orchestrator creation extension" in `docs/remote-protocol.md`):
 //! make the global orchestrator, or a project's, or get the one that is already there.
 //!
-//! It is `riwork orchestrator create [--project ID] --json`. Whether the orchestrator runs as
+//! It is `somtus orchestrator create [--project ID] --json`. Whether the orchestrator runs as
 //! a terminal or as a chat, and with which provider, is the desktop's own setting ("Orchestrator
 //! runs as") unless the phone supplies `mode` (chat or terminal). A scope that
 //! already has an orchestrator, in either mode, gets that one back instead of a second.
@@ -50,12 +50,12 @@ fn args(spec: &Spec) -> Vec<String> {
     args
 }
 
-/// What a failed `riwork orchestrator create` says: the words of a failed `shell create`
+/// What a failed `somtus orchestrator create` says: the words of a failed `shell create`
 /// (an unknown project, an agent that is not installed, a folder that is gone), except for
 /// the connector's own timeout, which must not speak of a terminal: the orchestrator may be
 /// a chat.
 fn fault(fault: Fault) -> Fault {
-    if fault.code == "cli_error" && fault.message == "RiWork CLI timeout" {
+    if fault.code == "cli_error" && fault.message == "Somtus CLI timeout" {
         return Fault::new(
             "cli_error",
             "creating the orchestrator took too long and was stopped; check the orchestrator list before trying again",
@@ -104,7 +104,7 @@ fn fallback_note(text: &str) -> Option<String> {
 }
 
 impl Rpc {
-    /// Whether the installed CLI can create orchestrators (`riwork capabilities --json` has
+    /// Whether the installed CLI can create orchestrators (`somtus capabilities --json` has
     /// `"orchestrator_create":true`): see `chat_known`, which it shares its question with.
     async fn orchestrator_create_known(&self, limit: Duration) -> std::result::Result<bool, Fault> {
         self.capability_known(&self.orchestrator_create, limit)
@@ -124,13 +124,13 @@ impl Rpc {
         } else {
             Err(Fault::new(
                 "cli_error",
-                "the installed riwork CLI cannot create orchestrators from the phone; update RiWork",
+                "the installed somtus CLI cannot create orchestrators from the phone; update Somtus",
             ))
         }
     }
 
     /// Make the orchestrator of the global scope, or of the project (which must exist under
-    /// exactly this id), as `riwork orchestrator create` does, or answer with the one that
+    /// exactly this id), as `somtus orchestrator create` does, or answer with the one that
     /// exists. Runs in the ordered lane, which a phone that drops does not cut short, and the
     /// CLI itself runs in a task of its own (see below). A phone does not retry it by
     /// itself, as with `shell.create`; if it does, the repeat finds the first (`created`

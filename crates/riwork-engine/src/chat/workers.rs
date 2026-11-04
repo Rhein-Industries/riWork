@@ -1,13 +1,13 @@
-//! RiWork's own workers in the timeline of the chat that started them.
+//! Somtus's own workers in the timeline of the chat that started them.
 //!
-//! A worker is a terminal (`riwork shell create`) or a chat (`riwork chat new`) whose
+//! A worker is a terminal (`somtus shell create`) or a chat (`somtus chat new`) whose
 //! `parent_id` is a chat. The chat host, the only writer of a chat's log, puts one marker
 //! item into the parent chat when the worker is started or given a later assignment, and
 //! replaces that same item with a bounded final snapshot when the worker finishes. What is
 //! live (status, elapsed time, the screen) comes from the inventory by `session_id`, and
 //! is never logged.
 //!
-//! A marker is an ordinary `tool_call` (server `riwork`, tool `worker`) with an additive
+//! A marker is an ordinary `tool_call` (server `somtus`, tool `worker`) with an additive
 //! `presentation.worker`, so a reader from before draws a plain tool row. Its status is
 //! always `completed`: `TurnCompleted` closes what is in progress, and a worker outlives
 //! the turn that started it.
@@ -245,6 +245,7 @@ fn provider_name(provider: super::model::Provider) -> &'static str {
         super::model::Provider::Codex => "codex",
         super::model::Provider::Claude => "claude",
         super::model::Provider::Muse => "muse",
+        super::model::Provider::Acp => "acp",
     }
 }
 
@@ -772,7 +773,7 @@ pub fn send(home: &Path, chat_id: &str, note: WorkerNote) -> Result<(), String> 
         .map_err(|error| error.to_string())
 }
 
-/// After `riwork shell create` (CLI or MCP): the new shell's card in its parent chat.
+/// After `somtus shell create` (CLI or MCP): the new shell's card in its parent chat.
 pub fn note_spawned_shell(home: &Path, shell: &crate::sessions::ShellSession) {
     let Some(parent) = shell.parent_id.as_deref().filter(|id| is_chat(home, id)) else {
         return;

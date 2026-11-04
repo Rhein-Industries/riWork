@@ -23,9 +23,11 @@ pub fn resources_dir() -> &'static str {
             {
                 return contents.join("Resources/ghostty").to_string_lossy().into_owned();
             }
-            let bundled = directory.join("RiWork.app/Contents/Resources/ghostty");
-            if bundled.is_dir() {
-                return bundled.to_string_lossy().into_owned();
+            for name in ["Somtus.app", "RiWork.app"] {
+                let bundled = directory.join(name).join("Contents/Resources/ghostty");
+                if bundled.is_dir() {
+                    return bundled.to_string_lossy().into_owned();
+                }
             }
         }
         env!("RIWORK_GHOSTTY_RESOURCES_DIR").to_owned()

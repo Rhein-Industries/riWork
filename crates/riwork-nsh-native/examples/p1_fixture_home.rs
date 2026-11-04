@@ -20,7 +20,7 @@ fn run() -> Result<(), String> {
         // Cargo places examples in <profile>/examples, next to the host binary.
         executable = std::env::current_exe()
             .ok()
-            .and_then(|path| path.parent()?.parent().map(|dir| dir.join("riwork")));
+            .and_then(|path| path.parent()?.parent().map(|dir| dir.join("somtus")));
     }
     let manifest =
         riwork_nsh_native::testing::fixtures::generate(&scenario, &out, executable.as_deref())?;

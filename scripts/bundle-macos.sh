@@ -4,18 +4,18 @@ set -eu
 cd "$(dirname "$0")/.."
 
 profile=${1:-release}
-binary="target/$profile/riwork"
+binary="target/$profile/somtus"
 ui="target/$profile/riwork-ui"
-bundle="target/$profile/RiWork.app"
+bundle="target/$profile/Somtus.app"
 resources="$bundle/Contents/Resources"
-app_icon="assets/app-icon/RiWork-legacy.icns"
+app_icon="assets/app-icon/Somtus.icns"
 zig=${ZIG:-zig}
 
 if [ ! -x "$binary" ]; then
     if [ "$profile" = debug ]; then
-        echo "Build RiWork first: cargo build -p riwork-desktop --bin riwork" >&2
+        echo "Build Somtus first: cargo build -p riwork-desktop --bin somtus" >&2
     else
-        echo "Build RiWork first: cargo build -p riwork-desktop --bin riwork --profile $profile" >&2
+        echo "Build Somtus first: cargo build -p riwork-desktop --bin somtus --profile $profile" >&2
     fi
     exit 1
 fi
@@ -32,7 +32,7 @@ if [ ! -s "$ui/bundle.js" ]; then
 fi
 
 if [ ! -f "$app_icon" ]; then
-    echo "RiWork app icon is missing: $app_icon" >&2
+    echo "Somtus app icon is missing: $app_icon" >&2
     exit 1
 fi
 
@@ -85,14 +85,14 @@ ZIG
 
 rm -rf "$bundle"
 mkdir -p "$bundle/Contents/MacOS" "$resources/terminfo" "$resources/ghostty"
-cp "$binary" "$bundle/Contents/MacOS/riwork"
+cp "$binary" "$bundle/Contents/MacOS/somtus"
 # Keep the complete output together: the entry, bytecode, metadata and every
 # imported/crate asset. A packaged app must never depend on a checkout cache.
 cp -R "$ui" "$resources/riwork-ui"
 # Optional standalone connector: build with cargo build -p riwork-remote before bundling.
-remote_binary="target/$profile/riwork-remote"
+remote_binary="target/$profile/somtus-remote"
 if [ -x "$remote_binary" ]; then
-    cp "$remote_binary" "$bundle/Contents/MacOS/riwork-remote"
+    cp "$remote_binary" "$bundle/Contents/MacOS/somtus-remote"
 fi
 # The chat's dictation helper, built beside riwork by build.rs when Swift is available.
 speech_binary="target/$profile/riwork-speech"
@@ -108,7 +108,7 @@ if [ -x "$speech_binary" ]; then
 else
     echo "warning: $speech_binary is missing; chat dictation will be unavailable" >&2
 fi
-cp "$app_icon" "$resources/RiWork.icns"
+cp "$app_icon" "$resources/Somtus.icns"
 mkdir -p "$resources/licenses"
 cp macos/diagram/LICENSE-mermaid "$resources/licenses/Mermaid.txt"
 cp macos/diagram/THIRD_PARTY_NOTICES.txt "$resources/licenses/Mermaid-dependencies.txt"
@@ -128,26 +128,26 @@ cat > "$bundle/Contents/Info.plist" <<'PLIST'
 <plist version="1.0">
 <dict>
     <key>CFBundleDevelopmentRegion</key><string>en</string>
-    <key>CFBundleExecutable</key><string>riwork</string>
+    <key>CFBundleExecutable</key><string>somtus</string>
     <key>CFBundleIdentifier</key><string>dev.riwork.shell</string>
     <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
-    <key>CFBundleName</key><string>RiWork</string>
-    <key>CFBundleDisplayName</key><string>RiWork</string>
-    <key>CFBundleIconFile</key><string>RiWork.icns</string>
+    <key>CFBundleName</key><string>Somtus</string>
+    <key>CFBundleDisplayName</key><string>Somtus</string>
+    <key>CFBundleIconFile</key><string>Somtus.icns</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>0.1.0</string>
     <key>CFBundleVersion</key><string>1</string>
     <key>LSMinimumSystemVersion</key><string>13.0</string>
     <key>NSHighResolutionCapable</key><true/>
-    <key>NSMicrophoneUsageDescription</key><string>RiWork uses the microphone when you dictate a chat message, and programs running within RiWork may use it too.</string>
-    <key>NSSpeechRecognitionUsageDescription</key><string>RiWork turns what you dictate into a chat message on this Mac; nothing is sent to a server.</string>
+    <key>NSMicrophoneUsageDescription</key><string>Somtus uses the microphone when you dictate a chat message, and programs running within Somtus may use it too.</string>
+    <key>NSSpeechRecognitionUsageDescription</key><string>Somtus turns what you dictate into a chat message on this Mac; nothing is sent to a server.</string>
 </dict>
 </plist>
 PLIST
 
-# Match `riwork update`: a certificate keeps macOS folder permissions attached
+# Match `somtus update`: a certificate keeps macOS folder permissions attached
 # to the app across builds. Ad-hoc signing uses a different code hash on every
-# build, and alternating it with a certificate-signed RiWork can repeatedly
+# build, and alternating it with a certificate-signed Somtus can repeatedly
 # invalidate the same bundle identifier's permission record.
 codesign_identity=${CODESIGN_IDENTITY:-}
 if [ -z "$codesign_identity" ]; then
@@ -166,7 +166,7 @@ fi
 if [ "$codesign_identity" = - ]; then
     echo "No signing certificate selected; using ad-hoc signing (folder permissions may reset after rebuilding)." >&2
 else
-    echo "Signing RiWork with $codesign_identity." >&2
+    echo "Signing Somtus with $codesign_identity." >&2
 fi
 identifier=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$bundle/Contents/Info.plist")
 if [ -z "$identifier" ]; then
@@ -176,9 +176,9 @@ fi
 # Extended attributes copied with the resources would make codesign reject the bundle.
 xattr -cr "$bundle"
 # Sign nested executables first: sealing the bundle records them but does not sign them.
-if [ -f "$bundle/Contents/MacOS/riwork-remote" ]; then
+if [ -f "$bundle/Contents/MacOS/somtus-remote" ]; then
     codesign --force --sign "$codesign_identity" --identifier "$identifier.remote" \
-        "$bundle/Contents/MacOS/riwork-remote"
+        "$bundle/Contents/MacOS/somtus-remote"
 fi
 if [ -f "$bundle/Contents/MacOS/riwork-speech" ]; then
     codesign --force --sign "$codesign_identity" --identifier "$identifier.speech" \

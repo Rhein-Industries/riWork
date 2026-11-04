@@ -1,9 +1,9 @@
-//! RiWork's Markdown blocks as `nsh/base` `TextView` document blocks: the objects TSX
+//! Somtus's Markdown blocks as `nsh/base` `TextView` document blocks: the objects TSX
 //! passes as `document={{ blocks }}` (`TextViewBlock`, `TextViewInline` in
 //! `nsh/base.d.ts`). The blocks are built as `nsh_base::text_view` nodes and cross as
 //! their JSON, so the shape is the one TextView reads by construction.
 //!
-//! A line break inside a paragraph is a `break` (RiWork keeps single newlines; NSH's own
+//! A line break inside a paragraph is a `break` (Somtus keeps single newlines; NSH's own
 //! Markdown would make them spaces). A run of cited files is a custom block named
 //! [`FILES`] for TSX's `renderCustom`. Images are out of scope here: an image span is a
 //! link to its target.

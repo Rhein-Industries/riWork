@@ -3,8 +3,8 @@
   "palettes": [
     {
       "id": "ri_work",
-      "label": "RiWork",
-      "description": "RiWork’s original dark palette with cyan and purple accents.",
+      "label": "Somtus",
+      "description": "Somtus’s original dark palette with cyan and purple accents.",
       "dark": true,
       "palette": {
         "bg": 593172,
@@ -42,7 +42,7 @@
           16777215
         ]
       },
-      "source": "RiWork existing preset, preserved from crates/riwork-core/src/theme.rs; UI roles and ANSI colors unchanged."
+      "source": "Somtus existing preset, preserved from crates/riwork-core/src/theme.rs; UI roles and ANSI colors unchanged."
     },
     {
       "id": "catppuccin",
@@ -85,7 +85,7 @@
           12239582
         ]
       },
-      "source": "RiWork existing preset, preserved from crates/riwork-core/src/theme.rs; UI roles and ANSI colors unchanged."
+      "source": "Somtus existing preset, preserved from crates/riwork-core/src/theme.rs; UI roles and ANSI colors unchanged."
     },
     {
       "id": "tokyo_night",
@@ -128,7 +128,7 @@
           12634869
         ]
       },
-      "source": "RiWork existing preset, preserved from crates/riwork-core/src/theme.rs; UI roles and ANSI colors unchanged."
+      "source": "Somtus existing preset, preserved from crates/riwork-core/src/theme.rs; UI roles and ANSI colors unchanged."
     },
     {
       "id": "gruvbox_light",
@@ -171,7 +171,7 @@
           3946550
         ]
       },
-      "source": "RiWork existing preset, preserved from crates/riwork-core/src/theme.rs; UI roles and ANSI colors unchanged."
+      "source": "Somtus existing preset, preserved from crates/riwork-core/src/theme.rs; UI roles and ANSI colors unchanged."
     },
     {
       "id": "hermes",
@@ -214,7 +214,7 @@
           16773599
         ]
       },
-      "source": "RiWork existing preset, preserved from crates/riwork-core/src/theme.rs; UI roles and ANSI colors unchanged."
+      "source": "Somtus existing preset, preserved from crates/riwork-core/src/theme.rs; UI roles and ANSI colors unchanged."
     },
     {
       "id": "dracula",
@@ -257,7 +257,7 @@
           16777215
         ]
       },
-      "source": "Pinned Ghostty themes release 20260810-152212-0173c3c: Dracula; file SHA-256 e6990f485cb0001cd62109e5aa94d34d4f60bb85798735b995a4158ee1ff033f; archive https://deps.files.ghostty.org/ghostty-themes-release-20260810-152212-0173c3c.tgz (SHA-256 ea9878471420ee5b12e7f2ff480099c954ea50e573a1bdf83f43e105c9be63f0). UI roles derive from these terminal colors using RiWork's readable 4.5:1 palette mapping."
+      "source": "Pinned Ghostty themes release 20260810-152212-0173c3c: Dracula; file SHA-256 e6990f485cb0001cd62109e5aa94d34d4f60bb85798735b995a4158ee1ff033f; archive https://deps.files.ghostty.org/ghostty-themes-release-20260810-152212-0173c3c.tgz (SHA-256 ea9878471420ee5b12e7f2ff480099c954ea50e573a1bdf83f43e105c9be63f0). UI roles derive from these terminal colors using Somtus's readable 4.5:1 palette mapping."
     },
     {
       "id": "monokai",
@@ -300,7 +300,7 @@
           16646129
         ]
       },
-      "source": "Pinned Ghostty themes release 20260810-152212-0173c3c: Monokai Classic; file SHA-256 78cf0958f5e57750eedfd68ef44d3f8655c42035d3732741dc6b59593ebcc6a9; archive https://deps.files.ghostty.org/ghostty-themes-release-20260810-152212-0173c3c.tgz (SHA-256 ea9878471420ee5b12e7f2ff480099c954ea50e573a1bdf83f43e105c9be63f0). UI roles derive from these terminal colors using RiWork's readable 4.5:1 palette mapping."
+      "source": "Pinned Ghostty themes release 20260810-152212-0173c3c: Monokai Classic; file SHA-256 78cf0958f5e57750eedfd68ef44d3f8655c42035d3732741dc6b59593ebcc6a9; archive https://deps.files.ghostty.org/ghostty-themes-release-20260810-152212-0173c3c.tgz (SHA-256 ea9878471420ee5b12e7f2ff480099c954ea50e573a1bdf83f43e105c9be63f0). UI roles derive from these terminal colors using Somtus's readable 4.5:1 palette mapping."
     },
     {
       "id": "nord",
@@ -343,7 +343,7 @@
           15527924
         ]
       },
-      "source": "Pinned Ghostty themes release 20260810-152212-0173c3c: Nord; file SHA-256 2e6664c01db6a651eb0d19123cff6f744997e3e3b7b0c2b6b8f7177138be50a4; archive https://deps.files.ghostty.org/ghostty-themes-release-20260810-152212-0173c3c.tgz (SHA-256 ea9878471420ee5b12e7f2ff480099c954ea50e573a1bdf83f43e105c9be63f0). UI roles derive from these terminal colors using RiWork's readable 4.5:1 palette mapping."
+      "source": "Pinned Ghostty themes release 20260810-152212-0173c3c: Nord; file SHA-256 2e6664c01db6a651eb0d19123cff6f744997e3e3b7b0c2b6b8f7177138be50a4; archive https://deps.files.ghostty.org/ghostty-themes-release-20260810-152212-0173c3c.tgz (SHA-256 ea9878471420ee5b12e7f2ff480099c954ea50e573a1bdf83f43e105c9be63f0). UI roles derive from these terminal colors using Somtus's readable 4.5:1 palette mapping."
     },
     {
       "id": "solarized_light",
@@ -386,7 +386,7 @@
           16643811
         ]
       },
-      "source": "Pinned Ghostty themes release 20260810-152212-0173c3c: iTerm2 Solarized Light; file SHA-256 5a374b2770f74abebb6593c5fdec1a18d1032035775484d32d88cbfafa9cfea9; archive https://deps.files.ghostty.org/ghostty-themes-release-20260810-152212-0173c3c.tgz (SHA-256 ea9878471420ee5b12e7f2ff480099c954ea50e573a1bdf83f43e105c9be63f0). UI roles derive from these terminal colors using RiWork's readable 4.5:1 palette mapping."
+      "source": "Pinned Ghostty themes release 20260810-152212-0173c3c: iTerm2 Solarized Light; file SHA-256 5a374b2770f74abebb6593c5fdec1a18d1032035775484d32d88cbfafa9cfea9; archive https://deps.files.ghostty.org/ghostty-themes-release-20260810-152212-0173c3c.tgz (SHA-256 ea9878471420ee5b12e7f2ff480099c954ea50e573a1bdf83f43e105c9be63f0). UI roles derive from these terminal colors using Somtus's readable 4.5:1 palette mapping."
     },
     {
       "id": "solarized_dark",
@@ -429,7 +429,7 @@
           16643811
         ]
       },
-      "source": "Pinned Ghostty themes release 20260810-152212-0173c3c: iTerm2 Solarized Dark; file SHA-256 9da77ad112701ac55101babbbbfdb7695cc6461ffefe9fa67224f7f9bee38dcb; archive https://deps.files.ghostty.org/ghostty-themes-release-20260810-152212-0173c3c.tgz (SHA-256 ea9878471420ee5b12e7f2ff480099c954ea50e573a1bdf83f43e105c9be63f0). UI roles derive from these terminal colors using RiWork's readable 4.5:1 palette mapping."
+      "source": "Pinned Ghostty themes release 20260810-152212-0173c3c: iTerm2 Solarized Dark; file SHA-256 9da77ad112701ac55101babbbbfdb7695cc6461ffefe9fa67224f7f9bee38dcb; archive https://deps.files.ghostty.org/ghostty-themes-release-20260810-152212-0173c3c.tgz (SHA-256 ea9878471420ee5b12e7f2ff480099c954ea50e573a1bdf83f43e105c9be63f0). UI roles derive from these terminal colors using Somtus's readable 4.5:1 palette mapping."
     },
     {
       "id": "one_dark",
@@ -472,7 +472,7 @@
           11252415
         ]
       },
-      "source": "Pinned Ghostty themes release 20260810-152212-0173c3c: Atom One Dark; file SHA-256 46f57abfbe93bf63de492ed1167f08a79004c60818204cb77eb82ac691b1fb95; archive https://deps.files.ghostty.org/ghostty-themes-release-20260810-152212-0173c3c.tgz (SHA-256 ea9878471420ee5b12e7f2ff480099c954ea50e573a1bdf83f43e105c9be63f0). UI roles derive from these terminal colors using RiWork's readable 4.5:1 palette mapping."
+      "source": "Pinned Ghostty themes release 20260810-152212-0173c3c: Atom One Dark; file SHA-256 46f57abfbe93bf63de492ed1167f08a79004c60818204cb77eb82ac691b1fb95; archive https://deps.files.ghostty.org/ghostty-themes-release-20260810-152212-0173c3c.tgz (SHA-256 ea9878471420ee5b12e7f2ff480099c954ea50e573a1bdf83f43e105c9be63f0). UI roles derive from these terminal colors using Somtus's readable 4.5:1 palette mapping."
     },
     {
       "id": "gruvbox_dark",
@@ -515,7 +515,7 @@
           15457202
         ]
       },
-      "source": "Pinned Ghostty themes release 20260810-152212-0173c3c: Gruvbox Dark; file SHA-256 2f9ea0d3bc429e78f6cdb19cb1104f522bf187664f14922f3001ed7c0af54595; archive https://deps.files.ghostty.org/ghostty-themes-release-20260810-152212-0173c3c.tgz (SHA-256 ea9878471420ee5b12e7f2ff480099c954ea50e573a1bdf83f43e105c9be63f0). UI roles derive from these terminal colors using RiWork's readable 4.5:1 palette mapping."
+      "source": "Pinned Ghostty themes release 20260810-152212-0173c3c: Gruvbox Dark; file SHA-256 2f9ea0d3bc429e78f6cdb19cb1104f522bf187664f14922f3001ed7c0af54595; archive https://deps.files.ghostty.org/ghostty-themes-release-20260810-152212-0173c3c.tgz (SHA-256 ea9878471420ee5b12e7f2ff480099c954ea50e573a1bdf83f43e105c9be63f0). UI roles derive from these terminal colors using Somtus's readable 4.5:1 palette mapping."
     }
   ]
 }

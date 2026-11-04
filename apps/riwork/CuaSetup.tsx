@@ -20,7 +20,7 @@ export function cuaPresentation(state: CuaState) {
   const verify = !!s?.installed && s.accessibility && s.screen_recording && !s.direct_capture_verified;
   return {
     chip: state.pending ? "Working" : s?.ready ? "Driver ready" : "Setup needed",
-    message: state.pending ?? state.error ?? s?.message ?? "Cua.ai controls desktop apps for every RiWork agent.",
+    message: state.pending ?? state.error ?? s?.message ?? "Cua.ai controls desktop apps for every Somtus agent.",
     label: link ? "Link Cua skill" : s?.ready ? "Check Cua" : repair ? "Repair Cua" : verify ? "Verify screen capture" : s?.installed ? "Grant macOS access" : "Set up Cua",
     action: (link ? "install" : s?.ready ? "check" : !s?.version || !s.running ? "install" : s.installed ? "permissions" : "install") as CuaAction,
     help: !!s?.installed && !s.ready && !verify,

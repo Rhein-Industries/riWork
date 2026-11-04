@@ -26,7 +26,7 @@ def fixture(v):
                RIWORK_APPEARANCE="light")
     for key in ("HOME", "RIWORK_RUNTIME_DIR", "XDG_CONFIG_HOME", "TMUX_TMPDIR", "TMPDIR"):
         Path(env[key]).mkdir(parents=True, exist_ok=True)
-    binary = v.target / "debug/riwork"
+    binary = v.target / "debug/somtus"
     v.command([binary, "settings", "set", "theme", "native"], "fixture-native-theme", env=env)
     def inventory():
         return {str(path.relative_to(home)): {"sha256": digest(path), "mtime_ns": path.stat().st_mtime_ns}
@@ -93,7 +93,7 @@ def main():
             v.command(v.cargo("test", "-p", "riwork-nsh-workspace"), "workspace-rust-tests")
             v.command(v.cargo("test", "-p", "riwork-nsh-workspace", "--test", "layout_backend") + ["--", "--nocapture"], "sync-call-timings")
             v.command(v.cargo("test", "-p", "riwork-nsh-native", "--features", "test-support"), "native-tests")
-            v.command(v.cargo("test", "-p", "riwork-desktop", "--bin", "riwork"), "host-unit-tests")
+            v.command(v.cargo("test", "-p", "riwork-desktop", "--bin", "somtus"), "host-unit-tests")
             v.command(["cargo", "fmt", "-p", "riwork-core", "-p", "riwork-nsh-native", "-p", "riwork-nsh-workspace", "-p", "riwork-desktop", "--check"], "format")
             v.command(["git", "diff", "--check"], "whitespace")
         elif args.mode == "nsh":
@@ -101,7 +101,7 @@ def main():
         elif args.mode == "fixture":
             fixture(v)
         elif args.mode == "review":
-            v.command(v.cargo("test", "-p", "riwork-desktop", "--bin", "riwork"), "host-final-tests")
+            v.command(v.cargo("test", "-p", "riwork-desktop", "--bin", "somtus"), "host-final-tests")
             v.command(v.cargo("test", "-p", "riwork-desktop", "--test", "appkit_shell") + ["--", "view_menu_text_size_items"], "view-menu-text-size-items")
             v.command(["cargo", "fmt", "-p", "riwork-core", "-p", "riwork-nsh-native", "-p", "riwork-nsh-native-test-support", "-p", "riwork-nsh-workspace", "-p", "riwork-desktop", "--check"], "final-format")
             v.command(["git", "diff", "--check"], "final-whitespace")

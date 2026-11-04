@@ -908,7 +908,7 @@ fn attach_command_is_the_quoted_attach_argv_and_exec_adds_only_the_flags_asked_f
 }
 
 /// tmux honours `TMUX_TMPDIR`, so a terminal that sets it and an app that does
-/// not would run two servers. RiWork clears it for every call and for the
+/// not would run two servers. Somtus clears it for every call and for the
 /// attach command.
 #[cfg(unix)]
 #[test]

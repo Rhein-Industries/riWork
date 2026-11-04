@@ -1,4 +1,4 @@
-//! The chat host: `riwork chat serve`.
+//! The chat host: `somtus chat serve`.
 //!
 //! One host per `RIWORK_HOME` owns the provider processes of every chat, so
 //! chats keep running while app windows reload or quit. It listens on
@@ -132,6 +132,7 @@ impl Providers {
             Provider::Codex => self.codex,
             Provider::Claude => self.claude,
             Provider::Muse => self.muse,
+            Provider::Acp => super::acp::start,
         }
     }
 }
@@ -543,14 +544,14 @@ impl Inner {
                     identity,
                     self.info.codex_account_id.as_deref(),
                 ) {
-                    eprintln!("riwork chat: {error}");
+                    eprintln!("somtus chat: {error}");
                 }
             }
             return;
         }
         // Persist before matching notices; a failure must not reuse another login's scope.
         if let Err(error) = self.log.save_account_identity(identity.as_ref()) {
-            eprintln!("riwork chat: {error}");
+            eprintln!("somtus chat: {error}");
         }
         self.provider_account_identity = identity;
         if let Some(identity) = &self.provider_account_identity {
@@ -559,7 +560,7 @@ impl Inner {
                 identity,
                 self.info.codex_account_id.as_deref(),
             ) {
-                eprintln!("riwork chat: {error}");
+                eprintln!("somtus chat: {error}");
             }
         }
         if let Ok(transcript) = log::read_notice_transcript(self.log.dir()) {
@@ -665,7 +666,7 @@ impl Inner {
             if let Err(error) =
                 dismissals.forget_worsened(self.info.provider, self.account_scope(), item)
             {
-                eprintln!("riwork chat: {error}");
+                eprintln!("somtus chat: {error}");
             }
             dismissals.mark(
                 self.info.provider,
@@ -692,7 +693,7 @@ impl Inner {
         let mut line = match serde_json::to_string(&envelope) {
             Ok(line) => line,
             Err(error) => {
-                eprintln!("riwork chat: cannot serialize an event: {error}");
+                eprintln!("somtus chat: cannot serialize an event: {error}");
                 return;
             }
         };
@@ -700,7 +701,7 @@ impl Inner {
         if let Err(error) = self.log.append(line.as_bytes(), sync) {
             self.log_end = None;
             let message = format!("cannot write the chat's event log: {error}");
-            eprintln!("riwork chat: {}: {message}", self.info.id);
+            eprintln!("somtus chat: {}: {message}", self.info.id);
             self.broken = true;
             self.stop_wanted = true;
             self.info.state = ChatState::Failed { message };
@@ -739,7 +740,7 @@ impl Inner {
             return;
         }
         if let Err(error) = self.log.save_info(&self.info) {
-            eprintln!("riwork chat: {}: {error}", self.info.id);
+            eprintln!("somtus chat: {}: {error}", self.info.id);
         }
     }
 
@@ -1274,18 +1275,18 @@ pub fn serve(home: &Path, idle: Duration) -> Result<(), String> {
     let mut host = match Host::start(home, Providers::system(), options) {
         Ok(host) => host,
         Err(StartError::AlreadyRunning) => {
-            eprintln!("riwork chat: a chat host already runs for this RIWORK_HOME.");
+            eprintln!("somtus chat: a chat host already runs for this RIWORK_HOME.");
             return Ok(());
         }
         Err(StartError::Failed(message)) => return Err(message),
     };
     eprintln!(
-        "riwork chat: serving {} (exits after {} s without clients or running chats).",
+        "somtus chat: serving {} (exits after {} s without clients or running chats).",
         host.socket().display(),
         idle.as_secs()
     );
     let exit = host.run();
-    eprintln!("riwork chat: stopping ({exit:?}).");
+    eprintln!("somtus chat: stopping ({exit:?}).");
     host.shutdown();
     Ok(())
 }
@@ -1713,7 +1714,7 @@ fn deliver_worker_note(shared: &Shared, note: ParentNote) {
             if let Ok(chat) = shared.find(&parent)
                 && let Err(error) = record_worker(&chat, &parent, &note, None, now_unix())
             {
-                eprintln!("riwork chat: worker card in {parent}: {error}");
+                eprintln!("somtus chat: worker card in {parent}: {error}");
             }
         }
     }
@@ -1780,7 +1781,7 @@ fn recover_worker_ends(shared: &Shared) {
         let envelopes = match envelopes {
             Ok(envelopes) => envelopes,
             Err(error) => {
-                eprintln!("riwork chat: cannot read the log of {}: {error}", info.id);
+                eprintln!("somtus chat: cannot read the log of {}: {error}", info.id);
                 continue;
             }
         };
@@ -1790,7 +1791,7 @@ fn recover_worker_ends(shared: &Shared) {
             if let Some(note) = record.follow(&info.id, envelope.seq, &envelope.event, now)
                 && let Err(error) = record_worker(&parent, parent_id, &note, None, now)
             {
-                eprintln!("riwork chat: worker card in {parent_id}: {error}");
+                eprintln!("somtus chat: worker card in {parent_id}: {error}");
             }
         }
     }
@@ -1834,7 +1835,7 @@ fn subscribe(shared: &Shared, mut stream: UnixStream, id: String, chat_id: &str,
     // Events that arrive while the replay is written wait in the queue: nothing
     // in it is older than the replay's last line.
     if let Err(error) = log::replay(&dir, since, last, end, &mut stream) {
-        eprintln!("riwork chat: cannot replay {chat_id}: {error}");
+        eprintln!("somtus chat: cannot replay {chat_id}: {error}");
         return;
     }
     loop {
@@ -1910,7 +1911,7 @@ fn create_identified(
         .as_ref()
         .is_some_and(|id| !Uuid::parse_str(id).is_ok_and(|uuid| uuid.to_string() == *id))
     {
-        return Err("parent_id must be a canonical RiWork session UUID".into());
+        return Err("parent_id must be a canonical Somtus session UUID".into());
     }
     if new.orchestrator.is_some() && new.parent_id.is_some() {
         return Err("an orchestrator cannot be a child session".into());
@@ -2065,7 +2066,7 @@ fn create_identified(
                 store.register_created(&crate::project_tabs::Session::chat(&chat.info()))
             })
         {
-            eprintln!("riwork tabs: {error}");
+            eprintln!("somtus tabs: {error}");
         }
     }
     drop(creation);
@@ -2082,7 +2083,7 @@ fn create_identified(
             late: false,
         };
         if let Err(error) = note_worker(shared, parent, note) {
-            eprintln!("riwork chat: worker card for {}: {error}", info.id);
+            eprintln!("somtus chat: worker card for {}: {error}", info.id);
         }
     }
     // A driver that cannot start leaves the chat failed, not missing: its
@@ -2136,6 +2137,7 @@ fn default_title(provider: Provider) -> &'static str {
         Provider::Codex => "Codex chat",
         Provider::Claude => "Claude chat",
         Provider::Muse => "Muse chat",
+        Provider::Acp => "ACP chat",
     }
 }
 
@@ -2144,6 +2146,7 @@ fn provider_name(provider: Provider) -> &'static str {
         Provider::Codex => "Codex",
         Provider::Claude => "Claude",
         Provider::Muse => "Muse",
+        Provider::Acp => "ACP",
     }
 }
 
@@ -2227,14 +2230,14 @@ fn load_chats(
             .or_else(|| previous.filter(|identity| identity.rank() > 0));
         if let Some(identity) = identity {
             if let Err(error) = log::write_account_identity(&dir, Some(&identity)) {
-                eprintln!("riwork chat: {error}");
+                eprintln!("somtus chat: {error}");
                 continue;
             }
             identities.push((info.provider, identity));
         }
     }
     if let Err(error) = lock(dismissals).migrate_all(identities) {
-        eprintln!("riwork chat: {error}");
+        eprintln!("somtus chat: {error}");
     }
     for entry in entries {
         let name = entry.file_name().to_string_lossy().into_owned();
@@ -2244,12 +2247,12 @@ fn load_chats(
         let (chat_log, info, last) = match ChatLog::open(&dir) {
             Ok(opened) => opened,
             Err(error) => {
-                eprintln!("riwork chat: skipping {name}: {error}");
+                eprintln!("somtus chat: skipping {name}: {error}");
                 continue;
             }
         };
         if info.id != name {
-            eprintln!("riwork chat: skipping {name}: its info.json names another chat");
+            eprintln!("somtus chat: skipping {name}: its info.json names another chat");
             continue;
         }
         let was_at_work = matches!(
@@ -2275,7 +2278,7 @@ fn load_chats(
                         }
                     }
                 }
-                Err(error) => eprintln!("riwork chat: cannot read the log of {name}: {error}"),
+                Err(error) => eprintln!("somtus chat: cannot read the log of {name}: {error}"),
             }
         }
         if !matches!(
@@ -2291,7 +2294,7 @@ fn load_chats(
             inner.publish_info();
         }
         if let Err(error) = refresh_notice_dismissals(home, &name, &mut inner) {
-            eprintln!("riwork chat: {error}");
+            eprintln!("somtus chat: {error}");
         }
         chats.insert(
             name.clone(),
@@ -2321,7 +2324,7 @@ fn delete(shared: &Shared, chat_id: &str) -> Result<(), String> {
         let result = crate::project_tabs::TabStore::at(&shared.home, &project)
             .and_then(|store| store.forget(&format!("chat:{chat_id}")));
         if let Err(error) = result {
-            eprintln!("riwork tabs: {error}");
+            eprintln!("somtus tabs: {error}");
         }
     }
     // Files a phone sent to this chat (see `upload_inbox`) go with it.
@@ -3665,7 +3668,7 @@ fn log_tail(path: &Path) -> String {
 
 /// Makes sure a host serves `home` and returns its socket path. Idempotent and
 /// safe to run concurrently: callers take turns on a lock, and the first to
-/// find no host starts one. `exe` is the `riwork` to run as `chat serve`.
+/// find no host starts one. `exe` is the `somtus` to run as `chat serve`.
 pub fn ensure(home: &Path, exe: &Path) -> Result<PathBuf, String> {
     ensure_within(home, exe, START_WAIT)
 }
@@ -3740,7 +3743,7 @@ fn ensure_within(home: &Path, exe: &Path, wait: Duration) -> Result<PathBuf, Str
     }
 }
 
-/// `riwork chat serve` for `home`, with the environment a host may have.
+/// `somtus chat serve` for `home`, with the environment a host may have.
 fn host_command(exe: &Path, home: &Path) -> Command {
     let mut command = Command::new(exe);
     command
@@ -3748,7 +3751,7 @@ fn host_command(exe: &Path, home: &Path) -> Command {
         .env("RIWORK_HOME", home)
         // The host is nobody's terminal: it must not carry this one's pane or
         // account into the chats it starts, nor the chat that started it. Nor the
-        // opt-in out of the Cua guard on input to RiWork's windows: one host serves
+        // opt-in out of the Cua guard on input to Somtus's windows: one host serves
         // every chat, orchestrators included, for as long as it runs.
         .env_remove("RIWORK_SHELL_ID")
         .env_remove("RIWORK_CHAT_ID")
@@ -3758,7 +3761,7 @@ fn host_command(exe: &Path, home: &Path) -> Command {
     command
 }
 
-/// `riwork chat serve`, detached, with its output in the run directory's log.
+/// `somtus chat serve`, detached, with its output in the run directory's log.
 fn spawn_host(exe: &Path, home: &Path, paths: &Paths) -> Result<std::process::Child, String> {
     let log = open_private(&paths.log, true)
         .map_err(|error| format!("Cannot open {}: {error}", paths.log.display()))?;
@@ -3790,7 +3793,7 @@ fn spawn_host(exe: &Path, home: &Path, paths: &Paths) -> Result<std::process::Ch
 }
 
 /// For the app: makes sure the chat host of `home` runs, by running the
-/// bundled `riwork chat ensure`, and returns the socket to connect to. Blocks
+/// bundled `somtus chat ensure`, and returns the socket to connect to. Blocks
 /// for up to a few seconds while a host starts; call it from a background task.
 pub fn ensure_host(home: &Path) -> Result<PathBuf, String> {
     // In a test build the current executable is the test harness: run with
@@ -3800,7 +3803,7 @@ pub fn ensure_host(home: &Path) -> Result<PathBuf, String> {
         return Err("a test build never starts a chat host from its own executable".into());
     }
     let exe = std::env::current_exe()
-        .map_err(|error| format!("Cannot locate the RiWork executable: {error}"))?;
+        .map_err(|error| format!("Cannot locate the Somtus executable: {error}"))?;
     ensure_host_with(&exe, home)
 }
 
@@ -3814,7 +3817,7 @@ fn ensure_host_with(exe: &Path, home: &Path) -> Result<PathBuf, String> {
     if !output.status.success() {
         let message = String::from_utf8_lossy(&output.stderr).trim().to_owned();
         return Err(if message.is_empty() {
-            format!("`riwork chat ensure` failed ({})", output.status)
+            format!("`somtus chat ensure` failed ({})", output.status)
         } else {
             message
         });

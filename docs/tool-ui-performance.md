@@ -20,7 +20,7 @@ python3 scripts/tool-ui-fixture.py --home /tmp/riwork-perf-home \
   --copy-largest-real-chat
 python3 scripts/tool-ui-perf-host.py --home /tmp/riwork-perf-home
 CARGO_PROFILE_DEV_DEBUG=1 cargo build -p riwork-desktop
-python3 scripts/tool-ui-profile.py target/debug/riwork \
+python3 scripts/tool-ui-profile.py target/debug/somtus \
   --output /tmp/riwork-perf-run
 python3 scripts/perf-frames.py /tmp/riwork-perf-run.log
 ```

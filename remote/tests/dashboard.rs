@@ -1,5 +1,5 @@
 //! `dashboard.get` (docs/remote-protocol.md, "Dashboard extension"): validation before any CLI
-//! runs, the one read it turns into (`riwork dashboard --json`), what it passes on of the CLI's
+//! runs, the one read it turns into (`somtus dashboard --json`), what it passes on of the CLI's
 //! reply (the contract's keys, each list cut to its limit, objects only, version 1 only), the
 //! capability that gates it and `features.dashboard` in `ready`. Against a stub CLI that records
 //! its argv and prints whatever `dashboard.json` holds, and against the shared fixture the
@@ -136,12 +136,12 @@ fn stub_cli(dir: &Path) -> PathBuf {
              printf '\\n' >> \"$d/argv.log\"\n\
              case \"$1 $2\" in\n\
              'capabilities --json')\n\
-               if [ -e \"$d/capabilities.unknown\" ]; then echo \"riwork: Unknown invocation 'capabilities'\" >&2; exit 2; fi\n\
+               if [ -e \"$d/capabilities.unknown\" ]; then echo \"somtus: Unknown invocation 'capabilities'\" >&2; exit 2; fi\n\
                if [ -e \"$d/capabilities.out\" ]; then cat \"$d/capabilities.out\"; else printf '{{\"v\":1,\"chat\":true,\"dashboard\":true}}'; fi;;\n\
              'dashboard --json')\n\
-               if [ -e \"$d/dashboard.error\" ]; then printf 'riwork: %s\\n' \"$(cat \"$d/dashboard.error\")\" >&2; exit 2; fi\n\
+               if [ -e \"$d/dashboard.error\" ]; then printf 'somtus: %s\\n' \"$(cat \"$d/dashboard.error\")\" >&2; exit 2; fi\n\
                cat \"$d/dashboard.json\";;\n\
-             *) echo \"riwork: not expected: $*\" >&2; exit 9;;\n\
+             *) echo \"somtus: not expected: $*\" >&2; exit 9;;\n\
              esac\n",
             dir = dir.display()
         ),
@@ -490,7 +490,7 @@ impl Rig {
         let _ = std::process::Command::new(&cli)
             .args(["warm", "up"])
             .output();
-        let connector = Command::new(env!("CARGO_BIN_EXE_riwork-remote"))
+        let connector = Command::new(env!("CARGO_BIN_EXE_somtus-remote"))
             .env("RIWORK_HOME", &home)
             .args(["start", "--riwork"])
             .arg(&cli)

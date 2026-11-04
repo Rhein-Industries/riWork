@@ -306,7 +306,7 @@ fn ttl_bounds_and_v1_records_stay_free_of_invite_fields() {
     assert!(
         v1.deep_link()
             .unwrap()
-            .starts_with("riwork://pair?v=1&data=")
+            .starts_with("somtus://pair?v=1&data=")
     );
     assert!(v1.invite_id.is_none());
     let v2 = storage
@@ -323,7 +323,7 @@ fn ttl_bounds_and_v1_records_stay_free_of_invite_fields() {
     assert!(
         v2.deep_link()
             .unwrap()
-            .starts_with("riwork://pair?v=2&data=")
+            .starts_with("somtus://pair?v=2&data=")
     );
     assert_eq!(v2.invite_state.as_deref(), Some("pending"));
     assert!(v2.pairing_secret.is_empty());

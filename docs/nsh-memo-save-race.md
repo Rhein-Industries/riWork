@@ -13,7 +13,7 @@ live_targets_touched: none
 ```
 
 `git merge nsh` fast-forwarded this branch from `f67f88b` to `fd58edc` before
-changes. No merge to `nsh`, push, install, reload, live window or live RiWork
+changes. No merge to `nsh`, push, install, reload, live window or live Somtus
 state was used. The review subagent inherited default tier with Fast off; no
 model, effort, account or tier settings were changed.
 

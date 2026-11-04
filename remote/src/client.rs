@@ -1,8 +1,8 @@
 //! The client half of a Mac-to-Mac remote: the registry of paired hosts, redeeming
 //! a protocol v2 invite, and the encrypted link to one host.
 //!
-//! A host is another Mac running `riwork-remote start`. This Mac pairs with it the
-//! way a phone does (`pair --protocol 2 --kind desktop` there, a `riwork://pair?v=2`
+//! A host is another Mac running `somtus-remote start`. This Mac pairs with it the
+//! way a phone does (`pair --protocol 2 --kind desktop` there, a `somtus://pair?v=2`
 //! link here) and then talks the same RPCs through the same blind relay, in the
 //! role "mobile". [`Link`] is that connection: one per host, because the relay lets
 //! one socket per role hold a route. It reconnects with backoff, so callers see a
@@ -63,7 +63,10 @@ pub fn now_unix() -> u64 {
 pub struct HostRecord {
     /// The host's desktop id, which is what `--desktop` takes.
     pub id: String,
-    pub pairing: Pairing,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pairing: Option<Pairing>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ssh: Option<crate::ssh::Route>,
     pub label: String,
     pub relay: String,
     pub route: String,
@@ -90,6 +93,10 @@ pub struct HostSummary {
     pub route: String,
     pub added_at_unix: u64,
     pub allow_insecure_loopback: bool,
+    #[serde(default)]
+    pub transport: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_id: Option<String>,
 }
 
 fn check_label(label: &str) -> Result<()> {
@@ -114,7 +121,8 @@ impl HostRecord {
             label,
             relay: pairing.relay_url.clone(),
             route: pairing.route_id.clone(),
-            pairing,
+            pairing: Some(pairing),
+            ssh: None,
             added_at_unix: now_unix(),
             allow_insecure_loopback,
         };
@@ -127,17 +135,28 @@ impl HostRecord {
     pub fn validate(&self) -> Result<()> {
         uuid(&self.id)?;
         check_label(&self.label)?;
+        if let Some(ssh) = &self.ssh {
+            ensure!(
+                self.pairing.is_none()
+                    && self.relay.is_empty()
+                    && self.route.is_empty()
+                    && !self.allow_insecure_loopback,
+                "SSH record cannot carry relay credentials"
+            );
+            return ssh.validate();
+        }
+        let pairing = self.pairing.as_ref().context("host has no route")?;
         ensure!(
-            self.id == self.pairing.desktop_id
-                && self.relay == self.pairing.relay_url
-                && self.route == self.pairing.route_id,
+            self.id == pairing.desktop_id
+                && self.relay == pairing.relay_url
+                && self.route == pairing.route_id,
             "host record disagrees with its pairing"
         );
         ensure!(
-            self.pairing.v == 2 && self.pairing.invite_state.as_deref() == Some("established"),
+            pairing.v == 2 && pairing.invite_state.as_deref() == Some("established"),
             "host pairing must be an established protocol 2 pairing"
         );
-        self.pairing.validate(self.allow_insecure_loopback)?;
+        pairing.validate(self.allow_insecure_loopback)?;
         self.root()?;
         Ok(())
     }
@@ -149,11 +168,15 @@ impl HostRecord {
             route: self.route.clone(),
             added_at_unix: self.added_at_unix,
             allow_insecure_loopback: self.allow_insecure_loopback,
+            transport: if self.ssh.is_some() { "ssh" } else { "relay" }.into(),
+            host_id: self.ssh.as_ref().map(|ssh| ssh.host_id.clone()),
         }
     }
     fn root(&self) -> Result<Secret> {
         Ok(Secret(decode::<32>(
             self.pairing
+                .as_ref()
+                .context("SSH has no relay root key")?
                 .root_key
                 .as_deref()
                 .context("missing root key")?,
@@ -214,7 +237,7 @@ impl HostsFile {
     /// The host `--desktop` names, with a hint when there is none.
     pub fn require(&self, id: &str) -> Result<&HostRecord> {
         self.find(id).with_context(|| {
-            format!("no host {id}; `riwork-remote hosts list` shows the hosts added on this Mac")
+            format!("no host {id}; `somtus-remote hosts list` shows the hosts added on this Mac")
         })
     }
 }
@@ -245,12 +268,12 @@ pub fn parse_pair_link(text: &str, allow_insecure_loopback: bool) -> Result<Pair
     // The URL parser drops tabs and newlines wherever they are; a link is one token.
     ensure!(
         !text.chars().any(|c| c.is_whitespace() || c.is_control()),
-        "expected a pairing link: riwork://pair?v=2&data=…"
+        "expected a pairing link: somtus://pair?v=2&data=…"
     );
     let url = url::Url::parse(text)
         .ok()
-        .filter(|u| u.scheme() == "riwork")
-        .context("expected a pairing link: riwork://pair?v=2&data=…")?;
+        .filter(|u| matches!(u.scheme(), "somtus" | "riwork"))
+        .context("expected a pairing link: somtus://pair?v=2&data=…")?;
     // Nothing a differential parser could read two ways: no userinfo, port,
     // fragment or path, no encoded host, and exactly the two query items.
     ensure!(
@@ -260,12 +283,12 @@ pub fn parse_pair_link(text: &str, allow_insecure_loopback: bool) -> Result<Pair
             && url.port().is_none()
             && url.fragment().is_none()
             && matches!(url.path(), "" | "/"),
-        "expected a pairing link: riwork://pair?v=2&data=…"
+        "expected a pairing link: somtus://pair?v=2&data=…"
     );
     let raw = url.query().unwrap_or_default();
     ensure!(
         !raw.contains('%'),
-        "expected a pairing link: riwork://pair?v=2&data=…"
+        "expected a pairing link: somtus://pair?v=2&data=…"
     );
     let items: Vec<(String, String)> = url
         .query_pairs()
@@ -280,10 +303,10 @@ pub fn parse_pair_link(text: &str, allow_insecure_loopback: bool) -> Result<Pair
     };
     ensure!(
         items.len() == 2,
-        "expected a pairing link: riwork://pair?v=2&data=…"
+        "expected a pairing link: somtus://pair?v=2&data=…"
     );
     let (Some(version), Some(data)) = (get("v"), get("data")) else {
-        bail!("expected a pairing link: riwork://pair?v=2&data=…");
+        bail!("expected a pairing link: somtus://pair?v=2&data=…");
     };
     match version {
         "2" => {}
@@ -548,7 +571,7 @@ pub async fn add_host(
     ensure!(file.hosts.len() < MAX_HOSTS, "host limit ({MAX_HOSTS})");
     if let Some(existing) = file.find(&pairing.desktop_id) {
         bail!(
-            "host {} is already added as \"{}\"; run `riwork-remote hosts remove {}` first to pair it again",
+            "host {} is already added as \"{}\"; run `somtus-remote hosts remove {}` first to pair it again",
             existing.id,
             log_safe(&existing.label),
             existing.id
@@ -564,7 +587,7 @@ pub async fn add_host(
     if !online {
         ensure!(
             await_peer(&mut ws, Duration::from_secs(10)).await?,
-            "the host is offline: `riwork remote start` has to be running there"
+            "the host is offline: `somtus remote start` has to be running there"
         );
     }
     let mut stored: Option<HostRecord> = None;
@@ -577,7 +600,13 @@ pub async fn add_host(
     })
     .await?;
     let record = stored.context("pairing finished without a record")?;
-    let (features, warning) = match handshake_session(&mut ws, &record.pairing, &root.0).await {
+    let (features, warning) = match handshake_session(
+        &mut ws,
+        record.pairing.as_ref().context("pairing")?,
+        &root.0,
+    )
+    .await
+    {
         Ok((_, features)) => (Some(features), None),
         Err(e) => (
             None,
@@ -694,7 +723,7 @@ impl Reply {
     }
 }
 
-enum Command {
+pub(crate) enum Command {
     Request {
         id: String,
         method: String,
@@ -728,7 +757,7 @@ impl PendingCall {
 pub struct Connection {
     pub generation: u64,
     pub features: Features,
-    tx: mpsc::Sender<Command>,
+    pub(crate) tx: mpsc::Sender<Command>,
 }
 
 /// Liveness and backoff; tests shorten them.
@@ -883,7 +912,9 @@ impl Link {
     ) -> Result<Reply, CallError> {
         let end = Instant::now() + limit;
         self.ready(limit).await?;
-        let pending = self.start(method, params).await?;
+        let pending = tokio::time::timeout_at(end, self.start(method, params))
+            .await
+            .map_err(|_| CallError::Timeout)??;
         pending
             .wait(end.saturating_duration_since(Instant::now()))
             .await
@@ -908,15 +939,15 @@ struct Pending {
     sent: Instant,
 }
 /// How one attempt to hold a session ended.
-struct Outcome {
-    reason: String,
+pub(crate) struct Outcome {
+    pub(crate) reason: String,
     /// How long the session was ready; `None` if it never was.
-    online_for: Option<Duration>,
+    pub(crate) online_for: Option<Duration>,
     /// The relay was fine and the host was not there: no reason to back off.
-    host_away: bool,
+    pub(crate) host_away: bool,
 }
 impl Outcome {
-    fn failed(reason: impl AsRef<str>) -> Self {
+    pub(crate) fn failed(reason: impl AsRef<str>) -> Self {
         Self {
             reason: log_safe(reason.as_ref()),
             online_for: None,
@@ -939,7 +970,7 @@ impl FailureLog {
             return;
         }
         eprintln!(
-            "riwork-remote client: link to \"{}\" is down: {reason}; reconnecting (no payload logged).",
+            "somtus-remote client: link to \"{}\" is down: {reason}; reconnecting (no payload logged).",
             log_safe(label)
         );
         self.last = Some((reason.to_owned(), Instant::now()));
@@ -1003,7 +1034,12 @@ async fn attempt(
     conn: &watch::Sender<Option<Connection>>,
     generation: &mut u64,
 ) -> Outcome {
-    let pairing = &host.pairing;
+    if let Some(route) = &host.ssh {
+        return crate::ssh::attempt(route, timing, state, conn, generation).await;
+    }
+    let Some(pairing) = host.pairing.as_ref() else {
+        return Outcome::failed("host has no route");
+    };
     let root = match host.root() {
         Ok(root) => root,
         Err(e) => return Outcome::failed(format!("host record: {e:#}")),
@@ -1167,6 +1203,7 @@ async fn run_connection(
         tokio::select! {
             command = rx.recv() => match command {
                 Some(Command::Request { id, method, params, reply }) => {
+                    if reply.is_closed() { continue; }
                     let request = (id, method.as_str(), params);
                     if let Err(e) = send_request(ws, session, pending, request, Some(reply)).await {
                         return e;
@@ -1305,7 +1342,7 @@ mod tests {
     }
     fn link_for(pairing: &Pairing) -> String {
         format!(
-            "riwork://pair?v={}&data={}",
+            "somtus://pair?v={}&data={}",
             pairing.v,
             b64(&serde_json::to_vec(pairing).unwrap())
         )
@@ -1321,7 +1358,11 @@ mod tests {
     fn a_v2_link_is_read_into_its_pending_pairing() {
         let tmp = tempfile::tempdir().unwrap();
         let pairing = invite(tmp.path(), RELAY, false);
-        let read = parse_pair_link(&pairing.deep_link().unwrap(), false).unwrap();
+        let link = pairing.deep_link().unwrap();
+        assert!(link.starts_with("somtus://pair?"));
+        let legacy = link.replacen("somtus:", "riwork:", 1);
+        assert!(parse_pair_link(&legacy, false).is_ok());
+        let read = parse_pair_link(&link, false).unwrap();
         assert_eq!(read.desktop_id, pairing.desktop_id);
         assert_eq!(read.invite_secret, pairing.invite_secret);
         assert_eq!(read.invite_state.as_deref(), Some("pending"));
@@ -1332,7 +1373,7 @@ mod tests {
         let upper = pairing
             .deep_link()
             .unwrap()
-            .replacen("riwork:", "RIWORK:", 1);
+            .replacen("somtus:", "SOMTUS:", 1);
         assert!(parse_pair_link(&upper, false).is_ok());
     }
 
@@ -1354,61 +1395,61 @@ mod tests {
                 "expected a pairing link",
             ),
             (
-                format!("riwork://other?v=2&data={data}"),
+                format!("somtus://other?v=2&data={data}"),
                 "expected a pairing link",
             ),
             (
-                format!("riwork://user@pair?v=2&data={data}"),
+                format!("somtus://user@pair?v=2&data={data}"),
                 "expected a pairing link",
             ),
             (
-                format!("riwork://pair:80?v=2&data={data}"),
+                format!("somtus://pair:80?v=2&data={data}"),
                 "expected a pairing link",
             ),
             (
-                format!("riwork://pair/extra?v=2&data={data}"),
+                format!("somtus://pair/extra?v=2&data={data}"),
                 "expected a pairing link",
             ),
             (
-                format!("riwork://pair?v=2&data={data}#fragment"),
+                format!("somtus://pair?v=2&data={data}#fragment"),
                 "expected a pairing link",
             ),
             (
-                format!("riwork://pair?v=2&data={data}&extra=1"),
+                format!("somtus://pair?v=2&data={data}&extra=1"),
                 "expected a pairing link",
             ),
             (
-                format!("riwork://pair?v=2&v=2&data={data}"),
+                format!("somtus://pair?v=2&v=2&data={data}"),
                 "expected a pairing link",
             ),
             (
-                format!("riwork://pair?data={data}"),
+                format!("somtus://pair?data={data}"),
                 "expected a pairing link",
             ),
             (
-                format!("riwork://pair?v=2&data=%41{data}"),
+                format!("somtus://pair?v=2&data=%41{data}"),
                 "expected a pairing link",
             ),
-            ("riwork://pair?v=2".into(), "expected a pairing link"),
-            (format!("riwork://pair?v=1&data={data}"), "protocol 1"),
+            ("somtus://pair?v=2".into(), "expected a pairing link"),
+            (format!("somtus://pair?v=1&data={data}"), "protocol 1"),
             (
-                format!("riwork://pair?v=3&data={data}"),
+                format!("somtus://pair?v=3&data={data}"),
                 "unsupported pairing link version",
             ),
             (
-                format!("riwork://pair?v=2&data={data}="),
+                format!("somtus://pair?v=2&data={data}="),
                 "malformed base64url",
             ),
             (
-                "riwork://pair?v=2&data=!!!!".to_string(),
+                "somtus://pair?v=2&data=!!!!".to_string(),
                 "malformed base64url",
             ),
             (
-                format!("riwork://pair?v=2&data={}", b64(b"not json")),
+                format!("somtus://pair?v=2&data={}", b64(b"not json")),
                 "does not hold a pairing",
             ),
             (
-                format!("riwork://pair?v=2&data={}", "A".repeat(20_000)),
+                format!("somtus://pair?v=2&data={}", "A".repeat(20_000)),
                 "too large",
             ),
         ];
@@ -1417,7 +1458,7 @@ mod tests {
         v1ish["v"] = json!(1);
         cases.push((
             format!(
-                "riwork://pair?v=2&data={}",
+                "somtus://pair?v=2&data={}",
                 b64(&serde_json::to_vec(&v1ish).unwrap())
             ),
             "does not match",
@@ -1426,7 +1467,7 @@ mod tests {
         extra["surprise"] = json!(true);
         cases.push((
             format!(
-                "riwork://pair?v=2&data={}",
+                "somtus://pair?v=2&data={}",
                 b64(&serde_json::to_vec(&extra).unwrap())
             ),
             "does not hold a pairing",
@@ -1497,21 +1538,40 @@ mod tests {
         other.id = uuid::Uuid::new_v4().to_string();
         assert!(other.validate().is_err());
         let mut no_root = record.clone();
-        no_root.pairing.root_key = None;
+        no_root.pairing.as_mut().unwrap().root_key = None;
         assert!(no_root.validate().is_err());
 
         // What is printed for debugging, and listed, carries no secret.
         let debug = format!("{record:?}");
-        let root = record.pairing.root_key.clone().unwrap();
-        assert!(!debug.contains(&root) && !debug.contains(&record.pairing.relay_token));
+        let root = record.pairing.as_ref().unwrap().root_key.clone().unwrap();
+        assert!(
+            !debug.contains(&root)
+                && !debug.contains(&record.pairing.as_ref().unwrap().relay_token)
+        );
         let summary = serde_json::to_string(&record.summary()).unwrap();
-        assert!(!summary.contains(&root) && !summary.contains(&record.pairing.relay_token));
+        assert!(
+            !summary.contains(&root)
+                && !summary.contains(&record.pairing.as_ref().unwrap().relay_token)
+        );
         assert!(!summary.contains("pairing"));
         // The record survives its own JSON.
         let again: HostRecord =
             serde_json::from_str(&serde_json::to_string(&record).unwrap()).unwrap();
         assert_eq!(again.id, record.id);
-        assert_eq!(again.pairing.root_key, record.pairing.root_key);
+        assert_eq!(
+            again.pairing.as_ref().unwrap().root_key,
+            record.pairing.as_ref().unwrap().root_key
+        );
+        // Existing relay files predate optional SSH routes: their JSON shape and
+        // pairing material remain readable without a migration or new keys.
+        let legacy = serde_json::to_value(&record).unwrap();
+        assert!(legacy.get("ssh").is_none());
+        assert!(legacy["pairing"].is_object());
+        let restored: HostRecord = serde_json::from_value(legacy.clone()).unwrap();
+        restored.validate().unwrap();
+        assert_eq!(serde_json::to_value(restored).unwrap(), legacy);
+        assert_eq!(record.summary().transport, "relay");
+        assert!(record.summary().host_id.is_none());
     }
 
     #[test]
@@ -1580,8 +1640,14 @@ mod tests {
             ["A", "B"]
         );
         assert_eq!(
-            loaded.require(&a.id).unwrap().pairing.root_key,
-            a.pairing.root_key
+            loaded
+                .require(&a.id)
+                .unwrap()
+                .pairing
+                .as_ref()
+                .unwrap()
+                .root_key,
+            a.pairing.as_ref().unwrap().root_key
         );
         assert!(
             loaded

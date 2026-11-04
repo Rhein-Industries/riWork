@@ -12,6 +12,7 @@ pub mod appearance;
 pub mod backend;
 pub mod chat;
 pub mod cua;
+pub mod customization;
 pub mod dashboard;
 pub mod dictation;
 pub mod dto;
@@ -23,6 +24,7 @@ pub mod invoke;
 mod memo;
 pub mod orchestrators;
 pub mod overview;
+pub mod hosts;
 mod presence;
 mod preview_input;
 #[cfg(target_os = "macos")]
@@ -54,7 +56,7 @@ use dto::{
 use hub::{Snapshot, TopicSubscription};
 pub use service::{ProcessService, initialize};
 
-/// The UI sets of RiWork's own engines: `nsh/base` and `riwork/native`. Add-in engines get
+/// The UI sets of Somtus's own engines: `nsh/base` and `riwork/native`. Add-in engines get
 /// `nsh/base` only (addin_view.rs).
 pub fn ui_sets() -> Vec<nsh_core::element::Registry> {
     vec![nsh_base::registry(), registry()]
@@ -73,6 +75,7 @@ fn native(registry: &mut Registry) {
         .module::<settings_aux::OrcaImport>()
         .module::<appearance::Appearance>()
         .module::<dashboard::Dashboard>()
+        .module::<hosts::Hosts>()
         .module::<orchestrators::Orchestrators>()
         .module::<chat::Chat>()
         .module::<dictation::Dictation>()
@@ -83,6 +86,7 @@ fn native(registry: &mut Registry) {
         .module::<usage::Usage>()
         .module::<usage::Accounts>()
         .module::<cua::Cua>()
+        .module::<customization::Customization>()
         .module::<app_preview::Previews>()
         .class::<app_preview::PreviewHandle>()
         .module::<schedules::Schedules>()
@@ -427,10 +431,12 @@ mod tests {
                 "Appearance",
                 "Chat",
                 "Cua",
+                "Customization",
                 "Dashboard",
                 "Dictation",
                 "Files",
                 "Handoff",
+                "Hosts",
                 "Layouts",
                 "OrcaImport",
                 "Orchestrators",
@@ -453,6 +459,7 @@ mod tests {
                     "subscribe"
                         | "subscribeMetrics"
                         | "subscribeChat"
+                        | "openRemote"
                         | "sentenceCase"
                         | "open"
                         | "stageProjectMemo"

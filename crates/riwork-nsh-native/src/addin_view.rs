@@ -1,8 +1,8 @@
-//! `riwork.addin`: an add-in's view, an NSH engine of its own embedded in a RiWork tab.
+//! `riwork.addin`: an add-in's view, an NSH engine of its own embedded in a Somtus tab.
 //!
-//! The engine is loaded without RiWork's native modules: its UI sets are `nsh/base` only, so
-//! neither an import nor `nativeModule("riwork/native")` reaches RiWork. The add-in reaches
-//! RiWork through the add-in API on its host channel (addins.rs), for what it was granted, and
+//! The engine is loaded without Somtus's native modules: its UI sets are `nsh/base` only, so
+//! neither an import nor `nativeModule("riwork/native")` reaches Somtus. The add-in reaches
+//! Somtus through the add-in API on its host channel (addins.rs), for what it was granted, and
 //! its bundle's capabilities allow those host calls and its network origins only
 //! (addin_build.rs). Nothing loads until the add-in is trusted; a source change rebuilds and
 //! reloads it while it shows (an agent writing it, live), and a change to what it asks for
@@ -64,6 +64,7 @@ pub fn register(components: &Components) {
             let inner = Rc::new(RefCell::new(Inner {
                 id, context, container: container.clone(), addin: String::new(), view: String::new(),
                 project: String::new(), args: JsonValue::Null, palette: JsonValue::Null,
+                workspace: JsonValue::Null,
                 app: None, api: None, watch: None, generation: 0, start_pending: false,
                 rebuilding: Arc::new(AtomicBool::new(false)),
             }));
@@ -87,6 +88,7 @@ struct Inner {
     project: String,
     args: JsonValue,
     palette: JsonValue,
+    workspace: JsonValue,
     app: Option<Rc<AppView>>,
     api: Option<Arc<Api>>,
     watch: Option<notify::RecommendedWatcher>,
@@ -206,7 +208,7 @@ impl Inner {
             let name = name.to_owned();
             on_main(id, move |this| this.borrow().context.emit(&name, data));
         });
-        let api = Api::new(home.clone(), found, self.project.clone(), channel.clone(), emit)?;
+        let api = Api::new(home.clone(), found, self.project.clone(), channel.clone(), emit, self.workspace.clone())?;
         api.serve();
         self.api = Some(api);
         let data = addins::data_dir(&home, &found.scope, &manifest.id);
@@ -308,8 +310,24 @@ impl NativeComponent for AddinView {
                 "view" => { let next = text(); let changed = inner.view != next; inner.view = next; changed }
                 "project" => { let next = text(); let changed = inner.project != next; inner.project = next; changed }
                 "args" => { inner.args = value.cloned().unwrap_or(JsonValue::Null); inner.app.is_none() }
-                // Read by the add-in at load; a later theme change shows on its next load.
-                "palette" => { inner.palette = value.cloned().unwrap_or(JsonValue::Null); false }
+                "palette" => {
+                    let next = value.cloned().unwrap_or(JsonValue::Null);
+                    if inner.palette != next {
+                        inner.palette = next;
+                        if let Some(api) = &inner.api { api.palette_changed(&inner.palette); }
+                    }
+                    false
+                }
+                // Context is live data, not part of the embedded engine's identity.
+                "context" => {
+                    inner.workspace = value.cloned().unwrap_or(JsonValue::Null);
+                    if let Some(api) = &inner.api {
+                        // Project identity changes already queued an engine replacement.
+                        // Do not send the new project's tabs through the outgoing API.
+                        if api.project_id == inner.project { api.set_workspace(&inner.workspace); }
+                    }
+                    false
+                }
                 _ => false,
             }
         };
@@ -322,7 +340,7 @@ impl NativeComponent for AddinView {
         match name {
             // After trusting it, or after a failure.
             "retry" => Inner::start(&self.inner),
-            // One of the add-in's commands, chosen in RiWork.
+            // One of the add-in's commands, chosen in Somtus.
             "command" => {
                 if let Some(api) = &self.inner.borrow().api {
                     let _ = api.channel.send("addin.command", json!({"id": args.get("id").cloned().unwrap_or_default()}));

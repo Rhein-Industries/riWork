@@ -1,28 +1,19 @@
 import Foundation
-import CoreGraphics
 import ImageIO
-import UniformTypeIdentifiers
 
-// Reproducible opaque app icon; no downloaded artwork or external dependency.
-let context = CGContext(data: nil, width: 1024, height: 1024, bitsPerComponent: 8,
-                        bytesPerRow: 4096, space: CGColorSpaceCreateDeviceRGB(),
-                        bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)!
-context.setFillColor(CGColor(red: 0.13, green: 0.25, blue: 0.40, alpha: 1))
-context.fill(CGRect(x: 0, y: 0, width: 1024, height: 1024))
-context.setStrokeColor(CGColor(red: 0.92, green: 0.96, blue: 1, alpha: 1))
-context.setLineWidth(42)
-context.setLineCap(.round)
-context.setLineJoin(.round)
-context.addPath(CGPath(roundedRect: CGRect(x: 170, y: 230, width: 684, height: 564), cornerWidth: 92, cornerHeight: 92, transform: nil))
-context.strokePath()
-context.move(to: CGPoint(x: 315, y: 622))
-context.addLine(to: CGPoint(x: 459, y: 512))
-context.addLine(to: CGPoint(x: 315, y: 402))
-context.strokePath()
-context.move(to: CGPoint(x: 554, y: 402))
-context.addLine(to: CGPoint(x: 708, y: 402))
-context.strokePath()
-let url = URL(fileURLWithPath: CommandLine.arguments[1])
-let destination = CGImageDestinationCreateWithURL(url as CFURL, UTType.png.identifier as CFString, 1, nil)!
-CGImageDestinationAddImage(destination, context.makeImage()!, nil)
-precondition(CGImageDestinationFinalize(destination))
+// Install the supplied SOMTUS artwork unchanged; this is the shared brand source.
+// Usage: swift ios/scripts/create-icon.swift OUTPUT.png [SOURCE.png]
+precondition(CommandLine.arguments.count >= 2, "Usage: create-icon.swift OUTPUT.png [SOURCE.png]")
+let repository = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+let source = CommandLine.arguments.count > 2
+    ? URL(fileURLWithPath: CommandLine.arguments[2])
+    : repository.appendingPathComponent("somtus-icon-export/somtus-icon-1024.png")
+let data = try Data(contentsOf: source)
+guard let imageSource = CGImageSourceCreateWithData(data as CFData, nil),
+      let properties = CGImageSourceCopyPropertiesAtIndex(imageSource, 0, nil) as? [CFString: Any],
+      properties[kCGImagePropertyPixelWidth] as? Int == 1024,
+      properties[kCGImagePropertyPixelHeight] as? Int == 1024,
+      properties[kCGImagePropertyHasAlpha] as? Bool != true else {
+    fatalError("SOMTUS app artwork must be an opaque 1024 × 1024 PNG.")
+}
+try data.write(to: URL(fileURLWithPath: CommandLine.arguments[1]), options: .atomic)

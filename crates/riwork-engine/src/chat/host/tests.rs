@@ -1772,7 +1772,7 @@ fn a_host_that_is_asked_to_stop_returns_from_run() {
 
 // ---- Starting the host -----------------------------------------------------------------------
 
-/// A stand-in for `riwork`: a script that does what `body` says.
+/// A stand-in for `somtus`: a script that does what `body` says.
 fn stub_riwork(dir: &Path, body: &str) -> PathBuf {
     let path = dir.join("riwork-stub");
     fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
@@ -3454,7 +3454,7 @@ fn missing_resume_preserves_used_sessions_and_allows_never_used_sessions_for_eve
             assert_eq!(
                 host.info(&chat.id).id,
                 chat.id,
-                "RiWork session identity remains stable"
+                "Somtus session identity remains stable"
             );
         }
     }
@@ -4706,7 +4706,7 @@ mod worker_markers {
                 turn_id: Some("t1".into()),
                 status: ItemStatus::InProgress,
                 body: ItemBody::Command {
-                    command: "riwork shell create --worktree w --harness claude --json".into(),
+                    command: "somtus shell create --worktree w --harness claude --json".into(),
                     cwd: None,
                     output: String::new(),
                     exit_code: None,
@@ -5074,7 +5074,7 @@ mod worker_ends {
     }
 
     /// The parent's chat-worker card for `child`, made in the parent's turn `p1` and given
-    /// its first assignment there, as `riwork chat new` and `chat send` make it.
+    /// its first assignment there, as `somtus chat new` and `chat send` make it.
     fn started(host: &NoticeHost, parent: &Chat, child: &Chat, text: &str) {
         turn(parent, "p1");
         note_worker(

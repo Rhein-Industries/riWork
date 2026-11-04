@@ -1,7 +1,7 @@
 import SwiftUI
 import RiWorkCore
 
-/// One of RiWork's own workers, where the chat started it (`WorkerTimeline`). Read-only: the phone neither messages nor stops a worker.
+/// One of Somtus's own workers, where the chat started it (`WorkerTimeline`). Read-only: the phone neither messages nor stops a worker.
 /// Finished, it is one line that opens to the last lines of its output; continued, one muted line that points at the card below; live,
 /// its status from the lists the phone reads anyway, and the time since it was noted, counted every second.
 struct ChatWorkerCard: View {

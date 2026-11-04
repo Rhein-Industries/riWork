@@ -1,4 +1,4 @@
-//! `chat-drafts/<chat id>`: each chat's unsent draft and unresolved submissions, under the RiWork
+//! `chat-drafts/<chat id>`: each chat's unsent draft and unresolved submissions, under the Somtus
 //! data directory, so a draft outlives its tab being closed and the app restarting.
 //! Switching tabs needs none of this: a hidden chat tab keeps its view and with it the
 //! message box.
@@ -148,7 +148,7 @@ pub fn new_editor() -> u64 {
     EDITORS.fetch_add(1, Ordering::Relaxed)
 }
 
-/// The drafts of one RiWork data directory, with writes queued off the UI thread.
+/// The drafts of one Somtus data directory, with writes queued off the UI thread.
 pub struct Drafts {
     records: HashMap<String, Record>,
     owners: HashMap<String, Owner>,
@@ -602,7 +602,7 @@ fn write_drafts(dir: PathBuf, mut persisted: HashMap<String, String>, queue: &Qu
 fn cap_failed(failed: &mut Vec<(String, String)>) {
     if failed.len() > MAX_FAILED {
         for (id, _) in failed.drain(..failed.len() - MAX_FAILED) {
-            eprintln!("riwork: gave up writing the draft of chat {id}: too many drafts failed");
+            eprintln!("somtus: gave up writing the draft of chat {id}: too many drafts failed");
         }
     }
 }
@@ -627,7 +627,7 @@ fn write_pending(
                 }
             }
             Err(error) => {
-                eprintln!("riwork: {error}");
+                eprintln!("somtus: {error}");
                 failed.push((id, text));
             }
         }
@@ -802,7 +802,7 @@ pub fn remember_complete(chat_id: &str, contents: Contents, owner: Owner, unread
     if let Some(Err(error)) =
         with(|drafts| drafts.set_draft_with_unready(chat_id, contents, Some(owner), unready))
     {
-        eprintln!("riwork: {error}");
+        eprintln!("somtus: {error}");
     }
 }
 
@@ -850,13 +850,13 @@ pub fn flush_pending(timeout: Duration) -> Result<(), String> {
 
 pub fn settle_submission(chat_id: &str, key: &str, status: SubmissionStatus) {
     if let Some(Err(error)) = with(|drafts| drafts.settle_submission(chat_id, key, status)) {
-        eprintln!("riwork: {error}");
+        eprintln!("somtus: {error}");
     }
 }
 
 pub fn dismiss_submission(chat_id: &str, key: &str) {
     if let Some(Err(error)) = with(|drafts| drafts.dismiss_submission(chat_id, key)) {
-        eprintln!("riwork: {error}");
+        eprintln!("somtus: {error}");
     }
 }
 
@@ -872,20 +872,20 @@ pub fn recovery_directory(chat_id: &str) -> Option<PathBuf> {
 /// The chat's draft goes once `sent` went out, unless it has changed since.
 pub fn clear_sent(chat_id: &str, sent: &str) {
     if let Some(Err(error)) = with(|drafts| drafts.clear_sent(chat_id, sent)) {
-        eprintln!("riwork: {error}");
+        eprintln!("somtus: {error}");
     }
 }
 
 /// The chat was deleted: its draft goes for good.
 pub fn forget(chat_id: &str) {
     if let Some(Err(error)) = with(|drafts| drafts.forget(chat_id)) {
-        eprintln!("riwork: {error}");
+        eprintln!("somtus: {error}");
     }
 }
 
 pub fn remember(chat_id: &str, text: &str) {
     if let Some(Err(error)) = with(|drafts| drafts.set(chat_id, text)) {
-        eprintln!("riwork: {error}");
+        eprintln!("somtus: {error}");
     }
 }
 

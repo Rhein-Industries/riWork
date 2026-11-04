@@ -1,7 +1,7 @@
 //! A local stdio MCP bridge for the same workspace data used by GPUI and the CLI.
 //!
 //! This server deliberately writes only JSON-RPC to stdout. A host can launch
-//! `riwork mcp` and discover the available operations through `tools/list`.
+//! `somtus mcp` and discover the available operations through `tools/list`.
 //!
 //! Trusted add-ins add tools of their own (`addin__<id>__<tool>`): each is a method
 //! of one of the add-in's workers, started once per server and kept until it ends.
@@ -155,8 +155,8 @@ fn initialize(params: &Value) -> Value {
     json!({
         "protocolVersion":version,
         "capabilities":{"tools":{"listChanged":false}},
-        "serverInfo":{"name":"riwork","title":"RiWork Workspaces","version":env!("CARGO_PKG_VERSION")},
-        "instructions":"Use these tools to manage RiWork projects, Git worktrees, tasks, and desktop schedules. Schedule mutations require full UUIDs, explicit scope, and a current revision; dispatch occurs only while the desktop app is open."
+        "serverInfo":{"name":"riwork","title":"Somtus Workspaces","version":env!("CARGO_PKG_VERSION")},
+        "instructions":"Use these tools to manage Somtus projects, Git worktrees, tasks, and desktop schedules. Schedule mutations require full UUIDs, explicit scope, and a current revision; dispatch occurs only while the desktop app is open."
     })
 }
 
@@ -713,7 +713,7 @@ fn execute_tool(name: &str, args: &Value) -> Result<Value, String> {
                 .clamp(1, 100_000);
             orchestrator_output(&manager, project_id.as_deref(), lines)
         }
-        _ => Err(format!("Unknown RiWork tool '{name}'")),
+        _ => Err(format!("Unknown Somtus tool '{name}'")),
     }
 }
 
@@ -743,7 +743,7 @@ fn selected_orchestrator(
     orchestrators::find(manager, &host, &orchestrators::scope_of(project_id))
 }
 
-/// `riwork_orchestrator_status`: the orchestrator as `riwork orchestrator status --json`
+/// `riwork_orchestrator_status`: the orchestrator as `somtus orchestrator status --json`
 /// shows it (`null` when the scope has none), with its `mode`.
 fn orchestrator_status(
     manager: &SessionManager,
@@ -757,7 +757,7 @@ fn orchestrator_status(
 /// `riwork_orchestrator_create`: the orchestrator of a scope, started as Settings and,
 /// for a project, its own choice say (`orchestrators::plan`, as the CLI and the windows
 /// create them) when the scope has none. One that exists is returned as it runs.
-/// `created`, `source`, `fallback` and `notes` are what `riwork orchestrator create
+/// `created`, `source`, `fallback` and `notes` are what `somtus orchestrator create
 /// --json` adds.
 fn orchestrator_create(
     manager: &SessionManager,
@@ -1146,7 +1146,7 @@ fn tools() -> Vec<Value> {
         tool(
             "riwork_delegate_task",
             "Delegate a task",
-            "Assign work once to a native child chat of the calling active RiWork chat. Persist and reuse request_id for retries; changed assignments need a new ID. Inherits the parent's workspace and permission ceiling. Uncertain outcomes are observed, never resent or restarted. Optionally wait up to 30000 ms for a result.",
+            "Assign work once to a native child chat of the calling active Somtus chat. Persist and reuse request_id for retries; changed assignments need a new ID. Inherits the parent's workspace and permission ceiling. Uncertain outcomes are observed, never resent or restarted. Optionally wait up to 30000 ms for a result.",
             json!({"request_id":{"type":"string","minLength":1,"maxLength":256},"prompt":{"type":"string","minLength":1},"title":{"type":"string"},"provider":{"type":"string","enum":["codex","claude","muse"]},"model":{"type":"string"},"effort":{"type":"string"},"approval_mode":{"type":"string","enum":["plan","supervised","auto_edit","full"]},"wait_ms":{"type":"integer","minimum":0,"maximum":30000}}),
             &["request_id", "prompt"],
             false,
@@ -1202,7 +1202,7 @@ fn tools() -> Vec<Value> {
         tool(
             "riwork_project_use",
             "Select project",
-            "Choose the default project for future RiWork windows and CLI commands. Existing windows retain their project.",
+            "Choose the default project for future Somtus windows and CLI commands. Existing windows retain their project.",
             json!({"project_id":{"type":"string"}}),
             &["project_id"],
             false,
@@ -1210,7 +1210,7 @@ fn tools() -> Vec<Value> {
         tool(
             "riwork_worktree_list",
             "List worktrees",
-            "List Git worktrees, refreshing externally created worktrees first. The refresh registers newly found worktrees in RiWork's saved state, so this is not read-only. Defaults to the active project.",
+            "List Git worktrees, refreshing externally created worktrees first. The refresh registers newly found worktrees in Somtus's saved state, so this is not read-only. Defaults to the active project.",
             json!({"project_id":{"type":"string"},"all":{"type":"boolean"}}),
             &[],
             false,
@@ -1345,7 +1345,7 @@ fn tools() -> Vec<Value> {
         ),
     ];
     items.extend([
-        tool("riwork_preview_open", "Open development preview", "Explicitly run or reuse an identical development preview in an already open RiWork project window. Supports true windowless GPUI or an owned iOS simulator build/install/stream pipeline. wait=true returns only after an actual rendered frame. Does not activate the OS window. Saved tabs never auto-run.", json!({
+        tool("riwork_preview_open", "Open development preview", "Explicitly run or reuse an identical development preview in an already open Somtus project window. Supports true windowless GPUI or an owned iOS simulator build/install/stream pipeline. wait=true returns only after an actual rendered frame. Does not activate the OS window. Saved tabs never auto-run.", json!({
             "project_id":{"type":"string"},"cwd":{"type":"string"},"command":{"type":"string"},
             "ios":{"type":"boolean"},"mode":{"type":"string","enum":["cooperative","window_capture"]},
             "scheme":{"type":"string"},"xcode_project":{"type":"string"},"bundle_id":{"type":"string"},
@@ -1359,7 +1359,7 @@ fn tools() -> Vec<Value> {
         tool("riwork_preview_close", "Close preview tab", "Close an exact preview tab and stop only its owned app/simulator. Layout remains idle on later restoration.", json!({"preview_id":{"type":"string","format":"uuid"}}), &["preview_id"], false),
         schedule_tool("riwork_schedule_list", "List schedules", "List schedules in the configured RIWORK_HOME ledger; omit scope for all, or filter by explicit app/project/workspace identity. No sessions are opened or dispatched.", &[], true),
         schedule_tool("riwork_schedule_show", "Show schedule", "Read one schedule by its full UUID, including current revision, pinned target and latest outcome.", &["schedule_id"], true),
-        schedule_tool("riwork_schedule_create", "Create schedule", "Schedule a future prompt. destination=new_chat creates a new ordinary project chat per occurrence with supervised permission by default and pins root/account; shell_id must be omitted. Otherwise bind an existing live Codex/Claude session. For new chats target.shell_id is the destination identity used by revision-checked mutations; last_run.created_chat_id opens the result. RiWork later types that prompt into the agent session, only while the desktop app is open.", &["scope","shell_id","title","prompt","at"], false),
+        schedule_tool("riwork_schedule_create", "Create schedule", "Schedule a future prompt. destination=new_chat creates a new ordinary project chat per occurrence with supervised permission by default and pins root/account; shell_id must be omitted. Otherwise bind an existing live Codex/Claude session. For new chats target.shell_id is the destination identity used by revision-checked mutations; last_run.created_chat_id opens the result. Somtus later types that prompt into the agent session, only while the desktop app is open.", &["scope","shell_id","title","prompt","at"], false),
         schedule_tool("riwork_schedule_update", "Update schedule", "Edit a pinned schedule with its full UUID, current revision, explicit scope and shell UUID. Provide a new exact future at; omit recurrence to retain it, use once=true to clear it. The new prompt is later typed into the pinned agent session.", &["schedule_id","revision","scope","shell_id","at"], false),
         schedule_tool("riwork_schedule_pause", "Pause schedule", "Pause a schedule using its full UUID, current revision, explicit scope and pinned shell UUID.", &["schedule_id","revision","scope","shell_id"], false),
         schedule_tool("riwork_schedule_resume", "Resume schedule", "Resume a schedule using its full UUID, current revision, explicit scope and pinned shell UUID. Its prompt will again be typed into the agent session when due. Failed/uncertain outcomes require a future edit first.", &["schedule_id","revision","scope","shell_id"], false),
@@ -1405,9 +1405,9 @@ pub(crate) fn addin_tool_problem(addin_id: &str, tool: &ToolSpec) -> Option<Stri
     None
 }
 
-/// The project whose add-ins a command or an agent gets: the one its RiWork
+/// The project whose add-ins a command or an agent gets: the one its Somtus
 /// session belongs to (RIWORK_CHAT_ID, RIWORK_SHELL_ID), else the one whose root
-/// or worktree holds `cwd` most closely, as `riwork preview` infers it. Its id and
+/// or worktree holds `cwd` most closely, as `somtus preview` infers it. Its id and
 /// root; `None` outside every project, where only personal add-ins apply.
 pub(crate) fn addin_project(home: &Path, cwd: &Path) -> Option<(String, PathBuf)> {
     let state = Store::open(home).ok()?.snapshot().ok()?;
@@ -1563,7 +1563,7 @@ fn call_addin_tool(
 static ADDIN_WORKERS: Mutex<BTreeMap<String, (String, Arc<WorkerProcess>)>> =
     Mutex::new(BTreeMap::new());
 
-/// Runs a trusted add-in's tool, as `riwork mcp` does for an agent: the tool's
+/// Runs a trusted add-in's tool, as `somtus mcp` does for an agent: the tool's
 /// method on its worker, which starts on first use and is kept for this process
 /// (started again when it died or its grant changed), with 120 s to answer. The
 /// worker's events have nowhere to go here. Its stderr goes to
@@ -1579,7 +1579,7 @@ pub(crate) fn run_addin_tool(
     let digest = addins::grant_digest(&addin.dir, manifest);
     if !addins::trusted(home, &key, &digest) {
         return Err(format!(
-            "{} is not trusted with what it asks for now; run riwork addin trust {key}",
+            "{} is not trusted with what it asks for now; run somtus addin trust {key}",
             manifest.name
         ));
     }

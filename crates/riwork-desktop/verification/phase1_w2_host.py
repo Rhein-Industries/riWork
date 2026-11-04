@@ -28,13 +28,13 @@ def main():
     args = parser.parse_args()
     args.nsh, args.tsc = NSH, TSC
     run = Verification(args)
-    # Cargo integration tests can replace target/debug/riwork with a different
+    # Cargo integration tests can replace target/debug/somtus with a different
     # feature graph. Keep this fixture-enabled executable immutable per build.
-    binary = run.root / "fixture-bin/riwork"
+    binary = run.root / "fixture-bin/somtus"
     if args.mode == "build":
         run.command(run.cargo("build", "-p", "riwork-desktop", "--features", "riwork-nsh-native/test-support"), "cargo-build")
         binary.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(run.target / "debug/riwork", binary)
+        shutil.copy2(run.target / "debug/somtus", binary)
         run.manifest["fixture_executable"] = {"path": str(binary), "sha256": digest(binary)}
         run.command([NSH, "build", "apps/riwork", "--out", run.root / "bundle"], "nsh-build")
         for mode, entry in [("auto-close", "AutoClose"), ("auto-quit", "AutoQuit")]:

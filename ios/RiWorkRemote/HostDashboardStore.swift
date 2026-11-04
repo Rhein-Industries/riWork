@@ -178,7 +178,7 @@ import RiWorkCore
                     hosts[index].state = .ready; hosts[index].failure = nil
                 }
             } else {
-                install(hostID: desktop.id, token: token, state: .unsupported, failure: "Update RiWork on this host to read its dashboard.")
+                install(hostID: desktop.id, token: token, state: .unsupported, failure: "Update Somtus on this host to read its dashboard.")
             }
         } catch is CancellationError {
         } catch {
@@ -186,7 +186,7 @@ import RiWorkCore
             // Not asked again on this socket's session (by this overview or `relay.call`), and left out of the host's features.
             if unsupported, let held { connections.dashboardRefused(held) }
             install(hostID: desktop.id, token: token, state: unsupported ? .unsupported : .offline,
-                    failure: unsupported ? "Update RiWork on this host to read its dashboard." : RemoteModel.dashboardFailureText(error))
+                    failure: unsupported ? "Update Somtus on this host to read its dashboard." : RemoteModel.dashboardFailureText(error))
         }
         // Given back (unless stopping already did); a socket nobody else holds closes as idle sockets do.
         if let held {

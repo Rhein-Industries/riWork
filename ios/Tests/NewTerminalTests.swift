@@ -183,7 +183,7 @@ final class NewTerminalTests: XCTestCase {
         XCTAssertEqual(map("outcome_unknown"), .outcomeUnknown(.create(.codex)))
         XCTAssertEqual(TerminalControlError.harnessUnavailable(.codex).message, "Codex isn’t installed on the Mac (or isn’t on its PATH).")
         XCTAssertEqual(TerminalControlError.harnessUnavailable(.claude).message, "Claude isn’t installed on the Mac (or isn’t on its PATH).")
-        XCTAssertEqual(TerminalControlError.unsupported.message, "Update RiWork on your Mac to open terminals from the phone.")
+        XCTAssertEqual(TerminalControlError.unsupported.message, "Update Somtus on your Mac to open terminals from the phone.")
         XCTAssertEqual(TerminalControlError.notFound(.create(.shell)).message, "That project or worktree no longer exists on the Mac. Refresh and try again.")
     }
     func testAConnectionThatBreaksLeavesTheOutcomeUnknown() {

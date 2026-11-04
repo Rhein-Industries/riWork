@@ -14,7 +14,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use riwork_engine::chat::{
     lineage,
     model::{
-        Approval, ApprovalKind, ChatEvent, ChatOrigin, ChatState, Decision, Delta, Item, ItemBody,
+        Approval, ApprovalKind, ApprovalMode, ChatEvent, ChatOrigin, ChatState, Decision, Delta, Item, ItemBody,
         ItemStatus, LineageContext, LineageKind, NoticeLevel, Provider, Question, SourceKind,
         StepStatus, Transcript, TurnOutcome,
     },
@@ -1274,6 +1274,7 @@ pub fn provider_name(provider: Provider) -> &'static str {
         Provider::Codex => "Codex",
         Provider::Claude => "Claude",
         Provider::Muse => "Muse",
+        Provider::Acp => "ACP",
     }
 }
 
@@ -1395,6 +1396,7 @@ fn toolbar_dto(transcript: &Transcript, info: &riwork_engine::chat::model::ChatI
         mode_label: toolbar::mode_label(info.approval_mode).into(),
         modes: toolbar::MODES
             .iter()
+            .filter(|(mode, _, _)| info.provider != Provider::Acp || *mode != ApprovalMode::Plan)
             .map(|(mode, label, description)| {
                 pick(
                     wire_name(mode),

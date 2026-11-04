@@ -31,7 +31,7 @@ use riwork_core::global_window::{
     DashboardFilter, DashboardSort, GlobalWindowState, GlobalWindowStore,
 };
 
-pub(crate) const TITLE: &str = "RiWork · Global";
+pub(crate) const TITLE: &str = "Somtus · Global";
 
 /// What a project window says once it has left out the global tabs of an older layout.
 pub(crate) const MOVED_NOTICE: &str = "The dashboard and the global chat now have their own window: View › Global Dashboard (⌘⌥G) or Global Chat (⌘⇧O).";
@@ -82,7 +82,7 @@ pub(crate) fn chat_starting(cx: &App) -> bool {
 pub(crate) fn open(view: GlobalView, start: bool, cx: &mut App) {
     cx.defer(move |cx| {
         if let Err(error) = bring_up(view, start, cx) {
-            eprintln!("riwork: cannot open the global window: {error}");
+            eprintln!("somtus: cannot open the global window: {error}");
         }
     });
 }
@@ -1694,7 +1694,7 @@ impl GlobalWindow {
                                     .child("Terminal orchestrator: the global orchestrator runs in a terminal"),
                             )
                             .child(div().text_color(rgb(colors.muted)).child(
-                                "RiWork keeps this terminal as it is; a chat takes over only after you end it.",
+                                "Somtus keeps this terminal as it is; a chat takes over only after you end it.",
                             )),
                     )
                     .child(div().flex_1().min_h_0().child(body))

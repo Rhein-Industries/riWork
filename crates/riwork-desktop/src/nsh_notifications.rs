@@ -307,13 +307,13 @@ pub(crate) fn claim_and_post(
             for notice in &notices {
                 match notifier.post(&Notification::completion(notice)) {
                     Ok(()) => posted += 1,
-                    Err(error) => errors.report("riwork notifications", error),
+                    Err(error) => errors.report("somtus notifications", error),
                 }
             }
             posted
         }
         Err(error) => {
-            errors.report("riwork notifications", error);
+            errors.report("somtus notifications", error);
             0
         }
     }
@@ -427,7 +427,7 @@ pub(crate) fn start(home: PathBuf, notifier: Option<Arc<dyn Notifier>>) -> Backg
         Err(error) => {
             // Without the push source, fall back to GPUI's once-a-second poll
             // rather than never delivering.
-            eprintln!("riwork notifications: home watcher unavailable, polling: {error}");
+            eprintln!("somtus notifications: home watcher unavailable, polling: {error}");
             let _ = thread::Builder::new()
                 .name("riwork-home-poll".into())
                 .spawn(move || {
@@ -488,7 +488,7 @@ fn run_wakes(home: PathBuf, changes: mpsc::Receiver<()>) {
                 changed = false;
                 match runner.tick() {
                     Ok(()) => errors.clear(),
-                    Err(error) => errors.report("riwork orchestrator wakes", error),
+                    Err(error) => errors.report("somtus orchestrator wakes", error),
                 }
                 last_tick = Some(Instant::now());
             }
@@ -545,7 +545,7 @@ mod center {
         pub(crate) fn new(respond: Respond) -> Option<Self> {
             // UNUserNotificationCenter aborts the process outside an app bundle.
             if NSBundle::mainBundle().bundleIdentifier().is_none() {
-                eprintln!("riwork notifications: disabled outside an app bundle");
+                eprintln!("somtus notifications: disabled outside an app bundle");
                 return None;
             }
             let center = UNUserNotificationCenter::currentNotificationCenter();
@@ -567,11 +567,11 @@ mod center {
                 // SAFETY: a non-null error is valid for the callback's duration.
                 if let Some(error) = unsafe { error.as_ref() } {
                     eprintln!(
-                        "riwork notifications: authorization failed: {}",
+                        "somtus notifications: authorization failed: {}",
                         error.localizedDescription()
                     );
                 } else if !granted.as_bool() {
-                    eprintln!("riwork notifications: authorization denied");
+                    eprintln!("somtus notifications: authorization denied");
                 }
             });
             self.center
@@ -601,7 +601,7 @@ mod center {
                 // SAFETY: a non-null error is valid for the callback's duration.
                 if let Some(error) = unsafe { error.as_ref() } {
                     eprintln!(
-                        "riwork notifications: delivery failed: {}",
+                        "somtus notifications: delivery failed: {}",
                         error.localizedDescription()
                     );
                 }
@@ -900,7 +900,7 @@ mod tests {
         }
         assert!(FixtureNotifier::at(Path::new("/private/tmp/rw/state")).is_some());
         let flag = Some(OsStr::new("1"));
-        let bundle = Path::new("/Applications/RiWork.app/Contents/MacOS/riwork");
+        let bundle = Path::new("/Applications/Somtus.app/Contents/MacOS/somtus");
         let plain = Path::new("/tmp/target/debug/riwork");
         assert_eq!(delivery(&home.0, flag, Some(plain)), Delivery::Fixture);
         assert_eq!(delivery(&home.0, flag, Some(bundle)), Delivery::Fixture);

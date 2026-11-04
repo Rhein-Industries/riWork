@@ -190,10 +190,10 @@ fn stub_cli(dir: &Path) -> PathBuf {
              [ \"$1\" = warm ] && exit 0\n\
              for a in \"$@\"; do printf '%s\\037' \"$a\"; done >> \"$d/argv.log\"\n\
              printf '\\n' >> \"$d/argv.log\"\n\
-             fail() {{ if [ -e \"$d/$1.error\" ]; then printf 'riwork: %s\\n' \"$(cat \"$d/$1.error\")\" >&2; exit 2; fi; }}\n\
+             fail() {{ if [ -e \"$d/$1.error\" ]; then printf 'somtus: %s\\n' \"$(cat \"$d/$1.error\")\" >&2; exit 2; fi; }}\n\
              case \"$1 $2\" in\n\
              'capabilities --json')\n\
-               if [ -e \"$d/capabilities.unknown\" ]; then echo \"riwork: Unknown invocation 'capabilities'\" >&2; exit 2; fi\n\
+               if [ -e \"$d/capabilities.unknown\" ]; then echo \"somtus: Unknown invocation 'capabilities'\" >&2; exit 2; fi\n\
                if [ -e \"$d/capabilities.out\" ]; then cat \"$d/capabilities.out\"; else printf '{{\"v\":1,\"chat\":true}}'; fi;;\n\
              'project show'|'worktree show')\n\
                fail show\n\
@@ -1205,9 +1205,9 @@ async fn the_cli_failures_the_phone_acts_on_have_their_own_codes() {
             "muse is not installed or is not on PATH".into(),
         ),
         (
-            "Cua Driver is not installed. Open RiWork Settings, or run `riwork setup`.",
+            "Cua Driver is not installed. Open Somtus Settings, or run `somtus setup`.",
             "harness_unavailable",
-            "Cua Driver is not installed. Open RiWork Settings, or run `riwork setup`.".into(),
+            "Cua Driver is not installed. Open Somtus Settings, or run `somtus setup`.".into(),
         ),
         // The words of the host, as they are.
         (
@@ -1290,7 +1290,7 @@ async fn a_cli_without_chats_is_told_apart_and_asked_again_until_it_says_yes() {
     let capabilities = |f: &Fixture| f.calls_of("capabilities", "--json").len();
     let too_old = |response: &Value| {
         assert_eq!(code(response), "cli_error", "{response}");
-        assert!(message(response).contains("update RiWork"), "{response}");
+        assert!(message(response).contains("update Somtus"), "{response}");
     };
     for says in [
         "{\"v\":1}",
@@ -1825,7 +1825,7 @@ async fn the_real_cli_lists_creates_follows_and_stops_a_chat_through_the_rpc() {
 
 #[tokio::test]
 async fn a_cli_that_cannot_be_run_is_not_one_that_lacks_chats() {
-    // "Update RiWork" is for a CLI that ran and does not know chats; a CLI that could not be
+    // "Update Somtus" is for a CLI that ran and does not know chats; a CLI that could not be
     // started says what is wrong with starting it.
     let f = Fixture::without_cli();
     for (method, params) in [
@@ -1847,8 +1847,8 @@ async fn a_cli_that_cannot_be_run_is_not_one_that_lacks_chats() {
         let response = f.call(method, params).await;
         assert_eq!(code(&response), "cli_error", "{method}: {response}");
         assert!(
-            message(&response).contains("start configured RiWork CLI")
-                && !message(&response).contains("update RiWork"),
+            message(&response).contains("start configured Somtus CLI")
+                && !message(&response).contains("update Somtus"),
             "{method}: {response}"
         );
     }
@@ -1935,7 +1935,7 @@ async fn snapshots_validate_before_cli_and_preserve_complete_rows_with_bounded_a
     );
     f.set(
         "snapshot.error",
-        "Usage: riwork chat serve|ensure|list|new|events|command|send|stop (riwork help)",
+        "Usage: somtus chat serve|ensure|list|new|events|command|send|stop (somtus help)",
     );
     let answer = f.call("chat.snapshot", json!({"chat_id":f.chat})).await;
     assert_eq!(code(&answer), "invalid_request");
@@ -2463,7 +2463,7 @@ async fn muse_chats_are_created_listed_switched_to_and_listed_by_models() {
     assert_eq!(call[..4], ["chat", "models", "--provider", "muse"]);
 }
 
-/// The `reply` of the shared fixture: what `riwork chat suggestions --json` prints.
+/// The `reply` of the shared fixture: what `somtus chat suggestions --json` prints.
 fn shared_suggestions() -> Value {
     let text = std::fs::read_to_string(SUGGESTIONS_FIXTURE).unwrap();
     serde_json::from_str::<Value>(&text).unwrap()["reply"].take()
@@ -2477,7 +2477,7 @@ async fn chat_suggestions_passes_on_a_chats_commands_files_and_models_and_nothin
     // A CLI without the command is not asked.
     let response = f.call("chat.suggestions", json!({"chat_id":chat})).await;
     assert_eq!(code(&response), "cli_error", "{response}");
-    assert!(message(&response).contains("update RiWork"), "{response}");
+    assert!(message(&response).contains("update Somtus"), "{response}");
     assert!(f.calls_of("chat", "suggestions").is_empty());
 
     f.says(
@@ -2569,7 +2569,7 @@ async fn chat_suggestions_passes_on_a_chats_commands_files_and_models_and_nothin
         ])
     );
     // Every provider's models are checked as the chat's are, and each must name a provider
-    // RiWork knows; one in `models` never names one, as an older phone reads them.
+    // Somtus knows; one in `models` never names one, as an older phone reads them.
     let mut printed = reply.clone();
     printed["models"] = json!([{"id":"opus","name":"Opus","provider":"claude"}]);
     printed["mention_models"] = json!([

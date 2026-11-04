@@ -1,4 +1,4 @@
-//! Headless session, agent, chat, scheduling, and remote backends for RiWork.
+//! Headless session, agent, chat, scheduling, and remote backends for Somtus.
 
 // Keep the shared data namespaces identical for backend callers.
 pub use riwork_core::{
@@ -20,11 +20,13 @@ pub mod dashboard_intelligence;
 pub mod file_preview;
 mod folder_trust;
 pub mod global_overview;
+pub mod host_sessions;
 pub mod handoff;
 pub mod notifications;
 pub mod orchestrator_wakes;
 pub mod orchestrators;
 pub mod preview_control;
+pub mod program_status;
 pub mod project_sort;
 pub mod project_tabs;
 pub mod remote_cache;

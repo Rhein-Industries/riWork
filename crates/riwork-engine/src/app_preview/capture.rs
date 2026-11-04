@@ -1,4 +1,4 @@
-//! Native-window fallback. Every desktop call crosses RiWork's Cua MCP guard.
+//! Native-window fallback. Every desktop call crosses Somtus's Cua MCP guard.
 
 use std::{
     collections::HashMap,
@@ -107,7 +107,7 @@ impl Capture {
                     state,
                     PreviewPhase::WaitingForWindow,
                     if self.ever_bound {
-                        "The bound window closed. Select a window to continue; RiWork will not redirect input automatically.".into()
+                        "The bound window closed. Select a window to continue; Somtus will not redirect input automatically.".into()
                     } else if windows.len() > 1 {
                         format!(
                             "{} launched windows found. Select the window to preview.",
@@ -543,7 +543,7 @@ fn read_bounds(value: Option<&Value>) -> Option<Bounds> {
 }
 
 fn setup_error(error: String) -> String {
-    format!("{error} Open RiWork Settings → Computer Use to check Cua setup and macOS permissions.")
+    format!("{error} Open Somtus Settings → Computer Use to check Cua setup and macOS permissions.")
 }
 
 fn effect_confirmed(result: &Value) -> bool {
@@ -595,7 +595,7 @@ impl McpDriver {
     fn connect() -> Result<Self, String> {
         // Desktop's entrypoint dispatches CLI commands before starting GPUI.
         // The existing server verifies the driver signature and protects all
-        // live RiWork windows. No direct desktop CLI commands are executed.
+        // live Somtus windows. No direct desktop CLI commands are executed.
         let executable = std::env::current_exe().map_err(|error| error.to_string())?;
         let mut command = Command::new(executable);
         command
@@ -611,7 +611,7 @@ impl McpDriver {
         }
         let mut child = command
             .spawn()
-            .map_err(|error| format!("Cannot start RiWork Cua MCP server: {error}"))?;
+            .map_err(|error| format!("Cannot start Somtus Cua MCP server: {error}"))?;
         let stdin = child
             .stdin
             .take()
@@ -688,7 +688,7 @@ impl McpDriver {
         ] {
             if !driver.tools.contains_key(required) {
                 return Err(format!(
-                    "Cua Driver does not advertise required tool {required}; update it through RiWork Cua setup."
+                    "Cua Driver does not advertise required tool {required}; update it through Somtus Cua setup."
                 ));
             }
         }
@@ -739,7 +739,7 @@ impl Driver for McpDriver {
     fn call(&mut self, name: &str, arguments: Value) -> Result<Value, String> {
         if !self.tools.contains_key(name) {
             return Err(format!(
-                "Cua Driver does not advertise {name}; use RiWork Cua setup to update the driver."
+                "Cua Driver does not advertise {name}; use Somtus Cua setup to update the driver."
             ));
         }
         let result = self.request("tools/call", json!({"name":name,"arguments":arguments}))?;

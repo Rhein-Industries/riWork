@@ -65,16 +65,16 @@ test("main-pane summaries preserve active identity and lookup is pane-independen
 });
 
 test("window titles name remote projects and update only when changed", () => {
-  expect(windowTitle("RiWork")).toBe("RiWork · RiWork");
-  expect(windowTitle("app", "Studio")).toBe("RiWork · app (on Studio)");
-  expect(windowTitle(null, null, "global")).toBe("RiWork · Global");
-  expect(windowTitle()).toBe("RiWork");
+  expect(windowTitle("Somtus")).toBe("Somtus · Somtus");
+  expect(windowTitle("app", "Studio")).toBe("Somtus · app (on Studio)");
+  expect(windowTitle(null, null, "global")).toBe("Somtus · Global");
+  expect(windowTitle()).toBe("Somtus");
   const calls: string[] = [];
   const update = createTitleUpdater((title) => calls.push(title));
   update(windowTitle("app"));
   update(windowTitle("app"));
   update(windowTitle("app", "Studio"));
-  expect(calls).toEqual(["RiWork · app", "RiWork · app (on Studio)"]);
+  expect(calls).toEqual(["Somtus · app", "Somtus · app (on Studio)"]);
 });
 
 test("panel labels preserve persisted legacy identities", () => {

@@ -86,7 +86,7 @@ fn resolve_source_from(
             }
         }
     }
-    Err("Cannot find the RiWork source checkout. Use `riwork update --source /path/to/riWork` or set RIWORK_SOURCE_DIR.".to_owned())
+    Err("Cannot find the Somtus source checkout. Use `somtus update --source /path/to/riWork` or set RIWORK_SOURCE_DIR.".to_owned())
 }
 
 fn validate_source(source: &Path) -> Result<PathBuf, String> {
@@ -114,9 +114,9 @@ fn validate_source_layout(source: &Path) -> Result<(PathBuf, SourceLayout), Stri
         .map_err(|error| format!("Cannot resolve source {}: {error}", source.display()))?;
     require_source_files(&source, &["Cargo.toml"])?;
     let manifest = fs::read_to_string(source.join("Cargo.toml"))
-        .map_err(|error| format!("Cannot read RiWork Cargo.toml: {error}"))?;
-    let layout = if manifest_names_section(&manifest, "[package]", "riwork") {
-        // Keep updates of older source checkouts (and their fixtures) working.
+        .map_err(|error| format!("Cannot read Somtus Cargo.toml: {error}"))?;
+    let layout = if manifest_names_section(&manifest, "[package]", "somtus") {
+        // Standalone layouts remain supported alongside the Cargo workspace.
         require_source_files(&source, &["src/main.rs"])?;
         SourceLayout::Legacy
     } else if manifest_has_section(&manifest, "[workspace]")
@@ -128,19 +128,19 @@ fn validate_source_layout(source: &Path) -> Result<(PathBuf, SourceLayout), Stri
             &[desktop_manifest, "crates/riwork-desktop/src/main.rs"],
         )?;
         let desktop = fs::read_to_string(source.join(desktop_manifest))
-            .map_err(|error| format!("Cannot read RiWork {desktop_manifest}: {error}"))?;
+            .map_err(|error| format!("Cannot read Somtus {desktop_manifest}: {error}"))?;
         if !manifest_names_section(&desktop, "[package]", "riwork-desktop")
-            || !manifest_names_section(&desktop, "[[bin]]", "riwork")
+            || !manifest_names_section(&desktop, "[[bin]]", "somtus")
         {
             return Err(format!(
-                "{} does not contain the riwork-desktop Cargo package with its riwork binary",
+                "{} does not contain the riwork-desktop Cargo package with its somtus binary",
                 source.display()
             ));
         }
         SourceLayout::Workspace
     } else {
         return Err(format!(
-            "{} does not contain the riwork Cargo package or the RiWork virtual workspace",
+            "{} does not contain the somtus Cargo package or the Somtus virtual workspace",
             source.display()
         ));
     };
@@ -152,7 +152,7 @@ fn validate_source_layout(source: &Path) -> Result<(PathBuf, SourceLayout), Stri
 const BUNDLE_INPUTS: [&str; 4] = [
     "scripts/bundle-macos.sh",
     // The only icon the bundler reads.
-    "assets/app-icon/RiWork-legacy.icns",
+    "assets/app-icon/Somtus.icns",
     // The diagram renderer's licenses, copied into the app's resources.
     "macos/diagram/LICENSE-mermaid",
     "macos/diagram/THIRD_PARTY_NOTICES.txt",
@@ -162,7 +162,7 @@ fn require_source_files(source: &Path, files: &[&str]) -> Result<(), String> {
     for relative in files {
         if !source.join(relative).is_file() {
             return Err(format!(
-                "{} is not a RiWork checkout: missing {relative}",
+                "{} is not a Somtus checkout: missing {relative}",
                 source.display()
             ));
         }
@@ -278,7 +278,7 @@ fn build_update_with(
         &log_path,
     )?;
     let cargo = find_tool("cargo", tool_path)
-        .ok_or("Cargo is required to rebuild RiWork. Install Rust or put cargo on PATH.")?;
+        .ok_or("Cargo is required to rebuild Somtus. Install Rust or put cargo on PATH.")?;
     let ui_output = if uses_nsh {
         require_source_files(&source, &["apps/riwork/App.tsx"])?;
         let nsh = update_nsh_cli(tool_path, &source, &mut log, &log_path)?;
@@ -311,7 +311,7 @@ fn build_update_with(
         build.env("ZIG", zig);
         eprintln!("Using Zig at {}.", zig.display());
     }
-    eprintln!("Building RiWork ({profile}). Log: {}", log_path.display());
+    eprintln!("Building Somtus ({profile}). Log: {}", log_path.display());
     run_stage(
         &mut build,
         "Cargo build",
@@ -340,7 +340,7 @@ fn build_update_with(
         }
         let mut remote_build =
             companion_build_command(&cargo, &source, &remote_target, &profile, tool_path);
-        eprintln!("Building riwork-remote ({profile}).");
+        eprintln!("Building somtus-remote ({profile}).");
         run_stage(
             &mut remote_build,
             "Remote companion build",
@@ -354,7 +354,7 @@ fn build_update_with(
         let cached_companion = layout
             .companion_target(&staging.path)
             .join(&profile)
-            .join("riwork-remote");
+            .join("somtus-remote");
         match fs::remove_file(&cached_companion) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -379,7 +379,7 @@ fn build_update_with(
             .map_err(|error| format!("Cannot stage the NSH interface: {error}"))?;
     }
 
-    // The existing bundler removes target/<profile>/RiWork.app. Run an exact
+    // The existing bundler removes target/<profile>/Somtus.app. Run an exact
     // copy in a disposable checkout layout so it can never remove a live app.
     let bundler = stage_bundle_inputs(&source, &staging.path)?;
     let mut bundle_command = Command::new("/bin/sh");
@@ -395,7 +395,7 @@ fn build_update_with(
         bundle_command.env("CODESIGN_IDENTITY", &identity.sign_with);
         eprintln!("Signing with {}.", identity.name);
     }
-    eprintln!("Packaging RiWork.app.");
+    eprintln!("Packaging Somtus.app.");
     run_stage(
         &mut bundle_command,
         "macOS bundle",
@@ -403,8 +403,8 @@ fn build_update_with(
         &mut log,
         &log_path,
     )?;
-    let staged_executable = staged_target.join(&profile).join("riwork");
-    let staged_bundle = staged_target.join(&profile).join("RiWork.app");
+    let staged_executable = staged_target.join(&profile).join("somtus");
+    let staged_bundle = staged_target.join(&profile).join("Somtus.app");
     validate_artifacts(&staged_executable, &staged_bundle)?;
     if uses_nsh {
         require_nsh_bundle(&staged_bundle.join("Contents/Resources/riwork-ui"))?;
@@ -429,7 +429,7 @@ fn build_update_with(
     eprintln!("Checking that the new build starts.");
     smoke_test(&staged_executable, &staging.path, &mut log, &log_path)?;
     smoke_test(
-        &staged_bundle.join("Contents/MacOS/riwork"),
+        &staged_bundle.join("Contents/MacOS/somtus"),
         &staging.path,
         &mut log,
         &log_path,
@@ -437,8 +437,8 @@ fn build_update_with(
     let destination = target.join(&profile);
     fs::create_dir_all(&destination)
         .map_err(|error| format!("Cannot create install directory: {error}"))?;
-    let executable = destination.join("riwork");
-    let bundle = destination.join("RiWork.app");
+    let executable = destination.join("somtus");
+    let bundle = destination.join("Somtus.app");
     log.sync_all()
         .map_err(|error| format!("Cannot sync update log: {error}"))?;
     // Past this point the swap is short and must complete, so this is the last
@@ -494,7 +494,7 @@ fn desktop_build_command(
         command.args(["-p", "riwork-desktop"]);
     }
     command
-        .args(["--bin", "riwork"])
+        .args(["--bin", "somtus"])
         .env("CARGO_TARGET_DIR", target)
         .env("PATH", tool_path);
     if profile == "release" {
@@ -570,7 +570,7 @@ fn companion_build_command(
             "build",
             "--locked",
             "--bin",
-            "riwork-remote",
+            "somtus-remote",
             "--manifest-path",
         ])
         .arg(source.join("remote/Cargo.toml"))
@@ -583,7 +583,7 @@ fn companion_build_command(
 }
 fn validate_companion(bundle: &Path, required: bool) -> Result<(), String> {
     if required {
-        let path = bundle.join("Contents/MacOS/riwork-remote");
+        let path = bundle.join("Contents/MacOS/somtus-remote");
         let metadata = fs::metadata(&path)
             .map_err(|e| format!("Missing staged remote companion {}: {e}", path.display()))?;
         if !metadata.is_file() || metadata.len() == 0 {
@@ -632,9 +632,9 @@ fn update_lock(target: &Path) -> Result<File, String> {
                 thread::sleep(Duration::from_millis(50))
             }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                return Err("Another RiWork update is running. Wait for it to finish.".to_owned());
+                return Err("Another Somtus update is running. Wait for it to finish.".to_owned());
             }
-            Err(error) => return Err(format!("Cannot lock RiWork update: {error}")),
+            Err(error) => return Err(format!("Cannot lock Somtus update: {error}")),
         }
     }
 }
@@ -699,7 +699,7 @@ fn pick_signing_identity(listing: &str) -> Option<SigningIdentity> {
         })
 }
 
-/// The Zig 0.16 toolchain kept under the RiWork data directory, for the
+/// The Zig 0.16 toolchain kept under the Somtus data directory, for the
 /// Ghostty build, unless `ZIG` is set. Homebrew's Zig is often another version,
 /// which fails that build, and a toolchain unpacked under /tmp loses its
 /// standard library to the system's periodic cleanup.
@@ -940,7 +940,7 @@ fn log_tail(path: &Path) -> String {
 fn validate_artifacts(executable: &Path, bundle: &Path) -> Result<(), String> {
     for file in [
         executable.to_path_buf(),
-        bundle.join("Contents/MacOS/riwork"),
+        bundle.join("Contents/MacOS/somtus"),
         bundle.join("Contents/Info.plist"),
     ] {
         if !file.is_file() {
@@ -948,7 +948,7 @@ fn validate_artifacts(executable: &Path, bundle: &Path) -> Result<(), String> {
         }
     }
     for relative in [
-        "Contents/Resources/RiWork.icns",
+        "Contents/Resources/Somtus.icns",
         "Contents/Resources/terminfo/78/xterm-ghostty",
         "Contents/Resources/ghostty/shell-integration/zsh/ghostty-integration",
     ] {
@@ -1311,13 +1311,13 @@ mod tests {
         fs::create_dir_all(source.join("assets/app-icon")).unwrap();
         fs::write(
             source.join("Cargo.toml"),
-            "[package]\nname = \"riwork\"\nversion = \"0.1.0\"\n",
+            "[package]\nname = \"somtus\"\nversion = \"0.1.0\"\n",
         )
         .unwrap();
         fs::write(source.join("src/main.rs"), "fn main() {}\n").unwrap();
         fs::write(source.join("scripts/bundle-macos.sh"), "#!/bin/sh\n").unwrap();
         fs::write(
-            source.join("assets/app-icon/RiWork-legacy.icns"),
+            source.join("assets/app-icon/Somtus.icns"),
             b"legacy icon fixture",
         )
         .unwrap();
@@ -1345,9 +1345,9 @@ mod tests {
         )
         .unwrap();
         for (relative, package, binary) in [
-            ("crates/riwork-desktop", "riwork-desktop", "riwork"),
-            ("crates/riwork-cli", "riwork-cli", "riwork-cli"),
-            ("remote", "riwork-remote", "riwork-remote"),
+            ("crates/riwork-desktop", "riwork-desktop", "somtus"),
+            ("crates/riwork-cli", "riwork-cli", "somtus-cli"),
+            ("remote", "riwork-remote", "somtus-remote"),
         ] {
             let crate_root = source.join(relative);
             fs::create_dir_all(crate_root.join("src")).unwrap();
@@ -1387,7 +1387,7 @@ mod tests {
         let missing = temporary.path.join("missing");
         assert!(resolve_source_from(Some(&missing), Some(&configured), &compiled, None).is_err());
         assert!(resolve_source_from(None, Some(&missing), &compiled, None).is_err());
-        let executable = compiled.join("target/debug/RiWork.app/Contents/MacOS/riwork");
+        let executable = compiled.join("target/debug/Somtus.app/Contents/MacOS/somtus");
         assert_eq!(
             resolve_source_from(None, None, &missing, Some(&executable)).unwrap(),
             compiled.canonicalize().unwrap()
@@ -1421,7 +1421,7 @@ mod tests {
             resolve_source_from(None, Some(&nested_manifest), &compiled, Some(&executable))
                 .is_err()
         );
-        let workspace_executable = workspace.join("target/debug/RiWork.app/Contents/MacOS/riwork");
+        let workspace_executable = workspace.join("target/debug/Somtus.app/Contents/MacOS/somtus");
         assert_eq!(
             resolve_source_from(None, None, &missing, Some(&workspace_executable)).unwrap(),
             workspace.canonicalize().unwrap()
@@ -1437,17 +1437,17 @@ mod tests {
         let source = fixture(&temporary.path, "source");
         fs::write(
             source.join("Cargo.toml"),
-            "[package]\nname = \"other\"\n[dependencies]\nname = \"riwork\"\n",
+            "[package]\nname = \"other\"\n[dependencies]\nname = \"somtus\"\n",
         )
         .unwrap();
         assert!(
             validate_source(&source)
                 .unwrap_err()
-                .contains("riwork Cargo package")
+                .contains("somtus Cargo package")
         );
         fs::write(
             source.join("Cargo.toml"),
-            "[package]\nname = 'riwork' # package\n",
+            "[package]\nname = 'somtus' # package\n",
         )
         .unwrap();
         fs::remove_file(source.join("scripts/bundle-macos.sh")).unwrap();
@@ -1457,12 +1457,12 @@ mod tests {
                 .contains("scripts/bundle-macos.sh")
         );
         fs::write(source.join("scripts/bundle-macos.sh"), "#!/bin/sh\n").unwrap();
-        // The bundler reads only the rounded icon; the full-bleed export is optional.
-        let relative = "assets/app-icon/RiWork-legacy.icns";
+        // The supplied Somtus icon is required for every update.
+        let relative = "assets/app-icon/Somtus.icns";
         fs::remove_file(source.join(relative)).unwrap();
         assert!(validate_source(&source).unwrap_err().contains(relative));
         fs::write(source.join(relative), b"icon fixture").unwrap();
-        assert!(!source.join("assets/app-icon/RiWork.icns").exists());
+        assert!(source.join("assets/app-icon/Somtus.icns").exists());
         validate_source(&source).unwrap();
         assert_eq!(
             validate_source_layout(&source).unwrap().1,
@@ -1479,7 +1479,7 @@ mod tests {
             "crates/riwork-desktop/Cargo.toml",
             "crates/riwork-desktop/src/main.rs",
             "scripts/bundle-macos.sh",
-            "assets/app-icon/RiWork-legacy.icns",
+            "assets/app-icon/Somtus.icns",
             "macos/diagram/LICENSE-mermaid",
             "macos/diagram/THIRD_PARTY_NOTICES.txt",
         ] {
@@ -1493,19 +1493,19 @@ mod tests {
         let desktop = fs::read_to_string(&desktop_manifest).unwrap();
         for invalid in [
             desktop.replace("name = \"riwork-desktop\"", "name = \"other\""),
-            desktop.replace("name = \"riwork\"", "name = \"other-binary\""),
+            desktop.replace("name = \"somtus\"", "name = \"other-binary\""),
         ] {
             fs::write(&desktop_manifest, invalid).unwrap();
             assert!(
                 validate_source(&workspace)
                     .unwrap_err()
-                    .contains("riwork-desktop Cargo package with its riwork binary")
+                    .contains("riwork-desktop Cargo package with its somtus binary")
             );
         }
         fs::write(&desktop_manifest, desktop).unwrap();
         let root_manifest = workspace.join("Cargo.toml");
         let root = fs::read_to_string(&root_manifest).unwrap();
-        fs::write(&root_manifest, "[workspace.package]\nname = \"riwork\"\n").unwrap();
+        fs::write(&root_manifest, "[workspace.package]\nname = \"somtus\"\n").unwrap();
         assert!(validate_source(&workspace).is_err());
         fs::write(&root_manifest, root).unwrap();
         validate_source(&workspace).unwrap();
@@ -1527,13 +1527,13 @@ mod tests {
         .unwrap();
         let source = fixture(&temporary.path, "source");
         let staging = temporary.path.join("staging");
-        // A full-bleed export present in the checkout is not a bundler input.
-        fs::write(source.join("assets/app-icon/RiWork.icns"), b"icon fixture").unwrap();
+        // An obsolete icon present in the checkout is not a bundler input.
+        fs::write(source.join("assets/app-icon/RiWork.icns"), b"old icon fixture").unwrap();
         let bundler = stage_bundle_inputs(&source, &staging).unwrap();
         assert_eq!(fs::read_to_string(bundler).unwrap(), "#!/bin/sh\n");
         assert!(!staging.join("assets/app-icon/RiWork.icns").exists());
         assert_eq!(
-            fs::read(staging.join("assets/app-icon/RiWork-legacy.icns")).unwrap(),
+            fs::read(staging.join("assets/app-icon/Somtus.icns")).unwrap(),
             b"legacy icon fixture"
         );
         assert_eq!(
@@ -1545,11 +1545,11 @@ mod tests {
             "notices fixture"
         );
 
-        let executable = staging.join("riwork");
-        let bundle = staging.join("RiWork.app");
+        let executable = staging.join("somtus");
+        let bundle = staging.join("Somtus.app");
         fs::write(&executable, "executable fixture").unwrap();
         for relative in [
-            "Contents/MacOS/riwork",
+            "Contents/MacOS/somtus",
             "Contents/Info.plist",
             "Contents/Resources/terminfo/78/xterm-ghostty",
             "Contents/Resources/ghostty/shell-integration/zsh/ghostty-integration",
@@ -1561,11 +1561,11 @@ mod tests {
         assert!(
             validate_artifacts(&executable, &bundle)
                 .unwrap_err()
-                .contains("Contents/Resources/RiWork.icns")
+                .contains("Contents/Resources/Somtus.icns")
         );
         fs::copy(
-            staging.join("assets/app-icon/RiWork-legacy.icns"),
-            bundle.join("Contents/Resources/RiWork.icns"),
+            staging.join("assets/app-icon/Somtus.icns"),
+            bundle.join("Contents/Resources/Somtus.icns"),
         )
         .unwrap();
         validate_artifacts(&executable, &bundle).unwrap();
@@ -1654,7 +1654,7 @@ mod tests {
                 if layout == SourceLayout::Workspace {
                     expected.extend(["-p", "riwork-desktop"]);
                 }
-                expected.extend(["--bin", "riwork"]);
+                expected.extend(["--bin", "somtus"]);
                 if profile == "release" {
                     expected.push("--release");
                 }
@@ -1687,7 +1687,7 @@ mod tests {
                     "build",
                     "--locked",
                     "--bin",
-                    "riwork-remote",
+                    "somtus-remote",
                     "--manifest-path"
                 ]
             );
@@ -1700,10 +1700,10 @@ mod tests {
                     .any(|(k, v)| k == "CARGO_TARGET_DIR" && v == Some(target.as_os_str()))
             );
         }
-        let bundle = temporary.path.join("RiWork.app");
+        let bundle = temporary.path.join("Somtus.app");
         validate_companion(&bundle, false).unwrap();
         assert!(validate_companion(&bundle, true).is_err());
-        let binary = bundle.join("Contents/MacOS/riwork-remote");
+        let binary = bundle.join("Contents/MacOS/somtus-remote");
         fs::create_dir_all(binary.parent().unwrap()).unwrap();
         fs::write(&binary, "companion").unwrap();
         #[cfg(unix)]
@@ -1908,7 +1908,7 @@ mod tests {
                 disposition(libc::SIGHUP)
             ]
         );
-        // `nohup riwork update` must keep surviving a closed terminal.
+        // `nohup somtus update` must keep surviving a closed terminal.
         unsafe { libc::signal(libc::SIGHUP, libc::SIG_IGN) };
         {
             let _guard = InterruptGuard::install();
@@ -1974,10 +1974,10 @@ mod tests {
         let root = &temporary.path;
         let log_path = root.join("log");
         let mut log = log_file(&log_path);
-        let staged_executable = root.join("staged/riwork");
-        let staged_bundle = root.join("staged/RiWork.app");
-        let executable = root.join("release/riwork");
-        let bundle = root.join("release/RiWork.app");
+        let staged_executable = root.join("staged/somtus");
+        let staged_bundle = root.join("staged/Somtus.app");
+        let executable = root.join("release/somtus");
+        let bundle = root.join("release/Somtus.app");
         fs::create_dir_all(staged_bundle.parent().unwrap()).unwrap();
         fs::create_dir_all(&bundle).unwrap();
         // The state right after install_artifacts swapped the names.
@@ -1987,13 +1987,13 @@ mod tests {
         fs::write(&executable, "generation 2 executable").unwrap();
         fs::write(bundle.join("version"), "generation 2 bundle").unwrap();
         // An older rollback set is superseded.
-        fs::create_dir(root.join("release/RiWork.app.previous")).unwrap();
+        fs::create_dir(root.join("release/Somtus.app.previous")).unwrap();
         fs::write(
-            root.join("release/RiWork.app.previous/version"),
+            root.join("release/Somtus.app.previous/version"),
             "generation 0",
         )
         .unwrap();
-        fs::write(root.join("release/riwork.previous"), "generation 0").unwrap();
+        fs::write(root.join("release/somtus.previous"), "generation 0").unwrap();
         let previous = retain_previous(
             &staged_executable,
             &staged_bundle,
@@ -2001,13 +2001,13 @@ mod tests {
             &bundle,
             &mut log,
         );
-        assert_eq!(previous, Some(root.join("release/RiWork.app.previous")));
+        assert_eq!(previous, Some(root.join("release/Somtus.app.previous")));
         assert_eq!(
-            fs::read_to_string(root.join("release/riwork.previous")).unwrap(),
+            fs::read_to_string(root.join("release/somtus.previous")).unwrap(),
             "generation 1 executable"
         );
         assert_eq!(
-            fs::read_to_string(root.join("release/RiWork.app.previous/version")).unwrap(),
+            fs::read_to_string(root.join("release/Somtus.app.previous/version")).unwrap(),
             "generation 1 bundle"
         );
         assert_eq!(
@@ -2024,7 +2024,7 @@ mod tests {
             &mut log,
         );
         assert_eq!(previous, None);
-        assert!(root.join("release/riwork.previous").exists());
+        assert!(root.join("release/somtus.previous").exists());
     }
 
     #[cfg(unix)]
@@ -2037,7 +2037,7 @@ mod tests {
         .unwrap();
         let log_path = temporary.path.join("build.log");
         let mut log = log_file(&log_path);
-        let good = temporary.path.join("good/riwork");
+        let good = temporary.path.join("good/somtus");
         write_executable(
             &good,
             "[ \"$1\" = help ] && [ -z \"$GH_TOKEN\" ] && echo usage",
@@ -2048,7 +2048,7 @@ mod tests {
             ("crashes", "kill -SEGV $$"),
             ("aborts", "echo 'dyld: Library not loaded' >&2; exit 134"),
         ] {
-            let bad = temporary.path.join(name).join("riwork");
+            let bad = temporary.path.join(name).join("somtus");
             write_executable(&bad, body);
             let error = smoke_test(&bad, &temporary.path, &mut log, &log_path).unwrap_err();
             assert!(error.contains("not installed"), "{name}: {error}");
@@ -2059,7 +2059,7 @@ mod tests {
         }
         assert!(
             smoke_test(
-                &temporary.path.join("missing/riwork"),
+                &temporary.path.join("missing/somtus"),
                 &temporary.path,
                 &mut log,
                 &log_path
@@ -2077,11 +2077,11 @@ mod tests {
             &source.join("scripts/bundle-macos.sh"),
             r#"set -eu
 test "${ZIG##*/}" = fixture-zig
-bundle="target/$1/RiWork.app"
+bundle="target/$1/Somtus.app"
 mkdir -p "$bundle/Contents/MacOS" "$bundle/Contents/Resources/terminfo/78" "$bundle/Contents/Resources/ghostty/shell-integration/zsh"
-cp "target/$1/riwork" "$bundle/Contents/MacOS/riwork"
-cp "target/$1/riwork-remote" "$bundle/Contents/MacOS/riwork-remote"
-cp assets/app-icon/RiWork-legacy.icns "$bundle/Contents/Resources/RiWork.icns"
+cp "target/$1/somtus" "$bundle/Contents/MacOS/somtus"
+cp "target/$1/somtus-remote" "$bundle/Contents/MacOS/somtus-remote"
+cp assets/app-icon/Somtus.icns "$bundle/Contents/Resources/Somtus.icns"
 touch "$bundle/Contents/Info.plist" "$bundle/Contents/Resources/terminfo/78/xterm-ghostty" "$bundle/Contents/Resources/ghostty/shell-integration/zsh/ghostty-integration"
 "#,
         );
@@ -2089,11 +2089,11 @@ touch "$bundle/Contents/Info.plist" "$bundle/Contents/Resources/terminfo/78/xter
         write_executable(
             &tools.join("cargo"),
             r#"set -eu
-binary=riwork
+binary=somtus
 for arg in "$@"; do
-    if [ "$arg" = riwork-remote ]; then binary=riwork-remote; fi
+    if [ "$arg" = somtus-remote ]; then binary=somtus-remote; fi
 done
-if [ "$binary" = riwork ]; then test "${ZIG##*/}" = fixture-zig; fi
+if [ "$binary" = somtus ]; then test "${ZIG##*/}" = fixture-zig; fi
 mkdir -p "$CARGO_TARGET_DIR/debug"
 mode=$(cat build-mode)
 printf '#!/bin/sh\n%s\n' "$mode" > "$CARGO_TARGET_DIR/debug/$binary"
@@ -2144,8 +2144,8 @@ chmod +x "$CARGO_TARGET_DIR/debug/$binary"
         let first = build_update_with(&source, Some("debug"), &environment).unwrap();
         assert!(!stale.exists(), "interrupted staging is swept");
         assert_eq!(first.previous_bundle, None);
-        assert!(installed("riwork").contains("generation one"));
-        assert!(installed("RiWork.app/Contents/MacOS/riwork-remote").contains("generation one"));
+        assert!(installed("somtus").contains("generation one"));
+        assert!(installed("Somtus.app/Contents/MacOS/somtus-remote").contains("generation one"));
         let logs = |source: &Path| {
             fs::read_dir(source.join("target"))
                 .unwrap()
@@ -2157,24 +2157,24 @@ chmod +x "$CARGO_TARGET_DIR/debug/$binary"
 
         build_mode("echo generation two");
         let second = build_update_with(&source, Some("debug"), &environment).unwrap();
-        assert!(installed("riwork").contains("generation two"));
-        assert!(installed("RiWork.app/Contents/MacOS/riwork").contains("generation two"));
-        assert!(installed("RiWork.app/Contents/MacOS/riwork-remote").contains("generation two"));
+        assert!(installed("somtus").contains("generation two"));
+        assert!(installed("Somtus.app/Contents/MacOS/somtus").contains("generation two"));
+        assert!(installed("Somtus.app/Contents/MacOS/somtus-remote").contains("generation two"));
         assert_eq!(
             second.previous_bundle,
-            Some(source.join("target/debug/RiWork.app.previous"))
+            Some(source.join("target/debug/Somtus.app.previous"))
         );
-        assert!(installed("riwork.previous").contains("generation one"));
-        assert!(installed("RiWork.app.previous/Contents/MacOS/riwork").contains("generation one"));
+        assert!(installed("somtus.previous").contains("generation one"));
+        assert!(installed("Somtus.app.previous/Contents/MacOS/somtus").contains("generation one"));
 
         // Compiles, but fails at startup: nothing is replaced and nothing is left behind.
         build_mode("exit 1");
         let error = build_update_with(&source, Some("debug"), &environment).unwrap_err();
         assert!(error.contains("does not run"), "{error}");
-        assert!(installed("riwork").contains("generation two"));
-        assert!(installed("RiWork.app/Contents/MacOS/riwork").contains("generation two"));
-        assert!(installed("RiWork.app/Contents/MacOS/riwork-remote").contains("generation two"));
-        assert!(installed("riwork.previous").contains("generation one"));
+        assert!(installed("somtus").contains("generation two"));
+        assert!(installed("Somtus.app/Contents/MacOS/somtus").contains("generation two"));
+        assert!(installed("Somtus.app/Contents/MacOS/somtus-remote").contains("generation two"));
+        assert!(installed("somtus.previous").contains("generation one"));
         assert!(
             fs::read_dir(source.join("target"))
                 .unwrap()
@@ -2188,6 +2188,6 @@ chmod +x "$CARGO_TARGET_DIR/debug/$binary"
 
         build_mode("echo generation three");
         build_update_with(&source, Some("debug"), &environment).unwrap();
-        assert!(installed("riwork.previous").contains("generation two"));
+        assert!(installed("somtus.previous").contains("generation two"));
     }
 }

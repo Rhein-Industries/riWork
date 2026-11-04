@@ -1,4 +1,4 @@
-//! `riwork shell paste ID [--json] -- FILE...` as the remote connector's `shell.paste` runs it
+//! `somtus shell paste ID [--json] -- FILE...` as the remote connector's `shell.paste` runs it
 //! (`remote/src/rpc/upload.rs`): the paths of existing files reach the shell as a drop of those
 //! files on its terminal would type them, without Return, and errors that start with a token
 //! happened before anything was pasted. `shell close` takes the shell's upload inbox with it.
@@ -30,7 +30,7 @@ impl Home {
     }
 
     fn run(&self, args: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_riwork-cli"))
+        Command::new(env!("CARGO_BIN_EXE_somtus-cli"))
             .args(args)
             .env("RIWORK_HOME", &self.path)
             .env("RIWORK_RUNTIME_DIR", self.path.join("runtime"))
@@ -208,7 +208,7 @@ fn refusals_name_their_token_and_paste_nothing() {
     for (args, expected) in cases {
         let error = home.error(&args);
         assert!(
-            error.starts_with(&format!("riwork: {expected}")),
+            error.starts_with(&format!("somtus: {expected}")),
             "{args:?}: {error}"
         );
     }

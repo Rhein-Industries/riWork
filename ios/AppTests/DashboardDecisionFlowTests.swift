@@ -89,13 +89,13 @@ private actor DashboardLandingTransport: RemoteTransport {
     private func json<T: Encodable>(_ value: T) throws -> JSONValue { try JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode(value)) }
     private func dashboard(question: Bool = false) throws -> JSONValue {
         let request = question ? self.question.requestID : approval.requestID
-        let session: JSONValue = .object(["target": .object(["type": .string("chat"), "id": .string(chatID), "project_id": .string(projectID)]), "agent": .string("Claude"), "title": .string("Preview pipeline"), "project_name": .string("RiWork"), "is_chat": .bool(true)])
+        let session: JSONValue = .object(["target": .object(["type": .string("chat"), "id": .string(chatID), "project_id": .string(projectID)]), "agent": .string("Claude"), "title": .string("Preview pipeline"), "project_name": .string("Somtus"), "is_chat": .bool(true)])
         let decision: JSONValue = .object(["kind": .string(question ? "question" : "approval"), "chat_id": .string(chatID), "request_id": .string(request), "observed_at": .number(1_800_000_000), "session": session,
             "source": .object(["chat_id": .string(chatID), "event_seq": .number(3), "event_id": .string("chat:\(chatID):seq:3")]),
             question ? "question" : "approval": question ? try json(self.question) : try json(approval)])
         return .object(["v": .number(1), "generated_at": .number(1_800_000_000), "chats_known": .bool(true),
             "totals": .object(["projects": .number(1), "attention": .number(1), "agents": .object(["working": .number(1), "waiting": .number(1)]), "tasks": .object(["todo": .number(2), "in_progress": .number(1)])]),
-            "projects": .array([.object(["id": .string(projectID), "name": .string("RiWork"), "agents": .object(["working": .number(1)]), "tasks": .object(["todo": .number(2), "in_progress": .number(1)])])]),
+            "projects": .array([.object(["id": .string(projectID), "name": .string("Somtus"), "agents": .object(["working": .number(1)]), "tasks": .object(["todo": .number(2), "in_progress": .number(1)])])]),
             "working": .array([.object(["session": session, "activity": .string("working")])]),
             "decisions": .array([decision]), "decisions_total": .number(1), "decision_sources": .object(["state": .string("read")])])
     }

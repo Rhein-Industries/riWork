@@ -20,7 +20,7 @@ use crate::{
 };
 
 /// The transcript of the session a terminal's Claude is in. The session id comes from
-/// the hooks RiWork gives every launch; the file is in the folder of the directory the
+/// the hooks Somtus gives every launch; the file is in the folder of the directory the
 /// session started in, or else in whichever folder has it (a session moves with `/resume`).
 pub fn locate(home: &Path, shell: &ShellSession) -> Option<PathBuf> {
     let (session, _) = crate::agent_hooks::schedule_state(home, &shell.id)?;

@@ -1,5 +1,5 @@
 //! `appearance.json`: the colors the desktop resolved, published under the
-//! RiWork data directory for the phone companion.
+//! Somtus data directory for the phone companion.
 //!
 //! Kept free of GPUI so `remote/tests` compiles it under strict Clippy.
 //! `remote/src/appearance.rs` validates the same document for the
@@ -19,7 +19,7 @@ pub const MAX_BYTES: u64 = 16 * 1024;
 pub const VERSION: u8 = 1;
 /// The CLI's error for a file that is missing or invalid. The phone maps it to
 /// `not_found` "appearance not published".
-pub const NOT_PUBLISHED: &str = "RiWork has not published its appearance yet; open the RiWork app";
+pub const NOT_PUBLISHED: &str = "Somtus has not published its appearance yet; open the Somtus app";
 
 /// A color as `0xRRGGBB`; the document spells it lowercase `#rrggbb`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

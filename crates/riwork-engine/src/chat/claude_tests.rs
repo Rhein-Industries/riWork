@@ -3109,7 +3109,7 @@ fn the_session_and_mode_claude_reports_are_observed_and_its_resolved_model_is_no
     // An approval "for the session" moves the CLI to another mode on its own.
     core.on_frame(&json!({"type":"system","subtype":"status","permissionMode":"plan"}));
     assert_eq!(heard.modes(), [ApprovalMode::AutoEdit, ApprovalMode::Plan]);
-    // A mode RiWork has no name for is not reported as one it has.
+    // A mode Somtus has no name for is not reported as one it has.
     core.on_frame(&json!({"type":"system","subtype":"status","permissionMode":"dontAsk"}));
     assert_eq!(heard.modes(), [ApprovalMode::AutoEdit, ApprovalMode::Plan]);
     // The same session again is nothing new.

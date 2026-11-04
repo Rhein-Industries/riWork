@@ -40,6 +40,7 @@ extension ChatProvider {
         case .codex: "chevron.left.forwardslash.chevron.right"
         case .claude: "sparkles"
         case .muse: "infinity"
+        case .acp: "network"
         }
     }
 }

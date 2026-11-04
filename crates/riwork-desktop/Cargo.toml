@@ -10,7 +10,7 @@ terminal-fixture = ["riwork-nsh-terminal/terminal-fixture"]
 dev-reload = ["dep:nsh-dev"]
 
 [[bin]]
-name = "riwork"
+name = "somtus"
 path = "src/nsh_main.rs"
 
 [[test]]

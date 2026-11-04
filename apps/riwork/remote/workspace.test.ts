@@ -14,7 +14,7 @@ function fixture(overrides: Partial<WorkspaceRemoteApi> = {}) {
     orchestrator: async () => ({ shell: null, notice: null }), ...overrides,
   };
   const actions = workspaceRemote({ api,
-    session: { openRemoteShell: (host, id) => { calls.push(["open", host, id]); return {}; }, selectPane: (id) => { calls.push(["pane", id]); return {}; }, selectPanel: (id) => { calls.push(["tab", id]); return {}; } },
+    session: { openRemoteChat: (host, id) => { calls.push(["chat", host, id]); return {}; }, openRemoteShell: (host, id) => { calls.push(["open", host, id]); return {}; }, selectPane: (id) => { calls.push(["pane", id]); return {}; }, selectPanel: (id) => { calls.push(["tab", id]); return {}; } },
     projectId: () => project, generation: () => generation, alive: () => alive, snapshot: () => snapshot,
     data: () => EMPTY_REMOTE, selectedWorktree: () => "tree", install: () => {}, focus: (id) => calls.push(["focus", id]), notice: (text) => notices.push(text),
   });
@@ -47,7 +47,7 @@ test("P6B-REMOTE-WORKSPACE-03 failure is never automatically retried and dead/ch
   expect(f.notices).toEqual(["No answer in time"]); expect(count).toBe(1);
   f.actions.open("host", { ...shell, alive: false }); f.actions.open("host", { ...shell, chat: true });
   expect(f.calls.length).toBe(0);
-  expect(f.notices.slice(1)).toEqual(["Shell has ended on the host", "Shell runs as a chat on the host; chats run on that Mac. Open it there, or in the iOS app."]);
+  expect(f.notices.slice(1)).toEqual(["Shell has ended on the host", "Shell is a chat on the host, but this host did not report its chat ID. Refresh or update the host."]);
 });
 test("P6B-REMOTE-WORKSPACE-04 worktree selects the exact host tab before starting anything", async () => {
   const f = fixture({ clickWorktree: async () => ({ action: "tab", shellId: "shell", shell: null }) });
@@ -76,4 +76,11 @@ test("2CB-REMOTE-WORKSPACE-06 the orchestrator opens what the native lookup foun
   const stale = fixture({ orchestrator: () => new Promise((resolve) => { finish = resolve; }) });
   const asked = stale.actions.orchestrator(); stale.switch("local"); finish({ shell: null, notice: "Cannot reach Fixture Mac" }); await asked;
   expect(stale.notices).toEqual([]);
+});
+
+test("REMOTE-CHAT native chat uses the host/chat pair rather than a terminal or local chat", () => {
+  const f = fixture();
+  f.actions.open("host-b", { ...shell, chat: true, chatId: "chat-id", alive: false });
+  expect(f.calls).toEqual([["chat", "host-b", "chat-id"], ["focus", "remote-chat:host-b:chat-id"]]);
+  expect(f.notices).toEqual([]);
 });

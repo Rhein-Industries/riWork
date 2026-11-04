@@ -64,20 +64,20 @@ fn resolver_follows_path_links_and_finds_profile_packaged_companion() {
     use std::{fs, os::unix::fs::symlink};
     let tmp = tempfile::tempdir().unwrap();
     let profile = tmp.path().canonicalize().unwrap().join("target/debug");
-    let macos = profile.join("RiWork.app/Contents/MacOS");
+    let macos = profile.join("Somtus.app/Contents/MacOS");
     fs::create_dir_all(&macos).unwrap();
-    let root = profile.join("riwork");
+    let root = profile.join("somtus");
     fs::write(&root, "CLI").unwrap();
-    let link = tmp.path().join("riwork-on-path");
+    let link = tmp.path().join("somtus-on-path");
     symlink(&root, &link).unwrap();
     assert!(remote_cli::resolve(&link, None).is_err());
-    let packed = macos.join("riwork-remote");
+    let packed = macos.join("somtus-remote");
     fs::write(&packed, "companion").unwrap();
     assert_eq!(remote_cli::resolve(&link, None).unwrap(), packed);
-    let packaged_cli = macos.join("riwork");
+    let packaged_cli = macos.join("somtus");
     fs::write(&packaged_cli, "CLI").unwrap();
     assert_eq!(remote_cli::resolve(&packaged_cli, None).unwrap(), packed);
-    let sibling = profile.join("riwork-remote");
+    let sibling = profile.join("somtus-remote");
     fs::write(&sibling, "explicit companion").unwrap();
     assert_eq!(remote_cli::resolve(&link, None).unwrap(), sibling);
     assert_eq!(
@@ -85,4 +85,25 @@ fn resolver_follows_path_links_and_finds_profile_packaged_companion() {
         packed
     );
     assert!(remote_cli::resolve(&link, Some(tmp.path().join("missing override"))).is_err());
+}
+
+#[test]
+fn resolver_keeps_existing_legacy_bundle_usable_during_upgrade() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("somtus");
+    std::fs::write(&root, "CLI").unwrap();
+    let legacy = tmp.path().join("RiWork.app/Contents/MacOS/riwork-remote");
+    std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+    std::fs::write(&legacy, "old companion").unwrap();
+    assert_eq!(
+        remote_cli::resolve(&root, None).unwrap(),
+        legacy.canonicalize().unwrap()
+    );
+    let current = tmp.path().join("Somtus.app/Contents/MacOS/somtus-remote");
+    std::fs::create_dir_all(current.parent().unwrap()).unwrap();
+    std::fs::write(&current, "new companion").unwrap();
+    assert_eq!(
+        remote_cli::resolve(&root, None).unwrap(),
+        current.canonicalize().unwrap()
+    );
 }

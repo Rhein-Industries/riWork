@@ -7,7 +7,7 @@
 //! the chat's own worktree: an agent often shows an image another worktree of its project
 //! made, and the global orchestrator one from any project. They come from what the store
 //! registers, checked against the chat's own identity, never from the chat's working
-//! directory, the window's selection, a common parent, HOME or the RiWork data directory:
+//! directory, the window's selection, a common parent, HOME or the Somtus data directory:
 //!
 //! - an ordinary chat or a project orchestrator chat: its own project's root, repositories and
 //!   worktrees, and that project's orchestrator folder (`RIWORK_HOME/orchestrators/projects/ID`);

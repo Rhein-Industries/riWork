@@ -13,6 +13,7 @@ use std::{
 };
 
 use block2::RcBlock;
+use riwork_core::customization_keys::{self, Bindings};
 use nsh_core::{
     desktop::{Key, MenuAction as DesktopMenuAction, MenuItem, MenuRole, Shortcut},
     keymap::When,
@@ -53,6 +54,10 @@ struct DockItem {
 }
 
 type Emit = Arc<dyn Fn(MenuAction) + Send + Sync>;
+struct MenuTargetState {
+    emit: Emit,
+    bindings: RefCell<Bindings>,
+}
 
 // IOKit's device-dependent modifier bits (NX_DEVICE*KEYMASK): which side of a modifier is down.
 const DEVICE_LEFT_COMMAND: usize = 0x08;
@@ -187,7 +192,7 @@ pub(crate) fn command_window(
 define_class!(
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
-    #[ivars = Emit]
+    #[ivars = MenuTargetState]
     #[name = "RiWorkNshMenuTarget"]
     struct MenuTarget;
 
@@ -203,7 +208,7 @@ define_class!(
 
         #[unsafe(method(riworkDockWindowChosen:))]
         fn dock_window(&self, item: &NSMenuItem) {
-            (self.ivars())(MenuAction {
+            (self.ivars().emit)(MenuAction {
                 window_number: Some(item.tag()),
                 command: "focusWindow",
             });
@@ -243,7 +248,7 @@ impl MenuTarget {
             return;
         }
         let app = NSApplication::sharedApplication(self.mtm());
-        (self.ivars())(MenuAction {
+        (self.ivars().emit)(MenuAction {
             window_number: app.keyWindow().map(|window| window.windowNumber()),
             command,
         });
@@ -284,21 +289,14 @@ impl MenuTarget {
             self.emit("tabContextMenu");
             return true;
         }
-        if !flags.contains(NSEventModifierFlags::Command)
-            || flags.intersects(NSEventModifierFlags::Control | NSEventModifierFlags::Option)
-        {
-            return false;
-        }
-        let shifted = flags.contains(NSEventModifierFlags::Shift);
-        let Some(command) = key
-            .as_deref()
-            .and_then(|key| intercepted_command(key, shifted))
-        else {
+        let unshifted = event.charactersByApplyingModifiers(NSEventModifierFlags::empty())
+            .map(|text| text.to_string()).or(key);
+        let Some(command) = intercepted_binding(unshifted.as_deref(), flags, &self.ivars().bindings.borrow()) else {
             return false;
         };
         let app = NSApplication::sharedApplication(self.mtm());
         let Some(window) = app.keyWindow() else {
-            if app_command(command) {
+            if app_command(command) || command == "resetCustomization" {
                 self.emit(command);
                 return true;
             }
@@ -342,15 +340,25 @@ fn is_nsh_view(object: &AnyObject) -> bool {
     false
 }
 
-fn intercepted_command(key: &str, shifted: bool) -> Option<&'static str> {
-    match (key, shifted) {
-        ("w" | "W", false) => Some("closeTab"),
-        ("n" | "N", true) => Some("newProjectWindow"),
-        ("=" | "+", _) => Some("biggerText"),
-        ("-", false) => Some("smallerText"),
-        ("0", false) => Some("actualSize"),
-        _ => None,
+fn intercepted_binding(key: Option<&str>, flags: NSEventModifierFlags, bindings: &Bindings) -> Option<&'static str> {
+    let key = key?.to_lowercase();
+    let flags = flags & (NSEventModifierFlags::Command | NSEventModifierFlags::Control
+        | NSEventModifierFlags::Option | NSEventModifierFlags::Shift);
+    let matches = |chord: &str| {
+        Shortcut::parse(chord, true).ok().is_some_and(|shortcut| {
+            let (expected, mask) = key_equivalent(&shortcut);
+            expected == key && mask == flags
+        })
+    };
+    if matches(customization_keys::RESET_CHORD) { return Some("resetCustomization"); }
+    for (command, chord) in customization_keys::effective_bindings(bindings) {
+        // Explicit overrides belong to the window even when an embedded add-in
+        // or native editor owns focus. Defaults retain their contextual routing.
+        if (bindings.contains_key(&command) || app_command(&command) || matches!(command.as_str(), "closeTab" | "newProjectWindow")) && matches(&chord) {
+            return customization_keys::canonical_command(&command);
+        }
     }
+    None
 }
 
 /// Retain for the lifetime of the host: NSMenuItem does not retain its target.
@@ -366,7 +374,7 @@ pub(crate) struct HostMenus {
 
 impl HostMenus {
     pub(crate) fn install(mtm: MainThreadMarker, emit: Emit) -> Self {
-        let target = MenuTarget::alloc(mtm).set_ivars(emit);
+        let target = MenuTarget::alloc(mtm).set_ivars(MenuTargetState { emit, bindings: RefCell::new(Bindings::new()) });
         // SAFETY: NSObject's designated initializer on a newly allocated object.
         let target: Retained<MenuTarget> = unsafe { msg_send![super(target), init] };
         let menu = render_menu(mtm, "", &menu_model(), &target);
@@ -413,6 +421,16 @@ impl HostMenus {
             flags_monitor,
             dock: RefCell::new(None),
         }
+    }
+
+    /// Update both AppKit's visible accelerators and the pre-responder monitor.
+    pub(crate) fn update_bindings(&mut self, bindings: Bindings) {
+        if *self._target.ivars().bindings.borrow() == bindings { return; }
+        let Ok(bindings) = customization_keys::normalize_bindings(&bindings) else { return; };
+        *self._target.ivars().bindings.borrow_mut() = bindings.clone();
+        let model = customized_menu(&bindings);
+        self.menu = render_menu(self._target.mtm(), "", &model, &self._target);
+        NSApplication::sharedApplication(self._target.mtm()).setMainMenu(Some(&self.menu));
     }
 
     /// AppKit asks the application delegate for this menu on demand. The host
@@ -556,7 +574,7 @@ fn menu_model() -> Vec<MenuItem> {
     use MenuItem::Separator;
     vec![
         submenu(
-            "RiWork",
+            "Somtus",
             vec![
                 item("Settings…", "openSettings", Some("cmd+,")),
                 item(
@@ -566,7 +584,7 @@ fn menu_model() -> Vec<MenuItem> {
                 ),
                 item("Automations", "openSchedules", Some("cmd+shift+s")),
                 Separator,
-                item("Quit RiWork", "quit", Some("cmd+q")),
+                item("Quit Somtus", "quit", Some("cmd+q")),
             ],
         ),
         submenu(
@@ -624,6 +642,27 @@ fn menu_model() -> Vec<MenuItem> {
             ],
         ),
     ]
+}
+
+fn customized_menu(bindings: &Bindings) -> Vec<MenuItem> {
+    fn visit(items: &mut [MenuItem], bindings: &Bindings) {
+        for item in items {
+            match item {
+                MenuItem::Submenu { items, .. } => visit(items, bindings),
+                MenuItem::Action(action) if action.role.is_none() => {
+                    let Some(command) = action.id.checked_sub(1).and_then(|id| COMMANDS.get(id as usize)) else { continue; };
+                    let command = if *command == "sessions" { "openSessions" } else { command };
+                    if let Some(chord) = bindings.get(command) {
+                        action.shortcut = chord.as_deref().and_then(|chord| Shortcut::parse(chord, true).ok());
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut model = menu_model();
+    visit(&mut model, bindings);
+    model
 }
 
 fn render_menu(
@@ -689,9 +728,22 @@ fn make_item(
 fn key_equivalent(shortcut: &Shortcut) -> (String, NSEventModifierFlags) {
     let key = match shortcut.key {
         Key::Char(character) => character.to_string(),
+        Key::Enter => "\r".into(),
+        Key::Escape => "\u{1b}".into(),
+        Key::Tab => "\t".into(),
+        Key::Space => " ".into(),
+        Key::Backspace => "\u{7f}".into(),
+        Key::Delete => "\u{f728}".into(),
+        Key::Insert => "\u{f727}".into(),
+        Key::Up => "\u{f700}".into(),
+        Key::Down => "\u{f701}".into(),
         Key::Left => "\u{f702}".into(),
         Key::Right => "\u{f703}".into(),
-        _ => unreachable!("the host menu only uses character and arrow keys"),
+        Key::Home => "\u{f729}".into(),
+        Key::End => "\u{f72b}".into(),
+        Key::PageUp => "\u{f72c}".into(),
+        Key::PageDown => "\u{f72d}".into(),
+        Key::F(number) => char::from_u32(0xf703 + u32::from(number)).unwrap().to_string(),
     };
     let mut mask = NSEventModifierFlags::empty();
     for (set, flag) in [
@@ -777,6 +829,7 @@ mod tests {
                 "quit",
                 "openGlobalDashboard",
                 "openGlobalChat",
+                "openProjectOrchestrator",
                 "newChat",
                 "appPreview",
                 "sessions",
@@ -887,7 +940,7 @@ mod tests {
                 _ => panic!("top-level items must be submenus"),
             })
             .collect::<Vec<_>>();
-        assert_eq!(names, ["RiWork", "Edit", "View"]);
+        assert_eq!(names, ["Somtus", "Edit", "View"]);
         MenuItem::each_action(&model, &mut |action| {
             assert_ne!(action.role, Some(MenuRole::Close));
             assert_ne!(
@@ -899,16 +952,61 @@ mod tests {
 
     #[test]
     fn close_tab_and_font_keys_preserve_their_modifier_boundaries() {
-        assert_eq!(intercepted_command("w", false), Some("closeTab"));
-        assert_eq!(intercepted_command("W", false), Some("closeTab"));
-        assert_eq!(intercepted_command("w", true), None);
-        assert_eq!(intercepted_command("N", true), Some("newProjectWindow"));
-        assert_eq!(intercepted_command("n", false), None);
-        assert_eq!(intercepted_command("=", true), Some("biggerText"));
-        assert_eq!(intercepted_command("+", false), Some("biggerText"));
-        assert_eq!(intercepted_command("-", false), Some("smallerText"));
-        assert_eq!(intercepted_command("0", false), Some("actualSize"));
-        assert_eq!(intercepted_command("0", true), None);
+        let run = |key, shift| intercepted_binding(Some(key), NSEventModifierFlags::Command |
+            if shift { NSEventModifierFlags::Shift } else { NSEventModifierFlags::empty() }, &Bindings::new());
+        assert_eq!(run("w", false), Some("closeTab"));
+        assert_eq!(run("W", false), Some("closeTab"));
+        assert_eq!(run("w", true), None);
+        assert_eq!(run("N", true), Some("newProjectWindow"));
+        assert_eq!(run("n", false), None);
+        assert_eq!(run("=", true), Some("biggerText"));
+        assert_eq!(run("-", false), Some("smallerText"));
+        assert_eq!(run("0", false), Some("actualSize"));
+        assert_eq!(run("0", true), None);
+    }
+
+    #[test]
+    fn live_overrides_remove_old_intercepts_and_keep_recovery() {
+        let bindings = customization_keys::normalize_bindings(&Bindings::from([
+            ("closeTab".into(), Some("ctrl+alt+k".into())), ("biggerText".into(), None),
+            ("quit".into(), Some("mod+shift+q".into())),
+        ])).unwrap();
+        let cmd = NSEventModifierFlags::Command;
+        assert_eq!(intercepted_binding(Some("w"), cmd, &bindings), None);
+        assert_eq!(intercepted_binding(Some("="), cmd, &bindings), None);
+        assert_eq!(intercepted_binding(Some("="), cmd | NSEventModifierFlags::Shift, &bindings), None);
+        assert_eq!(intercepted_binding(Some("q"), cmd, &bindings), None);
+        assert_eq!(intercepted_binding(Some("q"), cmd | NSEventModifierFlags::Shift, &bindings), Some("quit"));
+        assert_eq!(intercepted_binding(Some("k"), NSEventModifierFlags::Control | NSEventModifierFlags::Option, &bindings), Some("closeTab"));
+        assert_eq!(intercepted_binding(Some("\u{1b}"), NSEventModifierFlags::Control | NSEventModifierFlags::Option | NSEventModifierFlags::Shift, &bindings), Some("resetCustomization"));
+    }
+
+    #[test]
+    fn explicit_window_overrides_route_before_embedded_native_views() {
+        let bindings = customization_keys::normalize_bindings(&Bindings::from([
+            ("openCustomization".into(), Some("ctrl+alt+k".into())),
+            ("newSubshell".into(), Some("mod+shift+j".into())),
+        ])).unwrap();
+        assert_eq!(intercepted_binding(Some("k"), NSEventModifierFlags::Control | NSEventModifierFlags::Option, &bindings), Some("openCustomization"));
+        assert_eq!(intercepted_binding(Some("j"), NSEventModifierFlags::Command | NSEventModifierFlags::Shift, &bindings), Some("newSubshell"));
+        // The unchanged default stays with its normal menu/keymap owner.
+        assert_eq!(intercepted_binding(Some(","), NSEventModifierFlags::Command, &bindings), None);
+    }
+
+    #[test]
+    fn menu_accelerators_follow_overrides_but_edit_and_chat_roles_stay_fixed() {
+        let model = customized_menu(&Bindings::from([
+            ("openSettings".into(), Some("ctrl+alt+k".into())), ("quit".into(), None),
+            ("openSessions".into(), Some("mod+shift+j".into())),
+        ]));
+        let mut actions = Vec::new();
+        MenuItem::each_action(&model, &mut |a| actions.push(a.clone()));
+        let action = |command| actions.iter().find(|a| a.id.checked_sub(1).and_then(|n|COMMANDS.get(n as usize)) == Some(&command)).unwrap();
+        assert_eq!(action("openSettings").shortcut, Some(Shortcut::parse("ctrl+alt+k", true).unwrap()));
+        assert_eq!(action("sessions").shortcut, Some(Shortcut::parse("mod+shift+j", true).unwrap()));
+        assert!(action("quit").shortcut.is_none());
+        assert_eq!(action("find").shortcut, Some(Shortcut::parse("mod+f", true).unwrap()));
+        assert_eq!(actions.iter().find(|a| a.role == Some(MenuRole::Copy)).unwrap().shortcut, MenuRole::Copy.shortcut(true));
     }
 
     #[test]

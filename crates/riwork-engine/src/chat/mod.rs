@@ -9,28 +9,30 @@
 //!   MSP JSON-RPC). `codex`, `claude` and `muse` are the drivers; `child` is
 //!   what they share (the process in its own group, a size-capped line reader).
 //! - `client` is the blocking client a window and the CLI use to reach it.
-//! - `wire` is the line protocol of the chat host (`riwork chat serve`), the
+//! - `wire` is the line protocol of the chat host (`somtus chat serve`), the
 //!   background process that owns the provider processes so chats keep running
 //!   while app windows reload.
 //! - `host` is that process: it serves `wire`, keeps each chat's files (`log`)
 //!   and starts drivers with the configuration `launch` resolves.
 //! - `text` writes a transcript as plain text, for what reads a chat like a
-//!   terminal (`riwork orchestrator output`).
+//!   terminal (`somtus orchestrator output`).
 //! - `citation` reads the file citations Codex writes into its messages, for the
 //!   views that draw them as files and the plain text that names them.
 //! - `catalog` reads the models each provider offers from what chats saved, for
 //!   a chat that is not running that provider yet.
-//! - `workers` puts RiWork's own workers (terminals and chats a chat started) in that
+//! - `workers` puts Somtus's own workers (terminals and chats a chat started) in that
 //!   chat's timeline: a marker item the host writes, overlaid with live inventory state.
 //! - `lineage` is the marker the host writes into a chat whose conversation went on in
 //!   another chat (a handoff or a fork); the new chat keeps its origin in its info.
 //! - `suggest` is what a message box offers while a `/` command or an `@` file is
-//!   typed, for the desktop and (through `riwork chat suggestions`) the phone.
+//!   typed, for the desktop and (through `somtus chat suggestions`) the phone.
 
 // The contract lands before the host and the tabs that use it.
 #![allow(dead_code)]
 
 mod account_identity;
+pub mod acp;
+pub mod acp_config;
 #[cfg(test)]
 mod attachment_driver_tests;
 pub mod attachments;

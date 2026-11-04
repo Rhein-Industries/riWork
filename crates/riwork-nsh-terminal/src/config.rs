@@ -41,7 +41,7 @@ impl Colors {
 }
 
 /// One set of source paths per process. Fixture HOME/XDG_CONFIG_HOME therefore
-/// isolates both Ghostty preferences and RiWork state without global installs.
+/// isolates both Ghostty preferences and Somtus state without global installs.
 pub(crate) fn roots() -> Vec<PathBuf> {
     let home = std::env::var_os("HOME").map(PathBuf::from);
     let xdg = std::env::var_os("XDG_CONFIG_HOME")
@@ -143,7 +143,7 @@ pub(crate) fn write(
     colors.validate()?;
     let dir = home.join("nsh/terminal-config");
     riwork_core::paths::create_private_dir(&dir).map_err(|e| e.to_string())?;
-    let mut text = format!("# Generated RiWork terminal configuration; revision {revision}.\n");
+    let mut text = format!("# Generated Somtus terminal configuration; revision {revision}.\n");
     for path in roots.iter().filter(|p| p.is_file()) {
         let path = path
             .to_str()

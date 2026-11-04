@@ -364,7 +364,7 @@ export function DashboardView(props: {
     <If when={!!wire()} else={<View testID="dashboard-unread" style={{ flex: 1, alignItems: "center", justifyContent: "center", gap: 8, padding: 24 }}>
       <Text style={font(18, palette().muted)}>{props.dto()?.error ? "⚠" : "⧗"}</Text>
       <Text style={{ ...font(11, palette().muted), textAlign: "center" }}>{props.dto()?.error
-        ? "The sessions could not be read, so nothing can be counted yet. RiWork tries again every two seconds; Refresh tries now."
+        ? "The sessions could not be read, so nothing can be counted yet. Somtus tries again every two seconds; Refresh tries now."
         : "Reading the sessions, chats and tasks of every project…"}</Text>
     </View>}>
       <View style={{ flex: 1, minHeight: 0, gap: size(8) }}>

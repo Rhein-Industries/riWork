@@ -19,7 +19,7 @@ final class DesktopThemeTests: XCTestCase {
         XCTAssertEqual(theme, .builtIn)
         XCTAssertFalse(theme.isSynced)
         XCTAssertNil(theme.dark)
-        XCTAssertEqual(theme.background, ThemeColor(light: RGB(0xfbf1c7), dark: RGB(0x090d14)), "Gruvbox Light / RiWork, as before syncing existed")
+        XCTAssertEqual(theme.background, ThemeColor(light: RGB(0xfbf1c7), dark: RGB(0x090d14)), "Gruvbox Light / Somtus, as before syncing existed")
         XCTAssertEqual(theme.accent, ThemeColor(light: RGB(0x427b58), dark: RGB(0x55e6dc)))
         XCTAssertEqual(theme.gold, ThemeColor(light: RGB(0x9d5015), dark: RGB(0xf4bf75)))
         XCTAssertEqual(theme.terminalBackground, theme.background)

@@ -1,7 +1,7 @@
 //! `dashboard.get` ("Dashboard extension" in `docs/remote-protocol.md`): the desktop's global
 //! dashboard in one bounded read, as the desktop's own dashboard shows it.
 //!
-//! It is `riwork dashboard --json`, which samples what the desktop's dashboard samples (the
+//! It is `somtus dashboard --json`, which samples what the desktop's dashboard samples (the
 //! store, the shells and their agents, the chats of a chat host that runs or else the saved
 //! chats, and the automations) and starts nothing. The CLI already arranges, orders and cuts
 //! the reply (`riwork_engine::global_overview::wire`); the connector only checks it before the
@@ -93,7 +93,7 @@ fn reply(cli: Value) -> std::result::Result<Value, Fault> {
 
 impl Rpc {
     /// What `ready` announces as `features.dashboard`: the installed CLI said `"dashboard":
-    /// true` in `riwork capabilities --json`. Short, like `chat_supported`, whose question it
+    /// true` in `somtus capabilities --json`. Short, like `chat_supported`, whose question it
     /// shares.
     pub async fn dashboard_supported(&self) -> bool {
         self.capability_known(&self.dashboard, Duration::from_secs(3))
@@ -101,7 +101,7 @@ impl Rpc {
             .unwrap_or(false)
     }
 
-    /// The global dashboard, as `riwork dashboard --json` reads it. Without that command the
+    /// The global dashboard, as `somtus dashboard --json` reads it. Without that command the
     /// method is one this desktop does not have, in the words a connector from before it uses.
     pub(super) async fn dashboard(&self, reply_limit: usize) -> std::result::Result<Value, Fault> {
         if !self.capability_known(&self.dashboard, CLI_TIMEOUT).await? {

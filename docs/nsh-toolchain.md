@@ -2,7 +2,7 @@
 
 This records the isolated NSH baseline for task
 `60f8aec4-464b-43fa-bfa1-3980195461dd`, verified on 2026-10-27. It does
-not change RiWork's dependencies or its workspace lockfile.
+not change Somtus's dependencies or its workspace lockfile.
 
 ## Verification environment
 
@@ -16,7 +16,7 @@ not change RiWork's dependencies or its workspace lockfile.
 - NSH cache: `$NSH_PROBE/nsh-cache`; temporary files: `$NSH_PROBE/tmp`.
 - Host: Apple silicon, `aarch64-apple-darwin`, macOS 26.2 (25C56).
 - Xcode: `/Applications/Xcode.app/Contents/Developer`; macOS SDK 26.0.
-- No application windows, RiWork runtime, orchestrator, or live task state were
+- No application windows, Somtus runtime, orchestrator, or live task state were
   used for verification. No app was launched, installed, packaged, merged, or
   pushed. No `nsh-platform-gpui` dependency was resolved and `--target gpui`
   was never invoked. The distribution's bundled hosts were not run.
@@ -27,7 +27,7 @@ not change RiWork's dependencies or its workspace lockfile.
 | --- | --- |
 | NSH release | `NSH_VERSION=v0.3.0` |
 | Isolated CLI | `nsh 0.3.0 (76fa8a7)` |
-| Rust toolchain | `1.99.1`, matching RiWork's `rust-toolchain.toml` |
+| Rust toolchain | `1.99.1`, matching Somtus's `rust-toolchain.toml` |
 | rustc | `1.99.1 (58cf8f9c3 2026-10-13)`; LLVM `23.1.1` |
 | Cargo | `1.99.1 (5f94df478 2026-08-27)` |
 | `nsh-core` | crates.io `=0.3.0` |
@@ -212,11 +212,11 @@ PY
 ```
 
 Result: `PASS: all 49 user NSH file hashes and ~/.local/bin/nsh symlink unchanged`.
-The existing CLI still reports `nsh 0.2.0 (68531fb)`. RiWork's `Cargo.toml`,
+The existing CLI still reports `nsh 0.2.0 (68531fb)`. Somtus's `Cargo.toml`,
 `Cargo.lock`, and `rust-toolchain.toml` remain unchanged. Task status is left to
 the orchestrator.
 
-Only this document belongs in the RiWork commit. The CLI, generated app, Cargo
+Only this document belongs in the Somtus commit. The CLI, generated app, Cargo
 lockfile, cache, and build output stay in `/tmp`; no `.gitignore` change is
 needed. The isolated prefix is temporary: repeat the commands if it is removed.
 

@@ -34,7 +34,7 @@ function Ready() {
     if (alive) session.set(value); else value.dispose();
   });
   return <View style={{ flex: 1 }}><Text testID="fixture-fonts">{`family:${ui.theme().family} mono:${ui.theme().monoFamily}`}</Text>{session() && ui.ready() && <Workspace session={session()!}
-    title="RiWork · Project Alpha" projectLabel="Project Alpha" projectId={params.projectId ?? undefined}
+    title="Somtus · Project Alpha" projectLabel="Project Alpha" projectId={params.projectId ?? undefined}
     theme={ui.theme} settings={ui.settings} appearanceNotice={() => notice() || ui.notice()} modalOpen={modal} diagnostics={params.diagnostics} />}</View>;
 }
 

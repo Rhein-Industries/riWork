@@ -265,7 +265,7 @@ mod app {
             }
         };
         if !activated {
-            eprintln!("riwork: could not bring the Quick Look panel (pid {pid}) forward");
+            eprintln!("somtus: could not bring the Quick Look panel (pid {pid}) forward");
         }
     }
 }

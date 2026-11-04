@@ -389,6 +389,7 @@ pub fn missing_start(
         Provider::Codex => "codex",
         Provider::Claude => "claude",
         Provider::Muse => "muse",
+        Provider::Acp => "acp",
     };
     Err(format!("{program} is not installed or is not on PATH"))
 }

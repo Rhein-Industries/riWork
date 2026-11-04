@@ -7,7 +7,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-/// The shared RiWork data directory. An empty `RIWORK_HOME` or `HOME` counts as
+/// The shared Somtus data directory. An empty `RIWORK_HOME` or `HOME` counts as
 /// unset: `create_dir_all("")` succeeds, which would put state in the working
 /// directory and fail later at the first fsync.
 pub fn riwork_home() -> Result<PathBuf, String> {

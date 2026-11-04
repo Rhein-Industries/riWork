@@ -1183,7 +1183,7 @@ import RiWorkCore
         defaults.set(KeyboardFocusSetting.never.rawValue, forKey: KeyboardPrefs.focusKey)
         let screen = UIScreen.main.bounds.size
         let rig = try await makeRig(hardwareKeyboard: true, width: screen.width, height: screen.height, look: .nativeLight, defaults: suite)
-        await rig.transport.append(chatID, [.info(chat()), .itemCompleted(ChatItem(id: "tab-help-proof", status: .completed, body: .agentMessage("Use the physical Tab key to reach your RiWork shortcuts.")))])
+        await rig.transport.append(chatID, [.info(chat()), .itemCompleted(ChatItem(id: "tab-help-proof", status: .completed, body: .agentMessage("Use the physical Tab key to reach your Somtus shortcuts.")))])
         // The project's name under the selected tab and over a focused terminal is the iPhone's (`projectCaption`); an iPad shows neither.
         let phone = UIDevice.current.userInterfaceIdiom == .phone
         await eventually("the terminal capture and project context are visible") {

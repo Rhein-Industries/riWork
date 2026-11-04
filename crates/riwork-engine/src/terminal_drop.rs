@@ -89,8 +89,8 @@ fn shell(name: &str) -> bool {
 /// The program in front in a pane whose tmux `pane_current_command` is `command`, in a shell
 /// started for `harness`. `foreground` names the processes in front on the pane's terminal; it
 /// is asked only when `command` does not settle it, as for Codex installed by npm, which runs
-/// as `node` with the real `codex` beside it. An agent RiWork started may also run under
-/// RiWork's launcher, where the harness tells. A shell in front means the agent is gone.
+/// as `node` with the real `codex` beside it. An agent Somtus started may also run under
+/// Somtus's launcher, where the harness tells. A shell in front means the agent is gone.
 pub fn program(
     harness: Option<HarnessKind>,
     command: &str,
@@ -133,7 +133,7 @@ pub fn foreground_names(tty: &str) -> Vec<String> {
         .collect()
 }
 
-/// Whether Codex would likely take `path` for a picture: it reads the file, RiWork guesses from
+/// Whether Codex would likely take `path` for a picture: it reads the file, Somtus guesses from
 /// the extension, which only decides whether a space follows.
 fn picture(path: &Path) -> bool {
     path.extension()
@@ -267,7 +267,7 @@ mod tests {
             program(None, "node", || vec!["node".to_owned()]),
             Program::Shell
         );
-        // An agent RiWork started may run under a launcher.
+        // An agent Somtus started may run under a launcher.
         assert_eq!(program(Some(Codex), "node", none), Program::Codex);
         assert_eq!(program(Some(Claude), "riwork", none), Program::Claude);
         assert_eq!(program(Some(Grok), "riwork", none), Program::Grok);

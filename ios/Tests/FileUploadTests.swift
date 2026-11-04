@@ -213,7 +213,7 @@ final class FileUploadTests: XCTestCase {
         catch { XCTAssertEqual(error as? UploadError, .tooLarge(name: "a.png", limit: 1000)) }
         let calls = await none.callCount()
         XCTAssertEqual(calls, 0, "nothing leaves the phone for a file the desktop would refuse")
-        XCTAssertTrue(UploadError.desktopTooOld.localizedDescription.contains("Update RiWork on the Mac"))
+        XCTAssertTrue(UploadError.desktopTooOld.localizedDescription.contains("Update Somtus on the Mac"))
     }
 
     func testTheFeatureIsReadAndBoundedByWhatAFrameHolds() {

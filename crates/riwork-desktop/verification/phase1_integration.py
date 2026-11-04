@@ -186,8 +186,8 @@ class Verification:
             raise RuntimeError(f"fixture wrote deferred state: {forbidden}")
 
     def parity(self):
-        binary = (self.args.binary or self.target / "debug/riwork").resolve(strict=True)
-        reference = (self.args.reference or self.target / "debug/riwork-cli").resolve(strict=True)
+        binary = (self.args.binary or self.target / "debug/somtus").resolve(strict=True)
+        reference = (self.args.reference or self.target / "debug/somtus-cli").resolve(strict=True)
         # Both entry points use this unchanged CLI crate. Preserve the evidence
         # instead of rebuilding the old GPUI host just to invoke its dispatcher.
         _, diff, _ = self.command(["git", "diff", "ea0f2f5", "--", "crates/riwork-cli"], "cli-source-diff")
@@ -234,7 +234,7 @@ class Verification:
     def gui(self):
         if sys.platform != "darwin":
             raise RuntimeError("the real fixture host requires macOS")
-        binary = (self.args.binary or self.target / "debug/riwork").resolve(strict=True)
+        binary = (self.args.binary or self.target / "debug/somtus").resolve(strict=True)
         bundle = (self.args.bundle or self.root / "bundle/bundle.js").resolve(strict=True)
         # Short sockets are essential on macOS; the shared evidence root can be
         # longer, so allocate this fixture independently and record its location.
@@ -354,7 +354,7 @@ def main():
     parser.add_argument("--nsh", type=Path, default=NSH)
     parser.add_argument("--tsc", type=Path, default=TSC)
     parser.add_argument("--binary", type=Path)
-    parser.add_argument("--reference", type=Path, help="unchanged riwork-cli binary")
+    parser.add_argument("--reference", type=Path, help="standalone somtus-cli binary")
     parser.add_argument("--bundle", type=Path)
     parser.add_argument("--jobs", type=int, default=4)
     parser.add_argument("--linger-seconds", type=int, default=120)

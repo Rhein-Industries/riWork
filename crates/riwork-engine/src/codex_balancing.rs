@@ -128,7 +128,7 @@ fn resolve(
         // A sample that could not be saved only leaves its account unknown, as the
         // choice below reads them back; the other accounts are still chosen among.
         if let Err(error) = refresh_samples(state_home, &candidates) {
-            eprintln!("riwork codex balancing: {error}");
+            eprintln!("somtus codex balancing: {error}");
         }
     }
     let now = unix_now();

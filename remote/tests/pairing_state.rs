@@ -15,7 +15,7 @@ fn routes_len(path: &Path) -> usize {
     r.routes.len()
 }
 fn remote(home: &Path, cwd: &Path) -> Command {
-    let mut c = Command::new(env!("CARGO_BIN_EXE_riwork-remote"));
+    let mut c = Command::new(env!("CARGO_BIN_EXE_somtus-remote"));
     c.env("RIWORK_HOME", home).current_dir(cwd);
     c
 }
@@ -216,7 +216,7 @@ fn revoke_waits_a_bounded_time_for_the_config_lock() {
 fn unset_home_is_an_error_not_a_path_relative_to_the_working_directory() {
     let tmp = tempfile::tempdir().unwrap();
     for home in [None, Some("")] {
-        let mut c = Command::new(env!("CARGO_BIN_EXE_riwork-remote"));
+        let mut c = Command::new(env!("CARGO_BIN_EXE_somtus-remote"));
         c.arg("devices")
             .current_dir(tmp.path())
             .env_remove("RIWORK_HOME")

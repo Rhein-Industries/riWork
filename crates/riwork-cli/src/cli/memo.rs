@@ -1,4 +1,4 @@
-//! `riwork project memo show|set ID`: a project's memo (`riwork_core::project_memo`), the
+//! `somtus project memo show|set ID`: a project's memo (`riwork_core::project_memo`), the
 //! person's own Markdown notes for it. `set` reads the whole new text from standard input, so
 //! it never appears in a process list, and replaces the memo: the last save wins.
 //!
@@ -15,7 +15,7 @@ use super::{ensure_empty, pop_command, print_json, take_single, write_stdout};
 use crate::{project_memo, store::Store};
 
 pub(super) const USAGE: &str =
-    "Usage: riwork project memo show ID [--json], or riwork project memo set ID [--json] < TEXT";
+    "Usage: somtus project memo show ID [--json], or somtus project memo set ID [--json] < TEXT";
 
 /// The most standard input `set` reads: the cap with room for line breaks and controls that
 /// normalization removes. Anything longer is refused unread.

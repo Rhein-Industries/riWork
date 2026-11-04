@@ -409,13 +409,13 @@ fn what_cannot_be_done_is_refused_before_anything_is_read_or_started() {
         change(&mut asked);
         Run { host: &host }.go(asked).err().unwrap()
     };
-    // Claude (and Grok) have no accounts of RiWork's.
+    // Claude (and Grok) have no accounts of Somtus's.
     let error = go(&|asked| {
         asked.provider = HarnessKind::Claude;
         asked.account = Some("Work".into());
     });
     assert!(
-        error.starts_with("Claude has no RiWork-managed accounts"),
+        error.starts_with("Claude has no Somtus-managed accounts"),
         "{error}"
     );
     assert!(error.contains("system"));
@@ -425,7 +425,7 @@ fn what_cannot_be_done_is_refused_before_anything_is_read_or_started() {
         asked.account = Some("Work".into());
     });
     assert!(
-        error.starts_with("Grok has no RiWork-managed accounts"),
+        error.starts_with("Grok has no Somtus-managed accounts"),
         "{error}"
     );
     // Chats run Codex and Claude.

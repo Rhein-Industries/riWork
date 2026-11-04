@@ -566,7 +566,7 @@ enum ConnectionState: Equatable {
         let pairing = try Pairing.parse(pairingText, allowLocalDevelopment: allowLocal)
         guard !desktops.contains(where: { $0.id == pairing.route_id || $0.pairing.device_id == pairing.device_id }) else { throw RemoteError.remote("This device pairing is already saved. Choose it in Desktops.") }
         let cleaned = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        let saved = SavedDesktop(name: cleaned.isEmpty ? "RiWork desktop" : String(cleaned.prefix(80)), pairing: pairing, allowLocalDevelopment: allowLocal)
+        let saved = SavedDesktop(name: cleaned.isEmpty ? "Somtus desktop" : String(cleaned.prefix(80)), pairing: pairing, allowLocalDevelopment: allowLocal)
         desktops.append(saved)
         do { try persist() } catch { desktops.removeAll { $0.id == saved.id }; throw error }
         return saved.id

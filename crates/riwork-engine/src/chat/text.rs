@@ -1,5 +1,5 @@
 //! A chat's transcript as plain text, for what reads a chat the way it reads a
-//! terminal: `riwork orchestrator output` and the MCP tool of the same name.
+//! terminal: `somtus orchestrator output` and the MCP tool of the same name.
 //!
 //! The user's and the agent's messages are given whole. Every other item is one
 //! line (a command with how it ended, the files a change touched, the tool a

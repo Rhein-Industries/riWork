@@ -1,4 +1,4 @@
-//! `riwork dashboard --json`, which the remote connector answers the phone's `dashboard.get`
+//! `somtus dashboard --json`, which the remote connector answers the phone's `dashboard.get`
 //! with (`remote/src/rpc/dashboard.rs`, "Dashboard extension" in docs/remote-protocol.md): its
 //! shape, that it reports the store's projects and tasks and, with no chat host running, the
 //! saved chats, and that reading it starts nothing: no chat host, chat, shell or tmux server.
@@ -65,14 +65,14 @@ impl Home {
     }
 
     fn run(&self, args: &[&str]) -> Output {
-        let child = Command::new(env!("CARGO_BIN_EXE_riwork-cli"))
+        let child = Command::new(env!("CARGO_BIN_EXE_somtus-cli"))
             .args(args)
             .current_dir(&self.path)
             .env("HOME", self.path.join("home"))
             .env("RIWORK_HOME", self.state())
             .env("RIWORK_RUNTIME_DIR", self.path.join("runtime"))
             .env_remove("CODEX_HOME")
-            // A test may itself run in a RiWork shell or chat: the command under test is
+            // A test may itself run in a Somtus shell or chat: the command under test is
             // nobody's session.
             .env_remove("RIWORK_SHELL_ID")
             .env_remove("RIWORK_CHAT_ID")
@@ -222,7 +222,7 @@ fn finish(mut child: Child, what: &[&str]) -> Output {
         if Instant::now() > deadline {
             let _ = child.kill();
             let _ = child.wait();
-            panic!("riwork {what:?} did not exit; it may have started the GUI");
+            panic!("somtus {what:?} did not exit; it may have started the GUI");
         }
         thread::sleep(Duration::from_millis(20));
     };

@@ -95,7 +95,7 @@ Exact final commands, from the assigned worktree (all exited 0):
 ```sh
 source /tmp/riwork-nsh-p3a-500f21fc.FuPHBM/env.sh
 cargo test --locked --offline -p riwork-nsh-native -p riwork-nsh-workspace --jobs 4
-cargo test --locked --offline -p riwork-desktop --bin riwork nsh_host::tests --jobs 4
+cargo test --locked --offline -p riwork-desktop --bin somtus nsh_host::tests --jobs 4
 
 export RIWORK_HOME="$NSH_P3A/home-verified"
 cargo run --locked --offline -p riwork-nsh-workspace --example seed_fixture -- "$RIWORK_HOME"
@@ -138,7 +138,7 @@ an actual two-project switch. Fixture readiness waits allow 15 seconds for
 asynchronous initialization during concurrent compilation. The final full run
 uses a fresh home and all final source changes.
 
-No live RiWork windows or state, task status, merge, push, installation or
+No live Somtus windows or state, task status, merge, push, installation or
 desktop automation is part of this verification. Task status is left to the
 orchestrator. Headless tests establish behavior and persistence; they do not
 claim visual parity with a running AppKit window.

@@ -266,7 +266,7 @@ pub fn deliver_new(
             model: fresh.model.clone(),
             effort: fresh.effort.clone(),
             fast: fresh.fast,
-            // A scheduled chat starts off, as every Muse RiWork starts unless asked on.
+            // A scheduled chat starts off, as every Muse Somtus starts unless asked on.
             contributor_mode: chat::model::ContributorMode::Off,
             contributor_opt_out: false,
             claude_billing: None,
@@ -297,7 +297,7 @@ pub fn deliver_new(
             Err(error) => format!("stopping it failed ({error})"),
         };
         return Ok(Delivery::Failed(format!(
-            "The running chat host predates RiWork's contributor mode off by default, so Muse chat {chat_id} started with your Muse settings and {stopped}. No prompt sent; no automatic retry. Try again once the chat host runs this version of RiWork."
+            "The running chat host predates Somtus's contributor mode off by default, so Muse chat {chat_id} started with your Muse settings and {stopped}. No prompt sent; no automatic retry. Try again once the chat host runs this version of Somtus."
         )));
     }
     if chat.id != chat_id

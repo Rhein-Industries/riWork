@@ -4,7 +4,7 @@
 //!   forked with the provider's own copy of a thread (`LineageContext::Native`) starts with an
 //!   empty log, so what it inherited is read first from the chat it was forked from, up to
 //!   where it was forked, following forks of forks.
-//! - A terminal's Codex is its rollout, found through the binding RiWork keeps for the pane
+//! - A terminal's Codex is its rollout, found through the binding Somtus keeps for the pane
 //!   (`activity::bound_rollout`); its Claude is the session transcript at
 //!   `~/.claude/projects/<folder>/<session>.jsonl`, found through the session id that
 //!   Claude's hooks report (`agent_hooks`).
@@ -57,7 +57,7 @@ pub fn read_chat(home: &Path, chat_id: &str) -> Result<Read, String> {
 }
 
 /// The conversation of a chat up to and including its item `at`, or the whole of it. The
-/// markers of the chats it went on in (`lineage`) are RiWork's own and never part of it. A
+/// markers of the chats it went on in (`lineage`) are Somtus's own and never part of it. A
 /// native fork's starts with what it inherited; when that cannot be read, the caveat says so.
 pub fn read_chat_through(home: &Path, chat_id: &str, at: Option<&str>) -> Result<Read, String> {
     let transcript = fold(home, chat_id)?;
@@ -216,7 +216,7 @@ fn inherited(
     Ok((entries, caveat))
 }
 
-/// The entries of a chat's items: what was said and done, never RiWork's own markers.
+/// The entries of a chat's items: what was said and done, never Somtus's own markers.
 fn conversation(items: &[Item]) -> Vec<Entry> {
     let mut entries = Vec::new();
     for item in items {
@@ -397,10 +397,10 @@ pub(super) fn push(entries: &mut Vec<Entry>, entry: Entry) {
 pub fn read_shell(manager: &SessionManager, shell: &ShellSession) -> Result<Read, String> {
     let located = match shell.harness {
         Some(HarnessKind::Codex) => crate::activity::bound_rollout(manager.state_home(), shell)
-            .ok_or("RiWork cannot find this terminal's Codex conversation (it learns which one after the first turn)")
+            .ok_or("Somtus cannot find this terminal's Codex conversation (it learns which one after the first turn)")
             .map(|path| (path, true)),
         Some(HarnessKind::Claude) => claude::locate(manager.state_home(), shell)
-            .ok_or("RiWork cannot find this terminal's Claude session (it learns which one after the first turn)")
+            .ok_or("Somtus cannot find this terminal's Claude session (it learns which one after the first turn)")
             .map(|path| (path, false)),
         _ => Err(""),
     };

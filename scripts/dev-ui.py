@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run an isolated RiWork desktop with automatic TSX view reloads."""
+"""Run an isolated Somtus desktop with automatic TSX view reloads."""
 import argparse
 import os
 from pathlib import Path
@@ -31,7 +31,7 @@ def main():
     repo = Path(__file__).resolve().parents[1]
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--project", type=Path, default=repo, help="Project opened in the development window")
-    parser.add_argument("--home", type=Path, help="Separate RiWork data directory (default: target/dev-ui/home)")
+    parser.add_argument("--home", type=Path, help="Separate Somtus data directory (default: target/dev-ui/home)")
     parser.add_argument("--nsh", default=os.environ.get("NSH_CLI") or shutil.which("nsh"), help="Pinned NSH 0.3.0 CLI, or set NSH_CLI")
     parser.add_argument("--port", type=int, help="Local dev-server port (default: choose a free port)")
     args = parser.parse_args()
@@ -48,7 +48,7 @@ def main():
     home = (args.home or work / "home").expanduser().resolve()
     live_home = Path(os.environ.get("RIWORK_HOME") or Path.home() / ".local/share/riwork").expanduser().resolve()
     if home == live_home:
-        parser.error("--home must be separate from the active RiWork data directory")
+        parser.error("--home must be separate from the active Somtus data directory")
     if args.port is not None and not 1 <= args.port <= 65535:
         parser.error("--port must be between 1 and 65535")
     work.mkdir(parents=True, exist_ok=True)
@@ -83,7 +83,7 @@ def main():
                 time.sleep(0.1)
         env["RIWORK_NSH_DEV_URL"] = f"ws://127.0.0.1:{port}/ws"
         print(f"Development data: {home}\nSave TSX to reload the UI. Component state resets; Rust edits require restarting this command.", flush=True)
-        desktop = subprocess.Popen([str(work / "cargo/debug/riwork"), str(project)], cwd=repo, env=env, start_new_session=True)
+        desktop = subprocess.Popen([str(work / "cargo/debug/somtus"), str(project)], cwd=repo, env=env, start_new_session=True)
         while desktop.poll() is None:
             if server.poll() is not None:
                 raise RuntimeError("NSH dev server stopped")

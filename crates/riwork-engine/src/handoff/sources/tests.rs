@@ -274,7 +274,7 @@ fn a_codex_rollout_becomes_messages_commands_files_and_tools() {
     assert_eq!(
         entries(&read),
         [
-            // The startup guidance RiWork sends is not the person's.
+            // The startup guidance Somtus sends is not the person's.
             Entry::User(
                 "Fix the failing build in `src/lib.rs`.\nIt broke after the last merge.".into()
             ),

@@ -92,7 +92,7 @@ impl Workspace {
                 if project_id != self.project_id || self.is_remote() {
                     return Err(ControlError::new(
                         "wrong_project",
-                        "Open this local project in RiWork before creating its preview.",
+                        "Open this local project in Somtus before creating its preview.",
                     ));
                 }
                 if !self.ensure_layout(window, cx) {

@@ -87,7 +87,7 @@ export function hostChat(value: unknown): HostChat | null {
   const id = str(row.id), provider = str(row.provider);
   if (!id || !provider) return null;
   const state = record(row.state);
-  const kind = provider === "codex" ? "Codex chat" : provider === "claude" ? "Claude chat" : provider === "muse" ? "Muse chat" : "Chat";
+  const kind = provider === "codex" ? "Codex chat" : provider === "claude" ? "Claude chat" : provider === "muse" ? "Muse chat" : provider === "acp" ? "ACP chat" : "Chat";
   const chat: HostChat = {
     id, provider, title: str(row.user_title) || str(row.provider_title) || str(row.title) || str(row.first_user_message) || kind,
     projectId: str(row.project_id) ?? null, worktreeId: str(row.worktree_id) ?? null,

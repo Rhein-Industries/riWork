@@ -289,11 +289,11 @@ pub(super) fn launch(
         let project_args = project_arguments(&project);
         let scheme = resolve_scheme(&runner, &spec.cwd, &project_args, &ios.scheme)?;
         runner.stage(&format!(
-            "Creating a RiWork-owned {} ({})…",
+            "Creating a Somtus-owned {} ({})…",
             selection.device_name, selection.runtime_name
         ))?;
         let mut create = Command::new("/usr/bin/xcrun");
-        let device_name = format!("RiWork Preview {}", uuid::Uuid::new_v4().simple());
+        let device_name = format!("Somtus Preview {}", uuid::Uuid::new_v4().simple());
         create
             .args([
                 "simctl",
@@ -688,7 +688,7 @@ fn cleanup_stale_sessions(cache: &Path, inventory: &Value, runner: &Runner) -> R
             let _ = fs::remove_file(path);
             continue;
         }
-        runner.stage("Removing a simulator left by a previous RiWork process…")?;
+        runner.stage("Removing a simulator left by a previous Somtus process…")?;
         drop(Session {
             udid: lease.udid,
             lease_path: Some(path),
@@ -705,7 +705,8 @@ fn stale_lease_matches(lease: &Lease, inventory: &Value) -> bool {
     if lease.owner_pid == 0
         || lease.owner_pid > i32::MAX as u32
         || uuid::Uuid::parse_str(&lease.udid).is_err()
-        || !lease.device_name.starts_with("RiWork Preview ")
+        || !(lease.device_name.starts_with("Somtus Preview ")
+            || lease.device_name.starts_with("RiWork Preview "))
     {
         return false;
     }
@@ -894,18 +895,18 @@ mod tests {
         let mut lease = Lease {
             owner_pid: i32::MAX as u32,
             udid: udid.clone(),
-            device_name: "RiWork Preview isolated-lease".into(),
+            device_name: "Somtus Preview isolated-lease".into(),
         };
         let inventory =
-            json!({"devices":{"runtime":[{"udid":udid,"name":"RiWork Preview isolated-lease"}]}});
+            json!({"devices":{"runtime":[{"udid":udid,"name":"Somtus Preview isolated-lease"}]}});
         assert!(stale_lease_matches(&lease, &inventory));
         lease.owner_pid = std::process::id();
         assert!(
             !stale_lease_matches(&lease, &inventory),
-            "Another running RiWork's simulator stays untouched"
+            "Another running Somtus's simulator stays untouched"
         );
         lease.owner_pid = i32::MAX as u32;
-        lease.device_name = "RiWork Preview different-launch".into();
+        lease.device_name = "Somtus Preview different-launch".into();
         assert!(
             !stale_lease_matches(&lease, &inventory),
             "Matching a prefix never grants cleanup ownership"

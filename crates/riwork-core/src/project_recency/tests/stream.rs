@@ -1254,7 +1254,7 @@ fn process_cpu() -> Duration {
 /// installation, as three windows asking every 30 s each:
 ///
 ///   RIWORK_BENCH_STATE=~/.local/share/riwork/state.json RIWORK_BENCH_MINUTES=3 \
-///     cargo test --release --bin riwork idle_cost -- --ignored --nocapture
+///     cargo test --release --bin somtus idle_cost -- --ignored --nocapture
 ///
 /// First with a scan of every root each period, as before the stream, then with
 /// the stream (`RIWORK_BENCH_ONLY=polling` or `=stream` runs just one). Reads the registry and watches and stats the files; changes
@@ -1373,7 +1373,7 @@ fn idle_cost_of_a_real_registry() {
 /// What making and stopping a stream over a real registry costs.
 ///
 ///   RIWORK_BENCH_STATE=~/.local/share/riwork/state.json \
-///     cargo test --release --bin riwork stream_cost -- --ignored --nocapture
+///     cargo test --release --bin somtus stream_cost -- --ignored --nocapture
 #[test]
 #[ignore]
 fn stream_cost_of_a_real_registry() {
@@ -1409,7 +1409,7 @@ fn stream_cost_of_a_real_registry() {
 
 /// What one event costs to hear, and to fold into the dates.
 ///
-///   cargo test --release --bin riwork event_cost -- --ignored --nocapture
+///   cargo test --release --bin somtus event_cost -- --ignored --nocapture
 #[test]
 #[ignore]
 fn event_cost() {

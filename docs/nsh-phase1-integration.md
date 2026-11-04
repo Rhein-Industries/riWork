@@ -3,7 +3,7 @@
 Task `47be9d38-ad1b-41fa-b0a7-a2e32eeb5fc0`, branch `nsh-p1-integration`,
 based on `nsh` at `1d63063`.
 
-`verification_environment = isolated fixture homes, headless NSH engines, and two real AppKit fixture windows inspected read-only through RiWork cua-driver MCP with explicit fixture PID; no live RiWork windows or state.`
+`verification_environment = isolated fixture homes, headless NSH engines, and two real AppKit fixture windows inspected read-only through Somtus cua-driver MCP with explicit fixture PID; no live Somtus windows or state.`
 
 This implements the requested M4 integration subset, following acceptance §4's
 P1a → P1c → P1b ordering and the assignment's adoption of D-OWN-1. It is not M5
@@ -120,7 +120,7 @@ Final fixture: `/private/tmp/rwnshi-gui-x748i0lv`, PID **59579**, stopped after
 inspection (SIGTERM exit -15). Its GUI manifest is
 `/private/tmp/riwork-p1-integration-mkzwamt7/gui-2sfv9rtl/manifest.json`.
 The fixture generator uses core Store and LayoutStore writers. The actual launch
-was `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/riwork /private/tmp/rwnshi-gui-x748i0lv/repos/Alpha`;
+was `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/somtus /private/tmp/rwnshi-gui-x748i0lv/repos/Alpha`;
 the same executable with `.../repos/Beta` forwarded successfully and exited 0.
 
 Read-only cua-driver calls, each restricted to PID 59579:
@@ -170,7 +170,7 @@ inspection is fixture cleanup; graceful close/quit durability is proved by the
 Rust tests, not by that signal.
 
 The root lock still contains GPUI packages for the independent
-`riwork-gpui-preview` workspace member; the required exclusion is the `riwork`
+`riwork-gpui-preview` workspace member; the required exclusion is the `somtus`
 binary dependency tree. All 142 protected legacy desktop source files, including
 GPUI `main.rs` and its tests, remain byte-for-byte unchanged. The deletion embargo
 in acceptance §4.3 remains in force. No merge, push, install or task-status update

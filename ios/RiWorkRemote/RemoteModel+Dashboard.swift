@@ -69,7 +69,7 @@ extension RemoteModel {
     /// Why the dashboard's figures are not there, when the desktop has none to send; nil while it has, or may have.
     var dashboardUnavailableReason: String? {
         guard dashboardSupport == .unsupported else { return nil }
-        return "The RiWork on your Mac does not send its dashboard yet. Update RiWork on the Mac to see what needs you, what is working, tasks and automations here. Projects still open below."
+        return "The Somtus on your Mac does not send its dashboard yet. Update Somtus on the Mac to see what needs you, what is working, tasks and automations here. Projects still open below."
     }
     /// How current the dashboard on screen is: live, the age of the last read, or why it is not being read.
     func dashboardFreshness(now: Date = .now) -> DashboardFreshness {

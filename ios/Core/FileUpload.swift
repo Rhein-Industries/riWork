@@ -98,7 +98,7 @@ public enum UploadError: Error, LocalizedError, Equatable, Sendable {
     case refused(String)
     public var errorDescription: String? {
         switch self {
-        case .desktopTooOld: "This Mac’s RiWork cannot take files from the phone yet. Update RiWork on the Mac, then try again."
+        case .desktopTooOld: "This Mac’s Somtus cannot take files from the phone yet. Update Somtus on the Mac, then try again."
         case .tooLarge(let name, let limit): "\(name) is larger than the \(ByteCountFormatter.string(fromByteCount: Int64(limit), countStyle: .file)) the Mac takes."
         case .tooMany(let limit): "Send at most \(limit) files at once."
         case .pasteUncertain: "The files may already be in the terminal. Look before sending them again."

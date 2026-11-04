@@ -7,7 +7,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>RiWork</string>
+	<string>Somtus</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -27,6 +27,7 @@
 			<string>com.riwork.remote.pair</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
+				<string>somtus</string>
 				<string>riwork</string>
 			</array>
 		</dict>
@@ -36,9 +37,9 @@
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>NSCameraUsageDescription</key>
-	<string>Scan a pairing code from your RiWork desktop, or take a photo to send to a terminal or chat on it.</string>
+	<string>Scan a pairing code from your Somtus desktop, or take a photo to send to a terminal or chat on it.</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Connect to a RiWork relay on your local network.</string>
+	<string>Connect to a Somtus relay on your local network.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Dictate commands and messages. Your voice is recognized on this device and is not sent anywhere.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>

@@ -560,7 +560,7 @@ fn write_drafts(dir: PathBuf, mut persisted: HashMap<String, String>, queue: &Qu
 fn cap_failed(failed: &mut Vec<(String, String)>) {
     if failed.len() > MAX_FAILED {
         for (id, _) in failed.drain(..failed.len() - MAX_FAILED) {
-            eprintln!("riwork: gave up writing the draft of chat {id}: too many drafts failed");
+            eprintln!("somtus: gave up writing the draft of chat {id}: too many drafts failed");
         }
     }
 }
@@ -585,7 +585,7 @@ fn write_pending(
                 }
             }
             Err(error) => {
-                eprintln!("riwork: {error}");
+                eprintln!("somtus: {error}");
                 failed.push((id, text));
             }
         }
@@ -737,7 +737,7 @@ pub(crate) fn remember_complete(
             .0
             .set_draft_with_unready(chat_id, draft, Some(owner), unready)
         {
-            eprintln!("riwork: {error}");
+            eprintln!("somtus: {error}");
         }
     }
 }
@@ -781,7 +781,7 @@ pub(crate) fn settle_submission(chat_id: &str, key: &str, status: SubmissionStat
     if cx.has_global::<ChatDrafts>() {
         let store = cx.global_mut::<ChatDrafts>();
         if let Err(error) = store.0.settle_submission(chat_id, key, status) {
-            eprintln!("riwork: {error}");
+            eprintln!("somtus: {error}");
         }
     }
 }
@@ -790,7 +790,7 @@ pub(crate) fn dismiss_submission(chat_id: &str, key: &str, cx: &mut App) {
     if cx.has_global::<ChatDrafts>() {
         let store = cx.global_mut::<ChatDrafts>();
         if let Err(error) = store.0.dismiss_submission(chat_id, key) {
-            eprintln!("riwork: {error}");
+            eprintln!("somtus: {error}");
         }
     }
 }
@@ -809,7 +809,7 @@ pub fn clear_sent(chat_id: &str, sent: &str, cx: &mut App) {
         return;
     }
     if let Err(error) = cx.global_mut::<ChatDrafts>().0.clear_sent(chat_id, sent) {
-        eprintln!("riwork: {error}");
+        eprintln!("somtus: {error}");
     }
 }
 
@@ -819,7 +819,7 @@ pub fn forget(chat_id: &str, cx: &mut App) {
         return;
     }
     if let Err(error) = cx.global_mut::<ChatDrafts>().0.forget(chat_id) {
-        eprintln!("riwork: {error}");
+        eprintln!("somtus: {error}");
     }
 }
 
@@ -828,7 +828,7 @@ pub fn remember(chat_id: &str, text: &str, cx: &mut App) {
         return;
     }
     if let Err(error) = cx.global_mut::<ChatDrafts>().0.set(chat_id, text) {
-        eprintln!("riwork: {error}");
+        eprintln!("somtus: {error}");
     }
 }
 

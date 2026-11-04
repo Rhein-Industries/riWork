@@ -1,4 +1,4 @@
-//! `riwork chat ensure|serve|list|stop` with the real binary on a throwaway
+//! `somtus chat ensure|serve|list|stop` with the real binary on a throwaway
 //! RIWORK_HOME: the host starts detached and once, answers on a private socket,
 //! stops on SIGTERM or when idle, and the next `ensure` starts it again. No
 //! provider is ever started: that needs a driver, which the in-process tests
@@ -32,12 +32,12 @@ impl Home {
     }
 
     fn command(&self, args: &[&str]) -> Command {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_riwork-cli"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_somtus-cli"));
         command
             .args(args)
             .env("RIWORK_HOME", &self.0)
             .env("RIWORK_RUNTIME_DIR", self.0.join("runtime"))
-            // A test may itself run in a RiWork shell or chat: the command under test
+            // A test may itself run in a Somtus shell or chat: the command under test
             // is nobody's session.
             .env_remove("RIWORK_SHELL_ID")
             .env_remove("RIWORK_CHAT_ID")
@@ -53,7 +53,7 @@ impl Home {
         thread::spawn(move || done.send(child.wait_with_output().unwrap()));
         output
             .recv_timeout(Duration::from_secs(60))
-            .unwrap_or_else(|_| panic!("riwork {args:?} did not exit"))
+            .unwrap_or_else(|_| panic!("somtus {args:?} did not exit"))
     }
 
     /// The pid of the running host, from its lock file.
@@ -212,7 +212,7 @@ fn chat_commands_refuse_what_they_cannot_do_without_starting_a_host() {
     let unknown = home.run(&["chat", "frobnicate"]);
     assert_eq!(unknown.status.code(), Some(2));
     assert!(
-        stderr(&unknown).contains("Usage: riwork chat"),
+        stderr(&unknown).contains("Usage: somtus chat"),
         "{}",
         stderr(&unknown)
     );

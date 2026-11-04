@@ -25,7 +25,7 @@ pub fn chat_provider(harness: HarnessKind) -> Result<Provider, String> {
 }
 
 /// A chat in the source's project, worktree and directory, with `message` as its first
-/// message. `account` is a RiWork account id, or none for the project's own.
+/// message. `account` is a Somtus account id, or none for the project's own.
 pub fn start_chat(
     socket: &std::path::Path,
     origin: &Origin,

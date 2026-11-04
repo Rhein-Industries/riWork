@@ -1,15 +1,15 @@
 ---
 name: riwork-panel-dev
-description: Improve one panel or pane of the RiWork app (apps/riwork) by looking at it - take a screenshot from its fixture, critique the design, then the logic, make focused fixes, and show before and after for the person to approve or send back. Use when asked to review, polish, critique or redesign a RiWork panel, pane, tab or view, or to "look at" how one renders.
+description: Improve one panel or pane of the Somtus app (apps/riwork) by looking at it - take a screenshot from its fixture, critique the design, then the logic, make focused fixes, and show before and after for the person to approve or send back. Use when asked to review, polish, critique or redesign a Somtus panel, pane, tab or view, or to "look at" how one renders.
 ---
 
-# RiWork panel dev
+# Somtus panel dev
 
 A loop for one panel: **capture → design critique → logic critique → improve → show → wait**. The
 person decides after every round: they approve it, or tell you what to change and you go round
 again. Never move on from "show" by yourself.
 
-Work in the RiWork repository (a worktree of it when other work is going on). Keep this review's
+Work in the Somtus repository (a worktree of it when other work is going on). Keep this review's
 files in `.pane-shot/<panel>/round-N/` at the repository root; git ignores `.pane-shot/`. Do not
 write new tests unless the person asks. Do not commit.
 
@@ -31,7 +31,7 @@ write new tests unless the person asks. Do not commit.
    shows and the focus stays where it is (`PANE_SHOT_VISIBLE=1` shows it). Pick the panel's usual
    size, `--dark` when dark mode matters, `--params JSON` when the fixture reads `host.params`,
    and `--step` lines (test code: `app.press`, `app.type`, `app.host.send`, ...) that bring it to
-   its most telling state. Every run gets a private RiWork home, so a fixture that writes to the
+   its most telling state. Every run gets a private Somtus home, so a fixture that writes to the
    Store or settings is safe; keep your own scripts and notes in your worktree, never in a
    scratch folder other agents share. The first run in a fresh
    worktree builds for about a minute; later ones take 15–30 s. Write the command you used to
@@ -43,7 +43,7 @@ write new tests unless the person asks. Do not commit.
 From the picture only, as a product designer: what the eye finds first and whether it should,
 hierarchy, spacing and alignment, typography, color and contrast, density, affordances (what
 looks pressable or disabled), wording, the empty, busy and error states it shows, and consistency
-with RiWork's other panels. Write `design.md` in the round's folder: findings ranked by impact,
+with Somtus's other panels. Write `design.md` in the round's folder: findings ranked by impact,
 each with what you see, why it matters, and the change you propose.
 
 ## Logic critique
@@ -68,7 +68,7 @@ scripts/pane-test.sh NAME...                         # each existing test name, 
 say which failures were there before your change.
 
 **Never run a test with plain `nsh test`.** Some tests open the whole app and save settings,
-layouts, projects or an API key; on the person's own RiWork home they overwrite real data.
+layouts, projects or an API key; on the person's own Somtus home they overwrite real data.
 `scripts/pane-test.sh` and `scripts/pane-shot.sh` give every run a private `/tmp` home.
 
 ## Show, then wait
@@ -91,9 +91,9 @@ copy this round's `after.png` to `round-N+1/before.png`, put the note at the top
 An orchestrator can give a panel to a new chat in its own worktree:
 
 ```sh
-CHAT=$(riwork chat new --provider claude --worktree WT --mode full --title "Panel: Schedules" --json | jq -r .id)
-riwork chat send "$CHAT" "Use the riwork-panel-dev skill on the Schedules panel."
+CHAT=$(somtus chat new --provider claude --worktree WT --mode full --title "Panel: Schedules" --json | jq -r .id)
+somtus chat send "$CHAT" "Use the riwork-panel-dev skill on the Schedules panel."
 ```
 
 The chat replies with before and after when a round is ready; the person answers there (or tells
-the orchestrator, which passes it on with `riwork chat send`).
+the orchestrator, which passes it on with `somtus chat send`).

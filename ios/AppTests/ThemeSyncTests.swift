@@ -55,7 +55,7 @@ private final class Flag: @unchecked Sendable {
         XCTAssertTrue(met, what)
     }
 
-    /// The wire form of a palette. Defaults are the desktop's RiWork dark palette.
+    /// The wire form of a palette. Defaults are the desktop's Somtus dark palette.
     private func wire(dark: Bool = true, updated: Double = 1_790_000_000, bg: String = "#090d14", panel: String = "#101720", active: String = "#14212a", divider: String = "#253c45",
                       cyan: String = "#55e6dc", magenta: String = "#ce78ef", gold: String = "#f4bf75", text: String = "#d3e1e6", muted: String = "#708993",
                       terminal: (background: String, foreground: String)? = nil) -> JSONValue {

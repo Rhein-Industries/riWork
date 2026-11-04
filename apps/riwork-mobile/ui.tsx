@@ -22,6 +22,8 @@ export function kit(app: MobileApp) {
   const scale = () => { const value = app.theme().theme.scale; return Number.isFinite(value) && value > 0 ? value : 1; };
   const pt = (size: number) => size * scale();
   const target = () => Math.max(44, pt(44));
+  /** The iPad's top row and its tabs and tools: tighter than a touch target, as the Mac's 28-point header is (the strip scrolls sideways, so a tab keeps its width). */
+  const bar = () => Math.max(34, pt(34));
   const color = (tone: Tone | "error" = "text") => {
     const colors = palette();
     switch (tone) {
@@ -56,9 +58,9 @@ export function kit(app: MobileApp) {
   function Tool(props: { label: string; icon: IconName; action: () => void; selected?: boolean; disabled?: boolean; testID?: string }) {
     return <View testID={props.testID} role="button" accessibilityLabel={props.label} accessibilityState={{ selected: !!props.selected }}
       disabled={props.disabled} onPress={props.action} activeStyle={{ backgroundColor: palette().panelActive }} disabledStyle={{ opacity: 0.4 }}
-      style={{ width: target(), height: target(), flexShrink: 0, alignItems: "center", justifyContent: "center", borderRadius: pt(10),
+      style={{ width: pt(40), height: bar(), flexShrink: 0, alignItems: "center", justifyContent: "center", borderRadius: pt(8),
         backgroundColor: props.selected ? palette().panelActive : "transparent" }}>
-      <Icon name={props.icon} color={props.selected ? palette().text : palette().muted} size={pt(18)} />
+      <Icon name={props.icon} color={props.selected ? palette().text : palette().muted} size={pt(16)} />
     </View>;
   }
   /** A symbol-only button with its label for VoiceOver. */
@@ -138,5 +140,5 @@ export function kit(app: MobileApp) {
   /** The bottom of a scrolling page: clear of the home indicator. */
   function bottomInset() { const insets = safeAreaInsets(); return () => insets().bottom; }
 
-  return { palette, pt, target, color, text, dark, windowControls, Action, Tool, IconButton, Section, Divider, Note, Failure, StatusDot, Toggle, Page, bottomInset };
+  return { palette, pt, target, bar, color, text, dark, windowControls, Action, Tool, IconButton, Section, Divider, Note, Failure, StatusDot, Toggle, Page, bottomInset };
 }

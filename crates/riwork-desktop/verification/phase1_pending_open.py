@@ -28,7 +28,7 @@ def main():
             run.command([NSH, 'build', 'apps/riwork/PendingOpen.fixture.tsx', '--out', bundle.parent], 'app-fixture-build')
         run.env['RIWORK_PENDING_OPEN_TEST_BUNDLE'] = str(bundle.resolve())
         run.manifest['bundle_sha256'] = digest(bundle)
-        code, out, err = run.command(run.cargo('test', '-p', 'riwork-desktop', '--bin', 'riwork', 'pending_open_tests::production_app_recovers_pending_open_after_failed_quit_and_restart') + ['--', '--ignored', '--nocapture', '--test-threads=1'], 'app-recovery', check=False, timeout=600)
+        code, out, err = run.command(run.cargo('test', '-p', 'riwork-desktop', '--bin', 'somtus', 'pending_open_tests::production_app_recovers_pending_open_after_failed_quit_and_restart') + ['--', '--ignored', '--nocapture', '--test-threads=1'], 'app-recovery', check=False, timeout=600)
         if args.expect_regression_failure:
             expected = b'lost ready acknowledgement' if args.mode == 'ordering' else b'waiting for app.restoreReady'
             assert code != 0 and expected in out + err, (code, out[-2000:], err[-2000:])
@@ -37,7 +37,7 @@ def main():
             assert code == 0, 'App recovery failed; see raw command output'
             run.manifest['status'] = 'passed'
     else:
-        run.command(run.cargo('test', '-p', 'riwork-desktop', '--bin', 'riwork'), 'host-suite', timeout=600)
+        run.command(run.cargo('test', '-p', 'riwork-desktop', '--bin', 'somtus'), 'host-suite', timeout=600)
         run.command(run.cargo('test', '-p', 'riwork-nsh-workspace'), 'layout-suites', timeout=600)
         run.command([NSH, 'check', 'apps/riwork', '--tsc', TSC], 'nsh-check', timeout=600)
         run.command(['cargo', 'fmt', '-p', 'riwork-desktop', '-p', 'riwork-nsh-workspace', '--check'], 'format')

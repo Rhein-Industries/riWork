@@ -1739,7 +1739,7 @@ impl ProjectSettingsPanel {
         rows.push(row(
             delegation_choice::PARALLEL_TITLE,
             parallel.into_any_element(),
-            "A soft target for how many worker shells this project's orchestrator runs at once; RiWork starts none by itself.",
+            "A soft target for how many worker shells this project's orchestrator runs at once; Somtus starts none by itself.",
         ));
 
         for work in Work::ALL {
@@ -2100,7 +2100,7 @@ impl Render for ProjectSettingsPanel {
                     .text_size(ui_text::text(10.0))
                     .child(
                         "Your own Markdown notes for this project, saved as you type and shared \
-                         with RiWork on your phone. Type /memo in one of its chats to insert them.",
+                         with Somtus on your phone. Type /memo in one of its chats to insert them.",
                     ),
             )
             .child(self.memo.clone());

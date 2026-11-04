@@ -7,7 +7,7 @@ controls. The setting defaults off; enabling it does not change Claude chats'
 subscription/API billing choice.
 
 ```sh
-riwork settings set dashboard_haiku_summaries true
+somtus settings set dashboard_haiku_summaries true
 ```
 
 The helper uses `claude-haiku-5-5`, low effort, thinking off (it would count against
@@ -29,7 +29,7 @@ missing or unreadable key is checked again each minute and spends no budget. The
 saved key never enters arguments, logs or cache files.
 
 The phone's `dashboard.get` never waits on Keychain or the API: it returns the saved
-summary, and when a new one is due, starts a detached `riwork dashboard
+summary, and when a new one is due, starts a detached `somtus dashboard
 --refresh-summary` process for a later read to show.
 
 Event descriptions are the dashboard's own observations, so they can include

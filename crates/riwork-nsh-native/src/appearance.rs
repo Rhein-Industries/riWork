@@ -62,7 +62,7 @@ fn publish_saved(process: &service::ProcessService, requested: &str, system_dark
     // against a previous process. A failed write retries at the next change.
     match appearance_file::publish(process.home(), &snapshot, now) {
         Ok(_) => sent.1 = Some(snapshot),
-        Err(error) => eprintln!("riwork appearance: {error}"),
+        Err(error) => eprintln!("somtus appearance: {error}"),
     }
 }
 
@@ -187,7 +187,7 @@ impl AppearanceDto {
         let ghostty = ghostty_theme();
         let appearance = theme::Appearance::resolve_with_ghostty(settings.theme, system_dark, ghostty.clone().ok());
         let ghostty_error = if settings.theme == theme::ThemeChoice::Ghostty {
-            ghostty.err().map(|error| format!("{error} Showing RiWork's fallback colors until it can be read."))
+            ghostty.err().map(|error| format!("{error} Showing Somtus's fallback colors until it can be read."))
         } else { None };
         let errors = [settings_error, ghostty_error].into_iter().flatten().collect::<Vec<_>>();
         let force = settings.terminal_colors_forced();

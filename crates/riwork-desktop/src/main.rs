@@ -1713,7 +1713,7 @@ fn remote_title(desktop_id: &str, shell_id: &str, cx: &App) -> String {
 }
 
 fn window_title_for(project_name: &str) -> String {
-    format!("RiWork · {project_name}")
+    format!("Somtus · {project_name}")
 }
 
 fn project_recency_sources(state: &State) -> BTreeMap<String, Vec<PathBuf>> {
@@ -11843,7 +11843,7 @@ impl Workspace {
                 })
                 .text_color(rgb(colors.muted))
                 .text_size(ui_text::text(9.0))
-                .child("Grok's account allowance and credits are shown only in Grok's own /usage screen. RiWork cannot read them through an official interface.")
+                .child("Grok's account allowance and credits are shown only in Grok's own /usage screen. Somtus cannot read them through an official interface.")
                 .into_any_element(),
         );
         cards
@@ -12339,7 +12339,7 @@ impl Render for Workspace {
         div()
             .id("riwork")
             .relative()
-            .key_context("RiWork")
+            .key_context("Somtus")
             .track_focus(&self.focus)
             .on_action(cx.listener(Self::new_tab_action))
             .on_action(cx.listener(Self::create_project_action))
@@ -13554,7 +13554,7 @@ fn sync_appearance(cx: &mut App) {
 }
 
 fn exit_startup(error: String) -> ! {
-    eprintln!("riwork: {error}");
+    eprintln!("somtus: {error}");
     std::process::exit(2);
 }
 
@@ -13592,7 +13592,7 @@ fn main() {
         Ok(false) => {}
         Err(error) => {
             if !error.is_empty() {
-                eprintln!("riwork: {error}");
+                eprintln!("somtus: {error}");
             }
             std::process::exit(2);
         }
@@ -13603,7 +13603,7 @@ fn main() {
         env::remove_var("RIWORK_SHELL_ID");
     }
     if let Err(error) = paths::ensure_default_projects_directory() {
-        eprintln!("riwork: {error}");
+        eprintln!("somtus: {error}");
         std::process::exit(2);
     }
     let startup_path = args.first().map(PathBuf::from).filter(|path| path.is_dir());
@@ -13635,7 +13635,7 @@ fn main() {
         .map(|snapshot| registration.start_restore_watchdog(snapshot));
 
     application().run(move |cx: &mut App| {
-        cx.set_app_identity("dev.riwork.shell", "RiWork");
+        cx.set_app_identity("dev.riwork.shell", "Somtus");
         schedules::start(state_home.clone(), cx);
         notifications::start(state_home.clone(), cx);
         orchestrator_wakes::start(state_home.clone(), cx);
@@ -13655,7 +13655,7 @@ fn main() {
         let settings = SettingsStore::open_default()
             .and_then(|store| store.load())
             .unwrap_or_else(|error| {
-                eprintln!("riwork: {error}");
+                eprintln!("somtus: {error}");
                 Settings::default()
             });
         theme::force_system_appearance(cx);
@@ -13780,12 +13780,12 @@ fn main() {
             KeyBinding::new("cmd-alt-left", chat_view::CollapseTranscript, Some("ChatView")),
         ]);
         cx.set_menus([
-            Menu::new("RiWork").items([
+            Menu::new("Somtus").items([
                 MenuItem::action("Settings…", OpenSettings),
                 MenuItem::action("Project Settings…", OpenProjectSettings),
                 MenuItem::action("Automations", OpenSchedules),
                 MenuItem::separator(),
-                MenuItem::action("Quit RiWork", Quit),
+                MenuItem::action("Quit Somtus", Quit),
             ]),
             behavior_controls::edit_menu(),
             // RiWork's own text; terminals zoom with the same keys while focused.
@@ -13835,7 +13835,7 @@ fn main() {
                 };
                 if let Err(error) = opened {
                     // The previous app stays open until every window is restored.
-                    eprintln!("riwork: cannot restore a window: {error}");
+                    eprintln!("somtus: cannot restore a window: {error}");
                     cx.quit();
                     return;
                 }
@@ -13847,7 +13847,7 @@ fn main() {
         }
         // The heartbeat below publishes again and reports failures.
         if let Err(error) = registration.publish_windows(runtime_windows(cx, false)) {
-            eprintln!("riwork: {error}");
+            eprintln!("somtus: {error}");
         }
         cx.spawn(async move |cx| {
             let mut reload = None;
@@ -13864,7 +13864,7 @@ fn main() {
                 let _ = cx.update(|cx| {
                     if let Some(snapshot) = &restore {
                         if restore_started.elapsed() > Duration::from_secs(20) {
-                            eprintln!("riwork: window restoration timed out; keeping the previous app open");
+                            eprintln!("somtus: window restoration timed out; keeping the previous app open");
                             cx.quit();
                             return;
                         }
@@ -13880,7 +13880,7 @@ fn main() {
                                 .publish_windows(windows)
                                 .and_then(|_| runtime.mark_restore_ready(snapshot, &registration))
                             {
-                                eprintln!("riwork: {error}");
+                                eprintln!("somtus: {error}");
                                 if let Some(watchdog) = &watchdog {
                                     watchdog.abort_confirm();
                                 }
@@ -13900,7 +13900,7 @@ fn main() {
                             Ok(true) => cx.quit(),
                             Ok(false) => {}
                             Err(error) => {
-                                eprintln!("riwork: {error}");
+                                eprintln!("somtus: {error}");
                                 reload = None;
                             }
                         }
@@ -13918,7 +13918,7 @@ fn main() {
                             Ok(false) => {}
                             Err(error) => {
                                 publish_due = false;
-                                eprintln!("riwork: {error}");
+                                eprintln!("somtus: {error}");
                             }
                         }
                     }
@@ -13933,12 +13933,12 @@ fn main() {
                                 Ok(launch) => reload = Some(launch),
                                 Err(error) => {
                                     let _ = registration.fail_reload(&request, &error);
-                                    eprintln!("riwork: {error}");
+                                    eprintln!("somtus: {error}");
                                 }
                             }
                         }
                         Ok(None) => {}
-                        Err(error) => eprintln!("riwork: {error}"),
+                        Err(error) => eprintln!("somtus: {error}"),
                     }
                 });
             }
@@ -14086,7 +14086,7 @@ fn open_startup_window(
         Err(error) if startup_path.is_some() => error,
         Err(error) => return Err(error),
     };
-    eprintln!("riwork: {error}");
+    eprintln!("somtus: {error}");
     let handle = open_workspace_window(None, fallback_cwd, None, cx)?;
     let _ = with_workspace(handle.into(), cx, |workspace, _, cx| {
         workspace.notice = Some(error);

@@ -183,7 +183,7 @@ fn only_a_trigger_at_a_word_start_opens_the_list(cx: &mut TestAppContext) {
     assert_eq!(
         rows(cx, &codex),
         Some((vec!["/memo".into()], 0)),
-        "Codex chats offer RiWork's /memo, not Claude's /compact"
+        "Codex chats offer Somtus's /memo, not Claude's /compact"
     );
     let _ = std::fs::remove_dir_all(root);
 }

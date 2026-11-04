@@ -7,7 +7,7 @@ M5 reports remain historical evidence; this is the W3 rerun.
 
 `verification_environment = macOS arm64; isolated HOME, RIWORK_HOME, runtime,
 config and tmux fixtures; real headless NSH engines; read-only Cua.ai Driver
-screenshots of an exact fixture PID; no live RiWork input or live data writes.`
+screenshots of an exact fixture PID; no live Somtus input or live data writes.`
 
 The [machine-readable results](nsh-phase1-w3-native-results.json) contain all
 40 exact command argv/cwd/environments, exit codes, stdout/stderr hashes,
@@ -31,9 +31,9 @@ or per-window sampler. Settings text/status changes read the current document
 under the core store lock. An explicit choice of a default replaces an unknown
 future saved value while unrelated unknown settings remain intact.
 
-W3 applies the assignment's D-THEME-1 proposal: Follow Ghostty uses the RiWork
+W3 applies the assignment's D-THEME-1 proposal: Follow Ghostty uses the Somtus
 palette and retains its diagnostic. Terminal colors remain unknown unless the
-RiWork override is selected. The app neither parses Ghostty configuration nor calls an appearance
+Somtus override is selected. The app neither parses Ghostty configuration nor calls an appearance
 publisher. Presets and Native expose the terminal override choice for the terminal
 phase. TSX resolves against each window's current color scheme before painting
 the workspace, follows both native subscriptions, installs font/casing with the matching palette

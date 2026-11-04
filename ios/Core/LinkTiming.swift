@@ -68,10 +68,10 @@ public struct DesktopFeatures: Sendable, Equatable {
     /// suggestion list. Without it the composer opens no list.
     public var chatSuggestions = false
     /// The desktop answers `dashboard.get` (`features.dashboard`): its global dashboard in one bounded read. Without it the phone never
-    /// asks, lists and opens the projects as before, and says the dashboard needs a newer RiWork on the Mac.
+    /// asks, lists and opens the projects as before, and says the dashboard needs a newer Somtus on the Mac.
     public var dashboard = false
     /// The desktop reads and saves project memos (`features.project_memo`): `project.memo.get` and `project.memo.set`. Without it the
-    /// phone offers no memo and says the Mac needs a newer RiWork.
+    /// phone offers no memo and says the Mac needs a newer Somtus.
     public var projectMemo = false
     /// The newest key list `shell.keys` takes (`features.key_names`): 2 adds Insert, Space, F1 … F12 and keys with modifiers
     /// (`C-Up`, `M-x`, `C-\`). A desktop that does not say takes the first list, and gets the others as escape sequences.

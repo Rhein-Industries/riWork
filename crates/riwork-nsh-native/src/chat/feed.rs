@@ -327,7 +327,7 @@ pub fn unreadable(chat_id: &str, seq: u64) -> Envelope {
                 status: ItemStatus::Completed,
                 body: ItemBody::notice(
                     NoticeLevel::Warning,
-                    "An event from the chat host could not be read. This RiWork may be older than the host.",
+                    "An event from the chat host could not be read. This Somtus may be older than the host.",
                     None,
                 ),
             },

@@ -1,5 +1,5 @@
-//! Process-level checks of the `cua-driver` skill through `riwork setup`,
-//! `riwork cua setup` and `riwork cua status`. Everything runs in a throwaway
+//! Process-level checks of the `cua-driver` skill through `somtus setup`,
+//! `somtus cua setup` and `somtus cua status`. Everything runs in a throwaway
 //! user home with a private `RIWORK_HOME`, an Orca profile with two saved Codex
 //! accounts, and a fake Cua Driver (`RIWORK_CUA_DRIVER`) whose pack lives in
 //! the fixture. The fake logs each `skills` call so a fetch shows up.
@@ -53,7 +53,7 @@ impl Fixture {
             .map(|id| self.root.join("orca/codex-accounts").join(id).join("home"))
     }
 
-    /// Answers RiWork's probes as a ready driver would, prints the pack
+    /// Answers Somtus's probes as a ready driver would, prints the pack
     /// location for `skills path`, and writes the pack for `skills install`.
     fn write_driver(&self) {
         let driver = self.root.join("bin/cua-driver");
@@ -104,7 +104,7 @@ esac
     }
 
     fn command(&self, arguments: &[&str], environment: &[(&str, &Path)]) -> Command {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_riwork-cli"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_somtus-cli"));
         command
             .args(arguments)
             .current_dir(&self.root)
@@ -125,7 +125,7 @@ esac
         command
     }
 
-    /// Runs RiWork and returns its JSON status.
+    /// Runs Somtus and returns its JSON status.
     fn json(&self, arguments: &[&str], environment: &[(&str, &Path)]) -> Value {
         let output = self
             .command(arguments, environment)
@@ -302,7 +302,7 @@ fn setup_links_the_relocated_homes_riwork_launches_and_leaves_foreign_paths() {
     fs::create_dir_all(&elsewhere).unwrap();
     fs::create_dir_all(home.join(".config/muse/skills")).unwrap();
     symlink(&elsewhere, home.join(".config/muse/skills/cua-driver")).unwrap();
-    // Profiles a terminal can point RiWork at.
+    // Profiles a terminal can point Somtus at.
     let claude = fixture.root.join("profiles/claude");
     let grok = fixture.root.join("profiles/grok");
     fs::create_dir_all(&claude).unwrap();
@@ -360,7 +360,7 @@ fn setup_links_the_relocated_homes_riwork_launches_and_leaves_foreign_paths() {
         fs::read_link(home.join(".config/muse/skills/cua-driver")).unwrap(),
         elsewhere
     );
-    // Claude Code's link was Cua Driver's; RiWork records only the links it made.
+    // Claude Code's link was Cua Driver's; Somtus records only the links it made.
     let manifest: Value =
         serde_json::from_slice(&fs::read(fixture.root.join("state/cua/skill-links.json")).unwrap())
             .unwrap();
@@ -390,7 +390,7 @@ fn setup_links_the_relocated_homes_riwork_launches_and_leaves_foreign_paths() {
         "{text}"
     );
     assert!(text.contains("blocked by foreign path"), "{text}");
-    assert!(text.contains("a directory RiWork did not create"), "{text}");
+    assert!(text.contains("a directory Somtus did not create"), "{text}");
     assert!(text.contains("read under every Codex home"), "{text}");
 }
 
@@ -415,14 +415,14 @@ fn an_ordinary_harness_launch_leaves_the_skill_directories_alone() {
 }
 
 // Live discovery: the installed CLIs, run against the fixture homes after
-// `riwork setup` has linked them. Each CLI only lists what it found; none is
+// `somtus setup` has linked them. Each CLI only lists what it found; none is
 // logged in, and every home and config directory it sees is the fixture's.
 // Set `RIWORK_LIVE_CLAUDE`, `RIWORK_LIVE_CODEX`, `RIWORK_LIVE_GROK` or
 // `RIWORK_LIVE_MUSE` to choose a binary; otherwise the first one on `PATH`
-// that is not RiWork's launcher is used, and a CLI that is not installed is
+// that is not Somtus's launcher is used, and a CLI that is not installed is
 // reported as skipped.
 
-const SHIM_MARKER: &[u8] = b"# RiWork Cua harness shim";
+const SHIM_MARKER: &[u8] = b"# Somtus Cua harness shim";
 
 fn installed(name: &str) -> Option<PathBuf> {
     if let Some(path) = std::env::var_os(format!("RIWORK_LIVE_{}", name.to_uppercase())) {

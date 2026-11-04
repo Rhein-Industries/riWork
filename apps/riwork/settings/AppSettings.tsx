@@ -5,6 +5,8 @@ import { space, type InterfaceTheme } from "../appearance";
 import { ChoiceRow, Section, StepperRow, ToggleRow, buttonStyle, defaultTheme, textStyle, type Theme } from "./SettingsControls";
 import { SETTINGS_SECTIONS, modelIdError, sectionColumns, settingsLayout } from "./settings_model";
 import { ThemePicker, createPaletteCatalog, type PaletteCatalogSource } from "./ThemePicker";
+import { Brand } from "../Brand";
+import { CustomizationSettings } from "./CustomizationSettings";
 import { SpeechModelPicker } from "./SpeechModels";
 
 interface Subscription { close(): void }
@@ -265,7 +267,7 @@ export function AppSettings(props: AppSettingsProps) {
       <View testID="settings-theme-grid"><ThemePicker catalog={paletteCatalog} selected={() => settings()!.theme} theme={theme} onChoose={(id) => { focusTheme(id); patch({ theme: id }); }}
         onNode={(id, node) => { themeNodes.set(id, node); scheduleInitialFocus(); }}
         onFocus={(id) => { if (alive) themeFocus.set(id); }} onBlur={(id) => { if (alive && themeFocus() === id) themeFocus.set(null); }} /></View>
-      {settings()!.theme === "ghostty" && <ToggleRow id="terminal-colors" label="Use RiWork terminal colors" checked={settings()!.useRiworkColors} onChange={(value) => patch({ useRiworkColors: value })} theme={theme} />}
+      {settings()!.theme === "ghostty" && <ToggleRow id="terminal-colors" label="Use Somtus terminal colors" checked={settings()!.useRiworkColors} onChange={(value) => patch({ useRiworkColors: value })} theme={theme} />}
       {settings()!.theme === "native" && <ToggleRow id="terminal-colors" label="Terminals match the theme" checked={settings()!.nativeTerminalColors} onChange={(value) => patch({ nativeTerminalColors: value })} theme={theme} />}
       <ChoiceRow id="interface-font" label="Interface font" value={`interface-font-${settings()!.interfaceFont}`} choices={[{ id: "interface-font-system", label: "System (SF Pro)" }, { id: "interface-font-system_mono", label: "System + monospace accents" }]} onChange={(value) => patch({ interfaceFont: value === "interface-font-system" ? "system" : "system_mono" })} theme={theme} />
       <ToggleRow id="panel-tab-icons" label="Icons instead of labels" checked={settings()!.panelTabIcons} onChange={(value) => patch({ panelTabIcons: value })} theme={theme} />
@@ -321,8 +323,8 @@ export function AppSettings(props: AppSettingsProps) {
       </View>
       <ToggleRow id="dashboard-haiku-summaries" label="Haiku dashboard summaries" description="Summarizes observed work for the dashboard using the saved Anthropic API key. Recent commands, file paths and messages from every provider's chats are sent to Anthropic. API usage is billed separately; decisions remain provider requests." checked={s.dashboardHaikuSummaries} onChange={(value) => patch({ dashboardHaikuSummaries: value })} theme={theme} />
       {subheading("Orchestrator")}
-      <ChoiceRow id="orchestrator-mode" label="Orchestrator runs as" description="Automatic lets RiWork choose a native chat. Terminal uses Codex in a terminal tab. Chat uses the provider and model below." value={`orchestrator-mode-${s.orchestratorMode}`} choices={[{ id: "orchestrator-mode-automatic", label: "Automatic" }, { id: "orchestrator-mode-terminal", label: "Terminal" }, { id: "orchestrator-mode-chat", label: "Chat" }]} onChange={(value) => patch({ orchestratorMode: value === "orchestrator-mode-automatic" ? "automatic" : value === "orchestrator-mode-terminal" ? "terminal" : "chat" })} theme={theme} />
-      {s.orchestratorMode === "automatic" && note("RiWork chooses a Muse chat on Wonder Full, or a Codex chat on GPT-6.1-Sol when Muse cannot start.", "orchestrator-automatic-note")}
+      <ChoiceRow id="orchestrator-mode" label="Orchestrator runs as" description="Automatic lets Somtus choose a native chat. Terminal uses Codex in a terminal tab. Chat uses the provider and model below." value={`orchestrator-mode-${s.orchestratorMode}`} choices={[{ id: "orchestrator-mode-automatic", label: "Automatic" }, { id: "orchestrator-mode-terminal", label: "Terminal" }, { id: "orchestrator-mode-chat", label: "Chat" }]} onChange={(value) => patch({ orchestratorMode: value === "orchestrator-mode-automatic" ? "automatic" : value === "orchestrator-mode-terminal" ? "terminal" : "chat" })} theme={theme} />
+      {s.orchestratorMode === "automatic" && note("Somtus chooses a Muse chat on Wonder Full, or a Codex chat on GPT-6.1-Sol when Muse cannot start.", "orchestrator-automatic-note")}
       {s.orchestratorMode === "chat" && <>
         <ChoiceRow id="orchestrator-provider" label="Chat provider" description="Choosing another provider starts it on that provider's default model." value={`orchestrator-provider-${s.orchestratorChatProvider}`} choices={[{ id: "orchestrator-provider-codex", label: "Codex" }, { id: "orchestrator-provider-claude", label: "Claude" }, { id: "orchestrator-provider-muse", label: "Muse" }]} onChange={(value) => patch({ orchestratorChatProvider: value === "orchestrator-provider-codex" ? "codex" : value === "orchestrator-provider-claude" ? "claude" : "muse", orchestratorChatModel: null })} theme={theme} />
         <ChoiceRow id="orchestrator-model" label="Chat model" value={`orchestrator-model-${s.modelChoices.find((choice) => choice.model === s.orchestratorChatModel)?.id ?? "default"}`} choices={s.modelChoices.map((choice) => ({ id: `orchestrator-model-${choice.id}`, label: choice.label }))} onChange={(value) => patch({ orchestratorChatModel: s.modelChoices.find((choice) => `orchestrator-model-${choice.id}` === value)?.model ?? null })} theme={theme} />
@@ -388,7 +390,7 @@ export function AppSettings(props: AppSettingsProps) {
       case "03": return appearanceBody();
       case "04": return <ToggleRow id="open-preview-on-select" label="Open the preview when a file is selected" description="Select a file in Files to open Preview beside it. You can always open Preview with ⌘⇧P." checked={settings()!.openPreviewOnSelect} onChange={(value) => patch({ openPreviewOnSelect: value })} theme={theme} />;
       case "05": return agentBody();
-      case "06": return <ToggleRow id="remember-window-size" label="Remember project window size" description="Reopen projects at their last size. Switching projects keeps the current window size." checked={settings()!.rememberWindowSize} onChange={(value) => patch({ rememberWindowSize: value })} theme={theme} />;
+      case "06": return <View style={{ gap: 14 }}><ToggleRow id="remember-window-size" label="Remember project window size" description="Reopen projects at their last size. Switching projects keeps the current window size." checked={settings()!.rememberWindowSize} onChange={(value) => patch({ rememberWindowSize: value })} theme={theme} /><CustomizationSettings theme={theme} /></View>;
       case "07": return statusBody();
       case "08": return props.remote ?? <Text style={muted()}>Remote settings are unavailable here.</Text>;
       case "09": return importBody();
@@ -399,7 +401,10 @@ export function AppSettings(props: AppSettingsProps) {
   return <SettingsFocus.Provider value={focus}><View testID="settings-panel" onLayout={(event) => { if (alive && event.size.width !== width()) width.set(event.size.width); }} style={{ flex: 1, minHeight: 0, backgroundColor: theme().palette.panel }}>
     <View style={{ minHeight: space(46, theme().scale), paddingHorizontal: space(6, theme().scale), paddingVertical: space(6, theme().scale), justifyContent: "center", alignItems: "center" }}>
       <View style={{ width: "100%", maxWidth: settingsLayout(width()).maxWidth, paddingHorizontal: space(6, theme().scale), gap: space(1, theme().scale) }}>
-        <Text role="header" style={{ ...textStyle(theme, 13), fontWeight: "600" }}>Settings</Text>
+        <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+          <Text role="header" style={{ ...textStyle(theme, 13), fontWeight: "600" }}>Settings</Text>
+          <Brand theme={theme} />
+        </View>
         {saveError() ? <Text testID="settings-save-error" selectable={true} style={{ ...muted(), color: theme().palette.danger }}>{saveError()}</Text> : <Text style={muted()}>All projects · Saved automatically</Text>}
       </View>
     </View>

@@ -140,7 +140,7 @@ impl Stored {
     }
 }
 
-/// `caller` is the native RiWork chat from the invocation context. MCP obtains
+/// `caller` is the native Somtus chat from the invocation context. MCP obtains
 /// it from RIWORK_CHAT_ID/RIWORK_SHELL_ID, never a model-supplied parent selector.
 pub struct DelegationService {
     home: PathBuf,

@@ -34,6 +34,7 @@ export interface NativeChatUsage {
 
 export interface ChatTabProps {
   chatId: string;
+  desktopId?: string;
   visible: boolean;
   active?: boolean;
   theme?: () => InterfaceTheme;
@@ -92,7 +93,7 @@ type SideContent = { kind: "review"; scope?: string; key?: string } | { kind: "i
 export function ChatTab(props: ChatTabProps) {
   const theme = props.theme ?? (() => DEFAULT_THEME);
   const active = () => props.visible && props.active !== false;
-  const handle: ChatHandle = Chat.open(props.chatId);
+  const handle: ChatHandle = props.desktopId ? Chat.openRemote(props.desktopId, props.chatId) : Chat.open(props.chatId);
   cleanup(() => handle.close());
   const rows = signal<ChatRow[]>([]);
   // The transcript and composer's column; the whole tab's width decides where
@@ -169,9 +170,9 @@ export function ChatTab(props: ChatTabProps) {
   const text = (base = 12, color = theme().palette.text) => ({ fontFamily: theme().family, fontSize: base * theme().scale, color });
   const mono = (base = 11, color = theme().palette.text) => ({ fontFamily: theme().monoFamily, fontSize: base * theme().scale, color });
   const notice = (message: string) => notices.set([...notices(), message].slice(-3));
-  const billing = createBillingControl({ panel, handle, visible: () => props.visible, onError: notice, onNotice: notice, onOpenSettings: () => props.onApiKeySettings?.() });
+  const billing = createBillingControl({ panel, handle, remote: !!props.desktopId, visible: () => props.visible, onError: notice, onNotice: notice, onOpenSettings: () => props.onApiKeySettings?.() });
   const continuing = createContinue({
-    chatId: props.chatId, panel, notice, onReplace: props.onReplace,
+    chatId: props.chatId, unavailable: !!props.desktopId, panel, notice, onReplace: props.onReplace,
     onOpen: props.onOpenWorker ? (id) => props.onOpenWorker!(id, "chat") : undefined,
   });
   // The other agents' model lists are read when a menu that offers them opens (reading Muse's
@@ -369,7 +370,7 @@ export function ChatTab(props: ChatTabProps) {
     ];
     if (panel().sessionId) items.push({ label: "Copy provider session ID", onSelect: () => void Clipboard.writeText(panel().sessionId!) });
     items.push({ type: "separator" }, ...continuing.forkItems());
-    if (props.onHandoff) items.push({ label: "Hand off…", onSelect: () => props.onHandoff?.() });
+    if (props.onHandoff && panel().provider !== "acp") items.push({ label: "Hand off…", onSelect: () => props.onHandoff?.() });
     if (origin() && props.onOpenWorker) items.push({ label: "Open original", onSelect: openOrigin });
     items.push({ type: "separator" },
       { label: "Expand all activity", onSelect: () => handle.expandAll(true) },
@@ -543,7 +544,7 @@ export function ChatTab(props: ChatTabProps) {
     const lineageTitle = computed(() => row().kind === "lineage" ? row().title : "");
     const lineageChat = computed(() => row().lineage?.chatId);
     let reviewFiles: YNode | undefined;
-    const forkButton = () => finished() && iconControl("more", "Fork from here…", () => forkMenu(row().id));
+    const forkButton = () => !props.desktopId && panel().provider !== "acp" && finished() && iconControl("more", "Fork from here…", () => forkMenu(row().id));
     return () => {
       const shown = kind();
       if (shown === "user" && handoffBytes() !== undefined) return <View testID={`chat-handoff-context:${row().id}`} style={{ marginTop: space(14, theme().scale), marginBottom: space(10, theme().scale),
@@ -909,7 +910,7 @@ export function ChatTab(props: ChatTabProps) {
         {stopped() && <Text style={{ ...text(11, theme().palette.muted), ...chatColumn(paneWidth(), theme().scale) }}>Stopped. The chat will resume when you send a message.</Text>}
         {failed() && <Text style={{ ...text(11, theme().palette.danger), ...chatColumn(paneWidth(), theme().scale) }}>{`Failed: ${panel().stateMessage ?? ""}`}</Text>}
         {continuing.forking() && <Text testID="chat-forking" style={{ ...text(11, theme().palette.working), ...chatColumn(paneWidth(), theme().scale) }}>Forking the conversation…</Text>}
-        <Composer panel={panel} handle={handle} theme={theme} notice={notice} visible={interactive} width={paneWidth} billing={billing} continuing={continuing}
+        <Composer remote={!!props.desktopId} panel={panel} handle={handle} theme={theme} notice={notice} visible={interactive} width={paneWidth} billing={billing} continuing={continuing}
           onSent={() => { following.set(true); list?.scrollToEnd(); }} onEditor={(editor) => editors.push(editor)} onEditMemo={props.onEditMemo}
           onInput={(node) => { composerInput = node; if (props.focusOnAttach && active()) { node.focus(); props.onAttached?.(); } }} onMeasure={(part, height) => { composer[part] = height; report(); }} />
       </View>
@@ -1063,7 +1064,7 @@ function encodeAttachment(bytes: Uint8Array): string {
 
 /** The message box, its send/stop slot and the model, effort, Fast and mode
  * choices. Drafts are saved on every change and restored into an empty box. */
-function Composer(props: PartProps & { billing: BillingControl; continuing: ContinueControl; width: () => number; visible: () => boolean; onSent: () => void; onEditor: (editor: number) => void; onEditMemo?: (projectId: string) => void;
+function Composer(props: PartProps & { remote?: boolean; billing: BillingControl; continuing: ContinueControl; width: () => number; visible: () => boolean; onSent: () => void; onEditor: (editor: number) => void; onEditMemo?: (projectId: string) => void;
   onInput?: (node: YNode) => void; onMeasure?: (part: "box" | "input" | "controls", height: number) => void }) {
   const theme = props.theme;
   // One draft editor identity per mounted composer, unique across windows: the
@@ -1108,7 +1109,7 @@ function Composer(props: PartProps & { billing: BillingControl; continuing: Cont
   const text = (base = 12, color = theme().palette.text) => ({ fontFamily: theme().family, fontSize: base * theme().scale, color });
   const toolbar = () => props.panel().toolbar;
   const empty = () => draft().trim() === "" && attachments().length === 0;
-  const accepting = () => !props.billing.pending() && props.panel().link !== "deleted" && props.panel().link !== "connecting";
+  const accepting = () => !props.billing.pending() && props.panel().link !== "deleted" && props.panel().link !== "connecting" && (!props.remote || props.panel().link === "live");
   const approval = () => props.panel().approvals[0];
   const guarded = () => Date.now() - lastSend < APPROVAL_GUARD_MS;
   const suggestions = createSuggestions({
@@ -1187,6 +1188,7 @@ function Composer(props: PartProps & { billing: BillingControl; continuing: Cont
   }
 
   function addAttachments(uris: string[], files: File[] = []) {
+    if (props.remote) { props.notice("File uploads are not available for remote chats yet."); return; }
     if (!accepting()) return;
     const sources: ComposerAttachment[] = [
       ...uris.map((uri) => {
@@ -1246,7 +1248,7 @@ function Composer(props: PartProps & { billing: BillingControl; continuing: Cont
     if (dictation()?.finishBeforeSend(submit)) return;
     if (pending()) return;
     const rest = memoCommandRest(draft());
-    if (rest !== null) {
+    if (rest !== null && !props.remote) {
       replaceDraft(rest);
       modelPicker.set(false);
       memo.open(props.panel().projectId);
@@ -1406,7 +1408,7 @@ function Composer(props: PartProps & { billing: BillingControl; continuing: Cont
   const fastAvailable = computed(() => !!toolbar()?.fastAvailable);
   /** Why a message cannot go yet, said under the box instead of a silent button. */
   const blocked = computed(() => {
-    if (props.panel().link === "connecting") return "Connecting to the chat… keep typing; you can send as soon as it is back.";
+    if (props.panel().link === "connecting" || (props.remote && props.panel().link !== "live")) return "Connecting to the chat… keep typing; you can send as soon as it is back.";
     if (props.billing.pending()) return "Switching how this chat bills… sending waits for it.";
     if (empty()) return "";
     if (pending()) return "Sending…";
@@ -1432,7 +1434,7 @@ function Composer(props: PartProps & { billing: BillingControl; continuing: Cont
   const sendDisabled = () => !!memo.preview() || empty() || pending() || incompleteAttachments() || !accepting();
   return <View style={{ ...chatColumn(props.width(), theme().scale), minWidth: 0, flexShrink: 0, paddingTop: 8, paddingBottom: 12 }}>
     <View testID="chat-composer" onLayout={(bounds) => props.onMeasure?.("box", bounds.size.height)}
-    onFileDragEnter={() => draggingFiles.set(true)} onFileDragLeave={() => draggingFiles.set(false)}
+    onFileDragEnter={() => { if (!props.remote) draggingFiles.set(true); }} onFileDragLeave={() => draggingFiles.set(false)}
     onFileDrop={(event) => { draggingFiles.set(false); addAttachments(event.uris); }} style={{ minWidth: 0, padding: 10, gap: 8, borderRadius: 10, borderWidth: 1, borderColor: draggingFiles() ? theme().palette.cyan : theme().palette.divider, backgroundColor: theme().palette.panel }}>
     {memo.preview() && <MemoPreview preview={memo.preview} theme={theme} active={() => props.visible() && accepting()} onInsert={insertMemo} onCancel={closeMemo}
       onEdit={props.onEditMemo ? (projectId) => { memo.close(); props.onEditMemo?.(projectId); } : undefined} />}
@@ -1521,12 +1523,12 @@ function Composer(props: PartProps & { billing: BillingControl; continuing: Cont
       style={{ ...text(14), lineHeight: 21 * theme().scale, height: inputHeight(), paddingHorizontal: 3, paddingVertical: 4 }} />
     <View onLayout={(bounds) => props.onMeasure?.("controls", bounds.size.height)}
       style={{ flexDirection: "row", alignItems: "center", minWidth: 0, gap: 3, paddingTop: 7, borderTopWidth: 1, borderColor: chatHairline(theme()) }}>
-      <View role="button" testID="chat-attach" focusable={accepting()} tooltip="Attach files · You can also paste or drop images and files" accessibilityLabel="Attach files"
+      {!props.remote && <View role="button" testID="chat-attach" focusable={accepting()} tooltip="Attach files · You can also paste or drop images and files" accessibilityLabel="Attach files"
         accessibilityState={{ disabled: !accepting() }} onPress={() => { if (accepting()) void chooseAttachments(); }}
         style={{ width: 28 * theme().scale, height: 28 * theme().scale, flexShrink: 0, borderRadius: 5, alignItems: "center", justifyContent: "center", opacity: accepting() ? 1 : 0.4 }}
         hoverStyle={{ backgroundColor: theme().palette.panelActive }} focusStyle={{ backgroundColor: theme().palette.panelActive }}>
         <Icon name="add" size={16 * theme().scale} color={theme().palette.muted} />
-      </View>
+      </View>}
       {spacious() && hasToolbar() && <View style={{ maxWidth: 90 * theme().scale, minWidth: 0, flexShrink: 1 }}>
         {pill("chat-provider", () => toolbar()?.providerLabel ?? "", providerMenu, theme().palette.muted)}
       </View>}

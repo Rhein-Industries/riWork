@@ -1,7 +1,7 @@
-//! RiWork's command dispatcher, workspace MCP server, and local-source updater.
+//! Somtus's command dispatcher, workspace MCP server, and local-source updater.
 //!
-//! The desktop `riwork` executable calls [`cli::run_cli`] before it initializes
-//! its UI. The `riwork-cli` executable uses [`cli::run_headless`] and delegates
+//! The desktop `somtus` executable calls [`cli::run_cli`] before it initializes
+//! its UI. The `somtus-cli` executable uses [`cli::run_headless`] and delegates
 //! graphical invocations to the installed desktop executable.
 
 pub mod cli;

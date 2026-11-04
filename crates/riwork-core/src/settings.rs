@@ -1,4 +1,4 @@
-//! Saved application preferences, shared by every RiWork window and process.
+//! Saved application preferences, shared by every Somtus window and process.
 //! UI globals and panels adapt these data types in the desktop crate.
 
 use crate::{
@@ -38,7 +38,7 @@ impl DisplayMode {
         }
     }
 }
-/// How an orchestrator created from now on runs: chosen by RiWork (`Automatic`), in a
+/// How an orchestrator created from now on runs: chosen by Somtus (`Automatic`), in a
 /// terminal tab, as it always has, or as a chat of the chat host.
 ///
 /// `Automatic` is the default, so a settings file without the key (a fresh one, or
@@ -73,7 +73,7 @@ pub const AUTOMATIC_ORCHESTRATORS: [(Provider, &str); 2] = [
     (Provider::Codex, "gpt-6.1-sol"),
 ];
 
-/// The model RiWork's routing prefers for each chat provider: Muse Wonder Full for
+/// The model Somtus's routing prefers for each chat provider: Muse Wonder Full for
 /// orchestration, Claude Opus 5.5 (the CLI's `opus` alias) for the hardest
 /// reasoning and review, Codex GPT-6.1-Sol as the workhorse. Settings offer it
 /// beside the provider's own default.
@@ -82,6 +82,7 @@ pub fn recommended_model(provider: Provider) -> &'static str {
         Provider::Muse => "muse-wonder-full-1.0",
         Provider::Claude => "opus",
         Provider::Codex => "gpt-6.1-sol",
+        Provider::Acp => "",
     }
 }
 
@@ -91,7 +92,7 @@ pub fn valid_model_id(model: &str) -> bool {
     !model.trim().is_empty() && model.chars().count() <= 100 && !model.chars().any(char::is_control)
 }
 
-/// What an orchestrator created now is: chosen by RiWork, a terminal, or a chat of
+/// What an orchestrator created now is: chosen by Somtus, a terminal, or a chat of
 /// a provider on a model (`None` is the provider's own default). Settings name one
 /// for every orchestrator, and a project's override for its own
 /// (`store::ProjectOrchestrator`), in the same shape.
@@ -194,6 +195,7 @@ pub fn provider_label(provider: Provider) -> &'static str {
         Provider::Codex => "Codex",
         Provider::Claude => "Claude",
         Provider::Muse => "Muse",
+        Provider::Acp => "ACP",
     }
 }
 
@@ -262,7 +264,7 @@ pub struct Settings {
     /// Desktop palette. Unknown future choices read as Native and remain in
     /// the file until this setting changes.
     pub theme: ThemeChoice,
-    /// Follow Ghostty can independently use RiWork's terminal palette.
+    /// Follow Ghostty can independently use Somtus's terminal palette.
     pub use_riwork_colors: bool,
     pub remember_window_size: bool,
     /// Built-in panel tabs and toolbar buttons show an icon instead of their text label.
@@ -311,7 +313,7 @@ pub struct Settings {
     /// nothing. Told to an orchestrator when it starts or loads its skill; one that
     /// runs keeps what it was told. Written only once something is chosen in it.
     pub delegation_policy: DelegationPolicy,
-    /// RiWork's own interface text in points of its panel list text, like
+    /// Somtus's own interface text in points of its panel list text, like
     /// Ghostty's `font-size`: 11 is the design size, from `ui_text::MIN_POINTS`
     /// to `MAX_POINTS`. Terminals keep Ghostty's size.
     pub ui_text_size: TextPoints,
@@ -329,7 +331,7 @@ pub struct Settings {
     /// helper runs or asks for a permission.
     pub dictation_mic: bool,
     /// What the Mac's chats dictate with: `apple` (Apple's on-device speech, built in) or
-    /// the key of a local MLX speech model in RiWork's pinned catalog, which RiWork
+    /// the key of a local MLX speech model in Somtus's pinned catalog, which Somtus
     /// downloads on request (crates/riwork-nsh-native/speech/models.json). A key this
     /// build does not know dictates with Apple's.
     pub dictation_model: String,
@@ -640,7 +642,7 @@ impl<'de> Deserialize<'de> for Settings {
     }
 }
 
-/// "settings.json has orchestrator_mode = "hologram", which this RiWork cannot read; …"
+/// "settings.json has orchestrator_mode = "hologram", which this Somtus cannot read; …"
 fn unreadable_note(unreadable: &[(String, Value)]) -> Option<String> {
     if unreadable.is_empty() {
         return None;
@@ -651,7 +653,7 @@ fn unreadable_note(unreadable: &[(String, Value)]) -> Option<String> {
         .collect::<Vec<_>>()
         .join(", ");
     Some(format!(
-        "settings.json has {values}, which this RiWork cannot read or use. It is kept as saved, and the default stands in for it until you choose here."
+        "settings.json has {values}, which this Somtus cannot read or use. It is kept as saved, and the default stands in for it until you choose here."
     ))
 }
 
@@ -750,7 +752,7 @@ impl SettingsStore {
     pub fn open(dir: impl Into<PathBuf>) -> Result<Self, String> {
         let dir = dir.into();
         if dir.as_os_str().is_empty() {
-            return Err("The RiWork data directory path is empty".to_owned());
+            return Err("The Somtus data directory path is empty".to_owned());
         }
         crate::paths::create_private_dir(&dir)
             .map_err(|error| format!("Cannot create settings directory: {error}"))?;
@@ -824,7 +826,7 @@ impl SettingsStore {
     pub fn set_value(&self, key: &str, value: Value) -> Result<Settings, String> {
         if !Settings::default().values()?.contains_key(key) {
             return Err(format!(
-                "invalid_request: '{key}' is not a known setting; run riwork settings list"
+                "invalid_request: '{key}' is not a known setting; run somtus settings list"
             ));
         }
         self.update_with(&[key], |_, document| {
@@ -906,7 +908,7 @@ impl SettingsStore {
         self.read_with_document().map(|(settings, _)| settings)
     }
 
-    /// Also return the file's own JSON object: settings from another RiWork
+    /// Also return the file's own JSON object: settings from another Somtus
     /// build may hold keys and values this one does not model.
     fn read_with_document(&self) -> Result<(Settings, Map<String, Value>), String> {
         let path = self.dir.join("settings.json");
@@ -1307,7 +1309,7 @@ mod tests {
         assert!(defaults.native_terminal_colors);
         assert_eq!(defaults.interface_font, InterfaceFont::SystemMono);
         // A file from a build without them reads as the defaults; the retired
-        // RiWork terminal colors key is not read.
+        // Somtus terminal colors key is not read.
         fs::write(
             dir.join("settings.json"),
             r#"{"schema_version":1,"theme":"ghostty","use_riwork_colors":true}"#,

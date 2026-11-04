@@ -2,9 +2,22 @@ import { Text, View, cleanup, host, mount, signal, type YNode } from "nsh";
 import { Layouts, type LayoutSession } from "riwork/native";
 import { Workspace } from "../Workspace";
 import { requirePrivateHome } from "./private-home";
+import { DEFAULT_CUSTOMIZATION, type CustomizationSnapshot } from "../customization_model";
+import type { CustomizationService } from "../customization";
 
 function Fixture() {
-  const params = host.params as { windowId: string; projectId: string; restore?: unknown; fixtureName?: string };
+  const params = host.params as { windowId: string; projectId: string; restore?: unknown; fixtureName?: string; customize?: boolean };
+  let custom = DEFAULT_CUSTOMIZATION, customRev = 1;
+  const customListeners = new Set<(event: { rev: number; data: unknown }) => void>();
+  const customService: CustomizationService = {
+    snapshot: async () => custom,
+    subscribe: (listener) => { customListeners.add(listener); listener({ rev: customRev, data: custom }); return { close: () => { customListeners.delete(listener); } }; },
+    select: async () => {}, reset: async () => {}, initializeFiles: async () => {}, reveal: async () => {},
+  };
+  cleanup(host.on("app.fixture.customize", (value) => {
+    custom = value as unknown as CustomizationSnapshot; customRev++;
+    for (const listener of customListeners) listener({ rev: customRev, data: custom });
+  }));
   const session = signal<LayoutSession | null>(null);
   const error = signal("");
   let alive = true;
@@ -37,7 +50,8 @@ function Fixture() {
     if (alive) session.set(value); else value.dispose();
   }).catch((reason: unknown) => error.set(String(reason)));
   return <View style={{ flex: 1 }}>
-    {session() ? <Workspace session={session()!} title="RiWork · Fixture" projectLabel="Fixture" diagnostics={true}
+    {session() ? <Workspace session={session()!} title="Somtus · Fixture" projectLabel="Fixture" diagnostics={true}
+      customizationService={params.customize ? customService : undefined}
       onTerminalMount={(shellId) => host.post("app.fixture.terminalMount", { shellId })}
       onViewRef={(id, node) => nodes.set(id, node)}
       onChange={(snapshot, dock) => {

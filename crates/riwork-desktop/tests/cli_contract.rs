@@ -53,7 +53,7 @@ impl Fixture {
     }
 
     fn desktop(&self, args: &[&str], input: &[u8]) -> Output {
-        let mut command = self.command(env!("CARGO_BIN_EXE_riwork"));
+        let mut command = self.command(env!("CARGO_BIN_EXE_somtus"));
         command.args(args);
         run(command, input)
     }
@@ -187,7 +187,7 @@ fn direct_dispatch_reference() {
         Ok(false) => panic!("reference case unexpectedly requested GUI startup"),
         Err(error) => {
             if !error.is_empty() {
-                eprintln!("riwork: {error}");
+                eprintln!("somtus: {error}");
             }
             2
         }
@@ -259,7 +259,7 @@ fn mcp_stdio_keeps_protocol_bytes_without_gui_initialization() {
 #[test]
 fn chat_host_serves_in_the_same_executable_and_exits_headlessly() {
     let fixture = Fixture::new();
-    let mut command = fixture.command(env!("CARGO_BIN_EXE_riwork"));
+    let mut command = fixture.command(env!("CARGO_BIN_EXE_somtus"));
     command.args(["chat", "serve", "--idle-seconds", "2"]);
     let mut child = ChildGuard(command.spawn().unwrap());
     drop(child.0.stdin.take());

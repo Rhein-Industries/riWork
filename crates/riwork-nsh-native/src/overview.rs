@@ -1,5 +1,5 @@
 //! The global dashboard's live read: one process service, whatever the window
-//! count, that reads what `riwork dashboard --json` reads and publishes the
+//! count, that reads what `somtus dashboard --json` reads and publishes the
 //! engine's own `dashboard.get` wire (the phone reads the same shape).
 //!
 //! Reading starts nothing: no chat host (a running one is asked for its chats,
@@ -62,7 +62,7 @@ pub struct DashboardDto {
     pub read_at: Option<u64>,
     /// Why the latest read failed, when it did.
     pub error: Option<String>,
-    /// `riwork dashboard --json` (wire v1 with observations and the saved
+    /// `somtus dashboard --json` (wire v1 with observations and the saved
     /// summary under `intelligence`); `None` until a read succeeded.
     pub wire: Option<Value>,
     /// The Backends section's rows as the engine words them; `None` until read.
@@ -172,7 +172,7 @@ pub trait OverviewSource: Send + Sync {
     }
 }
 
-/// Production: the same calls, in the same order, as `riwork dashboard`.
+/// Production: the same calls, in the same order, as `somtus dashboard`.
 pub struct EngineSource {
     home: PathBuf,
     manager: OnceLock<SessionManager>,
@@ -438,7 +438,7 @@ fn run(
                 None
             }
             Err(error) => {
-                // Tried again at the change pace: "RiWork tries again every two seconds".
+                // Tried again at the change pace: "Somtus tries again every two seconds".
                 dirty = true;
                 Some(error)
             }

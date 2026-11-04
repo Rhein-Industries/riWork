@@ -108,7 +108,7 @@ fn stub_cli(dir: &Path, shell: &str) -> PathBuf {
              'orchestrator list') echo '[]';;\n\
              'shell output')\n\
                if [ \"$(cat \"$d/mode\" 2>/dev/null)\" = old ]; then\n\
-                 echo 'riwork: Usage: riwork shell output ID [--lines N]' >&2; exit 2\n\
+                 echo 'somtus: Usage: somtus shell output ID [--lines N]' >&2; exit 2\n\
                fi\n\
                cat \"$d/output.json\";;\n\
              'shell send') [ -e \"$d/send-delay\" ] && sleep \"$(cat \"$d/send-delay\")\";;\n\
@@ -462,19 +462,19 @@ async fn a_cli_from_before_this_feature_is_named_when_the_new_flags_fail() {
     let response = f.output(json!({"styled":true})).await;
     assert_eq!(code(&response), "cli_error");
     let message = response["error"]["message"].as_str().unwrap();
-    assert!(message.contains("update RiWork"), "{message}");
+    assert!(message.contains("update Somtus"), "{message}");
     let response = f.output(json!({"if_changed":HASH,"wait_ms":10})).await;
     assert!(
         response["error"]["message"]
             .as_str()
             .unwrap()
-            .contains("update RiWork")
+            .contains("update Somtus")
     );
     // A plain request would not have used a new flag: its error is the CLI's.
     let response = f.output(json!({})).await;
     let message = response["error"]["message"].as_str().unwrap();
     assert!(
-        !message.contains("update RiWork") && message.contains("Usage"),
+        !message.contains("update Somtus") && message.contains("Usage"),
         "{message}"
     );
 }

@@ -19,7 +19,7 @@ import UIKit
                     switch phase {
                     case .background:
                         model.setAppActive(false)
-                        BackgroundGrace.run("RiWork viewport release") { await model.disconnect(background: true) }
+                        BackgroundGrace.run("Somtus viewport release") { await model.disconnect(background: true) }
                     case .active: Task { await model.appDidBecomeActive() }
                     default: break
                     }

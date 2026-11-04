@@ -56,7 +56,7 @@ public enum ChatControlError: Error, Equatable, Sendable, LocalizedError {
     public enum Resource: String, Sendable { case snapshot = "snapshot_limit", response = "response_too_large" }
     case resourceLimit(Resource, String)
 
-    public static let unsupportedMessage = "Update RiWork on your Mac to use chats from the phone."
+    public static let unsupportedMessage = "Update Somtus on your Mac to use chats from the phone."
 
     public var errorDescription: String? { message }
     public var message: String {

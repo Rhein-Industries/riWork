@@ -126,7 +126,7 @@ pub struct OriginDto {
 }
 
 const ROW_TS: &str = "export interface ChatRow { artifacts?: {itemId:string;label:string;path?:string|null;line?:number|null;imageIndex?:number|null;inlineImage?:boolean}[]; fileCount?:number; attachments?: ChatAttachment[]; key: string; id: string; kind: 'user' | 'final' | 'commentary' | 'reasoning' | 'shell' | 'read' | 'search' | 'list' | 'web_search' | 'web_fetch' | 'mcp' | 'worker' | 'subagent' | 'other' | 'edit' | 'plan' | 'todo' | 'compaction' | 'notice' | 'request' | 'group' | 'activity' | 'lineage'; depth: number; title: string; target?: string; meta?: string; open: boolean; disclosure: boolean; failedCount: number; running: boolean; durationMs?: number; currentLabel?: string; provisional: boolean; requestId?: string; status?: 'in_progress' | 'completed' | 'failed' | 'declined' | 'interrupted'; hasBody: boolean; lineage?: ChatLineage; handoffBytes?: number; }
-export interface ChatLineage { kind: 'handoff' | 'fork'; chatId: string; title: string; provider?: 'codex' | 'claude' | 'muse'; model?: string; }";
+export interface ChatLineage { kind: 'handoff' | 'fork'; chatId: string; title: string; provider?: 'codex' | 'claude' | 'muse' | 'acp'; model?: string; }";
 serde_js!(RowDto, "ChatRow", ROW_TS);
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -313,13 +313,13 @@ pub struct ChatPanelDto {
     pub origin: Option<OriginDto>,
 }
 
-const PANEL_TS: &str = "export interface ChatPanel { chatId: string; title: string; provider?: 'codex' | 'claude' | 'muse'; cwd?: string; projectId?: string; worktreeId?: string; state: 'starting' | 'idle' | 'running' | 'waiting' | 'stopped' | 'failed'; stateMessage?: string; link: 'connecting' | 'live' | 'reconnecting' | 'deleted'; running: boolean; empty: boolean; status?: string; approvals: ChatApproval[]; questions: ChatQuestion[]; toolbar?: ChatToolbar; notices: { id: string; level: 'info' | 'warning' | 'error'; text: string }[]; billing?: {selected?: 'subscription'|'api_key';reported?:'subscription'|'api_key';source?:string;limits:{id:string;resetsAt?:number}[]}; fileChanges?: number; workers?: ChatWorker[]; mode: 'normal' | 'verbose'; failures: string[]; sessionId?: string; usageLabel?: string; usageDetail?: string; origin?: ChatOrigin; }
+const PANEL_TS: &str = "export interface ChatPanel { chatId: string; title: string; provider?: 'codex' | 'claude' | 'muse' | 'acp'; cwd?: string; projectId?: string; worktreeId?: string; state: 'starting' | 'idle' | 'running' | 'waiting' | 'stopped' | 'failed'; stateMessage?: string; link: 'connecting' | 'live' | 'reconnecting' | 'deleted'; running: boolean; empty: boolean; status?: string; approvals: ChatApproval[]; questions: ChatQuestion[]; toolbar?: ChatToolbar; notices: { id: string; level: 'info' | 'warning' | 'error'; text: string }[]; billing?: {selected?: 'subscription'|'api_key';reported?:'subscription'|'api_key';source?:string;limits:{id:string;resetsAt?:number}[]}; fileChanges?: number; workers?: ChatWorker[]; mode: 'normal' | 'verbose'; failures: string[]; sessionId?: string; usageLabel?: string; usageDetail?: string; origin?: ChatOrigin; }
 export interface ChatOrigin { kind: 'handoff' | 'fork'; sourceId: string; sourceKind: 'chat' | 'shell'; sourceTitle: string; label: string; context: 'transcript' | 'summary' | 'native'; document?: string; }
 export interface ChatApproval { requestId: string; kind: 'command' | 'file_change' | 'permissions' | 'tool'; heading: string; title: string; detail: string; choices: { decision: ChatDecision; label: string; key?: string }[]; }
 export type ChatDecision = 'accept' | 'accept_for_session' | 'decline' | 'cancel';
 export interface ChatQuestion { requestId: string; prompts: { header?: string; question: string; options: { label: string; description: string }[]; multiSelect: boolean }[]; }
 export interface ChatPick { id: string; label: string; detail?: string; current: boolean; }
-export interface ChatToolbar { provider: 'codex' | 'claude' | 'muse'; providerLabel: string; modelLabel: string; model?: string; models: ChatPick[]; modelSuggestions: string[]; effortLabel: string; effort?: string; efforts: ChatPick[]; effortAvailable: boolean; fastAvailable: boolean; fast: boolean; approvalMode: string; modeLabel: string; modes: ChatPick[]; providers: ChatPick[]; contributorMode?: 'on' | 'off'; contributorLabel?: string; }";
+export interface ChatToolbar { provider: 'codex' | 'claude' | 'muse' | 'acp'; providerLabel: string; modelLabel: string; model?: string; models: ChatPick[]; modelSuggestions: string[]; effortLabel: string; effort?: string; efforts: ChatPick[]; effortAvailable: boolean; fastAvailable: boolean; fast: boolean; approvalMode: string; modeLabel: string; modes: ChatPick[]; providers: ChatPick[]; contributorMode?: 'on' | 'off'; contributorLabel?: string; }";
 serde_js!(ChatPanelDto, "ChatPanel", PANEL_TS);
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -452,7 +452,7 @@ pub struct ChatSummaryDto {
 serde_js!(
     ChatSummaryDto,
     "ChatSummary",
-    "export interface ChatSummary { id: string; title: string; provider: 'codex' | 'claude' | 'muse'; projectId?: string; worktreeId?: string; cwd: string; state: string; model?: string; }"
+    "export interface ChatSummary { id: string; title: string; provider: 'codex' | 'claude' | 'muse' | 'acp'; projectId?: string; worktreeId?: string; cwd: string; state: string; model?: string; }"
 );
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -479,7 +479,7 @@ pub struct NewChatRequest {
 serde_js!(
     NewChatRequest,
     "NewChatRequest",
-    "export interface NewChatRequest { provider: 'codex' | 'claude' | 'muse'; projectId?: string | null; worktreeId?: string | null; cwd: string; model?: string | null; effort?: string | null; approvalMode?: 'supervised' | 'auto_edit' | 'full' | 'plan' | null; fast?: boolean; title?: string | null; }"
+    "export interface NewChatRequest { provider: 'codex' | 'claude' | 'muse' | 'acp'; projectId?: string | null; worktreeId?: string | null; cwd: string; model?: string | null; effort?: string | null; approvalMode?: 'supervised' | 'auto_edit' | 'full' | 'plan' | null; fast?: boolean; title?: string | null; }"
 );
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

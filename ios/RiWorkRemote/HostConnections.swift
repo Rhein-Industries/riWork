@@ -132,7 +132,7 @@ enum HostConnectionError: LocalizedError, Equatable {
         return announced(socket, hostID: hostID)
     }
 
-    /// The host refused `dashboard.get` in the lease's session although it announced it (a Mac whose connector is newer than its RiWork).
+    /// The host refused `dashboard.get` in the lease's session although it announced it (a Mac whose connector is newer than its Somtus).
     /// For the rest of that session its features leave `dashboard` out, so nobody asks again, as `RemoteModel.dashboardSupport` does for
     /// the interactive host.
     func dashboardRefused(_ lease: HostLease) {
@@ -156,7 +156,7 @@ enum HostConnectionError: LocalizedError, Equatable {
         wakeRoomWaiters()
         guard !value else { return }
         let closing = sockets.filter { $0.value.holds == 0 && $0.value.busy }.compactMap { shut($0.key) }
-        if !closing.isEmpty { BackgroundGrace.run("RiWork sockets close") { for task in closing { await task.value } } }
+        if !closing.isEmpty { BackgroundGrace.run("Somtus sockets close") { for task in closing { await task.value } } }
     }
 
     /// Asks every open socket for compressed replies or not (`RemoteModel.setCompressTraffic`); the next ones open asking the same.
@@ -232,7 +232,7 @@ enum HostConnectionError: LocalizedError, Equatable {
         guard active else {
             let closing = shut(hostID)
             // On the way to the background: closed before iOS suspends the app, so no registration outlives it at the relay.
-            if let closing { BackgroundGrace.run("RiWork socket close") { await closing.value } }
+            if let closing { BackgroundGrace.run("Somtus socket close") { await closing.value } }
             return closing
         }
         closeWhenIdle(socket, hostID: hostID)

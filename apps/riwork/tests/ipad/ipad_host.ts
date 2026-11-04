@@ -24,7 +24,7 @@ const folders = [{ id: "f-work", name: "Work", parentId: null, createdAt: NOW - 
 const listed: [string, string, string, string | null, number, number, number, number][] = [
   ["riwork", "riWork", "~/orca/projects/riWork", "f-work", 2, 1, 1, 20],
   ["nsh", "nsh", "~/orca/projects/nsh", "f-work", 1, 0, 0, 95],
-  ["ios", "RiWork companion for iPhone and iPad", "~/orca/projects/riWork/ios", "f-work", 0, 1, 0, 840],
+  ["ios", "Somtus companion for iPhone and iPad", "~/orca/projects/riWork/ios", "f-work", 0, 1, 0, 840],
   ["site", "orca-site", "~/orca/projects/orca-site", null, 0, 0, 2, 7200],
   ["cool365", "cool365-assist", "~/Documents/riwork/cool365-assist", null, 0, 0, 0, 9000],
   ["transcribe", "riTranscribe", "~/orca/projects/riTranscribe", null, 0, 0, 0, 20000],

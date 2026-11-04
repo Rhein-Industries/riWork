@@ -8,7 +8,7 @@
 # nearest folder with an App.tsx) is built and opened in the NSH macOS development host with a
 # hidden window (NSH_HIDDEN_WINDOW, see apps/riwork/vendor/nsh-platform-macos): nothing shows
 # and the focus stays where it is; PANE_SHOT_VISIBLE=1 shows the window. It runs in a private
-# RiWork home (scripts/pane-env.sh), never the person's. --params passes the fixture its
+# Somtus home (scripts/pane-env.sh), never the person's. --params passes the fixture its
 # `host.params` (`'{"key":"shot"}'`). --wait waits for a selector (`id:flow:code-review`) and
 # each --step is a line of test code run before the picture, in order. The picture is at twice
 # the size (Retina).

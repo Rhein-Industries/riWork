@@ -14,7 +14,7 @@ const PROOF: Proof = Proof {
     wait: std::time::Duration::from_secs(5),
     poll: std::time::Duration::from_millis(5),
 };
-const CHECK_IN: &str = "RiWork check-in:";
+const CHECK_IN: &str = "Somtus check-in:";
 
 fn in_process(home: &Path) -> Result<PathBuf, String> {
     Ok(socket_path(home))
@@ -147,9 +147,9 @@ impl Fixture {
 
     fn expected(&self) -> String {
         format!(
-            "RiWork check-in: worker shell {shell} (claude) finished a turn in project Wake project ({project}), \
-             worktree feature/wake ({worktree}). Read its output with `riwork shell output {shell} --lines 120` \
-             and its task state with `riwork worktree tasks {worktree}`, then decide its next step.",
+            "Somtus check-in: worker shell {shell} (claude) finished a turn in project Wake project ({project}), \
+             worktree feature/wake ({worktree}). Read its output with `somtus shell output {shell} --lines 120` \
+             and its task state with `somtus worktree tasks {worktree}`, then decide its next step.",
             shell = self.worker.id,
             project = self.project_id,
             worktree = self.worktree_id,
@@ -763,7 +763,7 @@ fn a_real_terminal_orchestrator_gets_one_line_at_its_idle_prompt() {
             Some(format!("/usr/bin/python3 '{}'", script.display())),
         )
         .unwrap();
-    // RiWork's own terminal orchestrator is a Codex; the script stands in for
+    // Somtus's own terminal orchestrator is a Codex; the script stands in for
     // it, and the probe reports the pane's process as `codex` with its rollout
     // open, so the real identity proof runs.
     let registry = home.join("sessions.json");

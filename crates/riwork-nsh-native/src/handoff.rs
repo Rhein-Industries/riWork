@@ -62,7 +62,7 @@ pub struct HandoffRequestDto {
     pub in_place: Option<bool>,
 }
 
-/// A fork of a chat (`riwork chat fork`): the whole conversation or up to an item, with the
+/// A fork of a chat (`somtus chat fork`): the whole conversation or up to an item, with the
 /// source's agent or another.
 #[derive(Clone, Debug, Serialize, Deserialize, JsObject)]
 #[serde(rename_all = "camelCase")]
@@ -132,7 +132,7 @@ fn source_dto(source: &Source) -> Result<HandoffSourceDto, String> {
             if chat.orchestrator.is_some() {
                 return Err("An orchestrator's conversation is not handed off.".into());
             }
-            let provider = match chat.provider { Provider::Codex => "codex", Provider::Claude => "claude", Provider::Muse => "muse" };
+            let provider = match chat.provider { Provider::Codex => "codex", Provider::Claude => "claude", Provider::Acp => "acp", Provider::Muse => "muse" };
             ("chat", provider, chat.project_id.clone(), chat.worktree_id.clone(), chat.cwd.clone())
         }
     };
@@ -155,7 +155,7 @@ fn mode_of(mode: Option<&str>) -> Result<Option<ApprovalMode>, String> {
 }
 
 fn provider_word(provider: Provider) -> &'static str {
-    match provider { Provider::Codex => "codex", Provider::Claude => "claude", Provider::Muse => "muse" }
+    match provider { Provider::Codex => "codex", Provider::Claude => "claude", Provider::Acp => "acp", Provider::Muse => "muse" }
 }
 
 /// Forks a chat on the blocking pool (`handoff::fork`).

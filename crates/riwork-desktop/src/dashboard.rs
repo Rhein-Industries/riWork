@@ -457,7 +457,7 @@ pub fn chat_copy(global: &GlobalOrchestrator, runs: &OrchestratorRuns, starting:
             "Open terminal orchestrator",
             format!("Runs in a terminal · {}", activity_word(*activity)),
             Some(
-                "RiWork keeps this terminal as it is; a chat takes over only after you end it."
+                "Somtus keeps this terminal as it is; a chat takes over only after you end it."
                     .to_owned(),
             ),
             false,
@@ -1038,7 +1038,7 @@ pub fn render<V: 'static>(
                 ),
                 Some(_) => empty_state(
                     "exclamationmark.triangle",
-                    "The sessions could not be read, so nothing can be counted yet. RiWork tries again every two seconds; Refresh tries now.",
+                    "The sessions could not be read, so nothing can be counted yet. Somtus tries again every two seconds; Refresh tries now.",
                     colors,
                 ),
             })

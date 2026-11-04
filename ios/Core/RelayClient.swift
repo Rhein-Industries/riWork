@@ -146,6 +146,7 @@ public enum NativeInvokeRequests {
         "Sessions.openEditor": true,
         "Tabs.snapshot": false,
         "Settings.get": false,
+        "Hosts.local": false,
         "Settings.set": true,
         "Files.listDirectory": false,
         "Files.preview": false,

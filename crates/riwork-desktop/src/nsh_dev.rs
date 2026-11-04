@@ -57,7 +57,7 @@ pub fn start(
     DevClient::start(
         url,
         HostInfo {
-            device: format!("RiWork development ({})", std::process::id()),
+            device: format!("Somtus development ({})", std::process::id()),
             platform: HostPlatform::MacOs,
             bytecode_version: "riwork-source-only".into(),
             ui_sets: vec!["nsh/base".into(), "riwork/native".into()],

@@ -48,7 +48,7 @@ test("P6B-REMOTE-UI-02 opening Add resets Remove and validates the masked link w
     expect(app.texts()).toContain("Paste the pairing link from the other Mac.");
     await app.type("id:remote-pairing-link", "not-a-disposable-link");
     await app.submit("id:remote-pairing-link");
-    expect(app.texts()).toContain("That is not a RiWork pairing link.");
+    expect(app.texts()).toContain("That is not a Somtus pairing link.");
     expect((await inspect(app)).calls.length).toBe(0);
     expect(app.texts().some((text) => text.includes("not-a-disposable-link"))).toBe(false);
     await app.keyboard.press("escape"); await app.waitUntil(() => !app.shows("id:remote-prompt"));
@@ -94,7 +94,7 @@ test("P6B-REMOTE-UI-04 stale remote projects remain selectable and local-only pa
     await app.press("id:remote-shell-fixture-shell");
     expect((await inspect(app)).actions).toContain("shell:disposable-mac:fixture-shell");
     await app.press("id:remote-shell-fixture-chat");
-    expect((await inspect(app)).notices).toContain("Project orchestrator runs as a chat on Disposable Mac; chats run on that Mac. Open it there, or in the iOS app.");
+    expect((await inspect(app)).notices).toContain("Project orchestrator is a chat on Disposable Mac, but this host did not report its chat ID. Refresh or update the host.");
     await app.press("id:fixture-ended");
     await app.waitFor("id:remote-reconnect");
     await app.press("id:remote-reconnect");

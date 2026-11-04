@@ -83,7 +83,7 @@ export function createMobileApp(): MobileApp {
   const loaded = signal(false), failure = signal("");
   function install(value: unknown) {
     const next = value as OverviewSnapshot | null;
-    if (!next || next.schema !== 2 || !Number.isFinite(next.revision)) throw new Error("This mobile interface needs a compatible RiWork host.");
+    if (!next || next.schema !== 2 || !Number.isFinite(next.revision)) throw new Error("This mobile interface needs a compatible Somtus host.");
     if (!alive || next.revision < overview().revision) return;
     overview.set(next); loaded.set(true);
   }

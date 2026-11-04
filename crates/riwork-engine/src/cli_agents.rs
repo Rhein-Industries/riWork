@@ -1,5 +1,5 @@
-//! The agent fields of `riwork shell list --json`, `riwork orchestrator list
-//! --json` and `riwork project list --json`, which the remote connector passes
+//! The agent fields of `somtus shell list --json`, `somtus orchestrator list
+//! --json` and `somtus project list --json`, which the remote connector passes
 //! on to the phone (`remote/src/rpc.rs`, `SESSION_FIELDS` and `PROJECT_FIELDS`).
 //!
 //! Activity is read cold in the CLI's own process by the code the desktop

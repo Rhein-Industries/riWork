@@ -4,7 +4,7 @@ import { DEFAULT_THEME, space, type InterfaceTheme } from "../appearance";
 import { Icon } from "../Icon";
 import { taskStatusLabel } from "../panel_model";
 import {
-  EMPTY_REMOTE, REMOTE_HISTORY_NOTE, checkPairingLink, filteredFolders, linkPresentation,
+  EMPTY_REMOTE, checkPairingLink, filteredFolders, linkPresentation,
   maskedPairingLink, projectConnectionNote, projectNameError, remoteErrorNotice, remoteHostLabel, remoteProjectKey,
   remoteStrip, samePrompt, shellOpenRefusal,
   type PairingLink, type PairRequest, type RemoteDefaults, type RemoteLists, type RemoteOrder, type RemotePromptKind,
@@ -279,16 +279,36 @@ export function RemoteProjectPanel(props: {
   query?: () => string; selectedWorktree?: () => string | null;
   onQuery?: (query: string) => void; onSearch?: (node: YNode) => (() => void) | void;
   onNewShell?: () => void;
+  readChats?: (host: string, project: string) => Promise<{ id: string; title: string; provider: string; state: string }[]>;
+  onChat?: (host: string, chat: string) => void;
   onWorktree: (id: string) => void; onTask: (id: string) => void; onShell: (host: string, shell: RemoteShell) => void;
 }) {
   const c = props.controller;
   const read = () => c.data().projects.find((project) => project.key === props.projectKey());
+  const chats = signal<{ id: string; title: string; provider: string; state: string }[]>([]), chatError = signal("");
+  const chatSource = computed(() => `${props.projectKey()}|${read()?.link === "online" ? "online" : "offline"}`);
+  let previousChatProject = "";
+  effect(() => {
+    const [key, link] = chatSource().split("|");
+    if (key !== previousChatProject) { previousChatProject = key; chats.set([]); chatError.set(""); }
+    if (props.panel !== "shells" || !props.readChats || link !== "online") return;
+    const parts = remoteProjectKey(key); if (!parts) return;
+    let alive = true, reading = false;
+    const refresh = async () => {
+      if (reading) return; reading = true;
+      try { const next = await props.readChats!(parts.host, parts.project); if (alive) { chats.set(next); chatError.set(""); } }
+      catch (error) { if (alive) chatError.set(String(error)); }
+      finally { reading = false; }
+    };
+    void refresh(); const timer = setInterval(() => void refresh(), 10000);
+    return () => { alive = false; clearInterval(timer); };
+  });
   const matches = (...parts: (string | null)[]) => !props.query?.().trim() || parts.filter(Boolean).join("\n").toLocaleLowerCase().includes(props.query!().trim().toLocaleLowerCase());
   const worktrees = () => read()?.worktrees.filter((w) => matches(w.id, w.branch, w.path)) ?? [];
   const tasks = () => read()?.tasks.filter((task) => matches(task.id, task.title, task.details, task.status)) ?? [];
-  const shells = () => read()?.shells.filter((shell) => matches(shell.id, shell.display, shell.cwd, shell.harness, shell.alive ? "live" : "exited")) ?? [];
-  const count = () => props.panel === "worktrees" ? worktrees().length : props.panel === "tasks" ? tasks().length : shells().length;
-  const total = () => read()?.[props.panel].length ?? 0;
+  const shells = () => read()?.shells.filter((shell) => !chats().some((chat) => chat.id === shell.chatId)).filter((shell) => matches(shell.id, shell.display, shell.cwd, shell.harness, shell.alive ? "live" : "exited")) ?? [];
+  const count = () => props.panel === "worktrees" ? worktrees().length : props.panel === "tasks" ? tasks().length : shells().length + chats().filter((chat) => matches(chat.id, chat.title, chat.provider)).length;
+  const total = () => (read()?.[props.panel].length ?? 0) + (props.panel === "shells" ? chats().length : 0);
   const title = props.panel === "shells" ? "Sessions" : props.panel === "tasks" ? "Tasks" : "Worktrees";
   const noun = props.panel === "shells" ? "session" : props.panel === "tasks" ? "task" : "worktree";
   const row = () => ({ paddingHorizontal: space(8, c.theme().scale), paddingVertical: space(8, c.theme().scale), gap: 3, borderRadius: space(5, c.theme().scale) });
@@ -327,7 +347,7 @@ export function RemoteProjectPanel(props: {
       {!read()!.unpaired && <>
         {listNote(read()!)}
         {props.panel === "shells" && <>
-          <Text style={font(c, 10, c.theme().palette.muted)}>{REMOTE_HISTORY_NOTE}</Text>
+          {chatError() && <Text style={font(c, 10, c.theme().palette.gold)}>{chatError()}</Text>}
           {read()!.creating && <Text style={font(c, 10, c.theme().palette.cyan)}>Starting a terminal…</Text>}
           {read()!.failure && <View style={{ flexDirection: "row" }}><Text style={font(c, 10, c.theme().palette.gold)}>{read()!.failure}</Text>{action(c, "remote-dismiss-shell", "Dismiss", () => c.dismiss(read()!.host, read()!.project))}</View>}
         </>}
@@ -338,6 +358,10 @@ export function RemoteProjectPanel(props: {
           </Button>)}
           {props.panel === "tasks" && tasks().map((task) => <Button testID={`remote-task-${task.id}`} accessibilityLabel={task.title} onPress={() => props.onTask(task.id)} style={row()} hoverStyle={{ backgroundColor: c.theme().palette.panelActive }}>
             <Text style={font(c)}>{task.title}</Text><Text style={font(c, 10, c.theme().palette.muted)}>{`${taskStatusLabel(task.status)} · ${read()!.worktrees.find((w) => w.id === task.worktreeId)?.branch ?? "Unassigned"}`}</Text>
+          </Button>)}
+          {props.panel === "shells" && chats().filter((chat) => matches(chat.id, chat.title, chat.provider)).map((chat) => <Button testID={`remote-chat-${chat.id}`} accessibilityLabel={chat.title}
+            onPress={() => props.onChat?.(read()!.host, chat.id)} style={row()} hoverStyle={{ backgroundColor: c.theme().palette.panelActive }}>
+            <Text style={font(c)}>{chat.title}</Text><Text style={font(c, 10, c.theme().palette.muted)}>{`${chat.provider} chat · ${chat.state}`}</Text>
           </Button>)}
           {props.panel === "shells" && shells().map((shell) => <Button testID={`remote-shell-${shell.id}`} accessibilityLabel={shell.display} onPress={() => c.openShell(read()!.host, shell, props.onShell)} style={row()} hoverStyle={{ backgroundColor: c.theme().palette.panelActive }}>
             <Text style={font(c)}>{`${shell.orchestrator ? shell.projectId ? "P·ORCH" : "G·ORCH" : shell.id.slice(0, 8)} · ${shell.harness ?? "shell"} · ${shell.alive ? "live" : "exited"}`}</Text><Text style={font(c, 10, c.theme().palette.muted)}>{shell.cwd}</Text>

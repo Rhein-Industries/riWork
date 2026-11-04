@@ -72,7 +72,7 @@ def probes(v):
 
 
 def fixture(v):
-    binary = v.target / "debug/riwork"
+    binary = v.target / "debug/somtus"
     bundle = v.root / "bundle/bundle.js"
     for path in (binary, bundle):
         path.resolve(strict=True)

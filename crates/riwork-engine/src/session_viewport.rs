@@ -602,7 +602,7 @@ mod tests {
         }
     }
 
-    /// A stand-in for the RiWork binary: records each launch and the launched
+    /// A stand-in for the Somtus binary: records each launch and the launched
     /// process's id and process group, then exits (a watchdog that died).
     #[cfg(unix)]
     fn recording_executable(home: &Home) -> (PathBuf, PathBuf) {

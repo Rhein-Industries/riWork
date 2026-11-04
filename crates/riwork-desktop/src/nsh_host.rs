@@ -390,9 +390,9 @@ fn new_window_command() -> Value {
 
 fn window_title(runtime: &RuntimeWindow) -> &'static str {
     if runtime.is_global() {
-        "RiWork · Global"
+        "Somtus · Global"
     } else {
-        "RiWork"
+        "Somtus"
     }
 }
 
@@ -424,6 +424,7 @@ enum Service {
     Restart(ReloadRequest, ClosingWindows),
     RestartSkipped,
     TextSize(&'static str),
+    ResetCustomization,
     #[cfg(feature = "dev-reload")]
     DevReload(crate::nsh_dev::Build, ClosingWindows),
     Finished,
@@ -446,6 +447,7 @@ enum Main {
     Recovery(Recovery),
     Restart(ReloadRequest),
     SettingsChanged(f32),
+    Keybindings(riwork_core::customization_keys::Bindings),
     Menu(MenuAction),
     Quit,
     QuitPrepared,
@@ -476,7 +478,7 @@ impl Recovery {
                 // native gate or waking a surviving App's pending opener.
                 *quitting = false;
                 batch.cancel_with(&mut notify);
-                eprintln!("riwork: quit cancelled: {error}");
+                eprintln!("somtus: quit cancelled: {error}");
             }
         }
     }
@@ -674,6 +676,7 @@ struct Host {
     chunks: Option<PathBuf>,
     components: Components,
     menus: HostMenus,
+    customization: Option<Arc<native::customization::CustomizationService>>,
     windows: BTreeMap<String, Window>,
     service: mpsc::Sender<Service>,
     focus_serial: u64,
@@ -715,7 +718,7 @@ impl Host {
             window.closing = false;
         }
         batch.cancel();
-        eprintln!("riwork: TSX reload cancelled; keeping the current UI: {error}");
+        eprintln!("somtus: TSX reload cancelled; keeping the current UI: {error}");
         self.finish_dev_reload();
     }
 
@@ -782,7 +785,7 @@ impl Host {
         self.state("");
         self.publish();
         eprintln!(
-            "riwork: TSX UI reloaded (server {}, build {}); component state was reset",
+            "somtus: TSX UI reloaded (server {}, build {}); component state was reset",
             build.session, build.version
         );
         self.finish_dev_reload();
@@ -806,6 +809,9 @@ impl Host {
         let appearance = self.forced_appearance.unwrap_or(Appearance::System);
         let mut params = prepared.params(&id, window_count(&self.windows));
         params["appearance"] = json!(appearance_name(appearance));
+        if let Some(customization) = &self.customization {
+            params["customization"] = json!(customization.snapshot());
+        }
         channel.set_params(params.as_object().unwrap().clone());
         for &name in host_names::OPERATIONS {
             let id = id.clone();
@@ -843,7 +849,7 @@ impl Host {
             self.mtm,
             AppOptions {
                 app_id: APP_ID.into(),
-                title: "RiWork".into(),
+                title: "Somtus".into(),
                 size: (frame.size.width as i32, frame.size.height as i32),
                 appearance,
                 data_dir: Some(self.home.join("nsh")),
@@ -1072,7 +1078,7 @@ impl Host {
             if let Service::Quit(batch) = error.0 {
                 batch.cancel();
             }
-            eprintln!("riwork: unavailable: host service stopped");
+            eprintln!("somtus: unavailable: host service stopped");
         }
     }
     fn restart(&mut self, request: ReloadRequest) {
@@ -1135,7 +1141,7 @@ impl Host {
                 Err(error) => {
                     match intent.call {
                         Some(call) => call.reject(error),
-                        None => eprintln!("riwork: {error}"),
+                        None => eprintln!("somtus: {error}"),
                     }
                     return;
                 }
@@ -1208,7 +1214,7 @@ impl Host {
             #[cfg(feature = "dev-reload")]
             Main::DevBuild(result) => match result {
                 Ok(build) => { self.dev_reloads.push(build); self.start_dev_reload(); }
-                Err(error) => eprintln!("riwork: TSX build failed; keeping the current UI: {error}"),
+                Err(error) => eprintln!("somtus: TSX build failed; keeping the current UI: {error}"),
             },
             #[cfg(feature = "dev-reload")]
             Main::DevPrepared(build, batch, result) => self.dev_prepared(build, batch, result),
@@ -1249,7 +1255,7 @@ impl Host {
                     if let Some(call) = call {
                         call.reject(error);
                     } else {
-                        eprintln!("riwork: close cancelled: {error}");
+                        eprintln!("somtus: close cancelled: {error}");
                     }
                 }
             },
@@ -1259,6 +1265,7 @@ impl Host {
                 }
             }),
             Main::Restart(request) => self.restart(request),
+            Main::Keybindings(bindings) => self.menus.update_bindings(bindings),
             Main::SettingsChanged(size) => {
                 for window in self.windows.values() {
                     let _ = window
@@ -1290,7 +1297,7 @@ impl Host {
                 }
             }
             Main::Error(error) => {
-                eprintln!("riwork: {error}");
+                eprintln!("somtus: {error}");
                 self.quit();
             }
             #[cfg(feature = "terminal-fixture")]
@@ -1448,6 +1455,7 @@ impl Host {
     }
     fn menu(&mut self, action: MenuAction) {
         match action.command {
+            "resetCustomization" => { let _ = self.service.send(Service::ResetCustomization); }
             "biggerText" | "smallerText" | "actualSize" => {
                 let _ = self.service.send(Service::TextSize(action.command));
             }
@@ -1580,7 +1588,7 @@ impl Host {
             },
             "system.notify" => match (notices::Notification::from_call(&data), self.notifier.clone()) {
                 (Err(error), _) => call.reject(error),
-                (Ok(_), None) => call.reject("unavailable: system notifications need the RiWork app bundle"),
+                (Ok(_), None) => call.reject("unavailable: system notifications need the Somtus app bundle"),
                 (Ok(notification), Some(notifier)) => match notifier.post(&notification) {
                     Ok(()) => {
                         if self.posted.len() >= POSTED_NOTICES { self.posted.pop_front(); }
@@ -2064,6 +2072,7 @@ struct Startup {
     windows: Vec<PreparedWindow>,
     instance: DesktopInstance,
     runtime: HostRuntime,
+    customization: Option<Arc<native::customization::CustomizationService>>,
 }
 fn startup(args: Vec<String>) -> Result<Option<Startup>, String> {
     let home = paths::riwork_home()?;
@@ -2127,6 +2136,7 @@ fn startup(args: Vec<String>) -> Result<Option<Startup>, String> {
         return Err("Cannot restore an empty window snapshot".into());
     }
     let runtime = HostRuntime::register(&home, restore)?;
+    let customization = native::customization::observe(&home).ok();
     Ok(Some(Startup {
         home,
         bundle,
@@ -2134,6 +2144,7 @@ fn startup(args: Vec<String>) -> Result<Option<Startup>, String> {
         windows,
         instance,
         runtime,
+        customization,
     }))
 }
 /// The registered layout follows project switches without an AppKit event or
@@ -2294,11 +2305,20 @@ fn forward_open(home: &Path, request: OpenRequest) {
     };
     match prepare(home, OpenOptions::project(Some(path))) {
         Ok(window) => send(Main::Open(window, OpenIntent::forwarded())),
-        Err(error) => eprintln!("riwork: forwarded open failed: {error}"),
+        Err(error) => eprintln!("somtus: forwarded open failed: {error}"),
     }
 }
 
 fn services(mut startup: Startup, rx: mpsc::Receiver<Service>, tx: mpsc::Sender<Service>) {
+    if let Some(customization) = startup.customization.clone() {
+        let updates = customization.subscribe();
+        thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread().build().expect("customization observer runtime");
+            runtime.block_on(async move {
+                while let Ok(snapshot) = updates.recv().await { send(Main::Keybindings(snapshot.data.keys)); }
+            });
+        });
+    }
     startup.instance.set_request_waker(move || {
         let _ = tx.send(Service::Wake);
     });
@@ -2337,7 +2357,7 @@ fn services(mut startup: Startup, rx: mpsc::Receiver<Service>, tx: mpsc::Sender<
                     if let Some(call) = intent.call {
                         call.reject(error);
                     } else {
-                        eprintln!("riwork: {error}");
+                        eprintln!("somtus: {error}");
                     }
                 }
             },
@@ -2364,7 +2384,7 @@ fn services(mut startup: Startup, rx: mpsc::Receiver<Service>, tx: mpsc::Sender<
                         };
                         send(Main::Open(window, intent));
                     }
-                    Err(error) => eprintln!("riwork notifications: {error}"),
+                    Err(error) => eprintln!("somtus notifications: {error}"),
                 }
             }
             Ok(Service::Close(id, batch, call)) => {
@@ -2386,7 +2406,7 @@ fn services(mut startup: Startup, rx: mpsc::Receiver<Service>, tx: mpsc::Sender<
                         error,
                         || {
                             if let Err(error) = startup.instance.resume_forwarding() {
-                                eprintln!("riwork: {error}");
+                                eprintln!("somtus: {error}");
                             }
                         },
                         send,
@@ -2428,7 +2448,7 @@ fn services(mut startup: Startup, rx: mpsc::Receiver<Service>, tx: mpsc::Sender<
                             || {
                                 let _ = startup.runtime.fail_reload(&request, &error);
                                 if let Err(error) = startup.instance.resume_forwarding() {
-                                    eprintln!("riwork: {error}");
+                                    eprintln!("somtus: {error}");
                                 }
                             },
                             send,
@@ -2439,12 +2459,20 @@ fn services(mut startup: Startup, rx: mpsc::Receiver<Service>, tx: mpsc::Sender<
             Ok(Service::RestartSkipped) => {
                 restart_queued = false;
                 if let Err(error) = startup.instance.resume_forwarding() {
-                    eprintln!("riwork: {error}");
+                    eprintln!("somtus: {error}");
+                }
+            }
+            Ok(Service::ResetCustomization) => {
+                if let Some(customization) = &startup.customization {
+                    match customization.reset() {
+                        Ok(snapshot) => send(Main::Keybindings(snapshot.keys)),
+                        Err(error) => eprintln!("somtus: cannot reset UI customization: {error}"),
+                    }
                 }
             }
             Ok(Service::TextSize(command)) => match change_text_size(&startup.home, command) {
                 Ok(size) => send(Main::SettingsChanged(size)),
-                Err(error) => eprintln!("riwork: {error}"),
+                Err(error) => eprintln!("somtus: {error}"),
             },
             #[cfg(feature = "dev-reload")]
             Ok(Service::DevReload(build, batch)) => {
@@ -2466,7 +2494,7 @@ fn services(mut startup: Startup, rx: mpsc::Receiver<Service>, tx: mpsc::Sender<
         if let Err(error) = startup.runtime.check_restore_deadline() {
             // Do not confirm late. The engine watchdog is the final backstop;
             // normal host progress closes this failed replacement immediately.
-            eprintln!("riwork: {error}");
+            eprintln!("somtus: {error}");
             send(Main::Finish);
             while let Ok(message) = rx.recv() {
                 if matches!(message, Service::Finished) {
@@ -2494,7 +2522,7 @@ fn services(mut startup: Startup, rx: mpsc::Receiver<Service>, tx: mpsc::Sender<
                             format!("restart: {error}"),
                             || {
                                 if let Err(error) = startup.instance.resume_forwarding() {
-                                    eprintln!("riwork: {error}");
+                                    eprintln!("somtus: {error}");
                                 }
                             },
                             send,
@@ -2514,7 +2542,7 @@ fn services(mut startup: Startup, rx: mpsc::Receiver<Service>, tx: mpsc::Sender<
                 .try_publish(current_layouts(&startup.home, &snapshots))
             {
                 Ok(completed) => runtime_tick.published(now, completed),
-                Err(e) => eprintln!("riwork: {e}"),
+                Err(e) => eprintln!("somtus: {e}"),
             }
             if reload.is_none()
                 && !restart_queued
@@ -2580,6 +2608,19 @@ fn notification_delivery(
     }
 }
 
+/// Replacement processes have detached stderr. Startup can fail before the
+/// renderer logger exists, so keep that error in the same per-process log.
+pub fn record_failure(error: &str) {
+    use std::{io::Write, os::unix::fs::OpenOptionsExt};
+    let Ok(home) = paths::riwork_home() else { return; };
+    let directory = home.join("nsh/logs");
+    if paths::create_private_dir(&directory).is_err() { return; }
+    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).mode(0o600)
+        .open(directory.join(format!("desktop-{}.log", std::process::id()))) {
+        let _ = writeln!(file, "Somtus desktop startup failed: {error}");
+    }
+}
+
 pub fn run(args: Vec<String>) -> Result<(), String> {
     #[cfg(not(feature = "dev-reload"))]
     if std::env::var_os("RIWORK_NSH_DEV_URL").is_some() {
@@ -2625,7 +2666,8 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     let delegate = Delegate::new(mtm, None);
     app.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
     set_ui_sets(native::ui_sets());
-    let menus = HostMenus::install(mtm, Arc::new(|action| send(Main::Menu(action))));
+    let mut menus = HostMenus::install(mtm, Arc::new(|action| send(Main::Menu(action))));
+    if let Some(customization) = &startup.customization { menus.update_bindings(customization.snapshot().keys); }
     let (tx, rx) = mpsc::channel();
     let components = Components::default();
     riwork_nsh_terminal::initialize_theme_projection(
@@ -2660,6 +2702,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         chunks: startup.directory.clone(),
         components,
         menus,
+        customization: startup.customization.clone(),
         windows: BTreeMap::new(),
         service: tx.clone(),
         focus_serial: 0,
@@ -2689,7 +2732,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
             host.asset_base = Some(AssetBase::Http(assets.clone()));
             for window in host.windows.values() { window.view.set_asset_base(Some(AssetBase::Http(assets.clone()))); }
         });
-        eprintln!("riwork: watching TSX builds at {url}");
+        eprintln!("somtus: watching TSX builds at {url}");
         Some(crate::nsh_dev::start(url, |build| send(Main::DevBuild(build)))?)
     } else { None };
     // Process-wide, once (not per window): notification claims and orchestrator
@@ -3478,8 +3521,8 @@ mod window_registry {
                     height: 760.
                 }
             );
-            assert_eq!(window_title(&prepared.runtime), "RiWork · Global");
-            assert_eq!(window_title(&fixture.window("project").1), "RiWork");
+            assert_eq!(window_title(&prepared.runtime), "Somtus · Global");
+            assert_eq!(window_title(&fixture.window("project").1), "Somtus");
             let saved = GlobalWindowState {
                 window_size: WindowSize::new(900., 650.),
                 ..GlobalWindowState::default()

@@ -11,7 +11,7 @@ const ready: CuaStatus = { installed: true, version: "fixture", ready: true, run
 const state = (change: Partial<CuaStatus> = {}, extra: Partial<CuaState> = {}): CuaState => ({ status: { ...ready, ...change }, pending: null, error: null, ...extra });
 const states: [string, CuaState, string, string][] = [
   ["initial", { status: null, pending: null, error: null }, "Set up Cua", "install"],
-  ["missing", state({ installed: false, ready: false, running: false, version: null, message: "Cua Driver is not installed. Select Set up Cua or run `riwork setup`." }), "Set up Cua", "install"],
+  ["missing", state({ installed: false, ready: false, running: false, version: null, message: "Cua Driver is not installed. Select Set up Cua or run `somtus setup`." }), "Set up Cua", "install"],
   ["signature", state({ version: null, ready: false, message: "Cua Driver signature does not match. Repair Cua." }), "Repair Cua", "install"],
   ["version", state({ version: null, ready: false, message: "Cannot read the driver version. Repair Cua." }), "Repair Cua", "install"],
   ["service-stopped", state({ running: false, ready: false, message: "Cua Driver service is not running." }), "Repair Cua", "install"],
@@ -149,7 +149,7 @@ test("CuaMissing opens Settings in the active pane using fixture status only", a
     expect(app.shows("text:Computer use settings are unavailable here.")).toBe(false);
     expect(app.texts().filter((text) => text === "Cua.ai").length).toBe(1);
     expect(latest(app).panes.find((pane) => pane.id === 3)?.activeTab).toBe("panel:settings");
-    expect(app.shows("text:Cua Driver is not installed. Select Set up Cua or run `riwork setup`.")).toBe(true);
+    expect(app.shows("text:Cua Driver is not installed. Select Set up Cua or run `somtus setup`.")).toBe(true);
   } finally { app.dispose(); }
 });
 

@@ -1,7 +1,7 @@
 //! Files from the phone ("File upload extension" in `docs/remote-protocol.md`): `upload.begin`,
 //! `upload.chunk`, `upload.finish` and `upload.cancel` store a file in the inbox of a shell or
 //! a chat (`crate::upload`), and `shell.paste` pastes finished uploads into their shell as a
-//! drop of those files on its terminal would (`riwork shell paste SHELL -- FILE...`), exactly
+//! drop of those files on its terminal would (`somtus shell paste SHELL -- FILE...`), exactly
 //! once per batch UUID, with the same ledger as `shell.keys`.
 //!
 //! Everything is checked before anything is written, and the connector, not the phone, holds
@@ -140,12 +140,11 @@ pub(super) fn paste_spec(r: &Request) -> std::result::Result<PasteSpec, Fault> {
     })
 }
 
-/// What a failed `riwork shell paste` says, as `keys_fault` reads `shell keys`: a CLI error that
+/// What a failed `somtus shell paste` says, as `keys_fault` reads `shell keys`: a CLI error that
 /// begins with one of its tokens happened before anything was pasted.
 fn paste_fault(error: &anyhow::Error) -> (Fault, bool) {
     let message = error.to_string();
-    if message
-        .strip_prefix("RiWork CLI failed: riwork: ")
+    if super::cli_failure_detail(&message)
         .is_some_and(|detail| detail.starts_with("Unknown shell command 'paste'"))
     {
         return (paste_unsupported(), true);
@@ -167,7 +166,7 @@ fn paste_fault(error: &anyhow::Error) -> (Fault, bool) {
 fn paste_unsupported() -> Fault {
     Fault::new(
         "cli_error",
-        "the installed riwork CLI cannot paste files into a terminal; update RiWork",
+        "the installed somtus CLI cannot paste files into a terminal; update Somtus",
     )
 }
 
@@ -190,7 +189,7 @@ impl Rpc {
                     Err(paste_unsupported())
                 }
             }
-            Err(e) if e.to_string().starts_with("RiWork CLI failed") => Err(paste_unsupported()),
+            Err(e) if e.to_string().starts_with("Somtus CLI failed") => Err(paste_unsupported()),
             Err(e) => Err(cli_fault(e)),
         }
     }
@@ -306,7 +305,7 @@ impl Rpc {
         let shell_lock = self.input_lock(&p.shell_id);
         let _shell_guard = shell_lock.lock().await;
         let checked = self.ensure_selected(&p.shell_id).await?;
-        if !self.storage.authorized(device).map_err(cli_fault)? {
+        if !self.authorized(device).map_err(cli_fault)? {
             return Err(Fault::new("not_found", "device revoked"));
         }
         let excess = (ledger.batches.len() + 1).saturating_sub(KEYS_LEDGER_MAX);
@@ -371,7 +370,16 @@ impl Rpc {
                     })
                     // A config that cannot be read decides nothing: keep everything.
                     .map_err(|_| refuse_nothing())?;
-                uploads.sweep(|device| paired.contains(device));
+                // SSH clients authenticate as the OS account, not by relay
+                // pairing. Their marker is an upload-owner record only.
+                uploads.sweep(|device| {
+                    paired.contains(device)
+                        || (crate::crypto::uuid(device).is_ok()
+                            && storage
+                                .dir
+                                .join(format!("ssh-client-{device}.json"))
+                                .is_file())
+                });
                 Ok(())
             })
             .await;

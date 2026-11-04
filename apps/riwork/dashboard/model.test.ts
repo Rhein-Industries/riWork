@@ -108,7 +108,7 @@ test("P5-DASH-09 rows go to their own project and the global orchestrator stays 
   expect(routeTarget({ type: "shell", id: "s" }, read, { s: "a" })).toEqual({ kind: "project", projectId: "a", step: { kind: "showShell", shellId: "s" } });
   expect(routeTarget({ type: "shell", id: "gone" }, read)).toEqual({ kind: "notice", text: "That session has ended." });
   expect(routeTarget({ type: "chat", id: "c", orchestrator: "global" }, read)).toEqual({ kind: "chat" });
-  expect(routeTarget({ type: "chat", id: "c" }, read)).toEqual({ kind: "notice", text: "This chat belongs to no project; open it with riwork chat." });
+  expect(routeTarget({ type: "chat", id: "c" }, read)).toEqual({ kind: "notice", text: "This chat belongs to no project; open it with somtus chat." });
   expect(routeTarget({ type: "project", id: "zz" }, read)).toEqual({ kind: "notice", text: "That project is gone." });
   expect(routeTarget({ type: "task", id: "t" }, read)).toEqual({ kind: "project", projectId: "a", step: { kind: "task", taskId: "t" } });
 });

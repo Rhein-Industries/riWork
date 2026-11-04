@@ -38,7 +38,10 @@ fn the_default_is_native_follows_the_system_and_writes_no_appearance_file() {
     let light = AppearanceDto::from_settings(&settings, false, None);
     let dark = AppearanceDto::from_settings(&settings, true, None);
     assert_eq!(light.selected, "native");
-    assert_eq!(light.palette.bg, format!("#{:06x}", Palette::NATIVE_LIGHT.bg));
+    assert_eq!(
+        light.palette.bg,
+        format!("#{:06x}", Palette::NATIVE_LIGHT.bg)
+    );
     assert_eq!(dark.palette.bg, format!("#{:06x}", Palette::NATIVE_DARK.bg));
     assert!(light.error.is_none());
     assert_eq!(

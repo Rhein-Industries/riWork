@@ -1,4 +1,4 @@
-//! `riwork shell attach ID --exec [--ignore-size] [--read-only]` as the remote
+//! `somtus shell attach ID --exec [--ignore-size] [--read-only]` as the remote
 //! connector's `pty.open` runs it (`remote/src/pty.rs`): the process becomes a
 //! tmux client of the shell, on the terminal it was started on, announcing a
 //! terminal type tmux can use. Each child runs in a throwaway RIWORK_HOME with
@@ -102,7 +102,7 @@ impl Home {
     }
 
     fn command(&self, args: &[&str]) -> Command {
-        self.command_for(Path::new(env!("CARGO_BIN_EXE_riwork-cli")), args)
+        self.command_for(Path::new(env!("CARGO_BIN_EXE_somtus-cli")), args)
     }
 
     fn run(&self, args: &[&str]) -> Output {
@@ -224,7 +224,7 @@ fn finish(mut child: Child, what: &[&str]) -> Output {
         if Instant::now() > deadline {
             let _ = child.kill();
             let _ = child.wait();
-            panic!("riwork {what:?} did not exit; it may have started the GUI");
+            panic!("somtus {what:?} did not exit; it may have started the GUI");
         }
         thread::sleep(Duration::from_millis(20));
     };
@@ -239,7 +239,7 @@ fn git(root: &Path, args: &[&str]) {
     let output = Command::new("git")
         .arg("-C")
         .arg(root)
-        .args(["-c", "user.name=RiWork Tests"])
+        .args(["-c", "user.name=Somtus Tests"])
         .args(["-c", "user.email=riwork-tests@example.invalid"])
         .args([
             "-c",
@@ -282,7 +282,7 @@ fn capabilities_say_the_cli_can_attach_in_place() {
     let sandbox = std::env::temp_dir().join(format!("riwork-attach-caps-{}", Uuid::new_v4()));
     fs::create_dir_all(&sandbox).unwrap();
     let run = |args: &[&str]| {
-        Command::new(env!("CARGO_BIN_EXE_riwork-cli"))
+        Command::new(env!("CARGO_BIN_EXE_somtus-cli"))
             .args(args)
             .env("RIWORK_HOME", &sandbox)
             .output()
@@ -312,7 +312,7 @@ fn exec_becomes_the_tmux_client_the_printed_command_would_start_with_only_the_fl
     };
     let home = Home::new(&tmux);
     let shell = home.shell("exec cat");
-    let riwork = Path::new(env!("CARGO_BIN_EXE_riwork-cli"));
+    let riwork = Path::new(env!("CARGO_BIN_EXE_somtus-cli"));
 
     // The printed command, which Ghostty runs, names the same client.
     let printed = home.ok(&["shell", "attach", &shell, "--json"]);
@@ -398,7 +398,7 @@ fn the_terminal_it_announces_is_ghostty_where_its_terminfo_exists_and_a_plain_xt
     };
     let home = Home::new(&tmux);
     let shell = home.shell("exec cat");
-    let riwork = Path::new(env!("CARGO_BIN_EXE_riwork-cli"));
+    let riwork = Path::new(env!("CARGO_BIN_EXE_somtus-cli"));
     let attach = ["shell", "attach", shell.as_str(), "--exec"];
 
     // The executable as the build puts it (target/debug/riwork) may have a packaged app
@@ -433,7 +433,7 @@ fn the_terminal_it_announces_is_ghostty_where_its_terminfo_exists_and_a_plain_xt
 
     // The executable sits in an app bundle that ships it: that one is used, and
     // asking for it finds it with no help from the environment.
-    let bundle = home.path.join("RiWork.app/Contents");
+    let bundle = home.path.join("Somtus.app/Contents");
     fs::create_dir_all(bundle.join("MacOS")).unwrap();
     let bundled = terminfo_in(&bundle);
     let inside = bundle.join("MacOS/riwork");
@@ -493,7 +493,7 @@ fn a_shell_that_is_not_live_is_refused_before_anything_is_executed_and_so_is_mis
     let stranger = Uuid::new_v4().to_string();
     // The words the remote connector maps to `not_found` (`Checked::explain`).
     let said = refuse(&["shell", "attach", &stranger, "--exec"]);
-    assert_eq!(said.trim(), format!("riwork: unknown shell {stranger}"));
+    assert_eq!(said.trim(), format!("somtus: unknown shell {stranger}"));
 
     // A shell whose process ended is registered but not live.
     let dying = home.shell("sleep 1");
@@ -512,7 +512,7 @@ fn a_shell_that_is_not_live_is_refused_before_anything_is_executed_and_so_is_mis
         thread::sleep(Duration::from_millis(100));
     }
     let said = refuse(&["shell", "attach", &dying, "--exec"]);
-    assert_eq!(said.trim(), format!("riwork: shell {dying} has exited"));
+    assert_eq!(said.trim(), format!("somtus: shell {dying} has exited"));
 
     let live = home.shell("exec cat");
     for (args, expected) in [
@@ -530,11 +530,11 @@ fn a_shell_that_is_not_live_is_refused_before_anything_is_executed_and_so_is_mis
         ),
         (
             vec!["shell", "attach", "--exec"],
-            "Usage: riwork shell attach ID --exec [--ignore-size] [--read-only]",
+            "Usage: somtus shell attach ID --exec [--ignore-size] [--read-only]",
         ),
         (
             vec!["shell", "attach", live.as_str(), "extra", "--exec"],
-            "Usage: riwork shell attach ID --exec",
+            "Usage: somtus shell attach ID --exec",
         ),
     ] {
         let said = refuse(&args);
@@ -542,7 +542,7 @@ fn a_shell_that_is_not_live_is_refused_before_anything_is_executed_and_so_is_mis
     }
     // Without --exec the command is as it was.
     let said = refuse(&["shell", "attach"]);
-    assert!(said.contains("Usage: riwork shell attach ID"), "{said}");
+    assert!(said.contains("Usage: somtus shell attach ID"), "{said}");
     assert!(!said.contains("--exec"), "{said}");
     assert!(!record.exists(), "tmux must not have been run to attach");
 }

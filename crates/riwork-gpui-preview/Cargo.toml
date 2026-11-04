@@ -2,7 +2,7 @@
 name = "riwork-gpui-preview"
 version = "0.1.0"
 edition = "2024"
-description = "Windowless GPUI development previews inside RiWork"
+description = "Windowless GPUI development previews inside Somtus"
 
 [dependencies]
 anyhow = "1"

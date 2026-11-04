@@ -1,4 +1,4 @@
-//! The `appearance.get` result: `riwork appearance --json` checked before it
+//! The `appearance.get` result: `somtus appearance --json` checked before it
 //! goes to the phone.
 //!
 //! `riwork_core::appearance_file` defines and validates the same

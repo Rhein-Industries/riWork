@@ -108,7 +108,7 @@ system-wide input. Cua is used only for read-only observation of the printed PID
 cargo build -p riwork-desktop --features terminal-fixture --release --locked
 "$NSH" build apps/riwork --out /tmp/riwork-terminal-bundle
 python3 crates/riwork-desktop/verification/phase2b_terminal_extras.py \
-  --binary target/release/riwork --bundle /tmp/riwork-terminal-bundle/bundle.js \
+  --binary target/release/somtus --bundle /tmp/riwork-terminal-bundle/bundle.js \
   --cycles 20 --linger-seconds 120
 ```
 

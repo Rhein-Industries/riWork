@@ -308,7 +308,7 @@ private final class NSHMobileHostController: UIViewController {
         failureView?.removeFromSuperview()
         app.isHidden = true
         let title = UILabel()
-        title.text = "RiWork couldn’t open its interface"
+        title.text = "Somtus couldn’t open its interface"
         title.font = .preferredFont(forTextStyle: .headline)
         title.adjustsFontForContentSizeCategory = true
         title.numberOfLines = 0

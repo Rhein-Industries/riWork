@@ -1,10 +1,10 @@
-//! Builds an add-in's TSX into an NSH bundle with the NSH CLI (0.3.0, as `riwork update` uses).
+//! Builds an add-in's TSX into an NSH bundle with the NSH CLI (0.3.0, as `somtus update` uses).
 //!
-//! The author's folder is copied into a staging folder; RiWork writes its `nsh.json` there
+//! The author's folder is copied into a staging folder; Somtus writes its `nsh.json` there
 //! (the add-in's NSH id, and capabilities that allow exactly the add-in API's host calls and the
 //! network origins its manifest names, nothing else), and the current `addin-api.ts`. An
 //! `nsh.json` of the author's own is ignored. A folder that declares a Rust crate is refused, so
-//! an add-in never reaches RiWork's native modules. Builds are cached by the source's digest.
+//! an add-in never reaches Somtus's native modules. Builds are cached by the source's digest.
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -28,8 +28,8 @@ pub fn nsh_id(scope: &Scope, id: &str) -> String {
     format!("dev.riwork.addin.{scope}.{}", id.replace(['.', '-'], "_"))
 }
 
-/// The NSH CLI: `NSH_CLI` (absolute), RiWork's toolchain folder, then `nsh` on PATH; it must
-/// be version 0.3.0, as RiWork's own UI build.
+/// The NSH CLI: `NSH_CLI` (absolute), Somtus's toolchain folder, then `nsh` on PATH; it must
+/// be version 0.3.0, as Somtus's own UI build.
 pub fn find_nsh(home: &Path) -> Result<PathBuf, String> {
     let mut candidates = Vec::new();
     if let Some(path) = std::env::var_os("NSH_CLI").filter(|path| !path.is_empty()) {

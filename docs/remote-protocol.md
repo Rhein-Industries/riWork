@@ -1,4 +1,4 @@
-# RiWork remote protocol v1 — FROZEN (2026-09-27)
+# Somtus remote protocol v1 — FROZEN (2026-09-27)
 
 Contract owner: `feature/encrypted-relay`. This is the interoperability contract for
 `ios/`. No silent wire changes. Changes require an explicit dated note below and
@@ -6,39 +6,39 @@ agreement with the iOS worker.
 
 ## Changelog
 
-- 2026-11-01: Additive, in the "Direct typing extension", no new method and no new error code: a second key list for `shell.keys`. Besides the 14 named keys and `C-a` to `C-z`, a key may be `Insert`, `Space`, `F1` to `F12`, or a key with the modifiers `C-` (Control), `M-` (Meta, Alt) and `S-` (Shift), written in that order and each at most once, wherever tmux turns the combination into the bytes a terminal would send: any of them on the cursor and editing keys and the F-keys (`C-Up`, `S-F5`, `C-M-S-End`), `M-` on `Enter`, `Tab`, `BTab`, `Escape` and `Backspace`, `C-` and `M-` on `Space` (`C-Space` is NUL), `M-` on any printable ASCII character other than space (`M-x`, `M-.`), and `C-` on `a`-`z`, `@`, `[`, `\`, `]`, `^`, `_` and `?` (`C-\`, `C-M-x`). Every other spelling is still `invalid_request`, and a first-list key keeps its first-list name (`C-a`, never another spelling). `ready.features.key_names` is `2` when the desktop takes the second list (its `riwork capabilities --json` says `"key_names": 2`); a desktop without it refuses the new names with `invalid_request` before anything is typed, so a client sends them only when it sees the feature, and otherwise the bytes they stand for as `Escape` plus text, as before (Ctrl with a non-letter has no such form). The 150 ms pause before a key that follows text, the batch ledger and the answers are unchanged. Applies to v1 and v2 sessions. Existing names, bytes and fixtures are unchanged. See "Second key list" under "Direct typing extension". Needs the iOS worker's agreement; the iOS side implements the same rules.
+- 2026-11-01: Additive, in the "Direct typing extension", no new method and no new error code: a second key list for `shell.keys`. Besides the 14 named keys and `C-a` to `C-z`, a key may be `Insert`, `Space`, `F1` to `F12`, or a key with the modifiers `C-` (Control), `M-` (Meta, Alt) and `S-` (Shift), written in that order and each at most once, wherever tmux turns the combination into the bytes a terminal would send: any of them on the cursor and editing keys and the F-keys (`C-Up`, `S-F5`, `C-M-S-End`), `M-` on `Enter`, `Tab`, `BTab`, `Escape` and `Backspace`, `C-` and `M-` on `Space` (`C-Space` is NUL), `M-` on any printable ASCII character other than space (`M-x`, `M-.`), and `C-` on `a`-`z`, `@`, `[`, `\`, `]`, `^`, `_` and `?` (`C-\`, `C-M-x`). Every other spelling is still `invalid_request`, and a first-list key keeps its first-list name (`C-a`, never another spelling). `ready.features.key_names` is `2` when the desktop takes the second list (its `somtus capabilities --json` says `"key_names": 2`); a desktop without it refuses the new names with `invalid_request` before anything is typed, so a client sends them only when it sees the feature, and otherwise the bytes they stand for as `Escape` plus text, as before (Ctrl with a non-letter has no such form). The 150 ms pause before a key that follows text, the batch ledger and the answers are unchanged. Applies to v1 and v2 sessions. Existing names, bytes and fixtures are unchanged. See "Second key list" under "Direct typing extension". Needs the iOS worker's agreement; the iOS side implements the same rules.
 - 2026-11-01: Additive, in the "Live terminal extension", no new method and no new error code: changed rows only. `shell.output` takes an optional `delta` boolean; with `"delta": true` and an `if_changed` whose screen this desktop sent this device, a changed screen may be answered with `delta` (the rows that differ, and how the rest moved) in place of `output`, every other field as in the full answer, its `hash` naming the full screen. The desktop answers in full whenever it does not hold that screen (another device's, a connector restart, an evicted one) or the changes are not much smaller than the screen. `ready.features.output_delta` (`true`) says the connector does it; it needs nothing of the CLI. A client that does not send `delta` gets exactly what it got before, and one that cannot apply the changes (its screen is not the one `base` names) asks again without `if_changed`. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged. See "Changed rows" under "Live terminal extension". Needs the iOS worker's agreement; the iOS side implements the same text.
-- 2026-11-01: No wire change; how the desktop types got cheaper. A connector whose `riwork` CLI says `"shell_keys_serve": true` (`riwork capabilities --json`) no longer starts a `riwork shell keys` process for every `shell.keys` batch: it keeps one `riwork shell keys --serve` per device, which reads batches as JSON lines and types each exactly as that process would (the same item checks, input lock, copy-mode and input-off checks, the pause before a key after text, and error tokens). The batch ledger, its write before typing, the order of a device's batches and every answer and error code are as before; a batch the worker took and never answered is reported like a process that failed after typing began, so a repeat answers `uncertain`, and a worker that cannot be started falls back to a process per batch. `shell.output` still starts one CLI process per request.
-- 2026-11-01: "Native invoke extension", additive: one new method, `native.invoke` (`{"module","method","args"}` → `{"value"}`, plus `page` for a directory listing), that calls one of the desktop's own `riwork/native` methods from a fixed allowlist (allowlist v1: 33 methods of `Store`, `Sessions`, `Tabs`, `Settings`, `Files`, `Schedules` and `Orchestrators`), so a device's screens get the objects the Mac's own screens get. It is `riwork native invoke MODULE.METHOD --json` with `args` on the CLI's standard input, run by the desktop binary without its home watcher or session sampler. A method that writes runs in the ordered lane and one that reads in a shared slot. `ready.features.native` (`{"v":1,"methods":[…]}`) lists the methods both the connector and the installed desktop binary have (`"native"` in `riwork capabilities --json`); without it the method answers `invalid_request` "unsupported RPC method", as a connector from before it does. Every method's arguments are typed and refuse unknown fields, and each has an argument policy: no method takes a filesystem path the device chose; `Files.*` and `Sessions.openEditor` take a project (and worktree) id and a path relative to it, which the desktop resolves against its own store and walks without following links; policy changes may only narrow; automations may only be listed, paused and deleted; billing, accounts, API keys, project creation at a path, windows and anything that holds state between calls are not on the list. Two new error codes, only from this method: `conflict` (the desktop's data changed underneath, such as a stale automation revision) and `refused` (the desktop's policy or store refused the arguments: a path outside the project, a widening change, a worktree of another project). A value over its method's size limit is `response_too_large`. **This changes the authority statement below**: a paired device can now change projects, folders, tasks, memos and some settings of the desktop, not only its terminals and chats. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged. Needs the iOS worker's agreement; the phone's transport allows the method only for the methods of its own copy of the allowlist (`NativeInvokeRequests` in `ios/Core/RelayClient.swift`). See "Native invoke extension" below.
-- 2026-11-01: "State watch extension", additive: one new method, `state.watch` (`{"since":{TOPIC:REV|null,…},"wait_ms":0..25000}`), that waits until the desktop's data of one of the topics `store`, `sessions`, `tabs` (per project), `settings`, `schedules`, `usage` and `dashboard` changes, and answers `{"changed":[…],"revs":{…}}`, or `{"unchanged":true,"revs":{…}}` when `wait_ms` passed. A revision is an opaque digest of what the topic's reader answers; a null revision is always changed, which is how a client learns the first ones. It is `riwork watch --json` with the request on standard input; with `wait_ms` above 0 it is a long poll, counted with the waits of `shell.output` and `chat.events` (at most two at once), else a read. `ready.features.watch` (`{"v":1,"topics":[…]}`) lists the topics both sides have. No new error code. Only the phone's app issues it (one per desktop), never a screen. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged. Needs the iOS worker's agreement. See "State watch extension" below.
+- 2026-11-01: No wire change; how the desktop types got cheaper. A connector whose `somtus` CLI says `"shell_keys_serve": true` (`somtus capabilities --json`) no longer starts a `somtus shell keys` process for every `shell.keys` batch: it keeps one `somtus shell keys --serve` per device, which reads batches as JSON lines and types each exactly as that process would (the same item checks, input lock, copy-mode and input-off checks, the pause before a key after text, and error tokens). The batch ledger, its write before typing, the order of a device's batches and every answer and error code are as before; a batch the worker took and never answered is reported like a process that failed after typing began, so a repeat answers `uncertain`, and a worker that cannot be started falls back to a process per batch. `shell.output` still starts one CLI process per request.
+- 2026-11-01: "Native invoke extension", additive: one new method, `native.invoke` (`{"module","method","args"}` → `{"value"}`, plus `page` for a directory listing), that calls one of the desktop's own `riwork/native` methods from a fixed allowlist (allowlist v1: 33 methods of `Store`, `Sessions`, `Tabs`, `Settings`, `Files`, `Schedules` and `Orchestrators`), so a device's screens get the objects the Mac's own screens get. It is `somtus native invoke MODULE.METHOD --json` with `args` on the CLI's standard input, run by the desktop binary without its home watcher or session sampler. A method that writes runs in the ordered lane and one that reads in a shared slot. `ready.features.native` (`{"v":1,"methods":[…]}`) lists the methods both the connector and the installed desktop binary have (`"native"` in `somtus capabilities --json`); without it the method answers `invalid_request` "unsupported RPC method", as a connector from before it does. Every method's arguments are typed and refuse unknown fields, and each has an argument policy: no method takes a filesystem path the device chose; `Files.*` and `Sessions.openEditor` take a project (and worktree) id and a path relative to it, which the desktop resolves against its own store and walks without following links; policy changes may only narrow; automations may only be listed, paused and deleted; billing, accounts, API keys, project creation at a path, windows and anything that holds state between calls are not on the list. Two new error codes, only from this method: `conflict` (the desktop's data changed underneath, such as a stale automation revision) and `refused` (the desktop's policy or store refused the arguments: a path outside the project, a widening change, a worktree of another project). A value over its method's size limit is `response_too_large`. **This changes the authority statement below**: a paired device can now change projects, folders, tasks, memos and some settings of the desktop, not only its terminals and chats. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged. Needs the iOS worker's agreement; the phone's transport allows the method only for the methods of its own copy of the allowlist (`NativeInvokeRequests` in `ios/Core/RelayClient.swift`). See "Native invoke extension" below.
+- 2026-11-01: "State watch extension", additive: one new method, `state.watch` (`{"since":{TOPIC:REV|null,…},"wait_ms":0..25000}`), that waits until the desktop's data of one of the topics `store`, `sessions`, `tabs` (per project), `settings`, `schedules`, `usage` and `dashboard` changes, and answers `{"changed":[…],"revs":{…}}`, or `{"unchanged":true,"revs":{…}}` when `wait_ms` passed. A revision is an opaque digest of what the topic's reader answers; a null revision is always changed, which is how a client learns the first ones. It is `somtus watch --json` with the request on standard input; with `wait_ms` above 0 it is a long poll, counted with the waits of `shell.output` and `chat.events` (at most two at once), else a read. `ready.features.watch` (`{"v":1,"topics":[…]}`) lists the topics both sides have. No new error code. Only the phone's app issues it (one per desktop), never a screen. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged. Needs the iOS worker's agreement. See "State watch extension" below.
 - 2026-10-16: Additive dashboard fields, with no new method, feature flag, error code or version: optional `decisions` / `decisions_total`, `decision_sources`, `recent_activity` / `recent_activity_total`, and `intelligence`. Actual approval/question cards retain exact chat/request IDs, provider choices and source event identities; coverage and observation times distinguish incomplete or saved state. Each new list is capped at 40 rows. Optional Haiku summaries are separately identified, cite observed events and never create controls. Explicit answers revalidate the same host's current `chat.snapshot` and use existing `chat.command`; an uncertain outcome is never automatically retried. Applies to v1 and v2 sessions; original fixtures and older replies remain valid. See "Observed decisions and optional intelligence" in the Dashboard extension, [dashboard decisions](dashboard-decisions.md), and [Haiku summaries](haiku-dashboard.md). The iOS client implements the same fields and response checks.
 - 2026-10-15 (later): Additive, in the same "Chat extension": `presentation.worker` may also carry `after` (a worker chat's log `seq` when its card was written), and its `final` may carry `turn` and `turn_end` (the worker chat's turn that ended it, and the `seq` of that end in the worker's log) or `done_since` (Unix seconds a terminal's agent became done). They say which card an end belongs to and that it is recorded once; a phone reads none of them, and an older one ignores them. Existing methods, bytes and fixtures are unchanged. See `docs/chat-events.md` "Worker markers".
-- 2026-10-15: Additive, in the same "Chat extension", no new method, no new event and no new error code: chat items may carry optional `presentation.worker`, the record of a terminal or chat that this chat started (its worker): `session_id`, `kind` (`shell|chat`), `title`, and optionally `harness`, `model`, `worktree_id`, `assignment` (the first line of what the chat sent it, at most 240 characters), `noted_at` (Unix seconds), `late` and `follow_up` (present only when true), and `final` (`status` `done|exited|failed|stopped`, `ended_at`, `tail`: the worker's last six lines, at most 2 KiB). Such an item is an ordinary `tool_call` (`server` `riwork`, `tool` `worker`), always `completed`, with id `worker:<session_id>` or `worker:<session_id>:<n>`; the same id is written again when the worker finishes. Live state stays where it was: a client joins `session_id` against `shells.list` (terminals) and `chats.list` (chats). The relay never shortens `session_id`. An older phone shows the plain tool row and ignores the field; a phone decodes it leniently and drops a malformed one. See `docs/chat-events.md` "Worker markers". Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged. Needs the iOS worker's agreement.
-- 2026-10-15: In the "Project memo extension", no new method, field or error code: a memo's `updated_at` is now a revision. Every save that changes the text sets it to at least one more than the one before (the Unix seconds of the save, or the previous value plus one when that is not later), so two different texts never share an `updated_at`, even when saved within one second or after the Mac's clock was set back; it can run a few seconds ahead of the clock. Equal values mean the same text, which is what a phone relies on to send kept text again only over the memo it was written on. And `project.memo.set` first checks that the project exists under exactly the id given (`riwork project show ID --json`): an id the desktop does not have is `not_found` and saves nothing, also when a project is named that way, where it used to save that project's memo and answer `cli_error`. A desktop from before it may still give two saves in one second the same `updated_at`. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged.
-- 2026-10-14: Additive, in the same "Chat extension": one new read-only method, `chat.suggestions` (`{"chat_id":"…"}`), that answers what a chat's message box offers while a `/` command or an `@` file is typed: the slash commands a chat of its provider takes (`name`, `summary`, `argument`, `sends`, `handler`) and the files and folders of the chat's folder (`root`), each `path` relative to it, with `dir` and a file's `bytes`, from one bounded walk (at most 5000 entries, 50 000 looked at, 2 seconds, 24 levels deep; what `.gitignore` leaves out, `.git` and symbolic links skipped). `files.truncated` says the walk stopped at a bound or the connector left the last entries out to fit one frame; `file_bound` is 5000. Only names and sizes travel: no file is opened, so no preview of a file's contents goes over the wire. It starts nothing: no chat host, agent or provider. It runs in a shared (read) slot. `features.chat_suggestions` in `ready` says the installed CLI has it (`"chat_suggestions": true` in `riwork capabilities --json`). No new error code. A desktop whose connector predates it answers `invalid_request` "unsupported RPC method", and one whose `riwork` CLI predates it leaves `features.chat_suggestions` out and answers `cli_error`. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged; `ios/Tests/Fixtures/composer-suggestions.json` is a new shared fixture, whose `reply` is a `chat.suggestions` result and whose other cases pin the rules both composers apply to it. See "`chat.suggestions`" under "Chat extension" below. Needs the iOS worker's agreement.
+- 2026-10-15: Additive, in the same "Chat extension", no new method, no new event and no new error code: chat items may carry optional `presentation.worker`, the record of a terminal or chat that this chat started (its worker): `session_id`, `kind` (`shell|chat`), `title`, and optionally `harness`, `model`, `worktree_id`, `assignment` (the first line of what the chat sent it, at most 240 characters), `noted_at` (Unix seconds), `late` and `follow_up` (present only when true), and `final` (`status` `done|exited|failed|stopped`, `ended_at`, `tail`: the worker's last six lines, at most 2 KiB). Such an item is an ordinary `tool_call` (`server` `somtus`, `tool` `worker`), always `completed`, with id `worker:<session_id>` or `worker:<session_id>:<n>`; the same id is written again when the worker finishes. Live state stays where it was: a client joins `session_id` against `shells.list` (terminals) and `chats.list` (chats). The relay never shortens `session_id`. An older phone shows the plain tool row and ignores the field; a phone decodes it leniently and drops a malformed one. See `docs/chat-events.md` "Worker markers". Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged. Needs the iOS worker's agreement.
+- 2026-10-15: In the "Project memo extension", no new method, field or error code: a memo's `updated_at` is now a revision. Every save that changes the text sets it to at least one more than the one before (the Unix seconds of the save, or the previous value plus one when that is not later), so two different texts never share an `updated_at`, even when saved within one second or after the Mac's clock was set back; it can run a few seconds ahead of the clock. Equal values mean the same text, which is what a phone relies on to send kept text again only over the memo it was written on. And `project.memo.set` first checks that the project exists under exactly the id given (`somtus project show ID --json`): an id the desktop does not have is `not_found` and saves nothing, also when a project is named that way, where it used to save that project's memo and answer `cli_error`. A desktop from before it may still give two saves in one second the same `updated_at`. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged.
+- 2026-10-14: Additive, in the same "Chat extension": one new read-only method, `chat.suggestions` (`{"chat_id":"…"}`), that answers what a chat's message box offers while a `/` command or an `@` file is typed: the slash commands a chat of its provider takes (`name`, `summary`, `argument`, `sends`, `handler`) and the files and folders of the chat's folder (`root`), each `path` relative to it, with `dir` and a file's `bytes`, from one bounded walk (at most 5000 entries, 50 000 looked at, 2 seconds, 24 levels deep; what `.gitignore` leaves out, `.git` and symbolic links skipped). `files.truncated` says the walk stopped at a bound or the connector left the last entries out to fit one frame; `file_bound` is 5000. Only names and sizes travel: no file is opened, so no preview of a file's contents goes over the wire. It starts nothing: no chat host, agent or provider. It runs in a shared (read) slot. `features.chat_suggestions` in `ready` says the installed CLI has it (`"chat_suggestions": true` in `somtus capabilities --json`). No new error code. A desktop whose connector predates it answers `invalid_request` "unsupported RPC method", and one whose `somtus` CLI predates it leaves `features.chat_suggestions` out and answers `cli_error`. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged; `ios/Tests/Fixtures/composer-suggestions.json` is a new shared fixture, whose `reply` is a `chat.suggestions` result and whose other cases pin the rules both composers apply to it. See "`chat.suggestions`" under "Chat extension" below. Needs the iOS worker's agreement.
 - 2026-10-14: "Project memo extension", additive: two new methods, `project.memo.get` (read, shared lane) and `project.memo.set` (ordered lane), and `features.project_memo` on `ready` when the installed CLI says `"project_memo": true`. No new error code. A project's memo is one free-text Markdown string (at most 32768 UTF-8 bytes) the person writes for that project; a save replaces it whole and the last save to reach the desktop wins. The text of a save reaches the CLI on its standard input, never as an argument. It is not part of `projects.list`, `dashboard.get` or any other reply, and the desktop never gives it to an agent. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged. Needs the iOS worker's agreement; the iOS side implements the same text.
 - 2026-10-14: Additive and read-only, in the same "Chat extension", no new method and no new error code: `ChatInfo` gains `claude_billing` (`"subscription"` or `"api_key"`), who a Claude chat bills from its next start, chosen on the Mac (Settings' default for new chats, and each chat's composer). Absent in a chat from before it, which follows the Mac's Settings default at each start, and in a Codex or Muse chat until it is chosen; it stays with a chat that switches provider. Never a key: the key is kept in the Mac's Keychain only. A phone cannot change it: `chat.create` and the `configure` command keep refusing the field (`invalid_request`). Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged.
 - 2026-10-14: Additive, in "Chat orchestrators" and the "Orchestrator creation extension", no new method and no new error code: a chat orchestrator's entry in `orchestrators.list` and `shells.list` (and in `orchestrator.create`'s result) gains an optional `model`, the model the chat runs on as its provider names it (1 to 120 printable ASCII characters, no spaces), passed only for an entry whose `mode` is `chat` and left out when the CLI writes null (the provider's default) or anything else; and `orchestrator.create`'s result gains an optional `fallback`, the desktop's note that Automatic could not start its first choice and started another, passed only when `created` is true, without control characters and cut to 500 Unicode scalars. The desktop's "Orchestrator runs as" setting itself is not on the wire. A connector from before it leaves both out, and an older phone ignores them. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged. Needs the iOS worker's agreement.
-- 2026-10-14: Additive dashboard extension: one new read-only method, `dashboard.get` (params exactly `{}`), that answers the desktop's global dashboard in one bounded reply: totals, the global orchestrator, what needs attention, agents working and recently finished, every project's row, tasks in progress and the automations, ordered as the desktop orders them, each list cut to a fixed length with `<list>_total` giving its full length, and a figure that is not known left out rather than written as zero. `features.dashboard` in `ready` says the installed CLI has it (`"dashboard": true` in `riwork capabilities --json`). It reads and starts nothing: no chat host, chat, shell, orchestrator or tmux server. It runs in a shared (read) slot. No new error code. A desktop whose connector predates it answers `invalid_request` "unsupported RPC method", and so does a newer connector whose `riwork` CLI predates it; a client then falls back to `projects.list` and `orchestrators.list` and says why. No `model` and no project root path are part of it (a client takes a chat orchestrator's `model` from `orchestrators.list`, below). Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged; `ios/Tests/Fixtures/dashboard.json` is a new shared fixture. See "Dashboard extension" below. Needs the iOS worker's agreement.
+- 2026-10-14: Additive dashboard extension: one new read-only method, `dashboard.get` (params exactly `{}`), that answers the desktop's global dashboard in one bounded reply: totals, the global orchestrator, what needs attention, agents working and recently finished, every project's row, tasks in progress and the automations, ordered as the desktop orders them, each list cut to a fixed length with `<list>_total` giving its full length, and a figure that is not known left out rather than written as zero. `features.dashboard` in `ready` says the installed CLI has it (`"dashboard": true` in `somtus capabilities --json`). It reads and starts nothing: no chat host, chat, shell, orchestrator or tmux server. It runs in a shared (read) slot. No new error code. A desktop whose connector predates it answers `invalid_request` "unsupported RPC method", and so does a newer connector whose `somtus` CLI predates it; a client then falls back to `projects.list` and `orchestrators.list` and says why. No `model` and no project root path are part of it (a client takes a chat orchestrator's `model` from `orchestrators.list`, below). Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged; `ios/Tests/Fixtures/dashboard.json` is a new shared fixture. See "Dashboard extension" below. Needs the iOS worker's agreement.
 - 2026-10-14: In the same "Chat extension", no new method and no new error code: Muse contributor mode is off unless a chat turns it on, never the person's Muse settings. `chat.create` and the `configure` command take an optional `contributor_mode` (`"on"` or `"off"`), and `ChatInfo` gains `contributor_mode`, present (`"on"`) only for a chat that has it on (a Codex or Claude chat keeps it from Muse for a switch back, and can turn it off). Every chat's agent starts with `muse serve --contributor-mode off|on`; a chat from before, whatever its `contributor_opt_out`, is off. `contributor_opt_out: true` is still taken as off; on `configure` its `false`, which asked for the Muse settings, is refused (`invalid_request`), and on `chat.create` it is the off every chat has; `"on"` beside `contributor_opt_out: true` is refused. `contributor_mode` `"on"` in `chat.create` is for a Muse chat only (`invalid_request` otherwise). A desktop keeps `ChatInfo.contributor_opt_out` `true` for a Muse chat that is off, so an older phone still reads it as off; a Muse chat with neither field comes from a desktop before this, whose chat host leaves it to the Muse settings. A connector from before it refuses `contributor_mode` (`invalid_request`, unknown field). Changes the meaning of an absent or `false` `contributor_opt_out` (Muse settings before, off now). Applies to v1 and v2 sessions. Needs the iOS worker's agreement.
 - 2026-10-13: Additive, in the same "Chat extension", no new method and no new error code: an existing Muse chat can turn contributor mode off and on. The `configure` command of `chat.command` takes an optional `contributor_opt_out` boolean (`false` hands the mode back to the person's Muse settings; it never forces it on). Muse fixes the mode for a `muse serve` process, so the desktop restarts an idle chat's agent and resumes the same Muse session with its model, effort and approval mode; a stopped chat keeps the value for its next start; it is refused (`cli_error`) while a turn runs or waits or the agent still starts, beside other settings in one `configure`, and for a Codex or Claude chat, and the chat keeps its value. If Muse does not start again with it, the chat fails as a failed start does, keeps its old value and says so in a `notice` item, and the answer is `cli_error`. A connector or desktop CLI from before it refuses the field (`invalid_request`, unknown field); a chat host from before it would read past it and start a stopped chat as for a retry, which the desktop CLI detects: it stops that chat again and answers `cli_error` without claiming the change. An older phone never sends it. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged. Needs the iOS worker's agreement.
 - 2026-10-13: Additive, in the same "Chat extension", no new method and no new error code: a new Muse chat can opt out of Muse's contributor mode. `chat.create` takes an optional `contributor_opt_out` boolean (sent only when true; the desktop's CLI gets `--contributor-opt-out`), and `ChatInfo` gains `contributor_opt_out`, present and `true` only for a chat that opted out. Such a chat runs every `muse serve` it starts with `--contributor-mode off`, an override Muse never saves; a chat without it follows the person's Muse settings. A Codex or Claude chat has no contributor mode: it is made without it, with a `notice` item, and the connector answers `cli_error` because the chat is not the one asked for (as for `fast` on Muse). A desktop from before it refuses the field (`invalid_request`, unknown field); an older phone never sends it and skips the `ChatInfo` field. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged.
 - 2026-10-13: Additive, in the same "Chat extension": a third chat provider, Muse. Every chat `provider` in this document (`chat.create`, `chat.models`, the `switch` command, `ChatInfo`, and a chat orchestrator's `provider` in `orchestrators.list` and `shells.list`) also takes `muse`, beside `codex` and `claude`; a chat created without a title is called "Muse chat", and `muse is not installed or is not on PATH` maps to `harness_unavailable` as it does for the other providers. Muse chats take no attachments for now: the chat host refuses them. No new method, no new error code, and no `features.*` flag: a desktop or connector from before it refuses `muse` creates, models and switches with `invalid_request`, drops a Muse chat from validated chat results, and leaves a Muse orchestrator's `provider` out, and an older phone leaves Muse chats out of its lists, so each side degrades to absence, never corruption. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged. Needs the iOS worker's agreement.
-- 2026-10-08: Additive, in the same "Chat extension": one chat for both providers. A `switch` command for `chat.command` (`{"command":"switch","provider":"codex|claude"}`, optional `model`, `effort`, `fast`) moves a chat to the other provider in place: the same `chat_id`, the same events, a new agent on a thread of its own that is given the conversation so far; refused while a turn runs or waits. The log says so with an `info` event naming the new `provider` and an `item_completed` `notice` ("Continued with Claude (opus), which has the conversation so far."); `ChatInfo` gains optional `carried_over` (`{document, from}`). One new method, `chat.models` (`{"provider":"codex|claude"}`, optional `project_id`), lists the models saved chats of a provider reported, for a provider the chat does not run yet. `features.chat_provider_switch` and `features.chat_models` in `ready` say the installed CLI has them (`riwork capabilities --json`). No new error code. A desktop from before it refuses `switch` (`invalid_request`, unknown command) and `chat.models` ("unsupported RPC method"); an older phone sees the switch as an ordinary `info` and `notice` and follows the chat as before. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged.
-- 2026-10-08: Additive, in the "Terminal creation extension", no new method and no new error code: `shell.create` takes an optional `as_settings` boolean: an agent asked for with `"as_settings": true` starts unrestricted or not as the desktop's **Agent terminals run unrestricted** setting says (on by default), and `ready.features.shell_create_as_settings` (`true`) says the desktop does that. Without the feature (an older connector or `riwork` CLI) such an agent starts restricted. `unrestricted` keeps its meaning, left out included (restricted), so an older phone, which leaves it out for its switch's off, is unaffected; `as_settings` with `unrestricted` is `invalid_request`. The desktop's New Tab menu now has one entry per agent, unrestricted as that setting says. Applies to v1 and v2 sessions. Existing bytes and fixtures are unchanged.
+- 2026-10-08: Additive, in the same "Chat extension": one chat for both providers. A `switch` command for `chat.command` (`{"command":"switch","provider":"codex|claude"}`, optional `model`, `effort`, `fast`) moves a chat to the other provider in place: the same `chat_id`, the same events, a new agent on a thread of its own that is given the conversation so far; refused while a turn runs or waits. The log says so with an `info` event naming the new `provider` and an `item_completed` `notice` ("Continued with Claude (opus), which has the conversation so far."); `ChatInfo` gains optional `carried_over` (`{document, from}`). One new method, `chat.models` (`{"provider":"codex|claude"}`, optional `project_id`), lists the models saved chats of a provider reported, for a provider the chat does not run yet. `features.chat_provider_switch` and `features.chat_models` in `ready` say the installed CLI has them (`somtus capabilities --json`). No new error code. A desktop from before it refuses `switch` (`invalid_request`, unknown command) and `chat.models` ("unsupported RPC method"); an older phone sees the switch as an ordinary `info` and `notice` and follows the chat as before. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged.
+- 2026-10-08: Additive, in the "Terminal creation extension", no new method and no new error code: `shell.create` takes an optional `as_settings` boolean: an agent asked for with `"as_settings": true` starts unrestricted or not as the desktop's **Agent terminals run unrestricted** setting says (on by default), and `ready.features.shell_create_as_settings` (`true`) says the desktop does that. Without the feature (an older connector or `somtus` CLI) such an agent starts restricted. `unrestricted` keeps its meaning, left out included (restricted), so an older phone, which leaves it out for its switch's off, is unaffected; `as_settings` with `unrestricted` is `invalid_request`. The desktop's New Tab menu now has one entry per agent, unrestricted as that setting says. Applies to v1 and v2 sessions. Existing bytes and fixtures are unchanged.
 - 2026-10-08: Additive, in the same "Chat extension": how a chat's agent signed in. A new `account` event (`account`: `{api_key_source?, plan?}`), sent by the Claude driver after its agent starts and again if that changes, so it is in the chat's history like any event. `api_key_source` set means the agent bills an Anthropic API key, not a subscription, and names where the key came from (`ANTHROPIC_API_KEY`, `apiKeyHelper`, ...); `plan` names the subscription (`Claude Max`). Never an email, an organization or a credential. It is not among the `controls` of `chat.snapshot`, which a phone reads as one list. No new method, no new error code. A phone that does not know it skips it alone, as every unknown event; a desktop from before it never sends it. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged. Needs the iOS worker's agreement.
 - 2026-10-05: Chat items may carry optional `presentation` with `phase` (`commentary` or `final`) and `images` (`label`, `source`). Image sources are tagged by `kind`: `local` (`path`), `data` (`mime`, `base64`), `url` (`url`), or `unavailable` (`reason`). Providers retain at most eight images and 8 MiB of encoded image data per item, with 4 MiB per image; unsupported or larger data is marked unavailable. Remote page/frame trimming replaces an image source that cannot fit with `unavailable`, rather than truncating base64. Existing clients may ignore presentation; existing events and their ordering remain intact. Desktop Normal/Verbose is a local saved display preference, with no new RPC or command.
-- 2026-10-05: Additive chat orchestrators and orchestrator creation, no new error code. `orchestrators.list` (and `shells.list`) entries gain optional `mode` (`terminal|chat`) and, for an orchestrator that runs as a chat, `chat_id` (equal to `id`) and `provider` (`codex|claude`), so the phone can open it as a chat tab with the existing `chats.list`, `chat.events` and `chat.command` methods; the `shell.*` methods on a chat orchestrator's id are `invalid_request`; see "Chat orchestrators" under "Chat extension" below. A desktop without chat orchestrators leaves the fields out and an older phone ignores them; the connector checks each field's shape, leaves a malformed one out, and passes `chat_id` and `provider` only for an entry whose `mode` is `chat`. A project's orchestrator that runs as a chat also counts in that project's `agents` and `last_activity_unix` of `projects.list`, as a terminal one does. One new method, `orchestrator.create` (`{}` or `{"project_id":"UUID"}`), makes the global or a project's orchestrator, in the mode the desktop's "Orchestrator runs as" setting says, or returns the one that exists (`created` false); it runs in the ordered lane and a creation is not cut short when the phone's session ends, and `features.orchestrator_create` in `ready` says the installed CLI has it; see "Orchestrator creation extension" below. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged. A desktop whose connector predates `orchestrator.create` answers `invalid_request` "unsupported RPC method", and one whose `riwork` CLI predates it leaves `features.orchestrator_create` out.
+- 2026-10-05: Additive chat orchestrators and orchestrator creation, no new error code. `orchestrators.list` (and `shells.list`) entries gain optional `mode` (`terminal|chat`) and, for an orchestrator that runs as a chat, `chat_id` (equal to `id`) and `provider` (`codex|claude`), so the phone can open it as a chat tab with the existing `chats.list`, `chat.events` and `chat.command` methods; the `shell.*` methods on a chat orchestrator's id are `invalid_request`; see "Chat orchestrators" under "Chat extension" below. A desktop without chat orchestrators leaves the fields out and an older phone ignores them; the connector checks each field's shape, leaves a malformed one out, and passes `chat_id` and `provider` only for an entry whose `mode` is `chat`. A project's orchestrator that runs as a chat also counts in that project's `agents` and `last_activity_unix` of `projects.list`, as a terminal one does. One new method, `orchestrator.create` (`{}` or `{"project_id":"UUID"}`), makes the global or a project's orchestrator, in the mode the desktop's "Orchestrator runs as" setting says, or returns the one that exists (`created` false); it runs in the ordered lane and a creation is not cut short when the phone's session ends, and `features.orchestrator_create` in `ready` says the installed CLI has it; see "Orchestrator creation extension" below. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged. A desktop whose connector predates `orchestrator.create` answers `invalid_request` "unsupported RPC method", and one whose `somtus` CLI predates it leaves `features.orchestrator_create` out.
 - 2026-10-05: Additive, in the same "Chat extension": the models a chat can use and the provider's fast mode. A new `models` event (`models`: a list of `{id, name, description, efforts, default_effort, supports_fast, is_default}`, sent by the agent's driver once after it starts and again if the list changes, so it is in the chat's history like any event), `fast` on `ChatInfo` (the person's choice, a boolean, absent in a chat from before it), an optional `fast` boolean in `chat.create`, and an optional `fast` boolean in the `configure` command. A model's `id` is what `model` takes; `efforts` are the efforts that model takes; `supports_fast` says whether the toggle belongs to it. No new method and no new error code. A desktop from before it refuses `fast` as an unknown field (`invalid_request`) and never sends a `models` event; a client that has seen none offers a text field for the model and the usual efforts, as before. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged.
 - 2026-10-05: Additive file upload extension: four methods that carry a file from the phone into the inbox of a shell or a chat on the desktop, in chunks over the encrypted link (`upload.begin`, `upload.chunk`, `upload.finish`, `upload.cancel`), and `shell.paste`, which pastes finished uploads into their shell the way a drop of those files on its terminal would, exactly once per batch UUID like `shell.keys`; `features.upload` in `ready`; and the error code `upload_limit`. An upload resumes where it stopped after the link drops, is checked against the SHA-256 the phone announced, and is placed whole or not at all, under a name the desktop makes. The desktop holds the limits (a file, a device's quota, uploads under way) and removes old uploads, a closed shell's, a deleted chat's and a revoked device's. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged. A desktop whose connector predates it answers `invalid_request` "unsupported RPC method" and sends no `features.upload`; see "File upload extension" below.
-- 2026-10-04: Additive chat extension: five methods that let the phone follow and drive the desktop's Codex and Claude chats (the chat host, `riwork chat ...`), `chats.list`, `chat.create`, `chat.events`, `chat.command` and `chat.stop`, and `features.chat` in `ready`. `chat.events` is a long poll (`wait_ms` up to 25 000, counted with the waits of `shell.output`) that returns the events after a cursor, batched, in a page cut to fit one reply; `chat.create`, `chat.command` and `chat.stop` run in the ordered lane and a creation is not cut short when the phone's session ends. The chat JSON is the desktop's own (`crates/riwork-engine/src/chat/model.rs`); the phone decodes it leniently. No new error code. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged. A desktop whose connector predates it answers `invalid_request` "unsupported RPC method", and one whose `riwork` CLI predates it leaves `features.chat` out; see "Chat extension" below.
+- 2026-10-04: Additive chat extension: five methods that let the phone follow and drive the desktop's Codex and Claude chats (the chat host, `somtus chat ...`), `chats.list`, `chat.create`, `chat.events`, `chat.command` and `chat.stop`, and `features.chat` in `ready`. `chat.events` is a long poll (`wait_ms` up to 25 000, counted with the waits of `shell.output`) that returns the events after a cursor, batched, in a page cut to fit one reply; `chat.create`, `chat.command` and `chat.stop` run in the ordered lane and a creation is not cut short when the phone's session ends. The chat JSON is the desktop's own (`crates/riwork-engine/src/chat/model.rs`); the phone decodes it leniently. No new error code. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged. A desktop whose connector predates it answers `invalid_request` "unsupported RPC method", and one whose `somtus` CLI predates it leaves `features.chat` out; see "Chat extension" below.
 - 2026-10-03: Additive, in the same "Activity and recency extension": `projects.list` entries gain optional `last_activity_unix` (Unix seconds: when the newest of the project's shells last had output) and `shells.list` / `orchestrators.list` entries gain optional `last_activity_unix` (when that shell last had output, from tmux), so the phone's "Recent" project order can follow shell activity instead of file edits. No new method and no new error code. A desktop that cannot supply it leaves it out, an older phone ignores it, and the connector checks it is a non-negative integer and leaves a malformed one out. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged.
 - 2026-10-03: Additive activity and recency extension, no new method and no new error code: `projects.list` entries gain optional `last_edited_unix` (when the desktop app last saw a file of the project change, Unix seconds) and `agents` (`{"working":n,"waiting":n}` and additively `"done":n`: the project's agent shells by state), and `shells.list` / `orchestrators.list` entries gain optional `activity` (`working|waiting|done|unknown|exited`), `activity_since_unix`, `subagents_working` and additively `subagent_kinds`, so the phone can sort recent projects and show whether a Codex or Claude is working, with its subagents. See "Activity and recency extension" below. A field the desktop cannot supply is simply absent, so an older desktop or CLI answers exactly as before and an older phone ignores them; the connector checks each new field's shape and leaves a malformed one out. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged.
-- 2026-10-02: Additive desktop terminal extension, **protocol v2 only**: a second kind of paired device, a *desktop* (another Mac running RiWork, paired with `pair --protocol 2 --kind desktop`), may open terminal streams with `pty.open`, `pty.read`, `pty.write`, `pty.resize` and `pty.close`: a real tmux client on a pseudo-terminal of the host, whose raw bytes travel over those RPCs, so the other Mac shows the shell exactly as a Ghostty window here would. It adds `features.pty` to `ready` (only for desktop devices), two lanes (`Attach`, `Stream`), the error code `pty_limit`, and `riwork shell attach ID --exec` / `"shell_attach_exec": true` in `riwork capabilities --json` on the CLI side; see "Desktop terminal extension" below. A phone, and any v1 device, finds none of it: `pty.*` is `invalid_request` "unsupported RPC method" for them, as it is on a connector from before it, and no existing method, byte or fixture changes. A config that holds only phones is written byte for byte as before.
+- 2026-10-02: Additive desktop terminal extension, **protocol v2 only**: a second kind of paired device, a *desktop* (another Mac running Somtus, paired with `pair --protocol 2 --kind desktop`), may open terminal streams with `pty.open`, `pty.read`, `pty.write`, `pty.resize` and `pty.close`: a real tmux client on a pseudo-terminal of the host, whose raw bytes travel over those RPCs, so the other Mac shows the shell exactly as a Ghostty window here would. It adds `features.pty` to `ready` (only for desktop devices), two lanes (`Attach`, `Stream`), the error code `pty_limit`, and `somtus shell attach ID --exec` / `"shell_attach_exec": true` in `somtus capabilities --json` on the CLI side; see "Desktop terminal extension" below. A phone, and any v1 device, finds none of it: `pty.*` is `invalid_request` "unsupported RPC method" for them, as it is on a connector from before it, and no existing method, byte or fixture changes. A config that holds only phones is written byte for byte as before.
 - 2026-10-01: Additive project creation: `project.create` (make a new project, named by the phone, in the desktop's default projects folder, as a Git repository unless told otherwise), in the ordered lane and not cut short when the phone's session ends, and the error code `already_exists`; see "Project creation extension" below. The phone never names a path. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged. A desktop whose connector predates it answers `invalid_request` "unsupported RPC method".
 - 2026-10-01: Additive link extension: `server_ms` on every response (the desktop's own time, so the phone can tell the network's share of a round trip), `features` in the first encrypted frame (`ready`), the `link.configure` request, optionally deflated reply frames for a session that opted in (a marker byte inside the ciphertext; the envelope, AAD and fixtures are unchanged), larger limits that go with them (a reply may be up to 2 MiB of JSON if it fits one frame deflated; `shell.history` `lines` up to 5000), and `link.json` vectors; see "Link extension" below. Applies to v1 and v2 sessions. An older phone or desktop sees no difference: nothing is compressed until the phone asks, and only a desktop that announced the feature is asked.
 - 2026-10-01: Additive terminal creation: `shell.create` (start a plain shell, Codex, Claude or Grok in a project or worktree that exists on the desktop) and `shell.close` (end a project terminal), both in the ordered lane and not cut short when the phone's session ends, and the error code `harness_unavailable`; see "Terminal creation extension" below. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged. A desktop whose connector predates it answers `invalid_request` "unsupported RPC method".
-- 2026-10-01: No wire change; how the desktop answers got cheaper. A waiting `shell.output` no longer captures the pane every 80 ms: the CLI is told by tmux when the pane is written to (a control-mode client attached read-only, never sizing a window) and captures then, so a quiet terminal costs no processes and a change reaches the phone within about 10 ms of the CLI instead of up to 80 ms later. The connector asks the CLI whether it checks that a shell exists and is alive itself (`riwork capabilities`), and if so no longer lists sessions first. Results, errors and bytes are the same; see "Waiting" below.
+- 2026-10-01: No wire change; how the desktop answers got cheaper. A waiting `shell.output` no longer captures the pane every 80 ms: the CLI is told by tmux when the pane is written to (a control-mode client attached read-only, never sizing a window) and captures then, so a quiet terminal costs no processes and a change reaches the phone within about 10 ms of the CLI instead of up to 80 ms later. The connector asks the CLI whether it checks that a shell exists and is alive itself (`somtus capabilities`), and if so no longer lists sessions first. Results, errors and bytes are the same; see "Waiting" below.
 - 2026-09-30: Additive deep scrollback: `shell.history` (pages of scrollback above the screen, plain or styled) and the `history_size` and `alternate` fields on the `shell.output` result, also in its `unchanged` form and in its `hash`; see "Deep scrollback extension" below. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged.
 - 2026-09-30: Additive live terminal sync: optional `styled`, `if_changed` and `wait_ms` on `shell.output`, a `hash` on its result and an `unchanged` result, and requests of one device are now carried out concurrently (responses may arrive out of order, matched by `id`); see "Live terminal extension" below. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged.
 - 2026-09-30: Additive `appearance.get`, so the phone can show the desktop's colors; see "Theme sync extension" below. Applies to v1 and v2 sessions. Existing methods, bytes and fixtures are unchanged.
@@ -89,7 +89,7 @@ Pairing JSON (no extra nesting):
 {"v":1,"relay_url":"wss://relay.example.com/v1/ws","desktop_id":"11111111-1111-4111-8111-111111111111","device_id":"22222222-2222-4222-8222-222222222222","route_id":"33333333-3333-4333-8333-333333333333","device_name":"My iPhone","pairing_secret":"BASE64URL_32_BYTES","relay_token":"BASE64URL_32_BYTES"}
 ```
 
-Deep link is exactly `riwork://pair?v=1&data=BASE64URL_UTF8_PAIRING_JSON`.
+Deep link is exactly `somtus://pair?v=1&data=BASE64URL_UTF8_PAIRING_JSON`.
 `relay_token` in pairing is the **mobile** routing token. Desktop token stays local.
 Relay provisioning file is `{"v":1,"routes":[{"route_id":"UUID",
 "desktop_token_sha256":"lowercase_hex_SHA256_OF_RAW_TOKEN_BYTES",
@@ -275,7 +275,7 @@ this does not resize the native macOS app window or create a split layout.
 
 The desktop temporarily pins that existing terminal's tmux window to the mobile
 size, saving its prior dimensions and explicit/inherited `window-size` policy.
-Only the RiWork-owned single pane in window 0 is supported; a terminal with an
+Only the Somtus-owned single pane in window 0 is supported; a terminal with an
 unexpected split/layout fails `viewport_unsupported` rather than altering it.
 There is at most **one overridden shell per authenticated mobile connection**.
 Resizing a different tab first releases that connection's prior override. Repeated
@@ -447,8 +447,8 @@ Delivery and retries:
   holds nothing. Because typed text may run commands, `shell.keys` has the same
   authority as `shell.input`.
 - Delivery note, not a wire change (2026-11-01): a desktop whose CLI can (`"shell_keys_serve":
-  true` in `riwork capabilities --json`) types a device's batches with one long-lived
-  `riwork shell keys --serve` instead of a process per batch. Each batch is still
+  true` in `somtus capabilities --json`) types a device's batches with one long-lived
+  `somtus shell keys --serve` instead of a process per batch. Each batch is still
   recorded as pending before it is typed and typed under the same locks, in the same
   order, with the same pauses, and answered with the same statuses and errors. A
   batch the worker took and never answered (it died or timed out) may be partly
@@ -518,7 +518,7 @@ a secret and not a proof of anything.
   once.
 - If it is equal and `wait_ms` is `0`, the result is `unchanged`, at once.
 - If it is equal and `wait_ms` is positive, the desktop waits inside one process
-  (`riwork shell output ID --lines N --json [--styled] --if-changed=HASH --wait-ms N`,
+  (`somtus shell output ID --lines N --json [--styled] --if-changed=HASH --wait-ms N`,
   not one process per check) and captures again whenever tmux says the pane was
   written to, resized or put in a mode (after a few milliseconds, so that a screen
   drawn by several writes is read whole), and in any case every 4 seconds. Where
@@ -542,8 +542,8 @@ a secret and not a proof of anything.
 - A wait ends early, and the desktop stops the capture process, when the
   connection closes, the phone goes offline, or the device is revoked (see
   Concurrency).
-- A connector paired with an older `riwork` CLI answers `cli_error` "the installed
-  riwork CLI does not support styled output or waiting for changes; update RiWork"
+- A connector paired with an older `somtus` CLI answers `cli_error` "the installed
+  somtus CLI does not support styled output or waiting for changes; update Somtus"
   to a request that uses a new parameter. A desktop whose connector predates this
   extension answers `invalid_request` (unknown field) to them; a client then falls
   back to plain polling.
@@ -676,7 +676,7 @@ returns the newest `lines` (at most 2000) of them together with the screen;
   no scrollback of its own; the `history_size` lines above it are the normal
   screen's, are still there, and `shell.history` still reads them. The visible
   screen, `output`'s last `rows` lines, is the program's.
-- RiWork runs Codex, Grok and Claude Code on the main screen by default (the
+- Somtus runs Codex, Grok and Claude Code on the main screen by default (the
   desktop setting `agent_inline_mode`), so for them `alternate` is false and the
   whole conversation is in `history_size`. Codex and Grok clear their scrollback
   and draw the transcript again at the new width on every resize, including
@@ -764,15 +764,15 @@ that is printing heavily as a snapshot of the moment they were read. `shell.hist
 never waits and changes nothing; the only way to learn of new history is
 `history_size` in `shell.output`.
 
-*Page length since 2026-10-01.* `lines` is `1..=5000` on a connector that has the link extension, which announces it as `history_max_lines` in `ready`; a phone never asks for more than the desktop announced, and treats 1000 as the limit of a desktop that announces nothing. The installed `riwork` CLI has a limit of its own (1000 in builds from before 2026-10-01) and may be an older build than the connector. The first page it refuses for being too long is `cli_error` (`--lines needs an integer from 1 to 1000`); the connector remembers that limit, answers longer pages itself from then on (`invalid_request`, `lines must be 1..=1000`, without running anything) and announces it as `history_max_lines` in the `ready` of later sessions. The phone reads the number from either message and carries on with pages of that size.
+*Page length since 2026-10-01.* `lines` is `1..=5000` on a connector that has the link extension, which announces it as `history_max_lines` in `ready`; a phone never asks for more than the desktop announced, and treats 1000 as the limit of a desktop that announces nothing. The installed `somtus` CLI has a limit of its own (1000 in builds from before 2026-10-01) and may be an older build than the connector. The first page it refuses for being too long is `cli_error` (`--lines needs an integer from 1 to 1000`); the connector remembers that limit, answers longer pages itself from then on (`invalid_request`, `lines must be 1..=1000`, without running anything) and announces it as `history_max_lines` in the `ready` of later sessions. The phone reads the number from either message and carries on with pages of that size.
 
 *Errors.* `invalid_request` for any parameter above or a UUID that is not one;
 `not_found` for an unknown shell or one that is not alive (the same rules and
 message as `shell.output`); `response_too_large` when the page does not fit one
 encrypted response (128 KiB: a 1000-line page of wide styled lines can), in which
 case the client halves `lines` and asks again; `cli_error` for anything the desktop
-CLI reports, and for a CLI too old to know `riwork shell history` ("the installed
-riwork CLI does not support shell history; update RiWork"). A desktop whose
+CLI reports, and for a CLI too old to know `somtus shell history` ("the installed
+somtus CLI does not support shell history; update Somtus"). A desktop whose
 connector predates this extension answers `invalid_request` "unsupported RPC
 method"; a client then offers only the newest `lines` of `shell.output`.
 
@@ -824,7 +824,7 @@ The desktop compresses a reply only if the session opted in, the reply's JSON is
 
 **Larger limits that go with it.** Until now a reply was at most 131072 bytes of JSON because that was what one frame held. For a session that has opted in, the JSON text of a reply may be up to `max_inflated` (2 MiB); what decides is whether the frame fits 131072 bytes once deflated, and if it does not the reply is replaced by `response_too_large` for the same request id (the phone asks for fewer lines), exactly as an oversized plain reply always was. A session that has not opted in keeps the old limit. For `shell.output` and `shell.history` the connector lets the CLI write up to 2 MiB to its pipe before it cuts it off (128 KiB for every other method, as before), and checks the reply against the session's limit afterwards. `shell.history` `lines` is 1 to 5000 (above): measured on Claude Code's scrollback (about 200 to 270 bytes a line as JSON, 22 deflated) a 50,000-line history is 11.8 MB as JSON and about 1.1 MB deflated, which the phone fetches in about a dozen requests of at most 112 KiB on the wire instead of fifty of 80 KiB.
 
-**Measured** on 2026-10-01 on real styled output (`riwork shell output --styled`, `riwork shell history --styled`; raw deflate at level 6, ratio = JSON bytes / deflated bytes): a 1000-line page of Claude Code scrollback 10.4 times (200 KB to 19 KB), a 2000-line history 11.1 times, a 500-line screen of the same shell 8.7 times, a plain zsh screen 7.4 times; the worst content, short dense Codex screens, 3.0 to 3.6 times; a 200-line page 7.6 times and a 25-line page 6.1 times (the ratio rises with the page and levels off above about 500 lines). Level 1 gives 8.6 times and level 9 12.0 times on the largest page; level 6 costs about half a millisecond per 100 KB. The connector uses level 6, and its own encoder (flate2, sync flush and closing field included) gives the same within a few percent on the same shells: 10.1 times on a 140 KB page of that scrollback (18.6 KB on the wire instead of 187 KB, 0.9 ms), 11.8 times on a 252 KB page (1.5 ms), 7.1 times on a 200-line page, 5.5 to 8.9 times on Claude Code screens and 2.8 to 3.3 times on Codex screens. Compression stops paying below about 100 bytes of JSON, so the 2 KiB minimum is a policy, not a limit.
+**Measured** on 2026-10-01 on real styled output (`somtus shell output --styled`, `somtus shell history --styled`; raw deflate at level 6, ratio = JSON bytes / deflated bytes): a 1000-line page of Claude Code scrollback 10.4 times (200 KB to 19 KB), a 2000-line history 11.1 times, a 500-line screen of the same shell 8.7 times, a plain zsh screen 7.4 times; the worst content, short dense Codex screens, 3.0 to 3.6 times; a 200-line page 7.6 times and a 25-line page 6.1 times (the ratio rises with the page and levels off above about 500 lines). Level 1 gives 8.6 times and level 9 12.0 times on the largest page; level 6 costs about half a millisecond per 100 KB. The connector uses level 6, and its own encoder (flate2, sync flush and closing field included) gives the same within a few percent on the same shells: 10.1 times on a 140 KB page of that scrollback (18.6 KB on the wire instead of 187 KB, 0.9 ms), 11.8 times on a 252 KB page (1.5 ms), 7.1 times on a 200-line page, 5.5 to 8.9 times on Claude Code screens and 2.8 to 3.3 times on Codex screens. Compression stops paying below about 100 bytes of JSON, so the 2 KiB minimum is a policy, not a limit.
 
 **Security.** Compressing text that an attacker can influence together with text the attacker wants to learn, and letting the attacker see the length of the result, is the CRIME/BREACH oracle. A reply here is terminal text; an attacker who can get chosen text onto a terminal (a file or page the person prints, the output of a hostile repository) and who can see the size of the frames (the relay operator, or anyone who can read the sizes of TLS records between the endpoints and the relay) and where a secret is on the same screen, could in principle guess it a byte at a time by watching how the compressed size moves. The relay is blind and normally self-hosted, and it already sees sizes and timing, so in the intended deployment the party who could do this is the one that runs the relay; but with compression the size of a frame now depends on what is on the screen, which it did not before, and that is a real, if narrow, new channel. The extension limits the exposure: only the desktop's replies are compressed; a reply is compressed on its own, never together with another or with anything from the request, and only if it is at least 2 KiB; nothing secret is added to a reply by the protocol. And it is optional on both sides: the phone's Settings has a switch ("Compress traffic", `link.configure` with `"none"`), and a phone that does not ask never gets a compressed frame. Deployments that treat the relay or the path as hostile should turn it off. Frames are not padded.
 
@@ -860,7 +860,7 @@ repeated freely. Result:
 - `palette` is the application palette (backgrounds, dividers, accents, text).
   `terminal` is what the desktop's terminals show: the background, the foreground
   and the 16 ANSI colors in index order (exactly 16). It follows the selected theme,
-  the Ghostty configuration while following Ghostty, and the "Use RiWork terminal
+  the Ghostty configuration while following Ghostty, and the "Use Somtus terminal
   colors" option. It is omitted when the desktop could not read its terminal colors.
 - `dark` is true when the palette background is dark: its relative luminance
   (WCAG, on the linearized sRGB channels) is below 0.5.
@@ -878,10 +878,10 @@ repeated freely. Result:
   (or `updated_at`).
 - Errors: `not_found` with the message "appearance not published" when the desktop
   has not published usable colors: the file is missing, unreadable, not valid or
-  over 16 KiB (open the RiWork app on the desktop to publish). `invalid_request`
+  over 16 KiB (open the Somtus app on the desktop to publish). `invalid_request`
   for bad params, and
-  `cli_error` as elsewhere; a connector paired with an older `riwork` CLI answers
-  `cli_error` "the installed riwork CLI does not support appearance; update RiWork".
+  `cli_error` as elsewhere; a connector paired with an older `somtus` CLI answers
+  `cli_error` "the installed somtus CLI does not support appearance; update Somtus".
 - A desktop whose connector predates this method answers `invalid_request`
   "unsupported RPC method". The phone treats it, and `not_found`, as "no desktop
   colors" and keeps its own theme.
@@ -893,9 +893,9 @@ the Ghostty configuration, or the terminal colors option. It writes only when th
 colors differ from the file, so several windows or app processes, which share the
 one settings-level appearance, publish the same content without rewriting it. The
 connector never reads the file itself: `appearance.get` runs
-`riwork appearance --json`, which prints the file validated and re-serialized in
-the shape above and exits non-zero with "RiWork has not published its appearance
-yet; open the RiWork app" when the file is missing or invalid. `riwork appearance`
+`somtus appearance --json`, which prints the file validated and re-serialized in
+the shape above and exits non-zero with "Somtus has not published its appearance
+yet; open the Somtus app" when the file is missing or invalid. `somtus appearance`
 without `--json` prints a short summary. The connector re-validates the CLI output
 and treats output over 16 KiB as invalid.
 
@@ -906,7 +906,7 @@ new error code. No change to the handshake, envelopes, fixtures or any existing
 method; it applies to protocol v1 and v2 sessions alike. A client that never
 calls the methods is unaffected. The iOS side is built against this text.
 
-**`shell.create`** starts a terminal, exactly as `riwork shell create` does on the
+**`shell.create`** starts a terminal, exactly as `somtus shell create` does on the
 desktop. Params (an object; unknown fields, nulls and wrong types fail
 `invalid_request` before anything runs):
 
@@ -941,7 +941,7 @@ desktop. Params (an object; unknown fields, nulls and wrong types fail
   blank, no `char::is_control` character and no U+2028 / U+2029 (one physical
   line, as for `shell.input`), and it must not begin with `-`. The desktop's new
   terminal runs it in place of an interactive prompt and ends with it, as with
-  `riwork shell create --command`. It is text for that terminal's shell: it is
+  `somtus shell create --command`. It is text for that terminal's shell: it is
   never interpreted by the connector.
 
 Result: `shell_id` is the new terminal's full UUID and `shell` is its entry as
@@ -984,7 +984,7 @@ other methods:
   `--unrestricted`, which the CLI resolves from its Settings file at that moment). Nothing is concatenated into a shell string; a `command` is one
   argument. The rule against a leading `-` keeps it from being read as an option of
   its own, and `--json` is always last.
-- The project or worktree is looked up first (`riwork project show ID --json`, or
+- The project or worktree is looked up first (`somtus project show ID --json`, or
   `worktree show`), and its `id` must equal the id sent: the CLI also resolves
   names, branch names, paths and id prefixes, so an id that is nobody's could
   otherwise start a terminal in some other worktree. An unknown id is `not_found`
@@ -1021,17 +1021,17 @@ decide.
 
 On the desktop. The terminal is created by the same CLI the desktop app uses
 (`SessionManager::create` or `create_harness`), registered in `sessions.json` and
-started in the desktop's tmux. A running RiWork window for that project notices it
+started in the desktop's tmux. A running Somtus window for that project notices it
 within its two-second refresh and adds a tab for it to its active pane, behind the
 current tab: it takes no focus and does not change the selected tab, and the
 terminal view attaches when the tab is first shown (in a pane the user emptied
 there is no current tab, so it is shown there, still without focus). The same
-happens for any terminal made with `riwork shell create` while a window is open. A
+happens for any terminal made with `somtus shell create` while a window is open. A
 terminal the user closed in the window is not brought back. Of several windows that
 show the same project, the first to notice takes it. If no window shows the
 project, the terminal joins it when the project is next opened.
 
-**`shell.close`** ends a project terminal and its process, as `riwork shell close`
+**`shell.close`** ends a project terminal and its process, as `somtus shell close`
 does. Params `{"shell_id":"UUID"}` (unknown fields fail `invalid_request`). The id
 must be a project terminal the desktop lists; an orchestrator is refused with
 `invalid_request` and an unknown id is `not_found`. A terminal that already exited
@@ -1040,11 +1040,11 @@ can be closed too, which removes it from the desktop's list. Result
 the shell is released first. Errors are `invalid_request`, `not_found`, `cli_error`.
 Closing kills whatever runs in the terminal, so a client confirms it with the user.
 Any tab a desktop window has for the closed terminal is left to that window, as
-after `riwork shell close` from a command line.
+after `somtus shell close` from a command line.
 
 An older connector answers both methods `invalid_request` "unsupported RPC
 method"; a client then hides or disables terminal creation for that connection. A
-connector paired with an older `riwork` CLI still works: `shell create --json`,
+connector paired with an older `somtus` CLI still works: `shell create --json`,
 `--harness`, `--unrestricted` and `shell close` predate this extension. Only the
 desktop window's live tab for a new terminal needs the new app.
 
@@ -1055,7 +1055,7 @@ error code. No change to the handshake, envelopes, fixtures or any existing meth
 applies to protocol v1 and v2 sessions alike. A client that never calls the method is
 unaffected. The iOS side is built against this text.
 
-**`project.create`** makes a new project on the desktop, as `riwork project create
+**`project.create`** makes a new project on the desktop, as `somtus project create
 --name NAME` does, and returns it. Params (an object; unknown fields, nulls and wrong
 types fail `invalid_request` before anything runs):
 
@@ -1105,12 +1105,12 @@ project lives) or something is already at the folder's place (a folder, a file, 
 or the folder of a registered project). The message is the connector's own and names no
 path: `A project named "X" already exists on the desktop` or `A folder named "X" already
 exists in the desktop's projects folder`. Nothing that was there is read, changed or made
-a project, and no `git init` is run in it (plain `riwork project create`, which people
+a project, and no `git init` is run in it (plain `somtus project create`, which people
 type, adopts a folder it finds; the phone's request never does). `not_found` for
 "device revoked"; `cli_error` for everything else (the disk, Git, a permission, a
 start that took longer than 60 seconds), with the CLI's first line as the message, and
-for an installed `riwork` too old to create exclusively (`the installed riwork CLI cannot
-create projects from the phone; update RiWork`).
+for an installed `somtus` too old to create exclusively (`the installed somtus CLI cannot
+create projects from the phone; update Somtus`).
 
 Security and validation. Creation here is a smaller authority than a paired device has
 already (`shell.input` runs any command as the desktop user), and it is still validated as
@@ -1123,7 +1123,7 @@ strictly as the other methods:
   concatenated into a shell string; the name is one argument after `--name`, and the
   rule against a leading `-` keeps it from being read as an option. `--json` is last.
 - `--exclusive` makes the CLI refuse anything that exists instead of registering it. It is
-  sent only to a CLI that says it knows the flag (`riwork capabilities --json` has
+  sent only to a CLI that says it knows the flag (`somtus capabilities --json` has
   `"project_create_exclusive":true`; asked before each creation), because an older CLI would read
   the flag as a PATH and create a folder of that name next to the connector.
 - The folder itself is made with a plain `mkdir` (only its parent, the projects folder,
@@ -1150,23 +1150,23 @@ cannot tell whether the project exists, and must not retry by itself; it refresh
 usually means the first request worked).
 
 On the desktop. The project is written to the desktop's shared store, as by the CLI or the
-app's own "New project". A running RiWork window re-reads the store every two seconds and lists
+app's own "New project". A running Somtus window re-reads the store every two seconds and lists
 the new project in its Projects panel (when that is showing) on its next refresh, without
 taking focus or switching that window's project. (Under the default "Last edited" sort a project that has no source file
 yet follows those that have a date, as an empty project from the app does.)
 
 An older connector answers `invalid_request` "unsupported RPC method"; a client then hides
-project creation for that connection. A connector paired with an older `riwork` CLI answers
-`cli_error` with the "update RiWork" sentence above, and creates nothing.
+project creation for that connection. A connector paired with an older `somtus` CLI answers
+`cli_error` with the "update Somtus" sentence above, and creates nothing.
 
 ### Desktop terminal extension (v2 only, 2026-10-02)
 
-Additive, and only for a second kind of device. The phone flow above shows a terminal as captured text and sends typing as `shell.keys`; a Mac running RiWork wants the real thing: its own Ghostty window showing this Mac's shell with every mode, mouse and scroll behaviour intact. So the host does not capture anything. It runs a **tmux client** (`riwork shell attach SHELL --exec`) inside a pseudo-terminal it owns and carries that terminal's raw bytes to the other Mac, where they are written to a Ghostty surface exactly as a local tmux client's would be. Redraws, the alternate screen, mouse and cursor modes, copy-mode scrollback, and the full repaint a freshly attached client gets all come from tmux. The shell itself lives on in its tmux server; closing a stream hangs a *client* up and nothing else.
+Additive, and only for a second kind of device. The phone flow above shows a terminal as captured text and sends typing as `shell.keys`; a Mac running Somtus wants the real thing: its own Ghostty window showing this Mac's shell with every mode, mouse and scroll behaviour intact. So the host does not capture anything. It runs a **tmux client** (`somtus shell attach SHELL --exec`) inside a pseudo-terminal it owns and carries that terminal's raw bytes to the other Mac, where they are written to a Ghostty surface exactly as a local tmux client's would be. Redraws, the alternate screen, mouse and cursor modes, copy-mode scrollback, and the full repaint a freshly attached client gets all come from tmux. The shell itself lives on in its tmux server; closing a stream hangs a *client* up and nothing else.
 
 **Who may.** Only a *desktop* device on a **protocol v2** session. The desktop's owner decides at pairing, and the device cannot change it:
 
 ```sh
-riwork remote pair --relay wss://relay.example.com/v1/ws --protocol 2 --kind desktop --name 'Studio Mac' --out ...
+somtus remote pair --relay wss://relay.example.com/v1/ws --protocol 2 --kind desktop --name 'Studio Mac' --out ...
 ```
 
 `--kind` is `mobile` (the default, a phone) or `desktop`; `--kind desktop` with `--protocol 1` is refused, and `devices` prints each device's `kind`. The kind is a field of the host's own device record (`kind`, absent for a phone, so a config that holds only phones is byte for byte what it was); the pairing the other Mac imports does not carry it. A desktop has the same authority as a phone (full terminal control, see the introduction), is revoked the same way, and is limited to the same 64 devices. For a phone, a v1 device, or a connector from before this extension, every `pty.*` request is `invalid_request` "unsupported RPC method".
@@ -1189,7 +1189,7 @@ A client opens streams only if `features.pty` is there, and holds itself to the 
 
 Every id is a full lowercase canonical UUID, `data` is base64url **without padding** in its one canonical spelling, every number is a JSON integer, and no other field is accepted (an unknown field, a `null`, a float or a number out of range is `invalid_request`, before anything is started).
 
-**`pty.open`.** `term` is the terminal type the client wants the tmux client to announce. `xterm-ghostty` is what a Ghostty speaks natively; the host honours it only if it can describe it (RiWork's app bundle ships Ghostty's terminfo in `Contents/Resources/terminfo`, and the CLI also accepts the `TERMINFO` of a Ghostty that started it); otherwise the tmux client announces `xterm-256color`, which every system describes. `columns` and `rows` are the pseudo-terminal's size at start; `ignore_size` starts the client with tmux's `-f ignore-size`, so this display does not resize the window the shell has on the host. The host checks `riwork capabilities --json` for `shell_attach_exec` before it starts anything (an older CLI answers `cli_error` "the installed riwork CLI cannot open terminal streams; update RiWork"), then runs `riwork shell attach SHELL_ID --exec [--ignore-size]` with the same CLI path the other methods use. The CLI checks that the shell is registered and live, applies the usual scrolling configuration, and becomes the tmux client. **It answers when the terminal starts to draw** (a freshly attached tmux client begins with an escape sequence at once), so the client's first `pty.read` finds the repaint waiting. If the client instead prints plain text and ends, that text is the answer: the CLI's `unknown shell ID` is `not_found` "existing shell ID not found", its `shell ID has exited` and tmux's own "can't find session" / "no server running" / "no sessions" are `not_found` "selected shell is not alive", anything else is `cli_error` with its first line. (Plain text that does not end within 400 ms is taken for a screen.) At most `max_streams` streams exist per session; one more is `pty_limit`. It runs in its own lane (`Attach`, one at a time); a client that does not hear back within 15 seconds gets `cli_error` and the process is killed.
+**`pty.open`.** `term` is the terminal type the client wants the tmux client to announce. `xterm-ghostty` is what a Ghostty speaks natively; the host honours it only if it can describe it (Somtus's app bundle ships Ghostty's terminfo in `Contents/Resources/terminfo`, and the CLI also accepts the `TERMINFO` of a Ghostty that started it); otherwise the tmux client announces `xterm-256color`, which every system describes. `columns` and `rows` are the pseudo-terminal's size at start; `ignore_size` starts the client with tmux's `-f ignore-size`, so this display does not resize the window the shell has on the host. The host checks `somtus capabilities --json` for `shell_attach_exec` before it starts anything (an older CLI answers `cli_error` "the installed somtus CLI cannot open terminal streams; update Somtus"), then runs `somtus shell attach SHELL_ID --exec [--ignore-size]` with the same CLI path the other methods use. The CLI checks that the shell is registered and live, applies the usual scrolling configuration, and becomes the tmux client. **It answers when the terminal starts to draw** (a freshly attached tmux client begins with an escape sequence at once), so the client's first `pty.read` finds the repaint waiting. If the client instead prints plain text and ends, that text is the answer: the CLI's `unknown shell ID` is `not_found` "existing shell ID not found", its `shell ID has exited` and tmux's own "can't find session" / "no server running" / "no sessions" are `not_found` "selected shell is not alive", anything else is `cli_error` with its first line. (Plain text that does not end within 400 ms is taken for a screen.) At most `max_streams` streams exist per session; one more is `pty_limit`. It runs in its own lane (`Attach`, one at a time); a client that does not hear back within 15 seconds gets `cli_error` and the process is killed.
 
 The client runs with an **allowlisted environment** and nothing else: `PATH`, `HOME`, `LANG` and `LC_*` (a locale that is not UTF-8 becomes `LANG=en_US.UTF-8`, because tmux decides from it whether a client speaks UTF-8), `RIWORK_HOME` and `RIWORK_RUNTIME_DIR` (so the CLI uses the connector's state), `TERM` as asked, `COLORTERM=truecolor`, and `TERMINFO` if the connector has one. `TMUX` and `TMUX_TMPDIR` are removed, and so is everything else, secrets included. The process is the leader of a session of its own with the pseudo-terminal as its controlling terminal.
 
@@ -1215,7 +1215,7 @@ Additive and compatible, like the extensions before it: optional fields on three
 existing results. No new method, error code or parameter; no change to the handshake,
 envelopes, fixtures or any existing field. It applies to protocol v1 and v2 sessions
 alike. A field the desktop cannot supply is left out, so every field below is optional
-for a client: an older desktop or `riwork` CLI answers byte for byte as before, and an
+for a client: an older desktop or `somtus` CLI answers byte for byte as before, and an
 older phone ignores what it does not know. The connector checks the shape of each new
 field before passing it on and leaves a malformed one out, so a client that decodes
 them strictly never sees a wrong type. The iOS side is built against this text.
@@ -1266,7 +1266,7 @@ them strictly never sees a wrong type. The iOS side is built against this text.
   | `working` | a turn is open in the shell's bound thread | a turn is open (`UserPromptSubmit` seen, no `Stop`) and was heard from in the last 10 minutes, or a subagent is running |
   | `done` | its last turn completed | its last turn's `Stop` arrived |
   | `waiting` | the session is idle: just started, or the turn was aborted | idle: just started and not yet prompted, or paused by a `Stop` that listed background work, or an open turn silent for over 10 minutes |
-  | `unknown` | no exact thread binding yet, or the rollout cannot be read | the hooks of its launch have said nothing (a Claude started before RiWork passed them) |
+  | `unknown` | no exact thread binding yet, or the rollout cannot be read | the hooks of its launch have said nothing (a Claude started before Somtus passed them) |
   | `exited` | the shell's tmux session is gone | the same |
 
   Grok has no activity tracking: a live Grok shell is always `unknown`. Claude sends no
@@ -1322,8 +1322,8 @@ quick. `last_activity_unix` comes from tmux in the same call that tells which sh
 alive (a project's is the newest of its shells). File-edit recency is the one figure
 only the app has (its scan and file-change events live in its process), so the app writes
 it to `project-recency.json` in `RIWORK_HOME` (mode 600, replaced atomically, only when it
-changed), and `riwork project list --json` reads that file. The connector computes none
-of this: it runs `riwork project list --json`, `shell list --project ID --json` and
+changed), and `somtus project list --json` reads that file. The connector computes none
+of this: it runs `somtus project list --json`, `shell list --project ID --json` and
 `orchestrator list --json` and projects the fields above.
 
 **Compatibility.** Nothing a phone or an older desktop sends or receives changes. A
@@ -1342,20 +1342,20 @@ or any existing method; it applies to protocol v1 and v2 sessions alike. A clien
 never calls the methods is unaffected. The iOS side is built against this text.
 
 A *chat* is a conversation with Codex or Claude that the desktop drives through the
-agent's structured interface instead of its terminal: the chat host (`riwork chat
+agent's structured interface instead of its terminal: the chat host (`somtus chat
 serve`, started on demand) owns the agent process, keeps every chat's events in a log
-and numbers them. The methods below are the same operations as `riwork chat list|new|
+and numbers them. The methods below are the same operations as `somtus chat list|new|
 events|command|stop`, which is how the connector runs them. A chat belongs to the
 desktop, not to the phone: the phone follows it, answers its approvals and may stop it,
 and a chat started on the desktop appears in `chats.list` like one started here.
 
-**Feature detection.** `ready.features.chat` is `true` when the installed `riwork` CLI
-reports `"chat": true` in `riwork capabilities --json`. The connector asks the CLI
+**Feature detection.** `ready.features.chat` is `true` when the installed `somtus` CLI
+reports `"chat": true` in `somtus capabilities --json`. The connector asks the CLI
 as it connects to the relay and again while a phone's handshake finishes (for at most 3
 seconds), until the CLI says yes, which it then remembers. Without it the phone hides chats. A connector that predates the extension answers every method below
 `invalid_request` "unsupported RPC method"; a connector with an older CLI leaves
-`features.chat` out and answers `cli_error` "the installed riwork CLI does not support
-chats; update RiWork".
+`features.chat` out and answers `cli_error` "the installed somtus CLI does not support
+chats; update Somtus".
 
 **The chat JSON** is the serde form of the desktop's `crates/riwork-engine/src/chat/model.rs`, passed on as
 the CLI prints it (the keys of an object come in no particular order). A client must
@@ -1430,7 +1430,7 @@ An unknown project is `not_found`. The list is one reply: about 250 chats fit a 
 does not compress and about 4 000 one that does; more is `response_too_large`, and the
 phone then asks for one project's chats.
 
-**`chat.create`** starts a chat in a project or worktree of the desktop, as `riwork chat
+**`chat.create`** starts a chat in a project or worktree of the desktop, as `somtus chat
 new` does. Params (an object; unknown fields, nulls and wrong types fail
 `invalid_request` before anything runs):
 
@@ -1688,8 +1688,8 @@ then an `item_completed` with a `notice` item (`level` `info`, id `switch-N`), t
 states of the new agent's start and its `models`. A client that folds the events drops the
 old provider's `models` and `usage` when an `info` names another provider. An older client
 shows the notice and the new provider name as it shows any. A connector whose CLI predates
-the switch answers `cli_error` "the installed riwork CLI cannot move a chat to another
-provider; update RiWork", and an older connector refuses the command as unknown
+the switch answers `cli_error` "the installed somtus CLI cannot move a chat to another
+provider; update Somtus", and an older connector refuses the command as unknown
 (`invalid_request`).
 
 **`chat.models`** (since 2026-10-08, `features.chat_models`) lists what a chat of a provider
@@ -1729,7 +1729,7 @@ typed, so that the phone's composer lists what the desktop's does. Params exactl
   them; a Codex or Muse chat has none today. `name` is without the slash (1 to 40 of `a-z`,
   `0-9` and `-`), `summary` says what it is in one line, `argument` what may follow the name
   (null: nothing), `sends` what sending a message that starts with it does, and `handler`
-  who acts on it: `provider` (the text goes to the provider as typed) or `riwork` (the
+  who acts on it: `provider` (the text goes to the provider as typed) or `somtus` (the
   desktop acts on it before the provider sees anything). Accepting one puts `/name` in the
   draft; it never sends.
 - `files.entries` are the files and folders of the chat's folder, `root`, breadth first and
@@ -1752,7 +1752,7 @@ typed, so that the phone's composer lists what the desktop's does. Params exactl
   `ios/Tests/Fixtures/composer-suggestions.json`, whose `reply` is a result of this method.
 - `models` (since 2026-10-15) are the models the chat's provider listed for it, in the
   provider's order: the newest list its own driver reported (what its model menu shows), else
-  what `riwork chat models` reads for its provider; none when no chat of the provider ever
+  what `somtus chat models` reads for its provider; none when no chat of the provider ever
   listed any (no model is made up), nor one whose id has blank space inside, which would not
   read as one word in a mention. `id` is what the chat is set to, `name` and
   `description` what to show, `is_default` that the provider runs it when the chat names
@@ -1765,7 +1765,7 @@ typed, so that the phone's composer lists what the desktop's does. Params exactl
   models, so that such a phone never offers another provider's model.
 - `mention_models` (since 2026-10-16) are what `&` offers now: every provider's models, so
   that a message to an orchestrator can name a Claude model from a Codex or Muse chat. They
-  are the chat's own list (as in `models`), then what `riwork chat models` reads for the
+  are the chat's own list (as in `models`), then what `somtus chat models` reads for the
   chat's provider, then for Codex, Claude and Muse in that order; each id once (where two
   lists have it, the first one's row), and none whose id names no model: Claude's `default`
   ("Default (recommended)", the CLI's own choice of model) or one with blank space inside.
@@ -1824,7 +1824,7 @@ the other methods:
   command is rebuilt from the validated fields as one JSON argument, so nothing the
   connector did not check can travel in it.
 - The project or worktree of `chat.create` (and the project of a filtered `chats.list`)
-  is looked up first (`riwork project show ID --json`, or `worktree show`), and its `id`
+  is looked up first (`somtus project show ID --json`, or `worktree show`), and its `id`
   must equal the id sent: the CLI also resolves names and prefixes. An unknown id is
   `not_found` and starts nothing. The phone never names a directory, so it cannot start a
   chat anywhere that is not a registered project or worktree.
@@ -1862,15 +1862,15 @@ lets the person decide; after a `send` it reads the chat's events, where the mes
 `user_message` item if it arrived. An approval or an answer that is repeated is
 refused by the host, so that one is safe to ask again.
 
-On the desktop. The chats are the ones `riwork chat list` shows and the desktop app's
-chat tabs use: the same chat host, the same logs under `chats/` in the RiWork data
+On the desktop. The chats are the ones `somtus chat list` shows and the desktop app's
+chat tabs use: the same chat host, the same logs under `chats/` in the Somtus data
 directory. A message sent from the phone is a turn like one typed on the desktop; the
 phone's approvals answer the same prompts. The host is started on demand by the CLI the
 connector runs and exits by itself when idle, so a desktop with no chat at work runs
 none.
 
 An older connector answers `invalid_request` "unsupported RPC method" for all five; a
-client then hides chats for that connection. A connector paired with an older `riwork`
+client then hides chats for that connection. A connector paired with an older `somtus`
 CLI leaves `features.chat` out.
 
 **Chat orchestrators (2026-10-05).** The global orchestrator and each project's orchestrator
@@ -1903,12 +1903,12 @@ code, envelope or fixture, for v1 and v2 sessions alike.
   `shell.keys`, `shell.resize` and `shell.resize.clear` on a chat orchestrator's id are
   `invalid_request`, "this orchestrator runs as a chat; follow it with chat.events and send
   with chat.command": a chat has no pane to read, type into or size, and nothing is typed.
-  The connector knows it from the `mode` in the orchestrator list. Where the `riwork` CLI
+  The connector knows it from the `mode` in the orchestrator list. Where the `somtus` CLI
   checks a shell itself (`verifies_shell`) the connector does not list sessions first, so for
   `shell.output`, `shell.history` and `shell.keys` it looks only after that CLI has refused
   the id as unknown. `shell.close` still refuses every orchestrator ("only a project
   terminal can be closed"). A phone avoids the refusal by looking at `mode`.
-- *Closing.* `riwork orchestrator close` on the desktop ends a chat orchestrator by deleting
+- *Closing.* `somtus orchestrator close` on the desktop ends a chat orchestrator by deleting
   its chat. A phone with a tab on it then finds `chats.list` without the chat and
   `chat.events` answering `not_found`, and closes the tab. The phone cannot close an
   orchestrator itself (`chat.stop` stops the agent and keeps the chat).
@@ -1965,7 +1965,7 @@ method; it applies to protocol v1 and v2 sessions alike. A client that never cal
 is unaffected.
 
 **`orchestrator.create`** makes the orchestrator of the whole desktop or of one project, as
-`riwork orchestrator create [--project ID] [--mode terminal|chat] --json` does, or hands back the one that is already
+`somtus orchestrator create [--project ID] [--mode terminal|chat] --json` does, or hands back the one that is already
 there. Params, an object with no other field and no null (`invalid_request` before anything
 runs):
 
@@ -2017,11 +2017,11 @@ it runs in a task that outlives the request and only the answer is lost. A clien
 finds the orchestrator the first one made (`created` false); a client that lost the answer reads
 `orchestrators.list`.
 
-**Feature detection.** `ready.features.orchestrator_create` is `true` when the installed `riwork`
-CLI reports `"orchestrator_create": true` in `riwork capabilities --json`. The connector asks as
+**Feature detection.** `ready.features.orchestrator_create` is `true` when the installed `somtus`
+CLI reports `"orchestrator_create": true` in `somtus capabilities --json`. The connector asks as
 it asks for `features.chat` (one run of the CLI answers both questions) and remembers a yes.
 Without it the phone hides the control; the method itself answers `cli_error` "the installed
-riwork CLI cannot create orchestrators from the phone; update RiWork". A connector that predates
+somtus CLI cannot create orchestrators from the phone; update Somtus". A connector that predates
 the extension answers `invalid_request` "unsupported RPC method". The connector's tests are
 `remote/tests/orchestrator_create.rs` and `remote/tests/chat_link.rs`.
 
@@ -2071,8 +2071,8 @@ connector that predates the extension answers every method below `invalid_reques
   existing file is never replaced.
 - `size` (1 to `max_bytes`), `sha256` of the whole file, and optionally `type`, a media
   type (`type/subtype`, at most 127 bytes) used only for the extension.
-- For a shell, the desktop first checks that its CLI can paste (`riwork capabilities --json`
-  has `"shell_paste": true`, else `cli_error` "… update RiWork") and that the shell exists
+- For a shell, the desktop first checks that its CLI can paste (`somtus capabilities --json`
+  has `"shell_paste": true`, else `cli_error` "… update Somtus") and that the shell exists
   and is alive (`not_found`), so the phone learns it before the first byte. A chat is not
   looked up: its id only names the inbox.
 - The same `upload` again with the same `shell_id` or `chat_id`, `size` and `sha256` answers
@@ -2107,7 +2107,7 @@ complete one is left to its inbox and answered as complete.
 
 **`shell.paste`** `{"shell_id":"UUID","batch":"UUID","uploads":["UUID",…]}` pastes 1 to
 `max_files` different complete uploads of this device for this very shell into it, in that
-order, without Return, as `riwork shell paste SHELL -- FILE...` does (the paste a drop of those
+order, without Return, as `somtus shell paste SHELL -- FILE...` does (the paste a drop of those
 files on the desktop's terminal makes, chosen by the program in front). It is delivered once
 per (device, `batch`) with the ledger, locks and answers of `shell.keys`: `sent`,
 `duplicate` (this batch was pasted; nothing is pasted again) or `uncertain` (an earlier
@@ -2125,7 +2125,7 @@ what each device sent, and removes a partial upload with no chunk for an hour, a
 after a day, the files of a device that is revoked (by the `revoke` command, and by a running
 connector within a tick) or no longer paired, and files in the inboxes that no ledger knows
 once they are a day old. It sweeps when it starts and every hour, and expires a device's
-uploads before each new one. Closing a shell (`riwork shell close`, `shell.close`) and deleting
+uploads before each new one. Closing a shell (`somtus shell close`, `shell.close`) and deleting
 a chat remove that shell's or chat's inbox. Nothing on the desktop opens, runs or logs a file;
 the agent in the shell or chat reads it when it is told to.
 
@@ -2151,10 +2151,10 @@ window) in one read, so a phone can show the same picture without listing every 
 shells, chats and tasks. The desktop builds it exactly as its own dashboard does
 (`riwork_engine::global_overview::build`) and the phone is sent its projection
 (`global_overview::wire`, extended by `wire_with_observations`), through
-`riwork dashboard --json`.
+`somtus dashboard --json`.
 
-**Feature detection.** `ready.features.dashboard` is `true` when the installed `riwork` CLI
-reports `"dashboard": true` in `riwork capabilities --json`; the connector asks as it asks for
+**Feature detection.** `ready.features.dashboard` is `true` when the installed `somtus` CLI
+reports `"dashboard": true` in `somtus capabilities --json`; the connector asks as it asks for
 `features.chat` (one run of the CLI answers every such question) and remembers a yes. Without
 the flag, the method answers `invalid_request` "unsupported RPC method", exactly as a connector
 from before the extension answers it.
@@ -2314,10 +2314,10 @@ connections for other established pairings are closed before activating that hos
 or summary can redirect an answer to another host. Details and limits are in
 [dashboard decisions](dashboard-decisions.md) and [Haiku dashboard summaries](haiku-dashboard.md).
 
-**Compatibility.** A desktop whose connector or `riwork` CLI predates the extension sends no
+**Compatibility.** A desktop whose connector or `somtus` CLI predates the extension sends no
 `features.dashboard` and answers `dashboard.get` with `invalid_request` "unsupported RPC
 method". A client must then fall back to `projects.list` and `orchestrators.list` (and the
-per-project lists) and tell the person why the full dashboard is missing (update RiWork on the
+per-project lists) and tell the person why the full dashboard is missing (update Somtus on the
 Mac). An older phone never sends the method. The `v` of the reply is the reply's own version;
 a client refuses any other.
 
@@ -2341,13 +2341,13 @@ the project record, so `projects.list`, `dashboard.get` and the CLI's and MCP's 
 never carry it. The desktop never gives it to an agent; it reaches a chat only when the person
 inserts it into a draft with `/memo`.
 
-**Feature detection.** `ready.features.project_memo` is `true` when the installed `riwork` CLI
-reports `"project_memo": true` in `riwork capabilities --json` (the same question as
+**Feature detection.** `ready.features.project_memo` is `true` when the installed `somtus` CLI
+reports `"project_memo": true` in `somtus capabilities --json` (the same question as
 `features.chat`). Without it both methods answer `invalid_request` "unsupported RPC method", as a
 connector from before the extension does, and a client offers no memo.
 
 **`project.memo.get`** `{"project_id":"UUID"}`: exactly that key, a canonical UUID; anything else is
-`invalid_request` before any CLI runs. It is `riwork project memo show ID --json` and runs in a
+`invalid_request` before any CLI runs. It is `somtus project memo show ID --json` and runs in a
 shared (`Read`) slot. Result:
 
 ```json
@@ -2365,9 +2365,9 @@ at most 32768 UTF-8 bytes (32 KiB, the store's `riwork_core::project_memo::MAX_B
 any CLI runs. The desktop stores the text normalized: `\r\n` and a lone `\r` become `\n`, and control
 characters other than tab and newline are removed. A client sends its text normalized the same way,
 so that what it shows is what is kept. The result is the memo as saved, in `project.memo.get`'s shape.
-It is `riwork project memo set ID --json` with the text on the CLI's **standard input** (a process
+It is `somtus project memo set ID --json` with the text on the CLI's **standard input** (a process
 list shows arguments to every user of the Mac), in the ordered lane, after the device's
-authorization is checked again and `riwork project show ID --json` found the project under exactly
+authorization is checked again and `somtus project show ID --json` found the project under exactly
 this id (the CLI also matches names and paths; 2026-10-15); a save of the text already there changes
 nothing and keeps its `updated_at`.
 
@@ -2430,7 +2430,7 @@ no answer has `null`). `Files.listDirectory` adds `"page":{"offset","limit","tot
 the entries from `offset`, at most `limit` of them (`args.limit` 1 to 1000, default 500), out of
 `total`.
 
-**How it runs.** `riwork native invoke MODULE.METHOD --json` with `args` on the CLI's standard
+**How it runs.** `somtus native invoke MODULE.METHOD --json` with `args` on the CLI's standard
 input (never as arguments), answered with one line, `{"v":1,"value":…}` or
 `{"v":1,"error":{"code","message"}}`. The desktop binary runs the method on the same backends and
 checks as its windows, but builds no home watcher and no session sampler, and holds nothing
@@ -2507,7 +2507,7 @@ every screen's reads; one wait per desktop says which topics changed, and the de
 those.
 
 **Feature detection.** `ready.features.watch` is `{"v":1,"topics":[…]}`: the topics below that the
-installed desktop binary also names in `riwork capabilities --json` (`"watch":{"v":1,"topics":[…]}`).
+installed desktop binary also names in `somtus capabilities --json` (`"watch":{"v":1,"topics":[…]}`).
 Without it the method answers `invalid_request` "unsupported RPC method", and a client polls.
 
 **Request.** `{"since":{…},"wait_ms":N}`: exactly those two keys; `wait_ms` an integer from 0 to
@@ -2524,8 +2524,8 @@ about. A revision is an opaque digest of what that topic's reader answers (`Stor
 and for `dashboard` the store, shells, automations, usage and chats together), so a file that was
 only touched changes nothing; clients compare revisions for equality only.
 
-**How it runs.** `riwork watch --json` with the request on the CLI's standard input. It watches the
-desktop's RiWork home (registered before the first read, so no change falls between the two) and,
+**How it runs.** `somtus watch --json` with the request on the CLI's standard input. It watches the
+desktop's Somtus home (registered before the first read, so no change falls between the two) and,
 while `sessions`, `tabs` or `dashboard` are asked about, samples the shells every two seconds
 (tmux writes no file when a shell starts or ends). With `wait_ms` above 0 it is a long poll,
 counted with the waits of `shell.output` and `chat.events` (at most two at once); with 0 it is a
@@ -2578,7 +2578,7 @@ ready response. Values are test-only and must never provision production devices
   `{}`) returns the desktop's published palette and terminal colors (`v`,
   `updated_at`, `dark`, `palette`, optional `terminal`, lowercase `#rrggbb`), or
   `not_found` "appearance not published". The desktop GUI writes `appearance.json` in
-  `RIWORK_HOME`; `riwork appearance [--json]` reads it. A client that never calls the
+  `RIWORK_HOME`; `somtus appearance [--json]` reads it. A client that never calls the
   method is unaffected, and an older desktop answers `invalid_request` "unsupported
   RPC method". Needs the iOS worker's agreement; the iOS side implements the same
   text.
@@ -2640,7 +2640,7 @@ ready response. Values are test-only and must never provision production devices
   name or folder that already exists, answers the new error code `already_exists`
   without touching what is there. Parameters are validated before any CLI runs and the CLI is
   run with an argument vector, never a shell string, and only with the `--exclusive` flag it
-  announces in `riwork capabilities`. A running desktop window lists the project within its
+  announces in `somtus capabilities`. A running desktop window lists the project within its
   two-second refresh. A client that never calls the method is unaffected, and an older
   desktop answers `invalid_request` "unsupported RPC method". Needs the iOS worker's
   agreement; the iOS side implements the same text.
@@ -2696,7 +2696,7 @@ ready response. Values are test-only and must never provision production devices
   result `{"orchestrator":Session,"created":bool}`), which makes the global or a project's
   orchestrator in the mode the desktop's setting says, or returns the existing one, in the
   ordered lane and not cut short when the phone's session ends; `ready.features.
-  orchestrator_create` when the CLI says `"orchestrator_create": true` in `riwork capabilities
+  orchestrator_create` when the CLI says `"orchestrator_create": true` in `somtus capabilities
   --json`. No new error code. Needs the iOS worker's agreement; the iOS side implements the same
   text.
 - 2026-10-08: additive and backward compatible. An `account` chat event (`account`:
@@ -2731,7 +2731,7 @@ ready response. Values are test-only and must never provision production devices
   `chat.models` (`provider`, optional `project_id`), in the read lane, that lists a
   provider's saved models without starting anything; `ready.features.chat_provider_switch`
   and `ready.features.chat_models` when the CLI says `"chat_provider_switch": true` and
-  `"chat_models": true` in `riwork capabilities --json`. No new error code. Needs the iOS
+  `"chat_models": true` in `somtus capabilities --json`. No new error code. Needs the iOS
   worker's agreement; the iOS side implements the same text.
 - 2026-10-13: additive and backward compatible. A third chat provider, Muse, in the
   Chat extension: `provider` `codex|claude|muse` in `chat.create`, `chat.models`, the
@@ -2761,7 +2761,7 @@ ready response. Values are test-only and must never provision production devices
   length (40, 40, 20, 150, 50; 30 automation items) after the desktop's ordering with
   `<list>_total` giving its full length, text bounded by Unicode scalars, and unknown figures
   left out, never zero or `null`; `ready.features.dashboard` when the CLI says `"dashboard":
-  true` in `riwork capabilities --json`. It starts nothing. No `model` and no project root are
+  true` in `somtus capabilities --json`. It starts nothing. No `model` and no project root are
   part of it. No new error code. An older desktop answers `invalid_request` "unsupported RPC
   method" and a client falls back to `projects.list` and `orchestrators.list`. New shared
   fixture `ios/Tests/Fixtures/dashboard.json`. Needs the iOS worker's agreement; the iOS side
@@ -2782,7 +2782,7 @@ ready response. Values are test-only and must never provision production devices
   `files.truncated`; `file_bound`), from one walk bounded at 5000 entries, 50 000 looked at,
   2 seconds and 24 levels that honours `.gitignore` and skips `.git` and symbolic links, cut
   by the connector to fit one frame. No file contents travel. `ready.features.chat_suggestions`
-  when the CLI says `"chat_suggestions": true` in `riwork capabilities --json`. It starts
+  when the CLI says `"chat_suggestions": true` in `somtus capabilities --json`. It starts
   nothing. No new error code. An older desktop answers `invalid_request` "unsupported RPC
   method". New shared fixture `ios/Tests/Fixtures/composer-suggestions.json`. Needs the iOS
   worker's agreement; the iOS side implements the same text.
@@ -2811,7 +2811,7 @@ ready response. Values are test-only and must never provision production devices
   (`features.key_names` 2: `Insert`, `Space`, `F1`-`F12`, names with `C-`, `M-`, `S-`),
   and changed rows on `shell.output` (`delta`, `features.output_delta`). A phone that sends
   neither, and a desktop that announces neither, behave as before; no new method, error
-  code or fixture. Not a wire change: the connector types through one `riwork shell keys
+  code or fixture. Not a wire change: the connector types through one `somtus shell keys
   --serve` worker per device when its CLI has one. Needs the iOS worker's agreement; the
   iOS side implements the same rules.
 

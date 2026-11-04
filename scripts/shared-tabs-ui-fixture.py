@@ -7,7 +7,7 @@ fixture = Path(tempfile.mkdtemp(prefix='riwork-shared-tabs-', dir='/tmp'))
 home, runtime, root = fixture/'home', fixture/'runtime', fixture/'project'
 for directory in [home, runtime, root]: directory.mkdir(mode=0o700)
 bundle = fixture/'Shared Tabs Check.app'
-shutil.copytree(Path('target/debug/RiWork.app'), bundle)
+shutil.copytree(Path('target/debug/Somtus.app'), bundle)
 macos = bundle/'Contents/MacOS'
 # Keep a real Mach-O executable for direct bundle launch. Launch with env -i
 # HOME="$HOME" PATH="$PATH" RIWORK_HOME=<home> RIWORK_RUNTIME_DIR=<runtime>
@@ -15,11 +15,11 @@ macos = bundle/'Contents/MacOS'
 info_path = bundle/'Contents/Info.plist'
 info = plistlib.loads(info_path.read_bytes())
 identifier = 'dev.riwork.shared-tabs.check.'+uuid.uuid4().hex[:8]
-info.update(CFBundleIdentifier=identifier, CFBundleName='Shared Tabs Check', CFBundleExecutable='riwork')
+info.update(CFBundleIdentifier=identifier, CFBundleName='Shared Tabs Check', CFBundleExecutable='somtus')
 info_path.write_bytes(plistlib.dumps(info))
 clean = {key:value for key,value in os.environ.items() if not key.startswith(('RIWORK_', 'TMUX'))}
 clean.update(RIWORK_HOME=str(home), RIWORK_RUNTIME_DIR=str(runtime))
-binary = str(macos/'riwork')
+binary = str(macos/'somtus')
 def cli(*args, env=clean):
     return json.loads(subprocess.check_output([binary,*args,'--json'],env=env))
 project = cli('project','add',str(root)); project_id = project['id']

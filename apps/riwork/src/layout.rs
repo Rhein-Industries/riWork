@@ -636,13 +636,14 @@ impl LayoutModel {
         if chat_id.is_empty() {
             return Err("invalid: chat id is empty".into());
         }
+        self.resolve_pending_tab(panel_id, SavedTab::Chat { chat_id: chat_id.to_owned() })
+    }
+
+    pub fn resolve_pending_tab(&mut self, panel_id: &str, resolved: SavedTab) -> Result<DockAreaLayout, String> {
         let key = self.tab_key(panel_id);
         if !self.pending_chats.contains(&key) {
             return Err("not_found: pending chat".into());
         }
-        let resolved = SavedTab::Chat {
-            chat_id: chat_id.to_owned(),
-        };
         let resolved_key = resolved.key();
         if self.panel(&resolved_key).is_some() {
             return Err("invalid: chat is already open".into());
@@ -2537,6 +2538,26 @@ mod tests {
                 DEFAULT_EXTENT,
             )
             .unwrap()
+    }
+
+    #[test]
+    fn remote_chat_identity_survives_same_id_on_two_hosts_and_pending_pane_resolution() {
+        let mut model = LayoutModel::new(fixture(Layout::Pane(1), &[(1, &[])])).unwrap();
+        let chat_id = uuid::Uuid::new_v4().to_string();
+        let first = SavedTab::RemoteChat { desktop_id: "host-a".into(), chat_id: chat_id.clone() };
+        let second = SavedTab::RemoteChat { desktop_id: "host-b".into(), chat_id };
+        model.open_pending_chat("setup").unwrap();
+        model.resolve_pending_tab("chat-pending:setup", first.clone()).unwrap();
+        assert_eq!(model.panel("chat-pending:setup").unwrap(), &first);
+        model.open_tab(second.clone()).unwrap();
+        let encoded = serde_json::to_string(model.project()).unwrap();
+        let mut restored: ProjectLayout = serde_json::from_str(&encoded).unwrap();
+        restored.normalize().unwrap();
+        let tabs: Vec<_> = restored.panes.values().flat_map(|pane| pane.tabs.iter()).collect();
+        assert_eq!(tabs.len(), 2);
+        assert!(tabs.contains(&&first)); assert!(tabs.contains(&&second));
+        model.close_panel("chat-pending:setup", false).unwrap();
+        assert!(model.panel(&second.key()).is_some());
     }
 
     #[test]

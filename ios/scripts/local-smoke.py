@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Real Swift/Rust/installed RiWork interop in a disposable RIWORK_HOME.
-Never reads or mutates the user's RiWork registry or existing sessions.
+"""Real Swift/Rust/installed Somtus interop in a disposable RIWORK_HOME.
+Never reads or mutates the user's Somtus registry or existing sessions.
 """
 import argparse
 import json
@@ -18,8 +18,8 @@ import urllib.request
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--relay-binary', required=True, type=Path)
-parser.add_argument('--riwork', required=True, type=Path)
-parser.add_argument('--smoke-binary', type=Path, default=Path(__file__).resolve().parents[1] / '.build/debug/riwork-ios-smoke')
+parser.add_argument('--somtus', '--riwork', dest='riwork', required=True, type=Path)
+parser.add_argument('--smoke-binary', type=Path, default=Path(__file__).resolve().parents[1] / '.build/debug/somtus-ios-smoke')
 parser.add_argument('--hold', type=int, default=0, help='Keep the fixture available for simulator pairing for this many seconds')
 parser.add_argument('--viewport', action='store_true', help='Require the published resize extension; verify real PTY cells and desktop restoration')
 parser.add_argument('--protocol', type=int, default=1, choices=(1, 2), help='1 is the long-lived PSK. 2 is a single-use invite.')
@@ -100,7 +100,7 @@ try:
     run(pair)
     start([args.relay_binary, 'relay', '--bind', f'127.0.0.1:{port}', '--routes', routes], 'relay.log')
     wait_health(port)
-    start([args.relay_binary, 'start', '--riwork', args.riwork], 'connector.log')
+    start([args.relay_binary, 'start', '--somtus', args.riwork], 'connector.log')
     time.sleep(0.3)
     marker = root / 'input-count'
     size_file = root / 'pty-size'

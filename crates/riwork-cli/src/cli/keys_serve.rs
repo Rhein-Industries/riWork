@@ -1,6 +1,6 @@
-//! `riwork shell keys --serve`: the remote connector's typing worker.
+//! `somtus shell keys --serve`: the remote connector's typing worker.
 //!
-//! `riwork shell keys ID -- ITEM...` types one batch and exits, so a phone that types
+//! `somtus shell keys ID -- ITEM...` types one batch and exits, so a phone that types
 //! costs a process start for every batch it sends. The connector instead keeps one
 //! of these per paired device and hands it batch after batch. Each batch goes
 //! through exactly what `shell keys` does: the same item parsing and limits, the
@@ -24,7 +24,7 @@
 //! {"n":7,"ok":false,"error":"not_found: unknown shell UUID"}
 //! ```
 //!
-//! `error` is exactly what `shell keys` would have printed after `riwork: `, so an
+//! `error` is exactly what `shell keys` would have printed after `somtus: `, so an
 //! error that begins with a `session_keys` token happened before any key was typed,
 //! and any other may have typed part of the batch. `n` is echoed as it came (null
 //! when the line could not be read as a request). The worker ends at the end of its

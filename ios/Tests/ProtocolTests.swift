@@ -88,6 +88,7 @@ final class ProtocolTests: XCTestCase {
     func testPairingDeepLinkAndLocalDevelopmentPolicy() throws {
         let p = try pairing(fixture())
         let data = try JSONEncoder().encode(p)
+        XCTAssertEqual(try Pairing.parse("somtus://pair?v=1&data=\(Base64URL.encode(data))"), p)
         XCTAssertEqual(try Pairing.parse("riwork://pair?v=1&data=\(Base64URL.encode(data))"), p)
         XCTAssertThrowsError(try Pairing.parse("riwork://pair?v=2&data=\(Base64URL.encode(data))"))
         XCTAssertThrowsError(try Pairing.parse("riwork://pair?v=1&v=1&data=\(Base64URL.encode(data))"))
@@ -194,10 +195,16 @@ final class ProtocolTests: XCTestCase {
             "riwork:///pair?v=1&data=\(data)",
             "https://pair?v=1&data=\(data)",
         ]
-        for link in hostile { XCTAssertThrowsError(try Pairing.parse(link), link) }
+        for link in hostile {
+            XCTAssertThrowsError(try Pairing.parse(link), link)
+            let branded = link.replacingOccurrences(of: "riwork", with: "somtus")
+                .replacingOccurrences(of: "RIWORK", with: "SOMTUS")
+                .replacingOccurrences(of: "Riwork", with: "Somtus")
+            XCTAssertThrowsError(try Pairing.parse(branded), branded)
+        }
         // An uppercase scheme is reported as a bad link, not as bad JSON.
         do { _ = try Pairing.parse("RIWORK://pair?v=1&data=\(data)"); XCTFail() }
-        catch { XCTAssertTrue(error.localizedDescription.contains("riwork://pair"), error.localizedDescription) }
+        catch { XCTAssertTrue(error.localizedDescription.contains("somtus://pair"), error.localizedDescription) }
     }
     func testPairingDisplayFieldsAreBoundedPrintableText() throws {
         var p = try pairing(fixture())
@@ -224,6 +231,14 @@ final class ProtocolTests: XCTestCase {
         let shown = RemoteError.relayClosed(code: 1011, reason: "boom\u{1b}[31m\n\(String(repeating: "y", count: 500))").localizedDescription
         XCTAssertFalse(shown.unicodeScalars.contains { $0.value < 32 })
         XCTAssertLessThan(shown.count, 320)
+    }
+    func testNewAndLegacyV2PairingLinksShareTheSameIdentity() throws {
+        let pending = try v2Pairing(fixture("v2"))
+        let data = Base64URL.encode(try JSONEncoder().encode(pending))
+        for scheme in ["somtus", "riwork"] {
+            XCTAssertEqual(try Pairing.parse("\(scheme)://pair?v=2&data=\(data)"), pending)
+            XCTAssertThrowsError(try Pairing.parse("\(scheme)://pair?v=1&data=\(data)"))
+        }
     }
     func testPublishedV2InviteAndSessionVectors() throws {
         let f = try fixture("v2")

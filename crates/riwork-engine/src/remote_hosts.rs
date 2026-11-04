@@ -1,8 +1,8 @@
-//! Other Macs' RiWork, reached through `riwork-remote` and its per-host client daemon.
+//! Other Macs' Somtus, reached through `somtus-remote` and its per-host client daemon.
 //!
-//! The GUI never speaks the relay protocol itself: a `riwork-remote` daemon per paired host owns
+//! The GUI never speaks the relay protocol itself: a `somtus-remote` daemon per paired host owns
 //! the encrypted relay session and exposes it on a local Unix socket as JSON lines. This module
-//! is the blocking std client for that socket, plus thin wrappers around the `riwork-remote`
+//! is the blocking std client for that socket, plus thin wrappers around the `somtus-remote`
 //! subcommands that manage the host registry and mint pairing links. Everything here blocks, so
 //! callers run it on a background executor, never on the UI thread.
 
@@ -25,7 +25,7 @@ use std::{
 
 use serde_json::{Value, json};
 
-/// How long an ordinary `riwork-remote` subcommand may run before it is killed.
+/// How long an ordinary `somtus-remote` subcommand may run before it is killed.
 const CLI_TIMEOUT: Duration = Duration::from_secs(20);
 /// `client ensure` may have to start a daemon and wait for its relay session.
 const ENSURE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -50,11 +50,11 @@ const MAX_LINE: usize = 16 << 20;
 /// The longest error text handed to the UI.
 const MAX_ERROR_CHARS: usize = 300;
 /// Pairing links start with this; anything containing it is treated as a secret.
-const LINK_SCHEME: &str = "riwork://";
-const LINK_PREFIX: &str = "riwork://pair?";
+const LINK_SCHEMES: [&str; 2] = ["somtus://", "riwork://"];
+const LINK_PREFIXES: [&str; 2] = ["somtus://pair?", "riwork://pair?"];
 const HIDDEN_LINK: &str = "[pairing link hidden]";
 
-/// A paired host as `riwork-remote hosts list --json` reports it. Pairing secrets in the
+/// A paired host as `somtus-remote hosts list --json` reports it. Pairing secrets in the
 /// output are never read.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Host {
@@ -93,7 +93,7 @@ pub enum RemoteError {
     Protocol(String),
 }
 
-/// The `riwork-remote` binary.
+/// The `somtus-remote` binary.
 #[derive(Clone, Debug)]
 pub struct RemoteCli {
     binary: PathBuf,
@@ -129,11 +129,11 @@ pub struct Daemons {
 }
 
 impl RemoteCli {
-    /// Finds the `riwork-remote` that ships next to this executable, honoring
-    /// `RIWORK_REMOTE_BIN`, the same way `riwork remote ...` forwarding does.
+    /// Finds the `somtus-remote` that ships next to this executable, honoring
+    /// `RIWORK_REMOTE_BIN`, the same way `somtus remote ...` forwarding does.
     pub fn locate() -> Result<Self, String> {
         let exe = std::env::current_exe()
-            .map_err(|error| format!("Cannot locate RiWork executable: {error}"))?;
+            .map_err(|error| format!("Cannot locate Somtus executable: {error}"))?;
         let binary = crate::remote_cli::resolve(
             &exe,
             std::env::var_os("RIWORK_REMOTE_BIN").map(PathBuf::from),
@@ -158,7 +158,20 @@ impl RemoteCli {
         parse_hosts(&stdout)
     }
 
-    /// Redeems a pairing link from another Mac. `riwork-remote` stores the established host
+    /// Metadata for routing-independent host views. Old companions omit transport
+    /// and keep the relay default. No endpoint addresses or pairing secrets escape.
+    pub fn hosts_with_transport(&self) -> Result<Vec<(Host, String)>, String> {
+        let stdout = self.run(&argv(&["hosts", "list", "--json"]), CLI_TIMEOUT, &[])?;
+        let hosts = parse_hosts(&stdout)?;
+        let value: Value = serde_json::from_str(&stdout).map_err(|e| e.to_string())?;
+        let entries = value.as_array().or_else(|| value.get("hosts").and_then(Value::as_array));
+        Ok(hosts.into_iter().map(|host| {
+            let ssh = entries.into_iter().flatten().any(|row| row["id"].as_str() == Some(host.id.as_str()) && row["transport"].as_str() == Some("ssh"));
+            (host, if ssh { "ssh" } else { "relay" }.into())
+        }).collect())
+    }
+
+    /// Redeems a pairing link from another Mac. `somtus-remote` stores the established host
     /// before returning. The link goes in on standard input (`--link -`), not on the command
     /// line where any local process could read it, and is never kept or echoed.
     pub fn add_host(&self, link: &str, label: &str) -> Result<(), String> {
@@ -232,9 +245,9 @@ impl RemoteCli {
         let stdout = self.run(&args, PAIR_TIMEOUT, &[])?;
         stdout
             .split_whitespace()
-            .find(|token| token.starts_with(LINK_PREFIX))
+            .find(|token| LINK_PREFIXES.iter().any(|prefix| token.starts_with(prefix)))
             .map(|link| PairingLink(link.to_owned()))
-            .ok_or_else(|| "riwork-remote printed no pairing link".to_owned())
+            .ok_or_else(|| "somtus-remote printed no pairing link".to_owned())
     }
 
     #[cfg(test)]
@@ -243,7 +256,7 @@ impl RemoteCli {
         self
     }
 
-    /// Runs `riwork-remote args...` to completion and returns its stdout. Never hangs: the child
+    /// Runs `somtus-remote args...` to completion and returns its stdout. Never hangs: the child
     /// is killed once `timeout` passes. A failure is described by the first line the child
     /// printed, with anything that looks like a pairing link (or an entry of `secrets`) hidden.
     fn run(
@@ -306,7 +319,7 @@ impl RemoteCli {
                     let _ = child.kill();
                     let _ = child.wait();
                     return Err(scrub(
-                        &format!("Cannot wait for riwork-remote: {error}"),
+                        &format!("Cannot wait for somtus-remote: {error}"),
                         &hidden,
                     ));
                 }
@@ -316,7 +329,7 @@ impl RemoteCli {
                 let _ = child.wait();
                 return Err(scrub(
                     &format!(
-                        "riwork-remote {} timed out after {timeout:?}",
+                        "somtus-remote {} timed out after {timeout:?}",
                         describe(args)
                     ),
                     &hidden,
@@ -375,7 +388,7 @@ impl Daemons {
     }
 
     /// Drops the cached socket path of a host, e.g. after it is removed, so the next request asks
-    /// `riwork-remote` again instead of trusting a path that may be gone.
+    /// `somtus-remote` again instead of trusting a path that may be gone.
     pub fn forget(&self, host_id: &str) {
         lock(&self.sockets).remove(host_id);
     }
@@ -474,7 +487,7 @@ impl Daemons {
             .map(PathBuf::from)
             .filter(|path| path.is_absolute())
             .ok_or_else(|| {
-                unreachable("riwork-remote printed no absolute socket path".to_owned())
+                unreachable("somtus-remote printed no absolute socket path".to_owned())
             })?;
         lock(&self.sockets).insert(host_id.to_owned(), path.clone());
         Ok(path)
@@ -494,7 +507,7 @@ impl Daemons {
 }
 
 impl RemoteError {
-    /// The host runs a RiWork that predates the method (or the device kind may not call it).
+    /// The host runs a Somtus that predates the method (or the device kind may not call it).
     pub fn is_unsupported(&self) -> bool {
         matches!(self, Self::Rpc { code, message }
             if code == "invalid_request"
@@ -575,7 +588,7 @@ impl Drain {
         // If the thread cannot start (or there is no pipe) `done` is dropped, and `finish`
         // returns at once with nothing.
         let _ = thread::Builder::new()
-            .name("riwork-remote-pipe".into())
+            .name("somtus-remote-pipe".into())
             .spawn(move || {
                 let Some(mut pipe) = pipe else { return };
                 let mut chunk = [0u8; 8192];
@@ -818,7 +831,7 @@ fn first_line(text: &str) -> Option<&str> {
 }
 
 fn has_link_scheme(text: &str) -> bool {
-    text.to_ascii_lowercase().contains(LINK_SCHEME)
+    LINK_SCHEMES.iter().any(|scheme| text.to_ascii_lowercase().contains(scheme))
 }
 
 /// Hides pairing links. A link is a one-time secret that grants control of this Mac, and child
@@ -855,8 +868,8 @@ fn failure_text(status: ExitStatus, stdout: &str, stderr: &str, hidden: &[&str])
         })
         .map(str::to_owned)
         .unwrap_or_else(|| match status.code() {
-            Some(code) => format!("riwork-remote exited with {code}"),
-            None => "riwork-remote was stopped by a signal".to_owned(),
+            Some(code) => format!("somtus-remote exited with {code}"),
+            None => "somtus-remote was stopped by a signal".to_owned(),
         });
     let detail = scrub(&detail, hidden);
     if detail.chars().count() > MAX_ERROR_CHARS {
@@ -873,14 +886,14 @@ fn failure_text(status: ExitStatus, stdout: &str, stderr: &str, hidden: &[&str])
 /// is left unread.
 fn parse_hosts(text: &str) -> Result<Vec<Host>, String> {
     let value: Value = serde_json::from_str(text)
-        .map_err(|error| format!("riwork-remote printed an unreadable host list ({error})"))?;
+        .map_err(|error| format!("somtus-remote printed an unreadable host list ({error})"))?;
     let entries = match &value {
         Value::Array(entries) => entries,
         Value::Object(map) => match map.get("hosts") {
             Some(Value::Array(entries)) => entries,
-            _ => return Err("riwork-remote printed a host list without hosts".into()),
+            _ => return Err("somtus-remote printed a host list without hosts".into()),
         },
-        _ => return Err("riwork-remote printed an unexpected host list".into()),
+        _ => return Err("somtus-remote printed an unexpected host list".into()),
     };
     Ok(entries.iter().filter_map(host_from).collect())
 }
@@ -1090,7 +1103,7 @@ case "$1" in
       add)
         cat > "$DIR/stdin"
         if [ -e "$DIR/add_fail" ]; then
-          echo "riwork-remote: cannot redeem: $* $(cat "$DIR/stdin")" >&2
+          echo "somtus-remote: cannot redeem: $* $(cat "$DIR/stdin")" >&2
           exit 2
         fi
         ;;
@@ -1113,16 +1126,16 @@ case "$1" in
     case "$(cat "$DIR/pair_mode" 2>/dev/null)" in
       nolink) echo "no link today" ;;
       fail)
-        echo "riwork://pair?v=2&data=LEAKED"
+        echo "somtus://pair?v=2&data=LEAKED"
         echo "pair failed: cannot write routes" >&2
         exit 1
         ;;
       failquiet)
-        echo "riwork://pair?v=2&data=LEAKED"
+        echo "somtus://pair?v=2&data=LEAKED"
         exit 1
         ;;
       *)
-        echo "riwork://pair?v=2&data=SECRET2"
+        echo "somtus://pair?v=2&data=SECRET2"
         echo "Expires in 10 minutes"
         ;;
     esac
@@ -1132,7 +1145,7 @@ esac
 exit 0
 "#;
 
-    /// A fake `riwork-remote` that logs its arguments and behaves per files in its directory.
+    /// A fake `somtus-remote` that logs its arguments and behaves per files in its directory.
     struct FakeCli {
         dir: Scratch,
         cli: RemoteCli,
@@ -1143,7 +1156,7 @@ exit 0
             let dir = Scratch::new();
             dir.write("socket", &socket.display().to_string());
             dir.write("hosts.json", "[]");
-            let binary = dir.file("riwork-remote");
+            let binary = dir.file("somtus-remote");
             let script = FAKE_CLI.replace("@DIR@", &dir.0.display().to_string());
             fs::write(&binary, script).expect("write fake cli");
             fs::set_permissions(&binary, fs::Permissions::from_mode(0o755))
@@ -1613,7 +1626,7 @@ exit 0
             fake.dir.write("hosts.json", output);
             let error = fake.cli.hosts().expect_err("unreadable");
             assert!(!error.contains("TOPSECRET"), "{error}");
-            assert!(error.starts_with("riwork-remote printed"), "{error}");
+            assert!(error.starts_with("somtus-remote printed"), "{error}");
         }
     }
 
@@ -1624,10 +1637,10 @@ exit 0
         assert!(fake.log().is_empty());
 
         fake.cli
-            .add_host("  riwork://pair?v=2&data=ABC \n", "  Studio  ")
+            .add_host("  somtus://pair?v=2&data=ABC \n", "  Studio  ")
             .expect("add with label");
         fake.cli
-            .add_host("riwork://pair?v=2&data=ABC", "   ")
+            .add_host("somtus://pair?v=2&data=ABC", "   ")
             .expect("add without label");
         // The link never appears on the command line, only on standard input.
         assert_eq!(
@@ -1637,9 +1650,9 @@ exit 0
         assert!(
             fake.log()
                 .iter()
-                .all(|line| !line.contains("riwork://") && !line.contains("ABC"))
+                .all(|line| !line.contains("somtus://") && !line.contains("ABC"))
         );
-        assert_eq!(fake.dir.read("stdin").trim(), "riwork://pair?v=2&data=ABC");
+        assert_eq!(fake.dir.read("stdin").trim(), "somtus://pair?v=2&data=ABC");
     }
 
     #[test]
@@ -1654,11 +1667,11 @@ exit 0
     fn a_failing_add_host_never_leaks_the_link() {
         let fake = FakeCli::new(Path::new("/tmp/unused.sock"));
         fake.dir.write("add_fail", "");
-        let link = "riwork://pair?v=2&data=SECRET";
+        let link = "somtus://pair?v=2&data=SECRET";
 
         let error = fake.cli.add_host(link, "Studio").expect_err("add fails");
         assert!(!error.contains("SECRET"), "{error}");
-        assert!(!error.contains("riwork://"), "{error}");
+        assert!(!error.contains("somtus://"), "{error}");
         assert!(error.contains("cannot redeem"), "{error}");
 
         // A link without the usual scheme is still the caller's secret.
@@ -1680,7 +1693,7 @@ exit 0
         };
 
         let link = fake.cli.pair_desktop(&request).expect("link");
-        assert_eq!(link.expose(), "riwork://pair?v=2&data=SECRET2");
+        assert_eq!(link.expose(), "somtus://pair?v=2&data=SECRET2");
 
         let scratch = fake.pair_dir();
         assert!(!scratch.exists(), "{} was left behind", scratch.display());
@@ -1751,12 +1764,12 @@ exit 0
         fake.dir.write("pair_mode", "failquiet");
         let error = fake.cli.pair_desktop(&request).err().expect("fails");
         assert_eq!(error, "Pairing ready for this Mac");
-        assert!(!error.contains("LEAKED") && !error.contains("riwork://"));
+        assert!(!error.contains("LEAKED") && !error.contains("somtus://"));
         assert!(!fake.pair_dir().exists());
 
         fake.dir.write("pair_mode", "nolink");
         let error = fake.cli.pair_desktop(&request).err().expect("fails");
-        assert_eq!(error, "riwork-remote printed no pairing link");
+        assert_eq!(error, "somtus-remote printed no pairing link");
         assert!(!fake.pair_dir().exists());
     }
 
@@ -1807,7 +1820,7 @@ exit 0
     fn scrub_hides_every_token_with_a_link() {
         assert_eq!(
             scrub(
-                "bad link riwork://pair?v=2&data=A then 'RIWORK://pair?x=1' end",
+                "bad link somtus://pair?v=2&data=A then 'RIWORK://pair?x=1' end",
                 &[]
             ),
             "bad link [pairing link hidden] then [pairing link hidden] end"

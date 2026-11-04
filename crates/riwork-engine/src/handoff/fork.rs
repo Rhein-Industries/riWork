@@ -1,4 +1,4 @@
-//! Forking a chat (`riwork chat fork`, Fork chat and Fork from here in a chat tab): a new
+//! Forking a chat (`somtus chat fork`, Fork chat and Fork from here in a chat tab): a new
 //! chat that goes on, on its own, from a point of another chat's conversation, while the
 //! original goes on as it was.
 //!
@@ -200,7 +200,7 @@ pub fn fork(
         Request {
             source: Source::Chat(source.clone()),
             kind: Kind::Chat,
-            provider: harness(provider),
+            provider: harness(provider)?,
             model,
             effort,
             // A Codex fork keeps the source's account, as a native one does.
@@ -230,11 +230,12 @@ pub fn fork(
     })
 }
 
-fn harness(provider: Provider) -> HarnessKind {
+fn harness(provider: Provider) -> Result<HarnessKind, String> {
     match provider {
-        Provider::Codex => HarnessKind::Codex,
-        Provider::Claude => HarnessKind::Claude,
-        Provider::Muse => HarnessKind::Muse,
+        Provider::Codex => Ok(HarnessKind::Codex),
+        Provider::Claude => Ok(HarnessKind::Claude),
+        Provider::Muse => Ok(HarnessKind::Muse),
+        Provider::Acp => Err("ACP conversation forks are not supported; create a new ACP chat explicitly".into()),
     }
 }
 
@@ -286,7 +287,7 @@ impl Shape {
         Ok(shape)
     }
 
-    /// Whether `item` is part of the conversation, not RiWork's record or a banner.
+    /// Whether `item` is part of the conversation, not Somtus's record or a banner.
     fn said(item: &Item) -> bool {
         !lineage::is_marker(item)
             && !workers::is_marker(item)
@@ -343,7 +344,7 @@ impl Shape {
         };
         match source.provider {
             Provider::Claude => (at.is_none() && !busy).then(|| (whole(), None)),
-            Provider::Muse => None,
+            Provider::Muse | Provider::Acp => None,
             Provider::Codex => {
                 let Some(at) = at else {
                     return (!busy).then(|| (whole(), None));

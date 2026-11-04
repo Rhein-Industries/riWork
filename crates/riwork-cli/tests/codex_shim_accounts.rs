@@ -1,4 +1,4 @@
-//! Process-level checks of the managed `codex` launcher (`riwork cua harness
+//! Process-level checks of the managed `codex` launcher (`somtus cua harness
 //! codex`) against a fake `codex` executable in a throwaway environment. The
 //! fake records its arguments and `CODEX_HOME`, so a refused command shows up
 //! as a fake that never ran.
@@ -38,7 +38,7 @@ impl Fixture {
         Self { root }
     }
 
-    /// An Orca-managed saved account home, as RiWork exports it to a shell.
+    /// An Orca-managed saved account home, as Somtus exports it to a shell.
     fn managed_home(&self) -> PathBuf {
         let home = self.root.join("orca/codex-accounts/account-a/home");
         fs::create_dir_all(&home).unwrap();
@@ -52,7 +52,7 @@ impl Fixture {
     }
 
     fn codex(&self, codex_home: &Path, arguments: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_riwork-cli"))
+        Command::new(env!("CARGO_BIN_EXE_somtus-cli"))
             .args(["cua", "harness", "codex", "--"])
             .args(arguments)
             .current_dir(&self.root)
@@ -138,7 +138,7 @@ fn reads_and_the_users_own_profile_still_pass_through() {
     );
 }
 
-/// Launches through the managed wrappers with RiWork's agent-screen setting
+/// Launches through the managed wrappers with Somtus's agent-screen setting
 /// either left at its default or written to `settings.json`.
 impl Fixture {
     fn driver(&self) -> PathBuf {
@@ -186,7 +186,7 @@ impl Fixture {
     fn launch(&self, harness: &str, arguments: &[&str]) -> Vec<String> {
         let own = self.root.join("home/.codex");
         fs::create_dir_all(&own).unwrap();
-        let output = Command::new(env!("CARGO_BIN_EXE_riwork-cli"))
+        let output = Command::new(env!("CARGO_BIN_EXE_somtus-cli"))
             .args(["cua", "harness", harness, "--"])
             .args(arguments)
             .current_dir(&self.root)
@@ -259,7 +259,7 @@ fn interactive_claude_launches_leave_the_alternate_screen_unless_the_setting_is_
     assert_eq!(fixture.launch("claude", &[])[0], "SCREEN=unset");
 }
 
-/// Muse's contributor mode is off in every session RiWork's `muse` starts unless the user says
+/// Muse's contributor mode is off in every session Somtus's `muse` starts unless the user says
 /// otherwise, said once where Muse 1.4.7 reads it; what starts no session is left as typed.
 #[test]
 fn muse_launches_start_with_contributor_mode_off_once_unless_the_user_chose() {
@@ -271,7 +271,7 @@ fn muse_launches_start_with_contributor_mode_off_once_unless_the_user_chose() {
             .map(|pair| pair[1].clone())
             .collect::<Vec<_>>()
     };
-    // The interactive screen, with a prompt, and `resume`: after RiWork's Cua options.
+    // The interactive screen, with a prompt, and `resume`: after Somtus's Cua options.
     for arguments in [&[][..], &["fix the bug"], &["--", "a prompt"]] {
         let ran = fixture.launch("muse", arguments);
         assert_eq!(modes(&ran), ["off"], "{arguments:?}: {ran:?}");

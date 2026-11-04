@@ -55,7 +55,7 @@ export function NewProjectForm(props: {
     attempted.set(true);
     if (projectNameProblem(trimmed())) return;
     const create = app.services(props.host).projects.create;
-    if (!create) { message.set({ text: "Update RiWork on the Mac to create projects from here.", error: true }); return; }
+    if (!create) { message.set({ text: "Update Somtus on the Mac to create projects from here.", error: true }); return; }
     busy.set(true); message.set(null);
     try {
       const project = await create(trimmed(), git());
@@ -70,7 +70,7 @@ export function NewProjectForm(props: {
         message.set({ text: "The Mac may have made this project, but its answer was lost. The project list was read again: look for it there before making it again.", error: true });
         props.onUncertain();
       } else if (failure.code === "conflict") message.set({ text: "A project with this name already exists on the Mac. Choose another name.", error: true });
-      else if (failure.code === "unsupported") message.set({ text: "Update RiWork on the Mac to create projects from here.", error: true });
+      else if (failure.code === "unsupported") message.set({ text: "Update Somtus on the Mac to create projects from here.", error: true });
       else message.set({ text: failure.message, error: true });
     }
   }

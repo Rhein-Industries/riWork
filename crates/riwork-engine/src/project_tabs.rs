@@ -26,7 +26,7 @@ pub enum Status {
     Waiting,
     Error,
     Done,
-    /// A live shell with nothing running in it that RiWork follows: at its prompt, or a
+    /// A live shell with nothing running in it that Somtus follows: at its prompt, or a
     /// program without activity tracking.
     Idle,
     Stopped,
@@ -217,7 +217,7 @@ impl Session {
     pub fn chat(info: &ChatInfo) -> Self {
         use title_source::*;
         let named = |title: &Option<String>| title.clone().filter(|t| !t.trim().is_empty());
-        // RiWork names an orchestrator; a name it gave one is not the user's. Any other chat
+        // Somtus names an orchestrator; a name it gave one is not the user's. Any other chat
         // keeps whatever it was explicitly called, "Project orchestrator" included.
         let given = |title: &str| {
             info.orchestrator.is_some() && crate::orchestrators::fixed_title(title).is_some()
@@ -248,6 +248,7 @@ impl Session {
                     Provider::Claude => "Claude chat".into(),
                     Provider::Codex => "Codex chat".into(),
                     Provider::Muse => "Muse chat".into(),
+                    Provider::Acp => "ACP chat".into(),
                 },
             )
         };
@@ -951,7 +952,7 @@ pub fn shell_status(alive: bool, activity: Option<&str>) -> Status {
         Some("waiting") => Status::Waiting,
         Some("done") => Status::Done,
         Some("error" | "failed") => Status::Error,
-        // At its prompt, a program RiWork does not follow, or an agent gone back to it.
+        // At its prompt, a program Somtus does not follow, or an agent gone back to it.
         _ => Status::Idle,
     }
 }

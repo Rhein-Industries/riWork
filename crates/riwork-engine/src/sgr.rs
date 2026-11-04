@@ -1,4 +1,4 @@
-//! The SGR-only filter of `riwork shell output --styled`.
+//! The SGR-only filter of `somtus shell output --styled`.
 //!
 //! `tmux capture-pane -e` writes colors and text attributes as SGR sequences
 //! (`ESC [ ... m`), but also OSC hyperlinks, charset shifts and, in other tmux

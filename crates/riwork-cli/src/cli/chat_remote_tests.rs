@@ -564,7 +564,7 @@ fn events_say_what_is_wrong_with_the_chat_or_the_options_they_were_given() {
     ] {
         let error = fail(bad);
         assert!(
-            error.starts_with("Usage: riwork chat events")
+            error.starts_with("Usage: somtus chat events")
                 || error.contains("must be a whole number")
                 || error.contains("needs a value"),
             "{bad:?}: {error}"
@@ -978,7 +978,7 @@ fn command_says_what_is_wrong_with_the_chat_or_the_arguments() {
     ] {
         let error = run(&host.home, &words, true).unwrap_err();
         assert!(
-            error.starts_with("Usage: riwork chat command") || error.contains("needs a value"),
+            error.starts_with("Usage: somtus chat command") || error.contains("needs a value"),
             "{words:?}: {error}"
         );
     }
@@ -1513,7 +1513,7 @@ fn suggestions_read_a_saved_chats_commands_and_folder_without_a_host() {
             "chat_id": claude,
             "provider": "claude",
             "root": folder.display().to_string(),
-            // RiWork's commands, then the skills a Claude chat in this folder can run: the
+            // Somtus's commands, then the skills a Claude chat in this folder can run: the
             // person's own (~/.claude/skills) as well, which this test does not control.
             "commands": serde_json::to_value(&claude_commands).unwrap(),
             "files": {"entries": [
@@ -1539,7 +1539,7 @@ fn suggestions_read_a_saved_chats_commands_and_folder_without_a_host() {
             "/compact\tSummarize the conversation so far to free up context\n/memo\tShow this project's memo\n{skill_lines}README.md\nsrc/\nsrc/main.rs\n"
         )
     );
-    // A Codex chat offers only RiWork's /memo, and the same folder.
+    // A Codex chat offers only Somtus's /memo, and the same folder.
     let codex = save("codex");
     let reply: Value = serde_json::from_str(&run(&["suggestions", &codex], true).unwrap()).unwrap();
     assert_eq!(reply["provider"], "codex");

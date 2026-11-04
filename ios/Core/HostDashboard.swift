@@ -24,7 +24,7 @@ public struct HostDashboardEntry: Sendable, Equatable, Identifiable {
         case .ready: label = "Available"
         // Why, when the read said: a pending invite needs its first explicit connection, not a Mac that is "unavailable".
         case .offline: label = failure ?? "Host unavailable"
-        case .unsupported: label = failure ?? "Update RiWork on this host"
+        case .unsupported: label = failure ?? "Update Somtus on this host"
         case .paused: label = "Paused"
         }
         // Only a read that worked is current: a host being read again after a failure is not live until it answers.

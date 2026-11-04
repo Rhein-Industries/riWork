@@ -1020,7 +1020,7 @@ fn only_web_and_mail_links_are_ever_opened() {
         "file:///etc/passwd",
         "javascript:alert(1)",
         "ssh://host",
-        "riwork://pair?v=2",
+        "somtus://pair?v=2",
         "/Users/me/file.txt",
         "",
         "httpx://example.com",

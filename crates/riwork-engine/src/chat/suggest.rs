@@ -1,6 +1,6 @@
 //! What a chat's message box suggests while a `/` command, an `@` file or a `&` model is typed,
 //! and what each suggestion shows and does before anything is sent. One catalog for every composer:
-//! the desktop reads it here, and the phone gets the same entries from `riwork chat
+//! the desktop reads it here, and the phone gets the same entries from `somtus chat
 //! suggestions --json` (the connector's `chat.suggestions`) and applies the same rules, which
 //! `ios/Tests/Fixtures/composer-suggestions.json` pins for both.
 //!
@@ -11,27 +11,27 @@
 //!   (`a/b`, `me@host`, `a&b`, a URL's `?x=1&y=2`) opens nothing, nor does a token that is not
 //!   a whole command name (`/usr/bin`). `&` opens as `@` does, wherever the person writes, so
 //!   one message can name several models (`&opus design it, then &gpt-6.1-sol build it`).
-//! - **Slash commands** (`COMMANDS`): only what RiWork actually does with the text. RiWork's own
+//! - **Slash commands** (`COMMANDS`): only what Somtus actually does with the text. Somtus's own
 //!   `/memo` is acted on by the composers before anything is sent; any other typed `/…` goes
 //!   to the provider as written, so the provider entries are the commands that verifiably work
-//!   through RiWork's drivers.
+//!   through Somtus's drivers.
 //! - **`@` files** (`list_files`): the chat folder's files and folders, from one bounded walk
 //!   that honours `.gitignore` as Git does, rules from above the folder in its repository
 //!   included (`FILE_BOUND` entries, `SCAN_BOUND` directory entries looked at, `WALK_BUDGET`),
 //!   which a composer caches (`FileCache`) and only filters while typing.
 //!   Accepting one puts in its path relative to the chat's folder, which every provider's
 //!   agent can open from where it runs; nothing is attached. Chats and shells are not offered:
-//!   no provider and no RiWork pipeline resolves a reference to one from a message's text.
+//!   no provider and no Somtus pipeline resolves a reference to one from a message's text.
 //! - **`&` models** (`mention_entries`): every provider's models, so that a message to an
 //!   orchestrator can name a Claude model in a Codex chat: the chat's own list first, then what
-//!   each provider offers as its saved chats tell (`catalog::mention_lists`, what `riwork chat
+//!   each provider offers as its saved chats tell (`catalog::mention_lists`, what `somtus chat
 //!   models` reads), one row per id, each with its provider. They are ordered by how much the
 //!   person uses each (`order_models`): how many of their own chats of that provider are set to
 //!   it now, read from the chats' saved `info.json` (`model_usage`). Nothing new is recorded
 //!   for it. Accepting one writes a mention, `&` and the model's id (`ModelEntry::insertion`):
 //!   a way to tell an orchestrator which model the person would like for the work the message
 //!   hands out. It is only text: it switches nothing, and the orchestrator still decides;
-//!   RiWork never reads it back. Only ids that make a mention are offered (`mentionable`).
+//!   Somtus never reads it back. Only ids that make a mention are offered (`mentionable`).
 //! - **Accepting** (`accept`) replaces the token with the entry's text and a space. It never
 //!   sends: that stays the person's own ⏎ or Send.
 
@@ -169,7 +169,7 @@ pub fn accept(text: &str, trigger: &Trigger, insert: &str) -> (String, usize) {
 pub enum Handler {
     /// The text goes to the provider as typed and the provider runs the command.
     Provider,
-    /// RiWork acts on it before anything reaches the provider.
+    /// Somtus acts on it before anything reaches the provider.
     Riwork,
 }
 
@@ -206,14 +206,14 @@ pub struct Registered {
 }
 
 /// Every slash command a composer offers, in the order the list shows them. **This is where a
-/// command is registered**: a RiWork command (`/memo`, say) is a `Handler::Riwork` entry here
+/// command is registered**: a Somtus command (`/memo`, say) is a `Handler::Riwork` entry here
 /// for every provider whose chats it serves, and the code that acts on it before the message
 /// reaches the provider lives with the send path. Desktop and phone pick it up from here.
 pub const COMMANDS: &[Registered] = &[
     Registered {
         name: "compact",
         summary: "Summarize the conversation so far to free up context",
-        // Claude takes focus instructions after it, but RiWork never sends any: none is claimed.
+        // Claude takes focus instructions after it, but Somtus never sends any: none is claimed.
         argument: None,
         sends: "Goes to Claude as typed. Claude compacts the chat's context, as the Compact \
             button does, and the transcript marks where.",
@@ -226,7 +226,7 @@ pub const COMMANDS: &[Registered] = &[
         name: "memo",
         summary: "Show this project's memo",
         argument: None,
-        sends: "RiWork opens this project's memo above the message box and sends nothing. \
+        sends: "Somtus opens this project's memo above the message box and sends nothing. \
             Insert puts the memo in your draft; Edit opens the memo editor.",
         handler: Handler::Riwork,
         providers: &[Provider::Claude, Provider::Codex, Provider::Muse],
@@ -412,7 +412,7 @@ pub struct ModelUsage {
 const DEFAULT_KEY: &str = "";
 
 /// The providers whose models `&` offers, in the order their lists follow the chat's own.
-pub const PROVIDERS: [Provider; 3] = [Provider::Codex, Provider::Claude, Provider::Muse];
+pub const PROVIDERS: [Provider; 4] = [Provider::Codex, Provider::Claude, Provider::Muse, Provider::Acp];
 
 /// Whether a model id makes a mention an orchestrator can act on: not blank, one word (no blank
 /// space inside, or `&two words` would read as `&two`), and not `default`, which names no model:
@@ -903,7 +903,7 @@ pub struct Preview {
 pub fn command_preview(command: &Command, provider: Provider) -> Preview {
     let kind = match command.handler {
         Handler::Provider => format!("{} command", provider_title(provider)),
-        Handler::Riwork => "RiWork command".to_owned(),
+        Handler::Riwork => "Somtus command".to_owned(),
     };
     let mut body = vec![command.summary.clone()];
     body.push(match &command.argument {
@@ -1033,6 +1033,7 @@ pub fn provider_title(provider: Provider) -> &'static str {
         Provider::Codex => "Codex",
         Provider::Claude => "Claude",
         Provider::Muse => "Muse",
+        Provider::Acp => "ACP",
     }
 }
 
@@ -1107,7 +1108,7 @@ impl Peek {
 
 // ---- The phone's reply ---------------------------------------------------------------------
 
-/// What `riwork chat suggestions CHAT --json` prints, and the connector's `chat.suggestions`
+/// What `somtus chat suggestions CHAT --json` prints, and the connector's `chat.suggestions`
 /// passes to the phone: the chat's commands, its folder's listing, its provider's models and
 /// every provider's for `&`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1132,7 +1133,7 @@ pub struct Reply {
     pub mention_models: Vec<ModelEntry>,
 }
 
-/// The most bytes `riwork chat suggestions --json` prints: well within what the connector reads
+/// The most bytes `somtus chat suggestions --json` prints: well within what the connector reads
 /// of it (8 MiB), which cuts the reply further to fit one frame. Only a listing of very long
 /// or escaped paths comes near it.
 pub const REPLY_BYTES: usize = 4 * 1024 * 1024;
@@ -1151,7 +1152,7 @@ pub fn reply(
         chat_id: chat_id.to_owned(),
         provider,
         root: root.display().to_string(),
-        // RiWork's commands, then the skills the chat's provider runs by slash.
+        // Somtus's commands, then the skills the chat's provider runs by slash.
         commands: commands(provider).into_iter().chain(skills(provider, root)).collect(),
         files: list_files(root),
         file_bound: FILE_BOUND,

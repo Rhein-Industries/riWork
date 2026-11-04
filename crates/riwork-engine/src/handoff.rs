@@ -1,4 +1,4 @@
-//! Handing a conversation over to another agent: `riwork handoff`, and the same from a tab's
+//! Handing a conversation over to another agent: `somtus handoff`, and the same from a tab's
 //! menu.
 //!
 //! The source is a terminal shell or a chat. Its conversation goes into a Markdown document
@@ -265,7 +265,7 @@ fn mark_source(
             .map_err(|error| error.to_string())
     }) {
         eprintln!(
-            "riwork handoff: the source chat {source_id} has no marker of chat {}: {error}",
+            "somtus handoff: the source chat {source_id} has no marker of chat {}: {error}",
             target.id
         );
     }
@@ -310,6 +310,7 @@ fn provider_name(provider: Provider) -> &'static str {
         Provider::Codex => "Codex",
         Provider::Claude => "Claude",
         Provider::Muse => "Muse",
+        Provider::Acp => "ACP",
     }
 }
 
@@ -335,7 +336,7 @@ pub fn source_selector(
                 .into(),
         ),
         (None, None) => Err(
-            "Pass --from SHELL_OR_CHAT_ID: this command was not started by a RiWork shell or chat, so it has no conversation of its own to hand off."
+            "Pass --from SHELL_OR_CHAT_ID: this command was not started by a Somtus shell or chat, so it has no conversation of its own to hand off."
                 .into(),
         ),
     }
@@ -413,7 +414,7 @@ pub fn check(request: &Request) -> Result<(), String> {
     }
     if request.account.is_some() && request.provider != HarnessKind::Codex {
         return Err(format!(
-            "{} has no RiWork-managed accounts: it always uses the login of the system. Leave out --account; only Codex accounts can be chosen.",
+            "{} has no Somtus-managed accounts: it always uses the login of the system. Leave out --account; only Codex accounts can be chosen.",
             agent_name(request.provider)
         ));
     }

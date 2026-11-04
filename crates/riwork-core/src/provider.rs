@@ -9,6 +9,8 @@ pub enum Provider {
     Codex,
     Claude,
     Muse,
+    /// A user-configured Agent Client Protocol executable.
+    Acp,
 }
 
 /// Who pays for a Claude chat. `Subscription` starts the chat without

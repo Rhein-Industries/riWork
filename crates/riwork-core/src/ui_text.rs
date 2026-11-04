@@ -32,7 +32,7 @@ impl InterfaceFont {
     }
 }
 
-/// The faces RiWork's interface is drawn in.
+/// The faces Somtus's interface is drawn in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Face {
     /// Menlo throughout for the colorful themes and Follow Ghostty.
@@ -81,7 +81,7 @@ pub const SYSTEM_BODY_POINTS: f32 = 13.0;
 ///
 /// Calibrated by measurement, not by nominal size alone. Ghostty's default font
 /// on macOS is its embedded JetBrains Mono (no `font-family` set; see
-/// vendor/ghostty/src/font/embedded.zig); RiWork's text is Menlo. Screenshots of
+/// vendor/ghostty/src/font/embedded.zig); Somtus's text is Menlo. Screenshots of
 /// the running app on a 1x display, terminal at `font-size = 20` beside 20 px UI
 /// text: lowercase x-height 11.1 px (terminal) against 11.2 px (Menlo), advance
 /// 12.2 against 12.0 px. The two fonts match within 2 % at equal size, and GPUI
@@ -100,7 +100,7 @@ pub const GHOSTTY_DEFAULT_FONT_SIZE: f32 = 13.0;
 
 /// Names that keep their capital in sentence case.
 const PROPER_NOUNS: [&str; 13] = [
-    "Codex", "Claude", "Grok", "Muse", "Orca", "Cua", "Mac", "Ghostty", "RiWork", "Vim", "Finder",
+    "Codex", "Claude", "Grok", "Muse", "Orca", "Cua", "Mac", "Ghostty", "Somtus", "Vim", "Finder",
     "GitHub", "Git",
 ];
 

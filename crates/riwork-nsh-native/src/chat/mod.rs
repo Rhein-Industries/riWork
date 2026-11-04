@@ -17,6 +17,7 @@ pub mod media;
 pub mod image_scope;
 pub mod dto;
 pub mod feed;
+pub mod remote_feed;
 pub mod links;
 pub mod markdown;
 pub mod service;
@@ -119,7 +120,7 @@ impl Chat {
     }
 
     /// The same account-aware catalog used by the original new-chat dialog. `saved` reads
-    /// only what saved chats reported and Muse's last answer (`riwork chat models`), never
+    /// only what saved chats reported and Muse's last answer (`somtus chat models`), never
     /// asking an agent: what a chat's menus offer of the other agents.
     pub async fn models(provider: String, project_id: Option<String>, saved: Option<bool>) -> Result<dto::ModelCatalogDto, String> {
         let provider: Provider = from_wire(&provider)?;
@@ -201,7 +202,7 @@ impl Chat {
     }
 
     /// Fork a chat: the whole conversation, or up to and including item `at`; with its own
-    /// agent, or another (`riwork chat fork`). The fork says where it came from, and the
+    /// agent, or another (`somtus chat fork`). The fork says where it came from, and the
     /// source gets a marker naming it. A chat at work is forked at its last finished item.
     pub async fn fork(
         request: crate::handoff::ForkRequestDto,
@@ -223,6 +224,47 @@ impl Chat {
             options.history,
             mode,
         ))
+    }
+
+    /// Follow a chat on exactly this paired host, using the same native transcript view.
+    pub fn open_remote(desktop_id: String, chat_id: String) -> Result<ChatHandle, String> {
+        Ok(ChatHandle::start_remote(remote_feed::Target::new(desktop_id, chat_id)?))
+    }
+
+    pub async fn list_remote(desktop_id: String, project_id: String) -> Result<Vec<ChatSummaryDto>, String> {
+        crate::service::validate_uuid(&project_id)?;
+        blocking(move || {
+            let reply = crate::remote::call_host(&desktop_id, "chats.list", serde_json::json!({"project_id":project_id}), std::time::Duration::from_secs(20)).map_err(remote_feed::command_error)?;
+            let infos: Vec<riwork_engine::chat::model::ChatInfo> = serde_json::from_value(reply["chats"].clone()).map_err(|e| format!("broken: {e}"))?;
+            if infos.iter().any(|info| info.project_id.as_deref() != Some(&project_id)) { return Err("broken: The host listed a chat from another project".into()); }
+            Ok(infos.into_iter().map(summary).collect())
+        }).await
+    }
+
+    pub async fn remote_models(desktop_id: String, provider: String, project_id: String) -> Result<serde_json::Value, String> {
+        crate::service::validate_uuid(&project_id)?;
+        let _: Provider = from_wire(&provider)?;
+        blocking(move || crate::remote::call_host(&desktop_id, "chat.models", serde_json::json!({"provider":provider,"project_id":project_id}), std::time::Duration::from_secs(20)).map_err(remote_feed::command_error)).await
+    }
+
+    /// Create once on the selected host. Remote project/worktree validation is host-owned.
+    pub async fn create_remote(desktop_id: String, request: NewChatRequest) -> Result<ChatSummaryDto, String> {
+        let expected_provider: Provider = from_wire(&request.provider)?;
+        let expected_project = request.project_id.clone();
+        let expected_worktree = request.worktree_id.clone();
+        let mut params = serde_json::json!({"provider":request.provider,"approval_mode":request.approval_mode.unwrap_or_else(|| "supervised".into()),"fast":request.fast});
+        if let Some(tree) = request.worktree_id { crate::service::validate_uuid(&tree)?; params["worktree_id"] = tree.into(); }
+        else { let project = request.project_id.ok_or("invalid: choose a remote project")?; crate::service::validate_uuid(&project)?; params["project_id"] = project.into(); }
+        for (key, value) in [("model",request.model),("effort",request.effort),("title",request.title)] { if let Some(value) = value { params[key] = value.into(); } }
+        blocking(move || {
+            let reply = crate::remote::call_host(&desktop_id, "chat.create", params, std::time::Duration::from_secs(90)).map_err(remote_feed::command_error)?;
+            let info = serde_json::from_value(reply["chat"].clone()).map_err(|e| format!("broken: The host created a chat but its answer could not be read: {e}. Check the chat list before creating another."))?;
+            let info: riwork_engine::chat::model::ChatInfo = info;
+            if info.provider != expected_provider || expected_project.as_ref().is_some_and(|id| info.project_id.as_ref() != Some(id)) || expected_worktree.as_ref().is_some_and(|id| info.worktree_id.as_ref() != Some(id)) {
+                return Err("broken: The host created a chat with unexpected ownership. Check its chat list before creating another.".into());
+            }
+            Ok(summary(info))
+        }).await
     }
 
     /// A new composer's draft editor identity, unique across every window's JS
@@ -249,6 +291,7 @@ pub struct ChatHandle {
     inbox: Option<mpsc::Sender<WorkerMsg>>,
     commands: Option<mpsc::Sender<Delivery>>,
     backend: Arc<dyn ChatBackend>,
+    remote: Option<remote_feed::Target>,
 }
 
 /// What an async handle call needs, taken out of the JS instance so nothing
@@ -258,6 +301,7 @@ pub struct Parts {
     pub chat_id: String,
     pub commands: Option<mpsc::Sender<Delivery>>,
     pub backend: Arc<dyn ChatBackend>,
+    pub remote: Option<remote_feed::Target>,
 }
 
 impl ChatHandle {
@@ -295,7 +339,7 @@ impl ChatHandle {
                 return;
             };
             if let Err(error) = drafts::init(&home) {
-                eprintln!("riwork: chat drafts: {error}");
+                eprintln!("somtus: chat drafts: {error}");
             }
             if mode.is_none()
                 && let Ok(settings) =
@@ -330,7 +374,24 @@ impl ChatHandle {
             inbox: Some(inbox),
             commands,
             backend: handle_backend,
+            remote: None,
         }
+    }
+
+    pub fn start_remote(target: remote_feed::Target) -> Self {
+        Self::start_remote_with_backend(target, service::backend())
+    }
+
+    pub fn start_remote_with_backend(target: remote_feed::Target, backend: Arc<dyn ChatBackend>) -> Self {
+        let chat_id = target.draft_key();
+        let (inbox, receiver) = mpsc::channel();
+        let (feed, commands) = remote_feed::RemoteFeed::start(target.clone(), worker::sink(inbox.clone()));
+        let view = ChatView::new(target.key(), DisplayMode::Normal, system_clock());
+        let init_backend = backend.clone();
+        worker::spawn(view, receiver, Box::new(move |_| {
+            if let Ok(home) = init_backend.home() { let _ = drafts::init(&home); }
+        }), Arc::new(|_| {}), Box::new(move || drop(feed)));
+        Self { chat_id, inbox: Some(inbox), commands: Some(commands), backend, remote: Some(target) }
     }
 
     /// Rust-side access for the bridge tests and the JS methods below.
@@ -345,6 +406,7 @@ impl ChatHandle {
             chat_id: self.chat_id.clone(),
             commands: self.commands.clone(),
             backend: self.backend.clone(),
+            remote: self.remote.clone(),
         }
     }
 
@@ -391,6 +453,10 @@ fn receipt(result: Result<(), String>) -> ReceiptDto {
 }
 
 impl Parts {
+    pub fn require_local(&self, feature: &str) -> Result<(), String> {
+        if self.remote.is_some() { Err(format!("refused: {feature} is not available for remote chats")) } else { Ok(()) }
+    }
+
     /// Queue a command behind earlier ones and wait for its exchange, off the
     /// engine thread. `once`: a single exchange that is never resent.
     pub async fn exchange(&self, command: ChatCommand, once: bool) -> Result<(), String> {
@@ -592,6 +658,12 @@ impl ChatHandle {
             (view.fold.transcript.info.clone(), view.fold.transcript.models.clone())
         }).await?;
         let info = info.ok_or("unavailable: the chat's folder is not known yet")?;
+        if let Some(target) = parts.remote {
+            return blocking(move || {
+                let value = target.call("chat.suggestions", serde_json::json!({"chat_id":target.chat}), std::time::Duration::from_secs(20)).map_err(remote_feed::command_error)?;
+                suggestions::from_remote(value, &info, &text, caret)
+            }).await;
+        }
         blocking(move || suggestions::read(parts.backend.home()?, info, models, text, caret)).await
     }
 
@@ -607,6 +679,7 @@ impl ChatHandle {
 
     /// Resolve a deliberate local-file link against this chat's own working directory.
     pub async fn resolve_link(this: Instance<Self>, target: String) -> Result<dto::LinkTargetDto, String> {
+        this.with(|handle| handle.parts()).require_local("resolve link")?;
         let inbox = this.with(|handle| handle.inbox.clone());
         let cwd = query_view(inbox, |view| view.fold.transcript.info.as_ref().map(|info| info.cwd.clone())).await?
             .ok_or("unavailable: the chat's folder is not known yet")?;
@@ -620,10 +693,12 @@ impl ChatHandle {
         let inbox = this.with(|handle| handle.inbox.clone());
         let rows = query_view(inbox, |view| workers::reported(&view.fold.transcript)).await?;
         let parts = this.with(|handle| handle.parts());
+        if parts.remote.is_some() { return Ok(rows); }
         blocking(move || workers::live(parts.backend.as_ref(), &parts.chat_id, rows)).await
     }
 
     pub async fn worker_action(this: Instance<Self>, session_id: String, action: String, text: Option<String>) -> Result<(), String> {
+        this.with(|handle| handle.parts()).require_local("worker action")?;
         crate::service::validate_uuid(&session_id)?;
         let inbox = this.with(|handle| handle.inbox.clone());
         let id = session_id.clone();
@@ -644,6 +719,7 @@ impl ChatHandle {
     }
 
     pub async fn image_preview(this: Instance<Self>, item_id: String, image_index: u32) -> Result<media::ChatImagePreview, String> {
+
         let inbox = this.with(|handle| handle.inbox.clone());
         let (info, image) = query_view(inbox, move |view| {
             let transcript = &view.fold.transcript;
@@ -651,11 +727,16 @@ impl ChatHandle {
             let image = transcript.items.iter().find(|item| item.id == item_id).and_then(|item| item.presentation.images.get(image_index as usize)).cloned().ok_or("This image is no longer available")?;
             Ok::<_, String>((info, image))
         }).await??;
-        let backend = this.with(|handle| handle.backend.clone());
+        let parts = this.with(|handle| handle.parts());
+        if parts.remote.is_some() && matches!(image.source, riwork_engine::chat::model::ImageSource::Local { .. }) {
+            return Err("refused: Downloading a remote file preview is not supported by this chat view".into());
+        }
+        let backend = parts.backend;
         blocking(move || media::read(&backend.home()?, &info, image)).await
     }
 
     pub async fn billing_action(this: Instance<Self>, action: String, notice_id: Option<String>) -> Result<billing::BillingActionDto, String> {
+        this.with(|handle| handle.parts()).require_local("billing action")?;
         let (parts, inbox) = this.with(|handle| (handle.parts(), handle.inbox.clone()));
         billing::action(parts, inbox, action, notice_id).await
     }
@@ -779,16 +860,19 @@ impl ChatHandle {
     }
 
     pub async fn stage_attachment(this: Instance<Self>, path: String) -> Result<dto::AttachmentDto, String> {
+        this.with(|handle| handle.parts()).require_local("stage attachment")?;
         let parts = this.with(|handle| handle.parts());
         blocking(move || attachments::stage_path(parts.backend.as_ref(), &parts.chat_id, &path)).await
     }
 
     pub async fn stage_image(this: Instance<Self>, name: String, base64: String) -> Result<dto::AttachmentDto, String> {
+        this.with(|handle| handle.parts()).require_local("stage image")?;
         let parts = this.with(|handle| handle.parts());
         blocking(move || attachments::stage_image(parts.backend.as_ref(), &parts.chat_id, &name, &base64)).await
     }
 
     pub async fn attachment_preview(this: Instance<Self>, attachment: dto::AttachmentDto) -> Result<Option<String>, String> {
+        this.with(|handle| handle.parts()).require_local("attachment preview")?;
         let parts = this.with(|handle| handle.parts());
         blocking(move || attachments::preview(parts.backend.as_ref(), &parts.chat_id, &attachment.0)).await
     }

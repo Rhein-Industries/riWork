@@ -2,7 +2,7 @@
 //! cache, and one long-lived worker process that keeps the chosen model loaded between
 //! dictations (a large model takes seconds to load; dictation should not wait for that twice).
 //!
-//! The worker (speech/worker.py) runs in RiWork's own Python runtime, installed on request with
+//! The worker (speech/worker.py) runs in Somtus's own Python runtime, installed on request with
 //! `uv sync --frozen` from speech/pyproject.toml and speech/uv.lock into RIWORK_HOME/speech.
 //! Weights live in the standard Hugging Face cache, shared with other local apps such as
 //! riTranscribe, and every model is pinned to one commit with the exact files and sizes it needs:
@@ -531,7 +531,7 @@ impl WorkerEvent {
     }
 }
 
-/// The long-lived `worker.py serve` process. It ends when RiWork's end of its stdin closes.
+/// The long-lived `worker.py serve` process. It ends when Somtus's end of its stdin closes.
 /// Requests go through a writer thread, so audio from the microphone never waits for a busy
 /// worker to read: the capture helper's pipe keeps draining and its watchdog stays quiet.
 struct Worker {
@@ -609,7 +609,7 @@ impl Worker {
     }
 }
 
-/// Writes requests in order until the worker is gone or RiWork drops the worker.
+/// Writes requests in order until the worker is gone or Somtus drops the worker.
 fn write_requests(mut stdin: ChildStdin, requests: &async_channel::Receiver<String>) {
     while let Ok(line) = requests.recv_blocking() {
         if writeln!(stdin, "{line}").and_then(|_| stdin.flush()).is_err() {

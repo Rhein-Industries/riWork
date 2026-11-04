@@ -163,6 +163,7 @@ pub struct RemoteShellDto {
     pub worktree_id: Option<String>,
     pub orchestrator: bool,
     pub chat: bool,
+    pub chat_id: Option<String>,
     pub harness: Option<String>,
     pub alive: bool,
     pub cwd: String,
@@ -177,6 +178,7 @@ impl From<tree::RemoteShell> for RemoteShellDto {
             worktree_id: shell.worktree_id,
             orchestrator: shell.orchestrator,
             chat: shell.chat,
+            chat_id: shell.chat_id,
             harness: shell.harness,
             alive: shell.alive,
             cwd: shell.cwd,
@@ -292,6 +294,10 @@ pub struct RemoteWorktreeAction {
 
 /// The only side-effect seam. Fake implementations must not delegate to EngineBackend.
 pub trait RemoteBackend: Send + Sync {
+    /// One host-specific RPC. Implementations must never repeat a mutation.
+    fn call(&self, _host: &str, _method: &str, _params: serde_json::Value, _timeout: Duration) -> Result<serde_json::Value, RemoteError> {
+        Err(RemoteError::Rpc { code: "unsupported".into(), message: "This remote backend does not support chat RPCs".into() })
+    }
     fn run(&self, request: &Request) -> Reply;
     fn add_host(&self, link: &str, label: &str) -> Result<(), String>;
     fn remove_host(&self, host: &str) -> Result<(), String>;
@@ -342,6 +348,9 @@ impl Default for EngineBackend {
     }
 }
 impl RemoteBackend for EngineBackend {
+    fn call(&self, host: &str, method: &str, params: serde_json::Value, timeout: Duration) -> Result<serde_json::Value, RemoteError> {
+        self.transport().map_err(RemoteError::Unreachable)?.daemons.call(host, method, params, timeout)
+    }
     fn run(&self, request: &Request) -> Reply {
         let transport = match self.transport() {
             Ok(value) => value,
@@ -1028,8 +1037,8 @@ fn check_link(text: &str) -> Result<String, String> {
     if link.is_empty() {
         return Err("invalid: Paste the pairing link from the other Mac.".into());
     }
-    if !link.starts_with("riwork://pair?") || link.contains(char::is_whitespace) {
-        return Err("invalid: That is not a RiWork pairing link.".into());
+    if !(link.starts_with("somtus://pair?") || link.starts_with("riwork://pair?")) || link.contains(char::is_whitespace) {
+        return Err("invalid: That is not a Somtus pairing link.".into());
     }
     Ok(link.into())
 }
@@ -1048,7 +1057,7 @@ fn secret_error(error: &str, secret: Option<&str>) -> String {
     // Defensive scrub for a fake/backend that violated RemoteCli's error contract.
     text.split_whitespace()
         .map(|part| {
-            if part.contains("riwork://pair?") {
+            if part.contains("somtus://pair?") || part.contains("riwork://pair?") {
                 "[pairing link hidden]"
             } else {
                 part
@@ -1081,6 +1090,11 @@ pub fn launch_selection(folder: bool) -> Option<String> {
 }
 
 static PROCESS: OnceLock<Arc<RemoteService>> = OnceLock::new();
+/// Shared daemon owner for native features; no transport is owned by a view.
+pub(crate) fn call_host(host: &str, method: &str, params: serde_json::Value, timeout: Duration) -> Result<serde_json::Value, RemoteError> {
+    identifier(host).map_err(RemoteError::Protocol)?;
+    process().map_err(RemoteError::Unreachable)?.backend.call(host, method, params, timeout)
+}
 pub fn install_service(remote: Arc<RemoteService>) -> Result<(), String> {
     PROCESS
         .set(remote)
@@ -1339,7 +1353,7 @@ mod tests {
             Ok(())
         }
         fn pair_desktop(&self, _: &PairRequest) -> Result<String, String> {
-            Ok("riwork://pair?DISPOSABLE_FAKE_NO_CREDENTIAL".into())
+            Ok("somtus://pair?DISPOSABLE_FAKE_NO_CREDENTIAL".into())
         }
         fn create_project(&self, _: &str, _: &str) -> Result<tree::RemoteProject, RemoteError> {
             self.creates.fetch_add(1, Ordering::SeqCst);
@@ -1426,7 +1440,7 @@ mod tests {
         assert_eq!(
             link.masked,
             format!(
-                "riwork://pair?DI…  ({} characters)",
+                "somtus://pair?DI…  ({} characters)",
                 link.link.chars().count()
             )
         );
@@ -1529,7 +1543,7 @@ mod tests {
                 project_id: None,
                 worktree_id: None,
                 orchestrator: true,
-                chat: false,
+                chat: false, chat_id: None,
                 harness: Some("codex".into()),
                 alive: true,
                 cwd: "/FAKE".into(),
@@ -1578,7 +1592,7 @@ mod tests {
             project_id: project.map(Into::into),
             worktree_id: None,
             orchestrator: true,
-            chat: false,
+            chat: false, chat_id: None,
             harness: None,
             alive,
             cwd: "/FAKE".into(),
@@ -1632,9 +1646,18 @@ mod tests {
     }
 
     #[test]
+    fn both_pairing_schemes_are_accepted_and_hidden_in_errors() {
+        for scheme in ["somtus", "riwork"] {
+            let link = format!("{scheme}://pair?data=PRIVATE");
+            assert_eq!(check_link(&link).unwrap(), link);
+            assert_eq!(secret_error(&format!("bad {link}"), None), "bad [pairing link hidden]");
+        }
+    }
+
+    #[test]
     fn invalid_pairing_and_project_names_never_reach_the_fake() {
         let (_directory, remote, fake) = fixture();
-        for link in ["", "https://not-a-pair", "riwork://pair?with space"] {
+        for link in ["", "https://not-a-pair", "somtus://pair?with space"] {
             assert!(remote.add_host(link.into(), "".into()).is_err());
         }
         assert!(

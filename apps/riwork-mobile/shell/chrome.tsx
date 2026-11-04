@@ -1,4 +1,4 @@
-/** The iPad window's own pieces around its pages (`PadShell`), drawn as the Mac's RiWork window draws them
+/** The iPad window's own pieces around its pages (`PadShell`), drawn as the Mac's Somtus window draws them
  * (`apps/riwork/Workspace.tsx`, `StatusBar.tsx`) in touch density: the top row across the window, the
  * sidebar toggle and Dashboard that start a page's part of it while the sidebar does not, a tab's state dot
  * as the Mac's strip draws it, the link's dot, the host menu and the status bar along the bottom. */
@@ -79,11 +79,11 @@ export function linkText(link: LinkState): string {
   return link.error ? `${link.label} · ${link.error}` : link.label;
 }
 
-/** The window's top row (or a column's part of it), as tall as a touch target, on the panel color with the
+/** The window's top row (or a column's part of it), the kit's `bar` tall, on the panel color with the
  * Mac's divider below. `lead`: it starts the window's row, so it leaves the window's own controls clear. */
 export function TopRow(props: { ui: Kit; lead?: boolean; testID?: string; children?: JSX.Element }) {
   const { ui } = props;
-  return <View testID={props.testID} style={{ height: ui.target(), flexShrink: 0, flexDirection: "row", alignItems: "center", paddingLeft: props.lead ? ui.windowControls() : 0,
+  return <View testID={props.testID} style={{ height: ui.bar(), flexShrink: 0, flexDirection: "row", alignItems: "center", paddingLeft: props.lead ? ui.windowControls() : 0,
     backgroundColor: ui.palette().panel, borderBottomWidth: 1, borderColor: ui.palette().divider }}>
     {props.children}
   </View>;
@@ -129,7 +129,7 @@ export function HostSwitcher(props: { app: MobileApp; ui: Kit; chrome: PadChrome
   const link = () => app.link(props.host);
   return <View testID="host-switcher" role="button" accessibilityLabel={`${app.hostName(props.host)}, ${linkText(link())}. Desktops`}
     disabled={app.blocked()} onPress={props.chrome.hostMenu} activeStyle={{ backgroundColor: ui.palette().panelActive }}
-    style={{ flex: 1, minWidth: 0, height: ui.target(), flexDirection: "row", alignItems: "center", gap: ui.pt(8), paddingHorizontal: ui.pt(10), borderRadius: ui.pt(10) }}>
+    style={{ flex: 1, minWidth: 0, height: ui.bar(), flexDirection: "row", alignItems: "center", gap: ui.pt(7), paddingHorizontal: ui.pt(8), borderRadius: ui.pt(8) }}>
     <LinkDot ui={ui} link={link()} />
     <Text numberOfLines={1} style={{ ...ui.text(13), fontWeight: "600", flexShrink: 1 }}>{app.hostName(props.host)}</Text>
     <Icon name="down" size={ui.pt(12)} color={ui.palette().muted} />

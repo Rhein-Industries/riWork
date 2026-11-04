@@ -126,7 +126,7 @@ async fn a_mac_attaches_to_a_shell_through_the_real_connector() {
     );
     let link = String::from_utf8_lossy(&paired.stdout)
         .lines()
-        .find(|l| l.starts_with("riwork://pair?"))
+        .find(|l| l.starts_with("somtus://pair?"))
         .expect("a link")
         .to_owned();
     let routes: Routes = private_read(&routes_path, 1 << 20).unwrap();

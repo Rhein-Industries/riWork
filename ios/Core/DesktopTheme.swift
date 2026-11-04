@@ -48,7 +48,7 @@ public struct DesktopTheme: Sendable, Equatable {
     /// Below this WCAG contrast ratio a synced foreground is not trusted against its background.
     public static let minimumContrast = 3.0
 
-    /// The two built-in looks. Values from `src/theme.rs`: Gruvbox Light, and RiWork dark.
+    /// The two built-in looks. Values from `src/theme.rs`: Gruvbox Light, and Somtus dark.
     struct Scheme {
         let bg: RGB, panel: RGB, active: RGB, divider: RGB, text: RGB, muted: RGB, accent: RGB, magenta: RGB, gold: RGB, error: RGB
     }

@@ -34,7 +34,7 @@ struct ChatItemRow: View, Equatable {
     @Environment(\.desktopStyle) private var style
     let item: ChatItem
     let provider: ChatProvider
-    /// The card of RiWork's own worker this item marks, with where it stands (`WorkerTimeline`): drawn in place of the tool row.
+    /// The card of Somtus's own worker this item marks, with where it stands (`WorkerTimeline`): drawn in place of the tool row.
     var worker: WorkerCard? = nil
     var subagent: ChatSubagent? = nil
     /// The ids of the parts of this item that are open: the item's own id, or "id#path" for a file of an edit.

@@ -3,7 +3,7 @@
 //!
 //! The consumers are the orchestrator agents, which are told the policy of their scope
 //! when they start or load their skill (`riwork_engine::orchestrators::delegation`).
-//! RiWork itself never starts a worker because of it.
+//! Somtus itself never starts a worker because of it.
 //!
 //! Every field is optional, in Settings (`settings.json`'s `delegation_policy`) and in a
 //! project (its `delegation_policy` in the store) alike: one that is not chosen falls
@@ -59,8 +59,8 @@ impl Work {
     }
 }
 
-/// A harness and the model id it is started on, as `riwork shell create --harness H
-/// --model M` and `riwork chat new --provider H --model M` take them. Saved as
+/// A harness and the model id it is started on, as `somtus shell create --harness H
+/// --model M` and `somtus chat new --provider H --model M` take them. Saved as
 /// `{"provider":"claude","model":"opus"}`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Route {
@@ -69,7 +69,7 @@ pub struct Route {
 }
 
 impl Route {
-    /// The provider on the model RiWork's routing prefers for it
+    /// The provider on the model Somtus's routing prefers for it
     /// (`settings::recommended_model`): Claude on `opus`, Codex on `gpt-6.1-sol`, Muse on
     /// `muse-wonder-full-1.0`.
     pub fn recommended(provider: Provider) -> Self {
@@ -127,6 +127,7 @@ fn harness_word(provider: Provider) -> &'static str {
         Provider::Codex => "codex",
         Provider::Claude => "claude",
         Provider::Muse => "muse",
+        Provider::Acp => "acp",
     }
 }
 
@@ -250,7 +251,7 @@ impl DelegationPolicy {
             }
         };
         Some(format!(
-            "{whose} delegation policy {what}, which this RiWork cannot read. It is kept as saved, and what is beneath stands in for it until you choose here."
+            "{whose} delegation policy {what}, which this Somtus cannot read. It is kept as saved, and what is beneath stands in for it until you choose here."
         ))
     }
 }
@@ -329,7 +330,7 @@ pub struct Delegation {
 }
 
 impl Delegation {
-    /// RiWork's own policy, beneath Settings: spread work, about four worker shells at
+    /// Somtus's own policy, beneath Settings: spread work, about four worker shells at
     /// once, and the skill's Model routing (Claude Opus 5.5 for design, Codex
     /// GPT-6.1-Sol as the workhorse).
     pub fn built_in() -> Self {

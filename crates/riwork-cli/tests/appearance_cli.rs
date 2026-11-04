@@ -1,4 +1,4 @@
-//! `riwork appearance` against a throwaway RIWORK_HOME: the published colors
+//! `somtus appearance` against a throwaway RIWORK_HOME: the published colors
 //! file as the phone companion reads it. The child never starts the GUI; a
 //! regression that did is caught by the timeout and killed.
 
@@ -14,7 +14,7 @@ use std::{
 use uuid::Uuid;
 
 const NOT_PUBLISHED: &str =
-    "riwork: RiWork has not published its appearance yet; open the RiWork app\n";
+    "somtus: Somtus has not published its appearance yet; open the Somtus app\n";
 
 /// Reads a child's output while it runs: output that outgrows the pipe's buffer
 /// would block it in write, and it would never exit.
@@ -49,7 +49,7 @@ impl Home {
     }
 
     fn run(&self, args: &[&str]) -> Output {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_riwork-cli"))
+        let mut child = Command::new(env!("CARGO_BIN_EXE_somtus-cli"))
             .args(args)
             .env("RIWORK_HOME", &self.0)
             .env("RIWORK_RUNTIME_DIR", self.0.join("runtime"))
@@ -68,7 +68,7 @@ impl Home {
             if Instant::now() > deadline {
                 let _ = child.kill();
                 let _ = child.wait();
-                panic!("riwork {args:?} did not exit; it may have started the GUI");
+                panic!("somtus {args:?} did not exit; it may have started the GUI");
             }
             thread::sleep(Duration::from_millis(20));
         };
@@ -253,6 +253,6 @@ fn unexpected_arguments_are_refused() {
     assert!(
         String::from_utf8(home.run(&["help"]).stdout)
             .unwrap()
-            .contains("riwork appearance [--json]")
+            .contains("somtus appearance [--json]")
     );
 }

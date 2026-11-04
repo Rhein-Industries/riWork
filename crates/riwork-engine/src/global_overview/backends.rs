@@ -1,4 +1,4 @@
-//! The processes behind the work, for the dashboard's Backends section: the RiWork app, the
+//! The processes behind the work, for the dashboard's Backends section: the Somtus app, the
 //! chat host, and each provider's CLI with the agents that run it.
 //!
 //! **Freshness.** A process is *stale* when it started before the on-disk executable it was
@@ -12,7 +12,7 @@
 //! (`freshness`).
 //!
 //! What each row compares:
-//! - The RiWork app: each running GUI of this home (its runtime registration), its process
+//! - The Somtus app: each running GUI of this home (its runtime registration), its process
 //!   start against the executable the system says it runs.
 //! - The chat host: the process `run/chat.lock` names, its start against its executable.
 //! - A provider: the CLI a launch would run now (`sessions::installed_harness_program`)
@@ -81,7 +81,7 @@ pub struct Process {
     pub binary: Option<Binary>,
 }
 
-/// A running RiWork GUI of this home.
+/// A running Somtus GUI of this home.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Gui {
     pub process: Process,
@@ -185,7 +185,7 @@ pub(crate) fn read_with(
                 binary: gui
                     .executable
                     .as_deref()
-                    .map(|path| binary_at(path, "riwork")),
+                    .map(|path| binary_at(path, "somtus")),
             },
             windows: gui.windows,
         })
@@ -247,7 +247,7 @@ fn read_host(home: &Path, system: &impl System) -> HostSample {
     HostSample::Running(Process {
         pid,
         started_at,
-        binary: executable.as_deref().map(|path| binary_at(path, "riwork")),
+        binary: executable.as_deref().map(|path| binary_at(path, "somtus")),
     })
 }
 
@@ -255,7 +255,9 @@ fn read_host(home: &Path, system: &impl System) -> HostSample {
 /// would carry (`version_named`).
 fn binary_at(path: &Path, program: &str) -> Binary {
     Binary {
-        version: version_named(path, program),
+        version: version_named(path, program).or_else(|| {
+            (program == "somtus").then(|| version_named(path, "riwork")).flatten()
+        }),
         replaced_at: replaced_at(path),
     }
 }
@@ -433,10 +435,10 @@ pub fn freshness(start: Start, replaced_at: Option<u64>) -> Freshness {
     }
 }
 
-/// The running RiWork GUIs of this home.
+/// The running Somtus GUIs of this home.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AppOverview {
-    /// Normally one; none only for a reader outside the app (`riwork dashboard`).
+    /// Normally one; none only for a reader outside the app (`somtus dashboard`).
     pub running: usize,
     pub windows: usize,
     /// The earliest start among them, when known.
@@ -518,11 +520,12 @@ pub fn harness_name(provider: HarnessKind) -> &'static str {
     }
 }
 
-fn harness_of(provider: Provider) -> HarnessKind {
+fn harness_of(provider: Provider) -> Option<HarnessKind> {
     match provider {
-        Provider::Codex => HarnessKind::Codex,
-        Provider::Claude => HarnessKind::Claude,
-        Provider::Muse => HarnessKind::Muse,
+        Provider::Codex => Some(HarnessKind::Codex),
+        Provider::Claude => Some(HarnessKind::Claude),
+        Provider::Muse => Some(HarnessKind::Muse),
+        Provider::Acp => None,
     }
 }
 
@@ -627,7 +630,7 @@ fn providers(
                     starts.extend(
                         chats
                             .iter()
-                            .filter(|chat| harness_of(chat.provider) == *provider)
+                            .filter(|chat| harness_of(chat.provider) == Some(*provider))
                             .filter(|chat| super::chat_is_live(&chat.state))
                             .map(|chat| match chat.created_at_unix.max(host.unwrap_or(0)) {
                                 0 => Start::Unknown,
@@ -722,7 +725,7 @@ pub enum Tone {
     Idle,
 }
 
-/// One row of the section, as the desktop and `riwork dashboard` say it.
+/// One row of the section, as the desktop and `somtus dashboard` say it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Line {
     /// "app", "chat-host", or the provider's program name.
@@ -804,7 +807,7 @@ fn app_line(app: &AppOverview, now: u64) -> Line {
     );
     Line {
         key: "app",
-        title: "RiWork".to_owned(),
+        title: "Somtus".to_owned(),
         detail: parts.join(" · "),
         tone: match app.freshness {
             None => Tone::Idle,

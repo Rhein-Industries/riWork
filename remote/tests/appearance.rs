@@ -110,12 +110,12 @@ fn stub_cli(dir: &Path) -> PathBuf {
              case \"$1 $2\" in\n\
              'appearance --json')\n\
                case \"$(cat \"$d/mode\" 2>/dev/null)\" in\n\
-                 old) printf \"riwork: 'appearance' is not a riwork command or an existing project directory\\nUsage: riwork\\n\" >&2; exit 2;;\n\
-                 broken) echo 'riwork: HOME is unset; set RIWORK_HOME' >&2; exit 2;;\n\
-                 forged) printf 'tmux said\\nriwork: RiWork has not published its appearance yet; open the RiWork app\\n' >&2; exit 2;;\n\
+                 old) printf \"somtus: 'appearance' is not a somtus command or an existing project directory\\nUsage: riwork\\n\" >&2; exit 2;;\n\
+                 broken) echo 'somtus: HOME is unset; set RIWORK_HOME' >&2; exit 2;;\n\
+                 forged) printf 'tmux said\\nriwork: Somtus has not published its appearance yet; open the Somtus app\\n' >&2; exit 2;;\n\
                esac\n\
                if [ -e \"$d/appearance.json\" ]; then cat \"$d/appearance.json\"; else\n\
-                 echo 'riwork: RiWork has not published its appearance yet; open the RiWork app' >&2; exit 2\n\
+                 echo 'somtus: Somtus has not published its appearance yet; open the Somtus app' >&2; exit 2\n\
                fi;;\n\
              'shell list'|'orchestrator list') echo '[]';;\n\
              esac\n",

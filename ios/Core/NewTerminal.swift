@@ -6,7 +6,7 @@ import Foundation
 // extension"), so a request that leaves the phone is one the desktop will not reject as malformed. Everything here is
 // pure and `Sendable`; the app owns the timing.
 
-/// What a new terminal runs: the Mac's default shell, or one of the agents RiWork launches. Or, with the same sheet, a native chat
+/// What a new terminal runs: the Mac's default shell, or one of the agents Somtus launches. Or, with the same sheet, a native chat
 /// (`chat.create`, not `shell.create`): one kind for every provider, whose model says which (`NewTerminalForm.chatProvider`).
 public enum NewTerminalKind: String, CaseIterable, Sendable, Codable, Identifiable {
     case shell, codex, claude, grok, muse
@@ -267,7 +267,7 @@ public enum TerminalControlError: Error, Equatable, Sendable, LocalizedError {
     case busy
     case failed(String)
 
-    public static let unsupportedMessage = "Update RiWork on your Mac to open terminals from the phone."
+    public static let unsupportedMessage = "Update Somtus on your Mac to open terminals from the phone."
 
     public var errorDescription: String? { message }
     public var message: String {

@@ -79,38 +79,38 @@ Before-menu-fix and before-lock-fix failures are retained. The full host suite a
 | P1-GLB-02 / core | `cargo test -p riwork-core --lib global_window::tests:: --locked --offline` | 0 / 3 passed, 0 failed | PASS |
 | P1-GLB-04 / core | `cargo test -p riwork-engine --lib the_global_window_restores_as_itself_and_older_snapshots_hold_project_windows --locked --offline` | 0 / 1 passed, 0 failed | PASS |
 | P1-PROC-02 / host-unit | `cargo test -p riwork-desktop --test startup_environment --locked --offline` | 0 / 1 passed, 0 failed | PASS |
-| P1-PROC-04 / host-unit | `cargo test -p riwork-desktop --bin riwork nsh_host::tests::folder_arg_reuses_existing_project --locked --offline` | 0 / 1 passed, 0 failed | PASS |
-| P1-PROC-04 / host-unit | `cargo test -p riwork-desktop --bin riwork nsh_host::tests::no_active_project_registers_the_cwd_fallback --locked --offline` | 0 / 1 passed, 0 failed | PASS |
-| P1-PROC-04 / host-unit | `cargo test -p riwork-desktop --bin riwork nsh_host::tests::a_vanished_project_root_is_an_error_for_the_caller_not_a_panic --locked --offline` | 0 / 1 passed, 0 failed | PASS |
-| P1-PROC-05 / host-unit | `cargo test -p riwork-desktop --bin riwork nsh_runtime::tests::forwards_path_and_reopen_without_creating_a_second_primary --locked --offline` | 0 / 1 passed, 0 failed | PASS |
-| P1-PROC-05 / host-unit | `cargo test -p riwork-desktop --bin riwork nsh_runtime::tests::reclaims_stale_socket_but_never_deletes_a_regular_file --locked --offline` | 0 / 1 passed, 0 failed | PASS |
-| P1-PROC-05 / host-unit | `cargo test -p riwork-desktop --bin riwork nsh_runtime::tests::replacement_keeps_old_socket_and_prevents_handoff_race --locked --offline` | 0 / 1 passed, 0 failed | PASS |
-| P1-RLD-02 / host-unit | `cargo test -p riwork-desktop --bin riwork nsh_runtime::tests::restore_acknowledgements_are_per_window_and_idempotent --locked --offline` | 0 / 1 passed, 0 failed | PASS |
-| P1-RLD-02 / host-unit | `cargo test -p riwork-desktop --bin riwork nsh_runtime::tests::restore_matches_targets_even_if_window_order_changes --locked --offline` | 0 / 1 passed, 0 failed | PASS |
-| P1-RLD-02 / host-unit | `cargo test -p riwork-desktop --bin riwork restore::tests::confirmation_gives_up_after_20_s --locked --offline` | 0 / 0 passed, 0 failed | FAIL — missing named check |
-| P1-RLD-03 / host-unit | `cargo test -p riwork-desktop --bin riwork nsh_host::tests::a_busy_registry_lock_stays_due --locked --offline` | 0 / 1 passed, 0 failed | PASS |
-| P1-RLD-04 / host-unit | `cargo test -p riwork-desktop --bin riwork nsh_host::tests::runtime_publication_reads_current_layout_without_an_appkit_state_event --locked --offline` | 0 / 1 passed, 0 failed | PASS |
-| P1-RLD-04 / host-unit | `cargo test -p riwork-desktop --bin riwork nsh_host::tests::runtime_frames_keep_the_existing_display_local_top_left_coordinates --locked --offline` | 0 / 1 passed, 0 failed | PASS |
-| P1-WIN-02 / host-unit | `cargo test -p riwork-desktop --bin riwork placement::tests::the_cascade_counts_open_non_tooltip_windows --locked --offline` | 0 / 0 passed, 0 failed | FAIL — missing named check |
-| P1-WIN-03 / host-unit | `cargo test -p riwork-desktop --bin riwork placement::tests::zoomed_counts_as_maximized_and_keeps_its_normal_frame --locked --offline` | 0 / 0 passed, 0 failed | FAIL — missing named check |
-| P1-WIN-03 / host-unit | `cargo test -p riwork-desktop --bin riwork placement::tests::fullscreen_counts_as_fullscreen --locked --offline` | 0 / 0 passed, 0 failed | FAIL — missing named check |
-| P1-WIN-07 / host-unit | `cargo test -p riwork-desktop --bin riwork window_registry::tests::the_last_close_quits --locked --offline` | 0 / 0 passed, 0 failed | FAIL — missing named check |
-| P1-WIN-07 / host-unit | `cargo test -p riwork-desktop --bin riwork window_registry::tests::tooltips_do_not_count --locked --offline` | 0 / 0 passed, 0 failed | FAIL — missing named check |
-| P1-WIN-08 / host-unit | `cargo test -p riwork-desktop --bin riwork nsh_host::tests::quit_flushes_every_layout_session_and_the_global_state_from_rust --locked --offline` | 0 / 1 passed, 0 failed | PASS |
-| P1-WIN-08 / host-unit | `cargo test -p riwork-desktop --bin riwork nsh_host::tests::close_flushes_the_last_accepted_edit_before_the_window_goes --locked --offline` | 0 / 1 passed, 0 failed | PASS |
-| P1-WIN-09 / host-unit | `cargo test -p riwork-desktop --bin riwork window_state::tests::events_only_on_change --locked --offline` | 0 / 0 passed, 0 failed | FAIL — missing named check |
-| P1-GLB-01 / host-unit | `cargo test -p riwork-desktop --bin riwork window_registry::tests::the_global_window_is_a_singleton_and_opens_with_no_window --locked --offline` | 0 / 0 passed, 0 failed | FAIL — missing named check |
-| P1-GLB-04 / host-unit | `cargo test -p riwork-desktop --bin riwork runtime_window::tests::the_global_window_is_recorded_as_global --locked --offline` | 0 / 0 passed, 0 failed | FAIL — missing named check |
-| P1-GLB-08 / host-unit | `cargo test -p riwork-desktop --bin riwork menu::tests::dock_new_window --locked --offline` | 0 / 0 passed, 0 failed | FAIL — missing named check |
-| P1-GLB-09 / host-unit | `cargo test -p riwork-desktop --bin riwork window_registry::tests::route_prefers_frontmost_then_minimised_then_opens --locked --offline` | 0 / 0 passed, 0 failed | FAIL — missing named check |
-| P1-DRAG-03 / host-unit | `cargo test -p riwork-desktop --bin riwork host_names::tests::tab_transfer_is_refused --locked --offline` | 0 / 0 passed, 0 failed | FAIL — missing named check |
-| P1-MENU-01 / host-unit | `cargo test -p riwork-desktop --bin riwork nsh_menus::tests::command_ids_are_the_v1_set --locked --offline` | 0 / 1 passed, 0 failed | PASS |
-| P1-MENU-03 / host-unit | `cargo test -p riwork-desktop --bin riwork menu::tests::window_commands_go_to_the_key_window --locked --offline` | 0 / 0 passed, 0 failed | FAIL — missing named check |
-| P1-MENU-03 / host-unit | `cargo test -p riwork-desktop --bin riwork menu::tests::app_commands_work_with_no_window --locked --offline` | 0 / 0 passed, 0 failed | FAIL — missing named check |
-| P1-MENU-03 / host-unit | `cargo test -p riwork-desktop --bin riwork nsh_menus::tests::deferred_menu_commands_remain_present_disabled_and_keep_their_chords --locked --offline` | 0 / 1 passed, 0 failed | PASS |
-| P1-MENU-04 / host-unit | `cargo test -p riwork-desktop --bin riwork nsh_menus::tests::dock_labels_are_stable_unique_and_keep_the_last_key_window_marked --locked --offline` | 0 / 1 passed, 0 failed | PASS |
-| P1-KEYS-05 / host-unit | `cargo test -p riwork-desktop --bin riwork menu::tests::routing --locked --offline` | 0 / 0 passed, 0 failed | FAIL — missing named check |
-| P1-THM-05 / host-unit | `cargo test -p riwork-desktop --bin riwork startup::tests::forced_appearance_from_env --locked --offline` | 0 / 0 passed, 0 failed | FAIL — missing named check |
+| P1-PROC-04 / host-unit | `cargo test -p riwork-desktop --bin somtus nsh_host::tests::folder_arg_reuses_existing_project --locked --offline` | 0 / 1 passed, 0 failed | PASS |
+| P1-PROC-04 / host-unit | `cargo test -p riwork-desktop --bin somtus nsh_host::tests::no_active_project_registers_the_cwd_fallback --locked --offline` | 0 / 1 passed, 0 failed | PASS |
+| P1-PROC-04 / host-unit | `cargo test -p riwork-desktop --bin somtus nsh_host::tests::a_vanished_project_root_is_an_error_for_the_caller_not_a_panic --locked --offline` | 0 / 1 passed, 0 failed | PASS |
+| P1-PROC-05 / host-unit | `cargo test -p riwork-desktop --bin somtus nsh_runtime::tests::forwards_path_and_reopen_without_creating_a_second_primary --locked --offline` | 0 / 1 passed, 0 failed | PASS |
+| P1-PROC-05 / host-unit | `cargo test -p riwork-desktop --bin somtus nsh_runtime::tests::reclaims_stale_socket_but_never_deletes_a_regular_file --locked --offline` | 0 / 1 passed, 0 failed | PASS |
+| P1-PROC-05 / host-unit | `cargo test -p riwork-desktop --bin somtus nsh_runtime::tests::replacement_keeps_old_socket_and_prevents_handoff_race --locked --offline` | 0 / 1 passed, 0 failed | PASS |
+| P1-RLD-02 / host-unit | `cargo test -p riwork-desktop --bin somtus nsh_runtime::tests::restore_acknowledgements_are_per_window_and_idempotent --locked --offline` | 0 / 1 passed, 0 failed | PASS |
+| P1-RLD-02 / host-unit | `cargo test -p riwork-desktop --bin somtus nsh_runtime::tests::restore_matches_targets_even_if_window_order_changes --locked --offline` | 0 / 1 passed, 0 failed | PASS |
+| P1-RLD-02 / host-unit | `cargo test -p riwork-desktop --bin somtus restore::tests::confirmation_gives_up_after_20_s --locked --offline` | 0 / 0 passed, 0 failed | FAIL — missing named check |
+| P1-RLD-03 / host-unit | `cargo test -p riwork-desktop --bin somtus nsh_host::tests::a_busy_registry_lock_stays_due --locked --offline` | 0 / 1 passed, 0 failed | PASS |
+| P1-RLD-04 / host-unit | `cargo test -p riwork-desktop --bin somtus nsh_host::tests::runtime_publication_reads_current_layout_without_an_appkit_state_event --locked --offline` | 0 / 1 passed, 0 failed | PASS |
+| P1-RLD-04 / host-unit | `cargo test -p riwork-desktop --bin somtus nsh_host::tests::runtime_frames_keep_the_existing_display_local_top_left_coordinates --locked --offline` | 0 / 1 passed, 0 failed | PASS |
+| P1-WIN-02 / host-unit | `cargo test -p riwork-desktop --bin somtus placement::tests::the_cascade_counts_open_non_tooltip_windows --locked --offline` | 0 / 0 passed, 0 failed | FAIL — missing named check |
+| P1-WIN-03 / host-unit | `cargo test -p riwork-desktop --bin somtus placement::tests::zoomed_counts_as_maximized_and_keeps_its_normal_frame --locked --offline` | 0 / 0 passed, 0 failed | FAIL — missing named check |
+| P1-WIN-03 / host-unit | `cargo test -p riwork-desktop --bin somtus placement::tests::fullscreen_counts_as_fullscreen --locked --offline` | 0 / 0 passed, 0 failed | FAIL — missing named check |
+| P1-WIN-07 / host-unit | `cargo test -p riwork-desktop --bin somtus window_registry::tests::the_last_close_quits --locked --offline` | 0 / 0 passed, 0 failed | FAIL — missing named check |
+| P1-WIN-07 / host-unit | `cargo test -p riwork-desktop --bin somtus window_registry::tests::tooltips_do_not_count --locked --offline` | 0 / 0 passed, 0 failed | FAIL — missing named check |
+| P1-WIN-08 / host-unit | `cargo test -p riwork-desktop --bin somtus nsh_host::tests::quit_flushes_every_layout_session_and_the_global_state_from_rust --locked --offline` | 0 / 1 passed, 0 failed | PASS |
+| P1-WIN-08 / host-unit | `cargo test -p riwork-desktop --bin somtus nsh_host::tests::close_flushes_the_last_accepted_edit_before_the_window_goes --locked --offline` | 0 / 1 passed, 0 failed | PASS |
+| P1-WIN-09 / host-unit | `cargo test -p riwork-desktop --bin somtus window_state::tests::events_only_on_change --locked --offline` | 0 / 0 passed, 0 failed | FAIL — missing named check |
+| P1-GLB-01 / host-unit | `cargo test -p riwork-desktop --bin somtus window_registry::tests::the_global_window_is_a_singleton_and_opens_with_no_window --locked --offline` | 0 / 0 passed, 0 failed | FAIL — missing named check |
+| P1-GLB-04 / host-unit | `cargo test -p riwork-desktop --bin somtus runtime_window::tests::the_global_window_is_recorded_as_global --locked --offline` | 0 / 0 passed, 0 failed | FAIL — missing named check |
+| P1-GLB-08 / host-unit | `cargo test -p riwork-desktop --bin somtus menu::tests::dock_new_window --locked --offline` | 0 / 0 passed, 0 failed | FAIL — missing named check |
+| P1-GLB-09 / host-unit | `cargo test -p riwork-desktop --bin somtus window_registry::tests::route_prefers_frontmost_then_minimised_then_opens --locked --offline` | 0 / 0 passed, 0 failed | FAIL — missing named check |
+| P1-DRAG-03 / host-unit | `cargo test -p riwork-desktop --bin somtus host_names::tests::tab_transfer_is_refused --locked --offline` | 0 / 0 passed, 0 failed | FAIL — missing named check |
+| P1-MENU-01 / host-unit | `cargo test -p riwork-desktop --bin somtus nsh_menus::tests::command_ids_are_the_v1_set --locked --offline` | 0 / 1 passed, 0 failed | PASS |
+| P1-MENU-03 / host-unit | `cargo test -p riwork-desktop --bin somtus menu::tests::window_commands_go_to_the_key_window --locked --offline` | 0 / 0 passed, 0 failed | FAIL — missing named check |
+| P1-MENU-03 / host-unit | `cargo test -p riwork-desktop --bin somtus menu::tests::app_commands_work_with_no_window --locked --offline` | 0 / 0 passed, 0 failed | FAIL — missing named check |
+| P1-MENU-03 / host-unit | `cargo test -p riwork-desktop --bin somtus nsh_menus::tests::deferred_menu_commands_remain_present_disabled_and_keep_their_chords --locked --offline` | 0 / 1 passed, 0 failed | PASS |
+| P1-MENU-04 / host-unit | `cargo test -p riwork-desktop --bin somtus nsh_menus::tests::dock_labels_are_stable_unique_and_keep_the_last_key_window_marked --locked --offline` | 0 / 1 passed, 0 failed | PASS |
+| P1-KEYS-05 / host-unit | `cargo test -p riwork-desktop --bin somtus menu::tests::routing --locked --offline` | 0 / 0 passed, 0 failed | FAIL — missing named check |
+| P1-THM-05 / host-unit | `cargo test -p riwork-desktop --bin somtus startup::tests::forced_appearance_from_env --locked --offline` | 0 / 0 passed, 0 failed | FAIL — missing named check |
 | P1-WIN-01 / appkit | `cargo test -p riwork-desktop --test appkit_shell --locked --offline -- window_chrome --test-threads=1` | 0 / 1 passed, 0 failed | PASS |
 | P1-WIN-06 / appkit | `cargo test -p riwork-desktop --test appkit_shell --locked --offline -- titlebar_double_click_reads_the_system_preference --test-threads=1` | 101 / 0 passed, 0 failed | FAIL — missing named check |
 | P1-WIN-07 / appkit | `cargo test -p riwork-desktop --test appkit_shell --locked --offline -- tooltips_create_no_nswindow --test-threads=1` | 101 / 0 passed, 0 failed | FAIL — missing named check |

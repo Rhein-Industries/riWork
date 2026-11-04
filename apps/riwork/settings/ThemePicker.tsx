@@ -107,7 +107,7 @@ export function ThemePicker(props: {
   }
   return <View style={{ gap: size(8) }}>
     <Text style={textStyle(theme)}>Color palette</Text>
-    <Text style={textStyle(theme, 10, true)}>Choose the colors for RiWork. Interface font, text size and layout keep their own settings.</Text>
+    <Text style={textStyle(theme, 10, true)}>Choose the colors for Somtus. Interface font, text size and layout keep their own settings.</Text>
     <View role="radiogroup" accessibilityLabel="Color palette" style={{ flexDirection: "row", flexWrap: "wrap", gap: size(8) }}>
       {props.catalog.ids().map((id) => <Card id={id} />)}
     </View>

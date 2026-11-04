@@ -195,7 +195,7 @@ fn other_providers(provider: Provider) -> [Provider; 2] {
 /// What a refused switch says. A host from before the switch does not know the command.
 fn switch_failure(error: &str) -> String {
     if error.contains("unknown variant") && error.contains("switch") {
-        "The chat host that is running is from an older RiWork and cannot switch providers. \
+        "The chat host that is running is from an older Somtus and cannot switch providers. \
          It is replaced by this version once it has been idle for 15 minutes."
             .to_owned()
     } else {
@@ -312,7 +312,7 @@ pub struct ChatView {
     focus: FocusHandle,
     composer: Entity<TextareaState>,
     model_input: Entity<InputState>,
-    /// The RiWork data directory, where saved chats tell the other provider's models.
+    /// The Somtus data directory, where saved chats tell the other provider's models.
     catalog_home: Option<std::path::PathBuf>,
     /// What the providers the chat does not run offer, read when the model menu opens: the
     /// rows that move the chat to one of them.
@@ -756,7 +756,7 @@ impl ChatView {
         self.composer.read(cx).focus_handle(cx).focus(window, cx);
     }
 
-    /// The RiWork data directory, whose saved chats say what the other provider offers.
+    /// The Somtus data directory, whose saved chats say what the other provider offers.
     pub fn set_catalog_home(&mut self, home: std::path::PathBuf) {
         self.catalog_home = Some(home);
     }

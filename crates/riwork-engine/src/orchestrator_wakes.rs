@@ -13,7 +13,7 @@
 //!
 //! **Delivery** runs in the desktop app, which also claims the alerts and
 //! dispatches schedules: every GUI process ticks a `Runner` each second and a
-//! non-blocking lock lets one of them deliver at a time. While no RiWork app
+//! non-blocking lock lets one of them deliver at a time. While no Somtus app
 //! runs nothing is delivered, and a wake expires after `WAKE_LIFETIME`, as an
 //! unclaimed alert does. A wake goes only to an orchestrator that exists (none
 //! is created for it: a scope without one skips the wake) and is idle: a chat
@@ -306,7 +306,7 @@ pub(crate) enum Submission {
     Partial,
 }
 
-/// RiWork's terminal orchestrator is a Codex, idle as a schedule sees it: its
+/// Somtus's terminal orchestrator is a Codex, idle as a schedule sees it: its
 /// rollout's completed turn, the pane's Codex holding that rollout open, and
 /// the empty prompt on a screen that holds still.
 /// A custom orchestrator command has no harness and so no idle evidence.
@@ -391,7 +391,7 @@ pub(crate) fn deliver_at(
     }
     let delivering = private_file(&home.join(DELIVERY_LOCK))?;
     if delivering.try_lock_exclusive().is_err() {
-        // Another RiWork process is delivering now.
+        // Another Somtus process is delivering now.
         return Ok(());
     }
     if !has_pending(home)? {
@@ -567,16 +567,16 @@ fn message(state: &State, entry: &Entry, shell: &ShellSession) -> String {
                 one_line(&worktree.branch),
                 worktree.id
             ),
-            format!("riwork worktree tasks {}", worktree.id),
+            format!("somtus worktree tasks {}", worktree.id),
         ),
         None => (
             String::new(),
-            format!("riwork project tasks {}", entry.project_id),
+            format!("somtus project tasks {}", entry.project_id),
         ),
     };
     format!(
-        "RiWork check-in: worker shell {shell} ({harness}) {outcome} in project {project} ({project_id}){place}. \
-         Read its output with `riwork shell output {shell} --lines 120` and its task state with `{tasks}`, then decide its next step.",
+        "Somtus check-in: worker shell {shell} ({harness}) {outcome} in project {project} ({project_id}){place}. \
+         Read its output with `somtus shell output {shell} --lines 120` and its task state with `{tasks}`, then decide its next step.",
         shell = entry.shell_id,
         harness = entry.provider.program(),
         outcome = entry.outcome.description(),

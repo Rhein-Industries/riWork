@@ -161,7 +161,7 @@ async fn receive_json_seen(ws: &mut Socket, seen: &mut Instant) -> Result<Value>
 pub async fn start(storage: Storage, cli: PathBuf) -> Result<()> {
     ensure!(
         cli.is_absolute() && cli.is_file(),
-        "--riwork must name an existing absolute RiWork executable path"
+        "--somtus must name an existing absolute Somtus executable path"
     );
     let _exclusive = storage.lock("connector.lock")?;
     let rpc = Arc::new(Rpc::new(cli, storage.clone()));
@@ -171,7 +171,7 @@ pub async fn start(storage: Storage, cli: PathBuf) -> Result<()> {
     // The uploads' sweep: at once, then every hour (see `upload`).
     let mut sweep = interval(Duration::from_secs(60 * 60));
     eprintln!(
-        "RiWork connector running; paired device config is watched; Ctrl-C stops transport only."
+        "Somtus connector running; paired device config is watched; Ctrl-C stops transport only."
     );
     loop {
         tokio::select! {
@@ -829,7 +829,7 @@ mod tests {
     };
     use std::path::Path;
 
-    /// Stand-in RiWork CLI: logs each call and reports one live shell.
+    /// Stand-in Somtus CLI: logs each call and reports one live shell.
     fn scripted_cli(dir: &Path, shell: &str) -> (PathBuf, PathBuf) {
         use std::os::unix::fs::PermissionsExt;
         let (cli, log) = (dir.join("fake-riwork"), dir.join("cli.log"));
@@ -1391,7 +1391,7 @@ mod tests {
         ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
         ca_params
             .distinguished_name
-            .push(rcgen::DnType::CommonName, "RiWork Test CA");
+            .push(rcgen::DnType::CommonName, "Somtus Test CA");
         ca_params
             .key_usages
             .push(rcgen::KeyUsagePurpose::DigitalSignature);

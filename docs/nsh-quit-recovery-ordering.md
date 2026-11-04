@@ -86,8 +86,8 @@ failure. Each manifest records exact subprocess arguments, environment and exit
 codes. The test and check subprocesses were:
 
 ```sh
-cargo test -p riwork-desktop --bin riwork pending_open_tests::production_app_recovers_pending_open_after_failed_quit_and_restart --locked --offline -- --ignored --nocapture --test-threads=1
-cargo test -p riwork-desktop --bin riwork --locked --offline
+cargo test -p riwork-desktop --bin somtus pending_open_tests::production_app_recovers_pending_open_after_failed_quit_and_restart --locked --offline -- --ignored --nocapture --test-threads=1
+cargo test -p riwork-desktop --bin somtus --locked --offline
 cargo test -p riwork-nsh-workspace --locked --offline
 /tmp/riwork-nsh-toolchain-60f8aec4.18l3zV/nsh-cli-0.3.0/bin/nsh check apps/riwork --tsc /Users/dominik/Library/Caches/nsh/typescript-7.0.2-darwin-arm64/package/lib/tsc
 cargo fmt -p riwork-desktop -p riwork-nsh-workspace --check

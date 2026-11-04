@@ -1,4 +1,4 @@
-//! `riwork native invoke MODULE.METHOD --json`: one call of a `riwork/native` method for a
+//! `somtus native invoke MODULE.METHOD --json`: one call of a `riwork/native` method for a
 //! paired device, made by the remote connector (`native.invoke` in `docs/remote-protocol.md`).
 //!
 //! The arguments arrive on standard input as one JSON object; the answer is one JSON line,
@@ -101,6 +101,7 @@ pub const METHODS: &[Method] = &[
     write("Sessions.openEditor"),
     read("Tabs.snapshot", LARGE),
     read("Settings.get", SMALL),
+    read("Hosts.local", LARGE),
     write("Settings.set"),
     read("Files.listDirectory", LARGE),
     read("Files.preview", LARGE),
@@ -111,7 +112,7 @@ pub const METHODS: &[Method] = &[
     read("Orchestrators.plan", SMALL),
 ];
 
-/// The topics `riwork watch` reports on (`crate::state_watch`).
+/// The topics `somtus watch` reports on (`crate::state_watch`).
 pub use crate::state_watch::TOPICS;
 
 pub fn method(name: &str) -> Option<&'static Method> {
@@ -129,7 +130,7 @@ const TITLE_MAX: usize = 500;
 const TEXT_MAX: usize = 32 * 1024;
 const IDS_MAX: usize = 500;
 
-/// What the device may send for `riwork native invoke` and `riwork watch`, and their answers.
+/// What the device may send for `somtus native invoke` and `somtus watch`, and their answers.
 /// `args` are everything after the binary's name. `None` when they are not one of these
 /// commands, so the ordinary CLI and the app see them.
 pub fn cli(args: &[String]) -> Option<i32> {
@@ -150,7 +151,7 @@ pub fn cli(args: &[String]) -> Option<i32> {
             }
         }
         ["native", "invoke", ..] => return Some(usage()),
-        // Only with `--json`: `riwork watch` alone may name a folder to open.
+        // Only with `--json`: `somtus watch` alone may name a folder to open.
         ["watch", rest @ ..] if json => {
             if !rest.is_empty() {
                 return Some(usage());
@@ -168,12 +169,12 @@ pub fn cli(args: &[String]) -> Option<i32> {
 
 fn usage() -> i32 {
     eprintln!(
-        "riwork: Usage: riwork native invoke MODULE.METHOD --json < ARGS, or riwork watch --json < REQUEST"
+        "somtus: Usage: somtus native invoke MODULE.METHOD --json < ARGS, or somtus watch --json < REQUEST"
     );
     2
 }
 
-/// What `riwork capabilities --json` adds for these commands: `native` (`{"v":1,"methods":
+/// What `somtus capabilities --json` adds for these commands: `native` (`{"v":1,"methods":
 /// [...]}`) and `watch` (`{"v":1,"topics":[...]}`). The connector announces what it and this
 /// binary both have.
 pub fn capabilities() -> serde_json::Map<String, Value> {
@@ -201,7 +202,7 @@ fn stdin(cap: usize) -> Result<Vec<u8>, String> {
     Ok(input)
 }
 
-/// The answer to one call: the JSON line `riwork native invoke` prints.
+/// The answer to one call: the JSON line `somtus native invoke` prints.
 pub fn invoke(target: &str, input: &[u8]) -> Value {
     let Some(method) = method(target) else {
         return failure("invalid: unsupported native method");
@@ -764,6 +765,11 @@ async fn call(method: &Method, raw: Value) -> Result<Answer, String> {
         "Tabs.snapshot" => {
             let ProjectTabs { project_id } = args(raw)?;
             value(service.tabs_snapshot(project_id).await?)
+        }
+        "Hosts.local" => {
+            let NoArgs {} = args(raw)?;
+            let home = service.home().to_path_buf();
+            value(blocking(move || riwork_engine::host_sessions::local(&home)).await?)
         }
         "Settings.get" => {
             let NoArgs {} = args(raw)?;

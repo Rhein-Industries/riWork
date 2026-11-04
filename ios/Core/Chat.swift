@@ -32,12 +32,13 @@ extension KeyedDecodingContainer {
 // MARK: - Chats
 
 public enum ChatProvider: String, Codable, Sendable, CaseIterable, Hashable {
-    case codex, claude, muse
+    case codex, claude, muse, acp
     public var title: String {
         switch self {
         case .codex: "Codex"
         case .claude: "Claude"
         case .muse: "Muse"
+        case .acp: "ACP"
         }
     }
     /// "Codex chat", "Claude chat", "Muse chat": what a tab or a row calls it. Never "Claude Code".
@@ -652,7 +653,7 @@ public struct ChatItem: Codable, Sendable, Equatable, Identifiable {
         get { presentation.subagent }
         set { presentation.subagent = newValue }
     }
-    /// RiWork's own worker this item marks (`presentation.worker`, `WorkerTimeline.swift`); nil for every other item, and for a marker the
+    /// Somtus's own worker this item marks (`presentation.worker`, `WorkerTimeline.swift`); nil for every other item, and for a marker the
     /// phone cannot read, which then shows as the tool row its body also is.
     public var worker: ChatWorker? {
         get { presentation.worker }

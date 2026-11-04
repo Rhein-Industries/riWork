@@ -130,7 +130,7 @@ Send the existing `chat.command` RPC with:
 ```
 
 On the host socket this is `ChatCommand::DismissNotice { item_id }`; the CLI accepts
-`riwork chat command UUID --command-json '{"command":"dismiss_notice","item_id":"notice-item-id"}' --json`.
+`somtus chat command UUID --command-json '{"command":"dismiss_notice","item_id":"notice-item-id"}' --json`.
 `item_id` is 1–512 bytes without control characters. The host resolves the item in
 that chat's log and refuses unknown ids or non-sticky notices. Dismissal works on
 stopped chats without starting a provider. Repeating it is idempotent.
@@ -230,7 +230,7 @@ case-sensitive; the optional array accepts at most 16 nonempty strings of at mos
 control only when opted in and at least one window is known. Later empty live
 controls are delivered to opted-in clients to clear their quota state.
 
-The disk-reading CLI opt-in is `riwork chat snapshot UUID --rate-limits --json`;
+The disk-reading CLI opt-in is `somtus chat snapshot UUID --rate-limits --json`;
 the native host subscription and native CLI event reader retain all events. The
 Mac reads that native subscription directly and needs no UI change. Old phones'
 strict event enums therefore never see the new variant. Swift's keyed notice and

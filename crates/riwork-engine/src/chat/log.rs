@@ -512,7 +512,7 @@ pub fn read_infos_checked(home: &Path) -> Result<Vec<ChatInfo>, String> {
         match read {
             Ok(Some(info)) => infos.push(info),
             Ok(None) => {}
-            Err(error) => eprintln!("riwork tabs: skipping unreadable chat metadata: {error}"),
+            Err(error) => eprintln!("somtus tabs: skipping unreadable chat metadata: {error}"),
         }
     }
     infos.sort_by(|a, b| (a.created_at_unix, &a.id).cmp(&(b.created_at_unix, &b.id)));
@@ -1113,7 +1113,7 @@ fn verify_numbering(path: &Path, last: u64) -> io::Result<u64> {
         .open(path)?
         .set_len(kept_bytes)?;
     eprintln!(
-        "riwork chat: {} was numbered irregularly; kept its first {kept_lines} events",
+        "somtus chat: {} was numbered irregularly; kept its first {kept_lines} events",
         path.display()
     );
     Ok(kept_lines)
@@ -1792,7 +1792,7 @@ mod snapshot_tests {
             transcript.items[1].body,
             ItemBody::notice(NoticeLevel::Error, "old", None)
         );
-        // The phone gets what `riwork chat snapshot` prints; the relay passes it on as is.
+        // The phone gets what `somtus chat snapshot` prints; the relay passes it on as is.
         let snapshot = serde_json::to_value(f.read(None, u64::MAX, 10)).unwrap();
         let bodies: Vec<_> = snapshot["items"]
             .as_array()

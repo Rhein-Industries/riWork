@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <title>Somtus</title>
+  <rect width="32" height="32" fill="#FF4A14"/>
+  <path d="M4 7V25L14 16Z" fill="#0A0807"/>
+  <path d="M28 7V25L18 16Z" fill="#0A0807"/>
+  <rect x="15" y="4" width="2" height="24" fill="#0A0807"/>
+</svg>

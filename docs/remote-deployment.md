@@ -1,6 +1,6 @@
-# Deploying the RiWork blind relay
+# Deploying the Somtus blind relay
 
-The relay is a standalone Rust binary. It never runs the RiWork CLI and never
+The relay is a standalone Rust binary. It never runs the Somtus CLI and never
 receives endpoint pairing secrets. Run it under a dedicated OS account, with
 operator-managed routing-token hashes, behind a TLS reverse proxy. Desktop and
 iOS both make outbound `wss://HOST/v1/ws` connections. The relay itself accepts
@@ -12,7 +12,7 @@ Build on the deployment host from the reviewed source/lockfile:
 cargo build --locked --release --manifest-path remote/Cargo.toml
 ```
 
-Install `target/release/riwork-remote` as `/usr/local/bin/riwork-remote`.
+Install `target/release/somtus-remote` as `/usr/local/bin/somtus-remote`.
 Create the `riwork-relay` service account and `/etc/riwork-relay` with mode 700,
 owned by it. Install the **route hash manifest** exported by desktop pairing as
 `/etc/riwork-relay/routes.json`, mode 600, also owned by `riwork-relay`. Transfer
@@ -22,14 +22,14 @@ A Linux systemd unit (`/etc/systemd/system/riwork-relay.service`):
 
 ```ini
 [Unit]
-Description=RiWork opaque WebSocket relay
+Description=Somtus opaque WebSocket relay
 After=network.target
 
 [Service]
 Type=simple
 User=riwork-relay
 Group=riwork-relay
-ExecStart=/usr/local/bin/riwork-remote relay --bind 127.0.0.1:8787 --routes /etc/riwork-relay/routes.json --max-connections 32
+ExecStart=/usr/local/bin/somtus-remote relay --bind 127.0.0.1:8787 --routes /etc/riwork-relay/routes.json --max-connections 32
 Restart=on-failure
 RestartSec=2
 NoNewPrivileges=true
@@ -175,7 +175,7 @@ requests; that would discard the evidence needed for duplicate suppression.
 
 The v1 PSK protocol does not provide forward secrecy. Its exact security boundary,
 handshake/envelope bytes, errors and retry rules are in
-[remote-protocol.md](remote-protocol.md). Protocol v2 (`riwork remote pair --protocol 2`)
+[remote-protocol.md](remote-protocol.md). Protocol v2 (`somtus remote pair --protocol 2`)
 is a single-use expiring invite and an X25519 session; the default remains v1.
 See [remote-protocol-v2.md](remote-protocol-v2.md). Production transport requires both TLS
 and endpoint authentication; a relay token alone never authorizes a CLI request.
@@ -189,18 +189,18 @@ user, even though the v1 API has no create/close/schedule methods. Pair only dev
 you would give a terminal on that machine.
 
 Pairing credentials never expire; revocation is the only end. Any process running as
-the desktop user can run `riwork remote pair`, and a running connector adopts the
+the desktop user can run `somtus remote pair`, and a running connector adopts the
 new device within about 250 milliseconds, so the desktop account is the trust
 boundary. To make that visible:
 
 - The connector logs (stderr) `Remote device ID (NAME) enabled.` when it starts
   serving a device and `authenticated for the first time.` the first time that
   device completes a handshake, then `authenticated.` on later ones.
-- `riwork remote devices` prints JSON per device including `paired_at_unix`,
+- `somtus remote devices` prints JSON per device including `paired_at_unix`,
   `first_authenticated_unix` and `last_authenticated_unix` (Unix seconds; `null`
   when unknown, e.g. pairings made before these were recorded, or never connected).
   A device that appears which you did not pair, or connects when you did not expect
-  it, should be revoked with `riwork remote revoke DEVICE_UUID`.
+  it, should be revoked with `somtus remote revoke DEVICE_UUID`.
 
 References: [Caddy reverse proxy and WebSocket support](https://caddyserver.com/docs/caddyfile/directives/reverse_proxy),
 [Caddy automatic HTTPS](https://caddyserver.com/docs/automatic-https),

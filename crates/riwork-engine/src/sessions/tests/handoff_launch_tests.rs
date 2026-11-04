@@ -1,4 +1,4 @@
-//! What `riwork handoff` chooses for the terminal agent it starts: the model, the effort,
+//! What `somtus handoff` chooses for the terminal agent it starts: the model, the effort,
 //! how much it may do without asking, its first message, its Codex account and Muse's
 //! contributor mode.
 
@@ -227,7 +227,7 @@ fn a_launch_that_chooses_nothing_is_the_menus_launch() {
         codex
             .last()
             .unwrap()
-            .starts_with("Load the following RiWork desktop automation guidance")
+            .starts_with("Load the following Somtus desktop automation guidance")
     );
     let claude = command_line(HarnessKind::Claude, &nothing, false, false);
     assert!(!claude.contains(&"--model".to_owned()));
@@ -342,6 +342,6 @@ fn a_handed_off_terminal_starts_with_its_choices_and_the_account_picked_by_name(
     let error = manager
         .create_harness_with(project.id, None, root, HarnessKind::Claude, with_account)
         .unwrap_err();
-    assert_eq!(error, "claude has no RiWork-managed accounts");
+    assert_eq!(error, "claude has no Somtus-managed accounts");
     assert!(take_recorded(&capture).is_empty(), "nothing was started");
 }

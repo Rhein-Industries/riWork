@@ -47,11 +47,11 @@ impl Problem {
     pub fn message(&self) -> String {
         match self {
             Self::MicrophoneDenied => {
-                "Microphone access is off for RiWork. Turn it on in System Settings to dictate."
+                "Microphone access is off for Somtus. Turn it on in System Settings to dictate."
                     .to_owned()
             }
             Self::RecognitionDenied => {
-                "Speech recognition is off for RiWork. Turn it on in System Settings to dictate."
+                "Speech recognition is off for Somtus. Turn it on in System Settings to dictate."
                     .to_owned()
             }
             Self::Unsupported => {
@@ -71,7 +71,7 @@ impl Problem {
                 "Dictation stopped: the microphone went away. What was heard is kept.".to_owned()
             }
             Self::Unavailable => {
-                "Dictation is not available in this build of RiWork (riwork-speech is missing)."
+                "Dictation is not available in this build of Somtus (riwork-speech is missing)."
                     .to_owned()
             }
             Self::ModelMissing(label) => format!(
@@ -377,7 +377,7 @@ fn recording() -> Option<String> {
 
 /// One dictation's helper process. Dropping it cancels the dictation and ends the process; the
 /// helper also ends by itself when the app's end of its stdin closes, so it never outlives
-/// RiWork.
+/// Somtus.
 pub struct Engine {
     child: Option<Child>,
     stdin: Option<ChildStdin>,

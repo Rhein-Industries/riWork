@@ -332,8 +332,9 @@ final class ChatRequestsTests: XCTestCase {
         XCTAssertThrowsError(try ChatCommandRequest(chatID: chat, command: .switchProvider(provider: .claude, effort: String(repeating: "e", count: 33)))) {
             XCTAssertEqual($0 as? ChatValidationError, .textTooLong(field: "effort", limit: 32))
         }
-        XCTAssertEqual(ChatProvider.codex.others, [.claude, .muse]); XCTAssertEqual(ChatProvider.claude.others, [.codex, .muse])
-        XCTAssertEqual(ChatProvider.muse.others, [.codex, .claude])
+        XCTAssertEqual(ChatProvider.codex.others, [.claude, .muse, .acp]); XCTAssertEqual(ChatProvider.claude.others, [.codex, .muse, .acp])
+        XCTAssertEqual(ChatProvider.muse.others, [.codex, .claude, .acp])
+        XCTAssertEqual(ChatProvider.acp.others, [.codex, .claude, .muse])
         XCTAssertEqual(ChatProvider.muse.title, "Muse"); XCTAssertEqual(try create(.muse).params["provider"], .string("muse"))
         XCTAssertEqual(try ChatCommandRequest(chatID: chat, command: .switchProvider(provider: .muse)).params["command"], try value(#"{"command":"switch","provider":"muse"}"#))
     }

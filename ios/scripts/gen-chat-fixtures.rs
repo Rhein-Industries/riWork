@@ -194,7 +194,7 @@ fn main() {
     let events: Vec<Value> = events.iter().map(|e| to_value(e).unwrap()).collect();
     let commands: Vec<Value> = commands.iter().map(|c| to_value(c).unwrap()).collect();
     let modes: Vec<Value> = [ApprovalMode::Supervised, ApprovalMode::AutoEdit, ApprovalMode::Full, ApprovalMode::Plan].iter().map(|m| to_value(m).unwrap()).collect();
-    let providers: Vec<Value> = [Provider::Codex, Provider::Claude, Provider::Muse].iter().map(|p| to_value(p).unwrap()).collect();
+    let providers: Vec<Value> = [Provider::Codex, Provider::Claude, Provider::Muse, Provider::Acp].iter().map(|p| to_value(p).unwrap()).collect();
     let doc = json!({
         "generated_by": "ios/scripts/gen-chat-fixtures.sh from crates/riwork-engine/src/chat/model.rs; do not edit by hand",
         "events": events,

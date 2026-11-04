@@ -184,7 +184,7 @@ fn a_reply_lists_the_chat_folder_and_the_providers_commands() {
             .map(|c| c.name.as_str())
             .collect::<Vec<_>>(),
         ["memo"],
-        "Codex reads a typed /compact as words, but /memo is RiWork's"
+        "Codex reads a typed /compact as words, but /memo is Somtus's"
     );
     assert_eq!(paths(&made.files), ["a.txt"]);
     assert_eq!(made.files.entries[0].bytes, Some(5));
@@ -688,7 +688,7 @@ fn compact_is_claudes_and_memo_is_every_chats() {
                 .map(|c| c.name.as_str())
                 .collect::<Vec<_>>(),
             ["memo"],
-            "Codex and Muse read a typed /compact as words, but /memo is RiWork's"
+            "Codex and Muse read a typed /compact as words, but /memo is Somtus's"
         );
     }
 }
@@ -720,7 +720,7 @@ fn a_command_preview_says_what_it_is_and_what_sending_does() {
         handler: Handler::Riwork,
     };
     let preview = command_preview(&riwork, Provider::Codex);
-    assert_eq!(preview.kind, "RiWork command");
+    assert_eq!(preview.kind, "Somtus command");
     assert_eq!(preview.body[1], "Takes TEXT");
 }
 

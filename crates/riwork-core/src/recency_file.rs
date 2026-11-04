@@ -1,5 +1,5 @@
 //! `project-recency.json`: when each project's files last changed, as the
-//! Projects panel orders "Last edited", published under the RiWork data
+//! Projects panel orders "Last edited", published under the Somtus data
 //! directory so the CLI, and through it the phone companion, can sort by it.
 //!
 //! Only the app can know: the dates come from the scan and the file-change

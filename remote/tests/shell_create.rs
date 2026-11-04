@@ -149,17 +149,17 @@ fn stub_cli(dir: &Path) -> PathBuf {
              case \"$1 $2\" in\n\
              'capabilities --json') if [ -e \"$d/capabilities.json\" ]; then cat \"$d/capabilities.json\"; fi;;\n\
              'project show'|'worktree show')\n\
-               if [ -e \"$d/show.error\" ]; then printf 'riwork: %s\\n' \"$(cat \"$d/show.error\")\" >&2; exit 2; fi\n\
+               if [ -e \"$d/show.error\" ]; then printf 'somtus: %s\\n' \"$(cat \"$d/show.error\")\" >&2; exit 2; fi\n\
                if [ -e \"$d/show.id\" ]; then printf '{{\"id\":\"%s\"}}' \"$(cat \"$d/show.id\")\"; else printf '{{\"id\":\"%s\"}}' \"$3\"; fi;;\n\
              'shell create')\n\
                if [ -e \"$d/create.hold\" ]; then i=0; while [ ! -e \"$d/create.gate\" ] && [ $i -lt 400 ]; do sleep 0.05; i=$((i+1)); done; fi\n\
                touch \"$d/create.ran\"\n\
-               if [ -e \"$d/create.error\" ]; then printf 'riwork: %s\\n' \"$(cat \"$d/create.error\")\" >&2; exit 2; fi\n\
+               if [ -e \"$d/create.error\" ]; then printf 'somtus: %s\\n' \"$(cat \"$d/create.error\")\" >&2; exit 2; fi\n\
                cat \"$d/create.json\";;\n\
              'shell list') if [ -e \"$d/shells.json\" ]; then cat \"$d/shells.json\"; else echo '[]'; fi;;\n\
              'orchestrator list') if [ -e \"$d/orchestrators.json\" ]; then cat \"$d/orchestrators.json\"; else echo '[]'; fi;;\n\
              'shell close')\n\
-               if [ -e \"$d/close.error\" ]; then printf 'riwork: %s\\n' \"$(cat \"$d/close.error\")\" >&2; exit 2; fi;;\n\
+               if [ -e \"$d/close.error\" ]; then printf 'somtus: %s\\n' \"$(cat \"$d/close.error\")\" >&2; exit 2; fi;;\n\
              esac\n",
             dir = dir.display()
         ),
@@ -813,9 +813,9 @@ async fn the_cli_failures_the_phone_acts_on_have_their_own_codes() {
             "grok is not installed or is not on PATH",
         ),
         (
-            "Cua Driver is not installed. Open RiWork Settings, or run `riwork setup`.",
+            "Cua Driver is not installed. Open Somtus Settings, or run `somtus setup`.",
             "harness_unavailable",
-            "Cua Driver is not installed. Open RiWork Settings, or run `riwork setup`.",
+            "Cua Driver is not installed. Open Somtus Settings, or run `somtus setup`.",
         ),
         // Anything else is the CLI's own words, without the wrapper.
         (
@@ -830,9 +830,9 @@ async fn the_cli_failures_the_phone_acts_on_have_their_own_codes() {
         ),
         // Not the folder: the CLI could not find itself.
         (
-            "resolve RiWork executable: No such file or directory (os error 2)",
+            "resolve Somtus executable: No such file or directory (os error 2)",
             "cli_error",
-            "resolve RiWork executable: No such file or directory (os error 2)",
+            "resolve Somtus executable: No such file or directory (os error 2)",
         ),
         // A look-alike is not the installation error.
         (

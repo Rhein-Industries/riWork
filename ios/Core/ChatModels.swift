@@ -332,7 +332,7 @@ public enum ChatBundledModels {
             ChatModelOption(id: "haiku", name: "Haiku", description: "Haiku 4.5 · Fastest for quick answers", efforts: [], defaultEffort: nil, supportsFast: false, isDefault: false),
         ]
         // No snapshot recorded yet: the live list is the only offer beyond the default.
-        case .muse: return []
+        case .muse, .acp: return []
         }
     }
 }

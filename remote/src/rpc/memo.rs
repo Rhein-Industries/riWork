@@ -2,7 +2,7 @@
 //! `docs/remote-protocol.md`): a project's memo, the person's own Markdown notes for it, read and
 //! replaced from the phone.
 //!
-//! They are `riwork project memo show|set ID --json`. The text of a save goes to the CLI on its
+//! They are `somtus project memo show|set ID --json`. The text of a save goes to the CLI on its
 //! standard input, never as an argument (a process list shows arguments to every user of the
 //! Mac). A save replaces the whole memo and the last one to reach the desktop's store wins:
 //! there is no merge and no check against what the phone last saw. The connector checks the
@@ -89,10 +89,7 @@ fn reply(cli: Value, project_id: &str) -> std::result::Result<Value, Fault> {
 
 /// `project show`'s refusal of an id: no project, or more than one, has it.
 fn target_fault(fault: Fault) -> Fault {
-    let line = fault
-        .message
-        .strip_prefix("RiWork CLI failed: riwork: ")
-        .unwrap_or_default();
+    let line = super::cli_failure_detail(&fault.message).unwrap_or_default();
     if fault.code == "cli_error"
         && (line.starts_with("No project matches '")
             || line.starts_with("More than one project matches '"))
@@ -105,7 +102,7 @@ fn target_fault(fault: Fault) -> Fault {
 
 impl Rpc {
     /// What `ready` announces as `features.project_memo`: the installed CLI said `"project_memo":
-    /// true` in `riwork capabilities --json`. Short, like `chat_supported`, whose question it
+    /// true` in `somtus capabilities --json`. Short, like `chat_supported`, whose question it
     /// shares.
     pub async fn project_memo_supported(&self) -> bool {
         self.capability_known(&self.project_memo, Duration::from_secs(3))
@@ -124,7 +121,7 @@ impl Rpc {
         }
     }
 
-    /// The memo of the project, as `riwork project memo show ID --json` reads it.
+    /// The memo of the project, as `somtus project memo show ID --json` reads it.
     pub(super) async fn project_memo_get(&self, p: Get) -> std::result::Result<Value, Fault> {
         self.require_project_memo().await?;
         let cli = self
@@ -141,7 +138,7 @@ impl Rpc {
         reply(cli, &p.project_id)
     }
 
-    /// Replace the memo of the project with `p.text`, through `riwork project memo set ID
+    /// Replace the memo of the project with `p.text`, through `somtus project memo set ID
     /// --json` with the text on its standard input, and answer the memo as saved. The project
     /// must exist under exactly this id: the CLI also matches names and paths, so an id that is
     /// nobody's could otherwise save over another project's memo.
@@ -238,10 +235,10 @@ mod tests {
             "No project matches 'x'",
             "More than one project matches 'x'; use its UUID",
         ] {
-            let fault = target_fault(cli_fault(format!("RiWork CLI failed: riwork: {line}")));
+            let fault = target_fault(cli_fault(format!("Somtus CLI failed: somtus: {line}")));
             assert_eq!(fault.code, "not_found", "{line}");
         }
-        let other = target_fault(cli_fault("RiWork CLI failed: riwork: Cannot lock store"));
+        let other = target_fault(cli_fault("Somtus CLI failed: somtus: Cannot lock store"));
         assert_eq!(other.code, "cli_error");
     }
 

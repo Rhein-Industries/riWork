@@ -325,9 +325,9 @@ impl PreviewControl {
                 return Err(ControlError::new(
                     "timeout",
                     if queued {
-                        "RiWork did not accept the preview command before the timeout; the queued command was cancelled."
+                        "Somtus did not accept the preview command before the timeout; the queued command was cancelled."
                     } else {
-                        "RiWork accepted the preview command but did not confirm it before the timeout; inspect preview status before retrying."
+                        "Somtus accepted the preview command but did not confirm it before the timeout; inspect preview status before retrying."
                     },
                 ));
             }
@@ -355,7 +355,7 @@ impl PreviewControl {
                 {
                     return Err(ControlError::new(
                         "owner_conflict",
-                        "Another RiWork window owns this preview ID; create a new preview ID.",
+                        "Another Somtus window owns this preview ID; create a new preview ID.",
                     ));
                 }
             }
@@ -679,7 +679,7 @@ impl PreviewControl {
         if hosts.is_empty() {
             Err(ControlError::new(
                 "host_unavailable",
-                "Open this project in an updated RiWork GUI before controlling previews.",
+                "Open this project in an updated Somtus GUI before controlling previews.",
             ))
         } else {
             Ok(hosts)

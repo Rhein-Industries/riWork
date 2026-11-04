@@ -27,6 +27,7 @@ const sentence = (error: unknown) => String(error).replace(/^(?:Error: )?(?:refu
  * where it came from, and this chat gets a marker naming it. */
 export function createContinue(options: {
   chatId: string;
+  unavailable?: boolean;
   panel: () => ChatPanel;
   notice: (message: string) => void;
   /** The handoff made `id` this tab's chat. */
@@ -43,9 +44,10 @@ export function createContinue(options: {
   let alive = true, asked = 0;
   cleanup(() => { alive = false; asked++; });
 
-  /** The saved model lists of every agent (`riwork chat models`): what saved chats reported and
+  /** The saved model lists of every agent (`somtus chat models`): what saved chats reported and
    * Muse's last answer, never asking an agent. */
   function loadCatalogs() {
+    if ((options.unavailable || options.panel().provider === "acp")) return;
     const token = ++asked;
     const projectId = options.panel().projectId ?? null;
     for (const agent of AGENTS) {
@@ -73,6 +75,7 @@ export function createContinue(options: {
 
   /** The other agents, each with its default and its known models. */
   function others(): { agent: Agent; label: string; choices: AgentChoice[] }[] {
+    if ((options.unavailable || options.panel().provider === "acp")) return [];
     const current = options.panel().provider;
     return AGENTS.filter((agent) => agent.id !== current).map((agent) => ({
       agent: agent.id, label: agent.label,
@@ -82,7 +85,7 @@ export function createContinue(options: {
   }
 
   function open(next: AgentChoice) {
-    if (pending()) return;
+    if (pending() || (options.unavailable || options.panel().provider === "acp")) return;
     choice.set(next); error.set(""); note.set("");
     // A summary is asked of an agent that is idle; one at work passes what it wrote.
     context.set("transcript");
@@ -119,7 +122,7 @@ export function createContinue(options: {
 
   /** Forks the chat at `at` (that item included), or whole; with another agent when chosen. */
   async function fork(at?: string, agent?: AgentChoice) {
-    if (forking()) return;
+    if (forking() || (options.unavailable || options.panel().provider === "acp")) return;
     forking.set(true);
     try {
       const result = await Chat.fork({ chatId: options.chatId, at: at ?? null, provider: agent?.provider ?? null, model: agent?.model ?? null });
@@ -136,6 +139,7 @@ export function createContinue(options: {
    * This chat's own agent offers its other models (the fork keeps the chat's model unless one is
    * chosen, which "Fork from here" already does); another agent also its default model. */
   function forkItems(at?: string): MenuItem[] {
+    if ((options.unavailable || options.panel().provider === "acp")) return [];
     const current = options.panel().provider;
     const model = options.panel().toolbar?.model;
     const agents: MenuItem[] = AGENTS.flatMap((agent) => {

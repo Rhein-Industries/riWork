@@ -1697,7 +1697,7 @@ fn token_refresh_requests_emit_auth_required_once_and_are_answered_with_an_error
         text.push_str("\n");
         text.push_str(
             &json!({"type":"expect","frame":{"id":id,"error":{"code":-32601,
-            "message":"riwork does not handle account/chatgptAuthTokens/refresh"}}})
+            "message":"somtus does not handle account/chatgptAuthTokens/refresh"}}})
             .to_string(),
         );
     }

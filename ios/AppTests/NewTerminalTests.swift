@@ -274,7 +274,7 @@ actor SpawnTransport: RemoteTransport {
         await rig.transport.setCreateMode(.unsupported)
         let failure = await model.createTerminal(try request())
         XCTAssertEqual(failure, .unsupported)
-        XCTAssertEqual(failure?.message, "Update RiWork on your Mac to open terminals from the phone.")
+        XCTAssertEqual(failure?.message, "Update Somtus on your Mac to open terminals from the phone.")
         XCTAssertEqual(model.terminalControl, .unsupported)
         XCTAssertFalse(model.canOpenNewTerminal, "⌘N does nothing")
         XCTAssertEqual(model.terminalControlNotice, TerminalControlError.unsupportedMessage)

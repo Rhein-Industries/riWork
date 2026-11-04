@@ -608,7 +608,7 @@ struct ChatOutputAssetCard: View {
                 directory = folder
                 preview = ChatPreviewFile(url: file)
             } catch is CancellationError { cleanup() }
-            catch { cleanup(); failure = RemoteError.isUnsupportedMethod(error) ? "Update RiWork on your Mac to preview generated files." : error.localizedDescription }
+            catch { cleanup(); failure = RemoteError.isUnsupportedMethod(error) ? "Update Somtus on your Mac to preview generated files." : error.localizedDescription }
         }
     }
 

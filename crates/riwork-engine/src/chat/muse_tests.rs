@@ -48,7 +48,7 @@ fn a_riwork_decision_never_sends_a_choice_that_saves_a_rule() {
             Decision::Cancel
         ]
     );
-    // Only lasting grants and a refusal that saves a rule: nothing RiWork can say yes with.
+    // Only lasting grants and a refusal that saves a rule: nothing Somtus can say yes with.
     let lasting = [
         choice("approved", "localPersistent", "always"),
         choice("approvedPolicyAmendment", "localPersistent", "rule"),
@@ -150,7 +150,7 @@ fn the_cua_server_is_riwork_cua_mcp_for_this_session_with_literal_values() {
         .unwrap();
     let servers = cua_servers(
         &config,
-        Path::new("/Applications/RiWork.app/Contents/MacOS/riwork"),
+        Path::new("/Applications/Somtus.app/Contents/MacOS/somtus"),
         Some(Path::new("/opt/cua/driver")),
         false,
     )
@@ -159,13 +159,13 @@ fn the_cua_server_is_riwork_cua_mcp_for_this_session_with_literal_values() {
         servers,
         json!({"cua-driver": {
             "transport": "stdio",
-            "command": "/Applications/RiWork.app/Contents/MacOS/riwork",
+            "command": "/Applications/Somtus.app/Contents/MacOS/somtus",
             "args": ["cua", "mcp"],
             "env": {"RIWORK_HOME": home, "RIWORK_CUA_DRIVER": "/opt/cua/driver"},
             "mode": "required",
         }})
     );
-    // The opt-in that turns off the guard on input to RiWork's own windows, only when set.
+    // The opt-in that turns off the guard on input to Somtus's own windows, only when set.
     let allowed = cua_servers(&config, Path::new("/x"), None, true).unwrap();
     assert_eq!(
         allowed["cua-driver"]["env"],
@@ -634,7 +634,7 @@ fn approvals_offer_and_send_only_what_lasts_no_longer_than_asked() {
     );
     assert!(
         !first.detail.contains("allow rm forever"),
-        "a rule RiWork never sends is not shown as one of its choices"
+        "a rule Somtus never sends is not shown as one of its choices"
     );
     // The fixture accepts only the session choice, though a saved rule comes first.
     run.driver
@@ -1535,7 +1535,7 @@ fn compaction_shows_only_what_compacted_and_says_the_rest() {
 // ---- Live: the real `muse serve --provider echo` -------------------------------------
 
 /// The real Muse binary, named exactly (never looked up on `PATH`, so no
-/// launcher, RiWork shim or update check runs): run with
+/// launcher, Somtus shim or update check runs): run with
 /// `MUSE_LIVE_BIN=…/muse-bin-<version> cargo test -p riwork-engine live_ -- --ignored`.
 fn live_muse() -> PathBuf {
     std::env::var_os("MUSE_LIVE_BIN")
@@ -1544,7 +1544,7 @@ fn live_muse() -> PathBuf {
 }
 
 /// A throwaway everything: homes, Muse's data, the workspace, and a private
-/// stand-in for `riwork cua mcp`. Muse runs its offline echo provider.
+/// stand-in for `somtus cua mcp`. Muse runs its offline echo provider.
 struct Live {
     dir: PathBuf,
     fake_mcp: PathBuf,
@@ -1697,8 +1697,8 @@ fn live_echo_chat_carries_context_attachments_steers_and_resumes_with_cua_mcp() 
     let (mut driver, events, mut seen) = live.start(config.clone());
     let thread = driver.provider_thread_id().expect("a session");
 
-    // RiWork's Cua server, for this session only: exactly the command, arguments and
-    // RiWork home the driver named, initialized and listed by Muse.
+    // Somtus's Cua server, for this session only: exactly the command, arguments and
+    // Somtus home the driver named, initialized and listed by Muse.
     super::super::testing::eventually(|| {
         live.mcp().iter().any(|entry| entry["recv"] == "tools/list")
     });
@@ -1908,7 +1908,7 @@ fn live_model_discovery_lists_models_without_creating_a_conversation() {
     let mut config = live.config();
     config.program = live_muse(); // actual default provider, not the echo wrapper
     // Read this machine's configured provider catalog and login. Keep Muse's
-    // session/project stores, RiWork state and temporary files isolated; only
+    // session/project stores, Somtus state and temporary files isolated; only
     // metadata is queried, with no model turn or interactive login.
     config.env.retain(|(name, _)| {
         ![

@@ -1,5 +1,5 @@
 //! A CLI that checks for itself that a shell exists and is alive
-//! (`riwork capabilities` says so) is not asked to list sessions first: one CLI
+//! (`somtus capabilities` says so) is not asked to list sessions first: one CLI
 //! process per request instead of two or three. What a phone is told stays
 //! what it was told, and a CLI that does not say so is handled as before.
 use riwork_remote::{config::Storage, rpc::Rpc};
@@ -116,14 +116,14 @@ impl Fixture {
 
 /// A CLI that logs every call and, as the real one does for `shell output`,
 /// `shell history` and `shell keys`, refuses a shell it does not know (stderr
-/// `riwork: unknown shell ID`, with the `not_found: ` token for keys) or one
+/// `somtus: unknown shell ID`, with the `not_found: ` token for keys) or one
 /// that has exited (a `dead` file).
 fn stub_cli(dir: &Path, shell: &str, capabilities: Capabilities) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let cli = dir.join("fake-riwork");
     let capabilities = match capabilities {
         Capabilities::Verifies => "printf '{\"v\":1,\"verifies_shell\":true}'",
-        Capabilities::Unknown => "echo \"riwork: Unknown invocation 'capabilities'\" >&2; exit 2",
+        Capabilities::Unknown => "echo \"somtus: Unknown invocation 'capabilities'\" >&2; exit 2",
         Capabilities::Silent => "true",
         Capabilities::Denies => "printf '{\"v\":1,\"verifies_shell\":false}'",
     };
@@ -136,8 +136,8 @@ fn stub_cli(dir: &Path, shell: &str, capabilities: Capabilities) -> PathBuf {
              printf '\\n' >> \"$d/argv.log\"\n\
              refuse() {{\n\
                token=''; [ \"$1\" = keys ] && token='not_found: '\n\
-               if [ \"$2\" != '{shell}' ]; then echo \"riwork: ${{token}}unknown shell $2\" >&2; exit 2; fi\n\
-               if [ -e \"$d/dead\" ]; then echo \"riwork: ${{token}}shell $2 has exited\" >&2; exit 2; fi\n\
+               if [ \"$2\" != '{shell}' ]; then echo \"somtus: ${{token}}unknown shell $2\" >&2; exit 2; fi\n\
+               if [ -e \"$d/dead\" ]; then echo \"somtus: ${{token}}shell $2 has exited\" >&2; exit 2; fi\n\
                if [ -e \"$d/other\" ]; then echo \"$(cat \"$d/other\")\" >&2; exit 2; fi\n\
              }}\n\
              case \"$1 $2\" in\n\
@@ -219,7 +219,7 @@ async fn a_refusal_of_the_cli_reads_like_the_lookup_it_replaces() {
 async fn only_the_clis_own_refusal_is_put_in_other_words() {
     let f = Fixture::new(Capabilities::Verifies);
     // Another failure keeps its words and its code.
-    f.set("other", "riwork: tmux: no server running");
+    f.set("other", "somtus: tmux: no server running");
     let response = f.output(&f.shell).await;
     assert_eq!(code(&response), "cli_error", "{response}");
     assert!(
@@ -231,13 +231,13 @@ async fn only_the_clis_own_refusal_is_put_in_other_words() {
     // Words that merely contain the phrase are not the refusal.
     f.set(
         "other",
-        &format!("riwork: tmux said unknown shell {} twice", f.shell),
+        &format!("somtus: tmux said unknown shell {} twice", f.shell),
     );
     let response = f.output(&f.shell).await;
     assert_eq!(code(&response), "cli_error", "{response}");
     assert!(message(&response).contains("tmux said"), "{response}");
     // Nor is the refusal of a different shell.
-    f.set("other", &format!("riwork: unknown shell {}", new_uuid()));
+    f.set("other", &format!("somtus: unknown shell {}", new_uuid()));
     let response = f.output(&f.shell).await;
     assert_eq!(code(&response), "cli_error", "{response}");
     // A bad id never reaches the CLI at all.

@@ -129,7 +129,7 @@ public enum ProjectMemoRequests {
 
 /// What went wrong with reading or saving a memo, in words for the person.
 public enum ProjectMemoError: Error, Equatable, Sendable, LocalizedError {
-    /// The Mac's RiWork predates memos.
+    /// The Mac's Somtus predates memos.
     case unsupported
     case notConnected
     /// The link dropped or timed out: the save may or may not have reached the Mac. Saving the same text again is harmless.
@@ -140,7 +140,7 @@ public enum ProjectMemoError: Error, Equatable, Sendable, LocalizedError {
     case unreadableReply
     case failed(String)
 
-    public static let unsupportedMessage = "Update RiWork on your Mac to use project memos from the phone."
+    public static let unsupportedMessage = "Update Somtus on your Mac to use project memos from the phone."
 
     public var errorDescription: String? { message }
     public var message: String {
@@ -217,7 +217,7 @@ public struct ProjectMemoEditor: Sendable, Equatable {
         /// Text kept from earlier, while the Mac's memo changed since it was written: nothing is saved until the person chooses
         /// (`keepMine` or `useMacVersion`), so neither text is lost without being seen.
         case conflict
-        /// The Mac's RiWork has no memos.
+        /// The Mac's Somtus has no memos.
         case unsupported
     }
 

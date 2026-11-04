@@ -237,7 +237,7 @@ export function ProjectSettingsPanel(props: ProjectSettingsProps) {
         </View> : <Text style={textStyle(theme, 10, true)}>No Git repositories detected</Text>}
         <Text selectable={true} style={textStyle(theme, 10, true)}>{`Project ID ${snapshot()!.project.id}`}</Text>
       </Section>
-      <Section number="08" title="Memo" description="Your own Markdown notes for this project, saved as you type and shared with RiWork on your phone. Type /memo in one of its chats to insert them." theme={theme}>
+      <Section number="08" title="Memo" description="Your own Markdown notes for this project, saved as you type and shared with Somtus on your phone. Type /memo in one of its chats to insert them." theme={theme}>
         <MemoEditor projectId={props.projectId} theme={theme} visible={shown} bindSaveKey={false} onControl={(control) => { memoControl = control; if (control && revealPending) focusMemo(); }} />
       </Section>
     </View>}

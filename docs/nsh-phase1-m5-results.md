@@ -61,7 +61,7 @@ TARGET=/private/tmp/riwork-p1-integration-mkzwamt7/target
 python3 crates/riwork-desktop/verification/phase1_m5.py probes --root "$ROOT" --target-dir "$TARGET"
 python3 crates/riwork-desktop/verification/phase1_m5.py reference --root "$ROOT" --target-dir "$TARGET" --zig /Users/dominik/.local/share/riwork/toolchains/zig-0.16.0/zig
 python3 crates/riwork-desktop/verification/phase1_integration.py build --root "$ROOT" --target-dir "$TARGET"
-python3 crates/riwork-desktop/verification/phase1_integration.py parity --root "$ROOT" --target-dir "$TARGET" --reference "$ROOT/reference-target/debug/riwork"
+python3 crates/riwork-desktop/verification/phase1_integration.py parity --root "$ROOT" --target-dir "$TARGET" --reference "$ROOT/reference-target/debug/somtus"
 python3 crates/riwork-desktop/verification/phase1_integration.py headless --root "$ROOT" --target-dir "$TARGET"
 python3 crates/riwork-desktop/verification/phase1_m5.py fixture --root "$ROOT" --target-dir "$TARGET" --existing-appearance --linger-seconds 120
 python3 crates/riwork-desktop/verification/phase1_m5.py ledger --root "$ROOT" --target-dir "$TARGET"
@@ -73,7 +73,7 @@ The prescribed p1-basic, p1-layouts, p1-restore and p1-theme generators all exit
 
 ## Write allow-list, carry-over ledger and decisions
 
-Four real fixture launches were audited with SHA-256 **and mtime**, including removal detection. Changed files were only `nsh/desktop.handoff.lock` and `run/desktop.lock`; no disallowed writes, sessions.json, chats/ or tmux entry appeared. Three seeded appearance.json through the core publisher before the audit; it remained byte/mtime identical. The unseeded run never created it. No live RiWork application PID/window/state was read. A final Cua query for fixture PID 81359 returned zero windows after cleanup.
+Four real fixture launches were audited with SHA-256 **and mtime**, including removal detection. Changed files were only `nsh/desktop.handoff.lock` and `run/desktop.lock`; no disallowed writes, sessions.json, chats/ or tmux entry appeared. Three seeded appearance.json through the core publisher before the audit; it remained byte/mtime identical. The unseeded run never created it. No live Somtus application PID/window/state was read. A final Cua query for fixture PID 81359 returned zero windows after cleanup.
 
 All **142 protected legacy desktop source files** remain byte-for-byte identical to ea0f2f5. No GPUI deletion occurred. Section 4.3 successors are **not complete**: the preserved source does not count as executed successor coverage. Native theme, strip, global, pane and key successors that are missing are failed in the item table. The deletion embargo remains active.
 
@@ -98,7 +98,7 @@ Each command ID resolves to its exact invocation and result below. Multiple rout
 |---|---|---|---|
 | P1-PROC-01 | PASS | `C136`, `C256`, `C257`, `C258`, `C259`, `C260`, `C261`, `C262`, `C263`, `C264`, `C265`, `C266`, `C267`, `C268`, `C269`, `C270`, `C271`, `C272`, `C273`, `C280`, `C281`, `C283`, `C284`, `C285` | Host: CLI startup parser passes. Review of nsh_main.rs proves run_cli precedes any host/AppKit/NSH initialization. Root owns five-command historical cli-diff. Historical ea0f2f5 GPUI executable built with existing Zig 0.16. Initial settings JSON byte-order failure fixed by preserving serde_json insertion order. Final five exact command comparisons match stdout, stderr and exit code; regression golden is from the historical executable. |
 | P1-PROC-02 | PASS | `C156` | Host: Exact production scrub function passes in a dedicated single-thread process, avoiding mutation of the parallel Rust test environment. |
-| P1-PROC-03 | PASS | `C209`, `C216`, `C223`, `C230`, `C288`, `C289` | Final invalid-home command exits 2 with riwork: prefix. Immediate pgrep -f on only the fixture path exits 1: no orphan fixture process. |
+| P1-PROC-03 | PASS | `C209`, `C216`, `C223`, `C230`, `C288`, `C289` | Final invalid-home command exits 2 with somtus: prefix. Immediate pgrep -f on only the fixture path exits 1: no orphan fixture process. |
 | P1-PROC-04 | FAIL | `C157`, `C158`, `C159`, `C210`, `C217`, `C224`, `C231`, `C274`, `C290`, `C291`, `C292`, `C293`, `C294`, `C295`, `C296`, `C297`, `C298`, `C299`, `C300`, `C301`, `C302`, `C303`, `C304`, `C305`, `C306`, `C307`, `C308`, `C309`, `C310`, `C311`, `C312`, `C313`, `C314`, `C315`, `C316`, `C317`, `C318` | Host: All three host successors pass (canonical project reuse, vanished root error, cwd fallback). Root fixture proves missing-directory invocation is rejected by CLI, so the required fallback notice is not accepted; HOME/dot fallback is absent. |
 | P1-PROC-05 | FAIL | `C160`, `C161`, `C162`, `C211`, `C212`, `C218`, `C219`, `C225`, `C226`, `C232`, `C233`, `C290`, `C291`, `C292`, `C293`, `C294`, `C295`, `C296`, `C297`, `C298`, `C299`, `C300`, `C301`, `C302`, `C303`, `C304`, `C305`, `C306`, `C307`, `C308`, `C309`, `C310`, `C311`, `C312`, `C313`, `C314`, `C315`, `C316`, `C317`, `C318` | Host: All host ownership/forward/stale-lock/replacement successors pass. Explicit unlock-on-drop guard releases duplicated/inherited file descriptions; root owns real forward/instances proof. FAIL whole item: forwarding and one-PID/two-window checks pass, but output behavior depends on D-PROC-1, which remains explicitly open. Acceptance is withheld pending that decision; this run does not choose a new CLI contract. Final real fixture PID 81359: two distinct Alpha/Beta runtime windows, one registered PID; allowed lock writes only; no tmux entries; preexisting appearance.json SHA-256 and mtime unchanged. Cleanup SIGTERM exit -15. |
 | P1-PROC-06 | PASS | `C137`, `C212`, `C219`, `C226`, `C233`, `C290`, `C291`, `C292`, `C293`, `C294`, `C295`, `C296`, `C297`, `C298`, `C299`, `C300`, `C301`, `C302`, `C303`, `C304`, `C305`, `C306`, `C307`, `C308`, `C309`, `C310`, `C311`, `C312`, `C313`, `C314`, `C315`, `C316`, `C317`, `C318` | Host: Existing runtime registry test passes; root owns the live fixture two-window count. Final real fixture PID 81359: two distinct Alpha/Beta runtime windows, one registered PID; allowed lock writes only; no tmux entries; preexisting appearance.json SHA-256 and mtime unchanged. Cleanup SIGTERM exit -15. |
@@ -405,50 +405,50 @@ Command environments and stdout/stderr hashes are in the machine record; root ma
 | C139 | `cargo test -p riwork-engine --lib readiness_requires_correct_child_and_matching_registered_windows --locked --offline` | exit 0 |
 | C140 | `cargo test -p riwork-engine --lib failed_or_hung_replacement_keeps_old_alive_and_allows_retry --locked --offline` | exit 0 |
 | C141 | `cargo test -p riwork-engine --lib a_watchdog_that_fired_refuses_to_let_the_restore_confirm --locked --offline` | exit 0 |
-| C142 | `cargo test -p riwork-desktop --bin riwork nsh_runtime::tests::restore_acknowledgements_are_per_window_and_idempotent --locked --offline` | exit 0 |
-| C143 | `cargo test -p riwork-desktop --bin riwork nsh_runtime::tests::restore_matches_targets_even_if_window_order_changes --locked --offline` | exit 0 |
-| C144 | `cargo test -p riwork-desktop --bin riwork restore::tests::confirmation_gives_up_after_20_s --locked --offline` | exit 0 |
+| C142 | `cargo test -p riwork-desktop --bin somtus nsh_runtime::tests::restore_acknowledgements_are_per_window_and_idempotent --locked --offline` | exit 0 |
+| C143 | `cargo test -p riwork-desktop --bin somtus nsh_runtime::tests::restore_matches_targets_even_if_window_order_changes --locked --offline` | exit 0 |
+| C144 | `cargo test -p riwork-desktop --bin somtus restore::tests::confirmation_gives_up_after_20_s --locked --offline` | exit 0 |
 | C145 | `cargo test -p riwork-engine --lib publishing_writes_only_changes_and_never_waits_for_the_registry_lock --locked --offline` | exit 0 |
-| C146 | `cargo test -p riwork-desktop --bin riwork nsh_host::tests::a_busy_registry_lock_stays_due --locked --offline` | exit 0 |
+| C146 | `cargo test -p riwork-desktop --bin somtus nsh_host::tests::a_busy_registry_lock_stays_due --locked --offline` | exit 0 |
 | C147 | `cargo test -p riwork-engine --lib identifiers_geometry_and_private_file_read_are_validated --locked --offline` | exit 0 |
-| C148 | `cargo test -p riwork-desktop --bin riwork nsh_host::tests::runtime_publication_reads_current_layout_without_an_appkit_state_event --locked --offline` | exit 0 |
-| C149 | `cargo test -p riwork-desktop --bin riwork nsh_host::tests::runtime_frames_keep_the_existing_display_local_top_left_coordinates --locked --offline` | exit 0 |
+| C148 | `cargo test -p riwork-desktop --bin somtus nsh_host::tests::runtime_publication_reads_current_layout_without_an_appkit_state_event --locked --offline` | exit 0 |
+| C149 | `cargo test -p riwork-desktop --bin somtus nsh_host::tests::runtime_frames_keep_the_existing_display_local_top_left_coordinates --locked --offline` | exit 0 |
 | C150 | `cargo test -p riwork-core --lib opening_windows_cascade_inside_the_display_and_clamp_after_cascading --locked --offline` | exit 0 |
-| C151 | `cargo test -p riwork-desktop --bin riwork placement::tests::the_cascade_counts_open_non_tooltip_windows --locked --offline` | exit 0 |
+| C151 | `cargo test -p riwork-desktop --bin somtus placement::tests::the_cascade_counts_open_non_tooltip_windows --locked --offline` | exit 0 |
 | C152 | `cargo test -p riwork-core --lib legacy_and_invalid_window_sizes_do_not_break_layout_restoration --locked --offline` | exit 0 |
 | C153 | `cargo test -p riwork-core --lib global_window::tests:: --locked --offline` | exit 0 |
 | C154 | `cargo test -p riwork-engine --lib the_global_window_restores_as_itself_and_older_snapshots_hold_project_windows --locked --offline` | exit 0 |
-| C155 | `cargo test -p riwork-desktop --bin riwork runtime_window::tests::the_global_window_is_recorded_as_global --locked --offline` | exit 0 |
+| C155 | `cargo test -p riwork-desktop --bin somtus runtime_window::tests::the_global_window_is_recorded_as_global --locked --offline` | exit 0 |
 | C156 | `cargo test -p riwork-desktop --test startup_environment --locked --offline` | exit 0 |
-| C157 | `cargo test -p riwork-desktop --bin riwork nsh_host::tests::folder_arg_reuses_existing_project --locked --offline` | exit 0 |
-| C158 | `cargo test -p riwork-desktop --bin riwork nsh_host::tests::no_active_project_registers_the_cwd_fallback --locked --offline` | exit 0 |
-| C159 | `cargo test -p riwork-desktop --bin riwork nsh_host::tests::a_vanished_project_root_is_an_error_for_the_caller_not_a_panic --locked --offline` | exit 0 |
-| C160 | `cargo test -p riwork-desktop --bin riwork nsh_runtime::tests::forwards_path_and_reopen_without_creating_a_second_primary --locked --offline` | exit 0 |
-| C161 | `cargo test -p riwork-desktop --bin riwork nsh_runtime::tests::reclaims_stale_socket_but_never_deletes_a_regular_file --locked --offline` | exit 0 |
-| C162 | `cargo test -p riwork-desktop --bin riwork nsh_runtime::tests::replacement_keeps_old_socket_and_prevents_handoff_race --locked --offline` | exit 0 |
-| C163 | `cargo test -p riwork-desktop --bin riwork placement::tests::zoomed_counts_as_maximized_and_keeps_its_normal_frame --locked --offline` | exit 0 |
-| C164 | `cargo test -p riwork-desktop --bin riwork placement::tests::fullscreen_counts_as_fullscreen --locked --offline` | exit 0 |
-| C165 | `cargo test -p riwork-desktop --bin riwork window_registry::tests::the_last_close_quits --locked --offline` | exit 0 |
-| C166 | `cargo test -p riwork-desktop --bin riwork window_registry::tests::tooltips_do_not_count --locked --offline` | exit 0 |
+| C157 | `cargo test -p riwork-desktop --bin somtus nsh_host::tests::folder_arg_reuses_existing_project --locked --offline` | exit 0 |
+| C158 | `cargo test -p riwork-desktop --bin somtus nsh_host::tests::no_active_project_registers_the_cwd_fallback --locked --offline` | exit 0 |
+| C159 | `cargo test -p riwork-desktop --bin somtus nsh_host::tests::a_vanished_project_root_is_an_error_for_the_caller_not_a_panic --locked --offline` | exit 0 |
+| C160 | `cargo test -p riwork-desktop --bin somtus nsh_runtime::tests::forwards_path_and_reopen_without_creating_a_second_primary --locked --offline` | exit 0 |
+| C161 | `cargo test -p riwork-desktop --bin somtus nsh_runtime::tests::reclaims_stale_socket_but_never_deletes_a_regular_file --locked --offline` | exit 0 |
+| C162 | `cargo test -p riwork-desktop --bin somtus nsh_runtime::tests::replacement_keeps_old_socket_and_prevents_handoff_race --locked --offline` | exit 0 |
+| C163 | `cargo test -p riwork-desktop --bin somtus placement::tests::zoomed_counts_as_maximized_and_keeps_its_normal_frame --locked --offline` | exit 0 |
+| C164 | `cargo test -p riwork-desktop --bin somtus placement::tests::fullscreen_counts_as_fullscreen --locked --offline` | exit 0 |
+| C165 | `cargo test -p riwork-desktop --bin somtus window_registry::tests::the_last_close_quits --locked --offline` | exit 0 |
+| C166 | `cargo test -p riwork-desktop --bin somtus window_registry::tests::tooltips_do_not_count --locked --offline` | exit 0 |
 | C167 | `cargo test -p riwork-desktop --test appkit_shell --locked --offline -- tooltips_create_no_nswindow --test-threads=1` | exit 101 |
-| C168 | `cargo test -p riwork-desktop --bin riwork nsh_host::tests::quit_flushes_every_layout_session_and_the_global_state_from_rust --locked --offline` | exit 0 |
-| C169 | `cargo test -p riwork-desktop --bin riwork nsh_host::tests::close_flushes_the_last_accepted_edit_before_the_window_goes --locked --offline` | exit 0 |
-| C170 | `cargo test -p riwork-desktop --bin riwork window_state::tests::events_only_on_change --locked --offline` | exit 0 |
-| C171 | `cargo test -p riwork-desktop --bin riwork window_registry::tests::the_global_window_is_a_singleton_and_opens_with_no_window --locked --offline` | exit 0 |
-| C172 | `cargo test -p riwork-desktop --bin riwork menu::tests::dock_new_window --locked --offline` | exit 0 |
-| C173 | `cargo test -p riwork-desktop --bin riwork window_registry::tests::route_prefers_frontmost_then_minimised_then_opens --locked --offline` | exit 0 |
-| C174 | `cargo test -p riwork-desktop --bin riwork host_names::tests::tab_transfer_is_refused --locked --offline` | exit 0 |
-| C175 | `cargo test -p riwork-desktop --bin riwork nsh_menus::tests::command_ids_are_the_v1_set --locked --offline` | exit 0 |
+| C168 | `cargo test -p riwork-desktop --bin somtus nsh_host::tests::quit_flushes_every_layout_session_and_the_global_state_from_rust --locked --offline` | exit 0 |
+| C169 | `cargo test -p riwork-desktop --bin somtus nsh_host::tests::close_flushes_the_last_accepted_edit_before_the_window_goes --locked --offline` | exit 0 |
+| C170 | `cargo test -p riwork-desktop --bin somtus window_state::tests::events_only_on_change --locked --offline` | exit 0 |
+| C171 | `cargo test -p riwork-desktop --bin somtus window_registry::tests::the_global_window_is_a_singleton_and_opens_with_no_window --locked --offline` | exit 0 |
+| C172 | `cargo test -p riwork-desktop --bin somtus menu::tests::dock_new_window --locked --offline` | exit 0 |
+| C173 | `cargo test -p riwork-desktop --bin somtus window_registry::tests::route_prefers_frontmost_then_minimised_then_opens --locked --offline` | exit 0 |
+| C174 | `cargo test -p riwork-desktop --bin somtus host_names::tests::tab_transfer_is_refused --locked --offline` | exit 0 |
+| C175 | `cargo test -p riwork-desktop --bin somtus nsh_menus::tests::command_ids_are_the_v1_set --locked --offline` | exit 0 |
 | C176 | `cargo test -p riwork-desktop --test appkit_shell --locked --offline -- app_menu_matches_gpui --test-threads=1` | exit 0 |
-| C177 | `cargo test -p riwork-desktop --bin riwork menu::tests::window_commands_go_to_the_key_window --locked --offline` | exit 0 |
-| C178 | `cargo test -p riwork-desktop --bin riwork menu::tests::app_commands_work_with_no_window --locked --offline` | exit 0 |
-| C179 | `cargo test -p riwork-desktop --bin riwork nsh_menus::tests::deferred_menu_commands_remain_present_disabled_and_keep_their_chords --locked --offline` | exit 0 |
+| C177 | `cargo test -p riwork-desktop --bin somtus menu::tests::window_commands_go_to_the_key_window --locked --offline` | exit 0 |
+| C178 | `cargo test -p riwork-desktop --bin somtus menu::tests::app_commands_work_with_no_window --locked --offline` | exit 0 |
+| C179 | `cargo test -p riwork-desktop --bin somtus nsh_menus::tests::deferred_menu_commands_remain_present_disabled_and_keep_their_chords --locked --offline` | exit 0 |
 | C180 | `cargo test -p riwork-desktop --test appkit_shell --locked --offline -- view_menu_matches_gpui --test-threads=1` | exit 0 |
-| C181 | `cargo test -p riwork-desktop --bin riwork nsh_menus::tests::dock_labels_are_stable_unique_and_keep_the_last_key_window_marked --locked --offline` | exit 0 |
+| C181 | `cargo test -p riwork-desktop --bin somtus nsh_menus::tests::dock_labels_are_stable_unique_and_keep_the_last_key_window_marked --locked --offline` | exit 0 |
 | C182 | `cargo test -p riwork-desktop --test appkit_shell --locked --offline -- dock_menu_from_a_fake_registry --test-threads=1` | exit 0 |
-| C183 | `cargo test -p riwork-desktop --bin riwork menu::tests::routing --locked --offline` | exit 0 |
+| C183 | `cargo test -p riwork-desktop --bin somtus menu::tests::routing --locked --offline` | exit 0 |
 | C184 | `cargo test -p riwork-desktop --test appkit_shell --locked --offline -- text_size_key_equivalents_dispatch_without_a_window --test-threads=1` | exit 101 |
-| C185 | `cargo test -p riwork-desktop --bin riwork startup::tests::forced_appearance_from_env --locked --offline` | exit 0 |
+| C185 | `cargo test -p riwork-desktop --bin somtus startup::tests::forced_appearance_from_env --locked --offline` | exit 0 |
 | C186 | `cargo test -p riwork-desktop --test appkit_shell --locked --offline -- window_chrome --test-threads=1` | exit 0 |
 | C187 | `cargo test -p riwork-desktop --test appkit_shell --locked --offline -- titlebar_double_click_reads_the_system_preference --test-threads=1` | exit 101 |
 | C188 | `cargo test -p riwork-desktop --test appkit_shell --locked --offline -- edit_menu_uses_standard_selectors --test-threads=1` | exit 0 |
@@ -472,33 +472,33 @@ Command environments and stdout/stderr hashes are in the machine record; root ma
 | C206 | `rg -n 'setInterval\(\|requestAnimationFrame\(\|\.refetch\(' apps/riwork -g '!**/*.test.ts*'` | exit 1 |
 | C207 | `rg -n 'nsh/storage\|appearance_file\|sessions.json\|chats/' apps/riwork crates/riwork-nsh-native crates/riwork-desktop/src/nsh_host.rs` | exit 0 |
 | C208 | `cargo run -p riwork-nsh-workspace --example integration_fixture --locked --offline -- /private/tmp/rwm5-ki8420zw` | exit 0 |
-| C209 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/riwork /private/tmp/rwm5-ki8420zw/repos/Alpha` | exit 2 |
-| C210 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/riwork /private/tmp/rwm5-ki8420zw/missing` | exit 2 |
-| C211 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/riwork open /private/tmp/rwm5-ki8420zw/repos/Beta --json` | exit 0 |
-| C212 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/riwork instances --json` | exit 0 |
-| C213 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/riwork restart --json` | exit 2 |
-| C214 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/riwork instances --json` | exit 0 |
+| C209 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/somtus /private/tmp/rwm5-ki8420zw/repos/Alpha` | exit 2 |
+| C210 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/somtus /private/tmp/rwm5-ki8420zw/missing` | exit 2 |
+| C211 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/somtus open /private/tmp/rwm5-ki8420zw/repos/Beta --json` | exit 0 |
+| C212 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/somtus instances --json` | exit 0 |
+| C213 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/somtus restart --json` | exit 2 |
+| C214 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/somtus instances --json` | exit 0 |
 | C215 | `cargo run -p riwork-nsh-workspace --example integration_fixture --locked --offline -- /private/tmp/rwm5-u3qi2ooy --appearance` | exit 0 |
-| C216 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/riwork /private/tmp/rwm5-u3qi2ooy/repos/Alpha` | exit 2 |
-| C217 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/riwork /private/tmp/rwm5-u3qi2ooy/missing` | exit 2 |
-| C218 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/riwork open /private/tmp/rwm5-u3qi2ooy/repos/Beta --json` | exit 0 |
-| C219 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/riwork instances --json` | exit 0 |
-| C220 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/riwork restart --json` | exit 2 |
-| C221 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/riwork instances --json` | exit 0 |
+| C216 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/somtus /private/tmp/rwm5-u3qi2ooy/repos/Alpha` | exit 2 |
+| C217 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/somtus /private/tmp/rwm5-u3qi2ooy/missing` | exit 2 |
+| C218 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/somtus open /private/tmp/rwm5-u3qi2ooy/repos/Beta --json` | exit 0 |
+| C219 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/somtus instances --json` | exit 0 |
+| C220 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/somtus restart --json` | exit 2 |
+| C221 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/somtus instances --json` | exit 0 |
 | C222 | `cargo run -p riwork-nsh-workspace --example integration_fixture --locked --offline -- /private/tmp/rwm5-ikpfjuzy --appearance` | exit 0 |
-| C223 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/riwork /private/tmp/rwm5-ikpfjuzy/repos/Alpha` | exit 2 |
-| C224 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/riwork /private/tmp/rwm5-ikpfjuzy/missing` | exit 2 |
-| C225 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/riwork open /private/tmp/rwm5-ikpfjuzy/repos/Beta --json` | exit 0 |
-| C226 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/riwork instances --json` | exit 0 |
-| C227 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/riwork restart --json` | exit 2 |
-| C228 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/riwork instances --json` | exit 0 |
+| C223 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/somtus /private/tmp/rwm5-ikpfjuzy/repos/Alpha` | exit 2 |
+| C224 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/somtus /private/tmp/rwm5-ikpfjuzy/missing` | exit 2 |
+| C225 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/somtus open /private/tmp/rwm5-ikpfjuzy/repos/Beta --json` | exit 0 |
+| C226 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/somtus instances --json` | exit 0 |
+| C227 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/somtus restart --json` | exit 2 |
+| C228 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/somtus instances --json` | exit 0 |
 | C229 | `cargo run -p riwork-nsh-workspace --example integration_fixture --locked --offline -- /private/tmp/rwm5-eo6nq7gc --appearance` | exit 0 |
-| C230 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/riwork /private/tmp/rwm5-eo6nq7gc/repos/Alpha` | exit 2 |
-| C231 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/riwork /private/tmp/rwm5-eo6nq7gc/missing` | exit 2 |
-| C232 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/riwork open /private/tmp/rwm5-eo6nq7gc/repos/Beta --json` | exit 0 |
-| C233 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/riwork instances --json` | exit 0 |
-| C234 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/riwork restart --json` | exit 2 |
-| C235 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/riwork instances --json` | exit 0 |
+| C230 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/somtus /private/tmp/rwm5-eo6nq7gc/repos/Alpha` | exit 2 |
+| C231 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/somtus /private/tmp/rwm5-eo6nq7gc/missing` | exit 2 |
+| C232 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/somtus open /private/tmp/rwm5-eo6nq7gc/repos/Beta --json` | exit 0 |
+| C233 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/somtus instances --json` | exit 0 |
+| C234 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/somtus restart --json` | exit 2 |
+| C235 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/somtus instances --json` | exit 0 |
 | C236 | `/tmp/riwork-nsh-toolchain-60f8aec4.18l3zV/nsh-cli-0.3.0/bin/nsh --version` | exit 0 |
 | C237 | `rustc --version` | exit 0 |
 | C238 | `cargo --version` | exit 0 |
@@ -520,23 +520,23 @@ Command environments and stdout/stderr hashes are in the machine record; root ma
 | C254 | `/tmp/riwork-nsh-toolchain-60f8aec4.18l3zV/nsh-cli-0.3.0/bin/nsh check apps/riwork --tsc /Users/dominik/Library/Caches/nsh/typescript-7.0.2-darwin-arm64/package/lib/tsc` | exit 0 |
 | C255 | `/tmp/riwork-nsh-toolchain-60f8aec4.18l3zV/nsh-cli-0.3.0/bin/nsh test apps/riwork --junit /private/tmp/riwork-p1-m5-f6975181/nsh-yu1ieoe3/nsh.xml` | exit 0 |
 | C256 | `git diff ea0f2f5 -- crates/riwork-cli` | exit 0 |
-| C257 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/riwork project add /private/tmp/riwork-p1-m5-f6975181/parity-f_vatnks/cli-fixture/project --name Alpha --json` | exit 0 |
-| C258 | `/private/tmp/riwork-p1-m5-f6975181/reference-target/debug/riwork project list --json` | exit 0 |
-| C259 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/riwork project list --json` | exit 0 |
-| C260 | `/private/tmp/riwork-p1-m5-f6975181/reference-target/debug/riwork settings list --json` | exit 0 |
-| C261 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/riwork settings list --json` | exit 0 |
+| C257 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/somtus project add /private/tmp/riwork-p1-m5-f6975181/parity-f_vatnks/cli-fixture/project --name Alpha --json` | exit 0 |
+| C258 | `/private/tmp/riwork-p1-m5-f6975181/reference-target/debug/somtus project list --json` | exit 0 |
+| C259 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/somtus project list --json` | exit 0 |
+| C260 | `/private/tmp/riwork-p1-m5-f6975181/reference-target/debug/somtus settings list --json` | exit 0 |
+| C261 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/somtus settings list --json` | exit 0 |
 | C262 | `git diff ea0f2f5 -- crates/riwork-cli` | exit 0 |
-| C263 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/riwork project add /private/tmp/riwork-p1-m5-f6975181/parity-zh7mtux5/cli-fixture/project --name Alpha --json` | exit 0 |
-| C264 | `/private/tmp/riwork-p1-m5-f6975181/reference-target/debug/riwork project list --json` | exit 0 |
-| C265 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/riwork project list --json` | exit 0 |
-| C266 | `/private/tmp/riwork-p1-m5-f6975181/reference-target/debug/riwork settings list --json` | exit 0 |
-| C267 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/riwork settings list --json` | exit 0 |
-| C268 | `/private/tmp/riwork-p1-m5-f6975181/reference-target/debug/riwork instances --json` | exit 0 |
-| C269 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/riwork instances --json` | exit 0 |
-| C270 | `/private/tmp/riwork-p1-m5-f6975181/reference-target/debug/riwork appearance --json` | exit 2 |
-| C271 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/riwork appearance --json` | exit 2 |
-| C272 | `/private/tmp/riwork-p1-m5-f6975181/reference-target/debug/riwork nosuchcommand` | exit 2 |
-| C273 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/riwork nosuchcommand` | exit 2 |
+| C263 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/somtus project add /private/tmp/riwork-p1-m5-f6975181/parity-zh7mtux5/cli-fixture/project --name Alpha --json` | exit 0 |
+| C264 | `/private/tmp/riwork-p1-m5-f6975181/reference-target/debug/somtus project list --json` | exit 0 |
+| C265 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/somtus project list --json` | exit 0 |
+| C266 | `/private/tmp/riwork-p1-m5-f6975181/reference-target/debug/somtus settings list --json` | exit 0 |
+| C267 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/somtus settings list --json` | exit 0 |
+| C268 | `/private/tmp/riwork-p1-m5-f6975181/reference-target/debug/somtus instances --json` | exit 0 |
+| C269 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/somtus instances --json` | exit 0 |
+| C270 | `/private/tmp/riwork-p1-m5-f6975181/reference-target/debug/somtus appearance --json` | exit 2 |
+| C271 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/somtus appearance --json` | exit 2 |
+| C272 | `/private/tmp/riwork-p1-m5-f6975181/reference-target/debug/somtus nosuchcommand` | exit 2 |
+| C273 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/somtus nosuchcommand` | exit 2 |
 | C274 | `cargo run -p riwork-nsh-native --features test-support --example p1_fixture_home --locked --offline -- --scenario p1-basic --out /private/tmp/riwork-p1-m5-f6975181/probes-sdm1zgnm/p1-basic/home` | exit 101 |
 | C275 | `cargo run -p riwork-nsh-native --features test-support --example p1_fixture_home --locked --offline -- --scenario p1-layouts --out /private/tmp/riwork-p1-m5-f6975181/probes-sdm1zgnm/p1-layouts/home` | exit 101 |
 | C276 | `cargo run -p riwork-nsh-native --features test-support --example p1_fixture_home --locked --offline -- --scenario p1-restore --out /private/tmp/riwork-p1-m5-f6975181/probes-sdm1zgnm/p1-restore/home` | exit 101 |
@@ -551,30 +551,30 @@ Command environments and stdout/stderr hashes are in the machine record; root ma
 | C285 | `cargo build --manifest-path /private/tmp/riwork-p1-m5-f6975181/reference-phz1dufl/reference/Cargo.toml --target-dir /private/tmp/riwork-p1-m5-f6975181/reference-target -p riwork-desktop --locked --offline` | exit 0 |
 | C286 | `cargo test --manifest-path /private/tmp/riwork-p1-m5-f6975181/reference-phz1dufl/reference/Cargo.toml --target-dir /private/tmp/riwork-p1-m5-f6975181/reference-target -p riwork-desktop --release --locked --offline measure_a_busy_workspace_frame -- --ignored --nocapture` | exit 0 |
 | C287 | `git diff --cached --check` | exit 0 |
-| C288 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/riwork /private/tmp/rwm5-ikpfjuzy/repos/Alpha` | exit 2 |
+| C288 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/somtus /private/tmp/rwm5-ikpfjuzy/repos/Alpha` | exit 2 |
 | C289 | `pgrep -f /private/tmp/rwm5-ikpfjuzy` | exit 1 |
-| C290 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/riwork /private/tmp/rwm5-ki8420zw/repos/Alpha` | exit -15 |
+| C290 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/somtus /private/tmp/rwm5-ki8420zw/repos/Alpha` | exit -15 |
 | C291 | `cua-driver MCP list_windows({"pid":97664,"session":"p1-acceptance"})` | recorded structured Cua result |
 | C292 | `cua-driver MCP get_window_state({"pid":97664,"window_id":6375,"session":"p1-acceptance","query":"","tree_format":"elements","include_screenshot":false})` | recorded structured Cua result |
 | C293 | `cua-driver MCP get_window_state({"pid":97664,"window_id":6375,"session":"p1-acceptance","include_accessibility_tree":false,"screenshot_out_file":"/private/tmp/rwm5-ki8420zw/evidence/alpha.png"})` | recorded structured Cua result |
 | C294 | `cua-driver MCP get_window_state({"pid":97664,"window_id":6376,"session":"p1-acceptance","query":"","tree_format":"elements","include_screenshot":false})` | recorded structured Cua result |
 | C295 | `cua-driver MCP get_window_state({"pid":97664,"window_id":6376,"session":"p1-acceptance","include_accessibility_tree":false,"screenshot_out_file":"/private/tmp/rwm5-ki8420zw/evidence/beta.png"})` | recorded structured Cua result |
 | C296 | `cua-driver MCP get_window_state({"pid":97664,"window_id":6375,"session":"p1-acceptance","query":"close","tree_format":"elements","include_screenshot":false})` | recorded structured Cua result |
-| C297 | `cua-driver MCP verify_state({"pid":97664,"window_id":6375,"session":"p1-acceptance","expect":[{"window":{"exists":true,"bounds":{"x":1070,"y":334,"width":1220,"height":780,"tolerance_px":1}}},{"element":{"selector":{"label_contains":"RiWork \u00b7 Alpha"},"exists":true}}],"timeout_ms":5000,"stable_samples":2})` | recorded structured Cua result |
-| C298 | `cua-driver MCP verify_state({"pid":97664,"window_id":6376,"session":"p1-acceptance","expect":[{"window":{"exists":true,"bounds":{"x":1092,"y":356,"width":1220,"height":780,"tolerance_px":1}}},{"element":{"selector":{"label_contains":"RiWork \u00b7 Beta"},"exists":true}}],"timeout_ms":5000,"stable_samples":2})` | recorded structured Cua result |
-| C299 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/riwork /private/tmp/rwm5-u3qi2ooy/repos/Alpha` | exit -15 |
+| C297 | `cua-driver MCP verify_state({"pid":97664,"window_id":6375,"session":"p1-acceptance","expect":[{"window":{"exists":true,"bounds":{"x":1070,"y":334,"width":1220,"height":780,"tolerance_px":1}}},{"element":{"selector":{"label_contains":"Somtus \u00b7 Alpha"},"exists":true}}],"timeout_ms":5000,"stable_samples":2})` | recorded structured Cua result |
+| C298 | `cua-driver MCP verify_state({"pid":97664,"window_id":6376,"session":"p1-acceptance","expect":[{"window":{"exists":true,"bounds":{"x":1092,"y":356,"width":1220,"height":780,"tolerance_px":1}}},{"element":{"selector":{"label_contains":"Somtus \u00b7 Beta"},"exists":true}}],"timeout_ms":5000,"stable_samples":2})` | recorded structured Cua result |
+| C299 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/somtus /private/tmp/rwm5-u3qi2ooy/repos/Alpha` | exit -15 |
 | C300 | `cua-driver MCP list_windows({"pid":25211,"session":"p1-acceptance"})` | recorded structured Cua result |
 | C301 | `cua-driver MCP get_window_state({"pid":25211,"window_id":6387,"session":"p1-acceptance","query":"close","tree_format":"elements","include_screenshot":false})` | recorded structured Cua result |
 | C302 | `cua-driver MCP get_window_state({"pid":25211,"window_id":6387,"session":"p1-acceptance","include_accessibility_tree":false,"screenshot_out_file":"/private/tmp/rwm5-u3qi2ooy/evidence/alpha.png"})` | recorded structured Cua result |
 | C303 | `cua-driver MCP get_window_state({"pid":25211,"window_id":6388,"session":"p1-acceptance","query":"close","tree_format":"elements","include_screenshot":false})` | recorded structured Cua result |
 | C304 | `cua-driver MCP get_window_state({"pid":25211,"window_id":6388,"session":"p1-acceptance","include_accessibility_tree":false,"screenshot_out_file":"/private/tmp/rwm5-u3qi2ooy/evidence/beta.png"})` | recorded structured Cua result |
-| C305 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/riwork /private/tmp/rwm5-ikpfjuzy/repos/Alpha` | exit -15 |
+| C305 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/somtus /private/tmp/rwm5-ikpfjuzy/repos/Alpha` | exit -15 |
 | C306 | `cua-driver MCP list_windows({"pid":81359,"session":"p1-acceptance"})` | recorded structured Cua result |
 | C307 | `cua-driver MCP get_window_state({"pid":81359,"window_id":6413,"session":"p1-acceptance","query":"close","tree_format":"elements","include_screenshot":false})` | recorded structured Cua result |
 | C308 | `cua-driver MCP get_window_state({"pid":81359,"window_id":6413,"session":"p1-acceptance","include_accessibility_tree":false,"screenshot_out_file":"/private/tmp/rwm5-ikpfjuzy/evidence/alpha.png"})` | recorded structured Cua result |
 | C309 | `cua-driver MCP get_window_state({"pid":81359,"window_id":6414,"session":"p1-acceptance","query":"close","tree_format":"elements","include_screenshot":false})` | recorded structured Cua result |
 | C310 | `cua-driver MCP get_window_state({"pid":81359,"window_id":6414,"session":"p1-acceptance","include_accessibility_tree":false,"screenshot_out_file":"/private/tmp/rwm5-ikpfjuzy/evidence/beta.png"})` | recorded structured Cua result |
-| C311 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/riwork /private/tmp/rwm5-eo6nq7gc/repos/Alpha` | exit -15 |
+| C311 | `/private/tmp/riwork-p1-integration-mkzwamt7/target/debug/somtus /private/tmp/rwm5-eo6nq7gc/repos/Alpha` | exit -15 |
 | C312 | `cua-driver MCP list_windows({"pid":46330,"session":"p1-acceptance"})` | recorded structured Cua result |
 | C313 | `cua-driver MCP get_window_state({"pid":46330,"window_id":6400,"session":"p1-acceptance","query":"close","tree_format":"elements","include_screenshot":false})` | recorded structured Cua result |
 | C314 | `cua-driver MCP verify_state({"pid":46330,"window_id":6400,"session":"p1-acceptance","expect":[{"window":{"exists":true,"bounds":{"x":1070,"y":334,"width":1220,"height":780,"tolerance_px":1}}},{"element":{"selector":{"label_contains":"Close"},"exists":true}}],"timeout_ms":5000,"stable_samples":2})` | recorded structured Cua result |

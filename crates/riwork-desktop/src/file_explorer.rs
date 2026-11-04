@@ -2890,7 +2890,7 @@ impl FileExplorer {
                 .items_start()
                 .gap(ui_text::space(10.0))
                 .child(div().text_color(rgb(colors.muted)).child(
-                    "PDFs are only rendered on request, because the PDF parser runs inside RiWork.",
+                    "PDFs are only rendered on request, because the PDF parser runs inside Somtus.",
                 ))
                 // While a newer selection loads, this placeholder is stale.
                 .children((self.preview_path == self.selected).then(|| {
@@ -3554,7 +3554,7 @@ impl FileExplorer {
             }
             PreviewState::PdfPending => controls::empty_state(
                 "doc.richtext",
-                "PDFs are only rendered on request, because the PDF parser runs inside RiWork.",
+                "PDFs are only rendered on request, because the PDF parser runs inside Somtus.",
                 colors,
             )
             // While a newer selection loads, this placeholder is stale.

@@ -1,6 +1,6 @@
 # Dashboard decisions and observed activity
 
-`riwork dashboard --json` and the remote `dashboard.get` reply extend version 1
+`somtus dashboard --json` and the remote `dashboard.get` reply extend version 1
 with optional `decisions`, `decisions_total`, `decision_sources`,
 `recent_activity`, `recent_activity_total`, and `intelligence` fields. Existing
 dashboard rows and older replies remain supported.

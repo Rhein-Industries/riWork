@@ -1,10 +1,10 @@
 # Integrated AppKit NSH host
 
-The single `riwork` executable still calls `riwork_cli::cli::run_cli` before any
+The single `somtus` executable still calls `riwork_cli::cli::run_cli` before any
 GUI initialization. CLI, MCP and `chat serve` use the unchanged CLI/engine code,
 including the original output, errors and exit status. `src/main.rs` and the
 older UI modules are uncompiled parity references; GPUI is no longer a dependency
-of this binary. This is the host foundation, not the completed RiWork UI port.
+of this binary. This is the host foundation, not the completed Somtus UI port.
 
 ## Frozen seams
 
@@ -62,7 +62,7 @@ The last window closes the process after all terminal clients detach, their PTY
 children exit and the main thread frees their surfaces. AppKit keeps pumping
 wakeups through that drain; a parked terminal never blocks the main thread.
 
-The host owns RiWork/Edit/View menus and the Dock menu using the public
+The host owns Somtus/Edit/View menus and the Dock menu using the public
 `nsh/desktop` Rust model. The menu accelerators dispatch commands to the key
 window. Cmd-W emits `closeTab`, Cmd-Shift-N opens a project window, standard Edit
 selectors offer native responders first, and font keys offer native responder
@@ -94,7 +94,7 @@ failure cancels teardown or reload before a replacement is launched.
 The real app passes `host.params.restore.layout` to `Layouts.openSession` and
 posts `app.restoreReady` once after installing the DockArea projection. Global
 restores confirm immediately; the host verifies project handles exist before
-accepting readiness. `riwork restart` and `app.restart` flush, launch and confirm
+accepting readiness. `somtus restart` and `app.restart` flush, launch and confirm
 the replacement through the existing engine protocol. Confirmation is limited
 to the original window IDs and 20 seconds; the engine's 40-second watchdog is
 the final backstop. Failed launches resume the old host and forwarding socket.
@@ -125,7 +125,7 @@ The supplied runners create disposable state and run only this checkout's binary
 ```sh
 python3 crates/riwork-desktop/verification/run_headless.py
 python3 crates/riwork-desktop/verification/gui_acceptance.py \
-  --binary target/debug/riwork --linger-seconds 120
+  --binary target/debug/somtus --linger-seconds 120
 ```
 
 The headless runner clears an inherited blocked signal mask (otherwise the
@@ -134,8 +134,8 @@ isolated HOME outside `/tmp`: the existing trust-safety test deliberately refuse
 HOME writes while permitting temporary fixture paths. GUI verification always
 sets separate HOME/RIWORK_HOME/RIWORK_RUNTIME_DIR and `RIWORK_NSH_BACKGROUND=1`;
 that option suppresses AppKit activation and make-key during background tests.
-The fixture prints its PID for **RiWork's cua-driver MCP** inspection. Use only
-that PID; never test in a live RiWork window.
+The fixture prints its PID for **Somtus's cua-driver MCP** inspection. Use only
+that PID; never test in a live Somtus window.
 
 The integration runner verifies the real bundle (the older GUI runner above is
 only the historical P1b bridge fixture):

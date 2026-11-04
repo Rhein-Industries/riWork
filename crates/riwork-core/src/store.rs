@@ -1,4 +1,4 @@
-//! Durable projects, Git worktrees, and tasks shared by the UI and `riwork` CLI.
+//! Durable projects, Git worktrees, and tasks shared by the UI and `somtus` CLI.
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -90,7 +90,7 @@ impl ProjectOrchestrator {
     pub fn unreadable_note(&self) -> Option<String> {
         match self {
             Self::Unreadable(value) => Some(format!(
-                "This project's saved orchestrator choice {value} is not one this RiWork can read. It is kept as saved, and the project follows Settings until you choose here."
+                "This project's saved orchestrator choice {value} is not one this Somtus can read. It is kept as saved, and the project follows Settings until you choose here."
             )),
             Self::Inherit | Self::Choose(_) => None,
         }
@@ -120,7 +120,7 @@ impl<'de> Deserialize<'de> for ProjectOrchestrator {
     }
 }
 
-/// An organizational group in RiWork, independent of directories on disk.
+/// An organizational group in Somtus, independent of directories on disk.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ProjectFolder {
     pub id: String,
@@ -678,7 +678,7 @@ impl Store {
     pub fn open(dir: impl Into<PathBuf>) -> Result<Self, String> {
         let dir = dir.into();
         if dir.as_os_str().is_empty() {
-            return Err("The RiWork data directory path is empty".to_owned());
+            return Err("The Somtus data directory path is empty".to_owned());
         }
         crate::paths::create_private_dir(&dir)
             .map_err(|error| format!("Cannot create {}: {error}", dir.display()))?;
@@ -1006,7 +1006,7 @@ impl Store {
     /// already there it registers that folder (and `git init`s it unless it is inside a
     /// repository), and pointed at a registered root it renames the project. A caller that
     /// must never touch what is already on disk (the phone's `project.create`, through
-    /// `riwork project create --exclusive`) gets this instead:
+    /// `somtus project create --exclusive`) gets this instead:
     ///
     /// - the folder is made with `create_dir`, so of two callers racing for one name exactly
     ///   one wins, and whatever is at the path (folder, file, symlink) is never entered;
@@ -1535,7 +1535,7 @@ impl Store {
         })
     }
 
-    /// Discover worktrees created outside RiWork while preserving UUIDs used by
+    /// Discover worktrees created outside Somtus while preserving UUIDs used by
     /// tasks and shell sessions. Plain directories retain their root worktree.
     pub fn sync_worktrees(&self, project_selector: &str) -> Result<Vec<Worktree>, String> {
         self.sync_worktrees_with(project_selector, false)
@@ -1752,7 +1752,7 @@ impl Store {
         }
         self.sync_worktrees(project_selector)?;
         // Git may run checkout hooks and LFS for a long time, and a hook can call
-        // `riwork` itself, so the store lock covers only resolving the inputs
+        // `somtus` itself, so the store lock covers only resolving the inputs
         // here and recording the result below.
         let state = self.snapshot()?;
         let project = state.project(project_selector)?.clone();

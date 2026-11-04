@@ -1,4 +1,4 @@
-//! `riwork handoff`: pass a conversation from a shell or a chat to a new shell or chat.
+//! `somtus handoff`: pass a conversation from a shell or a chat to a new shell or chat.
 //! The work is `crate::handoff`; this reads the command line and the caller's own session
 //! and prints what was started.
 
@@ -17,7 +17,7 @@ use crate::{
     sessions::HarnessKind,
 };
 
-pub(super) const USAGE: &str = "Usage: riwork handoff [--from SHELL_OR_CHAT_ID] --to shell|chat --provider codex|claude|grok|muse [--model NAME] [--effort LEVEL] [--account LABEL_OR_ID] [--mode supervised|auto-edit|full|plan] [--contributor-on] [--context transcript|summary] [--at ITEM_ID] [--note TEXT] [--json]";
+pub(super) const USAGE: &str = "Usage: somtus handoff [--from SHELL_OR_CHAT_ID] --to shell|chat --provider codex|claude|grok|muse [--model NAME] [--effort LEVEL] [--account LABEL_OR_ID] [--mode supervised|auto-edit|full|plan] [--contributor-on] [--context transcript|summary] [--at ITEM_ID] [--note TEXT] [--json]";
 
 /// The longest note, in characters.
 const MAX_NOTE_CHARS: usize = 2000;
@@ -110,7 +110,7 @@ pub(super) fn parse(mut args: Vec<String>) -> Result<Arguments, String> {
     })
 }
 
-/// An item of a chat's transcript, as `riwork chat history` and the chat tab name it.
+/// An item of a chat's transcript, as `somtus chat history` and the chat tab name it.
 pub(super) fn item_setting(id: String) -> Result<String, String> {
     let id = id.trim().to_owned();
     if id.is_empty() || id.len() > 512 || id.chars().any(char::is_control) {
@@ -132,7 +132,7 @@ fn note_setting(text: String) -> Result<Option<String>, String> {
     Ok(handoff::tidy_note(&text))
 }
 
-/// Where a `riwork handoff` runs: the data directory, the caller's own session, and the
+/// Where a `somtus handoff` runs: the data directory, the caller's own session, and the
 /// things it reaches out to.
 pub(super) struct Caller<'a> {
     pub home: &'a Path,
@@ -146,7 +146,7 @@ pub(super) struct Caller<'a> {
     pub timing: Timing,
 }
 
-/// What `riwork handoff` prints.
+/// What `somtus handoff` prints.
 pub(super) fn output(caller: &Caller<'_>, args: Vec<String>, json: bool) -> Result<String, String> {
     let arguments = parse(args)?;
     let selector =
@@ -210,7 +210,7 @@ pub(super) fn output(caller: &Caller<'_>, args: Vec<String>, json: bool) -> Resu
     Ok(text)
 }
 
-/// `riwork handoff` as the command line runs it.
+/// `somtus handoff` as the command line runs it.
 pub(super) fn command(args: Vec<String>, json: bool) -> Result<(), String> {
     let home = crate::paths::riwork_home()?;
     let variable = |name: &str| match std::env::var(name) {
@@ -222,7 +222,7 @@ pub(super) fn command(args: Vec<String>, json: bool) -> Result<(), String> {
     let ensure_home = home.clone();
     let ensure = move || {
         let executable =
-            std::env::current_exe().map_err(|error| format!("Cannot locate RiWork: {error}"))?;
+            std::env::current_exe().map_err(|error| format!("Cannot locate Somtus: {error}"))?;
         crate::chat::host::ensure(&ensure_home, &executable)
     };
     let caller = Caller {

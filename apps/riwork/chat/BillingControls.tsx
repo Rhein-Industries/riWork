@@ -20,6 +20,7 @@ interface BillingSummary { label: string; short: string; hint: string; on: boole
 export function createBillingControl(props: {
   panel: () => Panel;
   handle: ChatHandle;
+  remote?: boolean;
   visible?: () => boolean;
   onError: (message: string) => void;
   onNotice: (message: string) => void;
@@ -28,8 +29,8 @@ export function createBillingControl(props: {
   const keySaved = signal<boolean | null>(null), defaultBilling = signal<Billing>("subscription"), pending = signal(false);
   const clock = signal(Date.now());
   let alive = true, keyRev = -1, settingsRev = -1;
-  const available = computed(() => props.panel().provider === "claude");
-  const subscriptions = [
+  const available = computed(() => !props.remote && props.panel().provider === "claude");
+  const subscriptions = props.remote ? [] : [
     Settings.subscribe((event) => {
       if (!alive || event.rev <= settingsRev) return;
       settingsRev = event.rev;
@@ -40,7 +41,7 @@ export function createBillingControl(props: {
       keyRev = event.rev; keySaved.set(event.data.saved ?? null);
     }),
   ];
-  void Settings.get().then((settings) => {
+  if (!props.remote) void Settings.get().then((settings) => {
     if (alive && settingsRev < 0) defaultBilling.set(settings.claudeChatIgnoresApiKey ? "subscription" : "api_key");
   }).catch((error) => { if (alive && available()) props.onError(String(error)); });
   effect(() => {

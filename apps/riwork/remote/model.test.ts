@@ -54,12 +54,13 @@ test("P6B-REMOTE-MODEL-03 host labels and terminal strip preserve offline/ended 
 test("P6B-REMOTE-MODEL-04 chat/dead shell refusals preserve host attribution", () => {
   expect(shellOpenRefusal(shell, "Fixture Mac")).toBe(null);
   expect(shellOpenRefusal({ ...shell, alive: false }, "Fixture Mac")).toBe("Codex same-id has ended on Fixture Mac");
-  expect(shellOpenRefusal({ ...shell, chat: true }, "Fixture Mac")).toBe("Codex same-id runs as a chat on Fixture Mac; chats run on that Mac. Open it there, or in the iOS app.");
+  expect(shellOpenRefusal({ ...shell, chat: true }, "Fixture Mac")).toBe("Codex same-id is a chat on Fixture Mac, but this host did not report its chat ID. Refresh or update the host.");
 });
 
 test("P6B-REMOTE-MODEL-05 pairing links validate without reflecting secrets and generated masks expose only 16 characters", () => {
   expect(checkPairingLink("")).toBe("Paste the pairing link from the other Mac.");
-  for (const value of ["https://invalid.example/", "riwork://pair?fake token", "riwork://pair?fake\nsecond"]) expect(checkPairingLink(value)).toBe("That is not a RiWork pairing link.");
+  for (const value of ["https://invalid.example/", "riwork://pair?fake token", "riwork://pair?fake\nsecond"]) expect(checkPairingLink(value)).toBe("That is not a Somtus pairing link.");
+  expect(checkPairingLink("somtus://pair?DISPOSABLE_NOT_A_CREDENTIAL")).toBe(null);
   const fake = "riwork://pair?DISPOSABLE_NOT_A_CREDENTIAL";
   expect(checkPairingLink(`  ${fake}  `)).toBe(null);
   expect(maskedPairingLink(fake)).toBe(`${fake.slice(0, 16)}…  (${fake.length} characters)`);
@@ -95,9 +96,9 @@ test("P6B-REMOTE-MODEL-08 delayed and failed mutations are single-flight and nev
   expect(calls).toBe(2); expect(gate.pending()).toBe(false);
 });
 
-test("a missing riwork-remote is one short actionable line; the build recipe stays as detail", () => {
-  const missing = "Missing standalone remote binary at /a/riwork-remote or /a/RiWork.app/Contents/MacOS/riwork-remote. Run `riwork update --source /path/to/riWork --no-reload` to build and package it.";
-  expect(remoteErrorNotice(missing)).toEqual({ summary: "Other Macs need the riwork-remote helper, which is not installed. Build it with riwork update.", detail: missing });
+test("a missing somtus-remote is one short actionable line; the build recipe stays as detail", () => {
+  const missing = "Missing standalone remote binary at /a/somtus-remote or /a/Somtus.app/Contents/MacOS/somtus-remote. Run `somtus update --source /path/to/riWork --no-reload` to build and package it.";
+  expect(remoteErrorNotice(missing)).toEqual({ summary: "Other Macs need the somtus-remote helper, which is not installed. Build it with somtus update.", detail: missing });
   expect(remoteErrorNotice("Relay unreachable. Retrying in 10 s")).toEqual({ summary: "Relay unreachable.", detail: "Relay unreachable. Retrying in 10 s" });
   expect(remoteErrorNotice("Relay unreachable")).toEqual({ summary: "Relay unreachable", detail: null });
 });

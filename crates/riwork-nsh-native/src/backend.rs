@@ -578,7 +578,7 @@ impl EngineSessionsBackend {
                 HarnessKind::Codex,
                 completion.outcome,
             ) {
-                eprintln!("riwork notifications: {error}");
+                eprintln!("somtus notifications: {error}");
             }
         }
     }

@@ -275,7 +275,7 @@ impl Files {
     }
 }
 
-/// The Mac's argument policy for a path another device names (`riwork native invoke`): only
+/// The Mac's argument policy for a path another device names (`somtus native invoke`): only
 /// a path relative to a project or worktree root that the Mac took from its own store. It
 /// refuses an absolute path, an empty, `.` or `..` component, NUL and an overlong path before
 /// anything is opened; the descriptor walk of the functions below then refuses a symbolic
@@ -365,7 +365,7 @@ pub fn preview_file(
                 .ok_or("Cannot verify this file. Refresh and try again.")?,
         )?;
         return Ok(PreviewDto::message(
-            "PDFs are only rendered on request, because the PDF parser runs inside RiWork.",
+            "PDFs are only rendered on request, because the PDF parser runs inside Somtus.",
         ));
     }
     let expected = identity
@@ -1309,7 +1309,7 @@ mod tests {
         );
     }
 
-    /// `riwork native invoke`'s path policy: another device names a path relative to a root
+    /// `somtus native invoke`'s path policy: another device names a path relative to a root
     /// the Mac takes from its store, and nothing outside that root is listed, previewed or read.
     #[test]
     fn another_devices_paths_stay_inside_the_project_root() {

@@ -2083,7 +2083,7 @@ impl ChatView {
                         "Muse contributor mode is off, so your content in this chat won't be used for product improvement. Turn it on for this chat only; Muse restarts on the same conversation."
                     }
                     None => {
-                        "The running chat host predates RiWork's contributor mode off by default, so this chat follows your Muse settings. Turn it off; Muse restarts on the same conversation."
+                        "The running chat host predates Somtus's contributor mode off by default, so this chat follows your Muse settings. Turn it off; Muse restarts on the same conversation."
                     }
                 },
                 TipLook::Control,

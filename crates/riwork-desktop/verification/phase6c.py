@@ -26,13 +26,13 @@ def main():
         run.command([NSH, 'check', 'apps/riwork', '--tsc', TSC], 'nsh-check', timeout=600)
     elif args.mode == 'fixtures':
         run.command(run.cargo('test', '-p', 'riwork-nsh-native', 'phase6c') + ['--', '--nocapture'], 'native-fixtures', timeout=600)
-        run.command(run.cargo('test', '-p', 'riwork-desktop', '--bin', 'riwork', 'phase6c') + ['--', '--nocapture'], 'guard-fixture', timeout=600)
+        run.command(run.cargo('test', '-p', 'riwork-desktop', '--bin', 'somtus', 'phase6c') + ['--', '--nocapture'], 'guard-fixture', timeout=600)
         for name in ['a_real_proxy_guards_unless_its_environment_opts_out', 'the_proxy_refuses_input_to_live_riwork_windows_and_forwards_the_rest', 'launch_rejects_missing_folder_or_empty_command_without_executing', 'input_limits_reject_nonfinite_positions_and_escaped_text_growth']:
             run.command(run.cargo('test', '-p', 'riwork-engine', name), name, timeout=600)
     elif args.mode == 'base':
         run.command(run.cargo('test', '-p', 'nsh-base'), 'base-suite', timeout=600)
     elif args.mode == 'suites':
-        run.command(run.cargo('test', '-p', 'riwork-desktop', '--bin', 'riwork'), 'host-suite', timeout=600)
+        run.command(run.cargo('test', '-p', 'riwork-desktop', '--bin', 'somtus'), 'host-suite', timeout=600)
         run.command(run.cargo('test', '-p', 'riwork-nsh-workspace'), 'workspace-suite', timeout=600)
         run.command(run.cargo('test', '-p', 'riwork-nsh-native'), 'native-suite', timeout=600)
         run.command(['cargo', 'fmt', '-p', 'riwork-desktop', '-p', 'riwork-nsh-workspace', '-p', 'riwork-nsh-native', '--check'], 'format')
@@ -41,7 +41,7 @@ def main():
         bundle = run.logdir / 'bundle/bundle.js'
         run.command([NSH, 'build', 'apps/riwork/PendingOpen.fixture.tsx', '--out', bundle.parent], 'app-fixture-build', timeout=600)
         run.env['RIWORK_PENDING_OPEN_TEST_BUNDLE'] = str(bundle.resolve())
-        run.command(run.cargo('test', '-p', 'riwork-desktop', '--bin', 'riwork', 'pending_open_tests::production_app_recovers_pending_open_after_failed_quit_and_restart') + ['--', '--ignored', '--nocapture', '--test-threads=1'], 'app-recovery', timeout=600)
+        run.command(run.cargo('test', '-p', 'riwork-desktop', '--bin', 'somtus', 'pending_open_tests::production_app_recovers_pending_open_after_failed_quit_and_restart') + ['--', '--ignored', '--nocapture', '--test-threads=1'], 'app-recovery', timeout=600)
     else:
         home = run.logdir / 'nsh-home'
         run.command(run.cargo('run', '-p', 'riwork-nsh-native', '--features', 'test-support', '--example', 'p1_workspace_fixture_home') + ['--', '--scenario', 'p1-layouts', '--out', home], 'seed-fixture', timeout=600)

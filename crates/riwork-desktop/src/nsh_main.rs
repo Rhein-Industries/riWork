@@ -50,6 +50,7 @@ fn main() {
     nsh_startup::scrub_gui_child_ids();
     #[cfg(target_os = "macos")]
     if let Err(error) = nsh_host::run(args) {
+        nsh_host::record_failure(&error);
         exit(error);
     }
     #[cfg(not(target_os = "macos"))]
@@ -58,7 +59,7 @@ fn main() {
 
 fn exit(error: String) -> ! {
     if !error.is_empty() {
-        eprintln!("riwork: {error}");
+        eprintln!("somtus: {error}");
     }
     std::process::exit(2)
 }

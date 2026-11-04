@@ -179,7 +179,7 @@ import UIKit
             ("orchestrator_create", features.orchestratorCreate), ("shell_create_as_settings", features.shellCreateAsSettings),
             ("chat_provider_switch", features.chatProviderSwitch), ("chat_models", features.chatModels),
             ("chat_suggestions", features.chatSuggestions), ("project_memo", features.projectMemo),
-            // A Mac whose connector is newer than its RiWork announces it and then refuses it.
+            // A Mac whose connector is newer than its Somtus announces it and then refuses it.
             ("dashboard", features.dashboard && !refusesDashboard),
             ("native", !features.nativeMethods.isEmpty),
         ]
@@ -222,11 +222,11 @@ import UIKit
         guard hostID == model.selectedDesktopID, model.state == .connected else { throw HostCallError("offline", model.state.label) }
         guard model.capabilitiesKnown else { throw HostCallError("offline", ConnectionState.connecting.label) }
         if let native, !model.desktopFeatures.nativeMethods.contains(native) {
-            throw HostCallError("unsupported", "The RiWork on this Mac does not offer this yet. Update RiWork on the Mac.")
+            throw HostCallError("unsupported", "The Somtus on this Mac does not offer this yet. Update Somtus on the Mac.")
         }
         if method == "shell.close" { try closable(params) }
         if method == "dashboard.get", !model.desktopFeatures.dashboard || model.dashboardSupport == .unsupported {
-            throw HostCallError("unsupported", model.dashboardUnavailableReason ?? "Update RiWork on the Mac to see its dashboard here.")
+            throw HostCallError("unsupported", model.dashboardUnavailableReason ?? "Update Somtus on the Mac to see its dashboard here.")
         }
         let relay = model, token = relay.generation
         do {
@@ -256,10 +256,10 @@ import UIKit
                 catch { throw HostCallError("offline", RemoteModel.dashboardFailureText(error)) }
                 defer { connections.release(lease) }
                 if method == "dashboard.get", !lease.features.dashboard {
-                    throw HostCallError("unsupported", "Update RiWork on the Mac to see its dashboard here.")
+                    throw HostCallError("unsupported", "Update Somtus on the Mac to see its dashboard here.")
                 }
                 if let native, !lease.features.nativeMethods.contains(native) {
-                    throw HostCallError("unsupported", "The RiWork on this Mac does not offer this yet. Update RiWork on the Mac.")
+                    throw HostCallError("unsupported", "The Somtus on this Mac does not offer this yet. Update Somtus on the Mac.")
                 }
                 do { return try await lease.transport.request(method: method, params: params, id: UUID().uuidString.lowercased()) }
                 catch {
@@ -507,7 +507,7 @@ import UIKit
             try bridge.openChat(chat, project: named)
         case "memo":
             try requireConnected()
-            guard model.desktopFeatures.projectMemo else { throw HostCallError("unsupported", "Update RiWork on the Mac to keep project memos here.") }
+            guard model.desktopFeatures.projectMemo else { throw HostCallError("unsupported", "Update Somtus on the Mac to keep project memos here.") }
             try bridge.openMemo(project: try project())
         case "newChat":
             try requireConnected()
@@ -571,7 +571,7 @@ struct HostCallError: LocalizedError, CustomStringConvertible {
 
     @MainActor static func from(_ error: any Error, dashboard: Bool = false) -> HostCallError {
         if let known = error as? HostCallError { return known }
-        if RemoteError.isUnsupportedMethod(error) { return .init("unsupported", "The RiWork on this Mac does not offer this yet. Update RiWork on the Mac.") }
+        if RemoteError.isUnsupportedMethod(error) { return .init("unsupported", "The Somtus on this Mac does not offer this yet. Update Somtus on the Mac.") }
         if error is CancellationError { return .init("failed", "The request was cancelled.") }
         if let remote = error as? RemoteError {
             switch remote {

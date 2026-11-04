@@ -1,7 +1,7 @@
 # Durable native chat delegation
 
-RiWork's MCP server exposes three tools for an agent running inside a native
-RiWork parent chat:
+Somtus's MCP server exposes three tools for an agent running inside a native
+Somtus parent chat:
 
 | Tool | Arguments | Behavior |
 | --- | --- | --- |
@@ -38,7 +38,7 @@ manual messages in that child do not replace it.
 
 Statuses are `running`, `waiting`, `completed`, `interrupted`, `failed`,
 `cancelling`, `cancelled`, and `uncertain`. `waiting` can mean the child needs
-an approval or answer; normal RiWork decision controls handle that interaction.
+an approval or answer; normal Somtus decision controls handle that interaction.
 No approval is granted automatically. Status reads and bounded waits never
 start a host or provider. Uncertain dispatches and unavailable providers are
 reported for inspection; they are not automatically retried or resumed.
@@ -46,7 +46,7 @@ Child logs are attributed to an assignment only after its Send receipt is
 accepted. An uncertain or rejected assignment cannot claim another input's
 result merely because it appears first in that child's history.
 
-Task records live under `delegated-tasks/` in the RiWork home. Reservation is
+Task records live under `delegated-tasks/` in the Somtus home. Reservation is
 synced before creation or sending. Updates use per-task filesystem locks and
 atomic replacement. A delayed Send acknowledgment cannot overwrite a saved
 result or cancellation request.
