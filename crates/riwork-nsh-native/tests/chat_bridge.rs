@@ -468,6 +468,48 @@ fn a_message_sent_while_a_turn_runs_steers_it() {
 }
 
 #[test]
+fn async_question_controls_survive_completion_and_reattach_then_submit_once() {
+    let (host, chat) = replay_chat("question_async");
+    let handle = open(&host, &chat);
+    let receiver = handle.subscribe_channel();
+    let mut mirror = Mirror::default();
+    mirror.until(&receiver, "idle", |m| m.panel().state == "idle");
+    assert_eq!(submit(&handle, "ask", 1).status, "submitted");
+    mirror.until(&receiver, "async questions after turn completion", |m| {
+        m.panel().state == "idle" && !m.panel().questions.is_empty()
+    });
+    assert!(!mirror.panel().running);
+    drop(handle);
+    let handle = open(&host, &chat);
+    let receiver = handle.subscribe_channel();
+    let mut mirror = Mirror::default();
+    mirror.until(&receiver, "replayed pending async questions", |m| {
+        !m.panel().questions.is_empty()
+    });
+    let question = &mirror.panel().questions[0];
+    assert_eq!(question.prompts.len(), 2);
+    assert_eq!(question.prompts[0].options.len(), 3);
+    assert_eq!(question.prompts[0].options[0].label, "Enter and Send both do nothing");
+    assert!(question.prompts[1].options.is_empty());
+    let request_id = question.request_id.clone();
+    let parts = handle.parts();
+    let command = riwork_engine::chat::model::ChatCommand::Answer {
+        request_id,
+        answers: vec![vec!["Enter only".into()], vec!["After switching tabs".into()]],
+    };
+    let duplicate = command.clone();
+    assert_eq!(runtime().block_on(parts.exchange(command, true)), Ok(()));
+    mirror.until(&receiver, "answered questionnaire", |m| {
+        m.panel().questions.is_empty() && m.panel().state == "idle"
+    });
+    assert!(runtime().block_on(parts.exchange(duplicate, true)).is_err());
+    assert_mirror_matches(&handle, &mirror);
+    drop(handle);
+    drop(host);
+    record_saw_no_mismatch("question_async");
+}
+
+#[test]
 fn questions_are_answered_once_then_the_access_request_is_allowed_for_the_session() {
     let (host, chat) = replay_chat("question");
     let handle = open(&host, &chat);

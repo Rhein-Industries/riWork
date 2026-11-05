@@ -82,11 +82,12 @@ public struct ChatTranscript: Sendable, Equatable {
             for at in items.indices where items[at].status == .inProgress && (items[at].turnID == nil || items[at].turnID == turnID) {
                 items[at].status = closed
             }
-            for at in requests.indices where requests[at].resolvedSeq == nil && (requests[at].turnID == nil || requests[at].turnID == turnID) {
+            for at in requests.indices where requests[at].resolvedSeq == nil && (requests[at].turnID == nil || requests[at].turnID == turnID)
+                && !questions.contains(where: { $0.requestID == requests[at].requestID && $0.answerViaMessage }) {
                 requests[at].resolvedSeq = sequence; requests[at].resolution = "cancel"
             }
             approvals.removeAll()
-            questions.removeAll()
+            questions.removeAll { !$0.answerViaMessage }
             elidedRequests.removeAll()
         case .itemStarted(let item), .itemCompleted(let item):
             if itemSequences[item.id] == nil { itemSequences[item.id] = sequence }

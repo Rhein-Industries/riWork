@@ -824,23 +824,27 @@ public struct ChatQuestionPrompt: Codable, Sendable, Equatable, Hashable {
 /// A turn waits for the user to answer questions (`Question`).
 public struct ChatQuestion: Codable, Sendable, Equatable, Hashable, Identifiable {
     public var requestID: String
+    /// Async Codex questions use normal chat input and remain open between turns.
+    public var answerViaMessage: Bool
     /// The item whose scope contains the question, when the provider reports it.
     public var itemID: String?
     public var questions: [ChatQuestionPrompt]
     public var id: String { requestID }
-    public init(requestID: String, itemID: String? = nil, questions: [ChatQuestionPrompt]) {
-        self.requestID = requestID; self.itemID = itemID; self.questions = questions
+    public init(requestID: String, itemID: String? = nil, answerViaMessage: Bool = false, questions: [ChatQuestionPrompt]) {
+        self.requestID = requestID; self.itemID = itemID; self.answerViaMessage = answerViaMessage; self.questions = questions
     }
-    private enum Keys: String, CodingKey { case questions; case requestID = "request_id", itemID = "item_id" }
+    private enum Keys: String, CodingKey { case questions; case requestID = "request_id", itemID = "item_id", answerViaMessage = "answer_via_message" }
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: Keys.self)
         requestID = try c.decode(String.self, forKey: .requestID)
+        answerViaMessage = c.tolerant(Bool.self, forKey: .answerViaMessage) ?? false
         itemID = c.tolerant(String.self, forKey: .itemID)
         questions = c.leniently([ChatQuestionPrompt].self, forKey: .questions)
     }
     public func encode(to encoder: any Encoder) throws {
         var c = encoder.container(keyedBy: Keys.self)
         try c.encode(requestID, forKey: .requestID)
+        if answerViaMessage { try c.encode(true, forKey: .answerViaMessage) }
         try c.encodeIfPresent(itemID, forKey: .itemID)
         try c.encode(questions, forKey: .questions)
     }

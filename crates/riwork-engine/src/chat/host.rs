@@ -354,7 +354,8 @@ struct Open {
     turn: Option<String>,
     turn_started_at: Option<u64>,
     approvals: Vec<String>,
-    questions: Vec<String>,
+    // Async questionnaires remain answerable between turns.
+    questions: Vec<(String, bool)>,
     /// Only lifecycle metadata for open calls, never output bodies.
     items: HashMap<String, ItemLifecycle>,
 }
@@ -379,7 +380,7 @@ impl Open {
                     self.turn_started_at = None;
                 }
                 self.approvals.clear();
-                self.questions.clear();
+                self.questions.retain(|(_, persistent)| *persistent);
                 self.items.clear();
             }
             ChatEvent::ItemStarted { item } => {
@@ -403,11 +404,12 @@ impl Open {
                 self.approvals.retain(|id| id != request_id)
             }
             ChatEvent::QuestionRequested { question } => {
-                self.questions.retain(|id| *id != question.request_id);
-                self.questions.push(question.request_id.clone());
+                self.questions.retain(|(id, _)| *id != question.request_id);
+                self.questions
+                    .push((question.request_id.clone(), question.answer_via_message));
             }
             ChatEvent::QuestionResolved { request_id, .. } => {
-                self.questions.retain(|id| id != request_id)
+                self.questions.retain(|(id, _)| id != request_id)
             }
             _ => {}
         }
@@ -900,7 +902,7 @@ impl Inner {
                 decision: Decision::Cancel,
             });
         }
-        for request_id in std::mem::take(&mut self.open.questions) {
+        for (request_id, _) in std::mem::take(&mut self.open.questions) {
             self.append(ChatEvent::QuestionResolved {
                 request_id,
                 answer_summary: None,
@@ -2255,17 +2257,18 @@ fn load_chats(
             eprintln!("somtus chat: skipping {name}: its info.json names another chat");
             continue;
         }
-        let was_at_work = matches!(
+        let had_provider = matches!(
             info.state,
-            ChatState::Starting | ChatState::Running | ChatState::Waiting
+            ChatState::Starting | ChatState::Running | ChatState::Waiting | ChatState::Idle
         );
         let mut settled = info.clone();
         settled.settle_contributor();
         let unsettled = settled != info;
         let mut inner = Inner::new(info, chat_log, last, dismissals.clone());
         inner.worker_notes = Some(worker_notes.clone());
-        if was_at_work {
-            // Only a chat that died mid-turn needs its log read whole.
+        if had_provider {
+            // An idle provider can leave async questions open too. Replay its
+            // lifecycle so settle closes requests a fresh adapter cannot answer.
             match log::read_envelopes(&dir) {
                 Ok(envelopes) => {
                     for envelope in &envelopes {

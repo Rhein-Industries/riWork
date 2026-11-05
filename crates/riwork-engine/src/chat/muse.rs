@@ -2625,6 +2625,7 @@ impl Session {
         });
         self.emit(ChatEvent::QuestionRequested {
             question: Question {
+                answer_via_message: false,
                 request_id: user_input_id.clone(),
                 item_id: params["itemId"]
                     .as_str()

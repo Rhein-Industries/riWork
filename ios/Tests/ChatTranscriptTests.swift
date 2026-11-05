@@ -134,6 +134,53 @@ final class ChatTranscriptTests: XCTestCase {
 
     // MARK: Requests
 
+    func testAsyncQuestionWireLifetimeAndResolution() throws {
+        let json = #"{"request_id":"async","answer_via_message":true,"questions":[{"question":"Which?","options":[{"label":"One","description":""}],"multi_select":false}]}"#
+        let question = try JSONDecoder().decode(ChatQuestion.self, from: Data(json.utf8))
+        XCTAssertEqual(try JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode(question)),
+                       try JSONDecoder().decode(JSONValue.self, from: Data(json.utf8)))
+        var t = ChatTranscript()
+        t.apply(.turnStarted(turnID: "ask"), seq: 1)
+        t.apply(.questionRequested(question), seq: 2)
+        t.apply(.turnCompleted(turnID: "ask", outcome: .completed), seq: 3)
+        XCTAssertEqual(t.questions, [question])
+        XCTAssertNil(t.requests.first?.resolvedSeq)
+        // A later turn's end also leaves the asynchronous controls available.
+        t.apply(.turnStarted(turnID: "later"), seq: 4)
+        t.apply(.turnCompleted(turnID: "later", outcome: .completed), seq: 5)
+        XCTAssertEqual(t.questions, [question])
+        t.apply(.questionResolved(requestID: "async", answerSummary: "One"), seq: 6)
+        XCTAssertTrue(t.questions.isEmpty)
+        XCTAssertEqual(t.requests.first?.resolvedSeq, 6)
+        XCTAssertEqual(t.requests.first?.answerSummary, "One")
+
+        // A phone attaching after the asking turn ended receives a pending
+        // control in its snapshot; a subsequent completion must preserve it.
+        var feed = ChatFeed()
+        let snapshot = ChatSnapshotReply(chatID: "c", cursor: "after-ask", next: 3, before: 1, more: false,
+                                         items: [], controls: [.state(.idle), .questionRequested(question)])
+        feed.install(try JSONDecoder().decode(ChatSnapshotReply.self, from: JSONEncoder().encode(snapshot)))
+        XCTAssertEqual(feed.transcript.questions, [question])
+        feed.accept(ChatEventsReply(chatID: "c", events: [
+            ChatEnvelope(seq: 4, event: .turnStarted(turnID: "next")),
+            ChatEnvelope(seq: 5, event: .turnCompleted(turnID: "next", outcome: .completed))
+        ], next: 5, more: false), since: 3)
+        XCTAssertEqual(feed.transcript.questions, [question])
+        XCTAssertNil(feed.transcript.requests.first?.resolvedSeq)
+    }
+
+    func testLegacyQuestionWireRemainsTurnBound() throws {
+        let json = #"{"request_id":"legacy","questions":[]}"#
+        let question = try JSONDecoder().decode(ChatQuestion.self, from: Data(json.utf8))
+        XCTAssertEqual(try JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode(question)),
+                       try JSONDecoder().decode(JSONValue.self, from: Data(json.utf8)))
+        var t = ChatTranscript()
+        t.apply(.questionRequested(question))
+        t.apply(.turnCompleted(turnID: "ask", outcome: .completed))
+        XCTAssertTrue(t.questions.isEmpty)
+        XCTAssertEqual(t.requests.first?.resolution, "cancel")
+    }
+
     func testRequestsKeepTheirArrivalOrderAndARepeatedRequestReplacesItself() {
         var t = ChatTranscript()
         t.apply(.approvalRequested(approval("r1")))

@@ -173,6 +173,7 @@ fn request_refresh_preserves_entities_and_failed_answers_new_request_does_not_in
 ) {
     let (handle, view, recording) = mount(cx);
     let question = Question {
+        answer_via_message: false,
         item_id: None,
         request_id: "q1".into(),
         questions: vec![QuestionPrompt {
@@ -801,6 +802,7 @@ fn dictation_find_answer_menu_suggestions_and_media_keep_their_keys(cx: &mut Tes
                 "find" => v.open_find(window, cx),
                 "answer" => {
                     let question = Question {
+                        answer_via_message: false,
                         item_id: None,
                         request_id: "question".into(),
                         questions: vec![QuestionPrompt {

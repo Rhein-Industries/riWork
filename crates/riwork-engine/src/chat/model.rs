@@ -924,11 +924,14 @@ pub struct QuestionPrompt {
     pub multi_select: bool,
 }
 
-/// A turn waits for the user to answer questions (Claude `AskUserQuestion`,
-/// Codex `item/tool/requestUserInput`).
+/// Questions offered by a provider, including asynchronous Codex questionnaires.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Question {
     pub request_id: String,
+    /// Codex agentMessage.questions: answered with a normal user message, and
+    /// kept across turn completion until answered or the provider stops.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub answer_via_message: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub item_id: Option<String>,
     pub questions: Vec<QuestionPrompt>,
@@ -1385,13 +1388,17 @@ impl Transcript {
                 for record in &mut self.requests {
                     if record.resolved_seq.is_none()
                         && record.turn_id.as_ref().is_none_or(|id| id == turn_id)
+                        && !self.questions.iter().any(|question| {
+                            question.request_id == record.request_id && question.answer_via_message
+                        })
                     {
                         record.resolved_seq = Some(seq);
                         record.resolution = Some("cancel".into());
                     }
                 }
                 self.approvals.clear();
-                self.questions.clear();
+                self.questions
+                    .retain(|question| question.answer_via_message);
             }
             ChatEvent::ItemStarted { item } | ChatEvent::ItemCompleted { item } => {
                 let mut item = item.clone();
@@ -1508,6 +1515,47 @@ impl Transcript {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn async_question_lifetime_round_trips_without_changing_legacy_wire_data() {
+        let value = serde_json::json!({"request_id":"legacy", "questions":[]});
+        let legacy: Question = serde_json::from_value(value).unwrap();
+        assert!(!legacy.answer_via_message);
+        assert!(
+            serde_json::to_value(&legacy)
+                .unwrap()
+                .get("answer_via_message")
+                .is_none()
+        );
+        let question = Question {
+            request_id: "async".into(),
+            answer_via_message: true,
+            ..legacy.clone()
+        };
+        let question: Question =
+            serde_json::from_value(serde_json::to_value(question).unwrap()).unwrap();
+        let mut transcript = Transcript::default();
+        transcript.apply(&ChatEvent::QuestionRequested { question: legacy });
+        transcript.apply(&ChatEvent::QuestionRequested { question });
+        transcript.apply(&ChatEvent::TurnCompleted {
+            turn_id: "ask".into(),
+            outcome: TurnOutcome::Completed,
+            ended_at: None,
+        });
+        assert_eq!(transcript.questions.len(), 1);
+        assert_eq!(transcript.questions[0].request_id, "async");
+        assert!(transcript.requests[0].resolved_seq.is_some());
+        assert!(transcript.requests[1].resolved_seq.is_none());
+        transcript.apply(&ChatEvent::QuestionResolved {
+            request_id: "async".into(),
+            answer_summary: Some("Typed answer".into()),
+        });
+        assert!(transcript.questions.is_empty());
+        assert_eq!(
+            transcript.requests[1].answer_summary.as_deref(),
+            Some("Typed answer")
+        );
+    }
 
     fn agent(id: &str, text: &str, status: ItemStatus) -> Item {
         Item {
@@ -2320,6 +2368,7 @@ mod tool_contract_tests {
             130,
             &ChatEvent::QuestionRequested {
                 question: Question {
+                    answer_via_message: false,
                     request_id: "question".into(),
                     item_id: None,
                     questions: vec![QuestionPrompt {

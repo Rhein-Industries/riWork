@@ -378,6 +378,7 @@ mod tests {
         });
         transcript.apply(&ChatEvent::QuestionRequested {
             question: Question {
+                answer_via_message: false,
                 item_id: None,
                 request_id: "q1".into(),
                 questions: vec![QuestionPrompt {

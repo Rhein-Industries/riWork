@@ -49,6 +49,7 @@
 //! | `item/fileChange/requestApproval` | `ApprovalRequested` (`FileChange`) |
 //! | `item/permissions/requestApproval` | `ApprovalRequested` (`Permissions`) |
 //! | `item/tool/requestUserInput` | `QuestionRequested` |
+//! | `agentMessage.questions` (async input, Codex 0.164) | `QuestionRequested`, answered by normal text input; survives turn completion |
 //! | `serverRequest/resolved` for a request still open | `ApprovalResolved { Cancel }` or `QuestionResolved` |
 //! | `error`, `warning`, `configWarning` | a `Notice` item (the "Reconnecting... n/5" errors share one notice per turn, updated in place) |
 //! | process exit | `TurnCompleted { Failed }` if a turn was open, `State { Failed }` |
@@ -58,7 +59,7 @@
 //! until its turn ends.
 //!
 //! `State` follows the driver's own bookkeeping, not `thread/status/changed`:
-//! `Running` while a turn is open, `Waiting` while it has open requests.
+//! `Running` while a turn is open, `Waiting` while it has blocking requests.
 //! Notifications for other threads (sub-agents) are ignored; their approval
 //! requests are still shown, since the sub-agent would wait for them.
 //!
@@ -88,7 +89,7 @@
 //! | `Send` | `turn/start`; while a turn runs, `turn/steer` (a steer that loses a race with the turn's end starts a new turn instead) |
 //! | `Interrupt` | `turn/interrupt` (remembered when the turn id is not known yet) |
 //! | `Approve` | the JSON-RPC response to the open request: `{ decision }`, or `{ permissions, scope }` for permissions |
-//! | `Answer` | the response `{ answers: { <question id>: { answers } } }` |
+//! | `Answer` | RPC questions: `{ answers: { <question id>: { answers } } }`; async item questions: titles and answers as normal text via `turn/start` or `turn/steer` |
 //! | `Configure` | stored; model, effort, approval mode and fast mode ride on the next `turn/start` (an effort the chosen model does not list is refused with a `Notice`) |
 //! | `Compact` | `thread/compact/start` |
 //! | `Stop` | shutdown |
@@ -429,6 +430,10 @@ struct Session {
     /// Whether an `error` notification already told the user about this turn.
     error_shown: bool,
     requests: Vec<OpenRequest>,
+    /// Async questionnaires have no JSON-RPC request to answer.
+    async_questions: HashMap<String, Vec<String>>,
+    /// An item can be reported at both start and completion, even after an answer.
+    async_question_items: HashSet<String>,
     streamed: HashMap<String, Streamed>,
     file_changes: HashMap<String, Vec<FileChange>>,
     notices: u64,
@@ -492,6 +497,8 @@ impl Session {
             last_finished_turn: None,
             error_shown: false,
             requests: Vec::new(),
+            async_questions: HashMap::new(),
+            async_question_items: HashSet::new(),
             streamed: HashMap::new(),
             file_changes: HashMap::new(),
             notices: 0,
@@ -1770,6 +1777,31 @@ impl Codex {
     }
 
     fn answer(&self, request_id: &str, answers: Vec<Vec<String>>) -> Result<(), String> {
+        let titles = self.with(|session| session.async_questions.get(request_id).cloned());
+        if let Some(titles) = titles {
+            if answers.len() != titles.len()
+                || answers.iter().any(|answer| {
+                    answer.is_empty() || answer.iter().all(|text| text.trim().is_empty())
+                })
+            {
+                return Err("Answer every question first".into());
+            }
+            let text = titles
+                .iter()
+                .zip(&answers)
+                .map(|(title, answer)| format!("{title}: {}", answer.join(", ")))
+                .collect::<Vec<_>>()
+                .join("\n");
+            self.send_text(text.clone())?;
+            self.with(|session| {
+                session.async_questions.remove(request_id);
+                session.emit(ChatEvent::QuestionResolved {
+                    request_id: request_id.to_owned(),
+                    answer_summary: Some(text),
+                });
+            });
+            return Ok(());
+        }
         let open = self.take_request(request_id, true)?;
         let RequestKind::Question { ids } = &open.kind else {
             return Ok(());
@@ -1922,6 +1954,7 @@ impl Codex {
                     });
                     session.emit(ChatEvent::QuestionRequested {
                         question: Question {
+                            answer_via_message: false,
                             request_id,
                             item_id: params["itemId"]
                                 .as_str()
@@ -2463,7 +2496,7 @@ impl Session {
             _ => None,
         };
         presentation.semantics = codex_semantics(item, &body);
-        let item = Item {
+        let converted = Item {
             started_at: None,
             ended_at: None,
             presentation,
@@ -2473,10 +2506,55 @@ impl Session {
             body,
         };
         self.emit(if done {
-            ChatEvent::ItemCompleted { item }
+            ChatEvent::ItemCompleted { item: converted }
         } else {
-            ChatEvent::ItemStarted { item }
+            ChatEvent::ItemStarted { item: converted }
         });
+        if item["type"] == "agentMessage" {
+            let prompts: Vec<QuestionPrompt> = item["questions"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|question| {
+                    let title = question["title"]
+                        .as_str()
+                        .filter(|title| !title.trim().is_empty())?;
+                    Some(QuestionPrompt {
+                        header: None,
+                        question: title.to_owned(),
+                        options: question["options"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|option| option.as_str())
+                            .map(|label| QuestionOption {
+                                label: label.to_owned(),
+                                description: String::new(),
+                            })
+                            .collect(),
+                        multi_select: false,
+                    })
+                })
+                .collect();
+            if !prompts.is_empty() && self.async_question_items.insert(id.to_owned()) {
+                let request_id = format!("async-question:{id}");
+                self.async_questions.insert(
+                    request_id.clone(),
+                    prompts
+                        .iter()
+                        .map(|prompt| prompt.question.clone())
+                        .collect(),
+                );
+                self.emit(ChatEvent::QuestionRequested {
+                    question: Question {
+                        request_id,
+                        answer_via_message: true,
+                        item_id: Some(id.to_owned()),
+                        questions: prompts,
+                    },
+                });
+            }
+        }
     }
 }
 

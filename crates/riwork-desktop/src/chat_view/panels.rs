@@ -4482,6 +4482,7 @@ mod tests {
 
     fn question() -> Question {
         Question {
+            answer_via_message: false,
             item_id: None,
             request_id: "q1".to_owned(),
             questions: vec![

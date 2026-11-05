@@ -2454,6 +2454,7 @@ impl Core {
                         questions,
                     } => ChatEvent::QuestionRequested {
                         question: Question {
+                            answer_via_message: false,
                             request_id: request_id.clone(),
                             item_id: str_of(request, "tool_use_id")
                                 .filter(|id| !id.is_empty())

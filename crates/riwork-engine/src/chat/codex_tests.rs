@@ -648,6 +648,131 @@ fn a_message_after_an_interrupt_starts_a_turn_of_its_own() {
 }
 
 #[test]
+fn async_question_answers_steer_the_active_turn_without_reopening_on_completion() {
+    let mut run = Run::start("question_async_running");
+    run.send("ask");
+    run.until(is_question);
+    let request_id = run.transcript().questions[0].request_id.clone();
+    assert!(
+        run.driver
+            .command(ChatCommand::Answer {
+                request_id: request_id.clone(),
+                answers: vec![],
+            })
+            .is_err(),
+        "incomplete answers leave the questionnaire open"
+    );
+    assert_eq!(run.transcript().questions.len(), 1);
+    run.driver
+        .command(ChatCommand::Answer {
+            request_id,
+            answers: vec![vec!["Enter only".into()], vec!["Typed answer".into()]],
+        })
+        .unwrap();
+    run.finish_turn();
+    assert!(run.transcript().questions.is_empty());
+    assert_eq!(
+        run.seen.iter().filter(|event| is_question(event)).count(),
+        1
+    );
+    assert_eq!(run.fake.received_method("turn/steer").len(), 1);
+    assert!(!run.states().contains(&ChatState::Waiting));
+    run.end();
+}
+
+#[test]
+fn async_question_controls_require_structured_metadata_from_our_thread() {
+    let fake = Fake::new(&[]);
+    let (tx, rx) = mpsc::channel();
+    let mut session = Session::new(&fake.config(Provider::Codex), tx);
+    session.thread_id = Some("ours".into());
+    let mut params = json!({"threadId":"ours","turnId":"turn-1","item":{
+        "id":"plain","type":"agentMessage","text":"Question?\n- One\n- Two"
+    }});
+    session.notification("item/completed", &params);
+    params["item"]["id"] = json!("null");
+    params["item"]["questions"] = Value::Null;
+    session.notification("item/completed", &params);
+    params["item"]["id"] = json!("child");
+    params["threadId"] = json!("child-thread");
+    params["item"]["questions"] = json!([{"title":"Child question?","options":["One"]}]);
+    session.notification("item/completed", &params);
+    assert!(!rx.try_iter().any(|event| is_question(&event)));
+    params["threadId"] = json!("ours");
+    params["item"]["id"] = json!("completed-only");
+    params["item"]["questions"] = json!([{"title":"Typed answer?"}]);
+    session.notification("item/completed", &params);
+    let events: Vec<_> = rx.try_iter().collect();
+    assert_eq!(events.iter().filter(|event| is_question(event)).count(), 1);
+    let transcript = fold(&events);
+    assert_eq!(
+        transcript.questions[0].questions[0].question,
+        "Typed answer?"
+    );
+    assert!(transcript.questions[0].questions[0].options.is_empty());
+}
+
+#[test]
+fn async_question_items_offer_choices_and_accept_answers_after_the_turn() {
+    let mut run = Run::start("question_async");
+    run.send("ask");
+    run.finish_turn();
+    let transcript = run.transcript();
+    assert_eq!(
+        transcript.questions.len(),
+        1,
+        "structured async questions must survive turn completion"
+    );
+    let question = &transcript.questions[0];
+    assert!(
+        transcript
+            .requests
+            .iter()
+            .all(|request| request.resolved_seq.is_none())
+    );
+    assert_eq!(
+        question.questions[0].question,
+        "When sending stops working, what happens?"
+    );
+    assert_eq!(
+        question.questions[0].options[0].label,
+        "Enter and Send both do nothing"
+    );
+    assert!(
+        question.questions[1].options.is_empty(),
+        "free text is supported"
+    );
+    let request_id = question.request_id.clone();
+    run.driver
+        .command(ChatCommand::Answer {
+            request_id: request_id.clone(),
+            answers: vec![
+                vec!["Enter only".into()],
+                vec!["After switching tabs".into()],
+            ],
+        })
+        .unwrap();
+    run.finish_turn();
+    assert!(run.transcript().questions.is_empty());
+    assert!(
+        run.driver
+            .command(ChatCommand::Answer {
+                request_id,
+                answers: vec![vec!["duplicate".into()]],
+            })
+            .is_err(),
+        "a questionnaire is submitted once"
+    );
+    assert!(!run.states().contains(&ChatState::Waiting));
+    assert_eq!(
+        run.seen.iter().filter(|event| is_question(event)).count(),
+        1,
+        "started/completed must not duplicate a questionnaire"
+    );
+    run.end();
+}
+
+#[test]
 fn a_question_that_does_not_block_leaves_the_turn_running_but_can_be_answered() {
     let mut run = Run::start("question_nonblocking");
     run.send("ask");

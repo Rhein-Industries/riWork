@@ -151,7 +151,7 @@ fn main() {
         ChatEvent::ApprovalRequested { approval: Approval { request_id: "r3".into(), item_id: None, kind: ApprovalKind::Permissions, title: "network".into(), detail: String::new(), choices: vec![Decision::Accept] } },
         ChatEvent::ApprovalRequested { approval: Approval { request_id: "r4".into(), item_id: None, kind: ApprovalKind::Tool, title: "Bash".into(), detail: String::new(), choices: vec![Decision::Accept, Decision::Decline] } },
         ChatEvent::ApprovalResolved { request_id: "r1".into(), decision: Decision::AcceptForSession },
-        ChatEvent::QuestionRequested { question: Question { request_id: "q1".into(), questions: vec![
+        ChatEvent::QuestionRequested { question: Question { answer_via_message: false, request_id: "q1".into(), questions: vec![
             QuestionPrompt { header: Some("Pick".into()), question: "Which?".into(), options: vec![QuestionOption { label: "A".into(), description: "first".into() }, QuestionOption { label: "B".into(), description: String::new() }], multi_select: true },
             QuestionPrompt { header: None, question: "Name?".into(), options: vec![], multi_select: false },
         ] } },

@@ -124,7 +124,7 @@ pub mod fixture {
 
     const FAKE_PROVIDER: &str =
         include_str!("../../../riwork-engine/src/chat/testdata/fake_provider.py");
-    pub const RECORDINGS: [(&str, &str); 6] = [
+    pub const RECORDINGS: [(&str, &str); 7] = [
         (
             "turn",
             include_str!("../../../riwork-engine/src/chat/testdata/codex/turn.ndjson"),
@@ -144,6 +144,10 @@ pub mod fixture {
         (
             "question",
             include_str!("../../../riwork-engine/src/chat/testdata/codex/question.ndjson"),
+        ),
+        (
+            "question_async",
+            include_str!("../../../riwork-engine/src/chat/testdata/codex/question_async.ndjson"),
         ),
         (
             "steer",

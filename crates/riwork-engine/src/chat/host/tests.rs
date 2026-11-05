@@ -1032,6 +1032,170 @@ fn requests_for_unknown_chats_and_things_a_stopped_chat_cannot_do_are_refused() 
 }
 
 #[test]
+fn idle_host_crash_settles_async_question_before_codex_resume_without_replaying_sends() {
+    use crate::chat::testkit::{Fake, fixture};
+
+    fn replay_config(
+        home: &Path,
+        info: &ChatInfo,
+        resume: Option<String>,
+    ) -> Result<DriverConfig, String> {
+        let mut config = (fake_providers().config)(home, info, resume)?;
+        config.program = info.cwd.join("provider");
+        Ok(config)
+    }
+
+    let fake = Fake::new(&[&fixture("codex/resume.ndjson")]);
+    let mut providers = fake_providers();
+    providers.codex = super::super::codex::start;
+    providers.config = replay_config;
+    let mut host = TestHost::with_providers(quick_options(), providers);
+    host.stop();
+
+    // A durable snapshot from a host crash after the asking turn ended. No
+    // orderly provider stop/resolution was written; the saved state is Idle.
+    let mut info = placeholder_info(&fake.config(Provider::Codex), "thread-9");
+    info.id = Uuid::new_v4().to_string();
+    let dir = log::chat_dir(&host.home, &info.id).unwrap();
+    let saved = ChatLog::create(&dir, &info).unwrap();
+    let events = [
+        ChatEvent::Info { info: info.clone() },
+        ChatEvent::TurnStarted {
+            turn_id: "ask-turn".into(),
+            started_at: None,
+        },
+        ChatEvent::QuestionRequested {
+            question: super::super::model::Question {
+                request_id: "async-question:ask".into(),
+                item_id: None,
+                answer_via_message: true,
+                questions: vec![],
+            },
+        },
+        ChatEvent::TurnCompleted {
+            turn_id: "ask-turn".into(),
+            outcome: TurnOutcome::Completed,
+            ended_at: None,
+        },
+        ChatEvent::State {
+            state: ChatState::Idle,
+        },
+    ];
+    let original: Vec<Envelope> = events
+        .into_iter()
+        .enumerate()
+        .map(|(at, event)| Envelope {
+            chat_id: info.id.clone(),
+            seq: at as u64 + 1,
+            event,
+        })
+        .collect();
+    for envelope in &original {
+        saved
+            .append(
+                format!("{}\n", serde_json::to_string(envelope).unwrap()).as_bytes(),
+                false,
+            )
+            .unwrap();
+    }
+    drop(saved);
+
+    host.restart(quick_options());
+    assert_eq!(host.info(&info.id).state, ChatState::Stopped);
+    assert!(
+        fake.starts().is_empty(),
+        "startup cleanup never starts a provider"
+    );
+    let recovered = host.log(&info.id);
+    assert_eq!(recovered[..original.len()], original);
+    assert_gapless(&recovered, 1);
+    let mut transcript = Transcript::default();
+    for envelope in &recovered {
+        transcript.apply_sequenced(envelope.seq, &envelope.event);
+    }
+    assert!(
+        transcript.questions.is_empty(),
+        "a fresh adapter cannot answer stale async controls"
+    );
+    assert_eq!(transcript.requests.len(), 1, "request history is retained");
+    assert!(transcript.requests[0].resolved_seq.is_some());
+    assert_eq!(
+        turns_completed(&recovered),
+        1,
+        "no invented completion for an idle chat"
+    );
+
+    host.restart(quick_options());
+    assert_eq!(host.log(&info.id), recovered, "settlement is written once");
+    let mut client = host.client();
+    send(&mut client, &info.id, "again");
+    let resumed = host.wait_for_log(&info.id, |log| {
+        turns_completed(log) == 2 && last_state(log) == Some(ChatState::Idle)
+    });
+    assert_eq!(resumed[..recovered.len()], recovered);
+    assert_eq!(fake.received_method("thread/resume").len(), 1);
+    assert_eq!(
+        fake.received_method("turn/start").len(),
+        1,
+        "only the newly sent message is delivered"
+    );
+    assert!(
+        client
+            .command(
+                &info.id,
+                ChatCommand::Answer {
+                    request_id: "async-question:ask".into(),
+                    answers: vec![vec!["stale".into()]],
+                }
+            )
+            .is_err()
+    );
+    assert_eq!(fake.received_method("turn/start").len(), 1);
+    assert!(fake.received_method("turn/steer").is_empty());
+    drop(host);
+    assert!(!fake.saw("mismatch"), "{:#?}", fake.entries());
+}
+
+#[test]
+fn async_question_remains_open_between_turns_and_is_settled_on_stop() {
+    let host = TestHost::new();
+    let chat = host.create(Provider::Codex);
+    host.wait_for_state(&chat.id, |state| *state == ChatState::Idle);
+    host.fake().emit(ChatEvent::TurnStarted {
+        turn_id: "ask-turn".into(),
+        started_at: None,
+    });
+    host.fake().emit(ChatEvent::QuestionRequested {
+        question: super::super::model::Question {
+            request_id: "async-question:ask".into(),
+            item_id: None,
+            answer_via_message: true,
+            questions: vec![],
+        },
+    });
+    host.fake().emit(ChatEvent::TurnCompleted {
+        turn_id: "ask-turn".into(),
+        outcome: TurnOutcome::Completed,
+        ended_at: None,
+    });
+    let log = host.wait_for_log(&chat.id, |log| turns_completed(log) == 1);
+    let fold = |log: &[Envelope]| {
+        let mut transcript = Transcript::default();
+        for envelope in log {
+            transcript.apply_sequenced(envelope.seq, &envelope.event);
+        }
+        transcript
+    };
+    assert_eq!(fold(&log).questions.len(), 1);
+    assert!(fold(&log).requests[0].resolved_seq.is_none());
+    host.client().close(&chat.id).unwrap();
+    let log = host.wait_for_log(&chat.id, |log| log.iter().any(|entry| matches!(
+        &entry.event, ChatEvent::QuestionResolved { request_id, .. } if request_id == "async-question:ask"
+    )));
+    assert!(fold(&log).questions.is_empty());
+}
+
+#[test]
 fn a_request_that_cannot_be_read_gets_an_error_and_the_connection_carries_on() {
     let host = TestHost::new();
     let stream = UnixStream::connect(host.socket()).unwrap();
