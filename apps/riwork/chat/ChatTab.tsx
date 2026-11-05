@@ -37,6 +37,9 @@ export interface ChatTabProps {
   desktopId?: string;
   visible: boolean;
   active?: boolean;
+  /** Select this visible chat's pane when its composer takes input. Resolves
+   * after the workspace has installed the native selection delivery. */
+  onFocus?: () => void | Promise<void>;
   theme?: () => InterfaceTheme;
   onTitle?: (title: string) => void;
   onUsage?: (usage: NativeChatUsage) => void;
@@ -911,6 +914,7 @@ export function ChatTab(props: ChatTabProps) {
         {failed() && <Text style={{ ...text(11, theme().palette.danger), ...chatColumn(paneWidth(), theme().scale) }}>{`Failed: ${panel().stateMessage ?? ""}`}</Text>}
         {continuing.forking() && <Text testID="chat-forking" style={{ ...text(11, theme().palette.working), ...chatColumn(paneWidth(), theme().scale) }}>Forking the conversation…</Text>}
         <Composer remote={!!props.desktopId} panel={panel} handle={handle} theme={theme} notice={notice} visible={interactive} width={paneWidth} billing={billing} continuing={continuing}
+          onFocus={() => { if (props.visible && !exporting()) return props.onFocus?.(); }}
           onSent={() => { following.set(true); list?.scrollToEnd(); }} onEditor={(editor) => editors.push(editor)} onEditMemo={props.onEditMemo}
           onInput={(node) => { composerInput = node; if (props.focusOnAttach && active()) { node.focus(); props.onAttached?.(); } }} onMeasure={(part, height) => { composer[part] = height; report(); }} />
       </View>
@@ -1065,7 +1069,7 @@ function encodeAttachment(bytes: Uint8Array): string {
 /** The message box, its send/stop slot and the model, effort, Fast and mode
  * choices. Drafts are saved on every change and restored into an empty box. */
 function Composer(props: PartProps & { remote?: boolean; billing: BillingControl; continuing: ContinueControl; width: () => number; visible: () => boolean; onSent: () => void; onEditor: (editor: number) => void; onEditMemo?: (projectId: string) => void;
-  onInput?: (node: YNode) => void; onMeasure?: (part: "box" | "input" | "controls", height: number) => void }) {
+  onInput?: (node: YNode) => void; onFocus?: () => void | Promise<void>; onMeasure?: (part: "box" | "input" | "controls", height: number) => void }) {
   const theme = props.theme;
   // One draft editor identity per mounted composer, unique across windows: the
   // native draft owners are process-wide (CHATC-035).
@@ -1283,6 +1287,27 @@ function Composer(props: PartProps & { remote?: boolean; billing: BillingControl
       persist();
       props.notice(`Could not send: ${error}. Your draft is retained.`);
     }).finally(() => pending.set(false));
+  }
+
+  let selecting: Promise<void> | undefined;
+  function activate() {
+    if (selecting || props.visible()) return selecting;
+    const delivery = props.onFocus?.();
+    if (!delivery) return;
+    const current = delivery.finally(() => { if (selecting === current) selecting = undefined; });
+    selecting = current;
+    void current.catch((error) => props.notice(`Could not select the chat: ${error}. Your draft is retained.`));
+    return current;
+  }
+  function submitFromComposer() {
+    if (composing()) return;
+    // Focus/selectPanel crosses the native bridge. An immediate Return or a
+    // direct Send click waits for that selection, then rechecks every guard in
+    // submit (including hidden/frozen/exporting and composition). Repeated
+    // clicks share the delivery; submit's pending guard admits only one send.
+    const delivery = activate();
+    if (delivery) void delivery.then(() => { if (mounted) submit(); }, () => {});
+    else submit();
   }
 
   function interrupt() {
@@ -1517,7 +1542,7 @@ function Composer(props: PartProps & { remote?: boolean; billing: BillingControl
       multiline={true} autoCorrect={false} submitBehavior="submit" readonly={props.panel().link === "deleted"} value={draft()}
       onSelectionChange={(event) => selection.set({ start: event.start, end: event.end })}
       onPaste={(event) => addAttachments(event.uris, event.uris.length ? [] : event.files)}
-      onChange={edit} onSubmit={() => { if (!suggestions.accept()) submit(); }} onFocus={() => focused.set(true)} onBlur={() => focused.set(false)}
+      onChange={edit} onSubmit={() => { if (!suggestions.accept()) submitFromComposer(); }} onFocus={() => { focused.set(true); activate(); }} onBlur={() => focused.set(false)}
       onCompositionChange={(event) => composing.set(event.composing)} onContentSizeChange={(size) => textHeight.set(size.height)}
       onLayout={(bounds) => props.onMeasure?.("input", bounds.size.height)}
       style={{ ...text(14), lineHeight: 21 * theme().scale, height: inputHeight(), paddingHorizontal: 3, paddingVertical: 4 }} />
@@ -1570,7 +1595,7 @@ function Composer(props: PartProps & { remote?: boolean; billing: BillingControl
           <Icon name="stop" size={15 * theme().scale} color={theme().palette.bg} />
         </View>
         : <View role="button" testID="chat-send" focusable={!sendDisabled()} tooltip={props.panel().running ? STEER_TIP : SEND_TIP} accessibilityLabel={props.panel().running ? STEER_TIP : SEND_TIP}
-          accessibilityState={{ disabled: sendDisabled() }} onPress={submit}
+          accessibilityState={{ disabled: sendDisabled() }} onPress={submitFromComposer}
           style={{ width: 30 * theme().scale, height: 30 * theme().scale, flexShrink: 0, borderRadius: 15 * theme().scale, alignItems: "center", justifyContent: "center",
             backgroundColor: sendDisabled() ? theme().palette.panelActive : theme().palette.cyan }} hoverStyle={{ opacity: 0.85 }} focusStyle={{ opacity: 0.75 }}>
           <Icon name="up" size={17 * theme().scale} color={sendDisabled() ? theme().palette.muted : theme().palette.bg} />

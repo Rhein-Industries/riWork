@@ -8,7 +8,22 @@ import { ChatTab, type ChatDiagnostics } from "../chat/ChatTab";
  * message box, and opening another chat (a fork, the original) shows that one,
  * as a workspace would. */
 function Fixture() {
-  const params = host.params as { recording?: string; chatId?: string };
+  const params = host.params as { recording?: string; chatId?: string; inactive?: boolean; deferFocus?: boolean; ignoreFocus?: boolean };
+  const selected = signal(!params.inactive), visible = signal(true), frozen = signal(false);
+  const ignoreFocus = signal(!!params.ignoreFocus);
+  let focusRequests = 0;
+  let select: (() => void) | undefined;
+  const onFocus = () => {
+    if (!visible() || frozen() || ignoreFocus()) return;
+    focusRequests++;
+    // LayoutSession.selectPanel crosses the native bridge. Hold that delivery so
+    // submitting immediately after focus exercises the same asynchronous race.
+    return new Promise<void>((resolve) => {
+      const finish = () => { selected.set(true); resolve(); };
+      if (params.deferFocus) select = finish;
+      else setTimeout(finish, 0);
+    });
+  };
   const chatId = signal<string | null>(params.chatId ?? null);
   const focusNext = signal(false);
   const error = signal("");
@@ -23,7 +38,12 @@ function Fixture() {
       .then((chat) => chatId.set(chat.id))
       .catch((reason) => error.set(String(reason)));
   }
-  host.on("app.fixture.inspect", () => host.post("app.fixture.state", { chatId: chatId(), ...last }));
+  host.on("app.fixture.inspect", () => host.post("app.fixture.state", { chatId: chatId(), selected: selected(), focusRequests, ...last }));
+  host.on("app.fixture.select", (value) => selected.set(value === true));
+  host.on("app.fixture.focusDelivered", () => { select?.(); select = undefined; });
+  host.on("app.fixture.visible", (value) => visible.set(value === true));
+  host.on("app.fixture.frozen", (value) => frozen.set(value === true));
+  host.on("app.fixture.ignoreFocus", (value) => ignoreFocus.set(value === true));
   // The chat's draft as the process-wide native store holds it now.
   host.on("app.fixture.draft", () => {
     const handle = Chat.open(chatId()!);
@@ -49,7 +69,7 @@ function Fixture() {
   host.on("app.fixture.show", (data) => { const id = (data as { chatId?: string } | undefined)?.chatId; if (id) chatId.set(id); });
   return <View style={{ flex: 1 }}>
     {error() !== "" && <Text testID="fixture-error">{error()}</Text>}
-    {chatId() && <ChatTab chatId={chatId()!} visible={true} onDiagnostics={(report) => { last = report; }}
+    {chatId() && <ChatTab chatId={chatId()!} visible={visible()} active={selected() && !frozen()} {...{ onFocus }} onDiagnostics={(report) => { last = report; }}
       focusOnAttach={focusNext()} onAttached={() => focusNext.set(false)}
       onReplace={(id) => { focusNext.set(true); chatId.set(id); }} onOpenWorker={(id, kind) => { if (kind === "chat") chatId.set(id); }} />}
   </View>;

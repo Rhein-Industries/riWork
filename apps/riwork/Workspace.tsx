@@ -832,6 +832,10 @@ export function Workspace(props: WorkspaceProps) {
         onDone={(result) => finishSetup(chatProps.panelId, result.kind, result.id, result.projectId)} onCancel={() => closeSetup(chatProps.panelId)}
         onError={(message) => notice.set(message)} onNotice={(message) => notice.set(message)} />}
       {ready() && <ErrorBoundary fallback={(error, retry) => <ChatFailure error={error} retry={retry} theme={theme} />}><ChatTab desktopId={chatHost()} chatId={chatId()!} visible={isVisible(chatProps.panelId)} active={selected() === chatProps.panelId && !terminalFrozen()} theme={theme}
+        onFocus={async () => {
+          if (!isVisible(chatProps.panelId) || terminalFrozen() || switching()) return;
+          install(await session.selectPanel(chatProps.panelId));
+        }}
         onUsage={(usage) => recordChatUsage(chatProps.panelId, usage)}
         onTitle={(title) => { if (chatHost() && remoteChatTitles()[chatProps.panelId] !== title) remoteChatTitles.set({ ...remoteChatTitles(), [chatProps.panelId]: title }); }}
         terminalTargets={chatHost() ? () => [] : terminalTargets} onCopyToTerminal={chatHost() ? undefined : copyToTerminal}
