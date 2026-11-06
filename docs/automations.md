@@ -1,8 +1,8 @@
 # Desktop Automations
 
-Open **Automations** from the native application menu, a pane menu, or **Cmd+Shift+S**. Choose a title, a single-line prompt, and a future first run. Run once, hourly, every 24 hours, every seven days, or at an elapsed interval of at least five minutes. Exact times include a UTC offset; recurring runs keep their UTC cadence across daylight-saving changes.
+Open **Automations** from **Somtus → Automations**, a pane menu, or **Cmd+Shift+S**. Choose a title, a single-line prompt, and a future first run. Run once, hourly, every 24 hours, every seven days, or at an elapsed interval of at least five minutes. Exact times include a UTC offset; recurring runs keep their UTC cadence across daylight-saving changes.
 
-**New project chat** is the default destination. Each occurrence creates an ordinary chat in the selected project's root and submits one prompt. Choose Codex or Claude, optional model/effort/fast settings, and an explicit permission mode; the default is **Supervised**. Codex uses the project-selected account, pinned at save time. An options-only edit keeps that account and destination identity. Switching providers or explicitly choosing a destination binds it again.
+**New project chat** is the default destination. Each occurrence creates an ordinary chat in the selected project's root and submits one prompt. Choose Codex, Claude or Muse, optional model/effort/fast settings, and an explicit permission mode; the default is **Supervised**. Codex uses the project-selected account, pinned at save time. An options-only edit keeps that account and destination identity. Switching providers or explicitly choosing a destination binds it again.
 
 **Existing AI shell** selects a specific live Codex or Claude shell. Project scope accepts an ordinary project-root shell without a worktree, or a project orchestrator. Workspace scope requires the exact project/worktree worker. App scope selects its global orchestrator shell. Existing schedules retain their older destination semantics and identities. Shell dispatch preserves the idle, approval, draft, provider/account, creation, pane and directory checks; scheduling never changes the shell's permissions.
 
@@ -42,3 +42,5 @@ Before claiming a fresh-chat occurrence, the client sends a non-mutating `capabi
 The dispatch claim persists a caller-owned chat UUID before Create. A compatible host never overwrites an existing chat with that UUID. The returned ID, project/root/account/provider/permission and model/effort/fast must match before Send. An interrupted claim or ambiguous create/send outcome pauses for review and never automatically retries that occurrence. A future reviewed edit can schedule another occurrence. Submitted means the prompt was recorded, not that the agent finished its work.
 
 Unsupported model or provider settings can fail initialization; the recorded chat ID remains available for inspection. The host's actual support, rather than the executable's version on disk, governs fresh-chat availability. Legacy scheduled destinations keep their existing dispatch paths.
+
+See [Scheduler reference](scheduling.md) for the existing-target CLI/MCP contract, delivery gates, persistence and verification commands.

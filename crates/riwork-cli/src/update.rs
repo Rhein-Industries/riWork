@@ -1847,8 +1847,11 @@ mod tests {
             .unwrap();
         assert!(wait_until_gone(descendant), "the stage's child survived");
         // Later stages do not start once an update was interrupted.
+        let later_stage_sentinel = temporary.path.join("never-runs");
         let error = run_stage(
-            Command::new("/bin/sh").args(["-c", "touch never-runs"]),
+            Command::new("/bin/sh")
+                .args(["-c", "touch never-runs"])
+                .current_dir(&temporary.path),
             "later stage",
             Duration::from_secs(5),
             &mut log,
@@ -1856,6 +1859,10 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.contains("interrupted"), "{error}");
+        assert!(
+            !later_stage_sentinel.exists(),
+            "the later stage ran after interruption"
+        );
         assert!(
             matches!(update_lock(&temporary.path), Err(error) if error.contains("interrupted"))
         );

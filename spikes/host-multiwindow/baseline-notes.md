@@ -7,7 +7,7 @@ distinction between model/event work, native view update work, and drawn frames.
 
 ## Closest long-answer reference
 
-Source: `PERFORMANCE_RECOVERY_REPORT.txt:536` and the current fixture in
+Source: `docs/archive/performance/PERFORMANCE_RECOVERY_REPORT.txt:536` and the current fixture in
 `crates/riwork-desktop/src/chat_view/display_tests.rs:758`.
 
 The fixture generates one 18,980-byte answer containing 60 Markdown sections:
@@ -75,7 +75,7 @@ Source: `crates/riwork-desktop/src/chat_view/display_tests.rs:346`.
 - Guards: 25 ms median frame (three samples), 1.5 ms/event, 60 ms median row/bulk
   toggles, fewer than 100 rendered rows, no token-triggered historical projection.
 
-Later integration evidence in `PERFORMANCE_RECOVERY_REPORT.txt:109` is less
+Later integration evidence in `docs/archive/performance/PERFORMANCE_RECOVERY_REPORT.txt:109` is less
 favorable: one serial baseline/current pair measured 34.0 / 40.5 ms median frame,
 both failing the existing 25 ms guard. No warm-up or retries; background workload
 and cache history were uncontrolled. Both stopped at the first frame guard, so

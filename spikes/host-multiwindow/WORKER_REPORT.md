@@ -114,7 +114,7 @@ start. The main event pump uses a 5 ms wait deadline.
 
 | Existing GPUI reference in this repository | Recorded number | Relationship to this spike |
 | --- | --- | --- |
-| Exact 18,980-byte/475-chunk long-answer correction and repeat, `PERFORMANCE_RECOVERY_REPORT.txt:536` | Last-100 fold/frame medians **5.863/42.119 ms** and **5.895/42.104 ms** | Closest text payload. GPUI Debug explicitly renders one frame after every delta; NSH Release streams asynchronously with different timer boundaries. |
+| Exact 18,980-byte/475-chunk long-answer correction and repeat, `docs/archive/performance/PERFORMANCE_RECOVERY_REPORT.txt:536` | Last-100 fold/frame medians **5.863/42.119 ms** and **5.895/42.104 ms** | Closest text payload. GPUI Debug explicitly renders one frame after every delta; NSH Release streams asynchronously with different timer boundaries. |
 | Same report, historical original and pre-review result | Late frame medians **90.170 ms** and **7.214 ms** | The report says the earlier large speedup was not reproduced. Both retained as context, neither selected as a current matched baseline. |
 | 2,400-item text-stream fixture, `docs/tool-ui-performance.md` | After-pass frame median/p95 **12.487/14.140 ms**; merged-review p95 **14.906 ms** | Approximately 30 deltas/s, but a full RiWork tool/image/history workload in Debug; this spike's history rows contain generated prose. |
 | Later 2,200-call integration regression | Baseline/current median frame **34.0/40.5 ms**, both failing the 25 ms guard | Shows the existing reference numbers vary with integration/environment. This spike did not rerun GPUI. |
