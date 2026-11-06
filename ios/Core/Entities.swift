@@ -129,10 +129,14 @@ public struct UploadConnectionIdentity: Sendable, Equatable {
     public let desktopID: String
     public let deviceID: String
     public let routeID: String
+    public let targetRouteID: String?
+    public let targetHostID: String?
     public init(pairing: Pairing) {
         desktopID = pairing.desktop_id
         deviceID = pairing.device_id
         routeID = pairing.route_id
+        targetRouteID = pairing.gateway?.routeID
+        targetHostID = pairing.gateway?.hostID
     }
 }
 

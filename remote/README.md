@@ -1,5 +1,8 @@
 # Somtus encrypted remote access
 
+Phones can also reach a paired desktop's registered SSH/Tailscale hosts through
+that desktop. See [phone gateway setup and protocol](../docs/phone-ssh-gateway.md).
+
 This headless workspace member builds the blind relay and the outbound desktop
 connector without GPUI/Ghostty native dependencies. The mobile client uses the
 [frozen v1 protocol](../docs/remote-protocol.md) and shared fixtures. Desktop

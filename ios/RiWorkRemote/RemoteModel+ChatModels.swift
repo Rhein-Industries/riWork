@@ -195,7 +195,7 @@ extension RemoteModel {
 
     /// Unknown accounts are additionally isolated by project; paired desktop identity survives app relaunch and renaming.
     func catalogueCacheKey(provider: ChatProvider, chat: ChatInfo? = nil) -> String? {
-        guard let desktopID = desktop?.pairing.desktop_id else { return nil }
+        guard let desktopID = desktop?.pairing.executionHostID else { return nil }
         let account = catalogueAccount(provider: provider, chat: chat) ?? "unknown-project-\(chat?.projectID ?? projectID ?? "global")"
         return "riwork.modelCatalogue.v1.\(desktopID).\(provider.rawValue).\(account)"
     }

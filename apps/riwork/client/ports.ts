@@ -122,11 +122,13 @@ export interface Services {
   features?(): string[];
 }
 
-/** A paired host as the device lists it. `features`: what its connection announced. */
+/** A paired host or a host reached through one. `features`: what its connection announced. */
 export interface HostInfo {
   id: string;
   name: string;
   address?: string;
+  /** The saved pairing that carries this host's route; this host has no separate pairing. */
+  gateway?: { id: string; name: string };
   selected: boolean;
   link: LinkState;
   features: string[];

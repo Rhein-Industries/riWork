@@ -1053,7 +1053,11 @@ fn screen_fields(cli: &Value, output: &str) -> Option<Value> {
     let (x, y) = (number(cursor.get("x")?)?, number(cursor.get("y")?)?);
     let (rows, cols) = (number(cli.get("rows")?)?, number(cli.get("cols")?)?);
     let in_mode = cli.get("in_mode")?.as_bool()?;
-    if rows == 0 || cols == 0 || y >= rows || output.lines().take(rows as usize).count() < rows as usize {
+    if rows == 0
+        || cols == 0
+        || y >= rows
+        || output.lines().take(rows as usize).count() < rows as usize
+    {
         return None;
     }
     Some(json!({"cursor":{"x":x,"y":y},"rows":rows,"cols":cols,"in_mode":in_mode}))
@@ -1255,6 +1259,46 @@ impl Rpc {
         rpc.account_session = Some(device);
         Ok(rpc)
     }
+    /// Gateway methods exist only on an authenticated first-hop session. Reuse
+    /// the envelope, authorization and request-id checks of ordinary RPC.
+    pub(crate) async fn handle_gateway_reply(
+        &self,
+        device: &str,
+        value: Value,
+        gateway: &crate::gateway::Gateway,
+        reply_limit: usize,
+    ) -> Result<Reply> {
+        let response = match parse_request(value) {
+            Err(response) => response,
+            Ok((request_id, request)) => {
+                if request.v != 1 || request.kind != "request" {
+                    error(
+                        &request_id,
+                        "invalid_request",
+                        "unsupported request version/type",
+                    )
+                } else if id(&request.id).is_err() {
+                    error(&request_id, "invalid_request", "invalid request UUID")
+                } else if !self.authorized(device)? {
+                    anyhow::bail!("device revoked");
+                } else if self.used_for_input(device, &request.id)? {
+                    error(
+                        &request_id,
+                        "request_conflict",
+                        "request UUID already used for input",
+                    )
+                } else {
+                    gateway.handle(device, &request).await
+                }
+            }
+        };
+        let id = response.get("id").cloned().unwrap_or(Value::Null);
+        let mut body = serde_json::to_vec(&response)?;
+        if body.len() > reply_limit.clamp(MAX_PLAINTEXT, crate::link::MAX_INFLATED) {
+            body = serde_json::to_vec(&too_large(id.clone()))?;
+        }
+        Ok(Reply { id, body })
+    }
     fn authorized(&self, device: &str) -> Result<bool> {
         if let Some(expected) = &self.account_session {
             return Ok(expected == device);
@@ -1293,6 +1337,89 @@ impl Rpc {
             input_ids: ParseCache::default(),
             storage,
         }
+    }
+    /// The complete phone feature set, shared by paired and SSH transports.
+    pub(crate) async fn phone_features(&self) -> Value {
+        let mut features = crate::link::features(self.history_max_lines());
+        // Chats, a chat going on with the other provider (`switch`), the models of a
+        // provider a chat does not run yet (`chat.models`), what a chat's message box
+        // offers for `/` and `@` (`chat.suggestions`), creating an orchestrator, agents
+        // that follow the desktop's Settings when `shell.create` leaves `unrestricted`
+        // out, the global dashboard (`dashboard.get`) and project memos
+        // (`project.memo.*`) exist when the installed CLI has them; an older phone
+        // ignores them all. Asked together, one question to the CLI answers them all, a
+        // no as much as a yes.
+        let (
+            chat,
+            provider_switch,
+            chat_models,
+            chat_suggestions,
+            orchestrator_create,
+            as_settings,
+            dashboard,
+            project_memo,
+            key_names,
+            (native, watch),
+        ) = tokio::join!(
+            self.chat_supported(),
+            self.chat_provider_switch_supported(),
+            self.chat_models_supported(),
+            self.chat_suggestions_supported(),
+            self.orchestrator_create_supported(),
+            self.shell_create_as_settings_supported(),
+            self.dashboard_supported(),
+            self.project_memo_supported(),
+            self.key_names_supported(),
+            self.native_features()
+        );
+        // The second key list of `shell.keys` (F-keys, Insert, Space, modifiers), when
+        // the installed CLI takes it; a phone without the flag keeps to the first list.
+        if key_names {
+            features["key_names"] = json!(2);
+        }
+        // Changed rows only (`shell.output` with `delta`), which this connector
+        // does by itself; an older phone never asks.
+        features["output_delta"] = json!(true);
+        if chat {
+            features["chat"] = json!(true);
+            if provider_switch {
+                features["chat_provider_switch"] = json!(true);
+            }
+            if chat_models {
+                features["chat_models"] = json!(true);
+            }
+            if chat_suggestions {
+                features["chat_suggestions"] = json!(true);
+            }
+        }
+        if self.tabs_advertised() {
+            features["tabs"] = json!(true);
+        }
+        if orchestrator_create {
+            features["orchestrator_create"] = json!(true);
+        }
+        if as_settings {
+            features["shell_create_as_settings"] = json!(true);
+        }
+        if dashboard {
+            features["dashboard"] = json!(true);
+        }
+        if project_memo {
+            features["project_memo"] = json!(true);
+        }
+        // The desktop's own methods (`native.invoke`) and a wait for its data to
+        // change (`state.watch`): what the installed desktop binary and this connector
+        // both have, `{"v":1,"methods":[...]}` and `{"v":1,"topics":[...]}`.
+        if let Some(native) = native {
+            features["native"] = native;
+        }
+        if let Some(watch) = watch {
+            features["watch"] = watch;
+        }
+        // Files from the phone; an older phone ignores it, and a phone that sees none
+        // tells the person that this desktop cannot take files yet.
+        features["upload"] = crate::upload::features();
+        features
     }
     /// The most lines a `shell.history` page may have right now (announced in `ready`).
     pub fn history_max_lines(&self) -> u32 {

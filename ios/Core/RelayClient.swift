@@ -6,6 +6,7 @@ public enum RequestValidation {
             guard let value, UUID(uuidString: value)?.uuidString.lowercased() == value else { throw RemoteError.protocolViolation("A full canonical UUID is required.") }
         }
         try uuid(id)
+        if try GatewayRequests.validate(method: method, params: params) { return }
         let required: Set<String>
         let optional: Set<String>
         switch method {
@@ -294,7 +295,11 @@ public actor RelayClient: RemoteTransport {
     /// gets less than 10 s: a timeout tears the whole connection down. A `shell.output` that asks the desktop to wait for a
     /// change (`wait_ms`) gets that wait plus 20 s (the connector gives up after the wait plus 8 s), for the same reason.
     static func timeout(for method: String, params: [String: JSONValue] = [:], default base: Duration) -> Duration {
+        if let inner = GatewayRequests.inner(method: method, params: params) {
+            return timeout(for: inner.method, params: inner.params, default: base)
+        }
         switch method {
+        case "hosts.open": return max(base, .seconds(30))
         case "shell.keys": return max(base, .seconds(10))
         // Starting an agent can take 20 to 30 s on the desktop (it prepares its tools first); closing waits for tmux.
         case "shell.create": return max(base, .seconds(90))
@@ -326,6 +331,7 @@ public actor RelayClient: RemoteTransport {
     public func isConnected() -> Bool { cipher != nil && socket != nil }
     @discardableResult
     public func connect(pairing: Pairing, allowLocalDevelopment: Bool = false) async throws -> Pairing {
+        guard pairing.gateway == nil else { throw RemoteError.invalidPairing("A gateway route needs its routed transport.") }
         disconnect()
         try pairing.validate(allowLocalDevelopment: allowLocalDevelopment)
         guard let url = URL(string: pairing.relay_url) else { throw RemoteError.invalidPairing("Invalid relay URL.") }
@@ -490,7 +496,7 @@ public actor RelayClient: RemoteTransport {
                 }
                 // Only `shell.input` reports an unknown outcome as uncertain. `shell.keys` carries a batch id the desktop dedupes,
                 // so a lost connection or cancelled caller surfaces as itself and the batch is simply retried.
-                pending[id] = Pending(continuation: continuation, isInput: method == "shell.input", kind: kind, timeout: deadline)
+                pending[id] = Pending(continuation: continuation, isInput: method == "shell.input" || GatewayRequests.isMutation(method: method, params: params), kind: kind, timeout: deadline)
                 let previous = sendTail
                 // The counter is already spent, so this frame is sent even if its caller is cancelled.
                 sendTail = Task {

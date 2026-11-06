@@ -29,6 +29,9 @@ public struct RequestBudget: Sendable, Equatable {
 
     /// The kind of a request: a long poll when it asks the desktop to wait (`wait_ms` above 0), else a call.
     public static func kind(method: String, params: [String: JSONValue]) -> Kind {
+        if let inner = GatewayRequests.inner(method: method, params: params) {
+            return kind(method: inner.method, params: inner.params)
+        }
         switch method {
         case "shell.output", "chat.events", "state.watch":
             if case .number(let wait)? = params["wait_ms"], wait > 0 { return .longPoll }

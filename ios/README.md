@@ -198,6 +198,11 @@ Release builds keep default App Transport Security and hide the local-relay swit
 
 ## Pair and connect
 
+After pairing with a desktop, its registered SSH/Tailscale hosts can appear in
+the host list as `via <desktop name>`, without another pairing per target. The
+gateway and target need the updated remote companion; see
+[phone gateway setup and protocol](../docs/phone-ssh-gateway.md).
+
 Follow `remote/README.md` and `docs/remote-deployment.md` in the combined repository.
 Create a device pairing, provision its route hashes on the relay, and run the
 desktop connector with the rebuilt Somtus CLI and its existing `RIWORK_HOME`.

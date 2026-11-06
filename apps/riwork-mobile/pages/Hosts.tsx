@@ -37,6 +37,8 @@ export function HostsPage(props: { app: MobileApp; ui: Kit; layout: Layout; onTo
 
   function HostRow(rowProps: { id: string; index: number }) {
     const info = () => app.hosts().find((entry) => entry.id === rowProps.id);
+    const address = () => info()?.gateway ? `via ${info()!.gateway!.name}` : info()?.address;
+    const managedHost = () => info()?.gateway ?? { id: rowProps.id, name: info()?.name ?? "desktop" };
     const detail = () => app.overview().details[rowProps.id];
     const status = () => {
       const link = info()?.link;
@@ -46,20 +48,20 @@ export function HostsPage(props: { app: MobileApp; ui: Kit; layout: Layout; onTo
     return <>
       {rowProps.index > 0 && <Divider />}
       <View style={{ flexDirection: "row", alignItems: "center" }}>
-        <View testID={`host:${rowProps.id}`} role="button" accessibilityLabel={`${info()?.name ?? "Desktop"}. ${status()}. ${info()?.address ?? ""}`}
+        <View testID={`host:${rowProps.id}`} role="button" accessibilityLabel={`${info()?.name ?? "Desktop"}. ${status()}. ${address() ?? ""}`}
           disabled={blocked()} disabledStyle={{ opacity: 0.5 }} activeStyle={{ backgroundColor: palette().panelActive }}
           onPress={() => app.openHost(rowProps.id)}
           style={{ flex: 1, minHeight: target(), padding: pt(16), flexDirection: "row", alignItems: "center", gap: pt(13) }}>
           {pad ? info() && <LinkDot ui={ui} link={info()!.link} /> : <Symbol name="desktopcomputer" color={palette().cyan} size={pt(24)} />}
           <View style={{ flex: 1, gap: pt(4) }}>
             <Text style={{ ...text(16), fontWeight: "600" }}>{info()?.name ?? "Desktop"}</Text>
-            {info()?.address && <Text style={text(12, "muted")}>{info()!.address!}</Text>}
+            {address() && <Text style={text(12, "muted")}>{address()!}</Text>}
             <Text style={text(12, info()?.link.state === "failed" ? "error" : "muted")}>{status()}</Text>
           </View>
           <Glyph layout={props.layout} symbol="chevron.right" icon="right" color={palette().muted} size={pt(13)} />
         </View>
-        <View role="button" accessibilityLabel={`Manage ${info()?.name ?? "desktop"}`} disabled={blocked()}
-          onPress={() => void app.present({ name: "hostDetails", host: rowProps.id })}
+        <View role="button" accessibilityLabel={`Manage ${managedHost().name}${info()?.gateway ? " connection" : ""}`} disabled={blocked()}
+          onPress={() => void app.present({ name: "hostDetails", host: managedHost().id })}
           activeStyle={{ backgroundColor: palette().panelActive }} style={{ minWidth: target(), minHeight: target(), alignItems: "center", justifyContent: "center", marginRight: pt(4) }}>
           <Glyph layout={props.layout} symbol="ellipsis.circle" icon="more" color={palette().muted} size={pt(pad ? 18 : 21)} />
         </View>

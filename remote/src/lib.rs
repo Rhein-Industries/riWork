@@ -9,6 +9,7 @@ pub mod client_daemon;
 pub mod config;
 pub mod connector;
 pub mod crypto;
+mod gateway;
 pub mod lanes;
 pub mod link;
 pub mod pty;

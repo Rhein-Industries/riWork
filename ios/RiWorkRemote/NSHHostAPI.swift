@@ -132,7 +132,9 @@ import UIKit
             var value: [String: Any] = ["id": desktop.id, "name": desktop.name, "selected": desktop.id == interactive,
                                         "link": link(desktop.id), "features": features(desktop.id)]
             // The relay's host name only: the pairing URL carries a token.
-            value["address"] = URLComponents(string: desktop.pairing.relay_url)?.host
+            if let route = desktop.pairing.gateway {
+                value["gateway"] = ["id": desktop.pairing.route_id, "name": route.gatewayName]
+            } else { value["address"] = URLComponents(string: desktop.pairing.relay_url)?.host }
             return value
         }
     }
@@ -577,11 +579,14 @@ struct HostCallError: LocalizedError, CustomStringConvertible {
             switch remote {
             case .rpc(let code, let message):
                 switch code {
-                case "not_found": return .init("not_found", message)
+                case "not_found", "host_not_found": return .init("not_found", message)
+                case "host_changed": return .init("conflict", message)
+                case "host_unsupported": return .init("unsupported", message)
+                case "host_session_closed", "host_unavailable": return .init("offline", message)
                 case "already_exists", "request_conflict", "viewport_busy": return .init("conflict", message)
                 case "pty_limit", "upload_limit", "cache_full", "response_too_large":
                     return .init("limit", dashboard ? RemoteModel.dashboardFailureText(error) : message)
-                case "outcome_unknown": return .init("uncertain", remote.localizedDescription)
+                case "outcome_unknown", "delivery_uncertain": return .init("uncertain", remote.localizedDescription)
                 default: return .init("failed", message)
                 }
             case .uncertainDelivery: return .init("uncertain", remote.localizedDescription)

@@ -320,6 +320,7 @@ struct Queued {
     reply_limit: usize,
     /// The terminal streams of the session, for a device that may have any.
     pty: Option<Arc<PtySet>>,
+    gateway: Arc<crate::gateway::Gateway>,
 }
 
 /// How a request ended. `outcome` is `None` when it was cut short because its
@@ -353,9 +354,20 @@ fn start_ready(
                 received,
                 reply_limit,
                 pty,
+                gateway,
             } = queued;
-            let run =
-                rpc.handle_session_reply(&device, request, &viewport, pty.as_ref(), reply_limit);
+            let run = async {
+                if request["method"]
+                    .as_str()
+                    .is_some_and(|m| m.starts_with("hosts."))
+                {
+                    rpc.handle_gateway_reply(&device, request, &gateway, reply_limit)
+                        .await
+                } else {
+                    rpc.handle_session_reply(&device, request, &viewport, pty.as_ref(), reply_limit)
+                        .await
+                }
+            };
             let outcome = if lane.cancellable() {
                 tokio::select! {
                     result = run => Some(result),
@@ -484,6 +496,7 @@ pub(crate) async fn run_device_with(device: &Device, rpc: &Arc<Rpc>, timing: Tim
     // with this function, however it ends, which kills every client process.
     let streams_allowed = device.kind == DeviceKind::Desktop && p.v == 2;
     let mut streams = SessionStreams::default();
+    let mut gateway = crate::gateway::SessionGateway::default();
     // Request tasks; dropped (so aborted) with this function, however it ends.
     let mut tasks: JoinSet<Done> = JoinSet::new();
     // The viewport lease's renewal while it runs (at most one), dropped the same way.
@@ -580,6 +593,7 @@ pub(crate) async fn run_device_with(device: &Device, rpc: &Arc<Rpc>, timing: Tim
                 session_ended.send_replace(epoch);
                 lanes.drop_queued_cancellable();
                 streams.end();
+                gateway.end();
                 if let Some(shared) = viewport.take() {
                     // Waits for a resize that is running; the tasks run on their own.
                     if let Some(mut v) = shared.lock().await.take() {
@@ -655,96 +669,18 @@ pub(crate) async fn run_device_with(device: &Device, rpc: &Arc<Rpc>, timing: Tim
             Some("client_finish") => {
                 let f: ClientFinish = serde_json::from_value(value)?;
                 let mut s = pending.take().context("unexpected finish")?.finish(&f)?;
-                // `features` is additive: an older phone reads only the three fields it knows.
-                let mut features = link::features(rpc.history_max_lines());
+                let mut features = rpc.phone_features().await;
+                features["hosts"] = json!(1);
                 if streams_allowed {
-                    // Only a device that may open streams is told they exist.
                     features["pty"] = pty::features();
                 }
-                // Chats, a chat going on with the other provider (`switch`), the models of a
-                // provider a chat does not run yet (`chat.models`), what a chat's message box
-                // offers for `/` and `@` (`chat.suggestions`), creating an orchestrator, agents
-                // that follow the desktop's Settings when `shell.create` leaves `unrestricted`
-                // out, the global dashboard (`dashboard.get`) and project memos
-                // (`project.memo.*`) exist when the installed CLI has them; an older phone
-                // ignores them all. Asked together, one question to the CLI answers them all, a
-                // no as much as a yes.
-                let (
-                    chat,
-                    provider_switch,
-                    chat_models,
-                    chat_suggestions,
-                    orchestrator_create,
-                    as_settings,
-                    dashboard,
-                    project_memo,
-                    key_names,
-                    (native, watch),
-                ) = tokio::join!(
-                    rpc.chat_supported(),
-                    rpc.chat_provider_switch_supported(),
-                    rpc.chat_models_supported(),
-                    rpc.chat_suggestions_supported(),
-                    rpc.orchestrator_create_supported(),
-                    rpc.shell_create_as_settings_supported(),
-                    rpc.dashboard_supported(),
-                    rpc.project_memo_supported(),
-                    rpc.key_names_supported(),
-                    rpc.native_features()
-                );
-                // The second key list of `shell.keys` (F-keys, Insert, Space, modifiers), when
-                // the installed CLI takes it; a phone without the flag keeps to the first list.
-                if key_names {
-                    features["key_names"] = json!(2);
-                }
-                // Changed rows only (`shell.output` with `delta`), which this connector
-                // does by itself; an older phone never asks.
-                features["output_delta"] = json!(true);
-                if chat {
-                    features["chat"] = json!(true);
-                    if provider_switch {
-                        features["chat_provider_switch"] = json!(true);
-                    }
-                    if chat_models {
-                        features["chat_models"] = json!(true);
-                    }
-                    if chat_suggestions {
-                        features["chat_suggestions"] = json!(true);
-                    }
-                }
-                if rpc.tabs_advertised() {
-                    features["tabs"] = json!(true);
-                }
-                if orchestrator_create {
-                    features["orchestrator_create"] = json!(true);
-                }
-                if as_settings {
-                    features["shell_create_as_settings"] = json!(true);
-                }
-                if dashboard {
-                    features["dashboard"] = json!(true);
-                }
-                if project_memo {
-                    features["project_memo"] = json!(true);
-                }
-                // The desktop's own methods (`native.invoke`) and a wait for its data to
-                // change (`state.watch`): what the installed desktop binary and this connector
-                // both have, `{"v":1,"methods":[...]}` and `{"v":1,"topics":[...]}`.
-                if let Some(native) = native {
-                    features["native"] = native;
-                }
-                if let Some(watch) = watch {
-                    features["watch"] = watch;
-                }
-                // Files from the phone; an older phone ignores it, and a phone that sees none
-                // tells the person that this desktop cannot take files yet.
-                features["upload"] = crate::upload::features();
                 let ready = json!({"v":1,"type":"ready","desktop_id":p.desktop_id,"device_id":p.device_id,"features":features});
                 let e = s.seal("d2c", &serde_json::to_vec(&ready)?)?;
                 send_json(&mut ws, &e).await?;
                 session = Some(s);
                 compress = false;
                 streams.begin(streams_allowed);
+                gateway.begin(rpc.storage.clone(), p.device_id.clone());
                 viewport = Some(Arc::new(tokio::sync::Mutex::new(Some(Viewport::new(
                     rpc.cli.clone(),
                     p.device_id.clone(),
@@ -794,6 +730,21 @@ pub(crate) async fn run_device_with(device: &Device, rpc: &Arc<Rpc>, timing: Tim
                     send_json(&mut ws, &reply).await?;
                     continue;
                 }
+                // Closing a routed host is session cleanup. It must not wait
+                // behind that host's accepted mutation (or its long polls).
+                // SSH finishes accepted ordered work after the link closes;
+                // queued calls see the invalid token and never reach the host.
+                if request.get("method").and_then(Value::as_str) == Some("hosts.close") {
+                    let gateway = gateway
+                        .current()
+                        .context("RPC before authenticated handshake")?;
+                    let reply = rpc
+                        .handle_gateway_reply(&p.device_id, request, &gateway, MAX_PLAINTEXT)
+                        .await?;
+                    let sealed = seal_body(s, reply, received, compress).await?;
+                    send_json(&mut ws, &sealed).await?;
+                    continue;
+                }
                 lanes.push(
                     classify(&request),
                     Queued {
@@ -809,6 +760,9 @@ pub(crate) async fn run_device_with(device: &Device, rpc: &Arc<Rpc>, timing: Tim
                             MAX_PLAINTEXT
                         },
                         pty: streams.0.clone(),
+                        gateway: gateway
+                            .current()
+                            .context("RPC before authenticated handshake")?,
                     },
                 );
                 start_ready(&mut lanes, &mut tasks, rpc, &p.device_id, &session_ended);

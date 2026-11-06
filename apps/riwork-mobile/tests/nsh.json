@@ -1,0 +1,5 @@
+{
+  "name": "Somtus mobile headless fixtures",
+  "id": "dev.riwork.mobile.tests",
+  "capabilities": { "host": ["mobile.snapshot", "mobile.action", "relay.hosts", "relay.select", "relay.disconnect", "nav.present"] }
+}

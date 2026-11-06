@@ -95,6 +95,7 @@ export function HostDashboardPage(props: {
           action={() => void app.device.hosts.disconnect(hostId).catch((error) => app.failure.set(String(error)))} />}
         {!connected() && link()?.state !== "connecting" && <Action compact={true} label="Connect" disabled={app.blocked()} action={() => app.connect(hostId)} />}
       </View>
+      {info()?.gateway && <Text style={text(12, "muted")}>{`via ${info()!.gateway!.name}`}</Text>}
       {link()?.error && <Text style={text(13, "error")}>{link()!.error!}</Text>}
     </View>;
   }

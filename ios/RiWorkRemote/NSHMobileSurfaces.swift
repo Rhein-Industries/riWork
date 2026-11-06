@@ -545,9 +545,14 @@ private struct NSHMobileHostDetails: View {
             WorkspaceBar(title: current.name) { Button("Done") { dismiss() }.disabled(busy) }
             List {
                 Section {
-                    Label(current.pairing.relayHost, systemImage: "network").foregroundStyle(style.muted)
-                    Button("Rename desktop", systemImage: "pencil") { renaming = true }.disabled(busy)
-                    Button("Remove from this device", systemImage: "trash", role: .destructive) { confirmingRemoval = true }.disabled(busy)
+                    if let gateway = current.pairing.gateway {
+                        Label("via \(gateway.gatewayName)", systemImage: "network").foregroundStyle(style.muted)
+                        Text("This desktop is reached through the gateway's saved SSH connection. Manage that connection on the gateway Mac.")
+                    } else {
+                        Label(current.pairing.relayHost, systemImage: "network").foregroundStyle(style.muted)
+                        Button("Rename desktop", systemImage: "pencil") { renaming = true }.disabled(busy)
+                        Button("Remove from this device", systemImage: "trash", role: .destructive) { confirmingRemoval = true }.disabled(busy)
+                    }
                 }.listRowBackground(style.panel)
                 if let failure { Section { Text(failure).foregroundStyle(style.error) }.listRowBackground(style.panel) }
                 Section { Text("Pairing keys stay in Keychain. Removing this pairing leaves desktop sessions running.").font(style.system(.caption)).foregroundStyle(style.muted) }

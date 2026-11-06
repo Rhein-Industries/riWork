@@ -90,10 +90,23 @@ impl Lane {
 /// The lane of a decoded request. Anything unrecognizable is a `Read`: it is
 /// answered with an error at once.
 pub fn classify(request: &Value) -> Lane {
+    // Inspect one forwarding layer only; recursive host calls are invalid.
+    if request["method"] == "hosts.call" {
+        let inner = &request["params"];
+        return if inner["method"]
+            .as_str()
+            .is_some_and(crate::gateway::allowed)
+        {
+            classify(inner)
+        } else {
+            Lane::Read
+        };
+    }
     let params = request.get("params");
     match request.get("method").and_then(Value::as_str) {
         Some(
-            "shell.keys"
+            "hosts.open"
+            | "shell.keys"
             | "shell.input"
             | "shell.resize"
             | "shell.resize.clear"
@@ -247,6 +260,45 @@ mod tests {
 
     fn request(method: &str, params: Value) -> Value {
         json!({"v":1,"type":"request","id":"x","method":method,"params":params})
+    }
+
+    #[test]
+    fn gateway_uses_one_inner_lane_and_rejects_recursive_and_stream_methods() {
+        for (method, params, expected) in [
+            ("shell.input", json!({}), Lane::Ordered),
+            (
+                "native.invoke",
+                json!({"module":"Store","method":"renameProject","args":{}}),
+                Lane::Ordered,
+            ),
+            (
+                "shell.output",
+                json!({"if_changed":"hash","wait_ms":5000}),
+                Lane::LongPoll,
+            ),
+            ("chat.events", json!({"wait_ms":25000}), Lane::LongPoll),
+            ("state.watch", json!({"wait_ms":25000}), Lane::LongPoll),
+            ("projects.list", json!({}), Lane::Read),
+            ("upload.chunk", json!({}), Lane::Read),
+            (
+                "hosts.call",
+                json!({"method":"shell.input","params":{}}),
+                Lane::Read,
+            ),
+            ("pty.open", json!({}), Lane::Read),
+            ("link.configure", json!({}), Lane::Read),
+        ] {
+            assert_eq!(
+                classify(&request(
+                    "hosts.call",
+                    json!({"session":"token","method":method,"params":params})
+                )),
+                expected,
+                "{method}"
+            );
+        }
+        assert_eq!(classify(&request("hosts.open", json!({}))), Lane::Ordered);
+        assert_eq!(classify(&request("hosts.close", json!({}))), Lane::Read);
     }
 
     #[test]

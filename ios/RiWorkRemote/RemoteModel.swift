@@ -281,9 +281,13 @@ enum ConnectionState: Equatable {
     /// Set when the Keychain library could not be read. Saved pairings are then untouched and never overwritten.
     var loadFailure: String?
     var loadFailed: Bool { loadFailure != nil }
+    /// Discovery failures leave the last known routes visible; they never redirect a route to another execution host.
+    var gatewayDiscoveryError: String?
+    @ObservationIgnored var gatewayDiscoveryInFlight: Set<String> = []
     @ObservationIgnored private let keychain: KeychainStore
     /// The phone's relay sockets, one per host; the overview, the decision responder and the shared screens borrow from it too.
     @ObservationIgnored let connections: HostConnections
+    @ObservationIgnored let gatewayDiscoveryEnabled: Bool
     /// This model's connection: `connections.interactive` (the interactive host's socket), or a test's scripted transport.
     @ObservationIgnored let client: any RemoteTransport
     @ObservationIgnored private let pollInterval: Duration
@@ -381,6 +385,7 @@ enum ConnectionState: Equatable {
         self.liveWaitMilliseconds = liveWaitMilliseconds
         self.linkWatcher = linkWatcher
         self.prefetchEnabled = prefetch
+        gatewayDiscoveryEnabled = client == nil
         let connections = connections ?? HostConnections()
         self.connections = connections
         self.client = client ?? connections.interactive
@@ -437,8 +442,10 @@ enum ConnectionState: Equatable {
         do {
             let library = try keychain.read(Library.self) ?? Library()
             desktops = library.desktops
+            synchronizeGatewayPairings()
             selectedDesktopID = library.selectedDesktopID ?? desktops.first?.id
-            chosen = library.selectedDesktopID
+            if let id = selectedDesktopID, !desktops.contains(where: { $0.id == id }) { selectedDesktopID = nil }
+            chosen = selectedDesktopID
             loadFailure = nil
         } catch {
             desktops = []; selectedDesktopID = nil
@@ -451,7 +458,7 @@ enum ConnectionState: Equatable {
     /// Last resort when the stored library can never be decoded; the user confirms first.
     func resetLibrary() throws {
         try keychain.delete()
-        for desktop in desktops { theme.forget(desktop.id) }
+        for desktop in desktops { theme.forget(desktop.id); connections.forget(desktop.id) }
         desktops = []; selectedDesktopID = nil; loadFailure = nil; error = nil
         theme.showInitial(selected: nil, existing: [])
     }
@@ -558,9 +565,10 @@ enum ConnectionState: Equatable {
     }
     func updateDesktop(_ update: (inout SavedDesktop) -> Void) throws {
         guard let i = desktops.firstIndex(where: { $0.id == selectedDesktopID }) else { return }
-        let previous = desktops[i]
+        let previous = desktops
         update(&desktops[i])
-        do { try persist() } catch { desktops[i] = previous; throw error }
+        synchronizeGatewayPairings()
+        do { try persist() } catch { desktops = previous; throw error }
     }
     func add(pairingText: String, name: String, allowLocal: Bool) throws -> String {
         let pairing = try Pairing.parse(pairingText, allowLocalDevelopment: allowLocal)
@@ -569,23 +577,27 @@ enum ConnectionState: Equatable {
         let saved = SavedDesktop(name: cleaned.isEmpty ? "Somtus desktop" : String(cleaned.prefix(80)), pairing: pairing, allowLocalDevelopment: allowLocal)
         desktops.append(saved)
         do { try persist() } catch { desktops.removeAll { $0.id == saved.id }; throw error }
+        connections.remember(saved.id)
         return saved.id
     }
     func rename(id: String, name: String) throws {
         guard let i = desktops.firstIndex(where: { $0.id == id }) else { return }
+        guard desktops[i].pairing.gateway == nil else { throw RemoteError.remote("Rename this SSH host on its gateway Mac.") }
         let cleaned = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleaned.isEmpty else { throw RemoteError.remote("Enter a desktop name.") }
-        let old = desktops[i].name; desktops[i].name = String(cleaned.prefix(80))
-        do { try persist() } catch { desktops[i].name = old; throw error }
+        let old = desktops; desktops[i].name = String(cleaned.prefix(80))
+        synchronizeGatewayPairings()
+        do { try persist() } catch { desktops = old; throw error }
     }
     func remove(id: String) async throws {
-        if selectedDesktopID == id { cancelUpload(); await disconnect(); selectedDesktopID = nil; clearSnapshot() }
-        discardKeyBuffers(forDesktop: id)
+        guard desktops.first(where: { $0.id == id })?.pairing.gateway == nil else { throw RemoteError.remote("Manage this SSH host on its gateway Mac.") }
+        let removed = desktops.filter { $0.id == id || $0.pairing.gateway != nil && $0.pairing.route_id == id }.map(\.id)
+        if let selectedDesktopID, removed.contains(selectedDesktopID) { cancelUpload(); await disconnect(); self.selectedDesktopID = nil; clearSnapshot() }
+        for target in removed { discardKeyBuffers(forDesktop: target) }
         let previous = desktops
-        desktops.removeAll { $0.id == id }
+        desktops.removeAll { removed.contains($0.id) }
         do { try persist() } catch { desktops = previous; throw error }
-        connections.forget(id)
-        theme.forget(id)
+        for target in removed { connections.forget(target); theme.forget(target) }
         theme.showInitial(selected: selectedDesktopID, existing: desktops.map(\.id))
     }
     func activate(_ id: String) async {
@@ -656,6 +668,7 @@ enum ConnectionState: Equatable {
             capabilitiesKnown = true
             startPolling(token: token)
             kickKeySender()
+            await discoverGatewayHosts(gatewayID: desktop.pairing.route_id)
         } catch {
             guard generation == token else { return }
             state = .failed; snapshotStale = true; self.error = error.localizedDescription
@@ -699,7 +712,7 @@ enum ConnectionState: Equatable {
         if drainingForBackground { resumeAfterDrain = true; return }
         if wantsConnection, state == .suspended { await connect() }
     }
-    private func clearSnapshot() {
+    func clearSnapshot() {
         sharedTabs = nil
         projects = []; touchedProjects = [:]; worktrees = []; shells = []; orchestrators = []; loadedProjectID = nil; resetOutput(); snapshotStale = true
         chats = []; chatsListed = false; projectChatID = nil; projectBlockedID = nil; chatConversations = [:]
@@ -718,6 +731,8 @@ enum ConnectionState: Equatable {
         resetTerminal()
     }
     func refresh() async {
+        guard state == .connected else { return }
+        if let desktop { await discoverGatewayHosts(gatewayID: desktop.pairing.route_id) }
         guard state == .connected else { return }
         failedViewport = nil; viewportError = nil; missingSessionIDs = []; outputLines = [:]; historyPageLines = [:]; historyRetryAfter = nil; historyMisses = 0
         do { try await refresh(token: generation) } catch { handle(error) }

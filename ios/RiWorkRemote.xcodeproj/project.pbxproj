@@ -7,6 +7,11 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		79B98F642926CA92E317FAFE /* GatewayConnectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AFB096EF3BDA5D0801B90404 /* GatewayConnectionTests.swift */; };
+		5EE8BDF6F6D96789FC9CC105 /* RemoteModel+Gateway.swift in Sources */ = {isa = PBXBuildFile; fileRef = F094B6ABF7EB68A4B8923AAC /* RemoteModel+Gateway.swift */; };
+		603990E409914032500B2407 /* GatewayTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = FBC418566014DC3F571F085D /* GatewayTransport.swift */; };
+		F30A40692585EB0D09E1226B /* GatewayTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 22C5112D5834E6BCFC430CD8 /* GatewayTests.swift */; };
+		7F45E3D01B4D3B07D8715B3B /* Gateway.swift in Sources */ = {isa = PBXBuildFile; fileRef = 86EFB1D01E5E53A022EE2D92 /* Gateway.swift */; };
 		00D6ABB0BE0582B2124CE3F7 /* RiWorkCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 761DEE92C9DC86427BFBBC1B /* RiWorkCore.framework */; };
 		022A9FD7C8E05AC4E37B307E /* ChatTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 07661F0D1A3874613BA4233D /* ChatTests.swift */; };
 		03C0241E1E77D2E0946A068A /* ProjectMemoViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14D16286F92FB983EBC46210 /* ProjectMemoViews.swift */; };
@@ -351,6 +356,11 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		AFB096EF3BDA5D0801B90404 /* GatewayConnectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "GatewayConnectionTests.swift"; sourceTree = "<group>"; };
+		F094B6ABF7EB68A4B8923AAC /* RemoteModel+Gateway.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "RemoteModel+Gateway.swift"; sourceTree = "<group>"; };
+		FBC418566014DC3F571F085D /* GatewayTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "GatewayTransport.swift"; sourceTree = "<group>"; };
+		22C5112D5834E6BCFC430CD8 /* GatewayTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "GatewayTests.swift"; sourceTree = "<group>"; };
+		86EFB1D01E5E53A022EE2D92 /* Gateway.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Gateway.swift"; sourceTree = "<group>"; };
 		001FA247070A682651C0F5E0 /* SGRTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SGRTests.swift; sourceTree = "<group>"; };
 		005C04299055A741176AF5B5 /* HotkeyEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HotkeyEditor.swift; sourceTree = "<group>"; };
 		00682FCE98709284A8147D26 /* TerminalDictation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalDictation.swift; sourceTree = "<group>"; };
@@ -676,6 +686,7 @@
 		85B5553D91FE19BC721443F6 /* AppTests */ = {
 			isa = PBXGroup;
 			children = (
+				AFB096EF3BDA5D0801B90404 /* GatewayConnectionTests.swift */,
 				A22E89FABB38C3BA37192725 /* ActivityTests.swift */,
 				B620C318695DAB885BC0F84C /* AttachmentTests.swift */,
 				7C95681B62F7BB139D970860 /* ChatFileViewerTests.swift */,
@@ -728,6 +739,7 @@
 		922F4DAB5232AA40C7557B92 /* Core */ = {
 			isa = PBXGroup;
 			children = (
+				86EFB1D01E5E53A022EE2D92 /* Gateway.swift */,
 				B82C39564A22BC7BEF1577E3 /* AgentActivity.swift */,
 				2F35167D87C329FBAF115AA3 /* Chat.swift */,
 				EFFB5B7F4A2FF965EE3BCE0F /* ChatAttachments.swift */,
@@ -823,6 +835,7 @@
 		D8C6982EDA0AF0A0C8B06A9D /* Tests */ = {
 			isa = PBXGroup;
 			children = (
+				22C5112D5834E6BCFC430CD8 /* GatewayTests.swift */,
 				64A2A93E50965FB1F981B5A1 /* AgentActivityTests.swift */,
 				A6795439BA7EC224280F7A3C /* AppearanceTests.swift */,
 				4F6738A9398808FDC7136E29 /* ChatAttachmentsTests.swift */,
@@ -909,6 +922,8 @@
 		DA2A7074211FAC2BC9F7CA58 /* RiWorkRemote */ = {
 			isa = PBXGroup;
 			children = (
+				F094B6ABF7EB68A4B8923AAC /* RemoteModel+Gateway.swift */,
+				FBC418566014DC3F571F085D /* GatewayTransport.swift */,
 				2D2754B64E6DE48082BE6E9E /* ActivityViews.swift */,
 				08896516EF74B9533C867969 /* Assets.xcassets */,
 				1EA59EC1A4935F679AB53577 /* AttachmentViews.swift */,
@@ -1184,6 +1199,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				79B98F642926CA92E317FAFE /* GatewayConnectionTests.swift in Sources */,
 				9820C138E78F3FF648A17810 /* ActivityTests.swift in Sources */,
 				FF3313718A0946B01BC5E9C8 /* AttachmentTests.swift in Sources */,
 				805BBA4274CA8049E9290CD3 /* ChatFileViewerTests.swift in Sources */,
@@ -1237,6 +1253,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				5EE8BDF6F6D96789FC9CC105 /* RemoteModel+Gateway.swift in Sources */,
+				603990E409914032500B2407 /* GatewayTransport.swift in Sources */,
 				9C0418A9E6B10377A364ADA9 /* ActivityViews.swift in Sources */,
 				8F6201CE336E4B675CEB5605 /* AttachmentViews.swift in Sources */,
 				DE25162258E3F02C16084946 /* BackgroundGrace.swift in Sources */,
@@ -1317,6 +1335,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				F30A40692585EB0D09E1226B /* GatewayTests.swift in Sources */,
 				27813BC4B95D06A89CDD4505 /* AgentActivityTests.swift in Sources */,
 				3637BC6041533A0E1FF10FFF /* AppearanceTests.swift in Sources */,
 				17402AD3232EFE88A09012C1 /* ChatAttachmentsTests.swift in Sources */,
@@ -1388,6 +1407,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				7F45E3D01B4D3B07D8715B3B /* Gateway.swift in Sources */,
 				C4CC5AF25EDFBDE256E77DC5 /* AgentActivity.swift in Sources */,
 				EBAD4CF77F19EEB48B9A8BE3 /* Chat.swift in Sources */,
 				A3CBA442B6650C5CD4E54D13 /* ChatAttachments.swift in Sources */,

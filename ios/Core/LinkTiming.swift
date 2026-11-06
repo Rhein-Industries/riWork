@@ -38,6 +38,8 @@ public struct TimedReply: Sendable {
 /// What a desktop announces in the `features` of its first encrypted frame (`ready`). An older desktop has no `features`, and is
 /// then treated as offering none of it.
 public struct DesktopFeatures: Sendable, Equatable {
+    /// Version 1 gateway routing to the paired Mac's registered SSH hosts.
+    public var hosts = false
     /// Replies can be deflated if asked for with `link.configure`.
     public var deflate = false
     /// Replies shorter than this are never compressed.
@@ -94,6 +96,7 @@ public struct DesktopFeatures: Sendable, Equatable {
             minimumCompressBytes = count(.object(deflate)["min_bytes"]) ?? 2048
             maximumInflatedBytes = min(LinkFrame.maximumInflatedBytes, count(.object(deflate)["max_inflated"]) ?? LinkFrame.maximumInflatedBytes)
         }
+        if case .number(1) = features["hosts"] { hosts = true }
         if case .bool(true) = features["chat"] { chat = true }
         if case .bool(true) = features["tabs"] { tabs = true }
         upload = UploadFeature(features["upload"])

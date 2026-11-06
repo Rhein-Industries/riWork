@@ -167,7 +167,15 @@ async fn dial(route: &Route, expected: Option<&str>) -> Result<(Dialed, Value)> 
 async fn dial_command(
     route: &Route,
     expected: Option<&str>,
+    command: Process,
+) -> Result<(Dialed, Value)> {
+    dial_command_session(route, expected, command, None).await
+}
+async fn dial_command_session(
+    route: &Route,
+    expected: Option<&str>,
     mut command: Process,
+    session: Option<&str>,
 ) -> Result<(Dialed, Value)> {
     let mut child = command
         .spawn()
@@ -186,7 +194,12 @@ async fn dial_command(
         pending: Vec::new(),
         stderr,
     };
-    write_json(&mut dialed.input, &json!({"v":VERSION,"type":"hello","client_id":route.client_id,"expected_host_id":expected})).await?;
+    let mut hello =
+        json!({"v":VERSION,"type":"hello","client_id":route.client_id,"expected_host_id":expected});
+    if let Some(session) = session {
+        hello["session_id"] = json!(session);
+    }
+    write_json(&mut dialed.input, &hello).await?;
     let hello = timeout(
         HANDSHAKE,
         read_json(&mut dialed.output, &mut dialed.pending, MAX_LINE),
@@ -296,7 +309,7 @@ async fn connected(
                         if reply.is_closed() { continue; }
                         pending.retain(|_, (_, reply)| !reply.is_closed());
                         let request = json!({"v":1,"type":"request","id":id,"method":method,"params":params});
-                        if pending.len() >= 256 || serde_json::to_vec(&request)?.len() > crate::MAX_PLAINTEXT {
+                        if pending.contains_key(&id) || pending.len() >= 256 || serde_json::to_vec(&request)?.len() > crate::MAX_PLAINTEXT {
                             let _ = reply.send(Err(CallError::Invalid("request not sent: SSH capacity limit".into()))); continue;
                         }
                         pending.insert(id, (Instant::now(), reply));
@@ -343,6 +356,108 @@ async fn connected(
     }
 }
 
+/// A dedicated, non-reconnecting link owned by a single phone session.
+/// Dropping/closing it kills SSH, causing EOF and cleanup on the account server.
+/// The existing desktop daemon is deliberately never shared with this client.
+pub(crate) struct GatewayLink {
+    connection: Connection,
+    task: tokio::task::JoinHandle<Outcome>,
+    closed: std::sync::atomic::AtomicBool,
+}
+impl GatewayLink {
+    pub async fn open(route: &Route, session: &str) -> Result<(Self, Value)> {
+        route.validate()?;
+        crate::crypto::uuid(session)?;
+        let (dialed, ready) =
+            dial_command_session(route, Some(&route.host_id), route.command(), Some(session))
+                .await?;
+        ensure!(
+            ready["features"]["forwarded_sessions"] == 1 && ready["session_id"] == session,
+            "the SSH host must be updated to support forwarded sessions"
+        );
+        ensure!(ready["features"].is_object(), "missing SSH features");
+        let features = ready["features"].clone();
+        let (state, _) = watch::channel(LinkState::Online { rtt_ms: None });
+        let (connection, mut current) = watch::channel(None);
+        let task = tokio::spawn(async move {
+            connected(
+                dialed,
+                ready,
+                LinkTiming::default(),
+                &state,
+                &connection,
+                &mut 0,
+            )
+            .await
+        });
+        struct Starting(Option<tokio::task::JoinHandle<Outcome>>);
+        impl Drop for Starting {
+            fn drop(&mut self) {
+                if let Some(task) = &self.0 {
+                    task.abort();
+                }
+            }
+        }
+        let mut starting = Starting(Some(task));
+        current
+            .changed()
+            .await
+            .context("SSH ended before session opened")?;
+        let connection = current
+            .borrow()
+            .clone()
+            .context("SSH ended before session opened")?;
+        let task = starting.0.take().expect("new SSH task");
+        Ok((
+            Self {
+                connection,
+                task,
+                closed: std::sync::atomic::AtomicBool::new(false),
+            },
+            features,
+        ))
+    }
+    pub fn is_open(&self) -> bool {
+        !self.closed.load(std::sync::atomic::Ordering::Acquire) && !self.task.is_finished()
+    }
+    pub fn close(&self) {
+        self.closed
+            .store(true, std::sync::atomic::Ordering::Release);
+        self.task.abort();
+    }
+    pub async fn call(
+        &self,
+        id: String,
+        method: String,
+        params: Value,
+    ) -> Result<Value, CallError> {
+        if !self.is_open() {
+            return Err(CallError::Offline("host session closed".into()));
+        }
+        let (reply, rx) = oneshot::channel();
+        self.connection
+            .tx
+            .try_send(Command::Request {
+                id,
+                method,
+                params,
+                reply,
+            })
+            .map_err(|_| CallError::Invalid("request not sent: host session unavailable".into()))?;
+        match timeout(Duration::from_secs(120), rx).await {
+            Ok(Ok(Ok(reply))) => Ok(reply.response),
+            Ok(Ok(Err(error))) => Err(error),
+            Ok(Err(_)) => Err(CallError::Offline("host session ended".into())),
+            Err(_) => Err(CallError::Timeout),
+        }
+    }
+}
+impl Drop for GatewayLink {
+    fn drop(&mut self) {
+        self.close();
+    }
+}
+
 /// Run only as an OS-account-authorized stdio endpoint (normally `ssh ...
 /// somtus-remote connect`). It creates no listening socket and grants no new
 /// account authority. Requests use the same allowlist, lanes and outcome ledger.
@@ -373,6 +488,31 @@ async fn serve_io(
         .context("missing client id")?
         .to_owned();
     crate::crypto::uuid(&client)?;
+    let forwarded_session = hello
+        .get("session_id")
+        .map(|value| {
+            let session = value.as_str().context("invalid session id")?;
+            crate::crypto::uuid(session)?;
+            Ok::<_, anyhow::Error>(session.to_owned())
+        })
+        .transpose()?;
+    // One stable phone/route principal owns one account session at a time.
+    // This also serializes its existing upload and input ledgers across process
+    // boundaries when a previous connection is still finishing accepted work.
+    let _account_lock = if forwarded_session.is_some() {
+        let (storage, client) = (storage.clone(), client.clone());
+        Some(
+            tokio::task::spawn_blocking(move || {
+                storage.lock_wait(
+                    &format!("ssh-forwarded-{client}.lock"),
+                    Duration::from_secs(2),
+                )
+            })
+            .await??,
+        )
+    } else {
+        None
+    };
     let rpc = Arc::new(Rpc::for_account_session(
         cli,
         storage.clone(),
@@ -395,40 +535,82 @@ async fn serve_io(
     }
     // Upload sweeping may coexist with the relay connector. This is an owner
     // marker only; it grants no relay authorization and contains no credentials.
+    // Uploads belong to the stable phone/route principal, so reconnect can
+    // resume partial files and completed paths survive terminal paste/chat use.
     crate::config::private_write(
         &storage.dir.join(format!("ssh-client-{client}.json")),
         &json!({"v":1,"host_id":host_id}),
     )?;
-    let (native, watch_features) = rpc.native_features().await;
-    write_json(&mut output, &json!({"v":VERSION,"type":"ready","host_id":host_id,"features":{"pty":crate::pty::features(),"history_max_lines":rpc.history_max_lines(),"native":native,"watch":watch_features}})).await?;
-    let viewport = Arc::new(tokio::sync::Mutex::new(None));
+    let mut features = rpc.phone_features().await;
+    // Stdio uses JSON lines; deflate belongs only to the encrypted first hop.
+    features
+        .as_object_mut()
+        .expect("phone features")
+        .remove("deflate");
+    features["forwarded_sessions"] = json!(1);
+    if forwarded_session.is_none() {
+        features["pty"] = crate::pty::features();
+    }
+    write_json(&mut output, &json!({"v":VERSION,"type":"ready","host_id":host_id,"session_id":forwarded_session,"features":features})).await?;
+    let viewport = Arc::new(tokio::sync::Mutex::new(Some(
+        crate::viewport::Viewport::new(rpc.cli.clone(), client.clone()),
+    )));
     let pty = crate::pty::PtySet::new();
     let (ended, _) = watch::channel(false);
-    let mut lanes = Lanes::default();
+    let mut lanes: Lanes<Value> = Lanes::default();
     let mut jobs = JoinSet::new();
+    let mut renewing = JoinSet::new();
+    let mut renew = tokio::time::interval(Duration::from_secs(3));
+    let mut heard = Instant::now();
+    let streams_allowed = forwarded_session.is_none();
     let result: Result<()> = async {
         loop {
             while let Some((lane, request)) = lanes.next_ready() {
-                let (rpc, client, viewport, pty) = (rpc.clone(), client.clone(), viewport.clone(), pty.clone()); let mut ended = ended.subscribe();
+                let (rpc, client, viewport, pty) = (rpc.clone(), client.clone(), viewport.clone(), pty.clone());
+                let mut ended = ended.subscribe();
+                // Upload store work runs on blocking threads. Let accepted writes
+                // finish before releasing this principal's process lock, even if
+                // the caller disappeared while its disk operation was running.
+                let cancellable = lane.cancellable()
+                    && !request["method"].as_str().is_some_and(|method| method.starts_with("upload."));
                 jobs.spawn(async move {
-                    let run = rpc.handle_session_up_to(&client, request, &viewport, Some(&pty), MAX_LINE);
-                    let response = if lane.cancellable() {
+                    let run = rpc.handle_session_up_to(&client, request, &viewport, streams_allowed.then_some(&pty), MAX_LINE);
+                    let response = if cancellable {
                         tokio::select! { result = run => Some(result), _ = ended.changed() => None }
                     } else { Some(run.await) };
                     (lane, response)
                 });
             }
+            let reading = lanes.queued() < lanes::MAX_QUEUED;
+            let idle_at = heard + Duration::from_secs(60);
             tokio::select! {
-                frame = read_json(&mut input, &mut partial, crate::MAX_PLAINTEXT), if lanes.queued() < lanes::MAX_QUEUED => {
-                    let Some(frame) = frame? else { return Ok(()) };
-                    if frame["v"] == VERSION && frame["type"] == "ping" { write_json(&mut output, &json!({"v":VERSION,"type":"pong"})).await?; }
-                    else if matches!(frame["method"].as_str(), Some("pty.write" | "pty.resize" | "pty.close")) {
-                        write_json(&mut output, &rpc.handle_pty_inline(&client, frame, &pty)?).await?;
-                    } else { lanes.push(lanes::classify(&frame), frame); }
+                biased;
+                _ = renew.tick() => {
+                    if renewing.is_empty() && let Ok(held) = viewport.clone().try_lock_owned()
+                        && held.as_ref().is_some_and(|v| v.selected.is_some()) {
+                        let rpc = rpc.clone();
+                        renewing.spawn(async move { match held.as_ref() {
+                            Some(viewport) => rpc.renew_viewport(viewport).await, None => Ok(()),
+                        } });
+                    }
                 },
+                Some(done) = renewing.join_next(), if !renewing.is_empty() => { done??; },
                 done = jobs.join_next(), if !jobs.is_empty() => {
                     let (lane, response) = done.context("request task ended")??; lanes.finished(lane);
                     if let Some(response) = response { write_json(&mut output, &response?).await?; }
+                },
+                frame = read_json(&mut input, &mut partial, crate::MAX_PLAINTEXT), if reading => {
+                    let Some(frame) = frame? else { return Ok(()) };
+                    heard = Instant::now();
+                    if frame["v"] == VERSION && frame["type"] == "ping" { write_json(&mut output, &json!({"v":VERSION,"type":"pong"})).await?; }
+                    else if streams_allowed && matches!(frame["method"].as_str(), Some("pty.write" | "pty.resize" | "pty.close")) {
+                        write_json(&mut output, &rpc.handle_pty_inline(&client, frame, &pty)?).await?;
+                    } else { lanes.push(lanes::classify(&frame), frame); }
+                },
+                // Reading comes before the deadline, so already-waiting pings
+                // count. Pausing reads for our bounded queue is not peer silence.
+                _ = tokio::time::sleep_until(idle_at), if reading => {
+                    ensure!(heard.elapsed() < Duration::from_secs(60), "SSH client stopped answering");
                 },
             }
         }
@@ -436,6 +618,8 @@ async fn serve_io(
     // Never start queued mutations after observing disconnect, never cancel accepted
     // ordered work halfway through, and never carry requests into a new link.
     ended.send_replace(true);
+    renewing.abort_all();
+    while renewing.join_next().await.is_some() {}
     while jobs.join_next().await.is_some() {}
     pty.close_all();
     if let Some(mut viewport) = viewport.lock().await.take() {

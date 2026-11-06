@@ -27,6 +27,12 @@ public struct Pairing: Codable, Sendable, Equatable {
     public let root_key: String?
     /// `pending`, `established` or `expired`. Absent on v1 records.
     public let invite_state: String?
+    /// Local routing metadata for an SSH host reached through this authenticated gateway. Never part of a pairing invite.
+    public var gateway: GatewayRoute?
+    public var connectionID: String { gateway.map { "\(route_id):\($0.routeID):\($0.hostID)" } ?? route_id }
+    public var executionHostID: String { gateway?.hostID ?? desktop_id }
+    public var direct: Pairing { var value = self; value.gateway = nil; return value }
+    public func routed(to route: GatewayRoute) -> Pairing { var value = direct; value.gateway = route; return value }
 
     public init(v: Int, relay_url: String, desktop_id: String, device_id: String, route_id: String, device_name: String, pairing_secret: String, relay_token: String, invite_id: String? = nil, invite_secret: String? = nil, expires_at: UInt64? = nil, root_key: String? = nil, invite_state: String? = nil) {
         self.v = v
@@ -45,7 +51,7 @@ public struct Pairing: Codable, Sendable, Equatable {
     }
     private enum CodingKeys: String, CodingKey {
         case v, relay_url, desktop_id, device_id, route_id, device_name, pairing_secret, relay_token
-        case invite_id, invite_secret, expires_at, root_key, invite_state
+        case invite_id, invite_secret, expires_at, root_key, invite_state, gateway
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -62,6 +68,7 @@ public struct Pairing: Codable, Sendable, Equatable {
         expires_at = try c.decodeIfPresent(UInt64.self, forKey: .expires_at)
         root_key = try c.decodeIfPresent(String.self, forKey: .root_key)
         invite_state = try c.decodeIfPresent(String.self, forKey: .invite_state)
+        gateway = try c.decodeIfPresent(GatewayRoute.self, forKey: .gateway)
     }
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
@@ -78,10 +85,13 @@ public struct Pairing: Codable, Sendable, Equatable {
         try c.encodeIfPresent(expires_at, forKey: .expires_at)
         try c.encodeIfPresent(root_key, forKey: .root_key)
         try c.encodeIfPresent(invite_state, forKey: .invite_state)
+        try c.encodeIfPresent(gateway, forKey: .gateway)
     }
     /// Replaces a redeemed invite with the root key. The invite secret is not copied.
     public func established(rootKey: String) -> Pairing {
-        Pairing(v: v, relay_url: relay_url, desktop_id: desktop_id, device_id: device_id, route_id: route_id, device_name: device_name, pairing_secret: "", relay_token: relay_token, invite_id: invite_id, invite_secret: nil, expires_at: expires_at, root_key: rootKey, invite_state: "established")
+        var value = Pairing(v: v, relay_url: relay_url, desktop_id: desktop_id, device_id: device_id, route_id: route_id, device_name: device_name, pairing_secret: "", relay_token: relay_token, invite_id: invite_id, invite_secret: nil, expires_at: expires_at, root_key: rootKey, invite_state: "established")
+        value.gateway = gateway
+        return value
     }
     /// 48 raw UUID bytes in displayed order: desktop, device, then route.
     public func identityBytes() throws -> Data {
@@ -115,6 +125,7 @@ public struct Pairing: Codable, Sendable, Equatable {
         let pairing: Pairing
         do { pairing = try JSONDecoder().decode(Pairing.self, from: data) }
         catch { throw RemoteError.invalidPairing("Paste the complete desktop pairing JSON or link.") }
+        guard pairing.gateway == nil else { throw RemoteError.invalidPairing("Gateway routes cannot be imported as pairings.") }
         if let linkVersion, pairing.v != linkVersion { throw RemoteError.invalidPairing("Link version does not match the pairing.") }
         try pairing.validate(allowLocalDevelopment: allowLocalDevelopment)
         return pairing
@@ -178,7 +189,7 @@ public enum InputValidation {
 }
 
 public struct SavedDesktop: Codable, Sendable, Identifiable {
-    public var id: String { pairing.route_id }
+    public var id: String { pairing.connectionID }
     public var name: String
     public var pairing: Pairing
     public let allowLocalDevelopment: Bool

@@ -191,7 +191,7 @@ struct RemoteRootView: View {
                                         Image(systemName: "desktopcomputer").font(.system(size: style.pt(14))).foregroundStyle(style.accent)
                                         VStack(alignment: .leading, spacing: 2) {
                                             Text(desktop.name).font(style.face(13, bold: true, relativeTo: .headline)).foregroundStyle(style.text)
-                                            Text(desktop.pairing.relayHost).font(style.face(11, relativeTo: .caption)).foregroundStyle(style.muted)
+                                            Text(desktop.pairing.gateway.map { "via \($0.gatewayName)" } ?? desktop.pairing.relayHost).font(style.face(11, relativeTo: .caption)).foregroundStyle(style.muted)
                                             if let host = hostDashboards.hosts.first(where: { $0.id == desktop.id }) {
                                                 Text(host.freshness().text).font(style.face(10, relativeTo: .caption2))
                                                     .foregroundStyle(host.freshness().stale ? style.warning : style.muted).lineLimit(2)
@@ -202,20 +202,28 @@ struct RemoteRootView: View {
                                     }.frame(minHeight: style.pt(44)).contentShape(Rectangle())
                                 }.buttonStyle(.plain).accessibilityHint("Open this desktop's dashboard and projects")
                                 Menu {
-                                    Button("Rename", systemImage: "pencil") { renaming = desktop }
-                                    Button("Remove from this device", systemImage: "trash", role: .destructive) { removing = desktop }
+                                    if desktop.pairing.gateway == nil {
+                                        Button("Rename", systemImage: "pencil") { renaming = desktop }
+                                        Button("Remove from this device", systemImage: "trash", role: .destructive) { removing = desktop }
+                                    } else {
+                                        Text("Manage this SSH connection on its gateway Mac.")
+                                    }
                                 } label: { Label("Desktop options for \(desktop.name)", systemImage: "ellipsis") }.labelStyle(.iconOnly)
                             }
                             .listRowBackground(style.background)
                             .listRowInsets(EdgeInsets(top: 0, leading: 12, bottom: 0, trailing: 8))
                             .listRowSeparatorTint(style.divider)
                             .contextMenu {
-                                Button("Rename", systemImage: "pencil") { renaming = desktop }
-                                Button("Remove from this device", systemImage: "trash", role: .destructive) { removing = desktop }
+                                if desktop.pairing.gateway == nil {
+                                    Button("Rename", systemImage: "pencil") { renaming = desktop }
+                                    Button("Remove from this device", systemImage: "trash", role: .destructive) { removing = desktop }
+                                }
                             }
                             .swipeActions {
-                                Button("Remove", role: .destructive) { removing = desktop }
-                                Button("Rename") { renaming = desktop }.tint(style.accent)
+                                if desktop.pairing.gateway == nil {
+                                    Button("Remove", role: .destructive) { removing = desktop }
+                                    Button("Rename") { renaming = desktop }.tint(style.accent)
+                                }
                             }
                         }
                         Button("Pair a desktop", systemImage: "plus.circle") { pairingRequest = PairingRequest(text: "") }.listRowBackground(style.background)

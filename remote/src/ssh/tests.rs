@@ -292,3 +292,311 @@ async fn stdio_uses_existing_rpc_and_finishes_accepted_mutation_after_disconnect
         "no mutation replay"
     );
 }
+
+#[cfg(unix)]
+struct Endpoint {
+    reader: BufReader<tokio::io::ReadHalf<tokio::io::DuplexStream>>,
+    writer: tokio::io::WriteHalf<tokio::io::DuplexStream>,
+    partial: Vec<u8>,
+    task: tokio::task::JoinHandle<Result<()>>,
+}
+#[cfg(unix)]
+impl Endpoint {
+    async fn open(storage: Storage, cli: PathBuf, route: &Route, scope: &str) -> Self {
+        let (client, server) = duplex(16384);
+        let (read, write) = tokio::io::split(server);
+        let task = tokio::spawn(serve_io(storage, cli, read, write));
+        let (reader, writer) = tokio::io::split(client);
+        let mut endpoint = Self {
+            reader: BufReader::new(reader),
+            writer,
+            partial: Vec::new(),
+            task,
+        };
+        write_json(&mut endpoint.writer, &json!({"v":1,"type":"hello","client_id":route.client_id,"expected_host_id":route.host_id,"session_id":scope})).await.unwrap();
+        let ready = read_json(&mut endpoint.reader, &mut endpoint.partial, MAX_LINE)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(ready["session_id"], scope);
+        assert_eq!(ready["features"]["forwarded_sessions"], 1);
+        assert!(ready["features"]["pty"].is_null());
+        assert!(ready["features"]["upload"].is_object());
+        assert_eq!(ready["features"]["chat"], true);
+        endpoint
+    }
+    async fn call(&mut self, method: &str, params: Value) -> Value {
+        write_json(&mut self.writer, &json!({"v":1,"type":"request","id":uuid::Uuid::new_v4().to_string(),"method":method,"params":params})).await.unwrap();
+        timeout(
+            Duration::from_secs(5),
+            read_json(&mut self.reader, &mut self.partial, MAX_LINE),
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap()
+    }
+    async fn close(mut self) {
+        self.writer.shutdown().await.unwrap();
+        drop(self.writer);
+        drop(self.reader);
+        timeout(Duration::from_secs(5), self.task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn forwarded_stdio_isolates_phones_preserves_uploads_and_clears_viewport_leases() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let storage = Storage::at(tmp.path().into()).unwrap();
+    let route = route();
+    let cli = tmp.path().join("session-cli");
+    let shell = uuid::Uuid::new_v4().to_string();
+    let calls = tmp.path().join("session-calls");
+    std::fs::write(&cli, format!(r#"#!/usr/bin/env python3
+import sys,json
+with open({calls:?},'a') as f: f.write(json.dumps(sys.argv[1:])+'\n')
+if sys.argv[1]=='capabilities': print(json.dumps({{'v':1,'chat':True,'shell_paste':True,'native':{{'v':1,'methods':['Hosts.local']}}}}))
+elif sys.argv[1:3]==['native','invoke']: print(json.dumps({{'v':1,'value':{{'hostId':{host:?}}}}}))
+elif sys.argv[1:3]==['shell','list']: print(json.dumps([{{'id':{shell:?},'alive':True,'mode':'terminal'}}]))
+elif sys.argv[1:3]==['orchestrator','list']: print('[]')
+else: print('{{}}')
+"#, calls=calls.to_string_lossy(), host=route.host_id)).unwrap();
+    std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let one = uuid::Uuid::new_v4().to_string();
+    let two = uuid::Uuid::new_v4().to_string();
+    let mut first = Endpoint::open(storage.clone(), cli.clone(), &route, &one).await;
+    let mut other_phone = route.clone();
+    other_phone.client_id = uuid::Uuid::new_v4().to_string();
+    let mut second = Endpoint::open(storage.clone(), cli.clone(), &other_phone, &two).await;
+    assert!(
+        storage
+            .dir
+            .join(format!("ssh-client-{}.json", route.client_id))
+            .is_file()
+    );
+    assert!(
+        storage
+            .dir
+            .join(format!("ssh-client-{}.json", other_phone.client_id))
+            .is_file()
+    );
+    // A reconnect cannot overlap a still-active process with the same input
+    // and upload principal. It fails before ready and never starts its CLI.
+    let (mut overlapping, server) = duplex(16384);
+    let (read, write) = tokio::io::split(server);
+    let denied = tokio::spawn(serve_io(storage.clone(), cli.clone(), read, write));
+    write_json(&mut overlapping, &json!({"v":1,"type":"hello","client_id":route.client_id,"expected_host_id":route.host_id,"session_id":uuid::Uuid::new_v4().to_string()})).await.unwrap();
+    assert!(
+        timeout(Duration::from_secs(3), denied)
+            .await
+            .unwrap()
+            .unwrap()
+            .is_err()
+    );
+    assert_eq!(
+        first
+            .call("pty.open", json!({"shell_id":shell,"columns":80,"rows":24}))
+            .await["ok"],
+        false
+    );
+    for endpoint in [&mut first, &mut second] {
+        let response = endpoint
+            .call(
+                "shell.resize",
+                json!({"shell_id":shell,"columns":80,"rows":24}),
+            )
+            .await;
+        assert_eq!(response["ok"], true, "{response}");
+    }
+    // The timer renews both independent leases while the SSH connection lives.
+    timeout(Duration::from_secs(5), async {
+        loop {
+            let text = std::fs::read_to_string(&calls).unwrap();
+            if text
+                .lines()
+                .filter(|line| line.starts_with("[\"shell\", \"resize\""))
+                .count()
+                >= 4
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let upload = uuid::Uuid::new_v4().to_string();
+    let begin = json!({"upload":upload,"shell_id":shell,"name":"example.txt","size":3,"sha256":"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"});
+    assert_eq!(first.call("upload.begin", begin.clone()).await["ok"], true);
+    // Another phone cannot address this phone's upload, even with its UUID.
+    assert_eq!(
+        second
+            .call(
+                "upload.chunk",
+                json!({"upload":upload,"offset":0,"data":"YWJj"})
+            )
+            .await["error"]["code"],
+        "not_found"
+    );
+    assert_eq!(second.call("upload.begin", begin).await["ok"], true);
+    let mut files = Vec::new();
+    for endpoint in [&mut first, &mut second] {
+        assert_eq!(
+            endpoint
+                .call(
+                    "upload.chunk",
+                    json!({"upload":upload,"offset":0,"data":"YWJj"})
+                )
+                .await["ok"],
+            true
+        );
+        let finish = endpoint
+            .call("upload.finish", json!({"upload":upload}))
+            .await;
+        assert_eq!(finish["ok"], true, "{finish}");
+        let path = PathBuf::from(finish["result"]["path"].as_str().unwrap());
+        assert_eq!(std::fs::read(&path).unwrap(), b"abc");
+        files.push(path);
+    }
+    assert_ne!(files[0], files[1]);
+    let batch = uuid::Uuid::new_v4().to_string();
+    let paste = json!({"shell_id":shell,"batch":batch,"uploads":[upload]});
+    assert_eq!(
+        first.call("shell.paste", paste.clone()).await["result"]["status"],
+        "sent"
+    );
+    first.close().await;
+    // A terminal/application may consume pasted paths after the phone sleeps.
+    assert!(files[0].exists());
+    assert!(files[1].exists());
+    let mut resumed = Endpoint::open(
+        storage.clone(),
+        cli,
+        &route,
+        &uuid::Uuid::new_v4().to_string(),
+    )
+    .await;
+    assert_eq!(
+        resumed
+            .call("upload.finish", json!({"upload":upload}))
+            .await["result"]["path"],
+        files[0].to_string_lossy().as_ref()
+    );
+    assert_eq!(
+        resumed.call("shell.paste", paste).await["result"]["status"],
+        "duplicate"
+    );
+    resumed.close().await;
+    second.close().await;
+    assert!(files[0].exists());
+    assert!(files[1].exists());
+    let args: Vec<Value> = std::fs::read_to_string(calls)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(
+        args.iter()
+            .filter(|args| args[0] == "shell" && args[1] == "paste")
+            .count(),
+        1
+    );
+    let leases: std::collections::HashSet<_> = args
+        .iter()
+        .filter(|args| args[1] == "resize")
+        .map(|args| args[6].as_str().unwrap())
+        .collect();
+    let cleared: std::collections::HashSet<_> = args
+        .iter()
+        .filter(|args| args[1] == "resize-clear")
+        .map(|args| args[6].as_str().unwrap())
+        .collect();
+    assert_eq!(leases.len(), 2);
+    assert_eq!(leases, cleared);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn duplicate_outstanding_request_id_is_refused_without_losing_original_reply() {
+    let tmp = tempfile::tempdir().unwrap();
+    let route = route();
+    let wire = tmp.path().join("wire");
+    let mut process = Process::new("python3");
+    process.arg("-u").arg("-c").arg(format!(r#"
+import sys,json,time
+hello=json.loads(sys.stdin.readline())
+print(json.dumps({{'v':1,'type':'ready','host_id':{host:?}}}),flush=True)
+for line in sys.stdin:
+ frame=json.loads(line)
+ if frame['type']=='ping': print('{{"v":1,"type":"pong"}}',flush=True)
+ else:
+  with open({wire:?},'a') as f: f.write(frame['id']+'\n')
+  time.sleep(.2)
+  print(json.dumps({{'v':1,'type':'response','id':frame['id'],'ok':True,'result':{{'original':True}}}}),flush=True)
+"#, host=route.host_id, wire=wire.to_string_lossy())).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
+    let (dialed, ready) = dial_command(&route, Some(&route.host_id), process)
+        .await
+        .unwrap();
+    let (state, _) = watch::channel(LinkState::Online { rtt_ms: None });
+    let (conn, mut current) = watch::channel(None);
+    let task = tokio::spawn(async move {
+        connected(dialed, ready, LinkTiming::default(), &state, &conn, &mut 0).await
+    });
+    current.changed().await.unwrap();
+    let connection = current.borrow().clone().unwrap();
+    let id = uuid::Uuid::new_v4().to_string();
+    let (reply, original) = oneshot::channel();
+    connection
+        .tx
+        .send(Command::Request {
+            id: id.clone(),
+            method: "mutation".into(),
+            params: json!({}),
+            reply,
+        })
+        .await
+        .unwrap();
+    let (reply, duplicate) = oneshot::channel();
+    connection
+        .tx
+        .send(Command::Request {
+            id: id.clone(),
+            method: "mutation".into(),
+            params: json!({}),
+            reply,
+        })
+        .await
+        .unwrap();
+    assert!(matches!(
+        timeout(Duration::from_secs(3), duplicate)
+            .await
+            .unwrap()
+            .unwrap(),
+        Err(CallError::Invalid(_))
+    ));
+    assert_eq!(
+        timeout(Duration::from_secs(3), original)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap()
+            .response["result"]["original"],
+        true
+    );
+    connection
+        .tx
+        .send(Command::Reset("test finished".into()))
+        .await
+        .unwrap();
+    timeout(Duration::from_secs(3), task)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(std::fs::read_to_string(wire).unwrap(), format!("{id}\n"));
+}

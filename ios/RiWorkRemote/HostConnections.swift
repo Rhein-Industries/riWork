@@ -62,11 +62,13 @@ enum HostConnectionError: LocalizedError, Equatable {
     @ObservationIgnored private(set) var interactiveHostID: String?
     @ObservationIgnored private var lent: [UUID: String] = [:]
     @ObservationIgnored private var active = true
+    @ObservationIgnored private var forgotten: Set<String> = []
     @ObservationIgnored private var roomWaiters: [(id: UUID, continuation: CheckedContinuation<Void, any Error>)] = []
 
     /// One host's socket. Its transport is kept for the host's lifetime and opened again as needed.
     @MainActor private final class Socket {
         let transport: any RemoteTransport
+        let gatewayID: String?
         var open = false
         var session = 0
         /// The pairing it was opened with, and the one its session established (they differ after a v2 invite is redeemed).
@@ -81,7 +83,7 @@ enum HostConnectionError: LocalizedError, Equatable {
         var holds = 0
         var lastUse = ContinuousClock.now
         var idleClose: Task<Void, Never>?
-        init(transport: any RemoteTransport) { self.transport = transport }
+        init(transport: any RemoteTransport, gatewayID: String? = nil) { self.transport = transport; self.gatewayID = gatewayID }
         func matches(_ pairing: Pairing) -> Bool { openedWith == pairing || established == pairing }
         var busy: Bool { open || opening != nil }
     }
@@ -97,9 +99,10 @@ enum HostConnectionError: LocalizedError, Equatable {
     /// Lends `desktop`'s socket, opening it if it is not open. This is never the explicit connection: a pairing whose v2 invite is still
     /// pending is refused. Give the lease back with `release`.
     func borrow(_ desktop: SavedDesktop) async throws -> HostLease {
+        guard !forgotten.contains(desktop.id), !forgotten.contains(desktop.pairing.route_id) else { throw RemoteError.disconnected }
         guard desktop.pairing.v == 1 || desktop.pairing.root_key != nil else { throw HostConnectionError.unfinishedPairing }
         guard active else { throw HostConnectionError.background }
-        let hostID = desktop.id, socket = socket(for: hostID)
+        let hostID = desktop.id, socket = socket(for: hostID, pairing: desktop.pairing)
         hold(socket)
         do {
             try await open(socket, hostID: hostID, pairing: desktop.pairing, allowLocalDevelopment: desktop.allowLocalDevelopment, explicit: false)
@@ -142,11 +145,16 @@ enum HostConnectionError: LocalizedError, Equatable {
 
     /// The host was removed: its socket closes and its transport is let go.
     func forget(_ hostID: String) {
+        forgotten.insert(hostID)
+        for child in sockets.filter({ $0.value.gatewayID == hostID }).map(\.key) { forget(child) }
         shut(hostID)
         if interactiveHostID == hostID { interactiveHostID = nil }
         sockets[hostID] = nil
         links[hostID] = nil
     }
+
+    /// A newly saved pairing or freshly discovered route may be opened again.
+    func remember(_ hostID: String) { forgotten.remove(hostID) }
 
     /// The app entered the background (false) or came back. In the background no socket opens; the idle ones close now, under a background
     /// task so they are gone before iOS suspends the app, and the rest as soon as they are let go.
@@ -169,9 +177,10 @@ enum HostConnectionError: LocalizedError, Equatable {
     /// Opens the interactive host's socket (`InteractiveConnection.connect`), reusing the one it has; returns what the session established
     /// and the session's number.
     fileprivate func openInteractive(pairing: Pairing, allowLocalDevelopment: Bool) async throws -> (Pairing, Int) {
-        let hostID = pairing.route_id
+        let hostID = pairing.connectionID
+        guard !forgotten.contains(hostID), !forgotten.contains(pairing.route_id) else { throw RemoteError.disconnected }
         if let previous = interactiveHostID, previous != hostID { await closeInteractive() }
-        let socket = socket(for: hostID)
+        let socket = socket(for: hostID, pairing: pairing)
         if interactiveHostID != hostID {
             interactiveHostID = hostID
             hold(socket)
@@ -210,9 +219,14 @@ enum HostConnectionError: LocalizedError, Equatable {
         return features
     }
 
-    private func socket(for hostID: String) -> Socket {
+    private func socket(for hostID: String, pairing: Pairing) -> Socket {
         if let socket = sockets[hostID] { return socket }
-        let socket = Socket(transport: factory(hostID))
+        let socket: Socket
+        if pairing.gateway != nil {
+            socket = Socket(transport: GatewayTransport(connections: self), gatewayID: pairing.route_id)
+        } else {
+            socket = Socket(transport: factory(hostID))
+        }
         sockets[hostID] = socket
         return socket
     }
@@ -335,7 +349,10 @@ enum HostConnectionError: LocalizedError, Equatable {
     private func makeRoom(for hostID: String) async throws {
         while true {
             guard active else { throw HostConnectionError.background }
-            let others = sockets.filter { $0.key != hostID && $0.key != interactiveHostID && $0.value.busy }
+            // Virtual routes consume gateway sessions, not additional relay sockets. Count each resource separately;
+            // otherwise a route opening its gateway could wait for its own slot forever.
+            let gatewayID = sockets[hostID]?.gatewayID
+            let others = sockets.filter { $0.key != hostID && $0.key != interactiveHostID && $0.value.busy && $0.value.gatewayID == gatewayID }
             if others.count < maximumOthers { return }
             if let oldest = others.filter({ $0.value.holds == 0 }).min(by: { $0.value.lastUse < $1.value.lastUse }) {
                 shut(oldest.key)
@@ -415,7 +432,7 @@ enum HostConnectionError: LocalizedError, Equatable {
         guard let owner else { throw RemoteError.disconnected }
         session = nil
         let (established, number) = try await owner.openInteractive(pairing: pairing, allowLocalDevelopment: allowLocalDevelopment)
-        session = (pairing.route_id, number)
+        session = (pairing.connectionID, number)
         return established
     }
     func disconnect() async {

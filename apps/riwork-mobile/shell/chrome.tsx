@@ -46,20 +46,22 @@ export function createPadChrome(app: MobileApp, host: Accessor<string | null>, w
     const hostId = host();
     if (!hostId || menuOpen()) return;
     const link = app.link(hostId);
-    const actions: AlertDialogAction[] = app.hosts().filter((info) => info.id !== hostId).map((info) => ({ id: `host:${info.id}`, label: info.name }));
-    actions.push({ id: "all", label: "All desktops" }, { id: "add", label: "Add desktop…" }, { id: "details", label: "Desktop details…" });
+    const gateway = app.hosts().find((info) => info.id === hostId)?.gateway;
+    const actions: AlertDialogAction[] = app.hosts().filter((info) => info.id !== hostId)
+      .map((info) => ({ id: `host:${info.id}`, label: info.gateway ? `${info.name} · via ${info.gateway.name}` : info.name }));
+    actions.push({ id: "all", label: "All desktops" }, { id: "add", label: "Add desktop…" }, { id: "details", label: gateway ? "Gateway details…" : "Desktop details…" });
     if (link.state === "connected") actions.push({ id: "disconnect", label: "Disconnect", role: "destructive" });
     else if (link.state !== "connecting") actions.push({ id: "connect", label: "Connect" });
     actions.push({ id: "settings", label: "Display and keyboard settings" }, { id: "cancel", label: "Cancel", role: "cancel" });
     menuOpen.set(true);
-    const choice = await AlertDialog.show({ title: app.hostName(hostId), description: linkText(link), presentation: "actionSheet", actions }).catch(() => null);
+    const choice = await AlertDialog.show({ title: app.hostName(hostId), description: gateway ? `via ${gateway.name} · ${linkText(link)}` : linkText(link), presentation: "actionSheet", actions }).catch(() => null);
     menuOpen.set(false);
     // Another desktop's window, or All desktops, starts with the sidebar closed over it.
     if (choice?.startsWith("host:") || choice === "all") overlayOpen.set(false);
     if (choice?.startsWith("host:")) app.openHost(choice.slice("host:".length));
     else if (choice === "all") app.nav.setRoutes([{ page: "hosts" }]);
     else if (choice === "add") void app.present({ name: "addHost" });
-    else if (choice === "details") void app.present({ name: "hostDetails", host: hostId });
+    else if (choice === "details") void app.present({ name: "hostDetails", host: gateway?.id ?? hostId });
     else if (choice === "connect") app.connect(hostId);
     else if (choice === "disconnect") void app.device.hosts.disconnect(hostId).catch((error) => app.failure.set(PortError.from(error).message));
     else if (choice === "settings") void app.present({ name: "settings" });

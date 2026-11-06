@@ -246,6 +246,7 @@ struct NSHAppChord {
         case "refresh":
             if model.loadFailed { model.loadLibrary() }
             else if route == "hosts" {
+                await model.refreshGatewayHosts()
                 if model.state == .connected { await model.refreshDashboardQuietly(); mirrorActiveDashboard() }
                 await hostDashboards.refresh()
             } else {
@@ -501,7 +502,7 @@ struct NSHAppChord {
             "windowControls": Double(windowControls),
             "keyboard": ["hardware": model.keyboard.usesHardwareLayout, "clicks": model.keyboard.usesClicks],
             "homeDashboard": homeDashboardDTO()]
-        result["error"] = model.loadFailure ?? model.error
+        result["error"] = model.loadFailure ?? model.error ?? model.gatewayDiscoveryError
         // The page of a Mac without `dashboard.get` still offers its global orchestrator, as `orchestrators.list` has it.
         if let host = model.selectedDesktopID, currentHost == host {
             var global = globalDTO()
