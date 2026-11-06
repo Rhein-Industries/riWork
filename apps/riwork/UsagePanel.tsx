@@ -1,11 +1,13 @@
 import { Scroll, Text, View, cleanup, effect, keymap, signal, type JSX } from "nsh";
 import { Button } from "nsh/base";
 import {
-  Accounts, Sessions, Usage, type AccountsDto, type CodexUsageDto, type ProviderUsageDto,
-  type ShellSessionDto, type UsageDto, type UsageWindowDto, type GrokTokenCountsDto, type GrokSessionUsageDto, type GrokUsageDto,
+  Accounts, Sessions, Store, Usage, type AccountsDto, type CodexUsageDto, type ProviderUsageDto,
+  type ShellSessionDto, type UsageDto, type UsageWindowDto, type GrokTokenCountsDto, type GrokSessionUsageDto, type GrokUsageDto, type StoreState,
 } from "riwork/native";
 import { space, type InterfaceTheme } from "./appearance";
 import { Icon } from "./Icon";
+import { EMPTY_STORE, shellLabel } from "./panel_model";
+import { PANEL } from "./panel_layout";
 
 function resetSummary(deadline: number | null | undefined, now: number): string {
   if (deadline == null) return "Reset unavailable";
@@ -35,8 +37,9 @@ export interface UsagePanelApi {
   usage: Pick<typeof Usage, "subscribe" | "refresh">;
   accounts: Pick<typeof Accounts, "subscribe">;
   sessions: Pick<typeof Sessions, "subscribe">;
+  store?: Pick<typeof Store, "subscribe">;
 }
-const NATIVE_API: UsagePanelApi = { usage: Usage, accounts: Accounts, sessions: Sessions };
+const NATIVE_API: UsagePanelApi = { usage: Usage, accounts: Accounts, sessions: Sessions, store: Store };
 
 /** Account usage is read by the process service; this panel only owns its visible subscriptions. */
 export function UsagePanel(props: {
@@ -47,6 +50,7 @@ export function UsagePanel(props: {
 }) {
   const api = props.api ?? NATIVE_API;
   const usage = signal<UsageDto | null>(null), accounts = signal<AccountsDto | null>(null);
+  const store = signal<StoreState>(EMPTY_STORE);
   const shells = signal<ShellSessionDto[]>([]), notice = signal("");
   const refreshing = signal(false);
   // The service publishes only when figures change (its `now` can be 15 minutes old), so
@@ -63,6 +67,7 @@ export function UsagePanel(props: {
       api.accounts.subscribe((event) => accounts.set(event.data)),
       api.sessions.subscribe((event) => shells.set(event.data.sessions)),
     ];
+    if (api.store) listeners.push(api.store.subscribe((event) => store.set(event.data)));
     return () => listeners.forEach((listener) => listener.close());
   });
   // Not a data read (P1-POLL-03): one timer to the next whole minute, re-armed by the tick.
@@ -111,6 +116,19 @@ export function UsagePanel(props: {
     return [...profiles.values()];
   };
   const stale = (value: ProviderUsageDto, flagged: boolean) => flagged || now() - value.updatedAtUnix > 900;
+  const sessionBase = (id: string, provider: string) => {
+    const shell = shells().find((shell) => shell.id === id);
+    if (!shell) return `${provider} · ${id.slice(0, 8)}`;
+    const project = store().projects.find((project) => project.id === shell.projectId);
+    const label = shellLabel(shell, store());
+    const context = label && label !== shell.harness && label !== "Shell" ? label : shell.cwd.split("/").filter(Boolean).pop();
+    return `${provider} · ${project?.name ? `${project.name} · ` : ""}${context || id.slice(0, 8)}`;
+  };
+  const sessionTitle = (id: string, provider: string) => {
+    const base = sessionBase(id, provider);
+    const duplicate = shells().some((shell) => shell.id !== id && shell.projectId === props.projectId() && shell.harness === provider.toLowerCase() && sessionBase(shell.id, provider) === base);
+    return duplicate ? `${base} · ${id.slice(0, 8)}` : base;
+  };
   const bodyStyle = () => ({ padding: space(12, theme().scale), gap: space(4, theme().scale), borderRadius: space(12, theme().scale), backgroundColor: palette().bg });
   const inset = () => space(6, theme().scale);
 
@@ -140,8 +158,8 @@ export function UsagePanel(props: {
     const remaining = () => Math.max(0, Math.min(100, 100 - props.window.usedPercent));
     return <View style={{ gap: 5, paddingTop: space(8, theme().scale) }}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-        <Text style={{ ...text(11), flex: 1 }}>{`${props.window.label} · ${Math.round(remaining())}% left`}</Text>
-        <Text style={text(10, palette().muted)}>{resetSummary(props.window.resetsAt, now())}</Text>
+        <Text style={{ ...text(12), fontWeight: "600", flexGrow: 1 }}>{`${props.window.label} · ${Math.round(remaining())}% left`}</Text>
+        <Text style={{ ...text(11, palette().muted), flexShrink: 0, marginLeft: "auto", textAlign: "right" }}>{resetSummary(props.window.resetsAt, now())}</Text>
       </View>
       <View role="progressbar" accessibilityLabel={`${props.window.label}: ${Math.round(remaining())}% remaining`} style={{ height: space(5, theme().scale), borderRadius: 5, backgroundColor: palette().panelActive, overflow: "hidden" }}>
         <View style={{ height: "100%", width: `${remaining()}%`, borderRadius: 5, backgroundColor: remaining() < 15 ? palette().gold : palette().cyan }} />
@@ -161,21 +179,31 @@ export function UsagePanel(props: {
     </>;
   }
   function GrokFigures(props: { report: GrokSessionUsageDto }) {
-    const report = () => props.report;
+    const report = () => props.report, details = signal(false);
+    const metric = (label: string, value: string) => <View style={{ minWidth: 100, flexGrow: 1, gap: 3, padding: 8, borderRadius: 6, backgroundColor: palette().panel }}><Text style={text(10, palette().muted)}>{label}</Text><Text style={{ ...text(14), fontWeight: "600" }}>{value}</Text></View>;
     return <>
-      <Text style={{ ...text(12), paddingTop: 4 }}>{`${report().costUsd != null ? `${money(report().costUsd!)} · ` : ""}${tokens(report().tokens.total)} tokens`}</Text>
-      <Text style={text(10, palette().muted)}>{`${report().primaryModel ?? "Model unavailable"} · ${report().turns} turns · ${report().modelCalls} model calls`}</Text>
-      <Text style={text(10, palette().muted)}>{tokenBreakdown(report().tokens)}</Text>
-      {report().costUsd == null && <Text style={text(10, palette().muted)}>Session cost unavailable</Text>}
-      {report().models.length > 1 && report().models.map((model) => <View style={{ paddingTop: 6, gap: 2 }}>
-        <Text style={text(10)}>{`${model.model} · ${tokens(model.tokens.total)} tokens · ${model.modelCalls} calls${model.costUsd != null ? ` · ${money(model.costUsd)}` : ""}`}</Text>
-        <Text style={text(9, palette().muted)}>{tokenBreakdown(model.tokens)}</Text>
-      </View>)}
+      <View testID="grok-metrics" style={{ flexDirection: "row", flexWrap: "wrap", gap: 8, paddingTop: 8 }}>
+        {metric("Session cost", report().costUsd == null ? "Unavailable" : money(report().costUsd!))}
+        {metric("Total tokens", tokens(report().tokens.total))}
+        {metric("Turns", String(report().turns))}{metric("Model calls", String(report().modelCalls))}
+      </View>
+      <Text style={text(11, palette().muted)}>{report().primaryModel ?? "Model unavailable"}</Text>
+      <Button testID="grok-usage-details" accessibilityLabel="Token and model details" onPress={() => details.set(!details())} style={{ alignSelf: "flex-start", paddingVertical: 8 }}>
+        <Text style={text(11)}>{details() ? "Hide token and model details" : "Token and model details"}</Text>
+      </Button>
+      {details() && <View style={{ gap: 8 }}>
+        <Text style={text(11, palette().muted)}>{tokenBreakdown(report().tokens)}</Text>
+        {report().models.map((model) => <View style={{ padding: 8, gap: 4, borderRadius: 6, backgroundColor: palette().panel }}>
+          <Text style={{ ...text(12), fontWeight: "600" }}>{model.model}</Text>
+          <Text style={text(11)}>{`${tokens(model.tokens.total)} tokens · ${model.modelCalls} calls${model.costUsd != null ? ` · ${money(model.costUsd)}` : ""}`}</Text>
+          <Text style={text(11, palette().muted)}>{tokenBreakdown(model.tokens)}</Text>
+        </View>)}
+      </View>}
     </>;
   }
   function GrokSession(props: { id: string; entry?: GrokUsageDto }) {
     const entry = () => props.entry;
-    return <Card id={`usage-grok:${props.id}`} title={`Session ${props.id.slice(0, 8)}`}
+    return <Card id={`usage-grok:${props.id}`} title={sessionTitle(props.id, "Grok")}
       aside={entry()?.usage ? <Freshness at={entry()!.fetchedAtUnix} stale={entry()!.stale} /> : undefined}>
       {entry()?.usage ? <GrokFigures report={entry()!.usage!} />
         : <Text style={{ ...text(11, palette().muted), paddingTop: 6 }}>{entry()?.pending ? "Reading session usage…" : entry()?.error ?? "Waiting for session usage…"}</Text>}
@@ -183,15 +211,15 @@ export function UsagePanel(props: {
     </Card>;
   }
   return <View testID="usage-panel" style={{ flex: 1, minHeight: 0, backgroundColor: palette().panel }}>
-    <View style={{ height: space(46, theme().scale), paddingLeft: space(12, theme().scale), paddingRight: space(8, theme().scale), flexDirection: "row", alignItems: "center", gap: 8 }}>
+    <View style={{ minHeight: space(PANEL.header, theme().scale), paddingHorizontal: space(PANEL.inset, theme().scale), flexDirection: "row", alignItems: "center", gap: 8 }}>
       <View style={{ flex: 1, minWidth: 0, gap: 1 }}>
         <Text style={{ ...text(13), fontWeight: "600" }}>Usage</Text>
         <Text style={text(10, palette().muted)}>{busy() ? "Refreshing…" : "Account usage"}</Text>
       </View>
       <Button testID="refresh-account-usage" accessibilityLabel="Refresh usage" disabled={!!busy()} onPress={() => void refresh()}
         tooltip={<Text style={{ ...text(11), padding: 8, backgroundColor: palette().panelActive }}>Refresh usage · ⌘R</Text>}
-        style={{ width: space(26, theme().scale), height: space(26, theme().scale), borderRadius: 13, alignItems: "center", justifyContent: "center" }} hoverStyle={{ backgroundColor: palette().panelActive }} focusStyle={{ backgroundColor: palette().divider }}>
-        <Icon name="refresh" size={14 * theme().scale} color={palette().muted} />
+        style={{ width: space(PANEL.control, theme().scale), height: space(PANEL.control, theme().scale), borderRadius: 13, alignItems: "center", justifyContent: "center" }} hoverStyle={{ backgroundColor: palette().panelActive }} focusStyle={{ backgroundColor: palette().divider }}>
+        <Icon name="refresh" size={PANEL.icon * theme().scale} color={palette().muted} />
       </Button>
     </View>
     {notice() !== "" && <Text role="alert" style={{ ...text(11, palette().gold), paddingHorizontal: 12, paddingBottom: 8 }}>{notice()}</Text>}
@@ -207,7 +235,7 @@ export function UsagePanel(props: {
           {codex().length === 0 && <Empty id="usage-codex-unavailable">Account usage is unavailable</Empty>}
         </Section>
         <Section title="Claude sessions" note={claude().length > 0 ? "Subscription quota needs a Pro or Max account." : undefined}>
-          {claude().map((entry) => <Card id={`usage-claude:${entry.shellId}`} title={`Session ${entry.shellId.slice(0, 8)}`}
+          {claude().map((entry) => <Card id={`usage-claude:${entry.shellId}`} title={sessionTitle(entry.shellId, "Claude")}
             aside={entry.usage ? <Freshness at={entry.usage.updatedAtUnix} stale={stale(entry.usage, entry.stale)} /> : undefined}>
             {entry.usage ? <Provider value={entry.usage} /> : <Text style={{ ...text(11, palette().muted), paddingTop: 6 }}>{entry.error ?? "Waiting for Claude usage after its first response"}</Text>}
             {entry.usage && entry.error && <Text style={{ ...text(10, palette().gold), paddingTop: 6 }}>{`Last refresh: ${entry.error}`}</Text>}

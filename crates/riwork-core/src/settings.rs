@@ -254,6 +254,31 @@ impl NewChatDefaults {
     }
 }
 
+/// Presentation only: project identities keep their folders and metadata.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ProjectPanel {
+    pub view: ProjectPanelView,
+    pub pinned: Vec<String>,
+}
+impl ProjectPanel {
+    pub fn checked(mut self) -> Result<Self, String> {
+        if self.pinned.len() > 10000 || self.pinned.iter().any(|id| uuid::Uuid::parse_str(id).is_err()) {
+            return Err("project pins must be project UUIDs (at most 10000)".into());
+        }
+        self.pinned.sort(); self.pinned.dedup();
+        Ok(self)
+    }
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectPanelView {
+    #[default]
+    List,
+    Columns,
+    Grid,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Settings {
     pub tab_close_behavior: TabCloseBehavior,
@@ -275,6 +300,7 @@ pub struct Settings {
     /// Preview tab that was closed stays closed.
     pub open_preview_on_select: bool,
     pub project_order: ProjectOrder,
+    pub project_panel: ProjectPanel,
     pub selected_codex_account: Option<String>,
     /// New Codex sessions that inherit the app's account choose the saved subscription
     /// with the most remaining quota. Explicit accounts, project pins and resumes keep
@@ -471,6 +497,7 @@ impl Default for Settings {
             panel_tab_icons: false,
             open_preview_on_select: true,
             project_order: ProjectOrder::default(),
+            project_panel: ProjectPanel::default(),
             selected_codex_account: None,
             codex_subscription_balancing: false,
             dashboard_haiku_summaries: false,
@@ -540,6 +567,7 @@ impl<'de> Deserialize<'de> for Settings {
                 defaults.open_preview_on_select,
             ),
             project_order: lenient_field(&object, "project_order", defaults.project_order),
+            project_panel: lenient_field(&object, "project_panel", defaults.project_panel),
             selected_codex_account: strict_field(
                 &object,
                 "selected_codex_account",
@@ -842,6 +870,10 @@ impl SettingsStore {
         }
         self.update_with(&[key], |_, document| {
             let invalid = |reason: String| format!("invalid_request: Cannot set '{key}': {reason}");
+            let value = if key == "project_panel" {
+                let panel = ProjectPanel::deserialize(value.clone()).map_err(|error| invalid(error.to_string()))?.checked().map_err(invalid)?;
+                serde_json::to_value(panel).map_err(|error| invalid(error.to_string()))?
+            } else { value.clone() };
             let mut prospective = document.clone();
             prospective.insert(key.to_owned(), value.clone());
             let settings = Settings::deserialize(Value::Object(prospective))
@@ -1077,6 +1109,25 @@ mod tests {
     use super::*;
     use crate::ui_text::SizeChange;
     use std::env;
+
+    #[test]
+    fn project_panel_preferences_roundtrip_and_reject_invalid_pins() {
+        let dir = env::temp_dir().join(format!("riwork-project-panel-{}", Uuid::new_v4()));
+        let store = SettingsStore::open(&dir).unwrap();
+        let pin = "11111111-1111-4111-8111-111111111111";
+        let saved = store.set_value("project_panel", serde_json::json!({ "view": "grid", "pinned": [pin, pin] })).unwrap();
+        assert_eq!(saved.project_panel.view, ProjectPanelView::Grid);
+        assert_eq!(saved.project_panel.pinned, [pin]);
+        assert_eq!(SettingsStore::open(&dir).unwrap().load().unwrap().project_panel, saved.project_panel);
+        for input in [serde_json::json!({ "view": "other", "pinned": [] }), serde_json::json!({ "view": "list", "pinned": ["arbitrary"] }), serde_json::json!({ "view": "list", "pinned": [], "unexpected": true }), serde_json::json!({ "view": "list", "pinned": vec![pin; 10001] })] {
+            assert!(store.set_value("project_panel", input).is_err());
+            assert_eq!(store.load().unwrap().project_panel, saved.project_panel);
+        }
+        store.set_value("project_panel", serde_json::json!({ "view": "columns", "pinned": [] })).unwrap();
+        assert_eq!(store.load().unwrap().project_panel.view, ProjectPanelView::Columns);
+        assert!(store.load().unwrap().project_panel.pinned.is_empty());
+        fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn optional_dashboard_api_and_subscription_balancing_are_strict_opt_in_settings() {

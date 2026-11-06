@@ -5,6 +5,7 @@ import { Chat, Sessions, Settings, Store, Tabs, type ChatSummary, type ProjectDt
 import { EMPTY_STORE, countLabel, matches, projectRows, shellLabel, shellMatches, taskAge, taskCounts, taskDate, taskMatches, taskRows, taskStatusLabel, taskWorktree, visibleWorktrees, worktreeLabel, type ListPanel, type ProjectOrder, type ProjectTreeRow, type TaskFilter, type TaskRow } from "./panel_model";
 import { DEFAULT_THEME, space, type InterfaceTheme } from "./appearance";
 import { Icon, type IconName } from "./Icon";
+import { PANEL } from "./panel_layout";
 
 const defaultTheme = () => DEFAULT_THEME;
 const PanelTheme = context<() => InterfaceTheme>(defaultTheme);
@@ -30,6 +31,8 @@ interface PanelOptions {
   showShell: (id: string) => void;
   showChat?: (id: string) => void;
   newChat?: () => void;
+  /** In-memory Exit/list seam for isolated confirmation tests. */
+  sessionActions?: Pick<typeof Sessions, "list" | "close">;
   selectWorktree: (id: string | null) => void;
   selectTask: (id: string | null) => void;
   initialWorktree?: string | null;
@@ -67,6 +70,42 @@ export function createPanelController(options: PanelOptions) {
   const order = signal<ProjectOrder>("edited");
   const descending = signal(true);
   const sortPending = signal(false);
+  const projectPanel = signal<{ view: "list" | "columns" | "grid"; pinned: string[] }>({ view: "list", pinned: [] });
+  const panelSaving = signal(false);
+  let savingPanel = false, panelRequest = 0;
+  let deferredPanel: SettingsDto["projectPanel"];
+  function applyPanel(value: SettingsDto["projectPanel"]) {
+    if (!value) return;
+    if (savingPanel) { deferredPanel = value; return; }
+    projectPanel.set({ view: value.view === "grid" || value.view === "columns" ? value.view : "list", pinned: value.pinned });
+  }
+  effect(() => applyPanel(options.settings?.()?.projectPanel));
+  if (!options.settings) {
+    const subscription = Settings.subscribe((event) => applyPanel(event.data.projectPanel));
+    cleanup(() => subscription.close());
+  }
+  async function setProjectPanel(next: { view: "list" | "columns" | "grid"; pinned: string[] }) {
+    if (savingPanel) return;
+    const previous = projectPanel(), request = ++panelRequest;
+    savingPanel = true; deferredPanel = undefined; panelSaving.set(true); projectPanel.set(next);
+    let saved: SettingsDto["projectPanel"];
+    try { saved = (await Settings.set({ projectPanel: next })).projectPanel; }
+    catch (error) { if (alive) { projectPanel.set(previous); options.notice(`Could not save project browser: ${error}`); } }
+    finally {
+      savingPanel = false;
+      if (alive) {
+        applyPanel(saved ?? deferredPanel); panelSaving.set(false);
+        // Re-read once after the write gate: a pushed edit from another window during
+        // the save must win without replacing this save's normalized response with an old snapshot.
+        void Settings.get().then((latest) => { if (alive && request === panelRequest) applyPanel(latest.projectPanel); }).catch(() => {});
+      }
+    }
+  }
+  function pinProject(id: string) {
+    if (!state().projects.some((project) => project.id === id)) return;
+    const prior = projectPanel();
+    void setProjectPanel({ ...prior, pinned: prior.pinned.includes(id) ? prior.pinned.filter((pin) => pin !== id) : [...prior.pinned, id] });
+  }
   const searches = new Map<string, YNode>();
   let generation = 0;
   let alive = true;
@@ -245,7 +284,7 @@ export function createPanelController(options: PanelOptions) {
       { label: "Assign to", disabled: pending(), submenu: assignItems(task) },
     ]);
   }
-  return { ...options, state, loaded, shells, chats, catalogLoading, catalogNotice, sessionFilter, selectedChat, closingShell, refreshCatalog, openChat, tabs, query, collapsed, selectedWorktree, selectedTask, taskFilter, now, selectedShell, editor, pending, order, descending, searches,
+  return { ...options, projectPanel, panelSaving, setProjectPanel, pinProject, state, loaded, shells, chats, catalogLoading, catalogNotice, sessionFilter, selectedChat, closingShell, refreshCatalog, openChat, tabs, query, collapsed, selectedWorktree, selectedTask, taskFilter, now, selectedShell, editor, pending, order, descending, searches,
     selectWorktree, selectTask, setTaskStatus, assignItems, taskMenu, resetProject, run, activate, attach, tabForShell, titleForShell, toggleFolder, expandFolder, folderMenu, folderPath, setOrder, sortPending, generation: () => generation };
 }
 export type PanelController = ReturnType<typeof createPanelController>;
@@ -286,14 +325,14 @@ function PanelSearch(props: { controller: PanelController; panel: ListPanel; sur
 
 function ToolbarCommand(props: { id?: string; label: string; icon?: IconName; disabled?: boolean; selected?: boolean; onPress: () => void; children?: JSX.Element }) {
   return <Button tooltip={<View style={{ padding: 7, borderRadius: 6, backgroundColor: theme().palette.panelActive }}><Text style={{ fontFamily: theme().family, fontSize: text(11), color: ink() }}>{props.label}</Text></View>} testID={props.id} accessibilityLabel={props.label} disabled={props.disabled} selected={props.selected} onPress={props.onPress}
-    style={{ width: space(24, theme().scale), height: space(24, theme().scale), borderRadius: space(13, theme().scale), alignItems: "center", justifyContent: "center", backgroundColor: "transparent" }}
+    style={{ width: space(PANEL.control, theme().scale), height: space(PANEL.control, theme().scale), borderRadius: space(13, theme().scale), alignItems: "center", justifyContent: "center", backgroundColor: props.selected ? theme().palette.panelActive : "transparent" }}
     hoverStyle={{ backgroundColor: theme().palette.panelActive }} focusStyle={{ backgroundColor: theme().palette.divider }} disabledStyle={{ opacity: 0.4 }}>
-    <Icon name={props.icon ?? "more"} size={text(13)} color={props.selected ? ink() : muted()} />
+    <Icon name={props.icon ?? "more"} size={text(PANEL.icon)} color={props.selected ? ink() : muted()} />
   </Button>;
 }
 
 function Header(props: { title: string; count: number; total: number; noun: string; project?: string; children?: JSX.Element }) {
-  return <View style={{ height: space(46, theme().scale), paddingLeft: space(12, theme().scale), paddingRight: space(8, theme().scale), flexDirection: "row", alignItems: "center", gap: space(8, theme().scale) }}>
+  return <View style={{ minHeight: space(PANEL.header, theme().scale), paddingHorizontal: space(PANEL.inset, theme().scale), flexDirection: "row", alignItems: "center", gap: space(8, theme().scale) }}>
     <View style={{ flex: 1, minWidth: 0, gap: 1 }}>
       <Text numberOfLines={1} style={{ fontFamily: theme().family, fontSize: text(13), fontWeight: "600", color: ink() }}>{props.title}</Text>
       <Text numberOfLines={1} testID={`count:${props.noun}`} style={{ fontFamily: theme().family, fontSize: text(10), color: muted() }}>{`${countLabel(props.count, props.total, props.noun)}${props.project ? ` · ${props.project}` : ""}`}</Text>
@@ -326,7 +365,7 @@ function ProjectRow(props: { item: () => ProjectTreeRow; controller: PanelContro
 function FolderRow(props: { item: () => ProjectTreeRow; controller: PanelController }) {
   const c = props.controller;
   const current = () => props.item() as Extract<ProjectTreeRow, { kind: "folder" }>;
-  const id = () => current().folder?.id ?? "unfiled";
+  const id = () => current().folder?.id ?? current().id.replace(/^folder-/, "");
   const hovering = signal(false);
   function menu() {
     if (!current().folder) return;
@@ -363,6 +402,7 @@ function ProjectItemRow(props: { item: () => ProjectTreeRow; controller: PanelCo
   const live = () => c.shells().filter((shell) => shell.projectId === project().id && shell.alive).length;
   const selected = () => c.projectId() === project().id;
   const hovering = signal(false);
+  const pinned = () => c.projectPanel().pinned.includes(project().id);
   const activity = () => {
     const chats = c.chats().filter((chat) => chat.projectId === project().id);
     const working = chats.filter((chat) => chat.state === "running").length, waiting = chats.filter((chat) => chat.state === "waiting").length;
@@ -381,6 +421,7 @@ function ProjectItemRow(props: { item: () => ProjectTreeRow; controller: PanelCo
       { label: "Open project", onSelect: () => void c.activate(project()) },
       { label: "Open in another window", onSelect: openWindow },
       { label: "Project settings…", onSelect: () => void settings() },
+      { label: pinned() ? "Unpin project" : "Pin project", checked: pinned(), disabled: c.panelSaving(), onSelect: () => c.pinProject(project().id) },
       { label: "Move to folder…", onSelect: () => c.folderMenu(project().id) },
       { type: "separator" },
       { label: "Agent completion notifications", checked: project().notifyOnAgentDone, onSelect: () => void c.run(() => Store.setProjectNotifications(project().id, !project().notifyOnAgentDone)) },
@@ -392,10 +433,14 @@ function ProjectItemRow(props: { item: () => ProjectTreeRow; controller: PanelCo
     <View style={{ flexDirection: "row", alignItems: "center", paddingRight: 2 }}>
       <Button testID={`project-${project().id}`} accessibilityLabel={project().name} selected={selected()} disabled={c.pending()} onPress={() => void c.activate(project())}
         style={{ flex: 1, minWidth: 0, minHeight: space(30, theme().scale), justifyContent: "center", paddingLeft: space(6 + props.item().depth * 16, theme().scale), paddingVertical: space(6, theme().scale), gap: 2 }} focusStyle={{ backgroundColor: theme().palette.divider }}>
-        <Text numberOfLines={1} style={{ fontFamily: theme().family, fontSize: text(11), color: ink() }}>{project().name}</Text>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+          {pinned() && <Icon name="pin" size={text(12)} color={accent()} />}
+          <Text numberOfLines={1} style={{ flex: 1, fontFamily: theme().family, fontSize: text(12), fontWeight: selected() ? "600" : "400", color: ink() }}>{project().name}</Text>
+        </View>
         {summary() !== "" && <Text numberOfLines={1} testID={`project-summary:${project().id}`} style={{ fontFamily: theme().family, fontSize: text(10), color: muted() }}>{summary()}</Text>}
       </Button>
       {(selected() || hovering()) && <View style={{ flexDirection: "row", alignItems: "center", gap: 0 }}>
+        <ToolbarCommand id={`pin-project:${project().id}`} icon="pin" label={pinned() ? "Unpin project" : "Pin project"} selected={pinned()} disabled={c.panelSaving()} onPress={() => c.pinProject(project().id)} />
         <ToolbarCommand id={`project-settings:${project().id}`} icon="settings" label="Project settings" onPress={() => void settings()} />
         <ToolbarCommand id={`open-project-window:${project().id}`} icon="open" label="Open project in another window" onPress={openWindow} />
         <ToolbarCommand id={`project-menu:${project().id}`} icon="more" label="Project actions" onPress={menu} />
@@ -406,14 +451,30 @@ function ProjectItemRow(props: { item: () => ProjectTreeRow; controller: PanelCo
 
 function Projects(props: { controller: PanelController; surface: string; footer?: JSX.Element }) {
   const c = props.controller;
+  const width = signal(600);
   const rows = () => {
-    // Without folders, Unfiled would only mean "all": list the projects flat, ignoring a stale
-    // collapsed Unfiled, so that no projects at all reaches the List's empty state.
-    const flat = !c.query().trim() && !c.state().projectFolders.length;
-    const all = projectRows(c.state(), c.query(), flat ? new Set<string>() : c.collapsed(), c.order(), c.descending(), c.shells());
-    if (flat) return all.flatMap((row): ProjectTreeRow[] => row.kind === "project" ? [{ ...row, depth: 0 }] : []);
-    // With folders, an Unfiled group that holds nothing is only noise.
-    return all.filter((row) => !((row.id === "folder-unfiled" && row.kind === "folder" && row.count === 0) || row.id === "empty-unfiled"));
+    const pins = new Set(c.projectPanel().pinned);
+    const all = projectRows(c.state(), c.query(), new Set(), c.order(), c.descending(), c.shells());
+    const pinned = all.filter((row): row is Extract<ProjectTreeRow, { kind: "project" }> => row.kind === "project" && pins.has(row.project.id));
+    const rest = { ...c.state(), projects: c.state().projects.filter((project) => !pins.has(project.id)) };
+    const flat = !rest.projectFolders.length;
+    const normal = projectRows(rest, c.query(), flat ? new Set<string>() : c.collapsed(), c.order(), c.descending(), c.shells())
+      .filter((row) => flat ? row.kind === "project" : !((row.id === "folder-unfiled" && row.kind === "folder" && row.count === 0) || row.id === "empty-unfiled"))
+      .map((row) => flat && row.kind === "project" ? { ...row, depth: 0 } : row);
+    return pinned.length ? [
+      { kind: "folder", id: "folder-pinned", name: "Pinned", depth: 0, count: pinned.length } as ProjectTreeRow,
+      ...(c.collapsed().has("pinned") && !c.query().trim() ? [] : pinned.map((row) => ({ ...row, depth: 0 }))),
+      ...((flat || c.query().trim()) && normal.length ? [{ kind: "folder", id: "folder-projects", name: c.query().trim() ? "Matches" : "Projects", depth: 0, count: normal.length } as ProjectTreeRow] : []),
+      ...(flat && c.collapsed().has("projects") && !c.query().trim() ? [] : normal),
+    ] : normal;
+  };
+  const groups = () => {
+    const result: { id: string; title: string; header?: ProjectTreeRow; rows: ProjectTreeRow[] }[] = [];
+    for (const row of rows()) {
+      if (row.kind === "folder") result.push({ id: row.id, title: row.name, header: row, rows: [] });
+      else { if (!result.length) result.push({ id: "all", title: c.query().trim() ? "Matches" : "Projects", rows: [] }); result[result.length - 1].rows.push(row); }
+    }
+    return result;
   };
   // A toolbar button closes the form it opened, and shows while that form is open.
   const rootFolderForm = () => { const editor = c.editor(); return editor?.kind === "folder" && !editor.id && !editor.parent; };
@@ -426,17 +487,35 @@ function Projects(props: { controller: PanelController; surface: string; footer?
       { label: c.order() === "name" ? "Z to A" : c.order() === "live" ? "Most live sessions first" : "Newest first", checked: c.descending(), disabled: c.sortPending(), onSelect: () => void c.setOrder(c.order(), true) },
     ]);
   }
-  return <View testID="projects-panel" style={{ flex: 1, minHeight: 0, backgroundColor: theme().palette.panel }}>
+  return <View testID="projects-panel" onLayout={(event) => width.set(event.size.width)} style={{ flex: 1, minHeight: 0, backgroundColor: theme().palette.panel }}>
     <Header title="Projects" count={c.query().trim() ? rows().filter((row) => row.kind === "project").length : c.state().projects.length} total={c.state().projects.length} noun="project">
       <ToolbarCommand id="sort-projects" icon="sort" label="Sort projects" onPress={sortMenu} />
       <ToolbarCommand id="new-folder" icon="folder" label="New folder" selected={rootFolderForm()} onPress={() => c.editor.set(rootFolderForm() ? null : { kind: "folder", name: "" })} />
       <ToolbarCommand id="new-project" icon="add" label="New project" selected={c.editor()?.kind === "project"} onPress={() => c.editor.set(c.editor()?.kind === "project" ? null : { kind: "project" })} />
     </Header>
+    <View testID="project-view-controls" role="radiogroup" accessibilityLabel="Project view" style={{ flexDirection: "row", gap: 4, paddingHorizontal: space(PANEL.inset, theme().scale), paddingBottom: 8 }}>
+      {(["list", "columns", "grid"] as const).map((view) => <ToolbarCommand id={`project-view-${view}`} icon={view} label={`${view[0].toUpperCase() + view.slice(1)} view`} selected={c.projectPanel().view === view} disabled={c.panelSaving()} onPress={() => void c.setProjectPanel({ ...c.projectPanel(), view })} />)}
+    </View>
     <InlineEditor controller={c} kinds={["folder", "project"]} />
     <PanelSearch controller={c} panel="projects" surface={props.surface} />
-    <List each={rows()} keyExtractor={(item) => item.id} estimatedItemSize={space(46, theme().scale)} style={{ flex: 1, minHeight: 0 }} contentStyle={{ paddingHorizontal: space(6, theme().scale), paddingBottom: 8 }} footer={props.footer} empty={props.footer ? undefined : <Empty query={c.query()} noun="projects" loading={!c.loaded()} />}>
+    {c.projectPanel().view === "list" ? <List each={rows()} keyExtractor={(item) => item.id} estimatedItemSize={space(46, theme().scale)} style={{ flex: 1, minHeight: 0 }} contentStyle={{ paddingHorizontal: space(6, theme().scale), paddingBottom: 8 }} footer={props.footer} empty={props.footer ? undefined : <Empty query={c.query()} noun="projects" loading={!c.loaded()} />}>
       {(item) => <ProjectRow item={item} controller={c} />}
-    </List>
+    </List> : <Scroll testID={`projects-${c.projectPanel().view}`} style={{ flex: 1, minHeight: 0 }} contentStyle={{ padding: space(PANEL.inset, theme().scale), gap: 12 }}>
+      {c.projectPanel().view === "columns" ? <View style={{ display: "grid", gridTemplateColumns: `repeat(${Math.max(1, Math.floor(width() / space(300, theme().scale)))}, minmax(0, 1fr))`, gap: 12 }}>
+        {groups().map((group) => <View style={{ minWidth: 0, padding: 8, gap: 6, borderRadius: 10, backgroundColor: theme().palette.bg }}>
+          <View>{group.header ? <FolderRow item={() => ({ ...group.header!, depth: 0 })} controller={c} /> : <Text style={{ fontFamily: theme().family, fontSize: text(12), fontWeight: "600", color: muted() }}>{group.title}</Text>}</View>
+          {group.rows.map((item) => <ProjectRow item={() => ({ ...item, depth: 0 })} controller={c} />)}
+        </View>)}
+      </View> : groups().map((group) => <View style={{ gap: 8 }}>
+        <View>{group.header ? <FolderRow item={() => ({ ...group.header!, depth: 0 })} controller={c} /> : <Text style={{ fontFamily: theme().family, fontSize: text(12), fontWeight: "600", color: muted() }}>{group.title}</Text>}</View>
+        <View style={{ display: "grid", gridTemplateColumns: `repeat(${Math.max(1, Math.floor(width() / space(280, theme().scale)))}, minmax(0, 1fr))`, gap: 10 }}>
+          {group.rows.map((item) => <View style={{ minWidth: 0, minHeight: 86, padding: 8, borderRadius: 10, backgroundColor: theme().palette.bg }}><ProjectRow item={() => ({ ...item, depth: 0 })} controller={c} /></View>)}
+        </View>
+      </View>)}
+      {!rows().length && <Empty query={c.query()} noun="projects" loading={!c.loaded()} />}
+      {props.footer}
+    </Scroll>}
+
   </View>;
 }
 
@@ -492,7 +571,7 @@ function Worktrees(props: { controller: PanelController; surface: string }) {
         <Text style={{ fontFamily: theme().monoFamily, fontSize: text(9), color: muted() }}>{tree().id}</Text>
       </View>}
       style={{ ...row(), flexDirection: "row", alignItems: "flex-start", gap: space(8, s()) }} hoverStyle={{ backgroundColor: theme().palette.panelActive }} focusStyle={{ backgroundColor: theme().palette.divider }} selectedStyle={{ backgroundColor: theme().palette.panelActive }}>
-      <View style={{ paddingTop: 1 }}><Icon name={tree().isPrimary ? "folder" : "worktrees"} size={text(13)} color={missing() ? theme().palette.gold : selected() ? accent() : muted()} /></View>
+      <View style={{ paddingTop: 1 }}><Icon name={tree().repositoryRoot ? "worktrees" : "folder"} size={text(13)} color={missing() ? theme().palette.gold : selected() ? accent() : muted()} /></View>
       <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: space(6, s()), minWidth: 0 }}>
           <Text numberOfLines={1} style={{ flexShrink: 1, fontFamily: family(), fontSize: text(11), fontWeight: selected() ? "600" : "400", color: ink() }}>{name(tree())}</Text>
@@ -618,7 +697,7 @@ function Tasks(props: { controller: PanelController; surface: string }) {
 }
 
 function Shells(props: { controller: PanelController; surface: string }) {
-  const c = props.controller;
+  const c = props.controller, sessionApi = c.sessionActions ?? Sessions;
   const allShells = () => c.shells().filter((shell) => shell.kind === "project" && shell.projectId === c.projectId());
   const allChats = () => c.chats().filter((chat) => chat.projectId === c.projectId());
   const project = () => c.state().projects.find((project) => project.id === c.projectId());
@@ -668,7 +747,35 @@ function Shells(props: { controller: PanelController; surface: string }) {
     // The subscription is ordered by revision and pushes only changes: a push that lands while
     // this read is in flight is newer than it, and must not be rolled back.
     const before = c.shells();
-    void Sessions.list().then((next) => { if (c.shells() === before) c.shells.set(next.sessions); }).catch((reason) => c.notice(String(reason)));
+    void sessionApi.list().then((next) => { if (c.shells() === before) c.shells.set(next.sessions); }).catch((reason) => c.notice(String(reason)));
+  }
+  const ending = signal<{ project: string; generation: number; ids: string[] } | null>(null);
+  const targets = () => allShells().filter((shell) => shell.alive && shell.kind === "project");
+  effect(() => { const request = ending(); if (request && (request.project !== c.projectId() || request.generation !== c.generation())) ending.set(null); });
+  effect(() => { if (ending()) return keymap.bind("escape", () => { if (!c.pending()) ending.set(null); }); });
+  function requestEnd() {
+    if (c.pending()) return;
+    const ids = targets().map((shell) => shell.id);
+    if (ids.length) ending.set({ project: c.projectId(), generation: c.generation(), ids });
+  }
+  function endTerminals() {
+    const request = ending();
+    if (!request || request.project !== c.projectId() || request.generation !== c.generation()) { ending.set(null); return; }
+    ending.set(null);
+    void c.run(async () => {
+      const current = await sessionApi.list();
+      const allowed = new Set(current.sessions.filter((shell) => shell.alive && shell.kind === "project" && shell.projectId === request.project).map((shell) => shell.id));
+      let ended = 0;
+      const failed: string[] = [];
+      for (const id of request.ids) {
+        if (request.project !== c.projectId() || request.generation !== c.generation()) break;
+        if (!allowed.has(id)) continue;
+        try { await sessionApi.close(id); ended++; }
+        catch (error) { failed.push(`${id.slice(0, 8)} (${error})`); }
+      }
+      c.notice(`Ended ${ended} terminal${ended === 1 ? "" : "s"}.${failed.length ? ` Not ended: ${failed.join("; ")}` : ""}`);
+      refresh();
+    });
   }
   const s = () => theme().scale;
   const lead = () => space(6, s()) + text(13) + space(8, s());
@@ -677,8 +784,17 @@ function Shells(props: { controller: PanelController; surface: string }) {
     <Header title="Sessions" count={rows().length} total={allShells().length + allChats().length} noun="session" project={c.projectLabel()}>
       <ToolbarCommand id="sessions-refresh" icon="refresh" label="Refresh sessions" disabled={c.catalogLoading()} onPress={refresh} />
       {c.newChat && <ToolbarCommand id="sessions-new-chat" icon="chat" label="New chat…" onPress={() => c.newChat?.()} />}
-      <ToolbarCommand id="new-shell" icon="add" label="New shell" disabled={c.pending() || !project()} onPress={createShell} />
+      <ToolbarCommand id="new-shell" icon="terminal" label="New terminal" disabled={c.pending() || !project()} onPress={createShell} />
+      <ToolbarCommand id="nuke-shells" icon="radiation" label="End project terminals…" disabled={c.pending() || !targets().length} onPress={requestEnd} />
     </Header>
+    {ending() && <View testID="end-terminals-confirm" role="alert" accessibilityLabel="End project terminals?" style={{ marginHorizontal: space(PANEL.inset, theme().scale), marginBottom: 12, padding: 12, gap: 10, borderRadius: 10, backgroundColor: theme().palette.bg, borderWidth: 1, borderColor: theme().palette.danger }}>
+      <Text style={{ fontFamily: theme().family, fontSize: text(13), fontWeight: "600", color: ink() }}>{`End ${ending()!.ids.length} project terminal${ending()!.ids.length === 1 ? "" : "s"}?`}</Text>
+      <Text style={{ fontFamily: theme().family, fontSize: text(11), color: muted() }}>Running processes and agents stop. Unsaved terminal output and temporary shell uploads are deleted. Chats and orchestrator terminals are kept.</Text>
+      <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: 8 }}>
+        <Button testID="end-terminals-cancel" ref={(node) => node.focus()} onPress={() => ending.set(null)} style={button()}><Text style={{ fontFamily: theme().family, fontSize: text(11), color: ink() }}>Cancel</Text></Button>
+        <Button testID="end-terminals-confirm-action" onPress={endTerminals} style={button()}><Text style={{ fontFamily: theme().family, fontSize: text(11), color: theme().palette.danger }}>{`End ${ending()!.ids.length} terminals`}</Text></Button>
+      </View>
+    </View>}
     <PanelSearch controller={c} panel="shells" surface={props.surface} />
     <View testID="sessions-controls" style={{ paddingHorizontal: space(12, s()), paddingBottom: space(6, s()), flexDirection: "row", gap: 4, flexWrap: "wrap" }}>
       {FILTERS.filter(([filter]) => filter === "all" || filter === "shells" || c.sessionFilter() === filter || allChats().some((chat) => chat.provider === filter)).map(([filter, chip, , label]) =>

@@ -1,10 +1,11 @@
 import { space, type InterfaceTheme } from "../appearance";
+import { PANEL } from "../panel_layout";
 
 /** Shared reading measure keeps the draft and conversation on one axis. */
 export const CHAT_COLUMN_WIDTH = 960;
 
 export function chatGutter(width: number, scale: number): number {
-  return space(width > 0 && width < 520 ? 12 : 24, scale);
+  return space(PANEL.inset, scale);
 }
 
 export function chatColumn(width: number, scale: number) {

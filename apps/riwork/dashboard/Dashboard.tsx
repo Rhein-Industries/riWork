@@ -12,7 +12,6 @@ import {
 } from "./model";
 
 type Dto = DashboardDto;
-type Region = "projects" | "activity" | "work";
 
 export const SEARCH_PLACEHOLDER = "Search projects, tasks and sessions  ⌘F";
 const TOUCH_SEARCH_PLACEHOLDER = "Search projects, tasks and sessions";
@@ -41,20 +40,18 @@ export function DashboardView(props: {
    * phone-wide view each project's figures under its name instead of in columns. */
   touch?: boolean;
 }) {
-  // The compact region is not saved; the search is never saved.
-  const region = signal<Region>("projects");
   const palette = () => props.theme().palette;
   const scale = () => props.theme().scale;
   const size = (value: number) => space(value, scale());
   const width = signal(0);
-  const font = (size: number, color = palette().text) => ({ fontFamily: props.theme().family, fontSize: size * scale(), color });
+  const font = (size: number, color = palette().text) => ({ fontFamily: props.theme().family, fontSize: (size + 1) * scale(), color });
   const mono = (size: number, color = palette().text) => ({ fontFamily: props.theme().monoFamily, fontSize: size * scale(), color });
   const wire = () => (props.dto()?.wire ?? null) as Wire | null;
   const now = () => props.dto()?.now ?? 0;
   const layout = () => layoutFor(width() || windowSize().width, scale());
   const touch = () => props.touch === true;
   /** Below 600 points (`PhoneShell`) the table's columns do not fit. */
-  const stacked = () => touch() && (width() || windowSize().width) < 600;
+  const stacked = () => (width() || windowSize().width) / Math.max(scale(), 1) < 700;
   const touchTarget = () => touch() ? { minHeight: 44, justifyContent: "center" as const } : {};
   // The body is drawn again only when this changes, not on every read or resize.
   const arrangement = computed(() => layout().arrangement);
@@ -87,7 +84,7 @@ export function DashboardView(props: {
   function section(id: string, title: string, children: JSX.Element | JSX.Element[], meta?: string) {
     return <View testID={id} style={{ gap: size(3), paddingVertical: size(6), minWidth: 0 }}>
       <View style={{ flexDirection: "row", justifyContent: "space-between", paddingHorizontal: size(8), paddingVertical: size(4) }}>
-        <Text style={{ ...font(10, palette().muted), fontWeight: "600" }}>{title}</Text>
+        <Text style={{ ...font(12), fontWeight: "700" }}>{title}</Text>
         {meta && <Text style={mono(10, palette().muted)}>{meta}</Text>}
       </View>
       {children}
@@ -95,8 +92,8 @@ export function DashboardView(props: {
   }
   function row(id: string, headline: string, detail: string, target?: Target, tone = palette().text) {
     return <View testID={id} role={target ? "button" : "text"} accessibilityLabel={`${headline}; ${detail}`} onPress={target ? () => props.onOpen(target) : undefined} focusable={!!target} hoverStyle={{ backgroundColor: palette().panelActive }} style={{ gap: 2, paddingHorizontal: size(8), paddingVertical: size(5), borderRadius: 7, ...(target ? touchTarget() : {}) }}>
-      <Text numberOfLines={1} style={font(11, tone)}>{headline}</Text>
-      <Text numberOfLines={1} style={font(10, palette().muted)}>{detail}</Text>
+      <Text numberOfLines={3} style={font(12, tone)}>{headline}</Text>
+      <Text numberOfLines={3} style={font(11, palette().muted)}>{detail}</Text>
     </View>;
   }
   /** A rail's line of words, on the same left edge as its title and rows. */
@@ -109,15 +106,15 @@ export function DashboardView(props: {
     const items = found.slice(0, limit);
     const count = props.query().trim() ? found.length : total ?? rows?.length;
     return items.length ? <>{items.map(({ item, index }) => draw(item, index))}{more(count, items.length)}</> :
-      <Text style={note()}>{rows?.length && props.query().trim() ? `Nothing here matches “${props.query().trim()}”.` : empty}</Text>;
+      <>{count ? more(count, 0) : <Text style={note()}>{rows?.length && props.query().trim() ? `Nothing here matches “${props.query().trim()}”.` : empty}</Text>}</>;
   }
   const sessionFields = (session: { agent: string; title?: string; project_name?: string; branch?: string }) => [session.agent, session.title ?? "", session.project_name ?? "Global", session.branch ?? ""];
 
   // ---- Regions ---------------------------------------------------------------------------
   function toolbar() {
     const fresh = freshness(now(), props.dto()?.readAt ?? null, props.dto()?.error ?? null);
-    return <View testID="dashboard-toolbar" style={{ flexDirection: "row", alignItems: "center", gap: size(10), paddingHorizontal: size(DASHBOARD_METRICS.page), paddingVertical: size(6), borderBottomWidth: 1, borderColor: palette().divider }}>
-      <View style={{ flexDirection: "row", alignItems: "center", height: size(26), paddingHorizontal: size(8), gap: size(5), borderRadius: 13, backgroundColor: palette().panelActive, flex: layout().arrangement === "compact" ? 1 : undefined, width: layout().arrangement === "compact" ? undefined : size(300), minWidth: size(160) }}>
+    return <View testID="dashboard-toolbar" style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: size(10), paddingHorizontal: size(DASHBOARD_METRICS.page), paddingVertical: size(6), borderBottomWidth: 1, borderColor: palette().divider }}>
+      <View style={{ flexDirection: "row", alignItems: "center", height: size(26), paddingHorizontal: size(8), gap: size(5), borderRadius: 13, backgroundColor: palette().panelActive, flex: layout().arrangement === "compact" ? 1 : undefined, width: layout().arrangement === "compact" ? undefined : size(300), minWidth: 0 }}>
         <Icon name="search" size={11 * scale()} color={palette().muted} />
         <Input testID="dashboard-search" accessibilityLabel="Search the dashboard" placeholder={touch() ? TOUCH_SEARCH_PLACEHOLDER : SEARCH_PLACEHOLDER} value={props.query()}
           ref={(node) => { search = node; }} onChange={(text) => props.query.set(text)}
@@ -125,7 +122,7 @@ export function DashboardView(props: {
         {props.query() !== "" && button("dashboard-clear-search", "×", () => { props.query.set(""); search?.focus(); }, false, "Clear the search")}
       </View>
       {layout().arrangement !== "compact" && <Scroll horizontal={true} style={{ flex: 1, minWidth: 0 }}>{wire() && summaryStrip(wire()!)}</Scroll>}
-      <Text testID="dashboard-freshness" numberOfLines={1} style={{ ...font(10, fresh.warn ? palette().gold : palette().muted), maxWidth: size(layout().arrangement === "compact" ? 180 : 260) }}>{fresh.text}</Text>
+      <Text testID="dashboard-freshness" numberOfLines={1} style={{ ...font(10, fresh.warn ? palette().gold : palette().muted), flexShrink: 1, maxWidth: size(layout().arrangement === "compact" ? 105 : 260) }}>{fresh.text}</Text>
       {button("dashboard-refresh", "↻", props.onRefresh, false, "Read everything again now")}
     </View>;
   }
@@ -151,12 +148,12 @@ export function DashboardView(props: {
     return <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6, alignItems: "center", paddingHorizontal: size(DASHBOARD_METRICS.page) }}>
       <Text style={{ ...font(10), fontWeight: "600" }}>Projects</Text>
       <Text style={mono(10, palette().muted)}>{`${visibleProjects(read.projects ?? [], props.query(), props.filter(), props.sort()).length} of ${read.projects_total ?? read.projects?.length ?? 0}`}</Text>
-      <View testID="dashboard-filters" role="tablist" accessibilityLabel="Filter projects" style={{ flexDirection: "row", gap: 2, padding: 2, borderRadius: 8, backgroundColor: palette().panelActive }}>
+      <View testID="dashboard-filters" role="tablist" accessibilityLabel="Filter projects" style={{ flexDirection: "row", flexWrap: "wrap", minWidth: 0, maxWidth: "100%", width: stacked() ? "100%" : undefined, gap: 2, padding: 2, borderRadius: 8, backgroundColor: palette().panelActive }}>
         {FILTERS.map((filter) => button(`dashboard-filter-${filter}`, `${filterLabel(filter)} ${counts.find(([f]) => f === filter)?.[1] ?? 0}`, () => props.onFilter(filter), props.filter() === filter,
           `${props.filter() === filter ? "Showing" : "Show"} ${filterLabel(filter)}`, "tab"))}
       </View>
       <Text style={font(10, palette().muted)}>Sort</Text>
-      <View testID="dashboard-sorts" role="tablist" accessibilityLabel="Order projects" style={{ flexDirection: "row", gap: 2, padding: 2, borderRadius: 8, backgroundColor: palette().panelActive }}>
+      <View testID="dashboard-sorts" role="tablist" accessibilityLabel="Order projects" style={{ flexDirection: "row", flexWrap: "wrap", minWidth: 0, maxWidth: "100%", width: stacked() ? "100%" : undefined, gap: 2, padding: 2, borderRadius: 8, backgroundColor: palette().panelActive }}>
         {SORTS.map((sort) => button(`dashboard-sort-${sort}`, sortLabel(sort), () => props.onSort(sort), props.sort() === sort,
           `${props.sort() === sort ? "Ordered by" : "Order by"} ${sortLabel(sort)}`, "tab"))}
       </View>
@@ -181,7 +178,11 @@ export function DashboardView(props: {
           <Text numberOfLines={1} style={font(12)}>{project.name}</Text>
           {where && <Text numberOfLines={1} style={font(10, palette().muted)}>{where}</Text>}
           <Text numberOfLines={1} style={font(10, palette().muted)}>{agents.length ? agents.map((part, index) => <Text style={{ color: toneOf(part.tone) }}>{`${index ? " " : ""}${part.text}`}</Text>) : "No agents"}{` · ${sessionsLine(project, read.chats_known)}`}</Text>
-          <Text numberOfLines={1} style={font(10, palette().muted)}>{`${tasks ? `${tasks[0]} · ${tasks[1]}` : "No tasks"} · ${age(now(), project.last_activity) ?? "—"}`}</Text>
+          <Text numberOfLines={2} style={font(10, palette().muted)}>{`${tasks ? `${tasks[0]} · ${tasks[1]}` : "No tasks"} · ${age(now(), project.last_activity) ?? "—"}`}</Text>
+          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+            {button(`dashboard-tasks-${project.id}`, "Tasks", () => props.onPanel(project.id, "tasks"), false, undefined, "outlined")}
+            {button(`dashboard-sessions-${project.id}`, "Sessions", () => props.onPanel(project.id, "shells"), false, undefined, "outlined")}
+          </View>
         </View>
       </View>;
     }
@@ -226,16 +227,18 @@ export function DashboardView(props: {
   function table(read: Wire) {
     const shown = visibleProjects(read.projects ?? [], props.query(), props.filter(), props.sort());
     const empty = shown.length ? null : emptyTable(read.projects ?? [], props.query(), props.filter());
-    return <View style={{ flex: 1, minHeight: 0, paddingHorizontal: size(DASHBOARD_METRICS.page) }}>
-      {!stacked() && tableHead()}
-      <Scroll testID="dashboard-table" style={{ flex: 1, minHeight: 0 }}>
+    const contents = () => <>
       {shown.map((project) => projectRow(project, read))}
       {more(read.projects_total, read.projects?.length ?? 0)}
       {empty && <View testID="dashboard-empty" style={{ padding: 16, gap: 8, alignItems: "flex-start" }}>
         <Text style={font(11, palette().muted)}>{empty.text}</Text>
         {empty.showAll && button("dashboard-show-all", empty.showAll, () => props.onFilter("all"))}
       </View>}
-      </Scroll>
+    </>;
+    return <View style={{ minHeight: 0 }}>
+      {!stacked() && tableHead()}
+      {shown.length > 8 ? <Scroll testID="dashboard-table" style={{ height: size(480), minHeight: 0 }}>{contents()}</Scroll>
+        : <View testID="dashboard-table">{contents()}</View>}
     </View>;
   }
   /** Rows are kept by request: a new read redraws a row in place, so the review
@@ -251,7 +254,7 @@ export function DashboardView(props: {
       return [...list.slice(0, at), open, ...list.slice(at)];
     };
     const sources = () => wire()?.decision_sources;
-    return section("dashboard-decisions", "Decisions", <>
+    return section("dashboard-decisions", `Decisions · ${found().length}`, <>
       <Text testID="dashboard-decision-sources" style={{ ...font(10, palette().muted), paddingHorizontal: size(8) }}>{!sources() || sources()!.state === "unavailable" ? "Chats not read yet · requests unknown"
         : sources()!.state === "partial" ? `${sources()!.chats_complete} of ${plural(sources()!.chats_total, "chat")} checked · some requests may be missing`
           : `${plural(sources()!.chats_total, "chat")} checked`}</Text>
@@ -264,22 +267,36 @@ export function DashboardView(props: {
   function decisionRow(decision: () => DecisionRow) {
     const id = decision().id, open = computed(() => review()?.decision.id === id);
     let opener: YNode | undefined;
-    return <View testID={`dashboard-decision-row-${id}`} style={{ borderRadius: 7, backgroundColor: open() ? palette().panelActive : "transparent" }}>
+    return <View testID={`dashboard-decision-row-${id}`} style={{ borderRadius: 9, borderWidth: 1, borderColor: palette().divider, marginBottom: 8, backgroundColor: open() ? palette().panelActive : palette().bg }}>
       <Button testID={`dashboard-decision-${id}`} selected={open()} disabled={!!review()?.busy()} ref={(node) => { opener = node; }} onPress={() => unfold(decision())}
         accessibilityLabel={`${open() ? "Hide the review of" : "Review"} ${sessionName(decision().session)}'s ${decision().kind === "approval" ? "approval request" : "question"}`}
         style={{ gap: 2, paddingHorizontal: size(8), paddingVertical: size(5), borderRadius: 7, alignItems: "stretch" }}
         hoverStyle={{ backgroundColor: palette().panelActive }} focusStyle={{ backgroundColor: palette().panelActive }}>
-        <Text numberOfLines={1} style={font(11)}>{`${sessionName(decision().session)} asks ${decision().kind === "approval" ? "for approval" : "a question"}`}</Text>
+        <Text numberOfLines={3} style={{ ...font(12), fontWeight: "600" }}>{`${sessionName(decision().session)} asks ${decision().kind === "approval" ? "for approval" : "a question"}`}</Text>
         <View style={{ flexDirection: "row", gap: size(8), justifyContent: "space-between" }}>
           <Text numberOfLines={1} style={{ ...font(10, palette().muted), flex: 1 }}>{`${decision().session.project_name ?? "Global"} · ${age(now(), decision().observed_at) ?? ""}`}</Text>
-          <View style={{ paddingHorizontal: size(8), paddingVertical: size(1), borderRadius: 5, borderWidth: 1, borderColor: palette().divider, backgroundColor: palette().bg }}>
-            <Text style={font(10, palette().text)}>{open() ? "Hide" : "Review"}</Text>
+          <View style={{ paddingHorizontal: size(12), paddingVertical: size(5), borderRadius: 5, borderWidth: 1, borderColor: palette().divider, backgroundColor: palette().bg }}>
+            <Text style={{ ...font(12, palette().text), fontWeight: "600" }}>{open() ? "Hide" : "Review"}</Text>
           </View>
         </View>
       </Button>
       {open() && <DecisionReviewView review={review()!} theme={props.theme} opener={() => opener} onClose={fold}
         onOpenChat={() => { const target = decision().session.target; fold(); props.onOpen(target); }} />}
     </View>;
+  }
+  function urgentActivity(read: Wire) {
+    // Requests with a decision card already have an explicit review action above.
+    const attention = (read.attention ?? []).filter((item) => !read.decisions?.some((decision) => item.kind === "waiting" && item.target.type === "chat" && item.target.id === decision.chat_id));
+    const total = Math.max(attention.length, (read.attention_total ?? read.attention?.length ?? 0) - ((read.attention?.length ?? 0) - attention.length));
+    return <>
+      {section("dashboard-attention-list", `Needs you · ${total}`, list(attention, total, (item, index) => {
+        const [headline, detail] = attentionCopy(item, now());
+        const failed = item.kind === "chat_failed" || item.kind === "automation" && item.outcome !== "missed" && item.outcome !== "uncertain";
+        return row(`dashboard-attention-${index}`, `${failed ? "Failed · " : "Waiting · "}${headline}`, detail, item.target, failed ? palette().danger : palette().gold);
+      }, quietAttention(read), (item) => [...attentionCopy(item, now()), item.project_name ?? "", item.session?.project_name ?? ""], Number.POSITIVE_INFINITY))}
+      {section("dashboard-working-list", `Working now · ${read.working_total ?? read.working?.length ?? 0}`, list(read.working, read.working_total, (work, index) =>
+        row(`dashboard-working-${index}`, sessionName(work.session), workDetail(work, now(), false), work.session.target), "No agent is working right now.", (work) => sessionFields(work.session)))}
+    </>;
   }
   /** The rest of the activity rail, drawn again on each read. */
   function activity(read: Wire) {
@@ -288,13 +305,6 @@ export function DashboardView(props: {
     // theirs alone (the section title says the rest are working): red for what
     // failed, the attention colour for what waits or was missed.
     return <>
-      {section("dashboard-attention-list", "Needs you", list(read.attention, read.attention_total, (item, index) => {
-        const [headline, detail] = attentionCopy(item, now());
-        const failed = item.kind === "chat_failed" || item.kind === "automation" && item.outcome !== "missed" && item.outcome !== "uncertain";
-        return row(`dashboard-attention-${index}`, headline, detail, item.target, failed ? palette().danger : palette().gold);
-      }, quietAttention(read), (item) => [...attentionCopy(item, now()), item.project_name ?? "", item.session?.project_name ?? ""], Number.POSITIVE_INFINITY))}
-      {section("dashboard-working-list", "Working now", list(read.working, read.working_total, (work, index) =>
-        row(`dashboard-working-${index}`, sessionName(work.session), workDetail(work, now(), false), work.session.target), "No agent is working right now.", (work) => sessionFields(work.session)))}
       {intelligence && section("dashboard-intelligence", "Overview", <View style={{ gap: 3, paddingHorizontal: size(8) }}>
         {intelligence.summary && <Text style={font(11)}>{intelligence.summary}</Text>}
         {intelligence.highlights.map((text) => <Text style={font(10, palette().muted)}>{text}</Text>)}
@@ -328,36 +338,22 @@ export function DashboardView(props: {
           </View>)}</>)}
     </>;
   }
-  function regions(read: Wire) {
-    const activity = (read.attention_total ?? read.attention?.length ?? 0);
-    return <>
-      {button("dashboard-region-projects", `Projects ${read.projects_total ?? read.projects?.length ?? 0}`, () => region.set("projects"), region() === "projects", undefined, "tab")}
-      {button("dashboard-region-activity", activity ? `Activity · ${activity} need you` : `Activity ${(read.working?.length ?? 0) + (read.finished?.length ?? 0)}`, () => region.set("activity"), region() === "activity", undefined, "tab")}
-      {button("dashboard-region-work", `Tasks ${read.tasks_in_progress_total ?? read.tasks_in_progress?.length ?? 0}`, () => region.set("work"), region() === "work", undefined, "tab")}
-    </>;
-  }
-  /** Made again only when the arrangement changes. Each region in it reads the
-   * wire itself, so a new read redraws them and leaves the decision rows be.
-   * The decisions stay a child of their own in each list of children: a
-   * function nested in another's array runs again with any sibling. */
+  /** Priority stays in the same mounted tree across window sizes so review drafts survive. */
   function body() {
-    const rail = (children: JSX.Element) => <Scroll style={{ width: DASHBOARD_METRICS.rail * Math.max(scale(), 1), minHeight: 0 }} contentStyle={{ gap: size(DASHBOARD_METRICS.gap), paddingBottom: 10 }}>{children}</Scroll>;
-    const projects = () => <View style={{ flex: 1, minHeight: 0, gap: 8 }}>{controls(wire()!)}{table(wire()!)}</View>;
-    if (arrangement() === "compact") {
-      return <View style={{ flex: 1, minHeight: 0, gap: 8 }}>
-        <View testID="dashboard-regions" role="tablist" style={{ flexDirection: "row", gap: 4, paddingHorizontal: size(DASHBOARD_METRICS.page) }}>{regions(wire()!)}</View>
-        {region() === "projects" ? projects()
-          : <Scroll style={{ flex: 1, minHeight: 0 }} contentStyle={{ gap: size(DASHBOARD_METRICS.gap), paddingHorizontal: size(DASHBOARD_METRICS.page) }}>
-            {region() === "activity" ? <>{decisions()}{activity(wire()!)}</> : workRail(wire()!)}
-          </Scroll>}
-      </View>;
-    }
-    const wide = arrangement() === "wide";
-    return <View style={{ flex: 1, minHeight: 0, flexDirection: "row", gap: size(DASHBOARD_METRICS.gap), paddingRight: size(DASHBOARD_METRICS.page) }}>
-      {projects()}
-      {rail(wide ? <>{decisions()}{activity(wire()!)}</> : <>{decisions()}{activity(wire()!)}{workRail(wire()!)}</>)}
-      {wide && rail(<>{workRail(wire()!)}</>)}
-    </View>;
+    const columns = () => (width() || windowSize().width) / Math.max(scale(), 1) >= 700 ? 2 : 1;
+    return <Scroll testID="dashboard-content" style={{ flex: 1, minHeight: 0 }} contentStyle={{ paddingHorizontal: size(12), paddingBottom: size(16), gap: size(18) }}>
+      <View testID="dashboard-priority" style={{ display: "grid", gridTemplateColumns: columns() > 1 ? "minmax(0, 1fr) minmax(0, 1fr)" : "minmax(0, 1fr)", gap: size(16), alignItems: "start" }}>
+        <View style={{ minWidth: 0 }}>{decisions()}</View>
+        <View style={{ minWidth: 0 }}>{urgentActivity(wire()!)}</View>
+      </View>
+      <View testID="dashboard-projects-region" style={{ minWidth: 0, gap: size(8), padding: size(8), borderRadius: 10, backgroundColor: palette().bg }}>
+        {controls(wire()!)}{table(wire()!)}
+      </View>
+      <View testID="dashboard-secondary" style={{ display: "grid", gridTemplateColumns: columns() > 1 ? "minmax(0, 1fr) minmax(0, 1fr)" : "minmax(0, 1fr)", gap: size(16), alignItems: "start" }}>
+        <View style={{ minWidth: 0 }}>{activity(wire()!)}</View>
+        <View style={{ minWidth: 0 }}>{workRail(wire()!)}</View>
+      </View>
+    </Scroll>;
   }
   return <View testID="dashboard" onLayout={(event) => { if (event.size.width !== width()) width.set(event.size.width); }} style={{ flex: 1, minHeight: 0, gap: size(8), paddingBottom: size(8), backgroundColor: palette().panel }}>
     {toolbar()}

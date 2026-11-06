@@ -2,7 +2,7 @@
  * and shells that are live, exited, a harness and an editor. Store, Sessions and Chat still answer
  * from the isolated RIWORK_HOME the test runs in; `app.fixture.seed` then replaces what they
  * delivered. No session process, tmux server or chat host starts. */
-import { View, host, mount, signal } from "nsh";
+import { Text, View, host, mount, signal } from "nsh";
 import type { ChatSummary, ShellSessionDto, StoreState } from "riwork/native";
 import { PanelContent, ShellIntent, createPanelController } from "../Panels";
 import { EMPTY_STORE } from "../panel_model";
@@ -51,18 +51,35 @@ const SHELLS: ShellSessionDto[] = [
 
 function Fixture() {
   const intent = signal<string | null>(null);
+  const activeProject = signal(PROJECT);
+  const attempted: string[] = [], closed: string[] = [];
+  let failure = false;
+  const notice = signal("");
   const controller = createPanelController({
-    projectId: () => PROJECT, projectLabel: () => "riWork",
+    projectId: activeProject, projectLabel: () => "riWork",
     switchProject: async () => {}, openPanel: () => {},
     showShell: (id) => intent.set(id), showChat: () => {}, newChat: () => {},
-    selectTask: () => {}, selectWorktree: () => {}, notice: () => {},
+    selectTask: () => {}, selectWorktree: () => {}, notice: (message) => notice.set(message),
+    sessionActions: {
+      list: async () => ({ sessions: controller.shells() }),
+      close: async (id) => {
+        attempted.push(id);
+        if (failure && id === SHELLS[2].id) throw new Error("Fixture exit refused");
+        closed.push(id); controller.shells.set(controller.shells().filter((shell) => shell.id !== id));
+      },
+    },
   });
+  host.on("app.fixture.inspect", () => host.post("app.fixture.state", { attempted, closed, shells: controller.shells(), chats: controller.chats(), notice: notice() }));
+  host.on("app.fixture.failure", () => { failure = true; });
+  host.on("app.fixture.project-switch", () => { activeProject.set("fixture-other"); controller.resetProject(); });
+  host.on("app.fixture.add-shell", () => controller.shells.set([...controller.shells(), { ...BASE, id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }]));
   host.on("app.fixture.seed", () => {
-    controller.state.set(STATE); controller.shells.set(SHELLS); controller.chats.set(CHATS);
+    controller.state.set(STATE); controller.shells.set([...SHELLS, { ...BASE, id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", projectId: "fixture-other" }]); controller.chats.set(CHATS);
     controller.catalogNotice.set(""); controller.catalogLoading.set(false);
   });
   return <View style={{ flex: 1 }}>
     <PanelContent controller={controller} panel="shells" surface="fixture" />
+    <Text testID="fixture-cleanup-notice">{notice()}</Text>
     {intent() && <ShellIntent controller={controller} shellId={intent()!} />}
   </View>;
 }

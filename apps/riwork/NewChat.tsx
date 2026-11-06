@@ -3,6 +3,7 @@ import { Button, Input } from "nsh/base";
 import { Chat, Settings, Store, type NewChatDefaultsDto, type NewChatRequest, type SettingsPatch } from "riwork/native";
 import { space, type InterfaceTheme } from "./appearance";
 import { Icon } from "./Icon";
+import { PANEL } from "./panel_layout";
 
 type Provider = NewChatRequest["provider"];
 type Mode = NonNullable<NewChatRequest["approvalMode"]>;
@@ -60,6 +61,8 @@ const MODES: { id: Mode; label: string; description: string }[] = [
  * creates the chat (the tab then becomes it); choosing providers and models reads metadata. */
 export function NewChat(props: NewChatProps) {
   const projectId = props.projectId;
+  const width = signal(600);
+  const wide = () => width() / Math.max(1, props.theme().scale) >= 760;
   // Keep the reviewed locations stable while the tab is open; confirm reads
   // the current store before creating so removed or moved folders cannot win.
   const locations = (props.locations?.length ? props.locations : [{ label: props.worktreeId ? "Selected worktree" : "Project root", cwd: props.cwd, worktreeId: props.worktreeId }]).map((location) => ({ ...location }));
@@ -80,7 +83,7 @@ export function NewChat(props: NewChatProps) {
   const theme = props.theme;
   const size = (value: number) => space(value, theme().scale);
   const text = (value = 11, muted = false) => ({ fontFamily: theme().family, fontSize: value * theme().scale, color: muted ? theme().palette.muted : theme().palette.text });
-  const field = () => ({ ...text(), minHeight: size(28), paddingHorizontal: size(8), paddingVertical: size(5), borderRadius: 6, backgroundColor: theme().palette.bg });
+  const field = () => ({ ...text(), minHeight: size(28), paddingHorizontal: size(8), paddingVertical: size(5), borderRadius: 6, backgroundColor: theme().palette.panel, borderWidth: 1, borderColor: theme().palette.divider });
   const catalog = () => catalogs()[provider()];
   const selected = () => catalog()?.supported.find((item) => model().trim() ? item.id === model().trim() : item.isDefault);
   const modelChoices = () => {
@@ -180,9 +183,11 @@ export function NewChat(props: NewChatProps) {
       <Text style={text(11, !selected)}>{label}</Text>
     </View>;
   }
-  return <Scroll testID="new-chat-setup" style={{ flex: 1, minHeight: 0, backgroundColor: theme().palette.bg }} contentStyle={{ alignItems: "center", padding: size(20) }}>
-    <View style={{ width: "100%", maxWidth: size(600), gap: size(12) }}>
+  return <Scroll testID="new-chat-setup" onLayout={(event) => width.set(event.size.width)} style={{ flex: 1, minHeight: 0, backgroundColor: theme().palette.bg }} contentStyle={{ padding: size(PANEL.inset) }}>
+    <View style={{ width: "100%", gap: size(18) }}>
     <View style={{ flexDirection: "row", alignItems: "center", gap: size(8) }}><Icon name="chat" size={17 * theme().scale} color={theme().palette.muted} /><Text role="header" style={{ ...text(17), fontWeight: "600" }}>New chat</Text></View>
+    <View testID="new-chat-form-grid" style={{ display: "grid", gridTemplateColumns: wide() ? "minmax(0, 1fr) minmax(0, 1fr)" : "minmax(0, 1fr)", gap: size(24), alignItems: "start" }}>
+    <View style={{ minWidth: 0, gap: size(12) }}>
     <Text style={{ ...text(10, true), fontWeight: "600" }}>Location</Text>
     <View role="radiogroup" accessibilityLabel="Chat location" style={{ gap: 3 }}>
       {locations.map((item, index) => <Button testID={`new-chat-location-${item.worktreeId ?? "project"}`} selected={locationIndex() === index} disabled={pending()}
@@ -221,18 +226,23 @@ export function NewChat(props: NewChatProps) {
       </View>
     </View>}
     {provider() !== "acp" && selected()?.supportsFast && <View testID="new-chat-fast" role="checkbox" accessibilityLabel="Fast mode" accessibilityState={{ checked: fast() }} disabled={pending()} onPress={() => fast.set(!fast())} style={{ flexDirection: "row", alignItems: "center", gap: 7 }}><Icon name={fast() ? "check" : "add"} size={12 * theme().scale} color={theme().palette.muted} /><Text style={text()}>Fast mode</Text></View>}
+    </View>
+    <View style={{ minWidth: 0, gap: size(12) }}>
+    <Text style={{ ...text(12), fontWeight: "600" }}>Conversation</Text>
     <Input testID="new-chat-title" accessibilityLabel="Chat title" placeholder="Title (optional)" value={title()} onChange={(value) => title.set(value)} disabled={pending()} style={field()} />
     <Text style={{ ...text(10, true), fontWeight: "600" }}>First message</Text>
     <Input testID="new-chat-message" accessibilityLabel="First message" placeholder="Optional: what the chat starts with" multiline={true} autoCorrect={false}
-      value={message()} onChange={(value) => message.set(value)} disabled={pending()} style={{ ...field(), minHeight: size(64), maxHeight: size(200) }} />
+      value={message()} onChange={(value) => message.set(value)} disabled={pending()} style={{ ...field(), minHeight: size(wide() ? 240 : 120), maxHeight: size(360) }} />
+    </View>
+    </View>
     {(!!error() || !!catalog()?.error) && <Text role="alert" style={{ ...text(11), color: theme().palette.gold }}>{error() || catalog()?.error}</Text>}
-    <View style={{ flexDirection: "row", justifyContent: "flex-end", alignItems: "center", gap: size(8) }}>
+    <View style={{ flexDirection: "row", justifyContent: "flex-end", flexWrap: "wrap", alignItems: "center", gap: size(8) }}>
       <Button testID="new-chat-save-defaults" accessibilityLabel="Save these choices as the defaults of new chats" disabled={pending() || savingDefaults() || key(saved()) === key(choices())}
         onPress={() => void saveDefaults()} style={{ marginRight: "auto", paddingHorizontal: size(12), paddingVertical: size(7), borderRadius: 6 }}>
         <Text style={text(11, true)}>{key(saved()) === key(choices()) ? "These are your defaults" : savingDefaults() ? "Saving…" : "Save as default"}</Text>
       </Button>
       <Button testID="new-chat-cancel" disabled={pending()} onPress={cancel} style={{ paddingHorizontal: size(12), paddingVertical: size(7), borderRadius: 6 }}><Text style={text()}>Cancel</Text></Button>
-      <Button testID="new-chat-confirm" disabled={pending() || loading() || !!catalog()?.error} onPress={() => void create()} style={{ paddingHorizontal: size(12), paddingVertical: size(7), borderRadius: 6, backgroundColor: theme().palette.panelActive }}><Text style={{ ...text(), fontWeight: "600" }}>{pending() ? "Starting…" : message().trim() ? "Start chat" : "Create chat"}</Text></Button>
+      <Button testID="new-chat-confirm" disabled={pending() || loading() || !!catalog()?.error} onPress={() => void create()} style={{ paddingHorizontal: size(12), paddingVertical: size(7), borderRadius: 6, backgroundColor: pending() || loading() || !!catalog()?.error ? theme().palette.panelActive : theme().palette.cyan }} focusStyle={{ outlineWidth: 2, outlineStyle: "solid", outlineOffset: 2, outlineColor: theme().palette.focus }}><Text style={{ ...text(), color: pending() || loading() || !!catalog()?.error ? theme().palette.muted : theme().palette.bg, fontWeight: "600" }}>{pending() ? "Starting…" : message().trim() ? "Start chat" : "Create chat"}</Text></Button>
     </View>
     </View>
   </Scroll>;

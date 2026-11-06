@@ -55,6 +55,14 @@ pub struct ProjectOrderDto {
     pub descending: bool,
 }
 
+/// Durable project browser presentation; IDs never change project metadata.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsObject)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProjectPanelDto {
+    pub view: String,
+    pub pinned: Vec<String>,
+}
+
 /// What a New chat tab starts with: `provider` codex|claude|muse|acp, `mode`
 /// supervised|auto_edit|full|plan.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsObject)]
@@ -118,6 +126,9 @@ pub struct SettingsDto {
     pub remember_window_size: bool,
     pub panel_tab_icons: bool,
     pub project_order: ProjectOrderDto,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[prop(skip_none)]
+    pub project_panel: Option<ProjectPanelDto>,
     pub tab_close_behavior: String,
     pub agent_inline_mode: bool,
     pub agent_terminals_unrestricted: bool,
@@ -159,6 +170,7 @@ pub struct SettingsPatch {
     pub remember_window_size: Option<bool>,
     pub panel_tab_icons: Option<bool>,
     pub project_order: Option<ProjectOrderDto>,
+    pub project_panel: Option<ProjectPanelDto>,
     pub tab_close_behavior: Option<String>,
     pub agent_inline_mode: Option<bool>,
     pub agent_terminals_unrestricted: Option<bool>,
@@ -213,6 +225,7 @@ impl SettingsDto {
                 sort: serde_json::to_value(settings.project_order.by).unwrap().as_str().unwrap().into(),
                 descending: settings.project_order.descending,
             },
+            project_panel: Some(ProjectPanelDto { view: serde_json::to_value(settings.project_panel.view).unwrap().as_str().unwrap().into(), pinned: settings.project_panel.pinned.clone() }),
             tab_close_behavior: serde_json::to_value(settings.tab_close_behavior)
                 .unwrap()
                 .as_str()
@@ -302,6 +315,7 @@ struct ValidatedPatch {
     remember_window_size: Option<bool>,
     panel_tab_icons: Option<bool>,
     project_order: Option<riwork_core::project_sort::ProjectOrder>,
+    project_panel: Option<riwork_core::settings::ProjectPanel>,
     tab_close_behavior: Option<riwork_core::settings::TabCloseBehavior>,
     agent_inline_mode: Option<bool>,
     agent_terminals_unrestricted: Option<bool>,
@@ -392,6 +406,11 @@ impl SettingsPatch {
                     .map_err(|_| format!("invalid: unknown project sort {:?}", order.sort))?;
                 Ok::<_, String>(riwork_core::project_sort::ProjectOrder { by, descending: order.descending })
             }).transpose()?,
+            project_panel: self.project_panel.as_ref().map(|panel| {
+                let view = serde_json::from_value(serde_json::json!(panel.view))
+                    .map_err(|_| format!("invalid: unknown project view {:?}", panel.view))?;
+                riwork_core::settings::ProjectPanel { view, pinned: panel.pinned.clone() }.checked().map_err(|error| format!("invalid: {error}"))
+            }).transpose()?,
             tab_close_behavior: self
                 .tab_close_behavior
                 .as_ref()
@@ -461,6 +480,9 @@ impl ValidatedPatch {
         }
         if let Some(value) = self.project_order {
             settings.project_order = value;
+        }
+        if let Some(value) = self.project_panel {
+            settings.project_panel = value;
         }
         if let Some(value) = self.tab_close_behavior {
             settings.tab_close_behavior = value;
@@ -589,6 +611,7 @@ impl SettingsBackend for CoreSettingsBackend {
             (patch.remember_window_size.is_some(), "remember_window_size"),
             (patch.panel_tab_icons.is_some(), "panel_tab_icons"),
             (patch.project_order.is_some(), "project_order"),
+            (patch.project_panel.is_some(), "project_panel"),
             (patch.tab_close_behavior.is_some(), "tab_close_behavior"),
             (patch.agent_inline_mode.is_some(), "agent_inline_mode"),
             (
@@ -920,7 +943,7 @@ snapshot_js_value!(SettingsDto, "SettingsEvent");
 impl JsValue for SettingsPatch {
     fn ts_type(types: &mut TsTypes) -> String {
         types.declare("SettingsPatch", |types| format!(
-            "export interface SettingsPatch {{ theme?: string; nativeTerminalColors?: boolean; useRiworkColors?: boolean; projectOrder?: {{ sort: 'name' | 'last_edited' | 'date_added' | 'live_sessions'; descending: boolean }}; openPreviewOnSelect?: boolean; uiTextSize?: number; uiTextMatchesTerminal?: boolean; interfaceFont?: 'system' | 'system_mono'; rememberWindowSize?: boolean; panelTabIcons?: boolean; tabCloseBehavior?: 'ask' | 'detach' | 'exit'; agentInlineMode?: boolean; agentTerminalsUnrestricted?: boolean; dictationMic?: boolean; dictationModel?: string; pushToTalkKey?: 'right_command' | 'right_option' | 'off'; newChatDefaults?: {{ provider: 'codex' | 'claude' | 'muse' | 'acp'; model?: string | null; effort?: string | null; fast: boolean; mode: 'supervised' | 'auto_edit' | 'full' | 'plan' }} | null; claudeChatIgnoresApiKey?: boolean; codexSubscriptionBalancing?: boolean; dashboardHaikuSummaries?: boolean; orchestratorMode?: 'automatic' | 'terminal' | 'chat'; orchestratorChatProvider?: 'codex' | 'claude' | 'muse'; orchestratorChatModel?: string | null; statusBar?: {}; delegationPatch?: {}; }}",
+            "export interface SettingsPatch {{ theme?: string; nativeTerminalColors?: boolean; useRiworkColors?: boolean; projectPanel?: {{ view: 'list' | 'columns' | 'grid'; pinned: string[] }}; projectOrder?: {{ sort: 'name' | 'last_edited' | 'date_added' | 'live_sessions'; descending: boolean }}; openPreviewOnSelect?: boolean; uiTextSize?: number; uiTextMatchesTerminal?: boolean; interfaceFont?: 'system' | 'system_mono'; rememberWindowSize?: boolean; panelTabIcons?: boolean; tabCloseBehavior?: 'ask' | 'detach' | 'exit'; agentInlineMode?: boolean; agentTerminalsUnrestricted?: boolean; dictationMic?: boolean; dictationModel?: string; pushToTalkKey?: 'right_command' | 'right_option' | 'off'; newChatDefaults?: {{ provider: 'codex' | 'claude' | 'muse' | 'acp'; model?: string | null; effort?: string | null; fast: boolean; mode: 'supervised' | 'auto_edit' | 'full' | 'plan' }} | null; claudeChatIgnoresApiKey?: boolean; codexSubscriptionBalancing?: boolean; dashboardHaikuSummaries?: boolean; orchestratorMode?: 'automatic' | 'terminal' | 'chat'; orchestratorChatProvider?: 'codex' | 'claude' | 'muse'; orchestratorChatModel?: string | null; statusBar?: {}; delegationPatch?: {}; }}",
             StatusBarDto::ts_type(types), DelegationPatch::ts_type(types)))
     }
     fn from_js(value: JsIn<'_>) -> Result<Self, PropError> {
@@ -937,3 +960,21 @@ impl JsValue for SettingsPatch {
 #[cfg(test)]
 #[path = "settings_shared_tests.rs"]
 mod shared_tests;
+
+#[cfg(test)]
+mod project_panel_tests {
+    use super::*;
+    #[test]
+    fn project_panel_bridge_uses_core_validation_and_preserves_other_settings() {
+        let id = "11111111-1111-4111-8111-111111111111";
+        let mut settings = CoreSettings::default();
+        let patch: SettingsPatch = serde_json::from_value(serde_json::json!({ "projectPanel": { "view": "grid", "pinned": [id, id] } })).unwrap();
+        patch.validate().unwrap().apply(&mut settings);
+        assert_eq!(settings.project_panel.pinned, [id]);
+        assert_eq!(settings.project_order, CoreSettings::default().project_order);
+        for input in [serde_json::json!({ "view": "future", "pinned": [] }), serde_json::json!({ "view": "list", "pinned": ["bad"] }), serde_json::json!({ "view": "list", "pinned": vec![id; 10001] })] {
+            let patch: SettingsPatch = serde_json::from_value(serde_json::json!({ "projectPanel": input })).unwrap();
+            assert!(patch.validate().is_err());
+        }
+    }
+}

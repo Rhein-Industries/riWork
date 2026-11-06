@@ -2,6 +2,11 @@ import { Canvas, Path2D, View, computed, nativeComponent, platform, signal } fro
 
 // Older macOS versions and hosts without AppKit retain a vector fallback.
 const paths = {
+  pin: "M9 3h6l-1 6 4 4v2h-5v7h-2v-7H6v-2l4-4Z",
+  list: "M3 5h18M3 12h18M3 19h18",
+  columns: "M3 4h8v16H3ZM14 4h7v16h-7Z",
+  grid: "M3 3h7v7H3ZM14 3h7v7h-7ZM3 14h7v7H3ZM14 14h7v7h-7Z",
+  radiation: "M14 12a2 2 0 1 0-4 0 2 2 0 0 0 4 0M9 8 6 3a10 10 0 0 0-4 7h6M15 8l3-5a10 10 0 0 1 4 7h-6M9 16l-3 5a10 10 0 0 0 12 0l-3-5",
   projects: "M5 3h14M4 6h16M3 9h18v12H3Z",
   folder: "M3 6h7l2 2h9v12H3Z",
   file: "M6 3h8l4 4v14H6ZM14 3v5h4",
@@ -51,6 +56,7 @@ export type IconName = keyof typeof paths;
 // The original desktop's icons.rs catalogue. AppKit draws these same symbols,
 // at the original weights and optical sizes, without changing the layout boxes.
 const symbols: Record<IconName, string> = {
+  pin: "pin", list: "list.bullet", columns: "rectangle.split.2x1", grid: "square.grid.2x2", radiation: "exclamationmark.triangle",
   projects: "rectangle.stack", folder: "folder", file: "doc", worktrees: "arrow.triangle.branch",
   tasks: "checklist", terminal: "terminal", chat: "bubble.left.and.bubble.right",
   person: "person.crop.circle", "project-orchestrator": "folder.badge.person.crop", key: "key.fill", microphone: "mic", usage: "chart.bar",
@@ -93,10 +99,10 @@ export function Icon(props: { name: IconName; size?: number; color?: string }) {
   // A memo: a parent's getters run again on its every change, which must
   // not remake the vector fallback when the symbol stays the same. UIKit has
   // every symbol of the table on the iOS versions the app supports.
-  const native = computed(() => platform.os === "ios" || (platform.os === "macos" && ready() === symbol()));
+  const native = computed(() => props.name !== "radiation" && (platform.os === "ios" || (platform.os === "macos" && ready() === symbol())));
   const points = () => side() * (props.name === "focus" || props.name === "restore" || props.name === "layout" ? 0.72 : 0.8);
   return <View pointerEvents="none" accessible={false} style={{ width: side(), height: side(), flexShrink: 0 }}>
-    {platform.os === "ios" && <MobileSymbol pointerEvents="none" accessible={false} name={symbol()} color={props.color ?? "#98989d"} size={points()}
+    {platform.os === "ios" && props.name !== "radiation" && <MobileSymbol pointerEvents="none" accessible={false} name={symbol()} color={props.color ?? "#98989d"} size={points()}
       style={{ position: "absolute", left: (side() - points()) / 2, top: (side() - points()) / 2, width: points(), height: points() }} />}
     {platform.os === "macos" && <SystemSymbol pointerEvents="none" accessible={false}
       symbol={{ name: symbol(), points: points(), weight: props.name === "check" || props.name === "close" ? "medium" : "regular", color: props.color ?? "#98989d" }}

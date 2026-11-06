@@ -53,11 +53,11 @@ function Fixture() {
   host.on("app.fixture.schedules.release", () => { hold = false; release?.(); release = null; });
   host.on("app.fixture.schedules.conflict", () => { conflict = true; });
   return <View style={{ flex: 1 }}>
-    <View style={{ flexDirection: "row", gap: 6 }}>
+    {!(host.params as { capture?: boolean }).capture && <View style={{ flexDirection: "row", gap: 6 }}>
       <Button testID="fixture-toggle-visible" onPress={() => visible.set(!visible())}><Text>Toggle visible</Text></Button>
       <Button testID="fixture-switch-project" onPress={() => project.set(project() === PROJECT ? OTHER : PROJECT)}><Text>Switch project</Text></Button>
       <Button testID="fixture-runtime-error" onPress={() => { data = { ...data, runtimeError: "Disposable ticker error" }; publish(); }}><Text>Publish runtime error</Text></Button>
-    </View>
+    </View>}
     <AutomationsPanel api={api} projectId={project} visible={visible} now={() => NOW}
       theme={() => ({ ...DEFAULT_THEME, native: true, family: "system-ui", scale: 13 / 11 })}
       openChat={(id) => opened.set([...opened(), id])} />

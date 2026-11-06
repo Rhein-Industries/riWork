@@ -3,6 +3,7 @@ import { Button, Input, Radio, RadioGroup } from "nsh/base";
 import { Schedules } from "riwork/native";
 import { DEFAULT_THEME, space, type InterfaceTheme } from "../appearance";
 import { Icon } from "../Icon";
+import { PANEL } from "../panel_layout";
 import {
   AutomationModel, EMPTY, EMPTY_TARGETS, FOOTNOTE, KEYS, PERMISSIONS, QUICK_TIMES,
   optionsLabel, projectScope, quickTime, selectScope, selectTarget, singleLine,
@@ -198,9 +199,9 @@ export function AutomationsPanel(props: {
   function renderRow(row: ScheduleRow) {
     const scope = row.key.scope.scope === "app" ? "App" : row.key.scope.scope === "workspace" ? "Workspace" : "Project";
     const attention = row.paused || row.reviewRequired;
-    return <View testID={`automation-row-${row.key.id}`} style={{ gap: space(5, theme().scale), padding: space(12, theme().scale), borderRadius: space(12, theme().scale), backgroundColor: palette().bg }}>
+    return <View testID={`automation-row-${row.key.id}`} style={{ gap: space(8, theme().scale), padding: space(16, theme().scale), borderRadius: space(12, theme().scale), borderWidth: 1, borderColor: palette().divider, backgroundColor: palette().bg }}>
       <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
-        <Text style={{ ...text(11), flex: 1, minWidth: 120, fontWeight: "600" }}>{`${scope} / ${row.title}`}</Text>
+        <Text style={{ ...text(13), flex: 1, minWidth: 100, fontWeight: "600" }}>{`${scope} / ${row.title}`}</Text>
         <View testID={`automation-status-${row.key.id}`} style={{ paddingHorizontal: space(8, theme().scale), paddingVertical: space(2, theme().scale), borderRadius: space(10, theme().scale), backgroundColor: palette().panel }}>
           <Text style={{ ...text(10, attention ? palette().gold : row.nextRun == null ? palette().muted : palette().text), fontWeight: "600" }}>{`${status(row)}${row.reviewRequired ? " · Review required" : ""}`}</Text>
         </View>
@@ -214,6 +215,7 @@ export function AutomationsPanel(props: {
       <View style={{ flexDirection: "row", flexWrap: "wrap", gap: space(6, theme().scale), paddingTop: space(5, theme().scale) }}>
         {button(`automation-edit-${row.key.id}`, "Edit", () => open(row))}
         {button(`automation-pause-${row.key.id}`, row.paused ? "Resume" : "Pause", () => void model.pause(row))}
+        <View style={{ flex: 1 }} />
         {button(`automation-delete-${row.key.id}`, state().confirmDelete === row.key.id ? "Confirm delete" : "Delete", () => void model.remove(row))}
         {state().confirmDelete === row.key.id && button(`automation-delete-cancel-${row.key.id}`, "Cancel", () => model.cancelDelete())}
         {row.lastRun?.createdChatId && button(`automation-created-chat-${row.key.id}`, "Open created chat", () => { if (!pending()) void props.openChat(row.lastRun!.createdChatId!); })}
@@ -235,19 +237,19 @@ export function AutomationsPanel(props: {
   return <View ref={(node) => { panel = node; }} testID="automations-panel" focusable={true} onFocus={() => focused.set(true)} onBlur={() => focused.set(false)} onPress={props.onPress}
     style={{ flex: 1, minHeight: 0, backgroundColor: palette().panel }}>
     {remote() ? <Text style={{ ...text(), padding: 16 }}>Automations works with this Mac's own projects. Select one of them to use it.</Text> : <>
-      <View style={{ height: space(46, theme().scale), flexDirection: "row", alignItems: "center", paddingLeft: space(12, theme().scale), paddingRight: space(8, theme().scale), gap: 8 }}>
+      <View style={{ minHeight: space(PANEL.header, theme().scale), flexDirection: "row", alignItems: "center", paddingHorizontal: space(PANEL.inset, theme().scale), gap: 8 }}>
         <View style={{ flex: 1, minWidth: 0, gap: 1 }}>
           <Text style={{ ...text(13), fontWeight: "600" }}>Automations</Text>
           <Text testID="automations-count" style={text(10, palette().muted)}>{!state().data ? "Reading automations…" : rows().length === 0 ? "No automations" : rows().length === 1 ? "1 automation" : `${rows().length} automations`}</Text>
         </View>
         <Button testID="automation-new" accessibilityLabel="New automation" disabled={pending()} onPress={() => open()}
           tooltip={<Text style={{ ...text(11), padding: 8, backgroundColor: palette().panelActive }}>New automation</Text>}
-          style={{ width: space(26, theme().scale), height: space(26, theme().scale), borderRadius: 13, alignItems: "center", justifyContent: "center" }} hoverStyle={{ backgroundColor: palette().panelActive }} focusStyle={{ backgroundColor: palette().divider }}>
-          <Icon name="add" size={14 * theme().scale} color={palette().muted} />
+          style={{ width: space(PANEL.control, theme().scale), height: space(PANEL.control, theme().scale), borderRadius: 13, alignItems: "center", justifyContent: "center" }} hoverStyle={{ backgroundColor: palette().panelActive }} focusStyle={{ backgroundColor: palette().divider }}>
+          <Icon name="add" size={PANEL.icon * theme().scale} color={palette().muted} />
         </Button>
       </View>
-      <Scroll testID="automations-scroll" style={{ flex: 1, minHeight: 0 }} contentStyle={{ paddingHorizontal: space(6, theme().scale), paddingBottom: space(12, theme().scale) }}>
-        <View style={{ width: "100%", maxWidth: space(800, theme().scale), gap: space(12, theme().scale) }}>
+      <Scroll testID="automations-scroll" style={{ flex: 1, minHeight: 0 }} contentStyle={{ paddingHorizontal: space(PANEL.inset, theme().scale), paddingBottom: space(12, theme().scale) }}>
+        <View style={{ width: "100%", gap: space(12, theme().scale) }}>
         <Text style={{ ...text(10, palette().muted), paddingHorizontal: space(6, theme().scale) }}>Schedule a new project chat or a prompt for an existing AI shell.</Text>
         {!!schedulerError() && <Text testID="automation-scheduler-error" role="alert" style={{ ...text(11, palette().gold), paddingHorizontal: space(6, theme().scale) }}>{`Scheduler error · ${schedulerError()}`}</Text>}
         {!editing() && !!state().error && <Text testID="automation-error" role="alert" style={{ ...text(11, palette().gold), paddingHorizontal: space(6, theme().scale) }}>{state().error}</Text>}

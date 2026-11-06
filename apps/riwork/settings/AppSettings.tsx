@@ -245,7 +245,7 @@ export function AppSettings(props: AppSettingsProps) {
     return <View style={{ gap: 8 }}>
       <ToggleRow id="codex-subscription-balancing" label="Balance Codex subscriptions" checked={settings()!.codexSubscriptionBalancing} onChange={(value) => patch({ codexSubscriptionBalancing: value })} theme={theme}
         description="New automatic Codex sessions use the saved account with the most quota left across its limits. Explicit accounts, project account choices and existing sessions stay fixed. Quota is checked before launch; missing, stale or exhausted accounts are excluded. If none qualify, choose an account explicitly or turn this off." />
-      {note("Choose the account for new Codex sessions when subscription balancing is off, or the preferred account when balanced quotas tie. Running sessions keep their account. A project can override this in Project Settings.")}
+      {note("Default account for new sessions. Override it per project in Project settings.")}
       <View role="radiogroup" accessibilityLabel="Default Codex account" style={{ gap: 6 }}>
         {accounts()?.accounts.map((account) => {
           const selected = () => account.system ? !accounts()?.selectedId : accounts()?.selectedId === account.id;
@@ -399,17 +399,17 @@ export function AppSettings(props: AppSettingsProps) {
   // The header sits in the sections' column, and a failed save shows there, in view,
   // instead of below the last section.
   return <SettingsFocus.Provider value={focus}><View testID="settings-panel" onLayout={(event) => { if (alive && event.size.width !== width()) width.set(event.size.width); }} style={{ flex: 1, minHeight: 0, backgroundColor: theme().palette.panel }}>
-    <View style={{ minHeight: space(46, theme().scale), paddingHorizontal: space(6, theme().scale), paddingVertical: space(6, theme().scale), justifyContent: "center", alignItems: "center" }}>
-      <View style={{ width: "100%", maxWidth: settingsLayout(width()).maxWidth, paddingHorizontal: space(6, theme().scale), gap: space(1, theme().scale) }}>
+    <View style={{ minHeight: space(46, theme().scale), paddingHorizontal: space(6, theme().scale), paddingVertical: space(10, theme().scale), justifyContent: "center", alignItems: "center" }}>
+      <View style={{ width: "100%", paddingHorizontal: space(6, theme().scale), gap: space(1, theme().scale) }}>
         <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
           <Text role="header" style={{ ...textStyle(theme, 13), fontWeight: "600" }}>Settings</Text>
-          <Brand theme={theme} />
+          <Brand theme={theme} size={28} />
         </View>
         {saveError() ? <Text testID="settings-save-error" selectable={true} style={{ ...muted(), color: theme().palette.danger }}>{saveError()}</Text> : <Text style={muted()}>All projects · Saved automatically</Text>}
       </View>
     </View>
     <Scroll testID="appearance-settings" ref={(node) => { page = node; scheduleReveal(); }} onScroll={(event) => { if (alive) scrollY.set(event.offset.y); }} style={{ flex: 1, minHeight: 0 }} contentStyle={{ paddingHorizontal: space(6, theme().scale), paddingBottom: space(12, theme().scale), alignItems: "center" }}>
-      <View testID={`settings-layout-${settingsLayout(width()).kind}`} style={{ width: "100%", maxWidth: settingsLayout(width()).maxWidth, flexDirection: settingsLayout(width()).kind === "wide" ? "row" : "column", gap: settingsLayout(width()).gap }}>
+      <View testID={`settings-layout-${settingsLayout(width()).kind}`} style={{ width: "100%", flexDirection: settingsLayout(width()).kind === "wide" ? "row" : "column", gap: settingsLayout(width()).gap }}>
         {sectionColumns(width()).map((column) => <View style={{ flex: 1, minWidth: 0, gap: 0 }}>{column.map((number) => {
           const section = SETTINGS_SECTIONS.find((section) => section.number === number)!;
           return <Section number={section.number} title={section.title} description={section.description} padding={settingsLayout(width()).card} theme={theme}>{body(number)}</Section>;

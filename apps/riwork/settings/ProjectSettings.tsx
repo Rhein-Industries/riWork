@@ -15,6 +15,8 @@ const providerChoices = ["codex", "claude", "muse"].map((id) => ({ id: `project-
 /** Metadata is an explicit form; account and agent choices persist independently. */
 export function ProjectSettingsPanel(props: ProjectSettingsProps) {
   const theme = props.theme ?? (() => DEFAULT_THEME), shown = () => props.visible?.() ?? true;
+  const width = signal(600);
+  const columns = () => width() / Math.max(1, theme().scale) >= 1440 ? 3 : width() / Math.max(1, theme().scale) >= 760 ? 2 : 1;
   const snapshot = signal<ProjectSettingsDto | null>(null), accounts = signal<AccountsDto | null>(null);
   // Keep the form's native inputs mounted while their values and status change.
   const ready = signal(false);
@@ -164,7 +166,7 @@ export function ProjectSettingsPanel(props: ProjectSettingsProps) {
     style={{ ...buttonStyle(theme), backgroundColor: canSave() ? theme().palette.cyan : theme().palette.panelActive, opacity: canSave() || saving() ? 1 : 0.6 }}>
     <Text style={{ ...textStyle(theme), color: canSave() ? theme().palette.bg : theme().palette.muted }}>{saving() ? "Saving…" : "Save"}</Text>
   </Button>;
-  return <View testID="project-settings-panel" style={{ flex: 1, minHeight: 0, backgroundColor: theme().palette.panel }}>
+  return <View testID="project-settings-panel" onLayout={(event) => width.set(event.size.width)} style={{ flex: 1, minHeight: 0, backgroundColor: theme().palette.panel }}>
     <View style={{ borderBottomWidth: 1, borderColor: theme().palette.divider }}>
       <View style={{ minHeight: space(46, theme().scale), paddingHorizontal: space(12, theme().scale), paddingVertical: space(6, theme().scale), flexDirection: "row", alignItems: "center", gap: space(10, theme().scale) }}>
         <View style={{ flex: 1, minWidth: 0, gap: space(1, theme().scale) }}>
@@ -183,7 +185,7 @@ export function ProjectSettingsPanel(props: ProjectSettingsProps) {
       </View> : null}
     </View>
     <Scroll ref={(node) => { scroll = node; }} style={{ flex: 1, minHeight: 0 }} contentStyle={{ paddingHorizontal: space(6, theme().scale), paddingBottom: space(12, theme().scale) }}>
-    {!ready() ? <Text style={{ ...textStyle(theme), padding: space(6, theme().scale), paddingTop: space(10, theme().scale) }}>{error() || (props.projectId() ? "Reading project settings…" : "Select a local project to edit its settings.")}</Text> : <View style={{ gap: 0, minWidth: 0, width: "100%", maxWidth: 820, alignSelf: "center" }}>
+    {!ready() ? <Text style={{ ...textStyle(theme), padding: space(6, theme().scale), paddingTop: space(10, theme().scale) }}>{error() || (props.projectId() ? "Reading project settings…" : "Select a local project to edit its settings.")}</Text> : <View testID={`project-settings-density-${columns()}`} style={{ display: "grid", gridTemplateColumns: `repeat(${columns()}, minmax(0, 1fr))`, columnGap: space(24, theme().scale), alignItems: "start", minWidth: 0, width: "100%" }}>
       <Section number="01" title="Name" theme={theme}><Input testID="project-settings-name" ref={(node) => { nameInput = node; }} accessibilityLabel="Project name" value={draft()!.name} onChange={(name) => { draft()!.editName(name); error.set(""); redraw(); }} onSubmit={() => void save()} style={fieldStyle()} /></Section>
       <Section number="02" title="Virtual folder" description="Group projects in the browser. Files stay in their current locations." theme={theme}>
         <ChoiceRow id="project-settings-folders" label="Folder" value={draft()!.folderId ?? "project-folder-unfiled"} disabled={pending()} theme={theme}
@@ -195,7 +197,7 @@ export function ProjectSettingsPanel(props: ProjectSettingsProps) {
           <Button testID="project-settings-create-folder" disabled={pending() || !folderName().trim()} onPress={() => void addFolder()} style={{ ...buttonStyle(theme), opacity: pending() || !folderName().trim() ? 0.6 : 1 }}><Text style={textStyle(theme)}>{draft()!.folderId ? "Add subfolder" : "Add folder"}</Text></Button>
         </View>
       </Section>
-      <Section number="03" title="Codex account" description="New Codex sessions use this choice. Running sessions keep their account. Selection saves immediately." theme={theme}>
+      <Section number="03" title="Codex account" description="Used by new Codex sessions. Changes save immediately." theme={theme}>
         <ChoiceRow id="project-codex-accounts" label="Account" value={accountId()} choices={snapshot()!.accounts.map((choice) => ({ id: accountKey(choice), label: choice.label, disabled: !choice.available, description: choice.reason ?? undefined }))} disabled={pending()} onChange={chooseAccount} theme={theme} />
         {snapshot()!.selectedAccountUnavailable && note("Selected account unavailable. Choose another before starting Codex.", "project-codex-unavailable")}
         {note(accounts()?.error, "project-codex-error", "error")}

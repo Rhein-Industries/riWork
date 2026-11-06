@@ -17,6 +17,9 @@ function Body(props: { projects: ProjectDto[]; directory: string }) {
     showShell: (id) => intent.set(id), selectTask: () => {}, selectWorktree: () => {},
     notice: (message) => notice.set(message), defaultProjectDirectory: props.directory,
   });
+  host.on("app.fixture.group-projects", () => {
+    void Store.createFolder(`Review group ${project().id}`).then((folder) => Store.moveProjectToFolder(project().id, folder.id));
+  });
   host.on("app.fixture.inspect", () => host.post("app.fixture.state", {
     state: controller.state(), projectId: project().id,
     selectedTask: controller.selectedTask(), selectedWorktree: controller.selectedWorktree(),
