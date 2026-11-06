@@ -1,0 +1,167 @@
+Performance audit, 2026-11-06 — active, incomplete
+
+Continuation: performance-audit-2026-11-06-pass2.txt records the subsequent
+terminal, replay, nested projection, search, Markdown and Files improvements.
+performance-audit-2026-11-06-pass3.txt records shared cache reads, window
+capture, search text ownership and native project inventory improvements.
+performance-audit-2026-11-06-pass4.txt records shared hub payloads, bounded host
+snapshot batches, large JSON previews and empty terminal maintenance.
+performance-audit-2026-11-06-pass5.txt records layout-writer disposal ownership
+and terminal reply allocation changes.
+performance-audit-2026-11-06-pass6.txt records deferred Files DTO construction,
+shared preference generations, typed window-state comparisons and allocation-free
+Markdown rule checks.
+performance-audit-2026-11-06-pass7.txt records borrowed Markdown line slices and
+the frontend's redundant splice-array copy removal.
+performance-audit-2026-11-06-pass8.txt records borrowed code-block serialization,
+row-patch temporary allocation removal, rejected unconditional in-place ASCII
+normalization and thresholded producer-queue coalescing.
+performance-audit-2026-11-06-pass9.txt records bounded remote screen-line
+validation and a source-backed inventory of further candidates.
+performance-audit-2026-11-06-pass10.txt records host-cache copy removal, shared
+overview/schedule State reads, deferred diff classification and remote idle work.
+The findings and remaining investigations below describe this first batch.
+
+Scope
+The user's goal remains a thorough, application-wide performance improvement
+effort. This record describes one batch, not proof that optimization is exhausted.
+The production desktop runs NSH (nsh_main.rs); legacy GPUI source and its older
+performance reports are reference material, not measurements of the current UI.
+Existing panel/settings edits and concurrent external edits were preserved.
+
+Changes in this batch
+* Shared Mac/iOS project tree: index children and owned projects, count each
+  subtree once, and use iterative traversal for deep nesting and cycle repair.
+* Workspace snapshots: tab metadata/indexing investigation and changes in
+  apps/riwork/src/lib.rs: borrow per-projection entry/shell indexes, reuse the
+  pane metadata for shared tabs, precompute ranks, and move built JSON arrays.
+* Engine transcript projection: index request assignment by turn/item rather
+  than repeatedly scanning history; preserve legacy and malformed associations.
+* Chat logs: use the existing memchr dependency for newline counting and reverse
+  search, and reuse the reverse-scan buffer.
+* Native Files: reuse lowercase sorting keys; seek into ordered Git-status maps
+  for descendant badges; share one lazily read Git status per watcher batch.
+  This cache lasts only the batch, so a later refresh still gets fresh status.
+* Native snapshot hub: move the new snapshot into the retained slot and avoid
+  cloning payloads for already closed listeners.
+* Remote terminal screen deltas: retain immutable screens through Arc while
+  comparing outside the shared device-table lock; reuse shift costs instead of
+  rescanning; copy full output into JSON only when no delta is sent.
+
+Measurements so far (synthetic algorithm workloads, not end-to-end UI latency)
+* Project tree, 400 nested folders, Node 24: baseline median ~1,321 ms;
+  candidate ~1.08 ms. A 10,000-deep candidate completes without recursion overflow.
+  In the actual NSH JS engine, 100 nested folders measured 169 -> 1 ms
+  (millisecond clock resolution); the 400-deep baseline exceeded its 2s call budget.
+* Workspace snapshot, same debug test binary with exact old/new JSON comparison:
+  12 shells: 484.833 -> 152.416 us; 100 shells: 4.056 -> 1.011 ms
+  (11 alternating samples); 2,000 shells: 153.939 -> 13.975 ms (5 samples).
+* Files natural sorting, 10,000 Unicode filenames, optimized Rust extraction:
+  37.47 -> 5.65 ms. Directory badges, 2,000 directories / 4,000 statuses:
+  12.85 -> 0.503 ms. Both compare exact output against the prior algorithm.
+* Log newline-count primitive, 32 MiB, optimized Rust: 5.750 -> 0.798 ms.
+  This is not a measured full replay/load improvement.
+* Engine cached projection, 6,000 items / 1,500 requests, debug test executables:
+  alternating baseline/candidate runs in ms (each averages five projections):
+  169.147/20.848, 162.632/19.989, 168.767/20.180. Medians 168.767/20.180,
+  about 8.36x faster. Earlier heavily contended timings were discarded.
+* Remote delta, 540 styled rows / 157,029 bytes, 2,000 iterations, rustc -O:
+  three alternating baseline/candidate runs in microseconds per delta:
+  51.800/44.235, 62.810/46.147, 53.215/40.629 (medians 53.215/44.235).
+  These timings exclude CLI capture, encoding, transport and rendering, and were
+  collected while other builds were active. Original optimized test executables
+  and harness are under target/performance-audit/ (ignored local artifacts).
+
+Validation
+Remote delta standalone tests pass for exact reconstruction (Unicode, styled
+text, trailing empty lines, both scroll directions), full-response fallback,
+question/device isolation, eviction, and retained screen lifetime without a lock.
+Remote library: cargo test --locked -p riwork-remote --lib passed 124 tests,
+10 ignored (including the manual performance measurement).
+Remote integration: cargo test --locked -p riwork-remote --test shell_output
+--test link --test shell_history passed all 28 tests, including full output,
+delta-only replies, cache misses, compressed transport and scrollback behavior.
+Native library: 209 passed, 2 ignored using the compiled Cargo test binary with
+TMPDIR=/private/tmp and --test-threads=1. Default macOS /var/folders temporary
+paths expose an unchanged media scope test's alias mismatch (/var vs /private/var);
+it fails isolated there and passes with the canonical temporary path. A scheduler
+test also failed in parallel and passed isolated and in both serial runs.
+Project-tree/panel pure models: 11 passed both in Node and the NSH headless
+test runner; 500 seeded generated cases matched the prior tree output exactly.
+An independent review compared another 6,000 generated valid-ID trees against
+HEAD (cycles, orphan parents, sorting, collapse and search); all matched.
+Native Files QuickJS bridge: all 3 tests passed with TMPDIR=/private/tmp and
+--test-threads=1. The default temporary location fails the existing fixture-only
+registration guard (which permits /tmp paths), rather than reaching editor setup.
+Logs are in target/performance-audit/native-*-canonical-tmp.log.
+Engine projection suite: all 12 passed including the manual benchmark.
+Engine log suite: all 11 passed (138 seconds).
+Full saved candidate engine unit binary: 1,266 passed, 2 failed, 130 ignored
+(272 seconds). The canonical temporary path makes an unchanged activity test's
+"no private substring" assertion fail; it passes with the default temporary
+directory. addin_worker::stop_closes_stdin_then_kills_what_lingers fails its
+existing one-second bound and also fails on the saved pre-projection baseline.
+The separate full-package Cargo run completed with 1,258 passed, 10 failed,
+130 ignored (270 seconds). Besides the two above, it hit seven worker timeout/
+crash-timing assertions and a viewport restore-watchdog assertion. The viewport
+test passed both saved baseline and candidate isolated reruns; all those extra
+failures had passed the direct full candidate run. Candidate worker-group rerun
+cleared request/crash failures but hit stop timing and a concurrent-request bound
+(2.66s vs <2s). That concurrent-request test then passed isolated on baseline
+(1.11s) and candidate (1.23s). The worker-stop bound also fails on baseline.
+The broad engine suite is not claimed clean.
+Full-package integration cases are explicitly ignored for GPU/simulator/tmux
+setup and were not exercised. No test processes from this audit remain running.
+Workspace final library suite: 51 passed, 2 failed, 1 ignored benchmark. Both
+failures are unchanged LayoutModel geometry tests:
+flattened_resize_reconstructs_binary_ratios_including_inner_divider and
+resizing_uses_core_locked_minima_and_returns_to_the_original_geometry.
+An isolated scratch build using HEAD lib.rs and unchanged modules reproduced
+both failures exactly (33 layout tests passed, 2 failed). Evidence:
+/tmp/riwork-workspace-baseline-check/results.log. The new metadata/order/freshness
+regression and the ignored snapshot benchmark pass.
+The existing apps/riwork/check-polling.sh fails on setInterval in
+remote/Remote.tsx:303 and client/remote.ts:202. Both calls also exist in HEAD;
+this is a pre-existing mismatch between the old push-only check and remote
+polling, and needs investigation rather than being attributed to this batch.
+
+Remaining investigations (non-exhaustive)
+* Native transcript search rebuilds/lowercases item text per query.
+* Files enumeration opens/identifies up to 50,000 entries before applying the
+  5,000-entry display cap; any optimization must preserve identity/path safety.
+* Snapshot byte-cap trimming can repeatedly remove the first item and rescan.
+* Log replay deserializes owned events then clones large bodies while folding;
+  investigate an owned-event fold without changing live borrowed-event handling.
+  Replay also enriches/reserializes events whose semantics cannot change; assess
+  a forward-compatible bypass with wire-equivalence tests.
+  A two-second sample of the remaining replay equivalence test recorded 455 of
+  1,194 thread samples under replay -> serde_json::to_writer / escaped strings.
+  Evidence: target/performance-audit/engine-tests.sample.txt. This is debug-test
+  profiling, separate from the earlier unprofiled performance comparisons.
+* Full streaming projection, deeply nested subagent ancestry, large single
+  messages, Markdown/image rendering, and selection/search invalidation.
+  Active NSH Markdown updates (chat/markdown.rs:148) deep-clone stable blocks
+  and copy the full source; chat/view.rs:889 also clones the agent message.
+  Search at chat/view.rs:940 runs full-history text/lowercase work on the same
+  transcript worker that folds stream events; debounce does not cancel work.
+* NSH rendering/frame pacing, terminal attach/release, startup, idle CPU, memory
+  growth/cache bounds, usage/dashboard/watch services and multiwindow behavior.
+  Terminal macos.rs:1613 retains the state registry mutex across config::stamp
+  disk reads (config.rs:62-115); AppKit terminal creation needs that same lock at
+  macos.rs:322. Hidden attached terminals can dispatch maintain every 250ms even
+  while the release schedule's next check is far away. Audit these first.
+  Host runtime publication builds/clones layouts before equality checks every
+  two seconds (nsh_host.rs:2174, :2542). Theme projection at terminal macos.rs:220
+  writes config and invokes Ghostty parsing on AppKit before windows open.
+* Remote throughput/backpressure, mobile transport and iOS runtime measurements.
+* Release-build, representative real-world performance and Cua-driven isolated
+  UI verification. Use Somtus cua-driver exclusively for desktop automation,
+  inspect its current state/tool descriptions, and pass target pid for all input.
+
+Whitespace checks passed. Relevant changed Rust files were formatted; unrelated
+formatting churn was removed. Baseline and temporary comparison code was removed
+from production sources. Timing benchmarks remain opt-in/ignored.
+
+No deployment, installed application restart, or claim of exhausted optimization.
+Goal remains active: next prioritize terminal registry lock/idle maintenance,
+replay serialization and transcript search/Markdown allocation measurements.

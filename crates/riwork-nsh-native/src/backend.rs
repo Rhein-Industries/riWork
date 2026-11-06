@@ -1,6 +1,7 @@
 //! Blocking domain adapters. The bridge always calls these on its blocking pool.
 
 use std::{
+    collections::BTreeMap,
     ffi::OsStr,
     fs,
     path::{Path, PathBuf},
@@ -296,6 +297,34 @@ impl CoreStoreBackend {
     }
 }
 
+/// Join against the existing ordered date map instead of scanning every
+/// project for every date. Removing entries also moves their owned keys and
+/// keeps duplicate project identifiers from changing the result.
+fn known_project_recency(
+    projects: &[ProjectDto],
+    mut dates: BTreeMap<String, u64>,
+) -> BTreeMap<String, u64> {
+    // A short scan wins for tiny inventories or sparse recency maps. In
+    // particular, no dates must not cause a walk through every project.
+    if projects.len() <= 16 || dates.len() <= 16 {
+        return dates
+            .into_iter()
+            .filter(|(id, _)| projects.iter().any(|project| &project.id == id))
+            .collect();
+    }
+    projects
+        .iter()
+        .map_while(|project| {
+            if dates.is_empty() {
+                None
+            } else {
+                Some(dates.remove_entry(&project.id))
+            }
+        })
+        .flatten()
+        .collect()
+}
+
 impl StoreBackend for CoreStoreBackend {
     fn snapshot(&self) -> Result<StoreState> {
         let mut state: StoreState = self.store()?
@@ -303,16 +332,17 @@ impl StoreBackend for CoreStoreBackend {
             .map_err(anyhow::Error::msg)?
             .try_into()?;
         if let Some(cached) = riwork_core::recency_file::read(&self.home) {
-            state.project_recency = crate::dto::StringMap(cached.projects.into_iter()
-                .filter(|(id, _)| state.projects.iter().any(|project| &project.id == id))
-                .collect());
+            state.project_recency = crate::dto::StringMap(known_project_recency(
+                &state.projects,
+                cached.projects,
+            ));
         }
         Ok(state)
     }
 
     fn search(&self, query: &str) -> Result<Vec<SearchHitDto>> {
         self.store()?
-            .snapshot()
+            .snapshot_shared()
             .map_err(anyhow::Error::msg)?
             .search(query)
             .into_iter()
@@ -875,6 +905,229 @@ fn tab_entry(entry: &riwork_engine::project_tabs::Entry) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn old_project_recency(
+        projects: &[ProjectDto],
+        dates: BTreeMap<String, u64>,
+    ) -> BTreeMap<String, u64> {
+        dates
+            .into_iter()
+            .filter(|(id, _)| projects.iter().any(|project| &project.id == id))
+            .collect()
+    }
+
+    fn recency_projects(ids: impl IntoIterator<Item = String>) -> Vec<ProjectDto> {
+        ids.into_iter().map(|id| {
+            let project: riwork_core::store::Project = serde_json::from_value(serde_json::json!({
+                "id": id, "name": "Fixture", "root": "/fixture", "created_at": 1,
+            })).unwrap();
+            project.try_into().unwrap()
+        }).collect()
+    }
+
+    #[test]
+    fn recency_join_matches_scan_with_missing_duplicate_and_reordered_projects() {
+        let mut dates = ["a", "b", "c", "missing", "Ω", ""]
+            .into_iter()
+            .enumerate()
+            .map(|(i, id)| (id.to_owned(), i as u64 + 1))
+            .collect::<BTreeMap<_, _>>();
+        dates.extend((0..100).map(|i| (format!("unknown-{i}"), i + 1)));
+        for length in 0..32 {
+            for offset in 0..9 {
+                let projects = (0..length)
+                    .map(|i| {
+                        ["Ω", "c", "a", "absent", "", "b", "a"][(i * 3 + offset) % 7].to_owned()
+                    })
+                    .collect::<Vec<_>>();
+                let projects = recency_projects(projects);
+                assert_eq!(
+                    known_project_recency(&projects, dates.clone()),
+                    old_project_recency(&projects, dates.clone()),
+                );
+            }
+        }
+        for project_count in [0, 12, 17, 200] {
+            let projects = (0..project_count)
+                .rev()
+                .map(|i| format!("project-{i}"))
+                .collect::<Vec<_>>();
+            let projects = recency_projects(projects);
+            for date_count in [0, 1, 16, 17, 200] {
+                let dates = (0..date_count)
+                    .map(|i| (format!("project-{i}"), i as u64 + 1))
+                    .collect::<BTreeMap<_, _>>();
+                assert_eq!(
+                    known_project_recency(&projects, dates.clone()),
+                    old_project_recency(&projects, dates)
+                );
+            }
+        }
+    }
+
+    fn search_fixture(projects: usize, memo_bytes: usize) -> riwork_core::store::State {
+        serde_json::from_value(serde_json::json!({
+            "projects": (0..projects).map(|i| serde_json::json!({
+                "id": uuid::Uuid::from_u128(i as u128 + 1).to_string(),
+                "name": format!("Project Ω {i}"), "root": format!("/fixture/project-{i}"),
+                "created_at": 1,
+            })).collect::<Vec<_>>(),
+            "project_memos": (0..projects).map(|i| (
+                uuid::Uuid::from_u128(i as u128 + 1).to_string(),
+                serde_json::json!({"text": "m".repeat(memo_bytes), "updated_at": 1}),
+            )).collect::<BTreeMap<_, _>>(),
+            "tasks": [{"id": "task", "project_id": uuid::Uuid::from_u128(1).to_string(),
+                "title": "Task Ω", "details": "details", "status": "todo", "created_at": 1, "updated_at": 1}],
+            "worktrees": [{"id": "tree", "project_id": uuid::Uuid::from_u128(1).to_string(),
+                "branch": "main", "path": "/fixture/worktree", "is_primary": true, "created_at": 1}],
+        })).unwrap()
+    }
+
+    #[test]
+    fn shared_inventory_search_matches_owned_results_and_reloads_errors() {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join("state.json");
+        let state = search_fixture(3, 1024);
+        fs::write(&path, serde_json::to_vec(&state).unwrap()).unwrap();
+        let backend = CoreStoreBackend::new(home.path().to_owned());
+        for query in ["", " Ω ", "task", "main", "project-2", "not present"] {
+            let expected = state
+                .search(query)
+                .into_iter()
+                .map(SearchHitDto::try_from)
+                .collect::<Result<Vec<_>>>()
+                .unwrap();
+            assert_eq!(
+                serde_json::to_value(backend.search(query).unwrap()).unwrap(),
+                serde_json::to_value(expected).unwrap()
+            );
+        }
+        fs::write(&path, "invalid json").unwrap();
+        assert!(backend.search("project").is_err());
+        fs::write(
+            &path,
+            serde_json::to_vec(&riwork_core::store::State::default()).unwrap(),
+        )
+        .unwrap();
+        assert!(backend.search("project").unwrap().is_empty());
+    }
+
+    #[test]
+    #[ignore = "manual paired inventory benchmark"]
+    fn benchmark_shared_inventory_search_and_recency() {
+        use std::{
+            hint::black_box,
+            time::{Duration, Instant},
+        };
+        fn paired(
+            mut old: impl FnMut(),
+            mut new: impl FnMut(),
+            samples: usize,
+            iterations: u32,
+        ) -> (Duration, Duration) {
+            let mut before = Vec::new();
+            let mut after = Vec::new();
+            for sample in 0..samples {
+                for candidate in if sample % 2 == 0 {
+                    [false, true]
+                } else {
+                    [true, false]
+                } {
+                    let start = Instant::now();
+                    for _ in 0..iterations {
+                        if candidate {
+                            new();
+                        } else {
+                            old();
+                        }
+                    }
+                    if candidate {
+                        after.push(start.elapsed() / iterations);
+                    } else {
+                        before.push(start.elapsed() / iterations);
+                    }
+                }
+            }
+            before.sort();
+            after.sort();
+            (before[samples / 2], after[samples / 2])
+        }
+        for count in [12, 200, 5000] {
+            let projects = (0..count)
+                .map(|i| format!("project-{i:08}"))
+                .collect::<Vec<_>>();
+            let projects = recency_projects(projects);
+            for shape in ["empty", "first", "last", "dense"] {
+                let dates = projects
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| match shape {
+                        "empty" => false,
+                        "first" => *i == 0,
+                        "last" => *i == count - 1,
+                        _ => true,
+                    })
+                    .map(|(i, project)| (project.id.clone(), i as u64 + 1))
+                    .collect::<BTreeMap<_, _>>();
+                assert_eq!(
+                    known_project_recency(&projects, dates.clone()),
+                    old_project_recency(&projects, dates.clone())
+                );
+                let (old, new) = paired(
+                    || {
+                        black_box(old_project_recency(&projects, dates.clone()));
+                    },
+                    || {
+                        black_box(known_project_recency(
+                            &projects,
+                            dates.clone(),
+                        ));
+                    },
+                    7,
+                    if count < 5000 { 50 } else { 1 },
+                );
+                eprintln!(
+                    "recency projects={count} shape={shape}: old={old:?} new={new:?} (includes identical input clone)"
+                );
+            }
+        }
+        for (count, memo_bytes) in [(12, 1024), (500, 32768)] {
+            let home = tempfile::tempdir().unwrap();
+            let state = search_fixture(count, memo_bytes);
+            fs::write(
+                home.path().join("state.json"),
+                serde_json::to_vec(&state).unwrap(),
+            )
+            .unwrap();
+            let backend = CoreStoreBackend::new(home.path().to_owned());
+            backend.search("not present").unwrap();
+            for query in ["not present", "project"] {
+                let (old, new) = paired(
+                    || {
+                        let result = backend
+                            .store()
+                            .unwrap()
+                            .snapshot()
+                            .unwrap()
+                            .search(query)
+                            .into_iter()
+                            .map(SearchHitDto::try_from)
+                            .collect::<Result<Vec<_>>>()
+                            .unwrap();
+                        black_box(result);
+                    },
+                    || {
+                        black_box(backend.search(query).unwrap());
+                    },
+                    7,
+                    20,
+                );
+                eprintln!(
+                    "inventory search projects={count} memo_bytes={memo_bytes} query={query:?}: owned={old:?} shared={new:?}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn failed_store_initialization_can_recover_in_the_same_adapter() {

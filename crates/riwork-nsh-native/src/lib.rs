@@ -252,7 +252,7 @@ impl Store {
     /// First delivers a snapshot, then pushes changed snapshots until closed or
     /// the rendering owner goes. The injected context is invisible in TypeScript.
     pub fn subscribe(
-        listener: Callback<Snapshot<StoreState>>,
+        listener: Callback<crate::hub::SharedSnapshot<StoreState>>,
         cx: CallCx<'_>,
     ) -> Result<Subscription, String> {
         Ok(Subscription::start(cx, async move {
@@ -301,7 +301,7 @@ impl Sessions {
     }
 
     pub fn subscribe(
-        listener: Callback<Snapshot<SessionsSnapshot>>,
+        listener: Callback<crate::hub::SharedSnapshot<SessionsSnapshot>>,
         cx: CallCx<'_>,
     ) -> Result<Subscription, String> {
         Ok(Subscription::start(cx, async move {
@@ -315,7 +315,7 @@ impl Sessions {
 
     /// Live shells' CPU and memory, sampled only while a subscriber exists.
     pub fn subscribe_metrics(
-        listener: Callback<Snapshot<SessionMetricsSnapshot>>,
+        listener: Callback<crate::hub::SharedSnapshot<SessionMetricsSnapshot>>,
         cx: CallCx<'_>,
     ) -> Result<Subscription, String> {
         Ok(Subscription::start(cx, async move {
@@ -340,7 +340,7 @@ impl Tabs {
 
     pub fn subscribe(
         project_id: String,
-        listener: Callback<Snapshot<TabsSnapshot>>,
+        listener: Callback<crate::hub::SharedSnapshot<TabsSnapshot>>,
         cx: CallCx<'_>,
     ) -> Result<Subscription, String> {
         service::validate_project_id(&project_id)?;
@@ -400,12 +400,14 @@ impl Drop for Subscription {
     }
 }
 
-async fn deliver<T: 'static>(subscription: TopicSubscription<T>, listener: Callback<Snapshot<T>>)
-where
+async fn deliver<T: serde::Serialize + 'static>(
+    subscription: TopicSubscription<T>,
+    listener: Callback<crate::hub::SharedSnapshot<T>>,
+) where
     Snapshot<T>: JsValue,
 {
-    while let Ok(snapshot) = subscription.recv().await {
-        listener.post(subscription.latest(snapshot));
+    while let Ok(snapshot) = subscription.recv_shared().await {
+        listener.post(crate::hub::SharedSnapshot(subscription.latest_shared(snapshot)));
         // A single requested frame gates the next delivery to another engine
         // turn. Once quiet we await the channel; no idle frame loop or polling.
         // A plain yield would allow multiple posts in one core task-drain turn.

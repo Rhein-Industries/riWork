@@ -23,6 +23,9 @@ pub struct ChatFileReview {
 }
 fn file(item: &str, at: usize, change: &FileChange) -> ChatChangedFile {
     let (added, removed) = change.diff.as_ref().map(|text| diff::stats(&diff::classify(text, change.kind))).unwrap_or_default();
+    file_with_stats(item, at, change, (added, removed))
+}
+fn file_with_stats(item: &str, at: usize, change: &FileChange, (added, removed): (usize, usize)) -> ChatChangedFile {
     ChatChangedFile { id: format!("{item}#{at}"), item_id: item.into(), path: change.path.clone(), kind: wire_name(&change.kind),
         has_diff: change.diff.as_ref().is_some_and(|text| !text.is_empty()), added: added as u32, removed: removed as u32 }
 }
@@ -38,12 +41,12 @@ pub fn files(transcript: &Transcript, scope: Option<&str>) -> Vec<ChatChangedFil
         }
         let ItemBody::FileChange { changes } = &item.body else { continue; };
         for (at, change) in changes.iter().enumerate() {
-            let row = file(&item.id, at, change);
             // An answer shows the latest reported patch per path, never sums repeated edits.
-            rows.insert(if turn.is_some() { change.path.clone() } else { format!("{}:{}", change.path, row.id) }, row);
+            // Select before classifying patches that a later report may replace.
+            rows.insert(if turn.is_some() { change.path.clone() } else { format!("{}:{}#{at}", change.path, item.id) }, (&item.id, at, change));
         }
     }
-    rows.into_values().collect()
+    rows.into_values().map(|(item, at, change)| file(item, at, change)).collect()
 }
 pub fn read(transcript: &Transcript, key: &str) -> Result<ChatFileReview, String> {
     let (id, index) = key.rsplit_once('#').ok_or("invalid: file review identity")?;
@@ -59,7 +62,7 @@ pub fn read(transcript: &Transcript, key: &str) -> Result<ChatFileReview, String
         kind: match line.kind { diff::LineKind::Add => "add", diff::LineKind::Remove => "remove", diff::LineKind::Hunk => "hunk", diff::LineKind::Header => "header", diff::LineKind::Note => "note", _ => "context" }.into(),
         text: line.text.into(), old_line: old.map(|n| n as u32), new_line: new.map(|n| n as u32),
     }).collect();
-    Ok(ChatFileReview { file: file(id, index, change), lines, patch })
+    Ok(ChatFileReview { file: file_with_stats(id, index, change, diff::stats(&shown)), lines, patch })
 }
 
 /// Counts are maintained at whole-item replacement boundaries, never per row.
@@ -118,6 +121,85 @@ impl FileCounts {
             ItemBody::AgentMessage { .. } => item.turn_id.as_ref()
                 .and_then(|turn| self.turns.get(turn)).map_or(0, HashMap::len),
             _ => 0,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use riwork_engine::chat::model::ChangeKind;
+
+    fn item(id: &str, turn: Option<&str>, status: ItemStatus, body: ItemBody) -> Item {
+        Item { id: id.into(), turn_id: turn.map(str::to_owned), status, body,
+            started_at: None, ended_at: None, presentation: Default::default() }
+    }
+    fn change(path: &str, kind: ChangeKind, patch: Option<&str>) -> FileChange {
+        FileChange { path: path.into(), kind, diff: patch.map(str::to_owned) }
+    }
+    fn transcript(items: Vec<Item>) -> Transcript {
+        let mut transcript = Transcript::default();
+        transcript.items = items;
+        transcript
+    }
+
+    #[test]
+    fn answer_scope_uses_latest_completed_patch_and_observes_replacements() {
+        let mut transcript = transcript(vec![
+            item("answer", Some("turn"), ItemStatus::InProgress, ItemBody::AgentMessage { text: "answer".into() }),
+            item("first", Some("turn"), ItemStatus::Completed, ItemBody::FileChange { changes: vec![change("same", ChangeKind::Add, Some("one\ntwo"))] }),
+            item("last", Some("turn"), ItemStatus::Completed, ItemBody::FileChange { changes: vec![change("same", ChangeKind::Modify, Some("+old")), change("same", ChangeKind::Delete, Some("latest"))] }),
+            item("failed", Some("turn"), ItemStatus::Failed, ItemBody::FileChange { changes: vec![change("same", ChangeKind::Add, Some("wrong"))] }),
+            item("other", Some("other"), ItemStatus::Completed, ItemBody::FileChange { changes: vec![change("same", ChangeKind::Add, Some("wrong"))] }),
+        ]);
+        let rows = files(&transcript, Some("answer"));
+        assert_eq!(rows.len(), 1);
+        assert_eq!((&*rows[0].id, &*rows[0].kind, rows[0].added, rows[0].removed), ("last#1", "delete", 0, 1));
+        assert_eq!(files(&transcript, Some("last")).len(), 2);
+        assert_eq!(files(&transcript, Some("failed"))[0].id, "failed#0");
+        assert!(files(&transcript, Some("missing")).is_empty());
+
+        transcript.items[2].status = ItemStatus::InProgress;
+        assert_eq!(files(&transcript, Some("answer"))[0].id, "first#0");
+        transcript.items[1].body = ItemBody::FileChange { changes: vec![] };
+        assert!(files(&transcript, Some("answer")).is_empty());
+        transcript.items[0].turn_id = None;
+        assert!(files(&transcript, Some("answer")).is_empty());
+    }
+
+    #[test]
+    fn formatted_key_collisions_and_lexical_index_order_are_preserved() {
+        let transcript = transcript(vec![
+            item("c", None, ItemStatus::Completed, ItemBody::FileChange { changes: vec![change("a:b", ChangeKind::Add, Some("first"))] }),
+            item("b:c", None, ItemStatus::Completed, ItemBody::FileChange { changes: vec![change("a", ChangeKind::Delete, Some("last"))] }),
+            item("id#part", None, ItemStatus::InProgress, ItemBody::FileChange { changes: (0..12).map(|_| change("z:#", ChangeKind::Modify, None)).collect() }),
+        ]);
+        let rows = files(&transcript, None);
+        assert_eq!(rows.len(), 13);
+        assert_eq!(rows[0].id, "b:c#0");
+        assert_eq!(rows[0].path, "a");
+        assert_eq!(rows.iter().skip(1).map(|row| row.id.as_str()).collect::<Vec<_>>(),
+            ["id#part#0", "id#part#1", "id#part#10", "id#part#11", "id#part#2", "id#part#3", "id#part#4", "id#part#5", "id#part#6", "id#part#7", "id#part#8", "id#part#9"]);
+        assert_eq!(read(&transcript, "c#0").unwrap().patch, "first");
+        assert_eq!(read(&transcript, "id#part#00").unwrap().file.id, "id#part#0");
+    }
+
+    #[test]
+    fn review_stats_match_shown_lines_for_missing_and_malformed_patches() {
+        for kind in [ChangeKind::Add, ChangeKind::Modify, ChangeKind::Delete, ChangeKind::Rename] {
+            for patch in [None, Some(""), Some("one\r\ntwo\r\n"), Some("@@ bad @@\r\n+add\r\n-remove\r\n\\ No newline at end of file"), Some("@@ -1,3 +1,3 @@\n--- SQL comment\n+++ plus text\n context\n")] {
+                let transcript = transcript(vec![item("edit#part", None, ItemStatus::Completed, ItemBody::FileChange { changes: vec![change("file", kind, patch)] })]);
+                let review = read(&transcript, "edit#part#0").unwrap();
+                assert_eq!(review.file, files(&transcript, Some("edit#part"))[0]);
+                assert_eq!(review.patch, patch.unwrap_or_default());
+                assert_eq!(review.file.added, review.lines.iter().filter(|line| line.kind == "add").count() as u32);
+                assert_eq!(review.file.removed, review.lines.iter().filter(|line| line.kind == "remove").count() as u32);
+                assert_eq!(review.file.has_diff, patch.is_some_and(|patch| !patch.is_empty()));
+            }
+        }
+        let transcript = transcript(vec![item("answer", None, ItemStatus::Completed, ItemBody::AgentMessage { text: String::new() })]);
+        for (key, message) in [("answer", "invalid: file review identity"), ("answer#bad", "invalid: file review index"), ("missing#0", "The reported change is no longer available"), ("answer#0", "This item has no file changes")] {
+            assert_eq!(read(&transcript, key).unwrap_err(), message);
         }
     }
 }

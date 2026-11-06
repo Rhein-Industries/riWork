@@ -3,12 +3,12 @@
 use std::{
     cmp::Ordering,
     collections::{BTreeMap, BTreeSet},
-    ffi::{CStr, OsString},
+    ffi::{CStr, CString},
     fs::File,
     io::Read,
     os::{
         fd::{AsRawFd, FromRawFd},
-        unix::{ffi::OsStringExt, fs::PermissionsExt, process::CommandExt},
+        unix::{fs::PermissionsExt, process::CommandExt},
     },
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -179,7 +179,7 @@ impl Files {
         root: String,
         path: String,
         show_hidden: bool,
-        listener: Callback<Snapshot<DirectoryListingDto>>,
+        listener: Callback<crate::hub::SharedSnapshot<DirectoryListingDto>>,
         cx: CallCx<'_>,
     ) -> Result<crate::Subscription, String> {
         if !Path::new(&root).is_absolute() || !Path::new(&path).is_absolute() {
@@ -210,7 +210,7 @@ impl Files {
                         scan_limited: false,
                         error: Some(bridge_error(error)),
                     },
-                }),
+                }.into()),
             }
         }))
     }
@@ -462,6 +462,15 @@ pub fn list_directory(
     path: &Path,
     show_hidden: bool,
 ) -> Result<DirectoryListingDto, String> {
+    list_directory_with_status(root, path, show_hidden, &OnceLock::new())
+}
+
+fn list_directory_with_status(
+    root: &Path,
+    path: &Path,
+    show_hidden: bool,
+    statuses: &OnceLock<BTreeMap<String, String>>,
+) -> Result<DirectoryListingDto, String> {
     let (directory, _) = file_preview::open_directory_in(root, path)?;
     let fd = unsafe { libc::dup(directory.as_raw_fd()) };
     if fd < 0 {
@@ -484,6 +493,7 @@ pub fn list_directory(
     }
     let stream = Directory(stream);
     let mut entries = Vec::new();
+    let mut child = PathBuf::new();
     let mut scanned = 0;
     let mut scan_limited = false;
     let mut unrepresentable = 0;
@@ -501,15 +511,12 @@ pub fn list_directory(
             break;
         }
         scanned += 1;
-        if !show_hidden && name.to_bytes().starts_with(b".") {
-            continue;
-        }
-        let os_name = OsString::from_vec(name.to_bytes().to_vec());
-        let Some(display_name) = os_name.to_str() else {
-            unrepresentable += 1;
+        let Some(display_name) = entry_name(name, show_hidden, &mut unrepresentable) else {
             continue;
         };
         let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+        #[cfg(test)]
+        ENTRY_STATS.with(|calls| calls.set(calls.get() + 1));
         if unsafe {
             libc::fstatat(
                 directory.as_raw_fd(),
@@ -522,70 +529,28 @@ pub fn list_directory(
             continue;
         }
         let mode = unsafe { stat.assume_init() }.st_mode & libc::S_IFMT;
-        let kind = if mode == libc::S_IFDIR {
-            "directory"
-        } else if mode == libc::S_IFREG {
-            "file"
-        } else if mode == libc::S_IFLNK {
-            "symlink"
-        } else {
-            "other"
-        };
-        let child = path.join(&os_name);
-        let identity = if kind == "file" {
-            let child_fd = unsafe {
-                libc::openat(
-                    directory.as_raw_fd(),
-                    name.as_ptr(),
-                    libc::O_RDONLY | libc::O_NONBLOCK | libc::O_CLOEXEC | libc::O_NOFOLLOW,
-                )
-            };
-            if child_fd < 0 {
-                None
-            } else {
-                let file = unsafe { File::from_raw_fd(child_fd) };
-                file.metadata()
-                    .ok()
-                    .filter(|meta| meta.is_file())
-                    .map(|meta| encode_identity(FileIdentity::of(&meta)))
-            }
-        } else {
-            None
-        };
-        entries.push(FileEntryDto {
-            name: display_name.into(),
-            path: path_string(&child)?,
-            relative_path: path_string(
-                child
-                    .strip_prefix(root)
-                    .map_err(|_| "Folder outside worktree")?,
-            )?,
-            kind: kind.into(),
-            identity,
-            git_status: None,
-        });
+        // Validate every successful child before sorting, including omitted
+        // entries. Keep error precedence for non-UTF-8 parent paths, but defer
+        // owned DTO strings until the display cap has selected their owners.
+        child.clear();
+        child.push(path);
+        child.push(display_name);
+        checked_entry_paths(root, &child)?;
+        entries.push(ScannedEntry::new(display_name, mode, entries.len()));
     }
-    entries.sort_by(|a, b| {
-        (a.kind != "directory")
-            .cmp(&(b.kind != "directory"))
-            .then_with(|| natural_cmp(&a.name, &b.name))
-            .then_with(|| a.path.cmp(&b.path))
-    });
     let omitted = entries.len().saturating_sub(DISPLAY_LIMIT) + unrepresentable;
-    entries.truncate(DISPLAY_LIMIT);
-    let statuses = git_status(root);
-    for entry in &mut entries {
-        entry.git_status = statuses.get(&entry.relative_path).cloned().or_else(|| {
-            if entry.kind != "directory" {
-                return None;
-            }
-            let prefix = format!("{}/", entry.relative_path);
-            statuses
-                .iter()
-                .find(|(path, _)| path.starts_with(&prefix))
-                .map(|(_, status)| status.clone())
-        });
+    let mut entries = displayed_entries(entries, root, path, DISPLAY_LIMIT)?;
+    // Only displayed files need an identity. Keep the validated directory open
+    // through this pass: ancestor swaps cannot redirect these no-follow opens.
+    // Metadata still comes from the opened file, not the earlier directory stat.
+    for entry in entries.iter_mut().filter(|entry| entry.kind == "file") {
+        if let Ok(name) = CString::new(entry.name.as_bytes()) {
+            entry.identity = entry_identity(&directory, &name);
+        }
     }
+    // A watcher refresh decorates every subscribed folder with the same Git
+    // snapshot. Initialize lazily, after path validation and successful reads.
+    decorate_entries(&mut entries, statuses.get_or_init(|| git_status(root)));
     Ok(DirectoryListingDto {
         schema: 3,
         root: path_string(root)?,
@@ -597,9 +562,226 @@ pub fn list_directory(
     })
 }
 
+#[cfg(test)]
+thread_local! {
+    static IDENTITY_OPENS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static ENTRY_STATS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+fn entry_identity(directory: &File, name: &CStr) -> Option<String> {
+    #[cfg(test)]
+    IDENTITY_OPENS.with(|opens| opens.set(opens.get() + 1));
+    let child_fd = unsafe {
+        libc::openat(
+            directory.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDONLY | libc::O_NONBLOCK | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+        )
+    };
+    if child_fd < 0 {
+        return None;
+    }
+    let file = unsafe { File::from_raw_fd(child_fd) };
+    file.metadata()
+        .ok()
+        .filter(|meta| meta.is_file())
+        .map(|meta| encode_identity(FileIdentity::of(&meta)))
+}
+
+fn entry_name<'a>(
+    name: &'a CStr,
+    show_hidden: bool,
+    unrepresentable: &mut usize,
+) -> Option<&'a str> {
+    if !show_hidden && name.to_bytes().starts_with(b".") {
+        return None;
+    }
+    match name.to_str() {
+        Ok(name) => Some(name),
+        Err(_) => {
+            *unrepresentable += 1;
+            None
+        }
+    }
+}
+
+fn checked_entry_paths<'a>(root: &Path, child: &'a Path) -> Result<(&'a str, &'a str), String> {
+    let absolute = child
+        .to_str()
+        .ok_or_else(|| "invalid: file name is not UTF-8".to_owned())?;
+    let relative = child
+        .strip_prefix(root)
+        .map_err(|_| "Folder outside worktree")?
+        .to_str()
+        .ok_or_else(|| "invalid: file name is not UTF-8".to_owned())?;
+    Ok((absolute, relative))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EntryKind {
+    Directory,
+    File,
+    Symlink,
+    Other,
+}
+
+impl EntryKind {
+    fn from_mode(mode: libc::mode_t) -> Self {
+        match mode {
+            libc::S_IFDIR => Self::Directory,
+            libc::S_IFREG => Self::File,
+            libc::S_IFLNK => Self::Symlink,
+            _ => Self::Other,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Directory => "directory",
+            Self::File => "file",
+            Self::Symlink => "symlink",
+            Self::Other => "other",
+        }
+    }
+}
+
+// Only nonempty, non-dot, single-component readdir names reach this record.
+// In particular, no name can replace or traverse the shared parent path.
+struct ScannedEntry {
+    name: String,
+    lower: String,
+    kind: EntryKind,
+    at: usize,
+}
+
+impl ScannedEntry {
+    fn new(name: &str, mode: libc::mode_t, at: usize) -> Self {
+        debug_assert!(
+            !name.is_empty()
+                && name != "."
+                && name != ".."
+                && !name.contains('/')
+                && !name.contains('\0')
+        );
+        Self {
+            name: name.into(),
+            lower: name.to_lowercase(),
+            kind: EntryKind::from_mode(mode),
+            at,
+        }
+    }
+
+    fn compare(a: &Self, b: &Self) -> Ordering {
+        (a.kind != EntryKind::Directory)
+            .cmp(&(b.kind != EntryKind::Directory))
+            .then_with(|| natural_cmp(&a.lower, &b.lower))
+            // All names came from one directory and are single components.
+            // Their joined paths share a prefix, so this is the same path tie.
+            .then_with(|| a.name.cmp(&b.name))
+            .then_with(|| a.at.cmp(&b.at))
+    }
+}
+
+fn displayed_entries(
+    mut entries: Vec<ScannedEntry>,
+    root: &Path,
+    path: &Path,
+    limit: usize,
+) -> Result<Vec<FileEntryDto>, String> {
+    sort_bounded(&mut entries, limit, ScannedEntry::compare);
+    let mut displayed = Vec::with_capacity(entries.len());
+    // Every child already passed the original validation during enumeration.
+    // Recover exact caller spelling from one checked selected child, then append
+    // other single-component names without repeating joins and prefix parsing.
+    // Empty/zero-limit selections must not introduce eager path validation.
+    if let Some(first) = entries.first() {
+        let child = path.join(&first.name);
+        let (absolute, relative) = checked_entry_paths(root, &child)?;
+        let absolute_prefix = absolute
+            .strip_suffix(first.name.as_str())
+            .expect("joined child name");
+        let relative_prefix = relative
+            .strip_suffix(first.name.as_str())
+            .expect("relative child name");
+        let append = |prefix: &str, name: &str| {
+            let mut result = String::with_capacity(prefix.len() + name.len());
+            result.push_str(prefix);
+            result.push_str(name);
+            result
+        };
+        for entry in entries {
+            displayed.push(FileEntryDto {
+                path: append(absolute_prefix, &entry.name),
+                relative_path: append(relative_prefix, &entry.name),
+                name: entry.name,
+                kind: entry.kind.as_str().into(),
+                identity: None,
+                git_status: None,
+            });
+        }
+    }
+    Ok(displayed)
+}
+
+fn sort_bounded<T>(entries: &mut Vec<T>, limit: usize, compare: impl Fn(&T, &T) -> Ordering) {
+    // Do not sort the omitted suffix of a large directory. Comparators include
+    // the original index to preserve stable ordering across partial selection.
+    // Preserve the linear fast path for already ordered directory enumeration.
+    if !entries
+        .windows(2)
+        .all(|pair| compare(&pair[0], &pair[1]) != Ordering::Greater)
+    {
+        if limit > 0 && entries.len() > limit.saturating_mul(2) {
+            entries.select_nth_unstable_by(limit, &compare);
+            entries.truncate(limit);
+        }
+        entries.sort_unstable_by(compare);
+    }
+    entries.truncate(limit);
+}
+
+#[cfg(test)]
+fn sort_entries(entries: Vec<FileEntryDto>, limit: usize) -> Vec<FileEntryDto> {
+    // Unicode lowercasing is name-sized allocation/work; pay it once per
+    // entry, rather than twice for each of O(n log n) comparisons.
+    let mut keyed: Vec<_> = entries
+        .into_iter()
+        .enumerate()
+        .map(|(at, entry)| (entry.name.to_lowercase(), at, entry))
+        .collect();
+    let compare = |(a_key, a_at, a): &(String, usize, FileEntryDto),
+                   (b_key, b_at, b): &(String, usize, FileEntryDto)| {
+        (a.kind != "directory")
+            .cmp(&(b.kind != "directory"))
+            .then_with(|| natural_cmp(a_key, b_key))
+            .then_with(|| a.path.cmp(&b.path))
+            .then_with(|| a_at.cmp(b_at))
+    };
+    sort_bounded(&mut keyed, limit, compare);
+    keyed.into_iter().map(|(_, _, entry)| entry).collect()
+}
+
+fn decorate_entries(entries: &mut [FileEntryDto], statuses: &BTreeMap<String, String>) {
+    for entry in entries {
+        entry.git_status = statuses.get(&entry.relative_path).cloned().or_else(|| {
+            if entry.kind != "directory" {
+                return None;
+            }
+            let prefix = format!("{}/", entry.relative_path);
+            // Descendants are contiguous in a BTreeMap. Seek straight to the
+            // first possible descendant instead of scanning the whole repo for
+            // every displayed directory (including clean directories).
+            statuses
+                .range(prefix.clone()..)
+                .next()
+                .filter(|(path, _)| path.starts_with(&prefix))
+                .map(|(_, status)| status.clone())
+        });
+    }
+}
+
+// Inputs are already lowercased by sort_entries.
 fn natural_cmp(a: &str, b: &str) -> Ordering {
-    let a = a.to_lowercase();
-    let b = b.to_lowercase();
     let mut left = a.as_bytes();
     let mut right = b.as_bytes();
     while !left.is_empty() && !right.is_empty() {
@@ -844,15 +1026,22 @@ fn watch_directory(
                         .lock()
                         .unwrap_or_else(PoisonError::into_inner)
                         .clone();
+                    let statuses = OnceLock::new();
                     for (key, hub) in listings {
                         if !hub.has_subscribers() {
                             continue;
                         }
-                        let mut failed = watch.failed.lock().unwrap_or_else(PoisonError::into_inner);
+                        let mut failed =
+                            watch.failed.lock().unwrap_or_else(PoisonError::into_inner);
                         if failed.contains(&key) {
                             continue;
                         }
-                        let listing = match list_directory(&watch.root, &key.path, key.show_hidden) {
+                        let listing = match list_directory_with_status(
+                            &watch.root,
+                            &key.path,
+                            key.show_hidden,
+                            &statuses,
+                        ) {
                             Ok(listing) => listing,
                             Err(error) => {
                                 failed.insert(key.clone());
@@ -885,7 +1074,11 @@ fn watch_directory(
         .lock()
         .unwrap_or_else(PoisonError::into_inner);
     let initial = list_directory(root, path, show_hidden)?;
-    watch.failed.lock().unwrap_or_else(PoisonError::into_inner).remove(&key);
+    watch
+        .failed
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .remove(&key);
     let hub = listings
         .entry(key)
         .or_insert_with(|| Arc::new(Hub::new(initial.clone())));
@@ -920,8 +1113,12 @@ impl JsValue for Snapshot<DirectoryListingDto> {
 mod tests {
     use super::*;
     use std::{
+        ffi::OsString,
         fs,
-        os::unix::fs::{PermissionsExt, symlink},
+        os::unix::{
+            ffi::{OsStrExt, OsStringExt},
+            fs::{PermissionsExt, symlink},
+        },
     };
     use tempfile::TempDir;
 
@@ -963,6 +1160,489 @@ mod tests {
             .iter()
             .find(|entry| entry.name == name)
             .unwrap()
+    }
+
+    fn synthetic_entry(name: String, kind: &str) -> FileEntryDto {
+        FileEntryDto {
+            path: format!("/fixture/{name}"),
+            relative_path: name.clone(),
+            name,
+            kind: kind.into(),
+            identity: None,
+            git_status: None,
+        }
+    }
+
+    #[test]
+    fn cached_natural_sort_preserves_unicode_numeric_and_path_ties() {
+        let names = [
+            "f10",
+            "f02",
+            "F2",
+            "f1",
+            "f0",
+            "f00",
+            "f000",
+            "f999999999999999999999",
+            "f1000000000000000000000",
+            "İ2",
+            "i\u{307}10",
+            "É10",
+            "é2",
+            "same2",
+            "Same2",
+        ];
+        let mut entries: Vec<_> = names
+            .into_iter()
+            .map(|name| synthetic_entry(name.into(), "file"))
+            .collect();
+        entries.push(synthetic_entry("z-directory".into(), "directory"));
+        let sorted = sort_entries(entries, usize::MAX);
+        assert_eq!(
+            sorted
+                .iter()
+                .map(|entry| entry.name.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "z-directory",
+                "f0",
+                "f00",
+                "f000",
+                "f1",
+                "F2",
+                "f02",
+                "f10",
+                "f999999999999999999999",
+                "f1000000000000000000000",
+                "İ2",
+                "i\u{307}10",
+                "Same2",
+                "same2",
+                "é2",
+                "É10"
+            ]
+        );
+    }
+
+    #[test]
+    fn git_badges_preserve_exact_status_and_first_descendant_without_prefix_collisions() {
+        let statuses = BTreeMap::from([
+            ("a/file".into(), " M".into()),
+            ("aa/file".into(), "??".into()),
+            ("dir".into(), "D ".into()),
+            ("dir/a".into(), " M".into()),
+            ("nested/日本語/a".into(), "A ".into()),
+            ("nested/日本語/z".into(), " M".into()),
+            ("only-child/a".into(), "??".into()),
+        ]);
+        let mut entries = vec![
+            synthetic_entry("a".into(), "directory"),
+            synthetic_entry("aa".into(), "directory"),
+            synthetic_entry("aaa".into(), "directory"),
+            synthetic_entry("dir".into(), "directory"),
+            synthetic_entry("nested/日本語".into(), "directory"),
+            synthetic_entry("only-child".into(), "file"),
+            synthetic_entry("z-clean".into(), "directory"),
+        ];
+        decorate_entries(&mut entries, &statuses);
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.git_status.as_deref())
+                .collect::<Vec<_>>(),
+            [
+                Some(" M"),
+                Some("??"),
+                None,
+                Some("D "),
+                Some("A "),
+                None,
+                None
+            ]
+        );
+    }
+
+    #[test]
+    fn refresh_batch_reuses_git_snapshot_but_next_refresh_reads_changes() {
+        let fixture = Fixture::new();
+        fs::create_dir(fixture.root.join("folder")).unwrap();
+        fs::write(fixture.root.join("folder/new.txt"), "new").unwrap();
+        fixture.git(&["init", "-q"]);
+        let statuses = OnceLock::new();
+        assert!(
+            list_directory_with_status(&fixture.root, &fixture.outside, false, &statuses).is_err()
+        );
+        assert!(
+            statuses.get().is_none(),
+            "invalid paths must not trigger Git"
+        );
+        let root =
+            list_directory_with_status(&fixture.root, &fixture.root, false, &statuses).unwrap();
+        assert_eq!(entry(&root, "folder").git_status.as_deref(), Some("??"));
+        fixture.git(&["add", "."]);
+        let nested = list_directory_with_status(
+            &fixture.root,
+            &fixture.root.join("folder"),
+            false,
+            &statuses,
+        )
+        .unwrap();
+        assert_eq!(entry(&nested, "new.txt").git_status.as_deref(), Some("??"));
+        let refreshed = list_directory(&fixture.root, &fixture.root.join("folder"), false).unwrap();
+        assert_eq!(
+            entry(&refreshed, "new.txt").git_status.as_deref(),
+            Some("A ")
+        );
+    }
+
+    #[test]
+    fn large_listing_sort_and_badges_match_previous_results() {
+        // Paired algorithm timings exclude filesystem/Git latency. No machine-
+        // dependent deadline: exact DTO equality is the regression assertion.
+        let entries: Vec<_> = (0..10_000)
+            .map(|i| {
+                synthetic_entry(
+                    format!(
+                        "component-Équipe-{}-日本語-file{}",
+                        (i * 7919) % 10_000,
+                        i % 31
+                    ),
+                    if i % 5 == 0 { "directory" } else { "file" },
+                )
+            })
+            .collect();
+        let mut previous = entries.clone();
+        let start = Instant::now();
+        previous.sort_by(|a, b| {
+            (a.kind != "directory")
+                .cmp(&(b.kind != "directory"))
+                .then_with(|| natural_cmp(&a.name.to_lowercase(), &b.name.to_lowercase()))
+                .then_with(|| a.path.cmp(&b.path))
+        });
+        let before_sort = start.elapsed();
+        let start = Instant::now();
+        let current = sort_entries(entries, usize::MAX);
+        let after_sort = start.elapsed();
+        assert_eq!(current, previous);
+
+        let statuses: BTreeMap<_, _> = (0..4_000)
+            .map(|i| (format!("dir{i:05}/file"), " M".to_owned()))
+            .collect();
+        let mut current: Vec<_> = (0..2_000)
+            .map(|i| synthetic_entry(format!("dir{:05}", i * 2 + 1), "directory"))
+            .collect();
+        current.push(synthetic_entry("z-clean".into(), "directory"));
+        let mut previous = current.clone();
+        let start = Instant::now();
+        for entry in &mut previous {
+            entry.git_status = statuses.get(&entry.relative_path).cloned().or_else(|| {
+                let prefix = format!("{}/", entry.relative_path);
+                statuses
+                    .iter()
+                    .find(|(path, _)| path.starts_with(&prefix))
+                    .map(|(_, status)| status.clone())
+            });
+        }
+        let before_badges = start.elapsed();
+        let start = Instant::now();
+        decorate_entries(&mut current, &statuses);
+        let after_badges = start.elapsed();
+        assert_eq!(current, previous);
+        eprintln!(
+            "Files sort (10k): {before_sort:?} -> {after_sort:?}; badges (2k dirs/4k statuses): {before_badges:?} -> {after_badges:?}"
+        );
+    }
+
+    #[test]
+    fn bounded_sort_keeps_the_full_sort_prefix_including_equal_keys() {
+        let mut entries: Vec<_> = (0..2000)
+            .map(|index| {
+                let mut entry = synthetic_entry(
+                    format!("Équipe-{}-日本語-file{}", (index * 7919) % 117, index % 31),
+                    if index % 5 == 0 { "directory" } else { "file" },
+                );
+                // Equal sort keys may carry distinct payloads; keep their
+                // original relative order across partial selection as well.
+                entry.identity = Some(index.to_string());
+                entry
+            })
+            .collect();
+        let duplicates: Vec<_> = entries[..100]
+            .iter()
+            .rev()
+            .cloned()
+            .map(|mut entry| {
+                entry.identity = Some(format!("late-{}", entry.identity.as_deref().unwrap()));
+                entry
+            })
+            .collect();
+        entries.extend(duplicates);
+        let mut expected = entries.clone();
+        expected.sort_by(|a, b| {
+            (a.kind != "directory")
+                .cmp(&(b.kind != "directory"))
+                .then_with(|| natural_cmp(&a.name.to_lowercase(), &b.name.to_lowercase()))
+                .then_with(|| a.path.cmp(&b.path))
+        });
+        for input in [entries, expected.clone()] {
+            for limit in [0, 1, 17, 100, 1049, 1050, 2099, 2100, usize::MAX] {
+                assert_eq!(
+                    sort_entries(input.clone(), limit),
+                    expected[..limit.min(expected.len())]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn deferred_entries_match_eager_paths_natural_order_and_stable_cutoffs() {
+        let mut names: Vec<_> = (0..2100)
+            .map(|at| {
+                (
+                    format!("Équipe-{}-日本語-file{}", (at * 7919) % 117, at % 31),
+                    [libc::S_IFDIR, libc::S_IFREG, libc::S_IFLNK, libc::S_IFIFO][at % 4],
+                )
+            })
+            .collect();
+        // Same keys with distinct kind payloads check stable cutoff ties.
+        names.extend([
+            ("same2".into(), libc::S_IFLNK),
+            ("same2".into(), libc::S_IFREG),
+            ("same2".into(), libc::S_IFIFO),
+            ("İ2".into(), libc::S_IFREG),
+            ("i\u{307}2".into(), libc::S_IFREG),
+            ("F02".into(), libc::S_IFREG),
+            ("f2".into(), libc::S_IFREG),
+            ("f000".into(), libc::S_IFREG),
+            ("f999999999999999999999999999999999".into(), libc::S_IFREG),
+        ]);
+        let root = Path::new("/fixture");
+        for spelling in [
+            "/fixture",
+            "/fixture/",
+            "/fixture/nested 日本語",
+            "/fixture//nested/",
+            "/fixture//nested///",
+            "/fixture/./nested/",
+            "/fixture/nested/.",
+            "//fixture/./日本語/",
+        ] {
+            let path = Path::new(spelling);
+            for reversed in [false, true] {
+                let input: Vec<_> = if reversed {
+                    names.iter().rev().collect()
+                } else {
+                    names.iter().collect()
+                };
+                let mut expected: Vec<_> = input
+                    .iter()
+                    .map(|(name, mode)| {
+                        let child = path.join(name);
+                        FileEntryDto {
+                            name: name.clone(),
+                            path: path_string(&child).unwrap(),
+                            relative_path: path_string(child.strip_prefix(root).unwrap()).unwrap(),
+                            kind: EntryKind::from_mode(*mode).as_str().into(),
+                            identity: None,
+                            git_status: None,
+                        }
+                    })
+                    .collect();
+                expected.sort_by(|a, b| {
+                    (a.kind != "directory")
+                        .cmp(&(b.kind != "directory"))
+                        .then_with(|| natural_cmp(&a.name.to_lowercase(), &b.name.to_lowercase()))
+                        .then_with(|| a.path.cmp(&b.path))
+                });
+                for limit in [0, 1, 17, 100, 1054, 1055, 2108, 2109, usize::MAX] {
+                    let scanned = input
+                        .iter()
+                        .enumerate()
+                        .map(|(at, (name, mode))| {
+                            checked_entry_paths(root, &path.join(name)).unwrap();
+                            ScannedEntry::new(name, *mode, at)
+                        })
+                        .collect();
+                    assert_eq!(
+                        displayed_entries(scanned, root, path, limit).unwrap(),
+                        expected[..limit.min(expected.len())]
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn reused_path_buffer_preserves_raw_spelling_and_empty_selection_validation() {
+        let mut parents: Vec<_> = [
+            "/",
+            "//",
+            "/fixture/",
+            "/fixture//nested///",
+            "/fixture/nested/.",
+            "/fixture/./日本語/",
+        ]
+        .into_iter()
+        .map(PathBuf::from)
+        .collect();
+        parents.push(PathBuf::from(OsString::from_vec(
+            b"/fixture/p\xff/".to_vec(),
+        )));
+        for count in 0..32 {
+            parents.push(PathBuf::from(format!(
+                "/fixture/{}//nested/",
+                "parent-".repeat(count)
+            )));
+        }
+        let mut child = PathBuf::from("previous contents must be cleared");
+        for path in parents {
+            for name in [
+                "a",
+                "日本語🦀",
+                ".hidden",
+                "İΟΣ",
+                "a long file name 1234567890",
+                "z",
+            ] {
+                child.clear();
+                child.push(&path);
+                child.push(name);
+                let previous = path.join(name);
+                assert_eq!(
+                    child.as_os_str().as_bytes(),
+                    previous.as_os_str().as_bytes()
+                );
+                for root in [Path::new("/"), Path::new("/fixture"), Path::new("/outside")] {
+                    assert_eq!(
+                        checked_entry_paths(root, &child),
+                        checked_entry_paths(root, &previous)
+                    );
+                    // Enumeration validates accepted children before selection.
+                    // Materialization itself must stay lazy for empty selections.
+                    assert!(
+                        displayed_entries(Vec::new(), root, &path, 5)
+                            .unwrap()
+                            .is_empty()
+                    );
+                    assert!(
+                        displayed_entries(
+                            vec![ScannedEntry::new(name, libc::S_IFREG, 0)],
+                            root,
+                            &path,
+                            0
+                        )
+                        .unwrap()
+                        .is_empty()
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn borrowed_name_and_path_validation_preserve_utf8_filter_and_error_order() {
+        // APFS rejects non-UTF-8 names at creation, so exercise those bytes
+        // directly as well as the filesystem fixture on supporting platforms.
+        for hidden in [false, true] {
+            let mut omitted = 0;
+            for (bytes, visible) in [
+                (b"visible\0".as_slice(), true),
+                (b".hidden\0".as_slice(), hidden),
+                (b"n\xff\0".as_slice(), false),
+                (b".\xff\0".as_slice(), false),
+            ] {
+                let name = CStr::from_bytes_with_nul(bytes).unwrap();
+                assert_eq!(entry_name(name, hidden, &mut omitted).is_some(), visible);
+            }
+            assert_eq!(omitted, if hidden { 2 } else { 1 });
+        }
+        let invalid_parent = PathBuf::from(OsString::from_vec(b"/fixture/p\xff".to_vec()));
+        let invalid_child = invalid_parent.join("valid-child");
+        for root in [
+            Path::new("/fixture"),
+            Path::new("/outside"),
+            &invalid_parent,
+        ] {
+            assert_eq!(
+                checked_entry_paths(root, &invalid_child).unwrap_err(),
+                "invalid: file name is not UTF-8"
+            );
+        }
+        assert_eq!(
+            checked_entry_paths(Path::new("/fixture"), Path::new("/outside/valid-child")).unwrap_err(),
+            "Folder outside worktree"
+        );
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn non_utf8_parent_errors_keep_their_lazy_status_precedence() {
+        let fixture = Fixture::new();
+        let invalid = OsString::from_vec(vec![b'p', 0xff]);
+        let folder = fixture.root.join(&invalid);
+        fs::create_dir(&folder).unwrap();
+        let error = "invalid: file name is not UTF-8";
+        for root in [&fixture.root, &folder] {
+            // Empty/all-skipped directories reach lazy Git before final path
+            // serialization, exactly as before deferred DTO construction.
+            let statuses = OnceLock::new();
+            assert_eq!(
+                list_directory_with_status(root, &folder, false, &statuses).unwrap_err(),
+                error
+            );
+            assert!(statuses.get().is_some());
+            fs::write(folder.join(".hidden"), b"").unwrap();
+            fs::write(folder.join(OsString::from_vec(vec![b'n', 0xff])), b"").unwrap();
+            let statuses = OnceLock::new();
+            assert_eq!(
+                list_directory_with_status(root, &folder, false, &statuses).unwrap_err(),
+                error
+            );
+            assert!(statuses.get().is_some());
+            // The first successful visible child must still fail immediately,
+            // before sorting, identity opening, or lazy status initialization.
+            let statuses = OnceLock::new();
+            IDENTITY_OPENS.with(|count| count.set(0));
+            assert_eq!(
+                list_directory_with_status(root, &folder, true, &statuses).unwrap_err(),
+                error
+            );
+            assert!(statuses.get().is_none());
+            assert_eq!(IDENTITY_OPENS.with(|count| count.get()), 0);
+            fs::remove_file(folder.join(".hidden")).unwrap();
+            fs::remove_file(folder.join(OsString::from_vec(vec![b'n', 0xff]))).unwrap();
+        }
+    }
+
+    #[test]
+    fn hidden_and_non_utf8_names_keep_scan_omission_and_stat_behavior() {
+        let fixture = Fixture::new();
+        let mut names = vec![OsString::from("visible"), OsString::from(".hidden")];
+        if !cfg!(target_os = "macos") {
+            names.extend([
+                OsString::from_vec(vec![b'n', 0xff]),
+                OsString::from_vec(vec![b'.', 0xff]),
+            ]);
+        }
+        for name in names {
+            fs::write(fixture.root.join(name), b"").unwrap();
+        }
+        for hidden in [false, true] {
+            let statuses = OnceLock::from(BTreeMap::new());
+            ENTRY_STATS.with(|calls| calls.set(0));
+            IDENTITY_OPENS.with(|calls| calls.set(0));
+            let listing =
+                list_directory_with_status(&fixture.root, &fixture.root, hidden, &statuses).unwrap();
+            let count = if hidden { 2 } else { 1 };
+            assert_eq!(listing.entries.len(), count);
+            assert_eq!(
+                listing.omitted,
+                if cfg!(target_os = "macos") { 0 } else { count }
+            );
+            assert!(!listing.scan_limited);
+            assert_eq!(ENTRY_STATS.with(|calls| calls.get()), count);
+            assert_eq!(IDENTITY_OPENS.with(|calls| calls.get()), count);
+        }
     }
 
     #[test]
@@ -1033,6 +1713,102 @@ mod tests {
         assert_eq!(
             child.entries[0].relative_path,
             "nested spaced 日本語/child.md"
+        );
+    }
+
+    #[test]
+    fn oversized_directory_opens_only_displayed_files_and_keeps_the_same_sorted_page() {
+        let fixture = Fixture::new();
+        fs::create_dir(fixture.root.join("directory")).unwrap();
+        for index in 0..DISPLAY_LIMIT + 3 {
+            fs::write(fixture.root.join(format!("file-{index}")), b"").unwrap();
+        }
+        IDENTITY_OPENS.with(|opens| opens.set(0));
+        ENTRY_STATS.with(|calls| calls.set(0));
+        let listing = fixture.listing();
+        assert_eq!(listing.entries.len(), DISPLAY_LIMIT);
+        assert_eq!(listing.omitted, 4);
+        assert!(!listing.scan_limited);
+        assert_eq!(listing.entries[0].name, "directory");
+        assert_eq!(IDENTITY_OPENS.with(|opens| opens.get()), DISPLAY_LIMIT - 1);
+        assert_eq!(ENTRY_STATS.with(|calls| calls.get()), DISPLAY_LIMIT + 4);
+        for (index, entry) in listing.entries[1..].iter().enumerate() {
+            assert_eq!(entry.name, format!("file-{index}"));
+            let actual = decode_identity(entry.identity.as_deref().unwrap()).unwrap();
+            let expected = FileIdentity::of(&fs::metadata(&entry.path).unwrap());
+            assert_eq!(actual, expected);
+        }
+    }
+
+    #[test]
+    fn delayed_identity_uses_the_open_directory_and_refuses_replaced_links_and_special_files() {
+        let fixture = Fixture::new();
+        let folder = fixture.root.join("folder");
+        fs::create_dir(&folder).unwrap();
+        fs::write(folder.join("selected"), "original").unwrap();
+        let expected = FileIdentity::of(&fs::metadata(folder.join("selected")).unwrap());
+        let (directory, _) = file_preview::open_directory_in(&fixture.root, &folder).unwrap();
+        fs::rename(&folder, fixture.root.join("old-folder")).unwrap();
+        symlink(&fixture.outside, &folder).unwrap();
+        fs::write(fixture.outside.join("selected"), "replacement outside").unwrap();
+        let name = CString::new("selected").unwrap();
+        let actual = entry_identity(&directory, &name).unwrap();
+        assert_eq!(decode_identity(&actual).unwrap(), expected);
+        let original = fixture.root.join("old-folder/selected");
+        fs::remove_file(&original).unwrap();
+        symlink(fixture.outside.join("selected"), &original).unwrap();
+        assert!(entry_identity(&directory, &name).is_none());
+        fs::remove_file(&original).unwrap();
+        fs::create_dir(&original).unwrap();
+        assert!(entry_identity(&directory, &name).is_none());
+        fs::remove_dir(&original).unwrap();
+        let fifo = CString::new(original.to_str().unwrap()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+        assert!(entry_identity(&directory, &name).is_none());
+    }
+
+    #[test]
+    #[ignore = "manual displayed-file identity benchmark"]
+    fn displayed_identity_performance() {
+        let fixture = Fixture::new();
+        let names: Vec<_> = (0..20_000)
+            .map(|index| CString::new(format!("file-{index}")).unwrap())
+            .collect();
+        for name in &names {
+            fs::write(fixture.root.join(name.to_str().unwrap()), b"").unwrap();
+        }
+        let (directory, _) = file_preview::open_directory_in(&fixture.root, &fixture.root).unwrap();
+        let mut samples = [Vec::new(), Vec::new()];
+        for pass in 0..5 {
+            for displayed_only in if pass % 2 == 0 {
+                [false, true]
+            } else {
+                [true, false]
+            } {
+                IDENTITY_OPENS.with(|opens| opens.set(0));
+                let start = Instant::now();
+                let count = if displayed_only {
+                    DISPLAY_LIMIT
+                } else {
+                    names.len()
+                };
+                let mut identities: Vec<_> = names[..count]
+                    .iter()
+                    .map(|name| entry_identity(&directory, name))
+                    .collect();
+                identities.truncate(DISPLAY_LIMIT);
+                samples[usize::from(displayed_only)].push(start.elapsed());
+                assert_eq!(IDENTITY_OPENS.with(|opens| opens.get()), count);
+                assert!(identities.iter().all(Option::is_some));
+                std::hint::black_box(identities);
+            }
+        }
+        for values in &mut samples {
+            values.sort();
+        }
+        eprintln!(
+            "Files identity phase (20k scanned/5k displayed): {:?} -> {:?}; opens 20000 -> 5000",
+            samples[0][2], samples[1][2]
         );
     }
 

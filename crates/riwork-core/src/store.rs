@@ -644,13 +644,13 @@ impl FileStamp {
 }
 
 /// The last parse of one file and the stamp it was read under.
-pub(crate) type ParseCache<T> = Arc<Mutex<Option<(Option<FileStamp>, T)>>>;
+pub(crate) type ParseCache<T> = Arc<Mutex<Option<(Option<FileStamp>, Arc<T>)>>>;
 
 /// The parse cache of the file at `path`, shared by every store this process
 /// opens on it. Most callers open a store for one read, so a cache of their
 /// own would never be hit. A stamp check guards every use, so sharing serves
 /// nothing a fresh read would not.
-pub(crate) fn parse_cache_for<T: Send + 'static>(
+pub(crate) fn parse_cache_for<T: Send + Sync + 'static>(
     caches: &'static Mutex<BTreeMap<PathBuf, ParseCache<T>>>,
     path: PathBuf,
 ) -> ParseCache<T> {
@@ -690,6 +690,12 @@ impl Store {
     }
 
     pub fn snapshot(&self) -> Result<State, String> {
+        self.snapshot_shared().map(|state| (*state).clone())
+    }
+
+    /// An immutable generation shared with other readers while the file's
+    /// stamp stands. Later writes leave already-held snapshots unchanged.
+    pub fn snapshot_shared(&self) -> Result<Arc<State>, String> {
         let path = self.dir.join("state.json");
         // Windows poll this every couple of seconds; while the file's stamp
         // stands, the last parse is the answer and no lock or read is needed.
@@ -703,7 +709,7 @@ impl Store {
         let lock = self.lock_file()?;
         FileExt::lock_shared(&lock).map_err(|error| format!("Cannot lock store: {error}"))?;
         let before = FileStamp::of(&path);
-        let state = self.read_state()?;
+        let state = Arc::new(self.read_state()?);
         // Cache only when the file stood still across the read.
         if let Some(stamp) = before
             && FileStamp::of(&path) == Some(stamp)
@@ -716,7 +722,7 @@ impl Store {
         Ok(state)
     }
 
-    fn cached_snapshot(&self, stamp: &Option<FileStamp>) -> Option<State> {
+    fn cached_snapshot(&self, stamp: &Option<FileStamp>) -> Option<Arc<State>> {
         self.snapshot_cache
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -746,11 +752,12 @@ impl Store {
             self.write_state(&state, original.as_ref())?;
             // The bytes just written parse back to this state (unknown fields
             // carried forward are not modeled), so seed the snapshot cache.
+            let cached =
+                FileStamp::of(&self.dir.join("state.json")).map(|stamp| (stamp, Arc::new(state)));
             *self
                 .snapshot_cache
                 .lock()
-                .unwrap_or_else(PoisonError::into_inner) =
-                FileStamp::of(&self.dir.join("state.json")).map(|stamp| (stamp, state.clone()));
+                .unwrap_or_else(PoisonError::into_inner) = cached;
         }
         Ok(result)
     }

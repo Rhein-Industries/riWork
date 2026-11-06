@@ -147,6 +147,10 @@ pub trait OverviewSource: Send + Sync {
     fn store(&self) -> Result<State, String> {
         Store::open(self.home().to_path_buf())?.snapshot()
     }
+    /// An immutable read generation. The default preserves custom `store` sources.
+    fn store_shared(&self) -> Result<Arc<State>, String> {
+        self.store().map(Arc::new)
+    }
     fn activity(&self, shells: &[ShellSession], now: u64) -> BTreeMap<String, AgentState> {
         activity::states_once(self.home(), shells, now)
     }
@@ -188,6 +192,9 @@ impl EngineSource {
 }
 
 impl OverviewSource for EngineSource {
+    fn store_shared(&self) -> Result<Arc<State>, String> {
+        Store::open(self.home.clone())?.snapshot_shared()
+    }
     fn home(&self) -> &Path {
         &self.home
     }
@@ -215,7 +222,7 @@ pub fn read_once(
     extras_due: bool,
     now: u64,
 ) -> Result<Read, String> {
-    let state = source.store()?;
+    let state = source.store_shared()?;
     let sample = source.shells()?;
     let activity = source.activity(&sample.shells, now);
     let chats = source.chats();
@@ -614,4 +621,90 @@ mod tests {
             Some(now + EXTRAS_EVERY)
         );
     }
+    struct CustomStoreSource {
+        home: PathBuf,
+        calls: Mutex<Vec<&'static str>>,
+        fail: bool,
+    }
+    impl OverviewSource for CustomStoreSource {
+        fn home(&self) -> &Path { &self.home }
+        fn store(&self) -> Result<State, String> {
+            self.calls.lock().unwrap().push("store");
+            if self.fail { Err("fixture store failed".into()) } else { Ok(State::default()) }
+        }
+        fn shells(&self) -> Result<ShellSample, String> {
+            self.calls.lock().unwrap().push("shells");
+            Ok(ShellSample::default())
+        }
+        fn activity(&self, _: &[ShellSession], _: u64) -> BTreeMap<String, AgentState> {
+            self.calls.lock().unwrap().push("activity");
+            BTreeMap::new()
+        }
+        fn chats(&self) -> Option<Vec<ChatInfo>> {
+            self.calls.lock().unwrap().push("chats");
+            Some(Vec::new())
+        }
+        fn extras(&self, _: &State, _: &ShellSample, _: Option<&[ChatInfo]>, _: u64) -> Extras {
+            self.calls.lock().unwrap().push("extras");
+            Extras {
+                schedules: Ok(Vec::new()),
+                chat_activity: BTreeMap::new(),
+                backends: BackendSample {
+                    guis: Vec::new(),
+                    chat_host: riwork_engine::global_overview::HostSample::Stopped,
+                    providers: Vec::new(),
+                    shell_starts: BTreeMap::new(),
+                },
+                observed: observed::Observations::default(),
+            }
+        }
+        fn summary(&self, _: &mut Value) { self.calls.lock().unwrap().push("summary"); }
+    }
+
+    #[test]
+    fn shared_reader_preserves_custom_store_overrides_order_errors_and_extras_cadence() {
+        // Opening this home would fail; the legacy store override must still win.
+        let mut source = CustomStoreSource { home: PathBuf::new(), calls: Mutex::new(Vec::new()), fail: false };
+        let mut extras = None;
+        let first = read_once(&source, &mut extras, false, 100).unwrap();
+        assert_eq!(*source.calls.lock().unwrap(), ["store", "shells", "activity", "chats", "extras", "summary"]);
+        source.calls.lock().unwrap().clear();
+        let next = read_once(&source, &mut extras, false, 100).unwrap();
+        assert_eq!(first.wire, next.wire);
+        assert_eq!(first.backend_lines, next.backend_lines);
+        assert_eq!(*source.calls.lock().unwrap(), ["store", "shells", "activity", "chats", "summary"]);
+        source.calls.lock().unwrap().clear();
+        read_once(&source, &mut extras, true, 100).unwrap();
+        assert_eq!(*source.calls.lock().unwrap(), ["store", "shells", "activity", "chats", "extras", "summary"]);
+        source.calls.lock().unwrap().clear();
+        source.fail = true;
+        assert_eq!(read_once(&source, &mut extras, true, 100).err().as_deref(), Some("fixture store failed"));
+        assert_eq!(*source.calls.lock().unwrap(), ["store"]);
+        assert!(extras.is_some());
+    }
+
+    #[test]
+    fn engine_source_shares_checked_generations_without_mutating_retained_reads() {
+        let directory = tempfile::tempdir().unwrap();
+        let home = directory.path().join("home");
+        let store = Store::open(home.clone()).unwrap();
+        let source = EngineSource::new(home.clone());
+        let empty = source.store_shared().unwrap();
+        assert!(Arc::ptr_eq(&empty, &store.snapshot_shared().unwrap()));
+        let root = directory.path().join("project");
+        std::fs::create_dir(&root).unwrap();
+        store.add_project(root, Some("Saved project")).unwrap();
+        let saved = source.store_shared().unwrap();
+        assert!(!Arc::ptr_eq(&empty, &saved));
+        assert!(empty.projects.is_empty());
+        assert_eq!(saved.projects[0].name, "Saved project");
+        assert!(Arc::ptr_eq(&saved, &source.store_shared().unwrap()));
+        std::fs::write(home.join("state.json"), b"invalid json").unwrap();
+        assert_eq!(source.store_shared().unwrap_err(), source.store().unwrap_err());
+        assert_eq!(saved.projects[0].name, "Saved project");
+        std::fs::remove_file(home.join("state.json")).unwrap();
+        assert_eq!(*source.store_shared().unwrap(), State::default());
+        assert_eq!(saved.projects[0].name, "Saved project");
+    }
+
 }

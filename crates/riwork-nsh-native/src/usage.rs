@@ -40,7 +40,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     dto::{SessionsSnapshot, ShellSessionDto},
-    hub::{Hub, Snapshot, TopicSubscription},
+    hub::{Hub, TopicSubscription},
     service::{self, blocking},
 };
 
@@ -340,9 +340,9 @@ pub fn read_saved_accounts(state_home: &Path) -> Option<AccountsSnapshot> {
 
 fn settings_of(store: &SettingsStore) -> Result<CodexSettings, String> {
     store
-        .load()
+        .load_shared()
         .map(|settings| CodexSettings {
-            selected: settings.selected_codex_account,
+            selected: settings.selected_codex_account.clone(),
             balancing: settings.codex_subscription_balancing,
         })
         .map_err(service::io_error)
@@ -1276,7 +1276,7 @@ impl Accounts {
     }
     /// Cache-only: never starts Orca. Never periodic.
     pub fn subscribe(
-        listener: Callback<Snapshot<AccountsDto>>,
+        listener: Callback<crate::hub::SharedSnapshot<AccountsDto>>,
         cx: CallCx<'_>,
     ) -> Result<crate::Subscription, String> {
         Ok(crate::Subscription::start(cx, async move {
@@ -1310,7 +1310,7 @@ impl Usage {
     /// Codex reads run only while subscribed. A visible Usage panel passes its
     /// project to include that project's live Grok session figures.
     pub fn subscribe(
-        listener: Callback<Snapshot<UsageDto>>,
+        listener: Callback<crate::hub::SharedSnapshot<UsageDto>>,
         project_id: Option<String>,
         cx: CallCx<'_>,
     ) -> Result<crate::Subscription, String> {
@@ -1373,6 +1373,25 @@ snapshot_js_value!(AccountsDto, "AccountsEvent");
 mod tests {
     use super::*;
     use riwork_engine::usage::UsageWindow;
+
+    #[test]
+    fn selected_account_reads_match_owned_settings_across_updates_and_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SettingsStore::open(dir.path()).unwrap();
+        for selected in [None, Some("fixture-account".to_owned())] {
+            store.update_selected(&["selected_codex_account", "codex_subscription_balancing"], |settings| {
+                settings.selected_codex_account = selected.clone();
+                settings.codex_subscription_balancing = selected.is_some();
+            }).unwrap();
+            let owned = store.load().unwrap();
+            assert_eq!(settings_of(&store).unwrap(), CodexSettings {
+                selected: owned.selected_codex_account,
+                balancing: owned.codex_subscription_balancing,
+            });
+        }
+        fs::write(dir.path().join("settings.json"), b"invalid").unwrap();
+        assert_eq!(settings_of(&store).unwrap_err(), store.load().map_err(service::io_error).unwrap_err());
+    }
 
     fn account(id: &str, label: &str, home: &str, available: bool) -> CodexAccount {
         CodexAccount {

@@ -284,6 +284,7 @@ pub struct ChatView {
     /// document), which shows folded.
     handoff_message: Option<String>,
     file_counts: super::review::FileCounts,
+    search_index: super::search::SearchIndex,
     /// Stable transcript positions of notices; streaming messages never enter
     /// this index, so banners and billing do not traverse message history.
     notices: BTreeSet<usize>,
@@ -319,6 +320,7 @@ impl ChatView {
             worker_rows: Vec::new(),
             handoff_message: None,
             file_counts: super::review::FileCounts::default(),
+            search_index: super::search::SearchIndex::default(),
             notices: BTreeSet::new(),
             billing: super::billing::Projection::default(),
             index: HashMap::new(),
@@ -365,6 +367,7 @@ impl ChatView {
         if applied.events == 0 {
             return applied;
         }
+        self.search_index.invalidate(applied.touched.iter().copied());
         // Whole-item replacements include additions and turn-finalized items.
         // Removing the old contribution first also handles a changed turn,
         // status, file list, or a file/notice replaced with another item kind.
@@ -790,7 +793,7 @@ impl ChatView {
 
     fn build_body(&mut self, key: &str) -> Option<BodyDto> {
         let at = *self.index.get(key)?;
-        let item = self.fold.item(&self.rows[at].id)?.clone();
+        let item = self.fold.item(&self.rows[at].id)?;
         self.stats.bodies_built += 1;
         Some(match &item.body {
             ItemBody::AgentMessage { text } => {
@@ -885,10 +888,9 @@ impl ChatView {
         };
         match &item.body {
             ItemBody::AgentMessage { text } if self.streams.contains_key(&key) => {
-                let text = text.clone();
                 let stream = self.streams.get_mut(&key).expect("checked");
                 let before = stream.blocks().len();
-                let splice = stream.update(&text);
+                let splice = stream.update(text);
                 // Unchanged text is a no-op; a shrink is a truncating splice.
                 if !(splice.blocks.is_empty() && splice.from == splice.len && splice.len == before)
                 {
@@ -937,18 +939,12 @@ impl ChatView {
             }).collect()
     }
 
-    pub fn search(&self, query: &str) -> Vec<super::dto::SearchHitDto> {
-        let query = query.trim().to_lowercase();
-        if query.is_empty() { return Vec::new(); }
-        self.fold.transcript.items.iter().filter_map(|item| {
-            let text = item_text(item);
-            let lower = text.to_lowercase();
-            let at = lower.find(&query)?;
-            // A bounded excerpt around the match, with Unicode-safe boundaries.
-            let offset = lower[..at].chars().count().saturating_sub(48);
-            let preview = text.chars().skip(offset).take(200).collect::<String>().split_whitespace().collect::<Vec<_>>().join(" ");
-            Some(super::dto::SearchHitDto { id: item.id.clone(), label: item_label(item).into(), preview })
-        }).take(200).collect()
+    pub fn search(&mut self, query: &str) -> Vec<super::dto::SearchHitDto> {
+        self.search_index.search(&self.fold.transcript.items, query)
+    }
+
+    pub(super) fn search_while(&mut self, query: &str, current: impl FnMut() -> bool) -> Option<Vec<super::dto::SearchHitDto>> {
+        self.search_index.search_while(&self.fold.transcript.items, query, current)
     }
 
     pub fn reveal_item(&mut self, id: &str) -> Option<u32> {
@@ -1088,7 +1084,7 @@ fn origin_dto(origin: &ChatOrigin) -> Option<OriginDto> {
     })
 }
 
-fn item_label(item: &Item) -> &'static str {
+pub(super) fn item_label(item: &Item) -> &'static str {
     match &item.body {
         ItemBody::UserMessage { .. } => "You",
         ItemBody::AgentMessage { .. } => "Assistant",
@@ -1103,20 +1099,368 @@ fn item_label(item: &Item) -> &'static str {
     }
 }
 
-fn item_text(item: &Item) -> String {
+// A small ordinary input stays on the canonical serializer path. The bounded
+// walk avoids visiting an entire large tree just to choose its preview path.
+fn costly_json(value: &Value, remaining: &mut usize) -> bool {
+    if *remaining == 0 {
+        return true;
+    }
+    *remaining -= 1;
+    match value {
+        Value::String(text) => text.len() > 1024,
+        Value::Array(values) => values.iter().any(|value| costly_json(value, remaining)),
+        Value::Object(values) => values
+            .iter()
+            .any(|(key, value)| key.len() > 1024 || costly_json(value, remaining)),
+        _ => false,
+    }
+}
+
+struct Excerpt {
+    skip: usize,
+    left: usize,
+    text: String,
+    space: bool,
+}
+
+impl Excerpt {
+    fn new(skip: usize, left: usize) -> Self {
+        Self {
+            skip,
+            left,
+            text: String::new(),
+            space: false,
+        }
+    }
+    fn done(&self) -> bool {
+        self.left == 0
+    }
+
+    fn push(&mut self, mut text: &str) {
+        if self.done() {
+            return;
+        }
+        if self.skip != 0 {
+            if text.len() <= self.skip {
+                self.skip -= text.chars().count();
+                return;
+            }
+            if self.skip >= 256 && text.as_bytes()[..self.skip].is_ascii() {
+                text = &text[self.skip..];
+                self.skip = 0;
+            } else {
+                // Chars::nth already uses optimized UTF-8 skipping. Counting
+                // small chunks first regresses optimized builds on Unicode.
+                if self.skip != 0 {
+                    let mut characters = text.chars();
+                    if characters.nth(self.skip - 1).is_none() {
+                        self.skip -= text.chars().count();
+                        return;
+                    }
+                    text = characters.as_str();
+                    self.skip = 0;
+                }
+            }
+        }
+        for character in text.chars().take(self.left) {
+            self.left -= 1;
+            if character.is_whitespace() {
+                self.space = !self.text.is_empty();
+            } else {
+                if self.space {
+                    self.text.push(' ');
+                }
+                self.text.push(character);
+                self.space = false;
+            }
+        }
+    }
+}
+
+impl std::io::Write for Excerpt {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if self.done() {
+            return Err(std::io::Error::other("excerpt complete"));
+        }
+        // Our formatter writes ASCII punctuation/numbers and whole UTF-8 string
+        // chunks. Validate that invariant; an unexpected error uses the canonical
+        // full serializer, never a partially decoded preview.
+        let text = std::str::from_utf8(bytes)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+        self.push(text);
+        if self.done() {
+            Err(std::io::Error::other("excerpt complete"))
+        } else {
+            Ok(bytes.len())
+        }
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Drive serde's pretty formatter while limiting individual string escaping to
+/// UTF-8 chunks. serde's normal serializer scans a whole string before writing
+/// its first fragment, even if the writer only wants its first 200 characters.
+pub(super) fn write_json_prefix<W: std::io::Write>(
+    value: &Value,
+    formatter: &mut serde_json::ser::PrettyFormatter<'_>,
+    writer: &mut W,
+) -> std::io::Result<()> {
+    use serde_json::ser::Formatter;
+    fn string<W: std::io::Write>(
+        mut text: &str,
+        formatter: &mut serde_json::ser::PrettyFormatter<'_>,
+        writer: &mut W,
+    ) -> std::io::Result<()> {
+        formatter.begin_string(writer)?;
+        while !text.is_empty() {
+            let end = char_floor(text, 256);
+            // Escaping remains serde's job; no hand-maintained JSON escape table.
+            let escaped = serde_json::to_string(&text[..end]).map_err(std::io::Error::other)?;
+            writer.write_all(escaped[1..escaped.len() - 1].as_bytes())?;
+            text = &text[end..];
+        }
+        formatter.end_string(writer)
+    }
+    match value {
+        Value::String(text) => string(text, formatter, writer),
+        Value::Array(values) => {
+            formatter.begin_array(writer)?;
+            for (index, value) in values.iter().enumerate() {
+                formatter.begin_array_value(writer, index == 0)?;
+                write_json_prefix(value, formatter, writer)?;
+                formatter.end_array_value(writer)?;
+            }
+            formatter.end_array(writer)
+        }
+        Value::Object(values) => {
+            formatter.begin_object(writer)?;
+            for (index, (key, value)) in values.iter().enumerate() {
+                formatter.begin_object_key(writer, index == 0)?;
+                string(key, formatter, writer)?;
+                formatter.end_object_key(writer)?;
+                formatter.begin_object_value(writer)?;
+                write_json_prefix(value, formatter, writer)?;
+                formatter.end_object_value(writer)?;
+            }
+            formatter.end_object(writer)
+        }
+        _ => serde_json::to_writer(writer, value).map_err(std::io::Error::other),
+    }
+}
+
+/// Source text kept as borrowed payloads where formatting only adds separators.
+/// Search can normalize once and extract a bounded preview without copying a
+/// complete command/tool output again on every cache hit.
+pub(super) struct ItemText<'a> {
+    first: std::borrow::Cow<'a, str>,
+    rest: Option<[&'a str; 3]>,
+    // When present, first is empty until prepared; rest follows the JSON.
+    json: Option<&'a Value>,
+}
+
+impl<'a> ItemText<'a> {
+    fn single(text: impl Into<std::borrow::Cow<'a, str>>) -> Self {
+        Self {
+            first: text.into(),
+            rest: None,
+            json: None,
+        }
+    }
+
+    #[cfg(test)]
+    fn parts(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(self.first.as_ref()).chain(self.rest.iter().flatten().copied())
+    }
+
+    fn joined(&self) -> String {
+        if self.json.is_some() {
+            return self.materialized().joined();
+        }
+        let mut text = String::with_capacity(
+            self.first.len()
+                + self
+                    .rest
+                    .iter()
+                    .flatten()
+                    .map(|part| part.len())
+                    .sum::<usize>(),
+        );
+        text.push_str(&self.first);
+        for part in self.rest.iter().flatten() {
+            text.push_str(part);
+        }
+        text
+    }
+
+    pub(super) fn into_owned(self) -> String {
+        if self.rest.is_none() {
+            self.first.into_owned()
+        } else {
+            self.joined()
+        }
+    }
+
+    pub(super) fn lowercase(&self) -> String {
+        if self.rest.is_none() {
+            return self.first.to_lowercase();
+        }
+        // Keep the whole logical string for Unicode's contextual sigma and
+        // expanding mappings. std's lowercase also has an efficient ASCII path.
+        self.joined().to_lowercase()
+    }
+
+    pub(super) fn excerpt(&self, offset: usize, limit: usize) -> String {
+        let mut excerpt = Excerpt::new(offset, limit);
+        if let Some(input) = self.json {
+            // Far into the input, normal serialization is cheaper than escaping
+            // many small chunks. Cold searches already prepare this text once.
+            if offset > 8192 {
+                return self.materialized().excerpt(offset, limit);
+            }
+            if limit != 0 {
+                let result = write_json_prefix(
+                    input,
+                    &mut serde_json::ser::PrettyFormatter::new(),
+                    &mut excerpt,
+                );
+                if result.is_err() && !excerpt.done() {
+                    // Only reaching the requested window is an expected error.
+                    return self.materialized().excerpt(offset, limit);
+                }
+            }
+        } else {
+            excerpt.push(&self.first);
+        }
+        for part in self.rest.iter().flatten() {
+            excerpt.push(part);
+        }
+        excerpt.text
+    }
+
+    /// Cold search/copy use the canonical serializer once; warm previews can
+    /// leave a large tool input lazy and stop at the requested character window.
+    pub(super) fn prepared(mut self) -> Self {
+        if let Some(input) = self.json.take() {
+            self.first = serde_json::to_string_pretty(input)
+                .unwrap_or_default()
+                .into();
+        }
+        self
+    }
+
+    fn materialized(&self) -> Self {
+        Self {
+            first: serde_json::to_string_pretty(self.json.unwrap())
+                .unwrap_or_default()
+                .into(),
+            rest: self.rest,
+            json: None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn excerpt_before(&self, mut offset: usize, mut limit: usize) -> String {
+        let mut preview = String::new();
+        let mut space = false;
+        for part in self.parts() {
+            if limit == 0 {
+                break;
+            }
+            let mut characters = part.chars();
+            if offset != 0 {
+                // Delegate long skips to str's character iterator; flattening
+                // segments first would walk every skipped character in Rust.
+                if part.len() <= offset || characters.nth(offset - 1).is_none() {
+                    offset -= part.chars().count();
+                    continue;
+                }
+                offset = 0;
+            }
+            for character in characters.take(limit) {
+                limit -= 1;
+                if character.is_whitespace() {
+                    space = !preview.is_empty();
+                } else {
+                    if space {
+                        preview.push(' ');
+                    }
+                    preview.push(character);
+                    space = false;
+                }
+            }
+        }
+        preview
+    }
+}
+
+pub(super) fn item_text(item: &Item) -> String {
+    item_source(item).into_owned()
+}
+
+pub(super) fn item_source(item: &Item) -> ItemText<'_> {
     if let Some(mark) = lineage::of(item) {
-        return mark.label();
+        return ItemText::single(mark.label());
     }
     match &item.body {
-        ItemBody::UserMessage { text } => typed_text(text),
-        ItemBody::AgentMessage { text } | ItemBody::Reasoning { text } | ItemBody::Notice { text, .. } => text.clone(),
-        ItemBody::Command { command, output, .. } => format!("$ {command}\n\n{output}"),
-        ItemBody::FileChange { changes } => changes.iter().map(|change| format!("{} {}\n{}", wire_name(&change.kind), change.path, change.diff.as_deref().unwrap_or_default())).collect::<Vec<_>>().join("\n\n"),
-        ItemBody::Plan { explanation, steps } => format!("{}\n{}", explanation.as_deref().unwrap_or_default(), steps.iter().map(|step| format!("[{}] {}", wire_name(&step.status), step.text)).collect::<Vec<_>>().join("\n")),
-        ItemBody::Todo { items } => items.iter().map(|step| format!("[{}] {}", wire_name(&step.status), step.text)).collect::<Vec<_>>().join("\n"),
-        ItemBody::ToolCall { input, output, .. } => format!("{}\n\n{}", serde_json::to_string_pretty(input).unwrap_or_default(), output.as_deref().unwrap_or_default()),
-        ItemBody::WebSearch { query } => query.clone(),
-        ItemBody::Compaction => String::new(),
+        ItemBody::UserMessage { text } => ItemText::single(typed_text_source(text)),
+        ItemBody::AgentMessage { text }
+        | ItemBody::Reasoning { text }
+        | ItemBody::Notice { text, .. }
+        | ItemBody::WebSearch { query: text } => ItemText::single(text.as_str()),
+        ItemBody::Command {
+            command, output, ..
+        } => ItemText {
+            first: "$ ".into(),
+            rest: Some([command, "\n\n", output]),
+            json: None,
+        },
+        ItemBody::FileChange { changes } => ItemText::single(
+            changes
+                .iter()
+                .map(|change| {
+                    format!(
+                        "{} {}\n{}",
+                        wire_name(&change.kind),
+                        change.path,
+                        change.diff.as_deref().unwrap_or_default()
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n\n"),
+        ),
+        ItemBody::Plan { explanation, steps } => ItemText::single(format!(
+            "{}\n{}",
+            explanation.as_deref().unwrap_or_default(),
+            steps
+                .iter()
+                .map(|step| format!("[{}] {}", wire_name(&step.status), step.text))
+                .collect::<Vec<_>>()
+                .join("\n")
+        )),
+        ItemBody::Todo { items } => ItemText::single(
+            items
+                .iter()
+                .map(|step| format!("[{}] {}", wire_name(&step.status), step.text))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ),
+        ItemBody::ToolCall { input, output, .. } => {
+            let lazy = costly_json(input, &mut 64);
+            ItemText {
+                first: if lazy {
+                    "".into()
+                } else {
+                    serde_json::to_string_pretty(input)
+                        .unwrap_or_default()
+                        .into()
+                },
+                rest: Some(["\n\n", output.as_deref().unwrap_or_default(), ""]),
+                json: lazy.then_some(input),
+            }
+        }
+        ItemBody::Compaction => ItemText::single(""),
     }
 }
 
@@ -1223,15 +1567,26 @@ fn level_name(level: NoticeLevel) -> &'static str {
 /// The typed text of a user message, without the attachment lines the host
 /// adds (`[Attached: <name> (<bytes> bytes)]`, CHATT-053).
 pub fn typed_text(text: &str) -> String {
+    typed_text_source(text).into_owned()
+}
+
+fn typed_text_source(text: &str) -> std::borrow::Cow<'_, str> {
+    fn attachment(line: &str) -> bool {
+        let line = line.trim();
+        line.starts_with("[Attached: ") && line.ends_with(" bytes)]")
+    }
+    // Without removed lines or carriage returns, lines().join("\n").trim()
+    // is exactly the original trimmed slice (including a final line ending).
+    if !text.contains('\r') && !text.lines().any(attachment) {
+        return std::borrow::Cow::Borrowed(text.trim());
+    }
     text.lines()
-        .filter(|line| {
-            let line = line.trim();
-            !(line.starts_with("[Attached: ") && line.ends_with(" bytes)]"))
-        })
+        .filter(|line| !attachment(line))
         .collect::<Vec<_>>()
         .join("\n")
         .trim()
         .to_owned()
+        .into()
 }
 
 fn char_floor(text: &str, at: usize) -> usize {

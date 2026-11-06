@@ -1,0 +1,284 @@
+RiWork / Somtus performance audit — eighth pass, 2026-11-06
+
+Scope and starting evidence
+The preceding goal turn made progress: Files allocation work was completed and
+borrowed Markdown lines/frontend splice copies were implemented and validated.
+All 34 saved pass7 source fingerprints matched at this pass's start. Prior
+owned jobs were terminal. Unrelated work remains preserved. No installed app
+or desktop interaction is part of this pass; Somtus cua-driver remains the
+desktop automation provider. The full performance objective stays active.
+
+Borrowed code-block conversion — adopted
+Top-level Markdown code blocks now serialize borrowed language/title/text fields
+directly into owned Value, avoiding the intermediate owned NSH CodeBlock. Other
+block variants and nested code still use the typed NSH converter. The small
+borrowed schema is checked against the actual NSH node serializer; optional
+None versus empty strings, field order, escapes and owned returned Values match.
+The current borrowed-line parser, retained document Values and owned Splice tail
+remain unchanged. This does not solve whole-tail parsing or Splice cloning.
+
+Exact-source proof covers 150 NSH field/read-back cases, 25 variant/style/nested
+controls, 42 threshold cases, 8,968 UTF-8 stream prefixes and the prior 449-prefix
+proof, replacements and retained outputs. Independent reviews found no blocker.
+Separate allocation instrumentation preserves exact output in 64 cases. At
+nominal 256 KiB, the language/title/code fixture's conversion drops from 14 to
+11 requests and 541,291 to 270,944 requested bytes. Combined update+serialization
+drops from 71 to 68 requests and 3,720,422 to 3,450,075 bytes. One full code-text
+copy plus the two present metadata-string temporaries are eliminated. These are
+allocation requests, not peak heap/RSS; omitted metadata saves fewer allocations.
+
+The first optimized 160-condition matrix showed isolated conversion improvements
+of 28–78%, but mixed combined/control times under substantial desktop load.
+Original sample values were retained sorted within each variant, losing pair
+chronology. Those observations and the limitation are preserved. A justified
+focused follow-up used eight combined/control cases, 21 chronological alternating
+pairs of 32 updates per case and warmup for each variant. Median batch-average
+costs per update:
+  Nominal 256 KiB multiline fence, no tabs: 621.957 -> 624.140 us (+0.35%);
+  Sparse tabs: 639.859 -> 633.580 us (-0.98%);
+  All tabs: 786.277 -> 787.412 us (+0.14%);
+  Nominal 64 KiB multiline prose control: 1,018.587 -> 1,020.122 us (+0.15%).
+The material first-run increases did not repeat. Combined CPU is essentially
+flat; adoption rests on exact temporary allocation reduction, with no large
+overall speed claim. Follow-up ran 26.834 seconds, 09:11:11.456–09:11:38.290 UTC,
+without competing owned jobs; ordinary desktop activity remained uncontrolled.
+
+The optimized/counter probe uses pinned cached serde_json preserve_order. The
+current isolated native Cargo feature set uses sorted Value maps. Candidate
+versus original Value bytes match under both, but the optimized timings/counts
+are not claimed for sorted-map builds. Initial full native validation passed
+249 tests and hit one new test-oracle failure (10 ignored): it incorrectly
+compared direct typed-node field order with sorted Value serialization. The
+test-only fix roundtrips the decoded node through Value, matching the wire path;
+the original candidate-versus-baseline byte assertion remains unchanged.
+Afterward, all 32 Markdown units passed (2 ignored), plus 12 chat_bridge and
+1 chat_search_bridge tests. Runtime implementation did not change during this
+correction. The first failure and focused recovery are both retained; a new
+all-green full native run is not claimed.
+Evidence: target/performance-audit/markdown-borrowed-code/{report.txt,results.json,
+  sources.json,probe-provenance.json,benchmark.jsonl,benchmark-followup.jsonl,
+  allocations.jsonl,native-first-tests.log,markdown-recovery-tests.log,
+  chat_bridge-final-tests.log,chat_search_bridge-final-tests.log,
+  native-recovery-validation.json}.
+
+Chat row patch allocation — adopted
+applyRows now fills its Map with direct set calls and walks original row keys
+when no explicit order is supplied. It removes temporary tuple/key arrays;
+there is no retained index or cache state. Reset/no-op array identity, last-row
+duplicate canonicalization, removal then upsert, unknown-key omission, repeated
+or empty explicit order and unchanged row object identity all remain intact.
+The pass7 Markdown splice guard and unrelated ChatTab edits are preserved.
+
+171,439 differential cases pass, including 30,000 sequential patch/reset steps.
+Independent review is clean. All eight actual-source P4-MODEL headless NSH tests
+pass in an isolated home. Separate operation proxies remove N tuple arrays plus
+two outer arrays (4N temporary slots) for default order; explicit order removes
+N tuples plus one outer array (3N slots). Map operations/output pushes stay equal.
+These proxies do not measure allocator bytes, garbage collection or process RSS.
+
+Cached release QuickJS measurements run the full helper in 33 workloads, nine
+chronological alternating paired samples each. Each iteration restarts original
+decoded rows and carries state only within its delivery window, so removal and
+append cases continue performing actual changes. Median batch-average costs:
+  One upsert / 20 rows: 6.660 -> 4.223 us;
+  200 rows: 55.973 -> 37.392 us; 2,200 rows: 627.770 -> 433.268 us;
+  10,000 rows: 2.774 -> 1.865 ms.
+Sparse updates improve 31–37%; reorders 24–28%; mixed windows with one row edit
+per 10 or 64 deliveries improve 30–33%. Body-only/reset controls remain
+effectively unchanged; worst empty body-only case is +11 ns/+3.9%, with overlap
+in sample ranges. This is not a speed claim for every streaming text delta.
+Mixed ratios are controlled fixtures, not observed application traffic.
+
+The first timing slot was held during unrelated profiling and high desktop
+load. After those processes ended, the final 21.64-second run had no competing
+owned job and ordinary desktop activity around 1–1.5 of eight CPU cores. No
+external process was interrupted. JSON decoding, native work, bridge, layout and
+rendering are excluded. Dense decoded DTO arrays are the supported scope; custom
+iterator/accessor/prototype side effects and sparse-row error text are excluded.
+Evidence: target/performance-audit/chat-row-allocation/{report.txt,results.json,
+  preparation.json,proof.log,timing.log,model-tests.log}.
+
+Search composite normalization — unconditional candidate rejected
+The exact current ItemText helpers were probed with a separate candidate that
+joins composites once and lowercases that buffer in place only when ASCII.
+Unicode still uses standard whole-logical-string lowercase. Both optimized and
+unoptimized builds pass 1,728 segment/context cases and 90 fixture/phase checks.
+Five chronological alternating pairs cover 90 conditions in each profile.
+At 48 KiB ASCII command normalization, optimized costs improve 2.575 -> 2.167 us,
+but unoptimized costs worsen 2.898 -> 91.093 us (31.4x). At 1 MiB, optimized costs
+improve 50.286 -> 47.439 us, but unoptimized costs worsen 53.007 -> 1,882.665 us
+(35.5x). Tool-output cases worsen 22.9–39.2x unoptimized. Production remains
+unchanged; no profile-specific workaround was introduced in this pass.
+
+These are rustc -O and opt-level 0 helper builds, both with cached release JSON
+dependencies, not complete release/Debug application measurements. The ASCII
+command path does not serialize JSON. The repository development profile retains
+default opt-level 0. Whole cache policy, worker scheduling/cancellation and UI
+costs are outside the probe. Runs took 4.13/11.83 seconds sequentially, with other
+owned jobs held and ordinary desktop activity present. No counting-allocator
+proof was added after the decisive CPU regression. Cold/overflow normalization
+and cancellation within a very large item remain open.
+Evidence: target/performance-audit/search-composite-lower/{report.txt,results.json,
+  preparation.json,optimized-timing.log,debug-timing.log}.
+
+Host producer queue — threshold refinement adopted
+The initial merge-every-pending-tail candidate passed deterministic ownership,
+ordering, send-error and actual RuntimeWindow/frame/restore integration proofs.
+Its 16-condition/seven-pair actual-host timing nevertheless rejects immediate
+adoption: stable 128-capture bursts reduce producer+consumer work by 48.5%
+(20 tabs) /84.5% (500 tabs), but stable two-capture bursts regress 18.2% /7.45%,
+and eight-capture bursts regress 3.22% /7.37%. Edited-generation controls gain
+no materialization or retained-payload reduction and have mixed times. Full
+chronological producer/consumer/cleanup/DTO-drop samples are retained.
+
+For 512 stable captures the prototype retains one rather than 512 envelopes and
+four rather than 2,048 capture entries; the actual large shared layout payload
+is 4.32 MB in both. Distinct edited generations retain 278.64 MB in both tested
+variants. Header savings must not be portrayed as whole-layout memory savings
+or a bound on all queued work. Producer synchronization also has a contention
+cost, despite structural lifetime correctness. No production queue change was
+accepted from these results.
+
+A refinement retains ordinary owned snapshots for short backlog and starts tail
+coalescing only at the existing 32-envelope consumer budget. The first 31 pending
+snapshots have no mutable-slot allocation. All commands seal the current tail;
+only equal window identity/order and pointer-identical launch/current layout
+generations can merge. Geometry, focus and last valid ordinary frame history
+are preserved. The receiver extracts owned messages and explicitly drains on
+closure, preventing temporary producer slot references from retiring large
+queued payloads on the producer thread. Sends share an ordering mutex; this is
+not a literally nonblocking replacement for std mpsc.
+
+Fresh deterministic proofs cover 31/32/33 boundaries, drain/refill, pending-count
+publication and rollback, receiver extraction versus merge, command barriers and
+receiver closure while a producer holds an upgraded slot. All 28 actual-host
+integration parity cases pass with prescribed geometry and in-memory persistence;
+these use actual RuntimeWindow, ProjectLayout, capture and inbox code, including
+blocked persistence flush, global/loading/project changes and focus. For 512
+stable captures the refinement retains 32 envelopes/128 capture entries. Edited
+generations still retain the same large payloads. The atomic count includes
+sender-in-flight/dequeued-before-extraction envelopes and excludes receiver-held
+owned payloads; it is not a total memory bound.
+
+The first 16-condition/seven-pair timing has roughly flat stable short-burst work
+(-3.10% to +2.04%) and 51.0%/81.15% lower producer+consumer work for stable bursts
+of 128 (20/500 tabs). One edited 20-tab/128-burst control regresses 16.03%; this
+prompted one unchanged-binary repeat, with both runs preserved. The repeat reduces
+that control's increase to 2.35%, but other controls remain mixed: edited 20-tab
+bursts of two increase 9.61% and isolated stable 500-tab captures increase 5.01%.
+Stable 128-capture gains repeat at 48.4%/81.9% work and 32.3%/60.2% full observed
+cost, including measured cleanup/final DTO drops. Short stable producer deltas
+are -0.056 to +0.066 us per capture in the repeat; long bursts add about 0.12 us.
+These are fixture results under ordinary uncontrolled desktop activity, with
+owned jobs serialized; they do not establish a universally faster queue. The
+repeat took 11.141 seconds. These observations precede the command-layout
+correction and final adoption measurements below.
+The work metric sums producer and consumer phases within each sample before
+taking medians; phase medians are not added. The full observed cost also includes
+fixture/backend shutdown and final output destruction. Prebuilding edited layout
+payloads, AppKit geometry sampling, real disk I/O and UI rendering are excluded.
+The initial sequential timing harness and first contention proof substituted
+command payload types. This changes enum/transport-slot layout, so the earlier
+short send costs are a proxy, not exact production-channel costs. Snapshot
+ownership, coalescing/inbox logic and RuntimeWindow materialization use the
+current code. This limitation prompted a concrete harness correction.
+Production-path review finds two principal producer threads: AppKit snapshots/UI
+commands and the Unix listener's Wake. Capturing, materializing commands, close
+admission, service processing and I/O happen outside the sender gate. The listener
+has a 64-entry accepted-request queue, which bounds Wakes while service work is
+blocked. The contention fixture uses finite Wake traffic; no hard mutex wait or
+AppKit latency bound is claimed.
+
+Final harnesses use the actual private command field definitions and matching
+public HostCall, ReloadRequest and Bundle types from pinned cached dependencies.
+The Service enum is 376 bytes in the default configuration and 744 bytes with
+dev-reload, versus 72 bytes in the earlier proxy. Both candidate and baseline
+have the same Service size/alignment in each configuration. This distinction is
+material; the earlier evidence remains archived rather than silently relabeled.
+Fresh default sequential proof and 20 contention cases in each feature
+configuration pass, including final DTO/frame results, per-sender round ordering
+and successful sends while the receiver is paused before materialization.
+
+Final default sequential timing runs 16 conditions with seven chronological
+alternating pairs. Stable 128-capture bursts reduce producer+consumer medians
+117.500 -> 59.292 us (20 tabs, -49.54%) and 1,949.501 -> 385.417 us
+(500 tabs, -80.23%); all seven pairs improve in each case. Full observed costs
+fall 32.64%/59.37%. Short stable bursts of 1/2/8 range from -0.34% to +2.34% work,
+with 14–56 ns producer median overhead per four-window capture. Edited controls
+have no structural gain and remain mixed: 20-tab bursts of 128 increase 8.21%
+in ratio of work medians (paired median +3.67%, range -12.87% to +10.87%);
+20-tab bursts of eight increase 3.52%, and 500-tab bursts of two increase 3.51%.
+Other edited controls range from -1.07% to +0.64%. No universal speedup is claimed.
+
+Contention timing covers 20 cases in each feature configuration with seven
+alternating pairs: one/four windows, running/held receiver and five finite
+snapshot/Wake patterns capped at 64 Wakes. A round rendezvous deliberately
+aligns sends after preparing the first snapshot, creating synthetic send pressure.
+All generations are stable; edited-generation coverage is in the sequential
+matrix. Default snapshot-send pooled medians add 41–208 ns depending on case;
+Wake sends usually add 41–83 ns. Observed candidate maxima are 11.458 us for
+snapshots and 19.084 us for Wakes in default, 12.208/9.584 us with dev-reload.
+These are finite observations with timer/measurement overhead, not worst-case
+wait guarantees. Wake-bearing paired completion medians range from -3.76% to
++7.17% in default and -0.39% to +6.68% with dev-reload. Held snapshot-only cases
+improve about 29–46%. Every raw call and per-batch statistic remains available.
+Completion includes capture, rendezvous, receiver work and thread joins; it
+excludes initial fixture setup. Final outcome drop includes DTO and probe vectors.
+
+Final runs took 9.380 seconds sequential and 0.190/0.192 seconds for default/dev
+contention, serialized without competing owned jobs. Ordinary desktop CPU load
+remained uncontrolled. Adoption is for substantial stable-backlog work/header
+reduction, with the measured sender cost and mixed edited/command-heavy controls
+explicitly accepted. The mutex is a scheduling tradeoff; distinct edited payloads
+and arbitrary command traffic remain unbounded. No application/UI improvement
+percentage is inferred.
+
+Production default desktop unit tests pass 92 cases (3 ignored), including stable
+generation/frame/command-barrier behavior, receiver teardown on the owning thread
+and a maintained 31/32/33 threshold, reset and failed-send ownership regression.
+The focused host_layouts suite passes 10 cases (1 ignored benchmark). Default
+desktop check passes. The desktop has a binary target, so validation uses
+  cargo test --locked -p riwork-desktop --bin somtus -- --test-threads=1
+and excludes GUI integration harnesses. The old ignored consumer-only coalescing
+benchmark was removed because producer merging would invalidate its comparison;
+its historical source/evidence remains archived. Production queue runtime code
+matches the measured candidate; final additions are comments and a cfg(test)
+counter/error regression. The dev-reload build check also passes. All owned
+validation handles are terminal; exact commands, hashes and results are recorded
+in adoption.json. Existing native unused-code and debug/linker warnings are
+retained separately from the queue validation.
+
+Initial evidence remains at target/performance-audit/host-producer-queue/;
+the initial candidate and logs are preserved separately from the refinement.
+Refinement evidence: target/performance-audit/host-producer-queue-threshold/.
+Final evidence: final-layout-report.txt, actual-layout-sequential/,
+  actual-layout-contention-default/, actual-layout-contention-dev/ and
+  contention-read-only-review.txt within that refinement directory.
+
+Further search investigation
+A read-only follow-up identifies cancellable large tool-JSON preparation as a
+separate candidate. Current cache limits bound retained normalized text, not the
+full preparation/lowercase work for one item. A coarse chunked serializer with
+reusable escaping scratch could observe cancellation between input scans, while
+retaining canonical JSON and whole-string Unicode lowercase. Cancellation must
+be distinct from serialization failure, never invoking an expensive fallback or
+publishing partial cache entries. No implementation is claimed. Chunking would
+not bound output reallocations, stack unwinding or whole lowercase/find latency.
+The proof/profile plan and source fingerprints are in
+  target/performance-audit/search-cancellation-next/plan.txt.
+
+Final verification and continuation
+At 10:15:47.838 UTC, all 36 files in pass8-production-sources.sha256 matched their
+expected final hashes; all other pass7-manifest files were unchanged. This is a
+source checkpoint before the subsequent remote change, not a claim that every
+dirty workspace file belongs to this audit. Existing unrelated work is preserved.
+Relevant whitespace checks pass, including the new private queue module. The
+broader baseline settings/engine/workspace failures documented earlier remain
+outside this focused validation; no all-green workspace or UI claim is made.
+Evidence: target/performance-audit/pass8-final-verification.json.
+
+Continuation: performance-audit-2026-11-06-pass9.txt records bounded remote screen
+validation and the next source-backed candidate inventory. Large-item search,
+whole-tail Markdown work, edited queue growth, rendering/frame pacing, startup,
+idle CPU and representative UI/mobile performance remain open. The original
+application-wide goal stays active; optimization has not been exhausted.

@@ -33,6 +33,7 @@ mod memo;
 mod native;
 mod orchestrator;
 mod output_delta;
+mod output_reply;
 mod tabs;
 mod upload;
 
@@ -1052,7 +1053,7 @@ fn screen_fields(cli: &Value, output: &str) -> Option<Value> {
     let (x, y) = (number(cursor.get("x")?)?, number(cursor.get("y")?)?);
     let (rows, cols) = (number(cli.get("rows")?)?, number(cli.get("cols")?)?);
     let in_mode = cli.get("in_mode")?.as_bool()?;
-    if rows == 0 || cols == 0 || y >= rows || output.lines().count() < rows as usize {
+    if rows == 0 || cols == 0 || y >= rows || output.lines().take(rows as usize).count() < rows as usize {
         return None;
     }
     Some(json!({"cursor":{"x":x,"y":y},"rows":rows,"cols":cols,"in_mode":in_mode}))
@@ -1883,77 +1884,7 @@ impl Rpc {
                         );
                     }
                 };
-                let hash = v
-                    .get("hash")
-                    .and_then(Value::as_str)
-                    .filter(|h| hash_shaped(h));
-                if v.get("unchanged") == Some(&Value::Bool(true)) {
-                    // Only ever the answer to a hash this request sent.
-                    return match (&p.if_changed, hash) {
-                        (Some(asked), Some(hash)) if asked == hash => {
-                            let mut result =
-                                json!({"shell_id":p.shell_id,"unchanged":true,"hash":hash});
-                            // Additive: the phone tracks the scrollback's growth.
-                            if let Some((size, alternate)) = scrollback_fields(&v) {
-                                result["history_size"] = json!(size);
-                                result["alternate"] = json!(alternate);
-                            }
-                            Ok(result)
-                        }
-                        _ => Err(cli_fault(
-                            "CLI reported unchanged output that was not asked",
-                        )),
-                    };
-                }
-                let text = v
-                    .get("output")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| cli_fault("missing CLI output"))?;
-                if styled && !sgr_only(text) {
-                    return Err(cli_fault(
-                        "CLI returned escape sequences other than SGR for styled output",
-                    ));
-                }
-                let mut result = json!({"shell_id":p.shell_id,"output":text});
-                // Additive: the last `rows` lines of `output` are the visible
-                // screen. Absent when the desktop could not read the pane.
-                if let (Some(screen), Some(map)) = (screen_fields(&v, text), result.as_object_mut())
-                    && let Some(fields) = screen.as_object()
-                {
-                    map.extend(fields.clone());
-                }
-                // Additive: the scrollback lines above the screen, and whether
-                // a full-screen program is on the alternate screen.
-                if let Some((size, alternate)) = scrollback_fields(&v) {
-                    result["history_size"] = json!(size);
-                    result["alternate"] = json!(alternate);
-                }
-                // Additive: names this exact answer, for `if_changed`.
-                if let Some(hash) = hash {
-                    result["hash"] = json!(hash);
-                }
-                // Changed rows only, when asked for and this device holds the screen its
-                // hash names; the full screen is remembered for the next one either way.
-                if p.delta == Some(true)
-                    && let Some(hash) = hash
-                {
-                    let asked = output_delta::Asked {
-                        device,
-                        shell: &p.shell_id,
-                        lines,
-                        styled,
-                    };
-                    let history = scrollback_fields(&v).map(|(size, _)| size);
-                    if let Some(base) = &p.if_changed
-                        && let Some(delta) = self.screens.delta(&asked, base, history, text)
-                        && let Some(map) = result.as_object_mut()
-                    {
-                        map.remove("output");
-                        map.insert("delta".into(), delta);
-                    }
-                    self.screens.remember(&asked, hash, history, text);
-                }
-                Ok(result)
+                output_reply::build(&self.screens, device, &p, lines, styled, v)
             }
             "shell.history" => {
                 let p: History = params(r)?;

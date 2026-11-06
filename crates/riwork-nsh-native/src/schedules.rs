@@ -471,7 +471,7 @@ impl EngineSchedules {
     fn bind(&self, binding: &ScheduleBindingDto) -> Result<Target, String> {
         checked_id(&binding.id)?;
         let scope = binding.scope.resolve()?;
-        let state = Store::open(self.home.clone())?.snapshot()?;
+        let state = Store::open(self.home.clone())?.snapshot_shared()?;
         let target = match binding.kind.as_str() {
             "shell" => Target::bind_shell(
                 scope,
@@ -504,7 +504,7 @@ impl EngineSchedules {
             };
             let options = request.options.unwrap_or_default();
             let (provider, permission) = options.parsed()?;
-            let state = Store::open(self.home.clone())?.snapshot()?;
+            let state = Store::open(self.home.clone())?.snapshot_shared()?;
             Target::bind_new_chat(
                 &self.home,
                 &state,
@@ -569,7 +569,7 @@ impl EngineSchedules {
         }
         if target.new_chat.is_some() {
             target
-                .validate_new_chat(&self.home, &Store::open(self.home.clone())?.snapshot()?)
+                .validate_new_chat(&self.home, Store::open(self.home.clone())?.snapshot_shared()?.as_ref())
                 .map_err(|e| format!("binding_failed: {e}"))?;
         }
         self.ledger()?
@@ -599,7 +599,7 @@ impl EngineSchedules {
         Ok(schedule_dto(&row))
     }
     fn read(&self, runtime_error: Option<String>) -> Result<SchedulesDto, String> {
-        let state = Store::open(self.home.clone())?.snapshot()?;
+        let state = Store::open(self.home.clone())?.snapshot_shared()?;
         let ledger = self.ledger()?;
         let rows = self.list(None)?;
         // Fixture/test builds must never inspect a real tmux server while reading UI data.
@@ -896,7 +896,7 @@ impl Schedules {
         .await
     }
     pub fn subscribe(
-        listener: Callback<Snapshot<SchedulesDto>>,
+        listener: Callback<crate::hub::SharedSnapshot<SchedulesDto>>,
         cx: CallCx<'_>,
     ) -> Result<crate::Subscription, String> {
         Ok(crate::Subscription::start(cx, async move {

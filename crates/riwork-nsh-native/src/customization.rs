@@ -127,9 +127,9 @@ impl Customization {
     pub fn subscribe(listener: Callback<Value>, cx: CallCx<'_>) -> Subscription {
         Subscription::start(cx, async move {
             if let Ok(subscription) = service::blocking(|| Ok(current()?.subscribe())).await {
-                while let Ok(snapshot) = subscription.recv().await {
+                while let Ok(snapshot) = subscription.recv_shared().await {
                     listener.post(
-                        serde_json::to_value(subscription.latest(snapshot))
+                        serde_json::to_value(subscription.latest_shared(snapshot))
                             .expect("customization event serializes"),
                     );
                     next_frame().await;

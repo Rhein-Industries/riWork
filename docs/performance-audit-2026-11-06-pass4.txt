@@ -1,0 +1,214 @@
+RiWork / Somtus performance audit — fourth pass, 2026-11-06
+
+Continuation: performance-audit-2026-11-06-pass5.txt covers shared layout-writer
+disposal ownership and moving parsed terminal output into its final owner.
+
+Scope
+Continues performance-audit-2026-11-06-pass3.txt. The preceding pass was verified
+against its saved production hashes before this work started; no prior test or
+benchmark process remained live. Unrelated UI/settings work was preserved.
+This pass targets queued snapshots, large search previews and empty terminal
+maintenance. The application-wide objective remains active and incomplete.
+No installed application restart/deployment, desktop input or screenshot was
+performed. Somtus's Cua.ai Driver remains the required desktop provider.
+
+Empty terminal maintenance
+The terminal worker previously woke every 250 ms even with no live terminal
+components. It now waits for the next configuration or pooled-surface deadline
+when empty. A generation-based Condvar wakes it for a new registration or an
+earlier pool deadline without losing notifications between inspection and wait.
+Live components, queued main work and a coalesced config change retain the
+existing 250 ms polling bound. Later pool deadlines may cause an earlier harmless
+wake; they do not need to interrupt the worker. Lock acquisition does not add
+background AppKit access or hold the registry during I/O.
+
+The deterministic ten-minute schedule test changes 2,400 empty-registry wake-ups
+to 300 while preserving all 300 configuration checks. Startup, queued work,
+registrations and pool events can add wakes. This is scheduling evidence, not
+an application CPU/power measurement. Notification-before-wait, notification
+across the wait boundary, timeout, pending config and deadline-selection tests
+pass along with existing terminal policy/config/registry tests: 34 passed,
+1 opt-in benchmark ignored. Independent review found no lost-wake, deadline or
+lock-order issue.
+Evidence: target/performance-audit/terminal-empty-wake-results.json,
+  terminal-empty-wake-tests.log.
+
+Theme projection investigation
+An isolated headless harness compiled the unchanged Objective-C implementation
+with clang -O2 against the pinned ReleaseFast Ghostty archive. It constructs no
+AppKit window or terminal surface and uses temporary HOME/XDG config paths.
+Three fresh-process samples per fixture measured initialization plus first
+projection medians of 3.683 ms (defaults), 3.805 ms (named theme), and 3.782 ms
+(160 KiB included source). Warm projection medians were 33–34 us, checking all
+18 projected colors every time. Fixture/file creation is excluded; filesystem
+pages may be cached. These are parser measurements, not full app startup times.
+No parser threading, initial-palette, or startup behavior change was made.
+Evidence/reproduction: target/performance-audit/theme-projection-before.json,
+  theme-projection-bench.m, theme-projection-bench.py and the terminal result
+  document above. The pinned artifact installation was reused read-only.
+
+Shared native hub deliveries
+Each published payload is now allocated once and shared by the cache, listener
+queues and posted callbacks. The public owned Snapshot<T>/recv() API remains
+available; typed JS callbacks serialize a borrowed shared payload with the same
+wire shape and declarations. Publication no longer deep-copies T for each
+listener. Checked revisions, equality suppression, atomic initial subscription,
+capacity 64, overflow resync and close semantics are preserved. Delivery merges
+resync flags and consumes at most 64 queued envelopes, so continuous publication
+cannot monopolize an engine turn.
+
+Seven alternating-order paired Debug samples, 64 publications:
+  4 KiB payload / 4 listeners: publication 90.083 -> 64.417 us;
+    coalescing 35.000 -> 39.250 us (a small component regression).
+  256 KiB payload / 8 listeners: publication 3.032209 ms -> 132.708 us;
+    coalescing 98.708 -> 85.875 us.
+Retained payload text changed from 1,052,672 to 262,144 bytes in the first fixture
+and from 134,479,872 to 16,777,216 bytes in the second. Payload clone counts were
+256/512 before and zero after. These byte counts exclude channel/envelope/Arc
+overhead; they are not process RSS. Subscription setup and input construction
+are excluded from timings. Per-delivery JSON/JS conversion and callers explicitly
+requesting owned values can still allocate/copy. Final timings ran in a dedicated
+slot after validation ended, with no other benchmark or compiler overlap.
+
+Eight hub tests pass, including actual headless JS shape parity, owned receive
+independence, shared lifetime/release, overflow resync, atomic subscribe races
+and bounded draining against an always-ready producer. The registry declaration
+check passes. Evidence: target/performance-audit/hub-shared-report.txt,
+  hub-shared-tests.log, hub-shared-benchmarks.log and hub-shared-results.json.
+
+Desktop snapshot batches
+The host service consumes up to 32 adjacent snapshots and materializes only the
+latest. Every non-snapshot command remains a FIFO barrier, including Wake and
+shutdown commands. Initial restoration uses the first snapshot's window IDs;
+the latest captured generation/focus/loading/global data survives. A lazily
+allocated frame map retains each window's last valid ordinary size even if a
+later capture is maximized/fullscreen or invalid. Fresh settings and close
+admission checks still gate remembering frames. Progress and runtime ticks run
+between bounded batches. Isolated snapshots do not allocate that frame map.
+
+Five alternating-order paired Debug samples, 128 captures / 4 windows:
+  20 tabs/window, isolated: 6.567084 -> 6.567917 ms.
+  20 tabs/window, bursts of 8: 6.525792 -> 0.894584 ms.
+  20 tabs/window, burst of 128: 6.403042 -> 0.264625 ms.
+  500 tabs/window, isolated: 148.476875 -> 149.132917 ms.
+  500 tabs/window, bursts of 8: 148.950834 -> 18.323750 ms.
+  500 tabs/window, burst of 128: 149.013917 -> 4.486750 ms.
+Owned layout copies fall from 512 to 64 or 16 in the burst fixtures and stay
+512 in isolated cases. Fixtures include drain/frame-map/materialization/drop
+work but exclude producer capture, AppKit, settings I/O and persistence. They
+reuse generations; disposal of many distinct generations remains a separate
+cost. The producer still uses the existing unbounded channel.
+
+All 90 desktop dev-reload tests pass, 5 tests ignored (three manual benchmarks
+and two production App fixture cases), including command
+barriers, bounded progress, restoration/current generation, remembered geometry
+and close admission. Evidence: target/performance-audit/host-queue-results.json,
+  host-queue-tests.log and host-queue-benchmark.log. Final timings ran separately
+from hub/search timings and compiler work.
+
+Large search previews
+Cold searches still serialize tool input once with the canonical pretty JSON
+serializer before normalization. On a warm hit, sufficiently large/costly JSON
+can remain borrowed while a prefix formatter emits only the requested preview.
+It uses serde's PrettyFormatter and canonical escaping of bounded UTF-8 string
+chunks; it does not implement a separate escape table. Ordinary small inputs
+keep normal formatting; distant JSON offsets above 8192 characters use the full
+serializer. Unexpected prefix-writer errors fall back to canonical formatting.
+Late ASCII text previews skip validated ASCII prefixes by byte offset. Unicode
+uses the standard character iterator. Cache shape, 8 MiB/4096-entry budgets,
+admission, invalidation, cancellation checkpoints, contextual lowercase and
+original character-offset/whitespace behavior are unchanged.
+
+Final paired Debug medians per query (48 fixture/phase combinations in raw log):
+  Typical 12 items / 256 bytes, warm hit: 62.137 -> 58.903 us;
+    warm miss: 3.374 -> 3.362 us.
+  128 large tool inputs / 48 KiB, warm hit: 24.545 -> 0.317 ms.
+  Late ASCII text, warm hit: 41.552 -> 1.979 ms.
+  Late Unicode text, warm hit: 42.908 -> 42.391 ms (unchanged).
+  Late JSON input, warm hit: 45.125 -> 25.447 ms.
+  240 inputs exceeding cache budget, warm hit: 153.929 -> 25.237 ms.
+The prior search path is embedded as a differential baseline, and each fixture
+asserts results, cache accounting and normalization-build parity.
+
+An independent rustc -O harness extracts the actual production preview helpers
+byte-for-byte and links cached release serde_json 1.0.151. Five alternating paired
+samples, input creation/query offset computation excluded:
+  Late ~1 MiB ASCII: 18.247 -> 11.678 us.
+  Late ~1 MiB Unicode: 17.843 -> 17.785 us.
+  Early ~1 MiB JSON string: 353.553 -> 0.958 us.
+  Early escaped/Unicode JSON: 1,422.070 -> 1.566 us.
+  Early 517 KiB JSON tree: 171.665 -> 0.933 us.
+Small isolated previews add 30–109 ns (approximately 13–16% in selected cases).
+The complete typical search benchmark improves rather than showing that helper
+regression. An earlier manual Unicode chunk-counting variant improved Debug but
+regressed optimized late Unicode from 17.780 to 39.595 us. It was rejected;
+standard Chars::nth removes that regression without duplicated preview logic.
+Neither the optimized helpers nor Debug search measure UI or whole-app latency.
+
+Final localized revision: native/bridge compilation passed; all 105 chat tests
+passed (5 ignored), chat_bridge passed 12 and actual QuickJS search bridge passed
+1. Nine targeted search tests include generated JSON byte parity, escapes/floats/
+Unicode, boundaries, bounded early stops, replacement and cancellation. The
+standalone optimized harness verifies all ten cases against prior exact output.
+Final timings were sequential and did not overlap compiler or other benchmark
+work. Evidence: target/performance-audit/native-search-prefix-results.json,
+  native-search-prefix-benchmark.log, native-search-optimized-metadata.json,
+  native-search-optimized-benchmark.log and referenced correctness logs.
+Rejected source/hashes/results remain in native-search-prefix-rejected-chunks/.
+
+Integrated checks and an existing failure
+The integrated native library passed 238 tests, with 9 tests ignored, including
+manual benchmarks and a speech test requiring an external runtime/model.
+Files bridge passed 3 tests and native_headless passed its lifecycle test. The
+services integration suite passed 16 tests and failed
+worktree_presence_has_a_deadline_without_restarting_empty_session_fallback.
+That test expects a periodic presence refresh; the unchanged service explicitly
+avoids periodic project scans for empty shell inventories. Its same assertion
+at services.rs:290 fails in isolation on the current library (2.81 s) and on the
+saved pre-Shared library (2.87 s). The unchanged test source was compiled against
+the saved baseline and matching dependency fingerprints. No assertion was
+relaxed and periodic filesystem scans were not added to satisfy it.
+Evidence: hub-full-native-tests.log, hub-shared-integration-tests.log,
+  hub-presence-isolated.log, hub-presence-baseline.log and
+  hub-presence-baseline-build.json, all under target/performance-audit/.
+
+The default desktop cargo check and full NSH application/type check passed:
+  RIWORK_GHOSTTY_INSTALL_DIR=/Users/dgs/riWork-update-somtus-20261104/target/somtus-prep/ghostty-install
+    cargo check --locked -p riwork-desktop --bin somtus
+  RIWORK_GHOSTTY_INSTALL_DIR=<same pinned install>
+    target/recovery-a6418362/tools/nsh check apps/riwork
+      --tsc /Users/dgs/Library/Caches/nsh/typescript-7.0.2-darwin-arm64/package/lib/tsc
+Logs: pass4-desktop-default-check.log and pass4-nsh-check.log. These checks and
+the full native suite preceded the final localized Unicode skip refinement;
+final search validation is recorded in its section. No TypeScript declarations
+or public search interfaces changed in that refinement.
+
+Remaining work
+The application-wide goal is active. Concrete remaining costs include:
+* Every retained layout generation owns a separate persistence disposal guard.
+  Releasing old generations can submit redundant blocking tasks or spawn OS
+  threads although the backend remains in use. One shared guarded owner per
+  backend session can remove those intermediate submissions while preserving
+  final off-thread destruction, cancelled switches and delayed readers.
+* The host producer queue remains unbounded. Snapshot-tail coalescing must use
+  the ordering of all service senders, preserve command barriers/initial restore
+  IDs/valid ordinary geometry, and avoid moving deep generation destruction
+  onto AppKit. A global latest-value slot alone does not preserve that ordering.
+* Remote shell output is parsed into an owned JSON string, then copied into its
+  retained screen and/or response. Moving the original string can eliminate a
+  full-screen copy without changing delta profitability or wire metadata.
+* Files creates full absolute/relative path DTO strings for every scanned entry
+  before retaining only the displayed prefix. Enumeration metadata syscalls,
+  path safety, exact natural ordering and omitted/error semantics need to stay
+  intact if that construction is deferred.
+* Cold/budget-overflow search normalization, distant JSON matches, owned plan/
+  todo/file-change formatting, very large unfinished Markdown tails, rendering,
+  memory growth and representative release/UI measurements remain open.
+The parser harness, helper benchmarks and targeted suites do not prove full
+application performance or a clean full-workspace test suite. Prior baseline
+failures remain documented in earlier reports.
+
+Final production fingerprints are in
+  target/performance-audit/pass4-production-sources.sha256.
+Subsequent source changes are documented in the next pass rather than being
+attributed to these frozen measurements.

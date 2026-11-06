@@ -1,0 +1,80 @@
+RiWork / Somtus performance audit — ninth pass, 2026-11-06
+
+Scope
+Prepared independently while pass8's host queue was reviewed and validated.
+The broad performance goal remains active. No desktop interaction, installed-app
+restart, external service or user-data fixture is involved. Somtus cua-driver
+remains the required provider for any future desktop automation.
+
+Bounded remote screen validation — adopted
+screen_fields only needs to establish that output has at least the declared
+number of screen rows. It now counts at most that many str::lines items,
+avoiding a scan through all remaining scrollback. It preserves the same iterator,
+scalar validation order, zero/invalid dimensions, existing cursor behavior and
+metadata construction. Styled output validation still scans the complete text.
+This is one localized expression change; prior remote ownership/cache work stays
+intact. No new persistent cache or response policy is introduced.
+
+Both optimized and opt-level 0 helpers pass 12,937 validator comparisons and 996
+complete reply/cache-follow-up comparisons. Coverage includes LF/CRLF/lone CR,
+Unicode, trailing lines, zero/u32::MAX bounds, malformed or missing fields,
+styled/plain output, deltas and base hashes. Actual current output_reply and
+output_delta code is used. Independent semantic/extraction review is clean.
+
+Measurements retain all 48 conditions in each profile, seven chronological
+alternating pairs each. Values below are median batch-average microseconds per
+non-delta full reply, including response destruction:
+  Returned/required ASCII lines       optimized          helper opt-level 0
+  1/1                                 2.477 -> 2.496      6.320 -> 6.216
+  24/24                               2.735 -> 2.766      7.526 -> 7.660
+  200/24                              4.742 -> 2.723     19.618 -> 7.682
+  540/24                              8.535 -> 2.816     42.703 -> 7.776
+  2,000/24                           24.412 -> 2.835    140.915 -> 7.972
+Tiny/visible-only controls are approximately flat. Full scans of too-short output
+show small mixed changes: optimized ASCII 2,000/2,001 increases 0.772 us (+3.27%),
+and helper opt-level 0 ASCII 24/25 increases 0.159 us (+3.41%). The largest absolute
+control shift is styled 2,000/2,001 at opt-level 0: +35.401 us (+1.33%). Styled
+excess-history replies improve much less because SGR validation remains dominant.
+All controls and raw samples are retained; no universal improvement is claimed.
+
+Timed full replies use delta=false/base=None; cache updates and diff polling are
+covered by proof, not these timings. Input Value cloning/setup is excluded, and
+unused Held teardown is outside both variants. Both helper profiles use the same
+cached optimized sorted-map serde_json dependency, so opt-level 0 is not a whole
+Debug-process measurement. CLI launch, request parsing, network, UI and allocator
+counts are outside scope. Runs took 0.924/6.025 seconds without competing owned
+jobs; ordinary desktop activity was uncontrolled.
+
+Evidence and validation
+target/performance-audit/pass9-screen-lines/{report.txt,results.json,
+  preparation.json,proof-results.json,candidate.patch} preserves exact source,
+dependency, harness and binary hashes, command arguments and all sample chronology.
+After the pass8 checkpoint, the baseline hash guard passed and only the measured
+one-expression change was applied. Current-source Cargo validation passes all
+127 remote library tests (11 existing manual/slow cases ignored) and all 12
+shell_output integration tests:
+  cargo test --locked -p riwork-remote --lib --test shell_output -- --test-threads=1
+The build took 22.51 seconds; tests took 9.07/5.93 seconds. All five recorded
+remote source/test hashes stayed stable through validation. Exact command,
+environment, timestamps and results are in final-validation.json and
+final-cargo-tests.log. No new default test merely repeats the iterator expression.
+
+The 36-file target/performance-audit/pass9-production-sources.sha256 checkpoint
+differs from pass8 only at remote/src/rpc.rs. The final source is byte-identical
+to the measured candidate. Whitespace checks pass; all owned jobs are terminal.
+Broader baseline failures from earlier passes remain documented; this is not a
+full-workspace or end-to-end application performance claim.
+
+Further concrete candidates
+Read-only investigation found a redundant host-cache copy before persistence,
+discarded/duplicate diff classification in chat file review, and remaining owned
+State clones in periodic readers. Source-backed paths, proof requirements and
+measurement plans are in target/performance-audit/pass9-candidates/ranked.txt.
+These remain prospective; no implementation or speed claim is made for them.
+Large-item search cancellation, whole-tail Markdown work, edited layout backlog,
+rendering/frame pacing, startup/idle behavior and representative UI/mobile
+measurements remain open. Optimization has not been exhausted.
+
+Continuation: performance-audit-2026-11-06-pass10.txt records the host-cache
+copy removal, shared overview/schedule reads, deferred chat diff work and remote
+idle-worker lifecycle changes. The prospective inventory above describes pass9.

@@ -223,6 +223,10 @@ struct ScreenIdentity {
 }
 
 impl PlanSchedule {
+    pub(crate) fn due(&self, now: Instant) -> bool {
+        self.next.is_some_and(|deadline| now >= deadline)
+    }
+
     pub fn check(&mut self, screen: &Screen<'_>, now: Instant) -> Option<Plan> {
         let identity = ScreenIdentity {
             panes: screen
@@ -467,11 +471,14 @@ mod tests {
             frozen: false,
         };
         let mut schedule = PlanSchedule::default();
+        assert!(!schedule.due(now));
         assert_eq!(
             schedule.check(&screen, now).unwrap().recheck,
             Some(PINNED_RECHECK)
         );
         assert!(schedule.check(&screen, now + MIN_RECHECK).is_none());
+        assert!(!schedule.due(now + MIN_RECHECK));
+        assert!(schedule.due(now + PINNED_RECHECK));
         assert!(schedule.check(&screen, now + PINNED_RECHECK).is_some());
         screen.frozen = true;
         assert_eq!(
@@ -490,6 +497,49 @@ mod tests {
             schedule
                 .check(&screen, now + PINNED_RECHECK + FROZEN_RECHECK)
                 .is_some()
+        );
+    }
+
+    #[test]
+    fn maintenance_only_dispatches_at_the_hidden_terminal_deadline() {
+        let now = Instant::now();
+        let mut schedule = PlanSchedule::default();
+        let mut gate = crate::maintenance::Gate::default();
+        let mut dispatches = 0;
+        for tick in 0..=2400 {
+            let elapsed = MIN_RECHECK * tick;
+            let at = now + elapsed;
+            let Some(pass) = gate.queue(2, schedule.due(at), false) else {
+                continue;
+            };
+            dispatches += 1;
+            let panes = single(vec![tab(1, secs(0)), tab(2, elapsed)]);
+            let plan = schedule
+                .check(
+                    &Screen {
+                        panes: &panes,
+                        active_pane: 1,
+                        focus_mode: false,
+                        frozen: false,
+                    },
+                    at,
+                )
+                .unwrap();
+            if tick == 0 {
+                assert_eq!(plan.recheck, Some(WARM_EXPIRY));
+            } else {
+                assert_eq!(elapsed, WARM_EXPIRY);
+                assert_eq!(plan.release, [2]);
+            }
+            drop(pass);
+        }
+        assert_eq!(
+            dispatches, 2,
+            "2401 timer ticks need only initial and deadline passes"
+        );
+        assert!(
+            gate.queue(3, false, false).is_some(),
+            "visibility/ownership changes wake immediately"
         );
     }
 

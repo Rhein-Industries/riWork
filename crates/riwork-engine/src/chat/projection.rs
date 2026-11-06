@@ -496,6 +496,88 @@ fn prepare_items<'a>(
     unique
 }
 
+/// Index request ownership once, rather than searching the entire history for
+/// every request and then searching every request again for every turn.
+#[derive(Default)]
+struct RequestIndex<'a> {
+    by_turn: HashMap<&'a str, Vec<(usize, &'a RequestRecord)>>,
+    by_item: HashMap<&'a str, Vec<(usize, &'a RequestRecord)>>,
+    unbound: Vec<(usize, &'a RequestRecord)>,
+    unplaced: Vec<&'a RequestRecord>,
+}
+
+impl<'a> RequestIndex<'a> {
+    fn new(items: &[Cow<'_, Item>], requests: &'a [RequestRecord]) -> Self {
+        let mut index = Self::default();
+        if requests.is_empty() {
+            return index;
+        }
+        let item_ids: HashSet<_> = items.iter().map(|item| item.id.as_str()).collect();
+        let turn_ids: HashSet<_> = items
+            .iter()
+            .filter_map(|item| item.turn_id.as_deref())
+            .collect();
+        for (at, record) in requests.iter().enumerate() {
+            if !record
+                .turn_id
+                .as_deref()
+                .is_some_and(|id| turn_ids.contains(id))
+                && !record
+                    .item_id
+                    .as_deref()
+                    .is_some_and(|id| item_ids.contains(id))
+            {
+                index.unplaced.push(record);
+            }
+            // Explicit turn ownership takes precedence over an item reference.
+            if let Some(turn) = record.turn_id.as_deref() {
+                index.by_turn.entry(turn).or_default().push((at, record));
+            } else if let Some(item) = record.item_id.as_deref() {
+                index.by_item.entry(item).or_default().push((at, record));
+            } else {
+                index.unbound.push((at, record));
+            }
+        }
+        index.unplaced.sort_by_key(|record| record.requested_seq);
+        index
+            .unbound
+            .sort_by_key(|(_, record)| record.requested_seq);
+        index
+    }
+
+    fn for_turn(
+        &self,
+        turn: &str,
+        items: &[Cow<'_, Item>],
+        first_seq: u64,
+        next_seq: u64,
+        seen: &HashSet<String>,
+    ) -> Vec<&'a RequestRecord> {
+        let mut matches = self.by_turn.get(turn).cloned().unwrap_or_default();
+        if !self.by_item.is_empty() {
+            for item in items {
+                if let Some(requests) = self.by_item.get(item.id.as_str()) {
+                    matches.extend_from_slice(requests);
+                }
+            }
+        }
+        let start = self
+            .unbound
+            .partition_point(|(_, record)| record.requested_seq < first_seq);
+        matches.extend(
+            self.unbound[start..]
+                .iter()
+                .take_while(|(_, record)| record.requested_seq < next_seq)
+                .filter(|(_, record)| !seen.contains(&record.request_id))
+                .copied(),
+        );
+        // Preserve input order for equal event sequences and cache identities,
+        // regardless of which ownership index supplied each request.
+        matches.sort_unstable_by_key(|(at, _)| *at);
+        matches.into_iter().map(|(_, record)| record).collect()
+    }
+}
+
 fn project_rows(
     unique: &[Cow<'_, Item>],
     item_sequences: &HashMap<String, u64>,
@@ -524,19 +606,8 @@ fn project_rows(
         .map(|(_, marker)| item_row(marker, options))
         .collect();
     let mut seen_requests = HashSet::new();
-    let mut unplaced: Vec<_> = requests
-        .iter()
-        .filter(|record| {
-            !unique.iter().any(|item| {
-                record
-                    .turn_id
-                    .as_ref()
-                    .is_some_and(|turn| item.turn_id.as_ref() == Some(turn))
-                    || record.item_id.as_ref() == Some(&item.id)
-            })
-        })
-        .collect();
-    unplaced.sort_by_key(|record| record.requested_seq);
+    let request_index = RequestIndex::new(unique, requests);
+    let mut unplaced = request_index.unplaced.iter().peekable();
     let mut start = 0;
     while start < unique.len() {
         let turn = unique[start]
@@ -557,27 +628,19 @@ fn project_rows(
             .and_then(|item| item_sequences.get(&item.id))
             .copied()
             .unwrap_or(u64::MAX);
-        for record in &unplaced {
-            if record.requested_seq < first_seq && seen_requests.insert(record.request_id.clone()) {
+        // Advance through chronological orphan controls only once. Earlier
+        // controls stay seen even if a later block has an older event sequence.
+        while unplaced
+            .peek()
+            .is_some_and(|record| record.requested_seq < first_seq)
+        {
+            let record = unplaced.next().unwrap();
+            if seen_requests.insert(record.request_id.clone()) {
                 rows.push(request_row(record));
             }
         }
-        let turn_requests: Vec<_> = requests
-            .iter()
-            .filter(|record| {
-                record.turn_id.as_deref() == Some(&turn)
-                    || (record.turn_id.is_none()
-                        && record
-                            .item_id
-                            .as_ref()
-                            .is_some_and(|id| turn_items.iter().any(|item| &item.id == id)))
-                    || (record.turn_id.is_none()
-                        && record.item_id.is_none()
-                        && record.requested_seq >= first_seq
-                        && record.requested_seq < next_seq
-                        && !seen_requests.contains(&record.request_id))
-            })
-            .collect();
+        let turn_requests =
+            request_index.for_turn(&turn, turn_items, first_seq, next_seq, &seen_requests);
         for request in &turn_requests {
             seen_requests.insert(request.request_id.clone());
         }
@@ -931,6 +994,145 @@ fn strip_normal_details(rows: &mut [Row]) {
     }
 }
 
+/// Effective nesting after validating the complete raw parent graph. A raw
+/// cycle invalidates every item that reaches it, even across non-subagent
+/// parents; only the immediate valid subagent owner becomes a displayed edge.
+struct ItemNesting<'a> {
+    roots: Vec<&'a Item>,
+    children: HashMap<&'a str, Vec<&'a Item>>,
+    parents: HashMap<&'a str, &'a str>,
+}
+
+impl<'a> ItemNesting<'a> {
+    fn new(items: &'a [Cow<'_, Item>]) -> Self {
+        let mut result = Self {
+            roots: Vec::new(),
+            children: HashMap::new(),
+            parents: HashMap::new(),
+        };
+        if items
+            .iter()
+            .all(|item| item.presentation.parent_id.is_none())
+        {
+            result.roots.extend(items.iter().map(Cow::as_ref));
+            return result;
+        }
+        let by_id: HashMap<_, _> = items
+            .iter()
+            .enumerate()
+            .map(|(index, item)| (item.id.as_str(), index))
+            .collect();
+        let raw_parents: Vec<_> = items
+            .iter()
+            .map(|item| {
+                item.presentation
+                    .parent_id
+                    .as_deref()
+                    .and_then(|id| by_id.get(id).copied())
+            })
+            .collect();
+        // Each path is finalized before starting the next. Reaching a visiting
+        // node therefore means a cycle in this path, while a finished path can
+        // immediately supply its result to every node leading to it.
+        const VISITING: u8 = 1;
+        const ACYCLIC: u8 = 2;
+        const CYCLIC: u8 = 3;
+        let mut state = vec![0; items.len()];
+        let mut path = Vec::new();
+        for start in 0..items.len() {
+            if state[start] != 0 {
+                continue;
+            }
+            let mut next = Some(start);
+            let outcome = loop {
+                let Some(index) = next else {
+                    break ACYCLIC;
+                };
+                match state[index] {
+                    ACYCLIC => break ACYCLIC,
+                    VISITING | CYCLIC => break CYCLIC,
+                    _ => {
+                        state[index] = VISITING;
+                        path.push(index);
+                        next = raw_parents[index];
+                    }
+                }
+            };
+            for index in path.drain(..) {
+                state[index] = outcome;
+            }
+        }
+        let subagents: Vec<_> = items
+            .iter()
+            .map(|item| row_kind(item) == RowKind::Subagent)
+            .collect();
+        for (index, item) in items.iter().enumerate() {
+            if let Some(owner) =
+                raw_parents[index].filter(|&owner| state[index] == ACYCLIC && subagents[owner])
+            {
+                let parent = items[owner].id.as_str();
+                result.parents.insert(item.id.as_str(), parent);
+                result.children.entry(parent).or_default().push(item);
+            } else {
+                result.roots.push(item);
+            }
+        }
+        result
+    }
+}
+
+/// Controls and approval gates are indexed once per turn, instead of scanning
+/// all controls and every nested sibling list for each item and nesting level.
+#[derive(Default)]
+struct TurnRequestIndex<'a> {
+    approvals: HashSet<&'a str>,
+    roots: Vec<&'a RequestRecord>,
+    nested: HashMap<&'a str, Vec<&'a RequestRecord>>,
+}
+
+impl<'a> TurnRequestIndex<'a> {
+    fn new(requests: &[&'a RequestRecord], nesting: &ItemNesting<'a>) -> Self {
+        let mut index = Self::default();
+        let root_parent = nesting
+            .roots
+            .first()
+            .and_then(|item| item.presentation.parent_id.as_deref());
+        for &record in requests {
+            if record.kind == RequestKind::Approval
+                && let Some(item) = record.item_id.as_deref()
+            {
+                index.approvals.insert(item);
+            }
+            let parent = record
+                .item_id
+                .as_deref()
+                .and_then(|id| nesting.parents.get(id))
+                .copied();
+            // Preserve the raw first-root parent behavior for malformed/orphan
+            // inputs as well as the ordinary unparented root controls.
+            if parent.is_none() || parent == root_parent {
+                index.roots.push(record);
+            }
+            if let Some(parent) = parent {
+                index.nested.entry(parent).or_default().push(record);
+            }
+        }
+        index
+    }
+
+    fn for_items(&self, items: &[&Item], level: usize) -> &[&'a RequestRecord] {
+        if level == 0 {
+            return &self.roots;
+        }
+        items
+            .first()
+            .and_then(|item| item.presentation.parent_id.as_deref())
+            .and_then(|parent| self.nested.get(parent))
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+    }
+}
+
 fn verbose_rows(
     items: &[Cow<'_, Item>],
     orders: &HashMap<String, u64>,
@@ -938,43 +1140,11 @@ fn verbose_rows(
     turn: &str,
     options: &ProjectionOptions,
 ) -> Vec<Row> {
-    let by_id: HashMap<_, _> = items
-        .iter()
-        .map(|item| (item.id.as_str(), item.as_ref()))
-        .collect();
-    // Only nest under an existing subagent, and reject cycles. Orphans remain rows.
-    fn parent<'a>(item: &'a Item, by_id: &HashMap<&str, &'a Item>) -> Option<&'a str> {
-        let id = item.presentation.parent_id.as_deref()?;
-        let owner = by_id.get(id)?;
-        if row_kind(owner) != RowKind::Subagent || id == item.id {
-            return None;
-        }
-        let mut visited = HashSet::from([item.id.as_str()]);
-        let mut next = Some(id);
-        while let Some(id) = next {
-            if !visited.insert(id) {
-                return None;
-            }
-            next = by_id
-                .get(id)
-                .and_then(|item| item.presentation.parent_id.as_deref());
-        }
-        Some(id)
-    }
-    let roots: Vec<_> = items
-        .iter()
-        .map(Cow::as_ref)
-        .filter(|item| parent(item, &by_id).is_none())
-        .collect();
-    let mut nested: HashMap<&str, Vec<&Item>> = HashMap::new();
-    for item in items.iter().map(Cow::as_ref) {
-        if let Some(id) = parent(item, &by_id) {
-            nested.entry(id).or_default().push(item);
-        }
-    }
+    let nesting = ItemNesting::new(items);
+    let requests = TurnRequestIndex::new(requests, &nesting);
     struct Context<'a> {
         orders: &'a HashMap<String, u64>,
-        requests: &'a [&'a RequestRecord],
+        requests: &'a TurnRequestIndex<'a>,
         nested: &'a HashMap<&'a str, Vec<&'a Item>>,
         turn: &'a str,
         options: &'a ProjectionOptions,
@@ -998,10 +1168,7 @@ fn verbose_rows(
             if let Some(children) = context.nested.get(item.id.as_str()) {
                 row.children = walk(children, context, level + 1);
             }
-            let gated = context.requests.iter().any(|request| {
-                request.kind == RequestKind::Approval
-                    && request.item_id.as_deref() == Some(&item.id)
-            });
+            let gated = context.requests.approvals.contains(item.id.as_str());
             let eligible = eligible(item, gated);
             entries.push((
                 context
@@ -1014,20 +1181,8 @@ fn verbose_rows(
                 eligible,
             ));
         }
-        for record in context.requests {
-            let belongs_here = record.item_id.as_ref().and_then(|id| {
-                context
-                    .nested
-                    .iter()
-                    .find(|(_, children)| children.iter().any(|item| &item.id == id))
-                    .map(|(id, _)| *id)
-            });
-            let this_parent = items
-                .first()
-                .and_then(|item| item.presentation.parent_id.as_deref());
-            if belongs_here == this_parent || (belongs_here.is_none() && level == 0) {
-                entries.push((record.requested_seq, usize::MAX, request_row(record), false));
-            }
+        for record in context.requests.for_items(items, level) {
+            entries.push((record.requested_seq, usize::MAX, request_row(record), false));
         }
         entries.sort_by_key(|(seq, at, _, _)| (*seq, *at));
         let mut rows = Vec::new();
@@ -1044,11 +1199,11 @@ fn verbose_rows(
         rows
     }
     walk(
-        &roots,
+        &nesting.roots,
         &Context {
             orders,
-            requests,
-            nested: &nested,
+            requests: &requests,
+            nested: &nesting.children,
             turn,
             options,
         },
@@ -1396,45 +1551,48 @@ fn activity_title(
     if let Some(duration) = duration {
         title.push_str(&format!(" {}", format_duration(duration)));
     }
-    let edits: HashSet<_> = work
-        .iter()
-        .flat_map(|item| match &item.body {
-            ItemBody::FileChange { changes } => changes
-                .iter()
-                .map(|change| change.path.as_str())
-                .collect::<Vec<_>>(),
-            _ => Vec::new(),
-        })
-        .collect();
-    let commands = work
-        .iter()
-        .filter(|item| row_kind(item) == RowKind::Shell)
-        .count();
-    let reads = work
-        .iter()
-        .filter(|item| {
-            matches!(
-                row_kind(item),
-                RowKind::Read
-                    | RowKind::Search
-                    | RowKind::List
-                    | RowKind::WebSearch
-                    | RowKind::WebFetch
-            )
-        })
-        .count();
-    // A parent with known children is metadata, not another counted call.
-    let calls: Vec<_> = work
-        .iter()
-        .filter(|item| {
-            matches!(row_kind(item), RowKind::Mcp | RowKind::Other)
-                || (row_kind(item) == RowKind::Subagent
-                    && !work
-                        .iter()
-                        .any(|child| child.presentation.parent_id.as_deref() == Some(&item.id)))
-        })
-        .collect();
-    let (call, calls_label) = if calls.iter().all(|item| row_kind(item) == RowKind::Mcp) {
+    // Small turns avoid an allocation/hash pass; the bounded scan is cheaper
+    // there. Larger turns must not scan the whole turn once per subagent.
+    let parents: Option<HashSet<_>> = (work.len() > 64).then(|| {
+        work.iter()
+            .filter_map(|item| item.presentation.parent_id.as_deref())
+            .collect()
+    });
+    let has_children = |id: &str| {
+        parents.as_ref().map_or_else(
+            || {
+                work.iter()
+                    .any(|child| child.presentation.parent_id.as_deref() == Some(id))
+            },
+            |parents| parents.contains(id),
+        )
+    };
+    let mut edits = HashSet::new();
+    let (mut commands, mut reads, mut calls) = (0, 0, 0);
+    let mut all_mcp = true;
+    for item in work {
+        if let ItemBody::FileChange { changes } = &item.body {
+            edits.extend(changes.iter().map(|change| change.path.as_str()));
+        }
+        match row_kind(item) {
+            RowKind::Shell => commands += 1,
+            RowKind::Read
+            | RowKind::Search
+            | RowKind::List
+            | RowKind::WebSearch
+            | RowKind::WebFetch => reads += 1,
+            RowKind::Mcp => calls += 1,
+            // A raw parent with known children is metadata, not another call.
+            // This intentionally also includes orphaned/cyclic relationships.
+            RowKind::Subagent if has_children(item.id.as_str()) => {}
+            RowKind::Subagent | RowKind::Other => {
+                calls += 1;
+                all_mcp = false;
+            }
+            _ => {}
+        }
+    }
+    let (call, calls_label) = if all_mcp {
         ("MCP call", "MCP calls")
     } else {
         ("tool call", "tool calls")
@@ -1443,7 +1601,7 @@ fn activity_title(
         (edits.len(), "file edited", "files edited"),
         (commands, "command", "commands"),
         (reads, "read", "reads"),
-        (calls.len(), call, calls_label),
+        (calls, call, calls_label),
     ] {
         if count > 0 {
             title.push_str(&format!(
@@ -2251,6 +2409,441 @@ mod tests {
             options.disclosure.reset_bulk_for_rows(false, mode, &rows);
             assert!(open_ids(&project(&expanded, &HashMap::new(), &[], &options)).is_empty());
         }
+    }
+
+    #[test]
+    fn indexed_request_assignment_matches_scan_for_partial_and_legacy_turns() {
+        let items: Vec<Item> = serde_json::from_value(serde_json::json!([
+            {"id":"a", "turn_id":"t", "body":{"type":"agent_message", "text":"a"}},
+            {"id":"b", "turn_id":"t", "body":{"type":"agent_message", "text":"b"}},
+            {"id":"c", "body":{"type":"agent_message", "text":"c"}},
+            {"id":"d", "turn_id":"u", "body":{"type":"agent_message", "text":"d"}},
+            {"id":"e", "turn_id":"t", "body":{"type":"agent_message", "text":"e"}}
+        ]))
+        .unwrap();
+        let items: Vec<_> = items.iter().map(Cow::Borrowed).collect();
+        let mut requests = Vec::new();
+        for turn in [
+            None,
+            Some("t"),
+            Some("u"),
+            Some("missing"),
+            Some("legacy:c"),
+        ] {
+            for item in [
+                None,
+                Some("a"),
+                Some("b"),
+                Some("c"),
+                Some("e"),
+                Some("missing"),
+            ] {
+                // Deliberately unsorted and repeated sequences: ownership, not
+                // input ordering, determines which turn can claim a request.
+                for seq in [8, 0, u64::MAX, 4, 4, 1] {
+                    requests.push(RequestRecord {
+                        request_id: format!("request-{}", requests.len()),
+                        turn_id: turn.map(str::to_owned),
+                        item_id: item.map(str::to_owned),
+                        requested_seq: seq,
+                        ..RequestRecord::default()
+                    });
+                }
+            }
+        }
+        let index = RequestIndex::new(&items, &requests);
+        let mut unplaced: Vec<_> = requests
+            .iter()
+            .filter(|record| {
+                !items.iter().any(|item| {
+                    record
+                        .turn_id
+                        .as_ref()
+                        .is_some_and(|turn| item.turn_id.as_ref() == Some(turn))
+                        || record.item_id.as_ref() == Some(&item.id)
+                })
+            })
+            .collect();
+        unplaced.sort_by_key(|record| record.requested_seq);
+        assert_eq!(index.unplaced, unplaced);
+        let seen: HashSet<_> = requests
+            .iter()
+            .step_by(4)
+            .map(|record| record.request_id.clone())
+            .collect();
+        for (turn, block) in [
+            ("t", &items[..2]),
+            ("legacy:c", &items[2..3]),
+            ("u", &items[3..4]),
+            ("t", &items[4..]),
+        ] {
+            for (first_seq, next_seq) in
+                [(0, 5), (5, 8), (8, 4), (8, u64::MAX), (u64::MAX, u64::MAX)]
+            {
+                let expected: Vec<_> = requests
+                    .iter()
+                    .filter(|record| {
+                        record.turn_id.as_deref() == Some(turn)
+                            || (record.turn_id.is_none()
+                                && record
+                                    .item_id
+                                    .as_ref()
+                                    .is_some_and(|id| block.iter().any(|item| &item.id == id)))
+                            || (record.turn_id.is_none()
+                                && record.item_id.is_none()
+                                && record.requested_seq >= first_seq
+                                && record.requested_seq < next_seq
+                                && !seen.contains(&record.request_id))
+                    })
+                    .collect();
+                assert_eq!(
+                    index.for_turn(turn, block, first_seq, next_seq, &seen),
+                    expected
+                );
+            }
+        }
+    }
+
+    fn nesting_item(index: usize, parent: Option<String>, subagent: bool) -> Item {
+        serde_json::from_value(serde_json::json!({
+            "id": format!("item-{index}"), "turn_id":"turn", "status":"completed",
+            "body":{"type":"command", "command":format!("cat file-{index}")},
+            "presentation":{"parent_id":parent, "subagent":subagent.then(|| serde_json::json!({
+                "name":format!("Agent {index}"), "status":"done", "purpose":null, "summary":null
+            }))}
+        }))
+        .unwrap()
+    }
+
+    fn nesting_requests(count: usize, seed: usize) -> Vec<RequestRecord> {
+        (0..count + 3)
+            .map(|index| RequestRecord {
+                request_id: format!("request-{index}"),
+                kind: if index % 3 == 0 {
+                    RequestKind::Question
+                } else {
+                    RequestKind::Approval
+                },
+                item_id: (index != count)
+                    .then(|| format!("item-{}", (index * 17 + seed) % (count + 3))),
+                requested_seq: ((index * 13 + seed) % (count + 5)) as u64,
+                ..RequestRecord::default()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn indexed_nesting_and_controls_match_ancestor_and_sibling_scans() {
+        fn scan_parent<'a>(item: &'a Item, by_id: &HashMap<&str, &'a Item>) -> Option<&'a str> {
+            let parent = item.presentation.parent_id.as_deref()?;
+            if parent == item.id || row_kind(by_id.get(parent)?) != RowKind::Subagent {
+                return None;
+            }
+            let mut visited = HashSet::from([item.id.as_str()]);
+            let mut next = Some(parent);
+            while let Some(id) = next {
+                if !visited.insert(id) {
+                    return None;
+                }
+                next = by_id
+                    .get(id)
+                    .and_then(|item| item.presentation.parent_id.as_deref());
+            }
+            Some(parent)
+        }
+        let mut random = 0x176a9b3_u64;
+        for seed in 0..128 {
+            let items: Vec<_> = (0..80)
+                .map(|index| {
+                    random = random.wrapping_mul(6364136223846793005).wrapping_add(1);
+                    let parent = if random % 7 == 0 {
+                        None
+                    } else {
+                        Some(format!("item-{}", (random >> 32) % 84))
+                    };
+                    Cow::Owned(nesting_item(index, parent, random % 4 != 0))
+                })
+                .collect();
+            let records = nesting_requests(items.len(), seed);
+            let requests: Vec<_> = records.iter().collect();
+            let nesting = ItemNesting::new(&items);
+            let by_id: HashMap<_, _> = items
+                .iter()
+                .map(|item| (item.id.as_str(), item.as_ref()))
+                .collect();
+            let mut roots = Vec::new();
+            let mut nested: HashMap<&str, Vec<&Item>> = HashMap::new();
+            for item in items.iter().map(Cow::as_ref) {
+                if let Some(parent) = scan_parent(item, &by_id) {
+                    nested.entry(parent).or_default().push(item);
+                    assert_eq!(nesting.parents.get(item.id.as_str()), Some(&parent));
+                } else {
+                    roots.push(item);
+                    assert!(!nesting.parents.contains_key(item.id.as_str()));
+                }
+            }
+            assert_eq!(nesting.roots, roots);
+            assert_eq!(nesting.children, nested);
+            let indexed = TurnRequestIndex::new(&requests, &nesting);
+            for item in &items {
+                assert_eq!(
+                    indexed.approvals.contains(item.id.as_str()),
+                    requests.iter().any(|request| {
+                        request.kind == RequestKind::Approval
+                            && request.item_id.as_ref() == Some(&item.id)
+                    })
+                );
+            }
+            for (level, siblings) in std::iter::once((0, roots.as_slice()))
+                .chain(nested.values().map(|items| (1, items.as_slice())))
+            {
+                let expected: Vec<_> = requests
+                    .iter()
+                    .copied()
+                    .filter(|record| {
+                        let belongs = record.item_id.as_ref().and_then(|id| {
+                            nested
+                                .iter()
+                                .find(|(_, children)| children.iter().any(|item| &item.id == id))
+                                .map(|(parent, _)| *parent)
+                        });
+                        let parent = siblings
+                            .first()
+                            .and_then(|item| item.presentation.parent_id.as_deref());
+                        belongs == parent || (belongs.is_none() && level == 0)
+                    })
+                    .collect();
+                assert_eq!(indexed.for_items(siblings, level), expected);
+            }
+        }
+    }
+
+    #[test]
+    fn deep_nesting_keeps_the_existing_bounded_projection_order() {
+        let mut items: Vec<Cow<'_, Item>> = (0..180usize)
+            .map(|index| {
+                Cow::Owned(nesting_item(
+                    index,
+                    index.checked_sub(1).map(|parent| format!("item-{parent}")),
+                    true,
+                ))
+            })
+            .collect();
+        // Two siblings start the depth-limited fallback, which keeps the
+        // historical reverse sibling order and does not insert controls.
+        items[66].to_mut().presentation.parent_id = Some("item-64".into());
+        let records = nesting_requests(items.len(), 3);
+        let requests: Vec<_> = records.iter().collect();
+        let options = ProjectionOptions {
+            mode: DisplayMode::Verbose,
+            ..ProjectionOptions::default()
+        };
+        let rows = verbose_rows(&items, &HashMap::new(), &requests, "turn", &options);
+        let fallback = &find(&rows, "item-64").unwrap().children;
+        assert_eq!(fallback.first().unwrap().id, "item-66");
+        assert_eq!(fallback.last().unwrap().id, "item-65");
+        assert!(
+            fallback
+                .iter()
+                .all(|row| row.kind == RowKind::Subagent && row.children.is_empty())
+        );
+        assert_eq!(fallback.len(), 115);
+    }
+
+    #[test]
+    fn activity_counts_keep_raw_parent_and_mixed_tool_semantics() {
+        use super::super::model::{ChangeKind, FileChange, Semantics};
+        let mut items = vec![
+            nesting_item(0, None, true),
+            nesting_item(1, Some("item-0".into()), true),
+            nesting_item(2, Some("item-2".into()), true),
+            nesting_item(3, None, false),
+        ];
+        for (index, paths) in [(4, vec!["a", "b"]), (5, vec!["a"])] {
+            let mut item = nesting_item(index, None, false);
+            item.body = ItemBody::FileChange {
+                changes: paths
+                    .into_iter()
+                    .map(|path| FileChange {
+                        path: path.into(),
+                        kind: ChangeKind::Modify,
+                        diff: None,
+                    })
+                    .collect(),
+            };
+            items.push(item);
+        }
+        for (index, kind) in [
+            ToolKind::Read,
+            ToolKind::Search,
+            ToolKind::List,
+            ToolKind::WebSearch,
+            ToolKind::WebFetch,
+            ToolKind::Mcp,
+            ToolKind::Mcp,
+            ToolKind::Other,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut item = nesting_item(10 + index, None, false);
+            item.body = ItemBody::ToolCall {
+                server: None,
+                tool: "tool".into(),
+                input: Value::Null,
+                output: None,
+            };
+            item.presentation.semantics = Some(Semantics {
+                kind,
+                ..Semantics::default()
+            });
+            items.push(item);
+        }
+        let work: Vec<_> = items.iter().collect();
+        assert_eq!(
+            activity_title(&work, false, Some(65000), None),
+            "Worked 1m 5s · 2 files edited · 1 command · 5 reads · 4 tool calls"
+        );
+        assert_eq!(
+            activity_title(&work, true, Some(65000), Some("reading")),
+            "Working 1m 5s · reading"
+        );
+        let mcp: Vec<_> = items
+            .iter()
+            .filter(|item| row_kind(item) == RowKind::Mcp)
+            .collect();
+        assert_eq!(
+            activity_title(&mcp, false, None, None),
+            "Worked · 2 MCP calls"
+        );
+        assert_eq!(
+            activity_title(&mcp[..1], false, None, None),
+            "Worked · 1 MCP call"
+        );
+    }
+
+    #[test]
+    #[ignore = "slow: wall-clock activity title benchmark"]
+    fn nested_activity_title_performance() {
+        use std::time::Instant;
+        for count in [12usize, 64, 128, 2000] {
+            let items: Vec<_> = (0..count)
+                .map(|index| {
+                    nesting_item(
+                        index,
+                        index.checked_sub(1).map(|parent| format!("item-{parent}")),
+                        true,
+                    )
+                })
+                .collect();
+            let work: Vec<_> = items.iter().collect();
+            let mut samples = Vec::new();
+            for _ in 0..7 {
+                let start = Instant::now();
+                std::hint::black_box(activity_title(&work, false, None, None));
+                samples.push(start.elapsed());
+            }
+            assert_eq!(
+                activity_title(&work, false, None, None),
+                "Worked · 1 tool call"
+            );
+            samples.sort();
+            eprintln!("activity title ({count} nested items): {:?}", samples[3]);
+        }
+    }
+
+    #[test]
+    #[ignore = "slow: wall-clock dense-turn projection benchmark"]
+    fn dense_turn_nesting_and_request_performance() {
+        use std::time::Instant;
+        for (name, count, shape) in [
+            ("typical", 12usize, 0),
+            ("dense approvals", 2000, 0),
+            ("deep chain", 1500, 1),
+            ("wide nesting", 400, 2),
+        ] {
+            let items: Vec<_> = (0..count)
+                .map(|index| {
+                    let (parent, subagent) = match shape {
+                        1 => (
+                            index.checked_sub(1).map(|parent| format!("item-{parent}")),
+                            true,
+                        ),
+                        2 => (
+                            (index % 2 == 1).then(|| format!("item-{}", index - 1)),
+                            index % 2 == 0,
+                        ),
+                        _ => (None, false),
+                    };
+                    Cow::Owned(nesting_item(index, parent, subagent))
+                })
+                .collect();
+            let records = nesting_requests(count, 0);
+            let requests: Vec<_> = records.iter().collect();
+            let options = ProjectionOptions {
+                mode: DisplayMode::Verbose,
+                ..ProjectionOptions::default()
+            };
+            let orders = HashMap::new();
+            let mut samples = Vec::new();
+            for _ in 0..7 {
+                let start = Instant::now();
+                std::hint::black_box(verbose_rows(&items, &orders, &requests, "turn", &options));
+                samples.push(start.elapsed());
+            }
+            samples.sort();
+            eprintln!("{name} ({count} items): {:?}", samples[3]);
+        }
+    }
+
+    #[test]
+    #[ignore = "slow: wall-clock projection benchmark"]
+    fn approval_heavy_history_projection_performance() {
+        use super::super::model::ChatEvent;
+        use std::time::Instant;
+
+        let mut transcript = Transcript::default();
+        for turn in 0..1500 {
+            for call in 0..4 {
+                let item = serde_json::from_value(serde_json::json!({
+                    "id": format!("call-{turn}-{call}"),
+                    "turn_id": format!("turn-{turn}"),
+                    "status": "completed",
+                    "body": {"type": "command", "command": "cargo test"}
+                }))
+                .unwrap();
+                transcript.apply(&ChatEvent::ItemCompleted { item });
+            }
+            transcript.requests.push(RequestRecord {
+                request_id: format!("request-{turn}"),
+                turn_id: Some(format!("turn-{turn}")),
+                item_id: Some(format!("call-{turn}-0")),
+                requested_seq: turn * 4 + 2,
+                ..RequestRecord::default()
+            });
+        }
+        let mut cache = ProjectionCache::default();
+        let options = ProjectionOptions::default();
+        let clean = HashSet::new();
+        cache.project(&transcript, &options, &clean);
+        let started = Instant::now();
+        for _ in 0..5 {
+            let rows = cache.project(&transcript, &options, &clean);
+            let requests: Vec<_> = rows
+                .iter()
+                .filter_map(|row| row.request_id.as_deref())
+                .collect();
+            assert_eq!(requests.len(), 1500);
+            for (turn, request) in requests.iter().enumerate() {
+                assert_eq!(*request, format!("request-{turn}"));
+            }
+            std::hint::black_box(rows);
+        }
+        let per_projection_ms = started.elapsed().as_secs_f64() * 1000.0 / 5.0;
+        eprintln!(
+            "approval-heavy projection: 6000 items, 1500 requests, {per_projection_ms:.3}ms/cached projection"
+        );
+        assert_eq!(cache.projected_turns, 1500);
     }
 
     /// Exercise the same cache entry point used by desktop on a transcript whose

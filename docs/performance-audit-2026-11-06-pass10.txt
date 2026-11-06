@@ -1,0 +1,163 @@
+RiWork / Somtus performance audit — tenth pass, 2026-11-06
+
+Scope and starting evidence
+The previous goal turn made progress: pass8/pass9 changes were implemented and
+validated. All 36 pass9 source fingerprints matched at this pass's start; prior
+owned jobs were terminal. The original application-wide goal remains active.
+Unrelated work is preserved. No desktop interaction, deployment, installed-app
+restart or external service is involved. Somtus cua-driver remains the required
+provider for any future desktop automation.
+
+Host-cache persistence — adopted
+Cache::save_owned consumes the detached snapshot that HostsService::persist
+already creates. Borrowed save retains its API by cloning once into that consuming
+path. Validation, trimming, serialization and atomic replacement are unchanged.
+The initial snapshot copy under the state mutex remains; this removes the second
+copy outside that mutex, not the first lock hold. Revision/saved handling, writer
+serialization, retry behavior and I/O outside the state mutex remain intact.
+host_sessions::local is unchanged.
+
+Actual-source release/Debug proofs cover eight rich cache fixtures and two
+service cases: borrowed/owned wire and disk bytes, reopen, file permissions,
+temporary cleanup, validation/budgets, failed writes, retry, skipped large rows
+followed by retained small rows, and concurrent later revisions. Harness-only
+fixture/linkage failures and their corrections remain recorded. The concurrent
+revision fixture changes a retained host label, so it proves changed persisted
+content rather than relying on a seen key that trimming discards.
+
+Separate allocation instrumentation: typical clone+save preparation falls from
+6,176 to 3,785 allocation/reallocation requests and 1,025,783 to 878,875 requested
+bytes. The large 33-host/512-row fixture falls from 399,577 to 244,328 requests and
+213,855,954 to 171,118,700 bytes, removing about 42.7 MB of requests. These are
+requested bytes, not peak memory or RSS.
+
+Fifteen conditions per profile, nine chronological paired samples each, separate
+detached-save preparation, clone+save preparation and actual atomic file saving.
+Release clone+save helper costs: tiny 3.057 -> 2.544 us; typical 381.328 ->
+323.937 us; large 62.760 -> 56.168 ms; seen-budget 16.578 -> 15.029 ms. Debug
+is mostly flat: typical 8.321 -> 8.270 ms, large 1.6657 -> 1.6781 s (+0.74%),
+tiny 57.125 -> 58.627 us (+2.63%). Filesystem timings are noisy: even empty saves
+vary by 9–17% without a payload copy to eliminate. Those I/O swings are not
+attributed to this change. Runs took 5.206/120.468 seconds with other owned jobs
+held; ordinary desktop activity was uncontrolled.
+Evidence: target/performance-audit/pass10-host-cache-owned/.
+
+Shared State readers — adopted
+OverviewSource adds a shared getter with a compatibility adapter for existing
+owned overrides; EngineSource uses Store::snapshot_shared directly. Four direct
+schedule reads (binding, creation preparation, update validation and listing)
+also retain a shared State. Store opening, metadata checks, errors and operation
+ordering stay intact. Store parsing was already cached: this removes residual
+full-State copies, not reparsing. The legacy default adapter still obtains an
+owned State and wraps it; its behavior is preserved, without claiming the same
+copy savings as the concrete EngineSource override.
+
+Sixty-eight parity/lifecycle/error checks pass in both caller profiles, including
+actual create/update/show transitions and retained generation behavior. Separate
+allocation measurements on 512 projects with 32 KiB memos show schedule reads
+falling from 3,184 to 538 requests and 17,116,181 to 44,767 requested bytes.
+Overview falls from 10,787 to 8,141 requests and 17,899,561 to 828,147 bytes.
+
+Sixteen conditions per caller profile use seven chronological paired samples.
+With 12 projects and no memos, optimized-caller overview costs 192.71 -> 188.46 us,
+schedule read 31.23 -> 29.33 us, preparation 13.77 -> 11.31 us. With 512 projects
+and 32 KiB memos, these are 2.798 -> 2.198 ms, 614.81 -> 41.44 us and
+578.47 -> 11.87 us. All optimized-caller medians improve; the one increasing
+opt-level 0 control is about 13.67 ns/+0.0443%, with broad overlap.
+
+These are exact caller helpers linked to compatible cached Debug core/engine/
+JSON dependencies, including Store, State clone and overview build. They are not
+release-application measurements. Overview's external shell/chat/activity sources
+are fixed seams; schedule preparation excludes ledger save/dispatch, while read
+retains actual fixture ledger/log/scope work. Runs took 1.76/2.18 seconds without
+competing owned jobs; normal desktop load remained. Evidence and all boundaries:
+  target/performance-audit/pass10-shared-readers/.
+
+Chat file review — adopted after comparing alternatives
+files() first selects borrowed survivors using the existing exact BTreeMap keys,
+then materializes only retained rows. read() reuses statistics from its existing
+classified lines. Scope/turn/status handling, latest-per-key behavior, original
+indices, lexical ordering, delimiter collisions, errors and numeric casts stay
+unchanged. The classifier, full patch and owned line DTO contracts are unchanged.
+
+Each helper profile passes 128,038 serialized-result comparisons across 1,511
+transcripts, including 62 patch forms, malformed/overflow hunks, line endings,
+all kinds/statuses, duplicate identities/paths, ambiguous keys and replacements.
+Three maintained semantic regressions supplement this differential proof.
+Repeated 64-patch cases classify 64 -> 1; single reviews classify 2 -> 1. At
+nominal 256 KiB repeated patches, requested bytes fall 25,164,654 -> 394,398.
+An 8 MiB read falls 60,087,998 -> 47,505,182 requested bytes. Empty transcripts
+still allocate nothing; unique rows keep their classification count and the
+deferred map uses smaller nodes.
+
+The first 26-fixture/seven-pair timings showed substantial duplicate/read gains
+but mixed unique-row controls. A separate reverse-entry variant then tested a
+concrete locality alternative. The matched 36-fixture comparison includes
+ascending, descending and deterministic shuffled paths, scoped/unscoped cases,
+all three variants and six balanced chronological variant permutations.
+Both candidates pass the same output oracle; original evidence is preserved.
+Reverse insertion shows no consistent unique-row advantage and retains larger
+DTO map nodes, so the deferred variant was selected.
+
+In the matched run, repeated nominal 256 KiB patches cost 4.860 -> 0.0778 ms
+optimized and 35.496 -> 0.5510 ms at opt-level 0. The original 8 MiB read probe
+costs 11.609 -> 8.887 ms optimized; including measured output destruction,
+15.801 -> 13.333 ms. Unique-case uncertainty remains: original opt-level 0
+unique 64x256 KiB increased 5.62%, then decreased 3.87% in the matched run;
+matched opt-level 0 unique 64x4 KiB increased 7.43%. No universal CPU improvement
+is claimed. Matched runs took 1.372/10.042 seconds with owned jobs held and
+uncontrolled desktop activity. Full matrices, counts and discarded alternative:
+  target/performance-audit/pass10-diff-review/.
+
+Remote idle polling — adopted
+The previous weak worker woke every 500 ms indefinitely after its first start.
+Checking the actual Workspace/controller code showed that windows retain a
+Remote subscription even when no remote data is requested, so merely stopping
+when the observer set is empty would miss normal idle windows.
+
+A per-service start claim and retirement decision now share the observer mutex.
+The loop retires when no validated subscriber requests folders, settings, remote
+tab-host data or a remote project. Cached-title subscriptions remain live and
+receive publications. A later active subscription can start a new planning loop.
+Selected remote projects still poll with hidden panels. Active cadence, engine
+planning, request deduplication and in-flight completion remain unchanged.
+
+Three current-source tests verify all 256 demand-flag combinations against the
+engine planner, actual startup/no-start/duplicate-start paths, partial lease drops,
+resubscription before/after retirement, separate services and weak ownership
+across waits. Controlled waits exercise the real start/worker loop and assert no
+further waits after retirement; timeouts are deadlock guards, not speed claims.
+There can be a retiring OS thread while its replacement starts, but only one
+loop can continue planning. Retirement happens at the next check after the
+current cycle/nominal 500 ms wait; no hard wall-time bound is asserted. In-flight
+requests can still retain the service until completion. OS spawn failure rollback
+and JS subscription wiring are source-reviewed, not fault-injected/GUI-tested.
+This is structural removal of recurring idle work, not measured CPU/battery gain.
+Evidence: target/performance-audit/pass10-remote-idle/.
+
+Combined current-source validation
+Engine host_sessions: all 8 tests pass. One combined native build then tests all
+accepted changes together: 260 library tests pass (10 ignored), plus 12 chat_bridge,
+1 chat_search_bridge and 5 dashboard_bridge tests. The source hashes stayed stable
+through the build/run. Native command, with TMPDIR=/private/tmp:
+  cargo test --locked -p riwork-nsh-native --lib --test chat_bridge
+    --test chat_search_bridge --test dashboard_bridge -- --test-threads=1
+The combined run took 77.276 seconds. Exact source/binary hashes, commands,
+timestamps and output: target/performance-audit/pass10-native-validation/.
+Earlier broader settings/engine/workspace baseline failures were not changed or
+retested, and this does not claim a clean full workspace or measured UI speedup.
+
+The final 40-file source checkpoint is
+  target/performance-audit/pass10-production-sources.sha256.
+All recorded source hashes match, including the seven sources compiled in the
+combined validation; all other pass9-manifest files are unchanged. This is a
+scoped source checkpoint, not an attribution of all dirty workspace files to
+this audit. Verification metadata: pass10-final-verification.json in that folder.
+All owned build/test/timing jobs are terminal. Relevant whitespace checks pass.
+
+Remaining work
+The first host-cache copy under its state lock, local host-session State reads,
+active remote polling deadlines, the host coordinator's idle wakeups, large-item
+search cancellation, whole-tail Markdown work, edited layout queue growth,
+rendering/frame pacing, startup and representative UI/mobile measurements remain
+open. The original objective stays active; optimization has not been exhausted.

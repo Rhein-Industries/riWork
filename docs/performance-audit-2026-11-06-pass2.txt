@@ -1,0 +1,253 @@
+Performance audit, 2026-11-06 — second pass, active and incomplete
+
+Continuation: performance-audit-2026-11-06-pass3.txt addresses the shared cache
+and main-thread snapshot costs identified at the end of this report.
+
+Scope
+This continues performance-audit-2026-11-06.txt. The application-wide objective
+remains active. These are measured algorithm and coordination improvements;
+they do not establish end-to-end frame latency or exhausted optimization.
+Unrelated panel/settings changes and concurrent external edits are preserved.
+
+Terminal maintenance
+The worker now releases the terminal registry mutex before configuration I/O or
+model locks. Configuration polling caches the discovered dependency graph and
+stats known files; changed identity/mtime/ctime/size, resolver environment,
+creation/deletion, read failures or a five-minute rescan trigger discovery.
+Missing optional paths remain watched. Config and theme parsing limits remain.
+The main-queue gate coalesces pending passes, preserves configuration changes,
+and dispatches for model changes or actual release/retry/pool deadlines.
+Native view reparenting emits an internal placement revision so moving between
+windows invalidates release grouping without reading AppKit from the worker.
+
+Validation: all 32 terminal library tests passed, including the manual config
+benchmark and the final Objective-C build. Existing policy tests cover freezing,
+pinning, attachment, grace periods, warm expiry and staggered releases. The new
+combined schedule/gate regression simulates 2,401 quarter-second observations
+over ten minutes and dispatches only the initial and deadline passes. This is
+not a measurement of total process wakeups: the background poll still exists.
+Graph tests cover recursive includes/themes, optional-file creation/deletion,
+same-length atomic replacement with restored mtime, UTF-8 retry and rescan.
+Config fixture: 16 files, 100 polls. Repeated discovery averages 2.315 ms/poll;
+cached checks average 71.947 us/poll. Source reads: 1,600 -> 0 after warmup.
+Log: target/performance-audit/terminal-final-tests.log.
+Command: RIWORK_GHOSTTY_INSTALL_DIR=/Users/dgs/riWork-update-somtus-20261104/target/somtus-prep/ghostty-install
+  cargo test --locked -p riwork-nsh-terminal --lib -- --include-ignored --nocapture
+The existing verified pinned Ghostty installation was read without modifying
+that other worktree; the default local installation was absent.
+
+Native transcript allocation and search
+Streaming Markdown now keeps stable blocks in place when uniquely owned and
+retains copy-on-write behavior for external snapshots. It copies/scans only the
+changed source suffix after verifying the stable prefix. CR/BOM replacements
+retain the full-parse fallback. Body building and streaming updates borrow the
+folded item/text instead of cloning the full message first.
+Search lazily caches exact Unicode lowercase text by stable item position,
+bounded to 8 MiB of string capacity and 4,096 entries. Accepted folds invalidate
+every touched position; replacements/deltas remain fresh. Search order, the
+200-hit limit and original Unicode preview semantics are preserved.
+
+Validation: 92 native chat tests passed, three manual benchmarks ignored;
+all 12 chat bridge integration tests passed (TMPDIR=/private/tmp). The bridge
+covers 2,200-call transcripts, bounded body materialization, Markdown splices,
+16ms stream coalescing/quiet delivery, controls, replay and reattachment.
+Paired Debug measurements:
+* 300 tool results, 5,288,290 cached normalized bytes, 20 warm no-match queries:
+  809.24 -> 475.08 ms total. Warm queries perform zero further normalizations.
+* 917,518-byte stable Markdown prefix, 100 appends: 11,804.51 -> 62.03 ms total.
+  Exact final parse parity asserted. This deliberately stresses the old prefix
+  scan/copy path in an unoptimized build, not representative UI frame timing.
+Evidence and reproduction commands:
+  target/performance-audit/native-chat-allocation-results.json
+
+Engine replay and nested projection
+Replay buffers normalized events in its existing input allocation before writing
+to subscribers. Known
+event normalization and unknown/future wire bytes are retained. Owned parsed
+item events move into the transcript instead of cloning their large payloads.
+Projection indexes effective parents, cycle roots and nested requests, and
+counts activity in one pass. A bounded scan avoids hashing overhead on small
+activity summaries; larger summaries use indexed raw parent membership.
+
+Validation: all 24 log tests passed (one manual benchmark ignored, 246 seconds),
+all 18 model tests passed (one manual benchmark ignored), and four replay/live
+subscription integration cases passed. These include replay continuity, events
+arriving during replay, lagging subscribers and rate-limit restoration. The new
+writer regression checks normalization, future records, exact bytes and errors;
+the owned-fold test checks semantic parity and large allocation identity.
+Replay fixture: 64 escaped events / 1,673,070 bytes, 260,672 -> 64 writer calls.
+Owned fold: 64 events / 32 MiB payload, alternating Debug samples, median
+1.774 -> 0.287 ms. Event creation is outside this measurement.
+An additional contended rerun measured 3.349 -> 0.235 ms; removed cloning and
+writer calls are stronger evidence than any one wall-clock sample.
+Full Debug replay timings were contended; no stable app throughput claim is made.
+
+All 17 final projection tests passed including manual benchmarks. Generated
+graphs matched the original full row projection in both modes; compact tests
+retain cycles, orphans, controls, ordering, mixed tools and the depth-limit
+fallback. Temporary full old-projection oracles were removed from source.
+Paired Debug medians collected while the old oracle was available:
+* 12 items: 47.625 -> 43.542 us.
+* 2,000 items / 2,003 requests: 78.914 -> 9.427 ms.
+* 1,500-deep ancestry: 17,267 -> 22.291 ms.
+* 400 items with wide nesting: 3,742 -> 5.591 ms.
+* Activity title, 2,000 nested items: 34.541 -> 1.951 ms.
+Deep/wide cases deliberately exercise worst-case scans, not common UI workloads.
+Logs: /tmp/riwork-engine-log-wave2-tests.log,
+  /tmp/riwork-projection-final-tests.log.
+Saved local comparison binaries: target/performance-audit/engine-nesting-comparison
+  and engine-activity-title-comparison.
+
+Displayed Files identities
+Regular-file identity capture now happens after sorting and the 5,000-entry
+display cap. Scanned but omitted entries no longer require open/fstat/close and
+identity JSON allocation. Metadata is still read from a no-follow opened file
+relative to the retained validated directory descriptor. The filename bytes,
+sorting, omission count and Git decoration semantics are unchanged.
+Validation: all 14 Files tests passed including the two manual benchmarks. New
+regressions verify the exact sorted cap/open count and ancestor rename, symlink,
+directory and FIFO replacement behavior. Independent review found no regression.
+Paired Debug identity-phase measurement, 20,000 files / 5,000 displayed,
+five alternating samples: median 540.619 -> 113.050 ms; opens 20,000 -> 5,000.
+This excludes enumeration, sorting and Git work and is not full listing latency.
+Log: target/performance-audit/files-deferred-identity-tests.log.
+All three Files bridge integration tests also passed after rebuilding these
+changes: explicit error snapshots, subscriptions across two engines with owner
+cancellation, and selected-file identity reaching/reusing the editor pane.
+Log: target/performance-audit/files-deferred-identity-bridge.log.
+Large listings also select the displayed prefix before sorting it, while
+preserving stable equal-key order through original entry positions. Already
+ordered listings keep a linear path. An optimized standalone paired experiment
+(seven alternating samples, exact DTO parity) measured 50,000 shuffled entries
+62.39 -> 25.74 ms. Ordered 50,000 entries measured 12.24 -> 12.89 ms, a small
+overhead rather than an improvement; 100/6,000-entry cases were roughly equal.
+This measures only sorting of an in-memory listing. The initial naive selection
+regressed ordered input more substantially and was replaced before adoption.
+Exact production sort functions also pass standalone Unicode/numeric and
+duplicate-key/cutoff differential tests. The final Files crate suite passed
+14 tests with one manual identity benchmark ignored; no failures.
+Evidence: target/performance-audit/files-prefix-experiment-final.log and
+  files-final-sort-tests.rs; final suite: files-final-tests.log.
+All three Files bridge tests passed again with the final sort and native worker
+changes (target/performance-audit/files-final-bridge.log).
+
+Host runtime publication
+Idle publication now retains coherent shared layout generations and compares
+them with the last successfully persisted windows before cloning layouts.
+The original capture order is preserved: layouts/focus precede Store lookup,
+so a newly created/switched project gets its current root. External Store/global
+state is still read every poll. No invalidation cache was introduced.
+The engine accepts a lazy capture callback and retains its existing heartbeat,
+missing-file recovery, validation, busy-lock retry and failed-write rollback.
+The ordinary owned snapshot API remains unchanged.
+
+Validation: all 79 desktop binary unit tests passed (two ignored); 34 engine
+runtime tests passed (ten explicitly ignored); all six workspace host-layout
+tests passed. Coverage includes switch generation coherence, close/disposal,
+fresh external paths/global state, focus/geometry, loading-window fallback,
+window order/count, busy retry, invalid candidates and write rollback.
+Five Debug paired repeats, 100 captures/comparisons each, four windows:
+* 20 tabs/window, 97,121 serialized bytes: median 43.166 -> 14.539 ms total.
+* 500 tabs/window, 2,361,761 serialized bytes: 1,609.422 -> 397.004 ms total.
+Other builds were active and timing variance was substantial. These measure
+synthetic capture/comparison, not app idle CPU or frame timing.
+Raw samples, test logs and commands:
+  target/performance-audit/host-snapshot-results.json
+
+Find cancellation and worker progress
+Find opts into searchLatest/cancelSearch while ordinary search keeps its original
+promise/result behavior. Each handle retains one pending query; newer queries
+settle superseded pending requests as null and cancel active scanning between
+items. Lightweight queue tickets preserve ordering with transcript events and
+ordinary worker operations. Cancelled tickets do not split event folding batches.
+Result publication and cancellation share a short lock, preventing a cancelled
+generation from subsequently publishing its hit list. Closing the handle also
+cancels outstanding Find work. The UI cancels on input changes, close and cleanup.
+The worker drains at most 1,024 messages/events per pass, preserving entire feed
+batches, so continuous producers cannot postpone folding/delivery indefinitely.
+This does not bound the transport queue or interrupt work inside one large item.
+
+Validation so far: all 100 chat unit tests passed, four manual benchmarks ignored.
+Seven worker regressions cover supersession, independent consumers, empty queries,
+consumer/worker closure, event batching, ordinary-query ordering and drain budgets.
+Item-level cancellation keeps already normalized cache entries reusable and
+returns no partial hit list. All 12 final chat bridge tests passed, including
+16ms coalescing/quiet delivery and replayed 2,200-call transcripts. The full NSH
+application check passed. A new actual QuickJS bridge test exposed deferred
+async-method startup: searchLatest(); cancelSearch() in one JavaScript turn
+could cancel before the request existed. searchLatest now uses NSH Later to
+enqueue synchronously while retaining Promise completion/rejection semantics.
+The final bridge test passes, verifying supersession, explicit and same-turn
+cancellation settling as JavaScript null before worker release, ordinary search
+independence, correct hits and empty queries. Final registry declaration checks
+confirm the same Promise<ChatSearchHit[] | null> and cancelSearch(): void types.
+Final synthetic worker measurement, three paired Debug samples: event-fold
+delay 413.965 -> 5.570 ms; corresponding total worker time 434.676 -> 38.034 ms.
+The fixture prequeues 16 obsolete Find requests over 300 items / 15.12 MB text,
+exceeding the normalization cache budget. It is a backlog test, not a claim
+about normal typing or UI frames. Compilation remained active during sampling.
+Final logs, exact commands and remaining limits:
+  target/performance-audit/native-search-cancellation-results.json
+
+Byte-capped history pages
+The fitter sizes immutable components once, indexes retained turn references
+and request removal order, then drains the omitted prefix once. It preserves
+exact compact-JSON limits, whole-item removal, provisional turn boundaries,
+request order and oversized-item/control errors. Optional-field framing is
+measured through the real Snapshot serializer using tiny payloads; large
+unchanged controls are not repeatedly serialized. Per-row sizing counts bytes
+without allocating row JSON; metadata keeps its original one-time serializer.
+
+Validation: the complete snapshot suite passed ten tests with two benchmarks
+ignored, including the existing slow full-serialization differential (200s).
+After final byte-counter/metadata sizing refinements, all nine fast snapshot
+tests passed again, including 768 generated cap/fixed-item comparisons. Those
+cover escaped keys, unsorted request sequences, interleaved turns, absent/empty
+maps, control-only pages and integer digit boundaries. The slow oracle was not
+repeated after those sizing-only refinements; the final fast tests exercised
+the final serializer path and exact cap/output parity.
+Paired Debug common-path medians, 101 alternating samples, exact prior fitter
+embedded in the benchmark:
+* 0 rows, no trim: 14.542 -> 14.500 us.
+* 1 row: 44.583 -> 38.583 us; 12 rows: 307.250 -> 229.250 us.
+* 100 rows, no trim: 2.599 -> 1.881 ms.
+* Large controls, no trim: 4.688 -> 4.483 ms.
+* Large controls, one row removed: 7.343 -> 3.563 ms.
+A repeated-controls regression found during this audit was repaired before
+these final measurements. Large-page fixture: 1,200 rows / 64 model descriptions,
+96 KiB cap, the same 35 rows retained. Three alternating-order pairs, each a
+median of five fits, measured 1,842.008 -> 35.470 ms (median of run medians).
+Fixture construction is excluded. This is Debug history-page fitting, not full
+log loading, transport or UI latency.
+Evidence: target/performance-audit/engine-snapshot-final-tests.log,
+  engine-snapshot-final-fast-tests.log, engine-snapshot-paths-final.log and
+  engine-snapshot-comparison.json (raw outputs, commands and binary hashes).
+
+Remaining work
+Read-only follow-up audit found concrete remaining host costs:
+* crates/riwork-core/src/store.rs ParseCache retains T under a shared mutex;
+  successful cached reads deep-clone State/Settings while holding that mutex.
+  No shared immutable read API exists. The hot host snapshot path needs project
+  roots but receives all projects/worktrees/tasks/memos. Shared Arc<T> cache
+  values can preserve existing owned APIs and every freshness/error check.
+* nsh_host.rs Host::snapshot runs on AppKit, cloning launch RuntimeWindow
+  layouts before replacing them with cloned current layouts. state("") can
+  publish a full snapshot once per changed window. Closing one window captures
+  every window before filtering. Direct construction and batched publication
+  are concrete next candidates; no changes to these paths are claimed here.
+Cold search, very large unfinished Markdown tails, file enumeration, startup,
+memory growth, rendering, transport,
+and release-build/representative UI measurements remain open.
+Somtus Cua.ai Driver read-only permission check reports Accessibility and Screen
+Recording granted. No desktop input has been issued. Any desktop verification
+must use that driver and include the target PID on every input call.
+The broad engine/workspace baseline test failures documented in pass one remain
+separate from these targeted checks; a clean full-workspace suite is not claimed.
+
+Final review
+Independent reviews covered terminal scheduling/reparenting, replay ownership,
+file identity/sorting safety, coherent host snapshots, snapshot byte arithmetic
+and worker cancellation. Whitespace checks pass. Opt-in timing fixtures remain
+available; no installed application restart or deployment was performed by this
+audit. The application-wide performance goal remains active; the concrete
+remaining costs above preclude a claim that optimization is exhausted.

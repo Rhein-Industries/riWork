@@ -60,3 +60,85 @@ test("P4-MODEL-04 approval detail folds to three lines; answers need every promp
   expect(viewport([5, 2, 9])).toEqual([2, 9]);
   expect(viewport([])).toBe(null);
 });
+
+test("P4-MODEL-05 Markdown splice keeps slice bounds and owns its array", () => {
+  type Markdown = Extract<ChatBody, { kind: "markdown" }>;
+  const body: Markdown = { kind: "markdown", blocks: [
+    { type: "paragraph", content: [{ type: "text", text: "one" }] },
+    { type: "paragraph", content: [{ type: "text", text: "two" }] },
+    { type: "paragraph", content: [{ type: "text", text: "three" }] },
+  ] };
+  const added: Markdown["blocks"] = [{ type: "paragraph", content: [{ type: "text", text: "tail" }] }];
+  Object.freeze(body.blocks);
+  Object.freeze(added);
+  const bounds = [-Infinity, -5, -1, -0, 0, 0.5, 1, 1.5, 3, 4, 9, Infinity, NaN];
+  for (const from of bounds) for (const len of bounds) {
+    const expected = body.blocks.slice(0, from).concat(added).slice(0, len);
+    const changes = bodyChanges(() => body, patch({ splice: [{ key: "m", from, len, blocks: added }] }));
+    const next = changes[0][1] as Markdown;
+    expect(next.blocks).toEqual(expected);
+    expect(next.blocks !== body.blocks && next.blocks !== added).toBe(true);
+    expect(next.blocks.every((block, index) => block === expected[index])).toBe(true);
+  }
+  expect(body.blocks.length).toBe(3);
+  expect(added.length).toBe(1);
+});
+
+test("P4-MODEL-06 repeated Markdown splices compose immutably after drops and replacements", () => {
+  type Markdown = Extract<ChatBody, { kind: "markdown" }>;
+  const blocks: Markdown["blocks"] = ["one", "two", "three"].map((text) => ({ type: "paragraph", content: [{ type: "text", text }] }));
+  const first: Markdown["blocks"] = [{ type: "paragraph", content: [{ type: "text", text: "first" }] }];
+  const final: Markdown["blocks"] = [{ type: "paragraph", content: [{ type: "text", text: "final" }] }];
+  Object.freeze(blocks); Object.freeze(first); Object.freeze(final);
+  const replacement: Markdown = { kind: "markdown", blocks };
+  const changes = bodyChanges((key) => key === "text" ? { kind: "text", text: "before", tone: "reasoning" } : undefined, patch({
+    drop: ["m", "gone", "m"],
+    bodies: { m: replacement },
+    splice: [
+      { key: "m", from: 2, len: 3, blocks: first },
+      { key: "m", from: 1, len: 2, blocks: final },
+      { key: "m", from: 2, len: 2, blocks: [] },
+      { key: "gone", from: 0, len: 1, blocks: first },
+    ],
+    append: [{ key: "text", text: " after" }, { key: "m", text: "ignored" }],
+  }));
+  expect(changes.map(([key]) => key)).toEqual(["m", "gone", "text"]);
+  const next = changes[0][1] as Markdown;
+  expect(next.blocks).toEqual([blocks[0], final[0]]);
+  expect(next.blocks[0] === blocks[0] && next.blocks[1] === final[0]).toBe(true);
+  expect(next !== replacement && next.blocks !== blocks && next.blocks !== final).toBe(true);
+  expect(changes[1][1]).toBe(undefined);
+  expect(changes[2][1]).toEqual({ kind: "text", text: "before after", tone: "reasoning" });
+  expect(blocks.length).toBe(3);
+});
+
+test("P4-MODEL-07 duplicate row keys retain last-object and remove-before-upsert semantics", () => {
+  const first = row("a", "first"), middle = row("b"), last = row("a", "last");
+  const rows = [first, middle, last];
+  Object.freeze(rows);
+  const canonical = applyRows(rows, patch({ upsert: [row("unknown")] }));
+  expect(canonical.length).toBe(3);
+  expect(canonical[0] === last && canonical[1] === middle && canonical[2] === last).toBe(true);
+  expect(canonical !== rows).toBe(true);
+  const revived = row("a", "revived");
+  const next = applyRows(rows, patch({ remove: ["a", "missing"], upsert: [row("a", "older"), revived] }));
+  expect(next.length).toBe(3);
+  expect(next[0] === revived && next[1] === middle && next[2] === revived).toBe(true);
+  expect(rows[0] === first && rows[2] === last).toBe(true);
+});
+
+test("P4-MODEL-08 explicit row order and resets preserve identities without retaining unseen rows", () => {
+  const rows = [row("a"), row("b")], unseen = row("new");
+  const next = applyRows(rows, patch({ upsert: [unseen] }));
+  expect(next[0] === rows[0] && next[1] === rows[1]).toBe(true);
+  expect(applyRows(next, patch({ order: ["new"] }))).toEqual([]);
+  const repeated = applyRows(rows, patch({ upsert: [unseen], order: ["b", "new", "missing", "b"] }));
+  expect(repeated.length).toBe(3);
+  expect(repeated[0] === rows[1] && repeated[1] === unseen && repeated[2] === rows[1]).toBe(true);
+  const empty = applyRows(rows, patch({ order: [] }));
+  expect(empty.length === 0 && empty !== rows).toBe(true);
+  expect(applyRows(rows, patch({ append: [{ key: "body", text: "delta" }] })) === rows).toBe(true);
+  const reset = [unseen];
+  expect(applyRows(rows, { kind: "reset", rev: 3, seq: 3, rows: reset }) === reset).toBe(true);
+  expect(applyRows(rows, { kind: "reset", rev: 4, seq: 4 })).toEqual([]);
+});

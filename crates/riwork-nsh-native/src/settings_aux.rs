@@ -11,7 +11,7 @@ use riwork_engine::anthropic_key::{self, KeyStore};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    hub::{Hub, Snapshot, TopicSubscription},
+    hub::{Hub, TopicSubscription},
     service::{self, blocking},
 };
 
@@ -142,7 +142,7 @@ impl ApiKey {
         blocking(|| api_key().remove()).await
     }
     pub fn subscribe(
-        listener: Callback<Snapshot<ApiKeyDto>>,
+        listener: Callback<crate::hub::SharedSnapshot<ApiKeyDto>>,
         cx: CallCx<'_>,
     ) -> crate::Subscription {
         crate::Subscription::start(cx, async move {

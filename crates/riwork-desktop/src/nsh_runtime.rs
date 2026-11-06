@@ -497,8 +497,11 @@ impl HostRuntime {
 
     /// The engine writes only changes or its 30-second heartbeat. A busy
     /// registry returns false, so the next host worker tick can retry.
-    pub fn try_publish(&mut self, windows: Vec<RuntimeWindow>) -> Result<bool, String> {
-        self.registration.try_publish_windows(windows)
+    pub fn try_publish_if_changed(
+        &mut self,
+        capture: impl FnOnce(&[RuntimeWindow]) -> Option<Vec<RuntimeWindow>>,
+    ) -> Result<bool, String> {
+        self.registration.try_publish_windows_if_changed(capture)
     }
 
     pub fn pending_reload(&self) -> Result<Option<ReloadRequest>, String> {
@@ -894,7 +897,12 @@ mod tests {
             .set_restore_window_ids(["ordinary-one".into(), "ordinary-two".into()])
             .unwrap();
         runtime.publish(windows.clone()).unwrap();
-        assert!(runtime.try_publish(windows.clone()).unwrap());
+        assert!(
+            runtime.try_publish_if_changed(|published| {
+                assert_eq!(published, windows);
+                None
+            }).unwrap()
+        );
         let instances = manager.instances().unwrap();
         assert_eq!(instances.len(), 1);
         assert_eq!(instances[0].windows, windows);

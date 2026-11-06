@@ -274,17 +274,20 @@ export function ChatTab(props: ChatTabProps) {
   effect(() => {
     const text = query().trim();
     const token = ++searchGeneration;
+    handle.cancelSearch();
     hitIndex.set(-1); hits.set([]);
     if (!finding() || !text) { searching.set(false); return; }
     searching.set(true);
     const timer = setTimeout(() => {
-      void handle.search(text).then((results) => {
+      void handle.searchLatest(text).then((results) => {
         if (!alive || token !== searchGeneration) return;
-        hits.set(results); searching.set(false);
+        searching.set(false);
+        if (results === null) return;
+        hits.set(results);
         if (results.length) revealHit(0);
       }).catch((error) => { if (alive && token === searchGeneration) { searching.set(false); notice(String(error)); } });
     }, 150);
-    return () => clearTimeout(timer);
+    return () => { clearTimeout(timer); handle.cancelSearch(); };
   });
 
   // The focus goes back to the code block when it was in the row.

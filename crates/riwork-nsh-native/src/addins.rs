@@ -402,10 +402,10 @@ impl Api {
                     let subscription = hosts.subscribe();
                     let weak = Arc::downgrade(&self);
                     watch.1 = Some(runtime().spawn(async move {
-                        while let Ok(snapshot) = subscription.recv().await {
+                        while let Ok(snapshot) = subscription.recv_shared().await {
                             let Some(api) = weak.upgrade() else { break };
                             if api.closed.load(Ordering::Acquire) { break; }
-                            let event = subscription.latest(snapshot);
+                            let event = subscription.latest_shared(snapshot);
                             let _ = api.channel.send("addin.hosts", serde_json::to_value(event).unwrap());
                         }
                     }));
@@ -664,11 +664,11 @@ impl Addins {
         })
         .await
     }
-    pub fn subscribe(listener: Callback<Value>, cx: CallCx<'_>) -> Subscription {
+    pub fn subscribe(listener: Callback<crate::hub::Shared<Value>>, cx: CallCx<'_>) -> Subscription {
         Subscription::start(cx, async move {
             let subscription = changes().subscribe();
-            while let Ok(snapshot) = subscription.recv().await {
-                listener.post(subscription.latest(snapshot).data);
+            while let Ok(snapshot) = subscription.recv_shared().await {
+                listener.post(subscription.latest_shared(snapshot).data);
                 next_frame().await;
             }
         })

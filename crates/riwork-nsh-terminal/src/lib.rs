@@ -2,6 +2,7 @@
 //! session identity and all tmux semantics remain in riwork-engine.
 mod config;
 mod images;
+mod maintenance;
 #[cfg(target_os = "macos")]
 mod macos;
 mod policy;

@@ -1,0 +1,127 @@
+RiWork / Somtus performance audit — seventh pass, 2026-11-06
+
+Scope and status
+Continues performance-audit-2026-11-06-pass6.txt. All 32 saved pass6 source
+fingerprints and all eight directly measured production sources matched before
+this pass. The previous pass's owned build/test/timing jobs were terminal.
+The application-wide goal remains active and incomplete. Unrelated changes
+are preserved; no installed app was driven, restarted or deployed. Somtus's
+cua-driver remains the desktop automation provider.
+
+Borrowed Markdown lines
+The preceding phase probe identifies open multiline fences as a remaining parse
+cost. The accepted candidate normalizes tabs once into Cow<str>, borrows source
+lines and recursive list/quote slices, and preserves owned returned blocks.
+Tab-free source remains borrowed; tabs still expand to exactly four ASCII spaces.
+Unindent retains the original calculation and returns a slice. MAX_DEPTH, task
+markers, CR/BOM behavior, parser/cache decisions and the Splice wire format are
+unchanged. Cache byte offsets still use the original source. Baseline is the
+pass6 parser, including its accepted allocation-free is_rule predicate.
+
+Independent review found no lifetime or semantic blocker. The exact-source
+optimized probe verifies 205 source cases through 8,968 UTF-8 stream prefixes,
+including full/cached parse, converted document and serialized Splice parity;
+1,170 unindent cases; 24 large inputs; replacements and 205 retained parsed-Arc
+cases. The preceding rule/stream/threshold proof also passes. Allocation counters
+run in a separate executable with 48 exact-output comparisons.
+
+Five alternating paired samples of 32 appended updates across 24 workloads
+(nominal 16/64/256 KiB starting sizes; 256-byte chunks) measure parse, update
+and combined update+serialization separately, 72 conditions total. The optimized
+helpers use the pinned release dependencies recorded in provenance. Input setup
+is excluded. These are in-process helper measurements, not UI latency.
+Combined multiline-fence updates improve 39–48% across tab-free, sparse-tab and
+all-tab fixtures. At nominal 256 KiB starting size, median batch-average costs
+per update are:
+  No tabs: 1,120.886 -> 612.691 us;
+  Sparse tabs: 1,182.226 -> 636.442 us;
+  All tabs: 1,542.856 -> 806.686 us.
+Other combined paths mostly improve 1–4%; single-line fence at 16 KiB improves
+9%. Small mixed results remain: 16 KiB prose +0.6%, 16 KiB sealed-prefix +0.4%,
+64 KiB single-line fence +0.1%. No universal speedup is claimed.
+
+For the final combined update in the nominal 256 KiB multiline-fence fixtures,
+allocation requests fall from 20,068 to 71 without tabs, 20,347 to 73 with sparse
+tabs, and 29,025 to 73 with all tabs. Requested bytes are respectively
+4,765,347 -> 3,720,422; 4,786,262 -> 4,535,120; 5,432,658 -> 4,647,698.
+These are requested Rust heap allocations/bytes, not peak memory or RSS.
+Timing completed in 25.223 seconds, 08:42:12.473–08:42:37.696 UTC, with no other
+owned compile/test/timing job. Ordinary desktop activity was not controlled.
+Exact sources, dependency hashes, commands, raw samples and proof counts:
+  target/performance-audit/markdown-borrowed-lines/probe-provenance.json,
+  sources.json, parity.log, benchmark.jsonl, allocations.jsonl and
+  timing-wallclock.json.
+
+Final production validation uses the current shared-preferences/Files source
+plus borrowed Markdown lines: native library 249 passed, 10 ignored; chat_bridge
+12 passed; chat_search_bridge 1 passed. The ten ignored cases are nine manual
+benchmarks and one external-runtime/model/recording speech test. Two focused
+new regressions cover original-source boundaries after tab normalization,
+retained generations, and owned nested quote/task/fence output. Validation used:
+  TMPDIR=/private/tmp cargo test --locked -p riwork-nsh-native --lib
+    --test chat_bridge --test chat_search_bridge -- --test-threads=1
+Full output is in markdown-borrowed-lines/native-final-tests.log.
+The broader baseline settings/engine/workspace failures from prior passes were
+not changed or retested, and no clean full-workspace claim is made.
+
+Frontend Markdown splices
+The accepted frontend change keeps the existing prefix slice and concat,
+then avoids the final slice only when the new array already has exactly the
+requested length. It preserves the fallback for all other slice lengths.
+18,295 differential QuickJS cases pass, including frozen/sparse arrays, numeric
+boundaries, mixed multiple splices, retained object identities and read/key order.
+Separate operation counts show valid tail-splice arrays fall from three to two.
+For a tail rewrite of N blocks, copied result-length totals fall from 3N-1 to
+2N-1. These are instrumented builtin calls/lengths, not allocator bytes or RSS.
+
+Nine alternating paired samples of actual full bodyChanges helpers in the
+cached release QuickJS runtime, reusing decoded inputs and normal uninstrumented
+Array builtins, give these median batch-average costs per delivery:
+  1 block: 1.600 -> 1.481 us; 20 blocks: 2.703 -> 2.219 us;
+  200 blocks: 12.144 -> 8.892 us; 5,000 blocks: 238.828 -> 168.429 us;
+  Four successive 200-block splices: 43.252 -> 31.229 us;
+  Three 200-block bodies: 33.331 -> 24.177 us.
+Mismatch fallback controls remain effectively unchanged: short length +0.1%,
+long length unchanged. Valid workloads improve 7–29%. Runtime memory is capped
+at 256 MiB; the Rust runner supplies a monotonic clock. The run took 8.32 seconds
+with no competing owned job after an unrelated desktop spike settled. Ordinary
+desktop activity remained around one CPU core; load was 3.71 on eight cores.
+No app was interacted with or stopped. This excludes JSON decoding, bridge and
+rendering; no end-to-end UI gain is claimed. Scope is plain decoded arrays and
+objects, not custom species/getters. Evidence and all ten workload samples:
+  target/performance-audit/chat-markdown-splice/{proof.log,timing.log,
+  preparation.json,results.json,report.txt}.
+
+The adopted helper is byte-identical to the measured candidate. Actual-source
+headless NSH validation passes all six P4-MODEL tests in an isolated RIWORK_HOME,
+including 169 numeric-bound pairs and repeated-splice/drop/replacement identity
+coverage. Command: nsh test apps/riwork/chat/model.test.ts --filter P4-MODEL
+(the exact environment, CLI path and output are recorded with the results).
+No platform/macOS target or installed application was launched. ChatTab and its
+unrelated UI edits are untouched.
+
+The larger applyRows index change is deferred: body-only deliveries already
+return without a row rebuild, and duplicate/default-order behavior needs care.
+
+The host producer queue still needs an ordering/lifetime proof before changes.
+Pointer-identical geometry coalescing alone cannot bound edited generations,
+and shutdown/receiver teardown must not shift deep payload destruction onto
+AppKit. No host-queue implementation is claimed in this pass. The precise
+sender/receiver inventory and deterministic interleaving proof obligations are
+recorded in target/performance-audit/host-producer-queue-audit.txt.
+
+Remaining work and final verification
+Open Markdown blocks still require whole-tail parsing, conversion, JSON cloning
+and full-block Splice serialization. Borrowed lines reduce temporary allocation
+without making that pipeline incremental. Cold/overflow search, host queue
+growth and layout teardown, rendering/frame pacing and representative app/UI
+measurements remain open. No exhausted-optimization claim is made.
+The pass7 production/test fingerprint manifest records 34 files at
+  target/performance-audit/pass7-production-sources.sha256.
+Relevant diff whitespace checks pass. All owned validation/timing jobs have
+terminated; no deployment, installed app restart or unrelated-process changes.
+The overall goal remains active.
+
+Continuation: performance-audit-2026-11-06-pass8.txt records borrowed code-block
+serialization, row-patch allocation removal and the subsequent search/host-queue
+experiments. The measurements and deferred work above describe pass7's state.

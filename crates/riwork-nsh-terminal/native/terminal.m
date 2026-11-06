@@ -404,6 +404,7 @@ bool rw_terminal_read_config_colors(const char *path, uint32_t colors[18]) {
         }
     }
     [self syncGeometry]; [self syncVisibility];
+    [self emit:@"placementChanged" fields:@{}];
     if (focusOnAttach && [self allowsInput] && self.window) [self.window makeFirstResponder:self];
 }
 - (void)viewDidChangeBackingProperties { [super viewDidChangeBackingProperties]; [self syncGeometry]; }

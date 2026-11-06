@@ -92,9 +92,28 @@ pub struct HostLayout {
 
 struct CurrentLayout {
     project: ProjectLayout,
-    // ArcSwap readers can release the final generation on any thread. Its
-    // writer therefore owns the same disposal guard as a cancelled switch.
-    persistence: OwnedPersistence,
+    // Readers of every generation share the writer's disposal guard. The last
+    // owner can release it on any thread without running its destructor there.
+    persistence: Arc<OwnedPersistence>,
+}
+
+/// A coherent host read that shares the layout instead of copying its tabs.
+/// Retaining it also retains the generation's guarded persistence owner.
+pub struct ProjectSnapshot(Arc<CurrentLayout>);
+
+impl ProjectSnapshot {
+    /// Whether both captures retain the exact same published generation.
+    pub fn shares_generation(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+
+    pub fn project_id(&self) -> &str {
+        self.0.persistence.project_id()
+    }
+
+    pub fn project(&self) -> &ProjectLayout {
+        &self.0.project
+    }
 }
 
 /// Reserves the window while a replacement is prepared off the engine thread.
@@ -143,7 +162,7 @@ pub fn registration_backend(
         window_size: AtomicU64::new(pack_size(snapshot.window_size)),
         current: Some(ArcSwap::from_pointee(CurrentLayout {
             project: snapshot,
-            persistence: OwnedPersistence(Some(persistence)),
+            persistence: Arc::new(OwnedPersistence(Some(persistence))),
         })),
         closing: AtomicBool::new(false),
         switching: AtomicBool::new(false),
@@ -217,10 +236,10 @@ impl HostLayout {
     pub fn publish(&self, mut project: ProjectLayout) {
         project.window_size = self.window_size();
         let current = self.current.as_ref().expect("live host layout");
-        let persistence = current.load().persistence.clone();
+        let persistence = Arc::clone(&current.load().persistence);
         current.store(Arc::new(CurrentLayout {
             project,
-            persistence: OwnedPersistence(Some(persistence)),
+            persistence,
         }));
     }
 
@@ -370,6 +389,11 @@ impl HostLayout {
         )
     }
 
+    /// Capture identity and layout together without allocating either payload.
+    pub fn shared_project_snapshot(&self) -> ProjectSnapshot {
+        ProjectSnapshot(self.current.as_ref().expect("live host layout").load_full())
+    }
+
     pub(crate) fn begin_project_switch(self: &Arc<Self>) -> Result<ProjectSwitch, String> {
         if self.closing.load(Ordering::SeqCst) {
             return Err("unavailable: window is closing".into());
@@ -457,10 +481,10 @@ impl ProjectSwitch {
             .expect("live host layout")
             .swap(Arc::new(CurrentLayout {
                 project,
-                persistence: OwnedPersistence(Some(persistence)),
+                persistence: Arc::new(OwnedPersistence(Some(persistence))),
             }));
-        // Each generation owns its disposal guard, including any generation
-        // still held by an ArcSwap reader after this replacement.
+        // Older readers retain the outgoing writer's shared disposal guard
+        // until their final generation is released.
         drop(previous);
         self.host.switching.store(false, Ordering::SeqCst);
         self.finished = true;
@@ -485,7 +509,14 @@ impl Drop for HostLayout {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    static DISPOSAL_SUBMISSIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 pub(crate) fn defer_persistence(persistence: Arc<dyn LayoutBackend>) {
+    #[cfg(test)]
+    DISPOSAL_SUBMISSIONS.with(|count| count.set(count.get() + 1));
     let deferred = DeferredPersistence(Some(persistence));
     if let Ok(runtime) = tokio::runtime::Handle::try_current() {
         // Cancellation drops the capture through the guarded fallback.
@@ -503,8 +534,8 @@ impl Drop for EditAdmission<'_> {
     }
 }
 
-/// Every generation transfers its owned Arc, rather than a temporary clone, to
-/// the blocking pool. Ordinary edits reuse the pool instead of spawning threads.
+/// Generations share this owner. Its final release transfers the backend Arc
+/// to the blocking pool; intermediate generations need no disposal work.
 struct OwnedPersistence(Option<Arc<dyn LayoutBackend>>);
 
 impl std::ops::Deref for OwnedPersistence {
@@ -600,6 +631,7 @@ mod tests {
     struct FakeLayoutBackend {
         scheduled: AtomicUsize,
         flushed: AtomicUsize,
+        project_id: String,
     }
 
     impl LayoutBackend for FakeLayoutBackend {
@@ -611,6 +643,55 @@ mod tests {
             self.flushed.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
+        fn project_id(&self) -> &str {
+            &self.project_id
+        }
+    }
+
+    #[test]
+    fn borrowed_snapshot_keeps_identity_and_layout_together_during_a_switch() {
+        let mut before = default_project_layout();
+        before.selected_task_id = Some("before".into());
+        let host = registration(
+            "borrowed-snapshot-switch",
+            Arc::new(FakeLayoutBackend {
+                project_id: "before".into(),
+                ..Default::default()
+            }),
+            before.clone(),
+        )
+        .unwrap();
+        let snapshot = host.shared_project_snapshot();
+        {
+            let writer = Arc::clone(&host);
+            std::thread::spawn(move || {
+                let mut after = default_project_layout();
+                after.selected_task_id = Some("after".into());
+                writer
+                    .begin_project_switch()
+                    .unwrap()
+                    .commit(
+                        Arc::new(FakeLayoutBackend {
+                            project_id: "after".into(),
+                            ..Default::default()
+                        }),
+                        after,
+                        false,
+                        || (),
+                    )
+                    .unwrap();
+            })
+            .join()
+            .unwrap();
+            assert_eq!(snapshot.project_id(), "before");
+            assert_eq!(snapshot.project(), &before);
+        }
+        let latest = host.shared_project_snapshot();
+        assert_eq!(latest.project_id(), "after");
+        assert_eq!(
+            latest.project().selected_task_id.as_deref(),
+            Some(latest.project_id())
+        );
     }
 
     struct DisposalProbe(std::sync::mpsc::Sender<std::thread::ThreadId>);
@@ -661,6 +742,255 @@ mod tests {
         assert_ne!(old_rx.recv_timeout(timeout).unwrap(), engine_thread);
         drop(host);
         assert_ne!(new_rx.recv_timeout(timeout).unwrap(), engine_thread);
+    }
+
+    #[test]
+    fn ordinary_generations_share_one_writer_owner_and_submit_only_its_final_disposal() {
+        for with_runtime in [false, true] {
+            let runtime = with_runtime.then(|| tokio::runtime::Runtime::new().unwrap());
+            let _entered = runtime.as_ref().map(|runtime| runtime.enter());
+            let caller = std::thread::current().id();
+            let (tx, rx) = std::sync::mpsc::channel();
+            DISPOSAL_SUBMISSIONS.with(|count| count.set(0));
+            let host = registration(
+                &format!("shared-writer-generations-{with_runtime}"),
+                Arc::new(DisposalProbe(tx)),
+                default_project_layout(),
+            )
+            .unwrap();
+            let mut readers = vec![host.current.as_ref().unwrap().load_full()];
+            for index in 0..128 {
+                let mut project = default_project_layout();
+                project.selected_task_id = Some(format!("generation-{index}"));
+                host.publish(project);
+                let next = host.current.as_ref().unwrap().load_full();
+                assert!(Arc::ptr_eq(&readers[0].persistence, &next.persistence));
+                readers.push(next);
+            }
+            assert_eq!(DISPOSAL_SUBMISSIONS.with(|count| count.get()), 0);
+            drop(readers);
+            assert_eq!(DISPOSAL_SUBMISSIONS.with(|count| count.get()), 0);
+            assert!(rx.try_recv().is_err(), "live host still owns the writer");
+            drop(host);
+            assert_eq!(DISPOSAL_SUBMISSIONS.with(|count| count.get()), 1);
+            assert_ne!(
+                rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap(),
+                caller
+            );
+            assert!(rx.try_recv().is_err());
+        }
+    }
+
+    #[test]
+    fn switched_writer_owners_wait_for_their_last_delayed_reader() {
+        for with_runtime in [false, true] {
+            let runtime = with_runtime.then(|| tokio::runtime::Runtime::new().unwrap());
+            let _entered = runtime.as_ref().map(|runtime| runtime.enter());
+            let caller = std::thread::current().id();
+            let (old_tx, old_rx) = std::sync::mpsc::channel();
+            let (new_tx, new_rx) = std::sync::mpsc::channel();
+            DISPOSAL_SUBMISSIONS.with(|count| count.set(0));
+            let host = registration(
+                &format!("shared-writer-switch-{with_runtime}"),
+                Arc::new(DisposalProbe(old_tx)),
+                default_project_layout(),
+            )
+            .unwrap();
+            let old_first = host.shared_project_snapshot();
+            host.publish(default_project_layout());
+            let old_last = host.shared_project_snapshot();
+            let mut switch = host.begin_project_switch().unwrap();
+            switch
+                .commit(
+                    Arc::new(DisposalProbe(new_tx)),
+                    default_project_layout(),
+                    false,
+                    || (),
+                )
+                .unwrap();
+            drop(switch);
+            let newest = host.shared_project_snapshot();
+            assert!(!Arc::ptr_eq(&old_last.0.persistence, &newest.0.persistence));
+            drop(host);
+            drop(old_first);
+            assert_eq!(DISPOSAL_SUBMISSIONS.with(|count| count.get()), 0);
+            assert!(old_rx.try_recv().is_err());
+            assert!(new_rx.try_recv().is_err());
+            drop(old_last);
+            assert_eq!(DISPOSAL_SUBMISSIONS.with(|count| count.get()), 1);
+            assert_ne!(
+                old_rx
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .unwrap(),
+                caller
+            );
+            assert!(new_rx.try_recv().is_err());
+            drop(newest);
+            assert_eq!(DISPOSAL_SUBMISSIONS.with(|count| count.get()), 2);
+            assert_ne!(
+                new_rx
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .unwrap(),
+                caller
+            );
+        }
+    }
+
+    #[test]
+    fn concurrent_final_readers_submit_one_off_thread_writer_disposal() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let host = registration(
+            "shared-writer-concurrent",
+            Arc::new(DisposalProbe(tx)),
+            default_project_layout(),
+        )
+        .unwrap();
+        let first = host.shared_project_snapshot();
+        host.publish(default_project_layout());
+        let second = host.shared_project_snapshot();
+        drop(host);
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        let workers = [first, second]
+            .into_iter()
+            .map(|reader| {
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    DISPOSAL_SUBMISSIONS.with(|count| count.set(0));
+                    barrier.wait();
+                    drop(reader);
+                    (
+                        std::thread::current().id(),
+                        DISPOSAL_SUBMISSIONS.with(|count| count.get()),
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        barrier.wait();
+        let workers = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(workers.iter().map(|(_, count)| count).sum::<usize>(), 1);
+        let disposer = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+        assert!(workers.iter().all(|(caller, _)| *caller != disposer));
+        assert_ne!(disposer, std::thread::current().id());
+    }
+
+    #[test]
+    fn final_writer_disposal_survives_a_shutdown_runtime() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let handle = runtime.handle().clone();
+        runtime.shutdown_background();
+        let _entered = handle.enter();
+        let (tx, rx) = std::sync::mpsc::channel();
+        DISPOSAL_SUBMISSIONS.with(|count| count.set(0));
+        let host = registration(
+            "shared-writer-shutdown",
+            Arc::new(DisposalProbe(tx)),
+            default_project_layout(),
+        )
+        .unwrap();
+        drop(host);
+        assert_eq!(DISPOSAL_SUBMISSIONS.with(|count| count.get()), 1);
+        assert_ne!(
+            rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap(),
+            std::thread::current().id()
+        );
+    }
+
+    #[test]
+    #[ignore = "manual paired retained-generation disposal benchmark"]
+    fn shared_writer_disposal_benchmark() {
+        use riwork_core::layouts::SavedTab;
+        use std::time::{Duration, Instant};
+
+        // Exact pre-change ownership: every retained generation owned a new
+        // guard around another Arc to the same writer. Field drop order also
+        // matches CurrentLayout (payload first, persistence second).
+        struct PreviousGeneration {
+            _project: ProjectLayout,
+            _persistence: OwnedPersistence,
+        }
+
+        for with_runtime in [false, true] {
+            let runtime = with_runtime.then(|| tokio::runtime::Runtime::new().unwrap());
+            let _entered = runtime.as_ref().map(|runtime| runtime.enter());
+            for tabs in [20, 500] {
+                let mut project = default_project_layout();
+                project.panes.values_mut().next().unwrap().tabs = (0..tabs)
+                    .map(|tab| SavedTab::Addin {
+                        instance_id: format!("tab-{tab}"),
+                        addin: "project/review".into(),
+                        view: "files".into(),
+                        title: format!("Review {tab}"),
+                        args: serde_json::json!({"context": "x".repeat(1024)}),
+                    })
+                    .collect();
+                for generations in [1, 128] {
+                    let setup = |shared: bool| {
+                        let (tx, rx) = std::sync::mpsc::channel();
+                        let backend: Arc<dyn LayoutBackend> = Arc::new(DisposalProbe(tx));
+                        let dispose: Box<dyn FnOnce()> = if shared {
+                            let host = registration_backend(
+                                "shared-writer-benchmark",
+                                backend,
+                                project.clone(),
+                            )
+                            .unwrap();
+                            let mut readers = vec![host.shared_project_snapshot()];
+                            for _ in 1..generations {
+                                host.publish(project.clone());
+                                readers.push(host.shared_project_snapshot());
+                            }
+                            Box::new(move || {
+                                drop(readers);
+                                drop(host);
+                            })
+                        } else {
+                            let readers = (0..generations)
+                                .map(|_| {
+                                    Arc::new(PreviousGeneration {
+                                        _project: project.clone(),
+                                        _persistence: OwnedPersistence(Some(Arc::clone(&backend))),
+                                    })
+                                })
+                                .collect::<Vec<_>>();
+                            let current = Arc::clone(readers.last().unwrap());
+                            drop(backend);
+                            Box::new(move || {
+                                drop(readers);
+                                drop(current);
+                            })
+                        };
+                        (dispose, rx)
+                    };
+                    let mut samples = [Vec::new(), Vec::new()];
+                    for sample in 0..5 {
+                        for index in if sample % 2 == 0 { [0, 1] } else { [1, 0] } {
+                            let (dispose, final_drop) = setup(index == 1);
+                            DISPOSAL_SUBMISSIONS.with(|count| count.set(0));
+                            let started = Instant::now();
+                            dispose();
+                            let submissions = DISPOSAL_SUBMISSIONS.with(|count| count.get());
+                            // The final raw backend Arc cannot be destroyed
+                            // until every submitted disposal has released it.
+                            let disposer =
+                                final_drop.recv_timeout(Duration::from_secs(10)).unwrap();
+                            samples[index].push(started.elapsed());
+                            assert_ne!(disposer, std::thread::current().id());
+                            assert_eq!(submissions, if index == 0 { generations } else { 1 });
+                        }
+                    }
+                    for sample in &mut samples {
+                        sample.sort();
+                    }
+                    eprintln!(
+                        "retained generation disposal: tokio={with_runtime} tabs={tabs} generations={generations} median_of=5 baseline={:?} shared_owner={:?} submissions={generations}->1; includes payload destruction and final backend destruction, excludes fixture creation/publication",
+                        samples[0][2], samples[1][2]
+                    );
+                }
+            }
+        }
     }
 
     #[test]

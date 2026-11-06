@@ -1,0 +1,187 @@
+RiWork / Somtus performance audit — third pass, 2026-11-06
+
+Continuation: performance-audit-2026-11-06-pass4.txt records shared hub payloads,
+bounded host snapshot batches, large JSON previews and empty terminal maintenance.
+
+Scope
+Continues performance-audit-2026-11-06.txt and its pass2 continuation.
+This pass addresses immutable cache reads, AppKit window capture, transcript
+search text ownership, and native project inventory search/recency filtering.
+The worktree contained unrelated UI/settings edits, which were preserved.
+No installed app was restarted, deployed, or driven. Desktop automation remains
+reserved for Somtus's Cua.ai Driver with an explicit target PID on every input.
+This is source, headless test, and synthetic benchmark evidence; it does not
+establish release-build frame rates, startup latency, or application-wide CPU.
+
+Shared immutable Store and Settings generations
+ParseCache<T> now retains Arc<T>. Store::snapshot_shared() and
+SettingsStore::load_shared() return immutable generations. Existing owned
+snapshot()/load() APIs still return independent copies, cloned after releasing
+the cache mutex. Successful State transactions move the committed value into
+the cache; Settings prepares its required owned-return/cache copy outside the
+mutex. The host's five read-only Store/Settings paths use the shared APIs.
+
+The existing FileStamp contract is unchanged: length, mtime, Unix inode,
+missing-file vs metadata-error distinction, before/after read checks and
+successful-write-only cache publication. In particular, an in-place edit that
+restores size/mtime intentionally retains the cached value, as before; an
+atomic replacement with a new inode refreshes it. New tests cover generation
+sharing, old snapshot retention, independent owned/COW mutation, failed writes,
+invalid JSON, disappearance, atomic replacement and metadata errors.
+
+Paired warm-cache Debug medians, 101 alternating samples of 32 reads, per read:
+  State 10 projects / 40 worktrees, 15,471 bytes: 10.837 -> 1.191 us.
+  State 200 projects / 800 worktrees, 809,741 bytes: 214.071 -> 1.237 us.
+  Settings 10 chat overrides, 1,762 bytes: 2.871 -> 1.638 us.
+  Settings 10,000 overrides, 251,512 bytes: 806.430 -> 1.687 us.
+Both paths stat on every call; fixture creation and parsing are excluded.
+The baseline reproduces the prior stat/deep-clone-under-mutex path.
+
+Validation: Store suite 64 passed, 3 ignored. Settings suite 23 passed, 1
+ignored, with two existing theme assertions failing (Ghostty/TokyoNight vs
+expected Native). Their exact input JSON and initial assertions also fail
+against a saved pre-Arc core library; this is not a clean Settings suite claim.
+New shared-cache tests pass. No theme behavior or stale assertions were edited.
+Evidence: target/performance-audit/core-shared-cache-report.txt,
+  core-shared-cache-tests.log, core-shared-store-tests.log,
+  core-shared-settings-tests.log, core-shared-cache-benchmarks.log,
+  core-theme-baseline.log and core-theme-baseline-library.txt.
+
+Main-thread window capture
+Window launch DTOs are held in Arc. An ordinary Service::Snapshot captures
+shared launch/current-layout generations plus geometry and focus; the service
+thread creates the owned reload DTO. Capture preserves the generation observed
+before handoff even if a layout or global selection changes afterward.
+Materialization builds the final DTO directly instead of cloning and discarding
+the launch layout. Closing one window selects it before capture. state("")
+updates every window before one publication; open/dev-reload avoid duplicate
+publication. Existing close admissions, flush barriers, loading fallbacks,
+project-path freshness, and global-state merging remain in force.
+
+Four loaded windows formerly cloned eight layouts on AppKit per publication.
+They now clone zero there and four on the service thread. A selected close
+copies one current/fallback layout instead of eight across all four windows.
+
+Debug medians of three paired samples, each 100 captures, four windows:
+  20 tabs/window: previous owned capture 10.945 ms; shared capture 0.230709 ms;
+    service materialization 4.580169 ms; selected-close materialization 1.253623 ms.
+  500 tabs/window: previous owned capture 244.856828 ms; shared capture 0.278829 ms;
+    service materialization 103.209121 ms; selected close 26.120460 ms.
+These exclude actual AppKit geometry calls, dispatch and rendering. Copying is
+reduced and moved; it is not eliminated from the service thread.
+
+Validation: desktop dev-reload suite 86 passed, 4 ignored. Tests cover exact
+prior-output parity across delayed handoff, focus, loading/global/mode variants,
+selected close, last-admitted-edit flush, update batching, and prior runtime
+publication/restore cases. Evidence: target/performance-audit/
+  host-main-capture-tests.log, host-main-capture-benchmark.log,
+  host-main-capture-results.json (commands, sample sizes and limitations).
+Default-feature desktop cargo check also passes on the final production source:
+  RIWORK_GHOSTTY_INSTALL_DIR=/Users/dgs/riWork-update-somtus-20261104/target/somtus-prep/ghostty-install
+    cargo check --locked -p riwork-desktop --bin somtus
+  target/performance-audit/desktop-default-pass3-check.log
+The existing rust-objcopy/libLLVM warning remains nonfatal. The pinned Ghostty
+artifact location was reused read-only; no toolchain installation was changed.
+
+Transcript search text ownership
+Search now borrows simple body text and represents command/tool output with
+borrowed segments. Warm hits construct only the bounded preview, without
+copying the full output. Ordinary user text can borrow its trimmed slice;
+CR/attachment cases retain the previous normalization. Owned item_text callers
+still receive the same strings. Lowercase remains the standard whole-string
+operation, preserving expanding mappings and contextual Greek sigma. Preview
+offsets retain the old lowercase-character-count behavior and whitespace rules.
+Cache limits, touched-position invalidation, hit ordering/200-hit cap and latest
+search cancellation remain in force. Cancellation checks surround the work for
+each item; one huge item still cannot be interrupted midway through formatting.
+
+The first timing pass rejected an ASCII-specific lowercasing candidate and a
+slow CRLF substring check. Final paired Debug medians, per query:
+  12 items / 256-byte payloads: cold hits 136.936 -> 68.840 us;
+    warm hits 132.332 -> 61.253 us; warm misses 3.395 -> 3.407 us.
+  128 items / 48 KiB each, warm hits:
+    Agent text 1.421 -> 0.599 ms; user text 1.900 -> 1.193 ms;
+    command output 1.478 -> 0.616 ms; tool output 1.597 -> 0.708 ms.
+  240 items / 48 KiB, exceeding cache capacity: cold hits 3.012 -> 2.059 ms;
+    warm hits 2.796 -> 1.304 ms; warm misses 2.832 -> 2.712 ms.
+  Unicode tool output warm hits: 0.792 -> 0.305 ms.
+Large JSON input formatting and late-hit character scans remain roughly
+unchanged. Warm misses already avoided source copies in the prior cache.
+Three alternating-order pairs per case; the baseline is the previous cached
+search, not the slower uncached implementation from the first audit. Final
+timings ran without concurrent Cargo/rustc jobs. All 27 phase/fixture cases
+assert identical results and cache capacities/build counts.
+
+Validation: 101 chat unit tests passed, 5 opt-in tests ignored. The
+source oracle covers every body kind and lineage, Unicode whitespace/sigma/
+expanding lowercase, excerpt offsets/limits across segments and 256 mixed
+newline/attachment user cases. Two independent reviews found no correctness
+issue. Final chat_bridge passed 12 tests; chat_search_bridge passed its actual
+QuickJS test of Promise/Option null, supersession, same-turn cancellation,
+ordinary-search independence and final declarations. Evidence:
+  target/performance-audit/native-search-source-results.json and copied logs
+  referenced there, including all 27 raw paired results and reproduction steps.
+
+Native project inventory
+Inventory search uses snapshot_shared(), avoiding a copy of all tasks, trees
+and project memos before each query. SearchHit DTOs remain independently owned.
+Recency dates join against their existing BTreeMap instead of scanning every
+project for every date. Small inventories and sparse date maps use the exact
+old scan; larger joins move original keys/values with remove_entry and stop
+once no dates remain. Duplicate/missing/reordered project IDs preserve the same
+sorted map. An initial generic iterator version regressed sparse maps and was
+replaced with the concrete ProjectDto slice path before final validation.
+
+Final paired Debug medians, seven alternating samples:
+  Recency, dense 12 projects: 4.223 -> 4.250 us (effectively unchanged).
+  Dense 200 projects: 189.045 -> 79.035 us.
+  Dense 5,000 projects: 89.570 -> 2.170 ms.
+  Sparse 5,000 projects / date for last project: 36.791 -> 36.750 us.
+  Inventory search, 12 projects / 1 KiB memo each:
+    miss 11.416 -> 5.558 us; project hits 28.387 -> 22.206 us.
+  Inventory search, 500 projects / 32 KiB memo each:
+    miss 696.708 -> 177.270 us; project hits 1.353 -> 0.794 ms.
+Recency measures the old and new joins on actual ProjectDto arrays, including
+identical map-copy setup in both timed paths, excluding fixture/disk reads.
+Search includes warm-cache stat and owned hit construction, excluding initial
+parsing. These are not application-wide or cold-start results. Empty recency
+nanosecond figures are timer-sensitive and support no relative-speed claim.
+Final timings ran without compiler/other-benchmark overlap.
+
+Eight backend tests pass, one opt-in benchmark ignored. The recency oracle
+covers 16/17 boundaries, empty/sparse/dense maps, duplicates, missing/reordered
+and Unicode IDs. Native search compares exact DTOs for empty, Unicode, project,
+task/worktree and missing queries, then corrupt-file failure and recovery.
+Evidence: target/performance-audit/native-backend-pass3-results.json,
+  native-backend-pass3-tests.log and native-backend-pass3-benchmark.log.
+Rejected sparse-map variants remain in recency-sparse-comparison.log and
+  native-backend-pass3-benchmark-generic.log.
+
+Final review
+Production source fingerprints are recorded in
+  target/performance-audit/pass3-production-sources.sha256.
+Independent reviews covered cache semantics, main/service handoff and close
+barriers, Unicode/excerpt/cancellation behavior, and inventory membership.
+No performance timing assertions were added to ordinary tests. Diff whitespace
+checks pass. No deployed/installed application or global toolchain was changed.
+
+Remaining work
+The application-wide objective remains active. Concrete next targets include:
+* Hub<T> publication deep-clones each full payload per live listener under its
+  mutex. Each listener queues up to 64 owned snapshots; latest() often discards
+  most before JS delivery. Shared internal payloads could remove wasted copies,
+  but must preserve revision/resync/overflow/close behavior and avoid shifting
+  a large delivered-value clone onto an engine thread. Public owned recv()
+  callers and custom delivery loops need explicit compatibility coverage.
+* The host service materializes every queued geometry snapshot. Coalescing must
+  preserve ordering around ready/open/close/quit/restart barriers.
+* Search still formats very large tool input JSON on warm hits and scans long
+  prefixes for late previews. File-change/plan/todo formatting remains owned.
+* Initial Ghostty theme projection writes configuration and invokes its
+  main-thread parser before the first AppView. Moving this requires startup
+  measurements and preservation of the initial palette and native ownership
+  rules; no startup change or measured startup gain is claimed here.
+* Very large unfinished Markdown tails, file enumeration, memory growth,
+  rendering, transport and representative release/UI measurements remain open.
+Prior broad engine/workspace baseline failures remain documented in pass one;
+targeted passing checks do not establish a clean full-workspace suite.

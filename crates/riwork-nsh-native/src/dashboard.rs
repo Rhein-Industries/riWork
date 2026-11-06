@@ -153,7 +153,7 @@ impl Dashboard {
     /// snapshot after each read (`overview` module). Nothing is read while no
     /// window subscribes; reading starts no host, chat, shell or orchestrator.
     pub fn subscribe(
-        listener: Callback<crate::hub::Snapshot<overview::DashboardDto>>,
+        listener: Callback<crate::hub::SharedSnapshot<overview::DashboardDto>>,
         cx: CallCx<'_>,
     ) -> Result<Subscription, String> {
         Ok(Subscription::start(cx, async move {

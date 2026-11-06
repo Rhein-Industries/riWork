@@ -2531,3 +2531,191 @@ fn stores_opened_separately_share_the_last_parse_and_see_every_change() {
     // Another directory has its own state.
     assert_eq!(Fixture::new().store().snapshot().unwrap(), State::default());
 }
+
+#[test]
+fn shared_snapshots_keep_immutable_generations_and_publish_only_successful_writes() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let first = store.snapshot_shared().unwrap();
+    assert!(Arc::ptr_eq(
+        &first,
+        &fixture.store().snapshot_shared().unwrap()
+    ));
+    let mut owned = store.snapshot().unwrap();
+    owned.active_project_id = Some("owned edit".into());
+    let mut detached = first.clone();
+    Arc::make_mut(&mut detached).active_project_id = Some("detached edit".into());
+    assert_eq!(*store.snapshot_shared().unwrap(), State::default());
+
+    store
+        .transaction_if_changed(|state| {
+            state.active_project_id = Some("not committed".into());
+            Ok(((), false))
+        })
+        .unwrap();
+    assert!(
+        store
+            .transaction::<()>(|state| {
+                state.active_project_id = Some("refused".into());
+                Err("refused".into())
+            })
+            .is_err()
+    );
+    assert!(Arc::ptr_eq(&first, &store.snapshot_shared().unwrap()));
+
+    fixture
+        .store()
+        .transaction(|state| {
+            state.active_project_id = Some("committed".into());
+            Ok(())
+        })
+        .unwrap();
+    // A successful transaction seeds the new generation before any reader runs.
+    let seeded = store
+        .snapshot_cache
+        .lock()
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .1
+        .clone();
+    let current = store.snapshot_shared().unwrap();
+    assert!(Arc::ptr_eq(&seeded, &current));
+    assert!(!Arc::ptr_eq(&first, &current));
+    assert_eq!(*first, State::default());
+    assert_eq!(current.active_project_id.as_deref(), Some("committed"));
+
+    // Force rename to fail after reading and applying the operation. The failed
+    // generation must never become visible through another store's cache.
+    let path = fixture.path("state/state.json");
+    let saved = fs::read(&path).unwrap();
+    let failed = store.transaction(|state| {
+        state.active_project_id = Some("failed write".into());
+        fs::remove_file(&path).unwrap();
+        fs::create_dir(&path).unwrap();
+        Ok(())
+    });
+    assert!(failed.is_err());
+    assert!(Arc::ptr_eq(
+        &current,
+        &store.snapshot_cache.lock().unwrap().as_ref().unwrap().1
+    ));
+    assert!(store.snapshot_shared().is_err());
+    fs::remove_dir(&path).unwrap();
+    fs::write(&path, saved).unwrap();
+    assert_eq!(*store.snapshot_shared().unwrap(), *current);
+}
+
+#[test]
+#[cfg(unix)]
+fn shared_snapshots_keep_file_stamp_freshness_and_do_not_hide_metadata_errors() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let path = fixture.path("state/state.json");
+    let missing = store.snapshot_shared().unwrap();
+    std::os::unix::fs::symlink("state.json", &path).unwrap();
+    assert_eq!(FileStamp::of(&path), None);
+    assert!(store.snapshot_shared().is_err());
+    fs::remove_file(&path).unwrap();
+    assert!(Arc::ptr_eq(&missing, &store.snapshot_shared().unwrap()));
+
+    let bytes = |id: &str| {
+        serde_json::to_vec(&State {
+            active_project_id: Some(id.into()),
+            ..State::default()
+        })
+        .unwrap()
+    };
+    fs::write(&path, bytes("aaaa")).unwrap();
+    let first = store.snapshot_shared().unwrap();
+    let modified = fs::metadata(&path).unwrap().modified().unwrap();
+    fs::write(&path, bytes("bbbb")).unwrap();
+    File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(modified)
+        .unwrap();
+    assert!(Arc::ptr_eq(&first, &store.snapshot_shared().unwrap()));
+    let replacement = fixture.path("state/replacement.json");
+    fs::write(&replacement, bytes("cccc")).unwrap();
+    File::options()
+        .write(true)
+        .open(&replacement)
+        .unwrap()
+        .set_modified(modified)
+        .unwrap();
+    fs::rename(&replacement, &path).unwrap();
+    let replaced = store.snapshot_shared().unwrap();
+    assert!(!Arc::ptr_eq(&first, &replaced));
+    assert_eq!(replaced.active_project_id.as_deref(), Some("cccc"));
+    assert_eq!(first.active_project_id.as_deref(), Some("aaaa"));
+    fs::write(&path, b"invalid json").unwrap();
+    assert!(store.snapshot_shared().is_err());
+    fs::remove_file(&path).unwrap();
+    assert_eq!(*store.snapshot_shared().unwrap(), State::default());
+}
+
+#[test]
+#[ignore = "timing: paired cached State cloning and shared generation reads"]
+fn measure_shared_snapshot_reads() {
+    use std::time::Instant;
+    for large in [false, true] {
+        let fixture = Fixture::new();
+        let store = fixture.store();
+        let mut state: State = serde_json::from_value(large_state_json()).unwrap();
+        if !large {
+            state.projects.truncate(10);
+            state.worktrees.truncate(40);
+            state
+                .project_memos
+                .retain(|id, _| state.projects.iter().any(|p| &p.id == id));
+            for memo in state.project_memos.values_mut() {
+                memo.text.truncate(120);
+            }
+        }
+        let path = fixture.path("state/state.json");
+        fs::write(&path, serde_json::to_vec(&state).unwrap()).unwrap();
+        assert_eq!(*store.snapshot_shared().unwrap(), state);
+        let mut samples = [Vec::new(), Vec::new()];
+        for pass in 0..101 {
+            for shared in if pass % 2 == 0 {
+                [false, true]
+            } else {
+                [true, false]
+            } {
+                let started = Instant::now();
+                for _ in 0..32 {
+                    if shared {
+                        std::hint::black_box(store.snapshot_shared().unwrap());
+                    } else {
+                        // The previous warm-cache path: stat, then deep-clone
+                        // the parsed value while its cache mutex is held.
+                        let stamp = FileStamp::of(&store.dir.join("state.json")).unwrap();
+                        let owned = store
+                            .snapshot_cache
+                            .lock()
+                            .unwrap()
+                            .as_ref()
+                            .filter(|(cached, _)| cached == &stamp)
+                            .map(|(_, value)| value.as_ref().clone())
+                            .unwrap();
+                        std::hint::black_box(owned);
+                    }
+                }
+                samples[usize::from(shared)].push(started.elapsed() / 32);
+            }
+        }
+        for values in &mut samples {
+            values.sort();
+        }
+        eprintln!(
+            "shared snapshot: {} projects, {} worktrees, {} bytes, legacy {:?}, shared {:?}",
+            state.projects.len(),
+            state.worktrees.len(),
+            fs::metadata(path).unwrap().len(),
+            samples[0][50],
+            samples[1][50]
+        );
+    }
+}

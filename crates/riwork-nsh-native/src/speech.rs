@@ -696,11 +696,11 @@ impl SpeechModels {
     pub async fn snapshot() -> Result<Value, String> {
         service::blocking(|| Ok(manager()?.snapshot())).await
     }
-    pub fn subscribe(listener: Callback<Value>, cx: CallCx<'_>) -> Subscription {
+    pub fn subscribe(listener: Callback<crate::hub::Shared<Value>>, cx: CallCx<'_>) -> Subscription {
         Subscription::start(cx, async move {
             if let Ok(subscription) = service::blocking(|| Ok(manager()?.topic.subscribe())).await {
-                while let Ok(snapshot) = subscription.recv().await {
-                    let data = subscription.latest(snapshot).data;
+                while let Ok(snapshot) = subscription.recv_shared().await {
+                    let data = subscription.latest_shared(snapshot).data;
                     if !data.is_null() {
                         listener.post(data);
                     }

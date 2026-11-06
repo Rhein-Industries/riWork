@@ -36,7 +36,7 @@ use riwork_engine::runtime::{
     ReloadLaunch, ReloadRequest, RuntimeWindow, WindowGeometry, WindowKind, WindowMode,
 };
 use riwork_nsh_native as native;
-use riwork_nsh_workspace::host_layouts::{self, HostLayout};
+use riwork_nsh_workspace::host_layouts::{self, HostLayout, ProjectSnapshot};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
@@ -408,7 +408,7 @@ const POSTED_NOTICES: usize = 64;
 
 // Service commands contain plain data only. No AppKit object leaves the main thread.
 enum Service {
-    Snapshot(Vec<(String, RuntimeWindow)>),
+    Snapshot(CapturedSnapshot),
     Ready(String),
     Open(OpenOptions, OpenIntent),
     /// A finished-agent notification was clicked: verify, then route `showShell`.
@@ -429,6 +429,154 @@ enum Service {
     DevReload(crate::nsh_dev::Build, ClosingWindows),
     Finished,
     Wake,
+}
+
+#[path = "nsh_service_queue.rs"]
+mod service_queue;
+
+struct CapturedSnapshot {
+    windows: Vec<(String, CapturedWindow)>,
+    frames: Option<BTreeMap<String, WindowSize>>,
+}
+
+impl CapturedSnapshot {
+    fn new(windows: Vec<(String, CapturedWindow)>) -> Self {
+        Self { windows, frames: None }
+    }
+
+    fn merge(&mut self, next: Self) -> Result<(), Self> {
+        if self.windows.len() != next.windows.len()
+            || !self.windows.iter().zip(&next.windows).all(|((id, window), (next_id, next_window))| {
+                id == next_id && window.same_generation(next_window)
+            })
+        {
+            return Err(next);
+        }
+        let frames = self.frames.get_or_insert_with(BTreeMap::new);
+        retain_ordinary_frames(frames, &self.windows);
+        if let Some(previous) = &next.frames {
+            frames.extend(previous.iter().map(|(id, size)| (id.clone(), *size)));
+        }
+        retain_ordinary_frames(frames, &next.windows);
+        for ((_, old), (_, new)) in self.windows.iter_mut().zip(&next.windows) {
+            old.bounds = new.bounds;
+            old.mode = new.mode;
+            old.size = new.size;
+            if let (Some((_, flags)), Some((_, next_flags))) = (&mut old.current, &new.current) {
+                *flags = *next_flags;
+            }
+        }
+        // Matching large owners remain in self until all duplicate next handles
+        // have dropped under the occupied slot lock and sender-order gate.
+        drop(next);
+        Ok(())
+    }
+}
+
+impl Service {
+    fn snapshot(windows: Vec<(String, CapturedWindow)>) -> Self {
+        Self::Snapshot(CapturedSnapshot::new(windows))
+    }
+}
+
+impl service_queue::MergeMessage for Service {
+    fn mergeable(&self) -> bool { matches!(self, Self::Snapshot(_)) }
+    fn try_merge(&mut self, next: Self) -> Result<(), Self> {
+        match (self, next) {
+            (Self::Snapshot(old), Self::Snapshot(next)) => old.merge(next).map_err(Self::Snapshot),
+            (_, next) => Err(next),
+        }
+    }
+}
+
+// Bound queue work between restore/reload, forwarding and heartbeat checks.
+const SNAPSHOT_BATCH_LIMIT: usize = service_queue::SNAPSHOT_BATCH_LIMIT;
+
+struct ServiceInbox {
+    receiver: service_queue::Receiver<Service>,
+    pending: Option<Service>,
+}
+
+struct SnapshotBatch {
+    windows: Vec<(String, CapturedWindow)>,
+    restore_ids: Option<Vec<String>>,
+    // Allocated only for a burst. A later maximized/fullscreen capture must not
+    // discard the last valid ordinary frame observed earlier in the batch.
+    frames: Option<BTreeMap<String, WindowSize>>,
+}
+
+impl ServiceInbox {
+    fn new(receiver: service_queue::Receiver<Service>) -> Self {
+        Self {
+            receiver,
+            pending: None,
+        }
+    }
+
+    fn recv_timeout(&mut self, timeout: Duration) -> Result<Service, mpsc::RecvTimeoutError> {
+        self.pending
+            .take()
+            .map(Ok)
+            .unwrap_or_else(|| self.receiver.recv_timeout(timeout))
+    }
+
+    fn recv(&mut self) -> Result<Service, mpsc::RecvError> {
+        self.pending
+            .take()
+            .map(Ok)
+            .unwrap_or_else(|| self.receiver.recv())
+    }
+
+    fn coalesce_snapshots(
+        &mut self,
+        snapshot: CapturedSnapshot,
+        initial: bool,
+    ) -> SnapshotBatch {
+        let CapturedSnapshot { mut windows, mut frames } = snapshot;
+        let restore_ids = initial.then(|| windows.iter().map(|(id, _)| id.clone()).collect());
+        for _ in 1..SNAPSHOT_BATCH_LIMIT {
+            match self.receiver.try_recv() {
+                Ok(Service::Snapshot(next)) => {
+                    let observed = frames.get_or_insert_with(BTreeMap::new);
+                    retain_ordinary_frames(observed, &windows);
+                    if let Some(previous) = next.frames { observed.extend(previous); }
+                    windows = next.windows;
+                }
+                Ok(command) => {
+                    // Every other command is a barrier, including Wake. Keep
+                    // it for the next pass, also when a shutdown wait begins.
+                    self.pending = Some(command);
+                    break;
+                }
+                Err(_) => break,
+            }
+        }
+        if let Some(frames) = &mut frames {
+            retain_ordinary_frames(frames, &windows);
+        }
+        SnapshotBatch {
+            windows,
+            restore_ids,
+            frames,
+        }
+    }
+}
+
+fn retain_ordinary_frames(
+    frames: &mut BTreeMap<String, WindowSize>,
+    windows: &[(String, CapturedWindow)],
+) {
+    for (id, window) in windows {
+        if window.mode == WindowMode::Windowed
+            && let Some(size) = WindowSize::new(window.bounds.width, window.bounds.height)
+        {
+            if let Some(previous) = frames.get_mut(id) {
+                *previous = size;
+            } else {
+                frames.insert(id.clone(), size);
+            }
+        }
+    }
 }
 enum Main {
     Call(String, &'static str, HostCall),
@@ -652,9 +800,9 @@ struct Window {
     window: Retained<NSWindow>,
     view: Rc<AppView>,
     _delegate: Retained<Delegate>,
-    runtime: RuntimeWindow,
+    runtime: Arc<RuntimeWindow>,
     normal: NSRect,
-    last_state: Value,
+    last_state: Option<WindowState>,
     focus_serial: u64,
     dock_info: Value,
     closing: bool,
@@ -678,7 +826,7 @@ struct Host {
     menus: HostMenus,
     customization: Option<Arc<native::customization::CustomizationService>>,
     windows: BTreeMap<String, Window>,
-    service: mpsc::Sender<Service>,
+    service: service_queue::Sender<Service>,
     focus_serial: u64,
     quitting: bool,
     quit_pending: bool,
@@ -775,14 +923,14 @@ impl Host {
                     .view
                     .host()
                     .set_params(params.as_object().unwrap().clone());
-                window.runtime = runtime;
+                window.runtime = Arc::new(runtime);
                 window.closing = false;
-                window.last_state = Value::Null;
+                window.last_state = None;
                 window.view.load(App::Js(self.bundle.clone()));
             }
         }
         self.dev_reloads.active = false;
-        self.state("");
+        self.update_states("");
         self.publish();
         eprintln!(
             "somtus: TSX UI reloaded (server {}, build {}); component state was reset",
@@ -886,9 +1034,9 @@ impl Host {
                 window,
                 view,
                 _delegate: delegate,
-                runtime: prepared.runtime,
+                runtime: Arc::new(prepared.runtime),
                 normal: frame,
-                last_state: Value::Null,
+                last_state: None,
                 focus_serial: 0,
                 dock_info: Value::Null,
                 closing: false,
@@ -897,7 +1045,7 @@ impl Host {
         if self.windows[&id].window.isKeyWindow() {
             self.record_focus(&id);
         }
-        self.state(&id);
+        self.update_states(&id);
         self.publish_global_selection();
         self.publish();
         Ok(id)
@@ -921,22 +1069,26 @@ impl Host {
         }
     }
     fn snapshot(&self) -> Vec<(String, RuntimeWindow)> {
-        self.windows
-            .iter()
-            .map(|(id, window)| {
-                let screen = window
-                    .window
-                    .screen()
-                    .or_else(|| NSScreen::mainScreen(self.mtm))
-                    .map(|screen| screen.frame())
-                    .unwrap_or(window.normal);
-                let mut runtime =
-                    recorded_runtime(&window.runtime, window.normal, screen, mode(&window.window));
-                apply_current_layout(id, &mut runtime);
-                (id.clone(), runtime)
-            })
-            .collect()
+        materialize_windows(self.capture(None))
     }
+    fn capture(&self, selected: Option<&str>) -> Vec<(String, CapturedWindow)> {
+        capture_windows(&self.windows, selected, |id, window| {
+            let screen = window
+                .window
+                .screen()
+                .or_else(|| NSScreen::mainScreen(self.mtm))
+                .map(|screen| screen.frame())
+                .unwrap_or(window.normal);
+            CapturedWindow::new(
+                id,
+                Arc::clone(&window.runtime),
+                window.normal,
+                screen,
+                mode(&window.window),
+            )
+        })
+    }
+
     fn facts(&self) -> Vec<WindowFacts> {
         self.windows
             .iter()
@@ -952,7 +1104,7 @@ impl Host {
             .collect()
     }
     fn publish(&self) {
-        let _ = self.service.send(Service::Snapshot(self.snapshot()));
+        let _ = self.service.send(Service::snapshot(self.capture(None)));
     }
     fn record_focus(&mut self, id: &str) {
         if let Some(window) = self.windows.get_mut(id).filter(|window| !window.closing) {
@@ -961,29 +1113,36 @@ impl Host {
         }
     }
     fn state(&mut self, id: &str) {
-        if id.is_empty() {
-            for id in self.windows.keys().cloned().collect::<Vec<_>>() {
-                self.state(&id);
-            }
-            return;
+        if self.update_states(id) {
+            self.publish();
         }
-        if let Some(w) = self.windows.get_mut(id) {
+    }
+    fn update_states(&mut self, id: &str) -> bool {
+        let app_active = self.app.isActive();
+        update_windows(&mut self.windows, id, |w| {
             w.normal = normal_frame(
                 w.normal,
                 w.window.frame(),
                 mode(&w.window),
                 w.window.isMiniaturized(),
             );
-            let state = json!({"key": w.window.isKeyWindow(), "visible": w.window.isVisible(),
-                "occluded": !w.window.occlusionState().contains(NSWindowOcclusionState::Visible),
-                "mode": mode(&w.window), "backingScale": w.window.backingScaleFactor(),
-                "frame": geometry(w.window.frame()), "appActive": self.app.isActive()});
-            if changed_state(&w.last_state, &state) {
-                let _ = w.view.host().send("window.state", state.clone());
-                w.last_state = state;
-                self.publish();
+            let state = WindowState {
+                key: w.window.isKeyWindow(),
+                visible: w.window.isVisible(),
+                occluded: !w.window.occlusionState().contains(NSWindowOcclusionState::Visible),
+                mode: mode(&w.window),
+                backing_scale: w.window.backingScaleFactor(),
+                frame: geometry(w.window.frame()),
+                app_active,
+            };
+            if let Some(event) = state.changed_event(w.last_state.as_ref()) {
+                let _ = w.view.host().send("window.state", event);
+                w.last_state = Some(state);
+                true
+            } else {
+                false
             }
-        }
+        })
     }
     fn focus(&self, id: &str) -> Result<(), String> {
         let w = self.windows.get(id).ok_or("not_found: window")?;
@@ -1027,12 +1186,7 @@ impl Host {
             .view
             .host()
             .send("window.willClose", json!({"reason":reason}));
-        let batch = ClosingWindows::new(
-            self.snapshot()
-                .into_iter()
-                .filter(|(window_id, _)| window_id == id)
-                .collect(),
-        );
+        let batch = ClosingWindows::new(materialize_windows(self.capture(Some(id))));
         if let Err(error) = self
             .service
             .send(Service::Close(id.to_owned(), batch, call))
@@ -1151,7 +1305,7 @@ impl Host {
             if let Some(state) = self
                 .windows
                 .get_mut(&id)
-                .and_then(|window| window.runtime.global.as_mut())
+                .and_then(|window| Arc::make_mut(&mut window.runtime).global.as_mut())
             {
                 state.view = GlobalView::from(view);
             }
@@ -1527,7 +1681,7 @@ impl Host {
             return;
         }
         if let Err(error) = admit_host_call(
-            self.windows.get(&id).map(|window| &window.runtime),
+            self.windows.get(&id).map(|window| window.runtime.as_ref()),
             self.quitting,
             &id,
             name,
@@ -1826,6 +1980,62 @@ fn normal_frame(previous: NSRect, frame: NSRect, mode: WindowMode, minimized: bo
         previous
     }
 }
+/// Keep the native sample on the main thread; construct the bridge JSON only
+/// when a field changes. The previous JSON object needed an owned clone per send.
+#[derive(Clone, Copy, Debug)]
+struct WindowState {
+    key: bool,
+    visible: bool,
+    occluded: bool,
+    mode: WindowMode,
+    backing_scale: f64,
+    frame: WindowGeometry,
+    app_active: bool,
+}
+
+impl PartialEq for WindowState {
+    fn eq(&self, other: &Self) -> bool {
+        self.key == other.key
+            && self.visible == other.visible
+            && self.occluded == other.occluded
+            && self.mode == other.mode
+            && self.app_active == other.app_active
+            && json_number_eq(self.backing_scale, other.backing_scale)
+            && [
+                self.frame.x,
+                self.frame.y,
+                self.frame.width,
+                self.frame.height,
+            ]
+            .into_iter()
+            .zip([
+                other.frame.x,
+                other.frame.y,
+                other.frame.width,
+                other.frame.height,
+            ])
+            .all(|(left, right)| json_number_eq(left.into(), right.into()))
+    }
+}
+
+// serde_json maps every non-finite floating point value to null. Match that
+// equality too, so repeated NaN/Infinity samples do not invent new events.
+fn json_number_eq(left: f64, right: f64) -> bool {
+    left == right || (!left.is_finite() && !right.is_finite())
+}
+
+impl WindowState {
+    fn changed_event(&self, previous: Option<&Self>) -> Option<Value> {
+        (previous != Some(self)).then(|| {
+            json!({"key": self.key, "visible": self.visible,
+                "occluded": self.occluded, "mode": self.mode,
+                "backingScale": self.backing_scale, "frame": self.frame,
+                "appActive": self.app_active})
+        })
+    }
+}
+
+#[cfg(test)]
 fn changed_state(previous: &Value, next: &Value) -> bool {
     previous != next
 }
@@ -1838,9 +2048,144 @@ fn last_close_quits(remaining: usize) -> bool {
     remaining == 0
 }
 
+/// Select before capturing: closing one window must not copy other layouts.
+fn capture_windows<T, R>(
+    windows: &BTreeMap<String, T>,
+    selected: Option<&str>,
+    mut capture: impl FnMut(&str, &T) -> R,
+) -> Vec<(String, R)> {
+    match selected {
+        Some(id) => windows
+            .get(id)
+            .map(|window| (id.to_owned(), capture(id, window)))
+            .into_iter()
+            .collect(),
+        None => windows
+            .iter()
+            .map(|(id, window)| (id.clone(), capture(id, window)))
+            .collect(),
+    }
+}
+
+/// Update every selected window before deciding whether to publish once.
+fn update_windows<T>(
+    windows: &mut BTreeMap<String, T>,
+    selected: &str,
+    mut update: impl FnMut(&mut T) -> bool,
+) -> bool {
+    if !selected.is_empty() {
+        return windows.get_mut(selected).is_some_and(update);
+    }
+    let mut changed = false;
+    for window in windows.values_mut() {
+        changed |= update(window);
+    }
+    changed
+}
+
+/// Main-thread capture contains only shared Rust data and copied geometry.
+/// Ordinary publications materialize their owned reload DTO on the service
+/// thread. Close/restart snapshots may materialize immediately before gating.
+struct CapturedWindow {
+    launch: Arc<RuntimeWindow>,
+    current: Option<(ProjectSnapshot, (bool, bool))>,
+    bounds: WindowGeometry,
+    mode: WindowMode,
+    size: Option<WindowSize>,
+}
+
+#[cfg(test)]
+thread_local! {
+    static MATERIALIZED_LAYOUTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+impl CapturedWindow {
+    fn same_generation(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.launch, &other.launch) && match (&self.current, &other.current) {
+            (None, None) => true,
+            (Some((left, _)), Some((right, _))) => left.shares_generation(right),
+            _ => false,
+        }
+    }
+
+    fn new(
+        id: &str,
+        launch: Arc<RuntimeWindow>,
+        normal: NSRect,
+        screen: NSRect,
+        mode: WindowMode,
+    ) -> Self {
+        let current = (!launch.is_global())
+            .then(|| host_layouts::lookup(id))
+            .flatten()
+            .map(|host| (host.shared_project_snapshot(), host.focus_state()));
+        Self {
+            launch,
+            current,
+            bounds: runtime_geometry(normal, screen),
+            mode,
+            size: WindowSize::new(normal.size.width as f32, normal.size.height as f32),
+        }
+    }
+
+    fn materialize(self) -> RuntimeWindow {
+        let RuntimeWindow {
+            project_id,
+            path,
+            bounds: _,
+            mode: _,
+            layout,
+            focus_mode,
+            focus_centered,
+            kind,
+            global,
+        } = self.launch.as_ref();
+        let (project_id, layout, focus_mode, focus_centered) = match &self.current {
+            Some((project, (focused, centered))) => (
+                Some(project.project_id()),
+                Some(project.project()),
+                *focused,
+                *centered,
+            ),
+            None => (
+                project_id.as_deref(),
+                layout.as_ref(),
+                *focus_mode,
+                *focus_centered,
+            ),
+        };
+        #[cfg(test)]
+        if layout.is_some() {
+            MATERIALIZED_LAYOUTS.with(|count| count.set(count.get() + 1));
+        }
+        RuntimeWindow {
+            project_id: project_id.map(str::to_owned),
+            path: path.clone(),
+            bounds: Some(self.bounds),
+            mode: self.mode,
+            layout: layout.cloned(),
+            focus_mode,
+            focus_centered,
+            kind: *kind,
+            global: global.as_ref().map(|global| GlobalWindowState {
+                window_size: self.size,
+                ..global.clone()
+            }),
+        }
+    }
+}
+
+fn materialize_windows(windows: Vec<(String, CapturedWindow)>) -> Vec<(String, RuntimeWindow)> {
+    windows
+        .into_iter()
+        .map(|(id, window)| (id, window.materialize()))
+        .collect()
+}
+
 /// What the registry records for one window at a publish, close, quit or
 /// reload: its launch RuntimeWindow with the current frame and mode, and for
 /// the global window its captured size. Layouts are applied by the caller.
+#[cfg(test)]
 fn recorded_runtime(
     runtime: &RuntimeWindow,
     normal: NSRect,
@@ -1922,7 +2267,7 @@ fn preferred_opening_size(home: &Path, runtime: &RuntimeWindow) -> WindowSize {
             });
     }
     let remember = SettingsStore::open(home)
-        .and_then(|store| store.load())
+        .and_then(|store| store.load_shared())
         .map(|settings| settings.remember_window_size)
         .unwrap_or(true);
     if remember {
@@ -1944,23 +2289,35 @@ fn preferred_opening_size(home: &Path, runtime: &RuntimeWindow) -> WindowSize {
 }
 
 fn remember_window_frames(home: &Path, windows: &[(String, RuntimeWindow)]) {
-    let Ok(settings) = SettingsStore::open(home).and_then(|store| store.load()) else {
+    remember_frames(
+        home,
+        windows.iter().filter_map(|(id, window)| {
+            let frame = window.bounds?;
+            (window.mode == WindowMode::Windowed)
+                .then(|| WindowSize::new(frame.width, frame.height))
+                .flatten()
+                .map(|size| (id.as_str(), size))
+        }),
+    );
+}
+
+fn remember_frames<'a>(home: &Path, frames: impl IntoIterator<Item = (&'a str, WindowSize)>) {
+    let Ok(settings) = SettingsStore::open(home).and_then(|store| store.load_shared()) else {
         return;
     };
-    for (id, window) in windows {
-        if let (Some(layout), Some(frame)) = (host_layouts::lookup(id), window.bounds) {
+    for (id, size) in frames {
+        if let Some(layout) = host_layouts::lookup(id) {
             // A close gate intentionally rejects late geometry. The flush owns
             // the last accepted edit and will retain the window if it fails.
             let _ = layout.observe_window_frame(
-                frame.width,
-                frame.height,
-                window.mode == WindowMode::Windowed,
+                size.width,
+                size.height,
+                true,
                 settings.remember_window_size,
             );
         }
     }
 }
-
 fn stop(app: &NSApplication) {
     app.stop(None);
     if let Some(event) = NSEvent::otherEventWithType_location_modifierFlags_timestamp_windowNumber_context_subtype_data1_data2(
@@ -2003,7 +2360,7 @@ fn prepare(home: &Path, options: OpenOptions) -> Result<PreparedWindow, String> 
         }
     } else {
         let store = Store::open(home.to_path_buf())?;
-        let state = store.snapshot()?;
+        let state = store.snapshot_shared()?;
         let project = if let Some(id) = &options.project_id {
             Uuid::parse_str(id)
                 .map_err(|_| "invalid: projectId must be a UUID or remote project key")?;
@@ -2187,11 +2544,116 @@ fn current_layouts(home: &Path, windows: &[(String, RuntimeWindow)]) -> Vec<Runt
     windows
 }
 
+/// Idle publication compares borrowed layouts first. Keep reading Store and
+/// global state on every poll so changes outside this process remain visible.
+/// Only a changed snapshot needs to own the (potentially large) layouts.
+fn current_layouts_if_changed(
+    home: &Path,
+    windows: &[(String, RuntimeWindow)],
+    published: &[RuntimeWindow],
+) -> Option<Vec<RuntimeWindow>> {
+    // Capture generations before Store, matching current_layouts: a project
+    // created just before switching must have its new root in this snapshot.
+    let layouts: Vec<_> = windows
+        .iter()
+        .map(|(id, window)| {
+            (!window.is_global())
+                .then(|| host_layouts::lookup(id))
+                .flatten()
+                .map(|host| (host.shared_project_snapshot(), host.focus_state()))
+        })
+        .collect();
+    let state = Store::open(home.to_path_buf())
+        .and_then(|store| store.snapshot_shared())
+        .ok();
+    let mut changed: Option<Vec<RuntimeWindow>> = None;
+    for (index, (_, window)) in windows.iter().enumerate() {
+        let previous = changed.is_none().then(|| published.get(index)).flatten();
+        let global = window
+            .global
+            .as_ref()
+            .map(|state| merged_global_state(home, state));
+        let capture = |project_id: Option<&str>, layout, focus_mode, focus_centered| {
+            // Destructure exhaustively: a new runtime field must participate in
+            // both comparison and construction here, just as in its owned DTO.
+            let RuntimeWindow {
+                path,
+                bounds,
+                mode,
+                kind,
+                project_id: _,
+                layout: _,
+                focus_mode: _,
+                focus_centered: _,
+                global: _,
+            } = window;
+            let path = state
+                .as_ref()
+                .filter(|_| !window.is_global())
+                .and_then(|state| {
+                    state
+                        .projects
+                        .iter()
+                        .find(|project| Some(project.id.as_str()) == project_id)
+                })
+                .map_or(path.as_path(), |project| project.root.as_path());
+            if previous.is_some_and(|old| {
+                old.project_id.as_deref() == project_id
+                    && old.path == path
+                    && old.bounds == *bounds
+                    && old.mode == *mode
+                    && old.kind == *kind
+                    && old.layout.as_ref() == layout
+                    && old.focus_mode == focus_mode
+                    && old.focus_centered == focus_centered
+                    && old.global == global
+            }) {
+                return None;
+            }
+            Some(RuntimeWindow {
+                project_id: project_id.map(str::to_owned),
+                path: path.to_owned(),
+                bounds: *bounds,
+                mode: *mode,
+                kind: *kind,
+                layout: layout.cloned(),
+                focus_mode,
+                focus_centered,
+                global: global.clone(),
+            })
+        };
+        let current = if let Some((project, (focused, centered))) = &layouts[index] {
+            capture(
+                Some(project.project_id()),
+                Some(project.project()),
+                *focused,
+                *centered,
+            )
+        } else {
+            capture(
+                window.project_id.as_deref(),
+                window.layout.as_ref(),
+                window.focus_mode,
+                window.focus_centered,
+            )
+        };
+        if let Some(current) = current {
+            changed
+                .get_or_insert_with(|| published[..index].to_vec())
+                .push(current);
+        }
+    }
+    if changed.is_none() && windows.len() < published.len() {
+        changed = Some(published[..windows.len()].to_vec());
+    }
+    changed
+}
+
 /// Runtime snapshots also need the switched project's root for restoration.
 /// This helper is called only by the service worker, never AppKit/engine code.
 fn refresh_project_paths(home: &Path, windows: &mut [RuntimeWindow]) {
     if let Ok(store) = Store::open(home.to_path_buf())
-        && let Ok(state) = store.snapshot()
+        && let Ok(state) = store.snapshot_shared()
     {
         for window in windows.iter_mut().filter(|window| !window.is_global()) {
             if let Some(project) = state
@@ -2309,7 +2771,7 @@ fn forward_open(home: &Path, request: OpenRequest) {
     }
 }
 
-fn services(mut startup: Startup, rx: mpsc::Receiver<Service>, tx: mpsc::Sender<Service>) {
+fn services(mut startup: Startup, rx: service_queue::Receiver<Service>, tx: service_queue::Sender<Service>) {
     if let Some(customization) = startup.customization.clone() {
         let updates = customization.subscribe();
         thread::spawn(move || {
@@ -2328,19 +2790,23 @@ fn services(mut startup: Startup, rx: mpsc::Receiver<Service>, tx: mpsc::Sender<
     let mut runtime_tick = RuntimeTick::new(Instant::now());
     let mut reload: Option<(ReloadLaunch, ClosingWindows)> = None;
     let mut restart_queued = false;
+    let mut inbox = ServiceInbox::new(rx);
     loop {
-        match rx.recv_timeout(Duration::from_millis(500)) {
+        let mut frames = None;
+        match inbox.recv_timeout(Duration::from_millis(500)) {
             Ok(Service::Snapshot(windows)) => {
-                if initial {
-                    initial = false;
+                let batch = inbox.coalesce_snapshots(windows, initial);
+                initial = false;
+                if let Some(ids) = batch.restore_ids {
                     if let Err(e) = startup
                         .runtime
-                        .set_restore_window_ids(windows.iter().map(|(id, _)| id.clone()))
+                        .set_restore_window_ids(ids)
                     {
                         send(Main::Error(e));
                     }
                 }
-                snapshots = windows;
+                snapshots = materialize_windows(batch.windows);
+                frames = batch.frames;
             }
             Ok(Service::Ready(id)) => {
                 match startup.runtime.mark_restore_ready(
@@ -2416,7 +2882,7 @@ fn services(mut startup: Startup, rx: mpsc::Receiver<Service>, tx: mpsc::Sender<
                 startup.instance.stop_forwarding();
                 send(Main::Finish);
                 // Retain the ownership lock until AppKit has stopped every view.
-                while let Ok(message) = rx.recv() {
+                while let Ok(message) = inbox.recv() {
                     if matches!(message, Service::Finished) {
                         break;
                     }
@@ -2484,7 +2950,11 @@ fn services(mut startup: Startup, rx: mpsc::Receiver<Service>, tx: mpsc::Sender<
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
         if reload.is_none() {
-            remember_window_frames(&startup.home, &snapshots);
+            if let Some(frames) = &frames {
+                remember_frames(&startup.home, frames.iter().map(|(id, size)| (id.as_str(), *size)));
+            } else {
+                remember_window_frames(&startup.home, &snapshots);
+            }
         }
         if reload.is_none() {
             for request in startup.instance.drain_requests() {
@@ -2496,7 +2966,7 @@ fn services(mut startup: Startup, rx: mpsc::Receiver<Service>, tx: mpsc::Sender<
             // normal host progress closes this failed replacement immediately.
             eprintln!("somtus: {error}");
             send(Main::Finish);
-            while let Ok(message) = rx.recv() {
+            while let Ok(message) = inbox.recv() {
                 if matches!(message, Service::Finished) {
                     break;
                 }
@@ -2508,7 +2978,7 @@ fn services(mut startup: Startup, rx: mpsc::Receiver<Service>, tx: mpsc::Sender<
                 Ok(true) => {
                     startup.instance.stop_forwarding();
                     send(Main::Finish);
-                    while let Ok(message) = rx.recv() {
+                    while let Ok(message) = inbox.recv() {
                         if matches!(message, Service::Finished) {
                             break;
                         }
@@ -2539,7 +3009,9 @@ fn services(mut startup: Startup, rx: mpsc::Receiver<Service>, tx: mpsc::Sender<
         if runtime_tick.is_due(now) {
             match startup
                 .runtime
-                .try_publish(current_layouts(&startup.home, &snapshots))
+                .try_publish_if_changed(|published| {
+                    current_layouts_if_changed(&startup.home, &snapshots, published)
+                })
             {
                 Ok(completed) => runtime_tick.published(now, completed),
                 Err(e) => eprintln!("somtus: {e}"),
@@ -2668,7 +3140,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     set_ui_sets(native::ui_sets());
     let mut menus = HostMenus::install(mtm, Arc::new(|action| send(Main::Menu(action))));
     if let Some(customization) = &startup.customization { menus.update_bindings(customization.snapshot().keys); }
-    let (tx, rx) = mpsc::channel();
+    let (tx, rx) = service_queue::channel();
     let components = Components::default();
     riwork_nsh_terminal::initialize_theme_projection(
         startup.home.clone(), Arc::new(native::appearance::set_ghostty_theme),
@@ -3199,6 +3671,816 @@ mod tests {
     }
 
     #[test]
+    fn captured_window_shares_layout_and_preserves_generation_focus_and_geometry_across_handoff() {
+        use riwork_nsh_workspace::persistence::{LayoutPersistence, SaveMode};
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let _entered = runtime.enter();
+        let fixture = LayoutFixture::new();
+        let id = format!("capture-generation-{}", Uuid::new_v4());
+        let loaded = LayoutPersistence::open(
+            &fixture.root,
+            "destination",
+            None,
+            SaveMode::LegacyChatState,
+        )
+        .unwrap();
+        let host =
+            host_layouts::registration(&id, Arc::new(loaded.persistence), loaded.project).unwrap();
+        host.set_focus_state(false, true).unwrap();
+        let mut launch = fixture.window(&id).1;
+        launch.layout = Some(riwork_nsh_workspace::persistence::default_project_layout());
+        launch.layout.as_mut().unwrap().selected_task_id = Some("old launch".into());
+        let launch = Arc::new(launch);
+        let normal = NSRect::new(NSPoint::new(25., 50.), NSSize::new(950., 700.));
+        let screen = NSRect::new(NSPoint::new(-100., 0.), NSSize::new(1800., 1100.));
+        let mut expected = recorded_runtime(&launch, normal, screen, WindowMode::Maximized);
+        apply_current_layout(&id, &mut expected);
+        MATERIALIZED_LAYOUTS.with(|count| count.set(0));
+        let captured = CapturedWindow::new(
+            &id,
+            Arc::clone(&launch),
+            normal,
+            screen,
+            WindowMode::Maximized,
+        );
+        assert_eq!(MATERIALIZED_LAYOUTS.with(|count| count.get()), 0);
+        assert!(std::ptr::eq(
+            captured.current.as_ref().unwrap().0.project(),
+            host.shared_project_snapshot().project()
+        ));
+        let mut later = host.project_layout();
+        later.selected_task_id = Some("after capture".into());
+        host.publish(later);
+        host.set_focus_state(true, false).unwrap();
+        let (actual, copies) = thread::spawn(move || {
+            MATERIALIZED_LAYOUTS.with(|count| count.set(0));
+            (
+                captured.materialize(),
+                MATERIALIZED_LAYOUTS.with(|count| count.get()),
+            )
+        })
+        .join()
+        .unwrap();
+        assert_eq!(actual, expected);
+        assert_eq!(actual.project_id.as_deref(), Some("destination"));
+        assert_eq!(
+            copies, 1,
+            "copy only the selected current layout on the service thread"
+        );
+        assert_eq!(MATERIALIZED_LAYOUTS.with(|count| count.get()), 0);
+    }
+
+    #[test]
+    fn captured_loading_and_global_windows_match_owned_snapshots() {
+        let fixture = LayoutFixture::new();
+        let normal = NSRect::new(NSPoint::new(10., 20.), NSSize::new(900., 650.));
+        let screen = NSRect::new(NSPoint::new(0., 0.), NSSize::new(1800., 1100.));
+        let mut loading = fixture.window("not-registered-capture").1;
+        loading.layout = Some(riwork_nsh_workspace::persistence::default_project_layout());
+        loading.focus_mode = true;
+        for launch in [
+            loading,
+            RuntimeWindow::global(
+                &fixture.root,
+                None,
+                WindowMode::Windowed,
+                GlobalWindowState::default(),
+            ),
+        ] {
+            for mode in [
+                WindowMode::Windowed,
+                WindowMode::Maximized,
+                WindowMode::Fullscreen,
+            ] {
+                let expected = recorded_runtime(&launch, normal, screen, mode);
+                let captured = CapturedWindow::new(
+                    "not-registered-capture",
+                    Arc::new(launch.clone()),
+                    normal,
+                    screen,
+                    mode,
+                );
+                assert_eq!(captured.materialize(), expected);
+            }
+        }
+        let mut launch = Arc::new(RuntimeWindow::global(
+            &fixture.root,
+            None,
+            WindowMode::Windowed,
+            GlobalWindowState::default(),
+        ));
+        let captured = CapturedWindow::new(
+            "capture-global",
+            Arc::clone(&launch),
+            normal,
+            screen,
+            WindowMode::Windowed,
+        );
+        Arc::make_mut(&mut launch).global.as_mut().unwrap().view = GlobalView::Chat;
+        assert_eq!(
+            captured.materialize().global.unwrap().view,
+            GlobalView::Dashboard
+        );
+        assert_eq!(launch.global.as_ref().unwrap().view, GlobalView::Chat);
+    }
+
+    #[test]
+    fn selected_capture_closes_only_its_window_and_flushes_the_last_admitted_edit() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let _entered = runtime.enter();
+        let fixture = LayoutFixture::new();
+        let ids = [
+            format!("capture-close-a-{}", Uuid::new_v4()),
+            format!("capture-close-b-{}", Uuid::new_v4()),
+        ];
+        let hosts: Vec<_> = ids.iter().map(|id| fixture.session(id)).collect();
+        let windows: BTreeMap<_, _> = ids
+            .iter()
+            .map(|id| (id.clone(), Arc::new(fixture.window(id).1)))
+            .collect();
+        let normal = NSRect::new(NSPoint::new(0., 0.), NSSize::new(900., 650.));
+        let mut visited = Vec::new();
+        MATERIALIZED_LAYOUTS.with(|count| count.set(0));
+        let captured = capture_windows(&windows, Some(&ids[0]), |id, launch| {
+            visited.push(id.to_owned());
+            CapturedWindow::new(id, Arc::clone(launch), normal, normal, WindowMode::Windowed)
+        });
+        assert_eq!(visited, vec![ids[0].clone()]);
+        assert_eq!(MATERIALIZED_LAYOUTS.with(|count| count.get()), 0);
+        let captured = materialize_windows(captured);
+        assert_eq!(MATERIALIZED_LAYOUTS.with(|count| count.get()), 1);
+        let mut last = hosts[0].project_layout();
+        last.selected_task_id = Some("last admitted".into());
+        hosts[0].schedule(last.clone()).unwrap();
+        let closing = ClosingWindows::new(captured);
+        assert!(hosts[0].schedule(last.clone()).is_err());
+        hosts[1].schedule(hosts[1].project_layout()).unwrap();
+        assert_eq!(
+            closing.flush(&fixture.root).unwrap()[0].layout.as_ref(),
+            Some(&last)
+        );
+        closing.cancel();
+        hosts[1].flush().unwrap();
+        assert!(
+            capture_windows(&windows, Some("missing"), |_, _| panic!(
+                "missing window cannot be captured"
+            ))
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn global_state_updates_visit_every_window_and_publish_only_after_the_complete_batch() {
+        let mut windows = BTreeMap::from([
+            ("a".to_owned(), false),
+            ("b".to_owned(), true),
+            ("c".to_owned(), false),
+        ]);
+        let mut deliveries = 0;
+        let mut publications = Vec::new();
+        let mut visited = 0;
+        if update_windows(&mut windows, "", |state| {
+            visited += 1;
+            let changed = !*state;
+            if changed {
+                deliveries += 1;
+            }
+            *state = true;
+            changed
+        }) {
+            publications.push(windows.clone());
+        }
+        assert_eq!(
+            visited, 3,
+            "an early change must not short-circuit later updates"
+        );
+        assert_eq!(deliveries, 2);
+        assert_eq!(publications.len(), 1);
+        assert!(publications[0].values().all(|state| *state));
+        assert!(!update_windows(&mut windows, "", |state| !*state));
+        visited = 0;
+        assert!(update_windows(&mut windows, "b", |state| {
+            visited += 1;
+            *state = false;
+            true
+        }));
+        assert_eq!(visited, 1);
+        assert!(!update_windows(&mut windows, "missing", |_| panic!(
+            "missing state cannot update"
+        )));
+    }
+
+    #[test]
+    #[ignore = "manual paired main-thread snapshot capture benchmark"]
+    fn main_thread_snapshot_capture_benchmark() {
+        use riwork_core::layouts::SavedTab;
+        use std::hint::black_box;
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let _entered = runtime.enter();
+        for tabs_per_window in [20, 500] {
+            let fixture = LayoutFixture::new();
+            let mut hosts = Vec::new();
+            let mut windows = BTreeMap::new();
+            for index in 0..4 {
+                let id = format!("main-capture-{index}-{}", Uuid::new_v4());
+                let host = fixture.session(&id);
+                let mut project = host.project_layout();
+                let pane = project.panes.values_mut().next().unwrap();
+                pane.tabs = (0..tabs_per_window)
+                    .map(|tab| SavedTab::Addin {
+                        instance_id: format!("tab-{tab}"),
+                        addin: "project/review".into(),
+                        view: "files".into(),
+                        title: format!("Review {tab}"),
+                        args: json!({
+                            "path": format!("src/module-{tab}/file.rs"),
+                            "context": "x".repeat(1024),
+                        }),
+                    })
+                    .collect();
+                pane.active_tab_key = pane.tabs.first().map(SavedTab::key);
+                host.publish(project.clone());
+                let mut window = fixture.window(&id).1;
+                window.layout = Some(project);
+                windows.insert(id, Arc::new(window));
+                hosts.push(host);
+            }
+            let normal = NSRect::new(NSPoint::new(20., 30.), NSSize::new(900., 650.));
+            let screen = NSRect::new(NSPoint::new(0., 0.), NSSize::new(1800., 1100.));
+            let selected = windows.first_key_value().unwrap().0;
+            let capture = |id: &str, launch: &Arc<RuntimeWindow>| {
+                CapturedWindow::new(id, Arc::clone(launch), normal, screen, WindowMode::Windowed)
+            };
+            let mut samples = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+            for _ in 0..3 {
+                let mut elapsed = [Duration::ZERO; 4];
+                for _ in 0..100 {
+                    let start = Instant::now();
+                    let baseline: Vec<_> = windows
+                        .iter()
+                        .map(|(id, launch)| {
+                            let mut recorded =
+                                recorded_runtime(launch, normal, screen, WindowMode::Windowed);
+                            apply_current_layout(id, &mut recorded);
+                            (id.clone(), recorded)
+                        })
+                        .collect();
+                    elapsed[0] += start.elapsed();
+
+                    MATERIALIZED_LAYOUTS.with(|count| count.set(0));
+                    let start = Instant::now();
+                    let captured = capture_windows(black_box(&windows), None, capture);
+                    elapsed[1] += start.elapsed();
+                    assert_eq!(MATERIALIZED_LAYOUTS.with(|count| count.get()), 0);
+                    let start = Instant::now();
+                    let current = materialize_windows(captured);
+                    elapsed[2] += start.elapsed();
+                    assert_eq!(MATERIALIZED_LAYOUTS.with(|count| count.get()), 4);
+                    assert_eq!(black_box(&current), black_box(&baseline));
+
+                    let start = Instant::now();
+                    let closed =
+                        materialize_windows(capture_windows(&windows, Some(selected), capture));
+                    elapsed[3] += start.elapsed();
+                    assert_eq!(closed, baseline[..1]);
+                    assert_eq!(MATERIALIZED_LAYOUTS.with(|count| count.get()), 5);
+                }
+                for (samples, elapsed) in samples.iter_mut().zip(elapsed) {
+                    samples.push(elapsed);
+                }
+            }
+            for sample in &mut samples {
+                sample.sort();
+            }
+            eprintln!(
+                "main-thread capture: windows=4 tabs_per_window={tabs_per_window} iterations=100 median_of=3 baseline={:?} capture={:?} service_materialize={:?} selected_close={:?}; layout copies per publication: main 8 -> 0, service 0 -> 4; selected close 8 -> 1",
+                samples[0][1], samples[1][1], samples[2][1], samples[3][1]
+            );
+        }
+    }
+
+    fn queued_capture(
+        fixture: &LayoutFixture,
+        id: &str,
+        width: f64,
+        mode: WindowMode,
+    ) -> (String, CapturedWindow) {
+        let mut launch = fixture.window(id).1;
+        launch.layout = Some(riwork_nsh_workspace::persistence::default_project_layout());
+        (
+            id.into(),
+            CapturedWindow::new(
+                id,
+                Arc::new(launch),
+                NSRect::new(NSPoint::new(10., 20.), NSSize::new(width, 650.)),
+                NSRect::new(NSPoint::new(0., 0.), NSSize::new(1800., 1100.)),
+                mode,
+            ),
+        )
+    }
+
+    #[test]
+    fn producer_tail_keeps_shared_generation_focus_frame_history_and_barriers() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let _entered = runtime.enter();
+        let fixture = LayoutFixture::new();
+        let id = format!("producer-tail-{}", Uuid::new_v4());
+        let host = fixture.session(&id);
+        let launch = Arc::new(fixture.window(&id).1);
+        let capture = |width, mode| vec![(id.clone(), CapturedWindow::new(
+            &id, Arc::clone(&launch),
+            NSRect::new(NSPoint::new(10., 20.), NSSize::new(width, 650.)),
+            NSRect::new(NSPoint::new(0., 0.), NSSize::new(1800., 1100.)), mode,
+        ))];
+        let (tx, rx) = service_queue::channel();
+        for index in 0..(SNAPSHOT_BATCH_LIMIT - 1) {
+            tx.send(Service::snapshot(capture(900. + index as f64, WindowMode::Windowed))).unwrap();
+        }
+        tx.send(Service::snapshot(capture(950., WindowMode::Windowed))).unwrap();
+        host.set_focus_state(true, false).unwrap();
+        tx.send(Service::snapshot(capture(1200., WindowMode::Maximized))).unwrap();
+        tx.send(Service::Ready(id.clone())).unwrap();
+        let mut inbox = ServiceInbox::new(rx);
+        let Service::Snapshot(snapshot) = inbox.recv().unwrap() else { panic!("snapshot"); };
+        let snapshot = inbox.coalesce_snapshots(snapshot, true);
+        assert_eq!(snapshot.frames.as_ref().unwrap().get(&id), WindowSize::new(950., 650.).as_ref());
+        let windows = materialize_windows(snapshot.windows);
+        assert_eq!(windows[0].1.bounds.unwrap().width, 1200.);
+        assert_eq!(windows[0].1.mode, WindowMode::Maximized);
+        assert!(windows[0].1.focus_mode && !windows[0].1.focus_centered);
+        assert!(matches!(inbox.recv().unwrap(), Service::Ready(window) if window == id));
+        assert!(matches!(inbox.recv_timeout(Duration::ZERO), Err(mpsc::RecvTimeoutError::Timeout)));
+
+        let previous = host.project_layout();
+        tx.send(Service::snapshot(capture(1000., WindowMode::Windowed))).unwrap();
+        let mut later = previous.clone();
+        later.selected_task_id = Some("new producer generation".into());
+        host.publish(later.clone());
+        tx.send(Service::snapshot(capture(1050., WindowMode::Windowed))).unwrap();
+        // A changed generation must retain its own FIFO envelope even when the
+        // launch Arc and window IDs are identical.
+        for project in [previous, later] {
+            let Service::Snapshot(snapshot) = inbox.recv().unwrap() else { panic!("snapshot"); };
+            assert_eq!(materialize_windows(snapshot.windows)[0].1.layout.as_ref(), Some(&project));
+        }
+        assert!(matches!(inbox.recv_timeout(Duration::ZERO), Err(mpsc::RecvTimeoutError::Timeout)));
+    }
+
+    #[test]
+    fn queued_snapshots_stop_at_commands_and_preserve_their_fifo_order() {
+        let fixture = LayoutFixture::new();
+        let barriers = vec![
+            Service::Ready("initial".into()),
+            Service::Open(OpenOptions::global(), OpenIntent::default()),
+            Service::OpenAgent {
+                tag: "notice".into(),
+                project_id: "project".into(),
+                shell_id: "shell".into(),
+            },
+            Service::Close("closing".into(), ClosingWindows::new(Vec::new()), None),
+            Service::Quit(ClosingWindows::new(Vec::new())),
+            Service::PrepareQuit,
+            Service::Restart(
+                ReloadRequest {
+                    request_id: "request".into(),
+                    instance_id: "instance".into(),
+                    ticket_id: "ticket".into(),
+                    replacement_executable: fixture.root.join("replacement"),
+                    created_at: 0,
+                },
+                ClosingWindows::new(Vec::new()),
+            ),
+            Service::RestartSkipped,
+            Service::TextSize("biggerText"),
+            Service::ResetCustomization,
+            Service::Wake,
+            Service::Finished,
+        ];
+        let (tx, rx) = service_queue::channel();
+        let expected: Vec<_> = barriers.iter().map(std::mem::discriminant).collect();
+        for (index, barrier) in barriers.into_iter().enumerate() {
+            for width in [900. + index as f64, 1000. + index as f64] {
+                tx.send(Service::snapshot(vec![queued_capture(
+                    &fixture,
+                    "initial",
+                    width,
+                    WindowMode::Windowed,
+                )]))
+                .unwrap();
+            }
+            tx.send(barrier).unwrap();
+        }
+        drop(tx);
+        let mut inbox = ServiceInbox::new(rx);
+        MATERIALIZED_LAYOUTS.with(|count| count.set(0));
+        for (index, command) in expected.iter().enumerate() {
+            let Service::Snapshot(windows) = inbox.recv_timeout(Duration::ZERO).unwrap() else {
+                panic!("expected snapshot");
+            };
+            let batch = inbox.coalesce_snapshots(windows, index == 0);
+            assert_eq!(
+                batch.restore_ids,
+                (index == 0).then(|| vec!["initial".to_owned()])
+            );
+            let windows = materialize_windows(batch.windows);
+            assert_eq!(windows[0].1.bounds.unwrap().width, 1000. + index as f32);
+            // Shutdown/deadline waits must also see a command taken as lookahead.
+            assert_eq!(std::mem::discriminant(&inbox.recv().unwrap()), *command);
+        }
+        assert_eq!(
+            MATERIALIZED_LAYOUTS.with(|count| count.get()),
+            expected.len()
+        );
+        assert!(inbox.recv().is_err());
+    }
+
+    #[test]
+    fn queued_snapshots_preserve_initial_ids_and_the_latest_capture_generation() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let _entered = runtime.enter();
+        let fixture = LayoutFixture::new();
+        let id = format!("queued-generation-{}", Uuid::new_v4());
+        let host = fixture.session(&id);
+        let (tx, rx) = service_queue::channel();
+        tx.send(Service::snapshot(vec![
+            queued_capture(&fixture, "initial-only", 800., WindowMode::Windowed),
+            queued_capture(&fixture, &id, 900., WindowMode::Windowed),
+        ]))
+        .unwrap();
+        let mut project = host.project_layout();
+        project.selected_task_id = Some("latest captured layout".into());
+        host.publish(project.clone());
+        host.set_focus_state(true, true).unwrap();
+        let mut global = RuntimeWindow::global(
+            &fixture.root,
+            None,
+            WindowMode::Windowed,
+            GlobalWindowState::default(),
+        );
+        global.global.as_mut().unwrap().view = GlobalView::Chat;
+        let global = CapturedWindow::new(
+            "global",
+            Arc::new(global),
+            NSRect::new(NSPoint::new(10., 20.), NSSize::new(1050., 750.)),
+            NSRect::new(NSPoint::new(0., 0.), NSSize::new(1800., 1100.)),
+            WindowMode::Maximized,
+        );
+        tx.send(Service::snapshot(vec![
+            ("global".into(), global),
+            queued_capture(&fixture, &id, 1000., WindowMode::Fullscreen),
+            queued_capture(&fixture, "new-loading", 1100., WindowMode::Windowed),
+        ]))
+        .unwrap();
+        let mut later = project.clone();
+        later.selected_task_id = Some("after capture".into());
+        host.publish(later.clone());
+        host.set_focus_state(false, false).unwrap();
+        let mut inbox = ServiceInbox::new(rx);
+        let Service::Snapshot(windows) = inbox.recv().unwrap() else {
+            unreachable!()
+        };
+        let batch = inbox.coalesce_snapshots(windows, true);
+        assert_eq!(batch.restore_ids.unwrap(), ["initial-only", &id]);
+        let windows = materialize_windows(batch.windows);
+        assert_eq!(
+            windows
+                .iter()
+                .map(|(id, _)| id.as_str())
+                .collect::<Vec<_>>(),
+            ["global", &id, "new-loading"]
+        );
+        assert_eq!(windows[0].1.global.as_ref().unwrap().view, GlobalView::Chat);
+        assert_eq!(
+            windows[0].1.global.as_ref().unwrap().window_size,
+            WindowSize::new(1050., 750.)
+        );
+        assert_eq!(windows[1].1.layout.as_ref(), Some(&project));
+        assert!(windows[1].1.focus_mode && windows[1].1.focus_centered);
+        assert!(
+            windows[2].1.layout.is_some(),
+            "loading window keeps its launch layout"
+        );
+        let published = current_layouts(&fixture.root, &windows);
+        assert_eq!(
+            published[1].layout.as_ref(),
+            Some(&later),
+            "periodic publication still reads the live generation"
+        );
+        assert!(!published[1].focus_mode && !published[1].focus_centered);
+    }
+
+    #[test]
+    fn queued_snapshot_budget_yields_with_more_snapshots_ready() {
+        let fixture = LayoutFixture::new();
+        let (tx, rx) = service_queue::channel();
+        for index in 0..(SNAPSHOT_BATCH_LIMIT * 3 + 1) {
+            tx.send(Service::snapshot(vec![queued_capture(
+                &fixture,
+                "budget",
+                800. + index as f64,
+                WindowMode::Windowed,
+            )]))
+            .unwrap();
+        }
+        tx.send(Service::Ready("budget".into())).unwrap();
+        let mut inbox = ServiceInbox::new(rx);
+        let mut tick = RuntimeTick::new(Instant::now());
+        let mut progress = 0;
+        for expected in [
+            SNAPSHOT_BATCH_LIMIT - 1,
+            SNAPSHOT_BATCH_LIMIT * 2 - 1,
+            SNAPSHOT_BATCH_LIMIT * 3 - 1,
+            SNAPSHOT_BATCH_LIMIT * 3,
+        ] {
+            let Service::Snapshot(windows) = inbox.recv().unwrap() else {
+                panic!("expected snapshot");
+            };
+            let batch = inbox.coalesce_snapshots(windows, false);
+            assert!(batch.restore_ids.is_none());
+            assert_eq!(batch.windows[0].1.bounds.width, 800. + expected as f32);
+            if expected == SNAPSHOT_BATCH_LIMIT * 3 {
+                assert!(
+                    batch.frames.is_none(),
+                    "an isolated snapshot needs no frame map"
+                );
+            }
+            // This is the service-loop point reached between bounded batches.
+            progress += 1;
+            let now = Instant::now();
+            assert!(tick.is_due(now));
+            tick.published(now, false);
+        }
+        assert_eq!(progress, 4);
+        assert!(matches!(inbox.recv().unwrap(), Service::Ready(id) if id == "budget"));
+    }
+
+    #[test]
+    fn queued_geometry_keeps_the_last_valid_ordinary_frame_and_respects_settings_and_close() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let _entered = runtime.enter();
+        let fixture = LayoutFixture::new();
+        let id = format!("queued-geometry-{}", Uuid::new_v4());
+        let host = fixture.session(&id);
+        let (tx, rx) = service_queue::channel();
+        for (width, mode) in [
+            (800., WindowMode::Windowed),
+            (950., WindowMode::Windowed),
+            (1920., WindowMode::Fullscreen),
+            (f64::NAN, WindowMode::Windowed),
+            (1800., WindowMode::Maximized),
+        ] {
+            tx.send(Service::snapshot(vec![queued_capture(
+                &fixture, &id, width, mode,
+            )]))
+            .unwrap();
+        }
+        let mut inbox = ServiceInbox::new(rx);
+        let Service::Snapshot(windows) = inbox.recv().unwrap() else {
+            unreachable!()
+        };
+        let batch = inbox.coalesce_snapshots(windows, false);
+        let frames = batch.frames.unwrap();
+        assert_eq!(frames.get(&id).copied(), WindowSize::new(950., 650.));
+        let settings = SettingsStore::open(&fixture.root).unwrap();
+        settings.update(|s| s.remember_window_size = false).unwrap();
+        remember_frames(
+            &fixture.root,
+            frames.iter().map(|(id, size)| (id.as_str(), *size)),
+        );
+        assert_eq!(host.window_size(), None);
+        settings.update(|s| s.remember_window_size = true).unwrap();
+        remember_frames(
+            &fixture.root,
+            frames.iter().map(|(id, size)| (id.as_str(), *size)),
+        );
+        assert_eq!(host.window_size(), WindowSize::new(950., 650.));
+        let closing = ClosingWindows::new(materialize_windows(batch.windows));
+        remember_frames(
+            &fixture.root,
+            [(id.as_str(), WindowSize::new(1200., 750.).unwrap())],
+        );
+        assert_eq!(host.window_size(), WindowSize::new(950., 650.));
+        let flushed = closing.flush(&fixture.root).unwrap();
+        assert_eq!(flushed[0].mode, WindowMode::Maximized);
+        assert_eq!(
+            flushed[0].layout.as_ref().unwrap().window_size,
+            WindowSize::new(950., 650.)
+        );
+        closing.cancel();
+    }
+
+    #[test]
+    fn lazy_publication_tracks_layout_focus_geometry_order_and_window_lifetimes() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let _entered = runtime.enter();
+        let fixture = LayoutFixture::new();
+        let id = format!("lazy-layout-{}", Uuid::new_v4());
+        let host = fixture.session(&id);
+        let mut windows = vec![fixture.window(&id)];
+        let mut published = current_layouts(&fixture.root, &windows);
+        assert!(current_layouts_if_changed(&fixture.root, &windows, &published).is_none());
+        let mut check_change = |windows: &[(String, RuntimeWindow)]| {
+            let changed = current_layouts_if_changed(&fixture.root, windows, &published).unwrap();
+            assert_eq!(changed, current_layouts(&fixture.root, windows));
+            assert!(current_layouts_if_changed(&fixture.root, windows, &changed).is_none());
+            published = changed;
+        };
+        let mut project = host.project_layout();
+        project.selected_task_id = Some("fresh edit".into());
+        host.publish(project);
+        check_change(&windows);
+        host.set_focus_state(true, true).unwrap();
+        check_change(&windows);
+        windows[0].1.bounds = Some(WindowGeometry {
+            x: 12.,
+            y: 34.,
+            width: 900.,
+            height: 650.,
+        });
+        check_change(&windows);
+        windows[0].1.mode = WindowMode::Maximized;
+        check_change(&windows);
+        let loading = fixture.window(&format!("lazy-loading-{}", Uuid::new_v4()));
+        windows.push(loading);
+        check_change(&windows);
+        windows.swap(0, 1);
+        check_change(&windows);
+        windows.pop();
+        check_change(&windows);
+        windows.clear();
+        check_change(&windows);
+    }
+
+    #[test]
+    fn lazy_publication_retains_launch_layouts_and_unchanged_prefix_windows() {
+        let fixture = LayoutFixture::new();
+        let mut windows = vec![
+            fixture.window(&format!("lazy-prefix-{}", Uuid::new_v4())),
+            fixture.window(&format!("lazy-launch-{}", Uuid::new_v4())),
+        ];
+        let mut project = riwork_nsh_workspace::persistence::default_project_layout();
+        project.selected_task_id = Some("launch layout".into());
+        windows[1].1.layout = Some(project);
+        let published = current_layouts(&fixture.root, &windows);
+        assert!(current_layouts_if_changed(&fixture.root, &windows, &published).is_none());
+        windows[1].1.focus_centered = true;
+        let changed = current_layouts_if_changed(&fixture.root, &windows, &published).unwrap();
+        assert_eq!(changed, current_layouts(&fixture.root, &windows));
+        assert_eq!(changed[0], published[0]);
+        assert_eq!(changed[1].layout, published[1].layout);
+    }
+
+    #[test]
+    fn lazy_publication_observes_external_project_roots_and_global_state() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let _entered = runtime.enter();
+        let fixture = LayoutFixture::new();
+        let project = Store::open(fixture.root.clone())
+            .unwrap()
+            .create_project(fixture.root.join("original"), Some("Original"), false)
+            .unwrap();
+        let id = format!("lazy-store-{}", Uuid::new_v4());
+        let mut window = fixture.window(&id);
+        window.1.project_id = Some(project.id.clone());
+        let global = GlobalWindowState {
+            window_size: Some(WindowSize {
+                width: 1000.,
+                height: 700.,
+            }),
+            ..Default::default()
+        };
+        let windows = vec![
+            window,
+            (
+                "lazy-global".into(),
+                RuntimeWindow::global(&fixture.root, None, WindowMode::Windowed, global.clone()),
+            ),
+        ];
+        let published = current_layouts(&fixture.root, &windows);
+        assert!(current_layouts_if_changed(&fixture.root, &windows, &published).is_none());
+        let path = fixture.root.join("state.json");
+        let mut state: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let moved = fixture.root.join("externally-moved");
+        state["projects"][0]["root"] = json!(moved);
+        std::fs::write(&path, serde_json::to_vec(&state).unwrap()).unwrap();
+        let saved = GlobalWindowState {
+            view: GlobalView::Chat,
+            ..Default::default()
+        };
+        GlobalWindowStore::at(&fixture.root).save(&saved).unwrap();
+        let changed = current_layouts_if_changed(&fixture.root, &windows, &published).unwrap();
+        assert_eq!(changed, current_layouts(&fixture.root, &windows));
+        assert_eq!(changed[0].path, moved);
+        assert_eq!(changed[1].global.as_ref().unwrap().view, GlobalView::Chat);
+        assert_eq!(
+            changed[1].global.as_ref().unwrap().window_size,
+            global.window_size
+        );
+        assert!(current_layouts_if_changed(&fixture.root, &windows, &changed).is_none());
+    }
+
+    #[test]
+    fn geometry_polling_observes_updated_remember_window_size_settings() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let _entered = runtime.enter();
+        let fixture = LayoutFixture::new();
+        let id = format!("lazy-size-{}", Uuid::new_v4());
+        let host = fixture.session(&id);
+        let mut windows = vec![fixture.window(&id)];
+        windows[0].1.bounds = Some(WindowGeometry {
+            x: 0.,
+            y: 0.,
+            width: 900.,
+            height: 650.,
+        });
+        let settings = SettingsStore::open(&fixture.root).unwrap();
+        settings
+            .update(|settings| settings.remember_window_size = false)
+            .unwrap();
+        remember_window_frames(&fixture.root, &windows);
+        assert_eq!(host.window_size(), None);
+        settings
+            .update(|settings| settings.remember_window_size = true)
+            .unwrap();
+        remember_window_frames(&fixture.root, &windows);
+        assert_eq!(
+            host.window_size(),
+            Some(WindowSize {
+                width: 900.,
+                height: 650.
+            })
+        );
+        let published = current_layouts(&fixture.root, &windows);
+        assert_eq!(
+            published[0].layout.as_ref().unwrap().window_size,
+            host.window_size()
+        );
+        assert!(current_layouts_if_changed(&fixture.root, &windows, &published).is_none());
+        host.flush().unwrap();
+    }
+
+    #[test]
+    #[ignore = "manual paired host snapshot benchmark"]
+    fn unchanged_host_layout_publication_benchmark() {
+        use riwork_core::layouts::SavedTab;
+        use std::hint::black_box;
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let _entered = runtime.enter();
+        for tabs_per_window in [20, 500] {
+            let fixture = LayoutFixture::new();
+            let mut sessions = Vec::new();
+            let mut windows = Vec::new();
+            for index in 0..4 {
+                let id = format!("snapshot-bench-{index}-{}", Uuid::new_v4());
+                let host = fixture.session(&id);
+                let mut project = host.project_layout();
+                project.panes.values_mut().next().unwrap().tabs = (0..tabs_per_window)
+                    .map(|tab| SavedTab::Addin {
+                        instance_id: format!("tab-{tab}"),
+                        addin: "project/review".into(),
+                        view: "files".into(),
+                        title: format!("Review {tab}"),
+                        args: json!({
+                            "path": format!("src/module-{tab}/file.rs"),
+                            "context": "x".repeat(1024),
+                        }),
+                    })
+                    .collect();
+                host.publish(project.clone());
+                let mut window = fixture.window(&id);
+                window.1.layout = Some(project);
+                windows.push(window);
+                sessions.push(host);
+            }
+            let published = current_layouts(&fixture.root, &windows);
+            assert!(current_layouts_if_changed(&fixture.root, &windows, &published).is_none());
+            let iterations = 100;
+            let start = Instant::now();
+            for _ in 0..iterations {
+                let snapshot = current_layouts(black_box(&fixture.root), black_box(&windows));
+                assert_eq!(black_box(&snapshot), black_box(&published));
+            }
+            let baseline = start.elapsed();
+            let start = Instant::now();
+            for _ in 0..iterations {
+                assert!(
+                    black_box(current_layouts_if_changed(
+                        black_box(&fixture.root),
+                        black_box(&windows),
+                        black_box(&published)
+                    ))
+                    .is_none()
+                );
+            }
+            let candidate = start.elapsed();
+            eprintln!(
+                "host snapshot benchmark: windows=4 tabs_per_window={tabs_per_window} serialized_bytes={} iterations={iterations} baseline={baseline:?} candidate={candidate:?}",
+                serde_json::to_vec(&published).unwrap().len(),
+            );
+        }
+    }
+
+    #[test]
     fn switched_layout_identity_drives_routing_publication_and_close_restore_metadata() {
         use riwork_nsh_workspace::persistence::{LayoutPersistence, SaveMode};
 
@@ -3233,6 +4515,11 @@ mod tests {
         );
         assert_ne!(current_project_id(&id, &launched.1), Some(original.id));
         let published = current_layouts(&fixture.root, &[launched.clone()]);
+        assert_eq!(
+            current_layouts_if_changed(&fixture.root, &[launched.clone()], &[]).unwrap(),
+            published
+        );
+        assert!(current_layouts_if_changed(&fixture.root, &[launched.clone()], &published).is_none());
         assert_eq!(
             published[0].project_id.as_deref(),
             Some(destination.id.as_str())
@@ -3718,6 +5005,131 @@ mod window_state {
     #[cfg(test)]
     mod tests {
         use super::super::*;
+
+        fn typed_seed() -> WindowState {
+            WindowState {
+                key: false,
+                visible: true,
+                occluded: false,
+                mode: WindowMode::Windowed,
+                backing_scale: 2.,
+                frame: WindowGeometry {
+                    x: 100.,
+                    y: 100.,
+                    width: 800.,
+                    height: 600.,
+                },
+                app_active: true,
+            }
+        }
+
+        fn previous_json(state: &WindowState) -> Value {
+            json!({"key": state.key, "visible": state.visible,
+                "occluded": state.occluded, "mode": state.mode, "backingScale": state.backing_scale,
+                "frame": state.frame, "appActive": state.app_active})
+        }
+
+        #[test]
+        fn typed_state_preserves_json_fields_and_numeric_equality() {
+            let mut states = Vec::new();
+            for flags in 0..16 {
+                for mode in [
+                    WindowMode::Windowed,
+                    WindowMode::Maximized,
+                    WindowMode::Fullscreen,
+                ] {
+                    states.push(WindowState {
+                        key: flags & 1 != 0,
+                        visible: flags & 2 != 0,
+                        occluded: flags & 4 != 0,
+                        app_active: flags & 8 != 0,
+                        mode,
+                        ..typed_seed()
+                    });
+                }
+            }
+            for number in [
+                0.,
+                -0.,
+                1.,
+                -1.,
+                0.1,
+                f64::MAX,
+                f64::MIN_POSITIVE,
+                f64::NAN,
+                f64::INFINITY,
+                f64::NEG_INFINITY,
+            ] {
+                states.push(WindowState {
+                    backing_scale: number,
+                    ..typed_seed()
+                });
+                for field in 0..4 {
+                    let mut state = typed_seed();
+                    match field {
+                        0 => state.frame.x = number as f32,
+                        1 => state.frame.y = number as f32,
+                        2 => state.frame.width = number as f32,
+                        _ => state.frame.height = number as f32,
+                    }
+                    states.push(state);
+                }
+            }
+            let json: Vec<_> = states.iter().map(previous_json).collect();
+            for (index, state) in states.iter().enumerate() {
+                assert_eq!(state.changed_event(None), Some(json[index].clone()));
+                assert_eq!(
+                    state.changed_event(None).unwrap().to_string(),
+                    json[index].to_string()
+                );
+                for (other, previous) in states.iter().enumerate() {
+                    assert_eq!(*state == *previous, json[index] == json[other]);
+                    assert_eq!(
+                        state.changed_event(Some(previous)),
+                        (json[index] != json[other]).then(|| json[index].clone())
+                    );
+                }
+            }
+        }
+
+        #[test]
+        fn typed_state_emits_the_same_sequence_and_resends_after_reload_reset() {
+            let initial = typed_seed();
+            let active = WindowState {
+                key: true,
+                ..initial
+            };
+            let full = WindowState {
+                mode: WindowMode::Fullscreen,
+                ..active
+            };
+            let hidden = WindowState {
+                visible: false,
+                occluded: true,
+                app_active: false,
+                ..full
+            };
+            let mut previous = None;
+            let mut old = Value::Null;
+            for state in [
+                initial, initial, active, active, full, hidden, hidden, initial,
+            ] {
+                let json = previous_json(&state);
+                let expected = changed_state(&old, &json).then(|| json.clone());
+                let event = state.changed_event(previous.as_ref());
+                assert_eq!(event, expected);
+                if event.is_some() {
+                    previous = Some(state);
+                    old = json;
+                }
+            }
+            previous = None;
+            old = Value::Null;
+            let json = previous_json(&initial);
+            assert!(changed_state(&old, &json));
+            assert_eq!(initial.changed_event(previous.as_ref()), Some(json));
+        }
+
         #[test]
         fn events_only_on_change() {
             let baseline = json!({"key":false,"visible":true,"occluded":false,"mode":"windowed","backingScale":2.,"frame":{"x":100.,"y":100.,"width":800.,"height":600.},"appActive":true});

@@ -20,6 +20,7 @@ pub mod feed;
 pub mod remote_feed;
 pub mod links;
 pub mod markdown;
+mod search;
 pub mod service;
 pub mod suggestions;
 pub mod toolbar;
@@ -289,6 +290,7 @@ impl Chat {
 pub struct ChatHandle {
     chat_id: String,
     inbox: Option<mpsc::Sender<WorkerMsg>>,
+    latest_search: worker::LatestSearch,
     commands: Option<mpsc::Sender<Delivery>>,
     backend: Arc<dyn ChatBackend>,
     remote: Option<remote_feed::Target>,
@@ -372,6 +374,7 @@ impl ChatHandle {
         Self {
             chat_id,
             inbox: Some(inbox),
+            latest_search: worker::LatestSearch::default(),
             commands,
             backend: handle_backend,
             remote: None,
@@ -391,7 +394,7 @@ impl ChatHandle {
         worker::spawn(view, receiver, Box::new(move |_| {
             if let Ok(home) = init_backend.home() { let _ = drafts::init(&home); }
         }), Arc::new(|_| {}), Box::new(move || drop(feed)));
-        Self { chat_id, inbox: Some(inbox), commands: Some(commands), backend, remote: Some(target) }
+        Self { chat_id, inbox: Some(inbox), latest_search: worker::LatestSearch::default(), commands: Some(commands), backend, remote: Some(target) }
     }
 
     /// Rust-side access for the bridge tests and the JS methods below.
@@ -648,6 +651,27 @@ impl ChatHandle {
     pub async fn search(this: Instance<Self>, query: String) -> Result<Vec<dto::SearchHitDto>, String> {
         let inbox = this.with(|handle| handle.inbox.clone());
         query_view(inbox, move |view| view.search(&query)).await
+    }
+
+    /// Find's latest query; a superseded/cancelled request settles as null.
+    /// Ordinary search() remains independent and returns every requested result.
+    pub fn search_latest(&self, query: String) -> Later<Option<Vec<dto::SearchHitDto>>> {
+        // Start in this JS call: an async method's body first runs on a later
+        // task poll, after a same-turn cancelSearch() may already have returned.
+        let queued = (|| {
+            let inbox = self.inbox.as_ref().ok_or("unavailable: the chat is closed")?;
+            let (ticket, result) = self.latest_search.request(query);
+            inbox.send(WorkerMsg::Search(ticket)).map_err(|_| "unavailable: the chat is closed".to_owned())?;
+            Ok::<_, String>(result)
+        })();
+        Later::new(async move {
+            queued?.recv().await.map_err(|_| "unavailable: the chat is closed".to_owned())
+        })
+    }
+
+    /// Cancel queued or active Find work immediately, without a worker round trip.
+    pub fn cancel_search(&self) {
+        self.latest_search.cancel();
     }
 
     /// Suggestions for a deliberately typed token in this chat's own folder.
@@ -909,6 +933,7 @@ impl ChatHandle {
 
     /// Stop following. Commands already queued are still delivered.
     pub fn close(&mut self) {
+        self.latest_search.cancel();
         self.post(WorkerMsg::Close);
         self.inbox = None;
         self.commands = None;
@@ -932,6 +957,7 @@ pub fn save_draft_work(chat_id: String, text: String, owner: drafts::Owner) -> W
 
 impl Drop for ChatHandle {
     fn drop(&mut self) {
+        self.latest_search.cancel();
         if let Some(inbox) = self.inbox.take() {
             let _ = inbox.send(WorkerMsg::Close);
         }

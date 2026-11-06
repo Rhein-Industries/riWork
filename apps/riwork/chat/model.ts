@@ -7,14 +7,22 @@ export function applyRows(rows: readonly ChatRow[], delivery: ChatDelivery): Cha
   const upsert = delivery.upsert ?? [];
   const remove = delivery.remove ?? [];
   if (!upsert.length && !remove.length && !delivery.order) return rows as ChatRow[];
-  const byKey = new Map(rows.map((row) => [row.key, row]));
+  const byKey = new Map<string, ChatRow>();
+  for (const row of rows) byKey.set(row.key, row);
   for (const key of remove) byKey.delete(key);
   for (const row of upsert) byKey.set(row.key, row);
-  const order = delivery.order ?? rows.map((row) => row.key);
+  const order = delivery.order;
   const next: ChatRow[] = [];
-  for (const key of order) {
-    const row = byKey.get(key);
-    if (row) next.push(row);
+  if (order == null) {
+    for (const previous of rows) {
+      const row = byKey.get(previous.key);
+      if (row) next.push(row);
+    }
+  } else {
+    for (const key of order) {
+      const row = byKey.get(key);
+      if (row) next.push(row);
+    }
   }
   return next;
 }
@@ -34,7 +42,7 @@ export function bodyChanges(
     const body = read(splice.key);
     if (body?.kind !== "markdown") continue;
     const blocks = body.blocks.slice(0, splice.from).concat(splice.blocks);
-    changed.set(splice.key, { kind: "markdown", blocks: blocks.slice(0, splice.len) });
+    changed.set(splice.key, { kind: "markdown", blocks: blocks.length === splice.len ? blocks : blocks.slice(0, splice.len) });
   }
   for (const append of delivery.append ?? []) {
     const body = read(append.key);

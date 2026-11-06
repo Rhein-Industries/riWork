@@ -496,7 +496,12 @@ impl Cache {
     /// discard. Budget each route fairly; all host identities and receipt times survive.
     /// The live cache stays complete. Its next successful read restores trimmed rows.
     pub fn save(&self, home: &Path) -> Result<(), String> {
-        let mut retained = self.clone();
+        self.clone().save_owned(home)
+    }
+    /// Persist a detached snapshot without cloning its complete inventory again.
+    /// Validation and byte-budget trimming consume only this owned cache.
+    pub fn save_owned(self, home: &Path) -> Result<(), String> {
+        let mut retained = self;
         retained
             .hosts
             .retain(|key, host| plain(key, 256) && host.valid_cached());

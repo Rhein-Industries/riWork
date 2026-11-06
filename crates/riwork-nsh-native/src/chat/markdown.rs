@@ -139,14 +139,30 @@ impl ParseCache {
         }
         // Keep unusual line endings on the full parser path. Byte offsets below
         // refer to complete LF lines, never to normalized or partially read text.
-        let reusable = !source.contains(['\r', '\u{feff}']);
-        let (offset, count) = self
+        let (mut offset, mut count) = self
             .stable
-            .filter(|(end, _)| reusable && source.get(..*end) == self.source.get(..*end))
+            .filter(|(end, _)| source.get(..*end) == self.source.get(..*end))
             .unwrap_or_default();
+        // A reused prefix was already checked for unusual line endings. Only
+        // the suffix can introduce one; replacements fall back to offset zero.
+        let reusable = !source[offset..].contains(['\r', '\u{feff}']);
+        if !reusable {
+            (offset, count) = (0, 0);
+        }
         let (tail, boundary) = parse_with_boundary(&source[offset..]);
-        let mut blocks = self.blocks[..count].to_vec();
-        blocks.extend(tail);
+        // The streaming document borrows this cache's blocks rather than
+        // retaining a second Arc. Preserve stable payloads in place when no
+        // external snapshot is held; retained snapshots still get copy-on-write.
+        if count == 0 {
+            self.blocks = Arc::new(tail);
+        } else if let Some(blocks) = Arc::get_mut(&mut self.blocks) {
+            blocks.truncate(count);
+            blocks.extend(tail);
+        } else {
+            let mut blocks = self.blocks[..count].to_vec();
+            blocks.extend(tail);
+            self.blocks = Arc::new(blocks);
+        }
         self.reused = count;
         self.stable = if reusable {
             boundary
@@ -159,18 +175,20 @@ impl ParseCache {
         {
             self.reparsed_bytes = source.len() - offset;
         }
-        self.source.clear();
-        self.source.push_str(source);
-        self.blocks = Arc::new(blocks);
+        // The prefix through offset was checked above and is unchanged.
+        self.source.truncate(offset);
+        self.source.push_str(&source[offset..]);
         self.blocks.clone()
     }
 }
 
 fn parse_with_boundary(source: &str) -> (Vec<Block>, Option<(usize, usize)>) {
-    let lines: Vec<String> = source
-        .lines()
-        .map(|line| line.replace('\t', "    "))
-        .collect();
+    let normalized = if source.contains('\t') {
+        Cow::Owned(source.replace('\t', "    "))
+    } else {
+        Cow::Borrowed(source)
+    };
+    let lines: Vec<&str> = normalized.lines().collect();
     let mut boundary = None;
     let blocks = blocks_with_boundary(&lines, 0, &mut boundary);
     let boundary = boundary.and_then(|(lines, blocks)| {
@@ -186,6 +204,105 @@ mod incremental_tests {
     use super::*;
 
     #[test]
+    fn normalized_lines_keep_raw_boundaries_and_retained_blocks() {
+        let prefix = "```rust\n\tone\t🦀\n```\n\n";
+        let expected = vec![Block::Code {
+            language: Some("rust".into()),
+            title: None,
+            text: "    one    🦀".into(),
+        }];
+        let mut cache = ParseCache::default();
+        let held = cache.parse(prefix);
+        assert_eq!(*held, expected);
+        assert_eq!(cache.stable, Some((prefix.len(), 1)));
+        cache.parse(&format!("{prefix}Tail"));
+        assert_eq!(cache.reparsed_bytes, 4);
+        assert_eq!(cache.stable, Some((prefix.len(), 1)));
+        assert_eq!(*held, expected);
+
+        let replacement = "```rust\r\n\tnew\r\n```\r\n\r\nTail";
+        cache.parse(replacement);
+        assert!(cache.stable.is_none());
+        assert!(matches!(&cache.blocks[0], Block::Code { text, .. } if text == "    new"));
+        assert_eq!(*held, expected);
+    }
+
+    #[test]
+    fn stable_payloads_are_reused_but_retained_snapshots_stay_immutable() {
+        let mut cache = ParseCache::default();
+        let source = format!("```rust\n{}\n```\n\nTail", "large_code();\n".repeat(4096));
+        let code_ptr = |blocks: &[Block]| match &blocks[0] {
+            Block::Code { text, .. } => text.as_ptr(),
+            _ => panic!("expected a code block"),
+        };
+        cache.parse(&source);
+        let pointer = code_ptr(&cache.blocks);
+        let next = format!("{source} appended");
+        cache.parse(&next);
+        assert_eq!(pointer, code_ptr(&cache.blocks));
+        assert_eq!(*cache.blocks, parse(&next));
+        let retained = cache.parse(&next);
+        let replacement = next.replace("large_code();", "other_code();");
+        cache.parse(&replacement);
+        assert_eq!(*retained, parse(&next));
+        assert_eq!(*cache.blocks, parse(&replacement));
+    }
+
+    #[test]
+    #[ignore = "manual paired stable-prefix allocation benchmark"]
+    fn stable_prefix_allocation_benchmark() {
+        // Previous implementation retained the complete source and cloned every
+        // stable block payload on each append. Keep that exact path for pairing.
+        fn previous(cache: &mut ParseCache, source: &str) {
+            if cache.source == source {
+                return;
+            }
+            let reusable = !source.contains(['\r', '\u{feff}']);
+            let (offset, count) = cache
+                .stable
+                .filter(|(end, _)| reusable && source.get(..*end) == cache.source.get(..*end))
+                .unwrap_or_default();
+            let (tail, boundary) = parse_with_boundary(&source[offset..]);
+            let mut blocks = cache.blocks[..count].to_vec();
+            blocks.extend(tail);
+            cache.stable = if reusable {
+                boundary
+                    .map(|(end, blocks)| (offset + end, count + blocks))
+                    .or_else(|| (offset > 0).then_some((offset, count)))
+            } else {
+                None
+            };
+            cache.source.clear();
+            cache.source.push_str(source);
+            cache.blocks = Arc::new(blocks);
+        }
+        let prefix = format!("```rust\n{}\n```\n\n", "large_code();\n".repeat(65_536));
+        let inputs: Vec<_> = (1..=100)
+            .map(|n| format!("{prefix}{}", "word ".repeat(n)))
+            .collect();
+        let mut baseline = ParseCache::default();
+        let mut candidate = ParseCache::default();
+        previous(&mut baseline, &prefix);
+        candidate.parse(&prefix);
+        let start = std::time::Instant::now();
+        for source in &inputs {
+            previous(&mut baseline, std::hint::black_box(source));
+        }
+        let before = start.elapsed();
+        let start = std::time::Instant::now();
+        for source in &inputs {
+            std::hint::black_box(candidate.parse(std::hint::black_box(source)));
+        }
+        let after = start.elapsed();
+        assert_eq!(baseline.blocks, candidate.blocks);
+        assert_eq!(*candidate.blocks, parse(inputs.last().unwrap()));
+        eprintln!(
+            "stable prefix {} bytes / 100 appends: previous {before:?}, candidate {after:?}",
+            prefix.len()
+        );
+    }
+
+    #[test]
     fn every_unicode_chunk_matches_full_parse_across_block_types() {
         let sources = [
             "# Heading\n\nText **bold** é中🦀.\n\n```rust src/main.rs\nlet x = 1;\n```\n\n## After\n\n- one\n  - nested\n- [x] done\n\n> [!NOTE]\n> a quote\n\n| A | B |\n|---|---|\n| x | y |\n\n~~~text\nlast\n~~~\n\nTail",
@@ -194,6 +311,8 @@ mod incremental_tests {
             "```\ncode\n```\n \t \n- x\n  lazy continuation\n\n    indented\n\n---\n",
             "```\r\nwindows\r\n```\r\n\r\nTail\r\n",
             "\u{feff}# Heading\n\n```\ncode\n```\n\nTail",
+            "# Stable\n\nparagraph\n\nnew\r\ntext\n\nEnd",
+            "# Stable\n\nparagraph\n\nnew\u{feff}text\n\nEnd",
             "Text\n```\nunfinished\n\nmore",
             "```\nx\n```\n\n:codex-file-citation{path=\"/out/Bericht März.docx\" purpose=\"output\"}\nQbit: see :codex-file-citation{path=\"/out/b.pdf\"}.\n:codex-file-citation{path=\"/out/c.png\"}\n\n- item\n  :codex-file-citation{path=\"/out/d.txt\"}",
             // Lists continue across blank lines; everything else ends at one.
@@ -335,12 +454,12 @@ pub fn cited_text(text: &str) -> (Cow<'_, str>, Vec<(Range<usize>, String)>) {
 // Blocks
 // ---------------------------------------------------------------------------------------
 
-fn blocks(lines: &[String], depth: usize) -> Vec<Block> {
+fn blocks(lines: &[&str], depth: usize) -> Vec<Block> {
     blocks_with_boundary(lines, depth, &mut None)
 }
 
 fn blocks_with_boundary(
-    lines: &[String],
+    lines: &[&str],
     depth: usize,
     boundary: &mut Option<(usize, usize)>,
 ) -> Vec<Block> {
@@ -350,7 +469,7 @@ fn blocks_with_boundary(
     let mut list_open = false;
     let mut i = 0;
     while i < lines.len() {
-        let line = lines[i].as_str();
+        let line = lines[i];
         if line.trim().is_empty() {
             flush(&mut paragraph, &mut out);
             i += 1;
@@ -402,13 +521,13 @@ fn blocks_with_boundary(
             let mut inner = Vec::new();
             while i < lines.len() {
                 match quote_content(&lines[i]) {
-                    Some(content) => inner.push(content.to_owned()),
+                    Some(content) => inner.push(content),
                     // A line of the same paragraph may skip the `>`.
                     None if !lines[i].trim().is_empty()
                         && inner.last().is_some_and(|last| !last.trim().is_empty())
                         && !starts_block(&lines[i]) =>
                     {
-                        inner.push(lines[i].clone())
+                        inner.push(lines[i])
                     }
                     None => break,
                 }
@@ -489,9 +608,9 @@ fn indent_of(line: &str) -> usize {
     line.chars().take_while(|c| *c == ' ').count()
 }
 
-fn unindent(line: &str, columns: usize) -> String {
+fn unindent(line: &str, columns: usize) -> &str {
     let spaces = indent_of(line).min(columns);
-    line[spaces..].to_owned()
+    &line[spaces..]
 }
 
 struct Fence {
@@ -610,10 +729,13 @@ fn is_rule(line: &str) -> bool {
     if indent_of(line) > 3 {
         return false;
     }
-    let compact: Vec<char> = line.chars().filter(|c| !c.is_whitespace()).collect();
-    compact.len() >= 3
-        && matches!(compact[0], '-' | '*' | '_')
-        && compact.iter().all(|c| *c == compact[0])
+    let mut compact = line.chars().filter(|c| !c.is_whitespace());
+    let Some(mark @ ('-' | '*' | '_')) = compact.next() else {
+        return false;
+    };
+    compact.next() == Some(mark)
+        && compact.next() == Some(mark)
+        && compact.all(|c| c == mark)
 }
 
 /// What follows the `>` of a quote line.
@@ -671,7 +793,7 @@ fn marker(line: &str) -> Option<Marker> {
 }
 
 /// The list that starts at `lines[start]` and the line after it.
-fn list(lines: &[String], start: usize, depth: usize) -> (Block, usize) {
+fn list(lines: &[&str], start: usize, depth: usize) -> (Block, usize) {
     let first = marker(&lines[start]).expect("a list starts at a marker");
     let ordered = first.ordered.is_some();
     let mut items = Vec::new();
@@ -686,16 +808,16 @@ fn list(lines: &[String], start: usize, depth: usize) -> (Block, usize) {
         if item.ordered.is_some() != ordered || item.indent >= first.content {
             break;
         }
-        let mut body = vec![lines[i][item.content.min(lines[i].len())..].to_owned()];
+        let mut body = vec![&lines[i][item.content.min(lines[i].len())..]];
         i += 1;
         while i < lines.len() {
-            let line = lines[i].as_str();
+            let line = lines[i];
             if line.trim().is_empty() {
                 // Blank lines belong to the item only if more of it follows.
                 let next = lines[i..].iter().position(|l| !l.trim().is_empty());
                 match next.map(|n| &lines[i + n]) {
                     Some(next) if indent_of(next) >= item.content => {
-                        body.push(String::new());
+                        body.push("");
                         i += 1;
                     }
                     _ => break,
@@ -707,7 +829,7 @@ fn list(lines: &[String], start: usize, depth: usize) -> (Block, usize) {
                 // A shallower marker is the next item (or another list); a deeper one of
                 // the other kind is nested in this item.
                 if sibling.ordered.is_some() != ordered && sibling.indent > item.indent {
-                    body.push(line[sibling.indent..].to_owned());
+                    body.push(&line[sibling.indent..]);
                     i += 1;
                 } else {
                     break;
@@ -716,7 +838,7 @@ fn list(lines: &[String], start: usize, depth: usize) -> (Block, usize) {
                 break;
             } else {
                 // A line of the item's paragraph that skips the indent.
-                body.push(line.trim_start().to_owned());
+                body.push(line.trim_start());
                 i += 1;
             }
         }
@@ -729,7 +851,8 @@ fn list(lines: &[String], start: usize, depth: usize) -> (Block, usize) {
             (line.len() == 3 || line[3..].starts_with(char::is_whitespace)).then_some(checked)
         });
         if checked.is_some() {
-            body[0] = body[0][3..].trim_start().to_owned();
+            let first = body[0];
+            body[0] = first[3..].trim_start();
         }
         let mut parsed = blocks(&body, depth + 1);
         if let Some(checked) = checked {
@@ -777,7 +900,7 @@ fn list(lines: &[String], start: usize, depth: usize) -> (Block, usize) {
 // Tables
 // ---------------------------------------------------------------------------------------
 
-fn table(lines: &[String], start: usize) -> Option<(Block, usize)> {
+fn table(lines: &[&str], start: usize) -> Option<(Block, usize)> {
     let header = lines.get(start)?;
     let delimiter = lines.get(start + 1)?;
     if !header.contains('|') {
@@ -1361,6 +1484,52 @@ mod tests {
         // Seven hashes, or none followed by a space, are not headings.
         assert!(matches!(&parse("####### x")[0], Block::Paragraph(_)));
         assert!(matches!(&parse("#hashtag")[0], Block::Paragraph(_)));
+    }
+
+    #[test]
+    fn nested_quote_task_and_fence_keep_normalized_owned_content() {
+        let parsed = {
+            let source = String::from(
+                "> - [x]\tTask\n>   ```rust\n>   \tcode 🦀\n>   ```\n",
+            );
+            parse(&source)
+        };
+        let Block::Quote(quoted) = &parsed[0] else { panic!("expected quote") };
+        let Block::List { start, items } = &quoted[0] else { panic!("expected list") };
+        assert_eq!(*start, None);
+        assert_eq!(items.len(), 1);
+        assert!(matches!(&items[0][0], Block::Task { checked: true, spans } if plain_text(spans) == "Task"));
+        assert_eq!(items[0][1], Block::Code {
+            language: Some("rust".into()),
+            title: None,
+            text: "    code 🦀".into(),
+        });
+    }
+
+    #[test]
+    fn rules_keep_unicode_whitespace_and_normalized_indentation_semantics() {
+        for source in [
+            "---",
+            "* * *",
+            "_\u{2003}_\u{a0}_",
+            "   *\u{2003}*\u{a0}*",
+            " -\t-\t- ",
+        ] {
+            assert_eq!(parse(source), [Block::Rule], "{source:?}");
+        }
+        for source in [
+            "--",
+            "-\u{a0}-",
+            "*-*",
+            "- - x",
+            "****x",
+            "    ---",
+            "\t---",
+            "\u{200b}---",
+            "−−−",
+        ] {
+            assert_ne!(parse(source), [Block::Rule], "{source:?}");
+        }
     }
 
     #[test]

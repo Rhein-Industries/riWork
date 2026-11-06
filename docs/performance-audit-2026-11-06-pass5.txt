@@ -1,0 +1,139 @@
+RiWork / Somtus performance audit — fifth pass, 2026-11-06
+
+Scope
+Continues performance-audit-2026-11-06-pass4.txt. That pass's final source
+fingerprints were saved before these changes. This pass addresses redundant
+layout-writer disposal and an unnecessary terminal-output copy. Existing work
+is preserved. No installed app restart/deployment or desktop interaction is
+part of this pass. The application-wide performance objective remains active.
+
+One guarded persistence owner per layout session
+CurrentLayout generations share Arc<OwnedPersistence>. Registration and a
+successful project switch create one owner; ordinary publications clone only
+its Arc. Discarding intermediate generations no longer submits disposal work.
+The final owner transfers its backend Arc to the existing blocking/fallback
+disposal path. A delayed ArcSwap reader retains the same guarded owner, and
+old/new projects retain distinct owners across a switch. This does not use
+racy strong-count tests. Close admission, cancellation, explicit flush and
+fallback-on-runtime-shutdown behavior are unchanged.
+
+Ten host_layouts tests pass, one opt-in benchmark ignored. Four new tests
+exercise 128 retained generations with zero intermediate disposal submissions,
+exactly one final submission, old/new delayed readers, concurrent final drops,
+and off-caller backend destruction with no runtime, active Tokio and a shut-down
+runtime. Existing close/switch/cancellation tests remain green. Independent
+review found no ownership, disposal-thread or admission-order issue.
+Evidence: target/performance-audit/shared-owner-results.json,
+  shared-owner-tests.log and host-layouts-shared-owner-baseline.rs.
+
+Final desktop dev-reload suite: 90 passed, 5 ignored. Default desktop cargo
+check also passed. Logs: shared-owner-desktop-tests.log and the default-check
+log named in shared-owner-results.json. These compile the current native search
+revision together with the shared persistence owner.
+
+Five alternating paired Debug samples; 128 retained generations, timed disposal
+including the final backend release:
+  No entered runtime, 20 tabs: 3.229 -> 1.097 ms.
+  No entered runtime, 500 tabs: 15.627 -> 13.351 ms.
+  Active Tokio, 20 tabs: 0.966 -> 0.528 ms.
+  Active Tokio, 500 tabs: 14.602 -> 13.571 ms.
+Disposal submissions fall from 128 to 1 in every 128-generation case. One-
+generation cases still submit once: comparable timings, with a 7.5 us increase
+in the no-runtime/20-tab case (66.208 -> 73.708 us). Large payload destruction
+still dominates large-layout cases. Timing ran after validation ended, with no
+other compiler or benchmark overlap; raw samples/log are referenced by the
+shared-owner result artifact.
+
+Terminal reply ownership
+The existing validated shell.output response construction is now a private
+helper. It moves the parsed output String into the full response or, when an
+accepted delta replaces the full response, into the retained screen. A full
+reply that also updates the cache still needs two owners and performs one
+string clone. Compared with the previous builder, one full-screen clone is
+removed on each path: plain 1 -> 0, accepted delta 1 -> 0, remembered full reply
+2 -> 1. This is payload allocation accounting, not all response allocations.
+
+Request validation, CLI calls/capping, hash/unchanged/error handling, SGR
+validation, screen/scrollback metadata, delta profitability, response field
+order and device/question/cache limits are preserved. Early extraction changes
+only the local JSON output slot; metadata validation receives the same text.
+Independent review found no observable response or cache-lifecycle change.
+
+Validation passed:
+  cargo test --locked -p riwork-remote --lib
+    127 passed, 11 opt-in tests/benchmarks ignored.
+  cargo test --locked -p riwork-remote --test link --test rpc_safety
+    --test shell_history --test shell_keys --test shell_output
+    44 passed, 1 real-tmux test ignored.
+The owned reply oracle compares exact serialized responses, errors and later
+cache behavior across plain/delta/unchanged, malformed hashes/output, metadata,
+SGR/Unicode, scrolling, replacement, eviction and device/question isolation.
+Pointer tests prove the parsed String moves into the selected owner and survives
+cache removal while retained externally. The optimized extracted helper also
+passed five correctness tests, two timing tests ignored.
+
+A separate counting-allocator harness verifies exactly one fewer allocation
+and output.len() fewer allocated bytes in each of 12 fixtures (200/540/2000
+rows; plain, accepted delta, missing base and unprofitable delta). Normal output
+sizes are 54,897 / 148,397 / 550,897 bytes. For example, the 540-row plain builder
+allocates 151,651 -> 3,254 total bytes; the accepted-delta builder allocates
+218,268 -> 69,871 bytes. Setup is excluded. These are per-operation allocation
+bytes, not retained memory or process RSS. Allocation instrumentation is in a
+separate executable from timing so its counters do not perturb timing results.
+Evidence: target/performance-audit/owned-terminal-output/remote-lib-tests.log,
+  remote-integration-tests.log, optimized-correctness.log, allocations-proof.log
+  and standalone-provenance.json.
+Seven alternating paired samples, 32 reply builds per sample. All final timing
+jobs ran sequentially after validation, without competing builds/benchmarks.
+Debug CPU medians are essentially flat; for example 200-row plain is
+535.800 -> 533.796 us and 2000-row plain is 5.192 -> 5.175 ms. The optimized
+actual-helper extraction uses rustc -O and the documented cached release
+serde_json library. Optimized plain replies:
+  200 rows: 67.869 -> 65.386 us.
+  540 rows: 182.023 -> 179.860 us.
+  2000 rows: 684.235 -> 662.921 us.
+The 540-row accepted delta is 224.932 -> 218.364 us. The 2000-row accepted delta
+is 796.354 -> 810.867 us (+1.8%, with overlapping sample spread); 200-row delta
+miss is 69.798 -> 69.881 us. These small mixed timing changes do not support a
+large CPU-speed claim. The clear result is the eliminated full-output allocation;
+validation and comparison scans remain the dominant work in these fixtures.
+Raw samples: owned-terminal-output/debug-benchmarks.log and
+  owned-terminal-output/optimized-benchmarks.log.
+Consolidated results, exact commands and source/library fingerprints:
+  target/performance-audit/owned-terminal-output/results.json and report.txt.
+
+Measurement limits and remaining work
+The disposal benchmark includes layout payload destruction and waits for the
+final fake-backend destructor, so deferred releases cannot escape its timing.
+It excludes generation construction/publication and actual persistence I/O.
+The candidate includes real HostLayout/ArcSwap teardown while the baseline
+models the prior retained CurrentLayout ownership; that small asymmetry favors
+the baseline. Layout payload deallocation still occurs on the final reader's
+thread. The producer channel remains unbounded.
+
+The terminal reply benchmark begins with parsed JSON and excludes CLI capture,
+JSON parsing, transport, response encoding and UI rendering. Full responses
+also retained by the cache still clone once; validation and delta comparison
+still scan text. Neither benchmark establishes end-to-end latency or application
+CPU usage. Files DTO construction, cold/overflow search, unfinished Markdown,
+rendering, memory growth and representative release/UI verification remain open.
+The next Files allocation design and exact baseline are saved in
+  target/performance-audit/files-deferred-dto-plan.txt and
+  files-deferred-dto-baseline.rs. The audit identified non-UTF8 parent error
+precedence as a compatibility requirement: defer owned DTO strings, retain
+per-entry path checks and all descriptor-relative metadata/identity semantics.
+No Files DTO implementation or timing gain is claimed in this pass.
+
+Final verification
+Production/test source fingerprints are saved in
+  target/performance-audit/pass5-production-sources.sha256.
+Diff whitespace checks pass. Final validation and benchmark jobs have terminated;
+no installed application, global toolchain or unrelated edits were changed.
+The broad workspace/engine/service baseline failures recorded in earlier passes
+are not erased by the passing targeted suites here. The goal remains active:
+concrete costs above and missing representative application measurements rule
+out a claim that no further improvement is possible.
+
+Continuation: performance-audit-2026-11-06-pass6.txt records deferred Files DTO
+construction, shared preference generations, typed window-state comparisons and
+allocation-free Markdown rule checks, with separate allocation/timing evidence.

@@ -782,14 +782,34 @@ impl RuntimeRegistration {
     pub fn try_publish_windows(&mut self, windows: Vec<RuntimeWindow>) -> Result<bool, String> {
         self.publish(windows, false)
     }
+
+    /// Inspect the last successfully published windows before allocating a new
+    /// snapshot. Return None only when the windows are unchanged. Heartbeats,
+    /// missing registrations and busy-lock retries follow the ordinary path.
+    pub fn try_publish_windows_if_changed(
+        &mut self,
+        capture: impl FnOnce(&[RuntimeWindow]) -> Option<Vec<RuntimeWindow>>,
+    ) -> Result<bool, String> {
+        let changed = capture(&self.instance.windows);
+        self.publish_changed(changed, false)
+    }
+
     fn publish(&mut self, windows: Vec<RuntimeWindow>, wait: bool) -> Result<bool, String> {
+        let changed = (windows != self.instance.windows).then_some(windows);
+        self.publish_changed(changed, wait)
+    }
+
+    fn publish_changed(
+        &mut self,
+        windows: Option<Vec<RuntimeWindow>>,
+        wait: bool,
+    ) -> Result<bool, String> {
         let path = self.manager.instance_path(&self.instance.id)?;
-        let changed = windows != self.instance.windows;
-        if !changed && self.written_at.elapsed() < HEARTBEAT && path.exists() {
+        if windows.is_none() && self.written_at.elapsed() < HEARTBEAT && path.exists() {
             return Ok(true);
         }
-        if changed {
-            validate_windows(&windows)?;
+        if let Some(windows) = &windows {
+            validate_windows(windows)?;
         }
         let _lock = if wait {
             self.manager.lock()?
@@ -798,10 +818,12 @@ impl RuntimeRegistration {
         } else {
             return Ok(false);
         };
-        let previous = std::mem::replace(&mut self.instance.windows, windows);
+        let previous = windows.map(|windows| std::mem::replace(&mut self.instance.windows, windows));
         self.instance.updated_at = now();
         if let Err(error) = write_json(&path, &self.instance) {
-            self.instance.windows = previous;
+            if let Some(previous) = previous {
+                self.instance.windows = previous;
+            }
             return Err(error);
         }
         self.written_at = Instant::now();
@@ -2999,6 +3021,103 @@ mod tests {
         registration.written_at = Instant::now() - HEARTBEAT * 2;
         assert!(registration.try_publish_windows(changed).unwrap());
         assert_ne!(inode(&path), refreshed);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn lazy_publication_retries_failures_and_preserves_heartbeats_without_a_new_snapshot() {
+        let fixture = Fixture::new();
+        let mut registration = fixture.register("state");
+        let path = fixture
+            .manager
+            .instance_path(&registration.instance.id)
+            .unwrap();
+        let initial = vec![window(fixture.path.clone())];
+        assert!(
+            registration
+                .try_publish_windows_if_changed(|_| Some(initial.clone()))
+                .unwrap()
+        );
+        let written = inode(&path);
+        assert!(
+            registration
+                .try_publish_windows_if_changed(|published| {
+                    assert_eq!(published, initial);
+                    None
+                })
+                .unwrap()
+        );
+        assert_eq!(inode(&path), written);
+
+        let changed = vec![window(fixture.path.clone()), window(fixture.path.clone())];
+        let held = fixture.manager.lock().unwrap();
+        assert!(
+            !registration
+                .try_publish_windows_if_changed(|_| Some(changed.clone()))
+                .unwrap()
+        );
+        drop(held);
+        assert!(
+            registration
+                .try_publish_windows_if_changed(|published| {
+                    assert_eq!(
+                        published, initial,
+                        "a busy attempt cannot advance publication"
+                    );
+                    Some(changed.clone())
+                })
+                .unwrap()
+        );
+
+        let mut invalid = initial.clone();
+        invalid[0].bounds.as_mut().unwrap().width = f32::NAN;
+        assert!(
+            registration
+                .try_publish_windows_if_changed(|_| Some(invalid))
+                .is_err()
+        );
+        assert_eq!(registration.instance.windows, changed);
+        fs::remove_file(&path).unwrap();
+        fs::create_dir(&path).unwrap();
+        assert!(
+            registration
+                .try_publish_windows_if_changed(|_| Some(initial.clone()))
+                .is_err()
+        );
+        assert_eq!(
+            registration.instance.windows, changed,
+            "a write failure retains the last good snapshot"
+        );
+        fs::remove_dir(&path).unwrap();
+        assert!(
+            registration
+                .try_publish_windows_if_changed(|_| None)
+                .unwrap()
+        );
+        assert_eq!(
+            read_json::<RuntimeInstance>(&path).unwrap().windows,
+            changed
+        );
+
+        let refreshed = inode(&path);
+        registration.written_at = Instant::now() - HEARTBEAT * 2;
+        let held = fixture.manager.lock().unwrap();
+        assert!(
+            !registration
+                .try_publish_windows_if_changed(|_| None)
+                .unwrap()
+        );
+        drop(held);
+        assert!(
+            registration
+                .try_publish_windows_if_changed(|_| None)
+                .unwrap()
+        );
+        assert_ne!(inode(&path), refreshed);
+        assert_eq!(
+            read_json::<RuntimeInstance>(&path).unwrap().windows,
+            changed
+        );
     }
 
     #[cfg(unix)]

@@ -1,6 +1,6 @@
 use crate::{
     config::{self, Colors},
-    policy,
+    maintenance, policy,
 };
 use nsh_core::JsonValue;
 use nsh_platform_macos::{
@@ -199,6 +199,9 @@ struct State {
 }
 static NEXT: AtomicU64 = AtomicU64::new(1);
 static CONFIG_REVISION: AtomicU64 = AtomicU64::new(1);
+// Native reparenting can change a window's warm-terminal set without a prop
+// change. AppKit reports that edge; the worker only reads this revision.
+static PLACEMENT_REVISION: AtomicU64 = AtomicU64::new(0);
 struct ThemeProjection {
     home: PathBuf,
     publish: Arc<dyn Fn(Result<riwork_core::theme::TerminalTheme, String>) + Send + Sync>,
@@ -245,6 +248,10 @@ fn claims() -> &'static Mutex<BTreeMap<(PathBuf, String), u64>> {
 }
 fn states() -> &'static Mutex<Vec<Weak<State>>> {
     STATES.get_or_init(Default::default)
+}
+fn maintenance_wake() -> &'static maintenance::Wake {
+    static WAKE: OnceLock<maintenance::Wake> = OnceLock::new();
+    WAKE.get_or_init(Default::default)
 }
 fn ptr(state: &State) -> *mut c_void {
     state.view.load(Ordering::Acquire) as *mut c_void
@@ -320,6 +327,7 @@ pub fn register(components: &Components, home: PathBuf) {
                 .host
                 .store(Retained::as_ptr(&host) as usize, Ordering::Release);
             states().lock().unwrap().push(Arc::downgrade(&state));
+            maintenance_wake().notify();
             Box::new(Terminal { host, state })
         }),
     );
@@ -603,7 +611,9 @@ fn schedule_pool() {
         plan.recheck
             .map_or(u64::MAX, |wait| clock_ms() + wait.as_millis() as u64)
     };
-    POOL_DUE.store(due, Ordering::Release);
+    if due < POOL_DUE.swap(due, Ordering::AcqRel) {
+        maintenance_wake().notify();
+    }
 }
 /// Lets kept terminals go: those the pool's policy releases now, or every one.
 fn release_pooled(all: bool) {
@@ -1280,6 +1290,7 @@ extern "C" fn on_event(context: *mut c_void, name: *const c_char, data: *const c
         serde_json::from_slice(unsafe { CStr::from_ptr(data) }.to_bytes()).unwrap_or(Value::Null);
     trace(&state, &name, value.clone());
     match name.as_ref() {
+        "placementChanged" => { PLACEMENT_REVISION.fetch_add(1, Ordering::AcqRel); }
         "ready" => status(&state, "attached", None, None),
         "ended" => {
             if pool_ended(&state) {
@@ -1605,23 +1616,25 @@ fn start_maintenance() {
     static START: std::sync::Once = std::sync::Once::new();
     START.call_once(|| {
         thread::spawn(|| {
-            let roots = config::roots();
-            let mut stamp = config::stamp(&roots);
+            let mut config_watch = config::Watch::new(config::roots());
             let mut check_at = Instant::now();
+            let mut gate = maintenance::Gate::default();
+            let wake = maintenance_wake();
+            let mut observed = wake.generation();
+            let mut wait = policy::MIN_RECHECK;
             loop {
-                thread::sleep(policy::MIN_RECHECK);
-                let mut list = states().lock().unwrap();
-                list.retain(|s| s.strong_count() > 0);
+                observed = wake.wait(observed, wait);
+                // Release the registry before config I/O or model locks: AppKit
+                // needs it to register new terminal components.
+                let list = maintenance::snapshot(states());
                 let list = list
-                    .iter()
-                    .filter_map(Weak::upgrade)
+                    .into_iter()
                     .filter(|s| s.alive.load(Ordering::Acquire))
                     .collect::<Vec<_>>();
+                let has_components = !list.is_empty();
                 let changed = if Instant::now() >= check_at {
                     check_at = Instant::now() + Duration::from_secs(2);
-                    let next = config::stamp(&roots);
-                    let changed = stamp != next;
-                    stamp = next;
+                    let changed = config_watch.changed();
                     if changed {
                         CONFIG_REVISION.fetch_add(1, Ordering::AcqRel);
                     }
@@ -1629,18 +1642,58 @@ fn start_maintenance() {
                 } else {
                     false
                 };
-                let needs = changed
-                    || clock_ms() >= POOL_DUE.load(Ordering::Acquire)
-                    || list.iter().any(|s| {
+                let now = Instant::now();
+                let mut needs_reconcile = false;
+                let identity = list
+                    .iter()
+                    .map(|s| {
                         let m = s.model.lock().unwrap();
-                        m.active.is_some() && !m.visible
-                            || m.active.is_none() && m.visible && !m.failed && !m.ended
-                            || m.retry_at.is_some()
+                        needs_reconcile |= m.active.is_none()
+                            && m.visible
+                            && !m.failed
+                            && !m.ended
+                            && !m.attaching
+                            && !m.closing
+                            && m.target.is_some()
+                            || m.visible
+                                && !m.frozen
+                                && !m.closing
+                                && m.retry_at.is_some_and(|deadline| now >= deadline);
+                        (
+                            s.id,
+                            s.generation.load(Ordering::Acquire),
+                            m.visible,
+                            m.frozen,
+                            m.active.is_some() && !m.closing,
+                            m.pinned || m.ended || m.child_exited,
+                            m.hidden,
+                            m.retry_at,
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                let due = needs_reconcile
+                    || clock_ms() >= POOL_DUE.load(Ordering::Acquire)
+                    || release_schedules()
+                        .lock()
+                        .unwrap()
+                        .values()
+                        .any(|schedule| schedule.due(now));
+                let identity = (PLACEMENT_REVISION.load(Ordering::Acquire), identity);
+                if let Some(pass) = gate.queue(identity, due, changed) {
+                    dispatch2::DispatchQueue::main().exec_async(move || {
+                        maintain(list, pass.config_changed);
+                        drop(pass);
                     });
-                if !needs {
-                    continue;
                 }
-                dispatch2::DispatchQueue::main().exec_async(move || maintain(list, changed));
+                let pool_due = POOL_DUE.load(Ordering::Acquire);
+                wait = maintenance::wait_duration(
+                    has_components,
+                    gate.pending(),
+                    check_at.saturating_duration_since(Instant::now()),
+                    (pool_due != u64::MAX).then(|| {
+                        Duration::from_millis(pool_due.saturating_sub(clock_ms()))
+                    }),
+                );
             }
         });
     });

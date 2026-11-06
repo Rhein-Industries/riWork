@@ -182,9 +182,9 @@ impl Cua {
                 if let Ok(subscription) =
                     service::blocking(|| Ok(observer()?.topic.subscribe())).await
                 {
-                    while let Ok(snapshot) = subscription.recv().await {
+                    while let Ok(snapshot) = subscription.recv_shared().await {
                         listener.post(
-                            serde_json::to_value(subscription.latest(snapshot))
+                            serde_json::to_value(subscription.latest_shared(snapshot))
                                 .expect("Cua event serializes"),
                         );
                         next_frame().await;

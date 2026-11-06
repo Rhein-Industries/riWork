@@ -1,7 +1,7 @@
 //! Somtus's Markdown blocks as `nsh/base` `TextView` document blocks: the objects TSX
 //! passes as `document={{ blocks }}` (`TextViewBlock`, `TextViewInline` in
-//! `nsh/base.d.ts`). The blocks are built as `nsh_base::text_view` nodes and cross as
-//! their JSON, so the shape is the one TextView reads by construction.
+//! `nsh/base.d.ts`). Blocks cross as the JSON of `nsh_base::text_view` nodes. Code
+//! borrows its fields during serialization; a schema test checks the same NSH shape.
 //!
 //! A line break inside a paragraph is a `break` (Somtus keeps single newlines; NSH's own
 //! Markdown would make them spaces). A run of cited files is a custom block named
@@ -36,7 +36,31 @@ pub fn document_blocks(blocks: &[Block]) -> Vec<Value> {
 
 /// `block` as a `TextViewBlock` object.
 pub fn block_json(block: &Block) -> Value {
+    // Code dominates unfinished fenced tails. Borrow its payload while building the
+    // owned JSON rather than copying it through a temporary owned TextView node.
+    if let Block::Code { language, title, text } = block {
+        return serde_json::to_value(CodeBlockRef {
+            kind: "codeBlock",
+            language: language.as_deref(),
+            meta: title.as_deref(),
+            code: text,
+        })
+        .expect("TextView nodes serialize to JSON");
+    }
     serde_json::to_value(view_block(block)).expect("TextView nodes serialize to JSON")
+}
+
+/// The borrowed form of `ViewBlock::CodeBlock(CodeBlock)`. Its field order and
+/// optional-field behavior are checked against the NSH node serializer.
+#[derive(Serialize)]
+struct CodeBlockRef<'a> {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    language: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    meta: Option<&'a str>,
+    code: &'a str,
 }
 
 /// `block` as a TextView node.
@@ -298,7 +322,6 @@ pub struct Splice {
 #[derive(Default)]
 pub struct StreamingDocument {
     cache: ParseCache,
-    parsed: Arc<Vec<Block>>,
     blocks: Vec<Value>,
 }
 
@@ -314,27 +337,23 @@ impl StreamingDocument {
 
     /// The parsed blocks of the text last given.
     pub fn parsed(&self) -> &Arc<Vec<Block>> {
-        &self.parsed
+        &self.cache.blocks
     }
 
     /// Takes the whole text so far (or a replacement of it) and returns how the blocks
     /// changed: `from` is the first block whose JSON differs from the last emission.
     pub fn update(&mut self, text: &str) -> Splice {
-        let parsed = self.cache.parse(text);
-        if Arc::ptr_eq(&parsed, &self.parsed) {
+        if self.cache.source == text {
             return Splice {
                 from: self.blocks.len(),
                 blocks: Vec::new(),
                 len: self.blocks.len(),
             };
         }
-        // The blocks the cache took over are the ones converted last time; past them, a
-        // block that parses the same converts the same.
-        let mut from = self.cache.reused.min(self.parsed.len()).min(parsed.len());
-        let shared = parsed.len().min(self.parsed.len());
-        while from < shared && parsed[from] == self.parsed[from] {
-            from += 1;
-        }
+        let parsed = self.cache.parse(text);
+        // Stable parsed blocks were retained in place. Reconvert only the
+        // unstable suffix, then compare JSON to suppress unchanged emissions.
+        let mut from = self.cache.reused.min(self.blocks.len()).min(parsed.len());
         let previous = self.blocks.split_off(from);
         self.blocks.extend(parsed[from..].iter().map(block_json));
         // A block can parse differently and still show the same.
@@ -343,7 +362,6 @@ impl StreamingDocument {
             .zip(&previous)
             .take_while(|(new, old)| new == old)
             .count();
-        self.parsed = parsed;
         Splice {
             from,
             blocks: self.blocks[from..].to_vec(),
@@ -356,6 +374,56 @@ impl StreamingDocument {
 mod tests {
     use super::*;
     use crate::chat::markdown::parse;
+
+    #[test]
+    fn borrowed_code_json_matches_the_owned_nsh_schema() {
+        let controls: String = (0..=31).map(char::from).collect();
+        let options = [None, Some(""), Some("rust"), Some("🦀\n\"\\"), Some("\0")];
+        for language in options {
+            for title in options {
+                for text in [
+                    "", "plain", "\n\r\n\t", "\"\\/<> &",
+                    "🦀 é e\u{301} 中文 \u{2028}\u{2029}", controls.as_str(),
+                ] {
+                    let block = Block::Code {
+                        language: language.map(str::to_owned),
+                        title: title.map(str::to_owned),
+                        text: text.into(),
+                    };
+                    let owned = serde_json::to_value(view_block(&block)).unwrap();
+                    let actual = block_json(&block);
+                    let expected = serde_json::to_vec(&owned).unwrap();
+                    assert_eq!(serde_json::to_vec(&actual).unwrap(), expected);
+                    let decoded: ViewBlock = serde_json::from_value(actual.clone()).unwrap();
+                    // Value's map backend can sort keys; compare the actual wire
+                    // path on both sides rather than the typed node's field order.
+                    let roundtrip = serde_json::to_value(decoded).unwrap();
+                    assert_eq!(serde_json::to_vec(&roundtrip).unwrap(), expected);
+                    drop(block);
+                    assert_eq!(actual, owned);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn streaming_keeps_the_large_stable_block_payload_in_place() {
+        let prefix = format!("```rust\n{}\n```\n\n", "large_code();\n".repeat(4096));
+        let mut document = StreamingDocument::new();
+        document.update(&prefix);
+        let code_ptr = |document: &StreamingDocument| match &document.parsed()[0] {
+            Block::Code { text, .. } => text.as_ptr(),
+            _ => panic!("expected code"),
+        };
+        let pointer = code_ptr(&document);
+        for tail in ["tail", "tail grows", "tail grows again"] {
+            let source = format!("{prefix}{tail}");
+            let splice = document.update(&source);
+            assert_eq!(code_ptr(&document), pointer);
+            assert!(splice.from >= 1, "stable code must not be resent");
+            assert_eq!(document.blocks(), doc(&source));
+        }
+    }
 
     fn doc(source: &str) -> Vec<Value> {
         document_blocks(&parse(source))

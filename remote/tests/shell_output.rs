@@ -128,6 +128,41 @@ fn code(response: &Value) -> &str {
 const HASH: &str = "0123456789abcdef";
 
 #[tokio::test]
+async fn delta_replies_omit_full_output_and_cache_misses_keep_it() {
+    let f = Fixture::new();
+    let old = "unchanged terminal row with plenty of text\n".repeat(100);
+    f.cli_says(json!({"id":f.shell,"output":old,"hash":HASH}));
+    let first = f.output(json!({"delta":true})).await;
+    assert_eq!(first["ok"], true, "{first}");
+    assert_eq!(first["result"]["output"], old);
+    assert!(first["result"].get("delta").is_none());
+
+    let new = format!("{old}new row");
+    let next_hash = "fedcba9876543210";
+    f.cli_says(json!({"id":f.shell,"output":new,"hash":next_hash}));
+    let changed = f.output(json!({"delta":true,"if_changed":HASH})).await;
+    assert_eq!(changed["ok"], true, "{changed}");
+    assert!(changed["result"].get("output").is_none());
+    assert_eq!(changed["result"]["hash"], next_hash);
+    assert_eq!(
+        changed["result"]["delta"],
+        json!({
+            "base":HASH,"shift":0,"line_count":101,"changed":[[100,["new row"]]]
+        })
+    );
+
+    let missing = f
+        .output(json!({"delta":true,"if_changed":"uncached"}))
+        .await;
+    assert_eq!(missing["ok"], true, "{missing}");
+    assert_eq!(missing["result"]["output"], new);
+    assert!(missing["result"].get("delta").is_none());
+    let plain = f.output(json!({})).await;
+    assert_eq!(plain["result"]["output"], new);
+    assert!(plain["result"].get("delta").is_none());
+}
+
+#[tokio::test]
 async fn the_new_parameters_are_validated_before_any_cli_runs() {
     let f = Fixture::without_cli();
     let long = "h".repeat(65);

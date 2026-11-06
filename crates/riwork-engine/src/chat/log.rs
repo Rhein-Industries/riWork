@@ -386,12 +386,16 @@ pub fn replay(
         }
         if let Ok(mut envelope) = serde_json::from_slice::<Envelope>(&line) {
             envelope.enrich();
-            serde_json::to_writer(&mut *out, &envelope)?;
-            out.write_all(b"\n")?;
-        } else {
-            // Future event/body shapes remain forwardable to tolerant clients.
-            out.write_all(&line)?;
+            // Envelope owns its strings, so the input buffer can also hold its
+            // normalized wire form. Serialize there before writing to the
+            // subscriber: direct serialization makes a socket write for every
+            // JSON fragment and escape. No second large line buffer is needed.
+            line.clear();
+            serde_json::to_writer(&mut line, &envelope)?;
+            line.push(b'\n');
         }
+        // Future event/body shapes keep their original bytes, as before.
+        out.write_all(&line)?;
     }
     out.flush()
 }
@@ -587,7 +591,7 @@ fn fold_tail(
             continue;
         }
         if let Ok(envelope) = serde_json::from_slice::<Envelope>(&line) {
-            transcript.apply_sequenced(envelope.seq, &envelope.event);
+            transcript.apply_sequenced_owned(envelope.seq, envelope.event);
         }
     }
     Ok(transcript)
@@ -633,7 +637,7 @@ pub fn notice_tail(dir: &Path, max: u64) -> super::model::Transcript {
             continue;
         }
         if let Ok(envelope) = serde_json::from_slice::<Envelope>(&line) {
-            transcript.apply_sequenced(envelope.seq, &envelope.event);
+            transcript.apply_sequenced_owned(envelope.seq, envelope.event);
         }
     }
     transcript
@@ -785,7 +789,7 @@ pub fn read_snapshot_with_features(
                 turn_starts.entry(turn_id.clone()).or_insert(next);
             }
         }
-        transcript.apply_sequenced(envelope.seq, &envelope.event);
+        transcript.apply_sequenced_owned(envelope.seq, envelope.event);
     }
     let mark = format!("{bytes}-{next}-{hash:016x}");
     if cursor.is_some_and(|c| c != mark) {
@@ -888,7 +892,7 @@ pub fn read_snapshot_with_features(
     };
     let dismissed_notices =
         super::notice_dismissals::snapshot_keys(home, transcript.info.as_ref())?;
-    let mut snapshot = Snapshot {
+    let snapshot = Snapshot {
         v: 1,
         chat_id: id.into(),
         cursor: mark,
@@ -903,57 +907,290 @@ pub fn read_snapshot_with_features(
         provisional,
         dismissed_notices,
     };
+    fit_snapshot_to_limit(snapshot, max_bytes, item_ids.is_empty())
+}
+
+/// Serialized metadata size, including the brackets of an empty items array.
+fn snapshot_metadata_size(snapshot: &mut Snapshot) -> Result<usize, String> {
+    let items = std::mem::take(&mut snapshot.items);
+    let rest = serde_json::to_vec(&*snapshot)
+        .map(|bytes| bytes.len())
+        .map_err(|error| error.to_string());
+    snapshot.items = items;
+    rest
+}
+
+fn serialized_size(value: &impl serde::Serialize) -> Result<usize, String> {
+    struct Counter(usize);
+    impl Write for Counter {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.0 += bytes.len();
+            Ok(bytes.len())
+        }
+        fn write_all(&mut self, bytes: &[u8]) -> io::Result<()> {
+            self.0 += bytes.len();
+            Ok(())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut counter = Counter(0);
+    serde_json::to_writer(&mut counter, value).map_err(|error| error.to_string())?;
+    Ok(counter.0)
+}
+
+#[derive(Default)]
+struct SnapshotMapSizes {
+    entries: std::collections::HashMap<String, usize>,
+    // Everything in this optional field except its map's entries and commas.
+    // Measured through Snapshot's serializer, including its actual field name.
+    overhead: usize,
+}
+
+impl SnapshotMapSizes {
+    fn new<T: serde::Serialize>(
+        values: &std::collections::HashMap<String, T>,
+        overhead: usize,
+    ) -> Result<Self, String> {
+        if values.is_empty() {
+            return Ok(Self::default());
+        }
+        let mut entries = std::collections::HashMap::new();
+        for (key, value) in values {
+            let entry = std::collections::BTreeMap::from([(key, value)]);
+            // A one-entry JSON object has two braces around its encoded entry.
+            entries.insert(key.clone(), serialized_size(&entry)? - 2);
+        }
+        Ok(Self { entries, overhead })
+    }
+
+    fn remove<T>(&self, values: &mut std::collections::HashMap<String, T>, key: &str) -> usize {
+        if values.remove(key).is_none() {
+            return 0;
+        }
+        self.entries[key] + if values.is_empty() { self.overhead } else { 1 }
+    }
+}
+
+struct SnapshotTurnSizes {
+    references: std::collections::HashMap<String, usize>,
+    timing: SnapshotMapSizes,
+    starts: SnapshotMapSizes,
+}
+
+struct SnapshotFieldSizes {
+    timing_overhead: usize,
+    starts_overhead: usize,
+    provisional_growth: usize,
+    more_shrink: usize,
+}
+
+fn snapshot_field_sizes(snapshot: &mut Snapshot) -> Result<SnapshotFieldSizes, String> {
+    // Probe the actual schema with tiny values. Large immutable controls and
+    // request payloads must not be serialized repeatedly even for a one-row cut.
+    let controls = std::mem::take(&mut snapshot.controls);
+    let requests = std::mem::take(&mut snapshot.requests);
+    let dismissed = std::mem::take(&mut snapshot.dismissed_notices);
+    let timing = std::mem::take(&mut snapshot.turn_timing);
+    let starts = std::mem::take(&mut snapshot.turn_starts);
+    let provisional = snapshot.provisional;
+    let more = snapshot.more;
+    let result = (|| {
+        let empty_size = snapshot_metadata_size(snapshot)?;
+        let timing_overhead = if timing.is_empty() {
+            0
+        } else {
+            snapshot
+                .turn_timing
+                .insert(String::new(), super::model::TurnTiming::default());
+            let field_size = snapshot_metadata_size(snapshot)? - empty_size;
+            let contents = serialized_size(&snapshot.turn_timing)? - 2;
+            snapshot.turn_timing.clear();
+            field_size - contents
+        };
+        let starts_overhead = if starts.is_empty() {
+            0
+        } else {
+            snapshot.turn_starts.insert(String::new(), 0);
+            let field_size = snapshot_metadata_size(snapshot)? - empty_size;
+            let contents = serialized_size(&snapshot.turn_starts)? - 2;
+            snapshot.turn_starts.clear();
+            field_size - contents
+        };
+        let provisional_growth = if provisional {
+            0
+        } else {
+            snapshot.provisional = true;
+            let growth = snapshot_metadata_size(snapshot)? - empty_size;
+            snapshot.provisional = false;
+            growth
+        };
+        let more_shrink = if more {
+            0
+        } else {
+            snapshot.more = true;
+            empty_size - snapshot_metadata_size(snapshot)?
+        };
+        Ok(SnapshotFieldSizes {
+            timing_overhead,
+            starts_overhead,
+            provisional_growth,
+            more_shrink,
+        })
+    })();
+    snapshot.controls = controls;
+    snapshot.requests = requests;
+    snapshot.dismissed_notices = dismissed;
+    snapshot.turn_timing = timing;
+    snapshot.turn_starts = starts;
+    snapshot.provisional = provisional;
+    snapshot.more = more;
+    result
+}
+
+impl SnapshotTurnSizes {
+    fn release(&mut self, snapshot: &mut Snapshot, turn: Option<&str>) -> usize {
+        let Some(turn) = turn else {
+            return 0;
+        };
+        let count = self
+            .references
+            .get_mut(turn)
+            .expect("retained turn reference");
+        *count -= 1;
+        if *count != 0 {
+            return 0;
+        }
+        self.timing.remove(&mut snapshot.turn_timing, turn)
+            + self.starts.remove(&mut snapshot.turn_starts, turn)
+    }
+}
+
+fn fit_snapshot_to_limit(
+    mut snapshot: Snapshot,
+    max_bytes: usize,
+    allow_trim: bool,
+) -> Result<Snapshot, String> {
     retain_snapshot_turns(&mut snapshot);
-    // Reduce by whole oldest items only. Oversized controls or one item are explicit errors.
-    // Each row is serialized once: a row's JSON does not depend on its neighbours, so the
-    // reply's length is the rest of the snapshot's plus the rows' and a comma between two.
-    let mut row_bytes = snapshot
+    let row_sizes = snapshot
         .items
         .iter()
-        .map(|row| serde_json::to_vec(row).map(|json| json.len()))
-        .collect::<Result<std::collections::VecDeque<_>, _>>()
-        .map_err(|e| e.to_string())?;
-    let mut rows_bytes = row_bytes.iter().sum::<usize>() + row_bytes.len().saturating_sub(1);
-    while snapshot_len(&mut snapshot, rows_bytes)? > max_bytes {
-        if !item_ids.is_empty() || snapshot.items.len() <= 1 {
+        .map(serialized_size)
+        .collect::<Result<Vec<_>, _>>()?;
+    let metadata_size = snapshot_metadata_size(&mut snapshot)?;
+    let mut size =
+        metadata_size + row_sizes.iter().sum::<usize>() + row_sizes.len().saturating_sub(1);
+    if size <= max_bytes {
+        return Ok(snapshot);
+    }
+    if !allow_trim || snapshot.items.len() <= 1 {
+        return Err("snapshot response limit exceeded".into());
+    }
+
+    let fields = snapshot_field_sizes(&mut snapshot)?;
+    let mut references = std::collections::HashMap::<String, usize>::new();
+    for turn in snapshot
+        .items
+        .iter()
+        .filter_map(|row| row.item.turn_id.as_deref())
+        .chain(
+            snapshot
+                .requests
+                .iter()
+                .filter_map(|record| record.turn_id.as_deref()),
+        )
+        .chain(snapshot.controls.iter().filter_map(|event| match event {
+            ChatEvent::TurnStarted { turn_id, .. } => Some(turn_id.as_str()),
+            _ => None,
+        }))
+    {
+        if let Some(count) = references.get_mut(turn) {
+            *count += 1;
+        } else {
+            references.insert(turn.to_owned(), 1);
+        }
+    }
+    let mut turns = SnapshotTurnSizes {
+        references,
+        timing: SnapshotMapSizes::new(&snapshot.turn_timing, fields.timing_overhead)?,
+        starts: SnapshotMapSizes::new(&snapshot.turn_starts, fields.starts_overhead)?,
+    };
+    let mut items = std::mem::take(&mut snapshot.items);
+    let mut requests = std::mem::take(&mut snapshot.requests);
+    let request_sizes = requests
+        .iter()
+        .map(serialized_size)
+        .collect::<Result<Vec<_>, _>>()?;
+    // Requests need not arrive in sequence order. Index removals chronologically,
+    // then retain survivors in their original order when the final page is known.
+    let mut request_order: Vec<_> = (0..requests.len()).collect();
+    request_order.sort_by_key(|&at| requests[at].requested_seq);
+    let mut removed_requests = vec![false; requests.len()];
+    let mut next_request = 0;
+    let mut request_count = requests.len();
+
+    // A remaining item's turn cannot lose its map entry while that item holds a
+    // reference. Suffix minima therefore stay valid as earlier rows are removed.
+    let mut first_turn_start = vec![None; items.len() + 1];
+    for at in (0..items.len()).rev() {
+        let start = items[at]
+            .item
+            .turn_id
+            .as_ref()
+            .and_then(|turn| snapshot.turn_starts.get(turn))
+            .copied();
+        first_turn_start[at] = start.into_iter().chain(first_turn_start[at + 1]).min();
+    }
+    let mut cut = 0;
+    while size > max_bytes {
+        if items.len() - cut <= 1 {
             return Err("snapshot response limit exceeded".into());
         }
-        let removed = snapshot.items.remove(0);
-        rows_bytes -= row_bytes.pop_front().unwrap_or_default() + 1;
-        let boundary = snapshot_item_boundary(&snapshot.items[0], &snapshot.turn_starts);
-        // If a byte cap cuts through a turn interval, item-exact pagination is
-        // required: an older page must still be able to recover every dropped row.
+        let removed = &items[cut];
+        size -= row_sizes[cut] + 1;
+        cut += 1;
+        let boundary = snapshot_item_boundary(&items[cut], &snapshot.turn_starts);
         let partial_start = removed.order >= boundary;
-        snapshot.before = if partial_start {
-            snapshot.items[0].order
+        let before = if partial_start {
+            items[cut].order
         } else {
             boundary
         };
-        snapshot
-            .requests
-            .retain(|record| record.requested_seq >= snapshot.before);
-        snapshot.provisional |= partial_start
-            || snapshot.items.iter().any(|row| {
-                row.item.turn_id.as_ref().is_some_and(|turn| {
-                    snapshot
-                        .turn_starts
-                        .get(turn)
-                        .is_some_and(|start| *start <= removed.order)
-                })
-            });
-        snapshot.more = true;
-        retain_snapshot_turns(&mut snapshot);
+        size = size - serialized_size(&snapshot.before)? + serialized_size(&before)?;
+        snapshot.before = before;
+        size -= turns.release(&mut snapshot, removed.item.turn_id.as_deref());
+        while let Some(&at) = request_order
+            .get(next_request)
+            .filter(|&&at| requests[at].requested_seq < before)
+        {
+            size -= request_sizes[at] + usize::from(request_count > 1);
+            request_count -= 1;
+            removed_requests[at] = true;
+            size -= turns.release(&mut snapshot, requests[at].turn_id.as_deref());
+            next_request += 1;
+        }
+        if !snapshot.provisional
+            && (partial_start || first_turn_start[cut].is_some_and(|start| start <= removed.order))
+        {
+            snapshot.provisional = true;
+            size += fields.provisional_growth;
+        }
+        if !snapshot.more {
+            snapshot.more = true;
+            size -= fields.more_shrink;
+        }
     }
-    Ok(snapshot)
-}
-
-/// The length of `snapshot` as compact JSON, given `rows_bytes` for its `items` without
-/// their brackets: everything else is serialized around an empty list.
-fn snapshot_len(snapshot: &mut Snapshot, rows_bytes: usize) -> Result<usize, String> {
-    let items = std::mem::take(&mut snapshot.items);
-    let rest = serde_json::to_vec(&*snapshot).map(|json| json.len());
+    items.drain(..cut);
     snapshot.items = items;
-    Ok(rest.map_err(|e| e.to_string())? + rows_bytes)
+    let mut at = 0;
+    requests.retain(|_| {
+        let keep = !removed_requests[at];
+        at += 1;
+        keep
+    });
+    snapshot.requests = requests;
+    Ok(snapshot)
 }
 
 fn snapshot_item_boundary(
@@ -1085,7 +1322,7 @@ fn verify_numbering(path: &Path, last: u64) -> io::Result<u64> {
         if buffer.is_empty() {
             break;
         }
-        lines += buffer.iter().filter(|byte| **byte == b'\n').count() as u64;
+        lines += memchr::memchr_iter(b'\n', buffer).count() as u64;
         let length = buffer.len();
         reader.consume(length);
     }
@@ -1123,12 +1360,13 @@ fn verify_numbering(path: &Path, last: u64) -> io::Result<u64> {
 fn line_start(file: &mut File, end: u64) -> io::Result<u64> {
     const CHUNK: u64 = 64 * 1024;
     let mut position = end;
+    let mut buffer = Vec::new();
     while position > 0 {
         let from = position.saturating_sub(CHUNK);
-        let mut buffer = vec![0; (position - from) as usize];
+        buffer.resize((position - from) as usize, 0);
         file.seek(SeekFrom::Start(from))?;
         file.read_exact(&mut buffer)?;
-        if let Some(index) = buffer.iter().rposition(|byte| *byte == b'\n') {
+        if let Some(index) = memchr::memrchr(b'\n', &buffer) {
             return Ok(from + index as u64 + 1);
         }
         position = from;
@@ -1311,6 +1549,142 @@ mod tests {
         assert_eq!(
             event_start(&mut file, 4, 5, end).unwrap(),
             Some(end * 3 / 5)
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn replay_normalizes_known_events_preserves_unknown_bytes_and_batches_writes() {
+        #[derive(Default)]
+        struct Writer {
+            bytes: Vec<u8>,
+            calls: usize,
+            flushes: usize,
+            limit: Option<usize>,
+        }
+        impl Write for Writer {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.calls += 1;
+                let remaining = self
+                    .limit
+                    .unwrap_or(usize::MAX)
+                    .saturating_sub(self.bytes.len());
+                if remaining == 0 {
+                    return Err(io::ErrorKind::BrokenPipe.into());
+                }
+                let length = bytes.len().min(remaining);
+                self.bytes.extend_from_slice(&bytes[..length]);
+                Ok(length)
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                self.flushes += 1;
+                Ok(())
+            }
+        }
+        let root = scratch();
+        let dir = root.join("chat");
+        let log = ChatLog::create(&dir, &info(&root)).unwrap();
+        let lines = [
+            // Known envelopes still normalize whitespace/field order and drop
+            // unknown fields; a raw passthrough would silently change the wire.
+            " { \"extra\":true, \"event\":{\"event\":\"item_completed\",\"item\":{\"id\":\"read\",\"body\":{\"type\":\"tool_call\",\"tool\":\"Read\",\"input\":{\"path\":\"file.rs\"},\"output\":\"héllo\\nmore\"}}},\"seq\":1,\"chat_id\":\"c\" }\n".to_owned(),
+            user_line(2, &"quoted \"text\"\\path\n🦀".repeat(2000)),
+            "{\"chat_id\":\"c\",\"seq\":3,\"event\":{\"event\":\"future_event\",\"future\": true}}\n".to_owned(),
+            "{\"chat_id\":\"c\",\"seq\":4,\"event\":{\"event\":\"item_completed\",\"item\":{\"id\":\"future\",\"body\":{\"type\":\"future_body\"}}}}\n".to_owned(),
+            "malformed future record\n".to_owned(),
+        ];
+        let mut expected = Vec::new();
+        for line in &lines {
+            log.append(line.as_bytes(), false).unwrap();
+            match serde_json::from_slice::<Envelope>(line.as_bytes()) {
+                Ok(mut envelope) => {
+                    envelope.enrich();
+                    serde_json::to_writer(&mut expected, &envelope).unwrap();
+                    expected.push(b'\n');
+                }
+                Err(_) => expected.extend_from_slice(line.as_bytes()),
+            }
+        }
+        assert_ne!(
+            expected,
+            lines.concat().as_bytes(),
+            "known records need normalization"
+        );
+        let mut out = Writer::default();
+        replay(&dir, 0, lines.len() as u64, None, &mut out).unwrap();
+        assert_eq!(out.bytes, expected);
+        assert_eq!(out.calls, lines.len(), "one complete write per record");
+        assert_eq!(out.flushes, 1);
+        assert_eq!(
+            fs::read(dir.join(EVENTS)).unwrap(),
+            lines.concat().as_bytes()
+        );
+        let mut failing = Writer {
+            limit: Some(17),
+            ..Writer::default()
+        };
+        let error = replay(&dir, 0, lines.len() as u64, None, &mut failing).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+        assert_eq!(failing.bytes, expected[..17]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[ignore = "slow: local socket replay throughput measurement"]
+    fn measure_replay_socket_throughput() {
+        use std::os::unix::net::UnixStream;
+        use std::time::Instant;
+
+        struct CountWrites {
+            socket: UnixStream,
+            calls: usize,
+        }
+        impl Write for CountWrites {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.calls += 1;
+                self.socket.write(bytes)
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                self.socket.flush()
+            }
+        }
+        let root = scratch();
+        let dir = root.join("chat");
+        let log = ChatLog::create(&dir, &info(&root)).unwrap();
+        let text = "line with quoted \"text\", path\\name, héllo 🦀\n".repeat(500);
+        let mut expected = Vec::new();
+        for seq in 1..=64 {
+            let line = user_line(seq, &text);
+            log.append(line.as_bytes(), false).unwrap();
+            expected.extend_from_slice(line.as_bytes());
+        }
+        let mut samples = Vec::new();
+        let mut calls = Vec::new();
+        for _ in 0..5 {
+            let (writer, mut reader) = UnixStream::pair().unwrap();
+            let received = std::thread::spawn(move || {
+                let mut bytes = Vec::new();
+                reader.read_to_end(&mut bytes).unwrap();
+                bytes
+            });
+            let mut writer = CountWrites {
+                socket: writer,
+                calls: 0,
+            };
+            let started = Instant::now();
+            replay(&dir, 0, 64, None, &mut writer).unwrap();
+            writer.socket.shutdown(std::net::Shutdown::Write).unwrap();
+            let bytes = received.join().unwrap();
+            samples.push(started.elapsed());
+            calls.push(writer.calls);
+            assert_eq!(bytes, expected);
+        }
+        samples.sort();
+        eprintln!(
+            "socket replay: {} bytes, 64 events, median {:?}, write calls {:?}",
+            expected.len(),
+            samples[2],
+            calls
         );
         fs::remove_dir_all(root).unwrap();
     }
@@ -1623,6 +1997,236 @@ mod snapshot_tests {
             retain_snapshot_turns(&mut snapshot);
         }
         Ok(snapshot)
+    }
+
+    #[test]
+    fn indexed_snapshot_trimming_matches_exact_serialization_for_overlapping_turns() {
+        let mut seed = 42u64;
+        let mut next = |bound: usize| {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+            (seed >> 32) as usize % bound
+        };
+        let sequences = [0, 9, 10, 99, 100, 999, 1000, u64::MAX - 1, u64::MAX];
+        let names = ["", "turn\"\\\n", "héllo🦀", "control-only", "missing-start"];
+        for case in 0..48 {
+            let count = if case == 0 { 0 } else { 1 + next(18) };
+            let items: Vec<_> = (0..count).map(|at| json!({
+                "order":sequences[next(sequences.len())],
+                "item":{"id":format!("row-{at}"),
+                    "turn_id": if next(5) == 0 { None } else { Some(names[next(names.len())]) },
+                    "body":{"type":"agent_message", "text":"quoted \"\\🦀\n".repeat(next(20))}}
+            })).collect();
+            let requests: Vec<_> = (0..next(12)).map(|at| json!({
+                "request_id":format!("request-{at}"), "title":"title \"\\\n".repeat(next(10)),
+                "turn_id": if next(4) == 0 { None } else { Some(names[next(names.len())]) },
+                "requested_seq": sequences[next(sequences.len())]
+            })).collect();
+            let mut starts = serde_json::Map::new();
+            let mut timing = serde_json::Map::new();
+            for name in names.iter().chain(["stale-unused"].iter()) {
+                if *name != "missing-start" {
+                    starts.insert((*name).into(), json!(sequences[next(sequences.len())]));
+                }
+                if next(3) != 0 {
+                    timing.insert((*name).into(), json!({"started_at":9,"ended_at":1000}));
+                }
+            }
+            let template = json!({
+                "v":1,"chat_id":"chat","cursor":"cursor","next":1000,"before":sequences[next(sequences.len())],
+                "more":case % 3 == 0,"provisional":case % 5 == 0,
+                "items":items,"requests":requests,
+                "controls":[{"event":"turn_started","turn_id":"control-only","started_at":10},
+                    {"event":"models","models":[{"id":"model","name":"name","description":"detail \"\\\n".repeat(case)}]}],
+                "turn_starts":starts,"turn_timing":timing,
+                "dismissed_notices":["notice 🦀", "escaped \"\\\n"]
+            });
+            let mut full: Snapshot = serde_json::from_value(template.clone()).unwrap();
+            retain_snapshot_turns(&mut full);
+            let length = serde_json::to_vec(&full).unwrap().len();
+            for cap in [
+                0,
+                1,
+                length / 4,
+                length / 2,
+                length - 1,
+                length,
+                length + 1,
+                4096,
+            ] {
+                let mut baseline: Snapshot = serde_json::from_value(template.clone()).unwrap();
+                retain_snapshot_turns(&mut baseline);
+                let expected = fit_by_serializing(baseline, cap);
+                let got = fit_snapshot_to_limit(
+                    serde_json::from_value(template.clone()).unwrap(),
+                    cap,
+                    true,
+                );
+                match (expected, got) {
+                    (Ok(expected), Ok(got)) => {
+                        assert!(serde_json::to_vec(&got).unwrap().len() <= cap);
+                        assert_eq!(
+                            serde_json::to_value(got).unwrap(),
+                            serde_json::to_value(expected).unwrap(),
+                            "case {case} cap {cap}"
+                        );
+                    }
+                    (Err(expected), Err(got)) => assert_eq!(got, expected, "case {case} cap {cap}"),
+                    (expected, got) => panic!(
+                        "case {case} cap {cap}: expected {:?}, got {:?}",
+                        expected.map(|s| s.items.len()),
+                        got.map(|s| s.items.len())
+                    ),
+                }
+                let fixed = fit_snapshot_to_limit(
+                    serde_json::from_value(template.clone()).unwrap(),
+                    cap,
+                    false,
+                );
+                assert_eq!(
+                    fixed.is_ok(),
+                    length <= cap,
+                    "fixed items, case {case} cap {cap}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "slow: common snapshot fitting paths measurement"]
+    fn measure_snapshot_fit_paths() {
+        use std::time::Instant;
+        // Previous fitter retained only in this opt-in comparison.
+        fn baseline(mut snapshot: Snapshot, cap: usize) -> Snapshot {
+            retain_snapshot_turns(&mut snapshot);
+            let mut rows: std::collections::VecDeque<_> = snapshot
+                .items
+                .iter()
+                .map(|row| serde_json::to_vec(row).unwrap().len())
+                .collect();
+            let mut rows_bytes = rows.iter().sum::<usize>() + rows.len().saturating_sub(1);
+            loop {
+                let items = std::mem::take(&mut snapshot.items);
+                let metadata = serde_json::to_vec(&snapshot).unwrap().len();
+                snapshot.items = items;
+                if rows_bytes + metadata <= cap {
+                    break;
+                }
+                assert!(snapshot.items.len() > 1);
+                let removed = snapshot.items.remove(0);
+                rows_bytes -= rows.pop_front().unwrap() + 1;
+                let boundary = snapshot_item_boundary(&snapshot.items[0], &snapshot.turn_starts);
+                let partial = removed.order >= boundary;
+                snapshot.before = if partial {
+                    snapshot.items[0].order
+                } else {
+                    boundary
+                };
+                snapshot
+                    .requests
+                    .retain(|record| record.requested_seq >= snapshot.before);
+                snapshot.provisional |= partial
+                    || snapshot.items.iter().any(|row| {
+                        row.item.turn_id.as_ref().is_some_and(|turn| {
+                            snapshot
+                                .turn_starts
+                                .get(turn)
+                                .is_some_and(|start| *start <= removed.order)
+                        })
+                    });
+                snapshot.more = true;
+                retain_snapshot_turns(&mut snapshot);
+            }
+            snapshot
+        }
+        for (count, large_controls, trim) in [
+            (0, false, false),
+            (1, false, false),
+            (12, false, false),
+            (100, false, false),
+            (2, true, false),
+            (2, true, true),
+        ] {
+            let template = json!({
+                "v":1,"chat_id":"chat","cursor":"cursor","next":1000,"before":1,"more":false,
+                "items":(0..count).map(|at|json!({"order":at+1,"item":{
+                    "id":format!("row-{at}"),"turn_id":"small","body":{"type":"agent_message","text":"hello 🦀\n".repeat(40)}
+                }})).collect::<Vec<_>>(),
+                "controls":[{"event":"models","models":(0..if large_controls {32} else {1}).map(|n|json!({
+                    "id":format!("model-{n}"),"name":"Model","description":if large_controls {"detail ".repeat(512)}else{String::new()}
+                })).collect::<Vec<_>>()}],
+                "requests":[],"turn_starts":{"small":1},"turn_timing":{"small":{"started_at":1,"ended_at":2}}
+            });
+            let cap = if trim {
+                let snapshot: Snapshot = serde_json::from_value(template.clone()).unwrap();
+                serde_json::to_vec(&snapshot).unwrap().len()
+                    - serde_json::to_vec(&snapshot.items[0]).unwrap().len() / 2
+            } else {
+                8 << 20
+            };
+            let mut times = [Vec::new(), Vec::new()];
+            for pass in 0..101 {
+                for indexed in if pass % 2 == 0 {
+                    [false, true]
+                } else {
+                    [true, false]
+                } {
+                    let snapshot = serde_json::from_value(template.clone()).unwrap();
+                    let started = Instant::now();
+                    let fitted = if indexed {
+                        fit_snapshot_to_limit(snapshot, cap, true).unwrap()
+                    } else {
+                        baseline(snapshot, cap)
+                    };
+                    times[usize::from(indexed)].push(started.elapsed());
+                    assert_eq!(fitted.items.len(), if trim { 1 } else { count });
+                    std::hint::black_box(fitted);
+                }
+            }
+            for time in &mut times {
+                time.sort();
+            }
+            eprintln!(
+                "snapshot fit: {count} rows, large_controls={large_controls}, trim={trim}, baseline {:?}, indexed {:?}",
+                times[0][50], times[1][50]
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "slow: large snapshot byte-limit trimming measurement"]
+    fn measure_snapshot_byte_limit_trimming() {
+        use std::time::Instant;
+        let mut f = Fixture::new();
+        f.event(json!({"event":"models", "models": (0..64).map(|n|json!({
+            "id":format!("model-{n}"), "name":format!("Model {n}"), "description":"description ".repeat(60)
+        })).collect::<Vec<_>>()}));
+        f.event(json!({"event":"turn_started", "turn_id":"large-turn", "started_at":1}));
+        for n in 0..1200 {
+            f.event(json!({"event":"item_completed", "item":{
+                "id":format!("item-{n}"), "turn_id":"large-turn", "status":"completed",
+                "body":{"type":"agent_message", "text":"text 🦀\n".repeat(100)}
+            }}));
+        }
+        let full = read_snapshot(&f.home, &f.id, None, u64::MAX, 100, 8 << 20, &[]).unwrap();
+        assert_eq!(full.items.len(), 1200);
+        let template = serde_json::to_value(full).unwrap();
+        let mut samples = Vec::new();
+        let mut kept = 0;
+        for _ in 0..5 {
+            let snapshot = serde_json::from_value(template.clone()).unwrap();
+            let started = Instant::now();
+            let fitted = fit_snapshot_to_limit(snapshot, 96 * 1024, true).unwrap();
+            samples.push(started.elapsed());
+            kept = fitted.items.len();
+            assert!(kept < 100);
+            assert!(fitted.provisional && fitted.more);
+            assert!(serde_json::to_vec(&fitted).unwrap().len() <= 96 * 1024);
+        }
+        samples.sort();
+        eprintln!(
+            "snapshot trimming: 1200 rows, {kept} retained, 96KiB cap, median {:?}",
+            samples[2]
+        );
     }
 
     #[test]
@@ -1961,7 +2565,7 @@ pub(super) fn read_notice_transcript(dir: &Path) -> Result<super::model::Transcr
             continue;
         }
         let envelope: Envelope = serde_json::from_slice(&line).map_err(|e| e.to_string())?;
-        transcript.apply_sequenced(envelope.seq, &envelope.event);
+        transcript.apply_sequenced_owned(envelope.seq, envelope.event);
     }
     Ok(transcript)
 }

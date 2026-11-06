@@ -12,11 +12,11 @@ use nsh_core::element::Cleanup;
 use nsh_core::prelude::*;
 use persistence::{LayoutPersistence, SaveMode};
 use riwork_core::layouts::{Axis, PanelKind, ProjectLayout, SavedTab};
-use riwork_engine::project_tabs::{Kind, Status, Update};
+use riwork_engine::project_tabs::{Entry, Kind, Status, Update};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, HashMap},
     time::{Duration, Instant},
 };
 use std::{
@@ -510,13 +510,13 @@ impl LayoutSession {
                 pane.active_shell_id = None;
             }
             if let Some(main) = project.main_pane.and_then(|id| project.panes.get_mut(&id)) {
-                main.tabs.sort_by_key(|tab| match tab {
+                let mut order = HashMap::with_capacity(tabs.entries.len());
+                for (index, entry) in tabs.entries.iter().enumerate() {
+                    order.entry(entry.key.as_str()).or_insert(index);
+                }
+                main.tabs.sort_by_cached_key(|tab| match tab {
                     SavedTab::Panel { .. } => (0, 0),
-                    _ => tabs
-                        .entries
-                        .iter()
-                        .position(|e| e.key == tab.key())
-                        .map_or((2, 0), |i| (1, i)),
+                    _ => order.get(tab.key().as_str()).map_or((2, 0), |&i| (1, i)),
                 });
             }
             if project != *self.model.project() {
@@ -591,6 +591,16 @@ impl LayoutSession {
         let shell = key
             .strip_prefix("shell:")
             .and_then(|id| self.data.shells.as_ref()?.iter().find(|s| s.id == id));
+        self.panel_model_with(tab, key, entry, shell)
+    }
+
+    fn panel_model_with(
+        &self,
+        tab: &SavedTab,
+        key: String,
+        entry: Option<&Entry>,
+        shell: Option<&session_io::Shell>,
+    ) -> Value {
         json!({"id":self.model.panel_id(tab),"key":key,
             "kind":match tab {SavedTab::Shell{..}=>"shell",SavedTab::Panel{..}=>"panel",SavedTab::RemoteShell{..}=>"remote_shell",SavedTab::RemoteChat{..}=>"remote_chat",SavedTab::Chat{..}=>"chat",SavedTab::AppPreview{..}=>"app_preview",SavedTab::Addin{..}=>"addin"},
             "title":entry.map(|e|e.title.clone()).unwrap_or_else(||tab_title(tab)),
@@ -1407,8 +1417,53 @@ impl LayoutSession {
         let project = self.model.project();
         let locked = project.effective_locked_panes();
         let ids = project.layout.pane_ids();
-        json!({
-            "projectId": self.host.project_id(),
+        // Borrow lookup tables for this projection only: no invalidation state,
+        // and each inventory is scanned once regardless of the number of tabs.
+        let mut entries = HashMap::new();
+        if let Some(tabs) = &self.data.tabs {
+            entries.reserve(tabs.entries.len());
+            for (index, entry) in tabs.entries.iter().enumerate() {
+                entries.entry(entry.key.as_str()).or_insert((index, entry));
+            }
+        }
+        let mut shells = HashMap::new();
+        if let Some(inventory) = &self.data.shells {
+            shells.reserve(inventory.len());
+            for shell in inventory {
+                shells.entry(shell.id.as_str()).or_insert(shell);
+            }
+        }
+        let panels = |tab: &SavedTab| {
+            let key = tab.key();
+            let entry = entries.get(key.as_str()).map(|(_, entry)| *entry);
+            let shell = key
+                .strip_prefix("shell:")
+                .and_then(|id| shells.get(id).copied());
+            self.panel_model_with(tab, key, entry, shell)
+        };
+        let panes = ids.into_iter().map(|id| {
+            let pane = &project.panes[&id];
+            let mut value = json!({ "id": id, "locked": locked.contains(&id), "main": project.main_pane == Some(id),
+                "active": project.active_pane == id, "activeTab": pane.active_tab_key.as_ref().map(|key|pane.tabs.iter().find(|tab|&tab.key()==key).map(|tab|self.model.panel_id(tab)).unwrap_or_else(||key.clone())) });
+            value["tabs"] = Value::Array(pane.tabs.iter().map(&panels).collect());
+            value
+        }).collect::<Vec<_>>();
+        let shared = self.data.tabs.as_ref().map(|_| {
+            let mut drawn = panes
+                .iter()
+                .flat_map(|pane| pane["tabs"].as_array().unwrap().iter().cloned())
+                .collect::<Vec<_>>();
+            drawn.sort_by_cached_key(|tab| {
+                let key = tab["key"].as_str().unwrap_or_default();
+                if key.starts_with("panel:") {
+                    (0, 0)
+                } else {
+                    entries.get(key).map_or((2, 0), |&(index, _)| (1, index))
+                }
+            });
+            drawn
+        });
+        let mut snapshot = json!({
             "remoteProject": remote::is_project(&self.data.project_id),
             "selectedWorktreeId": project.selected_worktree_id,
             "selectedTaskId": project.selected_task_id,
@@ -1416,17 +1471,12 @@ impl LayoutSession {
             "notice": self.io_notice.lock().unwrap().clone().or_else(||self.model.notice().map(str::to_owned)).or_else(||self.session_notice.clone()).or_else(||self.notice.clone()),
             "projectId": self.data.project_id, "focusMode":self.model.focus_mode(), "focusCentered":self.model.centered_focus(),
             "closeBehavior":self.data.close_behavior,"theme":self.data.theme,"uiTextSize":self.data.ui_text_size,"panelTabIcons":self.data.panel_tab_icons,
-            "sharedTabs": self.data.tabs.as_ref().map(|tabs| {
-                let mut drawn=ids.iter().flat_map(|id|&project.panes[id].tabs).map(|tab|self.panel_model(tab)).collect::<Vec<_>>();
-                drawn.sort_by_key(|tab| { let key=tab["key"].as_str().unwrap_or_default(); if key.starts_with("panel:"){(0,0)}else{tabs.entries.iter().position(|e|e.key==key).map_or((2,0),|i|(1,i))} }); drawn
-            }),
-            "panes": ids.into_iter().map(|id| {
-                let pane = &project.panes[&id];
-                json!({ "id": id, "locked": locked.contains(&id), "main": project.main_pane == Some(id),
-                    "active": project.active_pane == id, "activeTab": pane.active_tab_key.as_ref().map(|key|pane.tabs.iter().find(|tab|&tab.key()==key).map(|tab|self.model.panel_id(tab)).unwrap_or_else(||key.clone())),
-                    "tabs": pane.tabs.iter().map(|tab|self.panel_model(tab)).collect::<Vec<_>>() })
-            }).collect::<Vec<_>>()
-        })
+        });
+        // These are already JSON values; move them into the envelope instead
+        // of serializing (and allocating) both complete tab lists again.
+        snapshot["sharedTabs"] = shared.map(Value::Array).unwrap_or(Value::Null);
+        snapshot["panes"] = Value::Array(panes);
+        snapshot
     }
 
     /// Frozen panel lookup; empty sentinels have no persisted SavedTab.
@@ -1717,6 +1767,144 @@ mod integration_tests {
             entries: Vec::new(),
         });
         data
+    }
+
+    fn populate_workspace(session: &mut LayoutSession, count: usize) -> u64 {
+        let mut project = session.model.project().clone();
+        let main_id = project.main_pane.unwrap();
+        let pane = project.panes.get_mut(&main_id).unwrap();
+        pane.tabs.extend((0..count).map(|i| SavedTab::Shell {
+            shell_id: format!("snapshot-{i}"),
+        }));
+        pane.tabs.push(SavedTab::Chat {
+            chat_id: "unlisted".into(),
+        });
+        pane.active_tab_key = Some(format!("shell:snapshot-{}", count - 1));
+        session.model = LayoutModel::new(project).unwrap();
+        let mut data = snapshot_data(session, "snapshot", 1);
+        data.tabs.as_mut().unwrap().entries = (0..count).rev().map(|i| {
+            serde_json::from_value(json!({
+                "key":format!("shell:snapshot-{i}"), "kind":"shell", "title":format!("Title {i}"),
+                "status":"working", "hidden":false, "worker":i % 2 == 0, "order":i,
+                "parent":if i == 0 { None } else { Some("snapshot-0") }, "children":[], "child_count":0
+            })).unwrap()
+        }).collect();
+        data.shells = Some(
+            (0..count)
+                .map(|i| session_io::Shell {
+                    id: format!("snapshot-{i}"),
+                    project_id: Some(data.project_id.clone()),
+                    worktree_id: None,
+                    kind: "project".into(),
+                    cwd: session.home.clone(),
+                    alive: true,
+                    user_opened: i % 3 != 0,
+                    parent_id: None,
+                    title: String::new(),
+                    status: None,
+                    appear_after_ms: 0,
+                })
+                .collect(),
+        );
+        session.data = data;
+        main_id
+    }
+
+    #[test]
+    #[ignore = "slow: workspace snapshot wall-clock benchmark"]
+    fn large_workspace_snapshot_timing() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let _entered = runtime.enter();
+        for count in [12, 100, 2000] {
+            let (_home, mut session) = isolated_session();
+            populate_workspace(&mut session, count);
+            let mut samples = Vec::new();
+            for _ in 0..11 {
+                let start = Instant::now();
+                std::hint::black_box(session.snapshot());
+                samples.push(start.elapsed());
+            }
+            samples.sort();
+            eprintln!(
+                "workspace snapshot ({count} shells) median: {:?}",
+                samples[5]
+            );
+            session.host.flush().unwrap();
+        }
+    }
+
+    #[test]
+    fn large_workspace_snapshot_preserves_metadata_and_shared_order() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let _entered = runtime.enter();
+        let (_home, mut session) = isolated_session();
+        let count = 2000;
+        let main_id = populate_workspace(&mut session, count);
+        let snapshot = session.snapshot();
+        let panes = snapshot["panes"].as_array().unwrap();
+        let main = panes.iter().find(|pane| pane["id"] == main_id).unwrap();
+        assert_eq!(main["activeTab"], "shell:snapshot-1999");
+        let actual = main["tabs"].as_array().unwrap();
+        let shells = actual
+            .iter()
+            .filter(|tab| tab["kind"] == "shell")
+            .collect::<Vec<_>>();
+        assert_eq!(shells.len(), count);
+        for (i, tab) in shells.iter().enumerate() {
+            assert_eq!(tab["title"], format!("Title {i}"));
+            assert_eq!(tab["worker"], i % 2 == 0 || i % 3 == 0);
+            assert_eq!(tab["status"], "working");
+            assert_eq!(tab["shared"], true);
+        }
+        let shared = snapshot["sharedTabs"].as_array().unwrap();
+        let shared_shells = shared
+            .iter()
+            .filter(|tab| tab["kind"] == "shell")
+            .collect::<Vec<_>>();
+        assert_eq!(
+            shared_shells,
+            shells.iter().rev().copied().collect::<Vec<_>>()
+        );
+        assert_eq!(shared.last().unwrap()["key"], "chat:unlisted");
+        assert_eq!(shared.last().unwrap()["shared"], false);
+        assert_eq!(shared.last().unwrap()["status"], Value::Null);
+        session.reconcile(false).unwrap();
+        let reordered = session.model.project().panes[&main_id]
+            .tabs
+            .iter()
+            .filter_map(|tab| match tab {
+                SavedTab::Shell { shell_id } => Some(shell_id.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            reordered,
+            (0..count)
+                .rev()
+                .map(|i| format!("snapshot-{i}"))
+                .collect::<Vec<_>>()
+        );
+        session
+            .data
+            .tabs
+            .as_mut()
+            .unwrap()
+            .entries
+            .iter_mut()
+            .find(|entry| entry.key == "shell:snapshot-3")
+            .unwrap()
+            .title = "Renamed".into();
+        session.data.shells = None;
+        let updated = session.snapshot();
+        let renamed = updated["sharedTabs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tab| tab["key"] == "shell:snapshot-3")
+            .unwrap();
+        assert_eq!(renamed["title"], "Renamed");
+        assert_eq!(renamed["worker"], false);
+        session.host.flush().unwrap();
     }
 
     #[test]

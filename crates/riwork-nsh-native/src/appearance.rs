@@ -1,7 +1,6 @@
 //! Packed core palettes translated to CSS colors. Ghostty is parsed only by
 //! the native terminal owner; this bridge reads its cached RGB projection.
 use crate::{
-    hub::Snapshot,
     service::{self, blocking},
     settings::theme_id,
 };
@@ -184,17 +183,26 @@ impl AppearanceDto {
         system_dark: bool,
         settings_error: Option<String>,
     ) -> Self {
+        Self::from_settings_with_theme(settings, settings.theme, system_dark, settings_error)
+    }
+
+    pub(crate) fn from_settings_with_theme(
+        settings: &CoreSettings,
+        theme: theme::ThemeChoice,
+        system_dark: bool,
+        settings_error: Option<String>,
+    ) -> Self {
         let ghostty = ghostty_theme();
-        let appearance = theme::Appearance::resolve_with_ghostty(settings.theme, system_dark, ghostty.clone().ok());
-        let ghostty_error = if settings.theme == theme::ThemeChoice::Ghostty {
+        let appearance = theme::Appearance::resolve_with_ghostty(theme, system_dark, ghostty.clone().ok());
+        let ghostty_error = if theme == theme::ThemeChoice::Ghostty {
             ghostty.err().map(|error| format!("{error} Showing Somtus's fallback colors until it can be read."))
         } else { None };
         let errors = [settings_error, ghostty_error].into_iter().flatten().collect::<Vec<_>>();
-        let force = settings.terminal_colors_forced();
+        let force = settings.terminal_colors_for(theme);
         let diff = appearance.diff_colors(force);
         Self {
             schema: 2,
-            selected: theme_id(settings.theme),
+            selected: theme_id(theme),
             dark: theme::is_dark(appearance.palette.bg),
             palette: appearance.palette.into(),
             terminal_override: appearance.terminal_override(force).map(Into::into),
@@ -203,10 +211,10 @@ impl AppearanceDto {
                 added: hex(diff.added),
                 removed: hex(diff.removed),
             },
-            terminal_light: theme::Appearance::resolve(settings.theme, false)
+            terminal_light: theme::Appearance::resolve(theme, false)
                 .terminal_override(force)
                 .map(Into::into),
-            terminal_dark: theme::Appearance::resolve(settings.theme, true)
+            terminal_dark: theme::Appearance::resolve(theme, true)
                 .terminal_override(force)
                 .map(Into::into),
             tab_close_behavior: serde_json::to_value(settings.tab_close_behavior)
@@ -252,7 +260,7 @@ impl Appearance {
         }).await
     }
     pub fn subscribe(
-        listener: Callback<Snapshot<AppearanceDto>>,
+        listener: Callback<crate::hub::SharedSnapshot<AppearanceDto>>,
         cx: CallCx<'_>,
     ) -> Result<crate::Subscription, String> {
         Ok(crate::Subscription::start(cx, async move {

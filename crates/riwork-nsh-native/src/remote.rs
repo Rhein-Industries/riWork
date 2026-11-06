@@ -54,6 +54,11 @@ pub struct RemoteWants {
     pub descending: bool,
 }
 impl RemoteWants {
+    /// Matches RemoteTree's polling demand after observe() validates the wants.
+    /// Cached tab titles alone never request anything from a host.
+    fn needs_polling(&self) -> bool {
+        self.folders || self.settings || !self.tab_hosts.is_empty() || self.project_key.is_some()
+    }
     fn project_order(&self) -> ProjectOrder {
         let by = match self.order.as_str() {
             "name" => ProjectSort::Name,
@@ -488,7 +493,28 @@ struct State {
     selected: Option<String>,
     observers: BTreeMap<u64, RemoteWants>,
     next_observer: u64,
+    polling: bool,
     defaults: RemoteDefaults,
+}
+impl State {
+    fn begin_polling(&mut self) -> bool {
+        if self.polling || !self.observers.values().any(RemoteWants::needs_polling) {
+            return false;
+        }
+        self.polling = true;
+        true
+    }
+    fn plan(&mut self, now: Instant) -> Vec<Request> {
+        let wants: Vec<_> = self
+            .observers
+            .values()
+            .filter_map(|w| w.engine().ok())
+            .collect();
+        wants
+            .into_iter()
+            .flat_map(|wants| self.tree.plan(now, &wants))
+            .collect()
+    }
 }
 pub struct RemoteService {
     home: PathBuf,
@@ -529,6 +555,7 @@ impl RemoteService {
                 selected: kept.selected,
                 observers: BTreeMap::new(),
                 next_observer: 0,
+                polling: false,
                 defaults: RemoteDefaults {
                     routes: home
                         .join("remote/relay-routes.json")
@@ -603,19 +630,23 @@ impl RemoteService {
     /// Calling once per observer preserves RemoteTree's cross-window in-flight
     /// de-duplication, including two different selected projects on the same Mac.
     fn plan(&self, now: Instant) -> Vec<Request> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner).plan(now)
+    }
+    fn polling_plan(&self, now: Instant) -> Option<Vec<Request>> {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        let wants: Vec<_> = state
-            .observers
-            .values()
-            .filter_map(|w| w.engine().ok())
-            .collect();
-        wants
-            .into_iter()
-            .flat_map(|wants| state.tree.plan(now, &wants))
-            .collect()
+        if !state.observers.values().any(RemoteWants::needs_polling) {
+            // This decision and a new subscription's start claim share the
+            // observer lock, so leaving an idle loop cannot lose a restart.
+            state.polling = false;
+            return None;
+        }
+        Some(state.plan(now))
     }
     fn poll(self: &Arc<Self>) {
-        for request in self.plan(Instant::now()) {
+        self.dispatch(self.plan(Instant::now()));
+    }
+    fn dispatch(self: &Arc<Self>, requests: Vec<Request>) {
+        for request in requests {
             let service = self.clone();
             thread::spawn(move || {
                 let reply = service.backend.run(&request);
@@ -1113,23 +1144,46 @@ fn process() -> Result<Arc<RemoteService>, String> {
         .get_or_init(|| RemoteService::new(home, backend))
         .clone())
 }
-fn start_polling(remote: &Arc<RemoteService>) {
-    // Each subscription owns only a lease; a single weak process worker services
-    // their union. Starting it is serialized independently of backend operations.
-    static STARTED: OnceLock<()> = OnceLock::new();
-    STARTED.get_or_init(|| {
-        let remote = Arc::downgrade(remote);
-        thread::spawn(move || {
-            loop {
-                let Some(service) = remote.upgrade() else {
-                    break;
-                };
-                service.poll();
-                drop(service);
-                thread::sleep(Duration::from_millis(500));
-            }
-        });
-    });
+fn start_polling(remote: &Arc<RemoteService>) -> Result<(), String> {
+    start_polling_with(remote, || thread::sleep(Duration::from_millis(500))).map(|_| ())
+}
+
+fn start_polling_with(
+    remote: &Arc<RemoteService>,
+    wait: impl FnMut() + Send + 'static,
+) -> Result<Option<thread::JoinHandle<()>>, String> {
+    // Each subscription owns only a lease. Claim one worker under the observer
+    // lock; it exits when no lease needs polling. Cached-title subscriptions
+    // remain live, and a later active lease can restart the polling loop.
+    let mut state = remote.state.lock().unwrap_or_else(PoisonError::into_inner);
+    if !state.begin_polling() {
+        return Ok(None);
+    }
+    // Keep the start claim serialized through thread creation too. On a spawn
+    // error, another subscriber must see the cleared claim and be able to retry.
+    let weak = Arc::downgrade(remote);
+    match thread::Builder::new()
+        .name("somtus-remote-poll".into())
+        .spawn(move || run_polling(weak, wait))
+    {
+        Ok(worker) => Ok(Some(worker)),
+        Err(error) => {
+            state.polling = false;
+            Err(error.to_string())
+        }
+    }
+}
+
+fn run_polling(remote: Weak<RemoteService>, mut wait: impl FnMut()) {
+    loop {
+        let Some(service) = remote.upgrade() else { break };
+        let Some(requests) = service.polling_plan(Instant::now()) else { break };
+        service.dispatch(requests);
+        // The wait never keeps the service alive. With no polling demand, the next
+        // iteration exits without another timed wait or empty planning pass.
+        drop(service);
+        wait();
+    }
 }
 
 #[module]
@@ -1141,15 +1195,15 @@ impl Remote {
     }
     pub fn subscribe(
         wants: RemoteWants,
-        listener: Callback<Snapshot<RemoteSnapshot>>,
+        listener: Callback<crate::hub::SharedSnapshot<RemoteSnapshot>>,
         cx: CallCx<'_>,
     ) -> Result<Subscription, String> {
         wants.engine()?;
         Ok(Subscription::start(cx, async move {
             if let Ok((lease, topic)) = service::blocking(move || {
                 let remote = process()?;
-                start_polling(&remote);
                 let observation = remote.observe(wants)?;
+                start_polling(&remote)?;
                 remote.poll();
                 Ok(observation)
             })
@@ -1384,6 +1438,118 @@ mod tests {
         let reply = remote.backend.run(&request);
         remote.state.lock().unwrap().tree.apply(&request, reply);
         remote.publish();
+    }
+    fn controlled_polling(remote: &Arc<RemoteService>) -> (
+        thread::JoinHandle<()>,
+        std::sync::mpsc::Receiver<()>,
+        std::sync::mpsc::Sender<()>,
+    ) {
+        let (waiting, waits) = std::sync::mpsc::channel();
+        let (resume, resumes) = std::sync::mpsc::channel();
+        let worker = start_polling_with(remote, move || {
+            waiting.send(()).unwrap();
+            resumes.recv().expect("test released each expected wait");
+        }).unwrap().expect("active demand starts one worker");
+        (worker, waits, resume)
+    }
+    fn wait_for_poll(waits: &std::sync::mpsc::Receiver<()>) {
+        // Only a deadlock guard; correctness uses explicit phase handshakes,
+        // not elapsed-time assertions or an assumed scheduling speed.
+        waits.recv_timeout(Duration::from_secs(10)).unwrap();
+    }
+    #[test]
+    fn polling_demand_matches_engine_requests_including_cached_titles() {
+        for flags in 0..256 {
+            let wants = RemoteWants {
+                folders: flags & 1 != 0,
+                settings: flags & 2 != 0,
+                tab_hosts: if flags & 4 != 0 { vec![HOST.into()] } else { Vec::new() },
+                project_key: (flags & 8 != 0).then(|| tree::project_key(HOST, PROJECT)),
+                worktrees: flags & 16 != 0,
+                tasks: flags & 32 != 0,
+                shells: flags & 64 != 0,
+                tabs: if flags & 128 != 0 { vec![format!("remote:{HOST}:shell")] } else { Vec::new() },
+                ..Default::default()
+            };
+            let requests = RemoteTree::default().plan(Instant::now(), &wants.engine().unwrap());
+            assert_eq!(wants.needs_polling(), !requests.is_empty(), "flags={flags}");
+        }
+    }
+    #[test]
+    fn polling_stops_when_idle_and_resubscription_cannot_lose_its_worker() {
+        let (_directory, remote, fake) = fixture();
+        assert!(start_polling_with(&remote, || panic!("unobserved worker"))
+            .unwrap().is_none(), "an unobserved service starts no worker");
+        let (_titles, _cached_topic) = remote.observe(RemoteWants {
+            tabs: vec![format!("remote:{HOST}:shell")], ..Default::default()
+        }).unwrap();
+        assert!(start_polling_with(&remote, || panic!("cached-title worker"))
+            .unwrap().is_none(), "cached titles keep no polling loop");
+        let active = || RemoteWants { settings: true, ..Default::default() };
+        let (first, _topic) = remote.observe(active()).unwrap();
+        // Keep the initial host-list request pending without dispatching it, so
+        // controlled iterations have active demand but spawn no backend tasks.
+        assert!(matches!(&remote.plan(Instant::now())[..], [Request::Hosts]));
+        let (worker, waits, resume) = controlled_polling(&remote);
+        wait_for_poll(&waits);
+        assert!(start_polling_with(&remote, || panic!("duplicate worker"))
+            .unwrap().is_none(), "a second lease shares the existing worker");
+
+        let (peer, _peer_topic) = remote.observe(active()).unwrap();
+        drop(first);
+        resume.send(()).unwrap();
+        wait_for_poll(&waits);
+
+        // Re-subscribe before the sleeping worker checks the now-idle set.
+        drop(peer);
+        let (second, _peer) = remote.observe(active()).unwrap();
+        assert!(!remote.state.lock().unwrap().begin_polling());
+        resume.send(()).unwrap();
+        wait_for_poll(&waits);
+        drop(second);
+        resume.send(()).unwrap();
+        drop(resume);
+        worker.join().unwrap();
+        assert!(waits.try_recv().is_err(), "idle retirement performs no further waits");
+        assert!(!remote.state.lock().unwrap().polling);
+        assert_eq!(remote.state.lock().unwrap().observers.len(), 1, "cached-title lease remains");
+        assert!(!remote.state.lock().unwrap().begin_polling());
+
+        // Re-subscribe after retirement: the new lease claims a fresh worker.
+        let (third, _again) = remote.observe(active()).unwrap();
+        let (worker, waits, resume) = controlled_polling(&remote);
+        wait_for_poll(&waits);
+        drop(third);
+        resume.send(()).unwrap();
+        drop(resume);
+        worker.join().unwrap();
+        assert!(waits.try_recv().is_err());
+        assert!(!remote.state.lock().unwrap().polling);
+        assert!(fake.calls.lock().unwrap().is_empty());
+    }
+    #[test]
+    fn polling_workers_are_per_service_and_do_not_retain_idle_owners() {
+        let (_first_directory, first, _) = fixture();
+        let (_second_directory, second, _) = fixture();
+        let active = || RemoteWants { settings: true, ..Default::default() };
+        let (first_lease, _first_topic) = first.observe(active()).unwrap();
+        let (second_lease, _second_topic) = second.observe(active()).unwrap();
+        assert!(matches!(&first.plan(Instant::now())[..], [Request::Hosts]));
+        assert!(matches!(&second.plan(Instant::now())[..], [Request::Hosts]));
+        let (first_worker, first_waits, first_resume) = controlled_polling(&first);
+        let (second_worker, second_waits, second_resume) = controlled_polling(&second);
+        wait_for_poll(&first_waits);
+        wait_for_poll(&second_waits);
+        let first_weak = Arc::downgrade(&first);
+        let second_weak = Arc::downgrade(&second);
+        drop(first); drop(second); drop(first_lease); drop(second_lease);
+        assert!(first_weak.upgrade().is_none());
+        assert!(second_weak.upgrade().is_none());
+        first_resume.send(()).unwrap(); second_resume.send(()).unwrap();
+        drop(first_resume); drop(second_resume);
+        first_worker.join().unwrap(); second_worker.join().unwrap();
+        assert!(first_waits.try_recv().is_err());
+        assert!(second_waits.try_recv().is_err());
     }
     #[test]
     fn an_unobserved_service_never_requests_even_the_host_registry() {

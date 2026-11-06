@@ -1,0 +1,48 @@
+Performance audit deployment — 2026-11-06
+
+The user authorized deploying the completed performance improvements. Pass11
+optimization work was not started. The existing dirty workspace was preserved.
+
+The supported updater built the current checkout in release mode: NSH UI,
+Somtus desktop, and somtus-remote. NSH 0.3.0's executable hash matched the
+previously verified compiler; the terminal build validated the pinned Ghostty
+installation. All 40 pass10 source fingerprints matched before and after.
+The 3,356 recorded workspace files were unchanged during the build.
+
+The updater's bundle signature checks and executable startup smoke checks
+passed. Compilation emitted existing unused-code warnings and a nonfatal
+rust-objcopy warning about missing libLLVM while stripping debug information.
+No full-workspace test or live performance measurement is claimed here; scoped
+functional validation remains recorded in the pass10 report.
+
+The verified bundle was copied and atomically exchanged into
+/Applications/Somtus.app at 2026-11-06T12:26:25Z. The runtime installed-build
+pointer was updated under its registry lock using an atomic, synced write.
+Rollback bundle: /Applications/.Somtus.previous-performance-20261106.app
+
+The supported targeted restart succeeded: old GUI PID 48676 exited and new
+GUI PID 50356 runs /Applications/Somtus.app/Contents/MacOS/somtus.
+Executable SHA-256:
+51efbf057a40bd9810a1a61d72d57805837f8c606274cc1d58f2ea1ec9a81b5e
+
+All five windows restored with the same projects, layouts, bounds and focus
+settings. Only the order of the detached-chat ID set changed. All 39 existing
+tmux panes retained the same session/pane/process identities. Cua Driver
+observed the new windows and a screenshot confirmed the riWork Settings panel
+and active terminal rendered. No desktop input was sent.
+
+Scope limitation: existing chat backend PID 12261 was deliberately preserved.
+It had nine idle chats, one waiting chat and one failed chat, and its shutdown
+would stop providers. Desktop/UI/cache/projection and new local-reader gains
+are now active; host-side chat replay batching still requires a safe restart
+of that older backend. Other persistent background processes were not broadly
+restarted. This deployment does not claim every long-lived process was upgraded.
+
+Evidence:
+target/performance-audit/pass10-deployment-2026-11-06/
+  update-result.json, update-progress.log, installation.json, verification.json,
+  restart-result.json, instances-before-restart.json, instances-after.json,
+  tmux-before-restart.txt, tmux-after.txt, workspace-before.json,
+  source-verification-before.txt, source-verification-after-build.txt.
+Build log:
+target/riwork-update-03b4c1fb-0405-4e84-9e7e-675e6261d2a8.log

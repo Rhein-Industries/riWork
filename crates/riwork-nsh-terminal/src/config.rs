@@ -1,7 +1,9 @@
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeSet,
+    ffi::OsString,
     path::{Path, PathBuf},
+    time::{Duration, Instant, SystemTime},
 };
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
@@ -59,21 +61,119 @@ pub(crate) fn roots() -> Vec<PathBuf> {
         .collect()
 }
 
-pub(crate) fn stamp(roots: &[PathBuf]) -> Vec<(PathBuf, Option<(u64, std::time::SystemTime)>)> {
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FileStamp {
+    len: u64,
+    modified: SystemTime,
+    // Detect atomic replacements and edits that restore the previous mtime.
+    #[cfg(unix)]
+    identity: (u64, u64, i64, i64),
+}
+
+impl FileStamp {
+    fn metadata(metadata: &std::fs::Metadata) -> Option<Self> {
+        Some(Self {
+            len: metadata.len(),
+            modified: metadata.modified().ok()?,
+            #[cfg(unix)]
+            identity: {
+                use std::os::unix::fs::MetadataExt;
+                (
+                    metadata.dev(),
+                    metadata.ino(),
+                    metadata.ctime(),
+                    metadata.ctime_nsec(),
+                )
+            },
+        })
+    }
+
+    fn at(path: &Path) -> Option<Self> {
+        let metadata = std::fs::metadata(path).ok().filter(|m| m.is_file())?;
+        Self::metadata(&metadata)
+    }
+}
+
+type Stamp = Vec<(PathBuf, Option<FileStamp>)>;
+const RESCAN_AFTER: Duration = Duration::from_secs(300);
+
+/// The dependency graph changes only when a source file or resolver environment
+/// changes. Idle checks stat the known graph without reading/parsing every config
+/// and theme again. A periodic rescan bounds unobservable filesystem changes.
+pub(crate) struct Watch {
+    roots: Vec<PathBuf>,
+    snapshot: Stamp,
+    environment: (Option<OsString>, Option<OsString>),
+    scanned_at: Instant,
+    cacheable: bool,
+}
+
+fn resolver_environment() -> (Option<OsString>, Option<OsString>) {
+    (
+        std::env::var_os("HOME"),
+        std::env::var_os("GHOSTTY_RESOURCES_DIR"),
+    )
+}
+
+impl Watch {
+    pub(crate) fn new(roots: Vec<PathBuf>) -> Self {
+        let (snapshot, cacheable) = stamp(&roots);
+        Self {
+            snapshot,
+            roots,
+            environment: resolver_environment(),
+            scanned_at: Instant::now(),
+            cacheable,
+        }
+    }
+
+    pub(crate) fn changed(&mut self) -> bool {
+        self.changed_at(Instant::now())
+    }
+
+    fn changed_at(&mut self, now: Instant) -> bool {
+        let environment = resolver_environment();
+        if self.cacheable
+            && now.duration_since(self.scanned_at) < RESCAN_AFTER
+            && environment == self.environment
+            && self
+                .snapshot
+                .iter()
+                .all(|(path, previous)| FileStamp::at(path) == *previous)
+        {
+            return false;
+        }
+        let (next, cacheable) = stamp(&self.roots);
+        let changed = self.snapshot != next;
+        self.snapshot = next;
+        self.environment = environment;
+        self.scanned_at = now;
+        self.cacheable = cacheable;
+        changed
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static SOURCE_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+fn stamp(roots: &[PathBuf]) -> (Stamp, bool) {
     let mut paths = roots.to_vec();
     let mut seen = BTreeSet::new();
     let mut result = Vec::new();
+    let mut cacheable = true;
     while let Some(path) = paths.pop() {
         if seen.len() >= 64 || !seen.insert(path.clone()) {
             continue;
         }
         let meta = std::fs::metadata(&path).ok().filter(|m| m.is_file());
-        result.push((
-            path.clone(),
-            meta.as_ref()
-                .and_then(|m| Some((m.len(), m.modified().ok()?))),
-        ));
+        let signature = meta.as_ref().and_then(FileStamp::metadata);
+        cacheable &= meta.is_none() || signature.is_some();
+        result.push((path.clone(), signature));
         if meta.is_some_and(|m| m.len() <= 1024 * 1024) {
+            #[cfg(test)]
+            SOURCE_READS.with(|reads| reads.set(reads.get() + 1));
             if let Ok(text) = std::fs::read_to_string(&path) {
                 for line in text
                     .lines()
@@ -111,11 +211,15 @@ pub(crate) fn stamp(roots: &[PathBuf]) -> Vec<(PathBuf, Option<(u64, std::time::
                         _ => {}
                     }
                 }
+            } else {
+                // A transient read/UTF-8 failure must be retried next poll,
+                // even when the file's metadata has not changed.
+                cacheable = false;
             }
         }
     }
     result.sort_by(|a, b| a.0.cmp(&b.0));
-    result
+    (result, cacheable)
 }
 
 fn resolve(value: &str, parent: Option<&Path>) -> PathBuf {
@@ -177,6 +281,122 @@ pub(crate) fn write(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct Fixture(PathBuf);
+    impl Fixture {
+        fn new() -> Self {
+            let path =
+                std::env::temp_dir().join(format!("terminal-config-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+        fn write(&self, name: &str, text: impl AsRef<[u8]>) -> PathBuf {
+            let path = self.0.join(name);
+            std::fs::write(&path, text).unwrap();
+            path
+        }
+    }
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn unchanged_graph_skips_reads_and_reloads_includes_themes_and_optional_files() {
+        let fixture = Fixture::new();
+        let theme = fixture.write("theme", "background = #112233\n");
+        let child = fixture.write(
+            "child",
+            format!("theme = {}\nconfig-file = config\n", theme.display()),
+        );
+        let root = fixture.write("config", "config-file = child\nconfig-file = ?later\n");
+        let roots = vec![root.clone()];
+        let mut watch = Watch::new(roots.clone());
+        assert_eq!(watch.snapshot, stamp(&roots).0);
+        SOURCE_READS.with(|reads| reads.set(0));
+        for _ in 0..100 {
+            assert!(!watch.changed());
+        }
+        assert_eq!(SOURCE_READS.with(|reads| reads.get()), 0);
+
+        // Same-sized atomic replacement with the previous mtime still changes
+        // identity; this includes editors that preserve timestamps on save.
+        let previous_mtime = std::fs::metadata(&theme).unwrap().modified().unwrap();
+        let replacement = fixture.write("replacement", "background = #445566\n");
+        std::fs::File::open(&replacement)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(previous_mtime))
+            .unwrap();
+        std::fs::rename(replacement, &theme).unwrap();
+        assert!(watch.changed());
+        assert_eq!(watch.snapshot, stamp(&roots).0);
+        let later = fixture.write("later", "foreground = #ffffff\n");
+        assert!(watch.changed());
+        std::fs::remove_file(&later).unwrap();
+        assert!(watch.changed());
+        fixture.write("config", "font-size = 14\n");
+        assert!(watch.changed());
+        assert!(
+            !watch
+                .snapshot
+                .iter()
+                .any(|(path, _)| path == &child || path == &theme)
+        );
+        SOURCE_READS.with(|reads| reads.set(0));
+        assert!(!watch.changed_at(watch.scanned_at + RESCAN_AFTER));
+        assert_eq!(SOURCE_READS.with(|reads| reads.get()), 1);
+    }
+
+    #[test]
+    fn failed_source_reads_are_retried_without_waiting_for_metadata_to_change() {
+        let fixture = Fixture::new();
+        let root = fixture.write("config", [0xff, 0xfe]);
+        let mut watch = Watch::new(vec![root]);
+        SOURCE_READS.with(|reads| reads.set(0));
+        assert!(!watch.changed());
+        assert!(!watch.changed());
+        assert_eq!(SOURCE_READS.with(|reads| reads.get()), 2);
+    }
+
+    #[test]
+    #[ignore = "slow: manual terminal config polling benchmark"]
+    fn config_polling_cost() {
+        let fixture = Fixture::new();
+        for index in 0..16 {
+            fixture.write(
+                &format!("config-{index}"),
+                format!(
+                    "config-file = config-{}\n# {}\n",
+                    (index + 1) % 16,
+                    "x".repeat(64 * 1024)
+                ),
+            );
+        }
+        let roots = vec![fixture.0.join("config-0")];
+        let mut watch = Watch::new(roots.clone());
+        let expected = watch.snapshot.clone();
+        SOURCE_READS.with(|reads| reads.set(0));
+        let started = Instant::now();
+        for _ in 0..100 {
+            assert_eq!(stamp(&roots).0, expected);
+        }
+        let before = started.elapsed() / 100;
+        let before_reads = SOURCE_READS.with(|reads| reads.replace(0));
+        let started = Instant::now();
+        for _ in 0..100 {
+            assert!(!watch.changed());
+        }
+        eprintln!(
+            "terminal config poll: {:?} -> {:?}; reads {} -> {} (100 polls)",
+            before,
+            started.elapsed() / 100,
+            before_reads,
+            SOURCE_READS.with(|reads| reads.get())
+        );
+        assert_eq!(SOURCE_READS.with(|reads| reads.get()), 0);
+    }
+
     #[test]
     fn colors_reject_configuration_injection_and_incomplete_palettes() {
         let good = Colors::Override {

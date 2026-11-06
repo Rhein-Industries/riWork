@@ -812,12 +812,12 @@ impl Drop for DictationHandle {
 }
 #[class]
 impl DictationHandle {
-    pub fn subscribe(this: Instance<Self>, listener: Callback<Value>, cx: CallCx<'_>) -> Subscription {
+    pub fn subscribe(this: Instance<Self>, listener: Callback<crate::hub::Shared<Value>>, cx: CallCx<'_>) -> Subscription {
         let owner = this.with(|handle| handle.owner.clone());
         Subscription::start(cx, async move {
             if let Ok(subscription) = service::blocking(move || Ok(owner.topic.subscribe())).await {
-                while let Ok(snapshot) = subscription.recv().await {
-                    listener.post(subscription.latest(snapshot).data);
+                while let Ok(snapshot) = subscription.recv_shared().await {
+                    listener.post(subscription.latest_shared(snapshot).data);
                     next_frame().await;
                 }
             }

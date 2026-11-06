@@ -1325,6 +1325,46 @@ impl Transcript {
         self.apply_sequenced(self.last_seq.saturating_add(1), event);
     }
 
+    /// A log reader owns each parsed event and can move its potentially large
+    /// output and image payloads into the transcript instead of cloning them.
+    pub(super) fn apply_sequenced_owned(&mut self, seq: u64, event: ChatEvent) {
+        match event {
+            ChatEvent::ItemStarted { item } | ChatEvent::ItemCompleted { item } => {
+                self.last_seq = self.last_seq.max(seq);
+                self.revision = self.revision.wrapping_add(1);
+                self.apply_item(seq, item);
+            }
+            event => self.apply_sequenced(seq, &event),
+        }
+    }
+
+    fn apply_item(&mut self, seq: u64, mut item: Item) {
+        let item_id = item.id.clone();
+        self.item_sequences.entry(item_id.clone()).or_insert(seq);
+        match self.index.get(&item.id) {
+            Some(&at) => {
+                item.started_at = item.started_at.or(self.items[at].started_at);
+                item.presentation.parent_id = item
+                    .presentation
+                    .parent_id
+                    .or_else(|| self.items[at].presentation.parent_id.clone());
+                super::semantics::enrich_inheriting(
+                    &mut item,
+                    self.items[at].presentation.semantics.as_ref(),
+                );
+                super::semantics::refresh_output(&mut item);
+                self.items[at] = item;
+            }
+            None => {
+                self.index.insert(item.id.clone(), self.items.len());
+                super::semantics::enrich(&mut item);
+                super::semantics::refresh_output(&mut item);
+                self.items.push(item);
+            }
+        }
+        self.replaced.insert(item_id, self.revision);
+    }
+
     pub fn apply_sequenced(&mut self, seq: u64, event: &ChatEvent) {
         self.last_seq = self.last_seq.max(seq);
         self.revision = self.revision.wrapping_add(1);
@@ -1401,31 +1441,7 @@ impl Transcript {
                     .retain(|question| question.answer_via_message);
             }
             ChatEvent::ItemStarted { item } | ChatEvent::ItemCompleted { item } => {
-                let mut item = item.clone();
-                let item_id = item.id.clone();
-                self.item_sequences.entry(item_id.clone()).or_insert(seq);
-                match self.index.get(&item.id) {
-                    Some(&at) => {
-                        item.started_at = item.started_at.or(self.items[at].started_at);
-                        item.presentation.parent_id = item
-                            .presentation
-                            .parent_id
-                            .or_else(|| self.items[at].presentation.parent_id.clone());
-                        super::semantics::enrich_inheriting(
-                            &mut item,
-                            self.items[at].presentation.semantics.as_ref(),
-                        );
-                        super::semantics::refresh_output(&mut item);
-                        self.items[at] = item;
-                    }
-                    None => {
-                        self.index.insert(item.id.clone(), self.items.len());
-                        super::semantics::enrich(&mut item);
-                        super::semantics::refresh_output(&mut item);
-                        self.items.push(item);
-                    }
-                }
-                self.replaced.insert(item_id, self.revision);
+                self.apply_item(seq, item.clone());
             }
             ChatEvent::ItemDelta { item_id, delta } => {
                 let Some(&at) = self.index.get(item_id) else {
@@ -1566,6 +1582,144 @@ mod tests {
             turn_id: Some("t1".into()),
             status,
             body: ItemBody::AgentMessage { text: text.into() },
+        }
+    }
+
+    #[test]
+    fn owned_event_folding_preserves_lifecycle_and_moves_large_payloads() {
+        let mut borrowed = Transcript::default();
+        let mut owned = Transcript::default();
+        let mut started = agent("a", "start", ItemStatus::InProgress);
+        started.started_at = Some(10);
+        started.presentation.parent_id = Some("parent".into());
+        let mut completed = agent("a", &"message 🦀\n".repeat(8000), ItemStatus::Completed);
+        completed.presentation.images.push(ChatImage {
+            label: "image".into(),
+            source: ImageSource::Data {
+                mime: "image/png".into(),
+                base64: "A".repeat(128 * 1024),
+            },
+        });
+        let text_pointer = match &completed.body {
+            ItemBody::AgentMessage { text } => text.as_ptr(),
+            _ => unreachable!(),
+        };
+        let image_pointer = match &completed.presentation.images[0].source {
+            ImageSource::Data { base64, .. } => base64.as_ptr(),
+            _ => unreachable!(),
+        };
+        let events = [
+            ChatEvent::TurnStarted {
+                turn_id: "t1".into(),
+                started_at: Some(10),
+            },
+            ChatEvent::ItemStarted { item: started },
+            ChatEvent::ItemDelta {
+                item_id: "a".into(),
+                delta: Delta::Text(" delta".into()),
+            },
+            ChatEvent::ItemCompleted { item: completed },
+            ChatEvent::TurnCompleted {
+                turn_id: "t1".into(),
+                outcome: TurnOutcome::Completed,
+                ended_at: Some(20),
+            },
+        ];
+        for (seq, event) in [1, 4, 3, 9, 10].into_iter().zip(events) {
+            borrowed.apply_sequenced(seq, &event);
+            owned.apply_sequenced_owned(seq, event);
+            assert_eq!(owned, borrowed);
+            assert_eq!(owned.revision, borrowed.revision);
+            assert_eq!(owned.last_seq, borrowed.last_seq);
+            assert_eq!(owned.item_sequences, borrowed.item_sequences);
+            assert_eq!(owned.replaced, borrowed.replaced);
+        }
+        let item = owned.item("a").unwrap();
+        assert_eq!(item.started_at, Some(10));
+        assert_eq!(item.presentation.parent_id.as_deref(), Some("parent"));
+        assert_eq!(owned.item_seq("a"), Some(4));
+        match &item.body {
+            ItemBody::AgentMessage { text } => assert_eq!(text.as_ptr(), text_pointer),
+            _ => unreachable!(),
+        }
+        match &item.presentation.images[0].source {
+            ImageSource::Data { base64, .. } => assert_eq!(base64.as_ptr(), image_pointer),
+            _ => unreachable!(),
+        }
+        // Legacy tool metadata must still be inferred on both insert and
+        // replacement, preserving lifecycle-only parent and start information.
+        for (seq, event) in [
+            (
+                11,
+                serde_json::json!({"event":"item_started","item":{
+                    "id":"tool", "turn_id":"t2", "started_at":25,
+                    "presentation":{"parent_id":"parent"},
+                    "body":{"type":"tool_call","tool":"Read","input":{"path":"file.rs"}}
+                }}),
+            ),
+            (
+                12,
+                serde_json::json!({"event":"item_completed","item":{
+                    "id":"tool", "turn_id":"t2", "status":"completed",
+                    "body":{"type":"tool_call","tool":"Read","input":{},"output":"héllo\nmore"}
+                }}),
+            ),
+        ] {
+            let event: ChatEvent = serde_json::from_value(event).unwrap();
+            borrowed.apply_sequenced(seq, &event);
+            owned.apply_sequenced_owned(seq, event);
+            assert_eq!(owned, borrowed);
+        }
+        let tool = owned.item("tool").unwrap();
+        assert_eq!(tool.started_at, Some(25));
+        assert_eq!(tool.presentation.parent_id.as_deref(), Some("parent"));
+        let semantics = tool.presentation.semantics.as_ref().unwrap();
+        assert_eq!(semantics.target.as_deref(), Some("file.rs"));
+        assert_eq!(semantics.excerpt.as_deref(), Some("héllo"));
+    }
+
+    #[test]
+    #[ignore = "slow: owned transcript event folding measurement"]
+    fn measure_owned_event_folding() {
+        use std::time::Instant;
+
+        let mut samples = [Vec::new(), Vec::new()];
+        for pass in 0..7 {
+            for owned in if pass % 2 == 0 {
+                [false, true]
+            } else {
+                [true, false]
+            } {
+                let events: Vec<_> = (0..64)
+                    .map(|n| ChatEvent::ItemCompleted {
+                        item: agent(
+                            &n.to_string(),
+                            &"x".repeat(512 * 1024),
+                            ItemStatus::Completed,
+                        ),
+                    })
+                    .collect();
+                let mut transcript = Transcript::default();
+                let started = Instant::now();
+                for (seq, event) in events.into_iter().enumerate() {
+                    if owned {
+                        transcript.apply_sequenced_owned(seq as u64, event);
+                    } else {
+                        transcript.apply_sequenced(seq as u64, &event);
+                    }
+                }
+                samples[usize::from(owned)].push(started.elapsed());
+                assert_eq!(transcript.items.len(), 64);
+                std::hint::black_box(&transcript);
+            }
+        }
+        for (owned, mut samples) in samples.into_iter().enumerate() {
+            samples.sort();
+            let owned = owned != 0;
+            eprintln!(
+                "owned={owned}: 64 events / 32 MiB payload, fold median {:?}",
+                samples[3]
+            );
         }
     }
 

@@ -102,7 +102,7 @@ impl HostsService {
             }
             (state.cache.clone(), state.revision)
         };
-        cache.save(&self.home)?;
+        cache.save_owned(&self.home)?;
         self.state.lock().unwrap().saved = revision;
         Ok(())
     }
@@ -305,8 +305,8 @@ impl Hosts {
             if let Ok(subscription) =
                 service::blocking(|| Ok(observe(&service::process_home()?)?.subscribe())).await
             {
-                while let Ok(snapshot) = subscription.recv().await {
-                    listener.post(serde_json::to_value(subscription.latest(snapshot)).unwrap());
+                while let Ok(snapshot) = subscription.recv_shared().await {
+                    listener.post(serde_json::to_value(subscription.latest_shared(snapshot)).unwrap());
                     next_frame().await;
                 }
             }
@@ -427,5 +427,53 @@ mod tests {
         let changed = subscription.recv().await.unwrap();
         assert_eq!(changed.data["hosts"][0]["connection"], "blocked");
         assert_eq!(changed.data["hosts"][0]["id"], restored.hosts["route"].id);
+    }
+    #[test]
+    fn failed_persistence_keeps_live_inventory_and_dirty_revision() {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join("host-sessions.json");
+        std::fs::create_dir(&path).unwrap();
+        let mut cache = Cache::default();
+        cache.hosts.insert(
+            "pending".into(),
+            Host::pending(Some("pending".into()), "Not read yet".into(), "relay"),
+        );
+        let original = serde_json::to_vec(&cache).unwrap();
+        let state = State {
+            cache,
+            running: BTreeSet::new(),
+            due: BTreeMap::new(),
+            failures: BTreeMap::new(),
+            registry_error: None,
+            revision: 7,
+            saved: 2,
+        };
+        let service = HostsService {
+            home: home.path().into(),
+            topic: Hub::new(HostsService::snapshot_locked(&state)),
+            state: Mutex::new(state),
+            requested: AtomicBool::new(false),
+            registry_running: AtomicBool::new(false),
+            persistence: Mutex::new(()),
+        };
+        assert!(service.persist().is_err());
+        {
+            let state = service.state.lock().unwrap();
+            assert_eq!(state.saved, 2);
+            assert_eq!(state.revision, 7);
+            assert_eq!(serde_json::to_vec(&state.cache).unwrap(), original);
+        }
+        std::fs::remove_dir(&path).unwrap();
+        service.persist().unwrap();
+        {
+            let state = service.state.lock().unwrap();
+            assert_eq!(state.saved, 7);
+            assert_eq!(serde_json::to_vec(&state.cache).unwrap(), original);
+        }
+        assert!(Cache::open(home.path()).hosts.is_empty());
+        // Once this generation is saved, no new write is attempted.
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        service.persist().unwrap();
     }
 }

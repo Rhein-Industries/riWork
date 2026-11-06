@@ -19,7 +19,7 @@ use std::{
     fs::{File, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
-    sync::{Mutex, PoisonError},
+    sync::{Arc, Mutex, PoisonError},
 };
 use uuid::Uuid;
 
@@ -446,7 +446,12 @@ impl Settings {
     }
     /// Whether "Terminals match the theme" is on.
     pub fn terminal_colors_forced(&self) -> bool {
-        match self.theme {
+        self.terminal_colors_for(self.theme)
+    }
+
+    /// Resolve a temporary theme without copying unrelated saved preferences.
+    pub fn terminal_colors_for(&self, theme: ThemeChoice) -> bool {
+        match theme {
             ThemeChoice::Native => self.native_terminal_colors,
             _ => self.use_riwork_colors,
         }
@@ -764,6 +769,12 @@ impl SettingsStore {
     }
 
     pub fn load(&self) -> Result<Settings, String> {
+        self.load_shared().map(|settings| (*settings).clone())
+    }
+
+    /// An immutable generation shared with other readers while the file's
+    /// stamp stands. Later updates leave already-held settings unchanged.
+    pub fn load_shared(&self) -> Result<Arc<Settings>, String> {
         let path = self.dir.join("settings.json");
         // Windows poll this every couple of seconds; while the file's stamp
         // stands, the last parse is the answer and no lock or read is needed.
@@ -775,7 +786,7 @@ impl SettingsStore {
         let lock = self.lock_file()?;
         FileExt::lock_shared(&lock).map_err(|error| format!("Cannot lock settings: {error}"))?;
         let before = FileStamp::of(&path);
-        let settings = self.read()?;
+        let settings = Arc::new(self.read()?);
         // Cache only when the file stood still across the read.
         if let Some(stamp) = before
             && FileStamp::of(&path) == Some(stamp)
@@ -788,7 +799,7 @@ impl SettingsStore {
         Ok(settings)
     }
 
-    fn cached_load(&self, stamp: &Option<FileStamp>) -> Option<Settings> {
+    fn cached_load(&self, stamp: &Option<FileStamp>) -> Option<Arc<Settings>> {
         self.load_cache
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -886,11 +897,11 @@ impl SettingsStore {
         result?;
         // The document just written parses to these settings, so seed the load
         // cache.
+        let cached = FileStamp::of(&path).map(|stamp| (stamp, Arc::new(settings.clone())));
         *self
             .load_cache
             .lock()
-            .unwrap_or_else(PoisonError::into_inner) =
-            FileStamp::of(&path).map(|stamp| (stamp, settings.clone()));
+            .unwrap_or_else(PoisonError::into_inner) = cached;
         Ok(settings)
     }
 
@@ -2442,5 +2453,163 @@ mod tests {
             Settings::default()
         );
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn shared_settings_keep_immutable_generations_and_publish_only_successful_writes() {
+        let dir = env::temp_dir().join(format!("riwork-settings-generations-{}", Uuid::new_v4()));
+        let store = SettingsStore::open(&dir).unwrap();
+        let first = store.load_shared().unwrap();
+        let other = SettingsStore::open(&dir).unwrap();
+        assert!(Arc::ptr_eq(&first, &other.load_shared().unwrap()));
+        let mut owned = store.load().unwrap();
+        owned.open_preview_on_select = false;
+        let mut detached = first.clone();
+        Arc::make_mut(&mut detached).open_preview_on_select = false;
+        assert!(store.load_shared().unwrap().open_preview_on_select);
+        assert!(
+            store
+                .set_value("schema_version", serde_json::json!(2))
+                .is_err()
+        );
+        assert!(Arc::ptr_eq(&first, &store.load_shared().unwrap()));
+
+        let saved = other
+            .update(|settings| settings.open_preview_on_select = false)
+            .unwrap();
+        let seeded = store.load_cache.lock().unwrap().as_ref().unwrap().1.clone();
+        let current = store.load_shared().unwrap();
+        assert!(Arc::ptr_eq(&seeded, &current));
+        assert!(!Arc::ptr_eq(&first, &current));
+        assert_eq!(*current, saved);
+        assert!(first.open_preview_on_select);
+        assert!(!current.open_preview_on_select);
+
+        let path = dir.join("settings.json");
+        let bytes = fs::read(&path).unwrap();
+        let failed = store.update(|settings| {
+            settings.open_preview_on_select = true;
+            fs::remove_file(&path).unwrap();
+            fs::create_dir(&path).unwrap();
+        });
+        assert!(failed.is_err());
+        assert!(Arc::ptr_eq(
+            &current,
+            &store.load_cache.lock().unwrap().as_ref().unwrap().1
+        ));
+        assert!(store.load_shared().is_err());
+        fs::remove_dir(&path).unwrap();
+        fs::write(&path, bytes).unwrap();
+        assert_eq!(*store.load_shared().unwrap(), *current);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn shared_settings_keep_file_stamp_freshness_and_do_not_hide_metadata_errors() {
+        let dir = env::temp_dir().join(format!("riwork-settings-shared-stamp-{}", Uuid::new_v4()));
+        let store = SettingsStore::open(&dir).unwrap();
+        let path = dir.join("settings.json");
+        let missing = store.load_shared().unwrap();
+        std::os::unix::fs::symlink("settings.json", &path).unwrap();
+        assert_eq!(FileStamp::of(&path), None);
+        assert!(store.load_shared().is_err());
+        fs::remove_file(&path).unwrap();
+        assert!(Arc::ptr_eq(&missing, &store.load_shared().unwrap()));
+
+        let bytes = |account: &str| {
+            serde_json::to_vec(&serde_json::json!({
+                "schema_version": 1, "selected_codex_account": account
+            }))
+            .unwrap()
+        };
+        fs::write(&path, bytes("aaaa")).unwrap();
+        let first = store.load_shared().unwrap();
+        let modified = fs::metadata(&path).unwrap().modified().unwrap();
+        fs::write(&path, bytes("bbbb")).unwrap();
+        File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(modified)
+            .unwrap();
+        assert!(Arc::ptr_eq(&first, &store.load_shared().unwrap()));
+        let replacement = dir.join("replacement.json");
+        fs::write(&replacement, bytes("cccc")).unwrap();
+        File::options()
+            .write(true)
+            .open(&replacement)
+            .unwrap()
+            .set_modified(modified)
+            .unwrap();
+        fs::rename(&replacement, &path).unwrap();
+        let replaced = store.load_shared().unwrap();
+        assert!(!Arc::ptr_eq(&first, &replaced));
+        assert_eq!(replaced.selected_codex_account.as_deref(), Some("cccc"));
+        assert_eq!(first.selected_codex_account.as_deref(), Some("aaaa"));
+        fs::write(&path, b"invalid json").unwrap();
+        assert!(store.load_shared().is_err());
+        fs::remove_file(&path).unwrap();
+        assert_eq!(*store.load_shared().unwrap(), Settings::default());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    #[ignore = "timing: paired cached Settings cloning and shared generation reads"]
+    fn measure_shared_settings_reads() {
+        use std::time::Instant;
+        for overrides in [10, 10_000] {
+            let dir =
+                env::temp_dir().join(format!("riwork-settings-shared-bench-{}", Uuid::new_v4()));
+            let store = SettingsStore::open(&dir).unwrap();
+            let settings = Settings {
+                chat_display_modes: (0..overrides)
+                    .map(|n| (format!("chat-{n:08}"), DisplayMode::default()))
+                    .collect(),
+                ..Settings::default()
+            };
+            let path = dir.join("settings.json");
+            fs::write(&path, serde_json::to_vec(&settings).unwrap()).unwrap();
+            assert_eq!(*store.load_shared().unwrap(), settings);
+            let mut samples = [Vec::new(), Vec::new()];
+            for pass in 0..101 {
+                for shared in if pass % 2 == 0 {
+                    [false, true]
+                } else {
+                    [true, false]
+                } {
+                    let started = Instant::now();
+                    for _ in 0..32 {
+                        if shared {
+                            std::hint::black_box(store.load_shared().unwrap());
+                        } else {
+                            // The previous warm-cache path, including its stat
+                            // and deep clone while holding the parse-cache lock.
+                            let stamp = FileStamp::of(&store.dir.join("settings.json")).unwrap();
+                            let owned = store
+                                .load_cache
+                                .lock()
+                                .unwrap()
+                                .as_ref()
+                                .filter(|(cached, _)| cached == &stamp)
+                                .map(|(_, value)| value.as_ref().clone())
+                                .unwrap();
+                            std::hint::black_box(owned);
+                        }
+                    }
+                    samples[usize::from(shared)].push(started.elapsed() / 32);
+                }
+            }
+            for values in &mut samples {
+                values.sort();
+            }
+            eprintln!(
+                "shared settings: {overrides} chat overrides, {} bytes, legacy {:?}, shared {:?}",
+                fs::metadata(path).unwrap().len(),
+                samples[0][50],
+                samples[1][50]
+            );
+            fs::remove_dir_all(dir).unwrap();
+        }
     }
 }

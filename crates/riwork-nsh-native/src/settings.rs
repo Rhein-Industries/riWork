@@ -19,7 +19,7 @@ pub use forms::{DelegationDto, DelegationPatch, ModelChoiceDto, RouteChoiceDto, 
 
 use crate::{
     appearance::AppearanceDto,
-    hub::{Hub, Snapshot, TopicSubscription},
+    hub::{Hub, TopicSubscription},
     service::{self, blocking},
 };
 
@@ -555,6 +555,11 @@ pub enum StatusChange {
 /// Synchronous domain seam. Every call belongs on the bridge blocking pool.
 pub trait SettingsBackend: Send + Sync + 'static {
     fn get(&self) -> Result<CoreSettings, String>;
+    /// Immutable readers can retain a generation; existing backends keep their
+    /// owned get contract through this default adapter.
+    fn get_shared(&self) -> Result<Arc<CoreSettings>, String> {
+        self.get().map(Arc::new)
+    }
     fn set(&self, patch: SettingsPatch) -> Result<CoreSettings, String>;
     fn change_text_size(&self, change: SizeChange) -> Result<CoreSettings, String>;
     fn change_status(&self, _change: StatusChange) -> Result<CoreSettings, String> {
@@ -575,6 +580,9 @@ impl CoreSettingsBackend {
 impl SettingsBackend for CoreSettingsBackend {
     fn get(&self) -> Result<CoreSettings, String> {
         self.store.load().map_err(service::io_error)
+    }
+    fn get_shared(&self) -> Result<Arc<CoreSettings>, String> {
+        self.store.load_shared().map_err(service::io_error)
     }
     fn set(&self, patch: SettingsPatch) -> Result<CoreSettings, String> {
         let selected = [
@@ -666,7 +674,7 @@ impl SettingsBackend for CoreSettingsBackend {
 }
 
 struct PreferenceState {
-    settings: CoreSettings,
+    settings: Arc<CoreSettings>,
     error: Option<String>,
 }
 
@@ -686,11 +694,11 @@ impl PreferenceService {
         Ok(Self::with_backend(Arc::new(backend)))
     }
     pub fn with_backend(backend: Arc<dyn SettingsBackend>) -> Arc<Self> {
-        let (settings, error) = match backend.get() {
+        let (settings, error) = match backend.get_shared() {
             Ok(settings) => (settings, None),
             Err(error) => {
                 eprintln!("Somtus settings load: {error}; using defaults");
-                (CoreSettings::default(), Some(error))
+                (Arc::new(CoreSettings::default()), Some(error))
             }
         };
         Arc::new(Self {
@@ -720,7 +728,7 @@ impl PreferenceService {
     }
     pub fn refresh(&self) {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        match self.backend.get() {
+        match self.backend.get_shared() {
             Ok(settings) => {
                 state.settings = settings;
                 state.error = None;
@@ -731,17 +739,17 @@ impl PreferenceService {
         }
         self.publish(&state);
     }
-    pub(crate) fn core(&self) -> (CoreSettings, Option<String>) {
+    pub(crate) fn core(&self) -> (Arc<CoreSettings>, Option<String>) {
         let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         (state.settings.clone(), state.error.clone())
     }
     pub fn get(&self) -> SettingsDto {
-        let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        SettingsDto::from_settings(&state.settings, state.error.clone())
+        let (settings, error) = self.core();
+        SettingsDto::from_settings(&settings, error)
     }
     pub fn set(&self, patch: SettingsPatch) -> Result<SettingsDto, String> {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        state.settings = self.backend.set(patch)?;
+        state.settings = Arc::new(self.backend.set(patch)?);
         state.error = None;
         self.publish(&state);
         Ok(SettingsDto::from_settings(&state.settings, None))
@@ -754,14 +762,14 @@ impl PreferenceService {
             _ => return Err(format!("invalid: unknown text size action {action:?}")),
         };
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        state.settings = self.backend.change_text_size(change)?;
+        state.settings = Arc::new(self.backend.change_text_size(change)?);
         state.error = None;
         self.publish(&state);
         Ok(SettingsDto::from_settings(&state.settings, None))
     }
     pub fn change_status(&self, change: StatusChange) -> Result<SettingsDto, String> {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        state.settings = self.backend.change_status(change)?;
+        state.settings = Arc::new(self.backend.change_status(change)?);
         state.error = None;
         self.publish(&state);
         Ok(SettingsDto::from_settings(&state.settings, None))
@@ -791,15 +799,13 @@ impl PreferenceService {
         theme: Option<&str>,
         system_dark: bool,
     ) -> Result<AppearanceDto, String> {
-        let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        let mut settings = state.settings.clone();
-        if let Some(theme) = theme {
-            settings.theme = parse_theme(theme)?;
-        }
-        Ok(AppearanceDto::from_settings(
+        let (settings, error) = self.core();
+        let theme = theme.map(parse_theme).transpose()?.unwrap_or(settings.theme);
+        Ok(AppearanceDto::from_settings_with_theme(
             &settings,
+            theme,
             system_dark,
-            state.error.clone(),
+            error,
         ))
     }
     pub fn subscribe_settings(&self) -> TopicSubscription<SettingsDto> {
@@ -861,7 +867,7 @@ impl Settings {
         ui_text::sentence_case(&text)
     }
     pub fn subscribe(
-        listener: Callback<Snapshot<SettingsDto>>,
+        listener: Callback<crate::hub::SharedSnapshot<SettingsDto>>,
         cx: CallCx<'_>,
     ) -> Result<crate::Subscription, String> {
         Ok(crate::Subscription::start(cx, async move {
@@ -927,3 +933,7 @@ impl JsValue for SettingsPatch {
             .to_js(host)
     }
 }
+
+#[cfg(test)]
+#[path = "settings_shared_tests.rs"]
+mod shared_tests;

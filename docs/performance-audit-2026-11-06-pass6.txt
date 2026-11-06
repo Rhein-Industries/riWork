@@ -1,0 +1,217 @@
+RiWork / Somtus performance audit — sixth pass, 2026-11-06
+
+Scope
+Continues performance-audit-2026-11-06-pass5.txt. All thirty saved pass5 source
+fingerprints matched before this pass; no prior audit process remained live.
+This pass addresses Files DTO allocation, shared preference reads, repeated
+window-state JSON construction and Markdown rule classification. Unrelated
+work is preserved. No installed application was restarted/deployed or driven.
+Somtus cua-driver remains the desktop provider; this pass uses code/headless
+verification. The application-wide objective remains active and incomplete.
+
+Shared preference reads
+SettingsBackend has an additive get_shared() method whose default adapts the
+existing owned get(). CoreSettingsBackend uses the already-established shared
+SettingsStore generation. PreferenceService retains that Arc and captures it
+together with its error under the same state mutex. Read-only DTO construction
+can then run outside the lock. Writes/publication stay serialized, failed reads
+retain the old generation, and failed writes still leave state/error unchanged.
+Owned get() callers and older backend implementations remain compatible.
+
+Appearance previews resolve an explicit temporary theme against borrowed saved
+settings. The terminal-color force decision also uses that temporary theme,
+preserving the distinct Native versus named/Ghostty flags. The saved theme and
+maps are not copied or mutated. Usage's selected-account read uses the shared
+cache and clones only the selected account string. Project settings and saved
+appearance publication retain immutable generations through their existing
+background work. No cache freshness or subscription policy changed.
+
+Three new preference tests and the usage selected-account test pass. They cover
+pointer sharing, retained generations, update/error recovery, independent owned
+results, file invalidation, every preview theme and both terminal-force flags.
+The settings-forms integration suite passes seven tests. Independent review
+found no compatibility, coherence, locking or preview-theme issue.
+
+The older settings integration suite passes five and fails two theme assertions:
+  settings.rs:81 expects native for the currently recognized ri_work choice;
+  settings.rs:271 expects ghostty although the current default is Native.
+Both identical failures reproduce when the unchanged test source is compiled
+against the saved pre-Shared native library and matching dependency fingerprints.
+No production theme choice/default or assertion was changed to hide a failure.
+Evidence: target/performance-audit/preference-shared/results.json,
+  baseline-build.json, baseline-tests.log and current test logs.
+The integrated native suite passed 246 tests, 10 tests ignored (nine manual
+benchmarks and one speech test requiring an external runtime/model/recording).
+Seven alternating paired Debug samples, 100 reads per sample:
+  10 chat-display overrides, internal generation read: 1.222 -> 0.044 us;
+    complete appearance preview: 7.581 -> 6.434 us.
+  10,000 overrides, internal generation read: 817.055 -> 0.045 us;
+    complete appearance preview: 815.857 -> 6.399 us.
+Generation-read nanosecond figures are only an uncontended in-process Arc/mutex
+microbenchmark; they exclude file checks and do not describe a public RPC or UI
+latency. Appearance includes the same palette/terminal/diff DTO construction.
+Input setup is excluded; all seven raw samples, binary/source hashes and replay
+command are in preference-shared/results.json and benchmarks.log. No other
+compiler, test or timing job was active during the final measurement.
+
+Files enumeration
+Enumeration retains compact name/lowercase/kind/index records, then builds owned
+absolute/relative/kind DTO strings only for the displayed prefix. Each successful
+entry still performs the original path checks before sorting, even if later
+omitted. Hidden/UTF-8 filtering, scan limits, omitted counts, descriptor-relative
+fstatat with no-follow, natural/directory/stable ordering, displayed file identity
+opens and lazy Git decoration are preserved. Raw-name tie comparison is confined
+to records from the same parent, where it equals joined-path ordering.
+One scratch PathBuf retains capacity across per-entry checks. Displayed paths
+reuse prefixes obtained from the first checked selected child; this preserves
+raw path spelling, repeated separators and UTF-8 boundaries while avoiding
+another path check/allocation for every displayed record. Empty and zero-limit
+results still perform no selected-child check. The caller confines the parent
+at or below the root, and real directory names are single non-dot components,
+so both checked child strings end with the selected name. The returned vector
+reserves exactly the displayed length.
+
+APFS rejects invalid-UTF-8 filenames at fixture creation. Portable raw-byte
+name/path helper tests therefore run on macOS; the full invalid-UTF-8 parent/
+empty/all-skipped filesystem test is retained for other Unix filesystems. That
+real-filesystem coverage is not claimed on macOS. The existing ancestor swap,
+symlink and special-file identity safety checks remain part of verification.
+Final-source validation passes 18 Files unit tests (1 ignored benchmark) and
+3 files_bridge tests. Exact-helper comparison covers 12,216 path/error/limit
+cases, 16 construction allocation/parity cases and four real full-listing
+allocation/parity cases. Metadata and selected-file identity call counts match.
+Independent review found no ordering, error-precedence, confinement, cleanup or
+raw-path compatibility issue. Final timing results are recorded below.
+
+Separate allocation instrumentation and normal-System-allocator optimized
+timings use exact extracted baseline/current helpers and descriptor-open code.
+Construction excludes filesystem metadata/Git; the real listing phase retains
+enumeration, metadata and displayed-file identity opens but uses a prefilled
+empty Git cache. Setup and fixture creation are outside measurement. Counters
+report Rust heap requests/live bytes, not process RSS or filesystem caches.
+At 50,000 Unicode names under a long parent, construction peak live bytes fall
+from 48.31 MB to 7.75 MB; retained result bytes from 11.64 MB to 3.56 MB;
+allocation calls from 400,017 to 115,020. In the real 50,001-entry listing,
+peak live bytes fall from 30.66 MB to 7.70 MB and retained result bytes from
+10.14 MB to 2.06 MB. Both perform 50,000 metadata checks and 2,058 selected-file
+identity opens, display 5,000 entries and report 45,000 omitted/scan-limited.
+The 20-entry real listing's retained result falls from 10,173 to 9,597 bytes.
+
+Five alternating paired samples improve all 16 construction medians:
+  20 entries, short/long parents, ASCII/Unicode: 10–27% lower;
+  5,000 entries: 19–27% lower; 20,000 entries: 30–43% lower;
+  50,000 entries: 36–53% lower.
+Real listing medians (including unchanged filesystem calls):
+  20 entries: 295.494 -> 283.967 us;
+  5,001 entries: 76.970 -> 75.264 ms;
+  20,000 entries: 109.211 -> 105.772 ms;
+  50,001 entries: 166.195 -> 151.857 ms.
+These modest 2–9% listing gains have overlapping sample spread in some cases;
+the larger constructor gains do not describe end-to-end browser latency.
+Earlier variants regressed small/all-visible construction and near-cap listing;
+their logs are retained. Pre-sizing, scratch reuse and selected-child prefixes
+remove those measured regressions in the accepted source.
+
+Final timings ran sequentially after owned builds/tests ended. Unrelated iOS
+simulator startup activity was allowed to settle; remaining ordinary desktop
+activity used roughly 1–1.5 of eight CPU cores. This was not an idle workstation.
+No unrelated process was stopped. Raw samples/load snapshots, exact commands,
+source/library/binary fingerprints and final validation are in
+  target/performance-audit/files-deferred-dto/results.json and report.txt;
+  construction-timing-accepted.log, full-listing-timing-accepted.log,
+  construction-allocations-accepted.log, full-listing-allocations-accepted.log,
+  native-accepted-files-tests.log and native-accepted-files-bridge.log.
+
+Window-state publication
+The host retains a typed native sample rather than the previous JSON Value.
+It compares that sample before constructing JSON, serializes only changed
+events, and moves the event to the bridge without retaining/cloning the Value.
+Native sampling order, normal-frame updates, window selection and reload reset
+are unchanged. Equality matches serde_json's treatment of non-finite floats as
+null and signed-zero equality; all seven keys and nested frame fields remain.
+
+The optimized isolated harness matches actual serde/serde_json versions and
+verifies 98 states, 9,604 transition pairs, byte serialization and reset parity.
+A separate allocator build records 40,000 warmed samples across four windows:
+  Unchanged: 720,000 -> 0 allocations; 69.16 MB -> 0 requested bytes.
+  Change every 64 samples: 729,984 -> 11,232 allocations;
+    70.21 MB -> 1.08 MB requested bytes (624 events).
+  Always changing: 1,359,936 -> 719,928 allocations;
+    136.55 MB -> 69.15 MB requested bytes (39,996 events).
+These are allocation requests, not peak memory/RSS. AppKit sampling, bridge
+delivery and rendering are outside the helper measurement.
+
+Seven alternating paired optimized samples with the normal System allocator,
+40,000 samples / four windows:
+  Unchanged: 33.585250 -> 0.140959 ms.
+  Change every 64 samples: 33.564542 -> 0.554291 ms.
+  Always changing: 46.379583 -> 26.551333 ms.
+The initial harness printed only medians; that log is retained separately.
+A print-only harness refinement emitted all seven raw observations outside
+timed regions, followed by the final coordinated run above. Production helper
+code did not change. The production desktop suite passes 92 tests (5 ignored),
+and default-feature desktop cargo check passes. Independent review and actual
+workspace tests also cover the float/JSON equality and reload behavior.
+Evidence: target/performance-audit/window-state-results.json,
+  window-state-benchmark.log, window-state-allocations.log and referenced
+  source/helper hashes, exact commands and validation logs.
+
+Markdown rule classification
+is_rule no longer builds a Vec<char> before rejecting ordinary prose. It retains
+the same indentation/Unicode-whitespace/three-identical-markers contract and
+rejects non-marker or mismatched characters immediately. Parser caching, block
+conversion, Splice format and rendering behavior are unchanged. An optimized
+probe of exact parser/converter sources verifies 271,458 rule cases, 449 UTF-8
+stream prefixes with parsed/document/serialized-Splice parity and 25 threshold
+cases before adoption; a focused production regression test is added.
+
+The phase probe measures parsing, conversion, changed-Value cloning, streaming
+update, serialization and combined update+serialization separately across 18
+workloads. Medians of separate phases are not added into invented total times.
+The run completed in 60.564 seconds (07:51:30.903–07:52:31.467 UTC). An unrelated
+workspace's compiler started at 07:52:58 UTC, afterward, and was not disturbed.
+Raw phase measurements and final integrated checks are recorded below.
+
+Five alternating paired optimized samples, combined streaming update plus
+serialization, per update:
+  Single-line prose, 16 KiB: 377 -> 339 us; 64 KiB: 187 -> 86 us;
+    256 KiB: 677 -> 300 us.
+  Multiline prose improves 13–24%; continuing lists 22–28%; sealed-prefix
+    controls 7–8% in the recorded workloads.
+Fence body work is unchanged. The 16 KiB single-line fence measured
+32.199 -> 34.188 us (+1.989 us / 6.2%); 64 KiB was +1.2%, 256 KiB -0.3%.
+Those mixed small results are retained, not claimed as fence improvements.
+The existing link detector skips recognition above 64 KiB, explaining why the
+smaller prose case can cost more; that threshold was preserved. Large multiline
+fence parsing (~1.288 ms versus ~1.519 ms combined) remains a concrete target.
+
+Integrated validation of final Markdown/preferences, preceding the later Files
+capacity/scratch/prefix refinements: native suite 246 passed, 10 ignored;
+chat_bridge 12 passed; chat_search_bridge 1 passed. After the final Files
+refinement, its focused suite passed 18 tests (1 ignored), and files_bridge
+passed 3. Exact source/probe dependency hashes, all 108
+conditions and samples, phase limits and wall-clock evidence are recorded in
+  target/performance-audit/markdown-open-tail/results.json, report.txt,
+  probe-provenance.json, timing-wallclock.json and phase-benchmark.jsonl.
+
+Remaining work
+The host Service::Snapshot mpsc queue remains unbounded; Hub listener queues
+remain bounded at 64. Safe host coalescing must preserve all
+sender barriers and must not move deep generation destruction onto AppKit.
+Pointer-identical-generation coalescing could bound geometry-only bursts, but
+does not solve edited-generation growth. Large layout destruction remains.
+Open Markdown fences still reparse/convert/clone/serialize a whole unfinished
+block; the current block-splice wire contract still transmits that whole block.
+Metadata syscalls, displayed file identity work and Git status remain in Files.
+Cold/overflow search, rendering, broader memory growth and representative
+application/release/UI measurements remain open. No exhausted-optimization
+or clean full-workspace test claim is made.
+
+Final source fingerprints for this and the preceding saved passes are recorded
+in target/performance-audit/pass6-production-sources.sha256 (32 files). Diff
+whitespace checks pass. The active goal continues; these focused improvements
+do not establish representative UI latency or exhausted optimization.
+
+Continuation: performance-audit-2026-11-06-pass7.txt records borrowed Markdown
+line slices and the frontend's redundant splice-array copy removal, with final
+native and headless model validation covering the adopted source.

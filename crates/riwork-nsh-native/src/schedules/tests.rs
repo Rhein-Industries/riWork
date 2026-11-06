@@ -402,3 +402,29 @@ fn p6b_sched_09_bridge_errors_keep_frozen_codes_and_reopen_detail() {
     );
     assert!(missing.starts_with("not_found:"));
 }
+
+#[test]
+fn shared_state_reads_keep_unrelated_memos_out_of_schedule_wire_and_pinned_edits() {
+    let fixture = Fixture::new();
+    let store = Store::open(fixture.adapter.home.clone()).unwrap();
+    let mut state = store.snapshot().unwrap();
+    let before = fixture.adapter.read(Some("fixture runtime".into())).unwrap();
+    state.project_memos.insert(fixture.project.clone(), riwork_core::project_memo::ProjectMemo {
+        text: "m".repeat(riwork_core::project_memo::MAX_BYTES), updated_at: 7,
+    });
+    let pending = fixture.adapter.home.join("state-next.json");
+    std::fs::write(&pending, serde_json::to_vec(&state).unwrap()).unwrap();
+    std::fs::rename(pending, fixture.adapter.home.join("state.json")).unwrap();
+    let retained = store.snapshot_shared().unwrap();
+    assert_eq!(fixture.adapter.read(Some("fixture runtime".into())).unwrap(), before);
+    let created = fixture.adapter.create(fixture.fresh(), true).unwrap();
+    let pinned = fixture.adapter.row(&created.key.id).unwrap().target;
+    let edited = fixture.adapter.update(update(&created)).unwrap();
+    assert_eq!(fixture.adapter.row(&edited.key.id).unwrap().target, pinned);
+    assert_eq!(*retained, state);
+    assert!(Arc::ptr_eq(&retained, &store.snapshot_shared().unwrap()));
+    std::fs::write(fixture.adapter.home.join("state.json"), b"invalid json").unwrap();
+    assert!(fixture.adapter.read(None).is_err());
+    assert!(fixture.adapter.update(update(&edited)).unwrap_err().contains("state"));
+    assert_eq!(*retained, state);
+}
