@@ -6,7 +6,7 @@ import { Icon } from "./Icon";
 import type { Wire } from "./dashboard/model";
 import { activePane, mainPaneSummary, type WorkspaceSnapshot } from "./model";
 import {
-  BALANCED_INHERIT, accountItemLabel, defaultChoices, knownCodexProfiles, projectSelection, reportedAccountLabel,
+  BALANCED_INHERIT, accountItemLabel, defaultChoices, knownCodexProfiles, nextUsageChange, projectSelection, reportedAccountLabel,
   resolveSelection, resourcesText, systemHome, usageAria, usageFocus, usageHint, usageItemText, usageSegments, whole, type AccountListLike, type ProjectChoice, type UsageMode, type UsageSegment,
 } from "./usage";
 
@@ -56,6 +56,7 @@ export function StatusBar(props: Props) {
   const sessions = signal<ShellSessionDto[] | null>(null);
   const store = signal<StoreState | null>(null);
   const usage = signal<UsageDto | null>(null);
+  const usageClock = signal(Math.floor(Date.now() / 1000));
   const accounts = signal<AccountsDto | null>(null);
   const metrics = signal<SessionMetricsSnapshot["metrics"]>([]);
   const activity = signal<Wire | null>(null);
@@ -93,6 +94,26 @@ export function StatusBar(props: Props) {
     if (event.rev <= accountsRev) return;
     accountsRev = event.rev;
     accounts.set(event.data);
+  });
+  const usageShown = computed(() => settings().enabled && !props.snapshot().remoteProject
+    && settings().items.some((item) => item.kind === "usage" && item.enabled)
+    && !(props.settings?.()?.statusBar.usageMode !== "all_accounts" && props.nativeChat?.()));
+  // A snapshot's `now` stops advancing while the service has nothing new to publish.
+  // Wake only at a report's age/reset boundary, with no data read or idle polling.
+  effect(() => {
+    if (!usageShown() || !usage()) return;
+    usageClock.set(Math.floor(Date.now() / 1000));
+  });
+  effect(() => {
+    const read = usage();
+    if (!usageShown() || !read) return;
+    const now = Math.max(usageClock(), read.now);
+    const reports = [...read.codex, ...read.claude].flatMap((entry) => entry.usage ? [entry.usage] : []);
+    const deadline = nextUsageChange(reports, now);
+    if (deadline == null) return;
+    const delay = Math.min(2_147_483_647, Math.max(1, (deadline - now) * 1000));
+    const timer = setTimeout(() => usageClock.set(Math.max(now + Math.floor(delay / 1000), Math.floor(Date.now() / 1000))), delay);
+    return () => clearTimeout(timer);
   });
   // Sampling costs a `ps` run, so only a bar showing the item subscribes.
   // Another Mac's shells are not sampled; its item says so (main.rs).
@@ -250,7 +271,7 @@ export function StatusBar(props: Props) {
       mode, focus: usageFocus(selectedSession() ? `shell:${selectedSession()}` : undefined, shells, list),
       projectDefault: projectSelection(projectChoice() ?? { source: "inherit" }, list.selectedId, list),
       accounts: mode === "all_accounts" ? knownCodexProfiles(list) : [],
-      codex: read.codex, claude: read.claude.filter((entry) => entry.projectId === projectId()), now: read.now,
+      codex: read.codex, claude: read.claude.filter((entry) => entry.projectId === projectId()), now: Math.max(read.now, usageClock()),
     });
   };
   const accountLabel = () => accountItemLabel(accounts()?.balancing ?? false, projectChoice(), accounts()?.selectedId, accountList(), systemLabel());

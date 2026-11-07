@@ -72,3 +72,42 @@ Codex subscriptions only. Claude and Muse continue to use their existing sign-in
 Quota samples contain account-home paths and numeric metrics in private files under
 `RIWORK_HOME/codex-subscription-usage`; credentials, account labels and raw server
 errors are not saved.
+
+## Using one account
+
+Turn off **Balance Codex subscriptions**, select the desired account in Settings,
+and leave projects set to inherit the app default. The CLI switch is:
+
+```sh
+somtus settings set codex_subscription_balancing false
+```
+
+Choose **System default** when the desired account is the one currently signed in
+to the normal Codex home. A saved account with the same email can have a separate,
+expired sign-in; its cached label does not verify that its credentials still work.
+The Usage panel reports the identity returned by the selected home's Codex
+app-server. `somtus usage --json` reports the calling shell's account when run
+inside a Somtus terminal; outside one it uses the applicable project or app choice.
+
+Changing the default applies to new sessions. Existing terminals, chats and saved
+automations retain their account binding, so ongoing work is not silently moved
+to another identity. Reauthenticate a saved account through its account manager
+if it is needed again; changing the default does not delete its credentials.
+
+To switch an existing unrestricted Codex terminal without a custom profile,
+queue a switch with the exact email expected at the destination:
+
+```sh
+somtus shell switch-account SHELL_UUID --account system-default \
+  --expect-email you@example.com --when-idle --json
+```
+
+The worker verifies the destination sign-in, waits for the queued conversation
+and its active child work to finish, and checks for an empty prompt without an
+approval or draft before replacing the process. It copies the exact conversation
+history into the destination home and resumes the same thread in the same pane.
+Original history and credentials remain in their original homes. An existing
+destination history is refused rather than overwritten. A changed pane or a new
+turn cancels the queued request; an uncertain dispatch is reported without an
+automatic retry. Native chat tabs and saved automations are not migrated by this
+terminal command.

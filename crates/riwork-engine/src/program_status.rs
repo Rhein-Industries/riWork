@@ -393,17 +393,25 @@ fn atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
 /// Start a new pane incarnation before launching it. Old collectors cannot
 /// publish until the launcher sends this exact generation's root clear.
 pub fn prepare(home: &Path, shell: &str) -> Result<String, String> {
-    if !canonical_uuid(shell) {
+    let token = Uuid::new_v4().to_string();
+    prepare_with_token(home, shell, &token)?;
+    Ok(token)
+}
+
+/// Commit a token chosen by a replacement launcher, only once that new pane
+/// process has actually started. A canceled account switch never invalidates
+/// the original collector.
+pub fn prepare_with_token(home: &Path, shell: &str, token: &str) -> Result<(), String> {
+    if !canonical_uuid(shell) || !canonical_uuid(token) {
         return Err("invalid program status shell UUID".into());
     }
     let _lock = lock(home, shell)?;
-    let token = Uuid::new_v4().to_string();
     atomic(&generation_path(home, shell), token.as_bytes())?;
     atomic(
         &path(home, shell),
         &serde_json::to_vec(&Snapshot::empty(shell, &token)).unwrap(),
     )?;
-    Ok(token)
+    Ok(())
 }
 
 /// Read only a bounded, current-incarnation snapshot. An expired collector

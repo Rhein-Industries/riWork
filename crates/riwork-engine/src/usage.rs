@@ -131,6 +131,24 @@ pub fn read_codex_usage_at(home: &Path) -> Result<ProviderUsage, String> {
     read_codex_usage_at_timeout(home, CODEX_TIMEOUT)
 }
 
+/// Capability preflight for the dedicated in-place account switch. Help only:
+/// no account mutation, conversation or model request is made.
+pub(crate) fn codex_supports_direct_resume(home: &Path) -> Result<(), String> {
+    let executable = find_codex().ok_or("Codex is not installed or is not on PATH")?;
+    let mut command = Command::new(executable);
+    command
+        .args(["resume", "--help"])
+        .env("CODEX_HOME", home)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null());
+    let (status, output) = run_bounded(command, Duration::from_secs(5), 128 * 1024)
+        .map_err(|_| "Cannot verify Codex's direct resume support; nothing was switched")?;
+    if !status.success() || !String::from_utf8_lossy(&output).contains("--no-daemon") {
+        return Err("Installed Codex lacks direct resume support; update Codex before switching this terminal".into());
+    }
+    Ok(())
+}
+
 /// The same public account read under a shared launch deadline.
 pub(crate) fn read_codex_usage_at_timeout(
     home: &Path,
@@ -162,37 +180,29 @@ fn read_codex_usage_with(
     server.send(json!({ "id": 3, "method": "account/rateLimits/read", "params": null }))?;
 
     let mut account = None;
-    let mut account_received = false;
     let mut rates = None;
-    let mut finish_by = deadline;
     loop {
-        let message = match server.next(finish_by) {
-            Ok(message) => message,
-            Err(_) if rates.is_some() => break,
-            Err(error) => return Err(error),
-        };
+        let message = server.next(deadline)?;
         match message.get("id").and_then(Value::as_u64) {
             Some(2) => {
-                account_received = true;
-                account = message.get("result").cloned();
+                account = Some(response_result(&message));
             }
             Some(3) => {
-                let response = response_result(&message)?;
-                rates = Some(response);
-                // Account labels are optional. Do not delay a valid quota read
-                // for more than a second if its account reply is still pending.
-                finish_by = deadline.min(Instant::now() + Duration::from_secs(1));
+                rates = Some(response_result(&message)?);
             }
             _ => {}
         }
-        if account_received && rates.is_some() {
+        if account.is_some() && rates.is_some() {
             break;
         }
     }
 
     let rates = rates.ok_or("Codex did not return subscription usage")?;
-    let label = account.as_ref().and_then(codex_account_label);
-    parse_codex_usage(&rates, label, unix_now())
+    // An account error or missing reply must not make an unverified quota look
+    // current under the cached account's label. Both replies share one deadline.
+    let account = account.ok_or("Codex did not return its account identity")??;
+    let label = codex_account_label(&account)?;
+    parse_codex_usage(&rates, Some(label), unix_now())
 }
 
 /// Store only quota windows, context percentage, and estimated session cost.
@@ -358,15 +368,29 @@ fn parse_codex_usage(
     }
     let mut windows = Vec::new();
     if let Some(buckets) = value.get("rateLimitsByLimitId").and_then(Value::as_object) {
+        let mut names = BTreeMap::<String, usize>::new();
         for (id, bucket) in buckets {
-            append_codex_windows(bucket, Some(id), &mut windows);
+            if let Some(name) = codex_bucket_name(bucket, Some(id)) {
+                *names.entry(name).or_default() += 1;
+            }
+        }
+        for (id, bucket) in buckets {
+            let name = codex_bucket_name(bucket, Some(id)).map(|name| {
+                if names.get(&name).is_some_and(|count| *count > 1) {
+                    format!("{name} ({})", clean_label(id))
+                } else {
+                    name
+                }
+            });
+            append_codex_windows(bucket, name.as_deref(), &mut windows);
         }
     }
     // The legacy field mirrors a bucket in the multi-bucket response. It is
     // only a fallback, so the same limits are never shown twice.
     if windows.is_empty() {
         if let Some(bucket) = value.get("rateLimits") {
-            append_codex_windows(bucket, None, &mut windows);
+            let name = codex_bucket_name(bucket, None);
+            append_codex_windows(bucket, name.as_deref(), &mut windows);
         }
     }
     if windows.is_empty() {
@@ -374,15 +398,6 @@ fn parse_codex_usage(
             "Codex has no subscription usage windows available; check its account sign-in".into(),
         );
     }
-    let mut seen = BTreeSet::new();
-    windows.retain(|window| {
-        seen.insert((
-            window.label.clone(),
-            window.used_percent.to_bits(),
-            window.resets_at,
-            window.window_minutes,
-        ))
-    });
     Ok(ProviderUsage {
         provider: "codex".into(),
         windows,
@@ -395,14 +410,19 @@ fn parse_codex_usage(
     })
 }
 
-fn append_codex_windows(bucket: &Value, id: Option<&str>, windows: &mut Vec<UsageWindow>) {
-    let name = bucket
-        .get("limitName")
-        .and_then(Value::as_str)
-        .or_else(|| bucket.get("limitId").and_then(Value::as_str))
-        .or(id)
-        .map(clean_label)
-        .filter(|name| !name.is_empty());
+fn codex_bucket_name(bucket: &Value, id: Option<&str>) -> Option<String> {
+    [
+        bucket.get("limitName").and_then(Value::as_str),
+        bucket.get("limitId").and_then(Value::as_str),
+        id,
+    ]
+    .into_iter()
+    .flatten()
+    .map(clean_label)
+    .find(|name| !name.is_empty())
+}
+
+fn append_codex_windows(bucket: &Value, name: Option<&str>, windows: &mut Vec<UsageWindow>) {
     for (key, fallback) in [("primary", "Primary"), ("secondary", "Secondary")] {
         let Some(window) = bucket.get(key) else {
             continue;
@@ -414,7 +434,7 @@ fn append_codex_windows(bucket: &Value, id: Option<&str>, windows: &mut Vec<Usag
         let duration = minutes
             .map(duration_label)
             .unwrap_or_else(|| fallback.into());
-        let label = match name.as_deref() {
+        let label = match name {
             Some("codex") | None => duration,
             Some(name) => format!("{name} {duration}"),
         };
@@ -437,29 +457,29 @@ fn duration_label(minutes: u64) -> String {
     }
 }
 
-fn codex_account_label(value: &Value) -> Option<String> {
-    let account = value.get("account")?;
-    match account.get("type")?.as_str()? {
-        "chatgpt" => {
-            let email = account
-                .get("email")
-                .and_then(Value::as_str)
-                .map(clean_label)
-                .filter(|value| !value.is_empty());
-            let plan = account
-                .get("planType")
-                .and_then(Value::as_str)
-                .map(clean_label)
-                .filter(|value| !value.is_empty());
-            match (email, plan) {
-                (Some(email), Some(plan)) => Some(format!("{email} · {plan}")),
-                (email, plan) => email.or(plan),
-            }
-        }
-        "apiKey" => Some("API key".into()),
-        "amazonBedrock" => Some("Amazon Bedrock".into()),
-        _ => None,
-    }
+fn codex_account_label(value: &Value) -> Result<String, String> {
+    let Some(account) = value
+        .get("account")
+        .filter(|account| account.get("type").and_then(Value::as_str) == Some("chatgpt"))
+    else {
+        return Err(
+            "Codex subscription usage requires a ChatGPT account; check this account's sign-in"
+                .into(),
+        );
+    };
+    let field = |key| {
+        account
+            .get(key)
+            .and_then(Value::as_str)
+            .map(clean_label)
+            .filter(|value| !value.is_empty())
+    };
+    // Codex explicitly allows a null email. Do not substitute the saved label:
+    // it may describe an account that was signed out or replaced in this home.
+    let mut parts = vec![field("email").unwrap_or_else(|| "ChatGPT".into())];
+    parts.extend(field("workspaceName"));
+    parts.extend(field("planType"));
+    Ok(parts.join(" · "))
 }
 
 /// One Grok tab whose session usage is wanted.
@@ -1526,6 +1546,87 @@ mod tests {
     }
 
     #[test]
+    fn codex_distinct_buckets_with_matching_names_and_values_are_preserved() {
+        let bucket = json!({
+            "limitName": "Model quota",
+            "primary": {"usedPercent": 12, "windowDurationMins": 300, "resetsAt": 5000}
+        });
+        let usage = parse_codex_usage(
+            &json!({"rateLimits": bucket, "rateLimitsByLimitId": {
+                "model_a": bucket, "model_b": bucket
+            }}),
+            None,
+            1,
+        )
+        .unwrap();
+        assert_eq!(usage.windows.len(), 2);
+        assert_eq!(usage.windows[0].label, "Model quota (model_a) 5h");
+        assert_eq!(usage.windows[1].label, "Model quota (model_b) 5h");
+    }
+
+    #[test]
+    fn codex_blank_bucket_names_fall_back_to_reported_ids() {
+        let usage = parse_codex_usage(
+            &json!({"rateLimitsByLimitId": {
+                "codex_other": {
+                    "limitName": " \n\t", "limitId": " ",
+                    "primary": {"usedPercent": 12, "windowDurationMins": 300}
+                },
+                "model": {
+                    "limitName": "", "limitId": "Model quota",
+                    "primary": {"usedPercent": 34, "windowDurationMins": 10080}
+                }
+            }}),
+            None,
+            1,
+        )
+        .unwrap();
+        assert_eq!(usage.windows[0].label, "codex_other 5h");
+        assert_eq!(usage.windows[1].label, "Model quota 7d");
+    }
+
+    #[test]
+    fn codex_legacy_fallback_only_applies_without_usable_multibucket_windows() {
+        let legacy = json!({"primary": {"usedPercent": 9, "windowDurationMins": 300}});
+        for map in [json!(null), json!({}), json!({"codex": {"primary": null}})] {
+            let usage = parse_codex_usage(
+                &json!({"rateLimits": legacy, "rateLimitsByLimitId": map}),
+                None,
+                1,
+            )
+            .unwrap();
+            assert_eq!(usage.windows.len(), 1);
+            assert_eq!(usage.windows[0].used_percent, 9.0);
+        }
+    }
+
+    #[test]
+    fn codex_account_labels_use_the_reported_identity_workspace_and_plan() {
+        let label = codex_account_label(&json!({"account": {
+            "type": "chatgpt", "email": "fixture@example.test\n",
+            "workspaceName": " Team\t ", "planType": "business"
+        }}))
+        .unwrap();
+        assert_eq!(label, "fixture@example.test · Team · business");
+        assert_eq!(
+            codex_account_label(&json!({"account": {
+                "type": "chatgpt", "email": null, "planType": "pro"
+            }}))
+            .unwrap(),
+            "ChatGPT · pro"
+        );
+        for account in [
+            json!(null),
+            json!({}),
+            json!({"type":"apiKey"}),
+            json!({"type":"amazonBedrock"}),
+            json!({"type":"gcp"}),
+        ] {
+            assert!(codex_account_label(&json!({"account": account})).is_err());
+        }
+    }
+
+    #[test]
     fn codex_missing_and_malformed_windows_are_not_zero_usage() {
         assert!(parse_codex_usage(&json!({"rateLimits": {"primary": null}}), None, 1).is_err());
         assert!(
@@ -1682,6 +1783,47 @@ done
     impl Drop for FakeCodex {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.directory);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "slow: runs fake Codex app-server scripts and a wall-clock timeout"]
+    fn codex_quota_requires_a_successful_account_reply() {
+        for (account, expected) in [
+            (
+                Some(json!({"id": 2, "error": {"code": -32000,
+                    "message": "Bearer never-expose-account-token"}})),
+                "Codex could not read subscription usage; check its sign-in or try again",
+            ),
+            (
+                Some(json!({"id": 2, "result": {"account": null, "requiresOpenaiAuth": true}})),
+                "Codex subscription usage requires a ChatGPT account; check this account's sign-in",
+            ),
+            (None, "Codex usage read timed out; try again"),
+        ] {
+            let timeout = if account.is_some() {
+                Duration::from_secs(2)
+            } else {
+                Duration::from_millis(200)
+            };
+            let script = r#"#!/bin/sh
+while IFS= read -r line; do
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '%s\n' '{"id":1,"result":{}}' ;;
+    *'"method":"account/rateLimits/read"'*)
+      printf '%s\n' '{"id":3,"result":{"rateLimits":{"primary":{"usedPercent":8,"windowDurationMins":120}}}}'
+      __ACCOUNT_REPLY__ ;;
+  esac
+done
+"#.replace("__ACCOUNT_REPLY__", &account
+                .map(|reply| format!("printf '%s\\n' '{reply}'"))
+                .unwrap_or_else(|| ":".into()));
+            let fixture = FakeCodex::new(&script);
+            let error = read_codex_usage_with(&fixture.executable, None, timeout).unwrap_err();
+            assert_eq!(error, expected);
+            assert!(!error.contains("never-expose"));
         }
     }
 

@@ -108,6 +108,8 @@ somtus shell create [--project ID | --worktree ID] [--command CMD] [--no-parent]
 somtus shell create [--worktree ID] --harness codex|claude|grok|muse [--model NAME] [--account LABEL_OR_ID] [--unrestricted | --as-settings]
                     [--contributor-on]   Muse runs with contributor mode off unless --contributor-on
 somtus shell list [--project ID | --all]
+somtus shell switch-account ID --account LABEL_OR_ID --expect-email EMAIL --when-idle
+                                        Queue an exact Codex conversation on the verified account
 somtus shell output ID [--lines N] [--styled]   Read current shell output by UUID
 somtus shell output ID --json [--lines N] [--styled] [--if-changed HASH [--wait-ms N]]
 somtus shell history ID --end N --lines M [--styled] [--json]   Read a page of older scrollback
@@ -445,6 +447,7 @@ fn run_cli_with_invocation(args: &[String], invocation: Invocation) -> Result<bo
             | "update"
             | "instances"
             | "reload-session-worker"
+            | "switch-account-worker"
             | "project"
             | "projects"
             | "worktree"
@@ -474,6 +477,7 @@ fn run_cli_with_invocation(args: &[String], invocation: Invocation) -> Result<bo
             | "agent-notify"
             | "agent-hook"
             | "program-status-collect"
+            | "program-status-prepare"
             | "mcp"
             | "setup"
             | "cua"
@@ -530,6 +534,10 @@ fn run_cli_with_invocation(args: &[String], invocation: Invocation) -> Result<bo
             let path = take_single(args, "reload-session-worker REQUEST")?;
             crate::session_reload::run_reload_worker(std::path::Path::new(&path))?;
         }
+        "switch-account-worker" => {
+            let path = take_single(args, "switch-account-worker REQUEST")?;
+            crate::session_reload::run_account_switch_worker(std::path::Path::new(&path))?;
+        }
         "usage" => usage_command(args, json)?,
         "appearance" => appearance_command(args, json)?,
         "settings" => settings_cli::command(args, json)?,
@@ -554,6 +562,16 @@ fn run_cli_with_invocation(args: &[String], invocation: Invocation) -> Result<bo
             } else {
                 return Err("program-status-collect requires HOME SHELL GENERATION".into());
             }
+        }
+        "program-status-prepare" => {
+            if args.len() != 3 {
+                return Err("program-status-prepare requires HOME SHELL GENERATION".into());
+            }
+            riwork_engine::program_status::prepare_with_token(
+                std::path::Path::new(&args[0]),
+                &args[1],
+                &args[2],
+            )?;
         }
         "agent-notify" => {
             if args.len() != 3 {
@@ -2266,6 +2284,16 @@ fn shell_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
     let manager = SessionManager::open_default()?;
     let operation = pop_command(&mut args, "list");
     match operation.as_str() {
+        "switch-account" => {
+            let (id, account, email) = parse_account_switch_arguments(args)?;
+            let executable = std::env::current_exe().map_err(|e| e.to_string())?;
+            let report = crate::session_reload::queue_account_switch(&executable, &id, &account, &email)?;
+            if json {
+                print_json(&report)?;
+            } else {
+                println!("Queued account switch for {}. Status: {}", report.shell_id, report.receipt.display());
+            }
+        }
         "create" => {
             let manager = if take_flag(&mut args, "--no-parent") {
                 manager.without_parent()
@@ -2557,6 +2585,42 @@ fn shell_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
         _ => return Err(format!("Unknown shell command '{operation}'\n{HELP}")),
     }
     Ok(())
+}
+
+fn parse_account_switch_arguments(
+    mut args: Vec<String>,
+) -> Result<(String, String, String), String> {
+    let usage = "shell switch-account ID --account LABEL_OR_ID --expect-email EMAIL --when-idle";
+    if !take_flag(&mut args, "--when-idle") {
+        return Err(format!("Usage: somtus {usage}"));
+    }
+    let account = take_verbatim_option(&mut args, "--account")?.ok_or("--account is required")?;
+    let email =
+        take_verbatim_option(&mut args, "--expect-email")?.ok_or("--expect-email is required")?;
+    let id = take_single(args, usage)?;
+    Ok((id, account, email))
+}
+
+#[cfg(test)]
+mod account_switch_argument_tests {
+    use super::parse_account_switch_arguments;
+
+    #[test]
+    fn requires_an_explicit_account_identity_and_idle_gate() {
+        let args = ["shell-id", "--account", "system-default", "--expect-email", "fixture@example.test", "--when-idle"];
+        assert_eq!(parse_account_switch_arguments(args.map(str::to_owned).to_vec()).unwrap(),
+            ("shell-id".into(), "system-default".into(), "fixture@example.test".into()));
+        for flag in ["--account", "--expect-email", "--when-idle"] {
+            let mut missing = args.map(str::to_owned).to_vec();
+            let at = missing.iter().position(|arg| arg == flag).unwrap();
+            missing.remove(at);
+            if flag != "--when-idle" { missing.remove(at); }
+            assert!(parse_account_switch_arguments(missing).is_err());
+        }
+        let mut extra = args.map(str::to_owned).to_vec();
+        extra.push("--force".into());
+        assert!(parse_account_switch_arguments(extra).is_err());
+    }
 }
 
 const ATTACH_EXEC_USAGE: &str = "shell attach ID --exec [--ignore-size] [--read-only]";

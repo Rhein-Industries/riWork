@@ -134,7 +134,7 @@ pub struct CodexUsageDto {
     pub last_attempt: Option<u64>,
     /// Consecutive failed reads; each doubles the wait (at most 2^6).
     pub failures: u32,
-    /// `usage` is older than 15 minutes at `now`.
+    /// `usage` is older than 15 minutes or reports a window that has reset.
     pub stale: bool,
 }
 
@@ -552,8 +552,66 @@ struct CodexEntry {
     usage: Option<ProviderUsage>,
     error: Option<String>,
     pending: bool,
+    /// Coalesce refresh clicks during a read into one read after it finishes.
+    refresh_after_pending: bool,
     last_attempt: u64,
     failures: u32,
+}
+
+fn codex_reset_expired(usage: &ProviderUsage, now: u64) -> bool {
+    usage
+        .windows
+        .iter()
+        .any(|window| window.resets_at.is_some_and(|reset| reset <= now))
+}
+
+fn codex_stale(usage: &ProviderUsage, now: u64) -> bool {
+    stale(usage, now) || codex_reset_expired(usage, now)
+}
+
+impl CodexEntry {
+    fn refresh_interval(&self, now: u64) -> u64 {
+        // A server can briefly retain the previous window after a reset. Use
+        // the bounded retry interval until it reports the new window instead
+        // of presenting the old allowance for another fifteen minutes.
+        let current_window = self
+            .usage
+            .as_ref()
+            .is_some_and(|usage| !codex_reset_expired(usage, now));
+        engine_usage::codex_refresh_interval(current_window, self.failures)
+    }
+
+    fn reset_due(&self, now: u64) -> bool {
+        self.usage.as_ref().is_some_and(|usage| {
+            usage.windows.iter().any(|window| {
+                window
+                    .resets_at
+                    .is_some_and(|reset| reset > self.last_attempt && reset <= now)
+            })
+        })
+    }
+}
+
+fn same_saved_accounts(left: &Option<AccountsSnapshot>, right: &Option<AccountsSnapshot>) -> bool {
+    match (left, right) {
+        (None, None) => true,
+        (Some(left), Some(right)) => {
+            left.source_active_id == right.source_active_id
+                && left.error == right.error
+                && left.from_cache == right.from_cache
+                && left.accounts.len() == right.accounts.len()
+                && left.accounts.iter().zip(&right.accounts).all(|(left, right)| {
+                    left.id == right.id
+                        && left.label == right.label
+                        && left.email == right.email
+                        && left.home == right.home
+                        && left.available == right.available
+                        && left.unavailable_reason == right.unavailable_reason
+                        && left.is_system_default == right.is_system_default
+                })
+        }
+        _ => false,
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -716,7 +774,7 @@ impl State {
                     home: target.home.to_string_lossy().into_owned(),
                     account_id: target.account_id,
                     label: target.label,
-                    stale: entry.usage.as_ref().is_some_and(|usage| stale(usage, now)),
+                    stale: entry.usage.as_ref().is_some_and(|usage| codex_stale(usage, now)),
                     usage: entry.usage.as_ref().map(Into::into),
                     error: entry.error,
                     pending: entry.pending,
@@ -838,8 +896,7 @@ impl Inner {
     /// Cheap file-only reads: settings, the saved list, the system home.
     fn reload(&self) {
         let settings = self.backend.codex_settings();
-        let needs_saved = lock(&self.state).discovered.is_none();
-        let saved = needs_saved.then(|| self.backend.cached_accounts());
+        let saved = self.backend.cached_accounts();
         let system = self.backend.system_account().ok();
         let mut state = lock(&self.state);
         match settings {
@@ -849,7 +906,11 @@ impl Inner {
             }
             Err(error) => state.settings_error = Some(error),
         }
-        if let Some(saved) = saved {
+        if !same_saved_accounts(&state.saved, &saved) {
+            // Discovery retains its useful error/cache status until the saved
+            // file changes. An external account refresh then becomes visible
+            // without requiring another Orca subprocess from this panel.
+            state.discovered = None;
             state.saved = saved;
         }
         state.system = system;
@@ -861,13 +922,21 @@ impl Inner {
         let usage_subscribed = self.usage_hub.has_subscribers();
         let grok_projects = lock(&self.grok_projects).keys().cloned().collect::<BTreeSet<_>>();
         if !usage_subscribed && !self.accounts_hub.has_subscribers() {
-            lock(&self.state).force = false;
+            let mut state = lock(&self.state);
+            state.force = false;
+            for entry in state.codex.values_mut() {
+                entry.refresh_after_pending = false;
+            }
             return None;
         }
         self.reload();
         self.publish_accounts(&lock(&self.state));
         if !usage_subscribed {
-            lock(&self.state).force = false;
+            let mut state = lock(&self.state);
+            state.force = false;
+            for entry in state.codex.values_mut() {
+                entry.refresh_after_pending = false;
+            }
             return None;
         }
         if let Some(shells) = lock(&self.shells).poll() {
@@ -909,16 +978,20 @@ impl Inner {
         let mut start = Vec::new();
         for target in &targets {
             let entry = state.codex.entry(target.home.clone()).or_default();
-            let interval =
-                engine_usage::codex_refresh_interval(entry.usage.is_some(), entry.failures);
-            if entry.pending
-                || (!force
-                    && entry.last_attempt != 0
-                    && now.saturating_sub(entry.last_attempt) < interval)
+            if entry.pending {
+                entry.refresh_after_pending |= force;
+                continue;
+            }
+            let force = force || entry.refresh_after_pending || entry.reset_due(now);
+            if !force
+                && entry.last_attempt != 0
+                && now >= entry.last_attempt
+                && now - entry.last_attempt < entry.refresh_interval(now)
             {
                 continue;
             }
             entry.pending = true;
+            entry.refresh_after_pending = false;
             entry.last_attempt = now;
             start.push(target.clone());
         }
@@ -930,17 +1003,17 @@ impl Inner {
                 continue;
             };
             if !entry.pending {
-                soonest(
-                    entry
-                        .last_attempt
-                        .saturating_add(engine_usage::codex_refresh_interval(
-                            entry.usage.is_some(),
-                            entry.failures,
-                        )),
-                );
+                soonest(entry.last_attempt.saturating_add(entry.refresh_interval(now)));
             }
-            if let Some(usage) = entry.usage.as_ref().filter(|usage| !stale(usage, now)) {
-                soonest(usage.updated_at_unix + STALE_AFTER_SECS + 1);
+            if let Some(usage) = entry.usage.as_ref() {
+                if !stale(usage, now) {
+                    soonest(usage.updated_at_unix.saturating_add(STALE_AFTER_SECS + 1));
+                }
+                for reset in usage.windows.iter().filter_map(|window| window.resets_at) {
+                    if reset > now {
+                        soonest(reset);
+                    }
+                }
             }
         }
         for usage in state
@@ -1099,8 +1172,8 @@ impl UsageService {
         subscription
     }
 
-    /// `force` ignores the backoff (never a read in flight). Without a
-    /// subscriber nothing is read.
+    /// `force` ignores the backoff, or queues one follow-up if already reading.
+    /// Without a subscriber nothing is read.
     pub fn refresh_usage(&self, force: bool) {
         if force {
             lock(&self.inner.state).force = true;

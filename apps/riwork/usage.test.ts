@@ -1,7 +1,7 @@
 import { expect, test } from "nsh/test";
 import {
   BALANCED_LABEL, GROK_UNREAD, formatBytes, resourcesText, SYSTEM_DEFAULT_ID, SYSTEM_LABEL, accountItemLabel, codexAccountNumbers, defaultChoices,
-  knownCodexProfiles, limits, projectDefaultAccountLabel, projectSelection, shellSelection, usageAria, usageFocus,
+  knownCodexProfiles, limits, nextUsageChange, projectDefaultAccountLabel, projectSelection, quotaReadout, shellSelection, stale, usageAria, usageFocus,
   usageHint, usageItemText, usageSegments, whole, type AccountLike, type AccountListLike, type ClaudeEntryLike,
   type CodexEntryLike, type ProviderUsageLike, type Selection, type ShellLike, type UsageFocus, type UsageInputs,
 } from "./usage";
@@ -220,6 +220,63 @@ test("P5-USAGE-06: figures, aria label and hint keep GPUI's forms", () => {
   expect(usageAria(segments)).toBe(`Usage CODEX* · ${TEAM_B} · 5h 80% left / 7d 60% left`);
   expect(usageItemText("current_chat", segments)).toBe(`CODEX* · ${TEAM_B} · 5h 80% left / 7d 60% left`);
   expect(usageHint(segments)).toBe(`CODEX* · ${TEAM_B} · 5h 80% left / 7d 60% left (Last refresh failed: Codex is signed out)\nClick for account usage`);
+});
+
+test("P5-USAGE-10: a passed reset preserves reported quota but cannot look current", () => {
+  const report: ProviderUsageLike = { windows: [{ label: "5h", usedPercent: 100, resetsAt: NOW + 20 }, { label: "7d", usedPercent: 40, resetsAt: NOW + 3600 }], updatedAtUnix: NOW };
+  expect(stale(report, NOW + 19)).toBe(false);
+  expect(stale(report, NOW + 20)).toBe(true);
+  const reset = quotaReadout(report, NOW + 20);
+  expect(reset.freshness).toBe("stale");
+  expect(reset.note).toBe("Quota reset passed; waiting for an updated report");
+  expect(limits(report, false)).toBe("5h 0% left / 7d 60% left");
+  expect(reset.windows).toEqual(report.windows);
+  expect(nextUsageChange([report], NOW)).toBe(NOW + 20);
+  expect(nextUsageChange([report], NOW + 20)).toBe(NOW + 901);
+  expect(nextUsageChange([report], NOW + 901)).toBe(NOW + 3600);
+  expect(nextUsageChange([report], NOW + 3600)).toBe(undefined);
+  expect(nextUsageChange([{ ...report, windows: [] }], NOW)).toBe(undefined);
+});
+
+test("P5-USAGE-11: missing quota, pending reads and refresh failures remain distinct", () => {
+  const reads = new Reads();
+  const selection: Selection = { kind: "account", home: "/fixture/a", label: TEAM_B };
+  const current = () => reads.current({ kind: "codex", account: selection }, unknown);
+  reads.put(read(home(selection), { windows: [], updatedAtUnix: NOW }));
+  expect([current().figures, current().freshness, current().note]).toEqual(["QUOTA UNAVAILABLE", "unavailable", "No subscription quota was reported"]);
+  reads.put({ home: home(selection), pending: false });
+  expect(current().freshness).toBe("unavailable");
+  reads.put({ home: home(selection), pending: true });
+  expect([current().figures, current().freshness]).toEqual(["LOADING", "loading"]);
+  reads.put({ ...read(home(selection), quota([20, 40], NOW)), pending: true });
+  expect([current().figures, current().freshness, current().note]).toEqual(["5h 80% left / 7d 60% left", "current", "Refreshing usage…"]);
+  reads.put({ ...read(home(selection), quota([20, 40], NOW)), stale: true });
+  expect(current().freshness).toBe("stale");
+  reads.put({ ...read(home(selection), quota([20, 40], NOW)), pending: true, error: "Read timed out" });
+  expect([current().freshness, current().note]).toEqual(["stale", "Refreshing usage… Last refresh failed: Read timed out"]);
+});
+
+test("P5-USAGE-12: invalid quota numbers never become NaN figures or gauges", () => {
+  const usage: ProviderUsageLike = { updatedAtUnix: NOW, windows: [{ label: "invalid", usedPercent: NaN }, { label: "5h", usedPercent: 25 }, { label: "infinite", usedPercent: Infinity }] };
+  expect(limits(usage, false)).toBe("5h 75% left");
+  expect(quotaReadout(usage, NOW).windows).toEqual([{ label: "5h", usedPercent: 25 }]);
+  expect(quotaReadout({ ...usage, windows: [usage.windows[0]] }, NOW).freshness).toBe("unavailable");
+  expect(stale(quota([20, 40], NOW), NOW + 900)).toBe(false);
+  expect(stale(quota([20, 40], NOW), NOW + 901)).toBe(true);
+});
+
+test("P5-USAGE-15: Claude read errors do not masquerade as a first-response wait", () => {
+  const reads = new Reads();
+  reads.claude = [{ shellId: "claude", error: "Status line could not be read" }];
+  const failed = reads.current({ kind: "claude_shell", id: "claude" }, unknown);
+  expect([failed.figures, failed.freshness, failed.note]).toEqual(["UNAVAILABLE", "unavailable", "Status line could not be read"]);
+  reads.claude[0].usage = quota([30, 60], NOW);
+  const cached = reads.current({ kind: "claude_shell", id: "claude" }, unknown);
+  expect([cached.figures, cached.freshness]).toEqual(["5h 70% left / 7d 40% left", "stale"]);
+  const aggregate = reads.segments("all_accounts", { kind: "other" }, unknown).find((entry) => entry.source === "claude")!;
+  expect(aggregate.freshness).toBe("stale");
+  expect(aggregate.note?.includes("Last refresh failed: Status line could not be read")).toBe(true);
+  expect(aggregate.note?.includes("other sessions may use different accounts")).toBe(true);
 });
 
 test("the resources item sums this project's live shells in main.rs's units", () => {

@@ -119,6 +119,15 @@ function Fixture() {
     usage = { ...usage, claude: [], grok: [] }; publish();
     for (const listener of sessionListeners) listener({ sessions: shells });
   });
+  host.on("app.fixture.usage.report", (event) => {
+    const mode = (event as { mode: string }).mode;
+    const at = Math.floor(Date.now() / 1000);
+    const first = { ...USAGE.codex[0], pending: mode === "refreshing", stale: false,
+      error: mode === "failed" ? "Fixture read failed" : null,
+      usage: { ...USAGE.codex[0].usage!, updatedAtUnix: at,
+        windows: mode === "empty" ? [] : [{ label: "5h", usedPercent: 80, resetsAt: at + (mode === "reset" ? 2 : hours(1)), windowMinutes: 300 }] } };
+    usage = { ...usage, now: at, refreshing: first.pending, codex: [first, ...usage.codex.slice(1)] }; publish();
+  });
   host.on("app.fixture.usage.inspect", () => host.post("app.fixture.usage.state", { calls, listeners: listeners.size }));
   return <View style={{ flex: 1 }}>
     <UsagePanel api={api} projectId={() => PROJECT} theme={() => DEFAULT_THEME} visible={() => true} />

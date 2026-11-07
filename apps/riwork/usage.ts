@@ -1,8 +1,9 @@
 /**
- * The status bar's account readouts, ported 1:1 from
+ * The status bar's account readouts, retaining account selection semantics from
  * crates/riwork-desktop/src/account_status.rs and main.rs
  * (`project_default_account_label`, `codex_account_numbers`): PANEL-180..190.
- * Pure: everything is read already, by `Usage.subscribe` and `Accounts.subscribe`.
+ * Pure: snapshots come from `Usage.subscribe` and `Accounts.subscribe`;
+ * freshness also follows the display clock when those snapshots are unchanged.
  */
 
 export const SYSTEM_DEFAULT_ID = "system-default";
@@ -14,7 +15,7 @@ export const BALANCED_INHERIT = "Automatically chooses the saved subscription wi
 /** Older than this, figures may have moved (15 min). */
 export const STALE_AFTER_SECS = 15 * 60;
 
-export interface UsageWindowLike { label: string; usedPercent: number }
+export interface UsageWindowLike { label: string; usedPercent: number; resetsAt?: number | null }
 export interface ProviderUsageLike { windows: UsageWindowLike[]; updatedAtUnix: number; accountLabel?: string | null }
 export interface AccountLike {
   id: string; label: string; email?: string | null; homePath: string;
@@ -22,8 +23,8 @@ export interface AccountLike {
 }
 /** `listed: false` is GPUI's missing snapshot: no saved list was read yet. */
 export interface AccountListLike { listed: boolean; accounts: AccountLike[]; error?: string | null; refreshing?: boolean }
-export interface CodexEntryLike { home: string; usage?: ProviderUsageLike | null; error?: string | null; pending: boolean }
-export interface ClaudeEntryLike { shellId: string; usage?: ProviderUsageLike | null }
+export interface CodexEntryLike { home: string; usage?: ProviderUsageLike | null; error?: string | null; pending: boolean; stale?: boolean }
+export interface ClaudeEntryLike { shellId: string; usage?: ProviderUsageLike | null; error?: string | null; stale?: boolean }
 export interface ShellLike {
   id: string; projectId?: string | null; harness?: string | null; alive: boolean; codexHome?: string | null;
   codexAccountId?: string | null; codexAccountLabel?: string | null; codexAccountEmail?: string | null;
@@ -161,9 +162,39 @@ export function usageFocus(tabId: string | undefined, shells: ShellLike[], list:
 
 // ---- The usage readouts -------------------------------------------------------------------
 
-/** Older than a refresh takes. */
+/** Keep only usable reported numbers; missing or malformed quota is never an empty gauge. */
+export function quotaWindows<T extends UsageWindowLike>(usage: { windows: T[] }): T[] {
+  return usage.windows.filter((window) => Number.isFinite(window.usedPercent));
+}
+
+export function quotaResetPassed(usage: ProviderUsageLike, now: number): boolean {
+  return quotaWindows(usage).some((window) => window.resetsAt != null && Number.isFinite(window.resetsAt) && window.resetsAt > 0 && window.resetsAt <= now);
+}
+
+/** A reset ends the reported interval; the next interval's quota is still unknown. */
 export function stale(usage: ProviderUsageLike, now: number): boolean {
-  return Math.max(0, now - usage.updatedAtUnix) > STALE_AFTER_SECS;
+  return !Number.isFinite(usage.updatedAtUnix) || Math.max(0, now - usage.updatedAtUnix) > STALE_AFTER_SECS || quotaResetPassed(usage, now);
+}
+
+/** The next visible freshness boundary, so a quiet status bar needs no polling timer. */
+export function nextUsageChange(reports: ProviderUsageLike[], now: number): number | undefined {
+  const deadlines = reports.flatMap((usage) => quotaWindows(usage).length ? [usage.updatedAtUnix + STALE_AFTER_SECS + 1,
+    ...quotaWindows(usage).map((window) => window.resetsAt ?? 0)] : []);
+  const future = deadlines.filter((deadline) => Number.isFinite(deadline) && deadline > now);
+  return future.length ? Math.min(...future) : undefined;
+}
+
+/** Shared by the status bar and panel; preserve cached quota while showing its read state. */
+export function quotaReadout(usage: ProviderUsageLike, now: number, state: { stale?: boolean; pending?: boolean; error?: string | null } = {}): Pick<UsageSegment, "windows" | "freshness" | "note"> {
+  const windows = quotaWindows(usage);
+  const expired = quotaResetPassed(usage, now);
+  const isStale = !!state.stale || !!state.error || stale(usage, now);
+  const detail = state.error ? `Last refresh failed: ${state.error}`
+    : expired ? "Quota reset passed; waiting for an updated report"
+    : !windows.length ? "No subscription quota was reported"
+    : isStale && !state.pending ? "Last reported quota; refresh to update" : undefined;
+  const note = [state.pending ? "Refreshing usage…" : undefined, detail].filter(Boolean).join(" ");
+  return { windows, freshness: windows.length ? isStale ? "stale" : "current" : "unavailable", ...(note ? { note } : {}) };
 }
 
 /** Rust's `{:.0}`: an exact half rounds to even. */
@@ -175,7 +206,7 @@ export function whole(value: number): string {
 
 /** The first two windows: `5h 80% left / 7d 60% left`, or compact `5h 80% / 7d 60% left`. */
 export function limits(usage: ProviderUsageLike, compact: boolean): string {
-  const windows = usage.windows.slice(0, 2).map((window) => [window.label, Math.min(100, Math.max(0, 100 - window.usedPercent))] as const);
+  const windows = quotaWindows(usage).slice(0, 2).map((window) => [window.label, Math.min(100, Math.max(0, 100 - window.usedPercent))] as const);
   if (windows.length === 0) return "—";
   const joined = windows.map(([label, left]) => compact ? `${label} ${whole(left)}%` : `${label} ${whole(left)}% left`).join(" / ");
   return compact ? `${joined} left` : joined;
@@ -219,21 +250,20 @@ function codexSegment(selection: Selection, inputs: UsageInputs, compact: boolea
   const entry = inputs.codex.find((candidate) => candidate.home === selection.home);
   const base = { source: "codex" as const, account: selection.label };
   if (entry?.usage) {
+    const readout = quotaReadout(entry.usage, inputs.now, entry);
     return {
-      ...base, figures: limits(entry.usage, compact),
-      windows: entry.usage.windows,
-      freshness: entry.error || stale(entry.usage, inputs.now) ? "stale" : "current",
-      ...(entry.error ? { note: `Last refresh failed: ${entry.error}` } : {}),
+      ...base, ...readout, figures: readout.windows?.length ? limits(entry.usage, compact) : "QUOTA UNAVAILABLE",
     };
   }
   if (entry?.error && !entry.pending) return { ...base, figures: "UNAVAILABLE", freshness: "unavailable", note: entry.error };
+  if (entry && !entry.pending) return { ...base, figures: "QUOTA UNAVAILABLE", freshness: "unavailable", note: "No subscription quota was reported" };
   // Asked for and not answered, or not asked yet: the next refresh asks.
   return { ...base, figures: "LOADING", freshness: "loading" };
 }
 
-function claudeSegment(usage: ProviderUsageLike, compact: boolean, now: number): UsageSegment {
-  return { source: "claude", figures: usage.windows.length ? limits(usage, compact) : "QUOTA UNAVAILABLE", windows: usage.windows,
-    freshness: stale(usage, now) ? "stale" : usage.windows.length ? "current" : "unavailable" };
+function claudeSegment(usage: ProviderUsageLike, compact: boolean, now: number, entry?: ClaudeEntryLike): UsageSegment {
+  const readout = quotaReadout(usage, now, entry);
+  return { source: "claude", ...readout, figures: readout.windows?.length ? limits(usage, compact) : "QUOTA UNAVAILABLE" };
 }
 
 /** Latest Claude report. A newer report without windows supersedes old quota. */
@@ -249,8 +279,9 @@ export function usageSegments(inputs: UsageInputs): UsageSegment[] {
   if (inputs.mode === "current_chat") {
     const focus = inputs.focus;
     if (focus.kind === "claude_shell") {
-      const usage = inputs.claude.find((entry) => entry.shellId === focus.id)?.usage;
-      return [usage ? claudeSegment(usage, false, inputs.now)
+      const entry = inputs.claude.find((entry) => entry.shellId === focus.id);
+      return [entry?.usage ? claudeSegment(entry.usage, false, inputs.now, entry)
+        : entry?.error ? { source: "claude", figures: "UNAVAILABLE", freshness: "unavailable", note: entry.error }
         : { source: "claude", figures: "WAITING", freshness: "loading", note: "Claude reports usage after its first response" }];
     }
     if (focus.kind === "grok_shell") {
@@ -266,8 +297,11 @@ export function usageSegments(inputs: UsageInputs): UsageSegment[] {
   // Not even the system default's home could be found.
   if (segments.length === 0) segments.push(codexSegment({ kind: "unavailable" }, inputs, true));
   const claude = claudeSubscription(inputs.claude);
-  if (claude) segments.push({ ...claudeSegment(claude, true, inputs.now),
-    note: "Latest Claude session report. Claude does not identify its account here; other sessions may use different accounts." });
+  if (claude) {
+    const segment = claudeSegment(claude, true, inputs.now, inputs.claude.find((entry) => entry.usage === claude));
+    segments.push({ ...segment, note: [segment.note,
+      "Latest Claude session report. Claude does not identify its account here; other sessions may use different accounts."].filter(Boolean).join(" ") });
+  }
   return segments;
 }
 

@@ -14,6 +14,9 @@ use std::{
 };
 use uuid::Uuid;
 
+mod account_switch;
+pub use account_switch::{queue_account_switch, run_account_switch_worker};
+
 const RELOAD_DIRECTORY: &str = "session-reloads";
 const COMPLETION_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
@@ -33,7 +36,7 @@ pub struct SessionReloadReport {
     pub waiting_for_turn: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct ReloadRequest {
     home: PathBuf,
     shell_id: String,
@@ -47,6 +50,8 @@ struct ReloadRequest {
     codex_home: Option<String>,
     claude_config_dir: Option<String>,
     profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    account_switch: Option<account_switch::AccountSwitch>,
 }
 
 #[derive(Serialize)]
@@ -110,6 +115,10 @@ pub fn queue_reload_for_shell(
     shell_id: Option<&str>,
 ) -> Result<SessionReloadReport, String> {
     let request = current_request(riwork_exe, shell_id)?;
+    queue_request(request)
+}
+
+fn queue_request(request: ReloadRequest) -> Result<SessionReloadReport, String> {
     let directory = request.home.join(RELOAD_DIRECTORY);
     fs::create_dir_all(&directory)
         .map_err(|error| format!("Cannot create reload directory: {error}"))?;
@@ -154,7 +163,11 @@ fn launch_worker(
     let log = private_file(&log_path)?;
     let mut command = Command::new(&request.executable);
     command
-        .arg("reload-session-worker")
+        .arg(if request.account_switch.is_some() {
+            "switch-account-worker"
+        } else {
+            "reload-session-worker"
+        })
         .arg(request_path)
         .stdin(Stdio::null())
         .stdout(Stdio::from(
@@ -238,7 +251,7 @@ fn worker_verdict(receipt: &Path) -> Verdict {
     match read_receipt(receipt) {
         Some(stored) => match stored.status.as_str() {
             "waiting" | "completed" => Verdict::Accepted,
-            "aborted" | "failed" => Verdict::Refused(stored.message),
+            "aborted" | "failed" | "uncertain" => Verdict::Refused(stored.message),
             _ => Verdict::Running,
         },
         None => Verdict::Running,
@@ -355,6 +368,7 @@ fn current_request(
         codex_home,
         claude_config_dir: profile_environment("CLAUDE_CONFIG_DIR")?,
         profile,
+        account_switch: None,
     })
 }
 
@@ -365,6 +379,9 @@ pub fn run_reload_worker(request_path: &Path) -> Result<(), String> {
         File::open(request_path).map_err(|error| format!("Cannot open reload request: {error}"))?,
     )
     .map_err(|error| format!("Cannot read reload request: {error}"))?;
+    if request.account_switch.is_some() {
+        return Err("Account switches require the dedicated account-switch worker".into());
+    }
     validate_request(request_path, &request)?;
     let receipt = receipt_path(request_path);
     let lock_path = request
@@ -518,6 +535,16 @@ fn snapshot(path: &Path) -> Result<LogSnapshot, String> {
     })?;
     result.cursor = cursor;
     Ok(result)
+}
+
+/// A retained delegated descriptor is harmless only when its complete log
+/// explicitly records a finished turn. Unknown or partial state defers a switch.
+pub(crate) fn delegated_rollout_complete(path: &Path) -> Result<bool, String> {
+    let state = snapshot(path)?;
+    Ok(state.subagent
+        && state.saw_lifecycle
+        && state.active_turn.is_none()
+        && state.cursor == fs::metadata(path).map_err(|e| e.to_string())?.len())
 }
 
 fn read_lifecycle(path: &Path, cursor: &mut u64) -> Result<Vec<Lifecycle>, String> {
@@ -725,6 +752,11 @@ fn resume_command(request: &ReloadRequest, folder: Option<&Path>) -> String {
         args.push("--dangerously-bypass-approvals-and-sandbox".to_owned());
     }
     args.extend(["resume".to_owned(), request.thread_id.clone()]);
+    if request.account_switch.is_some() {
+        // Keep this migrated terminal's own process as its rollout owner. That
+        // makes post-launch identity independently verifiable without a model turn.
+        args.push("--no-daemon".into());
+    }
     // After the subcommand, beside the options the `codex` wrapper adds there.
     if let Some(folder) = folder {
         args.extend(crate::folder_trust::codex_arguments(folder));
@@ -999,6 +1031,7 @@ mod tests {
             codex_home: Some("/tmp/Codex's `profile`".to_owned()),
             claude_config_dir: None,
             profile: Some("a profile's name".to_owned()),
+            account_switch: None,
         }
     }
 

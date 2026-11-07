@@ -8,6 +8,7 @@ import { space, type InterfaceTheme } from "./appearance";
 import { Icon } from "./Icon";
 import { EMPTY_STORE, shellLabel } from "./panel_model";
 import { PANEL } from "./panel_layout";
+import { quotaReadout, quotaWindows, stale as quotaStale } from "./usage";
 
 function resetSummary(deadline: number | null | undefined, now: number): string {
   if (deadline == null) return "Reset unavailable";
@@ -115,7 +116,7 @@ export function UsagePanel(props: {
     }
     return [...profiles.values()];
   };
-  const stale = (value: ProviderUsageDto, flagged: boolean) => flagged || now() - value.updatedAtUnix > 900;
+  const stale = (value: ProviderUsageDto, flagged: boolean, error?: string | null) => flagged || !!error || quotaStale(value, now());
   const sessionBase = (id: string, provider: string) => {
     const shell = shells().find((shell) => shell.id === id);
     if (!shell) return `${provider} · ${id.slice(0, 8)}`;
@@ -166,15 +167,17 @@ export function UsagePanel(props: {
       </View>
     </View>;
   }
-  function Provider(props: { value: ProviderUsageDto }) {
+  function Provider(props: { value: ProviderUsageDto; state?: Parameters<typeof quotaReadout>[2] }) {
+    const readout = () => quotaReadout(props.value, now(), props.state);
     const session = () => [
       props.value.contextUsedPercent != null ? `Context ${Math.round(props.value.contextUsedPercent)}% used` : "",
       props.value.sessionCostUsd != null ? `Estimated session cost ${money(props.value.sessionCostUsd)}` : "",
     ].filter(Boolean).join(" · ");
     return <>
       {props.value.accountLabel && <Text selectable={true} style={text(11, palette().muted)}>{props.value.accountLabel}</Text>}
-      {props.value.windows.map((window) => <WindowGauge window={window} />)}
-      {props.value.windows.length === 0 && <Text style={{ ...text(11, palette().muted), paddingTop: 8 }}>Quota windows unavailable</Text>}
+      {quotaWindows(props.value).map((window) => <WindowGauge window={window} />)}
+      {readout().windows?.length === 0 && <Text style={{ ...text(11, palette().muted), paddingTop: 8 }}>Quota windows unavailable</Text>}
+      {readout().note && <Text style={{ ...text(10, readout().freshness === "stale" ? palette().gold : palette().muted), paddingTop: 6 }}>{readout().note}</Text>}
       {session() !== "" && <Text style={{ ...text(10, palette().muted), paddingTop: 8 }}>{session()}</Text>}
     </>;
   }
@@ -227,18 +230,16 @@ export function UsagePanel(props: {
       {!usage() ? <Card id="usage-loading" title="Account usage"><Text style={text(11, palette().muted)}>Reading account usage…</Text></Card> : <>
         <Section title="Codex accounts" note={codex().length > 0 ? "Quota is shared by every session on the same account." : undefined}>
           {codex().map((profile) => <Card id={`usage-codex:${profile.home}`} title={profile.label}
-            aside={profile.entry?.usage ? <Freshness at={profile.entry.usage.updatedAtUnix} stale={stale(profile.entry.usage, profile.entry.stale)} /> : undefined}>
-            {profile.entry?.usage ? <Provider value={profile.entry.usage} />
+            aside={profile.entry?.usage ? <Freshness at={profile.entry.usage.updatedAtUnix} stale={stale(profile.entry.usage, profile.entry.stale, profile.entry.error)} /> : undefined}>
+            {profile.entry?.usage ? <Provider value={profile.entry.usage} state={profile.entry} />
               : <Text style={{ ...text(11, profile.unavailable ? palette().gold : palette().muted), paddingTop: 6 }}>{profile.unavailable ?? (profile.entry?.pending ? "Reading account usage…" : profile.entry?.error ?? "Account usage is unavailable")}</Text>}
-            {profile.entry?.usage && profile.entry.error && <Text style={{ ...text(10, palette().gold), paddingTop: 6 }}>{`Last refresh: ${profile.entry.error}`}</Text>}
           </Card>)}
           {codex().length === 0 && <Empty id="usage-codex-unavailable">Account usage is unavailable</Empty>}
         </Section>
         <Section title="Claude sessions" note={claude().length > 0 ? "Subscription quota needs a Pro or Max account." : undefined}>
           {claude().map((entry) => <Card id={`usage-claude:${entry.shellId}`} title={sessionTitle(entry.shellId, "Claude")}
-            aside={entry.usage ? <Freshness at={entry.usage.updatedAtUnix} stale={stale(entry.usage, entry.stale)} /> : undefined}>
-            {entry.usage ? <Provider value={entry.usage} /> : <Text style={{ ...text(11, palette().muted), paddingTop: 6 }}>{entry.error ?? "Waiting for Claude usage after its first response"}</Text>}
-            {entry.usage && entry.error && <Text style={{ ...text(10, palette().gold), paddingTop: 6 }}>{`Last refresh: ${entry.error}`}</Text>}
+            aside={entry.usage ? <Freshness at={entry.usage.updatedAtUnix} stale={stale(entry.usage, entry.stale, entry.error)} /> : undefined}>
+            {entry.usage ? <Provider value={entry.usage} state={entry} /> : <Text style={{ ...text(11, palette().muted), paddingTop: 6 }}>{entry.error ?? "Waiting for Claude usage after its first response"}</Text>}
           </Card>)}
           {claude().length === 0 && <Empty id="usage-claude-empty">Open a Claude session to see its usage here</Empty>}
         </Section>

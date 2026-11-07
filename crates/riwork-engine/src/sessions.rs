@@ -1052,6 +1052,218 @@ impl SessionManager {
         Ok(result)
     }
 
+    /// Change one completed Codex pane's account, retaining its exact thread.
+    /// All launch preparation must succeed before the old process is replaced.
+    /// `publish` commits a previously staged rollout, after the final idle gate.
+    pub(crate) fn switch_codex_account_at_idle(
+        &self,
+        expected: &ShellSession,
+        pane_identity: &str,
+        thread_id: &str,
+        binding: &crate::codex_accounts::CodexAccountBinding,
+        command: &str,
+        publish: impl FnOnce() -> Result<(), String>,
+    ) -> Result<bool, String> {
+        let _registry_lock = self.lock_registry()?;
+        let _input_lock = crate::session_viewport::lock(&self.home, &expected.id, "input")?;
+        let mut registry = self.read_registry()?;
+        let session = registry
+            .sessions
+            .iter_mut()
+            .find(|s| s.id == expected.id)
+            .ok_or("The queued Codex pane no longer exists")?;
+        if session.created_at_unix != expected.created_at_unix
+            || session.command != expected.command
+            || session.codex_home != expected.codex_home
+            || session.codex_account_id != expected.codex_account_id
+            || session.cwd != expected.cwd
+            || session.project_id != expected.project_id
+            || session.worktree_id != expected.worktree_id
+            || session.unrestricted != expected.unrestricted
+            || session.harness != Some(HarnessKind::Codex)
+            || !self.is_alive(&session.id)?
+            || self.schedule_pane_identity(&session.id)? != pane_identity
+        {
+            return Err("The queued Codex pane changed; nothing was switched".into());
+        }
+        let children = match self.account_switch_rollout_proof(session, true) {
+            Ok((identity, children)) if identity == thread_id => children,
+            Ok(_) | Err(IdentityError::Changed(_)) => {
+                return Err("The queued Codex conversation changed; nothing was switched".into());
+            }
+            Err(IdentityError::Unproven(_)) => return Ok(false),
+        };
+        let mut tracker = crate::activity::ActivityTracker::at(self.home.clone());
+        let Some(token) = tracker.schedule_idle_token(session, thread_id) else {
+            return Ok(false);
+        };
+        let pane = pane_identity
+            .split('|')
+            .next()
+            .filter(|pane| {
+                pane.strip_prefix('%')
+                    .is_some_and(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit()))
+            })
+            .ok_or("Invalid physical pane identity")?
+            .to_owned();
+        if self
+            .tmux_text(&[
+                "display-message",
+                "-p",
+                "-t",
+                &pane,
+                "#{pane_in_mode}|#{pane_input_off}",
+            ])?
+            .trim()
+            != "0|0"
+            || self.schedule_prompt_screen(session).is_err()
+        {
+            return Ok(false);
+        }
+        let cwd = self.current_directory(&session.id)?;
+        let executable = env::current_exe().map_err(|error| error.to_string())?;
+        let cua = crate::cua::CuaManager::at(self.home.clone())?;
+        cua.driver_path()?;
+        let shims = cua.ensure_harness_shims(&executable)?;
+        let managed_path = path_with_harness_shims(&shims, login_shell_dirs())?;
+        let generation = Uuid::new_v4().to_string();
+        let monitored = status_launch_command(
+            &self.tmux,
+            &self.socket_name,
+            &executable,
+            &self.home,
+            &session.id,
+            &generation,
+            &self.default_command_shell(),
+            Some(command),
+        );
+        let monitored = format!(
+            "{} program-status-prepare {} {} {} && {monitored}",
+            quote_arg(&executable.to_string_lossy()),
+            quote_arg(&self.home.to_string_lossy()),
+            quote_arg(&session.id),
+            quote_arg(&generation)
+        );
+        let mut args = respawn_arguments(
+            &session.id,
+            &cwd.to_string_lossy(),
+            &self.home,
+            &managed_path,
+            Some(&binding.home),
+            &monitored,
+        );
+        // The condition and mutation must address the same physical pane,
+        // even if a session/window alias is changed by another tmux client.
+        args[3] = pane.clone();
+        // The file lock coordinates Somtus writers, but cannot stop a person's
+        // tmux client from typing. Briefly freeze pane input, drain already
+        // delivered keys, then check the composer again before replacement.
+        let lease = Uuid::new_v4().to_string();
+        let lease_condition = format!("#{{==:#{{@somtus-account-switch}},{lease}}}");
+        let restore =
+            format!("select-pane -e -t {pane} ; set-option -pu -t {pane} @somtus-account-switch");
+        self.tmux_checked(&[
+            "set-option",
+            "-p",
+            "-t",
+            &pane,
+            "@somtus-account-switch",
+            &lease,
+        ])?;
+        // This timer belongs to tmux, not this worker. It restores input even
+        // if the worker crashes while holding the lease. A later request's
+        // fresh token cannot be released by this timer.
+        let watchdog = account_switch_watchdog(&pane, &lease_condition, &restore);
+        self.tmux_checked(&["run-shell", "-b", "-C", "-d", "5", &watchdog])?;
+        let acquired = self.tmux_text(&[
+            "if-shell",
+            "-F",
+            "-t",
+            &pane,
+            &lease_condition,
+            &format!("select-pane -d -t {pane} ; display-message -p ACQUIRED"),
+            "display-message -p EXPIRED",
+        ])?;
+        if acquired.trim() != "ACQUIRED" {
+            return Ok(false);
+        }
+        struct RestoreInput<'a>(&'a SessionManager, String, String, String);
+        impl Drop for RestoreInput<'_> {
+            fn drop(&mut self) {
+                let _ = self
+                    .0
+                    .tmux_checked(&["if-shell", "-F", "-t", &self.1, &self.2, &self.3]);
+            }
+        }
+        let _restore_input =
+            RestoreInput(self, pane.clone(), lease_condition.clone(), restore.clone());
+        let first = match self.schedule_prompt_screen(session) {
+            Ok(screen) => screen,
+            Err(_) => return Ok(false),
+        };
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        if self.schedule_prompt_screen(session).ok().as_ref() != Some(&first)
+            || tracker.schedule_idle_token(session, thread_id).as_ref() != Some(&token)
+            || self.schedule_pane_identity(&session.id)? != pane_identity
+            || !self
+                .account_switch_rollout_proof(session, false)
+                .is_ok_and(|(identity, fresh)| {
+                    identity == thread_id && same_rollout_set(&children, &fresh)
+                })
+        {
+            return Ok(false);
+        }
+        publish()?;
+        // Publishing checks the source log again. No network or large copy
+        // occurs here, and no input can enter between this gate and respawn.
+        if tracker.schedule_idle_token(session, thread_id).as_ref() != Some(&token)
+            || self.schedule_prompt_screen(session).ok().as_ref() != Some(&first)
+            || children.iter().any(|(path, metadata)| {
+                !fs::metadata(path).is_ok_and(|fresh| same_rollout_metadata(metadata, &fresh))
+            })
+        {
+            return Err("Codex changed during the switch; its original pane was retained".into());
+        }
+        let condition = format!("#{{&&:#{{pane_input_off}},{lease_condition}}}");
+        let dispatch = format!(
+            "{} ; {restore} ; display-message -p SWITCHED",
+            args.iter()
+                .map(|arg| quote_arg(arg))
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+        let outcome = self
+            .tmux_text(&[
+                "if-shell",
+                "-F",
+                "-t",
+                &pane,
+                &condition,
+                &dispatch,
+                "display-message -p EXPIRED",
+            ])
+            .map_err(|error| {
+                format!(
+                    "Account switch was dispatched with an uncertain result; do not retry: {error}"
+                )
+            })?;
+        if outcome.trim() != "SWITCHED" {
+            return Err(
+                "The account-switch input lease expired; the original pane was retained".into(),
+            );
+        }
+        session.command = Some(command.to_owned());
+        session.codex_home = Some(binding.home.clone());
+        session.codex_account_id = binding.id.clone();
+        session.codex_account_label = binding.label.clone();
+        session.codex_account_email = binding.email.clone();
+        session.alive = true;
+        self.write_registry(&registry).map_err(|error| format!(
+            "Account switch was dispatched, but metadata could not be saved; do not retry: {error}"
+        ))?;
+        Ok(true)
+    }
+
     /// The command to pass as `TerminalOptions.command` in gpui-libghostty.
     /// Ghostty parses the command into argv and renders the tmux client.
     pub fn attach_command(&self, id: &str) -> Result<String, String> {
@@ -1676,6 +1888,54 @@ impl SessionManager {
         }
     }
 
+    /// Account migration requires the one primary interactive rollout. A
+    /// finished Codex can retain descriptors for its completed subagents too.
+    pub(crate) fn account_switch_provider_proof(
+        &self,
+        shell: &ShellSession,
+        idle_children: bool,
+    ) -> Result<String, IdentityError> {
+        self.account_switch_rollout_proof(shell, idle_children)
+            .map(|(identity, _)| identity)
+    }
+
+    fn account_switch_rollout_proof(
+        &self,
+        shell: &ShellSession,
+        idle_children: bool,
+    ) -> Result<(String, Vec<(PathBuf, fs::Metadata)>), IdentityError> {
+        use IdentityError::{Changed, Unproven};
+        if shell.harness != Some(HarnessKind::Codex) {
+            return Err(Changed("The pane no longer runs Codex".into()));
+        }
+        let tracker = crate::activity::ActivityTracker::at(self.home.clone());
+        let bound = tracker
+            .schedule_identity(shell)
+            .ok_or_else(|| Unproven("Codex thread identity is unknown".into()))?;
+        let (pid, command) = self.schedule_pane_process(&shell.id).map_err(Unproven)?;
+        if !matches!(command.as_str(), "codex" | "node")
+            || pid.parse::<u32>().ok().is_none_or(|pid| pid == 0)
+        {
+            return Err(Unproven("The pane is not running Codex".into()));
+        }
+        let (path, children) =
+            codex_open_rollout_with(&self.schedule_lsof(), &pid, true, idle_children)
+                .map_err(Unproven)?;
+        let home = shell
+            .codex_home
+            .as_ref()
+            .ok_or_else(|| Unproven("Codex account home is unknown".into()))?;
+        if !path.starts_with(home.join("sessions"))
+            || !path
+                .file_stem()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.ends_with(&bound))
+        {
+            return Err(Changed("The Codex conversation or account changed".into()));
+        }
+        Ok((bound, children))
+    }
+
     /// `(pane_pid, pane_current_command)` of the pane's foreground process.
     fn schedule_pane_process(&self, id: &str) -> Result<(String, String), String> {
         let pane = self.schedule_pane_report(id)?;
@@ -1945,7 +2205,7 @@ impl SessionManager {
         Ok(())
     }
 
-    fn schedule_prompt_screen(&self, shell: &ShellSession) -> Result<String, String> {
+    pub(crate) fn schedule_prompt_screen(&self, shell: &ShellSession) -> Result<String, String> {
         let pane = pane_target(&shell.id);
         let cursor = self.tmux_text(&[
             "display-message",
@@ -6241,6 +6501,15 @@ const DESCRIPTOR_LISTING_LIMIT: usize = 4 * 1024 * 1024;
 /// the npm wrapper's, and never another pane's files or processes. A bounded
 /// child query, not a scan.
 fn codex_open_rollout(lsof: &Path, pid: &str) -> Result<PathBuf, String> {
+    codex_open_rollout_with(lsof, pid, false, false).map(|(path, _)| path)
+}
+
+fn codex_open_rollout_with(
+    lsof: &Path,
+    pid: &str,
+    primary_only: bool,
+    idle_children: bool,
+) -> Result<(PathBuf, Vec<(PathBuf, fs::Metadata)>), String> {
     use std::io::Read;
     let mut child = Command::new(lsof)
         .args(["-nP", "-a", "-g", pid, "-Fn"])
@@ -6292,16 +6561,87 @@ fn codex_open_rollout(lsof: &Path, pid: &str) -> Result<PathBuf, String> {
     if truncated {
         return Err("Codex descriptor listing is too large to verify".into());
     }
-    let paths: HashSet<_> = String::from_utf8_lossy(&listing)
+    let mut paths: HashSet<_> = String::from_utf8_lossy(&listing)
         .lines()
         .filter_map(|line| line.strip_prefix('n'))
         .filter(|path| path.contains("/rollout-") && path.ends_with(".jsonl"))
         .map(PathBuf::from)
         .collect();
+    let mut children = Vec::new();
+    if primary_only {
+        let mut primary = HashSet::new();
+        for path in paths {
+            if primary_rollout_header(&path)? {
+                primary.insert(path);
+            } else {
+                let before = fs::metadata(&path).map_err(|e| e.to_string())?;
+                if idle_children
+                    && (!crate::session_reload::delegated_rollout_complete(&path)?
+                        || !same_rollout_metadata(
+                            &before,
+                            &fs::metadata(&path).map_err(|e| e.to_string())?,
+                        ))
+                {
+                    return Err(
+                        "Delegated Codex work is active or unknown; switching is deferred".into(),
+                    );
+                }
+                children.push((path, before));
+            }
+        }
+        paths = primary;
+    }
     if paths.len() != 1 {
         return Err("Codex has no unique open primary rollout; scheduling is deferred".into());
     }
-    Ok(paths.into_iter().next().expect("one rollout"))
+    children.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok((paths.into_iter().next().expect("one rollout"), children))
+}
+
+fn same_rollout_metadata(a: &fs::Metadata, b: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    a.dev() == b.dev()
+        && a.ino() == b.ino()
+        && a.len() == b.len()
+        && a.mtime() == b.mtime()
+        && a.mtime_nsec() == b.mtime_nsec()
+}
+
+fn same_rollout_set(a: &[(PathBuf, fs::Metadata)], b: &[(PathBuf, fs::Metadata)]) -> bool {
+    a.len() == b.len()
+        && a.iter().zip(b).all(|((path, metadata), (other, current))| {
+            path == other && same_rollout_metadata(metadata, current)
+        })
+}
+
+fn account_switch_watchdog(pane: &str, condition: &str, restore: &str) -> String {
+    // run-shell expands formats while scheduling. Escape that expansion so
+    // the delayed if-shell reads the then-current token, not a constant true.
+    format!(
+        "if-shell -F -t {} {} {}",
+        quote_arg(pane),
+        quote_arg(condition),
+        quote_arg(restore)
+    )
+    .replace('#', "##")
+}
+
+fn primary_rollout_header(path: &Path) -> Result<bool, String> {
+    use std::io::{BufRead, BufReader, Read};
+    let file = File::open(path).map_err(|_| "Cannot read an open Codex rollout header")?;
+    let mut line = String::new();
+    BufReader::new(file.take(64 * 1024))
+        .read_line(&mut line)
+        .map_err(|e| e.to_string())?;
+    if !line.ends_with('\n') {
+        return Err("Codex rollout header is incomplete or too large".into());
+    }
+    let value: serde_json::Value =
+        serde_json::from_str(&line).map_err(|_| "Invalid Codex rollout header")?;
+    if value["type"] != "session_meta" {
+        return Err("Codex rollout has no session metadata".into());
+    }
+    Ok(value["payload"]["source"] == "cli")
 }
 
 /// Test seam: stands in for the pane's foreground-process report and for
@@ -6424,6 +6764,118 @@ mod tmux_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "slow: isolated tmux server and input-lease timers"]
+    fn account_switch_input_lease_preserves_newer_owner_and_recovers_crashes() {
+        struct Server {
+            tmux: PathBuf,
+            socket: String,
+        }
+        impl Server {
+            fn run(&self, args: &[&str]) -> String {
+                let mut command = Command::new(&self.tmux);
+                command
+                    .args(["-L", &self.socket])
+                    .args(args)
+                    .env_remove("TMUX");
+                let output =
+                    run_bounded(command, None, Duration::from_secs(3), "isolated test tmux")
+                        .unwrap();
+                assert!(
+                    output.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                String::from_utf8(output.stdout).unwrap()
+            }
+        }
+        impl Drop for Server {
+            fn drop(&mut self) {
+                let _ = Command::new(&self.tmux)
+                    .args(["-L", &self.socket, "kill-server"])
+                    .output();
+            }
+        }
+        let server = Server {
+            tmux: find_tmux().expect("tmux test dependency"),
+            socket: format!("somtus-account-switch-test-{}", Uuid::new_v4()),
+        };
+        server.run(&["new-session", "-d", "-s", "lease", "/bin/sh"]);
+        let pane = server
+            .run(&["display-message", "-p", "-t", "lease:0.0", "#{pane_id}"])
+            .trim()
+            .to_owned();
+        let restore =
+            format!("select-pane -e -t {pane} ; set-option -pu -t {pane} @somtus-account-switch");
+        let arm = |token: &str| {
+            server.run(&[
+                "set-option",
+                "-p",
+                "-t",
+                &pane,
+                "@somtus-account-switch",
+                token,
+            ]);
+            let condition = format!("#{{==:#{{@somtus-account-switch}},{token}}}");
+            let watchdog = account_switch_watchdog(&pane, &condition, &restore);
+            server.run(&["run-shell", "-b", "-C", "-d", "1", &watchdog]);
+            server.run(&["select-pane", "-d", "-t", &pane]);
+        };
+        arm("old");
+        server.run(&[
+            "set-option",
+            "-p",
+            "-t",
+            &pane,
+            "@somtus-account-switch",
+            "new",
+        ]);
+        std::thread::sleep(Duration::from_millis(1200));
+        assert_eq!(
+            server
+                .run(&[
+                    "display-message",
+                    "-p",
+                    "-t",
+                    &pane,
+                    "#{pane_input_off}|#{@somtus-account-switch}"
+                ])
+                .trim(),
+            "1|new"
+        );
+        server.run(&["select-pane", "-e", "-t", &pane]);
+        let acquired = server.run(&[
+            "if-shell",
+            "-F",
+            "-t",
+            &pane,
+            "#{==:#{@somtus-account-switch},old}",
+            &format!("select-pane -d -t {pane} ; display-message -p ACQUIRED"),
+            "display-message -p EXPIRED",
+        ]);
+        assert_eq!(acquired.trim(), "EXPIRED");
+        assert_eq!(
+            server
+                .run(&["display-message", "-p", "-t", &pane, "#{pane_input_off}"])
+                .trim(),
+            "0"
+        );
+        arm("crashed");
+        std::thread::sleep(Duration::from_millis(1200));
+        assert_eq!(
+            server
+                .run(&[
+                    "display-message",
+                    "-p",
+                    "-t",
+                    &pane,
+                    "#{pane_input_off}|#{@somtus-account-switch}"
+                ])
+                .trim(),
+            "0|"
+        );
+    }
 
     /// A terminfo directory with the compiled entries named by `files`.
     fn terminfo_dir(files: &[&str]) -> PathBuf {

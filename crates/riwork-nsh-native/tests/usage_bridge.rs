@@ -63,6 +63,7 @@ struct Fake {
     settings: Mutex<CodexSettings>,
     saves: AtomicU32,
     claude: Mutex<BTreeMap<String, ProviderUsage>>,
+    grok_reads: AtomicU32,
 }
 
 impl Fake {
@@ -103,6 +104,15 @@ impl UsageBackend for Fake {
     }
     fn read_claude(&self, shell_id: &str) -> Result<Option<ProviderUsage>, String> {
         Ok(self.claude.lock().unwrap().get(shell_id).cloned())
+    }
+    fn read_grok(
+        &self,
+        _ids: &[String],
+        _previous: &BTreeMap<String, riwork_engine::usage::GrokTabUsage>,
+        _force: bool,
+    ) -> BTreeMap<String, riwork_engine::usage::GrokTabUsage> {
+        self.grok_reads.fetch_add(1, Ordering::SeqCst);
+        BTreeMap::new()
     }
     fn cached_accounts(&self) -> Option<AccountsSnapshot> {
         self.saved.lock().unwrap().clone()
@@ -316,7 +326,7 @@ async fn usage_reads_each_home_once_under_concurrent_subscribers_and_records_bal
         .map(|thread| thread.join().unwrap())
         .collect();
     wait_until("both homes in flight", || fake.reads() == 2);
-    // A forced refresh never starts a second read of a home in flight.
+    // Refresh clicks coalesce while pending; no parallel read of one home.
     for _ in 0..3 {
         service.refresh_usage(true);
     }
@@ -338,14 +348,14 @@ async fn usage_reads_each_home_once_under_concurrent_subscribers_and_records_bal
     fake.read_gate.open();
     for subscription in &subscriptions {
         let done = until(subscription, |data| {
-            data.codex.iter().all(|entry| entry.usage.is_some())
+            !data.refreshing && data.codex.iter().all(|entry| entry.usage.is_some())
         })
         .await;
         assert!(!done.data.refreshing);
     }
-    assert_eq!(fake.reads_of("/fake/system"), 1);
-    assert_eq!(fake.reads_of("/fake/a"), 1);
-    assert_eq!(fake.recorded.load(Ordering::SeqCst), 2);
+    assert_eq!(fake.reads_of("/fake/system"), 2, "one queued refresh per home");
+    assert_eq!(fake.reads_of("/fake/a"), 2);
+    assert_eq!(fake.recorded.load(Ordering::SeqCst), 4);
 }
 
 #[tokio::test]
@@ -412,6 +422,86 @@ async fn usage_republishes_when_figures_turn_stale_without_any_other_wake() {
 }
 
 #[tokio::test]
+async fn usage_refreshes_at_a_reset_without_another_wake_and_keeps_cached_figures_stale() {
+    let fake = Arc::new(Fake::default());
+    let now = SystemClock.now();
+    let mut before = quota(now);
+    before.windows[0].resets_at = Some(now + 2);
+    fake.answer("/fake/system", Ok(before));
+    let service = start(&fake, Arc::new(SystemClock));
+    let usage = service.subscribe_usage();
+    let fresh = until(&usage, |data| data.codex[0].usage.is_some() && !data.refreshing).await;
+    assert!(!fresh.data.codex[0].stale);
+
+    fake.read_gate.close();
+    let reset = until(&usage, |data| data.codex[0].stale && data.refreshing).await;
+    wait_until("reset-triggered read", || fake.reads() == 2);
+    assert_eq!(reset.data.codex[0].usage.as_ref().unwrap().windows[0].used_percent, 20.0,
+        "a reset never fabricates a new allowance");
+
+    let mut after = quota(now + 2);
+    after.windows[0].used_percent = 3.0;
+    after.windows[0].resets_at = Some(now + 3600);
+    fake.answer("/fake/system", Ok(after));
+    fake.read_gate.open();
+    let refreshed = until(&usage, |data| !data.refreshing && !data.codex[0].stale).await;
+    assert_eq!(refreshed.data.codex[0].usage.as_ref().unwrap().windows[0].used_percent, 3.0);
+    assert_eq!(fake.reads(), 2);
+}
+
+#[tokio::test]
+async fn usage_retries_an_expired_server_window_with_backoff_and_no_busy_loop() {
+    let fake = Arc::new(Fake::default());
+    let clock = manual();
+    let mut report = quota(START);
+    report.windows[0].resets_at = Some(START + 10);
+    fake.answer("/fake/system", Ok(report));
+    let service = start(&fake, clock.clone());
+    let usage = service.subscribe_usage();
+    until(&usage, |data| data.codex[0].usage.is_some() && !data.refreshing).await;
+
+    clock.advance(10);
+    service.wake();
+    until(&usage, |data| data.codex[0].stale && !data.refreshing).await;
+    assert_eq!(fake.reads(), 2);
+    for _ in 0..3 { service.wake(); }
+    clock.advance(59);
+    service.wake();
+    settle();
+    assert_eq!(fake.reads(), 2, "the same expired window cannot trigger a read loop");
+
+    fake.answer("/fake/system", Err("Temporarily unavailable".into()));
+    clock.advance(1);
+    service.wake();
+    until(&usage, |data| data.codex[0].failures == 1).await;
+    assert_eq!(fake.reads(), 3);
+    clock.advance(119);
+    service.wake();
+    settle();
+    assert_eq!(fake.reads(), 3);
+    fake.answer("/fake/system", Ok(quota(START + 190)));
+    clock.advance(1);
+    service.wake();
+    until(&usage, |data| data.codex[0].failures == 0 && !data.codex[0].stale && !data.refreshing).await;
+    assert_eq!(fake.reads(), 4);
+}
+
+#[tokio::test]
+async fn usage_clock_rollback_does_not_delay_reads_until_the_old_clock_catches_up() {
+    let fake = Arc::new(Fake::default());
+    let clock = manual();
+    fake.answer("/fake/system", Ok(quota(START)));
+    let service = start(&fake, clock.clone());
+    let usage = service.subscribe_usage();
+    until(&usage, |data| data.codex[0].usage.is_some() && !data.refreshing).await;
+    clock.0.store(START - 3600, Ordering::SeqCst);
+    fake.answer("/fake/system", Ok(quota(START - 3600)));
+    service.wake();
+    until(&usage, |data| data.codex[0].last_attempt == Some(START - 3600) && !data.refreshing).await;
+    assert_eq!(fake.reads(), 2);
+}
+
+#[tokio::test]
 async fn usage_reads_claude_caches_of_listed_shells_and_live_codex_shell_homes() {
     let fake = Arc::new(Fake::default());
     fake.claude
@@ -449,8 +539,12 @@ async fn usage_reads_claude_caches_of_listed_shells_and_live_codex_shell_homes()
     );
     assert_eq!(data.codex[1].home, "/fake/session");
     assert_eq!(data.codex[1].label, "old@example.test · Old");
-    assert!(data.grok.is_empty(), "Grok is never read by this service");
+    assert_eq!(data.grok.len(), 1, "live Grok shells get a placeholder");
+    assert_eq!(data.grok[0].shell_id, "grok-1");
+    assert!(data.grok[0].usage.is_none() && !data.grok[0].pending);
     wait_until("both Codex homes", || fake.reads() == 2);
+    assert_eq!(fake.grok_reads.load(Ordering::SeqCst), 0,
+        "Grok is not read without a visible usage panel");
 }
 
 #[tokio::test]
@@ -521,6 +615,23 @@ async fn accounts_subscribe_is_cache_only_and_refresh_is_single_flight() {
         Some("Orca's CLI is unavailable. Showing previously discovered accounts.")
     );
     until(&accounts, |data| data.from_cache && !data.refreshing).await;
+
+    // A later cache update supersedes discovery, even though this service has
+    // already discovered once. Unchanged cache reads above retain its error.
+    *fake.saved.lock().unwrap() = Some(AccountsSnapshot {
+        accounts: vec![account("account-new", "New account", "/fake/new", true)],
+        source_active_id: Some("account-new".into()),
+        ..Default::default()
+    });
+    service.wake();
+    let changed = until(&accounts, |data| data.accounts.iter().any(|account| account.id == "account-new")).await;
+    assert!(!changed.data.from_cache);
+    assert!(changed.data.error.is_none());
+    assert_eq!(changed.data.accounts.len(), 1);
+    assert!(changed.data.accounts[0].orca_active);
+    assert!(service.select_default(Some("account-a".into())).is_err());
+    assert_eq!(fake.discovers.load(Ordering::SeqCst), 1, "cache reconciliation never discovers");
+    assert_eq!(fake.reads(), 0, "accounts alone still start no quota reads");
 }
 
 #[tokio::test]
