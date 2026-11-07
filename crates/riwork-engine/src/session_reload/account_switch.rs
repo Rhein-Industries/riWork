@@ -12,6 +12,165 @@ pub(super) struct AccountSwitch {
     target_home: PathBuf,
     target_id: Option<String>,
     expected_email: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) supervised_policy: Option<SupervisedPolicy>,
+}
+
+/// This is evidence of the one supported supervised policy, not a configurable
+/// permission template. Every policy field is checked before constructing it.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(super) struct SupervisedPolicy {
+    turn_id: String,
+    cwd: PathBuf,
+}
+
+impl SupervisedPolicy {
+    pub(super) fn arguments(&self) -> Vec<String> {
+        [
+            "--sandbox",
+            "workspace-write",
+            "--ask-for-approval",
+            "on-request",
+            "-c",
+            "sandbox_mode=\"workspace-write\"",
+            "-c",
+            "approval_policy=\"on-request\"",
+            "-c",
+            "approvals_reviewer=\"user\"",
+            "-c",
+            "default_permissions=\":workspace\"",
+            "-c",
+            "sandbox_workspace_write.writable_roots=[]",
+            "-c",
+            "sandbox_workspace_write.network_access=false",
+            "-c",
+            "sandbox_workspace_write.exclude_tmpdir_env_var=false",
+            "-c",
+            "sandbox_workspace_write.exclude_slash_tmp=false",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
+    }
+}
+
+/// The extension deliberately accepts only the observed standard permission
+/// shape. An added permission field must be reviewed, not silently discarded.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)] // Ignored non-permission fields still form the strict schema.
+struct TurnContext {
+    turn_id: String,
+    root_turn_id: String,
+    cwd: PathBuf,
+    approval_policy: serde_json::Value,
+    sandbox_policy: serde_json::Value,
+    permission_profile: serde_json::Value,
+    file_system_sandbox_policy: serde_json::Value,
+    active_permission_profile: serde_json::Value,
+    approvals_reviewer: serde_json::Value,
+    cyber_access_program: serde_json::Value,
+    // Known non-permission metadata does not need to be retained in memory.
+    #[serde(default)]
+    collaboration_mode: Option<serde::de::IgnoredAny>,
+    #[serde(default)]
+    comp_hash: Option<serde::de::IgnoredAny>,
+    #[serde(default)]
+    disabled_plugin_ids: Option<serde::de::IgnoredAny>,
+    #[serde(default)]
+    effort: Option<serde::de::IgnoredAny>,
+    #[serde(default)]
+    model: Option<serde::de::IgnoredAny>,
+    #[serde(default)]
+    multi_agent_version: Option<serde::de::IgnoredAny>,
+    #[serde(default)]
+    realtime_active: Option<serde::de::IgnoredAny>,
+    #[serde(default)]
+    summary: Option<serde::de::IgnoredAny>,
+}
+
+fn standard_filesystem_entries(cwd: &Path) -> serde_json::Value {
+    let mut entries = vec![
+        serde_json::json!({"path":{"type":"special","value":{"kind":"root"}},"access":"read"}),
+        serde_json::json!({"path":{"type":"path","path":cwd},"access":"write"}),
+        serde_json::json!({"path":{"type":"special","value":{"kind":"slash_tmp"}},"access":"write"}),
+        serde_json::json!({"path":{"type":"special","value":{"kind":"tmpdir"}},"access":"write"}),
+    ];
+    for name in [".git", ".agents", ".codex", ".aws"] {
+        entries.push(serde_json::json!({"path":{"type":"path","path":cwd.join(name)},"access":"read","missing_path_behavior":"skip"}));
+    }
+    serde_json::Value::Array(entries)
+}
+
+fn context_policy(context: TurnContext, cwd: &Path) -> Result<SupervisedPolicy, String> {
+    let mut sandbox = context.sandbox_policy;
+    if sandbox.get("writable_roots") == Some(&serde_json::json!([])) {
+        sandbox.as_object_mut().unwrap().remove("writable_roots");
+    }
+    let entries = standard_filesystem_entries(cwd);
+    if context.cwd != cwd
+        || context.root_turn_id != context.turn_id
+        || context.approval_policy != "on-request"
+        || sandbox
+            != serde_json::json!({"type":"workspace-write","network_access":false,"exclude_tmpdir_env_var":false,"exclude_slash_tmp":false})
+        || context.permission_profile
+            != serde_json::json!({"type":"managed","file_system":{"type":"restricted","entries":entries},"network":"restricted"})
+        || context.file_system_sandbox_policy
+            != serde_json::json!({"kind":"restricted","entries":entries})
+        || context.active_permission_profile != serde_json::json!({"id":":workspace"})
+        || context.approvals_reviewer != "user"
+        || context.cyber_access_program != "standard"
+    {
+        return Err("The completed turn does not use the supported standard workspace-write/on-request policy; nothing was switched".into());
+    }
+    validate_uuid(&context.turn_id)?;
+    Ok(SupervisedPolicy {
+        turn_id: context.turn_id,
+        cwd: cwd.to_path_buf(),
+    })
+}
+
+fn supervised_policy(path: &Path, thread: &str, cwd: &Path) -> Result<SupervisedPolicy, String> {
+    let state = snapshot(path)?;
+    validate_snapshot(&state, thread)?;
+    let mut cursor = 0;
+    let mut active = None;
+    let mut completed = None;
+    let mut policy = None;
+    scan_record_bytes(path, &mut cursor, |line| {
+        let record: LogRecord = serde_json::from_slice(line).map_err(|e| e.to_string())?;
+        if record.kind == "turn_context" {
+            #[derive(Deserialize)]
+            struct ContextRecord {
+                payload: TurnContext,
+            }
+            policy = Some(serde_json::from_slice::<ContextRecord>(line)
+                .map_err(|_| "The latest turn context has an unknown or malformed permission state; nothing was switched".to_owned())
+                .and_then(|record| context_policy(record.payload, cwd)));
+        } else if let Some(event) = lifecycle(record) {
+            match event {
+                Lifecycle::Started(id) => active = Some(id),
+                Lifecycle::Completed(id) if active.as_deref() == Some(&id) => {
+                    active = None;
+                    completed = Some(id);
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    })?;
+    let policy =
+        policy.ok_or("The completed turn has no permission context; nothing was switched")??;
+    if active.is_some()
+        || state.active_turn.is_some()
+        || completed.as_deref() != Some(&policy.turn_id)
+        || cursor != state.cursor
+        || cursor != fs::metadata(path).map_err(|e| e.to_string())?.len()
+    {
+        return Err("A stable completed turn is required to preserve supervised permissions; nothing was switched".into());
+    }
+    Ok(policy)
 }
 
 /// Queue one exact terminal conversation for an account switch at an empty,
@@ -38,8 +197,8 @@ pub fn queue_account_switch(
         return Err("Account switching requires a live Codex terminal".into());
     }
     let profile = metadata_profile(source.command.as_deref())?;
-    if profile.is_some() || !source.unrestricted {
-        return Err("This account switch supports unrestricted Codex terminals without a custom profile; the original terminal was retained".into());
+    if profile.is_some() {
+        return Err("Account switching does not support custom Codex profiles; the original terminal was retained".into());
     }
     let source_home = source
         .codex_home
@@ -70,6 +229,15 @@ pub fn queue_account_switch(
     }
     let state = snapshot(&log_path)?;
     validate_snapshot(&state, &thread_id)?;
+    let supervised_policy = if source.unrestricted {
+        None
+    } else {
+        let cwd = manager
+            .current_directory(shell_id)?
+            .canonicalize()
+            .map_err(|e| e.to_string())?;
+        Some(supervised_policy(&log_path, &thread_id, &cwd)?)
+    };
     let executable = executable.canonicalize().map_err(|e| e.to_string())?;
     let request = ReloadRequest {
         home: manager.state_home().to_path_buf(),
@@ -90,6 +258,7 @@ pub fn queue_account_switch(
             target_home: binding.home,
             target_id: binding.id,
             expected_email: expected_email.into(),
+            supervised_policy,
         }),
     };
     queue_request(request)
@@ -203,6 +372,14 @@ fn finish_switch(request: &ReloadRequest) -> Result<(), String> {
         .account_switch
         .as_ref()
         .ok_or("Missing account switch")?;
+    if request.unrestricted != switch.source.unrestricted
+        || request.unrestricted == switch.supervised_policy.is_some()
+        || request.profile.is_some()
+    {
+        return Err(
+            "The account switch has no matching permission proof; nothing was switched".into(),
+        );
+    }
     let manager = SessionManager::at(request.home.clone())?;
     let mut tracker = ActivityTracker::at(request.home.clone());
     let mut cursor = request.cursor;
@@ -251,6 +428,16 @@ fn finish_switch(request: &ReloadRequest) -> Result<(), String> {
                 &request.thread_id,
                 state.cursor,
             )?;
+            if let Some(expected) = &switch.supervised_policy {
+                let actual =
+                    supervised_policy(&staged.temporary, &request.thread_id, &expected.cwd)?;
+                if &actual != expected {
+                    return Err(
+                        "The supervised turn or permission policy changed; nothing was switched"
+                            .into(),
+                    );
+                }
+            }
             let binding = CodexAccountBinding {
                 home: switch.target_home.clone(),
                 id: switch.target_id.clone(),
@@ -261,6 +448,15 @@ fn finish_switch(request: &ReloadRequest) -> Result<(), String> {
                 .current_directory(&request.shell_id)?
                 .canonicalize()
                 .map_err(|e| e.to_string())?;
+            if switch
+                .supervised_policy
+                .as_ref()
+                .is_some_and(|policy| policy.cwd != folder)
+            {
+                return Err(
+                    "The supervised working directory changed; nothing was switched".into(),
+                );
+            }
             let mut resume = request.clone();
             resume.codex_home = Some(binding.home.to_string_lossy().into_owned());
             let command = resume_command(&resume, Some(&folder));
@@ -496,6 +692,232 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.root);
         }
+    }
+
+    fn standard_context(fixture: &Fixture, turn: &str) -> serde_json::Value {
+        let entries = standard_filesystem_entries(&fixture.root);
+        serde_json::json!({
+            "turn_id":turn,"root_turn_id":turn,"cwd":fixture.root,
+            "approval_policy":"on-request",
+            "sandbox_policy":{"type":"workspace-write","network_access":false,"exclude_tmpdir_env_var":false,"exclude_slash_tmp":false},
+            "permission_profile":{"type":"managed","file_system":{"type":"restricted","entries":entries},"network":"restricted"},
+            "file_system_sandbox_policy":{"kind":"restricted","entries":entries},
+            "active_permission_profile":{"id":":workspace"},
+            "approvals_reviewer":"user","cyber_access_program":"standard",
+            "model":"test-model","effort":"high"
+        })
+    }
+
+    fn write_policy_log(fixture: &Fixture, context: &serde_json::Value) {
+        let turn = context["turn_id"].as_str().unwrap();
+        let records = [
+            serde_json::json!({"type":"session_meta","payload":{"id":fixture.id,"source":"cli"}}),
+            serde_json::json!({"type":"event_msg","payload":{"type":"task_started","turn_id":turn}}),
+            serde_json::json!({"type":"turn_context","payload":context}),
+            serde_json::json!({"type":"event_msg","payload":{"type":"task_complete","turn_id":turn}}),
+        ];
+        fs::write(
+            &fixture.log,
+            records
+                .iter()
+                .map(|record| format!("{record}\n"))
+                .collect::<String>(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn supervised_policy_requires_the_exact_completed_thread_and_standard_permissions() {
+        let fixture = Fixture::new();
+        let turn = Uuid::new_v4().to_string();
+        let mut context = standard_context(&fixture, &turn);
+        write_policy_log(&fixture, &context);
+        let expected = SupervisedPolicy {
+            turn_id: turn.clone(),
+            cwd: fixture.root.clone(),
+        };
+        assert_eq!(
+            supervised_policy(&fixture.log, &fixture.id, &fixture.root).unwrap(),
+            expected
+        );
+        context["sandbox_policy"]["writable_roots"] = serde_json::json!([]);
+        write_policy_log(&fixture, &context);
+        assert_eq!(
+            supervised_policy(&fixture.log, &fixture.id, &fixture.root).unwrap(),
+            expected
+        );
+        assert!(
+            supervised_policy(&fixture.log, &Uuid::new_v4().to_string(), &fixture.root).is_err()
+        );
+        assert!(supervised_policy(&fixture.log, &fixture.id, &fixture.target).is_err());
+    }
+
+    #[test]
+    fn supervised_policy_rejects_unknown_malformed_and_custom_permission_states() {
+        let fixture = Fixture::new();
+        let turn = Uuid::new_v4().to_string();
+        for (pointer, value) in [
+            ("/approval_policy", serde_json::json!("never")),
+            ("/approval_policy", serde_json::json!(null)),
+            (
+                "/sandbox_policy/type",
+                serde_json::json!("danger-full-access"),
+            ),
+            ("/sandbox_policy/network_access", serde_json::json!(true)),
+            (
+                "/sandbox_policy/exclude_tmpdir_env_var",
+                serde_json::json!(true),
+            ),
+            ("/sandbox_policy/exclude_slash_tmp", serde_json::json!(true)),
+            ("/permission_profile/network", serde_json::json!("enabled")),
+            (
+                "/permission_profile/file_system/entries/4/access",
+                serde_json::json!("write"),
+            ),
+            (
+                "/file_system_sandbox_policy/entries/1/access",
+                serde_json::json!("read"),
+            ),
+            ("/active_permission_profile/id", serde_json::json!("custom")),
+            (
+                "/approvals_reviewer",
+                serde_json::json!("guardian_subagent"),
+            ),
+            ("/cyber_access_program", serde_json::json!("unknown")),
+            (
+                "/root_turn_id",
+                serde_json::json!(Uuid::new_v4().to_string()),
+            ),
+        ] {
+            let mut context = standard_context(&fixture, &turn);
+            *context.pointer_mut(pointer).unwrap() = value;
+            write_policy_log(&fixture, &context);
+            assert!(
+                supervised_policy(&fixture.log, &fixture.id, &fixture.root).is_err(),
+                "{pointer}"
+            );
+        }
+        for (key, value) in [
+            ("writable_roots", serde_json::json!(["/extra"])),
+            ("new_permission", serde_json::json!(false)),
+        ] {
+            let mut context = standard_context(&fixture, &turn);
+            context["sandbox_policy"][key] = value;
+            write_policy_log(&fixture, &context);
+            assert!(supervised_policy(&fixture.log, &fixture.id, &fixture.root).is_err());
+        }
+        let mut context = standard_context(&fixture, &turn);
+        context["new_permission_state"] = serde_json::json!({"enabled":false});
+        write_policy_log(&fixture, &context);
+        assert!(
+            supervised_policy(&fixture.log, &fixture.id, &fixture.root)
+                .unwrap_err()
+                .contains("unknown or malformed")
+        );
+        context
+            .as_object_mut()
+            .unwrap()
+            .remove("new_permission_state");
+        context
+            .as_object_mut()
+            .unwrap()
+            .remove("permission_profile");
+        write_policy_log(&fixture, &context);
+        assert!(supervised_policy(&fixture.log, &fixture.id, &fixture.root).is_err());
+    }
+
+    #[test]
+    fn supervised_policy_does_not_reuse_an_earlier_context_after_a_new_turn_or_partial_record() {
+        let fixture = Fixture::new();
+        let turn = Uuid::new_v4().to_string();
+        write_policy_log(&fixture, &standard_context(&fixture, &turn));
+        let expected = supervised_policy(&fixture.log, &fixture.id, &fixture.root).unwrap();
+        let initial = fs::read(&fixture.log).unwrap();
+        for suffix in [
+            "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"new\"}}\n",
+            "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"new\"}}\n{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"new\"}}\n",
+            "{\"type\":\"turn_context\",\"payload\":",
+        ] {
+            fs::write(&fixture.log, &initial).unwrap();
+            OpenOptions::new()
+                .append(true)
+                .open(&fixture.log)
+                .unwrap()
+                .write_all(suffix.as_bytes())
+                .unwrap();
+            assert!(supervised_policy(&fixture.log, &fixture.id, &fixture.root).is_err());
+        }
+        let next_turn = Uuid::new_v4().to_string();
+        write_policy_log(&fixture, &standard_context(&fixture, &next_turn));
+        assert_ne!(
+            supervised_policy(&fixture.log, &fixture.id, &fixture.root).unwrap(),
+            expected
+        );
+        let mut changed = standard_context(&fixture, &turn);
+        changed["sandbox_policy"]["network_access"] = serde_json::json!(true);
+        write_policy_log(&fixture, &changed);
+        assert!(supervised_policy(&fixture.log, &fixture.id, &fixture.root).is_err());
+    }
+
+    #[test]
+    fn supervised_resume_explicitly_overrides_target_defaults_and_uses_a_new_worker_protocol() {
+        let fixture = Fixture::new();
+        let turn = Uuid::new_v4().to_string();
+        write_policy_log(&fixture, &standard_context(&fixture, &turn));
+        let policy = supervised_policy(&fixture.log, &fixture.id, &fixture.root).unwrap();
+        let source: ShellSession = serde_json::from_value(serde_json::json!({
+            "id":Uuid::new_v4().to_string(),"kind":"project","cwd":fixture.root,
+            "command":"codex","harness":"codex","created_at_unix":0,"unrestricted":false,
+            "codex_home":fixture.source
+        }))
+        .unwrap();
+        let request = ReloadRequest {
+            home: fixture.root.clone(),
+            shell_id: source.id.clone(),
+            thread_id: fixture.id.clone(),
+            executable: PathBuf::from("/stable/helper with spaces/somtus"),
+            log_path: fixture.log.clone(),
+            cursor: fs::metadata(&fixture.log).unwrap().len(),
+            active_turn: None,
+            original_command: source.command.clone(),
+            unrestricted: false,
+            codex_home: Some(fixture.target.to_string_lossy().into_owned()),
+            claude_config_dir: None,
+            profile: None,
+            account_switch: Some(AccountSwitch {
+                source,
+                pane_identity: "%5|identity".into(),
+                target_home: fixture.target.clone(),
+                target_id: None,
+                expected_email: "target@example.test".into(),
+                supervised_policy: Some(policy),
+            }),
+        };
+        let argv = shell_words(&resume_command(&request, Some(&fixture.root))).unwrap();
+        for pair in [
+            ["--sandbox", "workspace-write"],
+            ["--ask-for-approval", "on-request"],
+            ["-c", "sandbox_mode=\"workspace-write\""],
+            ["-c", "approval_policy=\"on-request\""],
+            ["-c", "approvals_reviewer=\"user\""],
+            ["-c", "default_permissions=\":workspace\""],
+            ["-c", "sandbox_workspace_write.writable_roots=[]"],
+            ["-c", "sandbox_workspace_write.network_access=false"],
+            ["-c", "sandbox_workspace_write.exclude_tmpdir_env_var=false"],
+            ["-c", "sandbox_workspace_write.exclude_slash_tmp=false"],
+            ["resume", &fixture.id],
+        ] {
+            assert!(argv.windows(2).any(|args| args == pair), "{pair:?}");
+        }
+        assert!(
+            !argv
+                .iter()
+                .any(|arg| arg.contains("bypass") || arg == "--yolo")
+        );
+        assert!(argv.contains(&"--no-daemon".to_owned()));
+        assert!(argv.contains(&format!("CODEX_HOME={}", fixture.target.display())));
+        assert_eq!(worker_command(&request), "switch-supervised-account-worker");
+        assert!(!request.account_switch.unwrap().source.unrestricted);
     }
 
     #[test]

@@ -448,6 +448,7 @@ fn run_cli_with_invocation(args: &[String], invocation: Invocation) -> Result<bo
             | "instances"
             | "reload-session-worker"
             | "switch-account-worker"
+            | "switch-supervised-account-worker"
             | "project"
             | "projects"
             | "worktree"
@@ -534,7 +535,7 @@ fn run_cli_with_invocation(args: &[String], invocation: Invocation) -> Result<bo
             let path = take_single(args, "reload-session-worker REQUEST")?;
             crate::session_reload::run_reload_worker(std::path::Path::new(&path))?;
         }
-        "switch-account-worker" => {
+        "switch-account-worker" | "switch-supervised-account-worker" => {
             let path = take_single(args, "switch-account-worker REQUEST")?;
             crate::session_reload::run_account_switch_worker(std::path::Path::new(&path))?;
         }

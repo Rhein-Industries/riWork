@@ -94,7 +94,7 @@ automations retain their account binding, so ongoing work is not silently moved
 to another identity. Reauthenticate a saved account through its account manager
 if it is needed again; changing the default does not delete its credentials.
 
-To switch an existing unrestricted Codex terminal without a custom profile,
+To switch an existing Codex terminal without a custom profile,
 queue a switch with the exact email expected at the destination:
 
 ```sh
@@ -106,6 +106,11 @@ The worker verifies the destination sign-in, waits for the queued conversation
 and its active child work to finish, and checks for an empty prompt without an
 approval or draft before replacing the process. It copies the exact conversation
 history into the destination home and resumes the same thread in the same pane.
+It supports unrestricted terminals and completed supervised turns using the
+standard workspace-write sandbox with on-request approvals. Supervised switches
+explicitly preserve the workspace permission profile, user approval reviewer,
+disabled network access, writable roots and temporary-directory settings;
+custom, unknown or changed policies are refused.
 Original history and credentials remain in their original homes. An existing
 destination history is refused rather than overwritten. A changed pane or a new
 turn cancels the queued request; an uncertain dispatch is reported without an

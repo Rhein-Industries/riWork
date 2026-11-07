@@ -1086,6 +1086,10 @@ impl SessionManager {
         {
             return Err("The queued Codex pane changed; nothing was switched".into());
         }
+        // `alive` is transient and absent from the registry. The guard above
+        // just proved this exact pane is live; carry that fact into the
+        // activity checks rather than treating its deserialized value as exited.
+        session.alive = true;
         let children = match self.account_switch_rollout_proof(session, true) {
             Ok((identity, children)) if identity == thread_id => children,
             Ok(_) | Err(IdentityError::Changed(_)) => {

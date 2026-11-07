@@ -163,11 +163,7 @@ fn launch_worker(
     let log = private_file(&log_path)?;
     let mut command = Command::new(&request.executable);
     command
-        .arg(if request.account_switch.is_some() {
-            "switch-account-worker"
-        } else {
-            "reload-session-worker"
-        })
+        .arg(worker_command(request))
         .arg(request_path)
         .stdin(Stdio::null())
         .stdout(Stdio::from(
@@ -599,6 +595,19 @@ fn scan_records(
     cursor: &mut u64,
     mut visit: impl FnMut(LogRecord),
 ) -> Result<(), String> {
+    scan_record_bytes(path, cursor, |line| {
+        let record = serde_json::from_slice(line)
+            .map_err(|error| format!("Cannot confirm Codex turn state: {error}"))?;
+        visit(record);
+        Ok(())
+    })
+}
+
+fn scan_record_bytes(
+    path: &Path,
+    cursor: &mut u64,
+    mut visit: impl FnMut(&[u8]) -> Result<(), String>,
+) -> Result<(), String> {
     let mut file =
         File::open(path).map_err(|error| format!("Cannot read Codex turn log: {error}"))?;
     if file.metadata().map_err(|error| error.to_string())?.len() < *cursor {
@@ -620,12 +629,18 @@ fn scan_records(
         if length == 0 || line.last() != Some(&b'\n') {
             break;
         }
-        let record = serde_json::from_slice(&line)
-            .map_err(|error| format!("Cannot confirm Codex turn state: {error}"))?;
-        visit(record);
+        visit(&line)?;
         *cursor += length as u64;
     }
     Ok(())
+}
+
+fn worker_command(request: &ReloadRequest) -> &'static str {
+    match &request.account_switch {
+        Some(switch) if switch.supervised_policy.is_some() => "switch-supervised-account-worker",
+        Some(_) => "switch-account-worker",
+        None => "reload-session-worker",
+    }
 }
 
 fn find_rollout(directory: &Path, thread_id: &str) -> Result<PathBuf, String> {
@@ -775,6 +790,12 @@ fn resume_command(request: &ReloadRequest, folder: Option<&Path>) -> String {
     }
     if request.unrestricted {
         args.push("--dangerously-bypass-approvals-and-sandbox".to_owned());
+    } else if let Some(policy) = request
+        .account_switch
+        .as_ref()
+        .and_then(|switch| switch.supervised_policy.as_ref())
+    {
+        args.extend(policy.arguments());
     }
     args.extend(["resume".to_owned(), request.thread_id.clone()]);
     if request.account_switch.is_some() {
