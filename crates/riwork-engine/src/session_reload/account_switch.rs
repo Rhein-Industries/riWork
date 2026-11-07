@@ -16,42 +16,85 @@ pub(super) struct AccountSwitch {
     pub(super) supervised_policy: Option<SupervisedPolicy>,
 }
 
-/// This is evidence of the one supported supervised policy, not a configurable
-/// permission template. Every policy field is checked before constructing it.
+/// Evidence of the supported workspace policy and an exact approval variant,
+/// not a configurable permission template. All fields are checked first.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub(super) struct SupervisedPolicy {
     turn_id: String,
     cwd: PathBuf,
+    #[serde(default)]
+    approval: SupervisedApproval,
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum SupervisedApproval {
+    #[default]
+    OnRequest,
+    GranularMcpAndPermissionRequests,
+}
+
+impl SupervisedApproval {
+    fn from_context(value: &serde_json::Value) -> Result<Self, String> {
+        if value == "on-request" {
+            Ok(Self::OnRequest)
+        } else if value
+            == &serde_json::json!({"granular": {
+                "mcp_elicitations": true, "request_permissions": true,
+                "rules": false, "sandbox_approval": false, "skill_approval": false
+            }})
+        {
+            Ok(Self::GranularMcpAndPermissionRequests)
+        } else {
+            Err(
+                "The completed turn has an unsupported approval policy; nothing was switched"
+                    .into(),
+            )
+        }
+    }
+
+    fn toml(self) -> &'static str {
+        match self {
+            Self::OnRequest => "\"on-request\"",
+            Self::GranularMcpAndPermissionRequests => {
+                "{granular={mcp_elicitations=true,request_permissions=true,rules=false,sandbox_approval=false,skill_approval=false}}"
+            }
+        }
+    }
 }
 
 impl SupervisedPolicy {
     pub(super) fn arguments(&self) -> Vec<String> {
-        [
-            "--sandbox",
-            "workspace-write",
-            "--ask-for-approval",
-            "on-request",
-            "-c",
-            "sandbox_mode=\"workspace-write\"",
-            "-c",
-            "approval_policy=\"on-request\"",
-            "-c",
-            "approvals_reviewer=\"user\"",
-            "-c",
-            "default_permissions=\":workspace\"",
-            "-c",
-            "sandbox_workspace_write.writable_roots=[]",
-            "-c",
-            "sandbox_workspace_write.network_access=false",
-            "-c",
-            "sandbox_workspace_write.exclude_tmpdir_env_var=false",
-            "-c",
-            "sandbox_workspace_write.exclude_slash_tmp=false",
-        ]
-        .into_iter()
-        .map(str::to_owned)
-        .collect()
+        let mut args = vec!["--sandbox".to_owned(), "workspace-write".to_owned()];
+        if self.approval == SupervisedApproval::OnRequest {
+            args.extend(["--ask-for-approval".to_owned(), "on-request".to_owned()]);
+        }
+        args.extend([
+            "-c".to_owned(),
+            format!("approval_policy={}", self.approval.toml()),
+        ]);
+        args.extend(
+            [
+                "-c",
+                "sandbox_mode=\"workspace-write\"",
+                "-c",
+                "approvals_reviewer=\"user\"",
+                "-c",
+                "default_permissions=\":workspace\"",
+                "-c",
+                "sandbox_workspace_write.writable_roots=[]",
+                "-c",
+                "sandbox_workspace_write.network_access=false",
+                "-c",
+                "sandbox_workspace_write.exclude_tmpdir_env_var=false",
+                "-c",
+                "sandbox_workspace_write.exclude_slash_tmp=false",
+            ]
+            .into_iter()
+            .map(str::to_owned),
+        );
+        args
     }
 }
 
@@ -104,6 +147,7 @@ fn standard_filesystem_entries(cwd: &Path) -> serde_json::Value {
 }
 
 fn context_policy(context: TurnContext, cwd: &Path) -> Result<SupervisedPolicy, String> {
+    let approval = SupervisedApproval::from_context(&context.approval_policy)?;
     let mut sandbox = context.sandbox_policy;
     if sandbox.get("writable_roots") == Some(&serde_json::json!([])) {
         sandbox.as_object_mut().unwrap().remove("writable_roots");
@@ -111,7 +155,6 @@ fn context_policy(context: TurnContext, cwd: &Path) -> Result<SupervisedPolicy, 
     let entries = standard_filesystem_entries(cwd);
     if context.cwd != cwd
         || context.root_turn_id != context.turn_id
-        || context.approval_policy != "on-request"
         || sandbox
             != serde_json::json!({"type":"workspace-write","network_access":false,"exclude_tmpdir_env_var":false,"exclude_slash_tmp":false})
         || context.permission_profile
@@ -122,12 +165,13 @@ fn context_policy(context: TurnContext, cwd: &Path) -> Result<SupervisedPolicy, 
         || context.approvals_reviewer != "user"
         || context.cyber_access_program != "standard"
     {
-        return Err("The completed turn does not use the supported standard workspace-write/on-request policy; nothing was switched".into());
+        return Err("The completed turn does not use the supported standard workspace-write policy; nothing was switched".into());
     }
     validate_uuid(&context.turn_id)?;
     Ok(SupervisedPolicy {
         turn_id: context.turn_id,
         cwd: cwd.to_path_buf(),
+        approval,
     })
 }
 
@@ -735,6 +779,7 @@ mod tests {
         let expected = SupervisedPolicy {
             turn_id: turn.clone(),
             cwd: fixture.root.clone(),
+            approval: SupervisedApproval::OnRequest,
         };
         assert_eq!(
             supervised_policy(&fixture.log, &fixture.id, &fixture.root).unwrap(),
@@ -859,19 +904,14 @@ mod tests {
         assert!(supervised_policy(&fixture.log, &fixture.id, &fixture.root).is_err());
     }
 
-    #[test]
-    fn supervised_resume_explicitly_overrides_target_defaults_and_uses_a_new_worker_protocol() {
-        let fixture = Fixture::new();
-        let turn = Uuid::new_v4().to_string();
-        write_policy_log(&fixture, &standard_context(&fixture, &turn));
-        let policy = supervised_policy(&fixture.log, &fixture.id, &fixture.root).unwrap();
+    fn supervised_request(fixture: &Fixture, policy: SupervisedPolicy) -> ReloadRequest {
         let source: ShellSession = serde_json::from_value(serde_json::json!({
             "id":Uuid::new_v4().to_string(),"kind":"project","cwd":fixture.root,
             "command":"codex","harness":"codex","created_at_unix":0,"unrestricted":false,
             "codex_home":fixture.source
         }))
         .unwrap();
-        let request = ReloadRequest {
+        ReloadRequest {
             home: fixture.root.clone(),
             shell_id: source.id.clone(),
             thread_id: fixture.id.clone(),
@@ -892,7 +932,16 @@ mod tests {
                 expected_email: "target@example.test".into(),
                 supervised_policy: Some(policy),
             }),
-        };
+        }
+    }
+
+    #[test]
+    fn supervised_resume_explicitly_overrides_target_defaults_and_uses_a_new_worker_protocol() {
+        let fixture = Fixture::new();
+        let turn = Uuid::new_v4().to_string();
+        write_policy_log(&fixture, &standard_context(&fixture, &turn));
+        let policy = supervised_policy(&fixture.log, &fixture.id, &fixture.root).unwrap();
+        let request = supervised_request(&fixture, policy);
         let argv = shell_words(&resume_command(&request, Some(&fixture.root))).unwrap();
         for pair in [
             ["--sandbox", "workspace-write"],
@@ -905,6 +954,7 @@ mod tests {
             ["-c", "sandbox_workspace_write.network_access=false"],
             ["-c", "sandbox_workspace_write.exclude_tmpdir_env_var=false"],
             ["-c", "sandbox_workspace_write.exclude_slash_tmp=false"],
+            ["-c", "check_for_update_on_startup=false"],
             ["resume", &fixture.id],
         ] {
             assert!(argv.windows(2).any(|args| args == pair), "{pair:?}");
@@ -918,6 +968,170 @@ mod tests {
         assert!(argv.contains(&format!("CODEX_HOME={}", fixture.target.display())));
         assert_eq!(worker_command(&request), "switch-supervised-account-worker");
         assert!(!request.account_switch.unwrap().source.unrestricted);
+    }
+
+    fn granular_approval() -> serde_json::Value {
+        serde_json::json!({"granular": {
+            "mcp_elicitations": true, "request_permissions": true,
+            "rules": false, "sandbox_approval": false, "skill_approval": false
+        }})
+    }
+
+    #[test]
+    fn granular_policy_is_pinned_and_resumed_without_a_string_approval_override() {
+        let fixture = Fixture::new();
+        let turn = Uuid::new_v4().to_string();
+        let mut context = standard_context(&fixture, &turn);
+        write_policy_log(&fixture, &context);
+        let old_policy = supervised_policy(&fixture.log, &fixture.id, &fixture.root).unwrap();
+        context["approval_policy"] = granular_approval();
+        write_policy_log(&fixture, &context);
+        let policy = supervised_policy(&fixture.log, &fixture.id, &fixture.root).unwrap();
+        assert_eq!(
+            policy.approval,
+            SupervisedApproval::GranularMcpAndPermissionRequests
+        );
+        // Same conversation and turn with a different policy cannot reuse a queued proof.
+        assert_ne!(policy, old_policy);
+        let encoded = serde_json::to_value(&policy).unwrap();
+        assert_eq!(
+            serde_json::from_value::<SupervisedPolicy>(encoded.clone()).unwrap(),
+            policy
+        );
+        // Previously queued on-request proofs remain interpretable; older
+        // workers' deny_unknown_fields rejects the new approval-bearing proof.
+        let mut legacy = encoded.clone();
+        legacy.as_object_mut().unwrap().remove("approval");
+        assert_eq!(
+            serde_json::from_value::<SupervisedPolicy>(legacy.clone()).unwrap(),
+            old_policy
+        );
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct LegacyProof {
+            #[serde(rename = "turn_id")]
+            _turn_id: String,
+            #[serde(rename = "cwd")]
+            _cwd: PathBuf,
+        }
+        assert!(serde_json::from_value::<LegacyProof>(legacy).is_ok());
+        assert!(serde_json::from_value::<LegacyProof>(encoded).is_err());
+
+        let request = supervised_request(&fixture, policy);
+        let argv = shell_words(&resume_command(&request, Some(&fixture.root))).unwrap();
+        let approval: Vec<_> = argv
+            .iter()
+            .filter(|argument| argument.starts_with("approval_policy="))
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            approval,
+            [
+                "approval_policy={granular={mcp_elicitations=true,request_permissions=true,rules=false,sandbox_approval=false,skill_approval=false}}"
+            ]
+        );
+        assert!(!argv.iter().any(|arg| arg == "--ask-for-approval"
+            || arg == "-a"
+            || arg == "on-request"
+            || arg.contains("bypass")
+            || arg == "--yolo"));
+        for pair in [
+            ["--sandbox", "workspace-write"],
+            ["-c", "sandbox_mode=\"workspace-write\""],
+            ["-c", "approvals_reviewer=\"user\""],
+            ["-c", "default_permissions=\":workspace\""],
+            ["-c", "sandbox_workspace_write.writable_roots=[]"],
+            ["-c", "sandbox_workspace_write.network_access=false"],
+            ["-c", "sandbox_workspace_write.exclude_tmpdir_env_var=false"],
+            ["-c", "sandbox_workspace_write.exclude_slash_tmp=false"],
+            ["-c", "check_for_update_on_startup=false"],
+            ["resume", &fixture.id],
+        ] {
+            assert!(argv.windows(2).any(|args| args == pair), "{pair:?}");
+        }
+        assert!(!request.unrestricted);
+        assert!(!request.account_switch.unwrap().source.unrestricted);
+    }
+
+    #[test]
+    fn granular_policy_rejects_every_changed_missing_unknown_or_nonboolean_bit() {
+        let fixture = Fixture::new();
+        let turn = Uuid::new_v4().to_string();
+        let expected = granular_approval();
+        for key in [
+            "mcp_elicitations",
+            "request_permissions",
+            "rules",
+            "sandbox_approval",
+            "skill_approval",
+        ] {
+            for replacement in [
+                None,
+                Some(serde_json::json!(
+                    !expected["granular"][key].as_bool().unwrap()
+                )),
+                Some(serde_json::json!("false")),
+                Some(serde_json::Value::Null),
+            ] {
+                let mut context = standard_context(&fixture, &turn);
+                context["approval_policy"] = expected.clone();
+                match replacement {
+                    Some(value) => {
+                        context["approval_policy"]["granular"][key] = value;
+                    }
+                    None => {
+                        context["approval_policy"]["granular"]
+                            .as_object_mut()
+                            .unwrap()
+                            .remove(key);
+                    }
+                }
+                write_policy_log(&fixture, &context);
+                assert!(
+                    supervised_policy(&fixture.log, &fixture.id, &fixture.root).is_err(),
+                    "{key}"
+                );
+            }
+        }
+        for nested in [true, false] {
+            let mut context = standard_context(&fixture, &turn);
+            context["approval_policy"] = expected.clone();
+            if nested {
+                context["approval_policy"]["granular"]["new_category"] = serde_json::json!(false);
+            } else {
+                context["approval_policy"]["new_category"] = serde_json::json!(false);
+            }
+            write_policy_log(&fixture, &context);
+            assert!(supervised_policy(&fixture.log, &fixture.id, &fixture.root).is_err());
+        }
+    }
+
+    #[test]
+    fn startup_update_override_is_per_account_switch_including_unrestricted_switches() {
+        let fixture = Fixture::new();
+        let turn = Uuid::new_v4().to_string();
+        write_policy_log(&fixture, &standard_context(&fixture, &turn));
+        let policy = supervised_policy(&fixture.log, &fixture.id, &fixture.root).unwrap();
+        let mut request = supervised_request(&fixture, policy);
+        request.unrestricted = true;
+        let switch = request.account_switch.as_mut().unwrap();
+        switch.source.unrestricted = true;
+        switch.supervised_policy = None;
+        let argv = shell_words(&resume_command(&request, None)).unwrap();
+        assert!(
+            argv.windows(2)
+                .any(|args| args == ["-c", "check_for_update_on_startup=false"])
+        );
+        assert!(argv.contains(&"--dangerously-bypass-approvals-and-sandbox".to_owned()));
+        assert!(!argv.iter().any(|arg| arg.starts_with("approval_policy=")));
+        request.account_switch = None;
+        let argv = shell_words(&resume_command(&request, None)).unwrap();
+        assert!(
+            !argv
+                .iter()
+                .any(|arg| arg.starts_with("check_for_update_on_startup="))
+        );
+        assert!(!fixture.target.join("config.toml").exists());
     }
 
     #[test]

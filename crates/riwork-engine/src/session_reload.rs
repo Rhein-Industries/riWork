@@ -802,6 +802,9 @@ fn resume_command(request: &ReloadRequest, folder: Option<&Path>) -> String {
         // Keep this migrated terminal's own process as its rollout owner. That
         // makes post-launch identity independently verifiable without a model turn.
         args.push("--no-daemon".into());
+        // This guarded handover must reach the resumed prompt without an
+        // optional update dialog. Leave global config and ordinary reloads alone.
+        args.extend(["-c".into(), "check_for_update_on_startup=false".into()]);
     }
     // After the subcommand, beside the options the `codex` wrapper adds there.
     if let Some(folder) = folder {

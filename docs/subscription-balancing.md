@@ -107,10 +107,12 @@ and its active child work to finish, and checks for an empty prompt without an
 approval or draft before replacing the process. It copies the exact conversation
 history into the destination home and resumes the same thread in the same pane.
 It supports unrestricted terminals and completed supervised turns using the
-standard workspace-write sandbox with on-request approvals. Supervised switches
-explicitly preserve the workspace permission profile, user approval reviewer,
-disabled network access, writable roots and temporary-directory settings;
-custom, unknown or changed policies are refused.
+standard workspace-write sandbox with on-request approvals or the supported
+granular approval policy. Supervised switches explicitly preserve the approval
+rules, workspace permission profile, user approval reviewer, disabled network
+access, writable roots and temporary-directory settings; unknown or changed
+policies are refused. Migration launches skip Codex's optional startup update
+prompt without changing its global update settings.
 Original history and credentials remain in their original homes. An existing
 destination history is refused rather than overwritten. A changed pane or a new
 turn cancels the queued request; an uncertain dispatch is reported without an
