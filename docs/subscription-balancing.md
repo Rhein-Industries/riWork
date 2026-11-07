@@ -94,6 +94,18 @@ automations retain their account binding, so ongoing work is not silently moved
 to another identity. Reauthenticate a saved account through its account manager
 if it is needed again; changing the default does not delete its credentials.
 
+To remove a saved account from Somtus's account choices and Usage panel:
+
+```sh
+somtus account forget LABEL_OR_ID --json
+```
+
+The removal is local to Somtus and survives refreshing Orca's account list.
+It prevents new selections of that account, including explicit account IDs.
+Existing sessions keep their bindings and files, so finish or migrate them
+separately. Orca's saved account, credentials and conversation history are
+preserved. The system-default account cannot be forgotten.
+
 To switch an existing Codex terminal without a custom profile,
 queue a switch with the exact email expected at the destination:
 

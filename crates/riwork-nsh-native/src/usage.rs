@@ -32,7 +32,7 @@ use std::{
 use futures_util::FutureExt;
 use nsh_core::prelude::*;
 use riwork_core::{
-    codex_accounts::{self, AccountsSnapshot, CodexAccount, SYSTEM_DEFAULT_ID},
+    codex_accounts::{self, AccountsSnapshot, CodexAccount, ForgottenAccounts, SYSTEM_DEFAULT_ID},
     settings::SettingsStore,
 };
 use riwork_engine::usage::{self as engine_usage, ProviderUsage};
@@ -296,6 +296,10 @@ pub trait UsageBackend: Send + Sync + 'static {
     fn read_claude(&self, shell_id: &str) -> Result<Option<ProviderUsage>, String>;
     /// The saved account list, or None when none was ever saved. Never spawns.
     fn cached_accounts(&self) -> Option<AccountsSnapshot>;
+    /// Local selection policy; also hides frozen homes retained by live shells.
+    fn forgotten_accounts(&self) -> Result<ForgottenAccounts, String> {
+        Ok(ForgottenAccounts::default())
+    }
     /// Bounded reads on a worker. Fixture backends never launch a harness.
     fn read_grok(&self, ids: &[String], _previous: &BTreeMap<String, engine_usage::GrokTabUsage>, _force: bool) -> BTreeMap<String, engine_usage::GrokTabUsage> {
         ids.iter().map(|id| (id.clone(), engine_usage::GrokTabUsage::unavailable("Session usage unavailable"))).collect()
@@ -368,11 +372,44 @@ fn stamp(path: &Path) -> Stamp {
         .map(|metadata| (metadata.modified().ok(), metadata.len()))
 }
 
+#[derive(Clone, PartialEq, Eq)]
+struct PolicyStamp {
+    modified: Option<SystemTime>,
+    len: u64,
+    regular: bool,
+    symlink: bool,
+    #[cfg(unix)]
+    identity: (u64, u64, u32, i64, i64),
+}
+
+type PolicyState = Result<Option<PolicyStamp>, (std::io::ErrorKind, Option<i32>)>;
+
+fn policy_stamp(path: &Path) -> PolicyState {
+    // Policy trust includes its type and permissions, not just its contents.
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err((error.kind(), error.raw_os_error())),
+    };
+    Ok(Some(PolicyStamp {
+        modified: metadata.modified().ok(),
+        len: metadata.len(),
+        regular: metadata.is_file(),
+        symlink: metadata.file_type().is_symlink(),
+        #[cfg(unix)]
+        identity: {
+            use std::os::unix::fs::MetadataExt;
+            (metadata.dev(), metadata.ino(), metadata.mode(), metadata.ctime(), metadata.ctime_nsec())
+        },
+    }))
+}
+
 /// riwork-core / riwork-engine, unchanged.
 pub struct CoreUsageBackend {
     home: PathBuf,
     settings: SettingsStore,
-    saved: Mutex<Option<(Stamp, Option<AccountsSnapshot>)>>,
+    saved: Mutex<Option<((Stamp, PolicyState), Option<AccountsSnapshot>)>>,
+    forgotten: Mutex<Option<(PolicyState, Result<ForgottenAccounts, String>)>>,
 }
 
 impl CoreUsageBackend {
@@ -381,12 +418,18 @@ impl CoreUsageBackend {
             settings: SettingsStore::open(home.clone())?,
             home,
             saved: Mutex::new(None),
+            forgotten: Mutex::new(None),
         })
     }
 }
 
 impl UsageBackend for CoreUsageBackend {
     fn read_codex(&self, target: &CodexTarget) -> Result<ProviderUsage, String> {
+        if target.account_id.as_deref() != Some(SYSTEM_DEFAULT_ID)
+            && self.forgotten_accounts()?.hides(target.account_id.as_deref(), &target.home)
+        {
+            return Err("This saved Codex account was forgotten in Somtus".into());
+        }
         engine_usage::read_codex_usage_at(&target.home)
     }
     fn record_codex(&self, home: &Path, usage: Option<&ProviderUsage>) {
@@ -408,14 +451,29 @@ impl UsageBackend for CoreUsageBackend {
     }
     fn cached_accounts(&self) -> Option<AccountsSnapshot> {
         // Woken on many home changes: parse again only when the cache moved.
-        let current = stamp(&self.home.join(CACHE_NAME));
+        let current = (
+            stamp(&self.home.join(CACHE_NAME)),
+            policy_stamp(&self.home.join(codex_accounts::FORGOTTEN_ACCOUNTS_FILE_NAME)),
+        );
         let mut saved = self.saved.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some((known, value)) = saved.as_ref()
             && *known == current
         {
             return value.clone();
         }
-        let value = current.and_then(|_| read_saved_accounts(&self.home));
+        let value = current.0.and_then(|_| read_saved_accounts(&self.home));
+        *saved = Some((current, value.clone()));
+        value
+    }
+    fn forgotten_accounts(&self) -> Result<ForgottenAccounts, String> {
+        let current = policy_stamp(&self.home.join(codex_accounts::FORGOTTEN_ACCOUNTS_FILE_NAME));
+        let mut saved = lock(&self.forgotten);
+        if let Some((known, value)) = saved.as_ref()
+            && *known == current
+        {
+            return value.clone();
+        }
+        let value = codex_accounts::read_forgotten_accounts(&self.home);
         *saved = Some((current, value.clone()));
         value
     }
@@ -480,6 +538,9 @@ impl UsageBackend for FixtureUsageBackend {
     }
     fn cached_accounts(&self) -> Option<AccountsSnapshot> {
         read_saved_accounts(&self.home)
+    }
+    fn forgotten_accounts(&self) -> Result<ForgottenAccounts, String> {
+        codex_accounts::read_forgotten_accounts(&self.home)
     }
     fn discover_accounts(&self) -> AccountsSnapshot {
         let saved = read_saved_accounts(&self.home);
@@ -627,6 +688,8 @@ struct State {
     system: Option<CodexAccount>,
     saved: Option<AccountsSnapshot>,
     discovered: Option<AccountsSnapshot>,
+    forgotten: ForgottenAccounts,
+    forgotten_error: Option<String>,
     refreshing: bool,
     discoveries: u64,
     shells: Vec<ShellSessionDto>,
@@ -649,19 +712,30 @@ struct AccountsView<'a> {
 }
 
 impl State {
+    fn hidden_account(&self, id: Option<&str>, home: &Path) -> bool {
+        if id == Some(SYSTEM_DEFAULT_ID)
+            || (id.is_none() && self.system.as_ref().is_some_and(|system| system.home == home))
+        {
+            return false;
+        }
+        self.forgotten.hides(id, home) || self.forgotten_error.is_some()
+    }
+
     fn view(&self) -> AccountsView<'_> {
         match self.discovered.as_ref().or(self.saved.as_ref()) {
             Some(snapshot) => AccountsView {
                 listed: true,
-                accounts: snapshot.accounts.iter().collect(),
-                error: snapshot.error.as_deref(),
+                accounts: snapshot.accounts.iter()
+                    .filter(|account| !self.hidden_account(Some(&account.id), &account.home))
+                    .collect(),
+                error: self.forgotten_error.as_deref().or(snapshot.error.as_deref()),
                 from_cache: snapshot.from_cache,
                 source_active_id: snapshot.source_active_id.as_deref(),
             },
             None => AccountsView {
                 listed: false,
                 accounts: self.system.iter().collect(),
-                error: None,
+                error: self.forgotten_error.as_deref(),
                 from_cache: false,
                 source_active_id: None,
             },
@@ -753,6 +827,9 @@ impl State {
             let Some(home) = shell.codex_home.as_deref().map(PathBuf::from) else {
                 continue;
             };
+            if self.hidden_account(shell.codex_account_id.as_deref(), &home) {
+                continue;
+            }
             if homes.insert(home.clone()) {
                 targets.push(CodexTarget {
                     label: shell_label(shell, &home, &view),
@@ -896,6 +973,7 @@ impl Inner {
     /// Cheap file-only reads: settings, the saved list, the system home.
     fn reload(&self) {
         let settings = self.backend.codex_settings();
+        let forgotten = self.backend.forgotten_accounts();
         let saved = self.backend.cached_accounts();
         let system = self.backend.system_account().ok();
         let mut state = lock(&self.state);
@@ -905,6 +983,13 @@ impl Inner {
                 state.settings_error = None;
             }
             Err(error) => state.settings_error = Some(error),
+        }
+        match forgotten {
+            Ok(forgotten) => {
+                state.forgotten = forgotten;
+                state.forgotten_error = None;
+            }
+            Err(error) => state.forgotten_error = Some(error),
         }
         if !same_saved_accounts(&state.saved, &saved) {
             // Discovery retains its useful error/cache status until the saved

@@ -4,7 +4,7 @@
 //! Orca; Somtus only points a newly launched Codex process at the selected home.
 
 use std::{
-    collections::HashSet,
+    collections::{BTreeSet, HashSet},
     env,
     ffi::{OsStr, OsString},
     fs,
@@ -31,6 +31,38 @@ const MAX_OUTPUT: usize = 1024 * 1024;
 const MAX_ACCOUNTS: usize = 128;
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
 const CACHE_NAME: &str = "codex-accounts.json";
+pub const FORGOTTEN_ACCOUNTS_FILE_NAME: &str = "codex-accounts-ignored.json";
+const MAX_FORGOTTEN_ACCOUNTS: usize = 4096;
+
+/// Local selection policy only. Orca's credentials, homes and conversation
+/// history remain owned by Orca, including homes still used by live terminals.
+#[derive(Clone, Debug, Default)]
+pub struct ForgottenAccounts {
+    account_ids: BTreeSet<String>,
+    profile_roots: Vec<PathBuf>,
+}
+
+impl ForgottenAccounts {
+    /// Recognize both the saved ID and its frozen managed-home path. The roots
+    /// are resolved once when loading policy, never once per usage target.
+    pub fn hides(&self, id: Option<&str>, home: &Path) -> bool {
+        if id == Some(SYSTEM_DEFAULT_ID) { return false; }
+        id.is_some_and(|id| self.account_ids.contains(id))
+            || self.profile_roots.iter().any(|root| {
+                self.account_ids.iter().any(|id| {
+                    home == root.join("codex-accounts").join(id).join("home")
+                })
+            })
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ForgottenPolicy {
+    version: u32,
+    user_data: PathBuf,
+    account_ids: BTreeSet<String>,
+}
 
 #[derive(Clone, Debug)]
 pub struct CodexAccount {
@@ -124,7 +156,7 @@ pub fn discover_in(state_home: &Path) -> AccountsSnapshot {
         let output = run_orca_account_list(&installed_orca_cli()?)?;
         let cache = parse_accounts(&output, user_data)?;
         write_cache(state_home, &cache)?;
-        Ok(cache)
+        filter_forgotten(state_home, cache)
     })();
     match result {
         Ok(cache) => snapshot(Some(cache), None, false),
@@ -209,6 +241,11 @@ pub fn cached_accounts(state_home: &Path) -> Result<Vec<CodexAccount>, String> {
 /// the same Codex home as choosing it in Settings. When no list was ever saved, Orca is
 /// asked once for it, as Settings does; run this on a background thread.
 pub fn resolve_account(state_home: &Path, query: &str) -> Result<CodexAccountBinding, String> {
+    if system_default_query(query) {
+        return resolve_launch_binding(state_home, None);
+    }
+    // A broken local exclusion policy is not a reason to rediscover accounts.
+    read_forgotten_accounts(state_home)?;
     let cache = match read_cache(state_home) {
         Ok(cache) => cache,
         Err(_) => {
@@ -221,6 +258,51 @@ pub fn resolve_account(state_home: &Path, query: &str) -> Result<CodexAccountBin
         }
     };
     resolve_account_in(&cache, query)
+}
+
+fn system_default_query(query: &str) -> bool {
+    query.trim().eq_ignore_ascii_case(SYSTEM_DEFAULT_ID)
+        || query.trim().eq_ignore_ascii_case("System default")
+}
+
+/// Forget an existing saved account in Somtus only. Discovery cannot re-add it,
+/// and explicit new launches refuse it. Existing frozen terminal bindings and
+/// pending account switches are unchanged. This never runs Orca or reads auth.
+pub fn forget_account(state_home: &Path, query: &str) -> Result<CodexAccountBinding, String> {
+    if system_default_query(query) {
+        return Err("The system-default Codex account cannot be forgotten.".into());
+    }
+    let _lock = forgotten_policy_lock(state_home)?;
+    let cache = read_cache_raw(state_home)?;
+    let mut forgotten = read_forgotten_accounts(state_home)?;
+    // Keep raw metadata for exact, idempotent lookup even after the visible
+    // catalog hides the account. An unavailable home can still be forgotten.
+    let mut accounts = snapshot(Some(cache.clone()), None, true).accounts;
+    for account in &mut accounts {
+        account.available = true;
+        account.unavailable_reason = None;
+    }
+    let account = find_account(&accounts, query)?;
+    if account.is_system_default {
+        return Err("The system-default Codex account cannot be forgotten.".into());
+    }
+    let binding = CodexAccountBinding {
+        id: Some(account.id.clone()),
+        label: Some(account.label.clone()),
+        email: account.email.clone(),
+        home: account.home.clone(),
+    };
+    if forgotten.account_ids.insert(account.id.clone()) {
+        if forgotten.account_ids.len() > MAX_FORGOTTEN_ACCOUNTS {
+            return Err("Too many forgotten Codex accounts.".into());
+        }
+        write_forgotten_policy(state_home, &ForgottenPolicy {
+            version: 1,
+            user_data: cache.user_data,
+            account_ids: forgotten.account_ids,
+        })?;
+    }
+    Ok(binding)
 }
 
 fn resolve_account_in(cache: &AccountCache, query: &str) -> Result<CodexAccountBinding, String> {
@@ -669,7 +751,104 @@ fn installed_orca_cli() -> Result<PathBuf, String> {
     })
 }
 
+fn forgotten_policy_error() -> String {
+    "Cannot read the forgotten Codex account policy; saved accounts remain unavailable. Repair the local policy before selecting a saved account.".into()
+}
+
+/// Missing policy means no exclusions. Invalid, non-private or wrong-profile
+/// policy fails closed, rather than making a forgotten account available again.
+pub fn read_forgotten_accounts(state_home: &Path) -> Result<ForgottenAccounts, String> {
+    let path = state_home.join(FORGOTTEN_ACCOUNTS_FILE_NAME);
+    let metadata = match fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(ForgottenAccounts::default()),
+        Err(_) => return Err(forgotten_policy_error()),
+    };
+    if !metadata.is_file() || metadata.len() > MAX_OUTPUT as u64 {
+        return Err(forgotten_policy_error());
+    }
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        if metadata.permissions().mode() & 0o077 != 0 {
+            return Err(forgotten_policy_error());
+        }
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    let file = options.open(&path).map_err(|_| forgotten_policy_error())?;
+    let mut bytes = Vec::new();
+    file.take((MAX_OUTPUT + 1) as u64).read_to_end(&mut bytes).map_err(|_| forgotten_policy_error())?;
+    if bytes.len() > MAX_OUTPUT { return Err(forgotten_policy_error()); }
+    let policy: ForgottenPolicy = serde_json::from_slice(&bytes).map_err(|_| forgotten_policy_error())?;
+    if policy.version != 1 || policy.user_data != orca_user_data()?
+        || policy.account_ids.len() > MAX_FORGOTTEN_ACCOUNTS
+        || policy.account_ids.iter().any(|id| !safe_account_id(id))
+    {
+        return Err(forgotten_policy_error());
+    }
+    let mut roots = vec![policy.user_data.clone()];
+    if let Ok(canonical) = policy.user_data.canonicalize()
+        && canonical != policy.user_data
+    {
+        roots.push(canonical);
+    }
+    Ok(ForgottenAccounts { account_ids: policy.account_ids, profile_roots: roots })
+}
+
+fn forgotten_policy_lock(state_home: &Path) -> Result<fs::File, String> {
+    use fs2::FileExt;
+    fs::create_dir_all(state_home).map_err(|_| "Cannot create the account policy directory.")?;
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+    let lock = options.open(state_home.join("codex-accounts-ignored.lock"))
+        .map_err(|_| "Cannot open the account policy lock.")?;
+    if !lock.metadata().map_err(|_| "Cannot inspect the account policy lock.")?.is_file() {
+        return Err("Invalid account policy lock.".into());
+    }
+    lock.lock_exclusive().map_err(|_| "Cannot lock the account policy.")?;
+    Ok(lock)
+}
+
+fn write_forgotten_policy(state_home: &Path, policy: &ForgottenPolicy) -> Result<(), String> {
+    let temporary = state_home.join(format!(".codex-accounts-ignored-{}.tmp", Uuid::new_v4()));
+    let result = (|| {
+        let mut bytes = serde_json::to_vec_pretty(policy).map_err(|_| "Cannot encode the account policy.")?;
+        bytes.push(b'\n');
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&temporary).map_err(|_| "Cannot save the account policy.")?;
+        file.write_all(&bytes).and_then(|_| file.sync_all()).map_err(|_| "Cannot save the account policy.")?;
+        fs::rename(&temporary, state_home.join(FORGOTTEN_ACCOUNTS_FILE_NAME)).map_err(|_| "Cannot publish the account policy.")?;
+        Ok(())
+    })();
+    if result.is_err() { let _ = fs::remove_file(temporary); }
+    result
+}
+
+fn filter_forgotten(state_home: &Path, mut cache: AccountCache) -> Result<AccountCache, String> {
+    let forgotten = read_forgotten_accounts(state_home)?;
+    cache.accounts.retain(|account| !forgotten.account_ids.contains(&account.id));
+    cache.source_active_id = cache.source_active_id.filter(|id| cache.accounts.iter().any(|account| &account.id == id));
+    Ok(cache)
+}
+
 fn read_cache(state_home: &Path) -> Result<AccountCache, String> {
+    filter_forgotten(state_home, read_cache_raw(state_home)?)
+}
+
+fn read_cache_raw(state_home: &Path) -> Result<AccountCache, String> {
     let path = state_home.join(CACHE_NAME);
     let metadata = fs::symlink_metadata(&path).map_err(|_| "No saved account metadata.")?;
     if !metadata.is_file() || metadata.len() > MAX_OUTPUT as u64 {
@@ -1217,6 +1396,142 @@ mod tests {
             .join("home");
         fs::create_dir_all(&home).unwrap();
         home.canonicalize().unwrap()
+    }
+
+    fn forget_fixture(profile: &Path) -> (PathBuf, AccountCache) {
+        let state = profile.join("somtus-state");
+        for id in ["local-1", "local-2"] {
+            fs::create_dir_all(profile.join("codex-accounts").join(id).join("home")).unwrap();
+        }
+        let cache = parse_accounts(&response(serde_json::json!([
+            {"id":"local-1","email":"first@example.test","workspaceLabel":"Work","managedHomeRuntime":"host"},
+            {"id":"local-2","email":"second@example.test","managedHomeRuntime":"host"}
+        ])), profile.to_path_buf()).unwrap();
+        write_cache(&state, &cache).unwrap();
+        (state, cache)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn forgotten_accounts_stay_hidden_after_discovery_and_explicit_resolution() {
+        use std::os::unix::fs::PermissionsExt;
+        const NAME: &str = "forgotten_accounts_stay_hidden_after_discovery_and_explicit_resolution";
+        let fixture = Fixture::new();
+        let cli = fixture.0.join("fake-orca");
+        let Some(profile) = run_in_child(&fixture, NAME, &[
+            ("ORCA_USER_DATA_PATH", fixture.0.as_os_str()), ("ORCA_CLI_COMMAND", cli.as_os_str()),
+        ]) else { return; };
+        let (state, cache) = forget_fixture(&profile);
+        let home = profile.join("codex-accounts/local-2/home");
+        let history = home.join("sessions");
+        fs::create_dir_all(&history).unwrap();
+        fs::write(home.join("auth.json"), b"fixture auth left untouched").unwrap();
+        fs::write(history.join("existing.jsonl"), b"fixture history left untouched").unwrap();
+        let raw_before = fs::read(state.join(CACHE_NAME)).unwrap();
+        let binding = forget_account(&state, "second@example.test").unwrap();
+        assert_eq!(binding.id.as_deref(), Some("local-2"));
+        assert_eq!(binding, forget_account(&state, "local-2").unwrap(), "forget is idempotent");
+        assert_eq!(fs::read(state.join(CACHE_NAME)).unwrap(), raw_before);
+        let policy = read_forgotten_accounts(&state).unwrap();
+        assert!(policy.hides(Some("local-2"), Path::new("/irrelevant")));
+        assert!(policy.hides(None, &home));
+        assert!(!policy.hides(Some(SYSTEM_DEFAULT_ID), &home));
+        assert!(!policy.hides(None, Path::new("/another-profile/codex-accounts/local-2/home")));
+        assert!(resolve_launch_binding(&state, Some("local-2")).is_err());
+        assert!(resolve_account(&state, "second@example.test").is_err());
+        assert_eq!(resolve_account(&state, "work").unwrap().id.as_deref(), Some("local-1"));
+        assert_eq!(read_cache(&state).unwrap().source_active_id, None);
+        let ids = || cached_accounts(&state).unwrap().into_iter().map(|a| a.id).collect::<Vec<_>>();
+        assert_eq!(ids(), [SYSTEM_DEFAULT_ID, "local-1"]);
+
+        let cli = profile.join("fake-orca");
+        let response = serde_json::json!({"ok":true,"result":{"codex":{
+            "accounts":cache.accounts,"activeAccountId":"local-2"
+        }}});
+        fs::write(&cli, format!("#!/bin/sh\nprintf '%s\\n' '{response}'\n")).unwrap();
+        fs::set_permissions(&cli, fs::Permissions::from_mode(0o700)).unwrap();
+        let discovered = discover_in(&state);
+        assert!(discovered.error.is_none());
+        assert_eq!(discovered.accounts.iter().map(|a| a.id.as_str()).collect::<Vec<_>>(), [SYSTEM_DEFAULT_ID, "local-1"]);
+        assert_eq!(discovered.source_active_id, None);
+        assert_eq!(ids(), [SYSTEM_DEFAULT_ID, "local-1"]);
+        fs::write(&cli, "#!/bin/sh\nexit 1\n").unwrap();
+        let fallback = discover_in(&state);
+        assert!(fallback.from_cache && fallback.error.is_some());
+        assert!(!fallback.accounts.iter().any(|a| a.id == "local-2"));
+        assert_eq!(fs::read(home.join("auth.json")).unwrap(), b"fixture auth left untouched");
+        assert_eq!(fs::read(history.join("existing.jsonl")).unwrap(), b"fixture history left untouched");
+        assert_eq!(fs::metadata(state.join(FORGOTTEN_ACCOUNTS_FILE_NAME)).unwrap().permissions().mode() & 0o777, 0o600);
+    }
+
+    #[test]
+    fn forgetting_rejects_system_default_and_allows_a_missing_saved_home() {
+        const NAME: &str = "forgetting_rejects_system_default_and_allows_a_missing_saved_home";
+        let fixture = Fixture::new();
+        let Some(profile) = run_in_child(&fixture, NAME, &[("ORCA_USER_DATA_PATH", fixture.0.as_os_str())]) else { return; };
+        let (state, _) = forget_fixture(&profile);
+        for query in [SYSTEM_DEFAULT_ID, "System default", "system"] {
+            assert!(forget_account(&state, query).is_err());
+        }
+        assert!(!state.join(FORGOTTEN_ACCOUNTS_FILE_NAME).exists());
+        assert!(forget_account(&state, "example.test").is_err(), "ambiguous name is not removed");
+        fs::remove_dir_all(profile.join("codex-accounts/local-1/home")).unwrap();
+        assert_eq!(forget_account(&state, "Work").unwrap().id.as_deref(), Some("local-1"));
+        assert!(read_forgotten_accounts(&state).unwrap().hides(Some("local-1"), Path::new("/missing")));
+        assert_eq!(resolve_account(&state, SYSTEM_DEFAULT_ID).unwrap().id, None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn invalid_forgotten_policy_fails_closed_without_blocking_system_default() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        const NAME: &str = "invalid_forgotten_policy_fails_closed_without_blocking_system_default";
+        let fixture = Fixture::new();
+        let Some(profile) = run_in_child(&fixture, NAME, &[("ORCA_USER_DATA_PATH", fixture.0.as_os_str())]) else { return; };
+        let (state, _) = forget_fixture(&profile);
+        forget_account(&state, "local-1").unwrap();
+        let path = state.join(FORGOTTEN_ACCOUNTS_FILE_NAME);
+        let original = fs::read(&path).unwrap();
+        let assert_closed = || {
+            assert!(cached_accounts(&state).is_err());
+            assert!(resolve_launch_binding(&state, Some("local-1")).is_err());
+            assert!(resolve_account(&state, "local-2").is_err());
+            assert!(forget_account(&state, "local-2").is_err(), "invalid policy must not be overwritten");
+            assert_eq!(resolve_launch_binding(&state, None).unwrap().id, None);
+            assert_eq!(resolve_account(&state, "System default").unwrap().id, None);
+        };
+        for bytes in [
+            b"malformed private policy".to_vec(),
+            serde_json::to_vec(&serde_json::json!({"version":1,"user_data":"/other-profile","account_ids":["local-1"]})).unwrap(),
+            serde_json::to_vec(&serde_json::json!({"version":1,"user_data":profile,"account_ids":[SYSTEM_DEFAULT_ID]})).unwrap(),
+        ] {
+            fs::write(&path, bytes).unwrap();
+            assert_closed();
+        }
+        fs::write(&path, &original).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        assert_closed();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        fs::rename(&path, state.join("saved-policy.json")).unwrap();
+        symlink(state.join("saved-policy.json"), &path).unwrap();
+        assert_closed();
+    }
+
+    #[test]
+    fn concurrent_forgets_preserve_both_local_exclusions() {
+        const NAME: &str = "concurrent_forgets_preserve_both_local_exclusions";
+        let fixture = Fixture::new();
+        let Some(profile) = run_in_child(&fixture, NAME, &[("ORCA_USER_DATA_PATH", fixture.0.as_os_str())]) else { return; };
+        let (state, _) = forget_fixture(&profile);
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let jobs: Vec<_> = ["local-1", "local-2"].into_iter().map(|id| {
+            let state = state.clone(); let barrier = barrier.clone();
+            thread::spawn(move || { barrier.wait(); forget_account(&state, id).unwrap(); })
+        }).collect();
+        for job in jobs { job.join().unwrap(); }
+        let policy = read_forgotten_accounts(&state).unwrap();
+        assert_eq!(policy.account_ids.len(), 2);
+        assert_eq!(cached_accounts(&state).unwrap().len(), 1);
     }
 
     #[test]

@@ -61,6 +61,7 @@ somtus reload [--all | --instance ID] [--session] [--shell ID]   Alias of restar
 somtus update [--source PATH] [--release | --debug] [--no-reload]   Build release by default, install, and reload all windows
 somtus instances                        List running Somtus apps and their windows
 somtus usage [--shell ID]               Read harness usage (Grok: session tokens and cost)
+somtus account forget LABEL_OR_ID      Remove a saved Codex account from Somtus without deleting its files
 somtus appearance [--json]              Show the colors Somtus publishes to the phone companion
 somtus settings list [--json]          List global settings and their typed values
 somtus settings get KEY [--json]       Read one known global setting
@@ -468,6 +469,7 @@ fn run_cli_with_invocation(args: &[String], invocation: Invocation) -> Result<bo
             | "search"
             | "dashboard"
             | "usage"
+            | "account"
             | "appearance"
             | "settings"
             | "customization"
@@ -540,6 +542,7 @@ fn run_cli_with_invocation(args: &[String], invocation: Invocation) -> Result<bo
             crate::session_reload::run_account_switch_worker(std::path::Path::new(&path))?;
         }
         "usage" => usage_command(args, json)?,
+        "account" => account_command(args, json)?,
         "appearance" => appearance_command(args, json)?,
         "settings" => settings_cli::command(args, json)?,
         "customization" => customization_cli::command(args, json)?,
@@ -1499,6 +1502,32 @@ fn appearance_summary(published: &crate::appearance_file::Published) -> String {
     ]
     .join("\n")
         + "\n"
+}
+
+fn account_command(args: Vec<String>, json: bool) -> Result<(), String> {
+    let [action, query] = args.as_slice() else {
+        return Err("Usage: somtus account forget LABEL_OR_ID [--json]".into());
+    };
+    if action != "forget" || query.starts_with('-') {
+        return Err("Usage: somtus account forget LABEL_OR_ID [--json]".into());
+    }
+    let home = crate::paths::riwork_home()?;
+    let account = crate::codex_accounts::forget_account(&home, query)?;
+    if json {
+        print_json(&json!({
+            "forgotten": true,
+            "account_id": account.id,
+            "account_email": account.email,
+            "files_preserved": true,
+            "existing_sessions_unchanged": true
+        }))?;
+    } else {
+        println!(
+            "Forgot {} in Somtus. Existing sessions and account files are preserved.",
+            account.label.as_deref().unwrap_or(query)
+        );
+    }
+    Ok(())
 }
 
 fn usage_command(mut args: Vec<String>, json: bool) -> Result<(), String> {

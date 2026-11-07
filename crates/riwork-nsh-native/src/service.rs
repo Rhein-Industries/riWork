@@ -1134,7 +1134,11 @@ fn relevant(path: &Path, home: &Path) -> u8 {
         STORE
     } else if path == home.join("settings.json") {
         SETTINGS
-    } else if path == home.join("schedules.json") || path.starts_with(home.join("usage")) {
+    } else if path == home.join("schedules.json")
+        || path == home.join("codex-accounts.json")
+        || path == home.join(riwork_core::codex_accounts::FORGOTTEN_ACCOUNTS_FILE_NAME)
+        || path.starts_with(home.join("usage"))
+    {
         DASHBOARD
     } else if path == home.join("sessions.json")
         || path == home.join("orchestrator-wakes.json")

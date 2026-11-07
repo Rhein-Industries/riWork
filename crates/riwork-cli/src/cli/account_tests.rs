@@ -112,6 +112,26 @@ fn words(words: &[&str]) -> Vec<String> {
 }
 
 #[test]
+fn account_forget_blocks_new_selections_and_preserves_managed_files() {
+    let fixture = Fixture::new();
+    if !fixture.child("account_forget_blocks_new_selections_and_preserves_managed_files") {
+        return;
+    }
+    let home = fixture.0.join("state");
+    fixture.accounts(&home);
+    let history = fixture.0.join("orca/codex-accounts/account-a/home/history.jsonl");
+    fs::write(&history, "retained conversation\n").unwrap();
+    assert!(run_cli(&words(&["account", "forget", "Team A", "--json"])).unwrap());
+    assert!(crate::codex_accounts::resolve_account(&home, "account-a").is_err());
+    assert!(crate::codex_accounts::resolve_account(&home, "account-b").is_ok());
+    assert_eq!(fs::read_to_string(history).unwrap(), "retained conversation\n");
+    assert!(!fixture.0.join("tmux-argv").exists());
+    assert!(run_cli(&words(&["account", "forget", "system-default"])).is_err());
+    assert!(run_cli(&words(&["account", "forget", "account-b", "unexpected"])).is_err());
+    assert!(crate::codex_accounts::resolve_account(&home, "account-b").is_ok());
+}
+
+#[test]
 fn chat_account_flag_rejects_invalid_selections_before_starting_a_host() {
     let fixture = Fixture::new();
     if !fixture.child("chat_account_flag_rejects_invalid_selections_before_starting_a_host") {

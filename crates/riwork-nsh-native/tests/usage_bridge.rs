@@ -13,7 +13,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use riwork_core::codex_accounts::{AccountsSnapshot, CodexAccount, SYSTEM_DEFAULT_ID};
+use riwork_core::codex_accounts::{self, AccountsSnapshot, CodexAccount, ForgottenAccounts, SYSTEM_DEFAULT_ID};
 use riwork_engine::usage::{ProviderUsage, UsageWindow};
 use riwork_nsh_native::{
     dto::ShellSessionDto,
@@ -60,6 +60,7 @@ struct Fake {
     discover_gate: Gate,
     discovered: Mutex<Option<AccountsSnapshot>>,
     saved: Mutex<Option<AccountsSnapshot>>,
+    forgotten: Mutex<Option<Result<ForgottenAccounts, String>>>,
     settings: Mutex<CodexSettings>,
     saves: AtomicU32,
     claude: Mutex<BTreeMap<String, ProviderUsage>>,
@@ -116,6 +117,9 @@ impl UsageBackend for Fake {
     }
     fn cached_accounts(&self) -> Option<AccountsSnapshot> {
         self.saved.lock().unwrap().clone()
+    }
+    fn forgotten_accounts(&self) -> Result<ForgottenAccounts, String> {
+        self.forgotten.lock().unwrap().clone().unwrap_or_else(|| Ok(ForgottenAccounts::default()))
     }
     fn discover_accounts(&self) -> AccountsSnapshot {
         self.discovers.fetch_add(1, Ordering::SeqCst);
@@ -758,4 +762,125 @@ fn core_backend_settings_and_saved_list_are_file_only() {
     assert_eq!(file["future_key"]["kept"], true);
     backend.save_selected_account(None).unwrap();
     assert_eq!(backend.codex_settings().unwrap().selected, None);
+}
+
+#[tokio::test]
+async fn forgotten_accounts_stay_hidden_across_cached_discovery_and_live_shell_fallbacks() {
+    const TEST: &str = "forgotten_accounts_stay_hidden_across_cached_discovery_and_live_shell_fallbacks";
+    const CHILD: &str = "RIWORK_TEST_FORGOTTEN_ACCOUNTS_HOME";
+    const OLD: &str = "2c47d98a-9500-4df2-90ec-a96c0352b682";
+    const KEPT: &str = "e120aac3-6a5a-48fd-a0ea-7613013cef5b";
+    let Some(root) = std::env::var_os(CHILD).map(PathBuf::from) else {
+        // Isolate profile selection without touching the developer's homes or
+        // changing process-wide environment alongside other bridge tests.
+        let root = tempfile::tempdir().unwrap();
+        for directory in ["profile", "system", "state"] {
+            std::fs::create_dir_all(root.path().join(directory)).unwrap();
+        }
+        let fixture_root = root.path().canonicalize().unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", TEST, "--nocapture"])
+            .env(CHILD, &fixture_root)
+            .env("ORCA_USER_DATA_PATH", fixture_root.join("profile"))
+            .env("CODEX_HOME", fixture_root.join("system"))
+            .env_remove("RIWORK_CODEX_ACCOUNT_HOME")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}\n{}",
+            String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        return;
+    };
+    let root = root.canonicalize().unwrap();
+    let state_home = root.join("state");
+    let profile = root.join("profile");
+    let old_home = profile.join("codex-accounts").join(OLD).join("home");
+    let kept_home = profile.join("codex-accounts").join(KEPT).join("home");
+    let unlisted_home = root.join("unlisted-live-home");
+    for home in [&old_home, &kept_home, &unlisted_home] {
+        std::fs::create_dir_all(home).unwrap();
+    }
+    let retained = old_home.join("conversation-sentinel.jsonl");
+    std::fs::write(&retained, "retained live conversation\n").unwrap();
+    let cache = serde_json::json!({"version":1,"user_data":profile,"source_active_id":OLD,
+        "accounts":[
+            {"id":OLD,"email":"old@example.test","managedHomeRuntime":"host"},
+            {"id":KEPT,"email":"kept@example.test","managedHomeRuntime":"host"}
+        ]}).to_string();
+    let cache_path = state_home.join("codex-accounts.json");
+    std::fs::write(&cache_path, &cache).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&cache_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    let backend = CoreUsageBackend::new(state_home.clone()).unwrap();
+    let original = backend.cached_accounts().unwrap();
+    assert!(original.accounts.iter().any(|account| account.id == OLD));
+    assert!(!backend.forgotten_accounts().unwrap().hides(Some(OLD), &old_home));
+
+    let fake = Arc::new(Fake::default());
+    *fake.saved.lock().unwrap() = Some(original.clone());
+    *fake.discovered.lock().unwrap() = Some(original);
+    let service = start_with_shells(&fake, manual(), vec![
+        shell(serde_json::json!({"id":"old-id","harness":"codex","codexHome":old_home,
+            "codexAccountId":OLD,"codexAccountLabel":"Frozen old label"})),
+        // Even a missing catalog ID must not recreate the forgotten home card.
+        shell(serde_json::json!({"id":"old-home-only","harness":"codex","codexHome":old_home})),
+        shell(serde_json::json!({"id":"unlisted","harness":"codex","codexHome":unlisted_home})),
+    ]);
+    let usage = service.subscribe_usage();
+    let accounts = service.subscribe_accounts();
+    service.refresh_accounts();
+    until(&usage, |data| data.codex.len() == 4 && !data.refreshing).await;
+    let old_reads = fake.reads_of(old_home.to_str().unwrap());
+    assert_eq!(old_reads, 1);
+
+    codex_accounts::forget_account(&state_home, OLD).unwrap();
+    // The warm production backend notices policy-only changes even though raw
+    // discovery metadata remains byte-for-byte intact for idempotent lookup.
+    assert_eq!(std::fs::read_to_string(&cache_path).unwrap(), cache);
+    assert!(!backend.cached_accounts().unwrap().accounts.iter().any(|account| account.id == OLD));
+    let policy = backend.forgotten_accounts().unwrap();
+    assert!(policy.hides(None, &old_home));
+    *fake.forgotten.lock().unwrap() = Some(Ok(policy));
+    service.wake();
+    until(&accounts, |data| data.accounts.iter().all(|account| account.id != OLD)).await;
+    until(&usage, |data| data.codex.len() == 3
+        && data.codex.iter().all(|entry| entry.home != old_home.to_string_lossy())).await;
+    // A cached discovery can still contain the account; it must remain hidden.
+    assert!(service.refresh_accounts().accounts.iter().all(|account| account.id != OLD));
+    assert!(service.select_default(Some(OLD.into())).is_err());
+    service.refresh_usage(true);
+    settle();
+    assert_eq!(fake.reads_of(old_home.to_str().unwrap()), old_reads,
+        "forgotten live homes must not be polled again");
+    let target = CodexTarget { home: old_home.clone(), account_id: Some(OLD.into()), label: "old".into() };
+    assert!(backend.read_codex(&target).unwrap_err().contains("forgotten"),
+        "a queued forgotten target must be refused before spawning Codex");
+    assert_eq!(std::fs::read_to_string(&retained).unwrap(), "retained live conversation\n");
+
+    *fake.forgotten.lock().unwrap() = Some(Err("Unreadable account selection policy".into()));
+    service.wake();
+    until(&accounts, |data| data.accounts.len() == 1
+        && data.accounts[0].system && data.error.as_deref() == Some("Unreadable account selection policy")).await;
+    until(&usage, |data| data.codex.len() == 1
+        && data.codex[0].account_id.as_deref() == Some(SYSTEM_DEFAULT_ID)).await;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let policy_path = state_home.join(codex_accounts::FORGOTTEN_ACCOUNTS_FILE_NAME);
+        // chmod leaves mtime/length unchanged; trust changes still invalidate
+        // both the policy cache and the previously filtered catalog cache.
+        std::fs::set_permissions(&policy_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(backend.forgotten_accounts().is_err());
+        assert!(backend.cached_accounts().is_none());
+        std::fs::set_permissions(&policy_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(backend.forgotten_accounts().unwrap().hides(None, &old_home));
+        let replacement = state_home.join("retained-policy.json");
+        std::fs::rename(&policy_path, &replacement).unwrap();
+        symlink(&replacement, &policy_path).unwrap();
+        assert!(backend.forgotten_accounts().is_err());
+        assert!(backend.cached_accounts().is_none());
+    }
 }
