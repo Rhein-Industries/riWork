@@ -106,10 +106,8 @@ export function UsagePanel(props: {
       home: account.homePath, label: account.label,
       ...(account.available ? {} : { unavailable: account.unavailableReason ?? "Account unavailable" }),
     });
-    // Live shells only: the service reads no ended shell's home, so its card would never fill.
-    for (const shell of shells()) if (shell.alive && shell.harness === "codex" && shell.codexHome && !profiles.has(shell.codexHome)) profiles.set(shell.codexHome, {
-      home: shell.codexHome, label: shell.codexAccountLabel ?? "Session account",
-    });
+    // The service includes eligible live-session homes and excludes forgotten accounts.
+    // Shell bindings retain their original identity, so they must not recreate account cards.
     for (const entry of usage()?.codex ?? []) {
       const profile = profiles.get(entry.home);
       profiles.set(entry.home, { home: entry.home, label: profile?.label ?? entry.label, entry, unavailable: profile?.unavailable });

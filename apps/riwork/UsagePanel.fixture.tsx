@@ -76,8 +76,9 @@ const USAGE: UsageDto = {
 function Fixture() {
   // Plain arrays: the panel calls the API inside its effects, which must not track them.
   const calls: string[] = [];
-  let usage = USAGE, shells = SHELLS, rev = 1;
+  let usage = USAGE, accounts = ACCOUNTS, shells = SHELLS, rev = 1;
   const listeners = new Set<(data: UsageDto) => void>(), sessionListeners = new Set<(data: SessionsSnapshot) => void>();
+  const accountListeners = new Set<(data: AccountsDto) => void>();
   const publish = () => { rev++; for (const listener of listeners) listener(usage); };
   // Deliver after the current tick, as the native hub does.
   const later = (deliver: () => void) => { void Promise.resolve().then(deliver); };
@@ -99,9 +100,10 @@ function Fixture() {
     },
     accounts: {
       subscribe: (listener) => {
-        calls.push("accounts"); let open = true;
-        later(() => { if (open) listener({ kind: "snapshot", rev: 1, data: ACCOUNTS }); });
-        return closer(() => { open = false; });
+        calls.push("accounts");
+        const deliver = (data: AccountsDto) => listener({ kind: "snapshot", rev, data });
+        accountListeners.add(deliver); later(() => { if (accountListeners.has(deliver)) deliver(accounts); });
+        return closer(() => { accountListeners.delete(deliver); });
       },
     },
     sessions: {
@@ -127,6 +129,22 @@ function Fixture() {
       usage: { ...USAGE.codex[0].usage!, updatedAtUnix: at,
         windows: mode === "empty" ? [] : [{ label: "5h", usedPercent: 80, resetsAt: at + (mode === "reset" ? 2 : hours(1)), windowMinutes: 300 }] } };
     usage = { ...usage, now: at, refreshing: first.pending, codex: [first, ...usage.codex.slice(1)] }; publish();
+  });
+  host.on("app.fixture.usage.forget", () => {
+    // The frozen live binding remains truthful after the native catalog and usage
+    // targets forget it. Another uncatalogued session is still an eligible target.
+    const sessionHome = "/Users/fixture/custom-codex";
+    shells = [...SHELLS,
+      shell("c0de6666-ffff-4fff-8fff-ffffffffffff", "codex", { codexHome: OLD_HOME, codexAccountId: "old", codexAccountLabel: "Old team" }),
+      shell("c0de7777-ffff-4fff-8fff-ffffffffffff", "codex", { codexHome: sessionHome, codexAccountLabel: "Custom session" }),
+    ];
+    accounts = { ...ACCOUNTS, accounts: ACCOUNTS.accounts.filter((account) => account.id !== "old") };
+    usage = { ...usage, codex: [...USAGE.codex,
+      { home: sessionHome, label: "Custom session", pending: true, failures: 0, stale: false },
+    ] };
+    for (const listener of sessionListeners) listener({ sessions: shells });
+    for (const listener of accountListeners) listener(accounts);
+    publish();
   });
   host.on("app.fixture.usage.inspect", () => host.post("app.fixture.usage.state", { calls, listeners: listeners.size }));
   return <View style={{ flex: 1 }}>

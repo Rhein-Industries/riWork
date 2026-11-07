@@ -41,3 +41,21 @@ test("P5-USAGE-14: the panel distinguishes absent quota, cached refresh and fail
     expect(app.shows(`${CARD} >> text:5h · 20% left`)).toBe(true);
   } finally { app.dispose(); }
 });
+
+test("P5-USAGE-16: forgotten live bindings cannot recreate cards and native unlisted targets remain visible", async () => {
+  const app = await open("./UsagePanel.fixture.tsx", OPTIONS);
+  try {
+    await app.waitFor(CARD);
+    const oldCard = "id:usage-codex:/Users/fixture/.riwork/codex/old";
+    // Catalog-only unavailable accounts still show their actionable reason.
+    expect(app.shows(`${oldCard} >> text:Signed out. Run codex login for this account.`)).toBe(true);
+    await app.host.send("app.fixture.usage.forget", {});
+    expect(app.count(oldCard)).toBe(0);
+    expect(app.shows("text:Old team")).toBe(false);
+    expect(app.shows(CARD)).toBe(true);
+    expect(app.shows("id:usage-codex:/Users/fixture/.riwork/codex/work")).toBe(true);
+    expect(app.shows("id:usage-codex:/Users/fixture/custom-codex >> text:Custom session")).toBe(true);
+    expect(app.shows("id:usage-codex:/Users/fixture/custom-codex >> text:Reading account usage…")).toBe(true);
+    expect(app.count("id:usage-loading")).toBe(0);
+  } finally { app.dispose(); }
+});
