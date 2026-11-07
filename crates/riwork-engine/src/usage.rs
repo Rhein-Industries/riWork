@@ -134,14 +134,16 @@ pub fn read_codex_usage_at(home: &Path) -> Result<ProviderUsage, String> {
 /// Capability preflight for the dedicated in-place account switch. Help only:
 /// no account mutation, conversation or model request is made.
 pub(crate) fn codex_supports_direct_resume(home: &Path) -> Result<(), String> {
-    let executable = find_codex().ok_or("Codex is not installed or is not on PATH")?;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let (executable, runtime_path) = crate::sessions::codex_usage_program(deadline)?;
     let mut command = Command::new(executable);
     command
         .args(["resume", "--help"])
+        .env("PATH", runtime_path)
         .env("CODEX_HOME", home)
         .stdin(Stdio::null())
         .stderr(Stdio::null());
-    let (status, output) = run_bounded(command, Duration::from_secs(5), 128 * 1024)
+    let (status, output) = run_bounded(command, deadline.saturating_duration_since(Instant::now()), 128 * 1024)
         .map_err(|_| "Cannot verify Codex's direct resume support; nothing was switched")?;
     if !status.success() || !String::from_utf8_lossy(&output).contains("--no-daemon") {
         return Err("Installed Codex lacks direct resume support; update Codex before switching this terminal".into());
@@ -154,17 +156,33 @@ pub(crate) fn read_codex_usage_at_timeout(
     home: &Path,
     timeout: Duration,
 ) -> Result<ProviderUsage, String> {
-    let executable = find_codex().ok_or("Codex is not installed or is not on PATH")?;
-    read_codex_usage_with(&executable, Some(home), timeout.min(CODEX_TIMEOUT))
+    let started = Instant::now();
+    let timeout = timeout.min(CODEX_TIMEOUT);
+    let (executable, runtime_path) = crate::sessions::codex_usage_program(started + timeout)?;
+    let remaining = timeout.saturating_sub(started.elapsed());
+    if remaining.is_zero() {
+        return Err("Codex usage read timed out; try again".into());
+    }
+    read_codex_usage_with_path(&executable, Some(home), remaining, Some(&runtime_path))
 }
 
+#[cfg(test)]
 fn read_codex_usage_with(
     executable: &Path,
     home: Option<&Path>,
     timeout: Duration,
 ) -> Result<ProviderUsage, String> {
+    read_codex_usage_with_path(executable, home, timeout, None)
+}
+
+fn read_codex_usage_with_path(
+    executable: &Path,
+    home: Option<&Path>,
+    timeout: Duration,
+    runtime_path: Option<&std::ffi::OsStr>,
+) -> Result<ProviderUsage, String> {
     let deadline = Instant::now() + timeout;
-    let mut server = CodexServer::start(executable, home)?;
+    let mut server = CodexServer::start(executable, home, runtime_path)?;
     server.send(json!({
         "id": 1,
         "method": "initialize",
@@ -1354,28 +1372,6 @@ fn unix_now() -> u64 {
         .as_secs()
 }
 
-fn find_codex() -> Option<PathBuf> {
-    let mut directories: Vec<_> = env::var_os("PATH")
-        .map(|path| env::split_paths(&path).collect())
-        .unwrap_or_default();
-    directories.extend([
-        PathBuf::from("/opt/homebrew/bin"),
-        PathBuf::from("/usr/local/bin"),
-    ]);
-    if let Some(home) = env::var_os("HOME") {
-        let home = PathBuf::from(home);
-        directories.extend([
-            home.join(".local/bin"),
-            home.join(".bun/bin"),
-            home.join(".npm-global/bin"),
-        ]);
-    }
-    directories
-        .into_iter()
-        .map(|directory| directory.join("codex"))
-        .find(|path| path.is_file())
-}
-
 struct CodexServer {
     child: Child,
     stdin: Option<ChildStdin>,
@@ -1383,13 +1379,16 @@ struct CodexServer {
 }
 
 impl CodexServer {
-    fn start(executable: &Path, home: Option<&Path>) -> Result<Self, String> {
+    fn start(executable: &Path, home: Option<&Path>, runtime_path: Option<&std::ffi::OsStr>) -> Result<Self, String> {
         let mut command = Command::new(executable);
         command
             .args(["app-server", "--stdio"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
+        if let Some(path) = runtime_path {
+            command.env("PATH", path);
+        }
         if let Some(home) = home {
             // Override an inherited account binding only for this read. Passing
             // the path as an environment value also preserves spaces verbatim.
@@ -1784,6 +1783,32 @@ done
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.directory);
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn codex_usage_reader_supplies_the_discovered_runtime_path() {
+        use std::os::unix::fs::PermissionsExt;
+        let fixture = FakeCodex::new(r#"#!/usr/bin/env riwork-usage-test-node
+while IFS= read -r line; do
+  case "$line" in
+    *'"method":"initialize"'*) printf '%s\n' '{"id":1,"result":{}}' ;;
+    *'"method":"account/read"'*) printf '%s\n' '{"id":2,"result":{"account":{"type":"chatgpt","email":"fixture@example.test","planType":"pro"}}}' ;;
+    *'"method":"account/rateLimits/read"'*) printf '%s\n' '{"id":3,"result":{"rateLimits":{"primary":{"usedPercent":8,"windowDurationMins":300}}}}' ;;
+  esac
+done
+"#);
+        let runtime = fixture.directory.join("riwork-usage-test-node");
+        fs::write(&runtime, "#!/bin/sh\nexec /bin/sh \"$@\"\n").unwrap();
+        fs::set_permissions(&runtime, fs::Permissions::from_mode(0o700)).unwrap();
+        // The parent test process cannot resolve this unique interpreter. The
+        // explicit child PATH is required, just as for npm Codex under Finder.
+        let path = env::join_paths([fixture.directory.clone()]).unwrap();
+        let usage = read_codex_usage_with_path(
+            &fixture.executable, Some(&fixture.directory), Duration::from_secs(2), Some(&path),
+        ).unwrap();
+        assert_eq!(usage.account_label.as_deref(), Some("fixture@example.test · pro"));
+        assert_eq!(usage.windows[0].used_percent, 8.0);
     }
 
     #[cfg(unix)]

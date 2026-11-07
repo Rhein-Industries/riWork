@@ -5027,23 +5027,90 @@ static LOGIN_SHELL_DIRECTORIES: OnceLock<Vec<PathBuf>> = OnceLock::new();
 /// The directories of the user's login shell are resolved once per process, and
 /// only when something needs them.
 fn login_shell_dirs() -> &'static [PathBuf] {
-    LOGIN_SHELL_DIRECTORIES.get_or_init(|| {
-        // Unit tests must not depend on the developer's shell configuration.
-        if cfg!(test) {
-            return Vec::new();
+    LOGIN_SHELL_DIRECTORIES.get_or_init(read_login_shell_dirs)
+}
+
+fn read_login_shell_dirs() -> Vec<PathBuf> {
+    read_login_shell_dirs_with_timeout(LOGIN_PATH_TIMEOUT)
+}
+
+fn read_login_shell_dirs_with_timeout(timeout: Duration) -> Vec<PathBuf> {
+    // Unit tests must not depend on the developer's shell configuration.
+    if cfg!(test) {
+        return Vec::new();
+    }
+    let shell = env::var_os("SHELL")
+        .filter(|shell| !shell.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/bin/zsh"));
+    login_shell_path(&shell, timeout)
+        .map(|path| {
+            env::split_paths(&path)
+                .filter(|directory| directory.is_absolute())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Usage reads run on workers and can recover from an earlier failed GUI
+/// startup lookup. Keep this retry separate from the nonblocking picker and
+/// usual launch cache; concurrent account reads share one bounded attempt.
+#[derive(Default)]
+struct UsageLoginDirectories {
+    directories: Vec<PathBuf>,
+    attempted: Option<std::time::Instant>,
+}
+
+impl UsageLoginDirectories {
+    fn resolve(&mut self, now: std::time::Instant, read: impl FnOnce() -> Vec<PathBuf>) -> Vec<PathBuf> {
+        if self.directories.is_empty()
+            && self.attempted.is_none_or(|at| now.saturating_duration_since(at) >= Duration::from_secs(60))
+        {
+            self.attempted = Some(now);
+            self.directories = read();
         }
-        let shell = env::var_os("SHELL")
-            .filter(|shell| !shell.is_empty())
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("/bin/zsh"));
-        login_shell_path(&shell, LOGIN_PATH_TIMEOUT)
-            .map(|path| {
-                env::split_paths(&path)
-                    .filter(|directory| directory.is_absolute())
-                    .collect()
-            })
-            .unwrap_or_default()
-    })
+        self.directories.clone()
+    }
+}
+
+static USAGE_LOGIN_DIRECTORIES: Mutex<UsageLoginDirectories> = Mutex::new(UsageLoginDirectories {
+    directories: Vec::new(),
+    attempted: None,
+});
+
+fn usage_login_shell_dirs(deadline: std::time::Instant) -> Result<Vec<PathBuf>, String> {
+    if let Some(directories) = LOGIN_SHELL_DIRECTORIES.get().filter(|dirs| !dirs.is_empty()) {
+        return Ok(directories.clone());
+    }
+    resolve_usage_login_dirs(&USAGE_LOGIN_DIRECTORIES, deadline, read_login_shell_dirs_with_timeout)
+}
+
+fn resolve_usage_login_dirs(
+    cache: &Mutex<UsageLoginDirectories>,
+    deadline: std::time::Instant,
+    read: impl FnOnce(Duration) -> Vec<PathBuf>,
+) -> Result<Vec<PathBuf>, String> {
+    let timeout_error = || "Codex usage read timed out; try again".to_owned();
+    let mut cache = loop {
+        if std::time::Instant::now() >= deadline { return Err(timeout_error()); }
+        match cache.try_lock() {
+            Ok(cache) => break cache,
+            Err(std::sync::TryLockError::Poisoned(error)) => break error.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => {
+                std::thread::sleep(Duration::from_millis(5).min(deadline.saturating_duration_since(std::time::Instant::now())));
+            }
+        }
+    };
+    let now = std::time::Instant::now();
+    let remaining = deadline.saturating_duration_since(now).min(LOGIN_PATH_TIMEOUT);
+    let directories = cache.resolve(now, || read(remaining));
+    if std::time::Instant::now() >= deadline {
+        // Exhausting one caller's short balancing budget must not cache a
+        // failed lookup for the next manual refresh with a normal budget.
+        if directories.is_empty() { cache.attempted = None; }
+        return Err(timeout_error());
+    }
+    Ok(directories)
 }
 
 /// Start resolving the login shell's directories without waiting for them, so
@@ -5230,6 +5297,33 @@ pub(crate) fn find_grok_program() -> Option<PathBuf> {
         HarnessKind::Grok,
         Path::new("/nonexistent/riwork-harness-bin"),
     )
+}
+
+/// The real Codex CLI and its runtime PATH for a background account read.
+/// Finder's PATH omits version managers, and an npm wrapper also needs the
+/// matching `node` beside the executable. Never select Somtus's own shim.
+pub(crate) fn codex_usage_program(deadline: std::time::Instant) -> Result<(PathBuf, std::ffi::OsString), String> {
+    let mut directories = executable_dirs();
+    if let Some(home) = env::var_os("HOME").map(PathBuf::from) {
+        directories.extend([home.join(".bun/bin"), home.join(".npm-global/bin")]);
+    }
+    codex_usage_program_in(directories, usage_login_shell_dirs(deadline)?)
+}
+
+fn codex_usage_program_in(
+    directories: Vec<PathBuf>,
+    login: Vec<PathBuf>,
+) -> Result<(PathBuf, std::ffi::OsString), String> {
+    let program = find_harness_program_via(
+        HarnessKind::Codex,
+        Path::new("/nonexistent/riwork-harness-bin"),
+        directories.clone(),
+        || login.clone(),
+    ).ok_or("Codex is not installed or is not on PATH")?;
+    let path = joined_harness_path(
+        program.parent().map(Path::to_path_buf).into_iter().chain(login).chain(directories),
+    )?;
+    Ok((program, path))
 }
 
 /// Where a launch looked for a CLI, as far as a look that starts nothing can tell.
@@ -10273,6 +10367,82 @@ else:
             None
         );
         assert_eq!(asked.get(), 2);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn codex_usage_program_resolves_gui_nvm_and_uses_its_matching_runtime() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = scratch("usage gui path with spaces");
+        let minimal = root.join("minimal PATH");
+        let nvm = root.join(".nvm/versions/node/v24/bin");
+        let other = root.join("different node/bin");
+        for directory in [&minimal, &nvm, &other] { fs::create_dir_all(directory).unwrap(); }
+        executable_script(&minimal.join("codex"), "# Somtus Cua harness shim\nexit 99");
+        executable_script(&nvm.join("node"), "exec /bin/sh \"$@\"");
+        executable_script(&other.join("node"), "exit 98");
+        fs::write(nvm.join("codex"), "#!/usr/bin/env node\nprintf '%s' \"$CODEX_HOME\"\n").unwrap();
+        fs::set_permissions(nvm.join("codex"), fs::Permissions::from_mode(0o700)).unwrap();
+        let account_home = root.join("account home with spaces");
+        for (directories, login) in [
+            (vec![minimal], vec![nvm.clone()]),
+            (vec![nvm.clone()], vec![other]),
+        ] {
+            let (program, path) = codex_usage_program_in(directories, login).unwrap();
+            assert_eq!(program, nvm.join("codex"));
+            assert_eq!(env::split_paths(&path).next(), Some(nvm.clone()));
+            let output = Command::new(program).env("PATH", path).env("CODEX_HOME", &account_home)
+                .output().unwrap();
+            assert!(output.status.success());
+            assert_eq!(String::from_utf8(output.stdout).unwrap(), account_home.to_string_lossy());
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn usage_login_lookup_retries_a_failed_startup_after_a_bounded_cooldown() {
+        let mut cache = UsageLoginDirectories::default();
+        let now = std::time::Instant::now();
+        let calls = std::cell::Cell::new(0);
+        let read = || {
+            calls.set(calls.get() + 1);
+            if calls.get() == 1 { Vec::new() } else { vec![PathBuf::from("/fake/nvm/bin")] }
+        };
+        assert!(cache.resolve(now, read).is_empty());
+        assert!(cache.resolve(now + Duration::from_secs(59), read).is_empty());
+        assert_eq!(calls.get(), 1);
+        assert_eq!(cache.resolve(now + Duration::from_secs(60), read), [PathBuf::from("/fake/nvm/bin")]);
+        assert_eq!(cache.resolve(now + Duration::from_secs(61), read), [PathBuf::from("/fake/nvm/bin")]);
+        assert_eq!(calls.get(), 2, "successful directories remain cached");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn usage_login_lookup_and_lock_wait_share_the_callers_deadline() {
+        let cache = Mutex::new(UsageLoginDirectories::default());
+        let held = cache.lock().unwrap();
+        let started = std::time::Instant::now();
+        assert!(resolve_usage_login_dirs(&cache, started + Duration::from_millis(20), |_| {
+            panic!("a contended short-budget lookup must not start another shell")
+        }).is_err());
+        assert!(started.elapsed() < Duration::from_millis(300));
+        drop(held);
+
+        let root = scratch("usage-login-deadline");
+        let shell = root.join("slow-login-shell");
+        executable_script(&shell, "exec /bin/sleep 2");
+        let started = std::time::Instant::now();
+        assert!(resolve_usage_login_dirs(&cache, started + Duration::from_millis(30), |remaining| {
+            assert!(remaining <= Duration::from_millis(30));
+            assert!(login_shell_path(&shell, remaining).is_none());
+            Vec::new()
+        }).is_err());
+        assert!(started.elapsed() < Duration::from_millis(500), "lookup must not spend its usual three seconds");
+        assert!(cache.lock().unwrap().attempted.is_none(), "a caller's exhausted budget must not cache failure");
+        assert_eq!(resolve_usage_login_dirs(&cache, std::time::Instant::now() + Duration::from_secs(1), |_| {
+            vec![root.join("nvm/bin")]
+        }).unwrap(), [root.join("nvm/bin")]);
         fs::remove_dir_all(root).unwrap();
     }
 

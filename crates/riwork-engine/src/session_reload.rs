@@ -507,21 +507,39 @@ fn wait_for_completion(
 fn snapshot(path: &Path) -> Result<LogSnapshot, String> {
     let mut result = LogSnapshot::default();
     let mut cursor = 0;
+    let mut saw_metadata = false;
     scan_records(path, &mut cursor, |record| {
         if record.kind == "session_meta" {
-            result.session_id = record.payload.id;
+            // Forked Codex logs start with their own identity, followed by
+            // inherited history that can include the parent's session_meta.
+            // Never let that history replace (or repair) the first identity.
+            if saw_metadata {
+                return;
+            }
+            saw_metadata = true;
             result.subagent = record
                 .payload
                 .source
                 .as_ref()
                 .and_then(|source| source.get("subagent"))
-                .is_some();
+                .is_some_and(serde_json::Value::is_object);
             result.noninteractive = record
                 .payload
                 .source
                 .as_ref()
                 .and_then(|source| source.as_str())
                 == Some("exec");
+            if result.subagent
+                || result.noninteractive
+                || record
+                    .payload
+                    .source
+                    .as_ref()
+                    .and_then(|source| source.as_str())
+                    == Some("cli")
+            {
+                result.session_id = record.payload.id;
+            }
         } else if let Some(event) = lifecycle(record) {
             result.saw_lifecycle = true;
             match event {
@@ -542,6 +560,13 @@ fn snapshot(path: &Path) -> Result<LogSnapshot, String> {
 pub(crate) fn delegated_rollout_complete(path: &Path) -> Result<bool, String> {
     let state = snapshot(path)?;
     Ok(state.subagent
+        && state.session_id.as_deref().is_some_and(|id| {
+            validate_uuid(id).is_ok()
+                && path
+                    .file_stem()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.ends_with(id))
+        })
         && state.saw_lifecycle
         && state.active_turn.is_none()
         && state.cursor == fs::metadata(path).map_err(|e| e.to_string())?.len())
@@ -1181,6 +1206,73 @@ mod tests {
         )
         .unwrap();
         assert!(snapshot(&path).unwrap().noninteractive);
+    }
+
+    #[test]
+    fn inherited_parent_metadata_cannot_replace_child_identity_or_hide_active_work() {
+        let temporary = Temporary::new();
+        let child = Uuid::new_v4().to_string();
+        let parent = Uuid::new_v4().to_string();
+        let path = temporary.0.join(format!("rollout-{child}.jsonl"));
+        let child_meta = log_record(
+            "session_meta",
+            serde_json::json!({
+                "id": child, "source": {"subagent": {"thread_spawn": {"parent_thread_id": parent}}}
+            }),
+        );
+        let parent_meta = log_record(
+            "session_meta",
+            serde_json::json!({"id": parent, "source": "cli"}),
+        );
+        fs::write(
+            &path,
+            format!(
+                "{child_meta}{parent_meta}{}{}{}",
+                event("task_started", "inherited"),
+                event("task_complete", "inherited"),
+                event("task_started", "child-current")
+            ),
+        )
+        .unwrap();
+        let state = snapshot(&path).unwrap();
+        assert_eq!(state.session_id.as_deref(), Some(child.as_str()));
+        assert_ne!(state.session_id.as_deref(), Some(parent.as_str()));
+        assert!(state.subagent);
+        assert_eq!(state.active_turn.as_deref(), Some("child-current"));
+        assert!(!delegated_rollout_complete(&path).unwrap());
+        append(&path, &event("task_complete", "child-current"));
+        assert!(delegated_rollout_complete(&path).unwrap());
+        append(&path, "{");
+        assert!(!delegated_rollout_complete(&path).unwrap());
+    }
+
+    #[test]
+    fn later_metadata_cannot_repair_an_invalid_first_identity() {
+        let temporary = Temporary::new();
+        let child = Uuid::new_v4().to_string();
+        let path = temporary.0.join(format!("rollout-{child}.jsonl"));
+        let later = log_record(
+            "session_meta",
+            serde_json::json!({"id": child, "source": {"subagent": {}}}),
+        );
+        for first in [
+            serde_json::json!({"source": {"subagent": {}}}),
+            serde_json::json!({"id": child, "source": null}),
+            serde_json::json!({"id": child, "source": {"subagent": null}}),
+        ] {
+            fs::write(
+                &path,
+                format!(
+                    "{}{later}{}{}",
+                    log_record("session_meta", first),
+                    event("task_started", "turn"),
+                    event("task_complete", "turn")
+                ),
+            )
+            .unwrap();
+            assert!(snapshot(&path).unwrap().session_id.is_none());
+            assert!(!delegated_rollout_complete(&path).unwrap());
+        }
     }
 
     #[test]
