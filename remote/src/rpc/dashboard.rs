@@ -95,8 +95,8 @@ impl Rpc {
     /// What `ready` announces as `features.dashboard`: the installed CLI said `"dashboard":
     /// true` in `somtus capabilities --json`. Short, like `chat_supported`, whose question it
     /// shares.
-    pub async fn dashboard_supported(&self) -> bool {
-        self.capability_known(&self.dashboard, Duration::from_secs(3))
+    pub async fn dashboard_supported(&self, wait: Duration) -> bool {
+        self.capability_known(&self.dashboard, wait)
             .await
             .unwrap_or(false)
     }

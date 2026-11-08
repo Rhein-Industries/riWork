@@ -2,7 +2,8 @@
 //! remote CLI/daemon; RemoteTree owns visibility, retry cadence and creation policy.
 //! Tests inject a backend: fixture builds never discover a CLI or open a socket.
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, HashSet, VecDeque},
+    panic::{AssertUnwindSafe, catch_unwind},
     path::PathBuf,
     sync::{Arc, Mutex, OnceLock, PoisonError, Weak},
     thread,
@@ -22,7 +23,7 @@ use nsh_core::{
 use riwork_engine::{
     project_sort::{ProjectOrder, ProjectSort},
     remote_cache::{self, Kept},
-    remote_hosts::{Daemons, PairRequest, RemoteCli, RemoteError},
+    remote_hosts::{Daemons, HostStatus, PairRequest, RemoteCli, RemoteError},
     remote_tree::{
         self as tree, Link, NewShellKind, RemoteTree, Reply, Request, SelectedWants, ShellScope,
         Wants,
@@ -304,6 +305,11 @@ pub trait RemoteBackend: Send + Sync {
         Err(RemoteError::Rpc { code: "unsupported".into(), message: "This remote backend does not support chat RPCs".into() })
     }
     fn run(&self, request: &Request) -> Reply;
+    /// Whether this host's daemon is being started right now, so that a request for the host would
+    /// only wait for that. It runs under the queue's lock, so it must not wait for anything.
+    fn starting(&self, _host: &str) -> bool {
+        false
+    }
     fn add_host(&self, link: &str, label: &str) -> Result<(), String>;
     fn remove_host(&self, host: &str) -> Result<(), String>;
     fn pair_desktop(&self, request: &PairRequest) -> Result<String, String>;
@@ -355,6 +361,15 @@ impl Default for EngineBackend {
 impl RemoteBackend for EngineBackend {
     fn call(&self, host: &str, method: &str, params: serde_json::Value, timeout: Duration) -> Result<serde_json::Value, RemoteError> {
         self.transport().map_err(RemoteError::Unreachable)?.daemons.call(host, method, params, timeout)
+    }
+    fn starting(&self, host: &str) -> bool {
+        // Looks only at a transport that is already there: finding the CLI can take a while.
+        let Ok(cached) = self.transport.try_lock() else {
+            return false;
+        };
+        cached
+            .as_ref()
+            .is_some_and(|transport| transport.daemons.starting(host))
     }
     fn run(&self, request: &Request) -> Reply {
         let transport = match self.transport() {
@@ -491,12 +506,25 @@ impl RemoteBackend for ClosedFixtureBackend {
 struct State {
     tree: RemoteTree,
     selected: Option<String>,
+    /// What the file says the next launch reopens; see `launch_record`.
+    saved_selection: Option<String>,
     observers: BTreeMap<u64, RemoteWants>,
     next_observer: u64,
     polling: bool,
     defaults: RemoteDefaults,
 }
 impl State {
+    /// What the next launch reopens: the selection, unless the registry has dropped its host. The
+    /// selection itself stays, because a window on that project keeps showing why it is empty.
+    fn launch_record(&self) -> Option<String> {
+        self.selected.clone().filter(|key| {
+            !tree::parse_project_key(key).is_some_and(|(host, _)| self.tree.host_removed(host))
+        })
+    }
+    /// Whether the file should be written again, which may be so when nothing drawn changed.
+    fn save_due(&mut self) -> bool {
+        self.tree.take_kept_dirty() || self.launch_record() != self.saved_selection
+    }
     fn begin_polling(&mut self) -> bool {
         if self.polling || !self.observers.values().any(RemoteWants::needs_polling) {
             return false;
@@ -516,10 +544,118 @@ impl State {
             .collect()
     }
 }
+/// Threads that run planned requests, at most. Each request costs a socket and often a process, on
+/// this Mac while no daemon is up and on the host for each list. One thread per request made all of
+/// that grow with the hosts: 64 of them reach about 320 sockets at once, past the 256 descriptors
+/// a launch from the Dock gets, and then local terminals and healthy hosts fail too.
+const MAX_WORKERS: usize = 16;
+/// Of those, threads on lists. A list can take 25 s on a slow host, and the rest of the threads are
+/// there for what is cheap and what every window waits for: the state of each link and the registry.
+const MAX_LIST_WORKERS: usize = 12;
+/// One host's lists that run at once. The host itself runs no more reads at a time (`SHARED_SLOTS`
+/// in `remote/src/lanes.rs`), so any more would hold a thread just to queue there, and then a few
+/// slow hosts could keep every other host's lists waiting.
+const MAX_LISTS_PER_HOST: usize = 3;
+
+/// The host a list is for. The registry and a link's status are not lists.
+fn list_host(request: &Request) -> Option<&str> {
+    match request {
+        Request::Hosts | Request::Status { .. } => None,
+        Request::Projects { host }
+        | Request::Orchestrators { host }
+        | Request::Worktrees { host, .. }
+        | Request::Tasks { host, .. }
+        | Request::Shells { host, .. } => Some(host),
+    }
+}
+
+/// The planned requests that no worker has started yet, and who is at work. A request stays
+/// marked as running in the tree from its plan until its answer, so each is here once at most.
+#[derive(Default)]
+struct WorkQueue {
+    /// The registry and links' statuses, oldest first. They go before any list.
+    first: VecDeque<Request>,
+    /// Lists waiting by host, oldest first.
+    lists: BTreeMap<String, VecDeque<Request>>,
+    /// Lists running by host. A host with none has no entry.
+    running: BTreeMap<String, usize>,
+    /// The host that had the last turn. The next goes to a host after it, so a host with a long
+    /// list of figures to read takes turns with the others.
+    last_host: String,
+    workers: usize,
+}
+impl WorkQueue {
+    fn push(&mut self, request: Request) {
+        match list_host(&request).map(str::to_owned) {
+            Some(host) => self.lists.entry(host).or_default().push_back(request),
+            None => self.first.push_back(request),
+        }
+    }
+    /// The next request to start. A list for a host whose daemon is being started stays here, as a
+    /// worker could only wait for that with it. A later tick finds it.
+    fn take(&mut self, starting: impl Fn(&str) -> bool) -> Option<Request> {
+        if let Some(request) = self.first.pop_front() {
+            return Some(request);
+        }
+        if self.running.values().sum::<usize>() >= MAX_LIST_WORKERS {
+            return None;
+        }
+        let ready = |host: &&String| {
+            self.running
+                .get(*host)
+                .is_none_or(|lists| *lists < MAX_LISTS_PER_HOST)
+                && !starting(host)
+        };
+        let host = self
+            .lists
+            .keys()
+            .filter(|host| **host > self.last_host)
+            .find(ready)
+            .or_else(|| self.lists.keys().find(ready))?
+            .clone();
+        let waiting = self.lists.get_mut(&host)?;
+        let request = waiting.pop_front()?;
+        if waiting.is_empty() {
+            self.lists.remove(&host);
+        }
+        *self.running.entry(host.clone()).or_default() += 1;
+        self.last_host = host;
+        Some(request)
+    }
+    /// A request from `take` has ended.
+    fn finished(&mut self, request: &Request) {
+        let Some(host) = list_host(request) else {
+            return;
+        };
+        match self.running.get_mut(host) {
+            Some(lists) if *lists > 1 => *lists -= 1,
+            _ => {
+                self.running.remove(host);
+            }
+        }
+    }
+    /// A request from `take` that no worker could start goes back to the head of its line.
+    fn give_back(&mut self, request: Request) {
+        self.finished(&request);
+        match list_host(&request).map(str::to_owned) {
+            Some(host) => self.lists.entry(host).or_default().push_front(request),
+            None => self.first.push_front(request),
+        }
+    }
+    fn drain(&mut self) -> Vec<Request> {
+        let lists = std::mem::take(&mut self.lists);
+        self.first
+            .drain(..)
+            .chain(lists.into_values().flatten())
+            .collect()
+    }
+}
+
 pub struct RemoteService {
     home: PathBuf,
     backend: Arc<dyn RemoteBackend>,
     state: Mutex<State>,
+    queue: Mutex<WorkQueue>,
     cache_write: Mutex<()>,
     host_mutation: Mutex<()>,
     hub: Hub<RemoteSnapshot>,
@@ -552,6 +688,7 @@ impl RemoteService {
             backend,
             state: Mutex::new(State {
                 tree,
+                saved_selection: kept.selected.clone(),
                 selected: kept.selected,
                 observers: BTreeMap::new(),
                 next_observer: 0,
@@ -564,6 +701,7 @@ impl RemoteService {
                     ..Default::default()
                 },
             }),
+            queue: Mutex::default(),
             cache_write: Mutex::new(()),
             host_mutation: Mutex::new(()),
             hub: Hub::new(RemoteSnapshot {
@@ -581,7 +719,7 @@ impl RemoteService {
         // Serialize cache snapshots and writes under one dedicated order. Every
         // writer captures current state after taking this gate, so an old reply
         // cannot overwrite a newer selection/list. No JS thread calls publish.
-        if state.tree.take_kept_dirty() {
+        if state.save_due() {
             drop(state);
             self.save_cache();
         }
@@ -593,8 +731,10 @@ impl RemoteService {
             .unwrap_or_else(PoisonError::into_inner);
         let kept = {
             let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+            let selected = state.launch_record();
+            state.saved_selection = selected.clone();
             Kept {
-                selected: state.selected.clone(),
+                selected,
                 hosts: state.tree.kept(),
             }
         };
@@ -645,20 +785,90 @@ impl RemoteService {
     fn poll(self: &Arc<Self>) {
         self.dispatch(self.plan(Instant::now()));
     }
+    /// Hands planned requests to the workers, starting more of them while there is work they could
+    /// start and room for them. Mutations and what a person asks for directly never come here.
     fn dispatch(self: &Arc<Self>, requests: Vec<Request>) {
+        self.dispatch_with(requests, |work| {
+            thread::Builder::new()
+                .name("somtus-remote-read".into())
+                .spawn(work)
+                .map(drop)
+        });
+    }
+    fn dispatch_with(
+        self: &Arc<Self>,
+        requests: Vec<Request>,
+        spawn: impl Fn(Box<dyn FnOnce() + Send>) -> std::io::Result<()>,
+    ) {
+        let mut queue = self.queue.lock().unwrap_or_else(PoisonError::into_inner);
         for request in requests {
-            let service = self.clone();
-            thread::spawn(move || {
-                let reply = service.backend.run(&request);
-                service
-                    .state
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .tree
-                    .apply(&request, reply);
-                service.publish();
-            });
+            queue.push(request);
         }
+        while queue.workers < MAX_WORKERS {
+            let Some(request) = queue.take(|host| self.backend.starting(host)) else {
+                return;
+            };
+            let service = Arc::downgrade(self);
+            let assigned = request.clone();
+            match spawn(Box::new(move || Self::work(service, assigned))) {
+                // Under this lock, so that it cannot be done before it has been counted.
+                Ok(()) => queue.workers += 1,
+                Err(error) => {
+                    queue.give_back(request);
+                    // A worker that is running takes what waits here, and the next tick tries again.
+                    if queue.workers == 0 {
+                        // Nobody will take these, and a request marked as running that is never
+                        // answered is never asked again.
+                        let stranded = queue.drain();
+                        drop(queue);
+                        let error = format!("This Mac could not start another thread: {error}");
+                        for request in stranded {
+                            self.take_reply(&request, failed(&request, error.clone()));
+                        }
+                    }
+                    return;
+                }
+            }
+        }
+    }
+    /// One worker: the request it was started for, then whatever is next, until nothing can start.
+    /// Only the request it is running keeps the service alive.
+    fn work(service: Weak<Self>, mut request: Request) {
+        while let Some(owner) = service.upgrade() {
+            owner.run_request(&request);
+            let mut queue = owner.queue.lock().unwrap_or_else(PoisonError::into_inner);
+            queue.finished(&request);
+            match queue.take(|host| owner.backend.starting(host)) {
+                Some(next) => request = next,
+                None => {
+                    queue.workers -= 1;
+                    return;
+                }
+            }
+        }
+    }
+    fn run_request(&self, request: &Request) {
+        // A panic must not cost the set a worker for good, nor leave the request marked as running.
+        let attempt = |reply: &dyn Fn() -> Reply| {
+            catch_unwind(AssertUnwindSafe(|| self.take_reply(request, reply())))
+        };
+        if attempt(&|| self.backend.run(request)).is_err() {
+            let _ = attempt(&|| failed(request, "The request failed unexpectedly.".into()));
+        }
+    }
+    /// Takes in the answer to a planned request. Returns whether the windows were sent a snapshot:
+    /// one holds every host's lists, and most answers leave them as they were.
+    fn take_reply(&self, request: &Request, reply: Reply) -> bool {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let changed = state.tree.apply(request, reply);
+        if changed {
+            drop(state);
+            self.publish();
+        } else if state.save_due() {
+            drop(state);
+            self.save_cache();
+        }
+        changed
     }
     pub fn select(&self, key: Option<String>) -> Result<(), String> {
         if let Some(key) = &key {
@@ -697,12 +907,41 @@ impl RemoteService {
         self.backend
             .remove_host(&host)
             .map_err(|e| secret_error(&e, None))?;
+        // Its session titles leave the Agents view and the disk now, as the next registry read
+        // may be a long way off. The route is gone either way, so a cache that cannot be written
+        // must not look like a removal that failed.
+        let _ = crate::hosts::forget_route(&self.home, &host);
         self.state
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .tree
             .invalidate_hosts();
         Ok(())
+    }
+    /// Whether a good registry read no longer lists this route, for a chat whose daemon cannot be
+    /// started. Tabs can stay open on a removed host with no panel left to read the registry, so
+    /// this reads it itself when nothing has for `tree::ROUTE_CHECK_INTERVAL`, however many ask.
+    pub fn route_removed(&self, host: &str) -> bool {
+        self.route_removed_at(host, Instant::now())
+    }
+    fn route_removed_at(&self, host: &str, now: Instant) -> bool {
+        let read = self
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .tree
+            .begin_route_check(now);
+        if read {
+            // On the chat's own thread, behind the workers' guard: a panic must neither end the
+            // chat's feed nor leave the read marked as running, after which no plan and no chat
+            // would read the registry again.
+            self.run_request(&Request::Hosts);
+        }
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .tree
+            .host_removed(host)
     }
     pub fn pair_desktop(&self, request: PairDesktopRequest) -> Result<RemotePairingLink, String> {
         if request.name.trim().is_empty()
@@ -1036,7 +1275,7 @@ fn snapshot(state: &State) -> RemoteSnapshot {
                 id: host.id.clone(),
                 label: host.label.clone(),
                 link: link_name(link),
-                status: link.unwrap_or(Link::Connecting).text().into(),
+                status: state.tree.link_text(&host.id),
             })
             .collect(),
         hosts_error: state.tree.hosts_error().map(str::to_owned),
@@ -1110,8 +1349,7 @@ impl RemoteService {
         self.state
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .selected
-            .clone()
+            .launch_record()
             .filter(|key| remote_parts(key).is_ok())
     }
 }
@@ -1125,6 +1363,20 @@ static PROCESS: OnceLock<Arc<RemoteService>> = OnceLock::new();
 pub(crate) fn call_host(host: &str, method: &str, params: serde_json::Value, timeout: Duration) -> Result<serde_json::Value, RemoteError> {
     identifier(host).map_err(RemoteError::Protocol)?;
     process().map_err(RemoteError::Unreachable)?.backend.call(host, method, params, timeout)
+}
+/// The daemon's view of a host's link, through the same seam as `call_host`. Like a read, it
+/// starts the daemon when none is running.
+pub(crate) fn host_status(host: &str) -> Result<HostStatus, String> {
+    identifier(host)?;
+    match process()?.backend.run(&Request::Status { host: host.into() }) {
+        Reply::Status(status) => status,
+        _ => Err("Unexpected answer to a status request".into()),
+    }
+}
+/// `RemoteService::route_removed` on the process service. Without a service nothing is known, so
+/// nothing counts as removed.
+pub(crate) fn route_removed(host: &str) -> bool {
+    process().is_ok_and(|remote| remote.route_removed(host))
 }
 pub fn install_service(remote: Arc<RemoteService>) -> Result<(), String> {
     PROCESS
@@ -1361,6 +1613,13 @@ mod tests {
         creates: AtomicUsize,
         /// Answer `orchestrators.list` with an empty list instead of failing.
         orchestrators_listed: std::sync::atomic::AtomicBool,
+        /// What the registry answers. By default it lists the fixture's one host.
+        registry: Mutex<Option<Result<Vec<Host>, String>>>,
+        /// What a status request answers. By default the link is online.
+        link: Mutex<Option<Result<HostStatus, String>>>,
+        /// How a creation fails. By default no answer comes.
+        create_error: Mutex<Option<RemoteError>>,
+        removal_fails: std::sync::atomic::AtomicBool,
     }
     impl Fake {
         fn new() -> Arc<Self> {
@@ -1368,6 +1627,10 @@ mod tests {
                 calls: Mutex::new(Vec::new()),
                 creates: AtomicUsize::new(0),
                 orchestrators_listed: Default::default(),
+                registry: Default::default(),
+                link: Default::default(),
+                create_error: Default::default(),
+                removal_fails: Default::default(),
             })
         }
     }
@@ -1375,17 +1638,21 @@ mod tests {
         fn run(&self, request: &Request) -> Reply {
             self.calls.lock().unwrap().push(format!("{request:?}"));
             match request {
-                Request::Hosts => Reply::Hosts(Ok(vec![Host {
-                    id: HOST.into(),
-                    label: "Disposable Mac".into(),
-                }])),
-                Request::Status { .. } => Reply::Status(Ok(HostStatus {
-                    state: LinkState::Online,
-                    rtt_ms: None,
-                    since: None,
-                    reason: None,
-                    label: None,
-                })),
+                Request::Hosts => Reply::Hosts(
+                    self.registry.lock().unwrap().clone().unwrap_or_else(|| {
+                        Ok(vec![Host {
+                            id: HOST.into(),
+                            label: "Disposable Mac".into(),
+                        }])
+                    }),
+                ),
+                Request::Status { .. } => Reply::Status(
+                    self.link
+                        .lock()
+                        .unwrap()
+                        .clone()
+                        .unwrap_or_else(|| Ok(link_state(LinkState::Online, None))),
+                ),
                 Request::Projects { .. } => Reply::Projects(Ok(vec![tree::RemoteProject {
                     id: PROJECT.into(),
                     name: "Fixture project".into(),
@@ -1404,6 +1671,9 @@ mod tests {
         }
         fn remove_host(&self, host: &str) -> Result<(), String> {
             self.calls.lock().unwrap().push(format!("remove:{host}"));
+            if self.removal_fails.load(Ordering::SeqCst) {
+                return Err("the registry is locked".into());
+            }
             Ok(())
         }
         fn pair_desktop(&self, _: &PairRequest) -> Result<String, String> {
@@ -1411,7 +1681,7 @@ mod tests {
         }
         fn create_project(&self, _: &str, _: &str) -> Result<tree::RemoteProject, RemoteError> {
             self.creates.fetch_add(1, Ordering::SeqCst);
-            Err(RemoteError::Timeout)
+            Err(self.create_failure())
         }
         fn create_shell(
             &self,
@@ -1425,7 +1695,27 @@ mod tests {
                 kind.wire()
             ));
             self.creates.fetch_add(1, Ordering::SeqCst);
-            Err(RemoteError::Timeout)
+            Err(self.create_failure())
+        }
+    }
+    impl Fake {
+        fn create_failure(&self) -> RemoteError {
+            self.create_error
+                .lock()
+                .unwrap()
+                .clone()
+                .unwrap_or(RemoteError::Timeout)
+        }
+    }
+    fn link_state(state: LinkState, reason: Option<&str>) -> HostStatus {
+        HostStatus {
+            state,
+            rtt_ms: None,
+            since: None,
+            reason: reason.map(str::to_owned),
+            label: None,
+            cause: None,
+            needs_action: false,
         }
     }
     fn fixture() -> (tempfile::TempDir, Arc<RemoteService>, Arc<Fake>) {
@@ -1457,6 +1747,600 @@ mod tests {
         // not elapsed-time assertions or an assumed scheduling speed.
         waits.recv_timeout(Duration::from_secs(10)).unwrap();
     }
+    /// Who is running, as a backend that holds requests sees it.
+    #[derive(Default)]
+    struct Load {
+        seen: Vec<Request>,
+        running: usize,
+        peak: usize,
+        lists: BTreeMap<String, usize>,
+        peak_lists: usize,
+        peak_host: usize,
+        released: bool,
+    }
+    /// A backend that keeps the requests `hold` picks running until the test lets them go.
+    struct Held {
+        load: Mutex<Load>,
+        moved: std::sync::Condvar,
+        hold: fn(&Request) -> bool,
+        starting: Mutex<HashSet<String>>,
+        panics: std::sync::atomic::AtomicBool,
+    }
+    impl RemoteBackend for Held {
+        fn run(&self, request: &Request) -> Reply {
+            assert!(!self.panics.load(Ordering::SeqCst), "a backend that panics");
+            let host = list_host(request);
+            let mut load = self.load.lock().unwrap();
+            load.seen.push(request.clone());
+            load.running += 1;
+            load.peak = load.peak.max(load.running);
+            if let Some(host) = host {
+                *load.lists.entry(host.to_owned()).or_default() += 1;
+                let lists = load.lists.values().sum();
+                let of_host = load.lists[host];
+                load.peak_lists = load.peak_lists.max(lists);
+                load.peak_host = load.peak_host.max(of_host);
+            }
+            self.moved.notify_all();
+            while (self.hold)(request) && !load.released {
+                load = self.moved.wait(load).unwrap();
+            }
+            load.running -= 1;
+            if let Some(host) = host {
+                *load.lists.get_mut(host).unwrap() -= 1;
+            }
+            self.moved.notify_all();
+            failed(request, "the fixture does not answer".into())
+        }
+        fn starting(&self, host: &str) -> bool {
+            self.starting.lock().unwrap().contains(host)
+        }
+        fn add_host(&self, _: &str, _: &str) -> Result<(), String> {
+            Err("not in this fixture".into())
+        }
+        fn remove_host(&self, _: &str) -> Result<(), String> {
+            Err("not in this fixture".into())
+        }
+        fn pair_desktop(&self, _: &PairRequest) -> Result<String, String> {
+            Err("not in this fixture".into())
+        }
+        fn create_project(&self, _: &str, _: &str) -> Result<tree::RemoteProject, RemoteError> {
+            Err(RemoteError::Timeout)
+        }
+        fn create_shell(
+            &self,
+            _: &str,
+            _: &ShellScope,
+            _: NewShellKind,
+            _: bool,
+        ) -> Result<tree::RemoteShell, RemoteError> {
+            Err(RemoteError::Timeout)
+        }
+    }
+    impl Held {
+        fn wait_for(&self, what: &str, done: impl Fn(&Load) -> bool) {
+            let deadline = Instant::now() + Duration::from_secs(20);
+            let mut load = self.load.lock().unwrap();
+            while !done(&load) {
+                let left = deadline.saturating_duration_since(Instant::now());
+                assert!(
+                    !left.is_zero(),
+                    "still waiting for {what}: {} running, {} seen",
+                    load.running,
+                    load.seen.len()
+                );
+                load = self.moved.wait_timeout(load, left).unwrap().0;
+            }
+        }
+        fn release(&self) {
+            self.load.lock().unwrap().released = true;
+            self.moved.notify_all();
+        }
+    }
+    fn held_fixture(
+        hold: fn(&Request) -> bool,
+    ) -> (tempfile::TempDir, Arc<RemoteService>, Arc<Held>) {
+        let directory = tempfile::tempdir().unwrap();
+        let held = Arc::new(Held {
+            load: Mutex::default(),
+            moved: Default::default(),
+            hold,
+            starting: Mutex::default(),
+            panics: Default::default(),
+        });
+        let remote = RemoteService::new(directory.path().into(), held.clone());
+        (directory, remote, held)
+    }
+    fn lists_of(host: &str) -> [Request; 4] {
+        let (host, project) = (host.to_owned(), PROJECT.to_owned());
+        [
+            Request::Projects { host: host.clone() },
+            Request::Worktrees {
+                host: host.clone(),
+                project: project.clone(),
+            },
+            Request::Tasks {
+                host: host.clone(),
+                project: project.clone(),
+            },
+            Request::Shells { host, project },
+        ]
+    }
+    fn workers(remote: &RemoteService) -> usize {
+        remote.queue.lock().unwrap().workers
+    }
+    /// Every worker has gone, and with it what it held of the service.
+    fn until_idle(remote: &Arc<RemoteService>) {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while workers(remote) > 0 || Arc::strong_count(remote) > 1 {
+            assert!(
+                Instant::now() < deadline,
+                "{} workers and {} owners left",
+                workers(remote),
+                Arc::strong_count(remote)
+            );
+            thread::sleep(Duration::from_millis(2));
+        }
+    }
+    fn no_more_threads(_: Box<dyn FnOnce() + Send>) -> std::io::Result<()> {
+        Err(std::io::Error::other("no more threads"))
+    }
+
+    #[test]
+    fn requests_run_on_a_bounded_set_of_workers_that_ends_with_the_work() {
+        let (_directory, remote, held) = held_fixture(|_| true);
+        // As many hosts as the registry allows, each with its link and its lists due.
+        let mut requests = Vec::new();
+        for n in 0..64 {
+            let host = format!("host-{n:02}");
+            requests.push(Request::Status { host: host.clone() });
+            requests.extend(lists_of(&host));
+        }
+        let total = requests.len();
+        remote.dispatch(requests);
+        held.wait_for("a full set", |load| load.running == MAX_WORKERS);
+        // The poll worker comes by on every tick, and that adds nobody.
+        for _ in 0..3 {
+            remote.dispatch(Vec::new());
+        }
+        thread::sleep(Duration::from_millis(50));
+        assert_eq!(held.load.lock().unwrap().running, MAX_WORKERS);
+        assert_eq!(workers(&remote), MAX_WORKERS);
+
+        held.release();
+        held.wait_for("every request", |load| {
+            load.seen.len() == total && load.running == 0
+        });
+        {
+            let load = held.load.lock().unwrap();
+            assert_eq!(load.peak, MAX_WORKERS);
+            assert!(load.peak_lists <= MAX_LIST_WORKERS, "{}", load.peak_lists);
+            assert!(load.peak_host <= MAX_LISTS_PER_HOST, "{}", load.peak_host);
+            let mut asked: Vec<_> = load.seen.iter().map(|r| format!("{r:?}")).collect();
+            asked.sort();
+            asked.dedup();
+            assert_eq!(asked.len(), total, "each one once");
+        }
+        // Nobody stays on for more work, or keeps the service alive.
+        until_idle(&remote);
+    }
+
+    #[test]
+    fn a_status_and_the_registry_never_queue_behind_lists() {
+        let (_directory, remote, held) = held_fixture(|request| list_host(request).is_some());
+        let lists: Vec<_> = (0..8)
+            .flat_map(|n| lists_of(&format!("host-{n}")))
+            .collect();
+        let total = lists.len() + 2;
+        remote.dispatch(lists);
+        held.wait_for("the lists' share of the workers", |load| {
+            load.running == MAX_LIST_WORKERS
+        });
+        thread::sleep(Duration::from_millis(50));
+        assert_eq!(
+            held.load.lock().unwrap().running,
+            MAX_LIST_WORKERS,
+            "the rest of the workers stay free"
+        );
+
+        let status = Request::Status {
+            host: "host-0".into(),
+        };
+        remote.dispatch(vec![status.clone(), Request::Hosts]);
+        held.wait_for("the status and the registry", |load| {
+            load.seen.contains(&status) && load.seen.contains(&Request::Hosts)
+        });
+
+        held.release();
+        held.wait_for("every list", |load| {
+            load.seen.len() == total && load.running == 0
+        });
+        until_idle(&remote);
+    }
+
+    #[test]
+    fn statuses_come_first_and_hosts_take_turns_with_their_lists() {
+        let mut queue = WorkQueue::default();
+        let [a_projects, a_worktrees, a_tasks, a_shells] = lists_of("a");
+        let [b_projects, ..] = lists_of("b");
+        let [c_projects, ..] = lists_of("c");
+        let status = Request::Status { host: "z".into() };
+        for request in [
+            a_projects.clone(),
+            a_worktrees.clone(),
+            a_tasks.clone(),
+            a_shells.clone(),
+            b_projects.clone(),
+            c_projects.clone(),
+            status.clone(),
+            Request::Hosts,
+        ] {
+            queue.push(request);
+        }
+        let mut order = Vec::new();
+        while let Some(request) = queue.take(|_| false) {
+            queue.finished(&request);
+            order.push(request);
+        }
+        assert_eq!(
+            order,
+            [
+                status,
+                Request::Hosts,
+                a_projects.clone(),
+                b_projects.clone(),
+                c_projects,
+                a_worktrees,
+                a_tasks,
+                a_shells
+            ]
+        );
+        // The turn carries over to what is planned next: `a` went last, so `b` is next.
+        queue.push(a_projects);
+        queue.push(b_projects.clone());
+        assert_eq!(queue.take(|_| false), Some(b_projects));
+    }
+
+    #[test]
+    fn a_host_holds_only_a_few_list_workers_and_all_hosts_twelve() {
+        let mut queue = WorkQueue::default();
+        // Two lists more than one host may run at once, and nothing else waiting.
+        let [projects, worktrees, tasks, shells] = lists_of("busy");
+        for request in [projects, worktrees, tasks, shells] {
+            queue.push(request);
+        }
+        let mut taken = Vec::new();
+        while let Some(request) = queue.take(|_| false) {
+            taken.push(request);
+        }
+        assert_eq!(taken.len(), MAX_LISTS_PER_HOST);
+        // One ending lets the next start.
+        queue.finished(&taken.pop().unwrap());
+        assert!(queue.take(|_| false).is_some());
+        assert!(queue.take(|_| false).is_none());
+
+        let mut queue = WorkQueue::default();
+        for n in 0..6 {
+            for request in lists_of(&format!("host-{n}")) {
+                queue.push(request);
+            }
+        }
+        let mut taken = Vec::new();
+        while let Some(request) = queue.take(|_| false) {
+            taken.push(request);
+        }
+        assert_eq!(taken.len(), MAX_LIST_WORKERS);
+        // What goes first still goes.
+        queue.push(Request::Hosts);
+        assert_eq!(queue.take(|_| false), Some(Request::Hosts));
+        queue.finished(&taken.pop().unwrap());
+        assert!(queue.take(|_| false).is_some());
+        assert!(queue.take(|_| false).is_none());
+    }
+
+    #[test]
+    fn slow_hosts_leave_workers_for_the_others() {
+        let (_directory, remote, held) =
+            held_fixture(|request| list_host(request).is_some_and(|host| host.starts_with("slow")));
+        let slow: Vec<_> = (0..3)
+            .flat_map(|n| lists_of(&format!("slow-{n}")))
+            .collect();
+        let total = slow.len() + 4;
+        remote.dispatch(slow);
+        held.wait_for("the slow hosts' lists", |load| {
+            load.running == 3 * MAX_LISTS_PER_HOST
+        });
+        thread::sleep(Duration::from_millis(50));
+        assert_eq!(held.load.lock().unwrap().running, 3 * MAX_LISTS_PER_HOST);
+        // All they can hold, and another host goes straight through.
+        remote.dispatch(lists_of("quick").to_vec());
+        held.wait_for("the quick host's lists", |load| {
+            lists_of("quick")
+                .iter()
+                .all(|list| load.seen.contains(list))
+        });
+        held.release();
+        held.wait_for("every list", |load| {
+            load.seen.len() == total && load.running == 0
+        });
+        assert!(held.load.lock().unwrap().peak_host <= MAX_LISTS_PER_HOST);
+        until_idle(&remote);
+    }
+
+    #[test]
+    fn a_list_for_a_host_whose_daemon_is_starting_holds_no_worker() {
+        let (_directory, remote, held) = held_fixture(|_| false);
+        held.starting.lock().unwrap().insert("starting".into());
+        let mut lists = lists_of("starting").to_vec();
+        lists.extend(lists_of("other"));
+        remote.dispatch(lists);
+        held.wait_for("the other host's lists", |load| load.seen.len() == 4);
+        until_idle(&remote);
+        // Nobody sits waiting on that daemon, nor are its lists lost or answered.
+        assert!(
+            held.load
+                .lock()
+                .unwrap()
+                .seen
+                .iter()
+                .all(|request| list_host(request) == Some("other"))
+        );
+        // A tick while it is still at it starts nothing.
+        remote.dispatch(Vec::new());
+        assert_eq!(workers(&remote), 0);
+        // A status does go: it does not wait for the daemon, and says the link is being made.
+        let status = Request::Status {
+            host: "starting".into(),
+        };
+        remote.dispatch(vec![status.clone()]);
+        held.wait_for("the status", |load| load.seen.contains(&status));
+        until_idle(&remote);
+
+        held.starting.lock().unwrap().clear();
+        remote.dispatch(Vec::new());
+        held.wait_for("the lists held back", |load| load.seen.len() == 9);
+        until_idle(&remote);
+    }
+
+    #[test]
+    fn when_no_worker_can_start_every_request_is_answered_and_asked_again() {
+        let (_directory, remote, fake) = fixture();
+        let (_observation, _topic) = remote
+            .observe(RemoteWants {
+                settings: true,
+                ..Default::default()
+            })
+            .unwrap();
+        let start = Instant::now();
+        let planned = remote.plan(start);
+        assert_eq!(planned, [Request::Hosts]);
+        remote.dispatch_with(planned, no_more_threads);
+        let data = remote.current();
+        assert!(
+            data.hosts_error
+                .as_deref()
+                .unwrap()
+                .contains("no more threads"),
+            "{data:?}"
+        );
+        assert!(!remote.hub.publish(data), "the windows were told");
+        assert_eq!(workers(&remote), 0);
+        assert!(fake.calls.lock().unwrap().is_empty());
+        // Asked again when due, as a request still marked as running never would be.
+        let again = start + tree::HOSTS_INTERVAL;
+        assert_eq!(remote.plan(again), [Request::Hosts]);
+        answer(&remote, Request::Hosts);
+
+        // And with a few at once: each gets its answer.
+        let later = again + tree::HOSTS_INTERVAL;
+        let planned = remote.plan(later);
+        assert_eq!(
+            planned,
+            [Request::Hosts, Request::Status { host: HOST.into() }]
+        );
+        remote.dispatch_with(planned, no_more_threads);
+        let data = remote.current();
+        assert!(data.hosts[0].status.contains("no more threads"), "{data:?}");
+        assert!(
+            data.hosts_error
+                .as_deref()
+                .unwrap()
+                .contains("no more threads")
+        );
+        let next = later + tree::HOSTS_INTERVAL;
+        assert_eq!(
+            remote.plan(next),
+            [Request::Hosts, Request::Status { host: HOST.into() }]
+        );
+    }
+
+    #[test]
+    fn a_worker_that_is_running_takes_over_what_could_not_get_its_own() {
+        let (_directory, remote, held) = held_fixture(|_| true);
+        let spawned = AtomicUsize::new(0);
+        let requests = lists_of("host").to_vec();
+        let total = requests.len();
+        remote.dispatch_with(requests, |work| {
+            if spawned.fetch_add(1, Ordering::SeqCst) == 0 {
+                thread::Builder::new().spawn(work).map(drop)
+            } else {
+                no_more_threads(work)
+            }
+        });
+        held.wait_for("the one worker", |load| load.running == 1);
+        assert_eq!(workers(&remote), 1);
+        // Nothing was given up on while it can still be done.
+        assert_eq!(held.load.lock().unwrap().seen.len(), 1);
+        held.release();
+        held.wait_for("every list", |load| {
+            load.seen.len() == total && load.running == 0
+        });
+        until_idle(&remote);
+    }
+
+    #[test]
+    fn a_request_that_panics_costs_no_worker_and_is_asked_again() {
+        let (_directory, remote, held) = held_fixture(|_| false);
+        held.panics.store(true, Ordering::SeqCst);
+        let (_observation, _topic) = remote
+            .observe(RemoteWants {
+                settings: true,
+                ..Default::default()
+            })
+            .unwrap();
+        let start = Instant::now();
+        remote.dispatch(remote.plan(start));
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while remote.current().hosts_error.is_none() {
+            assert!(Instant::now() < deadline, "the request stayed out");
+            thread::sleep(Duration::from_millis(2));
+        }
+        until_idle(&remote);
+        assert_eq!(remote.plan(start + tree::HOSTS_INTERVAL), [Request::Hosts]);
+    }
+
+    #[test]
+    fn a_registry_read_that_panics_for_a_chat_is_answered_and_asked_again() {
+        let (_directory, remote, held) = held_fixture(|_| false);
+        held.panics.store(true, Ordering::SeqCst);
+        let (_observation, _topic) = remote
+            .observe(RemoteWants {
+                settings: true,
+                ..Default::default()
+            })
+            .unwrap();
+        let start = Instant::now();
+        // Asked on a chat's own thread: the panic ends here, as a read that failed, and the chat
+        // goes on.
+        let removed = catch_unwind(AssertUnwindSafe(|| remote.route_removed_at(HOST, start)));
+        assert_eq!(removed.ok(), Some(false), "the panic reached the chat");
+        assert!(remote.current().hosts_error.is_some());
+        // Nor is the read left marked as running, so the registry is read again in its time.
+        held.panics.store(false, Ordering::SeqCst);
+        assert_eq!(remote.plan(start + tree::HOSTS_INTERVAL), [Request::Hosts]);
+    }
+
+    #[test]
+    fn sixty_four_hosts_all_come_online_through_the_workers() {
+        let (_directory, remote, fake) = fixture();
+        *fake.registry.lock().unwrap() = Some(Ok((0..64)
+            .map(|n| Host {
+                id: format!("host-{n:02}"),
+                label: format!("Mac {n}"),
+            })
+            .collect()));
+        let (_observation, _topic) = remote
+            .observe(RemoteWants {
+                folders: true,
+                settings: true,
+                ..Default::default()
+            })
+            .unwrap();
+        // Half-second ticks, as fast as the machine goes.
+        let mut now = Instant::now();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            remote.dispatch(remote.plan(now));
+            let data = remote.current();
+            if data.hosts.len() == 64
+                && data.folders.iter().all(|folder| {
+                    folder.link.as_deref() == Some("online") && !folder.projects.is_empty()
+                })
+            {
+                break;
+            }
+            assert!(Instant::now() < deadline, "{data:?}");
+            now += Duration::from_millis(500);
+            thread::sleep(Duration::from_millis(5));
+        }
+        until_idle(&remote);
+        // What the windows hold is what is true, though most answers published nothing.
+        assert!(!remote.hub.publish(remote.current()));
+    }
+
+    #[test]
+    fn an_answer_that_changes_nothing_builds_no_snapshot() {
+        let (_directory, remote, _fake) = fixture();
+        let listed = || {
+            Reply::Hosts(Ok(vec![Host {
+                id: HOST.into(),
+                label: "Disposable Mac".into(),
+            }]))
+        };
+        assert!(remote.take_reply(&Request::Hosts, listed()));
+        assert!(!remote.take_reply(&Request::Hosts, listed()));
+        let request = Request::Status { host: HOST.into() };
+        let online = |rtt| {
+            Reply::Status(Ok(HostStatus {
+                rtt_ms: Some(rtt),
+                ..link_state(LinkState::Online, None)
+            }))
+        };
+        assert!(remote.take_reply(&request, online(10)));
+        // The round-trip time moves on every poll and is not drawn.
+        assert!(!remote.take_reply(&request, online(20)));
+        assert!(!remote.hub.publish(remote.current()));
+        // A link that goes down is news.
+        let down = || Reply::Status(Err("the daemon is gone".into()));
+        assert!(remote.take_reply(&request, down()));
+        assert!(!remote.take_reply(&request, down()));
+        assert!(!remote.hub.publish(remote.current()));
+    }
+
+    #[test]
+    fn a_first_empty_registry_answer_reaches_the_windows_and_the_file() {
+        let (directory, remote, _fake) = fixture();
+        let key = tree::project_key(HOST, PROJECT);
+        remote.select(Some(key.clone())).unwrap();
+        assert_eq!(
+            remote_cache::load(directory.path()).selected.as_deref(),
+            Some(key.as_str())
+        );
+        assert!(remote.take_reply(&Request::Hosts, Reply::Hosts(Ok(Vec::new()))));
+        assert!(remote.current().projects.iter().any(|lists| lists.unpaired));
+        assert!(!remote.hub.publish(remote.current()));
+        assert_eq!(remote_cache::load(directory.path()).selected, None);
+    }
+
+    #[test]
+    fn an_answer_that_changes_only_the_file_still_writes_it() {
+        let directory = tempfile::tempdir().unwrap();
+        let name = |id: &str| tree::RemoteProject {
+            id: id.into(),
+            name: format!("the name of {id}"),
+            created_at: 1,
+        };
+        remote_cache::save(
+            directory.path(),
+            &Kept {
+                selected: None,
+                hosts: BTreeMap::from([
+                    (HOST.to_owned(), vec![name("kept")]),
+                    ("gone".to_owned(), vec![name("forgotten")]),
+                ]),
+            },
+        )
+        .unwrap();
+        let remote = RemoteService::new(directory.path().into(), Fake::new());
+        let listed = || {
+            vec![Host {
+                id: HOST.into(),
+                label: "Disposable Mac".into(),
+            }]
+        };
+        // The registry is already known to name only the one, and the file still has both.
+        remote.state.lock().unwrap().tree.set_hosts(listed());
+        assert!(
+            remote_cache::load(directory.path())
+                .hosts
+                .contains_key("gone")
+        );
+        assert!(!remote.take_reply(&Request::Hosts, Reply::Hosts(Ok(listed()))));
+        let kept = remote_cache::load(directory.path());
+        assert!(!kept.hosts.contains_key("gone"));
+        assert!(kept.hosts.contains_key(HOST));
+    }
+
     #[test]
     fn polling_demand_matches_engine_requests_including_cached_titles() {
         for flags in 0..256 {
@@ -1784,6 +2668,277 @@ mod tests {
         let found = remote.orchestrator(&key).unwrap();
         assert_eq!(found.shell.map(|shell| shell.id).as_deref(), Some("live"));
         assert_eq!(asked(&fake.calls.lock().unwrap()), before);
+    }
+
+    #[test]
+    fn a_route_is_removed_only_by_a_good_registry_read_asked_once_per_interval() {
+        let (_directory, remote, fake) = fixture();
+        let reads = || {
+            fake.calls
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|call| *call == "Hosts")
+                .count()
+        };
+        let every = tree::ROUTE_CHECK_INTERVAL;
+        let second = Duration::from_secs(1);
+        let now = Instant::now();
+        // The first read finds the host, and the tree and its subscribers learn it too.
+        assert!(!remote.route_removed_at(HOST, now));
+        assert_eq!(reads(), 1);
+        assert_eq!(remote.current().hosts.len(), 1);
+        // It goes, and however many tabs ask, the read waits for its time.
+        *fake.registry.lock().unwrap() = Some(Ok(Vec::new()));
+        for _ in 0..20 {
+            assert!(!remote.route_removed_at(HOST, now + second));
+        }
+        assert_eq!(reads(), 1);
+        let later = now + every;
+        assert!(remote.route_removed_at(HOST, later));
+        assert_eq!(reads(), 2);
+        assert!(remote.current().hosts.is_empty());
+        // Known now, at no further cost.
+        assert!(remote.route_removed_at(HOST, later + second));
+        assert_eq!(reads(), 2);
+        // A failed read neither clears that nor counts for anything else.
+        *fake.registry.lock().unwrap() = Some(Err("no companion".into()));
+        let again = later + every;
+        assert!(remote.route_removed_at(HOST, again));
+        assert_eq!(reads(), 3);
+        // Paired again, which is noticed from this question alone, with no panel showing.
+        *fake.registry.lock().unwrap() = None;
+        assert!(remote.route_removed_at(HOST, again + second));
+        assert!(!remote.route_removed_at(HOST, again + every));
+        assert_eq!(remote.current().hosts.len(), 1);
+
+        // A registry that never answered says nothing about anyone.
+        let (_directory, remote, fake) = fixture();
+        *fake.registry.lock().unwrap() = Some(Err("no companion".into()));
+        assert!(!remote.route_removed_at(HOST, Instant::now()));
+    }
+
+    #[test]
+    fn a_removed_hosts_names_and_launch_record_leave_the_file_and_its_window_stays_unpaired() {
+        let (directory, remote, fake) = fixture();
+        answer(&remote, Request::Hosts);
+        answer(&remote, Request::Status { host: HOST.into() });
+        answer(&remote, Request::Projects { host: HOST.into() });
+        let key = tree::project_key(HOST, PROJECT);
+        remote.select(Some(key.clone())).unwrap();
+        let saved = remote_cache::load(directory.path());
+        assert_eq!(saved.selected.as_deref(), Some(key.as_str()));
+        assert!(saved.hosts.contains_key(HOST));
+        assert_eq!(remote.launch_selection(false).as_deref(), Some(key.as_str()));
+
+        *fake.registry.lock().unwrap() = Some(Ok(Vec::new()));
+        answer(&remote, Request::Hosts);
+
+        // Nothing else had to happen for the file to forget it.
+        let saved = remote_cache::load(directory.path());
+        assert_eq!(saved.selected, None);
+        assert!(saved.hosts.is_empty());
+        let file = std::fs::read_to_string(directory.path().join("remote-ui.json")).unwrap();
+        assert!(!file.contains("Fixture project"), "{file}");
+        // Neither this process nor the next one opens it again.
+        assert_eq!(remote.launch_selection(false), None);
+        let next = RemoteService::new(directory.path().into(), fake.clone());
+        assert_eq!(next.launch_selection(false), None);
+        // The window already on it stays there and shows why it is empty.
+        let data = remote.current();
+        assert_eq!(data.selected.as_deref(), Some(key.as_str()));
+        assert!(data.projects.iter().any(|lists| lists.key == key && lists.unpaired));
+        // A window that selects it anyway, as a restored one does, leaves no record either.
+        remote.select(Some(key.clone())).unwrap();
+        assert_eq!(remote_cache::load(directory.path()).selected, None);
+
+        // Paired again under the same id, with that window still open: the record is back.
+        *fake.registry.lock().unwrap() = None;
+        answer(&remote, Request::Hosts);
+        assert_eq!(
+            remote_cache::load(directory.path()).selected.as_deref(),
+            Some(key.as_str())
+        );
+        assert_eq!(remote.launch_selection(false).as_deref(), Some(key.as_str()));
+    }
+
+    #[test]
+    fn the_launch_record_leaves_the_file_even_when_the_host_had_no_list_to_keep() {
+        let (directory, remote, fake) = fixture();
+        answer(&remote, Request::Hosts);
+        let key = tree::project_key(HOST, PROJECT);
+        remote.select(Some(key.clone())).unwrap();
+        assert!(remote_cache::load(directory.path()).hosts.is_empty());
+        *fake.registry.lock().unwrap() = Some(Ok(Vec::new()));
+        answer(&remote, Request::Hosts);
+        assert_eq!(remote_cache::load(directory.path()).selected, None);
+        assert_eq!(remote.launch_selection(false), None);
+    }
+
+    #[test]
+    fn a_failed_registry_read_changes_nothing_in_the_file() {
+        let (directory, remote, fake) = fixture();
+        answer(&remote, Request::Hosts);
+        answer(&remote, Request::Status { host: HOST.into() });
+        answer(&remote, Request::Projects { host: HOST.into() });
+        let key = tree::project_key(HOST, PROJECT);
+        remote.select(Some(key.clone())).unwrap();
+        let before = std::fs::read(directory.path().join("remote-ui.json")).unwrap();
+        *fake.registry.lock().unwrap() = Some(Err("no companion".into()));
+        answer(&remote, Request::Hosts);
+        assert_eq!(
+            std::fs::read(directory.path().join("remote-ui.json")).unwrap(),
+            before
+        );
+        assert_eq!(remote.launch_selection(false).as_deref(), Some(key.as_str()));
+    }
+
+    #[test]
+    fn removing_a_host_forgets_its_sessions_at_once_and_a_failed_removal_does_not() {
+        use riwork_engine::host_sessions::{Cache, Host as SessionHost, LocalSnapshot};
+        let (directory, remote, fake) = fixture();
+        let mut cache = Cache::default();
+        for route in [HOST, "other-mac"] {
+            cache.hosts.insert(
+                route.into(),
+                SessionHost::pending(Some(route.into()), route.into(), "relay"),
+            );
+            cache
+                .apply_read(
+                    route,
+                    LocalSnapshot {
+                        version: 1,
+                        host_id: uuid::Uuid::new_v4().to_string(),
+                        observed_at: 5,
+                        capabilities: vec!["chats".into()],
+                        total: 0,
+                        partial: false,
+                        sessions: Vec::new(),
+                    },
+                    5,
+                )
+                .unwrap();
+        }
+        cache.save(directory.path()).unwrap();
+        let listed = |route: &str| Cache::open(directory.path()).hosts.contains_key(route);
+        assert!(listed(HOST));
+
+        fake.removal_fails.store(true, Ordering::SeqCst);
+        assert!(remote.remove_host(HOST.into()).is_err());
+        assert!(listed(HOST), "the route is still there, and so are its sessions");
+
+        fake.removal_fails.store(false, Ordering::SeqCst);
+        remote.remove_host(HOST.into()).unwrap();
+        assert!(!listed(HOST));
+        assert!(listed("other-mac"));
+        // The registry is read again at the next plan, as before.
+        let (_observation, _topic) = remote
+            .observe(RemoteWants {
+                settings: true,
+                ..Default::default()
+            })
+            .unwrap();
+        assert!(remote.plan(Instant::now()).contains(&Request::Hosts));
+    }
+
+    #[test]
+    fn an_offline_hosts_reason_reaches_its_folder_note_and_status_text() {
+        let (_directory, remote, fake) = fixture();
+        answer(&remote, Request::Hosts);
+        let reason = "SSH host identity changed; reconnect refused before sending requests";
+        *fake.link.lock().unwrap() = Some(Ok(link_state(LinkState::Offline, Some(reason))));
+        answer(&remote, Request::Status { host: HOST.into() });
+        let data = remote.current();
+        assert_eq!(data.hosts[0].link.as_deref(), Some("offline"));
+        assert_eq!(data.hosts[0].status, reason);
+        assert_eq!(data.folders[0].link.as_deref(), Some("offline"));
+        assert_eq!(data.folders[0].note.as_deref(), Some(reason));
+
+        let failed = "Cannot start the connection to this Mac: unreadable registry";
+        *fake.link.lock().unwrap() = Some(Err(failed.into()));
+        answer(&remote, Request::Status { host: HOST.into() });
+        let data = remote.current();
+        assert_eq!(data.hosts[0].status, failed);
+        assert_eq!(data.folders[0].note.as_deref(), Some(failed));
+
+        let plain = Link::Offline.text();
+        *fake.link.lock().unwrap() = Some(Ok(link_state(LinkState::Offline, None)));
+        answer(&remote, Request::Status { host: HOST.into() });
+        let data = remote.current();
+        assert_eq!(data.hosts[0].status, plain);
+        assert_eq!(data.folders[0].note.as_deref(), Some(plain));
+
+        *fake.link.lock().unwrap() = None;
+        answer(&remote, Request::Status { host: HOST.into() });
+        assert_eq!(remote.current().hosts[0].status, Link::Online.text());
+    }
+
+    #[test]
+    fn a_creation_lost_with_the_link_may_exist_and_one_never_sent_is_refused() {
+        let (_directory, remote, fake) = fixture();
+        answer(&remote, Request::Hosts);
+        answer(&remote, Request::Status { host: HOST.into() });
+        answer(&remote, Request::Projects { host: HOST.into() });
+        let key = tree::project_key(HOST, PROJECT);
+        remote.select(Some(key.clone())).unwrap();
+        for (error, prefix, may_exist) in [
+            (RemoteError::Lost("the session ended".into()), "broken: ", true),
+            // What a plain `offline` from an older daemon becomes.
+            (RemoteError::Lost("host is offline: relay closed".into()), "broken: ", true),
+            (RemoteError::Timeout, "broken: ", true),
+            (
+                RemoteError::Rpc {
+                    code: "offline".into(),
+                    message: "host is offline: relay closed".into(),
+                },
+                "refused: ",
+                false,
+            ),
+            (
+                RemoteError::NeedsSetup {
+                    cause: "identity_changed".into(),
+                    message: "Remove and add this host".into(),
+                },
+                "refused: ",
+                false,
+            ),
+            (RemoteError::Unreachable("no daemon".into()), "refused: ", false),
+        ] {
+            let case = format!("{error:?}");
+            let creates = fake.creates.load(Ordering::SeqCst);
+            *fake.create_error.lock().unwrap() = Some(error);
+
+            let refused = remote
+                .create_project(HOST.into(), "New remote".into())
+                .unwrap_err();
+            assert!(refused.starts_with(prefix), "{case}: {refused}");
+            let folder = remote.current().folders.remove(0);
+            assert_eq!(
+                folder.failure.as_deref().unwrap().contains("may exist"),
+                may_exist,
+                "{case}"
+            );
+
+            let refused = remote
+                .create_shell(RemoteCreateShell {
+                    project_key: key.clone(),
+                    worktree_id: None,
+                    kind: "shell".into(),
+                    unrestricted: false,
+                })
+                .unwrap_err();
+            assert!(refused.starts_with(prefix), "{case}: {refused}");
+            let failure = remote
+                .current()
+                .projects
+                .into_iter()
+                .find(|lists| lists.key == key)
+                .and_then(|lists| lists.failure)
+                .unwrap();
+            assert_eq!(failure.contains("may exist"), may_exist, "{case}: {failure}");
+            // One request each, whatever came back.
+            assert_eq!(fake.creates.load(Ordering::SeqCst), creates + 2, "{case}");
+        }
     }
 
     #[test]

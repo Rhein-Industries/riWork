@@ -1203,10 +1203,10 @@ fn fit_suggestions(
 impl Rpc {
     /// Whether the installed CLI has the chat commands (`somtus capabilities --json` has
     /// `"chat":true`): `Ok(false)` if it ran and did not say so (an older CLI refuses the
-    /// question), an error if it could not be run or took longer than `limit` in all. Only a
-    /// yes is remembered: a CLI updated while the connector runs is believed at once. Askers
-    /// at the same time run the CLI once: the others wait for the answer, within their own
-    /// `limit`.
+    /// question), an error if it could not be run, was killed or took longer than `limit` in
+    /// all. Only a yes is remembered: a CLI updated while the connector runs is believed at
+    /// once. Askers at the same time run the CLI once: the others wait for the answer, within
+    /// their own `limit`.
     async fn chat_known(&self, limit: Duration) -> std::result::Result<bool, Fault> {
         self.capability_known(&self.chat, limit).await
     }
@@ -1234,11 +1234,13 @@ impl Rpc {
         {
             return Ok(flag.load(Ordering::Relaxed));
         }
+        // With no time left an answer could not be heard, and a run would only be killed.
+        let left = limit.saturating_sub(started.elapsed());
+        if left.is_zero() {
+            return Err(cli_fault("Somtus CLI timeout"));
+        }
         let asked = self
-            .raw_within(
-                vec!["capabilities".into(), "--json".into()],
-                limit.saturating_sub(started.elapsed()),
-            )
+            .raw_within(vec!["capabilities".into(), "--json".into()], left)
             .await;
         match asked {
             Ok(data) => {
@@ -1281,7 +1283,8 @@ impl Rpc {
                 self.capability_answers.fetch_add(1, Ordering::Release);
                 Ok(flag.load(Ordering::Relaxed))
             }
-            // It ran and refused the question: a CLI from before `capabilities`.
+            // It ran and refused the question: a CLI from before `capabilities`. One that a
+            // signal ended said nothing, and `raw_fed` does not call that a failure of the CLI.
             Err(e) if e.to_string().starts_with("Somtus CLI failed") => {
                 self.capability_answers.fetch_add(1, Ordering::Release);
                 Ok(false)
@@ -1289,32 +1292,30 @@ impl Rpc {
             Err(e) => Err(cli_fault(e)),
         }
     }
-    /// What `ready` announces as `features.chat`. The question is short: a CLI that does not
-    /// answer within a few seconds does not delay the handshake any longer (the phone gives
-    /// the whole handshake ten).
-    pub async fn chat_supported(&self) -> bool {
-        self.chat_known(Duration::from_secs(3))
-            .await
-            .unwrap_or(false)
+    /// What `ready` announces as `features.chat`, asked for at most `wait`: the question is
+    /// short, so a CLI that does not answer within a few seconds does not delay the
+    /// handshake any longer (the phone gives the whole handshake ten).
+    pub async fn chat_supported(&self, wait: Duration) -> bool {
+        self.chat_known(wait).await.unwrap_or(false)
     }
     /// What `ready` announces as `features.chat_provider_switch`: a chat takes the `switch`
     /// command. Short, like `chat_supported`, whose question it shares.
-    pub async fn chat_provider_switch_supported(&self) -> bool {
-        self.capability_known(&self.chat_provider_switch, Duration::from_secs(3))
+    pub async fn chat_provider_switch_supported(&self, wait: Duration) -> bool {
+        self.capability_known(&self.chat_provider_switch, wait)
             .await
             .unwrap_or(false)
     }
     /// What `ready` announces as `features.chat_models`: `chat.models` lists a provider's
     /// saved models.
-    pub async fn chat_models_supported(&self) -> bool {
-        self.capability_known(&self.chat_models, Duration::from_secs(3))
+    pub async fn chat_models_supported(&self, wait: Duration) -> bool {
+        self.capability_known(&self.chat_models, wait)
             .await
             .unwrap_or(false)
     }
     /// What `ready` announces as `features.chat_suggestions`: `chat.suggestions` lists a
     /// chat's commands and files.
-    pub async fn chat_suggestions_supported(&self) -> bool {
-        self.capability_known(&self.chat_suggestions, Duration::from_secs(3))
+    pub async fn chat_suggestions_supported(&self, wait: Duration) -> bool {
+        self.capability_known(&self.chat_suggestions, wait)
             .await
             .unwrap_or(false)
     }

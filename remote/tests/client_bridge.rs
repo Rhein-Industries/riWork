@@ -4,7 +4,7 @@
 //! byte, and so is what the terminal is left as.
 mod client_support;
 
-use client_support::{FakeHost, HostOptions, Net, REMOTE, eventually};
+use client_support::{FakeHost, HostOptions, Net, OtherBuild, REMOTE, eventually};
 use riwork_remote::{client::add_host, config::Storage};
 use std::{
     io::{Read, Write},
@@ -331,6 +331,18 @@ async fn the_bridge_says_what_is_wrong_when_the_host_refuses_and_leaves_the_term
     assert!(!status.success());
     terminal.wait_for(b"no host", "the error").await;
     assert!(!terminal.raw());
+}
+
+#[tokio::test]
+async fn a_bridge_that_finds_a_daemon_of_an_older_build_ends_up_on_a_current_one() {
+    let r = rig(HostOptions::default()).await;
+    let old = OtherBuild::start(&r.home, &r.id, None, true);
+    let (terminal, slave) = Terminal::open(80, 24);
+    let mut bridge = spawn_bridge(&r.home, &slave, &r.id, &r.shell);
+    terminal.wait_for(b"READY", "the first output").await;
+    assert_eq!(old.shutdowns(), 1);
+    r.host.end("exited");
+    assert!(exit_of(&mut bridge, 10).await.success());
 }
 
 #[tokio::test]

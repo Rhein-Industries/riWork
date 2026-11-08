@@ -9,6 +9,10 @@ pub struct Viewport {
     pub(crate) device: String,
     pub(crate) connection: String,
     pub(crate) selected: Option<(String, u32, u32)>,
+    /// The shell this connection last gave up on. Its client may not have heard of that,
+    /// and then lets go of it in its own time, however long after: this connection pinned
+    /// it, so that must keep working, as it does for a shell that died while pinned.
+    pub(crate) given_up: Option<String>,
 }
 impl Viewport {
     pub fn new(cli: PathBuf, device: String) -> Self {
@@ -17,7 +21,13 @@ impl Viewport {
             device,
             connection: uuid::Uuid::new_v4().to_string(),
             selected: None,
+            given_up: None,
         }
+    }
+    /// Stops holding the size of the selected shell. Whatever is left of the lease
+    /// lapses by itself, so nothing needs to work for this to be done.
+    pub(crate) fn give_up(&mut self) {
+        self.given_up = self.selected.take().map(|(shell, _, _)| shell);
     }
     pub(crate) fn args(&self, method: &str, shell: &str) -> Vec<String> {
         vec![

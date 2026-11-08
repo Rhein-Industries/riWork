@@ -6,7 +6,7 @@
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use riwork_remote::{
     MAX_PLAINTEXT,
-    client_daemon::{AttachRequest, daemon_attach, read_frame, write_frame},
+    client_daemon::{AttachRequest, daemon_attach, daemon_paths, read_frame, write_frame},
     config::{Pairing, Storage, private_read},
     connector::{connect_registered, receive_json, send_json},
     crypto::{
@@ -20,14 +20,18 @@ use serde_json::{Value, json};
 use std::{
     collections::{HashMap, VecDeque},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::Duration,
 };
 use tokio::{
-    net::UnixStream,
+    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    net::{UnixListener, UnixStream},
     sync::mpsc,
     task::JoinHandle,
-    time::{Instant, sleep, timeout},
+    time::{Instant, sleep, sleep_until, timeout},
 };
 use uuid::Uuid;
 
@@ -163,6 +167,16 @@ pub struct Observed {
     pub max_parked_reads: usize,
     /// `pty.write`s that arrived while the host was frozen (and so were not answered).
     pub frozen_writes: usize,
+    /// Every request that arrived while the host was frozen.
+    pub frozen_calls: Vec<String>,
+    /// How long a `pty.open` takes. They run one at a time, as in the host's Attach
+    /// lane. A test may change this as it goes.
+    pub open_delay: Duration,
+    /// `pty.open`s that arrived, answered or not (`opens` has the ones that were served).
+    pub opens_received: usize,
+    /// Of those, the ones not yet answered on this session, and the most there ever were.
+    pub opens_in_flight: usize,
+    pub max_opens_in_flight: usize,
     /// Replies sent as deflated frames.
     pub deflated_replies: usize,
 }
@@ -189,6 +203,8 @@ pub enum Ctl {
     Output(Vec<u8>),
     /// The newest stream ends.
     End(String),
+    /// This frame, as it is, not sealed: as a relay could send it to either end.
+    Raw(Value),
 }
 
 pub struct HostOptions {
@@ -200,6 +216,10 @@ pub struct HostOptions {
     pub greeting: Vec<u8>,
     /// Whether a terminal echoes what is written to it.
     pub echo: bool,
+    /// Answer a session's `client_hello` with this frame, and hang up.
+    pub answer_session: Option<Value>,
+    /// Answer an invite's `pair_hello` with this frame, and hang up.
+    pub answer_invite: Option<Value>,
 }
 impl Default for HostOptions {
     fn default() -> Self {
@@ -208,6 +228,8 @@ impl Default for HostOptions {
             refuse_open: None,
             greeting: b"READY\r\n".to_vec(),
             echo: true,
+            answer_session: None,
+            answer_invite: None,
         }
     }
 }
@@ -218,7 +240,11 @@ struct StreamState {
     eof: Mutex<Option<String>>,
     gate: tokio::sync::Mutex<()>,
     write_seq: Mutex<u64>,
+    /// `pty.close` came. Until then the stream holds a place, even after it ended.
+    closed: Mutex<bool>,
 }
+/// The host's limit (`pty::MAX_STREAMS`).
+const MAX_STREAMS: usize = 8;
 
 pub struct FakeHost {
     pub observed: Arc<Mutex<Observed>>,
@@ -258,6 +284,12 @@ impl FakeHost {
     }
     pub fn end(&self, reason: &str) {
         let _ = self.ctl.send(Ctl::End(reason.into()));
+    }
+    pub fn raw(&self, frame: Value) {
+        let _ = self.ctl.send(Ctl::Raw(frame));
+    }
+    pub fn open_delay(&self, delay: Duration) {
+        self.observed.lock().unwrap().open_delay = delay;
     }
     pub fn seen<T>(&self, read: impl FnOnce(&Observed) -> T) -> T {
         read(&self.observed.lock().unwrap())
@@ -332,8 +364,20 @@ async fn serve_connection(
     let mut streams: HashMap<String, Arc<StreamState>> = HashMap::new();
     let mut newest: Option<String> = None;
     let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Value>();
+    // The `pty.open`s waiting for the one slot, the first of them in service until
+    // `open_done`.
+    let mut opening: VecDeque<Value> = VecDeque::new();
+    let mut open_done: Option<Instant> = None;
+    observed.lock().unwrap().opens_in_flight = 0;
     loop {
         tokio::select! {
+            () = async { sleep_until(open_done.expect("guarded")).await }, if open_done.is_some() => {
+                let request = opening.pop_front().expect("one is in service");
+                handle_request(&request, options, observed, &out_tx, &mut streams, &mut newest);
+                let mut o = observed.lock().unwrap();
+                o.opens_in_flight -= 1;
+                open_done = (!opening.is_empty()).then(|| Instant::now() + o.open_delay);
+            },
             command = ctl.recv() => match command {
                 Some(Ctl::Drop(away)) => {
                     let _ = ws.close(None).await;
@@ -349,6 +393,9 @@ async fn serve_connection(
                     if let Some(stream) = newest.as_ref().and_then(|s| streams.get(s)) {
                         *stream.eof.lock().unwrap() = Some(reason);
                     }
+                }
+                Some(Ctl::Raw(frame)) => {
+                    let _ = send_json(&mut ws, &frame).await;
                 }
                 None => return Served::Ended,
             },
@@ -380,8 +427,15 @@ async fn serve_connection(
                         pair_state = None;
                         streams.clear();
                         newest = None;
+                        opening.clear();
+                        open_done = None;
+                        observed.lock().unwrap().opens_in_flight = 0;
                     }
                     Some("pair_hello") => {
+                        if let Some(answer) = &options.answer_invite {
+                            let _ = send_json(&mut ws, answer).await;
+                            return Served::Ended;
+                        }
                         let hello = serde_json::from_value(value).unwrap();
                         let now = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
@@ -408,6 +462,10 @@ async fn serve_connection(
                         }
                     }
                     Some("client_hello") => {
+                        if let Some(answer) = &options.answer_session {
+                            let _ = send_json(&mut ws, answer).await;
+                            return Served::Ended;
+                        }
                         let Some(key) = root else { return Served::Ended };
                         let hello: ClientHelloV2 = serde_json::from_value(value).unwrap();
                         let Ok((reply, state)) = accept_client_hello_v2(&identity, &key, &hello, random32()) else {
@@ -442,9 +500,11 @@ async fn serve_connection(
                         let Ok(plain) = s.open("c2d", &envelope) else { return Served::Ended };
                         let request: Value = serde_json::from_slice(&plain).unwrap();
                         if frozen {
+                            let mut o = observed.lock().unwrap();
                             if request["method"] == "pty.write" {
-                                observed.lock().unwrap().frozen_writes += 1;
+                                o.frozen_writes += 1;
                             }
+                            o.frozen_calls.push(request["method"].as_str().unwrap_or_default().to_owned());
                             continue;
                         }
                         if request["method"] == "link.configure" {
@@ -457,6 +517,27 @@ async fn serve_connection(
                             observed.lock().unwrap().calls.push("link.configure".into());
                             let state = if compress { "deflate" } else { "none" };
                             let _ = out_tx.send(ok(&id, json!({"compression":state,"min_bytes":2048,"max_inflated":2_097_152})));
+                            continue;
+                        }
+                        if request["method"] == "pty.open" {
+                            let delay = {
+                                let mut o = observed.lock().unwrap();
+                                o.opens_received += 1;
+                                o.opens_in_flight += 1;
+                                o.max_opens_in_flight = o.max_opens_in_flight.max(o.opens_in_flight);
+                                o.open_delay
+                            };
+                            if !opening.is_empty() || !delay.is_zero() {
+                                if opening.is_empty() {
+                                    open_done = Some(Instant::now() + delay);
+                                }
+                                opening.push_back(request);
+                                continue;
+                            }
+                            handle_request(
+                                &request, options, observed, &out_tx, &mut streams, &mut newest,
+                            );
+                            observed.lock().unwrap().opens_in_flight -= 1;
                             continue;
                         }
                         handle_request(
@@ -504,6 +585,17 @@ fn handle_request(
             if let Some((code, message)) = options.refuse_open {
                 return reply(err(&id, code, message));
             }
+            let held = streams
+                .values()
+                .filter(|stream| !*stream.closed.lock().unwrap())
+                .count();
+            if held >= MAX_STREAMS {
+                return reply(err(
+                    &id,
+                    "pty_limit",
+                    "at most 8 terminal streams at once; close one first",
+                ));
+            }
             let stream = Uuid::new_v4().to_string();
             let state = Arc::new(StreamState {
                 buf: Mutex::new(options.greeting.iter().copied().collect()),
@@ -511,6 +603,7 @@ fn handle_request(
                 eof: Mutex::new(None),
                 gate: tokio::sync::Mutex::new(()),
                 write_seq: Mutex::new(0),
+                closed: Mutex::new(false),
             });
             streams.insert(stream.clone(), state);
             *newest = Some(stream.clone());
@@ -610,10 +703,109 @@ fn handle_request(
                 return reply(err(&id, "not_found", "unknown stream"));
             };
             observed.lock().unwrap().closes.push(stream.clone());
+            *state.closed.lock().unwrap() = true;
             state.eof.lock().unwrap().get_or_insert("closed".into());
             reply(ok(&id, json!({"stream":stream,"status":"closed"})));
         }
         _ => reply(err(&id, "invalid_request", "unsupported RPC method")),
+    }
+}
+
+// ---- A daemon of another build ---------------------------------------------------
+
+/// What `OtherBuild` answers to a `call` of `projects.list`: a host's error, as a hostile
+/// host words it.
+pub const HOSTILE_CODE: &str = "bad\u{1b}[31mcode";
+pub const HOSTILE_MESSAGE: &str = "\u{1b}]52;c;aGVsbG8=\u{7}\u{1b}[2Jrun this\u{9b}31m";
+/// And to a `call` of anything else, as `{"name": ...}`: a result, with what a terminal acts
+/// on in it, C1 controls included.
+pub const HOSTILE_RESULT: &str = "\u{1b}[2Jname\u{9b}31m\u{7f}\u{85}\u{9d}52;c;aGVsbG8=\u{7}";
+
+/// All that `ensure` can tell of a daemon: it holds the lock, is on the socket, and
+/// answers `status`, here with `protocol` in the line (`None`: a build from before the
+/// field). `leaves` says whether `shutdown` ends it, as it does any real one.
+pub struct OtherBuild {
+    shutdowns: Arc<AtomicUsize>,
+    task: JoinHandle<()>,
+}
+impl Drop for OtherBuild {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+impl OtherBuild {
+    pub fn start(home: &Path, desktop_id: &str, protocol: Option<u64>, leaves: bool) -> Self {
+        use fs2::FileExt;
+        use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+        let paths = daemon_paths(&Storage::at(home.to_path_buf()).unwrap(), desktop_id).unwrap();
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&paths.dir)
+            .unwrap();
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .open(&paths.lock)
+            .unwrap();
+        lock.try_lock_exclusive().unwrap();
+        let listener = UnixListener::bind(&paths.socket).unwrap();
+        let shutdowns = Arc::new(AtomicUsize::new(0));
+        let asked = shutdowns.clone();
+        let task = tokio::spawn(async move {
+            let _lock = lock;
+            loop {
+                let Ok((stream, _)) = listener.accept().await else {
+                    return;
+                };
+                let mut stream = BufReader::new(stream);
+                let mut line = String::new();
+                if stream.read_line(&mut line).await.is_err() {
+                    continue;
+                }
+                let request: Value = serde_json::from_str(&line).unwrap_or(Value::Null);
+                let answer = match request["op"].as_str() {
+                    Some("status") => {
+                        let mut status = json!({"state":"online","label":"Other build"});
+                        if let Some(protocol) = protocol {
+                            status["daemon"] = json!(protocol);
+                        }
+                        status
+                    }
+                    Some("shutdown") => {
+                        asked.fetch_add(1, Ordering::SeqCst);
+                        json!({"ok":true})
+                    }
+                    Some("call") if request["method"] == "projects.list" => json!({
+                        "id": request["id"],
+                        "ok": false,
+                        "error": {"code": HOSTILE_CODE, "message": HOSTILE_MESSAGE},
+                    }),
+                    Some("call") => json!({
+                        "id": request["id"],
+                        "ok": true,
+                        "result": {"name": HOSTILE_RESULT},
+                    }),
+                    _ => continue,
+                };
+                let _ = stream
+                    .get_mut()
+                    .write_all(format!("{answer}\n").as_bytes())
+                    .await;
+                if leaves && request["op"] == "shutdown" {
+                    let _ = std::fs::remove_file(&paths.socket);
+                    return;
+                }
+            }
+        });
+        Self { shutdowns, task }
+    }
+    /// How many times it was asked to quit.
+    pub fn shutdowns(&self) -> usize {
+        self.shutdowns.load(Ordering::SeqCst)
     }
 }
 

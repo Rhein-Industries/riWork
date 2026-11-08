@@ -5,7 +5,7 @@ use crate::{
         ClientFinish, ClientHello, ClientHelloV2, Envelope, PairFinish, PairHello, Pending,
         Session, accept_client_hello_v2, accept_hello, decode, random32,
     },
-    lanes::{Lane, Lanes, MAX_QUEUED, classify},
+    lanes::{Lane, Lanes, MAX_QUEUED, Target, classify, target_of},
     link::{self, EncodeError},
     log_safe,
     pty::{self, PtySet},
@@ -312,6 +312,13 @@ impl Drop for SessionStreams {
 struct Queued {
     /// The session it arrived in.
     epoch: u64,
+    /// Whose slots it takes.
+    target: Target,
+    /// When the phone has to have an answer, for a request that goes to one of its
+    /// hosts (see `gateway::deadline`).
+    deadline: Option<std::time::Instant>,
+    /// When it stops waiting for its turn (see `gateway::queue_deadline`).
+    queue_deadline: Option<std::time::Instant>,
     viewport: SharedViewport,
     request: Value,
     /// When it was decrypted: the start of the reply's `server_ms`.
@@ -327,6 +334,7 @@ struct Queued {
 /// session ended; an `Err` closes the connection, as it always did.
 struct Done {
     lane: Lane,
+    target: Target,
     epoch: u64,
     received: std::time::Instant,
     outcome: Option<Result<Reply>>,
@@ -349,6 +357,9 @@ fn start_ready(
         tasks.spawn(async move {
             let Queued {
                 epoch,
+                target,
+                deadline,
+                queue_deadline: _,
                 viewport,
                 request,
                 received,
@@ -361,7 +372,7 @@ fn start_ready(
                     .as_str()
                     .is_some_and(|m| m.starts_with("hosts."))
                 {
-                    rpc.handle_gateway_reply(&device, request, &gateway, reply_limit)
+                    rpc.handle_gateway_reply(&device, request, &gateway, deadline, reply_limit)
                         .await
                 } else {
                     rpc.handle_session_reply(&device, request, &viewport, pty.as_ref(), reply_limit)
@@ -378,6 +389,7 @@ fn start_ready(
             };
             Done {
                 lane,
+                target,
                 epoch,
                 received,
                 outcome,
@@ -386,6 +398,71 @@ fn start_ready(
     }
 }
 
+/// Answers what is still queued at its deadline (see `gateway::queue_deadline`), with what
+/// its target ordered after it (see `Lanes::take_queued`). Run before a slot is handed on,
+/// and not only on the timer: a request for a host that late could only be refused once
+/// started, and its slot would then go to what came after it.
+async fn answer_late(
+    lanes: &mut Lanes<Queued>,
+    renewing: &mut JoinSet<Option<&'static str>>,
+    epoch: u64,
+    session: &mut Option<Session>,
+    ws: &mut Socket,
+    compress: bool,
+) -> Result<()> {
+    let now = std::time::Instant::now();
+    for late in lanes.take_queued(|queued| queued.queue_deadline.is_some_and(|at| at <= now)) {
+        if late.epoch != epoch {
+            continue;
+        }
+        // The phone would give up on these, and on the whole connection with them. They
+        // never started, so what it is told is that nothing was sent, but for a release.
+        let answer = end_pin_of_late_release(&late, renewing)
+            .unwrap_or_else(|| crate::gateway::not_sent(&late.request));
+        let s = session.as_mut().context("response without a session")?;
+        let sealed = seal_reply(s, answer, late.received, compress).await?;
+        send_json(ws, &sealed).await?;
+    }
+    Ok(())
+}
+/// A release that will not run ends the pin all the same, as one that failed does (see
+/// `shell.resize.clear`), and is answered as one that ran. Its client may have forgotten the
+/// shell by now, and its traffic would go on renewing; one that only covered the terminal
+/// would otherwise go on believing it holds the size, and not ask for it when it comes
+/// back. This waits for a renewal that is running, as the release would have, so it goes
+/// with those; what is left of the lease lapses. `None` for any other request.
+fn end_pin_of_late_release(
+    late: &Queued,
+    renewing: &mut JoinSet<Option<&'static str>>,
+) -> Option<Value> {
+    if late.request["method"] != "shell.resize.clear" {
+        return None;
+    }
+    let uuid = |value: &Value| {
+        value
+            .as_str()
+            .filter(|text| crate::crypto::uuid(text).is_ok())
+            .map(str::to_owned)
+    };
+    let id = uuid(&late.request["id"])?;
+    let shell = uuid(&late.request["params"]["shell_id"])?;
+    let viewport = late.viewport.clone();
+    let held = shell.clone();
+    renewing.spawn(async move {
+        if let Some(v) = viewport.lock().await.as_mut()
+            && v.selected
+                .as_ref()
+                .is_some_and(|(selected, _, _)| *selected == held)
+        {
+            v.give_up();
+        }
+        None
+    });
+    Some(crate::rpc::success(
+        &id,
+        json!({"shell_id":shell,"status":"cleared"}),
+    ))
+}
 /// Records the handshake off the async threads; a failure only costs the audit trail.
 fn record_authentication(storage: Storage, id: String, name: String) {
     tokio::task::spawn_blocking(move || {
@@ -499,8 +576,9 @@ pub(crate) async fn run_device_with(device: &Device, rpc: &Arc<Rpc>, timing: Tim
     let mut gateway = crate::gateway::SessionGateway::default();
     // Request tasks; dropped (so aborted) with this function, however it ends.
     let mut tasks: JoinSet<Done> = JoinSet::new();
-    // The viewport lease's renewal while it runs (at most one), dropped the same way.
-    let mut renewing: JoinSet<Result<()>> = JoinSet::new();
+    // What holds the viewport outside a request: the lease's renewal while it runs (at
+    // most one) and the end of a pin. Dropped the same way.
+    let mut renewing: JoinSet<Option<&'static str>> = JoinSet::new();
     let mut lanes: Lanes<Queued> = Lanes::default();
     // Counts sessions: bumped when one ends, so that what its requests still
     // produce is neither sent nor waited for.
@@ -528,18 +606,18 @@ pub(crate) async fn run_device_with(device: &Device, rpc: &Arc<Rpc>, timing: Tim
                 // A resize that is running renews the lease itself, and so does a renewal
                 // that has not finished. The CLI runs in a task of its own, holding the
                 // viewport as a resize would, so that the loop goes on reading, answering
-                // and pinging meanwhile; its failure still ends the connection.
+                // and pinging meanwhile.
                 if renewing.is_empty()
                     && let Some(shared)=&viewport
                     && last_mobile.elapsed()<=timing.mobile_active
-                    && let Ok(held)=shared.clone().try_lock_owned()
+                    && let Ok(mut held)=shared.clone().try_lock_owned()
                     && held.as_ref().is_some_and(|v| v.selected.is_some())
                 {
                     let rpc=rpc.clone();
                     renewing.spawn(async move {
-                        match held.as_ref() {
-                            Some(v)=>rpc.renew_viewport(v).await,
-                            None=>Ok(()),
+                        match held.as_mut() {
+                            Some(v)=>rpc.renew_lease(v).await,
+                            None=>None,
                         }
                     });
                 }
@@ -549,11 +627,13 @@ pub(crate) async fn run_device_with(device: &Device, rpc: &Arc<Rpc>, timing: Tim
             _=revocation.tick(), if !tasks.is_empty() || lanes.queued()>0 =>{
                 // A long wait must not outlive the device's authorization.
                 ensure!(rpc.storage.authorized(&p.device_id)?, "device revoked during RPC");
+                answer_late(&mut lanes,&mut renewing,epoch,&mut session,&mut ws,compress).await?;
                 continue;
             },
             Some(joined)=tasks.join_next(), if !tasks.is_empty() =>{
                 let done=joined.context("request task failed")?;
-                lanes.finished(done.lane);
+                lanes.finished_for(&done.target,done.lane);
+                answer_late(&mut lanes,&mut renewing,epoch,&mut session,&mut ws,compress).await?;
                 start_ready(&mut lanes,&mut tasks,rpc,&p.device_id,&session_ended);
                 if done.epoch==epoch && let Some(outcome)=done.outcome {
                     let reply=outcome?;
@@ -568,7 +648,9 @@ pub(crate) async fn run_device_with(device: &Device, rpc: &Arc<Rpc>, timing: Tim
                 continue;
             },
             Some(renewed)=renewing.join_next(), if !renewing.is_empty() =>{
-                renewed.context("lease renewal failed")??;
+                if let Some(why)=renewed.context("lease renewal failed")? {
+                    eprintln!("Remote device {} no longer holds a terminal's size: {why}.",p.device_id);
+                }
                 continue;
             },
             value=receive_json_seen(&mut ws,&mut last_rx), if reading =>value?,
@@ -595,9 +677,11 @@ pub(crate) async fn run_device_with(device: &Device, rpc: &Arc<Rpc>, timing: Tim
                 streams.end();
                 gateway.end();
                 if let Some(shared) = viewport.take() {
-                    // Waits for a resize that is running; the tasks run on their own.
+                    // Waits for a resize that is running; the tasks run on their own. A
+                    // lease that cannot be released lapses by itself, and the next phone
+                    // has no reason to wait for a new connection over it.
                     if let Some(mut v) = shared.lock().await.take() {
-                        rpc.clear_viewport(&mut v).await?;
+                        let _ = rpc.clear_viewport(&mut v).await;
                     }
                 }
                 session = None;
@@ -669,7 +753,7 @@ pub(crate) async fn run_device_with(device: &Device, rpc: &Arc<Rpc>, timing: Tim
             Some("client_finish") => {
                 let f: ClientFinish = serde_json::from_value(value)?;
                 let mut s = pending.take().context("unexpected finish")?.finish(&f)?;
-                let mut features = rpc.phone_features().await;
+                let mut features = rpc.phone_features(None).await;
                 features["hosts"] = json!(1);
                 if streams_allowed {
                     features["pty"] = pty::features();
@@ -739,16 +823,30 @@ pub(crate) async fn run_device_with(device: &Device, rpc: &Arc<Rpc>, timing: Tim
                         .current()
                         .context("RPC before authenticated handshake")?;
                     let reply = rpc
-                        .handle_gateway_reply(&p.device_id, request, &gateway, MAX_PLAINTEXT)
+                        .handle_gateway_reply(&p.device_id, request, &gateway, None, MAX_PLAINTEXT)
                         .await?;
                     let sealed = seal_body(s, reply, received, compress).await?;
                     send_json(&mut ws, &sealed).await?;
                     continue;
                 }
-                lanes.push(
-                    classify(&request),
+                let target = target_of(&request);
+                let lane = classify(&request);
+                let deadline = crate::gateway::deadline(&target, &request, received);
+                let queue_deadline = crate::gateway::queue_deadline(
+                    &target,
+                    lane,
+                    device.kind == DeviceKind::Desktop,
+                    &request,
+                    received,
+                );
+                lanes.push_for(
+                    target.clone(),
+                    lane,
                     Queued {
                         epoch,
+                        target,
+                        deadline,
+                        queue_deadline,
                         viewport: viewport
                             .clone()
                             .context("RPC before authenticated handshake")?,
@@ -899,6 +997,7 @@ mod tests {
             renew: Duration::from_millis(50),
             mobile_active: Duration::from_secs(1),
             revoke_poll: Duration::from_millis(50),
+            ..Timing::default()
         };
         let pairing = device.pairing.clone();
         let connector = tokio::spawn(async move { run_device_with(&device, &rpc, timing).await });
@@ -997,6 +1096,7 @@ mod tests {
             renew: Duration::from_millis(200),
             mobile_active: Duration::from_secs(5),
             revoke_poll: Duration::from_millis(50),
+            ..Timing::default()
         };
         let pairing = device.pairing.clone();
         let connector = tokio::spawn(async move { run_device_with(&device, &rpc, timing).await });
@@ -1111,6 +1211,401 @@ mod tests {
                 serde_json::to_vec(&response).unwrap().len()
             );
         }
+    }
+
+    /// A connector whose phone has pinned a live shell, with a stand-in CLI that fails
+    /// the way the real one does: `shell resize` and `shell resize-clear` of that shell
+    /// print what the files `resize-says` and `clear-says` hold and exit 2, and `shell
+    /// list` no longer lists it once `gone` exists. A second shell lists and pins without
+    /// fail. A write takes longer than a phone gives what waits behind it once
+    /// `slow-writes` exists. Renewals run every 100 ms.
+    struct LeaseRig {
+        _tmp: tempfile::TempDir,
+        dir: PathBuf,
+        log: PathBuf,
+        shell: String,
+        other: String,
+        pairing: Pairing,
+        connector: tokio::task::JoinHandle<Result<()>>,
+        server: tokio::task::JoinHandle<std::io::Result<()>>,
+        ws: Socket,
+        session: Session,
+    }
+    impl LeaseRig {
+        async fn new() -> Self {
+            use std::os::unix::fs::PermissionsExt;
+            let tmp = tempfile::tempdir().unwrap();
+            let dir = tmp.path().to_path_buf();
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("ws://{}/v1/ws", listener.local_addr().unwrap());
+            let (storage, device, routes) = paired(&dir, &url).await;
+            let relay = Relay::new(private_read::<Routes>(&routes, 1 << 20).unwrap(), 8).unwrap();
+            let server = tokio::spawn(async move { axum::serve(listener, relay.router()).await });
+            let shell = uuid::Uuid::new_v4().to_string();
+            let other = uuid::Uuid::new_v4().to_string();
+            let (cli, log) = (dir.join("lease-cli"), dir.join("cli.log"));
+            let script = r#"#!/bin/sh
+D='@DIR@'
+printf '%s\n' "$*" >> "$D/cli.log"
+case "$1 $2" in
+capabilities*) echo '{"v":1,"native":{"v":1,"methods":["Store.renameProject"]}}';;
+'native invoke') cat >/dev/null; if [ -e "$D/slow-writes" ]; then sleep 16; fi; echo '{"v":1,"value":{}}';;
+'shell list') if [ -e "$D/gone" ]; then printf '[{"id":"@OTHER@","alive":true}]'; else printf '[{"id":"@SHELL@","alive":true},{"id":"@OTHER@","alive":true}]'; fi;;
+'orchestrator list'|'project list') echo '[]';;
+'shell resize') if [ "$3" = '@SHELL@' ] && [ -e "$D/resize-says" ]; then cat "$D/resize-says" >&2; exit 2; fi;;
+'shell resize-clear') if [ "$3" = '@SHELL@' ] && [ -e "$D/clear-says" ]; then cat "$D/clear-says" >&2; exit 2; fi;;
+esac
+"#
+            .replace("@DIR@", &dir.to_string_lossy())
+            .replace("@SHELL@", &shell)
+            .replace("@OTHER@", &other);
+            std::fs::write(&cli, script).unwrap();
+            std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let _ = std::process::Command::new(&cli).arg("warm").output();
+            let rpc = Arc::new(Rpc::new(cli, storage));
+            let timing = Timing {
+                ping: Duration::from_millis(100),
+                idle: Duration::from_secs(5),
+                renew: Duration::from_millis(100),
+                mobile_active: Duration::from_secs(600),
+                revoke_poll: Duration::from_millis(50),
+            };
+            let pairing = device.pairing.clone();
+            let connector =
+                tokio::spawn(async move { run_device_with(&device, &rpc, timing).await });
+            let (mut ws, mut session) = mobile(&pairing).await;
+            let resized = call(
+                &mut ws,
+                &mut session,
+                "shell.resize",
+                json!({"shell_id":shell,"columns":43,"rows":17}),
+            )
+            .await;
+            assert_eq!(resized["ok"], true, "{resized}");
+            let rig = Self {
+                _tmp: tmp,
+                dir,
+                log,
+                shell,
+                other,
+                pairing,
+                connector,
+                server,
+                ws,
+                session,
+            };
+            rig.renews().await;
+            rig
+        }
+        fn says(&self, file: &str, words: &str) {
+            std::fs::write(self.dir.join(file), format!("{words}\n")).unwrap();
+        }
+        fn heals(&self, file: &str) {
+            std::fs::remove_file(self.dir.join(file)).unwrap();
+        }
+        async fn renews(&self) {
+            let before = renewals(&self.log);
+            eventually(|| renewals(&self.log) >= before + 2).await;
+        }
+        /// Waits until no renewal has started for a second, which is many ticks.
+        async fn renewals_have_stopped(&self) {
+            let mut seen = renewals(&self.log);
+            for _ in 0..20 {
+                sleep(Duration::from_secs(1)).await;
+                let now = renewals(&self.log);
+                if now == seen {
+                    return;
+                }
+                seen = now;
+            }
+            panic!("renewals never stopped");
+        }
+        /// The connection is the same one and answers: this session's next counter
+        /// would not open on any other.
+        async fn still_answers(&mut self) {
+            assert!(!self.connector.is_finished(), "{:?}", self.connector);
+            let listed = call(&mut self.ws, &mut self.session, "projects.list", json!({})).await;
+            assert_eq!(listed["ok"], true, "{listed}");
+        }
+        async fn release(&mut self) -> Value {
+            let shell = self.shell.clone();
+            call(
+                &mut self.ws,
+                &mut self.session,
+                "shell.resize.clear",
+                json!({"shell_id":shell}),
+            )
+            .await
+        }
+        async fn pin(&mut self, shell: &str) -> Value {
+            call(
+                &mut self.ws,
+                &mut self.session,
+                "shell.resize",
+                json!({"shell_id":shell,"columns":43,"rows":17}),
+            )
+            .await
+        }
+        /// Asks without waiting for the answer.
+        async fn send(&mut self, method: &str, params: Value) -> String {
+            let id = uuid::Uuid::new_v4().to_string();
+            let request = json!({"v":1,"type":"request","id":id,"method":method,"params":params});
+            let sealed = self
+                .session
+                .seal("c2d", &serde_json::to_vec(&request).unwrap())
+                .unwrap();
+            send_json(&mut self.ws, &sealed).await.unwrap();
+            id
+        }
+        async fn next(&mut self) -> Value {
+            let reply = timeout(Duration::from_secs(25), receive_json(&mut self.ws))
+                .await
+                .expect("connector answers")
+                .unwrap();
+            let reply: Envelope = serde_json::from_value(reply).unwrap();
+            serde_json::from_slice(&self.session.open("d2c", &reply).unwrap()).unwrap()
+        }
+    }
+    impl Drop for LeaseRig {
+        fn drop(&mut self) {
+            self.connector.abort();
+            self.server.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn a_shell_that_ended_ends_its_lease_and_not_the_connection() {
+        let mut rig = LeaseRig::new().await;
+        std::fs::write(rig.dir.join("gone"), "").unwrap();
+        rig.says(
+            "resize-says",
+            &format!("somtus: shell {} has exited", rig.shell),
+        );
+        rig.renewals_have_stopped().await;
+        rig.still_answers().await;
+        // The phone has yet to hear of it, and then it lets go of what it thinks it holds:
+        // a refusal here would stay in its way for as long as the connection lasts.
+        let released = rig.release().await;
+        assert_eq!(released["result"]["status"], "cleared", "{released}");
+        // Asked again, it is any other shell that is not there.
+        let again = rig.release().await;
+        assert_eq!(again["error"]["code"], "not_found", "{again}");
+    }
+
+    #[tokio::test]
+    async fn a_lease_someone_else_took_comes_back_when_they_leave_and_is_not_fought_over() {
+        let mut rig = LeaseRig::new().await;
+        let busy =
+            "somtus: viewport_busy: another authenticated connection owns this terminal size";
+        rig.says("resize-says", busy);
+        // Asked on every tick. The CLI refuses for as long as the other lease lasts, so this
+        // changes nobody's terminal, and the phone goes on believing it holds the size.
+        rig.renews().await;
+        rig.still_answers().await;
+        // The other holder left: the next renewal takes the lease, with no word from the phone.
+        rig.heals("resize-says");
+        rig.renews().await;
+        rig.says("resize-says", busy);
+        rig.renews().await;
+        // There is nothing of this connection's to let go of, which is what the phone wants.
+        rig.says("clear-says", busy);
+        let released = rig.release().await;
+        assert_eq!(released["result"]["status"], "cleared", "{released}");
+        rig.renewals_have_stopped().await;
+        let tries = renewals(&rig.log);
+        rig.still_answers().await;
+        assert_eq!(renewals(&rig.log), tries);
+        // Asking for the size while it is held is refused, and that is not held on to.
+        let shell = rig.shell.clone();
+        let refused = rig.pin(&shell).await;
+        assert_eq!(refused["error"]["code"], "viewport_busy", "{refused}");
+        rig.renewals_have_stopped().await;
+        // Asking for it again asks for the lease again.
+        rig.heals("resize-says");
+        let resized = rig.pin(&shell).await;
+        assert_eq!(resized["ok"], true, "{resized}");
+        rig.renews().await;
+    }
+
+    #[tokio::test]
+    async fn a_lease_someone_else_took_does_not_stop_a_resize_of_another_shell() {
+        let mut rig = LeaseRig::new().await;
+        let busy =
+            "somtus: viewport_busy: another authenticated connection owns this terminal size";
+        rig.says("resize-says", busy);
+        rig.says("clear-says", busy);
+        rig.renews().await;
+        let (shell, other) = (rig.shell.clone(), rig.other.clone());
+        let resized = rig.pin(&other).await;
+        assert_eq!(resized["ok"], true, "{resized}");
+        // Only the new one is renewed now.
+        let of = |shell: &str| logged(&rig.dir, "cli.log", &format!("shell resize {shell}"));
+        let (first, second) = (of(&shell), of(&other));
+        eventually(|| of(&other) >= second + 2).await;
+        assert_eq!(of(&shell), first);
+        // And the first can still be let go of, as a phone that never heard of any of it does.
+        let released = rig.release().await;
+        assert_eq!(released["result"]["status"], "cleared", "{released}");
+    }
+
+    #[tokio::test]
+    async fn a_terminal_that_cannot_be_held_is_let_go_at_once() {
+        let mut rig = LeaseRig::new().await;
+        rig.says(
+            "resize-says",
+            "somtus: viewport_unsupported: expected one existing pane in window 0",
+        );
+        // A renewal that failed this way has already extended the lease. Its CLI shows only
+        // once it has started, so the quiet that follows proves nothing about it.
+        eventually(|| logged(&rig.dir, "cli.log", "shell resize-clear") >= 1).await;
+        rig.renewals_have_stopped().await;
+        rig.still_answers().await;
+        let released = rig.release().await;
+        assert_eq!(released["result"]["status"], "cleared", "{released}");
+    }
+
+    #[tokio::test]
+    async fn a_renewal_that_fails_for_no_stated_reason_goes_on_until_it_works() {
+        let mut rig = LeaseRig::new().await;
+        rig.says("resize-says", "somtus: tmux did not answer");
+        // The phone believes it holds the size and will not ask again, so this has no end
+        // but its going quiet, and a later success takes a fresh lease. So it outlasts the
+        // CLI's lease (12 s), and renewals still go on.
+        sleep(Duration::from_secs(13)).await;
+        rig.renews().await;
+        rig.still_answers().await;
+        rig.heals("resize-says");
+        rig.renews().await;
+        // It was never given up, so letting go of it asks the CLI to.
+        let released = rig.release().await;
+        assert_eq!(released["result"]["status"], "cleared", "{released}");
+        assert_eq!(logged(&rig.dir, "cli.log", "shell resize-clear"), 1);
+        rig.renewals_have_stopped().await;
+    }
+
+    #[tokio::test]
+    async fn a_release_that_fails_ends_the_pin_and_is_answered_as_one_that_did() {
+        let mut rig = LeaseRig::new().await;
+        rig.says("clear-says", "somtus: tmux did not answer");
+        // Its client may have forgotten the shell by now (a phone leaving for one of this
+        // gateway's routes does), and its traffic would keep the lease going for good. One
+        // that only covered the terminal goes on believing it holds the size until it is
+        // told otherwise, and does not ask for it again when it comes back.
+        let released = rig.release().await;
+        let shell = rig.shell.clone();
+        assert_eq!(
+            released["result"],
+            json!({"shell_id":shell,"status":"cleared"}),
+            "{released}"
+        );
+        rig.renewals_have_stopped().await;
+        let tries = renewals(&rig.log);
+        rig.still_answers().await;
+        let retried = rig.release().await;
+        assert_eq!(retried["result"]["status"], "cleared", "{retried}");
+        assert_eq!(renewals(&rig.log), tries);
+        // A shell this connection holds nothing of is not its to answer for.
+        let again = rig.release().await;
+        assert_eq!(again["error"]["code"], "cli_error", "{again}");
+    }
+
+    #[tokio::test]
+    async fn a_resize_that_failed_and_could_not_be_undone_holds_nothing() {
+        let mut rig = LeaseRig::new().await;
+        let released = rig.release().await;
+        assert_eq!(released["result"]["status"], "cleared", "{released}");
+        rig.says("resize-says", "somtus: tmux did not answer");
+        rig.says("clear-says", "somtus: tmux did not answer");
+        let shell = rig.shell.clone();
+        let failed = rig.pin(&shell).await;
+        assert_eq!(failed["error"]["code"], "cli_error", "{failed}");
+        // Its client was told this failed and will not let go of it: a renewal that goes
+        // through later on would leave the terminal at that size with nobody to release it.
+        rig.heals("resize-says");
+        rig.renewals_have_stopped().await;
+        let tries = renewals(&rig.log);
+        rig.still_answers().await;
+        assert_eq!(renewals(&rig.log), tries);
+        let resized = rig.pin(&shell).await;
+        assert_eq!(resized["ok"], true, "{resized}");
+        rig.renews().await;
+    }
+
+    #[tokio::test]
+    async fn a_release_that_waited_too_long_to_run_still_ends_the_pin() {
+        let mut rig = LeaseRig::new().await;
+        std::fs::write(rig.dir.join("slow-writes"), "").unwrap();
+        // This machine's one ordered slot is taken for longer than a phone gives what
+        // waits behind it.
+        let rename = json!({"module":"Store","method":"renameProject","args":{}});
+        let write = rig.send("native.invoke", rename).await;
+        eventually(|| logged(&rig.dir, "cli.log", "native invoke") >= 1).await;
+        let shell = rig.shell.clone();
+        let release = rig
+            .send("shell.resize.clear", json!({"shell_id":shell}))
+            .await;
+        // Answered before the phone's timer, and as a release that ran: a phone that only
+        // covered the terminal would otherwise go on believing it holds the size, and not
+        // ask for it again when it comes back.
+        let reply = rig.next().await;
+        assert_eq!(reply["id"], release, "{reply}");
+        assert_eq!(
+            reply["result"],
+            json!({"shell_id":shell,"status":"cleared"}),
+            "{reply}"
+        );
+        assert_eq!(logged(&rig.dir, "cli.log", "shell resize-clear"), 0);
+        rig.renewals_have_stopped().await;
+        let answered = rig.next().await;
+        assert_eq!(answered["id"], write, "{answered}");
+        assert_eq!(answered["ok"], true, "{answered}");
+        // Asked again, it is told the same.
+        let released = rig.release().await;
+        assert_eq!(released["result"]["status"], "cleared", "{released}");
+    }
+
+    /// Typing that waited too long is not sent, and what the phone sent after it must not
+    /// reach the shell ahead of it: the phone sends it again later, after a paste perhaps.
+    #[tokio::test]
+    async fn what_waits_behind_a_request_that_was_not_sent_is_not_sent_either() {
+        let mut rig = LeaseRig::new().await;
+        std::fs::write(rig.dir.join("slow-writes"), "").unwrap();
+        let rename = json!({"module":"Store","method":"renameProject","args":{}});
+        let write = rig.send("native.invoke", rename).await;
+        eventually(|| logged(&rig.dir, "cli.log", "native invoke") >= 1).await;
+        let (shell, other) = (rig.shell.clone(), rig.other.clone());
+        // On the phone's 15 s timer, and then one on its 30 s timer, not yet late when the
+        // first is.
+        let typed = rig
+            .send("shell.input", json!({"shell_id":shell,"line":"cat "}))
+            .await;
+        let later = rig.send("shell.close", json!({"shell_id":other})).await;
+        for id in [&typed, &later] {
+            let reply = rig.next().await;
+            assert_eq!(reply["id"], *id, "{reply}");
+            assert_eq!(reply["error"]["code"], "host_timeout", "{reply}");
+            let words = reply["error"]["message"].as_str().unwrap();
+            assert!(words.contains("not sent"), "{reply}");
+        }
+        let answered = rig.next().await;
+        assert_eq!(answered["id"], write, "{answered}");
+        // Nothing of either runs once the slot is free: the next answer is this one's.
+        rig.still_answers().await;
+    }
+
+    #[tokio::test]
+    async fn a_lease_that_cannot_be_released_when_the_phone_leaves_ends_nothing() {
+        let mut rig = LeaseRig::new().await;
+        rig.says("clear-says", "somtus: tmux did not answer");
+        rig.ws.close(None).await.unwrap();
+        // The connector goes on and takes the next session, on the same socket to the relay.
+        eventually(|| logged(&rig.dir, "cli.log", "shell resize-clear") >= 1).await;
+        sleep(Duration::from_millis(200)).await;
+        assert!(!rig.connector.is_finished(), "{:?}", rig.connector);
+        let (mut ws, mut session) = mobile(&rig.pairing).await;
+        let listed = call(&mut ws, &mut session, "projects.list", json!({})).await;
+        assert_eq!(listed["ok"], true, "{listed}");
+        assert!(!rig.connector.is_finished(), "{:?}", rig.connector);
     }
 
     #[tokio::test]
@@ -1651,6 +2146,7 @@ esac
                 renew: Duration::from_secs(300),
                 mobile_active: Duration::from_secs(20),
                 revoke_poll: Duration::from_millis(50),
+                ..Timing::default()
             };
             let pairing = device.pairing.clone();
             let connector =

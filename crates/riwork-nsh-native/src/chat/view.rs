@@ -979,6 +979,7 @@ impl ChatView {
         let empty = transcript.items.is_empty();
         let status = match (self.link, &transcript.state) {
             (Link::Reconnecting, _) => Some("Reconnecting…"),
+            (Link::Removed, _) => Some("This host was removed from this Mac"),
             (Link::Connecting, _) if empty => Some("Connecting…"),
             (_, ChatState::Starting) => Some("Starting…"),
             (_, ChatState::Running) => Some("Working…"),

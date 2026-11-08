@@ -36,7 +36,9 @@
 //! batch or a resize from starting (it has a slot of its own), and two long
 //! polls leave a slot for reads. Requests that find no slot wait in a queue in
 //! arrival order; a request that has to wait does not hold up a later one it
-//! does not compete with.
+//! does not compete with. One still waiting when the phone would give up is answered
+//! as not sent (`gateway::queue_deadline`), so that its timer does not end the connection,
+//! and so is what was ordered for its target after it (`Lanes::take_queued`).
 //!
 //! A desktop device's terminal streams (`pty.*`, see `pty`) have two lanes of
 //! their own, outside those four, so a stream can never take a phone's slot nor
@@ -49,8 +51,19 @@
 //!
 //! `pty.write`, `pty.resize` and `pty.close` have no lane: the connection loop
 //! answers them itself, in arrival order, because they never wait.
+//!
+//! All of that is per `Target`. A phone that reaches its SSH hosts through this
+//! desktop (`gateway`) has one queue, in arrival order, but this desktop and each
+//! host have slots of their own. What the slots protect is where the work is done:
+//! the ledgers, the viewport, the order of typed text and the number of CLI
+//! processes of that machine. A forwarded call runs no process here, and its host
+//! has lanes of its own, so one host's slow command or dead link holds up neither
+//! another host nor the desktop. `hosts.open` goes by route: opens of one route take
+//! turns, so that the second finds the first's session, and different routes dial at
+//! once (`gateway::MAX_SESSIONS` bounds them). The phone's own limit on outstanding
+//! requests (`RequestBudget` on iOS) is what bounds the replies, as it always was.
 use serde_json::Value;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 
 /// Requests of the `Ordered` lane that run at once.
 pub const ORDERED_SLOTS: usize = 1;
@@ -84,6 +97,42 @@ impl Lane {
     /// Typing and resizing are not: they finish, and only the answer is lost.
     pub fn cancellable(self) -> bool {
         self != Self::Ordered
+    }
+}
+
+/// Whose slots a request takes. The name is a session token or a route id as the
+/// phone wrote it: `gateway` checks it, and until then it only counts slots.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum Target {
+    /// This machine.
+    Local,
+    /// Dialing one registered route.
+    Route(String),
+    /// One open routed session.
+    Session(String),
+}
+
+/// The target of a decoded request. A request that cannot be forwarded as it stands
+/// is `Local`: it is answered with an error, and it must not get slots of its own for
+/// naming something else each time.
+pub fn target_of(request: &Value) -> Target {
+    let params = &request["params"];
+    let name = |key: &str| {
+        params[key]
+            .as_str()
+            .filter(|name| crate::crypto::uuid(name).is_ok())
+            .map(str::to_owned)
+    };
+    match request["method"].as_str() {
+        Some("hosts.open") => name("route_id").map_or(Target::Local, Target::Route),
+        Some("hosts.call")
+            if params["method"]
+                .as_str()
+                .is_some_and(crate::gateway::allowed) =>
+        {
+            name("session").map_or(Target::Local, Target::Session)
+        }
+        _ => Target::Local,
     }
 }
 
@@ -166,44 +215,16 @@ pub fn classify(request: &Value) -> Lane {
     }
 }
 
-/// Received requests and the slots they run in.
-pub struct Lanes<T> {
-    queue: VecDeque<(Lane, T)>,
+/// The slots one target has taken.
+#[derive(Default)]
+struct Slots {
     ordered: usize,
     shared: usize,
     long_polls: usize,
     attaching: usize,
     streaming: usize,
 }
-
-impl<T> Default for Lanes<T> {
-    fn default() -> Self {
-        Self {
-            queue: VecDeque::new(),
-            ordered: 0,
-            shared: 0,
-            long_polls: 0,
-            attaching: 0,
-            streaming: 0,
-        }
-    }
-}
-
-impl<T> Lanes<T> {
-    pub fn push(&mut self, lane: Lane, item: T) {
-        self.queue.push_back((lane, item));
-    }
-
-    /// Received but not started.
-    pub fn queued(&self) -> usize {
-        self.queue.len()
-    }
-
-    /// Started and not finished.
-    pub fn running(&self) -> usize {
-        self.ordered + self.shared + self.attaching + self.streaming
-    }
-
+impl Slots {
     fn admits(&self, lane: Lane) -> bool {
         match lane {
             Lane::Ordered => self.ordered < ORDERED_SLOTS,
@@ -213,13 +234,7 @@ impl<T> Lanes<T> {
             Lane::Stream => self.streaming < STREAM_SLOTS,
         }
     }
-
-    /// The oldest queued request that has a slot, which it now holds until
-    /// `finished`. Because every `Ordered` request needs the same single
-    /// slot, the oldest one that fits is also the oldest one there is.
-    pub fn next_ready(&mut self) -> Option<(Lane, T)> {
-        let index = self.queue.iter().position(|(lane, _)| self.admits(*lane))?;
-        let (lane, item) = self.queue.remove(index)?;
+    fn take(&mut self, lane: Lane) {
         match lane {
             Lane::Ordered => self.ordered += 1,
             Lane::Read => self.shared += 1,
@@ -230,11 +245,8 @@ impl<T> Lanes<T> {
             Lane::Attach => self.attaching += 1,
             Lane::Stream => self.streaming += 1,
         }
-        Some((lane, item))
     }
-
-    /// The slot of a request that ended, however it ended.
-    pub fn finished(&mut self, lane: Lane) {
+    fn give_back(&mut self, lane: Lane) {
         match lane {
             Lane::Ordered => self.ordered = self.ordered.saturating_sub(1),
             Lane::Read => self.shared = self.shared.saturating_sub(1),
@@ -246,10 +258,107 @@ impl<T> Lanes<T> {
             Lane::Stream => self.streaming = self.streaming.saturating_sub(1),
         }
     }
+    fn running(&self) -> usize {
+        self.ordered + self.shared + self.attaching + self.streaming
+    }
+}
+
+/// Received requests and the slots they run in. `push`, `finished` and the rest of
+/// what names no target are for a connection with only the one, `Local`.
+pub struct Lanes<T> {
+    queue: VecDeque<(Target, Lane, T)>,
+    /// Only the targets that hold a slot, so that a phone naming a new session in every
+    /// request, a real one or not, grows nothing.
+    slots: HashMap<Target, Slots>,
+}
+
+impl<T> Default for Lanes<T> {
+    fn default() -> Self {
+        Self {
+            queue: VecDeque::new(),
+            slots: HashMap::new(),
+        }
+    }
+}
+
+impl<T> Lanes<T> {
+    pub fn push(&mut self, lane: Lane, item: T) {
+        self.push_for(Target::Local, lane, item);
+    }
+
+    pub fn push_for(&mut self, target: Target, lane: Lane, item: T) {
+        self.queue.push_back((target, lane, item));
+    }
+
+    /// Received but not started, whatever the target: this is what a connection stops
+    /// reading for.
+    pub fn queued(&self) -> usize {
+        self.queue.len()
+    }
+
+    /// Started and not finished.
+    pub fn running(&self) -> usize {
+        self.slots.values().map(Slots::running).sum()
+    }
+
+    fn admits(&self, target: &Target, lane: Lane) -> bool {
+        self.slots
+            .get(target)
+            .is_none_or(|slots| slots.admits(lane))
+    }
+
+    /// The oldest queued request that has a slot, which it now holds until
+    /// `finished`. Because every `Ordered` request of a target needs the same single
+    /// slot, the oldest of them that fits is also the oldest one there is.
+    pub fn next_ready(&mut self) -> Option<(Lane, T)> {
+        let index = self
+            .queue
+            .iter()
+            .position(|(target, lane, _)| self.admits(target, *lane))?;
+        let (target, lane, item) = self.queue.remove(index)?;
+        self.slots.entry(target).or_default().take(lane);
+        Some((lane, item))
+    }
+
+    /// The slot of a request that ended, however it ended.
+    pub fn finished(&mut self, lane: Lane) {
+        self.finished_for(&Target::Local, lane);
+    }
+
+    /// `finished`, for the target the request was pushed for.
+    pub fn finished_for(&mut self, target: &Target, lane: Lane) {
+        if let Some(slots) = self.slots.get_mut(target) {
+            slots.give_back(lane);
+            if slots.running() == 0 {
+                self.slots.remove(target);
+            }
+        }
+    }
 
     /// Forget the queued requests that may be dropped (see `Lane::cancellable`).
     pub fn drop_queued_cancellable(&mut self) {
-        self.queue.retain(|(lane, _)| !lane.cancellable());
+        self.queue.retain(|(_, lane, _)| !lane.cancellable());
+    }
+
+    /// Takes the queued requests `late` picks out of the queue, oldest first, without
+    /// their ever having held a slot. With an `Ordered` one go the `Ordered` ones of its
+    /// target queued after it, late or not: they must not reach that target ahead of it,
+    /// and its sender sends it again.
+    pub fn take_queued(&mut self, mut late: impl FnMut(&T) -> bool) -> Vec<T> {
+        let mut taken = Vec::new();
+        let mut cut: Vec<Target> = Vec::new();
+        for (target, lane, item) in std::mem::take(&mut self.queue) {
+            let behind = lane == Lane::Ordered && cut.contains(&target);
+            if behind || late(&item) {
+                if lane == Lane::Ordered && !behind {
+                    cut.push(target);
+                }
+                taken.push(item);
+            } else {
+                self.queue.push_back((target, lane, item));
+            }
+        }
+        taken
     }
 }
 
@@ -297,8 +406,208 @@ mod tests {
                 "{method}"
             );
         }
+        // Ordered, which says opens of one route take turns: `target_of` says who with.
         assert_eq!(classify(&request("hosts.open", json!({}))), Lane::Ordered);
         assert_eq!(classify(&request("hosts.close", json!({}))), Lane::Read);
+    }
+
+    #[test]
+    fn a_forwarded_call_counts_against_its_session_and_a_dial_against_its_route() {
+        let (session, route) = (
+            uuid::Uuid::new_v4().to_string(),
+            uuid::Uuid::new_v4().to_string(),
+        );
+        let call = |session: Value, method: Value| {
+            request(
+                "hosts.call",
+                json!({"session":session,"request_id":"r","method":method,"params":{}}),
+            )
+        };
+        for method in [
+            "shell.keys",
+            "projects.list",
+            "chat.events",
+            "native.invoke",
+        ] {
+            assert_eq!(
+                target_of(&call(json!(session), json!(method))),
+                Target::Session(session.clone()),
+                "{method}"
+            );
+        }
+        assert_eq!(
+            target_of(&request(
+                "hosts.open",
+                json!({"route_id":route,"host_id":"h"})
+            )),
+            Target::Route(route)
+        );
+        // Everything else is this machine's, and so is whatever will only be refused.
+        for local in [
+            request("shell.keys", json!({"session":session})),
+            request("projects.list", json!({})),
+            request("hosts.list", json!({})),
+            request("hosts.close", json!({"session":session})),
+            request("hosts.open", json!({})),
+            request("hosts.open", json!({"route_id":7})),
+            request("hosts.open", json!({"route_id":"not a uuid"})),
+            request("hosts.open", json!(null)),
+            request("hosts.call", json!(null)),
+            request("hosts.call", json!({"method":"shell.keys"})),
+            call(json!(7), json!("shell.keys")),
+            call(json!("not a uuid"), json!("shell.keys")),
+            call(json!(session.to_uppercase()), json!("shell.keys")),
+            call(json!(session), json!(7)),
+            call(json!(session), json!("hosts.call")),
+            call(json!(session), json!("pty.open")),
+            call(json!(session), json!("link.configure")),
+            json!({"method":"hosts.call"}),
+            json!({"method":7}),
+            Value::Null,
+        ] {
+            assert_eq!(target_of(&local), Target::Local, "{local}");
+        }
+    }
+
+    fn session(name: &str) -> Target {
+        Target::Session(name.into())
+    }
+
+    #[test]
+    fn each_target_has_its_own_slots_in_one_arrival_ordered_queue() {
+        let mut lanes = Lanes::default();
+        // Each of them typing: one at a time each, and side by side.
+        for (n, target) in [
+            session("a"),
+            session("a"),
+            session("b"),
+            Target::Local,
+            Target::Route("r".into()),
+            Target::Route("s".into()),
+            Target::Local,
+            Target::Route("r".into()),
+            session("b"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            lanes.push_for(target, Lane::Ordered, n);
+        }
+        assert_eq!(
+            std::iter::from_fn(|| lanes.next_ready())
+                .map(|(_, n)| n)
+                .collect::<Vec<_>>(),
+            vec![0, 2, 3, 4, 5]
+        );
+        assert_eq!((lanes.running(), lanes.queued()), (5, 4));
+        // A slot that frees up lets in the same target's next one, and only that.
+        lanes.finished_for(&session("b"), Lane::Ordered);
+        assert_eq!(lanes.next_ready(), Some((Lane::Ordered, 8)));
+        assert_eq!(lanes.next_ready(), None);
+        lanes.finished_for(&session("a"), Lane::Ordered);
+        assert_eq!(lanes.next_ready(), Some((Lane::Ordered, 1)));
+        assert_eq!(lanes.next_ready(), None);
+        lanes.finished_for(&Target::Route("r".into()), Lane::Ordered);
+        assert_eq!(lanes.next_ready(), Some((Lane::Ordered, 7)));
+        lanes.finished(Lane::Ordered);
+        assert_eq!(lanes.next_ready(), Some((Lane::Ordered, 6)));
+        assert_eq!((lanes.running(), lanes.queued()), (5, 0));
+    }
+
+    #[test]
+    fn a_target_is_held_to_the_limits_that_the_connection_was_held_to() {
+        let mut lanes = Lanes::default();
+        for n in 0..4 {
+            lanes.push_for(session("a"), Lane::LongPoll, n);
+        }
+        lanes.push_for(session("b"), Lane::LongPoll, 4);
+        for n in 5..8 {
+            lanes.push_for(session("a"), Lane::Read, n);
+        }
+        lanes.push_for(Target::Local, Lane::Read, 8);
+        // Two polls and a read for `a`; everything `b` and this machine asked for.
+        assert_eq!(
+            std::iter::from_fn(|| lanes.next_ready())
+                .map(|(_, n)| n)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 4, 5, 8]
+        );
+        assert_eq!(lanes.queued(), 4);
+    }
+
+    #[test]
+    fn a_target_takes_no_room_once_nothing_of_it_runs() {
+        let mut lanes = Lanes::default();
+        for n in 0..1000 {
+            let target = session(&format!("nobody-{n}"));
+            lanes.push_for(target.clone(), Lane::Read, n);
+            assert!(lanes.next_ready().is_some());
+            lanes.finished_for(&target, Lane::Read);
+        }
+        assert!(lanes.slots.is_empty());
+        assert_eq!(lanes.running(), 0);
+        // One that finishes more than it started, or never started, grows nothing either.
+        lanes.finished_for(&session("nobody"), Lane::Ordered);
+        lanes.finished(Lane::Read);
+        assert!(lanes.slots.is_empty());
+        // Two kinds of slot held, one given back: it stays until the other is too.
+        for lane in [Lane::Read, Lane::Ordered] {
+            lanes.push_for(session("a"), lane, 0);
+            assert!(lanes.next_ready().is_some());
+        }
+        lanes.finished_for(&session("a"), Lane::Read);
+        assert_eq!(lanes.slots.len(), 1);
+        lanes.finished_for(&session("a"), Lane::Ordered);
+        assert!(lanes.slots.is_empty());
+    }
+
+    #[test]
+    fn a_late_queued_request_is_taken_out_and_the_rest_keep_their_order() {
+        let mut lanes = Lanes::default();
+        lanes.push_for(session("a"), Lane::Ordered, 0);
+        assert_eq!(lanes.next_ready(), Some((Lane::Ordered, 0)));
+        for n in 1..6 {
+            lanes.push_for(session("a"), Lane::LongPoll, n);
+        }
+        assert_eq!(
+            start_all(&mut lanes),
+            vec![(Lane::LongPoll, 1), (Lane::LongPoll, 2)]
+        );
+        assert_eq!(lanes.take_queued(|n| *n % 2 == 0), vec![4]);
+        // Having held no slot, it gives none back: the ones that run still have their own.
+        assert_eq!((lanes.running(), lanes.queued()), (3, 2));
+        assert_eq!(lanes.next_ready(), None);
+        lanes.finished_for(&session("a"), Lane::LongPoll);
+        assert_eq!(lanes.next_ready(), Some((Lane::LongPoll, 3)));
+        assert!(lanes.take_queued(|_| false).is_empty());
+        assert_eq!(lanes.queued(), 1);
+    }
+
+    #[test]
+    fn a_late_ordered_request_takes_what_its_target_ordered_after_it_along() {
+        let mut lanes = Lanes::default();
+        lanes.push_for(session("a"), Lane::Ordered, 0);
+        assert_eq!(lanes.next_ready(), Some((Lane::Ordered, 0)));
+        // Typing that waits too long, then a paste, which is not late yet: run, the paste
+        // would reach the shell ahead of what is typed when the phone sends it again.
+        lanes.push_for(session("a"), Lane::Ordered, 1);
+        lanes.push_for(session("b"), Lane::Ordered, 2);
+        lanes.push_for(Target::Local, Lane::Ordered, 3);
+        lanes.push_for(session("a"), Lane::Read, 4);
+        lanes.push_for(session("a"), Lane::Ordered, 5);
+        assert_eq!(lanes.take_queued(|n| *n == 1), vec![1, 5]);
+        // Other targets and what needs no order are left as they were.
+        assert_eq!(
+            start_all(&mut lanes),
+            vec![(Lane::Ordered, 2), (Lane::Ordered, 3), (Lane::Read, 4)]
+        );
+        assert_eq!(lanes.queued(), 0);
+        // What came before a late one is not taken with it.
+        for n in 6..9 {
+            lanes.push_for(session("b"), Lane::Ordered, n);
+        }
+        assert_eq!(lanes.take_queued(|n| *n == 7), vec![7, 8]);
+        assert_eq!(lanes.queued(), 1);
     }
 
     #[test]

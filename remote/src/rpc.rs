@@ -111,7 +111,7 @@ pub fn error(id: &str, code: &str, message: impl AsRef<str>) -> Value {
 pub(crate) fn error_for(id: Value, code: &str, message: impl AsRef<str>) -> Value {
     json!({"v":1,"type":"response","id":id,"ok":false,"error":{"code":code,"message":message.as_ref()}})
 }
-fn success(id: &str, result: Value) -> Value {
+pub(crate) fn success(id: &str, result: Value) -> Value {
     json!({"v":1,"type":"response","id":id,"ok":true,"result":result})
 }
 /// What replaces a response that is longer than its connection may carry.
@@ -231,6 +231,11 @@ fn cli_lines_limit(message: &str) -> Option<u32> {
 }
 /// A CLI call that is not a wait. Above the tmux timeout of a single capture.
 const CLI_TIMEOUT: Duration = Duration::from_secs(15);
+/// How the error of a CLI that could not be started at all begins.
+pub(crate) const CLI_START_FAILED: &str = "start configured Somtus CLI";
+/// The most a question of `ready` to the CLI waits (see `phone_features`): one that is not
+/// answered within a few seconds delays the handshake no longer.
+const FEATURE_WAIT: Duration = Duration::from_secs(3);
 /// What a waiting CLI call may take beyond its wait: the captures around it.
 const CLI_WAIT_MARGIN: Duration = Duration::from_secs(8);
 /// Starting a terminal. An agent's start-up (Grok waits for the computer-use
@@ -1260,12 +1265,14 @@ impl Rpc {
         Ok(rpc)
     }
     /// Gateway methods exist only on an authenticated first-hop session. Reuse
-    /// the envelope, authorization and request-id checks of ordinary RPC.
+    /// the envelope, authorization and request-id checks of ordinary RPC. `deadline`
+    /// is when the phone has to have an answer (see `gateway::deadline`).
     pub(crate) async fn handle_gateway_reply(
         &self,
         device: &str,
         value: Value,
         gateway: &crate::gateway::Gateway,
+        deadline: Option<std::time::Instant>,
         reply_limit: usize,
     ) -> Result<Reply> {
         let response = match parse_request(value) {
@@ -1288,7 +1295,7 @@ impl Rpc {
                         "request UUID already used for input",
                     )
                 } else {
-                    gateway.handle(device, &request).await
+                    gateway.handle(device, &request, deadline).await
                 }
             }
         };
@@ -1338,8 +1345,14 @@ impl Rpc {
             storage,
         }
     }
-    /// The complete phone feature set, shared by paired and SSH transports.
-    pub(crate) async fn phone_features(&self) -> Value {
+    /// The complete phone feature set, shared by paired and SSH transports. `by`: when the
+    /// handshake goes on, whatever the CLI has said by then. Each question to the CLI waits a
+    /// few seconds at most, and not past `by`; none is asked once `by` has passed, and a yes
+    /// the CLI gave before stands.
+    pub(crate) async fn phone_features(&self, by: Option<std::time::Instant>) -> Value {
+        let wait = by.map_or(FEATURE_WAIT, |by| {
+            FEATURE_WAIT.min(by.saturating_duration_since(std::time::Instant::now()))
+        });
         let mut features = crate::link::features(self.history_max_lines());
         // Chats, a chat going on with the other provider (`switch`), the models of a
         // provider a chat does not run yet (`chat.models`), what a chat's message box
@@ -1361,16 +1374,16 @@ impl Rpc {
             key_names,
             (native, watch),
         ) = tokio::join!(
-            self.chat_supported(),
-            self.chat_provider_switch_supported(),
-            self.chat_models_supported(),
-            self.chat_suggestions_supported(),
-            self.orchestrator_create_supported(),
-            self.shell_create_as_settings_supported(),
-            self.dashboard_supported(),
-            self.project_memo_supported(),
-            self.key_names_supported(),
-            self.native_features()
+            self.chat_supported(wait),
+            self.chat_provider_switch_supported(wait),
+            self.chat_models_supported(wait),
+            self.chat_suggestions_supported(wait),
+            self.orchestrator_create_supported(wait),
+            self.shell_create_as_settings_supported(wait),
+            self.dashboard_supported(wait),
+            self.project_memo_supported(wait),
+            self.key_names_supported(wait),
+            self.native_features(wait)
         );
         // The second key list of `shell.keys` (F-keys, Insert, Space, modifiers), when
         // the installed CLI takes it; a phone without the flag keeps to the first list.
@@ -1470,7 +1483,7 @@ impl Rpc {
             .stderr(Stdio::piped())
             .kill_on_drop(true)
             .spawn()
-            .with_context(|| format!("start configured Somtus CLI {}", self.cli.display()))?;
+            .with_context(|| format!("{CLI_START_FAILED} {}", self.cli.display()))?;
         let stdin = child.stdin.take();
         let stdout = child.stdout.take().context("stdout")?;
         let stderr = child.stderr.take().context("stderr")?;
@@ -1499,6 +1512,13 @@ impl Rpc {
             let (_, out, err, status) = tokio::try_join!(feed, out, err, async {
                 Ok::<_, anyhow::Error>(child.wait().await?)
             })?;
+            // Not an answer of the CLI's: macOS kills a signed binary that was overwritten in
+            // place, and a shell in between reports a signal as 128 plus its number. Callers
+            // take "Somtus CLI failed" for a CLI that ran and said no, and may call it too old.
+            ensure!(
+                status.code().is_some_and(|code| code <= 128),
+                "Somtus CLI was killed by a signal"
+            );
             ensure!(
                 status.success(),
                 "Somtus CLI failed: {}",
@@ -1627,6 +1647,18 @@ impl Rpc {
             Err(e) if e.to_string().starts_with("Somtus CLI failed") => Err(too_old()),
             Err(e) => Err(cli_fault(e)),
         }
+    }
+    /// Whether the configured CLI cannot be started at all: a wrong path, or a file
+    /// that is not executable. A CLI that starts and then says no, or is slow to answer,
+    /// is not this. It is the question a handshake asks anyway, so this adds no run of
+    /// the CLI to a handshake with a current one. `limit` is what the handshake has left:
+    /// the answer is remembered for `phone_features`, whose own questions are short, so a
+    /// slow CLI announces what it has only if this one gets to hear it.
+    pub(crate) async fn cli_cannot_start(&self, limit: Duration) -> bool {
+        matches!(
+            self.capability_known(&self.chat, limit).await,
+            Err(fault) if fault.message.starts_with(CLI_START_FAILED)
+        )
     }
     /// Whether this CLI checks, before it reads from or types into a shell,
     /// that the shell is a registered, live session, and says so in its own
@@ -2068,8 +2100,15 @@ impl Rpc {
                 if v.selected
                     .as_ref()
                     .is_some_and(|(s, _, _)| *s != p.shell_id)
+                    && let Err(e) = self.clear_viewport(v).await
                 {
-                    self.clear_viewport(v).await.map_err(viewport_fault)?;
+                    // It is let go of either way; what is left of its lease lapses.
+                    v.give_up();
+                    // Someone else holding that shell's size says nothing about this one.
+                    let fault = viewport_fault(e);
+                    if fault.code != "viewport_busy" {
+                        return Err(fault);
+                    }
                 }
                 // Track before invoking CLI, so cancellation during the command
                 // still clears any geometry it may have applied.
@@ -2078,10 +2117,15 @@ impl Rpc {
                     let fault = viewport_fault(e);
                     if fault.code == "viewport_busy" {
                         v.selected = None; // denied ownership must not be renewed
-                    } else {
-                        let _ = self.clear_viewport(v).await;
+                    } else if self.clear_viewport(v).await.is_err() {
+                        // Its client is told this failed and will not let go of it, so a
+                        // later renewal must not go through. Any lease left lapses.
+                        v.give_up();
                     }
                     return Err(fault);
+                }
+                if v.given_up.as_ref() == Some(&p.shell_id) {
+                    v.given_up = None;
                 }
                 Ok(json!({"shell_id":p.shell_id,"columns":p.columns,"rows":p.rows}))
             }
@@ -2095,16 +2139,37 @@ impl Rpc {
                 // The CLI creates a lock file per shell ID it is asked about, so an
                 // arbitrary UUID must not reach it. A shell this connection pinned
                 // may have died since; clearing it must still work.
-                if v.selected.as_ref().is_none_or(|(s, _, _)| *s != p.shell_id) {
+                let given_up = v.given_up.as_ref() == Some(&p.shell_id);
+                let holds = v
+                    .selected
+                    .as_ref()
+                    .is_some_and(|(s, _, _)| *s == p.shell_id);
+                if !given_up && !holds {
                     self.selected(&p.shell_id).await?;
                 }
-                self.raw(v.args("resize-clear", &p.shell_id))
-                    .await
-                    .map_err(viewport_fault)?;
-                if v.selected
-                    .as_ref()
-                    .is_some_and(|(s, _, _)| *s == p.shell_id)
-                {
+                let cleared = self.raw(v.args("resize-clear", &p.shell_id)).await;
+                if given_up {
+                    // This connection holds nothing here any more, which is what its
+                    // client asks for. Someone else may hold the size by now, and the
+                    // CLI would refuse; otherwise this restores it ahead of the lapse.
+                    v.given_up = None;
+                } else if let Err(e) = cleared {
+                    let fault = viewport_fault(e);
+                    if !holds {
+                        return Err(fault);
+                    }
+                    // Someone else's lease leaves nothing of this connection's to let go
+                    // of. Any other failure ends the pin here all the same, and the client
+                    // is told it let go, as it has: it may have forgotten the shell already
+                    // (a phone that left it for a route of this gateway swallows the error
+                    // and keeps talking), and its traffic would go on renewing; and one that
+                    // only covered the terminal would go on believing it holds the size, and
+                    // not ask for it when it comes back. What is left of the lease lapses.
+                    if fault.code != "viewport_busy" {
+                        v.give_up();
+                    }
+                }
+                if holds {
                     v.selected = None;
                 }
                 Ok(json!({"shell_id":p.shell_id,"status":"cleared"}))
@@ -2259,8 +2324,8 @@ impl Rpc {
     /// What `ready` announces as `features.shell_create_as_settings`: a phone that sees it may
     /// send `as_settings` in `shell.create`, and the desktop's Settings decide. Short, like
     /// `chat_supported`.
-    pub async fn shell_create_as_settings_supported(&self) -> bool {
-        self.shell_create_as_settings_known(Duration::from_secs(3))
+    pub async fn shell_create_as_settings_supported(&self, wait: Duration) -> bool {
+        self.shell_create_as_settings_known(wait)
             .await
             .unwrap_or(false)
     }
@@ -2427,8 +2492,7 @@ impl Rpc {
             {
                 let _ = self.clear_viewport(v).await;
                 // The shell is about to go. A lease that could not be released
-                // lapses by itself; keeping it would only fail to renew and
-                // end the connection.
+                // lapses by itself; keeping it would only fail to renew.
                 v.selected = None;
             }
         }
@@ -2457,6 +2521,35 @@ impl Rpc {
             self.raw(args).await?;
         }
         Ok(())
+    }
+    /// One renewal by a session's timer. A lease is about one terminal, so what becomes
+    /// of it ends nothing else: the connection carries requests for other terminals and
+    /// on a gateway other hosts too, and nothing it could do would bring the lease back.
+    ///
+    /// A client that holds a size believes so until it wants another: a phone is not told
+    /// when a pin ends, and it does not ask again for what it thinks it has. So a pin goes
+    /// on through anything that can pass, and the next success takes a fresh lease if this
+    /// one lapsed. That covers a moment's trouble with the CLI or tmux, however long it
+    /// lasts, and a lease someone else holds, which the CLI refuses without touching until
+    /// they leave. What bounds this is what bounds every renewal: the session ending, and
+    /// on a phone's connection the phone going quiet. A shell that is gone and a terminal
+    /// that cannot be held at one size stay that way, so those end the pin. Says why when
+    /// it ended; the CLI's words stay here, where they can only pick the reason, because
+    /// they can hold paths.
+    pub(crate) async fn renew_lease(&self, v: &mut Viewport) -> Option<&'static str> {
+        let error = self.renew_viewport(v).await.err()?;
+        let shell = v.selected.as_ref()?.0.clone();
+        let why = match Checked::ByCli.explain(viewport_fault(&error), &shell).code {
+            "not_found" => "the shell is gone",
+            "viewport_unsupported" => {
+                // The CLI extends a lease before it finds this out.
+                let _ = self.raw(v.args("resize-clear", &shell)).await;
+                "it cannot be held at one size"
+            }
+            _ => return None,
+        };
+        v.give_up();
+        Some(why)
     }
     pub async fn clear_viewport(&self, v: &mut Viewport) -> Result<()> {
         if let Some((shell, _, _)) = &v.selected {
@@ -2654,11 +2747,16 @@ impl Rpc {
                     anyhow::bail!("Somtus CLI failed: somtus: {error}")
                 }
                 keys_worker::Outcome::Lost(error) => return Err(error),
-                // Nothing was typed: the process below types it.
-                keys_worker::Outcome::Unavailable(error) => eprintln!(
-                    "Typing worker unavailable ({}); typing with a process.",
-                    crate::log_safe(&format!("{error:#}"))
-                ),
+                // Nothing was typed: the process below types it. Not `eprintln!`, which
+                // panics when stderr has gone (an SSH session's can), and that would end it.
+                keys_worker::Outcome::Unavailable(error) => {
+                    use std::io::Write;
+                    let _ = writeln!(
+                        std::io::stderr(),
+                        "Typing worker unavailable ({}); typing with a process.",
+                        crate::log_safe(&format!("{error:#}"))
+                    );
+                }
             }
         }
         let mut args: Vec<String> = ["shell", "keys", shell, "--"]
@@ -2671,8 +2769,8 @@ impl Rpc {
     /// Whether `shell.keys` takes the second key list (`ready.features.key_names` 2): the
     /// installed CLI says `"key_names": 2`. Asked with the other capabilities when a session
     /// begins, which also tells whether batches can go to a typing worker.
-    pub async fn key_names_supported(&self) -> bool {
-        self.capability_known(&self.key_names_2, Duration::from_secs(3))
+    pub async fn key_names_supported(&self, wait: Duration) -> bool {
+        self.capability_known(&self.key_names_2, wait)
             .await
             .unwrap_or(false)
     }

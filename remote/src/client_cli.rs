@@ -3,12 +3,14 @@
 //! parser lives here and `main.rs` only dispatches.
 use crate::{
     bridge,
-    client::{HostsFile, add_host, remove_host},
+    client::{HostsFile, RegistryAfter, add_host, remove_host},
     client_daemon::{
-        DEFAULT_IDLE, daemon_call, daemon_status, daemon_watch, ensure, serve, shutdown,
-        socket_path,
+        DAEMON_PROTOCOL, DEFAULT_IDLE, daemon_call, daemon_status, daemon_watch, ensure, serve,
+        shutdown, socket_path,
     },
     config::Storage,
+    log_safe,
+    ssh::{DEFAULT_REMOTE_BIN, RouteChange},
 };
 use anyhow::{Context, Result, bail};
 use clap::Subcommand;
@@ -17,7 +19,7 @@ use std::{path::PathBuf, time::Duration};
 
 #[derive(Subcommand)]
 pub enum ClientCommand {
-    /// Add, list or remove the Macs this Mac controls.
+    /// Add, change, list or remove the Macs this Mac controls.
     Hosts {
         #[command(subcommand)]
         action: HostsCommand,
@@ -70,15 +72,40 @@ pub enum HostsCommand {
     AddSsh {
         #[arg(long)]
         target: String,
-        #[arg(long, default_value = "somtus-remote")]
+        #[arg(long, default_value = DEFAULT_REMOTE_BIN)]
         remote_bin: String,
         #[arg(long)]
         somtus: Option<String>,
-        /// The remote RIWORK_HOME, if it differs from that account's default.
+        /// The remote RIWORK_HOME as an absolute path, if it differs from that account's default.
         #[arg(long)]
         home: Option<String>,
         #[arg(long)]
         label: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Change how an SSH route connects, or its label, keeping its tabs and drafts. New connection values are tried first, and must reach the same installation.
+    UpdateSsh {
+        /// The route's id (`hosts list`).
+        id: String,
+        #[arg(long)]
+        target: Option<String>,
+        #[arg(long)]
+        remote_bin: Option<String>,
+        #[arg(long, conflicts_with = "no_somtus")]
+        somtus: Option<String>,
+        /// Stop passing --somtus to the host.
+        #[arg(long)]
+        no_somtus: bool,
+        /// The remote RIWORK_HOME as an absolute path.
+        #[arg(long, conflicts_with = "no_home")]
+        home: Option<String>,
+        /// Go back to that account's default RIWORK_HOME.
+        #[arg(long)]
+        no_home: bool,
+        #[arg(long)]
+        label: Option<String>,
+        /// Print the route as a JSON object (as `hosts list --json` shows it).
         #[arg(long)]
         json: bool,
     },
@@ -102,7 +129,7 @@ pub enum HostsCommand {
         #[arg(long)]
         json: bool,
     },
-    /// Forget a host and its credentials; its client process quits.
+    /// Forget a host and its credentials; its client process quits. Also takes a record out of a registry that fails validation, by its exact id.
     Remove { id: String },
 }
 
@@ -126,6 +153,9 @@ pub enum DaemonCommand {
         #[arg(long)]
         desktop: String,
     },
+    /// Print this file's daemon protocol number, which `ensure` asks before it replaces a daemon with this file.
+    #[command(hide = true)]
+    Protocol,
 }
 
 pub async fn run(command: ClientCommand) -> Result<()> {
@@ -196,9 +226,18 @@ async fn hosts(action: HostsCommand) -> Result<()> {
                 host_id: String::new(),
                 client_id: uuid::Uuid::new_v4().to_string(),
             };
-            let host = crate::ssh::add(&storage, route, label).await?;
+            let added = match crate::ssh::add(&storage, route, label).await {
+                Ok(added) => added,
+                Err(error) => {
+                    // This command runs on the person's own terminal, which may see
+                    // what ssh printed. The exit keeps that after the error.
+                    crate::ssh::print_dial_error(&error);
+                    std::process::exit(1);
+                }
+            };
+            let host = &added.host;
             if json {
-                println!("{}", serde_json::to_string(&host)?);
+                println!("{}", serde_json::to_string(host)?);
             } else {
                 println!(
                     "Added SSH route {} (\"{}\") to host {}.",
@@ -206,6 +245,64 @@ async fn hosts(action: HostsCommand) -> Result<()> {
                     host.label,
                     host.host_id.as_deref().unwrap_or("")
                 );
+            }
+            for warning in &added.warnings {
+                eprintln!("Warning: {warning}");
+            }
+        }
+        HostsCommand::UpdateSsh {
+            id,
+            target,
+            remote_bin,
+            somtus,
+            no_somtus,
+            home,
+            no_home,
+            label,
+            json,
+        } => {
+            let change = RouteChange {
+                target,
+                remote_bin,
+                somtus: if no_somtus {
+                    Some(None)
+                } else {
+                    somtus.map(Some)
+                },
+                home: if no_home { Some(None) } else { home.map(Some) },
+                label,
+            };
+            let updated = match crate::ssh::update(&storage, &id, change).await {
+                Ok(updated) => updated,
+                Err(error) => {
+                    // As for `add-ssh`: this is the person's own terminal.
+                    crate::ssh::print_dial_error(&error);
+                    std::process::exit(1);
+                }
+            };
+            let host = &updated.host;
+            if json {
+                println!("{}", serde_json::to_string(host)?);
+            } else if updated.saved {
+                println!(
+                    "Updated SSH route {} (\"{}\") to host {}.",
+                    host.id,
+                    host.label,
+                    host.host_id.as_deref().unwrap_or("")
+                );
+            } else {
+                println!(
+                    "SSH route {} (\"{}\") already has these values.",
+                    host.id, host.label
+                );
+            }
+            for warning in &updated.warnings {
+                eprintln!("Warning: {warning}");
+            }
+            // Its client process holds the route it read, and would go on dialing it until
+            // it next reads the registry. A label is no reason to end its terminals.
+            if updated.route_changed {
+                shutdown(&storage, &id).await?;
             }
         }
         HostsCommand::Add {
@@ -243,36 +340,84 @@ async fn hosts(action: HostsCommand) -> Result<()> {
             if json {
                 println!("{}", serde_json::to_string_pretty(&hosts)?);
             } else if hosts.is_empty() {
-                println!("No hosts. Add one with `hosts add --link 'somtus://pair?v=2&…'`.");
+                println!(
+                    "No hosts. Add one with `hosts add --link 'somtus://pair?v=2&…'` or `hosts add-ssh --target SSH_TARGET`."
+                );
             } else {
+                // The label last, as it can hold spaces. So can a route's paths, which are
+                // for `--json`.
                 for host in hosts {
-                    println!("{}  {}  {}", host.id, host.label, host.relay);
+                    let identity = host.host_id.as_deref().unwrap_or(&host.relay);
+                    println!(
+                        "{}  {}  {}  {}",
+                        host.id, host.transport, identity, host.label
+                    );
                 }
             }
         }
         HostsCommand::Remove { id } => {
-            let removed = remove_host(&storage, &id)?;
-            // Its client process would otherwise go on using the credentials until it idles out.
-            shutdown(&storage, &removed.id).await?;
-            println!("Removed host {} (\"{}\").", removed.id, removed.label);
+            let removal = remove_host(&storage, &id)?;
+            // Printed first: it is the only copy left, whatever happens next.
+            for host in &removal.hosts {
+                println!(
+                    "Removed host {} (\"{}\").",
+                    log_safe(&host.id),
+                    log_safe(&host.label)
+                );
+                if let Some(command) = host.add_command() {
+                    println!("To add it again: {command}");
+                    if host.home_is_not_absolute() {
+                        println!(
+                            "Its home is not an absolute path, so add-ssh will need the home's absolute path on the host instead."
+                        );
+                    }
+                } else if let Some(device) = &host.device_id {
+                    println!(
+                        "The host still trusts this Mac, as device {device}, until `somtus remote revoke {device}` runs there."
+                    );
+                }
+            }
+            match &removal.registry {
+                RegistryAfter::Valid => {}
+                RegistryAfter::Repaired => println!("The host registry is valid again."),
+                RegistryAfter::StillInvalid(reason) => {
+                    eprintln!("Warning: the host registry is still invalid: {reason}");
+                }
+            }
+            // Its client process would otherwise go on using the credentials until it next
+            // reads the registry. Only a UUID can have one, and a damaged file can name a
+            // host anything.
+            if crate::crypto::uuid(&id).is_ok() {
+                shutdown(&storage, &id).await?;
+            }
         }
     }
     Ok(())
 }
 
 async fn daemon(action: DaemonCommand) -> Result<()> {
-    let storage = Storage::from_env()?;
     match action {
         DaemonCommand::Serve {
             desktop,
             idle_seconds,
-        } => serve(storage, &desktop, Duration::from_secs(idle_seconds.max(1))).await,
+        } => {
+            let idle = Duration::from_secs(idle_seconds.max(1));
+            serve(Storage::from_env()?, &desktop, idle).await
+        }
         DaemonCommand::Ensure { desktop } => {
-            ensure(&storage, &desktop, &current_exe()?).await?;
+            ensure(&Storage::from_env()?, &desktop, &current_exe()?).await?;
             Ok(())
         }
         DaemonCommand::Socket { desktop } => {
-            println!("{}", socket_path(&storage, &desktop)?.display());
+            println!(
+                "{}",
+                socket_path(&Storage::from_env()?, &desktop)?.display()
+            );
+            Ok(())
+        }
+        // Says what the file is, so it has no use for a home, which may be in any state.
+        DaemonCommand::Protocol => {
+            println!("{DAEMON_PROTOCOL}");
             Ok(())
         }
     }
@@ -290,16 +435,37 @@ async fn call(desktop: &str, method: &str, params: Option<&str>, timeout_ms: u64
     let socket = ensure(&storage, desktop, &current_exe()?).await?;
     let reply = daemon_call(&socket, method, params, timeout_ms).await?;
     if reply["ok"] == true {
-        println!("{}", serde_json::to_string_pretty(&reply["result"])?);
+        println!(
+            "{}",
+            escape_c1(&serde_json::to_string_pretty(&reply["result"])?)
+        );
         return Ok(());
     }
+    // The host's words, on its way to a terminal.
     bail!(
         "{}: {}",
-        reply["error"]["code"].as_str().unwrap_or("error"),
-        reply["error"]["message"]
-            .as_str()
-            .unwrap_or("the call failed")
+        log_safe(reply["error"]["code"].as_str().unwrap_or("error")),
+        log_safe(
+            reply["error"]["message"]
+                .as_str()
+                .unwrap_or("the call failed")
+        )
     )
+}
+
+/// JSON text with DEL and the C1 controls escaped as well, which a terminal acts on as it
+/// does on the C0 ones that JSON escapes by itself. The text means the same: JSON has
+/// these only inside strings. Its own line breaks stay.
+fn escape_c1(json: &str) -> String {
+    json.chars()
+        .map(|c| {
+            if ('\u{7f}'..='\u{9f}').contains(&c) {
+                format!("\\u{:04x}", u32::from(c))
+            } else {
+                c.to_string()
+            }
+        })
+        .collect()
 }
 
 /// A status line as a sentence.

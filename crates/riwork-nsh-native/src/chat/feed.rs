@@ -36,6 +36,10 @@ pub enum Link {
     Reconnecting,
     /// The host does not know the chat any more.
     Deleted,
+    /// This Mac's registry no longer lists the host, so nothing is being asked of it. The chat
+    /// may well exist; it comes back with the host. The app's composer treats this as it treats
+    /// reconnecting, keeping the draft and waiting, and the panel's status says what is going on.
+    Removed,
 }
 
 impl Link {
@@ -43,7 +47,7 @@ impl Link {
         match self {
             Link::Connecting => "connecting",
             Link::Live => "live",
-            Link::Reconnecting => "reconnecting",
+            Link::Reconnecting | Link::Removed => "reconnecting",
             Link::Deleted => "deleted",
         }
     }

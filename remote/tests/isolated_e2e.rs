@@ -1278,3 +1278,118 @@ async fn live_output_styled_waiting_and_typing_through_the_real_relay_connector_
     );
     Ok(())
 }
+
+/// A shell that ends while a phone holds its size is what makes a lease renewal fail, in
+/// the words of the real CLI, which a stand-in cannot vouch for. Told apart from a moment's
+/// trouble, one renewal is enough; taken for one, they go on until the lease has lapsed.
+#[cfg(unix)]
+#[tokio::test]
+#[ignore = "requires RIWORK_TEST_CLI; isolated real tmux/CLI/relay/connector, one disposable cat pane that ends while it is pinned"]
+async fn a_pinned_shell_that_ends_costs_its_lease_and_not_the_connection() -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let cli = PathBuf::from(std::env::var_os("RIWORK_TEST_CLI").context("set RIWORK_TEST_CLI")?);
+    ensure!(cli.is_absolute(), "absolute CLI path required");
+    let temp = tempfile::tempdir()?;
+    let home = temp.path().join("home");
+    std::fs::create_dir(&home)?;
+    let mut f = Fixture {
+        temp,
+        home,
+        cli,
+        shells: vec![],
+        connector: None,
+        relay: None,
+    };
+    let project_dir = f.temp.path().join("project");
+    std::fs::create_dir(&project_dir)?;
+    let project = f
+        .cli(&["project", "add", project_dir.to_str().unwrap()])
+        .await?;
+    let shell = f
+        .cli(&[
+            "shell",
+            "create",
+            "--project",
+            project["id"].as_str().unwrap(),
+            "--command",
+            "/bin/cat",
+        ])
+        .await?;
+    let id = shell["id"].as_str().unwrap().to_owned();
+    f.shells.push(id.clone());
+    // The connector's CLI, with a log of what it was asked.
+    let log = f.temp.path().join("cli.log");
+    let logging = f.temp.path().join("logging-cli");
+    std::fs::write(
+        &logging,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nexec '{}' \"$@\"\n",
+            log.display(),
+            f.cli.display()
+        ),
+    )?;
+    std::fs::set_permissions(&logging, std::fs::Permissions::from_mode(0o700))?;
+    f.cli = logging;
+    let renewals = || {
+        std::fs::read_to_string(&log)
+            .unwrap_or_default()
+            .lines()
+            .filter(|line| line.starts_with("shell resize "))
+            .count()
+    };
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let storage = Storage::at(f.home.clone())?;
+    let routes_path = f.temp.path().join("routes.json");
+    let pair = storage.pair(
+        format!("ws://{}/v1/ws", listener.local_addr()?),
+        "pinned".into(),
+        true,
+        &f.temp.path().join("pair.json"),
+        Some(&routes_path),
+    )?;
+    let relay = Relay::new(private_read::<Routes>(&routes_path, 1_048_576)?, 16)?;
+    f.relay = Some(tokio::spawn(async move {
+        axum::serve(listener, relay.router()).await.unwrap();
+    }));
+    f.start_connector().await?;
+    let (mut ws, mut s) = mobile(&pair).await?;
+    let resized = call(
+        &mut ws,
+        &mut s,
+        "shell.resize",
+        json!({"shell_id":id,"columns":43,"rows":17}),
+    )
+    .await?;
+    ensure!(resized["ok"] == true, "{resized}");
+    cells(&f, &id, 43, 17).await?;
+    for _ in 0..100 {
+        if renewals() >= 2 {
+            break;
+        }
+        sleep(Duration::from_millis(50)).await;
+    }
+    ensure!(renewals() >= 2, "the timer renews the lease");
+
+    // As when a person types `exit`.
+    f.tmux(&["kill-session", "-t", &id])?;
+    let before = renewals();
+    sleep(Duration::from_secs(10)).await;
+    let tried = renewals() - before;
+    // One to find out, and one that may have been on its way. The one running when it ended
+    // may have found out by itself, so this can be none. Renewals that never stop make
+    // about three in these 10 s, and this bound is what catches them: the release below is
+    // answered `cleared` either way, because the CLI lets go of a dead session's size
+    // without its pane.
+    ensure!(tried <= 2, "{tried} renewals after the end");
+    let listed = call(&mut ws, &mut s, "projects.list", json!({})).await?;
+    ensure!(listed["ok"] == true, "{listed}");
+    let released = call(
+        &mut ws,
+        &mut s,
+        "shell.resize.clear",
+        json!({"shell_id":id}),
+    )
+    .await?;
+    ensure!(released["result"]["status"] == "cleared", "{released}");
+    Ok(())
+}

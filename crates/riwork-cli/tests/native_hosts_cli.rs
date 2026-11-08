@@ -190,6 +190,61 @@ fn invalid_native_requests_are_bounded_and_do_not_open_state() {
     home.assert_no_runtime_started();
 }
 
+/// A chat as the chat host saves it, so a read has something to lose.
+fn saved_chat(home: &Home) -> String {
+    let id = Uuid::new_v4().to_string();
+    let dir = home.0.join("state/chats").join(&id);
+    fs::create_dir_all(&dir).unwrap();
+    let info = json!({
+        "id": id,
+        "provider": "claude",
+        "cwd": "/tmp",
+        "title": "Saved chat",
+        "created_at_unix": 1_790_000_000u64,
+        "state": {"state": "stopped"},
+    });
+    fs::write(dir.join("info.json"), info.to_string()).unwrap();
+    fs::write(dir.join("events.jsonl"), "").unwrap();
+    id
+}
+
+#[test]
+fn a_store_this_build_cannot_read_does_not_hide_the_chats() {
+    let home = Home::new();
+    let chat = saved_chat(&home);
+    fs::write(home.0.join("state/state.json"), b"{ not json").unwrap();
+    let answer = home.invoke("Hosts.local", b"{}");
+    assert!(answer.get("error").is_none(), "{answer}");
+    let sessions = answer["value"]["sessions"].as_array().unwrap();
+    assert_eq!(sessions.len(), 1, "{answer}");
+    assert_eq!(sessions[0]["id"], chat.as_str());
+    assert_eq!(sessions[0]["kind"], "chat");
+    Uuid::parse_str(answer["value"]["hostId"].as_str().unwrap()).unwrap();
+}
+
+/// A read (`Cache::apply_read`) replaces a host's whole snapshot, so a source that fails must fail
+/// the read: its rows then stay last known instead of vanishing.
+#[test]
+fn a_tmux_that_fails_or_an_unreadable_registry_still_fails_the_read() {
+    let home = Home::new();
+    saved_chat(&home);
+    fs::write(home.0.join("state/sessions.json"), b"{ not json").unwrap();
+    let answer = home.invoke("Hosts.local", b"{}");
+    assert_eq!(answer["error"]["code"], "cli_error", "{answer}");
+    assert!(answer.get("value").is_none());
+
+    let home = Home::new();
+    saved_chat(&home);
+    fs::write(
+        home.0.join("bin/tmux"),
+        "#!/bin/sh\nprintf '%s\\n' 'lost server' >&2\nexit 1\n",
+    )
+    .unwrap();
+    let answer = home.invoke("Hosts.local", b"{}");
+    assert_eq!(answer["error"]["code"], "cli_error", "{answer}");
+    assert!(answer.get("value").is_none());
+}
+
 #[test]
 fn backend_error_retains_the_native_error_envelope() {
     let home = Home::new();

@@ -21,11 +21,11 @@ use crate::{
     },
     link, log_safe,
 };
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, anyhow, bail, ensure};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{Value, json, value::RawValue};
 use std::{
     collections::HashMap,
     fs::File,
@@ -33,7 +33,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::{
-    sync::{mpsc, oneshot, watch},
+    sync::{Semaphore, mpsc, oneshot, watch},
     time::{Instant, interval, sleep, sleep_until, timeout, timeout_at},
 };
 use tokio_tungstenite::tungstenite::Message;
@@ -45,10 +45,12 @@ pub type Socket =
 pub const HOSTS_FILE: &str = "hosts.json";
 const HOSTS_LOCK: &str = "hosts.lock";
 const HOSTS_LOCK_WAIT: Duration = Duration::from_secs(10);
-const MAX_HOSTS: usize = 64;
+pub(crate) const MAX_HOSTS: usize = 64;
 const MAX_HOSTS_BYTES: u64 = 1024 * 1024;
 const MAX_LINK_BYTES: usize = 16 * 1024;
-const MAX_LABEL_CHARS: usize = 64;
+pub(crate) const MAX_LABEL_CHARS: usize = 64;
+/// What a link says while the relay reports nobody on the host's side of the route.
+const HOST_AWAY: &str = "host offline (or access revoked)";
 
 pub fn now_unix() -> u64 {
     SystemTime::now()
@@ -97,9 +99,23 @@ pub struct HostSummary {
     pub transport: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host_id: Option<String>,
+    /// How an SSH route connects, as `hosts add-ssh` takes it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ssh: Option<SshSummary>,
+}
+/// An SSH route without its `client_id`, which names this Mac to the host and which no
+/// command takes.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SshSummary {
+    pub target: String,
+    pub remote_bin: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub somtus: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home: Option<String>,
 }
 
-fn check_label(label: &str) -> Result<()> {
+pub(crate) fn check_label(label: &str) -> Result<()> {
     ensure!(
         !label.trim().is_empty()
             && label.chars().count() <= MAX_LABEL_CHARS
@@ -170,6 +186,7 @@ impl HostRecord {
             allow_insecure_loopback: self.allow_insecure_loopback,
             transport: if self.ssh.is_some() { "ssh" } else { "relay" }.into(),
             host_id: self.ssh.as_ref().map(|ssh| ssh.host_id.clone()),
+            ssh: self.ssh.as_ref().map(crate::ssh::Route::summary),
         }
     }
     fn root(&self) -> Result<Secret> {
@@ -202,16 +219,40 @@ impl HostsFile {
     fn path(storage: &Storage) -> std::path::PathBuf {
         storage.dir.join(HOSTS_FILE)
     }
-    /// The registry, or an empty one when no host was added yet.
+    /// The registry, or an empty one when no host was added yet. All of it is valid or
+    /// none of it is used. An error says what can take a bad record out, when something
+    /// can, and repeats what the file says only through `log_safe`: it can hold anything.
+    ///
+    /// Only "no such file" means no hosts. Failing to look says nothing about them, and a
+    /// daemon or a desktop that took it for an empty list would act on that. A symlink is
+    /// there to be refused, wherever it points.
     pub fn load(storage: &Storage) -> Result<Self> {
         let path = Self::path(storage);
-        if !path.exists() {
-            return Ok(Self {
-                v: 1,
-                hosts: vec![],
-            });
+        match std::fs::symlink_metadata(&path) {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Self {
+                    v: 1,
+                    hosts: vec![],
+                });
+            }
+            Err(error) => return Err(error).with_context(|| format!("read {}", path.display())),
         }
-        let file: HostsFile = private_read(&path, MAX_HOSTS_BYTES)?;
+        Self::read(&path).map_err(|error| {
+            if RawHostsFile::read(&path).is_ok() {
+                anyhow!(
+                    "{}. `somtus-remote hosts remove ID` takes a record out of the file, and lists them if ID is not there",
+                    log_safe(&format!("{error:#}"))
+                )
+            } else if error.is::<serde_json::Error>() {
+                anyhow!("{}", log_safe(&format!("{error:#}")))
+            } else {
+                error
+            }
+        })
+    }
+    fn read(path: &std::path::Path) -> Result<Self> {
+        let file: HostsFile = private_read(path, MAX_HOSTS_BYTES)?;
         ensure!(
             file.v == 1 && file.hosts.len() <= MAX_HOSTS,
             "unsupported or oversized {HOSTS_FILE}"
@@ -227,7 +268,7 @@ impl HostsFile {
     pub fn save(&self, storage: &Storage) -> Result<()> {
         private_write(&Self::path(storage), self)
     }
-    /// Serializes read-modify-write cycles of `hosts add` / `hosts remove`.
+    /// Serializes read-modify-write cycles of the `hosts` commands.
     pub fn lock(storage: &Storage) -> Result<File> {
         storage.lock_wait(HOSTS_LOCK, HOSTS_LOCK_WAIT)
     }
@@ -246,11 +287,89 @@ pub fn load_host(storage: &Storage, id: &str) -> Result<HostRecord> {
     uuid(id).context("--desktop takes a host's full desktop id")?;
     Ok(HostsFile::load(storage)?.require(id)?.clone())
 }
-/// Removes a host; its credentials leave this Mac. Returns the removed host.
-pub fn remove_host(storage: &Storage, id: &str) -> Result<HostRecord> {
-    uuid(id).context("hosts remove takes a host's full desktop id")?;
+
+/// The registry as `hosts remove` repairs it: its outline as strict as `HostsFile`'s, so
+/// that a newer format is never rewritten, and each record left as the text it is, because
+/// one this build cannot read may be fine to the build that wrote it.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawHostsFile {
+    v: u8,
+    hosts: Vec<Box<RawValue>>,
+}
+impl RawHostsFile {
+    fn read(path: &std::path::Path) -> Result<Self> {
+        let file: Self = private_read(path, MAX_HOSTS_BYTES)?;
+        ensure!(file.v == 1, "unsupported {HOSTS_FILE}");
+        Ok(file)
+    }
+}
+
+/// A host `hosts remove` took out, with what the person may still want of it. From a file
+/// that failed validation `id` and `label` can be anything, so they are for `log_safe`.
+#[derive(Debug)]
+pub struct RemovedHost {
+    pub id: String,
+    pub label: String,
+    pub ssh: Option<SshSummary>,
+    /// What a relay host knows this Mac by, which leaves this Mac with the record.
+    pub device_id: Option<String>,
+}
+impl RemovedHost {
+    /// What can still be used of an entry of a file that failed validation.
+    fn from_entry(id: &str, entry: &Value) -> Self {
+        Self {
+            id: id.to_owned(),
+            label: entry["label"].as_str().unwrap_or_default().to_owned(),
+            ssh: SshSummary::from_damaged(&entry["ssh"]),
+            device_id: entry["pairing"]["device_id"]
+                .as_str()
+                .filter(|device| uuid(device).is_ok())
+                .map(str::to_owned),
+        }
+    }
+    /// The command that registers this route again.
+    pub fn add_command(&self) -> Option<String> {
+        let label = check_label(&self.label).is_ok().then_some(&*self.label);
+        self.ssh.as_ref().map(|route| route.add_command(label))
+    }
+    /// Whether that command holds a home `hosts add-ssh` will not take as it is, as a route
+    /// registered before it asked for an absolute one does.
+    pub fn home_is_not_absolute(&self) -> bool {
+        self.ssh
+            .as_ref()
+            .and_then(|route| route.home.as_deref())
+            .is_some_and(|home| crate::ssh::check_new_home(home).is_err())
+    }
+}
+/// What became of the registry in `hosts remove`.
+#[derive(Debug, PartialEq, Eq)]
+pub enum RegistryAfter {
+    /// It was valid to begin with.
+    Valid,
+    /// It failed validation, and removing this was what it took.
+    Repaired,
+    /// It failed validation and still does, for this reason, which is safe to print.
+    StillInvalid(String),
+}
+/// The result of `hosts remove`.
+#[derive(Debug)]
+pub struct Removal {
+    /// One host, or all that held the id in a damaged file that repeats it.
+    pub hosts: Vec<RemovedHost>,
+    pub registry: RegistryAfter,
+}
+
+/// Removes a host; its credentials leave this Mac. A bad record must not stop the one
+/// command that can take it out, so a registry that fails validation is repaired instead,
+/// while everything else that reads it stays refused.
+pub fn remove_host(storage: &Storage, id: &str) -> Result<Removal> {
     let _lock = HostsFile::lock(storage)?;
-    let mut file = HostsFile::load(storage)?;
+    let mut file = match HostsFile::load(storage) {
+        Ok(file) => file,
+        Err(error) => return remove_from_damaged(storage, id, error),
+    };
+    uuid(id).context("hosts remove takes a host's full desktop id")?;
     let at = file
         .hosts
         .iter()
@@ -258,7 +377,92 @@ pub fn remove_host(storage: &Storage, id: &str) -> Result<HostRecord> {
         .with_context(|| format!("no host {id}"))?;
     let removed = file.hosts.remove(at);
     file.save(storage)?;
-    Ok(removed)
+    Ok(Removal {
+        hosts: vec![RemovedHost {
+            id: removed.id,
+            label: removed.label,
+            ssh: removed.ssh.as_ref().map(crate::ssh::Route::summary),
+            device_id: removed.pairing.map(|pairing| pairing.device_id),
+        }],
+        registry: RegistryAfter::Valid,
+    })
+}
+/// An id from a damaged file, in full, for a person to read: as JSON, so that it cannot be
+/// mistaken for anything around it, with every control character escaped. JSON leaves DEL
+/// and the C1 range as they are, and a terminal can act on those too.
+fn shown_id(id: &str) -> String {
+    let mut shown = String::with_capacity(id.len() + 2);
+    for c in serde_json::to_string(id).unwrap_or_default().chars() {
+        if c.is_control() {
+            shown.push_str(&format!("\\u{:04x}", u32::from(c)));
+        } else {
+            shown.push(c);
+        }
+    }
+    shown
+}
+/// Cuts every entry whose `id` is exactly `id` out of a registry that failed to load,
+/// with `why` as the answer if the file is not one this may rewrite. The caller holds the
+/// lock. Nothing else in the file is dropped or changed, whatever is wrong with it: under
+/// version skew a record invalid here may be valid elsewhere, and a lost relay record
+/// needs a new invite.
+fn remove_from_damaged(storage: &Storage, id: &str, why: anyhow::Error) -> Result<Removal> {
+    let path = HostsFile::path(storage);
+    let Ok(file) = RawHostsFile::read(&path) else {
+        return Err(why.context(format!("{HOSTS_FILE} was left as it is")));
+    };
+    let parsed = |entry: &RawValue| serde_json::from_str::<Value>(entry.get()).unwrap_or_default();
+    let (taken, kept): (Vec<_>, Vec<_>) = file
+        .hosts
+        .into_iter()
+        .partition(|entry| parsed(entry)["id"].as_str() == Some(id));
+    if taken.is_empty() {
+        // `hosts list` cannot say, with the file like this.
+        let mut by_hand = false;
+        let holds: Vec<String> = kept
+            .iter()
+            .take(MAX_HOSTS)
+            .map(|entry| {
+                let entry = parsed(entry);
+                let shown = entry["id"].as_str().map(|id| (id, shown_id(id)));
+                // What this finds a record by is the exact id, so one with no id, or one
+                // that typing what is shown would not match, cannot be taken out from here.
+                by_hand |= shown.as_ref().is_none_or(|(id, shown)| {
+                    let quoted = shown.strip_prefix('"').and_then(|s| s.strip_suffix('"'));
+                    quoted != Some(*id)
+                });
+                format!(
+                    "{} (\"{}\")",
+                    shown.map_or("(no id)".into(), |(_, shown)| shown),
+                    log_safe(entry["label"].as_str().unwrap_or(""))
+                )
+            })
+            .collect();
+        let by_hand = if by_hand {
+            format!(
+                ". A record shown with no id, or with an escape in its id, has to be taken out of {} by hand",
+                log_safe(&path.display().to_string())
+            )
+        } else {
+            String::new()
+        };
+        bail!(
+            "no host {}; the file holds: {}{by_hand}",
+            log_safe(id),
+            holds.join(", ")
+        );
+    }
+    private_write(&path, &RawHostsFile { v: 1, hosts: kept })?;
+    Ok(Removal {
+        hosts: taken
+            .iter()
+            .map(|entry| RemovedHost::from_entry(id, &parsed(entry)))
+            .collect(),
+        registry: match HostsFile::load(storage) {
+            Ok(_) => RegistryAfter::Repaired,
+            Err(error) => RegistryAfter::StillInvalid(format!("{error:#}")),
+        },
+    })
 }
 
 /// What `hosts add` sees of a link.
@@ -420,6 +624,14 @@ async fn next_handshake_frame(ws: &mut Socket, end: Instant) -> Result<Value> {
     Ok(value)
 }
 
+/// A frame as the type it should be, for one nothing has authenticated yet: the relay can
+/// send those as well as the host. serde's errors quote what they could not read, so that
+/// sender would choose the words of a link's reason, and of what `hosts add` prints.
+fn frame_as<T: serde::de::DeserializeOwned>(frame: Value) -> Result<T> {
+    serde_json::from_value(frame)
+        .map_err(|_| anyhow!("the host or the relay sent a frame of an unexpected shape"))
+}
+
 /// A session handshake on a registered socket whose root is established: the
 /// X25519 exchange, then the authenticated `ready`.
 async fn handshake_session(
@@ -437,14 +649,14 @@ async fn handshake_session(
         if server["type"] == "pair_error" {
             bail!(
                 "the host refused the session ({})",
-                log_safe(server["error"].as_str().unwrap_or("unknown"))
+                known_pair_error(server["error"].as_str())
             );
         }
-        let server: ServerHelloV2 = serde_json::from_value(server)?;
+        let server: ServerHelloV2 = frame_as(server)?;
         let (finish, mut session) = accept_server_hello_v2(&identity, root, private, &server)?;
         send_json(ws, &finish).await?;
         let ready = next_handshake_frame(ws, end).await?;
-        let envelope: Envelope = serde_json::from_value(ready)?;
+        let envelope: Envelope = frame_as(ready)?;
         let plaintext = session.open("d2c", &envelope)?;
         let ready: Value = serde_json::from_slice(&link::decode_frame(&plaintext)?)?;
         ensure!(
@@ -515,7 +727,7 @@ async fn redeem_on(
                 known_pair_error(reply["error"].as_str())
             );
         }
-        let accept: PairAccept = serde_json::from_value(reply)?;
+        let accept: PairAccept = frame_as(reply)?;
         let (finish, root, mut transcript) = accept_pair(
             &identity,
             &pairing.relay_url,
@@ -629,12 +841,36 @@ pub async fn add_host(
 
 // ---- The link -------------------------------------------------------------
 
+/// Why a link is offline, when the failed attempt knows: fixed words only, never
+/// what the far side printed. `needs_action` means retrying cannot help until a
+/// person acts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OfflineCause {
+    pub code: &'static str,
+    pub needs_action: bool,
+}
+impl OfflineCause {
+    /// The fields of a status line or of a call's error that say this.
+    pub(crate) fn add_to(self, fields: &mut Value) {
+        fields["cause"] = json!(self.code);
+        if self.needs_action {
+            fields["needs_action"] = json!(true);
+        }
+    }
+}
+
 /// Where a [`Link`] is. `since` is Unix seconds, the start of the outage.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LinkState {
     Connecting,
-    Online { rtt_ms: Option<u64> },
-    Offline { since: u64, reason: String },
+    Online {
+        rtt_ms: Option<u64>,
+    },
+    Offline {
+        since: u64,
+        reason: String,
+        cause: Option<OfflineCause>,
+    },
 }
 impl LinkState {
     /// The status line the daemon sends (`{"state":…,"label":…}`).
@@ -645,8 +881,17 @@ impl LinkState {
                 json!({"state":"online","rtt_ms":ms,"label":label})
             }
             LinkState::Online { rtt_ms: None } => json!({"state":"online","label":label}),
-            LinkState::Offline { since, reason } => {
-                json!({"state":"offline","since":since,"reason":reason,"label":label})
+            LinkState::Offline {
+                since,
+                reason,
+                cause,
+            } => {
+                let mut status =
+                    json!({"state":"offline","since":since,"reason":reason,"label":label});
+                if let Some(cause) = cause {
+                    cause.add_to(&mut status);
+                }
+                status
             }
         }
     }
@@ -658,8 +903,11 @@ impl LinkState {
 /// Why a call did not produce a result.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CallError {
-    /// No session: not connected yet, or it was lost while the call was in flight.
+    /// Not written: there is no session, or it ended with the request still queued.
     Offline(String),
+    /// The request was written, or may have been, and the session ended before its
+    /// answer. It may have run on the host, or be running still; only the host can say.
+    Lost(String),
     /// No answer in time. The request may still have run on the host.
     Timeout,
     /// Refused here, before it was sent.
@@ -672,6 +920,7 @@ impl CallError {
     pub fn code(&self) -> &str {
         match self {
             CallError::Offline(_) => "offline",
+            CallError::Lost(_) => "connection_lost",
             CallError::Timeout => "timeout",
             CallError::Invalid(_) => "invalid_request",
             CallError::Rpc { code, .. } => code,
@@ -680,6 +929,9 @@ impl CallError {
     pub fn message(&self) -> String {
         match self {
             CallError::Offline(reason) => format!("host is offline: {reason}"),
+            CallError::Lost(reason) => {
+                format!("the connection to the host ended before it answered: {reason}")
+            }
             CallError::Timeout => "the host did not answer in time".into(),
             CallError::Invalid(message) => message.clone(),
             CallError::Rpc { message, .. } => message.clone(),
@@ -687,7 +939,10 @@ impl CallError {
     }
     /// A failure of the connection rather than of the request.
     pub fn is_link_loss(&self) -> bool {
-        matches!(self, CallError::Offline(_) | CallError::Timeout)
+        matches!(
+            self,
+            CallError::Offline(_) | CallError::Lost(_) | CallError::Timeout
+        )
     }
 }
 impl std::fmt::Display for CallError {
@@ -742,12 +997,18 @@ pub struct PendingCall {
     pub generation: u64,
 }
 impl PendingCall {
-    pub async fn wait(self, limit: Duration) -> Result<Reply, CallError> {
-        match timeout(limit, self.rx).await {
-            Err(_) => Err(CallError::Timeout),
-            Ok(Err(_)) => Err(CallError::Offline("the session ended".into())),
-            Ok(Ok(reply)) => reply,
-        }
+    pub async fn wait(mut self, limit: Duration) -> Result<Reply, CallError> {
+        timeout(limit, self.answer())
+            .await
+            .unwrap_or(Err(CallError::Timeout))
+    }
+    /// The answer, however long it takes. Dropping this future loses nothing: the answer
+    /// can still be waited for, which is not so after `wait` runs out of time.
+    pub(crate) async fn answer(&mut self) -> Result<Reply, CallError> {
+        (&mut self.rx)
+            .await
+            // Nobody will answer now, and this cannot tell whether it was written.
+            .unwrap_or_else(|_| Err(CallError::Lost("the session ended".into())))
     }
 }
 
@@ -758,6 +1019,40 @@ pub struct Connection {
     pub generation: u64,
     pub features: Features,
     pub(crate) tx: mpsc::Sender<Command>,
+    /// Held by the one `pty.open` this session may have out (see `Attach::open`).
+    pub(crate) open_turn: Arc<Semaphore>,
+}
+impl Connection {
+    pub(crate) fn new(generation: u64, features: Features, tx: mpsc::Sender<Command>) -> Self {
+        Self {
+            generation,
+            features,
+            tx,
+            open_turn: Arc::new(Semaphore::new(1)),
+        }
+    }
+    /// Sends a request on this session and returns at once. Unlike [`Link::start`] it
+    /// never goes on a later session: it fails once this one has ended.
+    pub(crate) async fn start(
+        &self,
+        method: &str,
+        params: Value,
+    ) -> Result<PendingCall, CallError> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(Command::Request {
+                id: uuid::Uuid::new_v4().to_string(),
+                method: method.into(),
+                params,
+                reply,
+            })
+            .await
+            .map_err(|_| CallError::Offline("the session ended".into()))?;
+        Ok(PendingCall {
+            rx,
+            generation: self.generation,
+        })
+    }
 }
 
 /// Liveness and backoff; tests shorten them.
@@ -831,6 +1126,22 @@ impl Link {
             }),
         }
     }
+    /// A link that only holds `connection`, with nobody behind it: for tests of what goes
+    /// on a session.
+    #[cfg(test)]
+    pub(crate) fn holding(connection: Option<Connection>) -> Link {
+        let (_, state) = watch::channel(LinkState::Connecting);
+        let (_, conn) = watch::channel(connection);
+        let (stop, _) = watch::channel(false);
+        Link {
+            inner: Arc::new(Inner {
+                label: String::new(),
+                state,
+                conn,
+                _stop: stop,
+            }),
+        }
+    }
     pub fn label(&self) -> &str {
         &self.inner.label
     }
@@ -884,24 +1195,10 @@ impl Link {
     /// Sends a request on the live session and returns at once. Requests started
     /// in sequence by one task reach the host in that sequence.
     pub async fn start(&self, method: &str, params: Value) -> Result<PendingCall, CallError> {
-        let connection = self
-            .connection()
-            .ok_or_else(|| CallError::Offline(self.offline_reason()))?;
-        let (reply, rx) = oneshot::channel();
-        connection
-            .tx
-            .send(Command::Request {
-                id: uuid::Uuid::new_v4().to_string(),
-                method: method.into(),
-                params,
-                reply,
-            })
+        self.connection()
+            .ok_or_else(|| CallError::Offline(self.offline_reason()))?
+            .start(method, params)
             .await
-            .map_err(|_| CallError::Offline("the session ended".into()))?;
-        Ok(PendingCall {
-            rx,
-            generation: connection.generation,
-        })
     }
     /// A request and its reply, waiting up to `limit` for the connection too.
     pub async fn call(
@@ -945,6 +1242,8 @@ pub(crate) struct Outcome {
     pub(crate) online_for: Option<Duration>,
     /// The relay was fine and the host was not there: no reason to back off.
     pub(crate) host_away: bool,
+    /// What a failed SSH dial knows about why it failed.
+    pub(crate) failure: Option<crate::ssh::DialFailure>,
 }
 impl Outcome {
     pub(crate) fn failed(reason: impl AsRef<str>) -> Self {
@@ -952,6 +1251,7 @@ impl Outcome {
             reason: log_safe(reason.as_ref()),
             online_for: None,
             host_away: false,
+            failure: None,
         }
     }
 }
@@ -997,10 +1297,15 @@ async fn supervise(
         if outcome.online_for.is_some() {
             outage = Some(now_unix());
         }
-        let since = *outage.get_or_insert_with(now_unix);
+        // The attempt may have said so already, when the relay said the host was away.
+        let since = *outage.get_or_insert_with(|| match &*state.borrow() {
+            LinkState::Offline { since, .. } => *since,
+            _ => now_unix(),
+        });
         state.send_replace(LinkState::Offline {
             since,
             reason: outcome.reason.clone(),
+            cause: outcome.failure.map(crate::ssh::DialFailure::cause),
         });
         if outcome.host_away {
             failures = 0;
@@ -1016,6 +1321,13 @@ async fn supervise(
         }
         let pause = if outcome.host_away {
             Duration::from_millis(200)
+        } else if outcome
+            .failure
+            .is_some_and(crate::ssh::DialFailure::needs_action)
+        {
+            // Trying again cannot help until a person acts, so a try only has to
+            // notice that they did, and each one is a login on the far side.
+            timing.backoff_max.saturating_mul(4)
         } else {
             timing.backoff(failures)
         };
@@ -1056,13 +1368,28 @@ async fn attempt(
         Err(e) => return Outcome::failed(format!("relay: {e:#}")),
     };
     if !online {
+        // Nobody needs to wait out `peer_wait` to learn what the relay has just said, and
+        // the registration stays valid, so this socket goes on listening for the host.
+        // Only the first time: a later attempt finds the outage already told.
+        state.send_if_modified(|current| {
+            let first = matches!(current, LinkState::Connecting);
+            if first {
+                *current = LinkState::Offline {
+                    since: now_unix(),
+                    reason: HOST_AWAY.into(),
+                    cause: None,
+                };
+            }
+            first
+        });
         match await_peer(&mut ws, timing.peer_wait).await {
             Ok(true) => {}
             Ok(false) => {
                 return Outcome {
-                    reason: "host offline (or access revoked)".into(),
+                    reason: HOST_AWAY.into(),
                     online_for: None,
                     host_away: true,
+                    failure: None,
                 };
             }
             Err(e) => return Outcome::failed(format!("{e:#}")),
@@ -1077,11 +1404,7 @@ async fn attempt(
     let (tx, mut rx) = mpsc::channel(256);
     let started = Instant::now();
     let mut pending: HashMap<String, Pending> = HashMap::new();
-    conn.send_replace(Some(Connection {
-        generation: *generation,
-        features: features.clone(),
-        tx,
-    }));
+    conn.send_replace(Some(Connection::new(*generation, features.clone(), tx)));
     state.send_replace(LinkState::Online { rtt_ms: None });
     let reason = run_connection(
         &mut ws,
@@ -1096,15 +1419,17 @@ async fn attempt(
     // Callers must see "offline" before they see their requests fail.
     conn.send_replace(None);
     rx.close();
-    let lost = CallError::Offline(reason.clone());
+    let lost = CallError::Lost(reason.clone());
     for (_, request) in pending.drain() {
         if let Some(reply) = request.reply {
             let _ = reply.send(Err(lost.clone()));
         }
     }
+    // What never left the queue was never written.
+    let unsent = CallError::Offline(reason.clone());
     while let Ok(command) = rx.try_recv() {
         if let Command::Request { reply, .. } = command {
-            let _ = reply.send(Err(lost.clone()));
+            let _ = reply.send(Err(unsent.clone()));
         }
     }
     // The session ended, often because this socket stopped taking data; closing it
@@ -1114,6 +1439,7 @@ async fn attempt(
         reason: log_safe(&reason),
         online_for: Some(started.elapsed()),
         host_away: false,
+        failure: None,
     }
 }
 
@@ -1155,7 +1481,7 @@ async fn send_request(
 
 /// A decrypted, decoded response.
 fn open_response(session: &mut crate::crypto::Session, frame: Value) -> Result<Value> {
-    let envelope: Envelope = serde_json::from_value(frame)?;
+    let envelope: Envelope = frame_as(frame)?;
     let plaintext = session.open("d2c", &envelope)?;
     let response: Value = serde_json::from_slice(&link::decode_frame(&plaintext)?)?;
     ensure!(
@@ -1572,6 +1898,7 @@ mod tests {
         assert_eq!(serde_json::to_value(restored).unwrap(), legacy);
         assert_eq!(record.summary().transport, "relay");
         assert!(record.summary().host_id.is_none());
+        assert!(record.summary().ssh.is_none());
     }
 
     #[test]
@@ -1667,7 +1994,9 @@ mod tests {
         assert!(strays.is_empty());
 
         // Removing returns the host and keeps the other.
-        assert_eq!(remove_host(&storage, &a.id).unwrap().label, "A");
+        let removal = remove_host(&storage, &a.id).unwrap();
+        assert_eq!(removal.hosts[0].label, "A");
+        assert_eq!(removal.registry, RegistryAfter::Valid);
         assert_eq!(HostsFile::load(&storage).unwrap().hosts.len(), 1);
         assert!(remove_host(&storage, &a.id).is_err());
 
@@ -1695,6 +2024,443 @@ mod tests {
         newer["v"] = json!(2);
         std::fs::write(&path, newer.to_string()).unwrap();
         assert!(HostsFile::load(&storage).is_err());
+    }
+
+    /// A registry written by hand, as `hosts_json` holds it.
+    fn write_registry(storage: &Storage, hosts_json: &str) -> std::path::PathBuf {
+        let path = storage.dir.join(HOSTS_FILE);
+        std::fs::write(&path, hosts_json).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        path
+    }
+    fn a_record(dir: &std::path::Path, label: &str) -> HostRecord {
+        HostRecord::new(established(&invite(dir, RELAY, false)), label.into(), false).unwrap()
+    }
+
+    #[test]
+    fn hosts_remove_takes_a_record_out_of_a_damaged_registry_and_touches_nothing_else() {
+        let tmp = tempfile::tempdir().unwrap();
+        let storage = Storage::at(tmp.path().to_path_buf()).unwrap();
+        let good = a_record(tmp.path(), "Good");
+        let mut bad = a_record(tmp.path(), "Bad");
+        bad.label = " too long and spaced ".repeat(9);
+        // As another build might write it: other keys, in another order, in another layout.
+        let newer = r#"{ "zzz":1.10, "id":"11111111-2222-4333-8444-555555555555",
+            "aaa":{"big":123456789012345678901234567890,"z":[1, 2,3]}, "label":"From a newer build"}"#;
+        let good_text = serde_json::to_string_pretty(&good).unwrap();
+        let bad_text = serde_json::to_string(&bad).unwrap();
+        let path = write_registry(
+            &storage,
+            &format!(r#"{{"v":1,"hosts":[{good_text},{newer},{bad_text}]}}"#),
+        );
+        assert!(HostsFile::load(&storage).is_err());
+
+        let removal = remove_host(&storage, &bad.id).unwrap();
+        assert_eq!(removal.hosts.len(), 1);
+        assert_eq!(removal.hosts[0].id, bad.id);
+        assert_eq!(removal.hosts[0].label, bad.label);
+        assert_eq!(
+            removal.hosts[0].device_id.as_ref(),
+            bad.pairing.as_ref().map(|pairing| &pairing.device_id)
+        );
+        assert!(removal.hosts[0].add_command().is_none(), "not an SSH route");
+        // The record from the newer build is still in the way, and the result says so.
+        let RegistryAfter::StillInvalid(reason) = &removal.registry else {
+            panic!("{:?}", removal.registry);
+        };
+        assert!(reason.contains("hosts remove"), "{reason}");
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert!(!after.contains(&bad.id), "{after}");
+        // Nothing about the other two moved, down to the bytes.
+        assert!(after.contains(&good_text), "{after}");
+        assert!(after.contains(newer), "{after}");
+        // It stays private and leaves nothing behind.
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        // The record from the newer build still stops a load: dropping it is the person's
+        // choice, because to that build it may be fine.
+        assert!(HostsFile::load(&storage).is_err());
+
+        let removal = remove_host(&storage, "11111111-2222-4333-8444-555555555555").unwrap();
+        assert_eq!(removal.hosts[0].label, "From a newer build");
+        assert_eq!(removal.registry, RegistryAfter::Repaired);
+        let file = HostsFile::load(&storage).unwrap();
+        assert_eq!(file.hosts.len(), 1);
+        assert_eq!(file.hosts[0].id, good.id);
+        assert_eq!(
+            file.hosts[0].pairing.as_ref().unwrap().root_key,
+            good.pairing.as_ref().unwrap().root_key
+        );
+        let strays: Vec<_> = std::fs::read_dir(&storage.dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(strays.is_empty());
+    }
+
+    #[test]
+    fn hosts_remove_on_a_damaged_registry_goes_by_the_exact_id_and_takes_all_that_hold_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let storage = Storage::at(tmp.path().to_path_buf()).unwrap();
+        let path = write_registry(
+            &storage,
+            r#"{"v":1,"hosts":[
+                {"id":"not a uuid","label":"named oddly"},
+                {"id":"NOT A UUID","label":"a near miss"},
+                {"id":"twice","label":"first"},
+                {"id":"twice","label":"second"},
+                {"label":"no id"},
+                {"id":5,"label":"a number"},
+                7
+            ]}"#,
+        );
+        let labels_left = || -> Vec<Value> {
+            let file: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            file["hosts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|host| host["label"].clone())
+                .collect()
+        };
+        assert_eq!(
+            remove_host(&storage, "not a uuid").unwrap().hosts[0].label,
+            "named oddly"
+        );
+        assert_eq!(
+            labels_left(),
+            [
+                json!("a near miss"),
+                json!("first"),
+                json!("second"),
+                json!("no id"),
+                json!("a number"),
+                Value::Null
+            ]
+        );
+        let labels: Vec<_> = remove_host(&storage, "twice")
+            .unwrap()
+            .hosts
+            .into_iter()
+            .map(|host| host.label)
+            .collect();
+        assert_eq!(labels, ["first", "second"]);
+        assert_eq!(
+            labels_left(),
+            [
+                json!("a near miss"),
+                json!("no id"),
+                json!("a number"),
+                Value::Null
+            ]
+        );
+        // What is not there stays an error, with nothing written. A number is not its text.
+        let before = std::fs::read(&path).unwrap();
+        for absent in ["nobody", "5", "not a uuid", ""] {
+            let error = format!("{:#}", remove_host(&storage, absent).expect_err(absent));
+            assert!(error.contains("no host"), "{error}");
+            assert!(
+                error.contains("a near miss"),
+                "shows what it could mean: {error}"
+            );
+            assert_eq!(std::fs::read(&path).unwrap(), before);
+        }
+    }
+
+    /// The ids and any key this build does not know play no part in how a route connects,
+    /// and the record was the only copy of how it does.
+    #[test]
+    fn hosts_remove_of_a_damaged_route_still_gives_the_command_that_adds_it_back() {
+        const ID: &str = "11111111-2222-4333-8444-555555555555";
+        let tmp = tempfile::tempdir().unwrap();
+        let storage = Storage::at(tmp.path().to_path_buf()).unwrap();
+        let removed = |ssh: &Value| {
+            let record =
+                json!({"id":ID,"label":"Studio","ssh":ssh,"relay":"","route":"","added_at_unix":1});
+            write_registry(&storage, &json!({"v":1,"hosts":[record]}).to_string());
+            assert!(HostsFile::load(&storage).is_err(), "{ssh}");
+            remove_host(&storage, ID).unwrap().hosts.remove(0)
+        };
+        let good = json!({
+            "target": "studio",
+            "remote_bin": "/opt/somtus-remote",
+            "somtus": "/opt/somtus",
+            "home": "/data/somtus",
+            "host_id": "22222222-2222-4222-8222-222222222222",
+            "client_id": "33333333-3333-4333-8333-333333333333",
+        });
+        let with = |change: &dyn Fn(&mut serde_json::Map<String, Value>)| {
+            let mut ssh = good.clone();
+            change(ssh.as_object_mut().unwrap());
+            ssh
+        };
+        let set = |name: &'static str, value: Value| {
+            with(&move |ssh| {
+                ssh.insert(name.into(), value.clone());
+            })
+        };
+        let missing = |name: &'static str| {
+            with(&move |ssh| {
+                ssh.remove(name);
+            })
+        };
+        let command = "somtus-remote hosts add-ssh --target='studio' \
+            --remote-bin='/opt/somtus-remote' --somtus='/opt/somtus' \
+            --home='/data/somtus' --label='Studio'";
+        for damage in [
+            set("host_id", json!("corrupted")),
+            set("client_id", json!("corrupted")),
+            set("from_a_newer_build", json!(1)),
+            missing("host_id"),
+            missing("client_id"),
+        ] {
+            assert_eq!(
+                removed(&damage).add_command().as_deref(),
+                Some(command),
+                "{damage}"
+            );
+        }
+        // Options the route does not have stay off, whichever way it does not have them.
+        let plain = with(&|ssh| {
+            ssh.insert("host_id".into(), json!("corrupted"));
+            ssh.insert("somtus".into(), Value::Null);
+            ssh.remove("home");
+        });
+        assert_eq!(
+            removed(&plain).add_command().as_deref(),
+            Some(
+                "somtus-remote hosts add-ssh --target='studio' \
+                 --remote-bin='/opt/somtus-remote' --label='Studio'"
+            )
+        );
+        // What add-ssh would refuse, or a command for some other route, is not printed.
+        for damage in [
+            set("target", json!("has space")),
+            set("target", json!("-oProxyCommand=x")),
+            set("target", json!("studio\u{1b}[2J")),
+            set("target", json!(5)),
+            missing("target"),
+            set("remote_bin", json!("/opt/\u{9b}31m")),
+            set("remote_bin", json!("")),
+            missing("remote_bin"),
+            set("somtus", json!(5)),
+            set("home", json!("/data\nsomtus")),
+            set("home", json!(["/data/somtus"])),
+            json!("not a route"),
+        ] {
+            assert_eq!(removed(&damage).add_command(), None, "{damage}");
+        }
+    }
+
+    /// What this command cannot be given, the person has to be told to do themselves.
+    #[test]
+    fn hosts_remove_says_which_records_it_cannot_name_and_lists_ids_as_they_are() {
+        let tmp = tempfile::tempdir().unwrap();
+        let storage = Storage::at(tmp.path().to_path_buf()).unwrap();
+        let long = "x".repeat(250);
+        // Odd, and any of them can be typed back: listed whole, and no more to say.
+        write_registry(
+            &storage,
+            &format!(
+                r#"{{"v":1,"hosts":[{{"id":"plain","label":"a"}},{{"id":"{long}","label":"b"}}]}}"#
+            ),
+        );
+        let error = format!("{:#}", remove_host(&storage, "nobody").err().unwrap());
+        assert!(error.contains("\"plain\" (\"a\")"), "{error}");
+        assert!(error.contains(&format!("\"{long}\"")), "{error}");
+        assert!(!error.contains("by hand"), "{error}");
+        for (entry, shown) in [
+            (r#"{"label":"x"}"#, "(no id)"),
+            (r#"{"id":5,"label":"x"}"#, "(no id)"),
+            ("7", "(no id)"),
+            // A real id, in a record that cannot be read to find it.
+            (r#"{"id":"real","x":1e999}"#, "(no id)"),
+            // ESC reaches this as itself, and is listed as something else.
+            (
+                r#"{"id":"\u001b[31mbad","label":"x"}"#,
+                r#""\u001b[31mbad""#,
+            ),
+            // JSON has no escape it must use for these, and a terminal may act on them.
+            (
+                "{\"id\":\"\u{9b}31mbad\u{7f}\",\"label\":\"x\"}",
+                r#""\u009b31mbad\u007f""#,
+            ),
+            (r#"{"id":"say \"hi\"","label":"x"}"#, r#""say \"hi\"""#),
+        ] {
+            let path = write_registry(
+                &storage,
+                &format!(r#"{{"v":1,"hosts":[{{"id":"plain","label":"a"}},{entry}]}}"#),
+            );
+            let before = std::fs::read(&path).unwrap();
+            let error = format!("{:#}", remove_host(&storage, "nobody").err().unwrap());
+            assert!(error.contains(shown), "{entry}: {error}");
+            assert!(error.contains("by hand"), "{entry}: {error}");
+            assert!(
+                error.contains(path.to_str().unwrap()),
+                "says which file: {error}"
+            );
+            assert!(!error.chars().any(char::is_control), "{entry}: {error:?}");
+            assert_eq!(std::fs::read(&path).unwrap(), before);
+        }
+    }
+
+    /// `hosts list` printing an empty list, and a daemon going away with its terminals, are
+    /// for a file that is not there. Not for one nobody could look at just now.
+    #[test]
+    fn a_registry_that_cannot_be_looked_at_is_an_error_and_not_an_empty_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let storage = Storage::at(tmp.path().to_path_buf()).unwrap();
+        let path = storage.dir.join(HOSTS_FILE);
+        // A symlink to a volume that is away. A save would replace it, but nothing gets to
+        // that when nothing loads.
+        std::os::unix::fs::symlink(tmp.path().join("away.json"), &path).unwrap();
+        assert!(HostsFile::load(&storage).is_err());
+        let anyone = uuid::Uuid::new_v4().to_string();
+        assert!(remove_host(&storage, &anyone).is_err());
+        assert!(std::fs::symlink_metadata(&path).unwrap().is_symlink());
+        std::fs::remove_file(&path).unwrap();
+        // A directory that lost its search bit: a stat there is refused, not told "no such file".
+        if unsafe { libc::geteuid() } != 0 {
+            std::fs::set_permissions(&storage.dir, std::fs::Permissions::from_mode(0o000)).unwrap();
+            let loaded = HostsFile::load(&storage);
+            std::fs::set_permissions(&storage.dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let error = format!("{:#}", loaded.err().expect("refused"));
+            assert!(error.contains(HOSTS_FILE), "{error}");
+        }
+        // No such file is still no hosts.
+        assert!(HostsFile::load(&storage).unwrap().hosts.is_empty());
+    }
+
+    #[test]
+    fn hosts_remove_leaves_alone_a_registry_it_does_not_fully_understand() {
+        let tmp = tempfile::tempdir().unwrap();
+        let storage = Storage::at(tmp.path().to_path_buf()).unwrap();
+        // Each has a record it could remove, and each is a reason not to rewrite the file:
+        // a newer format would lose what this build does not know of.
+        for content in [
+            r#"{"v":2,"hosts":[{"id":"x"}]}"#,
+            r#"{"v":1.0,"hosts":[{"id":"x"}]}"#,
+            r#"{"v":"1","hosts":[{"id":"x"}]}"#,
+            r#"{"hosts":[{"id":"x"}]}"#,
+            r#"{"v":1}"#,
+            r#"{"v":1,"hosts":[{"id":"x"}],"newer":true}"#,
+            r#"{"v":1,"v":1,"hosts":[{"id":"x"}]}"#,
+            r#"{"v":1,"hosts":{"x":{"id":"x"}}}"#,
+            r#"[{"id":"x"}]"#,
+            r#"{"v":1,"hosts":[{"id":"x"}"#,
+            "not JSON",
+        ] {
+            let path = write_registry(&storage, content);
+            assert!(HostsFile::load(&storage).is_err(), "{content}");
+            assert!(remove_host(&storage, "x").is_err(), "{content}");
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), content);
+        }
+        let damaged = r#"{"v":1,"hosts":[{"id":"x"}]}"#;
+        // Mode, kind and size stay what they are for every other read, and a rewrite
+        // would launder them.
+        let path = write_registry(&storage, damaged);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+        assert!(format!("{:#}", remove_host(&storage, "x").err().unwrap()).contains("mode 600"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), damaged);
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o640
+        );
+        std::fs::remove_file(&path).unwrap();
+        let elsewhere = tmp.path().join("elsewhere.json");
+        std::fs::write(&elsewhere, damaged).unwrap();
+        std::fs::set_permissions(&elsewhere, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, &path).unwrap();
+        assert!(remove_host(&storage, "x").is_err());
+        assert!(std::fs::symlink_metadata(&path).unwrap().is_symlink());
+        assert_eq!(std::fs::read_to_string(&elsewhere).unwrap(), damaged);
+        std::fs::remove_file(&path).unwrap();
+        let huge = format!(
+            r#"{{"v":1,"hosts":[{{"id":"x"}},{{"padding":"{}"}}]}}"#,
+            "x".repeat(MAX_HOSTS_BYTES as usize)
+        );
+        write_registry(&storage, &huge);
+        assert!(remove_host(&storage, "x").is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), huge);
+    }
+
+    #[test]
+    fn hosts_remove_on_a_registry_with_no_fault_stays_strict() {
+        let tmp = tempfile::tempdir().unwrap();
+        let storage = Storage::at(tmp.path().to_path_buf()).unwrap();
+        // No file at all: nothing to remove, and nothing is created.
+        assert!(remove_host(&storage, &uuid::Uuid::new_v4().to_string()).is_err());
+        assert!(!storage.dir.join(HOSTS_FILE).exists());
+        let a = a_record(tmp.path(), "A");
+        HostsFile {
+            v: 1,
+            hosts: vec![a.clone()],
+        }
+        .save(&storage)
+        .unwrap();
+        let before = std::fs::read(storage.dir.join(HOSTS_FILE)).unwrap();
+        let error = format!("{:#}", remove_host(&storage, "not-a-uuid").err().unwrap());
+        assert!(error.contains("full desktop id"), "{error}");
+        let error = format!(
+            "{:#}",
+            remove_host(&storage, &uuid::Uuid::new_v4().to_string())
+                .err()
+                .unwrap()
+        );
+        assert!(error.contains("no host"), "{error}");
+        assert_eq!(std::fs::read(storage.dir.join(HOSTS_FILE)).unwrap(), before);
+    }
+
+    #[test]
+    fn load_errors_say_what_can_take_a_bad_record_out_and_only_then() {
+        let tmp = tempfile::tempdir().unwrap();
+        let storage = Storage::at(tmp.path().to_path_buf()).unwrap();
+        let good = a_record(tmp.path(), "Good");
+        let mut bad = good.clone();
+        bad.label = "x".repeat(65);
+        let good_text = serde_json::to_string(&good).unwrap();
+        let bad_text = serde_json::to_string(&bad).unwrap();
+        let other = HostRecord {
+            id: uuid::Uuid::new_v4().to_string(),
+            ..a_record(tmp.path(), "Other")
+        };
+        let other_text = serde_json::to_string(&other).unwrap();
+        let many = vec![good_text.clone(); MAX_HOSTS + 1].join(",");
+        let repairable = [
+            format!(r#"{{"v":1,"hosts":[{bad_text}]}}"#),
+            format!(r#"{{"v":1,"hosts":[{good_text},{good_text}]}}"#),
+            format!(r#"{{"v":1,"hosts":[{good_text},{other_text}]}}"#),
+            r#"{"v":1,"hosts":[{"id":"x"}]}"#.to_owned(),
+            r#"{"v":1,"hosts":[{"id":"x","label":"y","unknown":1}]}"#.to_owned(),
+            format!(r#"{{"v":1,"hosts":[{many}]}}"#),
+        ];
+        for content in repairable {
+            write_registry(&storage, &content);
+            let error = load_error(&storage);
+            assert!(error.contains("hosts remove"), "{error}");
+        }
+        for content in [r#"{"v":2,"hosts":[]}"#, "not JSON", r#"{"v":1"#] {
+            write_registry(&storage, content);
+            let error = load_error(&storage);
+            assert!(!error.contains("hosts remove"), "{error}");
+        }
+        let path = write_registry(&storage, r#"{"v":1,"hosts":[]}"#);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+        assert!(!load_error(&storage).contains("hosts remove"));
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        // What the file says is not repeated raw: it may hold anything.
+        for content in [
+            "{\"v\":1,\"hosts\":[{\"id\":\"\\u001b[31mx\",\"label\":\"y\",\"relay\":\"\",\"route\":\"\",\"added_at_unix\":1}]}",
+            "{\"v\":1,\"hosts\":[{\"\\u001b[31mx\":1}]}",
+        ] {
+            write_registry(&storage, content);
+            let error = load_error(&storage);
+            assert!(!error.contains('\u{1b}'), "{error:?}");
+            assert!(error.contains("hosts remove"), "{error}");
+        }
     }
 
     #[test]
@@ -1794,10 +2560,36 @@ mod tests {
         assert_eq!(
             LinkState::Offline {
                 since: 5,
-                reason: "gone".into()
+                reason: "gone".into(),
+                cause: None
             }
             .to_status("A"),
             json!({"state":"offline","since":5,"reason":"gone","label":"A"})
+        );
+        // A known cause is added; `needs_action` appears only when it is true.
+        assert_eq!(
+            LinkState::Offline {
+                since: 5,
+                reason: "gone".into(),
+                cause: Some(OfflineCause {
+                    code: "identity_changed",
+                    needs_action: true
+                })
+            }
+            .to_status("A"),
+            json!({"state":"offline","since":5,"reason":"gone","label":"A","cause":"identity_changed","needs_action":true})
+        );
+        assert_eq!(
+            LinkState::Offline {
+                since: 5,
+                reason: "gone".into(),
+                cause: Some(OfflineCause {
+                    code: "unreachable",
+                    needs_action: false
+                })
+            }
+            .to_status("A"),
+            json!({"state":"offline","since":5,"reason":"gone","label":"A","cause":"unreachable"})
         );
         assert!(
             LinkState::Online { rtt_ms: None }.is_online() && !LinkState::Connecting.is_online()
@@ -1829,5 +2621,17 @@ mod tests {
         assert_eq!(offline.code(), "offline");
         assert!(offline.message().contains("host offline") && offline.is_link_loss());
         assert_eq!(CallError::Invalid("x".into()).code(), "invalid_request");
+        let lost = CallError::Lost("the relay closed the connection".into());
+        assert_eq!(lost.code(), "connection_lost");
+        assert!(lost.message().contains("the relay closed") && lost.is_link_loss());
+    }
+
+    #[tokio::test]
+    async fn a_reply_that_can_no_longer_come_is_lost_not_refused() {
+        let (reply, rx) = oneshot::channel();
+        let pending = PendingCall { rx, generation: 1 };
+        drop(reply);
+        let error = pending.wait(Duration::from_secs(1)).await.unwrap_err();
+        assert!(matches!(error, CallError::Lost(_)), "{error:?}");
     }
 }

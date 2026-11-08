@@ -104,8 +104,8 @@ impl Rpc {
     /// What `ready` announces as `features.project_memo`: the installed CLI said `"project_memo":
     /// true` in `somtus capabilities --json`. Short, like `chat_supported`, whose question it
     /// shares.
-    pub async fn project_memo_supported(&self) -> bool {
-        self.capability_known(&self.project_memo, Duration::from_secs(3))
+    pub async fn project_memo_supported(&self, wait: Duration) -> bool {
+        self.capability_known(&self.project_memo, wait)
             .await
             .unwrap_or(false)
     }

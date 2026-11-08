@@ -113,10 +113,8 @@ impl Rpc {
     /// What `ready` announces as `features.orchestrator_create`. Short, like
     /// `chat_supported`: a CLI that does not answer within a few seconds does not delay the
     /// handshake any longer.
-    pub async fn orchestrator_create_supported(&self) -> bool {
-        self.orchestrator_create_known(Duration::from_secs(3))
-            .await
-            .unwrap_or(false)
+    pub async fn orchestrator_create_supported(&self, wait: Duration) -> bool {
+        self.orchestrator_create_known(wait).await.unwrap_or(false)
     }
     async fn require_orchestrator_create(&self) -> std::result::Result<(), Fault> {
         if self.orchestrator_create_known(CLI_TIMEOUT).await? {

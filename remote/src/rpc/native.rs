@@ -349,13 +349,10 @@ fn watch_reply(cli: Value, asked: &Watch) -> std::result::Result<Value, Fault> {
 
 impl Rpc {
     /// What `ready` announces as `features.native` and `features.watch`, from the same
-    /// question as `features.chat`; `None` for a CLI that has neither (the standalone CLI, or a
-    /// desktop from before them).
-    pub async fn native_features(&self) -> (Option<Value>, Option<Value>) {
-        let caps = self
-            .native_known(Duration::from_secs(3))
-            .await
-            .unwrap_or_default();
+    /// question as `features.chat`, asked for at most `wait`; `None` for a CLI that has
+    /// neither (the standalone CLI, or a desktop from before them).
+    pub async fn native_features(&self, wait: Duration) -> (Option<Value>, Option<Value>) {
+        let caps = self.native_known(wait).await.unwrap_or_default();
         (
             (!caps.methods.is_empty()).then(|| json!({"v": 1, "methods": caps.methods})),
             (!caps.topics.is_empty()).then(|| json!({"v": 1, "topics": caps.topics})),

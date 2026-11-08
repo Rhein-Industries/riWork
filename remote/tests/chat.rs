@@ -8,6 +8,9 @@ use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+/// What `ready` gives a question to the CLI.
+const READY_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
+
 /// What a chat's message box offers, pinned for the engine, the connector and the phone.
 const SUGGESTIONS_FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -1336,14 +1339,14 @@ async fn a_cli_without_chats_is_told_apart_and_asked_again_until_it_says_yes() {
     assert_eq!(listed(&f).await["ok"], true);
     assert_eq!(capabilities(&f), before + 1, "a yes is remembered");
     // What `ready` says is the same question.
-    assert!(f.rpc.chat_supported().await);
+    assert!(f.rpc.chat_supported(READY_WAIT).await);
     let fresh = Fixture::new();
-    assert!(fresh.rpc.chat_supported().await);
+    assert!(fresh.rpc.chat_supported(READY_WAIT).await);
     fresh.set("capabilities.out", "{\"v\":1,\"chat\":false}");
     let fresher = Rpc::new(fresh.rpc.cli.clone(), fresh.rpc.storage.clone());
-    assert!(!fresher.chat_supported().await);
+    assert!(!fresher.chat_supported(READY_WAIT).await);
     let missing = Rpc::new("/nonexistent/riwork".into(), fresh.rpc.storage.clone());
-    assert!(!missing.chat_supported().await);
+    assert!(!missing.chat_supported(READY_WAIT).await);
 }
 
 #[tokio::test]
@@ -1684,7 +1687,10 @@ async fn the_real_cli_lists_creates_follows_and_stops_a_chat_through_the_rpc() {
         .unwrap()
         .device_id;
     let rpc = Rpc::new(real.wrapper.clone(), storage);
-    assert!(rpc.chat_supported().await, "the CLI announces chats");
+    assert!(
+        rpc.chat_supported(READY_WAIT).await,
+        "the CLI announces chats"
+    );
     let call = |method: &str, params: Value| {
         let (rpc, device) = (&rpc, device.clone());
         let request = req(method, params);
@@ -1853,7 +1859,7 @@ async fn a_cli_that_cannot_be_run_is_not_one_that_lacks_chats() {
         );
     }
     // And it is not remembered as anything: `ready` simply does not announce chats.
-    assert!(!f.rpc.chat_supported().await);
+    assert!(!f.rpc.chat_supported(READY_WAIT).await);
 }
 
 #[tokio::test]

@@ -5,10 +5,12 @@
 //! `client_bridge.rs`.
 mod client_support;
 
-use client_support::{Bridge, FakeHost, HostOptions, Net, wait_for_daemon};
+use client_support::{Bridge, FakeHost, HostOptions, Net, eventually, wait_for_daemon};
 use riwork_remote::{
-    client::add_host,
-    client_daemon::{daemon_call, serve, socket_path},
+    client::{HOSTS_FILE, HostRecord, HostsFile, add_host},
+    client_daemon::{
+        DaemonTiming, daemon_call, daemon_status, read_frame, serve_with, socket_path,
+    },
     config::Storage,
 };
 use serde_json::{Value, json};
@@ -30,6 +32,9 @@ impl Drop for Setup {
     }
 }
 async fn setup(options: HostOptions) -> Setup {
+    setup_timed(options, DaemonTiming::default()).await
+}
+async fn setup_timed(options: HostOptions, timing: DaemonTiming) -> Setup {
     let net = Net::new(1).await;
     let id = net.desktop_id();
     let host = FakeHost::start(&net, &net.invites[0].device_id, options);
@@ -41,19 +46,21 @@ async fn setup(options: HostOptions) -> Setup {
     let socket = socket_path(&client, &id).unwrap();
     let daemon = {
         let (client, id) = (client.clone(), id.clone());
-        tokio::spawn(async move { serve(client, &id, Duration::from_secs(300)).await })
+        tokio::spawn(async move { serve_with(client, &id, Duration::from_secs(300), timing).await })
     };
     wait_for_daemon(&socket).await;
     // Wait for its link: the sessions the host counts from here are the daemon's.
-    loop {
-        let status = riwork_remote::client_daemon::daemon_status(&socket)
-            .await
-            .unwrap();
-        if status["state"] == "online" {
-            break;
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            let status = daemon_status(&socket).await.unwrap();
+            if status["state"] == "online" {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+    })
+    .await
+    .expect("the daemon's link to the host comes online");
     Setup {
         net,
         host,
@@ -482,4 +489,486 @@ async fn a_misbehaving_client_cannot_hurt_the_daemon() {
     .unwrap();
     assert!(answer.contains("unknown op"), "{answer}");
     let _ = (&s.id, &s.client, &s.net);
+}
+
+// ---- What a call that failed says about what happened ----------------------------------
+
+#[tokio::test]
+async fn a_call_cut_off_after_it_was_written_is_lost_and_one_made_while_down_was_not_sent() {
+    let s = setup(HostOptions::default()).await;
+    s.host.freeze(true);
+    let call = {
+        let socket = s.socket.clone();
+        tokio::spawn(async move { daemon_call(&socket, "projects.list", json!({}), 20_000).await })
+    };
+    s.host
+        .wait(5, "the call to arrive", |o| {
+            o.frozen_calls.iter().any(|m| m == "projects.list")
+        })
+        .await;
+    s.host.drop_connection(Duration::from_secs(30));
+    let reply = tokio::time::timeout(Duration::from_secs(10), call)
+        .await
+        .expect("answered when the session ends")
+        .unwrap()
+        .unwrap();
+    assert_eq!(reply["ok"], false, "{reply}");
+    assert_eq!(reply["error"]["code"], "connection_lost", "{reply}");
+    assert!(reply["error"]["message"].as_str().unwrap().len() > 3);
+    assert!(reply["error"].get("not_sent").is_none(), "{reply}");
+
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while daemon_status(&s.socket).await.unwrap()["state"] != "offline" {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the link says it is offline");
+    let reply = daemon_call(&s.socket, "projects.list", json!({}), 5000)
+        .await
+        .unwrap();
+    assert_eq!(reply["ok"], false, "{reply}");
+    assert_eq!(reply["error"]["code"], "offline", "{reply}");
+    assert_eq!(reply["error"]["not_sent"], true, "{reply}");
+    // A plain outage has no cause to name, and time may yet fix it.
+    assert!(reply["error"].get("cause").is_none(), "{reply}");
+    assert!(reply["error"].get("needs_action").is_none(), "{reply}");
+    assert_eq!(reply["server_ms"], 0, "{reply}");
+}
+
+#[tokio::test]
+async fn an_error_from_the_host_cannot_claim_that_nothing_was_sent() {
+    let s = setup(HostOptions::default()).await;
+    let reply = daemon_call(&s.socket, "no.such.method", json!({}), 5000)
+        .await
+        .unwrap();
+    assert_eq!(reply["error"]["code"], "invalid_request", "{reply}");
+    assert!(reply["error"].get("not_sent").is_none(), "{reply}");
+}
+
+// ---- Opening terminals ------------------------------------------------------------------
+
+/// The deadline of a `pty.open`, short enough to test.
+fn opens_within(limit: Duration) -> DaemonTiming {
+    DaemonTiming {
+        open: limit,
+        ..DaemonTiming::default()
+    }
+}
+
+/// The bridge's statuses until it is online, within `seconds`. Before that it may only
+/// hear that its terminal is on its way.
+async fn online_in_the_end(bridge: &mut Bridge, seconds: u64) {
+    tokio::time::timeout(Duration::from_secs(seconds), async {
+        loop {
+            let status = bridge.status().await;
+            if status["state"] == "online" {
+                return;
+            }
+            assert_eq!(status["state"], "connecting", "{status}");
+        }
+    })
+    .await
+    .expect("online in the end");
+}
+
+#[tokio::test]
+async fn terminals_that_open_together_are_each_given_the_whole_deadline() {
+    let s = setup_timed(HostOptions::default(), opens_within(Duration::from_secs(2))).await;
+    // Each is quick enough, and the last would pass the deadline if the wait counted.
+    s.host.open_delay(Duration::from_millis(800));
+    let mut bridges = [s.attach().await, s.attach().await, s.attach().await];
+    for bridge in &mut bridges {
+        // A slow machine can keep the last waiting for its turn until it is told that its
+        // terminal is on its way. What the deadline decides is whether an open is given up.
+        online_in_the_end(bridge, 20).await;
+        bridge.data_until(b"READY").await;
+    }
+    assert_eq!(s.host.seen(|o| o.opens_received), 3, "none was sent again");
+    assert!(s.host.seen(|o| o.closes.is_empty()), "none was given up on");
+    assert_eq!(
+        s.host.seen(|o| o.max_opens_in_flight),
+        1,
+        "sent one at a time"
+    );
+    assert_eq!(s.host.seen(|o| o.sessions), 2, "the link was never reset");
+}
+
+#[tokio::test]
+async fn an_open_the_host_is_slow_to_answer_costs_neither_the_link_nor_other_terminals() {
+    // The answer comes a second after the deadline, and a second before the stream it
+    // names is given up on: room either side for a slow machine.
+    let s = setup_timed(HostOptions::default(), opens_within(Duration::from_secs(2))).await;
+    let mut other = s.ready().await;
+    s.host.open_delay(Duration::from_secs(3));
+    let mut bridge = s.attach().await;
+    s.host
+        .wait(5, "the slow open to arrive", |o| o.opens_received == 2)
+        .await;
+    s.host.open_delay(Duration::ZERO);
+    // The terminal is told at the deadline, and not that the host cannot be reached: the
+    // link is fine. It comes up on the same session.
+    assert_eq!(bridge.status().await["state"], "connecting");
+    online_in_the_end(&mut bridge, 20).await;
+    bridge.data_until(b"READY").await;
+    bridge.data(b"typed").await;
+    bridge.data_until(b"typed").await;
+    // The stream the late answer named has nobody to read it, and is closed.
+    s.host
+        .wait(5, "the late stream to be closed", |o| !o.closes.is_empty())
+        .await;
+    assert_eq!(
+        s.host.seen(|o| o.max_opens_in_flight),
+        1,
+        "the next open waits for the late answer"
+    );
+    assert_eq!(s.host.seen(|o| o.sessions), 2, "the link was never reset");
+    other.data(b"still here").await;
+    other.data_until(b"still here").await;
+}
+
+#[tokio::test]
+async fn a_bridge_that_leaves_while_its_terminal_opens_leaves_no_stream_behind() {
+    let s = setup(HostOptions::default()).await;
+    s.host.open_delay(Duration::from_millis(200));
+    // One more than the host's limit: each would keep its place for the life of the session.
+    for left in 1..=9 {
+        let bridge = s.attach().await;
+        s.host
+            .wait(5, "the open to arrive", |o| o.opens_received == left)
+            .await;
+        drop(bridge);
+        s.host
+            .wait(5, "its stream to be closed", |o| o.closes.len() == left)
+            .await;
+    }
+    let mut bridge = s.ready().await;
+    bridge.data(b"typed").await;
+    bridge.data_until(b"typed").await;
+    assert_eq!(s.host.seen(|o| o.sessions), 2, "the link was never reset");
+}
+
+#[tokio::test]
+async fn the_next_terminal_waits_for_the_open_of_one_that_left() {
+    let s = setup(HostOptions::default()).await;
+    s.host.open_delay(Duration::from_millis(300));
+    let gone = s.attach().await;
+    s.host
+        .wait(5, "the open to arrive", |o| o.opens_received == 1)
+        .await;
+    drop(gone);
+    let mut next = s.attach().await;
+    assert_eq!(next.status().await["state"], "online");
+    next.data_until(b"READY").await;
+    s.host
+        .wait(5, "the first stream to be closed", |o| o.closes.len() == 1)
+        .await;
+    assert_eq!(s.host.seen(|o| o.max_opens_in_flight), 1);
+}
+
+#[tokio::test]
+async fn a_terminal_that_leaves_while_waiting_its_turn_was_never_opened() {
+    let s = setup(HostOptions::default()).await;
+    // Long enough that the drop is seen first, however slow this machine is.
+    s.host.open_delay(Duration::from_secs(2));
+    let mut first = s.attach().await;
+    s.host
+        .wait(5, "the first open to arrive", |o| o.opens_received == 1)
+        .await;
+    let waiting = s.attach().await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    drop(waiting);
+    assert_eq!(first.status().await["state"], "online");
+    first.data_until(b"READY").await;
+    // Its turn went to nobody, and nothing is left holding the way.
+    let mut third = s.attach().await;
+    assert_eq!(third.status().await["state"], "online");
+    third.data_until(b"READY").await;
+    assert_eq!(s.host.seen(|o| o.opens_received), 2);
+    assert_eq!(s.host.seen(|o| o.closes.len()), 0);
+}
+
+#[tokio::test]
+async fn a_terminal_waiting_its_turn_opens_at_the_size_it_has_by_then() {
+    let s = setup(HostOptions::default()).await;
+    // Long enough that the resize is seen first, however slow this machine is.
+    s.host.open_delay(Duration::from_secs(2));
+    let mut first = s.attach().await;
+    s.host
+        .wait(5, "the first open to arrive", |o| o.opens_received == 1)
+        .await;
+    let mut second = s.attach().await;
+    second.resize(90, 20).await;
+    assert_eq!(first.status().await["state"], "online");
+    assert_eq!(second.status().await["state"], "online");
+    let open = s.host.seen(|o| o.opens[1].clone());
+    assert_eq!(
+        (open["columns"].as_u64(), open["rows"].as_u64()),
+        (Some(90), Some(20))
+    );
+}
+
+#[tokio::test]
+async fn a_terminal_kept_waiting_for_its_turn_past_the_deadline_is_told_and_still_opens() {
+    // One open fits in the deadline and two do not, by more than a second either way.
+    let s = setup_timed(
+        HostOptions::default(),
+        opens_within(Duration::from_millis(4400)),
+    )
+    .await;
+    s.host.open_delay(Duration::from_secs(3));
+    let _first = s.attach().await;
+    s.host
+        .wait(5, "the first open to arrive", |o| o.opens_received == 1)
+        .await;
+    let _second = s.attach().await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let mut third = s.attach().await;
+    let told = third.status().await;
+    assert_eq!(told["state"], "connecting", "{told}");
+    // Its own open has not gone out; on a slow machine the second's may not have either.
+    assert!(
+        s.host.seen(|o| o.opens_received) <= 2,
+        "told while it was not yet its turn"
+    );
+    // Its own open need not wait as long.
+    s.host
+        .wait(10, "the second open to arrive", |o| o.opens_received == 2)
+        .await;
+    s.host.open_delay(Duration::ZERO);
+    online_in_the_end(&mut third, 20).await;
+    third.data_until(b"READY").await;
+    assert_eq!(s.host.seen(|o| o.sessions), 2, "the link was never reset");
+}
+
+/// An open whose session ended before it was answered named no stream, so nothing is
+/// closed, on that session or the next. That a stream which was named and then died with
+/// its session is not closed on the next one is a unit test in `client_daemon`.
+#[tokio::test]
+async fn an_open_cut_off_with_its_session_asks_for_no_close() {
+    let s = setup(HostOptions::default()).await;
+    // Never answered: the session ends long before, however slow this machine is.
+    s.host.open_delay(Duration::from_secs(5));
+    let bridge = s.attach().await;
+    s.host
+        .wait(5, "the open to arrive", |o| o.opens_received == 1)
+        .await;
+    drop(bridge);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    s.host.drop_connection(Duration::from_millis(100));
+    s.host
+        .wait(10, "the next session", |o| o.sessions == 3)
+        .await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(
+        !s.host.seen(|o| o.calls.iter().any(|m| m == "pty.close")),
+        "nothing to close, and nothing asked"
+    );
+}
+
+// ---- The registry -----------------------------------------------------------------------
+
+/// How often a daemon reads the registry, short enough to test.
+fn a_quick_look_at_the_registry() -> DaemonTiming {
+    DaemonTiming {
+        registry: Duration::from_millis(100),
+        ..DaemonTiming::default()
+    }
+}
+impl Setup {
+    fn registry_path(&self) -> PathBuf {
+        self.client.dir.join(HOSTS_FILE)
+    }
+    fn record(&self) -> HostRecord {
+        HostsFile::load(&self.client).unwrap().hosts.remove(0)
+    }
+    fn save(&self, hosts: Vec<HostRecord>) {
+        HostsFile { v: 1, hosts }.save(&self.client).unwrap();
+    }
+    async fn daemon_quits(&self) {
+        eventually(5, "the daemon to quit", || self.daemon.is_finished()).await;
+        assert!(!self.socket.exists(), "the socket goes with it");
+    }
+    /// Long enough for several looks at the registry.
+    async fn daemon_stays(&self) {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert!(!self.daemon.is_finished(), "the daemon quit");
+        assert!(daemon_status(&self.socket).await.is_ok());
+    }
+}
+
+#[tokio::test]
+async fn a_daemon_whose_route_left_the_registry_quits_without_being_told() {
+    let s = setup_timed(HostOptions::default(), a_quick_look_at_the_registry()).await;
+    // A terminal is no reason to stay, and neither would it end by itself.
+    let _bridge = s.ready().await;
+    s.daemon_stays().await;
+    s.save(vec![]);
+    s.daemon_quits().await;
+}
+
+#[tokio::test]
+async fn looking_at_the_registry_does_not_keep_an_idle_daemon_going() {
+    let net = Net::new(1).await;
+    let _host = FakeHost::start(&net, &net.invites[0].device_id, HostOptions::default());
+    let client = Storage::at(net.client_home("client")).unwrap();
+    add_host(&client, &net.link(0), Some("Studio"), true)
+        .await
+        .unwrap();
+    let id = net.desktop_id();
+    let served = serve_with(
+        client,
+        &id,
+        Duration::from_secs(1),
+        a_quick_look_at_the_registry(),
+    );
+    tokio::time::timeout(Duration::from_secs(5), served)
+        .await
+        .expect("it idles out")
+        .unwrap();
+}
+
+#[tokio::test]
+async fn a_daemon_whose_route_or_credentials_changed_quits() {
+    let s = setup_timed(HostOptions::default(), a_quick_look_at_the_registry()).await;
+    // The same id, as when a host is removed and paired again.
+    let mut changed = s.record();
+    changed.added_at_unix += 1;
+    s.save(vec![changed]);
+    s.daemon_quits().await;
+}
+
+#[tokio::test]
+async fn a_new_name_for_a_route_does_not_interrupt_its_terminals() {
+    let s = setup_timed(HostOptions::default(), a_quick_look_at_the_registry()).await;
+    let mut bridge = s.ready().await;
+    let mut renamed = s.record();
+    renamed.label = "Renamed".into();
+    s.save(vec![renamed]);
+    s.daemon_stays().await;
+    bridge.data(b"typed").await;
+    bridge.data_until(b"typed").await;
+}
+
+/// A name is all that changed, so nothing is restarted, or told before it has to be told
+/// something. But what the daemon says from then on uses the new one.
+#[tokio::test]
+async fn a_new_name_reaches_what_the_daemon_says_and_leaves_its_terminals_alone() {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+    let s = setup_timed(HostOptions::default(), a_quick_look_at_the_registry()).await;
+    let mut bridge = s.ready().await;
+    let mut watching =
+        tokio::io::BufReader::new(tokio::net::UnixStream::connect(&s.socket).await.unwrap());
+    watching
+        .get_mut()
+        .write_all(b"{\"op\":\"watch\"}\n")
+        .await
+        .unwrap();
+    let mut line = String::new();
+    watching.read_line(&mut line).await.unwrap();
+    let first: Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(first["label"], "Studio", "{first}");
+
+    let mut renamed = s.record();
+    renamed.label = "Renamed".into();
+    s.save(vec![renamed]);
+
+    // Someone watching hears of it, as they would of any other change in the line.
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            line.clear();
+            watching.read_line(&mut line).await.unwrap();
+            let status: Value = serde_json::from_str(&line).unwrap();
+            if status["label"] == "Renamed" {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("a line with the new name");
+    let status = daemon_status(&s.socket).await.unwrap();
+    assert_eq!(status["label"], "Renamed", "{status}");
+
+    // A terminal has no reason to hear of it, and keeps going.
+    assert!(
+        tokio::time::timeout(Duration::from_millis(300), read_frame(&mut bridge.stream))
+            .await
+            .is_err(),
+        "nothing for a terminal"
+    );
+    bridge.data(b"typed").await;
+    bridge.data_until(b"typed").await;
+    assert_eq!(s.host.seen(|o| o.sessions), 2);
+    assert_eq!(s.host.seen(|o| o.opens.len()), 1);
+
+    // The next thing it is told uses the new name.
+    s.host.drop_connection(Duration::from_millis(100));
+    let offline = bridge.status().await;
+    assert_eq!(offline["state"], "offline", "{offline}");
+    assert_eq!(offline["label"], "Renamed", "{offline}");
+    let online = bridge.status().await;
+    assert_eq!(online["state"], "online", "{online}");
+    assert_eq!(online["label"], "Renamed", "{online}");
+}
+
+/// Not a registry that says this route has gone: one nobody can look at right now. These
+/// reach the next look through a rename, so that no look can find the file truly missing.
+#[tokio::test]
+async fn a_registry_that_cannot_be_looked_at_does_not_interrupt_a_healthy_terminal() {
+    use std::os::unix::fs::PermissionsExt;
+    let s = setup_timed(HostOptions::default(), a_quick_look_at_the_registry()).await;
+    let mut bridge = s.ready().await;
+    let path = s.registry_path();
+    let kept = s.client.dir.join("kept.json");
+    std::fs::copy(&path, &kept).unwrap();
+    let dangling = s.client.dir.join("dangling");
+    std::os::unix::fs::symlink(s.client.dir.join("away.json"), &dangling).unwrap();
+    std::fs::rename(&dangling, &path).unwrap();
+    s.daemon_stays().await;
+    std::fs::rename(&kept, &path).unwrap();
+    s.daemon_stays().await;
+    if unsafe { libc::geteuid() } != 0 {
+        // The daemon's own socket is under here too, so it is asked only after this.
+        std::fs::set_permissions(&s.client.dir, std::fs::Permissions::from_mode(0o000)).unwrap();
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        std::fs::set_permissions(&s.client.dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        s.daemon_stays().await;
+    }
+    bridge.data(b"typed").await;
+    bridge.data_until(b"typed").await;
+    assert_eq!(s.host.seen(|o| o.sessions), 2);
+    // A file that really is gone still counts.
+    std::fs::remove_file(&path).unwrap();
+    s.daemon_quits().await;
+}
+
+#[tokio::test]
+async fn a_damaged_registry_does_not_interrupt_a_healthy_terminal() {
+    use std::os::unix::fs::PermissionsExt;
+    let s = setup_timed(HostOptions::default(), a_quick_look_at_the_registry()).await;
+    let mut bridge = s.ready().await;
+    let path = s.registry_path();
+    let good = std::fs::read(&path).unwrap();
+    // Not JSON at all, ...
+    std::fs::write(&path, b"{ not json").unwrap();
+    s.daemon_stays().await;
+    // ... a record that does not validate next to this one, ...
+    let mut value: Value = serde_json::from_slice(&good).unwrap();
+    let mut other = value["hosts"][0].clone();
+    other["id"] = json!("not-a-uuid");
+    value["hosts"].as_array_mut().unwrap().push(other);
+    std::fs::write(&path, value.to_string()).unwrap();
+    s.daemon_stays().await;
+    // ... and a file others can read.
+    std::fs::write(&path, &good).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    s.daemon_stays().await;
+    bridge.data(b"typed").await;
+    bridge.data_until(b"typed").await;
+    assert_eq!(s.host.seen(|o| o.sessions), 2);
+    // Repaired, it counts again.
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    s.daemon_stays().await;
+    s.save(vec![]);
+    s.daemon_quits().await;
 }

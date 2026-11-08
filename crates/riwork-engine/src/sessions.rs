@@ -154,6 +154,19 @@ pub fn registered_shell(home: &Path, id: &str) -> Result<ShellSession, String> {
         .ok_or_else(|| format!("unknown shell {id}"))
 }
 
+/// Whether `home`'s registry lists any shell this build can represent, without asking tmux. A
+/// read that cannot find tmux cannot list them, which does not show that they are gone.
+pub fn shells_registered(home: &Path) -> Result<bool, String> {
+    let path = home.join("sessions.json");
+    match fs::read(&path) {
+        Ok(bytes) => parse_registry(&bytes)
+            .map(|registry| !registry.sessions.is_empty())
+            .map_err(|error| format!("parse {}: {error}", path.display())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(format!("read {}: {error}", path.display())),
+    }
+}
+
 fn user_shell_caller() -> bool {
     ![
         "RIWORK_CHAT_ID",
@@ -3632,6 +3645,12 @@ fn bundled_terminfo_dirs() -> Vec<PathBuf> {
     dirs.push(dir.join("Somtus.app/Contents/Resources/terminfo"));
     dirs.push(dir.join("RiWork.app/Contents/Resources/terminfo"));
     dirs
+}
+
+/// Whether there is a tmux at all. A host without one simply has no terminals, unlike a host
+/// whose tmux fails.
+pub fn tmux_installed() -> bool {
+    find_tmux().is_some()
 }
 
 fn find_tmux() -> Option<PathBuf> {

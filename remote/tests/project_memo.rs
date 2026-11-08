@@ -7,6 +7,9 @@ use riwork_remote::{config::Storage, rpc::Rpc};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
+/// What `ready` gives a question to the CLI.
+const READY_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
+
 fn new_uuid() -> String {
     uuid::Uuid::new_v4().to_string()
 }
@@ -174,7 +177,7 @@ async fn without_the_capability_both_methods_are_unsupported() {
     ] {
         let f = Fixture::new();
         f.set("capabilities.out", answer);
-        assert!(!f.rpc.project_memo_supported().await, "{answer}");
+        assert!(!f.rpc.project_memo_supported(READY_WAIT).await, "{answer}");
         for (method, params) in [
             ("project.memo.get", json!({"project_id": new_uuid()})),
             (
@@ -193,7 +196,7 @@ async fn without_the_capability_both_methods_are_unsupported() {
         );
     }
     let f = Fixture::new();
-    assert!(f.rpc.project_memo_supported().await);
+    assert!(f.rpc.project_memo_supported(READY_WAIT).await);
 }
 
 #[tokio::test]

@@ -72,27 +72,45 @@ enum Action {
     #[command(flatten)]
     Mac(riwork_remote::client_cli::ClientCommand),
 }
+/// Serves this account over stdin and stdout. A client gets a line saying why when
+/// this cannot even start; the error itself is for stderr.
+async fn connect(somtus: Option<PathBuf>) -> Result<()> {
+    let cli = somtus
+        .or_else(|| {
+            std::env::var_os("SOMTUS_CLI")
+                .or_else(|| std::env::var_os("RIWORK_CLI"))
+                .map(PathBuf::from)
+        })
+        .or_else(|| {
+            std::env::current_exe().ok().and_then(|exe| {
+                let dir = exe.parent()?;
+                ["somtus", "somtus-cli", "riwork", "riwork-cli"]
+                    .into_iter()
+                    .map(|name| dir.join(name))
+                    .find(|p| p.is_file())
+            })
+        })
+        .context("pass --somtus /absolute/path/to/somtus")
+        .inspect_err(|_| riwork_remote::ssh::refuse_cli_missing())?;
+    let storage =
+        Storage::from_env().inspect_err(|_| riwork_remote::ssh::refuse_home_unavailable())?;
+    riwork_remote::ssh::serve(storage, cli).await
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     match Cli::parse().command {
         Action::Connect { somtus } => {
-            let path = somtus
-                .or_else(|| {
-                    std::env::var_os("SOMTUS_CLI")
-                        .or_else(|| std::env::var_os("RIWORK_CLI"))
-                        .map(PathBuf::from)
-                })
-                .or_else(|| {
-                    std::env::current_exe().ok().and_then(|exe| {
-                        let dir = exe.parent()?;
-                        ["somtus", "somtus-cli", "riwork", "riwork-cli"]
-                            .into_iter()
-                            .map(|name| dir.join(name))
-                            .find(|p| p.is_file())
-                    })
-                })
-                .context("pass --somtus /absolute/path/to/somtus")?;
-            riwork_remote::ssh::serve(Storage::from_env()?, path).await?;
+            let served = connect(somtus).await;
+            if let Err(error) = &served {
+                // Not `eprintln!`, which panics when stderr has gone: the panic would stop
+                // the exit below.
+                use std::io::Write;
+                let _ = writeln!(std::io::stderr(), "Error: {error:#}");
+            }
+            // tokio's read of stdin cannot be cancelled, so a normal return would wait
+            // in the runtime's shutdown for a byte that may never come.
+            std::process::exit(i32::from(served.is_err()));
         }
         Action::Relay {
             bind,

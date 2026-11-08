@@ -5,7 +5,16 @@
 //! homes with short paths; the client processes are the real binary.
 mod client_support;
 
-use client_support::{Net, REMOTE, eventually, stub_cli};
+use client_support::{
+    HOSTILE_CODE, HOSTILE_MESSAGE, HOSTILE_RESULT, Net, OtherBuild, REMOTE, eventually, short_dir,
+    stub_cli,
+};
+use riwork_remote::{
+    client::{HostRecord, HostsFile},
+    client_daemon::{DAEMON_PROTOCOL, daemon_paths, daemon_status, ensure},
+    config::Storage,
+    ssh::Route,
+};
 use serde_json::{Value, json};
 use std::{
     os::unix::fs::PermissionsExt,
@@ -201,7 +210,8 @@ async fn pairing_a_host_stores_an_established_record_and_prints_no_secret() {
     let listed: Value =
         serde_json::from_slice(&rig.run(&["hosts", "list", "--json"]).await.stdout).unwrap();
     assert_eq!(listed[0]["id"], id.as_str());
-    assert_eq!(listed[0].as_object().unwrap().len(), 6, "{listed}");
+    assert_eq!(listed[0].as_object().unwrap().len(), 7, "{listed}");
+    assert!(listed[0].get("ssh").is_none(), "{listed}");
 
     // Pairing the same host again is refused before the network is used.
     let again = rig.add(0, "Again").await;
@@ -351,13 +361,18 @@ async fn call_and_status_go_through_a_client_process_that_ensure_starts_once() {
 
     let status = rig.wait_state("online", 10).await;
     assert_eq!(status["label"], "Studio");
-    let status = loop {
-        let status = rig.status().await;
-        if status["rtt_ms"].is_u64() {
-            break status;
+    assert_eq!(status["daemon"], 2, "{status}");
+    let status = tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            let status = rig.status().await;
+            if status["rtt_ms"].is_u64() {
+                break status;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    };
+    })
+    .await
+    .expect("a round trip time in the status");
     assert!(status["rtt_ms"].as_u64().unwrap() < 5000, "{status}");
     let human = rig.run(&["status", "--desktop", &id]).await;
     assert!(
@@ -516,12 +531,16 @@ async fn the_client_process_exits_when_idle_and_a_second_one_does_not_start() {
         .unwrap();
     // A client keeps it alive however long this takes (the socket file is there a moment
     // before it takes connections, so connecting is retried).
-    let client = loop {
-        match tokio::net::UnixStream::connect(&socket).await {
-            Ok(client) => break client,
-            Err(_) => tokio::time::sleep(Duration::from_millis(20)).await,
+    let client = tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            match tokio::net::UnixStream::connect(&socket).await {
+                Ok(client) => break client,
+                Err(_) => tokio::time::sleep(Duration::from_millis(20)).await,
+            }
         }
-    };
+    })
+    .await
+    .expect("the client process takes connections on its socket");
     let held = std::time::Instant::now();
     // Another one for the same host steps aside at once and does not disturb the first.
     let second = rig
@@ -564,6 +583,22 @@ async fn removing_a_host_stops_its_client_process_and_forgets_its_credentials() 
     assert!(socket.exists());
     let removed = rig.run(&["hosts", "remove", &id]).await;
     assert!(removed.status.success(), "{}", text(&removed.stderr));
+    // The record held the only copy of what the host knows this Mac by, and the host
+    // goes on trusting it.
+    let device = rig.net.host.config().unwrap().devices[0]
+        .pairing
+        .device_id
+        .clone();
+    let printed = text(&removed.stdout);
+    assert!(
+        printed.starts_with(&format!("Removed host {id} (\"Studio\").\n")),
+        "{printed}"
+    );
+    assert!(
+        printed.contains(&format!("somtus remote revoke {device}")),
+        "{printed}"
+    );
+    assert!(!printed.contains("add-ssh"), "{printed}");
     eventually(10, "the client process to quit", || !socket.exists()).await;
     let raw = std::fs::read_to_string(rig.hosts_file()).unwrap();
     assert!(!raw.contains("root_key"), "{raw}");
@@ -572,4 +607,350 @@ async fn removing_a_host_stops_its_client_process_and_forgets_its_credentials() 
     assert!(text(&call.stderr).contains("no host"));
     let twice = rig.run(&["hosts", "remove", &id]).await;
     assert!(!twice.status.success());
+}
+
+/// A relay record's id, relay and route have to agree with its pairing, so there is
+/// nothing `update-ssh` could change, not even by accident.
+#[tokio::test]
+async fn update_ssh_refuses_a_relay_host_and_leaves_the_registry_as_it_was() {
+    let rig = Rig::new(1).await;
+    assert!(rig.add(0, "Studio").await.status.success());
+    let id = rig.id();
+    let before = std::fs::read(rig.hosts_file()).unwrap();
+    for option in [["--target", "elsewhere"], ["--label", "Renamed"]] {
+        let out = rig
+            .run(&["hosts", "update-ssh", &id, option[0], option[1]])
+            .await;
+        assert!(!out.status.success(), "{option:?}");
+        assert!(
+            text(&out.stderr).contains("relay"),
+            "{option:?}: {}",
+            text(&out.stderr)
+        );
+        assert_eq!(std::fs::read(rig.hosts_file()).unwrap(), before);
+    }
+}
+
+/// With both kinds on one list, each line has to say which it is. The JSON of a relay
+/// host stays as it was: only an SSH route has an `ssh`.
+#[tokio::test]
+async fn hosts_list_tells_transports_apart() {
+    let rig = Rig::new(1).await;
+    assert!(rig.add(0, "Studio").await.status.success());
+    let id = rig.id();
+    let storage = Storage::at(rig.client_home.clone()).unwrap();
+    let mut file = HostsFile::load(&storage).unwrap();
+    let (route, host_id) = (
+        uuid::Uuid::new_v4().to_string(),
+        uuid::Uuid::new_v4().to_string(),
+    );
+    file.hosts.push(HostRecord {
+        id: route.clone(),
+        pairing: None,
+        ssh: Some(Route {
+            target: "build-server".into(),
+            remote_bin: "/opt/somtus remote".into(),
+            somtus: None,
+            home: Some("/srv/somtus home".into()),
+            host_id: host_id.clone(),
+            client_id: uuid::Uuid::new_v4().to_string(),
+        }),
+        label: "Build server".into(),
+        relay: String::new(),
+        route: String::new(),
+        added_at_unix: 1,
+        allow_insecure_loopback: false,
+    });
+    file.save(&storage).unwrap();
+    let out = rig.run(&["hosts", "list"]).await;
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let shown = text(&out.stdout);
+    let lines: Vec<&str> = shown.lines().collect();
+    assert_eq!(lines.len(), 2, "{shown}");
+    for word in [id.as_str(), "relay", rig.net.url.as_str(), "Studio"] {
+        assert!(lines[0].contains(word), "{word}: {shown}");
+    }
+    for word in [route.as_str(), "ssh", host_id.as_str(), "Build server"] {
+        assert!(lines[1].contains(word), "{word}: {shown}");
+    }
+    assert!(
+        !shown.contains("/opt") && !shown.contains("/srv"),
+        "{shown}"
+    );
+    let listed: Value =
+        serde_json::from_slice(&rig.run(&["hosts", "list", "--json"]).await.stdout).unwrap();
+    assert!(listed[0].get("ssh").is_none(), "{listed}");
+    assert_eq!(
+        listed[1]["ssh"],
+        json!({"target":"build-server","remote_bin":"/opt/somtus remote","home":"/srv/somtus home"})
+    );
+}
+
+#[tokio::test]
+async fn a_client_process_quits_when_its_host_leaves_the_registry_even_with_a_client_on_it() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let rig = Rig::new(1).await;
+    assert!(rig.add(0, "Studio").await.status.success());
+    let id = rig.id();
+    rig.wait_state("online", 10).await;
+    let socket = PathBuf::from(
+        text(
+            &rig.run(&["client", "socket", "--desktop", &id])
+                .await
+                .stdout,
+        )
+        .trim(),
+    );
+    // A connected client keeps it from idling out, and nothing tells it of this save.
+    let mut watching = tokio::net::UnixStream::connect(&socket).await.unwrap();
+    watching.write_all(b"{\"op\":\"watch\"}\n").await.unwrap();
+    HostsFile {
+        v: 1,
+        hosts: vec![],
+    }
+    .save(&Storage::at(rig.client_home.clone()).unwrap())
+    .unwrap();
+    eventually(10, "the client process to quit", || !socket.exists()).await;
+    let mut rest = Vec::new();
+    tokio::time::timeout(Duration::from_secs(5), watching.read_to_end(&mut rest))
+        .await
+        .expect("the client sees the connection end")
+        .unwrap();
+}
+
+// The other build runs in this test process, so these need a thread to serve it on while
+// the last of `Rig` waits for a command in its `Drop`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_daemon_of_an_older_build_makes_way_for_this_one() {
+    let rig = Rig::new(1).await;
+    assert!(rig.add(0, "Studio").await.status.success());
+    let id = rig.id();
+    let old = OtherBuild::start(&rig.client_home, &id, None, true);
+    let ensured = rig.run(&["client", "ensure", "--desktop", &id]).await;
+    assert!(ensured.status.success(), "{}", text(&ensured.stderr));
+    assert_eq!(old.shutdowns(), 1);
+    let status = rig.wait_state("online", 10).await;
+    assert_eq!(status["label"], "Studio", "{status}");
+    assert_eq!(status["daemon"], 2, "{status}");
+    let listed = rig.run(&["call", "--desktop", &id, "projects.list"]).await;
+    assert!(listed.status.success(), "{}", text(&listed.stderr));
+    assert_eq!(old.shutdowns(), 1, "and it is not asked again");
+}
+
+/// A route in a registry written by hand, for what needs a record and no connection.
+fn a_registered_route(home: &Path) -> (Storage, String) {
+    std::fs::create_dir_all(home).unwrap();
+    let storage = Storage::at(home.to_path_buf()).unwrap();
+    let route = uuid::Uuid::new_v4().to_string();
+    HostsFile {
+        v: 1,
+        hosts: vec![HostRecord {
+            id: route.clone(),
+            pairing: None,
+            ssh: Some(Route {
+                target: "never-dialed".into(),
+                remote_bin: "/never".into(),
+                somtus: None,
+                home: None,
+                host_id: uuid::Uuid::new_v4().to_string(),
+                client_id: uuid::Uuid::new_v4().to_string(),
+            }),
+            label: "Studio".into(),
+            relay: String::new(),
+            route: String::new(),
+            added_at_unix: 1,
+            allow_insecure_loopback: false,
+        }],
+    }
+    .save(&storage)
+    .unwrap();
+    (storage, route)
+}
+
+/// What `ensure` would start need not be this build: a bundle can be rolled back under
+/// running bridges, and the number in their code says nothing about the file. Replacing a
+/// daemon with one that is no newer gains nothing, and bridges of the newer build would go
+/// on doing it to each other.
+#[tokio::test]
+async fn a_daemon_is_not_told_to_quit_for_a_file_that_is_no_newer() {
+    for (case, body) in [
+        (
+            "refuses the question, as an older build does",
+            Some("echo \"error: unrecognized subcommand '$2'\" >&2\nexit 2"),
+        ),
+        ("the same number", Some("echo 1")),
+        ("a lower number", Some("echo 0")),
+        ("not a number", Some("echo soon")),
+        ("a number, and a failure", Some("echo 9\nexit 1")),
+        ("no such file", None),
+    ] {
+        let dir = short_dir("rwc");
+        let home = dir.path().join("client");
+        let (storage, route) = a_registered_route(&home);
+        let exe = dir.path().join("somtus-remote");
+        if let Some(body) = body {
+            std::fs::write(&exe, format!("#!/bin/sh\n{body}\n")).unwrap();
+            std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let running = OtherBuild::start(&home, &route, Some(1), true);
+        let socket = ensure(&storage, &route, &exe)
+            .await
+            .unwrap_or_else(|error| panic!("{case}: {error:#}"));
+        let paths = daemon_paths(&storage, &route).unwrap();
+        assert_eq!(socket, paths.socket, "{case}");
+        assert_eq!(running.shutdowns(), 0, "{case}");
+        assert!(!paths.log.exists(), "{case}: nothing else was started");
+        assert_eq!(
+            daemon_status(&paths.socket).await.unwrap()["label"],
+            "Other build",
+            "{case}"
+        );
+    }
+}
+
+/// The question is asked with the lock held, so it has to end.
+#[tokio::test]
+async fn a_file_that_does_not_answer_is_not_waited_for() {
+    let dir = short_dir("rwc");
+    let home = dir.path().join("client");
+    let (storage, route) = a_registered_route(&home);
+    let exe = dir.path().join("somtus-remote");
+    std::fs::write(&exe, "#!/bin/sh\nexec sleep 120\n").unwrap();
+    std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let running = OtherBuild::start(&home, &route, Some(1), true);
+    let begun = std::time::Instant::now();
+    ensure(&storage, &route, &exe).await.unwrap();
+    assert!(
+        begun.elapsed() < Duration::from_secs(60),
+        "{:?}",
+        begun.elapsed()
+    );
+    assert_eq!(running.shutdowns(), 0);
+}
+
+/// `ensure` asks this of the file before it runs it for real, whatever state the home is in.
+#[tokio::test]
+async fn the_file_says_its_protocol_and_needs_no_home_to_say_it() {
+    let dir = short_dir("rwc");
+    let not_a_directory = dir.path().join("file");
+    std::fs::write(&not_a_directory, "").unwrap();
+    let asked = tokio::process::Command::new(REMOTE)
+        .env("RIWORK_HOME", &not_a_directory)
+        .args(["client", "protocol"])
+        .stdin(Stdio::null())
+        .output()
+        .await
+        .unwrap();
+    assert!(asked.status.success(), "{}", text(&asked.stderr));
+    assert_eq!(text(&asked.stdout), format!("{DAEMON_PROTOCOL}\n"));
+    // It is for `ensure`, not for people.
+    let help = tokio::process::Command::new(REMOTE)
+        .env("RIWORK_HOME", &not_a_directory)
+        .args(["client", "--help"])
+        .stdin(Stdio::null())
+        .output()
+        .await
+        .unwrap();
+    assert!(help.status.success(), "{}", text(&help.stderr));
+    assert!(
+        !text(&help.stdout).contains("protocol"),
+        "{}",
+        text(&help.stdout)
+    );
+}
+
+/// A host's error is the host's words. This is the one place they go straight to a terminal,
+/// where an escape sequence can retitle it, repaint it or set the clipboard.
+#[tokio::test]
+async fn call_prints_a_hosts_error_without_its_control_characters() {
+    let dir = short_dir("rwc");
+    let home = dir.path().join("client");
+    let (_, route) = a_registered_route(&home);
+    let _daemon = OtherBuild::start(&home, &route, Some(DAEMON_PROTOCOL), true);
+    let out = tokio::process::Command::new(REMOTE)
+        .env("RIWORK_HOME", &home)
+        .args(["call", "--desktop", &route, "projects.list"])
+        .stdin(Stdio::null())
+        .output()
+        .await
+        .unwrap();
+    assert!(!out.status.success());
+    let stderr = text(&out.stderr);
+    // Sanity: the answer it was given holds what must not get through.
+    assert!(HOSTILE_CODE.contains('\u{1b}') && HOSTILE_MESSAGE.contains('\u{1b}'));
+    assert!(stderr.contains("run this"), "{stderr:?}");
+    assert!(stderr.contains("code"), "{stderr:?}");
+    for control in ['\u{1b}', '\u{7}', '\u{9b}'] {
+        assert!(!stderr.contains(control), "{stderr:?}");
+    }
+}
+
+/// A result is the host's words too. JSON escapes the C0 controls by itself, and not DEL or
+/// the C1 controls, which a terminal acts on just the same.
+#[tokio::test]
+async fn call_prints_a_hosts_result_without_its_control_characters() {
+    let dir = short_dir("rwc");
+    let home = dir.path().join("client");
+    let (_, route) = a_registered_route(&home);
+    let _daemon = OtherBuild::start(&home, &route, Some(DAEMON_PROTOCOL), true);
+    let out = tokio::process::Command::new(REMOTE)
+        .env("RIWORK_HOME", &home)
+        .args(["call", "--desktop", &route, "shells.list"])
+        .stdin(Stdio::null())
+        .output()
+        .await
+        .unwrap();
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let stdout = text(&out.stdout);
+    assert!(
+        !stdout
+            .chars()
+            .any(|c| c.is_control() && c != '\n' || ('\u{7f}'..='\u{9f}').contains(&c)),
+        "{stdout:?}"
+    );
+    // The same JSON all the same.
+    let printed: Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(printed, json!({"name": HOSTILE_RESULT}), "{stdout:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_daemon_of_the_same_or_a_newer_build_is_left_alone() {
+    for protocol in [2, 3] {
+        let rig = Rig::new(1).await;
+        assert!(rig.add(0, "Studio").await.status.success());
+        let id = rig.id();
+        let other = OtherBuild::start(&rig.client_home, &id, Some(protocol), true);
+        let ensured = rig.run(&["client", "ensure", "--desktop", &id]).await;
+        assert!(ensured.status.success(), "{}", text(&ensured.stderr));
+        let status = rig.status().await;
+        assert_eq!(status["label"], "Other build", "{status}");
+        assert_eq!(status["daemon"], protocol, "{status}");
+        assert_eq!(other.shutdowns(), 0, "protocol {protocol}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_daemon_of_an_older_build_that_will_not_go_is_used_rather_than_failing() {
+    let rig = Rig::new(1).await;
+    assert!(rig.add(0, "Studio").await.status.success());
+    let id = rig.id();
+    let stubborn = OtherBuild::start(&rig.client_home, &id, Some(1), false);
+    let begun = std::time::Instant::now();
+    let ensured = rig.run(&["client", "ensure", "--desktop", &id]).await;
+    assert!(ensured.status.success(), "{}", text(&ensured.stderr));
+    assert!(
+        begun.elapsed() >= Duration::from_secs(3),
+        "it had its chance"
+    );
+    assert!(
+        begun.elapsed() < Duration::from_secs(9),
+        "{:?}",
+        begun.elapsed()
+    );
+    assert_eq!(stubborn.shutdowns(), 1);
+    let storage = Storage::at(rig.client_home.clone()).unwrap();
+    let paths = daemon_paths(&storage, &id).unwrap();
+    let status = daemon_status(&paths.socket).await.unwrap();
+    assert_eq!(status["label"], "Other build", "{status}");
+    assert!(!paths.log.exists(), "nothing else was started");
 }

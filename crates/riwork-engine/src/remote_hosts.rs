@@ -15,7 +15,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Command, ExitStatus, Stdio},
     sync::{
-        Arc, Mutex, MutexGuard, PoisonError,
+        Arc, Mutex, MutexGuard, PoisonError, TryLockError,
         atomic::{AtomicU64, Ordering},
         mpsc,
     },
@@ -62,6 +62,19 @@ pub struct Host {
     pub label: String,
 }
 
+/// One `hosts list --json` entry as the all-host views use it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RegisteredHost {
+    pub host: Host,
+    pub transport: String,
+    /// When this record was added; older companions may not say. A relay route that is removed
+    /// and paired again keeps its id, so this is what tells the new record from the old one.
+    pub added_at: Option<u64>,
+    /// The host identity an SSH route was added for, which its dial is held to. A relay route
+    /// has none here, and older companions list none.
+    pub host_id: Option<String>,
+}
+
 /// The daemon's view of its relay connection to one host.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LinkState {
@@ -78,6 +91,10 @@ pub struct HostStatus {
     pub since: Option<u64>,
     pub reason: Option<String>,
     pub label: Option<String>,
+    /// A fixed word for why the link is offline, when the daemon knows one.
+    pub cause: Option<String>,
+    /// Retrying cannot help until a person acts.
+    pub needs_action: bool,
 }
 
 /// Why a daemon request produced no result.
@@ -91,6 +108,12 @@ pub enum RemoteError {
     Unreachable(String),
     /// The daemon's reply was not what the protocol allows.
     Protocol(String),
+    /// The link went down with the request written, or possibly written, so it may still have
+    /// run on the host. An older daemon's `offline` means this too, as it cannot tell the cases
+    /// apart.
+    Lost(String),
+    /// Nothing was sent, and retrying cannot help until a person acts.
+    NeedsSetup { cause: String, message: String },
 }
 
 /// The `somtus-remote` binary.
@@ -160,14 +183,23 @@ impl RemoteCli {
 
     /// Metadata for routing-independent host views. Old companions omit transport
     /// and keep the relay default. No endpoint addresses or pairing secrets escape.
-    pub fn hosts_with_transport(&self) -> Result<Vec<(Host, String)>, String> {
+    pub fn hosts_with_transport(&self) -> Result<Vec<RegisteredHost>, String> {
         let stdout = self.run(&argv(&["hosts", "list", "--json"]), CLI_TIMEOUT, &[])?;
         let hosts = parse_hosts(&stdout)?;
         let value: Value = serde_json::from_str(&stdout).map_err(|e| e.to_string())?;
         let entries = value.as_array().or_else(|| value.get("hosts").and_then(Value::as_array));
         Ok(hosts.into_iter().map(|host| {
-            let ssh = entries.into_iter().flatten().any(|row| row["id"].as_str() == Some(host.id.as_str()) && row["transport"].as_str() == Some("ssh"));
-            (host, if ssh { "ssh" } else { "relay" }.into())
+            let entry = entries.into_iter().flatten().find(|row| row["id"].as_str() == Some(host.id.as_str()));
+            let ssh = entry.is_some_and(|row| row["transport"].as_str() == Some("ssh"));
+            RegisteredHost {
+                transport: if ssh { "ssh" } else { "relay" }.into(),
+                added_at: entry.and_then(|row| row["added_at_unix"].as_u64()),
+                host_id: entry
+                    .filter(|_| ssh)
+                    .and_then(|row| row["host_id"].as_str())
+                    .map(str::to_owned),
+                host,
+            }
         }).collect())
     }
 
@@ -430,8 +462,31 @@ impl Daemons {
         }
     }
 
+    /// Whether another thread is starting this host's daemon right now, so that asking the host
+    /// would only wait for that. A caller with few threads can do something else meanwhile. One
+    /// that got past this just before the start began still waits its turn.
+    pub fn starting(&self, host_id: &str) -> bool {
+        self.cached(host_id).is_none()
+            && lock(&self.gates)
+                .get(host_id)
+                .is_some_and(|gate| matches!(gate.try_lock(), Err(TryLockError::WouldBlock)))
+    }
+
     /// The daemon's current view of its link to the host.
     pub fn status(&self, host_id: &str) -> Result<HostStatus, RemoteError> {
+        // Asked every few seconds by threads there are few of, and a start can take most of a
+        // minute. Whichever way that goes the link is being made now, and the next ask finds out.
+        if self.starting(host_id) {
+            return Ok(HostStatus {
+                state: LinkState::Connecting,
+                rtt_ms: None,
+                since: None,
+                reason: None,
+                label: None,
+                cause: None,
+                needs_action: false,
+            });
+        }
         let mut stream = self.connect(host_id)?;
         send(&mut stream, &json!({ "op": "status" }))?;
         let line = LineReader::new(stream).next_reply(deadline_in(self.status_wait))?;
@@ -509,9 +564,13 @@ impl Daemons {
 impl RemoteError {
     /// The host runs a Somtus that predates the method (or the device kind may not call it).
     pub fn is_unsupported(&self) -> bool {
-        matches!(self, Self::Rpc { code, message }
-            if code == "invalid_request"
-                && message.to_ascii_lowercase().contains("unsupported rpc method"))
+        let Self::Rpc { code, message } = self else {
+            return false;
+        };
+        let message = message.to_ascii_lowercase();
+        code == "invalid_request"
+            && (message.contains("unsupported rpc method")
+                || message.contains("unsupported native method"))
     }
 
     /// A short sentence for the UI.
@@ -524,6 +583,14 @@ impl RemoteError {
             Self::Timeout => "No answer in time".into(),
             Self::Unreachable(detail) => detail.clone(),
             Self::Protocol(detail) => format!("Unexpected answer from the client daemon: {detail}"),
+            Self::Lost(detail) if detail.trim().is_empty() => {
+                "The connection was lost before the host answered".into()
+            }
+            Self::Lost(detail) => detail.clone(),
+            Self::NeedsSetup { message, .. } if message.trim().is_empty() => {
+                "This host needs attention before it can connect".into()
+            }
+            Self::NeedsSetup { message, .. } => message.clone(),
         }
     }
 }
@@ -569,6 +636,11 @@ pub fn parse_status(line: &str) -> Result<HostStatus, RemoteError> {
         since: value.get("since").and_then(Value::as_u64),
         reason: text("reason"),
         label: text("label"),
+        cause: text("cause"),
+        needs_action: value
+            .get("needs_action")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
     })
 }
 
@@ -761,7 +833,9 @@ fn send(stream: &mut UnixStream, request: &Value) -> Result<(), RemoteError> {
 }
 
 /// Maps the daemon's answer to a call. The daemon's own timeout answer is the same outcome as
-/// the local deadline passing, so callers handle one `Timeout`.
+/// the local deadline passing, so callers handle one `Timeout`. `offline` only promises that
+/// nothing was sent when it says `not_sent`: an older daemon says `offline` for a request it may
+/// have written too, so without that word the request has to count as possibly run.
 fn reply_result(reply: &mut Value) -> Result<Value, RemoteError> {
     match reply.get("ok").and_then(Value::as_bool) {
         Some(true) => Ok(reply
@@ -775,13 +849,27 @@ fn reply_result(reply: &mut Value) -> Result<Value, RemoteError> {
                     .and_then(|error| error.get(name))
                     .and_then(Value::as_str)
             };
+            let flag = |name: &str| {
+                reply
+                    .get("error")
+                    .and_then(|error| error.get(name))
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+            };
             let code = field("code").unwrap_or("unknown");
-            if code == "timeout" {
-                return Err(RemoteError::Timeout);
-            }
-            Err(RemoteError::Rpc {
-                code: code.to_owned(),
-                message: field("message").unwrap_or_default().to_owned(),
+            let message = field("message").unwrap_or_default().to_owned();
+            Err(match code {
+                "timeout" => RemoteError::Timeout,
+                "connection_lost" => RemoteError::Lost(message),
+                "offline" if !flag("not_sent") => RemoteError::Lost(message),
+                "offline" if flag("needs_action") => RemoteError::NeedsSetup {
+                    cause: field("cause").unwrap_or("unknown").to_owned(),
+                    message,
+                },
+                _ => RemoteError::Rpc {
+                    code: code.to_owned(),
+                    message,
+                },
             })
         }
         None => Err(RemoteError::Protocol("a reply without an ok flag".into())),
@@ -1310,6 +1398,104 @@ exit 0
         ));
     }
 
+    /// The daemon's answers when no reply came, by what each one can promise about the request.
+    #[test]
+    fn call_maps_lost_offline_and_needs_setup_replies() {
+        let daemon = FakeDaemon::start(|request, mut stream| {
+            let id = request["id"].clone();
+            let error = match request["method"].as_str().unwrap_or_default() {
+                "lost" => json!({ "code": "connection_lost", "message": "the session ended" }),
+                "quiet_lost" => json!({ "code": "connection_lost" }),
+                "not_sent" => json!({ "code": "offline", "message": "relay closed",
+                    "not_sent": true }),
+                "with_cause" => json!({ "code": "offline", "message": "host offline",
+                    "not_sent": true, "cause": "unreachable" }),
+                "setup" => json!({ "code": "offline", "message": "Remove and add this host",
+                    "not_sent": true, "cause": "identity_changed", "needs_action": true }),
+                "bare_setup" => json!({ "code": "offline", "not_sent": true,
+                    "needs_action": true }),
+                "old_daemon" => json!({ "code": "offline", "message": "relay closed" }),
+                "action_only" => json!({ "code": "offline", "message": "relay closed",
+                    "needs_action": true }),
+                "other_code" => json!({ "code": "conflict", "message": "busy", "not_sent": true,
+                    "needs_action": true }),
+                _ => return,
+            };
+            let line = json!({ "id": id, "ok": false, "error": error });
+            reply(&mut stream, &line.to_string());
+        });
+        let fake = FakeCli::new(daemon.path());
+        let daemons = daemons(&fake);
+        let call = |method: &str| {
+            daemons
+                .call("h1", method, json!({}), Duration::from_secs(5))
+                .expect_err("an error reply")
+        };
+
+        assert_eq!(call("lost"), RemoteError::Lost("the session ended".into()));
+        assert_eq!(
+            call("quiet_lost").message(),
+            "The connection was lost before the host answered"
+        );
+        // Definitely not sent, so an ordinary host error rather than a lost one.
+        assert_eq!(
+            call("not_sent"),
+            RemoteError::Rpc {
+                code: "offline".into(),
+                message: "relay closed".into()
+            }
+        );
+        assert_eq!(
+            call("with_cause"),
+            RemoteError::Rpc {
+                code: "offline".into(),
+                message: "host offline".into()
+            }
+        );
+        let setup = call("setup");
+        assert_eq!(
+            setup,
+            RemoteError::NeedsSetup {
+                cause: "identity_changed".into(),
+                message: "Remove and add this host".into()
+            }
+        );
+        assert_eq!(setup.message(), "Remove and add this host");
+        assert_eq!(setup.to_string(), "Remove and add this host");
+        let bare = call("bare_setup");
+        assert!(matches!(&bare, RemoteError::NeedsSetup { .. }), "{bare:?}");
+        assert!(!bare.message().is_empty());
+        // An older daemon says offline for a request it may have written.
+        assert_eq!(call("old_daemon"), RemoteError::Lost("relay closed".into()));
+        assert_eq!(
+            call("action_only"),
+            RemoteError::Lost("relay closed".into())
+        );
+        assert_eq!(
+            call("other_code"),
+            RemoteError::Rpc {
+                code: "conflict".into(),
+                message: "busy".into()
+            }
+        );
+    }
+
+    #[test]
+    fn is_unsupported_needs_both_the_code_and_the_words() {
+        let error = |code: &str, message: &str| RemoteError::Rpc {
+            code: code.into(),
+            message: message.into(),
+        };
+        // The connector's three refusals of a method it does not have.
+        assert!(error("invalid_request", "unsupported RPC method").is_unsupported());
+        assert!(error("invalid_request", "Unsupported RPC method: pty.open").is_unsupported());
+        assert!(error("invalid_request", "unsupported native method").is_unsupported());
+        // The same code from argument checks, and the same words under another code.
+        assert!(!error("invalid_request", "params must be an object").is_unsupported());
+        assert!(!error("cli_error", "unsupported native method").is_unsupported());
+        assert!(!RemoteError::Lost("unsupported native method".into()).is_unsupported());
+    }
+
     #[test]
     fn call_times_out_when_the_daemon_never_answers() {
         let daemon = FakeDaemon::start(|_request, stream| hold_until_closed(stream));
@@ -1417,6 +1603,8 @@ exit 0
                 since: Some(1_790_000_000),
                 reason: None,
                 label: Some("MacBook".into()),
+                cause: None,
+                needs_action: false,
             }
         );
         assert_eq!(
@@ -1427,6 +1615,8 @@ exit 0
                 since: None,
                 reason: None,
                 label: Some("MacBook".into()),
+                cause: None,
+                needs_action: false,
             }
         );
         assert_eq!(
@@ -1437,6 +1627,8 @@ exit 0
                 since: Some(1_790_000_100),
                 reason: Some("relay closed".into()),
                 label: Some("MacBook".into()),
+                cause: None,
+                needs_action: false,
             }
         );
         assert!(matches!(
@@ -1451,6 +1643,28 @@ exit 0
                 .collect::<Vec<_>>(),
             vec![json!("status"); 4]
         );
+    }
+
+    #[test]
+    fn status_carries_the_cause_only_when_the_daemon_gives_one() {
+        let status = parse_status(
+            r#"{"state":"offline","since":5,"reason":"Remove and add this host","label":"Mac","cause":"identity_changed","needs_action":true,"daemon":2}"#,
+        )
+        .expect("status");
+        assert_eq!(status.state, LinkState::Offline);
+        assert_eq!(status.cause.as_deref(), Some("identity_changed"));
+        assert!(status.needs_action);
+        assert_eq!(status.reason.as_deref(), Some("Remove and add this host"));
+
+        let retrying =
+            parse_status(r#"{"state":"offline","reason":"relay closed","cause":"unreachable"}"#)
+                .expect("status");
+        assert_eq!(retrying.cause.as_deref(), Some("unreachable"));
+        assert!(!retrying.needs_action);
+
+        // An older daemon sends neither field.
+        let older = parse_status(r#"{"state":"offline","reason":"relay closed"}"#).expect("status");
+        assert_eq!((older.cause, older.needs_action), (None, false));
     }
 
     #[test]
@@ -1502,6 +1716,31 @@ exit 0
         }
         assert_eq!(fake.count("client ensure"), 1);
         assert_eq!(fake.count("client socket"), 1);
+    }
+
+    #[test]
+    fn a_status_does_not_wait_for_a_daemon_being_started() {
+        let daemon = echo_daemon();
+        let fake = FakeCli::new(daemon.path());
+        let daemons = daemons(&fake);
+        assert!(!daemons.starting("h1"), "nobody has asked yet");
+
+        let gate = Arc::clone(lock(&daemons.gates).entry("h1".to_owned()).or_default());
+        let turn = lock(&gate);
+        assert!(daemons.starting("h1"));
+        assert!(!daemons.starting("h2"), "only that host's");
+        let status = daemons.status("h1").expect("a status at once");
+        assert_eq!(status.state, LinkState::Connecting);
+        assert_eq!(status.reason, None);
+        assert_eq!(fake.count("client ensure"), 0, "left to whoever is at it");
+        drop(turn);
+        assert!(!daemons.starting("h1"));
+
+        // A socket that is known is no start, whoever is at the gate.
+        warm(&daemons);
+        let turn = lock(&gate);
+        assert!(!daemons.starting("h1"));
+        drop(turn);
     }
 
     #[test]
@@ -1617,6 +1856,48 @@ exit 0
         fake.dir.write("hosts.json", "[]");
         assert_eq!(fake.cli.hosts().expect("empty"), Vec::new());
         assert_eq!(fake.log(), vec!["hosts list --json"; 3]);
+    }
+
+    #[test]
+    fn hosts_with_transport_reads_the_records_age_and_defaults_old_companions() {
+        let fake = FakeCli::new(Path::new("/tmp/unused.sock"));
+        const PIN: &str = "5d0f1e3a-8c4b-4f6e-9a21-3b7c9d2e4f10";
+        let list = format!(
+            r#"[
+            {{"id":"relay-1","label":"Studio","transport":"relay","added_at_unix":1790000000,"host_id":"{PIN}","pairing":{{"key":"TOPSECRET"}}}},
+            {{"id":"ssh-1","label":"Box","transport":"ssh","added_at_unix":1790000100,"host_id":"{PIN}"}},
+            {{"id":"ssh-2","label":"Unpinned","transport":"ssh","added_at_unix":1790000200}},
+            {{"id":"old-1","label":"Old"}},
+            {{"id":"odd-1","label":"Odd","added_at_unix":"soon"}}
+        ]"#
+        );
+        for text in [list.clone(), format!(r#"{{"v":1,"hosts":{list}}}"#)] {
+            fake.dir.write("hosts.json", &text);
+            let routes = fake.cli.hosts_with_transport().expect("list");
+            let summary: Vec<_> = routes
+                .iter()
+                .map(|r| {
+                    (
+                        r.host.id.as_str(),
+                        r.transport.as_str(),
+                        r.added_at,
+                        r.host_id.as_deref(),
+                    )
+                })
+                .collect();
+            // Only an SSH route is pinned to an identity in the registry.
+            assert_eq!(
+                summary,
+                vec![
+                    ("relay-1", "relay", Some(1_790_000_000), None),
+                    ("ssh-1", "ssh", Some(1_790_000_100), Some(PIN)),
+                    ("ssh-2", "ssh", Some(1_790_000_200), None),
+                    ("old-1", "relay", None, None),
+                    ("odd-1", "relay", None, None),
+                ]
+            );
+            assert_eq!(routes[0].host.label, "Studio");
+        }
     }
 
     #[test]

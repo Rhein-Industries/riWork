@@ -7,6 +7,9 @@ use riwork_remote::{config::Storage, rpc::Rpc};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
+/// What `ready` gives a question to the CLI.
+const READY_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
+
 fn new_uuid() -> String {
     uuid::Uuid::new_v4().to_string()
 }
@@ -455,7 +458,7 @@ async fn a_cli_that_cannot_create_orchestrators_is_not_asked_to() {
         }
         f.cli_says(with_created(terminal(&new_uuid(), None), json!(true)));
         assert!(
-            !f.rpc.orchestrator_create_supported().await,
+            !f.rpc.orchestrator_create_supported(READY_WAIT).await,
             "{answer:?} was believed"
         );
         let response = f.create(json!({})).await;
@@ -480,8 +483,8 @@ async fn a_yes_is_remembered_and_one_answer_serves_chats_and_orchestrators() {
     f.cli_says(with_created(terminal(&new_uuid(), None), json!(true)));
     assert_eq!(f.create(json!({})).await["ok"], true);
     // The same answer said chats are there: the CLI is not asked again for them.
-    assert!(f.rpc.chat_supported().await);
-    assert!(f.rpc.orchestrator_create_supported().await);
+    assert!(f.rpc.chat_supported(READY_WAIT).await);
+    assert!(f.rpc.orchestrator_create_supported(READY_WAIT).await);
     assert_eq!(f.calls_of("capabilities", "--json").len(), 1);
 
     // A CLI that has orchestrator creation but not chats is believed for what it says.
@@ -489,14 +492,14 @@ async fn a_yes_is_remembered_and_one_answer_serves_chats_and_orchestrators() {
     f.set("capabilities.out", "{\"v\":1,\"orchestrator_create\":true}");
     f.cli_says(with_created(terminal(&new_uuid(), None), json!(true)));
     assert_eq!(f.create(json!({})).await["ok"], true);
-    assert!(!f.rpc.chat_supported().await);
+    assert!(!f.rpc.chat_supported(READY_WAIT).await);
     // And a CLI updated while the connector runs is believed at once.
     f.set(
         "capabilities.out",
         "{\"v\":1,\"orchestrator_create\":true,\"chat\":true}",
     );
     f.rpc.learn_chat().await;
-    assert!(f.rpc.chat_supported().await);
+    assert!(f.rpc.chat_supported(READY_WAIT).await);
 }
 
 #[tokio::test]

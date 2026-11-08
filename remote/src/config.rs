@@ -27,6 +27,17 @@ fn now_unix() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
+/// `lock_wait` ran out of time: another process holds the lock, as opposed to a
+/// lock that cannot be used at all.
+#[derive(Debug)]
+pub(crate) struct LockBusy;
+impl std::fmt::Display for LockBusy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("timed out waiting for another remote process using this storage")
+    }
+}
+impl std::error::Error for LockBusy {}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Pairing {
@@ -502,10 +513,7 @@ impl Storage {
             match f.try_lock_exclusive() {
                 Ok(()) => return Ok(f),
                 Err(e) if e.raw_os_error() == fs2::lock_contended_error().raw_os_error() => {
-                    ensure!(
-                        Instant::now() < end,
-                        "timed out waiting for another remote process using this storage"
-                    );
+                    ensure!(Instant::now() < end, LockBusy);
                     std::thread::sleep(Duration::from_millis(20));
                 }
                 Err(e) => return Err(e).context("lock remote storage"),

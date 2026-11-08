@@ -32,6 +32,9 @@ pub const PROJECTS_INTERVAL: Duration = Duration::from_secs(10);
 pub const STATS_INTERVAL: Duration = Duration::from_secs(30);
 /// How often the registry of hosts is read again while it is shown.
 pub const HOSTS_INTERVAL: Duration = Duration::from_secs(10);
+/// The least time between registry reads made because a chat tab's host cannot be reached.
+/// Each read starts a process, and every open tab on a removed host would otherwise ask.
+pub const ROUTE_CHECK_INTERVAL: Duration = Duration::from_secs(30);
 /// How many requests for project rows' figures may be out at once for one host.
 const MAX_STATS_IN_FLIGHT: usize = 4;
 /// A list reply travels through the relay and the host's CLI; this is generous.
@@ -434,6 +437,8 @@ struct HostNode {
     projects: Fetch<Vec<RemoteProject>>,
     orchestrators: Fetch<Vec<RemoteShell>>,
     data: BTreeMap<String, ProjectData>,
+    /// Where in the project list the next walk for the rows' figures starts.
+    figures_next: usize,
     /// The state of the last "new project" asked of this host.
     create: Creation,
 }
@@ -447,6 +452,7 @@ impl HostNode {
             projects: Fetch::default(),
             orchestrators: Fetch::default(),
             data: BTreeMap::new(),
+            figures_next: 0,
             create: Creation::Idle,
         }
     }
@@ -459,6 +465,26 @@ impl HostNode {
                 LinkState::Offline => Link::Offline,
             }),
             Err(_) => Some(Link::Offline),
+        }
+    }
+
+    /// Why the link is down: the daemon's reason, or why the daemon could not be reached.
+    fn offline_reason(&self) -> Option<&str> {
+        let reason = match self.status.as_ref()? {
+            Ok(status) if status.state == LinkState::Offline => status.reason.as_deref()?,
+            Ok(_) => return None,
+            Err(error) => error,
+        };
+        Some(reason.trim()).filter(|reason| !reason.is_empty())
+    }
+
+    /// The link's state as a sentence. A link that is down says why when that is known, which
+    /// the fixed sentence cannot: a login failure over SSH is not a sleeping or revoked Mac.
+    fn link_text(&self) -> &str {
+        match self.link() {
+            Some(Link::Offline) => self.offline_reason().unwrap_or(Link::Offline.text()),
+            Some(link) => link.text(),
+            None => Link::Connecting.text(),
         }
     }
 
@@ -655,6 +681,9 @@ pub struct RemoteTree {
     hosts_error: Option<String>,
     /// The registry has been read at least once, so a host missing from it is gone.
     hosts_known: bool,
+    /// A watched host's link could not even be asked about, which is how a route removed outside
+    /// this app looks. The next registry read settles it.
+    hosts_doubted: bool,
     /// Project lists kept from an earlier run, for hosts the registry has not named yet.
     kept: BTreeMap<String, Vec<RemoteProject>>,
     /// The project lists changed since they were last handed out to be kept.
@@ -772,6 +801,12 @@ impl RemoteTree {
     /// changed.
     pub fn set_hosts(&mut self, hosts: Vec<Host>) -> bool {
         self.hosts_known = true;
+        // The names of a removed host's projects have to leave the file, and that is worth a
+        // write even when nothing drawn changes, as when it went while the app was not running.
+        self.kept_dirty |= self
+            .kept
+            .keys()
+            .any(|id| !hosts.iter().any(|host| host.id == *id));
         let before = self
             .hosts
             .iter()
@@ -841,6 +876,31 @@ impl RemoteTree {
         self.hosts_poll.invalidate();
     }
 
+    /// A good registry read does not list this host. Nothing can be said before the first one, and
+    /// a failed read changes nothing.
+    pub fn host_removed(&self, id: &str) -> bool {
+        self.hosts_known && self.node(id).is_none()
+    }
+
+    /// Start a registry read for someone outside the plan, if one is due. It shares the plan's
+    /// poll, so one is never out next to another and a read the plan made counts as fresh. The
+    /// caller runs it and applies the answer as usual.
+    pub fn begin_route_check(&mut self, now: Instant) -> bool {
+        let due = self.hosts_poll.due(now, Some(ROUTE_CHECK_INTERVAL));
+        if due {
+            self.hosts_poll.begin(now);
+            self.hosts_doubted = false;
+        }
+        due
+    }
+
+    /// The state of a host's link as a sentence, with the reason when it is down and one is known.
+    pub fn link_text(&self, id: &str) -> String {
+        self.node(id)
+            .map_or(Link::Connecting.text(), HostNode::link_text)
+            .to_owned()
+    }
+
     /// Decide what to ask for now, and mark those requests as running. Nothing is planned
     /// for something nobody is looking at: a hidden panel or a collapsed folder costs no
     /// traffic. Creations are never planned here: only a person starts one.
@@ -849,10 +909,13 @@ impl RemoteTree {
         let looking = wants.folders || wants.settings;
         let wanted = looking || !wants.tab_hosts.is_empty() || wants.selected.is_some();
         if wanted {
-            // Tabs and a selection alone need the labels once; a shown list is kept current.
-            let every = looking.then_some(HOSTS_INTERVAL);
+            // Tabs and a selection alone need the labels once; a shown list is kept current. A
+            // read that failed is tried again, and so is one that may no longer be true.
+            let every =
+                (looking || !self.hosts_known || self.hosts_doubted).then_some(HOSTS_INTERVAL);
             if self.hosts_poll.due(now, every) {
                 self.hosts_poll.begin(now);
+                self.hosts_doubted = false;
                 requests.push(Request::Hosts);
             }
         }
@@ -896,25 +959,30 @@ impl RemoteTree {
             }
             if folder_open {
                 // The figures on the rows: a few at a time, so a host with many projects is
-                // not flooded.
+                // not flooded. Each walk goes on from where the last one ran out of budget: the
+                // top of the list comes due again every STATS_INTERVAL, and starting there every
+                // time would leave the rest of a long list unasked for good.
                 let mut budget = MAX_STATS_IN_FLIGHT.saturating_sub(node.in_flight());
                 let ids = node
                     .projects
                     .value()
                     .map(|projects| projects.iter().map(|project| project.id.clone()).collect())
                     .unwrap_or_else(Vec::<String>::new);
-                for id in ids {
-                    if budget == 0 {
-                        break;
-                    }
+                let first = node.figures_next.checked_rem(ids.len()).unwrap_or(0);
+                for (at, id) in ids.iter().enumerate().cycle().skip(first).take(ids.len()) {
                     node.data.entry(id.clone()).or_default().plan(
                         &host,
-                        &id,
+                        id,
                         Cadence::all(STATS_INTERVAL),
                         now,
                         &mut budget,
                         &mut requests,
                     );
+                    if budget == 0 {
+                        // This project again, as the budget may have stopped halfway through it.
+                        node.figures_next = at;
+                        break;
+                    }
                 }
             }
         }
@@ -929,7 +997,10 @@ impl RemoteTree {
                 match result {
                     Ok(hosts) => {
                         let error = self.hosts_error.take().is_some();
-                        self.set_hosts(hosts) || error
+                        // The first good read says something even when it names nobody: a window
+                        // kept on a project can now say that its host is not paired.
+                        let first = !self.hosts_known;
+                        self.set_hosts(hosts) || error || first
                     }
                     Err(error) => {
                         let changed = self.hosts_error.as_ref() != Some(&error);
@@ -939,18 +1010,24 @@ impl RemoteTree {
                 }
             }
             (Request::Status { host }, Reply::Status(result)) => {
+                let failed = result.is_err();
                 let Some(node) = self.node_mut(host) else {
                     return false;
                 };
                 node.status_poll.end();
                 let was = node.link();
+                let said = node.link_text().to_owned();
                 node.status = Some(result);
                 if was != Some(Link::Online) && node.link() == Some(Link::Online) {
                     // Back on line: what was listed may be stale, so ask again at once.
                     node.invalidate_lists();
                 }
                 // The round-trip time moves on every poll and is not drawn.
-                was != node.link()
+                let changed = was != node.link() || said != node.link_text();
+                // A read already out settles it. Should it have started too soon to see the
+                // change, this link goes on failing, and the next failure asks again.
+                self.hosts_doubted |= failed && !self.hosts_poll.in_flight;
+                changed
             }
             (Request::Projects { host }, Reply::Projects(result)) => {
                 let Some(node) = self.node_mut(host) else {
@@ -1251,7 +1328,7 @@ impl HostNode {
             return None;
         }
         let note = match (link, self.projects.value(), self.projects.error()) {
-            (Some(Link::Offline), ..) => Some(Link::Offline.text().to_owned()),
+            (Some(Link::Offline), ..) => Some(self.link_text().to_owned()),
             (_, None, Some(error)) => Some(error.to_owned()),
             (Some(Link::Connecting) | None, None, None) => Some(Link::Connecting.text().to_owned()),
             (_, None, None) => Some("Loading projects…".to_owned()),
@@ -1303,7 +1380,10 @@ impl HostNode {
 /// is a daemon that could not be reached: nothing was sent. A reply that never came, or that
 /// could not be read, is not.
 pub fn outcome_unknown(error: &RemoteError) -> bool {
-    matches!(error, RemoteError::Timeout | RemoteError::Protocol(_))
+    matches!(
+        error,
+        RemoteError::Timeout | RemoteError::Protocol(_) | RemoteError::Lost(_)
+    )
 }
 
 fn creation_failure(error: &RemoteError, host: &str, what: &str) -> String {
@@ -1458,6 +1538,8 @@ mod tests {
             since: None,
             reason: None,
             label: None,
+            cause: None,
+            needs_action: false,
         }
     }
 
@@ -1832,14 +1914,28 @@ mod tests {
         );
     }
 
-    #[test]
-    fn tabs_and_a_selection_alone_watch_their_host_and_read_the_registry_once() {
-        let now = Instant::now();
-        let mut tree = RemoteTree::default();
-        let wants = Wants {
+    /// A window with only a tab on `h1`.
+    fn wants_tab() -> Wants {
+        Wants {
             tab_hosts: BTreeSet::from(["h1".to_owned()]),
             ..Wants::default()
-        };
+        }
+    }
+
+    fn status_failed(tree: &mut RemoteTree) {
+        tree.apply(
+            &Request::Status { host: "h1".into() },
+            Reply::Status(Err("Cannot start the connection to this Mac".into())),
+        );
+    }
+
+    // The registry is read once only while it and the link answer: a failed read, or a link that
+    // cannot even be asked about, is what the tests after this one read it again for.
+    #[test]
+    fn tabs_and_a_selection_alone_watch_their_host_and_read_the_registry_once_while_all_answers() {
+        let now = Instant::now();
+        let mut tree = RemoteTree::default();
+        let wants = wants_tab();
         assert_eq!(tree.plan(now, &wants), [Request::Hosts]);
         tree.apply(
             &Request::Hosts,
@@ -1855,6 +1951,438 @@ mod tests {
             tree.plan(now + HOSTS_INTERVAL * 3, &wants),
             [Request::Status { host: "h1".into() }]
         );
+    }
+
+    #[test]
+    fn a_failed_first_registry_read_is_asked_again_for_tabs_and_a_selection_alone() {
+        for wants in [wants_tab(), wants_selected("")] {
+            let now = Instant::now();
+            let mut tree = RemoteTree::default();
+            assert_eq!(tree.plan(now, &wants), [Request::Hosts]);
+            tree.apply(
+                &Request::Hosts,
+                Reply::Hosts(Err("somtus-remote is not installed".into())),
+            );
+            // A read starts a process, so not at once.
+            assert!(tree.plan(now + Duration::from_secs(1), &wants).is_empty());
+            let again = now + HOSTS_INTERVAL;
+            assert_eq!(tree.plan(again, &wants), [Request::Hosts]);
+            // One at a time, however long it takes.
+            assert!(tree.plan(again + HOSTS_INTERVAL, &wants).is_empty());
+            tree.apply(
+                &Request::Hosts,
+                Reply::Hosts(Ok(vec![host("h1", "Studio")])),
+            );
+            // It worked: this is the ordinary quiet case again.
+            let known = again + HOSTS_INTERVAL * 2;
+            assert_eq!(
+                tree.plan(known, &wants),
+                [Request::Status { host: "h1".into() }]
+            );
+            set_link(&mut tree, LinkState::Online);
+            assert_eq!(
+                tree.plan(known + HOSTS_INTERVAL, &wants),
+                [Request::Status { host: "h1".into() }]
+            );
+        }
+    }
+
+    #[test]
+    fn a_failed_status_rereads_the_registry_and_a_removed_host_stops_being_asked() {
+        let now = Instant::now();
+        let mut tree = RemoteTree::default();
+        let wants = wants_tab();
+        tree.plan(now, &wants);
+        tree.apply(
+            &Request::Hosts,
+            Reply::Hosts(Ok(vec![host("h1", "Studio")])),
+        );
+        tree.plan(now, &wants);
+        status_failed(&mut tree);
+        // The read at `now` is too recent to repeat, and the link is not due either.
+        assert!(tree.plan(now + Duration::from_secs(1), &wants).is_empty());
+        let later = now + HOSTS_INTERVAL;
+        let asked = tree.plan(later, &wants);
+        assert_eq!(
+            asked
+                .iter()
+                .filter(|request| **request == Request::Hosts)
+                .count(),
+            1,
+            "{asked:?}"
+        );
+        // The registry no longer has the host: unpaired, and its link is never asked about again.
+        tree.apply(
+            &Request::Status { host: "h1".into() },
+            Reply::Status(Err("x".into())),
+        );
+        tree.apply(&Request::Hosts, Reply::Hosts(Ok(vec![])));
+        assert!(tree.selected_view("remote:h1:p1").unwrap().unpaired);
+        for step in 1..=8 {
+            assert!(
+                tree.plan(later + HOSTS_INTERVAL * step, &wants).is_empty(),
+                "step {step}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_read_too_early_to_see_a_removal_is_followed_by_another() {
+        let start = Instant::now();
+        let mut tree = RemoteTree::default();
+        let wants = wants_tab();
+        tree.plan(start, &wants);
+        tree.apply(
+            &Request::Hosts,
+            Reply::Hosts(Ok(vec![host("h1", "Studio")])),
+        );
+        tree.plan(start, &wants);
+        status_failed(&mut tree);
+        // The read this leads to is out when the link fails again, and answers as if nothing
+        // happened: the route went just after it looked.
+        let read = start + HOSTS_INTERVAL;
+        assert!(tree.plan(read, &wants).contains(&Request::Hosts));
+        status_failed(&mut tree);
+        tree.apply(
+            &Request::Hosts,
+            Reply::Hosts(Ok(vec![host("h1", "Studio")])),
+        );
+        // No doubt is left for now, so only the link is asked about.
+        let next = read + STATUS_INTERVAL;
+        assert_eq!(
+            tree.plan(next, &wants),
+            [Request::Status { host: "h1".into() }]
+        );
+        // Its next failure is what brings the second read, at the usual pace.
+        status_failed(&mut tree);
+        assert!(
+            !tree
+                .plan(read + HOSTS_INTERVAL - Duration::from_secs(1), &wants)
+                .contains(&Request::Hosts)
+        );
+        assert!(
+            tree.plan(read + HOSTS_INTERVAL, &wants)
+                .contains(&Request::Hosts)
+        );
+    }
+
+    #[test]
+    fn failing_statuses_cost_at_most_one_registry_read_per_interval() {
+        let start = Instant::now();
+        let mut tree = RemoteTree::default();
+        let wants = wants_tab();
+        let mut reads = 0;
+        let listed = || Reply::Hosts(Ok(vec![host("h1", "Studio")]));
+        // A minute of the polling worker's half-second ticks with the link failing throughout.
+        for tick in 0..120u32 {
+            let now = start + Duration::from_millis(500) * tick;
+            for request in tree.plan(now, &wants) {
+                match request {
+                    Request::Hosts => {
+                        reads += 1;
+                        tree.apply(&request, listed());
+                    }
+                    _ => status_failed(&mut tree),
+                }
+            }
+        }
+        assert!(
+            (2..=7).contains(&reads),
+            "{reads} registry reads in a minute"
+        );
+    }
+
+    #[test]
+    fn a_daemon_that_answers_offline_is_no_reason_to_read_the_registry() {
+        let now = Instant::now();
+        let mut tree = RemoteTree::default();
+        let wants = wants_tab();
+        tree.plan(now, &wants);
+        tree.apply(
+            &Request::Hosts,
+            Reply::Hosts(Ok(vec![host("h1", "Studio")])),
+        );
+        tree.plan(now, &wants);
+        set_link(&mut tree, LinkState::Offline);
+        assert_eq!(
+            tree.plan(now + HOSTS_INTERVAL * 3, &wants),
+            [Request::Status { host: "h1".into() }]
+        );
+    }
+
+    #[test]
+    fn a_host_counts_as_removed_only_when_a_good_registry_read_leaves_it_out() {
+        let mut tree = RemoteTree::default();
+        assert!(!tree.host_removed("h1"), "nothing has been read");
+        tree.apply(&Request::Hosts, Reply::Hosts(Err("no companion".into())));
+        assert!(!tree.host_removed("h1"), "a failed read says nothing");
+        tree.apply(
+            &Request::Hosts,
+            Reply::Hosts(Ok(vec![host("h1", "Studio")])),
+        );
+        assert!(!tree.host_removed("h1"));
+        tree.apply(&Request::Hosts, Reply::Hosts(Err("no companion".into())));
+        assert!(!tree.host_removed("h1"), "a failed read keeps the host");
+        tree.apply(&Request::Hosts, Reply::Hosts(Ok(vec![])));
+        assert!(tree.host_removed("h1"));
+        tree.apply(&Request::Hosts, Reply::Hosts(Err("no companion".into())));
+        assert!(tree.host_removed("h1"), "and it does not bring one back");
+        tree.apply(
+            &Request::Hosts,
+            Reply::Hosts(Ok(vec![host("h1", "Studio")])),
+        );
+        assert!(!tree.host_removed("h1"), "paired again");
+    }
+
+    #[test]
+    fn route_checks_read_the_registry_once_per_interval_and_share_the_plans_reads() {
+        let now = Instant::now();
+        let mut tree = RemoteTree::default();
+        let wants = wants_folders();
+        assert!(tree.begin_route_check(now));
+        // Out already: neither another check nor a plan starts a second one.
+        assert!(!tree.begin_route_check(now));
+        assert!(tree.plan(now, &wants).is_empty());
+        tree.apply(&Request::Hosts, Reply::Hosts(Ok(vec![])));
+        let early = now + ROUTE_CHECK_INTERVAL - Duration::from_secs(1);
+        assert!(!tree.begin_route_check(early));
+        let due = now + ROUTE_CHECK_INTERVAL;
+        assert!(tree.begin_route_check(due));
+        tree.apply(&Request::Hosts, Reply::Hosts(Err("no companion".into())));
+        // A failed read counts too: it is the process that is being limited.
+        assert!(!tree.begin_route_check(due + Duration::from_secs(1)));
+        // A read the plan made is as fresh as one made for a check.
+        let planned = due + HOSTS_INTERVAL;
+        assert_eq!(tree.plan(planned, &wants), [Request::Hosts]);
+        assert!(!tree.begin_route_check(planned));
+        tree.apply(&Request::Hosts, Reply::Hosts(Ok(vec![])));
+        assert!(!tree.begin_route_check(planned + Duration::from_secs(1)));
+        assert!(tree.begin_route_check(planned + ROUTE_CHECK_INTERVAL));
+    }
+
+    #[test]
+    fn a_kept_host_leaving_the_registry_is_written_down_even_if_nothing_drawn_changed() {
+        let mut tree = RemoteTree::default();
+        tree.keep(BTreeMap::from([
+            ("gone".to_owned(), vec![project("p1", "secret name", 20)]),
+            ("h1".to_owned(), vec![project("p2", "app", 10)]),
+        ]));
+        // No folder is drawn for either until the registry names them.
+        assert!(tree.set_hosts(vec![host("h1", "Studio")]));
+        assert!(tree.take_kept_dirty());
+        assert_eq!(tree.kept().keys().collect::<Vec<_>>(), ["h1"]);
+        // That one is forgotten now, so the same answer writes nothing again.
+        assert!(!tree.set_hosts(vec![host("h1", "Studio")]));
+        assert!(!tree.take_kept_dirty());
+
+        // The registry is empty and so is the tree: nothing drawn changes, and the file still must.
+        let mut tree = RemoteTree::default();
+        tree.keep(BTreeMap::from([(
+            "gone".to_owned(),
+            vec![project("p1", "secret name", 20)],
+        )]));
+        assert!(!tree.set_hosts(vec![]));
+        assert!(tree.take_kept_dirty());
+        assert!(tree.kept().is_empty());
+
+        // A host that never had a list leaves nothing to write down.
+        let mut tree = RemoteTree::default();
+        tree.set_hosts(vec![host("h1", "Studio")]);
+        assert!(tree.set_hosts(vec![]));
+        assert!(!tree.take_kept_dirty());
+    }
+
+    #[test]
+    fn a_first_empty_registry_read_is_drawn_and_the_same_answer_again_is_not() {
+        let mut tree = RemoteTree::default();
+        let key = project_key("h1", "p1");
+        assert!(!tree.selected_view(&key).unwrap().unpaired);
+        // No host came or went, and a window kept on that project can now say why it is empty.
+        assert!(tree.apply(&Request::Hosts, Reply::Hosts(Ok(vec![]))));
+        assert!(tree.selected_view(&key).unwrap().unpaired);
+        assert!(!tree.apply(&Request::Hosts, Reply::Hosts(Ok(vec![]))));
+    }
+
+    #[test]
+    fn every_project_of_a_big_host_gets_its_figures() {
+        let start = Instant::now();
+        let mut tree = RemoteTree::default();
+        tree.set_hosts(vec![host("h1", "Studio")]);
+        set_link(&mut tree, LinkState::Online);
+        let wants = wants_folders();
+        let listed = (0..200)
+            .map(|n| project(&format!("p{n}"), &format!("project {n}"), n))
+            .collect::<Vec<_>>();
+        let mut most = 0;
+        // Half-second ticks and instant answers, the most a host can be asked for.
+        for tick in 0..240u32 {
+            let now = start + Duration::from_millis(500) * tick;
+            let asked = lists(&mut tree, now, &wants);
+            most = most.max(asked.len());
+            for request in &asked {
+                let reply = match request {
+                    Request::Projects { .. } => Reply::Projects(Ok(listed.clone())),
+                    Request::Worktrees { .. } => Reply::Worktrees(Ok(vec![])),
+                    Request::Tasks { .. } => Reply::Tasks(Ok(vec![])),
+                    Request::Shells { .. } => Reply::Shells(Ok(vec![])),
+                    other => panic!("not asked: {other:?}"),
+                };
+                tree.apply(request, reply);
+            }
+            set_link(&mut tree, LinkState::Online);
+        }
+        assert!(most <= MAX_STATS_IN_FLIGHT, "{most} at once");
+        let folder = folders(&tree, "").remove(0);
+        assert_eq!(folder.count, 200);
+        let unknown = folder
+            .projects
+            .iter()
+            .filter(|row| row.stats.line().contains('–'))
+            .count();
+        assert_eq!(
+            unknown, 0,
+            "{unknown} of 200 projects never got their figures"
+        );
+    }
+
+    #[test]
+    fn the_figures_go_on_from_where_the_budget_ran_out() {
+        let now = Instant::now();
+        let mut tree = RemoteTree::default();
+        tree.set_hosts(vec![host("h1", "Studio")]);
+        set_link(&mut tree, LinkState::Online);
+        let wants = wants_folders();
+        let listed = (1..=4)
+            .map(|n| project(&format!("p{n}"), &format!("project {n}"), n))
+            .collect::<Vec<_>>();
+        lists(&mut tree, now, &wants);
+        tree.apply(
+            &Request::Projects { host: "h1".into() },
+            Reply::Projects(Ok(listed)),
+        );
+        // The first project's three lists and the second's first.
+        let first = lists(&mut tree, now, &wants);
+        answer_all(&mut tree, &first);
+        // The first project comes due again, and the rest of the list still goes first.
+        let later = now + STATS_INTERVAL;
+        tree.apply(
+            &Request::Projects { host: "h1".into() },
+            Reply::Projects(Ok(vec![
+                project("p1", "project 1", 1),
+                project("p2", "project 2", 2),
+                project("p3", "project 3", 3),
+                project("p4", "project 4", 4),
+            ])),
+        );
+        let next = lists(&mut tree, later, &wants)
+            .into_iter()
+            .filter(|request| !matches!(request, Request::Projects { .. }))
+            .collect::<Vec<_>>();
+        assert!(!next.is_empty());
+        assert!(
+            !next.iter().any(|request| matches!(
+                request,
+                Request::Worktrees { project, .. }
+                    | Request::Tasks { project, .. }
+                    | Request::Shells { project, .. }
+                    if project == "p1"
+            )),
+            "{next:?}"
+        );
+    }
+
+    #[test]
+    fn the_selected_projects_lists_stay_outside_the_rotating_budget() {
+        let now = Instant::now();
+        let mut tree = studio();
+        tree.apply(
+            &Request::Projects { host: "h1".into() },
+            Reply::Projects(Ok((1..=9)
+                .map(|n| project(&format!("p{n}"), &format!("project {n}"), n))
+                .collect())),
+        );
+        // The budget for the rows' figures is used up, and the walk is nowhere near the tail.
+        let mut wants = wants_folders();
+        let busy = lists(&mut tree, now, &wants);
+        assert_eq!(busy.len(), MAX_STATS_IN_FLIGHT);
+        // Selecting the last project still asks for all of it, and for nothing besides.
+        wants.selected = Some(SelectedWants {
+            host: "h1".into(),
+            project: "p9".into(),
+            worktrees: true,
+            tasks: true,
+            shells: true,
+        });
+        let asked = lists(&mut tree, now, &wants);
+        assert_eq!(
+            asked,
+            [
+                Request::Worktrees {
+                    host: "h1".into(),
+                    project: "p9".into()
+                },
+                Request::Tasks {
+                    host: "h1".into(),
+                    project: "p9".into()
+                },
+                Request::Shells {
+                    host: "h1".into(),
+                    project: "p9".into()
+                },
+                Request::Orchestrators { host: "h1".into() },
+            ]
+        );
+    }
+
+    #[test]
+    fn an_offline_hosts_reason_is_its_note_and_status_text() {
+        let identity = "SSH host identity changed; reconnect refused before sending requests";
+        let offline = |reason: Option<&str>| {
+            let mut down = status(LinkState::Offline);
+            down.reason = reason.map(str::to_owned);
+            Reply::Status(Ok(down))
+        };
+        let ask = Request::Status { host: "h1".into() };
+        let note = |tree: &RemoteTree| folders(tree, "")[0].note.clone();
+
+        let mut tree = studio();
+        assert!(tree.apply(&ask, offline(Some(identity))));
+        assert_eq!(note(&tree).as_deref(), Some(identity));
+        assert_eq!(tree.link_text("h1"), identity);
+        // Another reason on a link that stays down is a change to what is drawn.
+        assert!(tree.apply(&ask, offline(Some("host offline (or access revoked)"))));
+        assert!(!tree.apply(&ask, offline(Some("host offline (or access revoked)"))));
+        assert_eq!(tree.link_text("h1"), "host offline (or access revoked)");
+
+        // A daemon that could not be reached says why in the error.
+        let failed = "Cannot start the connection to this Mac: no such registry";
+        assert!(tree.apply(&ask, Reply::Status(Err(failed.into()))));
+        assert_eq!(note(&tree).as_deref(), Some(failed));
+        assert_eq!(tree.link_text("h1"), failed);
+
+        // Without a reason, the plain sentence.
+        for reason in [None, Some(""), Some("  ")] {
+            tree.apply(&ask, offline(reason));
+            assert_eq!(note(&tree).as_deref(), Some(Link::Offline.text()));
+            assert_eq!(tree.link_text("h1"), Link::Offline.text());
+        }
+
+        // A reason means nothing once the link is not offline.
+        tree.apply(&ask, offline(Some(identity)));
+        let mut coming = status(LinkState::Connecting);
+        coming.reason = Some(identity.into());
+        tree.apply(&ask, Reply::Status(Ok(coming)));
+        assert_eq!(tree.link_text("h1"), Link::Connecting.text());
+        assert_ne!(note(&tree).as_deref(), Some(identity));
+        set_link(&mut tree, LinkState::Online);
+        assert_eq!(tree.link_text("h1"), Link::Online.text());
+        assert!(note(&tree).is_none());
+
+        // Unasked, and unknown to the registry.
+        let mut tree = RemoteTree::default();
+        tree.set_hosts(vec![host("h1", "Studio")]);
+        assert_eq!(tree.link_text("h1"), Link::Connecting.text());
+        assert_eq!(tree.link_text("nobody"), Link::Connecting.text());
     }
 
     #[test]
@@ -1992,6 +2520,30 @@ mod tests {
             lists(&mut tree, later + Duration::from_secs(1), &wants),
             first
         );
+    }
+
+    #[test]
+    fn only_a_reply_that_may_have_been_lost_leaves_the_outcome_unknown() {
+        for error in [
+            RemoteError::Timeout,
+            RemoteError::Protocol("unreadable".into()),
+            RemoteError::Lost("the session ended".into()),
+        ] {
+            assert!(outcome_unknown(&error), "{error:?}");
+        }
+        for error in [
+            RemoteError::Unreachable("no daemon".into()),
+            RemoteError::Rpc {
+                code: "offline".into(),
+                message: "not sent".into(),
+            },
+            RemoteError::NeedsSetup {
+                cause: "identity_changed".into(),
+                message: "Remove and add this host".into(),
+            },
+        ] {
+            assert!(!outcome_unknown(&error), "{error:?}");
+        }
     }
 
     #[test]
