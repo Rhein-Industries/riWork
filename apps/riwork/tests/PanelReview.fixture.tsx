@@ -2,7 +2,7 @@
 import { View, Text, effect, host, mount, signal } from "nsh";
 import { Store } from "riwork/native";
 import { AddinsPanel, type AddinsPanelApi } from "../AddinsPanel";
-import { DEFAULT_THEME } from "../appearance";
+import { fixtureTheme } from "./fixture-theme";
 import { FilesPanel, PreviewPanel, createFilesController } from "../Files";
 import { AppSettings } from "../settings/AppSettings";
 import { privateFixtureDirectory, mountInPrivateHome } from "./private-home";
@@ -15,10 +15,10 @@ function AddinsFixture() {
     { key: "notes", name: "Daily notes", description: "Your own notes, available in every project.", scope: "personal", trusted: true, dir: "/fixture/addins/notes", views: [{ id: "main", title: "Notes" }] },
   ];
   const api = { list: async () => rows, subscribe: () => ({ close() {} }), create: async () => ({ key: "created" }), trust: async () => {}, revoke: async () => {}, reveal: async () => {}, setSetting: async () => {} } as unknown as AddinsPanelApi;
-  return <View style={{ flex: 1 }}><AddinsPanel api={api} projectId={() => "fixture"} theme={() => DEFAULT_THEME} visible={() => true} open={(key) => opened.set(key)} notice={() => {}} /><Text testID="review-opened">{opened()}</Text></View>;
+  return <View style={{ flex: 1 }}><AddinsPanel api={api} projectId={() => "fixture"} theme={fixtureTheme()} visible={() => true} open={(key) => opened.set(key)} notice={() => {}} /><Text testID="review-opened">{opened()}</Text></View>;
 }
 function FileBody(props: { root: string; preview: boolean }) {
-  const c = createFilesController({ root: () => props.root, label: () => "main · Somtus", previewRequested: () => {}, edit: () => {}, open: () => {}, reveal: () => {} });
+  const c = createFilesController({ theme: fixtureTheme(), root: () => props.root, label: () => "main · Somtus", previewRequested: () => {}, edit: () => {}, open: () => {}, reveal: () => {} });
   let seeded = false;
   effect(() => {
     const root = c.listings().get(props.root);
@@ -44,7 +44,7 @@ function Fixture() {
   const root = signal("");
   if (panel === "files" || panel === "preview") void privateFixtureDirectory(`panel-review-${panel}`).then((path) => root.set(path));
   if (panel === "addins") return <AddinsFixture />;
-  if (panel === "settings") return <AppSettings />;
+  if (panel === "settings") return <AppSettings theme={fixtureTheme()} />;
   return <View style={{ flex: 1 }}>{root() && <FileBody root={root()} preview={panel === "preview"} />}</View>;
 }
 mountInPrivateHome(Fixture);

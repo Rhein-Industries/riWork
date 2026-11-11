@@ -41,7 +41,10 @@ test("panel review pins and view modes survive reopening and retain project acti
     await peer.waitFor(`id:project-${id}`);
     expect((await inspect(peer)).state.projects.some((project) => project.id === id)).toBe(true);
     await peer.press(`id:project-${id}`);
-    expect(peer.shows(`id:project-settings:${id}`)).toBe(true);
+    // The selected row keeps pin and its menu (which holds Project settings); the pointer brings
+    // out the settings and window buttons.
+    expect(peer.shows(`id:project-menu:${id}`)).toBe(true);
+    expect(peer.shows(`id:pin-project:${id}`)).toBe(true);
   } finally { peer?.dispose(); app.dispose(); }
 });
 test("panel review terminal cleanup freezes scope, cancels safely, and expires on project switch", async () => {
@@ -91,7 +94,8 @@ test("panel review add-in creation and opening remain separate from trust", asyn
   try {
     await app.waitFor("id:addin-open:overview:main");
     await app.press("id:addin-open:overview:main");
-    expect(app.texts()).toContain("Not trusted yet: opening it asks first.");
+    expect(app.texts()).toContain("Not trusted yet");
+    expect(app.texts()).toContain("Opening it asks first.");
     await app.press("id:addin-new");
     expect(app.shows("id:addin-new-name")).toBe(true);
     await app.press("id:addin-new");

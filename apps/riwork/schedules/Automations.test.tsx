@@ -16,7 +16,8 @@ test("P6B-SCHED-UI-01 visible subscriptions close and reopen; real status and ea
   try {
     await app.waitFor(`id:automation-row-${ID}`);
     expect(app.texts()).toContain("1 automation"); expect(app.texts()).toContain(FOOTNOTE);
-    expect(app.texts()).toContain("Last · fixture observed · submitted · due fixture due");
+    // The card joins its remaining facts in one line (each on its own line in the tooltip).
+    expect(app.texts().some((text) => text.includes("Last · fixture observed · submitted · due fixture due"))).toBe(true);
     await app.press(`id:automation-created-chat-${ID}`);
     await app.press("id:automation-project-chat-earlier-fixture-chat");
     expect((await inspect(app)).opened).toEqual(["created-fixture-chat", "earlier-fixture-chat"]);

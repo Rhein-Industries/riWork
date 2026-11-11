@@ -3,7 +3,7 @@
 import { Text, View, host, mount, signal } from "nsh";
 import { Button } from "nsh/base";
 import { AutomationsPanel, type AutomationsApi } from "./Automations";
-import { DEFAULT_THEME } from "../appearance";
+import { fixtureTheme } from "../tests/fixture-theme";
 import { defaults, localIso, projectScope, type CreateRequest, type ScheduleData, type ScheduleRow, type UpdateRequest } from "./model";
 
 const PROJECT = "11111111-1111-4111-8111-111111111111", OTHER = "22222222-2222-4222-8222-222222222222";
@@ -16,6 +16,7 @@ function row(): ScheduleRow {
     nextRun: NOW + 600, nextDisplay: "2030-03-17 18:56:40 +01:00", lastRun: { dueAt: NOW - 60, observedAt: NOW - 30, dueDisplay: "fixture due", observedDisplay: "fixture observed", outcome: "submitted", message: "Inert fake result", createdChatId: "created-fixture-chat" } };
 }
 function Fixture() {
+  const palette = fixtureTheme();
   const visible = signal(true), project = signal(PROJECT), calls = signal<string[]>([]), opened = signal<string[]>([]);
   let revision = 1, subscribes = 0, closes = 0, hold = false, release: (() => void) | null = null, conflict = false;
   let data: ScheduleData = { schema: 1, now: NOW, rows: [row()], targets: [
@@ -59,7 +60,7 @@ function Fixture() {
       <Button testID="fixture-runtime-error" onPress={() => { data = { ...data, runtimeError: "Disposable ticker error" }; publish(); }}><Text>Publish runtime error</Text></Button>
     </View>}
     <AutomationsPanel api={api} projectId={project} visible={visible} now={() => NOW}
-      theme={() => ({ ...DEFAULT_THEME, native: true, family: "system-ui", scale: 13 / 11 })}
+      theme={() => ({ ...palette(), native: true, family: "system-ui", scale: 13 / 11 })}
       openChat={(id) => opened.set([...opened(), id])} />
   </View>;
 }

@@ -9,6 +9,7 @@ import { NOW, WIRE } from "./sample";
 const DARK = {
   bg: "#000000", panel: "#1c1c1e", panelActive: "#2c2c2e", divider: "#3a3a3c", cyan: "#ffffff", magenta: "#c7c7cc",
   gold: "#ff9f0a", text: "#f5f5f7", muted: "#98989d", focus: "#ffffff", working: "#409cff", danger: "#ff6961",
+  primary: "#ffffff", onPrimary: "#000000",
 };
 export const HOST = "mac-1";
 const given = ((host as unknown as { params?: { windowControls?: number } }).params ?? {});

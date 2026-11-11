@@ -2,7 +2,7 @@
  * inventory, Codex app-server, Claude status line or Grok harness. */
 import { mount, host, View } from "nsh";
 import type { AccountsDto, SessionsSnapshot, ShellSessionDto, UsageDto } from "riwork/native";
-import { DEFAULT_THEME } from "./appearance";
+import { fixtureTheme } from "./tests/fixture-theme";
 import { UsagePanel, type UsagePanelApi } from "./UsagePanel";
 
 const PROJECT = "11111111-1111-4111-8111-111111111111";
@@ -148,7 +148,7 @@ function Fixture() {
   });
   host.on("app.fixture.usage.inspect", () => host.post("app.fixture.usage.state", { calls, listeners: listeners.size }));
   return <View style={{ flex: 1 }}>
-    <UsagePanel api={api} projectId={() => PROJECT} theme={() => DEFAULT_THEME} visible={() => true} />
+    <UsagePanel api={api} projectId={() => PROJECT} theme={fixtureTheme()} visible={() => true} />
   </View>;
 }
 mount(Fixture);

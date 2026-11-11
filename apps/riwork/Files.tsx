@@ -4,6 +4,7 @@ import { Menu } from "nsh/desktop";
 import { Files, Store, type Subscription } from "riwork/native";
 import { DEFAULT_THEME, space, type InterfaceTheme } from "./appearance";
 import { Icon, type IconName } from "./Icon";
+import { StatusPill, focusRing, searchBox, type Tone } from "./PanelKit";
 import { PANEL } from "./panel_layout";
 import { directoryData, fileRows, memoBytes, omittedLabel, previewData, reconcileListings, type DirectoryListing, type FileEntry, type FilePreview } from "./files_model";
 
@@ -292,15 +293,20 @@ export type FilesController = ReturnType<typeof createFilesController>;
 function styles(c: FilesController) {
   const t = c.theme();
   return { text: { fontFamily: t.family, fontSize: 11 * t.scale, color: t.palette.text }, muted: { fontFamily: t.family, fontSize: 10 * t.scale, color: t.palette.muted },
-    button: { paddingHorizontal: space(10, t.scale), paddingVertical: space(4, t.scale), borderRadius: space(14, t.scale), backgroundColor: t.palette.panelActive } };
+    button: { paddingHorizontal: space(10, t.scale), paddingVertical: space(4, t.scale), borderRadius: space(8, t.scale), borderWidth: 1, borderColor: t.palette.divider, backgroundColor: t.palette.bg } };
 }
 function FileAction(props: { controller: FilesController; id: string; label: string; icon: IconName; disabled?: boolean; selected?: boolean; onPress: () => void }) {
   const c = props.controller;
   return <Button tooltip={<View style={{ padding: 7, borderRadius: 6, backgroundColor: c.theme().palette.panelActive }}><Text style={styles(c).text}>{props.label}</Text></View>} testID={props.id} accessibilityLabel={props.label} disabled={props.disabled} selected={props.selected} onPress={props.onPress}
-    style={{ width: space(PANEL.control, c.theme().scale), height: space(PANEL.control, c.theme().scale), borderRadius: space(13, c.theme().scale), alignItems: "center", justifyContent: "center", opacity: props.disabled ? 0.4 : 1 }}
-    hoverStyle={{ backgroundColor: c.theme().palette.panelActive }} focusStyle={{ backgroundColor: c.theme().palette.divider }} selectedStyle={{ backgroundColor: c.theme().palette.panelActive }}>
+    style={{ width: space(PANEL.control, c.theme().scale), height: space(PANEL.control, c.theme().scale), borderRadius: space(8, c.theme().scale), alignItems: "center", justifyContent: "center", opacity: props.disabled ? 0.4 : 1 }}
+    hoverStyle={{ backgroundColor: c.theme().palette.panelActive }} focusStyle={focusRing(c.theme().palette, 1)} selectedStyle={{ backgroundColor: c.theme().palette.panelActive }}>
     <Icon name={props.icon} size={PANEL.icon * c.theme().scale} color={props.selected ? c.theme().palette.text : c.theme().palette.muted} />
   </Button>;
+}
+/** A Git change as a state: added or new files are green, deleted ones red, other changes amber. */
+function gitTone(status: string): Tone {
+  const code = status.trim().toUpperCase();
+  return code.startsWith("D") ? "failed" : code.startsWith("A") || code.startsWith("?") ? "done" : code.startsWith("M") || code.startsWith("R") || code.startsWith("U") ? "needs" : "neutral";
 }
 export function FilesPanel(props: { controller: FilesController; surface?: string }) {
   const c = props.controller, id = props.surface ?? "files";
@@ -333,7 +339,7 @@ export function FilesPanel(props: { controller: FilesController; surface?: strin
       </View>
     </View>
     <View style={{ paddingHorizontal: space(12, c.theme().scale), paddingBottom: space(6, c.theme().scale) }}>
-      <View style={{ flexDirection: "row", alignItems: "center", gap: 5, height: space(28, c.theme().scale), paddingHorizontal: 9, borderRadius: space(14, c.theme().scale), backgroundColor: c.theme().palette.panelActive }}>
+      <View style={searchBox(c.theme, c.filterFocused()).style} hoverStyle={searchBox(c.theme, c.filterFocused()).hoverStyle}>
         <Icon name="search" size={13 * c.theme().scale} color={c.theme().palette.muted} />
         <Input testID={`files-filter:${id}`} ref={(node) => { search = node; c.searches.set(id, node); }} accessibilityLabel="Filter loaded files" placeholder="Filter loaded files…" value={c.query()} onChange={(value) => c.query.set(value)} onFocus={() => { c.focused.set("files"); c.filterFocused.set(true); }} onBlur={() => c.filterFocused.set(false)} onCompositionChange={(event) => c.filterComposing.set(event.composing)} onSubmit={() => { if (!c.filterComposing()) c.focusTree(id); }} style={{ ...styles(c).text, padding: 0, flex: 1, minWidth: 0, backgroundColor: "transparent" }} />
         {c.query() !== "" && <FileAction controller={c} id={`files-clear:${id}`} label="Clear filter" icon="close" onPress={() => { c.query.set(""); search?.focus(); }} />}
@@ -350,7 +356,8 @@ export function FilesPanel(props: { controller: FilesController; surface?: strin
       </View>
     </View>}
     {c.notice() !== "" && <Text testID="files-notice" role="alert" style={{ ...styles(c).text, color: c.theme().palette.gold, paddingHorizontal: 12, paddingBottom: 6 }}>{c.notice()}</Text>}
-    <List testID={`files-tree:${id}`} ref={(node) => c.treeLists.set(id, node)} each={c.rows()} keyExtractor={(item) => item.entry.path} estimatedItemSize={space(32, c.theme().scale)} style={{ flex: 1, minHeight: 0, marginHorizontal: space(PANEL.gutter, c.theme().scale), borderRadius: 9, backgroundColor: c.theme().palette.bg }} contentStyle={{ paddingBottom: 6 }}
+    {/* The tree sits on the panel like every other list; rows take the quiet fill. */}
+    <List testID={`files-tree:${id}`} ref={(node) => c.treeLists.set(id, node)} each={c.rows()} keyExtractor={(item) => item.entry.path} estimatedItemSize={space(32, c.theme().scale)} style={{ flex: 1, minHeight: 0 }} contentStyle={{ paddingHorizontal: space(PANEL.gutter, c.theme().scale), paddingBottom: 6 }}
       empty={<View style={{ minHeight: space(120, c.theme().scale), padding: 24, gap: 8, alignItems: "center", justifyContent: "center" }}><Icon name="folder" size={22 * c.theme().scale} color={c.theme().palette.muted} /><Text testID="files-empty" style={{ ...styles(c).muted, textAlign: "center" }}>{empty()}</Text></View>}>
       {(item) => <FileRow item={item} />}
     </List>
@@ -367,12 +374,12 @@ export function FilesPanel(props: { controller: FilesController; surface?: strin
     return <View testID={`file:${entry().relativePath}`} role="row" accessibilityLabel={entry().relativePath}
       accessibilityState={{ selected: c.selected()?.path === entry().path, expanded: entry().kind === "directory" ? c.expanded().has(entry().path) : undefined }}
       onContextMenu={() => contextMenu(entry())} onPress={(event) => { c.focusTree(id); c.select(entry()); if (event?.clickCount === 2 && entry().kind === "file") void c.edit(entry()); }}
-      style={{ height: space(32, c.theme().scale), paddingLeft: space(6 + props.item().depth * 16, c.theme().scale), paddingRight: 6, flexDirection: "row", alignItems: "center", gap: 5, borderRadius: space(7, c.theme().scale), backgroundColor: c.selected()?.path === entry().path ? c.theme().palette.panelActive : "transparent" }}
-      hoverStyle={{ backgroundColor: c.theme().palette.panelActive }} focusStyle={{ backgroundColor: c.theme().palette.divider }}>
+      style={{ height: space(32, c.theme().scale), paddingLeft: space(6 + props.item().depth * 16, c.theme().scale), paddingRight: 6, flexDirection: "row", alignItems: "center", gap: 5, borderRadius: space(8, c.theme().scale), backgroundColor: c.selected()?.path === entry().path ? c.theme().palette.panelActive : "transparent" }}
+      hoverStyle={{ backgroundColor: c.theme().palette.panelActive }} focusStyle={focusRing(c.theme().palette, -2)}>
       <View style={{ width: space(16, c.theme().scale), flexShrink: 0 }}>{entry().kind === "directory" && <Icon name={c.expanded().has(entry().path) ? "down" : "right"} size={16 * c.theme().scale} color={c.theme().palette.muted} />}</View>
       <Text numberOfLines={1} style={{ ...styles(c).text, fontFamily: c.theme().family, fontSize: 12 * c.theme().scale, fontWeight: entry().kind === "directory" ? "600" : "400", flex: 1 }}>{entry().name}</Text>
-      {entry().kind === "symlink" && <Text style={styles(c).muted}>Link</Text>}
-      {entry().gitStatus && <Text testID={`git:${entry().relativePath}`} accessibilityLabel={`Git ${entry().gitStatus}`} style={{ ...styles(c).muted, color: c.theme().palette.gold, paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, backgroundColor: c.theme().palette.panel }}>{entry().gitStatus}</Text>}
+      {entry().kind === "symlink" && <StatusPill theme={c.theme} tone="neutral" label="Link" inline={true} />}
+      {entry().gitStatus && <StatusPill theme={c.theme} id={`git:${entry().relativePath}`} accessibilityLabel={`Git ${entry().gitStatus}`} tone={gitTone(entry().gitStatus!)} label={entry().gitStatus!} inline={true} />}
     </View>;
   }
 }
@@ -419,10 +426,10 @@ export function PreviewPanel(props: { controller: FilesController }) {
       <Text testID="preview-metadata" numberOfLines={1} style={{ ...styles(c).muted, flex: 1 }}>{data()?.kind === "text" ? data()?.markdown ? c.renderedMarkdown() ? "Markdown · Read only" : "Markdown source · Read only" : "Text / Code · Read only" : data()?.kind === "image" || data()?.kind === "pdf" ? `${data()?.mime ?? (data()?.kind === "pdf" ? "PDF" : "Image")} · ${data()?.width ?? 0} × ${data()?.height ?? 0} pixels` : "No preview"}</Text>
       {!compact() && data()?.kind === "text" && <Button testID="preview-copy-contents" onPress={() => void c.copyContents()} style={styles(c).button}><Text style={styles(c).muted}>Copy contents</Text></Button>}
       {!compact() && data()?.markdown && <Button testID="preview-markdown-mode" onPress={() => c.renderedMarkdown.set(!c.renderedMarkdown())} style={styles(c).button}><Text style={styles(c).muted}>{c.renderedMarkdown() ? "Source" : "Rendered"}</Text></Button>}
-      {c.zoomable() && <View style={{ flexDirection: "row", alignItems: "center", borderRadius: space(14, c.theme().scale), backgroundColor: c.theme().palette.panelActive }}>
-        <Button testID="preview-zoom-out" accessibilityLabel="Zoom out" onPress={() => c.zoom.set(Math.max(data()?.kind === "text" ? 0.5 : 0.05, c.zoom() / 1.2))} style={{ ...styles(c).button, backgroundColor: "transparent" }} hoverStyle={{ backgroundColor: c.theme().palette.divider }}><Text style={styles(c).text}>−</Text></Button>
+      {c.zoomable() && <View style={{ flexDirection: "row", alignItems: "center", borderRadius: space(8, c.theme().scale), borderWidth: 1, borderColor: c.theme().palette.divider, backgroundColor: c.theme().palette.bg }}>
+        <Button testID="preview-zoom-out" accessibilityLabel="Zoom out" onPress={() => c.zoom.set(Math.max(data()?.kind === "text" ? 0.5 : 0.05, c.zoom() / 1.2))} style={{ ...styles(c).button, borderWidth: 0, backgroundColor: "transparent" }} hoverStyle={{ backgroundColor: c.theme().palette.divider }}><Text style={styles(c).text}>−</Text></Button>
         <Button testID="preview-zoom-fit" accessibilityLabel="Actual size" onPress={() => c.zoom.set(1)} style={{ paddingVertical: space(4, c.theme().scale) }} hoverStyle={{ backgroundColor: c.theme().palette.divider }}><Text style={styles(c).muted}>{`${Math.round(c.zoom() * 100)}%`}</Text></Button>
-        <Button testID="preview-zoom-in" accessibilityLabel="Zoom in" onPress={() => c.zoom.set(Math.min(5, c.zoom() * 1.2))} style={{ ...styles(c).button, backgroundColor: "transparent" }} hoverStyle={{ backgroundColor: c.theme().palette.divider }}><Text style={styles(c).text}>+</Text></Button>
+        <Button testID="preview-zoom-in" accessibilityLabel="Zoom in" onPress={() => c.zoom.set(Math.min(5, c.zoom() * 1.2))} style={{ ...styles(c).button, borderWidth: 0, backgroundColor: "transparent" }} hoverStyle={{ backgroundColor: c.theme().palette.divider }}><Text style={styles(c).text}>+</Text></Button>
       </View>}
     </View>}
     {c.notice() !== "" && <Text testID="preview-notice" role="alert" style={{ ...styles(c).text, color: c.theme().palette.gold, paddingHorizontal: space(12, c.theme().scale), paddingVertical: space(6, c.theme().scale) }}>{c.notice()}</Text>}

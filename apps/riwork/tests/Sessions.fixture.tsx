@@ -5,6 +5,7 @@
 import { Text, View, host, mount, signal } from "nsh";
 import type { ChatSummary, ShellSessionDto, StoreState } from "riwork/native";
 import { PanelContent, ShellIntent, createPanelController } from "../Panels";
+import { fixtureTheme } from "./fixture-theme";
 import { EMPTY_STORE } from "../panel_model";
 
 // Not a UUID, so the controller opens no Tabs subscription for it.
@@ -56,6 +57,7 @@ function Fixture() {
   let failure = false;
   const notice = signal("");
   const controller = createPanelController({
+    theme: fixtureTheme(),
     projectId: activeProject, projectLabel: () => "riWork",
     switchProject: async () => {}, openPanel: () => {},
     showShell: (id) => intent.set(id), showChat: () => {}, newChat: () => {},

@@ -2,7 +2,9 @@ import { Scroll, Text, cleanup, effect, keymap, signal, untracked, type JSX, typ
 import { Button, Input, View, SettingsFocus, settingsFocusScope } from "../SettingsFocus";
 import { Accounts, ApiKey, Appearance, OrcaImport, Settings, type AccountsDto, type SettingsDto, type SettingsPatch } from "riwork/native";
 import { space, type InterfaceTheme } from "../appearance";
-import { ChoiceRow, Section, StepperRow, ToggleRow, buttonStyle, defaultTheme, textStyle, type Theme } from "./SettingsControls";
+import { ChoiceRow, Section, StepperRow, ToggleRow, buttonStates, buttonStyle, defaultTheme, textStyle, type Theme } from "./SettingsControls";
+import { Icon } from "../Icon";
+import { StatusPill, focusRing } from "../PanelKit";
 import { SETTINGS_SECTIONS, modelIdError, sectionColumns, settingsLayout } from "./settings_model";
 import { ThemePicker, createPaletteCatalog, type PaletteCatalogSource } from "./ThemePicker";
 import { Brand } from "../Brand";
@@ -230,11 +232,10 @@ export function AppSettings(props: AppSettingsProps) {
   });
 
   const muted = () => textStyle(theme, 10, true);
-  // The shared button style has no border, so a focus color alone drew nothing, and an
-  // unstyled Button does not dim itself when disabled. A transparent hairline takes the
-  // focus color without moving the layout.
-  const actionStyle = () => ({ ...buttonStyle(theme), borderWidth: 1, borderColor: "transparent" });
-  const actionStates = () => ({ hoverStyle: { backgroundColor: theme().palette.divider }, focusStyle: { borderColor: theme().palette.focus }, disabledStyle: { opacity: 0.4 } });
+  // The shared button: the card color with a hairline that darkens on hover, a focus ring, and
+  // dimmed while disabled (an unstyled Button does not dim itself).
+  const actionStyle = () => buttonStyle(theme);
+  const actionStates = () => buttonStates(theme);
   const button = (id: string, label: string, action: () => void, disabled = false, accessibilityLabel = label) => <Button testID={id} accessibilityLabel={accessibilityLabel} disabled={disabled} onPress={action} style={actionStyle()} hoverStyle={actionStates().hoverStyle} focusStyle={actionStates().focusStyle} disabledStyle={actionStates().disabledStyle}><Text style={textStyle(theme, 10)}>{label}</Text></Button>;
   // Notes wrap at the same measure as row descriptions.
   const note = (text: string | null | undefined, id?: string, tone?: "warning" | "error") => !!text && <Text testID={id} selectable={true} style={{ ...muted(), maxWidth: 560, color: tone === "error" ? theme().palette.danger : tone === "warning" ? theme().palette.gold : theme().palette.muted }}>{text}</Text>;
@@ -249,10 +250,17 @@ export function AppSettings(props: AppSettingsProps) {
       <View role="radiogroup" accessibilityLabel="Default Codex account" style={{ gap: 6 }}>
         {accounts()?.accounts.map((account) => {
           const selected = () => account.system ? !accounts()?.selectedId : accounts()?.selectedId === account.id;
+          // The chosen account is a selected card: the card color, an ink hairline and a check.
           return <View testID={`codex-account-${account.id}`} role="radio" focusable={account.available} accessibilityLabel={account.label} accessibilityState={{ checked: selected(), selected: selected(), disabled: !account.available }}
-            disabled={!account.available} onFocus={() => { if (alive) accountFocus.set(account.id); }} onBlur={() => { if (alive) accountFocus.set(null); }} onPress={() => { if (!alive) return; if (account.available) accountFocus.set(account.id); void selectAccount(account.system ? null : account.id, account.available); }} style={{ paddingHorizontal: space(6, theme().scale), paddingVertical: space(7, theme().scale), borderRadius: 7, gap: 3, borderWidth: 1, borderColor: "transparent", opacity: account.available ? 1 : 0.6, backgroundColor: selected() ? theme().palette.panelActive : "transparent" }} hoverStyle={{ backgroundColor: theme().palette.panelActive }} focusStyle={{ borderColor: theme().palette.focus }}>
-            <Text style={textStyle(theme)}>{account.label}</Text><Text style={muted()}>{account.detail}</Text>
-            <Text style={{ ...muted(), color: !account.available ? theme().palette.gold : selected() ? theme().palette.cyan : theme().palette.muted }}>{!account.available ? "Unavailable" : selected() ? "Selected" : "Use account"}</Text>
+            disabled={!account.available} onFocus={() => { if (alive) accountFocus.set(account.id); }} onBlur={() => { if (alive) accountFocus.set(null); }} onPress={() => { if (!alive) return; if (account.available) accountFocus.set(account.id); void selectAccount(account.system ? null : account.id, account.available); }}
+            style={{ flexDirection: "row", alignItems: "center", gap: space(10, theme().scale), maxWidth: space(560, theme().scale), paddingHorizontal: space(12, theme().scale), paddingVertical: space(9, theme().scale), borderRadius: space(10, theme().scale), borderWidth: 1,
+              borderColor: selected() ? theme().palette.text : "transparent", opacity: account.available ? 1 : 0.6, backgroundColor: selected() ? theme().palette.bg : "transparent" }}
+            hoverStyle={{ backgroundColor: selected() ? theme().palette.bg : theme().palette.panelActive }} focusStyle={focusRing(theme().palette, 2)}>
+            <View style={{ flex: 1, minWidth: 0, gap: 3 }}>
+              <Text style={{ ...textStyle(theme), fontWeight: selected() ? "600" : "400" }}>{account.label}</Text><Text style={muted()}>{account.detail}</Text>
+            </View>
+            {!account.available ? <StatusPill theme={theme} tone="needs" label="Unavailable" />
+              : selected() ? <Icon name="check" size={14 * theme().scale} color={theme().palette.text} /> : null}
           </View>;
         })}
       </View>

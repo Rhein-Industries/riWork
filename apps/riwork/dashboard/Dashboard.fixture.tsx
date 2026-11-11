@@ -3,7 +3,7 @@
  * overview. No native read, chat host, provider or window is reached. */
 import { View, mount, signal } from "nsh";
 import type { DashboardDto } from "riwork/native";
-import { DEFAULT_THEME } from "../appearance";
+import { fixtureTheme } from "../tests/fixture-theme";
 import { DashboardView } from "./Dashboard";
 import type { DecisionApi, Review } from "./DecisionReview";
 import type { AgentCounts, DecisionRow, Filter, ProjectRow, SessionRow, Sort, TaskCounts, Wire } from "./model";
@@ -109,7 +109,7 @@ function Fixture() {
     respondDecision: async (reviewId) => ({ ...(reviewId === "review-1" ? APPROVAL : QUESTION), status: "sent" }),
   };
   return <View style={{ flex: 1 }}>
-    <DashboardView dto={dto} theme={() => DEFAULT_THEME} filter={filter} sort={sort} query={query} onFilter={(next) => filter.set(next)} onSort={(next) => sort.set(next)}
+    <DashboardView dto={dto} theme={fixtureTheme()} filter={filter} sort={sort} query={query} onFilter={(next) => filter.set(next)} onSort={(next) => sort.set(next)}
       onSearch={() => {}} onOpen={() => {}} onPanel={() => {}} onGlobalChat={() => {}} onRefresh={() => {}}
       plan={() => null} starting={() => false} decisions={api} />
   </View>;

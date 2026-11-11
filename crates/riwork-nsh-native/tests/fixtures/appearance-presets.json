@@ -14,7 +14,9 @@
       "muted": "#636366",
       "focus": "#000000",
       "working": "#0058d0",
-      "danger": "#c80018"
+      "danger": "#c80018",
+      "primary": "#000000",
+      "onPrimary": "#ffffff"
     },
     "dark": false,
     "terminalOverride": {
@@ -61,7 +63,9 @@
       "muted": "#98989d",
       "focus": "#ffffff",
       "working": "#409cff",
-      "danger": "#ff6961"
+      "danger": "#ff6961",
+      "primary": "#ffffff",
+      "onPrimary": "#000000"
     },
     "dark": true,
     "terminalOverride": {

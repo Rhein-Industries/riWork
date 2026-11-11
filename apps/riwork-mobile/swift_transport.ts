@@ -30,7 +30,9 @@ function deviceTheme(value: unknown): DeviceTheme {
   const theme: Partial<InterfaceTheme> = pushed.theme ?? {};
   return {
     theme: {
-      palette: { ...NATIVE_PALETTE, ...(theme.palette ?? {}) },
+      // Swift sends no primary color: a pushed palette fills its primary action with its own
+      // accent, under its own background, as the desktop does for the palettes before it.
+      palette: { ...NATIVE_PALETTE, ...(theme.palette?.cyan ? { primary: theme.palette.cyan, onPrimary: theme.palette.bg ?? NATIVE_PALETTE.onPrimary } : {}), ...(theme.palette ?? {}) },
       scale: typeof theme.scale === "number" && theme.scale > 0 ? theme.scale : DEFAULT_THEME.scale,
       family: theme.family ?? DEFAULT_THEME.family,
       monoFamily: theme.monoFamily ?? DEFAULT_THEME.monoFamily,

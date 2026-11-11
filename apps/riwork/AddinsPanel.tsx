@@ -4,6 +4,7 @@ import { Addins } from "riwork/native";
 import type { AddinInfo } from "./AddinTab";
 import { space, type InterfaceTheme } from "./appearance";
 import { Icon } from "./Icon";
+import { Segmented, StatusPill, buttonLook, cardStyle, focusRing, type ButtonKind } from "./PanelKit";
 import { PANEL } from "./panel_layout";
 
 export type AddinsPanelApi = Pick<typeof Addins, "list" | "subscribe" | "create" | "trust" | "revoke" | "reveal" | "setSetting">;
@@ -46,29 +47,34 @@ export function AddinsPanel(props: {
   }
 
   const text = (size = 11, color = theme().palette.text) => ({ fontFamily: theme().family, fontSize: size * theme().scale, color });
-  const pill = (label: string, action: () => void, testID?: string, primary = false) =>
-    <View testID={testID} role="button" accessibilityLabel={label} onPress={() => { if (!busy()) action(); }}
-      style={{ paddingHorizontal: space(9, theme().scale), paddingVertical: space(3, theme().scale), borderRadius: space(12, theme().scale),
-        backgroundColor: primary ? theme().palette.cyan : theme().palette.panelActive, opacity: busy() ? 0.5 : 1 }}
-      hoverStyle={{ backgroundColor: primary ? theme().palette.cyan : theme().palette.divider }}>
-      <Text style={text(11, primary ? theme().palette.bg : theme().palette.text)}>{label}</Text>
+  /** A button: plain (the card color with a hairline), or the view's one `primary` action. */
+  const pill = (label: string, action: () => void, testID?: string, kind: ButtonKind = "default") => {
+    const look = buttonLook(theme, kind);
+    return <View testID={testID} role="button" focusable={true} accessibilityLabel={label} onPress={() => { if (!busy()) action(); }}
+      style={{ ...look.style, opacity: busy() ? 0.5 : 1 }} hoverStyle={look.hoverStyle} focusStyle={look.focusStyle}>
+      <Text numberOfLines={1} style={look.label}>{label}</Text>
     </View>;
+  };
 
   function Row(rowProps: { item: () => AddinInfo }) {
     const addin = rowProps.item;
     const open = () => expanded() === addin().key;
-    return <View testID={`addin-row:${addin().key}`} style={{ marginBottom: 8, padding: space(12, theme().scale), gap: 8, borderRadius: 10, borderWidth: 1, borderColor: theme().palette.divider,
-      backgroundColor: open() ? theme().palette.panelActive : theme().palette.bg }} hoverStyle={{ backgroundColor: theme().palette.panelActive }}>
+    return <View testID={`addin-row:${addin().key}`} style={{ ...cardStyle(theme), marginBottom: 8, gap: 8, borderColor: open() ? theme().palette.text : theme().palette.divider }}
+      hoverStyle={{ borderColor: open() ? theme().palette.text : theme().palette.muted }}>
       <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 12, alignItems: "center" }}>
-      <View role="button" accessibilityLabel={addin().name ?? addin().key} onPress={() => expanded.set(open() ? null : addin().key)} style={{ flex: 1, minWidth: 160, gap: 6 }}>
+      <View role="button" focusable={true} accessibilityLabel={addin().name ?? addin().key} accessibilityState={{ expanded: open() }} onPress={() => expanded.set(open() ? null : addin().key)}
+        style={{ flex: 1, minWidth: 160, gap: 6, borderRadius: space(6, theme().scale) }} focusStyle={focusRing(theme().palette, 2)}>
         <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
-          <Icon name="addins" size={18 * theme().scale} color={addin().problem ? theme().palette.gold : addin().trusted ? theme().palette.cyan : theme().palette.muted} />
+          <Icon name="addins" size={18 * theme().scale} color={addin().problem ? theme().palette.danger : addin().trusted ? theme().palette.text : theme().palette.muted} />
           <Text numberOfLines={1} style={{ ...text(12), flex: 1 }}>{addin().name ?? addin().key}</Text>
           <Text style={text(9, theme().palette.muted)}>{`${addin().scope === "project" ? "Project" : addin().installed ? "Installed" : "Personal"}${addin().version ? ` · ${addin().version}` : ""}`}</Text>
         </View>
         {!!addin().description && <Text numberOfLines={open() ? 6 : 2} style={text(10, theme().palette.muted)}>{addin().description!}</Text>}
-        {!!addin().problem && <Text selectable={true} style={text(10, theme().palette.gold)}>{addin().problem!}</Text>}
-        {!addin().problem && !addin().trusted && <Text style={text(10, theme().palette.muted)}>Not trusted yet: opening it asks first.</Text>}
+        {!!addin().problem && <Text selectable={true} style={text(10, theme().palette.danger)}>{addin().problem!}</Text>}
+        {!addin().problem && !addin().trusted && <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
+          <StatusPill theme={theme} tone="needs" label="Not trusted yet" />
+          <Text style={text(10, theme().palette.muted)}>Opening it asks first.</Text>
+        </View>}
       </View>
       {!addin().problem && <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 4, paddingTop: 2 }}>
         {(addin().views ?? []).map((view) => pill(addin().views!.length > 1 ? view.title : "Open", () => props.open(addin().key, view.id, view.title), `addin-open:${addin().key}:${view.id}`))}
@@ -80,17 +86,18 @@ export function AddinsPanel(props: {
       </View>
       {open() && !addin().problem && <View style={{ gap: 6, paddingTop: 4 }}>
         {(addin().permissions ?? []).map((permission) => <Text style={text(10, theme().palette.muted)}>{`· ${permission.text}`}</Text>)}
-        {(addin().workers ?? []).length > 0 && <Text style={text(10, theme().palette.gold)}>{`Runs native code: ${addin().workers!.map((worker) => worker.id).join(", ")}`}</Text>}
+        {(addin().workers ?? []).length > 0 && <Text style={text(10, theme().palette.text)}>{`Runs native code: ${addin().workers!.map((worker) => worker.id).join(", ")}`}</Text>}
         {(addin().tools ?? []).length > 0 && <Text style={text(10, theme().palette.muted)}>{`Agent tools: ${addin().tools!.map((tool) => tool.name).join(", ")}`}</Text>}
         {(addin().settings ?? []).map((setting) => <View style={{ gap: 3 }}>
           <Text style={text(10)}>{setting.label}</Text>
           {setting.type === "boolean"
-            ? pill(setting.value === true ? "On" : "Off", () => void run(() => api.setSetting(props.projectId(), addin().key, setting.key, setting.value !== true)))
+            ? <View style={{ alignSelf: "flex-start" }}>{pill(setting.value === true ? "On" : "Off", () => void run(() => api.setSetting(props.projectId(), addin().key, setting.key, setting.value !== true)))}</View>
             : <Input testID={`addin-setting:${addin().key}:${setting.key}`} accessibilityLabel={setting.label} autoCorrect={false}
                 value={setting.value == null ? "" : String(setting.value)} placeholder={setting.description}
                 onSubmit={({ text: value }) => void run(() => api.setSetting(props.projectId(), addin().key, setting.key,
                   value === "" ? null : setting.type === "number" ? Number(value) : value))}
-                style={{ ...text(11), paddingHorizontal: 6, paddingVertical: 4, borderRadius: 4, backgroundColor: theme().palette.bg }} />}
+                style={{ ...text(11), paddingHorizontal: 8, paddingVertical: 5, borderRadius: space(8, theme().scale), borderWidth: 1, borderColor: theme().palette.divider, backgroundColor: theme().palette.bg }}
+                focusStyle={{ borderColor: theme().palette.focus }} />}
         </View>)}
         <Text selectable={true} numberOfLines={2} style={{ ...text(9, theme().palette.muted), fontFamily: theme().monoFamily }}>{addin().dir}</Text>
       </View>}
@@ -103,17 +110,20 @@ export function AddinsPanel(props: {
         <Text style={{ ...text(13), fontWeight: "600" }}>Add-ins</Text>
         <Text style={text(10, theme().palette.muted)}>{loading() ? "Looking…" : `${addins().length} ${addins().length === 1 ? "add-in" : "add-ins"}`}</Text>
       </View>
-      <Button testID="addin-new" accessibilityLabel={creating() ? "Cancel new add-in" : "New add-in"} onPress={() => { if (!busy()) creating.set(!creating()); }} style={{ width: space(PANEL.control, theme().scale), height: space(PANEL.control, theme().scale), borderRadius: 15, alignItems: "center", justifyContent: "center" }} hoverStyle={{ backgroundColor: theme().palette.panelActive }}><Icon name={creating() ? "close" : "add"} size={PANEL.icon * theme().scale} color={theme().palette.muted} /></Button>
+      <Button testID="addin-new" accessibilityLabel={creating() ? "Cancel new add-in" : "New add-in"} onPress={() => { if (!busy()) creating.set(!creating()); }} style={{ width: space(PANEL.control, theme().scale), height: space(PANEL.control, theme().scale), borderRadius: space(8, theme().scale), alignItems: "center", justifyContent: "center" }} hoverStyle={{ backgroundColor: theme().palette.panelActive }} focusStyle={focusRing(theme().palette, 1)}><Icon name={creating() ? "close" : "add"} size={PANEL.icon * theme().scale} color={theme().palette.muted} /></Button>
     </View>
     {creating() && <View style={{ paddingHorizontal: 12, paddingBottom: 10, gap: 6 }}>
       <Input testID="addin-new-name" accessibilityLabel="Add-in name" autoFocus={true} autoCorrect={false} placeholder="Name, e.g. Security dashboard"
         value={name()} onChange={(value) => name.set(value)} onSubmit={() => void create()}
-        style={{ ...text(12), paddingHorizontal: 8, paddingVertical: 5, borderRadius: 4, backgroundColor: theme().palette.bg }} />
-      <View style={{ flexDirection: "row", gap: 4, alignItems: "center" }}>
-        {pill("In this project", () => personal.set(false), "addin-new-project", !personal())}
-        {pill("Just for me", () => personal.set(true), "addin-new-personal", personal())}
+        style={{ ...text(12), paddingHorizontal: 8, paddingVertical: 5, borderRadius: space(8, theme().scale), borderWidth: 1, borderColor: theme().palette.divider, backgroundColor: theme().palette.bg }}
+        focusStyle={{ borderColor: theme().palette.focus }} />
+      <View style={{ flexDirection: "row", gap: 6, alignItems: "center" }}>
+        <Segmented theme={theme} role="radio" accessibilityLabel="Where the add-in is kept" segments={[
+          { id: "addin-new-project", label: "In this project", selected: !personal(), onPress: () => { if (!busy()) personal.set(false); } },
+          { id: "addin-new-personal", label: "Just for me", selected: personal(), onPress: () => { if (!busy()) personal.set(true); } },
+        ]} />
         <View style={{ flex: 1 }} />
-        {pill("Create", () => void create(), "addin-create", true)}
+        {pill("Create", () => void create(), "addin-create", "primary")}
       </View>
       <Text style={text(10, theme().palette.muted)}>{personal() ? "Kept with your Somtus data, for every project." : "Kept in the project's .ontack/addins, with its code."}</Text>
     </View>}

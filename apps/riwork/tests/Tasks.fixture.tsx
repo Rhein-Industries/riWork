@@ -4,6 +4,7 @@
 import { Text, View, cleanup, mount, signal } from "nsh";
 import { Store } from "riwork/native";
 import { PanelContent, createPanelController } from "../Panels";
+import { fixtureTheme } from "./fixture-theme";
 import { requirePrivateHome } from "./private-home";
 
 const TASKS: { title: string; details: string; status: string; assign?: boolean }[] = [
@@ -19,6 +20,7 @@ const TASKS: { title: string; details: string; status: string; assign?: boolean 
 function Body(props: { projectId: string; selected: string }) {
   const notice = signal("");
   const controller = createPanelController({
+    theme: fixtureTheme(),
     projectId: () => props.projectId, projectLabel: () => "riwork",
     switchProject: async () => {}, openPanel: () => {}, showShell: () => {},
     selectTask: () => {}, selectWorktree: () => {}, initialTask: props.selected,

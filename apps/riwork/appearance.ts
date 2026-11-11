@@ -7,6 +7,10 @@ import { DEFAULT_THEME, type InterfaceTheme } from "./theme";
 export { DEFAULT_THEME, NATIVE_PALETTE, space } from "./theme";
 export type { InterfaceTheme } from "./theme";
 
+/** Palettes that resolve light or dark with macOS, as core's `Appearance::resolve` does;
+ * the others fix the window's appearance to their own. */
+export const FOLLOWS_SYSTEM: ReadonlySet<string> = new Set(["native", "paper_clay"]);
+
 export function interfaceTheme(settings: SettingsDto, appearance: AppearanceDto, families: string[]): InterfaceTheme {
   const face = settings.text.face;
   return {
@@ -60,7 +64,7 @@ export function useAppearance(params: HostParams) {
   effect(() => {
     const current = resolved();
     if (!current || (params.appearance && params.appearance !== "system")) return;
-    const appearance = current.settings.theme === "native" ? "system" : current.appearance.dark ? "dark" : "light";
+    const appearance = FOLLOWS_SYSTEM.has(current.settings.theme) ? "system" : current.appearance.dark ? "dark" : "light";
     if (appearance === appliedScheme) return;
     appliedScheme = appearance;
     void host.call("app.setAppearance", { appearance }).catch(error);

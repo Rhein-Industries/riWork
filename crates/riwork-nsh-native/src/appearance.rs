@@ -97,6 +97,10 @@ pub struct PaletteDto {
     pub focus: String,
     pub working: String,
     pub danger: String,
+    /// The fill of a view's one primary action.
+    pub primary: String,
+    /// Text and icons on `primary`.
+    pub on_primary: String,
 }
 
 fn hex(color: u32) -> String {
@@ -117,6 +121,8 @@ impl From<Palette> for PaletteDto {
             focus: hex(p.focus),
             working: hex(p.working),
             danger: hex(p.danger),
+            primary: hex(p.primary),
+            on_primary: hex(p.on_primary),
         }
     }
 }

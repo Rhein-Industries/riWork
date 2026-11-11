@@ -80,8 +80,8 @@ export function ThemePicker(props: {
       ref={(node) => props.onNode(card.id, node)} onFocus={() => props.onFocus(card.id)} onBlur={() => props.onBlur(card.id)}
       onPress={() => props.onChoose(card.id)}
       style={{ flexGrow: 1, flexBasis: "44%", minWidth: size(145), padding: size(9), gap: size(7), alignItems: "stretch", borderWidth: 1,
-        borderColor: selected() ? theme().palette.focus : theme().palette.divider, borderRadius: 8, backgroundColor: selected() ? theme().palette.panelActive : "transparent" }}
-      focusStyle={{ borderColor: theme().palette.focus }} hoverStyle={{ backgroundColor: theme().palette.panelActive }}>
+        borderColor: selected() ? theme().palette.text : theme().palette.divider, borderRadius: size(12), backgroundColor: selected() ? theme().palette.bg : "transparent" }}
+      focusStyle={{ outlineStyle: "solid", outlineWidth: 2, outlineOffset: 2, outlineColor: theme().palette.focus }} hoverStyle={{ backgroundColor: theme().palette.panelActive }}>
       <View accessible={false} pointerEvents="none" style={{ height: size(61), borderRadius: 5, overflow: "hidden", borderWidth: 1, borderColor: colors().divider, backgroundColor: colors().bg }}>
         <View style={{ height: size(13), backgroundColor: colors().panel, flexDirection: "row", alignItems: "center", gap: size(3), paddingHorizontal: size(6) }}>
           {[0, 1, 2].map(() => <View style={{ width: size(3), height: size(3), borderRadius: size(2), backgroundColor: colors().muted }} />)}
@@ -92,7 +92,8 @@ export function ThemePicker(props: {
             <View style={{ height: size(3), width: "78%", borderRadius: 2, backgroundColor: colors().text }} />
             <View style={{ height: size(3), width: "58%", borderRadius: 2, backgroundColor: colors().muted }} />
             <View style={{ flexDirection: "row", gap: size(4), marginTop: size(2) }}>
-              {["cyan", "magenta", "gold", "working"].map((name) => <View style={{ width: size(13), height: size(5), borderRadius: 2, backgroundColor: colors()[name as keyof InterfaceTheme["palette"]] }} />)}
+              {/* The primary action's color first: it is what tells Paper & Clay's clay apart. */}
+              {["primary", "magenta", "gold", "working"].map((name) => <View style={{ width: size(13), height: size(5), borderRadius: 2, backgroundColor: colors()[name as keyof InterfaceTheme["palette"]] ?? colors().cyan }} />)}
             </View>
           </View>
         </View>

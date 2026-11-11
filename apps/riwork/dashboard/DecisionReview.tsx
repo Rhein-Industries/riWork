@@ -119,7 +119,7 @@ export function DecisionReviewView(props: {
   const palette = () => props.theme().palette;
   const size = (value: number) => space(value, props.theme().scale);
   const text = (value = 11, muted = false) => ({ fontFamily: props.theme().family, fontSize: value * props.theme().scale, color: muted ? palette().muted : palette().text });
-  const actionStyle = () => ({ paddingHorizontal: size(10), paddingVertical: size(6), borderRadius: 5, borderWidth: 1, borderColor: palette().divider });
+  const actionStyle = () => ({ paddingHorizontal: size(10), paddingVertical: size(6), borderRadius: size(8), borderWidth: 1, borderColor: palette().divider });
   // The review sits on its row's `panelActive` card: what answers takes the page colour to stand out.
   const primary = () => palette().bg;
   const close = () => { if (!r.busy()) props.onClose(); };

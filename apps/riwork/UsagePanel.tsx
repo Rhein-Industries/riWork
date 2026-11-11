@@ -6,6 +6,7 @@ import {
 } from "riwork/native";
 import { space, type InterfaceTheme } from "./appearance";
 import { Icon } from "./Icon";
+import { KitButton, StatusPill, cardStyle, focusRing } from "./PanelKit";
 import { EMPTY_STORE, shellLabel } from "./panel_model";
 import { PANEL } from "./panel_layout";
 import { quotaReadout, quotaWindows, stale as quotaStale } from "./usage";
@@ -128,7 +129,8 @@ export function UsagePanel(props: {
     const duplicate = shells().some((shell) => shell.id !== id && shell.projectId === props.projectId() && shell.harness === provider.toLowerCase() && sessionBase(shell.id, provider) === base);
     return duplicate ? `${base} · ${id.slice(0, 8)}` : base;
   };
-  const bodyStyle = () => ({ padding: space(12, theme().scale), gap: space(4, theme().scale), borderRadius: space(12, theme().scale), backgroundColor: palette().bg });
+  // Each account and session is a card of its own on the panel.
+  const bodyStyle = () => ({ ...cardStyle(theme), gap: space(4, theme().scale) });
   const inset = () => space(6, theme().scale);
 
   function Section(props: { title: string; note?: string; children?: JSX.Element }) {
@@ -150,8 +152,16 @@ export function UsagePanel(props: {
       {props.children}
     </View>;
   }
+  /** How old the figures are: muted words, or a pill when they are stale. */
   function Freshness(props: { at: number; stale: boolean }) {
-    return <Text style={text(10, props.stale ? palette().gold : palette().muted)}>{`${props.stale ? "Stale · " : ""}${ago(props.at, now())}`}</Text>;
+    // A child expression, so a report that goes stale while shown turns into the pill.
+    return <>{props.stale ? <StatusPill theme={theme} tone="needs" label={`Stale · ${ago(props.at, now())}`} inline={true} />
+      : <Text style={text(10, palette().muted)}>{ago(props.at, now())}</Text>}</>;
+  }
+  /** An account that cannot be read: its reason's first words as a pill, when they are short. */
+  function unavailablePill(reason: string) {
+    const first = reason.split(/[.:]/)[0].trim();
+    return <StatusPill theme={theme} tone="needs" label={first && first.length <= 24 ? first : "Unavailable"} inline={true} />;
   }
   function WindowGauge(props: { window: UsageWindowDto }) {
     const remaining = () => Math.max(0, Math.min(100, 100 - props.window.usedPercent));
@@ -161,7 +171,7 @@ export function UsagePanel(props: {
         <Text style={{ ...text(11, palette().muted), flexShrink: 0, marginLeft: "auto", textAlign: "right" }}>{resetSummary(props.window.resetsAt, now())}</Text>
       </View>
       <View role="progressbar" accessibilityLabel={`${props.window.label}: ${Math.round(remaining())}% remaining`} style={{ height: space(5, theme().scale), borderRadius: 5, backgroundColor: palette().panelActive, overflow: "hidden" }}>
-        <View style={{ height: "100%", width: `${remaining()}%`, borderRadius: 5, backgroundColor: remaining() < 15 ? palette().gold : palette().cyan }} />
+        <View style={{ height: "100%", width: `${remaining()}%`, borderRadius: 5, backgroundColor: remaining() < 15 ? palette().danger : palette().text }} />
       </View>
     </View>;
   }
@@ -175,13 +185,13 @@ export function UsagePanel(props: {
       {props.value.accountLabel && <Text selectable={true} style={text(11, palette().muted)}>{props.value.accountLabel}</Text>}
       {quotaWindows(props.value).map((window) => <WindowGauge window={window} />)}
       {readout().windows?.length === 0 && <Text style={{ ...text(11, palette().muted), paddingTop: 8 }}>Quota windows unavailable</Text>}
-      {readout().note && <Text style={{ ...text(10, readout().freshness === "stale" ? palette().gold : palette().muted), paddingTop: 6 }}>{readout().note}</Text>}
+      {readout().note && <Text style={{ ...text(10, palette().muted), paddingTop: 6 }}>{readout().note}</Text>}
       {session() !== "" && <Text style={{ ...text(10, palette().muted), paddingTop: 8 }}>{session()}</Text>}
     </>;
   }
   function GrokFigures(props: { report: GrokSessionUsageDto }) {
     const report = () => props.report, details = signal(false);
-    const metric = (label: string, value: string) => <View style={{ minWidth: 100, flexGrow: 1, gap: 3, padding: 8, borderRadius: 6, backgroundColor: palette().panel }}><Text style={text(10, palette().muted)}>{label}</Text><Text style={{ ...text(14), fontWeight: "600" }}>{value}</Text></View>;
+    const metric = (label: string, value: string) => <View style={{ minWidth: 100, flexGrow: 1, gap: 3, padding: 8, borderRadius: space(8, theme().scale), backgroundColor: palette().panel }}><Text style={text(10, palette().muted)}>{label}</Text><Text style={{ ...text(14), fontWeight: "600" }}>{value}</Text></View>;
     return <>
       <View testID="grok-metrics" style={{ flexDirection: "row", flexWrap: "wrap", gap: 8, paddingTop: 8 }}>
         {metric("Session cost", report().costUsd == null ? "Unavailable" : money(report().costUsd!))}
@@ -189,12 +199,12 @@ export function UsagePanel(props: {
         {metric("Turns", String(report().turns))}{metric("Model calls", String(report().modelCalls))}
       </View>
       <Text style={text(11, palette().muted)}>{report().primaryModel ?? "Model unavailable"}</Text>
-      <Button testID="grok-usage-details" accessibilityLabel="Token and model details" onPress={() => details.set(!details())} style={{ alignSelf: "flex-start", paddingVertical: 8 }}>
-        <Text style={text(11)}>{details() ? "Hide token and model details" : "Token and model details"}</Text>
-      </Button>
+      <View style={{ alignSelf: "flex-start", paddingVertical: 4 }}>
+        <KitButton theme={theme} kind="link" id="grok-usage-details" accessibilityLabel="Token and model details" label={details() ? "Hide token and model details" : "Token and model details"} onPress={() => details.set(!details())} />
+      </View>
       {details() && <View style={{ gap: 8 }}>
         <Text style={text(11, palette().muted)}>{tokenBreakdown(report().tokens)}</Text>
-        {report().models.map((model) => <View style={{ padding: 8, gap: 4, borderRadius: 6, backgroundColor: palette().panel }}>
+        {report().models.map((model) => <View style={{ padding: 8, gap: 4, borderRadius: space(8, theme().scale), backgroundColor: palette().panel }}>
           <Text style={{ ...text(12), fontWeight: "600" }}>{model.model}</Text>
           <Text style={text(11)}>{`${tokens(model.tokens.total)} tokens · ${model.modelCalls} calls${model.costUsd != null ? ` · ${money(model.costUsd)}` : ""}`}</Text>
           <Text style={text(11, palette().muted)}>{tokenBreakdown(model.tokens)}</Text>
@@ -208,7 +218,7 @@ export function UsagePanel(props: {
       aside={entry()?.usage ? <Freshness at={entry()!.fetchedAtUnix} stale={entry()!.stale} /> : undefined}>
       {entry()?.usage ? <GrokFigures report={entry()!.usage!} />
         : <Text style={{ ...text(11, palette().muted), paddingTop: 6 }}>{entry()?.pending ? "Reading session usage…" : entry()?.error ?? "Waiting for session usage…"}</Text>}
-      {entry()?.usage && entry()?.error && <Text style={{ ...text(10, palette().gold), paddingTop: 6 }}>{`Last refresh: ${entry()!.error}`}</Text>}
+      {entry()?.usage && entry()?.error && <Text style={{ ...text(10, palette().muted), paddingTop: 6 }}>{`Last refresh: ${entry()!.error}`}</Text>}
     </Card>;
   }
   return <View testID="usage-panel" style={{ flex: 1, minHeight: 0, backgroundColor: palette().panel }}>
@@ -219,18 +229,18 @@ export function UsagePanel(props: {
       </View>
       <Button testID="refresh-account-usage" accessibilityLabel="Refresh usage" disabled={!!busy()} onPress={() => void refresh()}
         tooltip={<Text style={{ ...text(11), padding: 8, backgroundColor: palette().panelActive }}>Refresh usage · ⌘R</Text>}
-        style={{ width: space(PANEL.control, theme().scale), height: space(PANEL.control, theme().scale), borderRadius: 13, alignItems: "center", justifyContent: "center" }} hoverStyle={{ backgroundColor: palette().panelActive }} focusStyle={{ backgroundColor: palette().divider }}>
+        style={{ width: space(PANEL.control, theme().scale), height: space(PANEL.control, theme().scale), borderRadius: space(8, theme().scale), alignItems: "center", justifyContent: "center" }} hoverStyle={{ backgroundColor: palette().panelActive }} focusStyle={focusRing(palette(), 1)} disabledStyle={{ opacity: 0.4 }}>
         <Icon name="refresh" size={PANEL.icon * theme().scale} color={palette().muted} />
       </Button>
     </View>
-    {notice() !== "" && <Text role="alert" style={{ ...text(11, palette().gold), paddingHorizontal: 12, paddingBottom: 8 }}>{notice()}</Text>}
+    {notice() !== "" && <Text role="alert" style={{ ...text(11, palette().danger), paddingHorizontal: 12, paddingBottom: 8 }}>{notice()}</Text>}
     <Scroll testID="usage-panel-scroll" style={{ flex: 1, minHeight: 0 }} contentStyle={{ paddingHorizontal: space(6, theme().scale), paddingBottom: space(12, theme().scale), gap: 6 }}>
       {!usage() ? <Card id="usage-loading" title="Account usage"><Text style={text(11, palette().muted)}>Reading account usage…</Text></Card> : <>
         <Section title="Codex accounts" note={codex().length > 0 ? "Quota is shared by every session on the same account." : undefined}>
           {codex().map((profile) => <Card id={`usage-codex:${profile.home}`} title={profile.label}
-            aside={profile.entry?.usage ? <Freshness at={profile.entry.usage.updatedAtUnix} stale={stale(profile.entry.usage, profile.entry.stale, profile.entry.error)} /> : undefined}>
+            aside={profile.entry?.usage ? <Freshness at={profile.entry.usage.updatedAtUnix} stale={stale(profile.entry.usage, profile.entry.stale, profile.entry.error)} /> : profile.unavailable ? unavailablePill(profile.unavailable) : undefined}>
             {profile.entry?.usage ? <Provider value={profile.entry.usage} state={profile.entry} />
-              : <Text style={{ ...text(11, profile.unavailable ? palette().gold : palette().muted), paddingTop: 6 }}>{profile.unavailable ?? (profile.entry?.pending ? "Reading account usage…" : profile.entry?.error ?? "Account usage is unavailable")}</Text>}
+              : <Text style={{ ...text(11, palette().muted), paddingTop: 6 }}>{profile.unavailable ?? (profile.entry?.pending ? "Reading account usage…" : profile.entry?.error ?? "Account usage is unavailable")}</Text>}
           </Card>)}
           {codex().length === 0 && <Empty id="usage-codex-unavailable">Account usage is unavailable</Empty>}
         </Section>

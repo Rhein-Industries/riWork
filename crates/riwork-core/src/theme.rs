@@ -11,6 +11,9 @@ pub enum ThemeChoice {
     Ghostty,
     #[default]
     Native,
+    /// Ivory paper, ink and a single clay accent; follows the system appearance
+    /// like Native, so it is not a catalogue entry.
+    PaperClay,
     RiWork,
     Catppuccin,
     TokyoNight,
@@ -26,8 +29,8 @@ pub enum ThemeChoice {
 }
 
 impl ThemeChoice {
-    pub const ALL: [Self; 14] = [
-        Self::Ghostty, Self::Native, Self::RiWork, Self::Catppuccin,
+    pub const ALL: [Self; 15] = [
+        Self::Ghostty, Self::Native, Self::PaperClay, Self::RiWork, Self::Catppuccin,
         Self::TokyoNight, Self::GruvboxLight, Self::Hermes,
         Self::Dracula, Self::Monokai, Self::Nord, Self::SolarizedLight,
         Self::SolarizedDark, Self::OneDark, Self::GruvboxDark,
@@ -38,6 +41,7 @@ impl ThemeChoice {
         match self {
             Self::Ghostty => "ghostty",
             Self::Native => "native",
+            Self::PaperClay => "paper_clay",
             Self::RiWork => "ri_work",
             Self::Catppuccin => "catppuccin",
             Self::TokyoNight => "tokyo_night",
@@ -57,6 +61,7 @@ impl ThemeChoice {
         match self {
             Self::Ghostty => "Follow Ghostty",
             Self::Native => "Native",
+            Self::PaperClay => "Paper & Clay",
             _ => &fixed_palette(self).label,
         }
     }
@@ -65,6 +70,7 @@ impl ThemeChoice {
         match self {
             Self::Ghostty => "Use your Ghostty colors throughout Somtus. Configuration changes sync automatically.",
             Self::Native => "Black on white, or white on black when macOS is dark. Follows the system appearance.",
+            Self::PaperClay => "Ink on ivory paper with one clay accent, or ivory on night when macOS is dark. Follows the system appearance.",
             _ => &fixed_palette(self).description,
         }
     }
@@ -106,10 +112,15 @@ pub struct Palette {
     pub working: u32,
     /// Errors and failures: a red, readable on `panel_active`.
     pub danger: u32,
+    /// The fill of a view's one primary action (a filled button).
+    pub primary: u32,
+    /// Text and icons on `primary`.
+    pub on_primary: u32,
 }
 
 /// A palette as stored. One written before `danger` existed shows errors in
-/// its attention color, as it always did.
+/// its attention color, as it always did; one without `primary` fills its
+/// primary action with its accent (`cyan`) under its `bg`, as it always did.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PaletteFields {
@@ -126,6 +137,10 @@ struct PaletteFields {
     working: u32,
     #[serde(default)]
     danger: Option<u32>,
+    #[serde(default)]
+    primary: Option<u32>,
+    #[serde(default)]
+    on_primary: Option<u32>,
 }
 
 impl From<PaletteFields> for Palette {
@@ -143,6 +158,8 @@ impl From<PaletteFields> for Palette {
             focus: fields.focus,
             working: fields.working,
             danger: fields.danger.unwrap_or(fields.gold),
+            primary: fields.primary.unwrap_or(fields.cyan),
+            on_primary: fields.on_primary.unwrap_or(fields.bg),
         }
     }
 }
@@ -208,6 +225,8 @@ impl Palette {
         focus: 0x000000,
         working: 0x0058d0,
         danger: 0xc80018,
+        primary: 0x000000,
+        on_primary: 0xffffff,
     };
 
     /// Native in dark mode: the same roles inverted, white on black, with the
@@ -226,6 +245,8 @@ impl Palette {
         focus: 0xffffff,
         working: 0x409cff,
         danger: 0xff6961,
+        primary: 0xffffff,
+        on_primary: 0x000000,
     };
 
     pub const fn native(dark: bool) -> Self {
@@ -233,6 +254,57 @@ impl Palette {
             Self::NATIVE_DARK
         } else {
             Self::NATIVE_LIGHT
+        }
+    }
+
+    /// Paper & Clay in light mode: an ivory canvas (`panel`), raised paper-white
+    /// cards (`bg`), oat for hover and selection (`panel_active`) and a warm
+    /// hairline (`divider`). Ink is the text, the accent and the focus ring, as
+    /// black is in Native; clay fills only the primary action. The state colors
+    /// stay apart from clay: amber for what needs the person, a calm blue for
+    /// work, a red for failures. Every text color reads at 4.5:1 or better on
+    /// `panel_active`.
+    pub const PAPER_CLAY_LIGHT: Self = Self {
+        bg: 0xfdfdfa,
+        panel: 0xfaf9f5,
+        panel_active: 0xf0eee6,
+        divider: 0xd1cfc5,
+        cyan: 0x141413,
+        magenta: 0x5e5d59,
+        gold: 0x7a5313,
+        text: 0x141413,
+        muted: 0x5e5d59,
+        focus: 0x141413,
+        working: 0x2c5aa0,
+        danger: 0xb42318,
+        primary: 0xd97757,
+        on_primary: 0xffffff,
+    };
+
+    /// Paper & Clay in dark mode: the same roles on night, with ivory text and
+    /// the state colors lifted to read on it. Clay still fills only the primary.
+    pub const PAPER_CLAY_DARK: Self = Self {
+        bg: 0x30302e,
+        panel: 0x262624,
+        panel_active: 0x3a3936,
+        divider: 0x4a4945,
+        cyan: 0xfaf9f5,
+        magenta: 0xc9c6bc,
+        gold: 0xe0b46a,
+        text: 0xfaf9f5,
+        muted: 0xa6a39a,
+        focus: 0xfaf9f5,
+        working: 0x8aaee6,
+        danger: 0xf28b82,
+        primary: 0xd97757,
+        on_primary: 0xffffff,
+    };
+
+    pub const fn paper_clay(dark: bool) -> Self {
+        if dark {
+            Self::PAPER_CLAY_DARK
+        } else {
+            Self::PAPER_CLAY_LIGHT
         }
     }
 
@@ -254,6 +326,7 @@ impl Palette {
             muted: readable(mix(bg, text, 0.58), panel_active),
             focus: gold, working: cyan,
             danger: readable(theme.palette[1], panel_active),
+            primary: cyan, on_primary: bg,
         }
     }
 }
@@ -284,11 +357,13 @@ impl Appearance {
     ) -> Self {
         let terminal = match choice {
             ThemeChoice::Native => native_terminal_theme(system_dark),
+            ThemeChoice::PaperClay => paper_clay_terminal_theme(system_dark),
             ThemeChoice::Ghostty => ghostty.unwrap_or_else(riwork_terminal_theme),
             _ => fixed_palette(choice).terminal,
         };
         let palette = match choice {
             ThemeChoice::Native => Palette::native(system_dark),
+            ThemeChoice::PaperClay => Palette::paper_clay(system_dark),
             ThemeChoice::Ghostty if ghostty.is_none() => fixed_palette(ThemeChoice::RiWork).palette,
             ThemeChoice::Ghostty => Palette::from_terminal(&terminal),
             _ => fixed_palette(choice).palette,
@@ -314,7 +389,11 @@ impl Appearance {
     }
 
     pub fn is_stale_for(&self, system_dark: bool) -> bool {
-        self.selected == ThemeChoice::Native && self.palette != Palette::native(system_dark)
+        match self.selected {
+            ThemeChoice::Native => self.palette != Palette::native(system_dark),
+            ThemeChoice::PaperClay => self.palette != Palette::paper_clay(system_dark),
+            _ => false,
+        }
     }
 
     pub fn diff_colors(&self, force: bool) -> DiffColors {
@@ -360,6 +439,31 @@ pub fn native_terminal_theme(dark: bool) -> TerminalTheme {
             [
                 0x1d1d1f, 0xc4281c, 0x1f7a37, 0x8a5a00, 0x1d5fbf, 0x8b3dbf, 0x0f6f80, 0x636366,
                 0x8e8e93, 0xd93a2b, 0x2a8f46, 0xa66d00, 0x2f74d9, 0xa24fd6, 0x168596, 0x3a3a3c,
+            ],
+        )
+    }
+}
+
+/// Paper & Clay's terminal colors: its ivory canvas or night background and warm
+/// ANSI hues taken from its state colors. Each normal color but the background's
+/// own (black on night) reads at 4.5:1 or better on its background.
+pub fn paper_clay_terminal_theme(dark: bool) -> TerminalTheme {
+    if dark {
+        terminal_theme(
+            0x262624,
+            0xfaf9f5,
+            [
+                0x3a3936, 0xf28b82, 0x8ccb9b, 0xe0b46a, 0x8aaee6, 0xd3a6da, 0x80c7c9, 0xd1cfc5,
+                0x87867f, 0xf6a69e, 0xa9dab4, 0xeccb8e, 0xadc6f0, 0xe3bfe6, 0xa3dadb, 0xfaf9f5,
+            ],
+        )
+    } else {
+        terminal_theme(
+            0xfaf9f5,
+            0x141413,
+            [
+                0x141413, 0xb42318, 0x24603d, 0x7a5313, 0x2c5aa0, 0x7b3f8c, 0x1f6a6e, 0x5e5d59,
+                0x87867f, 0xc4362a, 0x2e7a4e, 0x94661a, 0x3a6cb8, 0x9350a6, 0x27808a, 0x3d3d3a,
             ],
         )
     }
@@ -438,16 +542,8 @@ mod tests {
 
     #[test]
     fn every_removed_theme_name_reads_as_native_and_round_trips_untouched() {
-        for name in [
-            "native",
-            "ghostty",
-            "ri_work",
-            "catppuccin",
-            "tokyo_night",
-            "gruvbox_light",
-            "hermes",
-            "future_theme",
-        ] {
+        // Only a name this build does not know reads as Native.
+        for name in ["future_theme", "removed_theme"] {
             let settings: Settings = serde_json::from_value(serde_json::json!({
                 "theme": name, "chat_display_modes": {"saved-chat": "verbose"}
             }))
@@ -455,6 +551,17 @@ mod tests {
             assert_eq!(settings.theme, ThemeChoice::Native);
             let saved = serde_json::to_value(&settings).unwrap();
             assert_eq!(saved["theme"], "native");
+            assert_eq!(saved["chat_display_modes"]["saved-chat"], "verbose");
+        }
+        // Every current name, Paper & Clay included, reads as itself.
+        for choice in ThemeChoice::ALL {
+            let settings: Settings = serde_json::from_value(serde_json::json!({
+                "theme": choice.id(), "chat_display_modes": {"saved-chat": "verbose"}
+            }))
+            .unwrap();
+            assert_eq!(settings.theme, choice);
+            let saved = serde_json::to_value(&settings).unwrap();
+            assert_eq!(saved["theme"], choice.id());
             assert_eq!(saved["chat_display_modes"]["saved-chat"], "verbose");
         }
         assert_eq!(ThemeChoice::default(), ThemeChoice::Native);

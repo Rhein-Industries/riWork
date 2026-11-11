@@ -1,6 +1,7 @@
 import { Text, View, host, mount, signal } from "nsh";
 import type { StoreState, TaskDto, WorktreeDto } from "riwork/native";
 import { PanelContent, createPanelController } from "../Panels";
+import { fixtureTheme } from "./fixture-theme";
 import { EMPTY_STORE } from "../panel_model";
 
 // The Worktrees panel with in-memory data, for scripts/pane-shot.sh. The panel reads a
@@ -38,6 +39,7 @@ function Fixture() {
   const state = signal<StoreState>(scenario("default"));
   const notice = signal("");
   const controller = createPanelController({
+    theme: fixtureTheme(),
     projectId: () => PROJECT, projectLabel: () => "riwork",
     switchProject: async () => {}, openPanel: () => {}, showShell: () => {}, selectTask: () => {}, selectWorktree: () => {},
     notice: (message) => notice.set(message), initialWorktree: WORKTREES[1].id,

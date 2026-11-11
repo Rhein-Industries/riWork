@@ -2,6 +2,7 @@ import { Text, View, cleanup, mount, signal } from "nsh";
 import { Store, type ProjectDto } from "riwork/native";
 import { privateFixtureDirectory } from "./private-home";
 import { PanelContent, createPanelController } from "../Panels";
+import { fixtureTheme } from "./fixture-theme";
 
 // The Projects panel with folders, a nested folder, an empty folder, a long name and
 // tasks, for scripts/pane-shot.sh. Seeding goes through privateFixtureDirectory, which
@@ -10,6 +11,7 @@ function Body(props: { active: ProjectDto; directory: string }) {
   const project = signal(props.active);
   const notice = signal("");
   const controller = createPanelController({
+    theme: fixtureTheme(),
     projectId: () => project().id, projectLabel: () => project().name,
     switchProject: async (next) => { project.set(next); },
     openPanel: () => {}, showShell: () => {}, selectTask: () => {}, selectWorktree: () => {},

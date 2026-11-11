@@ -46,15 +46,15 @@ test("P1-THM-05: each window resolves Native on appearance events and both recei
   } finally { peer.dispose(); app.dispose(); }
 });
 
-test("P1-THM-01: Settings offers the fourteen core-labelled palettes and changes selection", async () => {
+test("P1-THM-01: Settings offers the fifteen core-labelled palettes and changes selection", async () => {
   const app = await open("./Appearance.fixture.tsx", options("theme-choices"));
   try {
     await app.waitFor("id:workspace");
     await app.rightClick("id:tab:panel:files");
     await app.chooseMenuItem("Views > Settings");
     await app.waitFor("id:appearance-settings");
-    // Follow Ghostty, Native and the twelve fixed palettes of color-palettes.json.
-    expect(app.count("id:settings-theme-grid >> role:radio")).toBe(14);
+    // Follow Ghostty, Native, Paper & Clay and the twelve fixed palettes of color-palettes.json.
+    expect(app.count("id:settings-theme-grid >> role:radio")).toBe(15);
     await app.press("id:theme-choice-native");
     // Settings is the selected tab now, so it reads in the palette's text color.
     await app.waitUntil(() => app.spanStyle("id:tab:panel:settings >> text:Settings").color === "#1d1d1fff");

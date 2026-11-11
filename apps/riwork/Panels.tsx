@@ -6,18 +6,21 @@ import { EMPTY_STORE, countLabel, matches, projectRows, shellLabel, shellMatches
 import { DEFAULT_THEME, space, type InterfaceTheme } from "./appearance";
 import { Icon, type IconName } from "./Icon";
 import { PANEL } from "./panel_layout";
+import { KitButton, Segmented, StatusPill, buttonLook, cardStyle, focusRing, searchBox, switchParts, type ButtonKind, type Tone } from "./PanelKit";
 
 const defaultTheme = () => DEFAULT_THEME;
 const PanelTheme = context<() => InterfaceTheme>(defaultTheme);
 const theme = () => PanelTheme()();
 const ink = () => theme().palette.text, muted = () => theme().palette.muted, accent = () => theme().palette.cyan;
 const text = (base: number) => base * theme().scale;
-const button = () => ({ paddingHorizontal: space(10, theme().scale), paddingVertical: space(4, theme().scale), borderRadius: space(14, theme().scale), backgroundColor: theme().palette.panelActive });
 // A form's input sits on InlineEditor's `bg` card: the panel's fill and an edge set it apart, and
 // the edge takes the focus color while it is focused (`fieldFocus`, the Input's `focusStyle`).
-const field = () => ({ minHeight: space(28, theme().scale), paddingHorizontal: space(8, theme().scale), paddingVertical: space(5, theme().scale), borderRadius: 4, borderWidth: 1, borderColor: theme().palette.divider, backgroundColor: theme().palette.panel, color: ink(), fontFamily: theme().family, fontSize: text(12) });
+const field = () => ({ minHeight: space(28, theme().scale), paddingHorizontal: space(8, theme().scale), paddingVertical: space(5, theme().scale), borderRadius: space(8, theme().scale), borderWidth: 1, borderColor: theme().palette.divider, backgroundColor: theme().palette.panel, color: ink(), fontFamily: theme().family, fontSize: text(12) });
 const fieldFocus = () => ({ borderColor: theme().palette.focus });
-const row = () => ({ paddingHorizontal: space(6, theme().scale), paddingVertical: space(6, theme().scale), gap: space(2, theme().scale), borderRadius: space(7, theme().scale) });
+// List rows sit on the panel itself: 8-point corners, the quiet fill on hover and selection, and
+// the focus ring drawn inside the row so the list's edge never clips it.
+const row = () => ({ paddingHorizontal: space(6, theme().scale), paddingVertical: space(6, theme().scale), gap: space(2, theme().scale), borderRadius: space(8, theme().scale) });
+const rowFocus = () => focusRing(theme().palette, -2);
 const statusColor = (status: string) => status === "done" ? accent() : status === "in_progress" ? theme().palette.working : muted();
 const statusIcon = (status: string): IconName => status === "done" ? "task-done" : status === "in_progress" ? "task-active" : "task-todo";
 const TASK_STATUSES = ["todo", "in_progress", "done"] as const;
@@ -289,45 +292,39 @@ export function createPanelController(options: PanelOptions) {
 }
 export type PanelController = ReturnType<typeof createPanelController>;
 
-/** A chip or a button. A `selected` chip (the current filter or status) and a `primary` button (the
- * main action of a form) take the accent fill with a `bg` label, and keep it while hovered or
- * focused: hover and focus come after the selected state, so a plain focus fill would leave the
- * light label on light gray after a click. A filled one shows its focus as a ring set off from the
- * fill by a gap of the surface, so it shows even where the focus color is the accent (native light).
- * Disabled, a primary button is a plain one with a muted label, and a selected chip keeps its fill,
- * dimmed. */
-function Command(props: { id?: string; label: string; disabled?: boolean; selected?: boolean; primary?: boolean; onPress: () => void; children?: JSX.Element }) {
-  const filled = () => !!props.selected || !!props.primary && !props.disabled;
-  const fill = (other: string) => filled() ? theme().palette.cyan : other;
-  const ring = () => ({ backgroundColor: theme().palette.cyan, outlineStyle: "solid" as const, outlineWidth: 2, outlineOffset: 2, outlineColor: theme().palette.focus });
-  return <Button testID={props.id} accessibilityLabel={props.label} disabled={props.disabled} selected={props.selected} onPress={props.onPress}
-    style={{ ...button(), backgroundColor: fill(theme().palette.panelActive), opacity: props.disabled && props.selected ? 0.5 : 1 }}
-    hoverStyle={filled() ? { backgroundColor: theme().palette.cyan, opacity: 0.85 } : { backgroundColor: theme().palette.divider }} focusStyle={filled() ? ring() : { backgroundColor: theme().palette.divider }}>
-    <Text style={{ fontFamily: theme().family, fontSize: text(11), fontWeight: props.primary ? "600" : "400", color: filled() ? theme().palette.bg : props.disabled ? muted() : ink() }}>{props.children ?? props.label}</Text>
-  </Button>;
+/** A text button. `primary` is a form's one main action, filled with the palette's primary color;
+ * disabled, it falls back to the quiet fill with a hairline and a muted label. `danger` is a plain
+ * button with a red label, for an action that ends something. The others are plain: the card
+ * color with a hairline. Focus shows as a ring set off from the button. */
+function Command(props: { id?: string; label: string; disabled?: boolean; primary?: boolean; danger?: boolean; onPress: () => void; children?: JSX.Element }) {
+  const kind = (): ButtonKind => props.primary ? "primary" : props.danger ? "danger" : "default";
+  return <KitButton theme={theme} id={props.id} label={props.label} kind={kind()} disabled={props.disabled} onPress={props.onPress}>{props.children}</KitButton>;
 }
 
 function PanelSearch(props: { controller: PanelController; panel: ListPanel; surface: string }) {
   const c = props.controller;
   const noun = props.panel === "shells" ? "sessions" : props.panel;
+  const focused = signal(false);
   let input: YNode | undefined;
   cleanup(() => c.searches.delete(props.surface));
   return <View style={{ paddingHorizontal: space(12, theme().scale), paddingBottom: space(8, theme().scale) }}>
-    <View style={{ flexDirection: "row", gap: 5, paddingHorizontal: space(9, theme().scale), height: space(28, theme().scale), borderRadius: space(14, theme().scale), backgroundColor: theme().palette.panelActive, alignItems: "center", minWidth: 0 }} onPress={() => input?.focus()}>
+    <View style={searchBox(theme, focused()).style} hoverStyle={searchBox(theme, focused()).hoverStyle} onPress={() => input?.focus()}>
       <Icon name="search" size={text(13)} color={muted()} />
       <Input testID={`search:${props.surface}`} accessibilityLabel={`Search ${noun}`} placeholder="Search  ⌘F" value={c.query()}
         onChange={(value) => c.query.set(value)} ref={(node) => { input = node; c.searches.set(props.surface, node); }}
+        onFocus={() => focused.set(true)} onBlur={() => focused.set(false)}
         style={{ flex: 1, minWidth: 0, padding: 0, backgroundColor: "transparent", color: ink(), fontFamily: theme().family, fontSize: text(11) }} />
-      {c.query() !== "" && <ToolbarCommand id={`clear-search:${props.surface}`} label="Clear the search" icon="close" onPress={() => { c.query.set(""); input?.focus(); }}>×</ToolbarCommand>}
+      {c.query() !== "" && <ToolbarCommand id={`clear-search:${props.surface}`} label="Clear the search" icon="close" small={true} onPress={() => { c.query.set(""); input?.focus(); }}>×</ToolbarCommand>}
     </View>
   </View>;
 }
 
-function ToolbarCommand(props: { id?: string; label: string; icon?: IconName; disabled?: boolean; selected?: boolean; onPress: () => void; children?: JSX.Element }) {
+function ToolbarCommand(props: { id?: string; label: string; icon?: IconName; disabled?: boolean; selected?: boolean; small?: boolean; onPress: () => void; children?: JSX.Element }) {
+  const size = () => space(props.small ? 22 : PANEL.control, theme().scale);
   return <Button tooltip={<View style={{ padding: 7, borderRadius: 6, backgroundColor: theme().palette.panelActive }}><Text style={{ fontFamily: theme().family, fontSize: text(11), color: ink() }}>{props.label}</Text></View>} testID={props.id} accessibilityLabel={props.label} disabled={props.disabled} selected={props.selected} onPress={props.onPress}
-    style={{ width: space(PANEL.control, theme().scale), height: space(PANEL.control, theme().scale), borderRadius: space(13, theme().scale), alignItems: "center", justifyContent: "center", backgroundColor: props.selected ? theme().palette.panelActive : "transparent" }}
-    hoverStyle={{ backgroundColor: theme().palette.panelActive }} focusStyle={{ backgroundColor: theme().palette.divider }} disabledStyle={{ opacity: 0.4 }}>
-    <Icon name={props.icon ?? "more"} size={text(PANEL.icon)} color={props.selected ? ink() : muted()} />
+    style={{ width: size(), height: size(), borderRadius: space(props.small ? 6 : 8, theme().scale), alignItems: "center", justifyContent: "center", backgroundColor: props.selected ? theme().palette.panelActive : "transparent" }}
+    hoverStyle={{ backgroundColor: theme().palette.panelActive }} focusStyle={focusRing(theme().palette, props.small ? 0 : 1)} disabledStyle={{ opacity: 0.4 }}>
+    <Icon name={props.icon ?? "more"} size={text(props.small ? 12 : PANEL.icon)} color={props.selected ? ink() : muted()} />
   </Button>;
 }
 
@@ -380,10 +377,10 @@ function FolderRow(props: { item: () => ProjectTreeRow; controller: PanelControl
   return <View onHoverIn={() => hovering.set(true)} onHoverOut={() => hovering.set(false)} onContextMenu={menu}
     style={{ paddingLeft: space(6 + current().depth * 16, theme().scale), paddingRight: 6, height: space(30, theme().scale), flexDirection: "row", alignItems: "center", gap: 3 }}>
     <View testID={current().id} role="button" focusable={true} accessibilityLabel={current().name} accessibilityState={{ expanded: !c.collapsed().has(id()) }} onPress={() => c.toggleFolder(id())}
-      style={{ flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", gap: space(6, theme().scale), height: "100%" }} focusStyle={{ backgroundColor: theme().palette.divider }}>
+      style={{ flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", gap: space(6, theme().scale), height: "100%", borderRadius: space(6, theme().scale) }} focusStyle={rowFocus()}>
       <Icon name={c.collapsed().has(id()) ? "right" : "down"} size={text(10)} color={muted()} />
       <Text numberOfLines={1} style={{ flex: 1, fontFamily: theme().family, fontSize: text(10), fontWeight: "600", color: muted() }}>{current().name}</Text>
-      <Text style={{ fontFamily: theme().family, fontSize: text(9), color: muted() }}>{String(current().count).padStart(2, "0")}</Text>
+      <Text style={{ fontFamily: theme().family, fontSize: text(10), fontVariant: ["tabular-nums"], color: muted() }}>{String(current().count)}</Text>
     </View>
     {current().folder && hovering() && <>
       <ToolbarCommand id={`subfolder:${id()}`} icon="add" label="Create subfolder" onPress={() => c.editor.set({ kind: "folder", parent: id(), name: "" })} />
@@ -428,11 +425,13 @@ function ProjectItemRow(props: { item: () => ProjectTreeRow; controller: PanelCo
       { label: "Wake orchestrators when a worker finishes", checked: project().wakeOrchestratorsOnAgentDone, onSelect: () => void c.run(() => Store.setProjectOrchestratorWakes(project().id, !project().wakeOrchestratorsOnAgentDone)) },
     ]);
   }
+  // The pointer brings out every row action; the selected row keeps only pin and the menu, which
+  // holds the others too, so the keyboard can still reach them.
   return <View onHoverIn={() => hovering.set(true)} onHoverOut={() => hovering.set(false)} onContextMenu={menu}
-    style={{ borderRadius: space(7, theme().scale), backgroundColor: selected() ? theme().palette.panelActive : "transparent" }} hoverStyle={{ backgroundColor: theme().palette.panelActive }}>
+    style={{ borderRadius: space(8, theme().scale), backgroundColor: selected() ? theme().palette.panelActive : "transparent" }} hoverStyle={{ backgroundColor: theme().palette.panelActive }}>
     <View style={{ flexDirection: "row", alignItems: "center", paddingRight: 2 }}>
       <Button testID={`project-${project().id}`} accessibilityLabel={project().name} selected={selected()} disabled={c.pending()} onPress={() => void c.activate(project())}
-        style={{ flex: 1, minWidth: 0, minHeight: space(30, theme().scale), justifyContent: "center", paddingLeft: space(6 + props.item().depth * 16, theme().scale), paddingVertical: space(6, theme().scale), gap: 2 }} focusStyle={{ backgroundColor: theme().palette.divider }}>
+        style={{ flex: 1, minWidth: 0, minHeight: space(32, theme().scale), justifyContent: "center", paddingLeft: space(6 + props.item().depth * 16, theme().scale), paddingVertical: space(6, theme().scale), gap: 2, borderRadius: space(8, theme().scale) }} focusStyle={rowFocus()}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
           {pinned() && <Icon name="pin" size={text(12)} color={accent()} />}
           <Text numberOfLines={1} style={{ flex: 1, fontFamily: theme().family, fontSize: text(12), fontWeight: selected() ? "600" : "400", color: ink() }}>{project().name}</Text>
@@ -441,8 +440,8 @@ function ProjectItemRow(props: { item: () => ProjectTreeRow; controller: PanelCo
       </Button>
       {(selected() || hovering()) && <View style={{ flexDirection: "row", alignItems: "center", gap: 0 }}>
         <ToolbarCommand id={`pin-project:${project().id}`} icon="pin" label={pinned() ? "Unpin project" : "Pin project"} selected={pinned()} disabled={c.panelSaving()} onPress={() => c.pinProject(project().id)} />
-        <ToolbarCommand id={`project-settings:${project().id}`} icon="settings" label="Project settings" onPress={() => void settings()} />
-        <ToolbarCommand id={`open-project-window:${project().id}`} icon="open" label="Open project in another window" onPress={openWindow} />
+        {hovering() && <ToolbarCommand id={`project-settings:${project().id}`} icon="settings" label="Project settings" onPress={() => void settings()} />}
+        {hovering() && <ToolbarCommand id={`open-project-window:${project().id}`} icon="open" label="Open project in another window" onPress={openWindow} />}
         <ToolbarCommand id={`project-menu:${project().id}`} icon="more" label="Project actions" onPress={menu} />
       </View>}
     </View>
@@ -493,8 +492,10 @@ function Projects(props: { controller: PanelController; surface: string; footer?
       <ToolbarCommand id="new-folder" icon="folder" label="New folder" selected={rootFolderForm()} onPress={() => c.editor.set(rootFolderForm() ? null : { kind: "folder", name: "" })} />
       <ToolbarCommand id="new-project" icon="add" label="New project" selected={c.editor()?.kind === "project"} onPress={() => c.editor.set(c.editor()?.kind === "project" ? null : { kind: "project" })} />
     </Header>
-    <View testID="project-view-controls" role="radiogroup" accessibilityLabel="Project view" style={{ flexDirection: "row", gap: 4, paddingHorizontal: space(PANEL.inset, theme().scale), paddingBottom: 8 }}>
-      {(["list", "columns", "grid"] as const).map((view) => <ToolbarCommand id={`project-view-${view}`} icon={view} label={`${view[0].toUpperCase() + view.slice(1)} view`} selected={c.projectPanel().view === view} disabled={c.panelSaving()} onPress={() => void c.setProjectPanel({ ...c.projectPanel(), view })} />)}
+    <View style={{ paddingHorizontal: space(PANEL.inset, theme().scale), paddingBottom: 8 }}>
+      <Segmented theme={theme} id="project-view-controls" role="radio" accessibilityLabel="Project view"
+        segments={(["list", "columns", "grid"] as const).map((view) => ({ id: `project-view-${view}`, icon: view, label: `${view[0].toUpperCase() + view.slice(1)} view`,
+          selected: c.projectPanel().view === view, disabled: c.panelSaving(), onPress: () => void c.setProjectPanel({ ...c.projectPanel(), view }) }))} />
     </View>
     <InlineEditor controller={c} kinds={["folder", "project"]} />
     <PanelSearch controller={c} panel="projects" surface={props.surface} />
@@ -502,14 +503,14 @@ function Projects(props: { controller: PanelController; surface: string; footer?
       {(item) => <ProjectRow item={item} controller={c} />}
     </List> : <Scroll testID={`projects-${c.projectPanel().view}`} style={{ flex: 1, minHeight: 0 }} contentStyle={{ padding: space(PANEL.inset, theme().scale), gap: 12 }}>
       {c.projectPanel().view === "columns" ? <View style={{ display: "grid", gridTemplateColumns: `repeat(${Math.max(1, Math.floor(width() / space(300, theme().scale)))}, minmax(0, 1fr))`, gap: 12 }}>
-        {groups().map((group) => <View style={{ minWidth: 0, padding: 8, gap: 6, borderRadius: 10, backgroundColor: theme().palette.bg }}>
+        {groups().map((group) => <View style={{ ...cardStyle(theme, 8), minWidth: 0, gap: 6 }}>
           <View>{group.header ? <FolderRow item={() => ({ ...group.header!, depth: 0 })} controller={c} /> : <Text style={{ fontFamily: theme().family, fontSize: text(12), fontWeight: "600", color: muted() }}>{group.title}</Text>}</View>
           {group.rows.map((item) => <ProjectRow item={() => ({ ...item, depth: 0 })} controller={c} />)}
         </View>)}
       </View> : groups().map((group) => <View style={{ gap: 8 }}>
         <View>{group.header ? <FolderRow item={() => ({ ...group.header!, depth: 0 })} controller={c} /> : <Text style={{ fontFamily: theme().family, fontSize: text(12), fontWeight: "600", color: muted() }}>{group.title}</Text>}</View>
         <View style={{ display: "grid", gridTemplateColumns: `repeat(${Math.max(1, Math.floor(width() / space(280, theme().scale)))}, minmax(0, 1fr))`, gap: 10 }}>
-          {group.rows.map((item) => <View style={{ minWidth: 0, minHeight: 86, padding: 8, borderRadius: 10, backgroundColor: theme().palette.bg }}><ProjectRow item={() => ({ ...item, depth: 0 })} controller={c} /></View>)}
+          {group.rows.map((item) => <View style={{ ...cardStyle(theme, 8), minWidth: 0, minHeight: 86 }}><ProjectRow item={() => ({ ...item, depth: 0 })} controller={c} /></View>)}
         </View>
       </View>)}
       {!rows().length && <Empty query={c.query()} noun="projects" loading={!c.loaded()} />}
@@ -542,8 +543,9 @@ function Worktrees(props: { controller: PanelController; surface: string }) {
       <ToolbarCommand id="refresh-worktrees" icon="refresh" label="Refresh worktrees" disabled={c.pending()} onPress={() => void c.run(() => Store.refreshWorktrees(c.projectId()))} />
     </Header>
     <PanelSearch controller={c} panel="worktrees" surface={props.surface} />
-    {stranded() && <View testID="worktree-selection-missing" style={{ marginHorizontal: space(12, s()), marginBottom: space(8, s()), padding: space(10, s()), gap: space(6, s()), borderRadius: space(8, s()), backgroundColor: theme().palette.bg }}>
-      <Text style={{ fontFamily: family(), fontSize: text(11), fontWeight: "600", color: theme().palette.gold }}>Selected worktree is missing</Text>
+    {stranded() && <View testID="worktree-selection-missing" style={{ ...cardStyle(theme, 10), marginHorizontal: space(12, s()), marginBottom: space(8, s()), gap: space(6, s()) }}>
+      <StatusPill theme={theme} tone="needs" label="Missing on disk" />
+      <Text style={{ fontFamily: family(), fontSize: text(11), fontWeight: "600", color: ink() }}>Selected worktree is missing</Text>
       <Text style={{ fontFamily: family(), fontSize: text(10), color: muted() }}>{`${stranded()} is no longer on disk, so Files has nothing to show.`}</Text>
       <View style={{ flexDirection: "row" }}>
         <Command id="worktree-use-primary" label={primary() ? `Use ${name(primary()!)}` : "Use the project folder"} onPress={() => c.selectWorktree(primary()?.id ?? null)} />
@@ -563,23 +565,27 @@ function Worktrees(props: { controller: PanelController; surface: string }) {
       for (const task of c.state().tasks) if (task.worktreeId === tree().id) { if (task.status === "done") done++; else open++; }
       return [open ? `${open} open` : "", done ? `${done} done` : ""].filter(Boolean).join(" · ");
     };
-    const meta = () => [missing() ? "Missing on disk" : "", tasks()].filter(Boolean).join(" · ");
+    // At most two lines: the branch, then what the worktree holds. Its folder is in the tooltip,
+    // and, like an idle project, a worktree with nothing to say is one line.
+    const meta = () => tasks();
     const label = () => [name(tree()) === tree().branch ? worktreeLabel(tree()) : name(tree()), tree().isPrimary ? "primary" : "", missing() ? "missing" : ""].filter(Boolean).join(", ");
     return <Button testID={`worktree-${tree().id}`} accessibilityLabel={label()} selected={selected()} onPress={() => c.selectWorktree(tree().id)}
       tooltip={<View style={{ maxWidth: space(300, s()), padding: 7, gap: 2, borderRadius: 6, backgroundColor: theme().palette.panelActive }}>
         <Text style={{ fontFamily: theme().monoFamily, fontSize: text(10), color: ink() }}>{tree().path}</Text>
         <Text style={{ fontFamily: theme().monoFamily, fontSize: text(9), color: muted() }}>{tree().id}</Text>
       </View>}
-      style={{ ...row(), flexDirection: "row", alignItems: "flex-start", gap: space(8, s()) }} hoverStyle={{ backgroundColor: theme().palette.panelActive }} focusStyle={{ backgroundColor: theme().palette.divider }} selectedStyle={{ backgroundColor: theme().palette.panelActive }}>
-      <View style={{ paddingTop: 1 }}><Icon name={tree().repositoryRoot ? "worktrees" : "folder"} size={text(13)} color={missing() ? theme().palette.gold : selected() ? accent() : muted()} /></View>
+      style={{ ...row(), flexDirection: "row", alignItems: "flex-start", gap: space(8, s()) }} hoverStyle={{ backgroundColor: theme().palette.panelActive }} focusStyle={rowFocus()} selectedStyle={{ backgroundColor: theme().palette.panelActive }}>
+      <View style={{ paddingTop: 1 }}><Icon name={tree().repositoryRoot ? "worktrees" : "folder"} size={text(13)} color={selected() ? accent() : muted()} /></View>
       <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: space(6, s()), minWidth: 0 }}>
           <Text numberOfLines={1} style={{ flexShrink: 1, fontFamily: family(), fontSize: text(11), fontWeight: selected() ? "600" : "400", color: ink() }}>{name(tree())}</Text>
           {repository(tree()) !== "" && <Text numberOfLines={1} style={{ flexShrink: 0, fontFamily: family(), fontSize: text(10), color: muted() }}>{repository(tree())}</Text>}
           {tree().isPrimary && name(tree()) === tree().branch && <Text style={{ flexShrink: 0, fontFamily: family(), fontSize: text(10), color: muted() }}>primary</Text>}
         </View>
-        <Text numberOfLines={1} ellipsizeMode="head" style={{ fontFamily: theme().monoFamily, fontSize: text(10), color: muted() }}>{tree().path}</Text>
-        {meta() !== "" && <Text numberOfLines={1} style={{ fontFamily: family(), fontSize: text(10), color: missing() ? theme().palette.gold : muted() }}>{meta()}</Text>}
+        {(missing() || meta() !== "") && <View style={{ flexDirection: "row", alignItems: "center", gap: space(6, s()), minWidth: 0 }}>
+          {missing() && <StatusPill theme={theme} tone="needs" label="Missing on disk" inline={true} />}
+          {meta() !== "" && <Text numberOfLines={1} style={{ flexShrink: 1, minWidth: 0, fontFamily: family(), fontSize: text(10), color: muted() }}>{meta()}</Text>}
+        </View>}
       </View>
       {selected() && <View style={{ paddingTop: 1 }}><Icon name="check" size={text(12)} color={accent()} /></View>}
     </Button>;
@@ -598,16 +604,15 @@ function TaskDetail(props: { controller: PanelController; task: () => TaskDto })
       <Text selectable={true} numberOfLines={4} style={{ flex: 1, minWidth: 0, fontFamily: theme().family, fontSize: text(12), fontWeight: "600", color: ink() }}>{task().title}</Text>
       <ToolbarCommand id="close-task-detail" icon="close" label="Close task detail" onPress={() => c.selectTask(null)} />
     </View>
-    <View style={{ flexDirection: "row", gap: 4, flexWrap: "wrap", alignItems: "center" }}>
-      {TASK_STATUSES.map((status) => <Command id={`task-status:${status}`} label={taskStatusLabel(status)}
-        selected={task().status === status} disabled={c.pending()} onPress={() => { if (task().status !== status) c.setTaskStatus(task(), status); }} />)}
-    </View>
+    <Segmented theme={theme} id="task-status" role="radio" accessibilityLabel="Task status"
+      segments={TASK_STATUSES.map((status) => ({ id: `task-status:${status}`, label: taskStatusLabel(status), selected: task().status === status, disabled: c.pending(),
+        onPress: () => { if (task().status !== status) c.setTaskStatus(task(), status); } }))} />
     <Button testID="assign-task" accessibilityLabel={`Assign task to worktree, currently ${taskWorktree(task(), c.state())}`} disabled={c.pending()}
       onPress={() => void Menu.popup(c.assignItems(task()))}
-      style={{ ...button(), flexDirection: "row", alignItems: "center", gap: space(6, s()), alignSelf: "flex-start", maxWidth: "100%" }}
-      hoverStyle={{ backgroundColor: theme().palette.divider }} focusStyle={{ backgroundColor: theme().palette.divider }}>
+      style={{ ...buttonLook(theme).style, alignSelf: "flex-start", maxWidth: "100%" }}
+      hoverStyle={buttonLook(theme).hoverStyle} focusStyle={buttonLook(theme).focusStyle} disabledStyle={buttonLook(theme).disabledStyle}>
       <Icon name="worktrees" size={text(12)} color={muted()} />
-      <Text numberOfLines={1} style={{ flexShrink: 1, fontFamily: theme().family, fontSize: text(11), color: task().worktreeId ? ink() : muted() }}>{taskWorktree(task(), c.state())}</Text>
+      <Text numberOfLines={1} style={{ ...buttonLook(theme).label, flexShrink: 1, color: task().worktreeId ? ink() : muted() }}>{taskWorktree(task(), c.state())}</Text>
       <Icon name="down" size={text(10)} color={muted()} />
     </Button>
     <If when={task().details.trim() !== ""}>
@@ -615,9 +620,10 @@ function TaskDetail(props: { controller: PanelController; task: () => TaskDto })
         <Text selectable={true} style={{ fontFamily: theme().family, fontSize: text(11), color: ink() }}>{task().details}</Text>
       </Scroll>
     </If>
-    <View style={{ gap: 2 }}>
+    {/* The task's ID is for tools, not for reading: it is in the dates' tooltip. */}
+    <View testID="task-detail-dates" style={{ alignSelf: "flex-start", maxWidth: "100%" }}
+      tooltip={<View style={{ padding: 7, borderRadius: 6, backgroundColor: theme().palette.panelActive }}><Text selectable={true} style={{ fontFamily: theme().monoFamily, fontSize: text(9), color: ink() }}>{task().id}</Text></View>}>
       <Text numberOfLines={1} style={{ fontFamily: theme().family, fontSize: text(10), color: muted() }}>{`Created ${taskDate(task().createdAt, c.now())} · updated ${taskAge(task().updatedAt, c.now())}`}</Text>
-      <Text selectable={true} numberOfLines={1} style={{ fontFamily: theme().monoFamily, fontSize: text(9), color: muted() }}>{task().id}</Text>
     </View>
   </View>;
 }
@@ -642,15 +648,15 @@ function TaskItem(props: { item: () => TaskRow; controller: PanelController }) {
   const selected = () => c.selectedTask() === task().id;
   const meta = () => [task().worktreeId ? taskWorktree(task(), c.state()) : "", taskAge(task().updatedAt, c.now())].filter(Boolean).join(" · ");
   return <View onContextMenu={() => c.taskMenu(task())}
-    style={{ flexDirection: "row", alignItems: "flex-start", borderRadius: space(7, theme().scale), backgroundColor: selected() ? theme().palette.panelActive : "transparent" }} hoverStyle={{ backgroundColor: theme().palette.panelActive }}>
+    style={{ flexDirection: "row", alignItems: "flex-start", borderRadius: space(8, theme().scale), backgroundColor: selected() ? theme().palette.panelActive : "transparent" }} hoverStyle={{ backgroundColor: theme().palette.panelActive }}>
     <Button testID={`task-toggle:${task().id}`} accessibilityLabel={done() ? `Reopen ${task().title}` : `Mark ${task().title} done`} disabled={c.pending()}
       onPress={() => c.setTaskStatus(task(), done() ? "todo" : "done")}
-      style={{ width: space(26, theme().scale), height: space(28, theme().scale), borderRadius: space(7, theme().scale), alignItems: "center", justifyContent: "center" }}
-      hoverStyle={{ backgroundColor: theme().palette.divider }} focusStyle={{ backgroundColor: theme().palette.divider }}>
+      style={{ width: space(26, theme().scale), height: space(28, theme().scale), borderRadius: space(8, theme().scale), alignItems: "center", justifyContent: "center" }}
+      hoverStyle={{ backgroundColor: theme().palette.divider }} focusStyle={rowFocus()}>
       <Icon name={statusIcon(task().status)} size={text(14)} color={statusColor(task().status)} />
     </Button>
     <Button testID={`task-${task().id}`} accessibilityLabel={`${task().title} · ${taskStatusLabel(task().status)}`} selected={selected()} onPress={() => c.selectTask(task().id)}
-      style={{ flex: 1, minWidth: 0, paddingRight: space(6, theme().scale), paddingVertical: space(6, theme().scale), gap: 2 }} focusStyle={{ backgroundColor: theme().palette.divider }}>
+      style={{ flex: 1, minWidth: 0, paddingRight: space(6, theme().scale), paddingVertical: space(6, theme().scale), gap: 2, borderRadius: space(8, theme().scale) }} focusStyle={rowFocus()}>
       <Text numberOfLines={2} style={{ fontFamily: theme().family, fontSize: text(11), color: done() ? muted() : ink() }}>{task().title}</Text>
       <Text numberOfLines={1} style={{ fontFamily: theme().family, fontSize: text(10), color: muted() }}>{meta()}</Text>
     </Button>
@@ -685,9 +691,10 @@ function Tasks(props: { controller: PanelController; surface: string }) {
     </Header>
     <InlineEditor controller={c} kinds={["task"]} />
     <PanelSearch controller={c} panel="tasks" surface={props.surface} />
-    <View testID="tasks-controls" style={{ paddingHorizontal: space(12, theme().scale), paddingBottom: space(6, theme().scale), flexDirection: "row", gap: 4 }}>
-      {([["open", "Open"], ["done", "Done"], ["all", "All"]] as const).map(([filter, label]) =>
-        <Command id={`tasks-filter-${filter}`} label={`${label} tasks`} selected={c.taskFilter() === filter} onPress={() => c.taskFilter.set(filter)}>{`${label} ${counts()[filter]}`}</Command>)}
+    <View testID="tasks-controls" style={{ paddingHorizontal: space(12, theme().scale), paddingBottom: space(6, theme().scale) }}>
+      <Segmented theme={theme} role="radio" accessibilityLabel="Show tasks"
+        segments={([["open", "Open"], ["done", "Done"], ["all", "All"]] as const).map(([filter, label]) => ({ id: `tasks-filter-${filter}`, label, count: counts()[filter],
+          accessibilityLabel: `${label} tasks`, selected: c.taskFilter() === filter, onPress: () => c.taskFilter.set(filter) }))} />
     </View>
     <List each={rows()} keyExtractor={(row) => row.id} estimatedItemSize={space(42, theme().scale)} style={{ flex: 1, minHeight: 0 }} contentStyle={{ paddingHorizontal: space(6, theme().scale), paddingBottom: space(6, theme().scale) }} empty={<TaskEmpty controller={c} counts={counts} />}>
       {(item) => <TaskListRow item={item} controller={c} />}
@@ -787,20 +794,29 @@ function Shells(props: { controller: PanelController; surface: string }) {
       <ToolbarCommand id="new-shell" icon="terminal" label="New terminal" disabled={c.pending() || !project()} onPress={createShell} />
       <ToolbarCommand id="nuke-shells" icon="radiation" label="End project terminals…" disabled={c.pending() || !targets().length} onPress={requestEnd} />
     </Header>
-    {ending() && <View testID="end-terminals-confirm" role="alert" accessibilityLabel="End project terminals?" style={{ marginHorizontal: space(PANEL.inset, theme().scale), marginBottom: 12, padding: 12, gap: 10, borderRadius: 10, backgroundColor: theme().palette.bg, borderWidth: 1, borderColor: theme().palette.danger }}>
+    {ending() && <View testID="end-terminals-confirm" role="alert" accessibilityLabel="End project terminals?" style={{ ...cardStyle(theme), marginHorizontal: space(PANEL.inset, theme().scale), marginBottom: 12, gap: 10, borderColor: theme().palette.danger }}>
       <Text style={{ fontFamily: theme().family, fontSize: text(13), fontWeight: "600", color: ink() }}>{`End ${ending()!.ids.length} project terminal${ending()!.ids.length === 1 ? "" : "s"}?`}</Text>
       <Text style={{ fontFamily: theme().family, fontSize: text(11), color: muted() }}>Running processes and agents stop. Unsaved terminal output and temporary shell uploads are deleted. Chats and orchestrator terminals are kept.</Text>
       <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: 8 }}>
-        <Button testID="end-terminals-cancel" ref={(node) => node.focus()} onPress={() => ending.set(null)} style={button()}><Text style={{ fontFamily: theme().family, fontSize: text(11), color: ink() }}>Cancel</Text></Button>
-        <Button testID="end-terminals-confirm-action" onPress={endTerminals} style={button()}><Text style={{ fontFamily: theme().family, fontSize: text(11), color: theme().palette.danger }}>{`End ${ending()!.ids.length} terminals`}</Text></Button>
+        <Button testID="end-terminals-cancel" ref={(node) => node.focus()} onPress={() => ending.set(null)} style={buttonLook(theme).style} hoverStyle={buttonLook(theme).hoverStyle} focusStyle={buttonLook(theme).focusStyle}><Text style={buttonLook(theme).label}>Cancel</Text></Button>
+        <Button testID="end-terminals-confirm-action" onPress={endTerminals} style={buttonLook(theme, "danger").style} hoverStyle={buttonLook(theme, "danger").hoverStyle} focusStyle={buttonLook(theme, "danger").focusStyle}><Text style={buttonLook(theme, "danger").label}>{`End ${ending()!.ids.length} terminals`}</Text></Button>
       </View>
     </View>}
     <PanelSearch controller={c} panel="shells" surface={props.surface} />
-    <View testID="sessions-controls" style={{ paddingHorizontal: space(12, s()), paddingBottom: space(6, s()), flexDirection: "row", gap: 4, flexWrap: "wrap" }}>
-      {FILTERS.filter(([filter]) => filter === "all" || filter === "shells" || c.sessionFilter() === filter || allChats().some((chat) => chat.provider === filter)).map(([filter, chip, , label]) =>
-        <Command id={`sessions-filter-${filter}`} label={label} selected={c.sessionFilter() === filter} onPress={() => c.sessionFilter.set(filter)}>{`${chip} ${counts()[filter]}`}</Command>)}
+    <View testID="sessions-controls" style={{ paddingHorizontal: space(12, s()), paddingBottom: space(6, s()) }}>
+      <Segmented theme={theme} role="radio" accessibilityLabel="Show sessions"
+        segments={FILTERS.filter(([filter]) => filter === "all" || filter === "shells" || c.sessionFilter() === filter || allChats().some((chat) => chat.provider === filter)).map(([filter, chip, , label]) =>
+          ({ id: `sessions-filter-${filter}`, label: chip, count: counts()[filter], accessibilityLabel: label, selected: c.sessionFilter() === filter, onPress: () => c.sessionFilter.set(filter) }))} />
     </View>
-    {c.catalogNotice() !== "" && <Text testID="sessions-catalog-notice" style={{ fontFamily: theme().family, fontSize: text(10), color: theme().palette.danger, paddingHorizontal: 12, paddingBottom: 8 }}>{c.catalogNotice()}</Text>}
+    {/* One line a person can act on; what the chat host said is under it and in its tooltip. */}
+    {c.catalogNotice() !== "" && <View testID="sessions-catalog-notice-row" role="alert" style={{ flexDirection: "row", alignItems: "center", gap: space(8, s()), marginHorizontal: space(12, s()), marginBottom: space(8, s()) }}
+      tooltip={<View style={{ maxWidth: space(320, s()), padding: 7, borderRadius: 6, backgroundColor: theme().palette.panelActive }}><Text selectable={true} style={{ fontFamily: theme().monoFamily, fontSize: text(9), color: ink() }}>{c.catalogNotice()}</Text></View>}>
+      <View style={{ flex: 1, minWidth: 0, gap: 1 }}>
+        <Text testID="sessions-catalog-notice" accessibilityLabel={c.catalogNotice()} style={{ fontFamily: theme().family, fontSize: text(10), fontWeight: "500", color: theme().palette.danger }}>Chat history is unavailable.</Text>
+        <Text numberOfLines={1} ellipsizeMode="middle" style={{ fontFamily: theme().family, fontSize: text(9), color: muted() }}>{c.catalogNotice().replace(/^Chat history unavailable:\s*(Error:\s*)?/, "")}</Text>
+      </View>
+      <Command id="sessions-catalog-retry" label="Retry" disabled={c.catalogLoading()} onPress={() => void c.refreshCatalog()} />
+    </View>}
     {c.catalogLoading() && allChats().length === 0 && <Text style={{ fontFamily: theme().family, fontSize: text(10), color: muted(), paddingHorizontal: 12, paddingBottom: 8 }}>Loading chat history…</Text>}
     <List each={rows()} keyExtractor={(item) => item.id} estimatedItemSize={space(58, s())} style={{ flex: 1, minHeight: 0 }} contentStyle={{ paddingHorizontal: space(6, s()), paddingBottom: 6 }} empty={<SessionsEmpty />}>
       {(item) => <>{item().kind === "chat" ? <ChatSession item={() => item() as Extract<SessionRow, { kind: "chat" }>} /> : <ShellSession item={() => item() as Extract<SessionRow, { kind: "shell" }>} />}</>}
@@ -819,31 +835,36 @@ function Shells(props: { controller: PanelController; surface: string }) {
     return <Empty query={c.query()} noun={entry()[2]} loading={!c.loaded()} message={elsewhere() ? `No ${entry()[2]}${searching() ? " match" : ""}` : undefined} action={action()}
       icon={searching() ? "search" : shellsShown() ? "terminal" : "chat"} />;
   }
+  /** The folder a session runs in, for its tooltip: rows no longer spend a line on it. */
+  function where(path: string) {
+    return <View style={{ maxWidth: space(320, s()), padding: 7, borderRadius: 6, backgroundColor: theme().palette.panelActive }}>
+      <Text style={{ fontFamily: theme().monoFamily, fontSize: text(10), color: ink() }}>{path}</Text>
+    </View>;
+  }
   function ChatSession(props: { item: () => Extract<SessionRow, { kind: "chat" }> }) {
     const item = props.item, chat = () => item().chat;
-    // Waiting and failed chats need the person; the weight marks them where the theme gives
-    // working and attention the same colour.
-    const attention = () => chat().state === "waiting" || chat().state === "failed";
-    const tone = () => chat().state === "running" || chat().state === "starting" ? theme().palette.working
-      : chat().state === "failed" ? theme().palette.danger : attention() ? theme().palette.gold : muted();
+    // Waiting and failed chats need the person; working ones are under way; the rest are quiet.
+    const tone = (): Tone => chat().state === "running" || chat().state === "starting" ? "working"
+      : chat().state === "failed" ? "failed" : chat().state === "waiting" ? "needs" : "neutral";
     return <Button testID={`session-chat-${chat().id}`} accessibilityLabel={`${provider(chat())} chat · ${chat().title || "Untitled chat"} · ${status(chat())} · ${context(chat())}`}
-      selected={c.selectedChat() === chat().id} disabled={!c.showChat} onPress={() => c.openChat(chat(), item().projectId, item().token)}
-      style={rowStyle()} hoverStyle={{ backgroundColor: theme().palette.panelActive }} focusStyle={{ backgroundColor: theme().palette.divider }} selectedStyle={{ backgroundColor: theme().palette.panelActive }}>
-      <View style={{ paddingTop: 1 }}><Icon name="chat" size={text(13)} color={tone()} /></View>
-      <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
+      selected={c.selectedChat() === chat().id} disabled={!c.showChat} onPress={() => c.openChat(chat(), item().projectId, item().token)} tooltip={where(chat().cwd)}
+      style={rowStyle()} hoverStyle={{ backgroundColor: theme().palette.panelActive }} focusStyle={rowFocus()} selectedStyle={{ backgroundColor: theme().palette.panelActive }}>
+      <View style={{ paddingTop: 1 }}><Icon name="chat" size={text(13)} color={muted()} /></View>
+      <View style={{ flex: 1, minWidth: 0, gap: space(4, s()) }}>
         <Text numberOfLines={1} style={{ fontFamily: theme().family, fontSize: text(11), color: ink() }}>{chat().title.trim() || "Untitled chat"}</Text>
-        <View style={{ flexDirection: "row", minWidth: 0 }}>
-          <Text numberOfLines={1} style={{ flexShrink: 0, fontFamily: theme().family, fontSize: text(10), fontWeight: attention() ? "600" : "400", color: tone() }}>{status(chat())}</Text>
-          <Text numberOfLines={1} style={{ flexShrink: 1, minWidth: 0, fontFamily: theme().family, fontSize: text(10), color: muted() }}>{` · ${provider(chat())} · ${context(chat())}`}</Text>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: space(6, s()), minWidth: 0 }}>
+          <StatusPill theme={theme} tone={tone()} label={status(chat())} inline={true} />
+          <Text numberOfLines={1} style={{ flexShrink: 1, minWidth: 0, fontFamily: theme().family, fontSize: text(10), color: muted() }}>{`${provider(chat())} · ${context(chat())}`}</Text>
         </View>
-        <Text numberOfLines={1} ellipsizeMode="middle" style={{ fontFamily: theme().monoFamily, fontSize: text(10), color: muted() }}>{chat().cwd}</Text>
       </View>
     </Button>;
   }
   function ShellSession(props: { item: () => Extract<SessionRow, { kind: "shell" }> }) {
     const item = props.item, shell = () => item().shell;
     const state = () => shell().alive ? "Live" : "Exited";
-    const tone = () => shell().alive ? accent() : muted();
+    const tone = () => shell().alive ? ink() : muted();
+    // A shell says what runs in it; one with no command says which harness it is.
+    const meta = () => shell().command ?? shell().harness ?? "shell";
     function menu() {
       void Menu.popup([
         { label: "Open session", disabled: !shell().alive, onSelect: () => c.attach(shell(), item().projectId, item().token) },
@@ -853,22 +874,22 @@ function Shells(props: { controller: PanelController; surface: string }) {
     }
     return <View onContextMenu={menu}>
       <Button testID={`shell-${shell().id}`} accessibilityLabel={`Shell · ${c.titleForShell(shell())} · ${state()} · ${shell().command ?? shell().cwd}`} selected={c.selectedShell() === shell().id} onPress={() => c.attach(shell(), item().projectId, item().token)} style={rowStyle()}
-        hoverStyle={{ backgroundColor: theme().palette.panelActive }} focusStyle={{ backgroundColor: theme().palette.divider }} selectedStyle={{ backgroundColor: theme().palette.panelActive }}>
+        tooltip={where(shell().cwd)} hoverStyle={{ backgroundColor: theme().palette.panelActive }} focusStyle={rowFocus()} selectedStyle={{ backgroundColor: theme().palette.panelActive }}>
         <View style={{ paddingTop: 1 }}><Icon name="terminal" size={text(13)} color={tone()} /></View>
-        <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
+        <View style={{ flex: 1, minWidth: 0, gap: space(4, s()) }}>
           <Text numberOfLines={1} style={{ fontFamily: theme().family, fontSize: text(11), color: shell().alive ? ink() : muted() }}>{c.titleForShell(shell())}</Text>
-          <View style={{ flexDirection: "row", minWidth: 0 }}>
-            <Text numberOfLines={1} style={{ flexShrink: 0, fontFamily: theme().family, fontSize: text(10), color: tone() }}>{state()}</Text>
-            <Text numberOfLines={1} style={{ flexShrink: 1, minWidth: 0, fontFamily: theme().family, fontSize: text(10), color: muted() }}>{` · ${shell().harness ?? "shell"}${c.tabForShell(shell().id)?.hidden ? " · Hidden tab" : ""}`}</Text>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: space(6, s()), minWidth: 0 }}>
+            <StatusPill theme={theme} tone={shell().alive ? "done" : "neutral"} label={state()} inline={true} />
+            <Text numberOfLines={1} style={{ flexShrink: 1, minWidth: 0, fontFamily: shell().command ? theme().monoFamily : theme().family, fontSize: text(10), color: muted() }}>{meta()}</Text>
+            {c.tabForShell(shell().id)?.hidden && <Text numberOfLines={1} style={{ flexShrink: 0, fontFamily: theme().family, fontSize: text(10), color: muted() }}>· Hidden tab</Text>}
           </View>
-          <Text numberOfLines={1} ellipsizeMode={shell().command ? "tail" : "middle"} style={{ fontFamily: theme().monoFamily, fontSize: text(10), color: muted() }}>{shell().command ?? shell().cwd}</Text>
         </View>
       </Button>
       {c.selectedShell() === shell().id && shell().alive && c.closingShell()?.id !== shell().id && <View style={{ paddingLeft: lead(), paddingBottom: 4, alignItems: "flex-start" }}><Command id={`close-shell:${shell().id}`} label="End shell…" disabled={c.pending()} onPress={() => c.closingShell.set(shell())} /></View>}
-      {c.closingShell()?.id === shell().id && shell().alive && <View testID="end-shell-confirm" style={{ marginLeft: lead(), marginRight: 6, marginBottom: 6, padding: 10, gap: 8, borderRadius: 8, backgroundColor: theme().palette.bg }}>
+      {c.closingShell()?.id === shell().id && shell().alive && <View testID="end-shell-confirm" style={{ ...cardStyle(theme, 10), marginLeft: lead(), marginRight: 6, marginBottom: 6, gap: 8 }}>
         <Text style={{ fontFamily: theme().family, fontSize: text(11), color: muted() }}>{`This ends ${c.titleForShell(shell())} and the processes running in it. Close its tab instead to keep it running.`}</Text>
         <View style={{ flexDirection: "row", gap: 6 }}>
-          <Command id="confirm-end-shell" label="End shell" disabled={c.pending()} onPress={() => void c.run(() => Sessions.close(shell().id), () => c.closingShell.set(null))} />
+          <Command id="confirm-end-shell" label="End shell" danger={true} disabled={c.pending()} onPress={() => void c.run(() => Sessions.close(shell().id), () => c.closingShell.set(null))} />
           <Command label="Cancel" disabled={c.pending()} onPress={() => c.closingShell.set(null)} />
         </View>
       </View>}
@@ -1018,9 +1039,10 @@ function ProjectEditor(props: { controller: PanelController }) {
     <Text testID="project-inspection" style={{ fontFamily: theme().family, fontSize: text(11), color: muted() }}>{checking() ? "Checking folder…" : inspection() ? `${inspection()!.exists ? "Existing folder" : "New folder"} · ${inspection()!.repositoryCount ? plural(inspection()!.repositoryCount, "Git repository") : "no repositories"}` : "Enter a project name, or choose an existing folder."}</Text>
     {resolved() !== "" && <Text numberOfLines={2} style={{ fontFamily: theme().family, fontSize: text(10), color: muted() }}>{`Resolves to ${resolved()}`}</Text>}
     {!!inspection()?.warning && <Text style={{ fontFamily: theme().family, fontSize: text(11), color: theme().palette.gold }}>{inspection()!.warning}</Text>}
-    {inspection()?.canInitGit ? <Switch testID="project-init-git" accessibilityLabel="Initialize Git" checked={initGit()} onChange={(value) => initGit.set(value)} disabled={c.pending()} style={{ flexDirection: "row", alignItems: "center", gap: 8 }}
-      trackStyle={{ width: 28, height: 16, borderRadius: 8, padding: 2, alignItems: initGit() ? "flex-end" : "flex-start", backgroundColor: initGit() ? accent() : theme().palette.divider }} thumbStyle={{ width: 12, height: 12, borderRadius: 6, backgroundColor: theme().palette.bg }}>
-      <Text style={{ fontFamily: theme().family, fontSize: text(11), color: ink() }}>Initialize Git</Text>
+    {inspection()?.canInitGit ? <Switch testID="project-init-git" accessibilityLabel="Initialize Git" checked={initGit()} onChange={(value) => initGit.set(value)} disabled={c.pending()}
+      style={{ flexDirection: "row-reverse", alignItems: "center", justifyContent: "space-between", gap: 12, minHeight: space(36, theme().scale), borderRadius: space(8, theme().scale) }}
+      focusStyle={focusRing(theme().palette, 2)} disabledStyle={{ opacity: 0.45 }} {...switchParts(theme, initGit())}>
+      <Text style={{ flex: 1, fontFamily: theme().family, fontSize: text(11), color: ink() }}>Initialize Git</Text>
     </Switch> : inspection() && <Text style={{ fontFamily: theme().family, fontSize: text(11), color: muted() }}>Use existing repositories</Text>}
     {error() !== "" && <Text testID="project-error" style={{ fontFamily: theme().family, fontSize: text(11), color: theme().palette.danger }}>{error()}</Text>}
     <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: 6 }}>
@@ -1034,7 +1056,7 @@ function ProjectEditor(props: { controller: PanelController }) {
 function InlineEditor(props: { controller: PanelController; kinds: Editor["kind"][] }) {
   const c = props.controller;
   return <View>{!!c.editor() && props.kinds.includes(c.editor()!.kind) && <View testID="panel-editor"
-    style={{ marginHorizontal: space(8, theme().scale), marginBottom: space(8, theme().scale), padding: space(12, theme().scale), borderRadius: 8, backgroundColor: theme().palette.bg }}>
+    style={{ ...cardStyle(theme), marginHorizontal: space(8, theme().scale), marginBottom: space(8, theme().scale) }}>
     {c.editor()!.kind === "folder" ? <FolderEditor controller={c} editor={c.editor() as Extract<Editor, { kind: "folder" }>} /> :
       c.editor()!.kind === "task" ? <TaskEditor controller={c} /> : <ProjectEditor controller={c} />}
   </View>}</View>;

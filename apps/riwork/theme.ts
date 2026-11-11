@@ -3,11 +3,14 @@
  * imports nothing native. Each host resolves the theme its own way (the Mac
  * in `appearance.ts`, iOS in Swift, pushed as `platform.theme`). */
 
-/** Native light, the context before the native owner's first delivery. Never a resolver. */
+/** Native light, the context before the native owner's first delivery. Never a resolver.
+ * `primary` fills a view's one primary action and `onPrimary` is what sits on it; a palette
+ * from a host that does not send them (iOS) takes its accent (`cyan`) under its `bg`. */
 export const NATIVE_PALETTE = {
   bg: "#ffffff", panel: "#f5f5f7", panelActive: "#e8e8ed", divider: "#d2d2d7",
   cyan: "#000000", magenta: "#3a3a3c", gold: "#b34000", text: "#1d1d1f",
   muted: "#636366", focus: "#000000", working: "#0058d0", danger: "#c80018",
+  primary: "#000000", onPrimary: "#ffffff",
 };
 
 export interface InterfaceTheme {
