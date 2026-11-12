@@ -143,19 +143,19 @@ export interface Segment {
 
 /** A filter or a view mode: a quiet track with the chosen segment raised on the card color
  * with a hairline. Counts are muted tabular figures. A row too long for its panel wraps. */
-export function Segmented(props: { theme: KitTheme; segments: Segment[]; id?: string; accessibilityLabel?: string; role?: "tab" | "radio"; touch?: boolean; stretch?: boolean }) {
+export function Segmented(props: { theme: KitTheme; segments: Segment[]; id?: string; accessibilityLabel?: string; role?: "tab" | "radio"; touch?: boolean; stretch?: boolean; compact?: boolean }) {
   const p = () => props.theme().palette, s = () => props.theme().scale;
   return <View testID={props.id} role={props.role === "tab" ? "tablist" : props.role === "radio" ? "radiogroup" : undefined} accessibilityLabel={props.accessibilityLabel}
     style={{ flexDirection: "row", flexWrap: "wrap", alignSelf: props.stretch ? "stretch" : "flex-start", maxWidth: "100%", minWidth: 0, gap: space(2, s()), padding: space(2, s()), borderRadius: space(9, s()), backgroundColor: p().panelActive }}>
     {props.segments.map((segment) => <Button testID={segment.id} accessibilityLabel={segment.accessibilityLabel ?? segment.label} role={props.role ?? null}
       selected={segment.selected} disabled={segment.disabled} onPress={segment.onPress}
       style={{ flexDirection: "row", alignItems: "center", justifyContent: "center", gap: space(5, s()), minHeight: space(props.touch ? 40 : 24, s()), minWidth: space(segment.icon ? 30 : 0, s()),
-        paddingHorizontal: space(segment.icon ? 6 : 9, s()), borderRadius: space(7, s()), borderWidth: 1,
+        paddingHorizontal: space(segment.icon ? 6 : props.compact ? 7 : 9, s()), borderRadius: space(7, s()), borderWidth: 1,
         borderColor: segment.selected ? p().divider : "transparent", backgroundColor: segment.selected ? p().bg : "transparent", opacity: segment.disabled && !segment.selected ? 0.45 : 1 }}
       hoverStyle={segment.selected ? {} : { backgroundColor: mix(p().panelActive, p().text, 0.06) }} focusStyle={focusRing(p(), 1)}>
       {segment.icon ? <Icon name={segment.icon} size={14 * s()} color={segment.selected ? p().text : p().muted} />
         : <Text numberOfLines={1} style={{ fontFamily: props.theme().family, fontSize: 10.5 * s(), fontWeight: "500", color: segment.selected ? p().text : p().muted }}>{segment.label}</Text>}
-      {segment.count != null && <Text style={{ fontFamily: props.theme().family, fontSize: 10 * s(), fontVariant: ["tabular-nums"], color: p().muted }}>{String(segment.count)}</Text>}
+      {segment.count != null && (!props.compact || segment.selected) && <Text style={{ fontFamily: props.theme().family, fontSize: 10 * s(), fontVariant: ["tabular-nums"], color: p().muted }}>{String(segment.count)}</Text>}
     </Button>)}
   </View>;
 }

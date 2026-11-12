@@ -71,16 +71,14 @@ export function Agents(props: { visible: () => boolean; theme: () => InterfaceTh
       <Text testID="agents-count" numberOfLines={1} style={font(10, palette().muted)}>{snapshot().hosts.length === 0 ? "Reading hosts…"
         : `${shown() === all().length ? all().length : `${shown()} of ${all().length}`} ${all().length === 1 ? "session" : "sessions"} · ${snapshot().hosts.length} ${snapshot().hosts.length === 1 ? "host" : "hosts"}`}</Text>
     </View>
-    <View style={{ paddingHorizontal: space(12, scale()), paddingBottom: space(8, scale()) }}>
-      <View style={searchBox(props.theme, focused()).style} hoverStyle={searchBox(props.theme, focused()).hoverStyle} onPress={() => search?.focus()}>
+    <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space(8, scale()), paddingHorizontal: space(12, scale()), paddingBottom: space(8, scale()) }}>
+      <View style={{ ...searchBox(props.theme, focused()).style, flexGrow: 1, flexShrink: 1, flexBasis: space(100, scale()) }} hoverStyle={searchBox(props.theme, focused()).hoverStyle} onPress={() => search?.focus()}>
         <Icon name="search" size={13 * scale()} color={palette().muted} />
-        <Input testID="agents-search" ref={node => {search=node;}} accessibilityLabel="Search hosts and agents" placeholder="Search hosts and agents" value={query()} onChange={value => query.set(value)}
+        <Input testID="agents-search" ref={node => {search=node;}} accessibilityLabel="Search hosts and agents" placeholder="Search" value={query()} onChange={value => query.set(value)}
           onFocus={() => focused.set(true)} onBlur={() => focused.set(false)}
           style={{ flex: 1, minWidth: 0, padding: 0, backgroundColor: "transparent", ...font(11) }} />
       </View>
-    </View>
-    <View style={{ paddingHorizontal: space(12, scale()), paddingBottom: space(6, scale()) }}>
-      <Segmented theme={props.theme} role="radio" accessibilityLabel="Show agents"
+      <Segmented theme={props.theme} role="radio" compact={true} accessibilityLabel="Show agents"
         segments={FILTERS.map(([id, label]) => ({ id: `agents-filter-${id}`, label, count: count(id), selected: filter() === id, onPress: () => filter.set(id) }))} />
     </View>
     <Scroll style={{ flex: 1, minHeight: 0 }}><View style={{ paddingHorizontal: space(PANEL.gutter, scale()), paddingBottom: space(12, scale()), gap: space(14, scale()) }}>

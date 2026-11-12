@@ -301,14 +301,16 @@ function Command(props: { id?: string; label: string; disabled?: boolean; primar
   return <KitButton theme={theme} id={props.id} label={props.label} kind={kind()} disabled={props.disabled} onPress={props.onPress}>{props.children}</KitButton>;
 }
 
-function PanelSearch(props: { controller: PanelController; panel: ListPanel; surface: string }) {
+/** The search field and, when a panel has one, its filter beside it. In a panel too narrow for
+ * both the filter wraps under the field. */
+function PanelSearch(props: { controller: PanelController; panel: ListPanel; surface: string; children?: JSX.Element }) {
   const c = props.controller;
   const noun = props.panel === "shells" ? "sessions" : props.panel;
   const focused = signal(false);
   let input: YNode | undefined;
   cleanup(() => c.searches.delete(props.surface));
-  return <View style={{ paddingHorizontal: space(12, theme().scale), paddingBottom: space(8, theme().scale) }}>
-    <View style={searchBox(theme, focused()).style} hoverStyle={searchBox(theme, focused()).hoverStyle} onPress={() => input?.focus()}>
+  return <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: space(8, theme().scale), paddingHorizontal: space(12, theme().scale), paddingBottom: space(8, theme().scale) }}>
+    <View style={{ ...searchBox(theme, focused()).style, flexGrow: 1, flexShrink: 1, flexBasis: space(100, theme().scale) }} hoverStyle={searchBox(theme, focused()).hoverStyle} onPress={() => input?.focus()}>
       <Icon name="search" size={text(13)} color={muted()} />
       <Input testID={`search:${props.surface}`} accessibilityLabel={`Search ${noun}`} placeholder="Search  ⌘F" value={c.query()}
         onChange={(value) => c.query.set(value)} ref={(node) => { input = node; c.searches.set(props.surface, node); }}
@@ -316,6 +318,7 @@ function PanelSearch(props: { controller: PanelController; panel: ListPanel; sur
         style={{ flex: 1, minWidth: 0, padding: 0, backgroundColor: "transparent", color: ink(), fontFamily: theme().family, fontSize: text(11) }} />
       {c.query() !== "" && <ToolbarCommand id={`clear-search:${props.surface}`} label="Clear the search" icon="close" small={true} onPress={() => { c.query.set(""); input?.focus(); }}>×</ToolbarCommand>}
     </View>
+    {props.children}
   </View>;
 }
 
@@ -690,12 +693,13 @@ function Tasks(props: { controller: PanelController; surface: string }) {
       <ToolbarCommand id="new-task" icon="add" label="Add task" disabled={c.pending()} onPress={add} />
     </Header>
     <InlineEditor controller={c} kinds={["task"]} />
-    <PanelSearch controller={c} panel="tasks" surface={props.surface} />
-    <View testID="tasks-controls" style={{ paddingHorizontal: space(12, theme().scale), paddingBottom: space(6, theme().scale) }}>
-      <Segmented theme={theme} role="radio" accessibilityLabel="Show tasks"
+    <PanelSearch controller={c} panel="tasks" surface={props.surface}>
+    <View testID="tasks-controls" style={{ maxWidth: "100%", minWidth: 0 }}>
+      <Segmented theme={theme} role="radio" compact={true} accessibilityLabel="Show tasks"
         segments={([["open", "Open"], ["done", "Done"], ["all", "All"]] as const).map(([filter, label]) => ({ id: `tasks-filter-${filter}`, label, count: counts()[filter],
           accessibilityLabel: `${label} tasks`, selected: c.taskFilter() === filter, onPress: () => c.taskFilter.set(filter) }))} />
     </View>
+    </PanelSearch>
     <List each={rows()} keyExtractor={(row) => row.id} estimatedItemSize={space(42, theme().scale)} style={{ flex: 1, minHeight: 0 }} contentStyle={{ paddingHorizontal: space(6, theme().scale), paddingBottom: space(6, theme().scale) }} empty={<TaskEmpty controller={c} counts={counts} />}>
       {(item) => <TaskListRow item={item} controller={c} />}
     </List>
@@ -802,12 +806,13 @@ function Shells(props: { controller: PanelController; surface: string }) {
         <Button testID="end-terminals-confirm-action" onPress={endTerminals} style={buttonLook(theme, "danger").style} hoverStyle={buttonLook(theme, "danger").hoverStyle} focusStyle={buttonLook(theme, "danger").focusStyle}><Text style={buttonLook(theme, "danger").label}>{`End ${ending()!.ids.length} terminals`}</Text></Button>
       </View>
     </View>}
-    <PanelSearch controller={c} panel="shells" surface={props.surface} />
-    <View testID="sessions-controls" style={{ paddingHorizontal: space(12, s()), paddingBottom: space(6, s()) }}>
-      <Segmented theme={theme} role="radio" accessibilityLabel="Show sessions"
+    <PanelSearch controller={c} panel="shells" surface={props.surface}>
+    <View testID="sessions-controls" style={{ maxWidth: "100%", minWidth: 0 }}>
+      <Segmented theme={theme} role="radio" compact={true} accessibilityLabel="Show sessions"
         segments={FILTERS.filter(([filter]) => filter === "all" || filter === "shells" || c.sessionFilter() === filter || allChats().some((chat) => chat.provider === filter)).map(([filter, chip, , label]) =>
           ({ id: `sessions-filter-${filter}`, label: chip, count: counts()[filter], accessibilityLabel: label, selected: c.sessionFilter() === filter, onPress: () => c.sessionFilter.set(filter) }))} />
     </View>
+    </PanelSearch>
     {/* One line a person can act on; what the chat host said is under it and in its tooltip. */}
     {c.catalogNotice() !== "" && <View testID="sessions-catalog-notice-row" role="alert" style={{ flexDirection: "row", alignItems: "center", gap: space(8, s()), marginHorizontal: space(12, s()), marginBottom: space(8, s()) }}
       tooltip={<View style={{ maxWidth: space(320, s()), padding: 7, borderRadius: 6, backgroundColor: theme().palette.panelActive }}><Text selectable={true} style={{ fontFamily: theme().monoFamily, fontSize: text(9), color: ink() }}>{c.catalogNotice()}</Text></View>}>
