@@ -495,13 +495,12 @@ function Projects(props: { controller: PanelController; surface: string; footer?
       <ToolbarCommand id="new-folder" icon="folder" label="New folder" selected={rootFolderForm()} onPress={() => c.editor.set(rootFolderForm() ? null : { kind: "folder", name: "" })} />
       <ToolbarCommand id="new-project" icon="add" label="New project" selected={c.editor()?.kind === "project"} onPress={() => c.editor.set(c.editor()?.kind === "project" ? null : { kind: "project" })} />
     </Header>
-    <View style={{ paddingHorizontal: space(PANEL.inset, theme().scale), paddingBottom: 8 }}>
+    <InlineEditor controller={c} kinds={["folder", "project"]} />
+    <PanelSearch controller={c} panel="projects" surface={props.surface}>
       <Segmented theme={theme} id="project-view-controls" role="radio" accessibilityLabel="Project view"
         segments={(["list", "columns", "grid"] as const).map((view) => ({ id: `project-view-${view}`, icon: view, label: `${view[0].toUpperCase() + view.slice(1)} view`,
           selected: c.projectPanel().view === view, disabled: c.panelSaving(), onPress: () => void c.setProjectPanel({ ...c.projectPanel(), view }) }))} />
-    </View>
-    <InlineEditor controller={c} kinds={["folder", "project"]} />
-    <PanelSearch controller={c} panel="projects" surface={props.surface} />
+    </PanelSearch>
     {c.projectPanel().view === "list" ? <List each={rows()} keyExtractor={(item) => item.id} estimatedItemSize={space(46, theme().scale)} style={{ flex: 1, minHeight: 0 }} contentStyle={{ paddingHorizontal: space(6, theme().scale), paddingBottom: 8 }} footer={props.footer} empty={props.footer ? undefined : <Empty query={c.query()} noun="projects" loading={!c.loaded()} />}>
       {(item) => <ProjectRow item={item} controller={c} />}
     </List> : <Scroll testID={`projects-${c.projectPanel().view}`} style={{ flex: 1, minHeight: 0 }} contentStyle={{ padding: space(PANEL.inset, theme().scale), gap: 12 }}>
