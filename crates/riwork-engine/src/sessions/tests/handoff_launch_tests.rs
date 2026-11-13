@@ -136,11 +136,8 @@ fn claude_gets_its_flags_and_the_message_after_its_settings() {
         arguments.len() - 1,
         "the message follows the settings value"
     );
-    // The guidance rides in the system prompt, as for any Claude launch.
-    assert!(contains_sequence(
-        &arguments,
-        &["--append-system-prompt", CUA_GUIDANCE]
-    ));
+    // The guidance comes with the Cua server's instructions, as for any Claude launch.
+    assert!(!arguments.iter().any(|a| a == "--append-system-prompt"));
     let edits = command_line(
         HarnessKind::Claude,
         &chosen(Some(ApprovalMode::AutoEdit)),

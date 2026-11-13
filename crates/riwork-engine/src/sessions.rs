@@ -4233,8 +4233,12 @@ fn cua_harness_arguments_with(
             arguments
         }
         HarnessKind::Claude => {
-            let mut environment =
-                serde_json::json!({ "RIWORK_HOME": state_home.to_string_lossy() });
+            // Claude is told of Somtus's Cua setup in the server's own instructions
+            // (`cua::MCP_GUIDANCE_ENV`); its system prompt is left as Claude Code wrote it.
+            let mut environment = serde_json::json!({
+                "RIWORK_HOME": state_home.to_string_lossy(),
+                crate::cua::MCP_GUIDANCE_ENV: "1"
+            });
             if let Some(driver) = custom_driver {
                 environment["RIWORK_CUA_DRIVER"] = driver.to_string_lossy().into();
             }
@@ -4251,12 +4255,7 @@ fn cua_harness_arguments_with(
                     }
                 }
             });
-            vec![
-                "--mcp-config".to_owned(),
-                config.to_string(),
-                "--append-system-prompt".to_owned(),
-                CUA_GUIDANCE.to_owned(),
-            ]
+            vec!["--mcp-config".to_owned(), config.to_string()]
         }
         HarnessKind::Grok => vec![
             "--agent".to_owned(),
@@ -8401,11 +8400,12 @@ mod tests {
                 mcp["mcpServers"]["cua-driver"]["env"]["RIWORK_HOME"],
                 "/Users/test/Somtus's State"
             );
-            let prompt_index = arguments
-                .iter()
-                .position(|arg| arg == "--append-system-prompt")
-                .unwrap();
-            assert_eq!(arguments[prompt_index + 1], CUA_GUIDANCE);
+            // The guidance is the server's to give; the system prompt is left alone.
+            assert_eq!(
+                mcp["mcpServers"]["cua-driver"]["env"][crate::cua::MCP_GUIDANCE_ENV],
+                "1"
+            );
+            assert!(!arguments.iter().any(|arg| arg == "--append-system-prompt"));
             assert!(
                 !arguments
                     .iter()

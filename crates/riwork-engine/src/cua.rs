@@ -1726,11 +1726,40 @@ struct McpPolicy {
     line_limit: usize,
     /// The guard on input to Somtus's own live windows; `None` forwards every call.
     guard: Option<McpGuard>,
+    /// Put Somtus's guidance ahead of the driver's own instructions in the answer to the
+    /// client's `initialize` (`MCP_GUIDANCE`).
+    guidance: bool,
+}
+
+/// The variable that, set to `1` in the environment of `somtus cua mcp`, has the proxy lead the
+/// server's instructions with `MCP_GUIDANCE`. Claude launches set it, so Claude learns of
+/// Somtus's Cua setup from the server it applies to and its system prompt is left as it is.
+pub(crate) const MCP_GUIDANCE_ENV: &str = "RIWORK_CUA_MCP_GUIDANCE";
+
+/// What Somtus says in the server's instructions. Kept short: with the driver's own text it
+/// should stay under the 2048 characters clients are known to cut instructions at.
+const MCP_GUIDANCE: &str = "Somtus set up this server (Cua.ai Driver). Use it, not another \
+    computer-use provider, for desktop work, in delegated work too; if it is unavailable or \
+    lacks macOS permissions, say so and point to Somtus's Cua setup. Somtus refuses input to \
+    its own windows and input that names no app: pass the target's `pid` on every input call.";
+
+/// `line`, the driver's answer to `initialize`, with `MCP_GUIDANCE` leading its instructions.
+/// A line that is not such an answer is `None`.
+fn with_mcp_guidance(line: &[u8]) -> Option<Vec<u8>> {
+    let mut message: Value = serde_json::from_slice(line).ok()?;
+    let result = message.get_mut("result")?.as_object_mut()?;
+    let instructions = match result.get("instructions").and_then(Value::as_str) {
+        Some(own) if !own.trim().is_empty() => format!("{MCP_GUIDANCE}\n\n{own}"),
+        _ => MCP_GUIDANCE.to_owned(),
+    };
+    result.insert("instructions".to_owned(), instructions.into());
+    serde_json::to_vec(&message).ok()
 }
 
 impl McpPolicy {
     fn standard() -> Self {
         Self {
+            guidance: std::env::var_os(MCP_GUIDANCE_ENV).is_some_and(|value| value == "1"),
             backoff: [1, 2, 5, 10, 30].map(Duration::from_secs).to_vec(),
             stable_after: Duration::from_secs(30),
             replay_timeout: MCP_READY_TIMEOUT,
@@ -1944,6 +1973,8 @@ impl McpState {
 
 enum DriverLine {
     Forward,
+    /// The answer to the client's own `initialize`.
+    ForwardInitialize,
     Drop,
     Replay { ok: bool },
 }
@@ -1962,6 +1993,7 @@ impl McpState {
                 ok: only.succeeded(),
             };
         }
+        let mut initialize = false;
         for envelope in envelopes {
             let Some(id) = envelope.response_id() else {
                 continue;
@@ -1976,9 +2008,14 @@ impl McpState {
             {
                 self.initialize = Some(params);
                 self.initialized = false;
+                initialize = true;
             }
         }
-        DriverLine::Forward
+        if initialize {
+            DriverLine::ForwardInitialize
+        } else {
+            DriverLine::Forward
+        }
     }
 }
 
@@ -1993,6 +2030,7 @@ struct McpProxy {
     on_note: Box<dyn Fn(&str) + Send + Sync>,
     line_limit: usize,
     guard: Option<McpGuard>,
+    guidance: bool,
     client_gone: AtomicBool,
     output_failed: AtomicBool,
 }
@@ -2029,6 +2067,7 @@ fn run_mcp_proxy(
         on_note,
         line_limit: policy.line_limit,
         guard: policy.guard.clone(),
+        guidance: policy.guidance,
         client_gone: AtomicBool::new(false),
         output_failed: AtomicBool::new(false),
     });
@@ -2326,6 +2365,10 @@ impl McpProxy {
         let action = locked(&self.state).on_driver_message(epoch, &envelopes);
         match action {
             DriverLine::Forward => self.write_message(&mut **output, line),
+            DriverLine::ForwardInitialize => {
+                let guided = self.guidance.then(|| with_mcp_guidance(line)).flatten();
+                self.write_message(&mut **output, guided.as_deref().unwrap_or(line));
+            }
             DriverLine::Drop => {}
             DriverLine::Replay { ok } => {
                 drop(output);
@@ -3953,7 +3996,22 @@ else:
             replay_timeout: Duration::from_secs(20),
             line_limit: MCP_LINE_LIMIT,
             guard: None,
+            guidance: false,
         }
+    }
+
+    #[test]
+    fn mcp_guidance_leads_the_drivers_instructions() {
+        let answer = br#"{"jsonrpc":"2.0","id":1,"result":{"instructions":"Driver text.","serverInfo":{"name":"cua-driver"}}}"#;
+        let guided: Value = serde_json::from_slice(&with_mcp_guidance(answer).unwrap()).unwrap();
+        let instructions = guided["result"]["instructions"].as_str().unwrap();
+        assert!(instructions.starts_with(MCP_GUIDANCE) && instructions.ends_with("\n\nDriver text."));
+        assert_eq!(guided["result"]["serverInfo"]["name"], "cua-driver");
+        let bare = br#"{"jsonrpc":"2.0","id":1,"result":{}}"#;
+        let guided: Value = serde_json::from_slice(&with_mcp_guidance(bare).unwrap()).unwrap();
+        assert_eq!(guided["result"]["instructions"], MCP_GUIDANCE);
+        assert!(with_mcp_guidance(br#"{"jsonrpc":"2.0","id":1,"error":{"code":-1}}"#).is_none());
+        assert!(MCP_GUIDANCE.len() < 350, "keep room for the driver's own instructions");
     }
 
     fn tool_call(name: &str, arguments: Value) -> Value {
@@ -3983,6 +4041,7 @@ else:
             on_note: Box::new(|_| {}),
             line_limit: MCP_LINE_LIMIT,
             guard,
+            guidance: false,
             client_gone: AtomicBool::new(false),
             output_failed: AtomicBool::new(false),
         };
