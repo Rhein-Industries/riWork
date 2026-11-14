@@ -17,7 +17,7 @@ settings:
     SWIFT_STRICT_CONCURRENCY: complete
     DEVELOPMENT_TEAM: ""
     CODE_SIGN_STYLE: Automatic
-    # The pinned NSH 0.3 iOS SDK ships Apple-silicon simulator slices.
+    # The pinned NSH 0.5.1 iOS SDK ships Apple-silicon simulator slices.
     "EXCLUDED_ARCHS[sdk=iphonesimulator*]": x86_64
 targets:
   RiWorkCore:
