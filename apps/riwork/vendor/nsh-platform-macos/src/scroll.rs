@@ -7,11 +7,13 @@
 //! and is shown by its container's layer's `sublayerTransform` while it
 //! moves; the container's bounds origin (as `NSClipView` scrolls) takes it
 //! once the view and the display link rest ([`commit_due`]), as
-//! `setBoundsOrigin:` walks the whole subtree. AppKit's geometry (hit
+//! `setBoundsOrigin:` walks the whole subtree. Scroll views containing
+//! inputs instead update the bounds each frame so AppKit draws newly
+//! visible fields at the live offset. AppKit's geometry (hit
 //! tests, conversions, `visibleRect`) follows the bounds, so what asks it
 //! commits first ([`commit_pending`], [`commit_ancestors`]); NSH's own
 //! (picking, [`bounds_origin`]) follows the live offset.
-//! Every change goes through [`moved_to`], which moves the transform,
+//! Every change goes through [`moved_to`], which moves the container,
 //! pins the sticky cells, feeds the native scroll value in the same frame
 //! and queues a report to the engine. Reports are coalesced to one per
 //! frame by the view's frame callback, which also runs animated
@@ -41,7 +43,7 @@ use nsh_core::{
     Command, EventKind, EventPayload, Points, ScrollBehavior, Size, StickyCell, ViewKind,
     geometry::point,
     scroll::{
-        dragged, ease_out, indicator_alpha, indicator_span, projected, rate, reveal_delta,
+        dragged, ease_out, indicator_alpha, indicator_span, projected, rate, reveal_focus_delta,
         snap_duration, sticky_shift, thumb_scroll,
     },
 };
@@ -54,7 +56,7 @@ use objc2_quartz_core::CALayer;
 
 use crate::{
     input::later,
-    surface::Surface,
+    surface::{Next, Surface},
     view::{NshView, ScrollState, ViewState},
 };
 
@@ -239,7 +241,12 @@ fn limits(state: &ViewState) -> (f32, f32) {
     let Some(s) = &state.scroll else {
         return (0.0, 0.0);
     };
-    let max = s.max((state.frame.size.width.0, state.frame.size.height.0));
+    range(s, (state.frame.size.width.0, state.frame.size.height.0))
+}
+
+/// [`limits`] of scroll state `s` in a viewport of `viewport` points.
+fn range(s: &ScrollState, viewport: (f32, f32)) -> (f32, f32) {
+    let max = s.max(viewport);
     let min = if !s.horizontal && s.live.refreshing {
         -s.behavior.refresh_inset().0
     } else {
@@ -317,6 +324,26 @@ pub(crate) fn can_scroll(view: &NshView, dx: f32, dy: f32) -> bool {
     };
     let pos = main(s);
     (d > 0.0 && pos < max - 0.5) || (d < 0.0 && pos > min + 0.5)
+}
+
+/// Whether `view` is a scroll view the user can move at all: it is
+/// enabled and its content is larger than its viewport along its axis.
+/// Unlike [`can_scroll`] it needs no direction, so input can ask it as a
+/// scroll begins, before the scroll has one: an embedded app passes on a
+/// scroll with no such view under the pointer
+/// ([`crate::input::forwards_scroll`]).
+pub(crate) fn movable(view: &NshView) -> bool {
+    let state = view.state();
+    state
+        .scroll
+        .as_ref()
+        .is_some_and(|s| movable_in(s, (state.frame.size.width.0, state.frame.size.height.0)))
+}
+
+/// [`movable`] for scroll state `s` in a viewport of `viewport` points.
+fn movable_in(s: &ScrollState, viewport: (f32, f32)) -> bool {
+    let (min, max) = range(s, viewport);
+    s.behavior.enabled && max > min
 }
 
 /// Whether a trackpad gesture by `(dx, dy)` may stretch `view` past its
@@ -438,11 +465,24 @@ const COMMIT_MS: u64 = 140;
 /// hosted views sync their remote state, per scroll step, which is the
 /// jank on long lists). The bounds commit once it settles ([`commit`])
 /// puts AppKit's model right for the price of one walk per scroll.
+/// Inputs need live bounds instead: AppKit clips their drawing by its
+/// visible rectangles, which do not follow the layer transform.
 fn apply_offset(surface: &Rc<Surface>, view: &NshView) {
     let origin = bounds_origin(view);
-    let committed = view.container_bounds_origin();
-    view.set_layer_scroll(committed.0 - origin.0, committed.1 - origin.1);
-    arm_commit(surface, view);
+    // Every offset, inset and mirroring change comes through here: what
+    // shows under it changed ([`crate::sight`]).
+    crate::sight::moved();
+    let inputs = view.state().input_count != 0;
+    if inputs {
+        view.commit_bounds_origin(origin.0, origin.1);
+    } else {
+        let committed = view.container_bounds_origin();
+        view.set_layer_scroll(committed.0 - origin.0, committed.1 - origin.1);
+        arm_commit(surface, view);
+    }
+    // The effects around it (and a screen effect reading the surface)
+    // picture the changed viewport again.
+    crate::shader::ui_changed(view);
 }
 
 /// Schedules the trailing bounds commit, `COMMIT_MS` after the offset
@@ -642,6 +682,7 @@ fn report(surface: &Surface, view: &NshView) {
         (state.id, x, y, applied)
     };
     surface.control(|c| c.scroll(id, point(Points(x), Points(y)), applied));
+    crate::access::scroll_bar::moved(view);
 }
 
 /// Eases to `to` (clamped to the rest limits).
@@ -656,7 +697,7 @@ fn animate_to(
     settle(surface, view);
     let (min, max) = limits(&view.state());
     let to = to.clamp(min, max.max(min));
-    let from = view.state().scroll.as_ref().map_or(0.0, main);
+    let from = view.state().scroll.as_deref().map_or(0.0, main);
     if (to - from).abs() < 0.5 || duration <= 0.0 {
         set_phase(view, Phase::Idle);
         moved_to(surface, view, to);
@@ -751,21 +792,68 @@ fn ensure_ticking(surface: &Rc<Surface>, view: &NshView) {
         s.live.ticking = true;
     }
     let view = view.clone();
+    // Whether only the indicator's fade is left (the agent of `nsh test`
+    // does not wait for it).
+    let mut fading = false;
     surface.add_frame_callback(move |surface, now| {
-        let busy = tick(surface, &view, now * 1000.0);
-        if !busy && let Some(s) = view.state_mut().scroll.as_mut() {
+        let left = tick(surface, &view, now * 1000.0);
+        if (left == Tick::Fading) != fading {
+            fading = !fading;
+            surface.cosmetic_frame(fading);
+        }
+        if left == Tick::Done
+            && let Some(s) = view.state_mut().scroll.as_mut()
+        {
             s.live.ticking = false;
         }
-        busy
+        match left {
+            Tick::Done => Next::Done,
+            _ => deadline(&view).map_or(Next::Frame, |ms| Next::At(ms / 1000.0)),
+        }
     });
 }
 
-/// One frame of `view`'s motion; false when there is nothing left to do.
-fn tick(surface: &Rc<Surface>, view: &NshView, now: f64) -> bool {
+/// When `view`'s motion next comes to something (ms, the frames' clock):
+/// an eased move's end, a mouse wheel's or a touchpad's rest; what runs
+/// its frame while no frames are drawn ([`Next::At`]). `None` while only
+/// drawing is left (the indicator's fade, the spinner) or input it waits
+/// for.
+fn deadline(view: &NshView) -> Option<f64> {
+    let state = view.state();
+    let end = match state.scroll.as_ref()?.live.phase {
+        Phase::Animate {
+            start, duration, ..
+        } => start + duration,
+        Phase::Wheel {
+            last,
+            gesture: false,
+            ..
+        } => last + WHEEL_IDLE,
+        Phase::AwaitMomentum { since } => since + MOMENTUM_WAIT,
+        _ => return None,
+    };
+    // A millisecond past it: the frame there finds it ended whatever the
+    // rounding.
+    Some(end + 1.0)
+}
+
+/// What a scroll view has left to do after a frame ([`tick`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Tick {
+    /// Nothing: its frame callback ends.
+    Done,
+    /// Motion, input it waits for, or the refresh spinner.
+    Busy,
+    /// Only the indicator's fade.
+    Fading,
+}
+
+/// One frame of `view`'s motion.
+fn tick(surface: &Rc<Surface>, view: &NshView, now: f64) -> Tick {
     let sampled = {
         let mut state = view.state_mut();
         let Some(s) = state.scroll.as_mut() else {
-            return false;
+            return Tick::Done;
         };
         // Events still come in these phases: hold at the newest until the
         // next one, rather than ending.
@@ -791,7 +879,9 @@ fn tick(surface: &Rc<Surface>, view: &NshView, now: f64) -> bool {
     }
     let (phase, pos, (min, max)) = {
         let state = view.state();
-        let Some(s) = &state.scroll else { return false };
+        let Some(s) = &state.scroll else {
+            return Tick::Done;
+        };
         (s.live.phase, main(s), limits(&state))
     };
     match phase {
@@ -848,18 +938,13 @@ fn tick(surface: &Rc<Surface>, view: &NshView, now: f64) -> bool {
         _ => {}
     }
     report(surface, view);
-    let (busy, overlays) = {
+    let (left, overlays) = {
         let mut state = view.state_mut();
         let Some(s) = state.scroll.as_mut() else {
-            return false;
+            return Tick::Done;
         };
-        let mut busy = !matches!(
-            s.live.phase,
-            Phase::Idle
-                | Phase::Thumb { .. }
-                | Phase::Momentum
-                | Phase::Wheel { gesture: true, .. }
-        ) || s.live.resampled.is_some();
+        let resampling = s.live.resampled.is_some();
+        let mut fading = false;
         let mut overlays = false;
         if matches!(s.live.phase, Phase::Thumb { .. }) {
             // A held thumb stays until it is let go (`thumb_end`).
@@ -870,23 +955,45 @@ fn tick(surface: &Rc<Surface>, view: &NshView, now: f64) -> bool {
                 s.live.alpha = alpha;
                 overlays = true;
             }
-            busy |= alpha > 0.0;
+            fading = alpha > 0.0;
         }
-        if !s.horizontal
+        let spinning = !s.horizontal
             && main(s) < 0.0
             && s.live.refreshing
-            && s.behavior.refresh_indicator.is_none()
-        {
+            && s.behavior.refresh_indicator.is_none();
+        if spinning {
             s.live.spin = ((now / 1000.0) as f32 * 2.0 * PI) % (2.0 * PI);
             overlays = true;
-            busy = true;
         }
-        (busy, overlays)
+        (
+            what_is_left(&s.live.phase, resampling, fading, spinning),
+            overlays,
+        )
     };
     if overlays {
         update_overlays(view);
     }
-    busy
+    left
+}
+
+/// What a scroll view in `phase` has left after a frame: its own motion
+/// (an animated scroll, a mouse wheel coming to rest, the wait for
+/// momentum), trackpad offsets still to show (`resampling`) or the
+/// refresh spinner (`spinning`) keep it busy; the phases events drive
+/// (a trackpad gesture, momentum, a held thumb) wait for them; the
+/// indicator's fade (`fading`) is all that may be left.
+fn what_is_left(phase: &Phase, resampling: bool, fading: bool, spinning: bool) -> Tick {
+    let moving = !matches!(
+        phase,
+        Phase::Idle | Phase::Thumb { .. } | Phase::Momentum | Phase::Wheel { gesture: true, .. }
+    );
+    if moving || resampling || spinning {
+        Tick::Busy
+    } else if fading {
+        Tick::Fading
+    } else {
+        Tick::Done
+    }
 }
 
 // The indicator and the refresh spinner.
@@ -1214,6 +1321,7 @@ pub(crate) fn config(
     view: &NshView,
     horizontal: bool,
     indicator: bool,
+    replaced: bool,
     mirrored: bool,
 ) {
     let changed = {
@@ -1222,10 +1330,12 @@ pub(crate) fn config(
             return;
         };
         s.horizontal = horizontal;
-        // A horizontal view keeps its indicator: it is the mouse's scroll
-        // bar, and a mouse without a horizontal wheel has no other way
-        // to move it (mouse drags do not scroll).
-        s.indicator = indicator || horizontal;
+        // The view shows its indicator only when it asks to, on either
+        // axis: a mouse without a horizontal wheel still moves a
+        // horizontal view with Shift + wheel, with the vertical wheel
+        // where nothing around scrolls vertically, and with the keys. A
+        // built-in bar of the app's (`replaced`) takes its place.
+        s.indicator = indicator && !replaced;
         if !indicator {
             s.live.alpha = 0.0;
         }
@@ -1259,6 +1369,7 @@ pub(crate) fn content(surface: &Rc<Surface>, view: &NshView, size: Size<Points>)
         ensure_ticking(surface, view);
     }
     update_overlays(view);
+    crate::access::scroll_bar::moved(view);
 }
 
 /// `ScrollBy`: the core keeps the visible content in place (items above
@@ -1639,7 +1750,7 @@ pub(crate) fn wheel_begin(surface: &Rc<Surface>, view: &NshView) {
         return;
     }
     interrupt(surface, view);
-    let raw = view.state().scroll.as_ref().map_or(0.0, main);
+    let raw = view.state().scroll.as_deref().map_or(0.0, main);
     set_phase(
         view,
         Phase::Wheel {
@@ -1668,7 +1779,7 @@ pub(crate) fn wheel(surface: &Rc<Surface>, view: &NshView, dx: f32, dy: f32, tim
         } => (gesture, total, raw),
         _ => {
             interrupt(surface, view);
-            let raw = view.state().scroll.as_ref().map_or(0.0, main);
+            let raw = view.state().scroll.as_deref().map_or(0.0, main);
             (false, 0.0, raw)
         }
     };
@@ -1738,7 +1849,7 @@ pub(crate) fn wheel_end(surface: &Rc<Surface>, view: &NshView, vx: f32, vy: f32)
     // After the refresh check: refreshing lowers the top limit.
     let (pos, (min, max)) = {
         let state = view.state();
-        (state.scroll.as_ref().map_or(0.0, goal), limits(&state))
+        (state.scroll.as_deref().map_or(0.0, goal), limits(&state))
     };
     let outside = pos < min - 0.5 || pos > max.max(min) + 0.5;
     if gesture && !outside && !snaps {
@@ -1917,8 +2028,9 @@ fn key_scroll_view(view: &NshView, horizontal: bool, dx: f32, dy: f32) -> Option
 }
 
 /// Scrolls the scroll views around `target` (animated) so that it shows,
-/// as iOS and Android do for the focused field. For the text fields: call
-/// it when one gets the keyboard focus.
+/// as iOS and Android do for the focused field. Called when a field gets
+/// the keyboard focus, and when another stop gets it other than by a click
+/// (Tab, `focus()`).
 pub(crate) fn reveal(surface: &Rc<Surface>, target: &NshView) {
     // The rectangles are AppKit's, which the bounds place.
     commit_ancestors(target);
@@ -1958,7 +2070,7 @@ pub(crate) fn reveal(surface: &Rc<Surface>, target: &NshView) {
         };
         // Pending animations count from where they are headed.
         let start = start - (base - pos);
-        let delta = reveal_delta(Points(start), Points(start + len), Points(dim)).0;
+        let delta = reveal_focus_delta(Points(start), Points(start + len), Points(dim)).0;
         let to = (base + delta).clamp(min, max.max(min));
         if (to - base).abs() < 0.5 {
             continue;
@@ -1976,6 +2088,46 @@ pub(crate) fn reveal(surface: &Rc<Surface>, target: &NshView) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A scroll view of `content` points in a 300 x 200 viewport.
+    fn movable_with(content: (f32, f32), horizontal: bool, enabled: bool) -> bool {
+        let s = ScrollState {
+            content,
+            horizontal,
+            behavior: nsh_core::ScrollBehavior {
+                enabled,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        movable_in(&s, (300.0, 200.0))
+    }
+
+    /// A scroll view switched off (`scrollable={false}`) cannot move, however
+    /// long its content: an embedded app passes its scrolls on.
+    #[test]
+    fn a_disabled_scroll_view_does_not_move() {
+        assert!(!movable_with((300.0, 800.0), false, false));
+        assert!(!movable_with((900.0, 200.0), true, false));
+    }
+
+    /// A scroll view whose content fits its viewport along its axis cannot
+    /// move, even when the content overflows across it.
+    #[test]
+    fn a_scroll_view_whose_content_fits_does_not_move() {
+        assert!(!movable_with((300.0, 200.0), false, true));
+        assert!(!movable_with((300.0, 120.0), false, true));
+        assert!(!movable_with((900.0, 200.0), false, true));
+        assert!(!movable_with((300.0, 800.0), true, true));
+    }
+
+    /// An enabled scroll view whose content overflows along its axis moves:
+    /// an embedded app keeps its scrolls.
+    #[test]
+    fn an_overflowing_scroll_view_moves() {
+        assert!(movable_with((300.0, 800.0), false, true));
+        assert!(movable_with((900.0, 200.0), true, true));
+    }
 
     #[test]
     fn a_long_scroll_commits_only_when_it_ends() {
@@ -2013,6 +2165,34 @@ mod tests {
         let mut rested = Some(0.0);
         assert!(!commit_due(5000.0, 4900.0, false, true, &mut rested));
         assert_eq!(rested, None);
+    }
+
+    /// A keyboard scroll keeps the view busy while it moves; then only its
+    /// indicator's fade is left, which `nsh test`'s agent does not wait for
+    /// (`Surface::animating`); the spinner and resampled offsets stay busy.
+    #[test]
+    fn only_the_indicators_fade_is_cosmetic() {
+        let gliding = Phase::Animate {
+            from: 0.0,
+            to: 40.0,
+            start: 0.0,
+            duration: KEY_ANIMATION,
+            momentum: false,
+            end: true,
+        };
+        assert_eq!(what_is_left(&gliding, false, true, false), Tick::Busy);
+        assert_eq!(what_is_left(&Phase::Idle, false, true, false), Tick::Fading);
+        assert_eq!(what_is_left(&Phase::Idle, false, false, false), Tick::Done);
+        assert_eq!(what_is_left(&Phase::Idle, true, true, false), Tick::Busy);
+        assert_eq!(what_is_left(&Phase::Idle, false, true, true), Tick::Busy);
+        assert_eq!(
+            what_is_left(&Phase::AwaitMomentum { since: 0.0 }, false, true, false),
+            Tick::Busy
+        );
+        assert_eq!(
+            what_is_left(&Phase::Momentum, false, true, false),
+            Tick::Fading
+        );
     }
 
     #[test]

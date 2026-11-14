@@ -67,9 +67,9 @@ export function MemoPreview(props: {
   return <View testID="chat-memo-preview" accessibilityLabel="Project memo preview"
     style={{ borderWidth: 1, borderColor: palette().divider, borderRadius: 8, backgroundColor: palette().panelActive, gap: size(6), marginBottom: size(6) }}>
     <Text role="header" style={{ ...text(), fontWeight: "600", paddingHorizontal: size(10), paddingTop: size(8) }}>{props.preview()?.kind === "noProject" ? "No project memo here" : "Project memo"}</Text>
-    {!!note() && <Text role="text" selectable={true} style={{ ...text(true), paddingHorizontal: size(10), paddingVertical: size(4) }}>{note()}</Text>}
+    {!!note() && <Text role="text" style={{ ...text(true), paddingHorizontal: size(10), paddingVertical: size(4), userSelect: "text" }}>{note()}</Text>}
     {!!contents().trim() && <Scroll style={{ maxHeight: size(220) }} contentStyle={{ paddingHorizontal: size(10), paddingVertical: size(4) }}>
-      <Text testID="chat-memo-preview-text" selectable={true} style={{ ...text(), fontFamily: props.theme().monoFamily }}>{contents()}</Text>
+      <Text testID="chat-memo-preview-text" style={{ ...text(), fontFamily: props.theme().monoFamily, userSelect: "text" }}>{contents()}</Text>
     </Scroll>}
     <View style={{ flexDirection: "row", flexWrap: "wrap", justifyContent: "flex-end", gap: size(6), padding: size(6), borderTopWidth: 1, borderColor: palette().divider }}>
       {!!project() && !!props.onEdit && <Button testID="chat-memo-edit" disabled={!props.active()} onPress={() => { const id = project(); if (id && props.active()) props.onEdit?.(id); }} style={button()} focusStyle={{ backgroundColor: palette().panel }}><Text style={text()}>Edit</Text></Button>}

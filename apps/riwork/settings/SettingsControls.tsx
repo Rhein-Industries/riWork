@@ -1,6 +1,7 @@
-import { Text, cleanup, effect, keymap, signal, type JSX, type YNode } from "nsh";
+import { Text, cleanup, effect, keymap, signal, type JSX, type ViewRef } from "nsh";
 import { Button, Switch, View } from "../SettingsFocus";
 import { DEFAULT_THEME, space, type InterfaceTheme } from "../appearance";
+import { focusView } from "../keyboard";
 import { PANEL } from "../panel_layout";
 import { focusRing, mix, strongLine, switchParts } from "../PanelKit";
 
@@ -27,14 +28,14 @@ export function Section(props: { number: string; title: string; description?: st
 const TRACK_HEIGHT = 22;
 /** One semantic switch: the label (and the description under it) on the left, the switch on the
  * right, at least 44 points tall. The track is the hairline when off and ink when on. */
-export function ToggleRow(props: { id: string; label: string; description?: string; checked: boolean; disabled?: boolean; onChange: (value: boolean) => void; theme?: Theme; onRef?: (node: YNode) => void }) {
+export function ToggleRow(props: { id: string; label: string; description?: string; checked: boolean; disabled?: boolean; onChange: (value: boolean) => void; theme?: Theme; onRef?: (node: ViewRef) => void }) {
   const theme = props.theme ?? defaultTheme;
   // The label's first line is about 1.2 times its size tall; whichever of it and the track is
   // shorter moves down to center on the other, so the switch sits on the first line.
   const offset = () => (12 * theme().scale * 1.2 - space(TRACK_HEIGHT, theme().scale)) / 2;
   const parts = () => switchParts(theme, props.checked);
   // The switch stays near its label even in a wide settings column.
-  return <Switch testID={props.id} ref={(node) => props.onRef?.(node)} accessibilityLabel={props.label} checked={props.checked} disabled={props.disabled} onChange={props.onChange}
+  return <Switch testID={props.id} ref={(node) => props.onRef?.(node)} accessibilityLabel={props.label} checked={props.checked} disabled={props.disabled} onChange={({ checked }) => props.onChange(checked)}
     style={{ flexDirection: "row-reverse", alignItems: props.description ? "flex-start" : "center", justifyContent: "space-between", alignSelf: "flex-start", width: "100%", maxWidth: space(560, theme().scale), minHeight: space(44, theme().scale),
       paddingVertical: space(8, theme().scale), gap: space(16, theme().scale), borderRadius: space(8, theme().scale), opacity: props.disabled ? 0.45 : 1 }}
     focusStyle={focusRing(theme().palette, 2)}
@@ -48,12 +49,12 @@ export interface Choice { id: string; label: string; description?: string; disab
 export function ChoiceRow(props: { id: string; label: string; description?: string; value: string; choices: Choice[]; onChange: (value: string) => void; disabled?: boolean; theme?: Theme }) {
   const theme = props.theme ?? defaultTheme, focused = signal<string | null>(null);
   let alive = true;
-  const refs = new Map<string, YNode>();
+  const refs = new Map<string, ViewRef>();
   const tabStop = () => props.choices.find((choice) => !choice.disabled && choice.id === props.value)?.id ?? props.choices.find((choice) => !choice.disabled)?.id;
   function choose(value: string) {
     if (!alive) return;
     if (props.disabled || props.choices.find((choice) => choice.id === value)?.disabled) return;
-    focused.set(value); props.onChange(value); refs.get(value)?.focus();
+    focused.set(value); props.onChange(value); focusView(refs.get(value));
   }
   effect(() => {
     if (!focused() || props.disabled) return;
@@ -97,7 +98,7 @@ export function StepperRow(props: { id: string; label: string; description?: str
     for (const [key, direction] of [["up", 1], ["right", 1], ["=", 1], ["shift+=", 1], ["down", -1], ["left", -1], ["-", -1]] as const) bindings.push(keymap.bind(key, () => step(direction)));
     return () => { for (const unbind of bindings) unbind(); };
   });
-  return <View testID={props.id} focusable={true} role="adjustable" accessibilityLabel={props.label} onFocus={() => { if (alive) focused.set(true); }} onBlur={() => { if (alive) focused.set(false); }} style={{ gap: 5, paddingVertical: space(8, theme().scale) }}>
+  return <View testID={props.id} role="adjustable" accessibilityLabel={props.label} onFocus={() => { if (alive) focused.set(true); }} onBlur={() => { if (alive) focused.set(false); }} style={{ gap: 5, paddingVertical: space(8, theme().scale) }}>
     <Text style={textStyle(theme)}>{props.label}</Text>{props.description && <Text style={textStyle(theme, 10, true)}>{props.description}</Text>}
     <View style={{ flexDirection: "row", gap: 8, alignItems: "center" }}>
       <Button testID={props.decreaseId ?? `${props.id}-decrease`} accessibilityLabel={`Decrease ${props.label}`} disabled={props.disabled || props.value <= props.minimum} onPress={() => step(-1)} style={buttonStyle(theme)} {...buttonStates(theme)}><Text style={textStyle(theme)}>−</Text></Button>

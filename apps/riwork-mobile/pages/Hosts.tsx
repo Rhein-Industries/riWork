@@ -153,14 +153,14 @@ function Overview(props: { app: MobileApp; ui: Kit; layout: Layout; dashboard: D
     {props.filter === "all" && props.dashboard.intelligence?.map((report) => <Section title={report.hostName ? `${report.hostName} · Haiku overview` : "Haiku overview"}>
       <View style={{ padding: pt(16), gap: pt(10) }}>
         {report.stale && <Text style={text(12, "gold")}>Saved summary</Text>}
-        {report.summary ? <Text selectable={true} style={text(15)}>{report.summary}</Text>
+        {report.summary ? <Text style={{ ...text(15), userSelect: "text" }}>{report.summary}</Text>
           : <Text style={text(14, report.error ? "gold" : "muted")}>{report.error ?? "Gathering observed work for the overview…"}</Text>}
         {report.highlights.map((line) => <View style={{ flexDirection: "row", gap: pt(8) }}>
-          <Text accessible={false} style={text(14, "accent")}>•</Text><Text selectable={true} style={{ ...text(14), flex: 1 }}>{line}</Text>
+          <Text accessible={false} style={text(14, "accent")}>•</Text><Text style={{ ...text(14), flex: 1, userSelect: "text" }}>{line}</Text>
         </View>)}
         {report.followups.length > 0 && <Text role="header" style={{ ...text(12, "muted"), fontWeight: "600" }}>Suggested follow-ups</Text>}
         {report.followups.map((line) => <View style={{ flexDirection: "row", gap: pt(8) }}>
-          <Glyph layout={props.layout} symbol="arrow.turn.down.right" icon="right" color={palette().muted} size={pt(15)} /><Text selectable={true} style={{ ...text(14, "muted"), flex: 1 }}>{line}</Text>
+          <Glyph layout={props.layout} symbol="arrow.turn.down.right" icon="right" color={palette().muted} size={pt(15)} /><Text style={{ ...text(14, "muted"), flex: 1, userSelect: "text" }}>{line}</Text>
         </View>)}
         {report.summary && report.error && <Text style={text(12, "gold")}>{report.error}</Text>}
         <Text style={text(11, "muted")}>{`AI summary of observed activity${report.generatedAt ? ` · ${new Date(report.generatedAt * 1000).toLocaleString()}` : ""}`}</Text>

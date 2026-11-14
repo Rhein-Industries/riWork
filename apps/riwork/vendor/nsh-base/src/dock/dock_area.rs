@@ -430,38 +430,64 @@ impl DockAreaApi {
 
     /// Removes panel `panel`, whatever its options say.
     pub fn remove_panel(&self, panel: PanelId) {
-        self.a.edit(|area| area.remove_panel(panel.as_str()));
+        if self.a.has_panel("removePanel", &panel) {
+            self.a.edit(|area| area.remove_panel(panel.as_str()));
+        }
     }
 
     /// Closes panel `panel` as its tab would: unless the area is locked,
     /// the panel is not closable, or it is the last panel of a group with
     /// nothing beside it.
     pub fn close_panel(&self, panel: PanelId) {
-        self.a.close(&panel);
+        if self.a.has_panel("closePanel", &panel) {
+            self.a.close(&panel);
+        }
     }
 
     /// Moves panel `panel` to `target` (a panel the area does not hold yet
     /// is added there).
     pub fn move_panel(&self, panel: PanelId, target: DockTarget) {
         let target = target.insert_target();
-        self.a.edit(|area| area.move_panel(panel, target));
+        let known = match target {
+            InsertTarget::Tabs { node, .. } => self.a.has_group("movePanel", node),
+            InsertTarget::Split { node, .. } => self.a.has_node("movePanel", node),
+        };
+        if known {
+            self.a.edit(|area| area.move_panel(panel, target));
+        }
     }
 
     /// Puts panel `panel` in a new tab group on the `side` of container
     /// `group`.
     pub fn split_at(&self, group: u64, panel: PanelId, side: Placement) {
         let node = NodeId::from_u64(group);
-        self.a.edit(|area| area.split_at(node, panel, side, None));
+        if self.a.has_node("splitAt", node) {
+            self.a.edit(|area| area.split_at(node, panel, side, None));
+        }
     }
 
     /// Displays panel `panel` in its group.
     pub fn select_panel(&self, panel: PanelId) {
-        self.a.select(&panel);
+        if self.a.has_panel("selectPanel", &panel) {
+            self.a.select(&panel);
+        }
     }
 
     /// Displays tab `index` of tab group `group`.
     pub fn select_tab(&self, group: u64, index: usize) {
         let node = NodeId::from_u64(group);
+        if !self.a.has_group("selectTab", node) {
+            return;
+        }
+        let count = self
+            .a
+            .latest(|area| area.group(node).map_or(0, |group| group.panels.len()));
+        if index >= count {
+            log::warn!(
+                "DockArea.selectTab: tab {index} out of range (group {group} has {count} tabs)"
+            );
+            return;
+        }
         self.a.edit(|area| area.set_active(node, index));
     }
 
@@ -470,27 +496,38 @@ impl DockAreaApi {
     /// presents the dock as a drawer (a sheet at the bottom), dismissing
     /// the one presented, or dismisses it; the layout stays as it is.
     pub fn toggle_dock(&self, placement: DockPlacement) {
-        let open = self.a.is_dock_open_untracked(placement);
-        self.a.set_dock_open(placement, !open);
+        if self.a.has_dock("toggleDock", placement) {
+            let open = self.a.is_dock_open_untracked(placement);
+            self.a.set_dock_open(placement, !open);
+        }
     }
 
     /// Opens (`true`) or closes the dock at `placement` (at compact width:
     /// presents or dismisses it, as `toggleDock`).
     pub fn set_dock_open(&self, placement: DockPlacement, open: bool) {
-        self.a.set_dock_open(placement, open);
+        if self.a.has_dock("setDockOpen", placement) {
+            self.a.set_dock_open(placement, open);
+        }
     }
 
     /// Sets the size of the dock at `placement` across its edge (never
     /// below 100 points).
     pub fn set_dock_size(&self, placement: DockPlacement, size: Points) {
-        self.a.edit(|area| area.set_dock_size(placement, size));
+        if self.a.has_dock("setDockSize", placement) {
+            self.a.edit(|area| area.set_dock_size(placement, size));
+        }
     }
 
     /// Zooms tab group `group` in (it fills the area) or, when it is
     /// zoomed, out; without `group`, the zoomed group out.
     pub fn toggle_zoom(&self, group: Option<u64>) {
         match group {
-            Some(group) => self.a.toggle_zoom(NodeId::from_u64(group)),
+            Some(group) => {
+                let node = NodeId::from_u64(group);
+                if self.a.has_group("toggleZoom", node) {
+                    self.a.toggle_zoom(node);
+                }
+            }
             None => self.a.set_zoom(None),
         }
     }
@@ -537,6 +574,9 @@ pub fn DockArea(props: DockAreaProps, cx: Scope<DockAreaEvent>) -> impl IntoElem
         .overflow_hidden()
         .min_w(px(0.0))
         .min_h(px(0.0))
+        // A terminal keeps no percentage height for a box of content: the
+        // area grows into its parent's room instead.
+        .when(crate::terminal::is_terminal(), |v| v.flex_grow(1.0))
         .on_layout(move |frame: &Bounds<Points>| a.size.set(frame.size))
         .child(
             when(
@@ -621,6 +661,10 @@ pub(crate) struct AreaCx {
     /// The area's size.
     size: Signal<Size<Points>>,
     dock_drag: Signal<Option<DockDrag>>,
+    /// Bumped each time the drop indicator's overlay is first laid out (a
+    /// commit after it opened): the key of the drag preview's row, which
+    /// mounts the preview again, above the indicator.
+    pub(crate) indicator_shown: Signal<u32>,
     /// The last edit of a controlled area, until the app passes a layout.
     pending: Stored<Option<Area>>,
 }
@@ -662,8 +706,59 @@ impl AreaCx {
             presented: signal(None),
             size,
             dock_drag: signal(None),
+            indicator_shown: signal(0),
             pending: stored(None),
         }
+    }
+
+    /// Reads the layout the next edit builds on: the one waiting for the
+    /// app to pass it back, else the one shown.
+    pub(crate) fn latest<R>(self, f: impl FnOnce(&Area) -> R) -> R {
+        match self.pending.with(|p| p.clone()) {
+            Some(area) => f(&area),
+            None => self.area.with_untracked(f),
+        }
+    }
+
+    // A ref's command runs when called and cannot throw: an id the layout
+    // does not hold does nothing and is logged, never a silent no-op.
+
+    fn has_panel(self, method: &str, panel: &PanelId) -> bool {
+        let has = self.latest(|area| area.placement_of_panel(panel.as_str()).is_some());
+        if !has {
+            log::warn!("DockArea.{method}: no panel `{panel}` in the layout");
+        }
+        has
+    }
+
+    fn has_node(self, method: &str, node: NodeId) -> bool {
+        let has = self.latest(|area| area.placement_of_node(node).is_some());
+        if !has {
+            log::warn!(
+                "DockArea.{method}: no group {} in the layout",
+                node.as_u64()
+            );
+        }
+        has
+    }
+
+    fn has_group(self, method: &str, node: NodeId) -> bool {
+        let has = self.latest(|area| area.group(node).is_some());
+        if !has {
+            log::warn!(
+                "DockArea.{method}: no tab group {} in the layout",
+                node.as_u64()
+            );
+        }
+        has
+    }
+
+    fn has_dock(self, method: &str, placement: DockPlacement) -> bool {
+        let has = self.latest(|area| area.dock(placement).is_some());
+        if !has {
+            log::warn!("DockArea.{method}: the layout has no dock at {placement:?}");
+        }
+        has
     }
 
     /// Applies `f` to the layout; when it changed something, reports the
@@ -866,7 +961,7 @@ impl AreaCx {
                 let mut on = Vec::new();
                 told.with(|told| {
                     let mut ids: Vec<&PanelId> = now.keys().collect();
-                    ids.sort();
+                    crate::sort::sort_by(&mut ids, |a, b| a.cmp(b));
                     for panel in ids {
                         let active = now[panel];
                         match told.get(panel) {
@@ -1100,6 +1195,7 @@ fn dock_frame(a: AreaCx, placement: DockPlacement) -> AnyElement {
                     .map_or(Points::ZERO, |info| fit_dock(a, placement, info.size)),
             };
             let open = move || info.get().is_some_and(|info| info.open);
+            let terminal = crate::terminal::is_terminal();
             let (axis, edge) = match placement {
                 DockPlacement::Left => (Axis::Horizontal, HandleEdge::Trailing),
                 DockPlacement::Right => (Axis::Horizontal, HandleEdge::Leading),
@@ -1121,6 +1217,13 @@ fn dock_frame(a: AreaCx, placement: DockPlacement) -> AnyElement {
                 .flex_col()
                 .overflow_hidden()
                 .style_with(move |s| match placement {
+                    // A terminal keeps no explicit height for a box of
+                    // content: the dock's rows are its basis in the column.
+                    // Its handle's line takes a Cell of its own on the
+                    // edge it hugs, not one of the dock's tabs or content.
+                    DockPlacement::Bottom if terminal => s.basis(size()).pt(px(24.0)),
+                    DockPlacement::Left if terminal => s.w(size()).pr(px(8.0)),
+                    DockPlacement::Right if terminal => s.w(size()).pl(px(8.0)),
                     DockPlacement::Bottom => s.h(size()),
                     _ => s.w(size()),
                 })
@@ -1278,6 +1381,13 @@ fn end_dock_drag(a: AreaCx, placement: DockPlacement, raw: Points) {
 /// `renderDragPreview`, in an overlay at the pointer that takes no touches.
 /// It moves by a transform, not its frame, so the drop indicator's layout
 /// animation (`tab_group.rs`) leaves it at the pointer.
+///
+/// Overlays stack in the order they open, and the drop indicator opens
+/// once the drag has a target, after the preview: the preview is mounted
+/// again each time the indicator opens, a row keyed by
+/// [`AreaCx::indicator_shown`] (a region run again would keep its node and
+/// its place), so it stays on top (the indicator's outline would cross the
+/// dragged tab's label in a terminal).
 fn drag_preview(a: AreaCx) -> AnyElement {
     let shown = computed(move || {
         a.drag.with(|drag| drag.is_some()) && a.props.render_drag_preview.with(Option::is_some)
@@ -1291,25 +1401,39 @@ fn drag_preview(a: AreaCx) -> AnyElement {
             y.set(at.y.0);
         }
     });
-    when(
-        move || shown.get(),
-        move || {
-            overlay()
-                .pointer_events(PointerEvents::None)
-                .focusable(false)
-                .left(Points::ZERO)
-                .top(Points::ZERO)
-                .bind_translate_x(&x)
-                .bind_translate_y(&y)
-                .child(dynamic(move || {
-                    let panel = dragged.get()?;
-                    let tab = untracked(|| super::tab_group::tab_value(a, &panel))?;
-                    a.props
-                        .render_drag_preview
-                        .get()
-                        .map(|r| r.render("preview", tab))
-                }))
+    // One row while the drag shows its preview, keyed by the indicator's
+    // openings: a new key is a new row, so the old preview's node goes and
+    // a new one opens, in the same commit.
+    each(
+        move || match shown.get() {
+            true => vec![a.indicator_shown.get()],
+            false => Vec::new(),
         },
+        |&opened: &u32| opened,
+        move |_, _| preview(a, dragged, x, y),
     )
-    .into_element()
+}
+
+/// The drag preview's overlay, at the pointer by `x` and `y`.
+fn preview(
+    a: AreaCx,
+    dragged: Memo<Option<PanelId>>,
+    x: AnimatedValue,
+    y: AnimatedValue,
+) -> impl IntoElement {
+    overlay()
+        .pointer_events(PointerEvents::None)
+        .focusable(false)
+        .left(Points::ZERO)
+        .top(Points::ZERO)
+        .bind_translate_x(&x)
+        .bind_translate_y(&y)
+        .child(dynamic(move || {
+            let panel = dragged.get()?;
+            let tab = untracked(|| super::tab_group::tab_value(a, &panel))?;
+            a.props
+                .render_drag_preview
+                .get()
+                .map(|r| r.render("preview", tab))
+        }))
 }

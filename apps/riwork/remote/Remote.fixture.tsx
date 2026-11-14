@@ -1,6 +1,6 @@
 /** A disposable in-memory paired-Mac fixture. No native Remote import, CLI,
  * network, test sockets, real clipboard, credentials or local filesystem calls. */
-import { Text, View, host, mount, signal, type YNode } from "nsh";
+import { Text, View, host, mount, signal, type ViewRef } from "nsh";
 import { Button, Input } from "nsh/base";
 import { RemoteProjects, RemoteProjectPanel, RemoteSettings, RemoteStrip, RemoteUnavailable, createRemoteController, type RemoteApi } from "./Remote";
 import { EMPTY_REMOTE, EMPTY_WANTS, shellOpenRefusal, type RemoteLists, type RemoteSnapshot } from "./model";
@@ -27,7 +27,7 @@ function Fixture() {
   const unrelated = signal(0), elsewhere = signal("");
   let subscribed = 0, closed = 0, unfolded = false;
   // The rest of the window: an inline form must leave it in place and usable.
-  let settingsBox: YNode | undefined, projectsBox: YNode | undefined;
+  let settingsBox: ViewRef | undefined, projectsBox: ViewRef | undefined;
   let hold = false, resume: (() => void) | null = null;
   const wait = async () => { if (hold) await new Promise<void>((resolve) => { resume = resolve; }); };
   const api: RemoteApi = {
@@ -67,7 +67,7 @@ function Fixture() {
       <Button testID="fixture-tasks" onPress={() => panel.set("tasks")}><Text>Tasks</Text></Button>
       <Button testID="fixture-shells" onPress={() => panel.set("shells")}><Text>Shells</Text></Button>
       <Button testID="fixture-ended" onPress={() => ended.set(true)}><Text>End bridge fixture</Text></Button>
-      <Input testID="fixture-elsewhere" accessibilityLabel="Elsewhere" value={elsewhere()} onChange={(value) => elsewhere.set(value)} style={{ width: 160 }} />
+      <Input testID="fixture-elsewhere" accessibilityLabel="Elsewhere" value={elsewhere()} onChange={({ value }) => elsewhere.set(value)} style={{ width: 160 }} />
     </View>
     <View ref={(node) => { settingsBox = node; }}><RemoteSettings controller={c} /></View>
     <View ref={(node) => { projectsBox = node; }}><RemoteProjects controller={c} query={query} selected={selected} collapsed={collapsed} onToggleFolder={(key) => {

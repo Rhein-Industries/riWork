@@ -16,7 +16,7 @@ use uuid::Uuid;
 
 const BUILD_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const BUNDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
-const NSH_VERSION: &str = "0.3.0";
+const NSH_VERSION: &str = "0.5.1";
 const SMOKE_TIMEOUT: Duration = Duration::from_secs(30);
 /// Cargo and rustc get this long to exit on SIGTERM before the group is killed.
 const STAGE_TERMINATE_GRACE: Duration = Duration::from_secs(5);
@@ -515,13 +515,13 @@ fn update_nsh_cli(
         Some(path) => {
             let path = PathBuf::from(path);
             if !path.is_absolute() {
-                return Err("NSH_CLI must be an absolute path to the NSH 0.3.0 executable.".into());
+                return Err(format!("NSH_CLI must be an absolute path to the NSH {NSH_VERSION} executable."));
             }
             path
         }
-        None => find_tool("nsh", tool_path).ok_or(
-            "NSH 0.3.0 is required to build this checkout. Set NSH_CLI to its absolute executable path.",
-        )?,
+        None => find_tool("nsh", tool_path).ok_or_else(|| {
+            format!("NSH {NSH_VERSION} is required to build this checkout. Set NSH_CLI to its absolute executable path.")
+        })?,
     };
     let executable = executable.canonicalize()
         .map_err(|error| format!("Cannot resolve NSH CLI {}: {error}", executable.display()))?;

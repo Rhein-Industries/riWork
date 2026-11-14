@@ -1,5 +1,5 @@
 // NSH 0.3 consolidates the nsh/native declarations into its nsh export.
-import { Text, View, cleanup, signal, type YNode } from "nsh";
+import { Text, View, cleanup, signal, type NativeComponentRef, type ViewRef } from "nsh";
 import { Input } from "nsh/base";
 import { DEFAULT_THEME, space, type InterfaceTheme } from "./appearance";
 import { Icon } from "./Icon";
@@ -41,8 +41,8 @@ export function LocalTerminal(props: LocalTerminalProps) {
   const finding = signal(false);
   const query = signal("");
   const result = signal<TerminalEvents["findResult"]>({ total: 0, current: 0 });
-  let view: YNode | undefined;
-  let search: YNode | undefined;
+  let view: NativeComponentRef | undefined;
+  let search: ViewRef | undefined;
   function find(text?: string) {
     if (text !== undefined) query.set(text);
     finding.set(true);
@@ -61,7 +61,7 @@ export function LocalTerminal(props: LocalTerminalProps) {
     {finding() && <View testID={`terminal-find:${props.shellId}`} style={{ flexDirection: "row", alignItems: "center", padding: space(6, theme().scale), gap: 8, backgroundColor: theme().palette.panel, borderBottomWidth: 1, borderColor: theme().palette.divider }}>
       <Icon name="search" color={theme().palette.muted} />
       <Input testID={`terminal-find-input:${props.shellId}`} accessibilityLabel="Find in terminal" placeholder="Find in terminal" value={query()}
-        ref={(node) => { search = node; node.focus(); }} onChange={(value) => { query.set(value); view?.command("find", { query: value }); }}
+        ref={(node) => { search = node; node.focus(); }} onChange={({ value }) => { query.set(value); view?.command("find", { query: value }); }}
         onSubmit={control.findNext} style={{ ...text(), flex: 1, color: theme().palette.text }} />
       <Text testID={`terminal-find-result:${props.shellId}`} style={text()}>{result().current > 0 ? `${result().current} / ${result().total}` : `${result().total} matches`}</Text>
       <View testID={`terminal-find-previous:${props.shellId}`} role="button" accessibilityLabel="Previous match" tooltip="Previous match" onPress={control.findPrevious}><Text style={text()}>↑</Text></View>

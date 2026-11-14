@@ -1,4 +1,4 @@
-import { Clipboard, Image, List, Scroll, Text, View, cleanup, computed, effect, host, keymap, openUrl, signal, untracked, type YNode } from "nsh";
+import { Clipboard, Image, List, Scroll, Text, View, cleanup, computed, effect, host, keymap, openUrl, signal, untracked, type InputRef, type ListRef, type ViewRef } from "nsh";
 import { Input, TextView } from "nsh/base";
 import { Menu, type MenuItem } from "nsh/desktop";
 import {
@@ -25,6 +25,7 @@ import { SideHeader, escapeWithin, focusWithin, type FocusWithin } from "./SideP
 import { Suggestions, createSuggestions } from "./Suggestions";
 import { AGENTS, ContinueConfirm, agentLabel, createContinue, type ContinueControl } from "./Continue";
 import { utf8Bytes } from "../files_model";
+import { focusView } from "../keyboard";
 
 export interface NativeChatUsage {
   provider: string;
@@ -106,7 +107,7 @@ export function ChatTab(props: ChatTabProps) {
   // The code block whose "Copy to:" row shows under its reply (by row key).
   const codeSnippet = signal<{ key: string; code: string } | null>(null);
   const exporting = signal(false);
-  let codeReturnFocus: YNode | undefined;
+  let codeReturnFocus: ViewRef | undefined;
   let copyFocus = false;
   // Reviews, previews, the reader and the copy row leave the tab usable: only
   // a snippet's native save panel holds it.
@@ -131,7 +132,7 @@ export function ChatTab(props: ChatTabProps) {
   const frame = (bounds: { origin: { x: number; y: number }; size: { width: number; height: number } }): ChatFrame =>
     ({ x: bounds.origin.x, y: bounds.origin.y, width: bounds.size.width, height: bounds.size.height });
   const editors: number[] = [];
-  let list: YNode | undefined;
+  let list: ListRef | undefined;
   const following = signal(true);
   const firstVisible = signal(0);
   const selectedRow = signal<string | null>(null);
@@ -141,7 +142,7 @@ export function ChatTab(props: ChatTabProps) {
   const hitIndex = signal(-1);
   const searching = signal(false);
   const showUsage = signal(false);
-  let searchInput: YNode | undefined;
+  let searchInput: ViewRef | undefined;
   let pendingReveal: string | null = null;
   let searchGeneration = 0;
   let alive = true;
@@ -242,7 +243,7 @@ export function ChatTab(props: ChatTabProps) {
   async function openLink(target: string) {
     try {
       if (/^(https?:|mailto:)/i.test(target)) {
-        if (!await openUrl(target)) notice("No application could open this link.");
+        if (!(await openUrl(target)).opened) notice("No application could open this link.");
       } else if (!target.startsWith("#")) {
         const link = await handle.resolveLink(target);
         if (props.onLink) props.onLink(link.path, link.line);
@@ -293,17 +294,17 @@ export function ChatTab(props: ChatTabProps) {
   // The focus goes back to the code block when it was in the row.
   function closeCodeSnippet(focused = true) {
     codeSnippet.set(null);
-    if (active() && focused) codeReturnFocus?.focus();
+    if (active() && focused) focusView(codeReturnFocus);
     codeReturnFocus = undefined;
   }
 
   // One side panel at a time: another takes its place, once a reader's edited
   // scratch copy is discarded (the reader asks first).
   let sideSequence = 0;
-  let sideReturnFocus: YNode | undefined;
+  let sideReturnFocus: ViewRef | undefined;
   let leaveReader: ((then: () => void) => void) | undefined;
-  let composerInput: YNode | undefined;
-  function openSide(next: SideContent, from?: YNode) {
+  let composerInput: ViewRef | undefined;
+  function openSide(next: SideContent, from?: ViewRef) {
     const show = () => { sideReturnFocus = from; leaveReader = undefined; side.set({ ...next, id: ++sideSequence }); };
     if (side()?.kind === "reader" && leaveReader) leaveReader(show);
     else show();
@@ -316,7 +317,10 @@ export function ChatTab(props: ChatTabProps) {
     side.set(null);
     if (restore === null || !active()) return;
     if (!restore) { composerInput?.focus(); return; }
-    void restore.measure().then((placed) => { if (alive && active()) (placed ? restore : composerInput)?.focus(); });
+    void restore.measure().then((placed) => {
+      if (!alive || !active()) return;
+      if (placed) focusView(restore); else composerInput?.focus();
+    });
   }
 
   function findInChat() { finding.set(true); searchInput?.focus(); }
@@ -347,16 +351,16 @@ export function ChatTab(props: ChatTabProps) {
 
   // A label that changes (an accessor) updates the control in place.
   // `ref` hears the button's node: a side panel it opens gives the focus back to it.
-  const control = (label: string | (() => string), action: () => void, active = false, disabled = false, ref?: (node: YNode) => void) =>
+  const control = (label: string | (() => string), action: () => void, active = false, disabled = false, ref?: (node: ViewRef) => void) =>
     <View role="button" ref={(node) => ref?.(node)} accessibilityLabel={typeof label === "function" ? label() : label} accessibilityState={{ disabled, selected: active }}
       onPress={() => { if (!disabled) action(); }}
       style={{ paddingHorizontal: 8, height: 27, alignItems: "center", justifyContent: "center", borderRadius: 5,
         backgroundColor: active ? theme().palette.panelActive : "transparent", opacity: disabled ? 0.35 : 1 }}
       hoverStyle={{ backgroundColor: theme().palette.panelActive }}>
-      <Text numberOfLines={1} style={text(11, active ? theme().palette.text : theme().palette.muted)}>{typeof label === "function" ? label() : label}</Text>
+      <Text style={{ ...text(11, active ? theme().palette.text : theme().palette.muted), numberOfLines: 1 }}>{typeof label === "function" ? label() : label}</Text>
     </View>;
 
-  const iconControl = (name: IconName, label: string, action: () => void, active = false, disabled = false, ref?: (node: YNode) => void) =>
+  const iconControl = (name: IconName, label: string, action: () => void, active = false, disabled = false, ref?: (node: ViewRef) => void) =>
     <View role="button" ref={(node) => ref?.(node)} focusable={!disabled} accessibilityLabel={label} tooltip={label} accessibilityState={{ disabled, selected: active }}
       onPress={() => { if (!disabled) action(); }}
       style={{ width: 28, height: 28, flexShrink: 0, alignItems: "center", justifyContent: "center", borderRadius: 5,
@@ -365,7 +369,7 @@ export function ChatTab(props: ChatTabProps) {
       <Icon name={name} size={16} color={active ? theme().palette.text : theme().palette.muted} />
     </View>;
 
-  let reviewButton: YNode | undefined, moreButton: YNode | undefined;
+  let reviewButton: ViewRef | undefined, moreButton: ViewRef | undefined;
   function moreMenu() {
     const items: MenuItem[] = [
       { label: "Find in conversation…", onSelect: findInChat },
@@ -397,7 +401,7 @@ export function ChatTab(props: ChatTabProps) {
         <View style={{ flexDirection: "row", alignItems: "center", gap: 6, minWidth: 0, flexShrink: 1 }}>
           <View accessible={false} style={{ width: 5, height: 5, borderRadius: 3, flexShrink: 0,
             backgroundColor: panel().state === "waiting" ? theme().palette.gold : panel().running ? theme().palette.working : theme().palette.muted }} />
-          <Text numberOfLines={1} style={{ ...text(12), fontWeight: "600", flexShrink: 1 }}>{panel().toolbar?.providerLabel ?? "Chat"}</Text>
+          <Text style={{ ...text(12), fontWeight: "600", flexShrink: 1, numberOfLines: 1 }}>{panel().toolbar?.providerLabel ?? "Chat"}</Text>
         </View>
         <View style={{ width: 1, height: 14, marginHorizontal: 4, backgroundColor: chatHairline(theme()) }} />
         {compact() ? control(mode() === "normal" ? "Normal ▾" : "Verbose ▾", () => {
@@ -417,12 +421,12 @@ export function ChatTab(props: ChatTabProps) {
       </View>
       {!!origin() && <View testID="chat-origin" accessibilityLabel={origin()!.label} style={{ flexDirection: "row", alignItems: "center", gap: 6, minWidth: 0 }}>
         <Icon name="worktrees" size={12} color={theme().palette.muted} />
-        <Text numberOfLines={1} style={{ ...text(11, theme().palette.muted), flexShrink: 1 }}>{origin()!.label}</Text>
+        <Text style={{ ...text(11, theme().palette.muted), flexShrink: 1, numberOfLines: 1 }}>{origin()!.label}</Text>
         <View style={{ flex: 1, minWidth: 0 }} />
         {!!props.onOpenWorker && control("Open original", openOrigin)}
         {!!origin()!.document && !compact() && control("Handoff document", openDocument)}
       </View>}
-      {showUsage() && hasUsageDetail() && <Text selectable={true} style={mono(10, theme().palette.muted)}>{panel().usageDetail ?? ""}</Text>}
+      {showUsage() && hasUsageDetail() && <Text style={{ ...mono(10, theme().palette.muted), userSelect: "text" }}>{panel().usageDetail ?? ""}</Text>}
       {several() && <View style={{ flexDirection: "row", alignItems: "center", gap: 2 }}>
         {iconControl("up", "Previous message", () => jumpTo(prompts()[currentPrompt() - 1] ?? -1), false, currentPrompt() === 0)}
         {control(`Message ${currentPrompt() + 1} of ${prompts().length}`, () => {
@@ -437,14 +441,14 @@ export function ChatTab(props: ChatTabProps) {
       </View>}
       {finding() && <View style={{ gap: 4 }}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
-          <Input ref={(node) => { searchInput = node; node.focus(); }} value={query()} onChange={(value) => query.set(value)} onSubmit={() => revealHit(hitIndex() + 1)}
+          <Input ref={(node) => { searchInput = node; node.focus(); }} value={query()} onChange={({ value }) => query.set(value)} onSubmit={() => revealHit(hitIndex() + 1)}
             placeholder="Find in conversation" accessibilityLabel="Find in conversation" style={{ ...text(12), flex: 1, minWidth: 50, height: 28, paddingHorizontal: 7, borderWidth: 1, borderRadius: 4, borderColor: theme().palette.divider }} />
           <Text style={text(10, theme().palette.muted)}>{searching() ? "Searching…" : query().trim() ? hits().length ? `${hitIndex() + 1} / ${hits().length}${hits().length === 200 ? "+" : ""}` : "No matches" : ""}</Text>
           {iconControl("up", "Previous match", () => revealHit(hitIndex() - 1), false, !hits().length)}
           {iconControl("down", "Next match", () => revealHit(hitIndex() + 1), false, !hits().length)}
           {iconControl("close", "Close search", closeFind)}
         </View>
-        {hits()[hitIndex()] && <Text numberOfLines={2} style={text(11, theme().palette.muted)}>{`${hits()[hitIndex()].label} · ${hits()[hitIndex()].preview}`}</Text>}
+        {hits()[hitIndex()] && <Text style={{ ...text(11, theme().palette.muted), numberOfLines: 2 }}>{`${hits()[hitIndex()].label} · ${hits()[hitIndex()].preview}`}</Text>}
       </View>}
     </View>;
   }
@@ -528,11 +532,11 @@ export function ChatTab(props: ChatTabProps) {
       hoverStyle={{ backgroundColor: theme().palette.panelActive }}>
       <Icon name={chevron()} size={11} color={theme().palette.muted} />
       {hasIcon() && <Icon name={kindIcon()} size={14} color={theme().palette.muted} />}
-      <Text numberOfLines={1} style={{ ...text(12, row().running ? theme().palette.text : theme().palette.muted), flexShrink: 1 }}>{row().title}</Text>
-      {hasTarget() && <Text numberOfLines={1} style={{ ...mono(11, theme().palette.muted), flexShrink: 2 }}>{row().target ?? ""}</Text>}
-      {hasMeta() && <Text numberOfLines={1} style={{ ...text(11, theme().palette.muted), flexShrink: 3 }}>{`· ${row().meta ?? ""}`}</Text>}
+      <Text style={{ ...text(12, row().running ? theme().palette.text : theme().palette.muted), flexShrink: 1, numberOfLines: 1 }}>{row().title}</Text>
+      {hasTarget() && <Text style={{ ...mono(11, theme().palette.muted), flexShrink: 2, numberOfLines: 1 }}>{row().target ?? ""}</Text>}
+      {hasMeta() && <Text style={{ ...text(11, theme().palette.muted), flexShrink: 3, numberOfLines: 1 }}>{`· ${row().meta ?? ""}`}</Text>}
       {hasDuration() && <Text style={text(10, theme().palette.muted)}>{duration()}</Text>}
-      {running() && <Text numberOfLines={1} style={{ ...text(10, theme().palette.working), flexShrink: 1 }}>{row().currentLabel || "Running"}</Text>}
+      {running() && <Text style={{ ...text(10, theme().palette.working), flexShrink: 1, numberOfLines: 1 }}>{row().currentLabel || "Running"}</Text>}
       {failed() && <Text style={text(10, theme().palette.danger)}>{`${row().failedCount} failed`}</Text>}
     </View>;
   }
@@ -549,7 +553,7 @@ export function ChatTab(props: ChatTabProps) {
     const contextShown = computed(() => contextOpen().has(row().id));
     const lineageTitle = computed(() => row().kind === "lineage" ? row().title : "");
     const lineageChat = computed(() => row().lineage?.chatId);
-    let reviewFiles: YNode | undefined;
+    let reviewFiles: ViewRef | undefined;
     const forkButton = () => !props.desktopId && panel().provider !== "acp" && finished() && iconControl("more", "Fork from here…", () => forkMenu(row().id));
     return () => {
       const shown = kind();
@@ -561,7 +565,7 @@ export function ChatTab(props: ChatTabProps) {
             style={{ flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", gap: 7, paddingVertical: 3, borderRadius: 5 }}>
             <Icon name={contextShown() ? "down" : "right"} size={11} color={theme().palette.muted} />
             <Icon name="worktrees" size={13} color={theme().palette.muted} />
-            <Text numberOfLines={1} style={{ ...text(12), fontWeight: "600", flexShrink: 1 }}>Handoff context</Text>
+            <Text style={{ ...text(12), fontWeight: "600", flexShrink: 1, numberOfLines: 1 }}>Handoff context</Text>
             <Text style={text(11, theme().palette.muted)}>{`· ${Math.max(1, Math.round((handoffBytes() ?? 0) / 1024))} KB`}</Text>
           </View>
           {iconControl("copy", "Copy handoff context", () => void copy(row().id))}
@@ -591,7 +595,7 @@ export function ChatTab(props: ChatTabProps) {
       if (shown === "lineage") return <View testID={`chat-lineage:${row().id}`} accessibilityLabel={lineageTitle()} style={{ flexDirection: "row", alignItems: "center", gap: 8, marginVertical: 3 }}>
         <View style={{ width: 18, height: 1, backgroundColor: chatHairline(theme()) }} />
         <Icon name="worktrees" size={12} color={theme().palette.muted} />
-        <Text numberOfLines={1} style={{ ...text(11, theme().palette.muted), flexShrink: 1 }}>{lineageTitle()}</Text>
+        <Text style={{ ...text(11, theme().palette.muted), flexShrink: 1, numberOfLines: 1 }}>{lineageTitle()}</Text>
         {!!lineageChat() && !!props.onOpenWorker && control("Open", () => props.onOpenWorker!(lineageChat()!, "chat"))}
         <View style={{ flex: 1, minWidth: 12, height: 1, backgroundColor: chatHairline(theme()) }} />
       </View>;
@@ -601,7 +605,7 @@ export function ChatTab(props: ChatTabProps) {
         <View style={{ flex: 1, height: 1, backgroundColor: chatHairline(theme()) }} />
       </View>;
       if (shown === "request") return <View style={{ height: space(24, theme().scale), justifyContent: "center" }}>
-        <Text numberOfLines={1} style={text(11, theme().palette.muted)}>{`✓ ${row().title}${row().target ? ` · ${row().target}` : ""}`}</Text>
+        <Text style={{ ...text(11, theme().palette.muted), numberOfLines: 1 }}>{`✓ ${row().title}${row().target ? ` · ${row().target}` : ""}`}</Text>
       </View>;
       return null;
     };
@@ -621,10 +625,10 @@ export function ChatTab(props: ChatTabProps) {
       <View role="button" accessibilityLabel={`Preview ${attachment.name}`} accessibilityState={{ expanded: expanded() }} onPress={toggle}
         style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
         <Text style={text(10, theme().palette.muted)}>{expanded() ? "▾" : "▸"}</Text>
-        <Text numberOfLines={1} style={{ ...text(11), flex: 1 }}>{attachment.name}</Text>
+        <Text style={{ ...text(11), flex: 1, numberOfLines: 1 }}>{attachment.name}</Text>
         <Text style={text(10, theme().palette.muted)}>{`${Math.max(1, Math.round(attachment.bytes / 1024))} KB`}</Text>
       </View>
-      {expanded() && attachment.preview.kind === "text" && <Text selectable={true} style={mono(11)}>{attachment.preview.excerpt}</Text>}
+      {expanded() && attachment.preview.kind === "text" && <Text style={{ ...mono(11), userSelect: "text" }}>{attachment.preview.excerpt}</Text>}
       {expanded() && thumbnail() && <Image src={thumbnail()!} style={{ width: 256, height: 192 }} />}
     </View>;
   }
@@ -636,7 +640,7 @@ export function ChatTab(props: ChatTabProps) {
     // changed). A recycled cell's new row starts its body afresh.
     const shown = computed(() => `${bodyProps.row().key}\u0000${body()?.kind ?? ""}`);
     const muted = () => bodyProps.row().kind === "commentary";
-    let markdown: YNode | undefined;
+    let markdown: ViewRef | undefined;
     const codeActions = () => [
       { id: "copy", label: "Copy code" },
       ...(!bodyProps.row().running && !bodyProps.row().provisional ? [{ id: "reader", label: "Reader" }, { id: "save", label: "Save…" }] : []),
@@ -654,7 +658,7 @@ export function ChatTab(props: ChatTabProps) {
       if (!kind) return <Text style={text(11, theme().palette.muted)}>…</Text>;
       // The code block's "Copy to:" row opens under the reply (a TextView takes
       // nothing of the app's between its blocks), the reader in the side panel.
-      if (kind === "markdown") return <View><TextView ref={(node) => { markdown = node; }} selectable={true} links="report" testID={`chat-body:${bodyProps.row().key}`}
+      if (kind === "markdown") return <View><TextView ref={(ref) => { markdown = ref.node; }} selectable={true} links="report" testID={`chat-body:${bodyProps.row().key}`}
         document={{ blocks: of("markdown")?.blocks ?? [] }}
         onLinkPress={(event) => void openLink(event.url)} codeBlockActions={codeActions()}
         onCodeBlockAction={(event) => {
@@ -669,7 +673,7 @@ export function ChatTab(props: ChatTabProps) {
             exporting.set(true);
             void saveSnippet({ ...event.code }, panel().cwd).then((result) => { if (alive && result.saved) notice(`Saved ${result.path ?? "snippet"}`); })
               .catch((error) => { if (alive) notice(`Could not save snippet: ${String(error)}`); })
-              .finally(() => { if (alive) { exporting.set(false); markdown?.focus(); } });
+              .finally(() => { if (alive) { exporting.set(false); focusView(markdown); } });
           }
         }}
         styles={{
@@ -684,15 +688,15 @@ export function ChatTab(props: ChatTabProps) {
           blockquote: { borderColor: chatHairline(theme()) },
           rule: { borderColor: chatHairline(theme()) },
         }} /><CopyRow row={bodyProps.row} /></View>;
-      if (kind === "text") return <Text selectable={true} testID={`chat-body:${bodyProps.row().key}`} style={{
+      if (kind === "text") return <Text testID={`chat-body:${bodyProps.row().key}`} style={{
         ...text(bodyProps.row().kind === "user" ? 14 : 13, toneColor(of("text")?.tone ?? "")),
         lineHeight: 21 * theme().scale,
-        fontStyle: of("text")?.tone === "reasoning" ? "italic" : "normal",
+        fontStyle: of("text")?.tone === "reasoning" ? "italic" : "normal", userSelect: "text",
       }}>{of("text")?.text ?? ""}</Text>;
       if (kind === "changes") return <View style={{ paddingVertical: 5, gap: 3 }}>
-        {(of("changes")?.files ?? []).map((file) => { let review: YNode | undefined; return <View style={{ flexDirection: "row", alignItems: "center", gap: 7, paddingVertical: 4 }}>
+        {(of("changes")?.files ?? []).map((file) => { let review: ViewRef | undefined; return <View style={{ flexDirection: "row", alignItems: "center", gap: 7, paddingVertical: 4 }}>
           <Text style={text(10, theme().palette.muted)}>{file.kind}</Text>
-          <View role="button" onPress={() => void openLink(file.path)} style={{ flex: 1, minWidth: 0 }}><Text numberOfLines={1} style={mono(11, theme().palette.cyan)}>{file.path}</Text></View>
+          <View role="button" onPress={() => void openLink(file.path)} style={{ flex: 1, minWidth: 0 }}><Text style={{ ...mono(11, theme().palette.cyan), numberOfLines: 1 }}>{file.path}</Text></View>
           <Text style={text(10, theme().palette.muted)}>{`+${file.added} −${file.removed}`}</Text>
           {control("Review", () => openSide({ kind: "review", scope: bodyProps.row().id, key: file.id }, review), false, false, (node) => { review = node; })}
         </View>; })}
@@ -700,7 +704,7 @@ export function ChatTab(props: ChatTabProps) {
       if (kind === "tool") return <ToolResult body={() => of("tool")} />;
       if (kind === "command") return <CommandBox body={() => of("command")} />;
       if (kind === "detail") return <Scroll style={{ maxHeight: 320, padding: 8, borderRadius: 4, backgroundColor: theme().palette.panel }}>
-        <Text selectable={true} style={mono(11)}>{of("detail")?.text ?? ""}</Text>
+        <Text style={{ ...mono(11), userSelect: "text" }}>{of("detail")?.text ?? ""}</Text>
       </Scroll>;
       if (kind === "steps") return <View style={{ gap: 2, paddingVertical: 4 }}>
         {!!of("steps")?.explanation && <Text style={text(12)}>{of("steps")?.explanation ?? ""}</Text>}
@@ -724,23 +728,23 @@ export function ChatTab(props: ChatTabProps) {
       {kind() === "file_search" && <>
         {(output() as Extract<ReturnType<typeof output>, { kind: "file_search" }>).hits.map((hit) => <View style={{ gap: 3, paddingVertical: 3 }}>
           {control(`${hit.path}${hit.line ? `:${hit.line}` : ""}`, () => void openLink(`${hit.path}${hit.line ? `:${hit.line}` : ""}`))}
-          {hit.preview && <Text selectable={true} style={mono(11, theme().palette.muted)}>{hit.preview}</Text>}
+          {hit.preview && <Text style={{ ...mono(11, theme().palette.muted), userSelect: "text" }}>{hit.preview}</Text>}
         </View>)}
       </>}
       {kind() === "web_search" && <>
         {(output() as Extract<ReturnType<typeof output>, { kind: "web_search" }>).hits.map((hit) => <View style={{ gap: 3, paddingVertical: 3 }}>
           {control(hit.title || hit.url, () => void openLink(hit.url))}
-          {hit.snippet && <Text selectable={true} style={text(11, theme().palette.muted)}>{hit.snippet}</Text>}
+          {hit.snippet && <Text style={{ ...text(11, theme().palette.muted), userSelect: "text" }}>{hit.snippet}</Text>}
         </View>)}
       </>}
       {kind() === "file_read" && control((output() as Extract<ReturnType<typeof output>, { kind: "file_read" }>).path, () => void openLink((output() as Extract<ReturnType<typeof output>, { kind: "file_read" }>).path))}
       {(kind() === "file_read" || kind() === "json") && <Scroll style={{ maxHeight: 300, padding: 8, borderRadius: 4, backgroundColor: theme().palette.panel }}>
-        <Text selectable={true} style={mono(11)}>{(output() as Extract<ReturnType<typeof output>, { kind: "file_read" | "json" }> | undefined)?.text ?? ""}</Text>
+        <Text style={{ ...mono(11), userSelect: "text" }}>{(output() as Extract<ReturnType<typeof output>, { kind: "file_read" | "json" }> | undefined)?.text ?? ""}</Text>
         {(output() as Extract<ReturnType<typeof output>, { kind: "file_read" | "json" }>).truncated && <Text style={text(10, theme().palette.muted)}>Preview truncated</Text>}
       </Scroll>}
       {omitted() > 0 && <Text style={text(10, theme().palette.muted)}>{`${omitted()} more results in raw output`}</Text>}
       <View style={{ flexDirection: "row" }}>{control(raw() ? "Hide raw output" : "Raw output", () => raw.set(!raw()))}{control("Copy output", () => void Clipboard.writeText(props.body()?.raw ?? ""))}</View>
-      {raw() && <Scroll style={{ maxHeight: 300, padding: 8, backgroundColor: theme().palette.panel }}><Text selectable={true} style={mono(11)}>{props.body()?.raw ?? ""}</Text></Scroll>}
+      {raw() && <Scroll style={{ maxHeight: 300, padding: 8, backgroundColor: theme().palette.panel }}><Text style={{ ...mono(11), userSelect: "text" }}>{props.body()?.raw ?? ""}</Text></Scroll>}
     </View>;
   }
 
@@ -753,14 +757,14 @@ export function ChatTab(props: ChatTabProps) {
     const hasOmitted = computed(() => (body()?.omitted ?? 0) > 0);
     return <View style={{ gap: 2, paddingVertical: 2 }}>
       <View style={{ flexDirection: "row", alignItems: "center" }}>
-        <Text selectable={true} style={{ ...mono(11, theme().palette.muted), flex: 1 }}>{`$ ${body()?.command ?? ""}`}</Text>
+        <Text style={{ ...mono(11, theme().palette.muted), flex: 1, userSelect: "text" }}>{`$ ${body()?.command ?? ""}`}</Text>
         {control("Copy output", () => void Clipboard.writeText(body()?.output ?? ""))}
       </View>
-      {hasCwd() && <Text selectable={true} style={mono(10, theme().palette.muted)}>{body()?.cwd ?? ""}</Text>}
+      {hasCwd() && <Text style={{ ...mono(10, theme().palette.muted), userSelect: "text" }}>{body()?.cwd ?? ""}</Text>}
       {hasExit() && <Text style={mono(10, body()?.exitCode === 0 ? theme().palette.muted : theme().palette.danger)}>{`Exit ${body()?.exitCode}`}</Text>}
       <Scroll style={{ maxHeight: 320, padding: 8, borderRadius: 4, backgroundColor: theme().palette.panel }}>
         {hasOmitted() && <Text style={{ ...mono(10, theme().palette.muted), fontStyle: "italic" }}>{`${body()?.omitted ?? 0} earlier bytes not shown`}</Text>}
-        <Text selectable={true} style={mono(11)}>{body()?.output || (body()?.running ? "Waiting for output…" : "")}</Text>
+        <Text style={{ ...mono(11), userSelect: "text" }}>{body()?.output || (body()?.running ? "Waiting for output…" : "")}</Text>
       </Scroll>
     </View>;
   }
@@ -786,7 +790,7 @@ export function ChatTab(props: ChatTabProps) {
     const focus = focusWithin();
     effect(() => sideFocused.set(focus.inside()));
     cleanup(() => { sideFocused.set(false); layout.side = undefined; });
-    return <View testID="chat-side" onLayout={(bounds) => { sideWidth.set(bounds.size.width); layout.side = frame(bounds); report(); }}
+    return <View testID="chat-side" onLayout={({ bounds }) => { sideWidth.set(bounds.size.width); layout.side = frame(bounds); report(); }}
       style={{ minWidth: 0, minHeight: 0, backgroundColor: theme().palette.bg, borderColor: chatHairline(theme()),
         gridRow: wide() ? "1 / 3" : "2", gridColumn: wide() ? "2" : "1",
         borderLeftWidth: wide() ? 1 : 0, borderTopWidth: wide() ? 0 : 1, borderBottomWidth: wide() ? 0 : 1 }}>
@@ -804,9 +808,9 @@ export function ChatTab(props: ChatTabProps) {
     const height = () => Math.max(1, sideWidth() - 24) * ((preview()?.height || 3) / (preview()?.width || 4));
     escapeWithin(imageProps.focus, active, closeSide);
     return <View style={{ flex: 1, minHeight: 0 }}>
-      <SideHeader theme={theme} title={() => preview()?.label || "Image preview"} focus={imageProps.focus} onClose={closeSide} closeRef={(node) => node.focus()} />
+      <SideHeader theme={theme} title={() => preview()?.label || "Image preview"} focus={imageProps.focus} onClose={closeSide} closeRef={(node) => focusView(node)} />
       {!!preview()?.dataUrl && <Scroll style={{ flex: 1, minHeight: 0 }} contentStyle={{ padding: 12 }}>
-        <Image testID="chat-side-image" src={preview()!.dataUrl!} resizeMode="contain" style={{ width: "100%", height: height() }}
+        <Image testID="chat-side-image" src={preview()!.dataUrl!} style={{ width: "100%", height: height(), objectFit: "contain" }}
           onError={(event) => {
             const shown = side();
             if (shown?.kind === "image") side.set({ ...shown, preview: { ...shown.preview, dataUrl: null, message: event.message || "This image could not be displayed" } });
@@ -844,7 +848,7 @@ export function ChatTab(props: ChatTabProps) {
             : origin() ? "The agent is reading the conversation it takes over." : "Ask a question, plan a change, or describe what you want to build."}</Text>
           {hasCwd() && <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginTop: 4 }}>
             <Icon name="folder" size={14} color={theme().palette.muted} />
-            <Text selectable={true} numberOfLines={2} style={{ ...mono(11, theme().palette.muted), flexShrink: 1 }}>{panel().cwd}</Text>
+            <Text style={{ ...mono(11, theme().palette.muted), flexShrink: 1, userSelect: "text", numberOfLines: 2 }}>{panel().cwd}</Text>
           </View>}
           <Text style={{ ...text(11, theme().palette.muted), marginTop: 8 }}>Use / for commands, @ for files, or drop an attachment.</Text>
         </View>
@@ -867,7 +871,7 @@ export function ChatTab(props: ChatTabProps) {
   const sideOpen = computed(() => !!sideKey());
   const wide = computed(() => tabWidth() === 0 || tabWidth() >= 720 * theme().scale);
   const stacked = () => sideOpen() && !wide();
-  return <View testID={`chat:${props.chatId}`} onLayout={(bounds) => tabWidth.set(bounds.size.width)} style={{ flex: 1, minHeight: 0, backgroundColor: theme().palette.bg }}>
+  return <View testID={`chat:${props.chatId}`} onLayout={({ bounds }) => tabWidth.set(bounds.size.width)} style={{ flex: 1, minHeight: 0, backgroundColor: theme().palette.bg }}>
     {deleted() ? <View testID="chat-deleted" style={{ flex: 1, padding: 24, gap: 8 }}>
       <Text style={text(14)}>This chat was deleted</Text>
       <Text style={text(12, theme().palette.muted)}>Its history is gone from the chat host.</Text>
@@ -875,7 +879,7 @@ export function ChatTab(props: ChatTabProps) {
     </View> : <View style={{ flex: 1, minHeight: 0, display: "grid",
       gridTemplateColumns: sideOpen() && wide() ? "minmax(0, 11fr) minmax(0, 9fr)" : "minmax(0, 1fr)",
       gridTemplateRows: stacked() ? "minmax(0, 1fr) minmax(0, 1fr) auto" : "minmax(0, 1fr) auto" }}>
-      <View testID="chat-main" onLayout={(bounds) => { paneWidth.set(bounds.size.width); layout.main = frame(bounds); report(); }}
+      <View testID="chat-main" onLayout={({ bounds }) => { paneWidth.set(bounds.size.width); layout.main = frame(bounds); report(); }}
         style={{ gridRow: 1, gridColumn: 1, minWidth: 0, minHeight: 0 }}>
         <ChatHeader />
         <List testID="chat-transcript" ref={(node) => { list = node; }} style={{ flex: 1, minHeight: 0 }}
@@ -896,7 +900,7 @@ export function ChatTab(props: ChatTabProps) {
         {jumpToLatest() && <View style={{ alignItems: "center" }}>{control("Jump to latest ↓", latest)}</View>}
       </View>
       {!!sideKey() && <SidePanel />}
-      <View onLayout={(bounds) => { layout.bottom = frame(bounds); report(); }} style={{ gridRow: stacked() ? 3 : 2, gridColumn: 1, minWidth: 0 }}>
+      <View onLayout={({ bounds }) => { layout.bottom = frame(bounds); report(); }} style={{ gridRow: stacked() ? 3 : 2, gridColumn: 1, minWidth: 0 }}>
         <WorkerShelf handle={handle} panel={panel} visible={() => props.visible} theme={theme} width={paneWidth} onOpen={props.onOpenWorker} onError={notice}
           onReveal={(id) => {
             following.set(false); selectedRow.set(id); pendingReveal = id;
@@ -979,7 +983,7 @@ function ApprovalBar(props: PartProps & { approval: () => ChatApproval; more: ()
       <Text style={{ ...text(12, theme().palette.gold), fontWeight: "600", flexShrink: 1 }}>{props.approval().heading}</Text>
       {props.more() > 0 && <Text style={text(11, theme().palette.muted)}>{`${props.more()} more waiting`}</Text>}
     </View>
-    <Text numberOfLines={2} style={{ fontFamily: props.approval().kind === "command" ? theme().monoFamily : theme().family, fontSize: 12 * theme().scale, color: theme().palette.text }}>{props.approval().title}</Text>
+    <Text style={{ fontFamily: props.approval().kind === "command" ? theme().monoFamily : theme().family, fontSize: 12 * theme().scale, color: theme().palette.text, numberOfLines: 2 }}>{props.approval().title}</Text>
     {detail().lines.length > 0 && <Text style={text(11, theme().palette.muted)}>{detail().lines.join("\n")}</Text>}
     {(detail().hidden > 0 || expanded()) && <View role="button" accessibilityLabel={expanded() ? "show less" : `show ${detail().hidden} more lines`} onPress={() => expanded.set(!expanded())}>
       <Text style={text(11, theme().palette.cyan)}>{expanded() ? "show less" : `show ${detail().hidden} more lines`}</Text>
@@ -1044,7 +1048,7 @@ function QuestionPanel(props: PartProps & { question: () => ChatQuestion }) {
         </View>)}
       </View>
       <Input testID={`chat-answer:${index}`} placeholder="or type an answer" readonly={sent()} value={typed()[index] ?? ""}
-        onChange={(value) => { const next = [...typed()]; next[index] = value; typed.set(next); }} onSubmit={submit}
+        onChange={({ value }) => { const next = [...typed()]; next[index] = value; typed.set(next); }} onSubmit={submit}
         style={{ ...text(11), paddingHorizontal: 6, paddingVertical: 3, borderWidth: 1, borderRadius: 3, borderColor: theme().palette.divider }} />
     </View>)}
     <View role="button" testID="chat-send-answers" accessibilityLabel={sent() ? "Sent" : "Send answers"} onPress={submit}>
@@ -1072,7 +1076,7 @@ function encodeAttachment(bytes: Uint8Array): string {
 /** The message box, its send/stop slot and the model, effort, Fast and mode
  * choices. Drafts are saved on every change and restored into an empty box. */
 function Composer(props: PartProps & { remote?: boolean; billing: BillingControl; continuing: ContinueControl; width: () => number; visible: () => boolean; onSent: () => void; onEditor: (editor: number) => void; onEditMemo?: (projectId: string) => void;
-  onInput?: (node: YNode) => void; onFocus?: () => void | Promise<void>; onMeasure?: (part: "box" | "input" | "controls", height: number) => void }) {
+  onInput?: (node: ViewRef) => void; onFocus?: () => void | Promise<void>; onMeasure?: (part: "box" | "input" | "controls", height: number) => void }) {
   const theme = props.theme;
   // One draft editor identity per mounted composer, unique across windows: the
   // native draft owners are process-wide (CHATC-035).
@@ -1112,7 +1116,7 @@ function Composer(props: PartProps & { remote?: boolean; billing: BillingControl
   const textHeight = signal(0);
   const inputHeight = () => Math.min(9 * 21 * theme().scale, Math.max(66 * theme().scale, textHeight() + 8));
   let lastSend = 0;
-  let input: YNode | undefined;
+  let input: InputRef | undefined;
   const text = (base = 12, color = theme().palette.text) => ({ fontFamily: theme().family, fontSize: base * theme().scale, color });
   const toolbar = () => props.panel().toolbar;
   const empty = () => draft().trim() === "" && attachments().length === 0;
@@ -1426,7 +1430,7 @@ function Composer(props: PartProps & { remote?: boolean; billing: BillingControl
     <View role="button" testID={testID} focusable={true} tooltip={label()} accessibilityLabel={label()} onPress={onPress}
       style={{ height: 28 * theme().scale, minWidth: 0, flexShrink: 1, paddingHorizontal: 7 * theme().scale, justifyContent: "center", borderRadius: 5 }}
       hoverStyle={{ backgroundColor: theme().palette.panelActive }} focusStyle={{ backgroundColor: theme().palette.panelActive }}>
-      <Text numberOfLines={1} style={text(11, tint)}>{label()}</Text>
+      <Text style={{ ...text(11, tint), numberOfLines: 1 }}>{label()}</Text>
     </View>;
 
   // Every delivery is a new panel and toolbar: the controls below are chosen
@@ -1461,7 +1465,7 @@ function Composer(props: PartProps & { remote?: boolean; billing: BillingControl
   const stopping = computed(() => props.panel().running && (empty() || pending() || incompleteAttachments()));
   const sendDisabled = () => !!memo.preview() || empty() || pending() || incompleteAttachments() || !accepting();
   return <View style={{ ...chatColumn(props.width(), theme().scale), minWidth: 0, flexShrink: 0, paddingTop: 8, paddingBottom: 12 }}>
-    <View testID="chat-composer" onLayout={(bounds) => props.onMeasure?.("box", bounds.size.height)}
+    <View testID="chat-composer" onLayout={({ bounds }) => props.onMeasure?.("box", bounds.size.height)}
     onFileDragEnter={() => { if (!props.remote) draggingFiles.set(true); }} onFileDragLeave={() => draggingFiles.set(false)}
     onFileDrop={(event) => { draggingFiles.set(false); addAttachments(event.uris); }} style={{ minWidth: 0, padding: 10, gap: 8, borderRadius: 10, borderWidth: 1, borderColor: draggingFiles() ? theme().palette.cyan : theme().palette.divider, backgroundColor: theme().palette.panel }}>
     {memo.preview() && <MemoPreview preview={memo.preview} theme={theme} active={() => props.visible() && accepting()} onInsert={insertMemo} onCancel={closeMemo}
@@ -1483,7 +1487,7 @@ function Composer(props: PartProps & { remote?: boolean; billing: BillingControl
             <View role="button" focusable={true} accessibilityLabel={`Preview ${entry.name}`} onPress={() => previewAttachment(entry)} style={{ flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", gap: 5, borderRadius: 3 }}
               focusStyle={{ backgroundColor: theme().palette.panelActive }}>
               <Icon name={entry.attachment?.kind.kind === "image" ? "eye" : "file"} size={13 * theme().scale} color={theme().palette.muted} />
-              <Text numberOfLines={1} style={{ ...text(11), minWidth: 0, flexShrink: 1 }}>{entry.name}</Text>
+              <Text style={{ ...text(11), minWidth: 0, flexShrink: 1, numberOfLines: 1 }}>{entry.name}</Text>
             </View>
             <View role="button" focusable={true} accessibilityLabel={`Remove ${entry.name}`} onPress={() => {
               if (previewing() === entry.key) previewing.set(null);
@@ -1491,7 +1495,7 @@ function Composer(props: PartProps & { remote?: boolean; billing: BillingControl
             }} style={{ width: 20, height: 20, flexShrink: 0, borderRadius: 4, alignItems: "center", justifyContent: "center" }}
               hoverStyle={{ backgroundColor: theme().palette.panelActive }} focusStyle={{ backgroundColor: theme().palette.panelActive }}><Icon name="close" size={10 * theme().scale} color={theme().palette.muted} /></View>
           </View>
-          <Text numberOfLines={2} style={text(10, entry.error ? theme().palette.danger : theme().palette.muted)}>{entry.error ?? (entry.attachment ? `${Math.max(1, Math.round(entry.attachment.bytes / 1024))} KB · Ready` : "Preparing…")}</Text>
+          <Text style={{ ...text(10, entry.error ? theme().palette.danger : theme().palette.muted), numberOfLines: 2 }}>{entry.error ?? (entry.attachment ? `${Math.max(1, Math.round(entry.attachment.bytes / 1024))} KB · Ready` : "Preparing…")}</Text>
           {entry.error && <View role="button" accessibilityLabel={`Retry ${entry.name}`} onPress={() => {
             attachmentChanged(attachments().map((item) => item.key === entry.key ? { ...item, error: undefined } : item)); void stage(entry);
           }}><Text style={text(10, theme().palette.cyan)}>Retry</Text></View>}
@@ -1500,13 +1504,13 @@ function Composer(props: PartProps & { remote?: boolean; billing: BillingControl
       {previewing() && <View style={{ padding: 7, borderRadius: 5, backgroundColor: theme().palette.bg }}>
         {thumbnail() && <Image src={thumbnail()!} style={{ width: "100%", maxWidth: 192, height: 128 }} />}
         {attachments().find((entry) => entry.key === previewing())?.attachment?.preview.kind === "text" && <Scroll style={{ maxHeight: 130 }}>
-          <Text selectable={true} style={{ ...text(11, theme().palette.muted), fontFamily: theme().monoFamily }}>{(attachments().find((entry) => entry.key === previewing())!.attachment!.preview as { kind: "text"; excerpt: string }).excerpt}</Text>
+          <Text style={{ ...text(11, theme().palette.muted), fontFamily: theme().monoFamily, userSelect: "text" }}>{(attachments().find((entry) => entry.key === previewing())!.attachment!.preview as { kind: "text"; excerpt: string }).excerpt}</Text>
         </Scroll>}
       </View>}
     </View>}
     {modelPicker() && <View style={{ minWidth: 0, gap: 6, padding: 4, paddingBottom: 10, borderBottomWidth: 1, borderColor: chatHairline(theme()) }}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
-        <Input ref={(node) => node.focus()} value={modelQuery()} onChange={(value) => modelQuery.set(value)} onSubmit={() => {
+        <Input ref={(node) => node.focus()} value={modelQuery()} onChange={({ value }) => modelQuery.set(value)} onSubmit={() => {
           const first = modelOptions()[0];
           const agent = otherAgents()[0]?.choices[0];
           if (first) chooseModel(first.id);
@@ -1522,7 +1526,7 @@ function Composer(props: PartProps & { remote?: boolean; billing: BillingControl
         {options().map((model) => <View role="button" accessibilityLabel={model.label} onPress={() => chooseModel(model.id)}
           style={{ padding: 7, gap: 3, borderRadius: 4, backgroundColor: model.current ? theme().palette.panelActive : "transparent" }} hoverStyle={{ backgroundColor: theme().palette.panelActive }}>
           <Text style={text(12)}>{`${model.current ? "✓ " : ""}${model.label}`}</Text>
-          {model.detail && <Text numberOfLines={3} style={text(11, theme().palette.muted)}>{model.detail}</Text>}
+          {model.detail && <Text style={{ ...text(11, theme().palette.muted), numberOfLines: 3 }}>{model.detail}</Text>}
         </View>)}
         {!options().length && !modelQuery().trim() && <Text style={{ ...text(11, theme().palette.muted), paddingHorizontal: 7, paddingVertical: 4 }}>Enter the model name supplied by your provider.</Text>}
         {otherAgents().length > 0 && <View testID="chat-model-agents" style={{ gap: 1, marginTop: 6, paddingTop: 6, borderTopWidth: 1, borderColor: chatHairline(theme()) }}>
@@ -1532,7 +1536,7 @@ function Composer(props: PartProps & { remote?: boolean; billing: BillingControl
             accessibilityLabel={`Continue with ${choice.label}`} onPress={() => continueWith(choice)}
             style={{ paddingHorizontal: 7, paddingVertical: 6, flexDirection: "row", alignItems: "center", gap: 7, borderRadius: 4 }} hoverStyle={{ backgroundColor: theme().palette.panelActive }}>
             <Icon name="worktrees" size={12 * theme().scale} color={theme().palette.muted} />
-            <Text numberOfLines={1} style={{ ...text(12), flexShrink: 1 }}>{choice.model ? choice.label : `${agentLabel(choice.provider)}`}</Text>
+            <Text style={{ ...text(12), flexShrink: 1, numberOfLines: 1 }}>{choice.model ? choice.label : `${agentLabel(choice.provider)}`}</Text>
             {!choice.model && <Text style={text(11, theme().palette.muted)}>default model</Text>}
           </View>))}
         </View>}
@@ -1545,11 +1549,11 @@ function Composer(props: PartProps & { remote?: boolean; billing: BillingControl
       multiline={true} autoCorrect={false} submitBehavior="submit" readonly={props.panel().link === "deleted"} value={draft()}
       onSelectionChange={(event) => selection.set({ start: event.start, end: event.end })}
       onPaste={(event) => addAttachments(event.uris, event.uris.length ? [] : event.files)}
-      onChange={edit} onSubmit={() => { if (!suggestions.accept()) submitFromComposer(); }} onFocus={() => { focused.set(true); activate(); }} onBlur={() => focused.set(false)}
-      onCompositionChange={(event) => composing.set(event.composing)} onContentSizeChange={(size) => textHeight.set(size.height)}
-      onLayout={(bounds) => props.onMeasure?.("input", bounds.size.height)}
+      onChange={({ value }) => edit(value)} onSubmit={() => { if (!suggestions.accept()) submitFromComposer(); }} onFocus={() => { focused.set(true); activate(); }} onBlur={() => focused.set(false)}
+      onCompositionChange={(event) => composing.set(event.composing)} onContentSizeChange={({ size }) => textHeight.set(size.height)}
+      onLayout={({ bounds }) => props.onMeasure?.("input", bounds.size.height)}
       style={{ ...text(14), lineHeight: 21 * theme().scale, height: inputHeight(), paddingHorizontal: 3, paddingVertical: 4 }} />
-    <View onLayout={(bounds) => props.onMeasure?.("controls", bounds.size.height)}
+    <View onLayout={({ bounds }) => props.onMeasure?.("controls", bounds.size.height)}
       style={{ flexDirection: "row", alignItems: "center", minWidth: 0, gap: 3, paddingTop: 7, borderTopWidth: 1, borderColor: chatHairline(theme()) }}>
       {!props.remote && <View role="button" testID="chat-attach" focusable={accepting()} tooltip="Attach files · You can also paste or drop images and files" accessibilityLabel="Attach files"
         accessibilityState={{ disabled: !accepting() }} onPress={() => { if (accepting()) void chooseAttachments(); }}
@@ -1565,7 +1569,7 @@ function Composer(props: PartProps & { remote?: boolean; billing: BillingControl
           accessibilityLabel={`Choose model, ${toolbar()?.modelLabel ?? ""}`} onPress={modelMenu}
           style={{ height: 28 * theme().scale, flexDirection: "row", alignItems: "center", minWidth: 0, gap: 4, paddingHorizontal: 5, borderRadius: 5 }}
           hoverStyle={{ backgroundColor: theme().palette.panelActive }} focusStyle={{ backgroundColor: theme().palette.panelActive }}>
-          <Text numberOfLines={1} style={{ ...text(11), flexShrink: 1, minWidth: 0, fontWeight: "500" }}>{toolbar()?.modelLabel ?? ""}</Text>
+          <Text style={{ ...text(11), flexShrink: 1, minWidth: 0, fontWeight: "500", numberOfLines: 1 }}>{toolbar()?.modelLabel ?? ""}</Text>
           <Icon name="down" size={10 * theme().scale} color={theme().palette.muted} />
         </View>}
       </View>
@@ -1576,12 +1580,12 @@ function Composer(props: PartProps & { remote?: boolean; billing: BillingControl
         tooltip={toolbar()?.fast ? "Fast mode is on · click to turn it off" : "Fast mode is off · click to turn it on"} onPress={() => configure({ fast: !toolbar()?.fast })}
         style={{ height: 28 * theme().scale, flexShrink: 0, paddingHorizontal: 7 * theme().scale, justifyContent: "center", borderRadius: 5, backgroundColor: toolbar()?.fast ? theme().palette.panelActive : "transparent" }}
         hoverStyle={{ backgroundColor: theme().palette.panelActive }} focusStyle={{ backgroundColor: theme().palette.panelActive }}>
-        <Text numberOfLines={1} style={{ ...text(11, toolbar()?.fast ? theme().palette.cyan : theme().palette.muted), fontWeight: toolbar()?.fast ? "600" : "400" }}>Fast</Text>
+        <Text style={{ ...text(11, toolbar()?.fast ? theme().palette.cyan : theme().palette.muted), fontWeight: toolbar()?.fast ? "600" : "400", numberOfLines: 1 }}>Fast</Text>
       </View>}
       {roomy() && hasToolbar() && <View style={{ maxWidth: 124 * theme().scale, minWidth: 0, flexShrink: 1 }}>
         {pill("chat-mode", () => toolbar()?.modeLabel ?? "", modeMenu, theme().palette.muted)}
       </View>}
-      <View style={{ display: roomy() ? "flex" : "none", flexShrink: 0 }}><BillingControls control={props.billing} theme={theme} narrow={!spacious()} /></View>
+      <View style={{ display: roomy() ? "flex" : "none", flexDirection: "column", flexShrink: 0 }}><BillingControls control={props.billing} theme={theme} narrow={!spacious()} /></View>
       <View role="button" testID="chat-options" focusable={!!toolbar() || props.billing.available()} tooltip={optionsHint()} accessibilityLabel={optionsHint()}
         onPress={optionsMenu} style={{ width: 28 * theme().scale, height: 28 * theme().scale, flexShrink: 0, borderRadius: 5, alignItems: "center", justifyContent: "center" }}
         hoverStyle={{ backgroundColor: theme().palette.panelActive }} focusStyle={{ backgroundColor: theme().palette.panelActive }}>

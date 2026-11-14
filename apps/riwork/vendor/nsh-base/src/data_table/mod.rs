@@ -11,7 +11,10 @@ mod parts;
 mod selection;
 mod view;
 
-use nsh_core::prelude::*;
+use nsh_core::{
+    element::{JsHost, JsIn, JsKind, JsOwned, JsValue, PropError, TsTypes},
+    prelude::*,
+};
 
 use self::controller::Dt;
 pub use self::{
@@ -29,6 +32,54 @@ pub enum DataTableAlign {
     Center,
     /// At the end: numbers.
     End,
+}
+
+/// Where a column stays while the others scroll sideways (`fixed`): JS's
+/// `true` is [`ColumnFixed::Left`], `false` [`ColumnFixed::None`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum ColumnFixed {
+    /// It scrolls with the others.
+    #[default]
+    None,
+    /// It stays at the left, with the other columns fixed there, before
+    /// them in their order.
+    Left,
+    /// It stays at the right, with the other columns fixed there, after
+    /// them in their order: right after the scrolling columns while they
+    /// fit in the table, at its right edge once they overflow it.
+    Right,
+}
+
+impl From<bool> for ColumnFixed {
+    fn from(fixed: bool) -> Self {
+        if fixed { Self::Left } else { Self::None }
+    }
+}
+
+impl JsValue for ColumnFixed {
+    fn ts_type(_: &mut TsTypes) -> String {
+        r#"boolean | "left" | "right""#.into()
+    }
+
+    fn from_js(value: JsIn<'_>) -> Result<Self, PropError> {
+        match value.kind() {
+            JsKind::Bool => bool::from_js(value).map(Self::from),
+            JsKind::String => match value.as_string().as_deref() {
+                Some("left") => Ok(Self::Left),
+                Some("right") => Ok(Self::Right),
+                _ => Err(value.expected(r#"true, false, "left" or "right""#)),
+            },
+            _ => Err(value.expected(r#"true, false, "left" or "right""#)),
+        }
+    }
+
+    fn to_js<'a>(&self, host: &'a dyn JsHost) -> Result<JsOwned<'a>, PropError> {
+        match self {
+            Self::None => false.to_js(host),
+            Self::Left => "left".to_owned().to_js(host),
+            Self::Right => "right".to_owned().to_js(host),
+        }
+    }
 }
 
 /// Which way a column is sorted.
@@ -71,10 +122,11 @@ pub struct DataTableColumn {
     /// (`onSortChange`; the app sorts its data and sets `sort`).
     #[prop(default)]
     pub sortable: bool,
-    /// It stays at the left while the other columns scroll under it. Fixed
-    /// columns lead the others, in their order.
+    /// Where it stays while the other columns scroll under it: at the
+    /// left (`true` or `"left"`), leading the others, or at the right
+    /// (`"right"`), after them; fixed columns keep their order.
     #[prop(default)]
-    pub fixed: bool,
+    pub fixed: ColumnFixed,
     /// Whether a drag of its edge resizes it (default the table's
     /// `resizableColumns`).
     #[prop(skip_none)]
@@ -297,7 +349,8 @@ pub struct DataTableProps {
     /// order muted, an alert highlighted) with no call into JS per row.
     #[prop(default)]
     pub row_classes: Prop<Vec<SharedString>>,
-    /// The height of a body row, in points (default 32).
+    /// The height of a body row, in points (default 32; in a terminal a
+    /// row is one Cell, whatever this is).
     #[prop(default = Points(32.0))]
     pub row_height: Prop<Points>,
     /// The height of a title row, in points (default the row height).
@@ -500,8 +553,9 @@ impl DataTableApi {
 
     /// Sets the column `key` as wide as its widest text in the rows given
     /// (the rows in view, and up to a thousand more around them) and its
-    /// title need; the width, `null` for no such column.
-    pub fn fit_column(&self, key: String) -> Option<Points> {
+    /// title need; the width. Rejects with a `TypeError` for a key no
+    /// column has.
+    pub fn fit_column(&self, key: String) -> Result<Points, JsError> {
         self.dt.fit_column(&key)
     }
 

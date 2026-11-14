@@ -62,9 +62,10 @@ export function PadShell(props: { app: MobileApp; ui: Kit }) {
           </View>
           {chrome.overlay() && <View testID="sidebar-shade" role="button" accessibilityLabel="Close the sidebar" onPress={chrome.close}
             style={{ position: "absolute", left: 0, top: 0, right: 0, bottom: 0, zIndex: 2, backgroundColor: ui.dark() ? "rgba(0,0,0,0.5)" : "rgba(0,0,0,0.2)" }} />}
-          <View testID="sidebar" style={{ display: shown() ? "flex" : "none", position: chrome.overlay() ? "absolute" : "relative", left: 0, top: 0, bottom: 0,
+          <View testID="sidebar" style={{ display: shown() ? "flex" : "none", flexDirection: "column", position: chrome.overlay() ? "absolute" : "relative", left: 0, top: 0, bottom: 0,
             zIndex: chrome.overlay() ? 3 : 0, width: SIDEBAR_WIDTH, flexShrink: 0, backgroundColor: ui.palette().panel, borderRightWidth: 1, borderColor: ui.palette().divider,
-            shadowColor: "#000000", shadowOpacity: chrome.overlay() ? 0.3 : 0, shadowRadius: 16, shadowOffset: { width: 4, height: 0 } }}>
+            // 32 of CSS blur is the former shadowRadius of 16: iOS draws a box shadow's blur as half that radius.
+            boxShadow: `4px 0 32px rgb(0 0 0 / ${chrome.overlay() ? 0.3 : 0})` }}>
             <Sidebar hostId={hostId} />
           </View>
         </View>

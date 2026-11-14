@@ -75,7 +75,7 @@ fn resolve(source: &Path, override_path: Option<&Path>) -> Result<PathBuf, Strin
     }
     path.canonicalize().map_err(|error| {
         format!(
-            "NSH bundle {}: {error}. Build apps/riwork/App.tsx with NSH 0.3: nsh build apps/riwork --out apps/riwork/.nsh/out; or set RIWORK_NSH_BUNDLE to its built bundle.js",
+            "NSH bundle {}: {error}. Build apps/riwork/App.tsx with NSH 0.5.1: nsh build apps/riwork --out apps/riwork/.nsh/out; or set RIWORK_NSH_BUNDLE to its built bundle.js",
             path.display()
         )
     })

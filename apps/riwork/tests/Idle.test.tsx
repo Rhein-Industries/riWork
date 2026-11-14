@@ -16,10 +16,12 @@ test("P1-POLL-02: a settled project sends no host work during 60 seconds of idle
   });
   try {
     await app.waitFor("id:tab:shell:idle");
-    await app.clock.runFor(1_000);
+    const clock = app.clock;
+    if (!clock) throw new Error("this test needs the manual clock its open() options ask for");
+    await clock.runFor(1_000);
     const calls = app.host.calls();
     const posts = app.host.posts();
-    await app.clock.runFor(60_000);
+    await clock.runFor(60_000);
     expect(app.host.calls()).toEqual(calls);
     expect(app.host.posts()).toEqual(posts);
   } finally { app.dispose(); }

@@ -378,7 +378,9 @@ pub(crate) fn filter(items: &[EditorCompletionItem], query: &str) -> Vec<Hit> {
             ))
         })
         .collect();
-    ranked.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    crate::sort::sort_by(&mut ranked, |a, b| {
+        a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1))
+    });
     ranked.into_iter().map(|(_, _, hit)| hit).collect()
 }
 
@@ -551,6 +553,7 @@ impl Ed {
                     KeyOptions {
                         when: When::Always,
                         repeat,
+                        ..Default::default()
                     },
                     move |_| f(&e),
                 );
@@ -1004,11 +1007,16 @@ impl Ed {
             }));
     }
 
+    /// Runs `edit`, out of the typing hooks' way.
+    pub(crate) fn without_completions(&self, edit: impl FnOnce()) {
+        self.completion.inner.borrow_mut().inserting = true;
+        edit();
+        self.completion.inner.borrow_mut().inserting = false;
+    }
+
     /// Applies `edits` as one undo step, out of the typing hooks' way.
     fn insert_completion(&self, edits: Vec<(Range<usize>, String)>) {
-        self.completion.inner.borrow_mut().inserting = true;
-        self.replace_in_one_step(edits);
-        self.completion.inner.borrow_mut().inserting = false;
+        self.without_completions(|| self.replace_in_one_step(edits));
         // What the sink held was typed before the insertion: an input
         // method must not replace it now.
         self.empty_sink();
@@ -1040,7 +1048,7 @@ impl Ed {
                     (a.min(b)..a.max(b), e.text.to_string())
                 })
                 .collect();
-            ranges.sort_by_key(|(r, _)| (r.start, r.end));
+            crate::sort::sort_by_key(&mut ranges, |(r, _)| (r.start, r.end));
             let mut kept: Vec<(Range<usize>, String)> = Vec::with_capacity(ranges.len());
             for (range, text) in ranges {
                 let overlaps = kept.last().is_some_and(|(last, _)| {
@@ -1220,6 +1228,7 @@ fn always() -> KeyOptions {
     KeyOptions {
         when: When::Always,
         repeat: false,
+        ..Default::default()
     }
 }
 
@@ -1490,7 +1499,7 @@ fn row(
         .gap(px(ROW_GAP))
         .px(px(ROW_PADDING))
         .focusable(false)
-        .on_hover_in(move || hover.mark_completion(i))
+        .on_mouse_enter(move |_: &MouseEvent| hover.mark_completion(i))
         .on(EventKind::PressDown, move |_: &EventPayload| {
             if desktop {
                 down.accept_completion(Some(i));

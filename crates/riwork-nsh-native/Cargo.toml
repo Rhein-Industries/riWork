@@ -21,10 +21,10 @@ required-features = ["test-support"]
 riwork-core = { path = "../riwork-core" }
 riwork-engine = { path = "../riwork-engine" }
 riwork-nsh-workspace = { path = "../../apps/riwork" }
-nsh-core = "=0.3.0"
-nsh-base = "=0.3.0"
+nsh-core = "=0.5.1"
+nsh-base = "=0.5.1"
 # Add-in engines: their host channel (addins.rs).
-nsh-engine = "=0.3.0"
+nsh-engine = "=0.5.1"
 anyhow = "1"
 base64 = "0.22"
 image = { version = "=0.25.10", default-features = false, features = ["png"] }
@@ -40,7 +40,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 uuid = { version = "1", features = ["v4"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-nsh-platform-macos = "=0.3.0"
+nsh-platform-macos = "=0.5.1"
 dispatch2 = "0.3"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["NSImageView", "NSImageCell"] }
 
@@ -48,7 +48,12 @@ objc2-app-kit = { version = "0.3", default-features = false, features = ["NSImag
 cc = "1"
 
 [dev-dependencies]
-nsh-engine = "=0.3.0"
+nsh-engine = "=0.5.1"
+# The tests read the registry's TypeScript declarations, which nsh-core 0.4+ only carries
+# with this feature (the app itself goes without the text).
+nsh-core = { version = "=0.5.1", features = ["declarations"] }
+# tests/base_patch_tsx.rs drives a compiled TSX fixture with the headless harness.
+nsh-testing = { version = "=0.5.1", default-features = false }
 # The engine's in-process chat host with fake and replayed provider drivers.
 riwork-engine = { path = "../riwork-engine", features = ["test-support"] }
 tempfile = "3"

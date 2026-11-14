@@ -94,15 +94,15 @@ export function WorkerShelf(props: {
         <View role="button" accessibilityLabel={worker.title} accessibilityState={{ expanded: selected() === worker.id }}
           onPress={() => selected.set(selected() === worker.id ? null : worker.id)} style={{ flexDirection: "row", alignItems: "center", minHeight: 25 * theme().scale, gap: 7 }}>
           <Icon name={selected() === worker.id ? "down" : "right"} size={10 * theme().scale} color={theme().palette.muted} />
-          <Text numberOfLines={1} style={{ ...text(12), flex: 1 }}>{worker.title}</Text>
-          <Text numberOfLines={2} style={{ ...text(11, /failed/i.test(worker.status) ? theme().palette.danger : /waiting/i.test(worker.status) ? theme().palette.gold : worker.active ? theme().palette.working : theme().palette.muted), maxWidth: "45%" }}>{worker.status}</Text>
+          <Text style={{ ...text(12), flex: 1, numberOfLines: 1 }}>{worker.title}</Text>
+          <Text style={{ ...text(11, /failed/i.test(worker.status) ? theme().palette.danger : /waiting/i.test(worker.status) ? theme().palette.gold : worker.active ? theme().palette.working : theme().palette.muted), maxWidth: "45%", numberOfLines: 2 }}>{worker.status}</Text>
         </View>
-        <Text numberOfLines={selected() === worker.id ? 3 : 1} style={text(11, theme().palette.muted)}>{worker.assignment || worker.output.split("\n").filter(Boolean).slice(-1).join("") || "Waiting for worker output…"}</Text>
+        <Text style={{ ...text(11, theme().palette.muted), numberOfLines: selected() === worker.id ? 3 : 1 }}>{worker.assignment || worker.output.split("\n").filter(Boolean).slice(-1).join("") || "Waiting for worker output…"}</Text>
         {selected() === worker.id && <>
           {worker.model && <Text style={text(11, theme().palette.muted)}>{worker.model}</Text>}
           {worker.detail && <Text style={text(11, theme().palette.gold)}>{worker.detail}</Text>}
           {worker.output && <Scroll style={{ maxHeight: 130, padding: 7, backgroundColor: theme().palette.bg, borderRadius: 4 }}>
-            <Text selectable={true} style={{ ...text(11), fontFamily: theme().monoFamily, lineHeight: 17 * theme().scale }}>{worker.output}</Text>
+            <Text style={{ ...text(11), fontFamily: theme().monoFamily, lineHeight: 17 * theme().scale, userSelect: "text" }}>{worker.output}</Text>
           </Scroll>}
           <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 3 }}>
             {worker.sessionId && (worker.kind === "shell" || worker.kind === "chat") && props.onOpen && button("Open", () => props.onOpen!(worker.sessionId!, worker.kind as "shell" | "chat"))}
@@ -111,7 +111,7 @@ export function WorkerShelf(props: {
             {worker.canStop && button("Stop", () => { stopping.set(stopping() === worker.id ? null : worker.id); messaging.set(null); }, !!busy())}
           </View>
           {messaging() === worker.id && <View style={{ flexDirection: "row", gap: 5 }}>
-            <Input ref={(node) => node.focus()} value={message()} onChange={(value) => message.set(value)} placeholder="Message this worker" multiline={true} autoCorrect={false} submitBehavior="submit"
+            <Input ref={(node) => node.focus()} value={message()} onChange={({ value }) => message.set(value)} placeholder="Message this worker" multiline={true} autoCorrect={false} submitBehavior="submit"
               onSubmit={() => void act(worker, "send")} style={{ ...text(11), flex: 1, padding: 5, borderRadius: 4, borderWidth: 1, borderColor: theme().palette.divider }} />
             {button("Send", () => void act(worker, "send"), !!busy() || !message().trim())}
           </View>}

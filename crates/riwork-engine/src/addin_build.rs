@@ -1,4 +1,4 @@
-//! Builds an add-in's TSX into an NSH bundle with the NSH CLI (0.3.0, as `somtus update` uses).
+//! Builds an add-in's TSX into an NSH bundle with the NSH CLI (0.5.1, as `somtus update` uses).
 //!
 //! The author's folder is copied into a staging folder; Somtus writes its `nsh.json` there
 //! (the add-in's NSH id, and capabilities that allow exactly the add-in API's host calls and the
@@ -17,7 +17,7 @@ use serde_json::json;
 /// The add-in API's TypeScript, written into every add-in that is built.
 pub const SDK: &str = include_str!("../addin/addin-api.ts");
 pub const SDK_FILE: &str = "addin-api.ts";
-const NSH_VERSION: &str = "0.3.0";
+const NSH_VERSION: &str = "0.5.1";
 
 /// The NSH id of an add-in's bundle: its data and storage are kept under it.
 pub fn nsh_id(scope: &Scope, id: &str) -> String {
@@ -29,15 +29,15 @@ pub fn nsh_id(scope: &Scope, id: &str) -> String {
 }
 
 /// The NSH CLI: `NSH_CLI` (absolute), Somtus's toolchain folder, then `nsh` on PATH; it must
-/// be version 0.3.0, as Somtus's own UI build.
+/// be version 0.5.1, as Somtus's own UI build.
 pub fn find_nsh(home: &Path) -> Result<PathBuf, String> {
     let mut candidates = Vec::new();
     if let Some(path) = std::env::var_os("NSH_CLI").filter(|path| !path.is_empty()) {
         candidates.push(PathBuf::from(path));
     }
-    candidates.push(home.join("toolchains/nsh-0.3.0/bin/nsh"));
+    candidates.push(home.join(format!("toolchains/nsh-{NSH_VERSION}/bin/nsh")));
     if let Some(path) = std::env::var_os("HOME") {
-        candidates.push(PathBuf::from(path).join(".local/share/riwork/toolchains/nsh-0.3.0/bin/nsh"));
+        candidates.push(PathBuf::from(path).join(format!(".local/share/riwork/toolchains/nsh-{NSH_VERSION}/bin/nsh")));
     }
     if let Some(path) = std::env::var_os("PATH") {
         candidates.extend(std::env::split_paths(&path).map(|dir| dir.join("nsh")));
@@ -141,9 +141,17 @@ pub fn scaffold(parent: &Path, id: &str, name: &str) -> Result<PathBuf, String> 
     Ok(dir)
 }
 
-/// Where builds of an add-in are kept: `RIWORK_HOME/addins-cache/<scope>/<id>/<digest>`.
+/// Where builds of an add-in are kept: `RIWORK_HOME/addins-cache/<scope>/<id>/<build>`
+/// ([`build_name`]).
 pub fn cache_dir(home: &Path, scope: &Scope, id: &str) -> PathBuf {
     home.join("addins-cache").join(scope.key()).join(id)
+}
+
+/// The folder of the build of the source with `digest`: by the NSH that compiled it too. A
+/// bundle is compiled for one NSH runtime (its `nsh:rt` calls), so a build an earlier Somtus
+/// kept is not loaded by this one: the same source is built again.
+fn build_name(digest: &str) -> String {
+    format!("{digest}-nsh-{NSH_VERSION}")
 }
 
 /// Builds the add-in in `dir` unless this source was built already.
@@ -156,7 +164,8 @@ pub fn build(home: &Path, scope: &Scope, dir: &Path, manifest: &Manifest) -> Res
     }
     let digest = addins::source_digest(dir);
     let cache = cache_dir(home, scope, &manifest.id);
-    let out = cache.join(&digest);
+    let name = build_name(&digest);
+    let out = cache.join(&name);
     let bundle = out.join("bundle.js");
     if bundle.is_file() {
         return Ok(Built { bundle, digest });
@@ -195,7 +204,7 @@ pub fn build(home: &Path, scope: &Scope, dir: &Path, manifest: &Manifest) -> Res
     fs::remove_dir_all(&staging).ok();
     result?;
     // Keep the newest few builds: an editor saving often must not fill the disk.
-    prune(&cache, &digest);
+    prune(&cache, &name);
     Ok(Built { bundle, digest })
 }
 
@@ -235,6 +244,13 @@ mod tests {
     }
 
     #[test]
+    fn a_build_is_kept_by_its_source_and_the_nsh_that_compiled_it() {
+        assert_eq!(build_name("abc123"), format!("abc123-nsh-{NSH_VERSION}"));
+        // A build Somtus kept before NSH 0.5.1 was named by its source alone: never this name.
+        assert_ne!(build_name("abc123"), "abc123");
+    }
+
+    #[test]
     fn nsh_ids_keep_scopes_apart() {
         let project = Scope::Project { project_id: "6f1c-22".into() };
         assert_eq!(nsh_id(&project, "acme.scan-x"), "dev.riwork.addin.p6f1c22.acme_scan_x");
@@ -242,7 +258,7 @@ mod tests {
     }
 
     /// The template, through the real NSH CLI: `cargo test -p riwork-engine --lib -- --ignored
-    /// builds_the_template` (needs NSH 0.3.0, found as `find_nsh` does).
+    /// builds_the_template` (needs NSH 0.5.1, found as `find_nsh` does).
     #[test]
     #[ignore = "runs the NSH CLI"]
     fn builds_the_template_with_the_nsh_cli() {

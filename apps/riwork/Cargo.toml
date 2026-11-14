@@ -8,8 +8,8 @@ publish = false
 test-support = []
 
 [dependencies]
-nsh-core = "=0.3.0"
-nsh-base = "=0.3.0"
+nsh-core = "=0.5.1"
+nsh-base = "=0.5.1"
 riwork-core = { path = "../../crates/riwork-core" }
 riwork-engine = { path = "../../crates/riwork-engine" }
 uuid = { version = "1", features = ["v4"] }
@@ -22,5 +22,8 @@ tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
 
 [dev-dependencies]
 tempfile = "3"
-nsh-engine = { version = "=0.3.0", default-features = false }
-nsh-testing = { version = "=0.3.0", default-features = false }
+nsh-engine = { version = "=0.5.1", default-features = false }
+nsh-testing = { version = "=0.5.1", default-features = false }
+# tests/base_patch.rs reads the patched nsh/base's TypeScript declarations, which nsh-core
+# 0.4+ only carries with this feature.
+nsh-core = { version = "=0.5.1", features = ["declarations"] }

@@ -1,4 +1,4 @@
-import { Scroll, Text, View, cleanup, nativeComponent, signal, type YNode } from "nsh";
+import { Scroll, Text, View, cleanup, nativeComponent, signal, type NativeComponentRef } from "nsh";
 import { Addins } from "riwork/native";
 import type { InterfaceTheme } from "./appearance";
 
@@ -42,7 +42,7 @@ export function AddinTab(props: {
   const state = signal<AddinState>({ status: "loading" });
   const info = signal<AddinInfo | null>(null);
   const busy = signal(false);
-  let surface: YNode | undefined;
+  let surface: NativeComponentRef | undefined;
   let alive = true;
   cleanup(() => { alive = false; });
   const refresh = () => void list(props.projectId()).then((addins) => {
@@ -81,7 +81,7 @@ export function AddinTab(props: {
       </View>)}
     </View>}
     {state().status === "build-failed" && <View testID="addin-build-failed" style={{ paddingHorizontal: 12, paddingVertical: 6, backgroundColor: theme().palette.panel, borderBottomWidth: 1, borderBottomColor: theme().palette.gold }}>
-      <Text numberOfLines={3} selectable={true} style={text(11, theme().palette.gold)}>{`The last change did not build; this is the version before it. ${state().error ?? ""}`}</Text>
+      <Text style={{ ...text(11, theme().palette.gold), numberOfLines: 3, userSelect: "text" }}>{`The last change did not build; this is the version before it. ${state().error ?? ""}`}</Text>
     </View>}
     <View style={{ flex: 1, minHeight: 0 }}>
       <AddinSurface ref={(node) => { surface = node; }} addin={props.addin.key} view={props.addin.view} project={props.projectId()}
@@ -94,7 +94,7 @@ export function AddinTab(props: {
           {state().status === "loading" && <Text testID="addin-loading" style={text(13, theme().palette.muted)}>{`Building ${name()}…`}</Text>}
           {state().status === "failed" && <>
             <Text style={text(14)}>{`${name()} could not start`}</Text>
-            <Text testID="addin-error" selectable={true} style={{ ...text(11, theme().palette.gold), fontFamily: theme().monoFamily }}>{state().error ?? ""}</Text>
+            <Text testID="addin-error" style={{ ...text(11, theme().palette.gold), fontFamily: theme().monoFamily, userSelect: "text" }}>{state().error ?? ""}</Text>
             <View style={{ flexDirection: "row", gap: 8 }}>
               {button("Retry", () => surface?.command("retry"), true, "addin-retry")}
               {button("Show folder", () => void Addins.reveal(props.projectId(), props.addin.key))}

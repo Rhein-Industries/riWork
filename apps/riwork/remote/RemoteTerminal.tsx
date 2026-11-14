@@ -1,4 +1,4 @@
-import { Text, View, cleanup, signal, type YNode } from "nsh";
+import { Text, View, cleanup, signal, type NativeComponentRef, type ViewRef } from "nsh";
 import { Input } from "nsh/base";
 import { DEFAULT_THEME, space, type InterfaceTheme } from "../appearance";
 import { Icon } from "../Icon";
@@ -24,7 +24,7 @@ export function RemoteTerminal(props: RemoteTerminalProps) {
   const theme = props.theme ?? (() => DEFAULT_THEME);
   const key = () => `remote:${props.desktopId}:${props.shellId}`;
   const text = (size: number, color = theme().palette.text) => ({ fontFamily: theme().family, fontSize: size * theme().scale, color });
-  let view: YNode | undefined, search: YNode | undefined;
+  let view: NativeComponentRef | undefined, search: ViewRef | undefined;
   function find(value?: string) {
     if (value !== undefined) query.set(value);
     finding.set(true); view?.command("find", { query: query() }); search?.focus();
@@ -51,7 +51,7 @@ export function RemoteTerminal(props: RemoteTerminalProps) {
     {finding() && <View testID={`terminal-find:${key()}`} style={{ flexDirection: "row", alignItems: "center", padding: space(6, theme().scale), gap: 8, backgroundColor: theme().palette.panel, borderBottomWidth: 1, borderColor: theme().palette.divider }}>
       <Icon name="search" color={theme().palette.muted} />
       <Input testID={`terminal-find-input:${key()}`} accessibilityLabel="Find in terminal" placeholder="Find in terminal" value={query()}
-        ref={(node) => { search = node; node.focus(); }} onChange={(value) => { query.set(value); view?.command("find", { query: value }); }} onSubmit={control.findNext} style={{ ...text(11), flex: 1 }} />
+        ref={(node) => { search = node; node.focus(); }} onChange={({ value }) => { query.set(value); view?.command("find", { query: value }); }} onSubmit={control.findNext} style={{ ...text(11), flex: 1 }} />
       <Text testID={`terminal-find-result:${key()}`} style={text(11, theme().palette.muted)}>{result().current > 0 ? `${result().current} / ${result().total}` : `${result().total} matches`}</Text>
       <View testID={`terminal-find-previous:${key()}`} role="button" accessibilityLabel="Previous match" onPress={control.findPrevious}><Text style={text(11, theme().palette.cyan)}>↑</Text></View>
       <View testID={`terminal-find-next:${key()}`} role="button" accessibilityLabel="Next match" onPress={control.findNext}><Text style={text(11, theme().palette.cyan)}>↓</Text></View>

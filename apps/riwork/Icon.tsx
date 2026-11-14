@@ -101,18 +101,18 @@ export function Icon(props: { name: IconName; size?: number; color?: string }) {
   // every symbol of the table on the iOS versions the app supports.
   const native = computed(() => props.name !== "radiation" && (platform.os === "ios" || (platform.os === "macos" && ready() === symbol())));
   const points = () => side() * (props.name === "focus" || props.name === "restore" || props.name === "layout" ? 0.72 : 0.8);
-  return <View pointerEvents="none" accessible={false} style={{ width: side(), height: side(), flexShrink: 0 }}>
-    {platform.os === "ios" && props.name !== "radiation" && <MobileSymbol pointerEvents="none" accessible={false} name={symbol()} color={props.color ?? "#98989d"} size={points()}
-      style={{ position: "absolute", left: (side() - points()) / 2, top: (side() - points()) / 2, width: points(), height: points() }} />}
-    {platform.os === "macos" && <SystemSymbol pointerEvents="none" accessible={false}
+  return <View accessible={false} style={{ width: side(), height: side(), flexShrink: 0, pointerEvents: "none" }}>
+    {platform.os === "ios" && props.name !== "radiation" && <MobileSymbol accessible={false} name={symbol()} color={props.color ?? "#98989d"} size={points()}
+      style={{ position: "absolute", left: (side() - points()) / 2, top: (side() - points()) / 2, width: points(), height: points(), pointerEvents: "none" }} />}
+    {platform.os === "macos" && <SystemSymbol accessible={false}
       symbol={{ name: symbol(), points: points(), weight: props.name === "check" || props.name === "close" ? "medium" : "regular", color: props.color ?? "#98989d" }}
       onAvailability={(event) => {
         if (event.available) availableSymbols.add(event.name);
         else availableSymbols.delete(event.name);
         if (event.name === symbol()) ready.set(event.available ? event.name : null);
       }}
-      style={{ position: "absolute", left: 0, top: 0, width: side(), height: side(), opacity: native() ? 1 : 0 }} />}
-    {!native() && <Canvas pointerEvents="none" style={{ width: side(), height: side(), flexShrink: 0 }} draw={(cx, size) => {
+      style={{ position: "absolute", left: 0, top: 0, width: side(), height: side(), opacity: native() ? 1 : 0, pointerEvents: "none" }} />}
+    {!native() && <Canvas style={{ width: side(), height: side(), flexShrink: 0, pointerEvents: "none" }} draw={(cx, size) => {
     cx.scale(size.width / 24, size.height / 24);
     cx.strokeStyle = props.color ?? "#98989d";
     cx.lineWidth = props.name === "more" ? 3 : 1.5;

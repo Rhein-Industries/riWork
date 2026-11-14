@@ -9,9 +9,11 @@
 //! are borderless, without a background or focus ring, with the config's
 //! font, colors and alignment. A single-line field shows its own
 //! placeholder (an attributed one); a text view has none, so a label under
-//! it shows the placeholder while the text is empty. Single-line text
-//! and placeholders share the field editor's natural font metrics;
-//! multiline paragraphs use the configured line height.
+//! it shows the placeholder while the text is empty, an input method's
+//! composition counting as text. Single-line text and placeholders share
+//! the field editor's natural font metrics; multiline paragraphs use the
+//! configured line height, its extra space split above and below the text
+//! ([`LineBox`]), as the caret is as tall as a line fragment.
 //!
 //! The fields are subclasses ([`define_field!`]) only to hear what AppKit
 //! tells a field's delegate's delegate: AppKit edits a field with the
@@ -30,10 +32,13 @@
 //!
 //! An input method's composition (the editor's marked text) is followed
 //! natively and reported as `onCompositionChange`: as it starts and
-//! changes, and as it ends, after the `onChangeText` of the committed
-//! text. A value from JS that comes during a composition waits for its
+//! changes (AppKit tells only of the selection then: marking text sends no
+//! `textDidChange:`), and as it ends, after the `onChangeText` of the
+//! committed text. A value from JS that comes during a composition waits for its
 //! end: setting the text then would end the input method's session and
-//! commit what it composes.
+//! commit what it composes. Leaving the input commits the composition, as
+//! a browser's blur does ([`commit_marked`]): what was composed stays and
+//! is reported before the composition ends.
 //!
 //! Focus follows desktop habits: Tab moves between fields (the window
 //! recalculates its key view loop), Escape leaves the field, and clicking
@@ -61,17 +66,18 @@ use objc2::{
     sel,
 };
 use objc2_app_kit::{
-    NSApplication, NSBorderType, NSColor, NSControl, NSControlTextEditingDelegate, NSEvent,
-    NSEventModifierFlags, NSEventType, NSFocusRingType, NSFontAttributeName,
-    NSForegroundColorAttributeName, NSLineBreakMode, NSMutableParagraphStyle,
+    NSApplication, NSBorderType, NSColor, NSControl, NSControlTextEditingDelegate, NSDragOperation,
+    NSDraggingInfo, NSEvent, NSEventModifierFlags, NSEventType, NSFocusRingType,
+    NSFontAttributeName, NSForegroundColorAttributeName, NSLineBreakMode, NSMutableParagraphStyle,
     NSParagraphStyleAttributeName, NSPasteboard, NSResponder, NSScrollView, NSSecureTextField,
-    NSText, NSTextAlignment, NSTextDelegate, NSTextField, NSTextFieldDelegate, NSTextInputClient,
-    NSTextView, NSTextViewDelegate, NSValidatedUserInterfaceItem, NSView, NSWritingDirection,
+    NSSpellChecker, NSText, NSTextAlignment, NSTextDelegate, NSTextField, NSTextFieldDelegate,
+    NSTextInputClient, NSTextStorage, NSTextView, NSTextViewDelegate, NSValidatedUserInterfaceItem,
+    NSView, NSWritingDirection,
 };
 use objc2_core_foundation::{CGFloat, CGSize};
 use objc2_foundation::{
     NSAttributedString, NSDictionary, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRange,
-    NSString,
+    NSRect, NSString, NSUndoManager,
 };
 
 use crate::{
@@ -91,10 +97,26 @@ enum Editor {
     Area {
         scroller: Retained<NSScrollView>,
         view: Retained<NSTextView>,
+        /// Retained because `NSTextView.textStorage` is an assign property.
+        storage: Retained<NSTextStorage>,
     },
 }
 
 impl Editor {
+    /// Clears this editor's undo records without changing another input's history.
+    fn clear_undo(
+        &self,
+        fallback: Option<&Retained<NSUndoManager>>,
+    ) -> Option<Retained<NSUndoManager>> {
+        let Editor::Area { view, storage, .. } = self else {
+            return None;
+        };
+        let manager = view.undoManager().or_else(|| fallback.cloned())?;
+        // SAFETY: AppKit registers text undo operations with the text storage as target.
+        unsafe { manager.removeAllActionsWithTarget(storage) };
+        Some(manager)
+    }
+
     /// The view hosted in the input's view.
     fn host(&self) -> Retained<NSView> {
         match self {
@@ -254,6 +276,8 @@ impl Editor {
 /// The native side of an input view ([`crate::view::ViewState::input`]).
 pub(crate) struct InputState {
     editor: RefCell<Editor>,
+    /// Retains a manager when available for cleanup after editor detachment.
+    undo_manager: RefCell<Option<Retained<NSUndoManager>>>,
     /// Hears the editors (their `delegate` is weak).
     delegate: Retained<InputDelegate>,
     /// Fills the view and holds the editor ([`InputPad`]).
@@ -337,6 +361,13 @@ impl Ctx {
         }
     }
 
+    /// A text view's text scrolled, or its size or the viewport's changed.
+    fn scrolled(&self) {
+        if let Some((surface, view, input)) = self.get() {
+            report_scroll(&surface, &view, &input);
+        }
+    }
+
     fn key_press(&self, key: &str) {
         self.send(EventKind::KeyPress, || {
             EventPayload::Map(vec![("key", PayloadValue::Str(key.to_owned()))])
@@ -355,6 +386,7 @@ impl Ctx {
         }
         let count = input.count.get() + 1;
         input.count.set(count);
+        input.remember_undo_manager();
         let text = input.editor.borrow().text();
         input.known.borrow_mut().clone_from(&text);
         // A composition that starts or changes is reported before the text
@@ -385,15 +417,23 @@ impl Ctx {
         let Some(input) = self.input.upgrade() else {
             return;
         };
-        if input.applying.get() || input.editing.get() {
+        // Marked text is in the editor's text, though no change is told.
+        input.update_placeholder();
+        if input.applying.get() {
             return;
         }
         let editor = input.editor.borrow().clone();
+        let marked = editor.marked_text();
+        let reported = *input.known.borrow() == editor.text();
+        // Marking text, or dropping it, is an edit `changed` never hears of.
+        if marked.is_some() || (reported && input.composition.borrow().is_some()) {
+            input.editing.set(false);
+        }
         // An edit not reported yet: `changed` reports it, then comes here.
-        if *input.known.borrow() != editor.text() {
+        if input.editing.get() || (marked.is_none() && !reported) {
             return;
         }
-        self.compose(&input, editor.marked_text());
+        self.compose(&input, marked);
     }
 
     /// Records the composition `marked` (`None`: none) and reports it if
@@ -768,8 +808,11 @@ pub(crate) fn tab(surface: &Surface, from: &NSView, backward: bool) -> bool {
         // A text view's clip view comes right before it in the loop and
         // gives the focus back to it: skip the views around `from`.
         if next.isDescendantOf(&scope)
-            && (!crate::view::is_ours(&next)
-                || NshView::from_ns(&next).is_some_and(|view| crate::input::is_key_control(&view)))
+            && (if crate::view::is_ours(&next) {
+                NshView::from_ns(&next).is_some_and(|view| crate::input::is_key_stop(&view))
+            } else {
+                held_seen(&next)
+            })
             && !from.isDescendantOf(&next)
         {
             return window.makeFirstResponder(Some(&next));
@@ -777,6 +820,20 @@ pub(crate) fn tab(surface: &Surface, from: &NSView, backward: bool) -> bool {
         at = next;
     }
     false
+}
+
+/// Whether a view of the key view loop that is not ours (an input's field,
+/// a hosted view) shows to the keyboard: the view of ours holding it does
+/// ([`NshView::seen_by_keys`]).
+fn held_seen(view: &NSView) -> bool {
+    let mut at = crate::view::superview(view);
+    while let Some(ns) = at {
+        if let Some(view) = NshView::from_ns(&ns) {
+            return view.seen_by_keys();
+        }
+        at = crate::view::superview(&ns);
+    }
+    true
 }
 
 /// Defines a field class: `NSTextField` or `NSSecureTextField` that tells
@@ -825,6 +882,18 @@ macro_rules! define_field {
                         cx.focus_changed(true);
                     }
                     ok
+                }
+
+                /// Its field editor is about to end editing: what an input
+                /// method composes there is committed first.
+                #[unsafe(method(textShouldEndEditing:))]
+                fn text_should_end_editing(&self, text: &NSText) -> bool {
+                    if let Some(editor) = text.downcast_ref::<NSTextView>() {
+                        commit_marked(editor);
+                    }
+                    // SAFETY: NSTextField's own handling (it implements
+                    // NSTextDelegate).
+                    unsafe { msg_send![super(self), textShouldEndEditing: text] }
                 }
 
                 #[unsafe(method(textDidEndEditing:))]
@@ -916,7 +985,101 @@ define_field!(
     NSObject
 );
 
-define_class!(
+/// Defines a direct subclass of `NSTextView` that an input edits with, as
+/// `define_class!` does, with its file drags appended to its methods:
+/// files dragged over the text go to the file drop target around the input
+/// ([`crate::file_drop::text_entered`]); `surface` names the function that
+/// gives the surface of a view of the class.
+macro_rules! define_text_view {
+    (
+        $(#[$($attr:tt)*])*
+        struct $name:ident;
+        surface = $surface:path;
+
+        unsafe impl NSObjectProtocol for $protocol_for:ident {}
+
+        impl $impl_for:ident {
+            $($methods:tt)*
+        }
+    ) => {
+        define_class!(
+            $(#[$($attr)*])*
+            struct $name;
+
+            unsafe impl NSObjectProtocol for $name {}
+
+            impl $name {
+                $($methods)*
+
+                /// The Edit menu's Copy (Cmd+C): the editor's own selection,
+                /// else the text selected around the input while it keeps
+                /// the focus (a chat's messages above its composer).
+                #[unsafe(method(copy:))]
+                fn copy(&self, sender: Option<&AnyObject>) {
+                    if !copies_selection_around(self, $surface(self)) {
+                        // SAFETY: NSTextView's own method.
+                        let _: () = unsafe { msg_send![super(self), copy: sender] };
+                    }
+                }
+
+                #[unsafe(method(draggingEntered:))]
+                fn dragging_entered(&self, sender: &ProtocolObject<dyn NSDraggingInfo>) -> NSDragOperation {
+                    $surface(self)
+                        .and_then(|surface| crate::file_drop::text_entered(&surface, sender))
+                        // SAFETY: NSTextView's own method.
+                        .unwrap_or_else(|| unsafe { msg_send![super(self), draggingEntered: sender] })
+                }
+
+                #[unsafe(method(draggingUpdated:))]
+                fn dragging_updated(&self, sender: &ProtocolObject<dyn NSDraggingInfo>) -> NSDragOperation {
+                    $surface(self)
+                        .and_then(|surface| crate::file_drop::text_updated(&surface, sender))
+                        // SAFETY: NSTextView's own method.
+                        .unwrap_or_else(|| unsafe { msg_send![super(self), draggingUpdated: sender] })
+                }
+
+                #[unsafe(method(draggingExited:))]
+                fn dragging_exited(&self, sender: Option<&ProtocolObject<dyn NSDraggingInfo>>) {
+                    if let Some(surface) = $surface(self) {
+                        crate::file_drop::clear(&surface);
+                    }
+                    // SAFETY: NSTextView's own method.
+                    let _: () = unsafe { msg_send![super(self), draggingExited: sender] };
+                }
+
+                #[unsafe(method(prepareForDragOperation:))]
+                fn prepare_drag(&self, sender: &ProtocolObject<dyn NSDraggingInfo>) -> bool {
+                    $surface(self)
+                        .and_then(|surface| crate::file_drop::text_updated(&surface, sender))
+                        .is_some()
+                        // SAFETY: NSTextView's own method.
+                        || unsafe { msg_send![super(self), prepareForDragOperation: sender] }
+                }
+
+                #[unsafe(method(performDragOperation:))]
+                fn perform_drag(&self, sender: &ProtocolObject<dyn NSDraggingInfo>) -> bool {
+                    $surface(self)
+                        .and_then(|surface| crate::file_drop::text_performed(&surface, sender))
+                        // SAFETY: NSTextView's own method.
+                        .unwrap_or_else(|| unsafe { msg_send![super(self), performDragOperation: sender] })
+                }
+
+                #[unsafe(method(draggingEnded:))]
+                fn dragging_ended(&self, sender: &ProtocolObject<dyn NSDraggingInfo>) {
+                    if let Some(surface) = $surface(self) {
+                        crate::file_drop::clear(&surface);
+                    }
+                    if NSTextView::class().responds_to(sel!(draggingEnded:)) {
+                        // SAFETY: NSTextView's own method, when it has one.
+                        let _: () = unsafe { msg_send![super(self), draggingEnded: sender] };
+                    }
+                }
+            }
+        );
+    };
+}
+
+define_text_view!(
     /// The text view of a multiline input: tells [`Ctx`] when it takes and
     /// loses the focus, and which modifiers its keys hold.
     #[unsafe(super(NSTextView, NSText, NSView, NSResponder, NSObject))]
@@ -924,6 +1087,7 @@ define_class!(
     #[ivars = OnceCell<Ctx>]
     #[name = "NshTextView"]
     struct TextArea;
+    surface = area_surface;
 
     unsafe impl NSObjectProtocol for TextArea {}
 
@@ -958,8 +1122,31 @@ define_class!(
             ok
         }
 
+        /// Scrolls the selection into view once AppKit laid the text out
+        /// ([`reveal_caret_later`]).
+        #[unsafe(method(nshRevealSelection))]
+        fn reveal_selection(&self) {
+            let range = self.selectedRange();
+            // SAFETY: NSTextView's TextKit 2 objects and their methods, when
+            // it has them (nil otherwise: TextKit 1 lays out as it scrolls).
+            unsafe {
+                let manager: Option<Retained<AnyObject>> = msg_send![self, textLayoutManager];
+                if let Some(manager) = manager {
+                    let content: Option<Retained<AnyObject>> = msg_send![&manager, textContentManager];
+                    if let Some(content) = content {
+                        let all: Option<Retained<AnyObject>> = msg_send![&content, documentRange];
+                        if let Some(all) = all {
+                            let _: () = msg_send![&manager, ensureLayoutForRange: &*all];
+                        }
+                    }
+                }
+            }
+            self.scrollRangeToVisible(range);
+        }
+
         #[unsafe(method(resignFirstResponder))]
         fn resign_first_responder(&self) -> bool {
+            commit_marked(self);
             // SAFETY: NSTextView's own method.
             let ok: bool = unsafe { msg_send![super(self), resignFirstResponder] };
             if ok && let Some(cx) = self.ivars().get() {
@@ -977,6 +1164,26 @@ define_class!(
             if let Some(cx) = self.ivars().get() {
                 cx.composition_changed();
             }
+        }
+
+        /// Where an input method opens its candidates. TextKit 2 lays out
+        /// only the text near the visible part and has no rect for the
+        /// rest (a point-wide view, a line per character, soon holds
+        /// such text): the visible part, not the screen's corner.
+        #[unsafe(method(firstRectForCharacterRange:actualRange:))]
+        fn first_rect(&self, range: NSRange, actual: *mut NSRange) -> NSRect {
+            // SAFETY: NSTextView's own method (NSTextInputClient); `actual`
+            // is the caller's.
+            let rect: NSRect = unsafe {
+                msg_send![super(self), firstRectForCharacterRange: range, actualRange: actual]
+            };
+            if rect != NSRect::ZERO {
+                return rect;
+            }
+            let Some(window) = self.window() else {
+                return rect;
+            };
+            window.convertRectToScreen(self.convertRect_toView(self.visibleRect(), None))
         }
 
         /// A paste (Edit > Paste, Command+V, the context menu): reported,
@@ -998,11 +1205,16 @@ define_class!(
         }
 
         /// Paste is offered for images and files too while the app
-        /// listens.
+        /// listens; Copy for text selected around the input.
         #[unsafe(method(validateUserInterfaceItem:))]
         fn validate(&self, item: &ProtocolObject<dyn NSValidatedUserInterfaceItem>,
         ) -> objc2::runtime::Bool {
             if item.action() == Some(sel!(paste:)) && self.ivars().get().is_some_and(Ctx::pastes_more) {
+                return objc2::runtime::Bool::YES;
+            }
+            if item.action() == Some(sel!(copy:))
+                && copy_falls_through(self, area_surface(self).as_deref())
+            {
                 return objc2::runtime::Bool::YES;
             }
             // SAFETY: NSTextView's own method.
@@ -1010,6 +1222,27 @@ define_class!(
         }
     }
 );
+
+/// The surface of text area `area`, for its drags.
+fn area_surface(area: &TextArea) -> Option<Rc<Surface>> {
+    area.ivars().get()?.surface.upgrade()
+}
+
+/// Whether a copy in `text_view` takes the text selected in `surface`
+/// instead: the editor has nothing of its own selected, and the surface
+/// has a selection (an input keeps the focus while text around it is
+/// selected).
+fn copy_falls_through(text_view: &NSTextView, surface: Option<&Surface>) -> bool {
+    text_view.selectedRange().length == 0 && surface.is_some_and(crate::text::can_copy)
+}
+
+/// A copy in `text_view` (an input's editor): copies the text selected
+/// around it, if [`copy_falls_through`]. False if the editor copies its
+/// own.
+fn copies_selection_around(text_view: &NSTextView, surface: Option<Rc<Surface>>) -> bool {
+    let surface = surface.as_deref();
+    copy_falls_through(text_view, surface) && surface.is_some_and(crate::text::copy)
+}
 
 /// A test's paste (`nsh test --target macos`): `content` on a pasteboard of
 /// its own (the machine's clipboard stays as it was), pasted into the
@@ -1036,12 +1269,21 @@ pub(crate) fn test_paste(
     board.clearContents();
     let mut items: Vec<Retained<ProtocolObject<dyn NSPasteboardWriting>>> = Vec::new();
     let item = || NSPasteboardItem::new();
-    if !content.text.is_empty() {
+    // Text and its HTML are one item, as a browser copies them.
+    if !content.text.is_empty() || !content.html.is_empty() {
         let text = item();
-        // SAFETY: an immutable AppKit constant.
-        text.setString_forType(&NSString::from_str(&content.text), unsafe {
-            NSPasteboardTypeString
-        });
+        if !content.text.is_empty() {
+            // SAFETY: an immutable AppKit constant.
+            text.setString_forType(&NSString::from_str(&content.text), unsafe {
+                NSPasteboardTypeString
+            });
+        }
+        if !content.html.is_empty() {
+            text.setString_forType(
+                &NSString::from_str(&content.html),
+                &NSString::from_str("public.html"),
+            );
+        }
         items.push(ProtocolObject::from_retained(text));
     }
     for file in &content.files {
@@ -1082,13 +1324,14 @@ fn text_area_pasting(area: &TextArea, pasteboard: &NSPasteboard) -> bool {
     area.ivars().get().is_none_or(|cx| cx.pasting(pasteboard))
 }
 
-define_class!(
+define_text_view!(
     /// The field editor of a single-line input ([`FieldCell`]): AppKit's
     /// shared one, but for pastes, which an input reports (`onPaste`).
     #[unsafe(super(NSTextView, NSText, NSView, NSResponder, NSObject))]
     #[thread_kind = MainThreadOnly]
     #[name = "NshFieldEditor"]
     struct FieldEditor;
+    surface = editor_surface;
 
     unsafe impl NSObjectProtocol for FieldEditor {}
 
@@ -1112,11 +1355,16 @@ define_class!(
         }
 
         /// Paste is offered for images and files too while the app
-        /// listens.
+        /// listens; Copy for text selected around the input.
         #[unsafe(method(validateUserInterfaceItem:))]
         fn validate(&self, item: &ProtocolObject<dyn NSValidatedUserInterfaceItem>,
         ) -> objc2::runtime::Bool {
             if item.action() == Some(sel!(paste:)) && field_ctx(self).is_some_and(|cx| cx.pastes_more()) {
+                return objc2::runtime::Bool::YES;
+            }
+            if item.action() == Some(sel!(copy:))
+                && copy_falls_through(self, editor_surface(self).as_deref())
+            {
                 return objc2::runtime::Bool::YES;
             }
             // SAFETY: NSTextView's own method.
@@ -1124,6 +1372,11 @@ define_class!(
         }
     }
 );
+
+/// The surface of the input field `editor` edits, for its drags.
+fn editor_surface(editor: &FieldEditor) -> Option<Rc<Surface>> {
+    field_ctx(editor)?.surface.upgrade()
+}
 
 /// The input of the field `editor` edits (its delegate, while it edits).
 fn field_ctx(editor: &FieldEditor) -> Option<Ctx> {
@@ -1319,6 +1572,14 @@ define_class!(
         #[unsafe(method(clipBoundsChanged:))]
         fn clip_bounds_changed(&self, _notification: &NSNotification) {
             self.ivars().caret_moved();
+            self.ivars().scrolled();
+        }
+
+        /// A text view or its clip view changed size: the content or the
+        /// viewport a built-in bar shows.
+        #[unsafe(method(textFrameChanged:))]
+        fn text_frame_changed(&self, _notification: &NSNotification) {
+            self.ivars().scrolled();
         }
     }
 
@@ -1373,6 +1634,23 @@ define_class!(
 );
 
 impl InputState {
+    fn clear_undo(&self, editor: &Editor) {
+        let fallback = self.undo_manager.borrow().clone();
+        if let Some(manager) = editor.clear_undo(fallback.as_ref()) {
+            *self.undo_manager.borrow_mut() = Some(manager);
+        }
+    }
+
+    fn remember_undo_manager(&self) {
+        let editor = self.editor.borrow();
+        let Editor::Area { view, .. } = &*editor else {
+            return;
+        };
+        if let Some(manager) = view.undoManager() {
+            *self.undo_manager.borrow_mut() = Some(manager);
+        }
+    }
+
     fn update_placeholder(&self) {
         let editor = self.editor.borrow();
         let shown = matches!(&*editor, Editor::Area { .. })
@@ -1389,6 +1667,7 @@ impl InputState {
         let old_len = editor.ns_text().length() as u32;
         let caret = editor.selection().map(|(_, end)| end);
         self.applying.set(true);
+        self.clear_undo(&editor);
         editor.set_text(text);
         if let Some(caret) = caret {
             let len = utf16_len(text) as u32;
@@ -1436,7 +1715,7 @@ impl InputState {
             NSColor::clearColor()
         } else {
             config
-                .selection_color
+                .caret_color
                 .map_or_else(|| self.text_color(), ns_color)
         };
         view.setInsertionPointColor(Some(&caret));
@@ -1475,6 +1754,7 @@ pub(crate) fn create(surface: &Rc<Surface>, view: &NshView) {
         }
         InputState {
             editor: RefCell::new(new_editor(mtm, &cx, &delegate, false, false)),
+            undo_manager: RefCell::new(None),
             delegate,
             pad: InputPad::create(mtm),
             placeholder,
@@ -1527,6 +1807,10 @@ fn new_editor(
         };
         // SAFETY: the class is a subclass of NSTextView.
         let view: Retained<NSTextView> = unsafe { Retained::cast_unchecked(area) };
+        // SAFETY: initWithFrame creates a text system; retaining its storage
+        // here keeps the target alive through undo cleanup.
+        let storage = unsafe { view.textStorage() }
+            .expect("NSTextView's frame initializer creates a text storage");
         view.setMinSize(CGSize::new(0.0, size.height));
         view.setMaxSize(CGSize::new(CGFloat::MAX, CGFloat::MAX));
         view.setVerticallyResizable(true);
@@ -1560,7 +1844,28 @@ fn new_editor(
                     Some(&clip),
                 );
         }
-        Editor::Area { scroller, view }
+        // A built-in bar also follows the text's height and the viewport's
+        // (`InputConfig::replaced`).
+        view.setPostsFrameChangedNotifications(true);
+        clip.setPostsFrameChangedNotifications(true);
+        for object in [&***view as &NSView, &*clip] {
+            // SAFETY: the delegate answers the selector (`textFrameChanged:`);
+            // a selector-based observer goes away with it.
+            unsafe {
+                objc2_foundation::NSNotificationCenter::defaultCenter()
+                    .addObserver_selector_name_object(
+                        delegate,
+                        sel!(textFrameChanged:),
+                        Some(objc2_app_kit::NSViewFrameDidChangeNotification),
+                        Some(object),
+                    );
+            }
+        }
+        Editor::Area {
+            scroller,
+            view,
+            storage,
+        }
     } else {
         let field = if secure {
             SecureField::create(mtm, cx.clone())
@@ -1586,6 +1891,13 @@ fn new_editor(
     }
 }
 
+impl Drop for InputState {
+    fn drop(&mut self) {
+        let fallback = self.undo_manager.get_mut().clone();
+        self.editor.get_mut().clear_undo(fallback.as_ref());
+    }
+}
+
 /// `Input`.
 pub(crate) fn config(surface: &Rc<Surface>, view: &NshView, config: &InputConfig) {
     let Some(input) = view.state().input.clone() else {
@@ -1598,6 +1910,7 @@ pub(crate) fn config(surface: &Rc<Surface>, view: &NshView, config: &InputConfig
     if swap {
         let old = input.editor.borrow().clone();
         let text = old.text();
+        input.clear_undo(&old);
         let focused = input.focused.get();
         if focused {
             input.cx.unfocus();
@@ -1645,16 +1958,40 @@ pub(crate) fn config(surface: &Rc<Surface>, view: &NshView, config: &InputConfig
                 editor.setAlignment(align);
             }
         }
-        Editor::Area { view: text, .. } => {
+        Editor::Area {
+            scroller,
+            view: text,
+            ..
+        } => {
+            // A built-in bar of the app's takes the indicator's place; the
+            // text still scrolls with the wheel, the keys and the caret.
+            scroller.setHasVerticalScroller(config.scrollbar_visible);
             text.setFont(Some(&font));
             text.setTextColor(Some(&color));
             text.setAlignment(align);
             text.setBaseWritingDirection(direction);
             text.setEditable(config.editable);
             text.setSelectable(true);
-            text.setContinuousSpellCheckingEnabled(config.auto_correct);
-            text.setAutomaticSpellingCorrectionEnabled(config.auto_correct);
-            text.setDefaultParagraphStyle(Some(&paragraph(config, align)));
+            // Never in a password shown as plain text.
+            let correct = config.auto_correct && !config.visible_password();
+            text.setContinuousSpellCheckingEnabled(correct);
+            text.setAutomaticSpellingCorrectionEnabled(correct);
+            // Smart quotes, dashes and text replacement are the system's
+            // corrections too: off with `autoCorrect`, else the user's
+            // settings (Keyboard › Text Input), so typed code stays as typed.
+            text.setAutomaticQuoteSubstitutionEnabled(
+                correct && NSSpellChecker::isAutomaticQuoteSubstitutionEnabled(),
+            );
+            text.setAutomaticDashSubstitutionEnabled(
+                correct && NSSpellChecker::isAutomaticDashSubstitutionEnabled(),
+            );
+            text.setAutomaticTextReplacementEnabled(
+                correct && NSSpellChecker::isAutomaticTextReplacementEnabled(),
+            );
+            let line = LineBox::new(config.style.line_height.0 as CGFloat, natural_height(&font));
+            text.setDefaultParagraphStyle(Some(&paragraph(line, align)));
+            // The space above the first line and below the last.
+            text.setTextContainerInset(CGSize::new(0.0, line.inset));
             let label = &input.placeholder;
             label.setFont(Some(&font));
             label.setTextColor(Some(&placeholder_color(config)));
@@ -1666,6 +2003,11 @@ pub(crate) fn config(surface: &Rc<Surface>, view: &NshView, config: &InputConfig
     *input.config.borrow_mut() = config.clone();
     if editor.focused() {
         input.style_editor();
+        // A new font or paragraph style lays the text out again from
+        // estimates: keep the line being edited in view.
+        if let Editor::Area { view, .. } = &editor {
+            reveal_caret_later(view);
+        }
     }
     input.update_placeholder();
     let first = !input.configured.replace(true);
@@ -1673,6 +2015,91 @@ pub(crate) fn config(surface: &Rc<Surface>, view: &NshView, config: &InputConfig
         auto_focus(surface, &input);
     }
     place(view, &input);
+    report_scroll(surface, view, &input);
+}
+
+/// Clears text undo records before a deleted input's editor can be released.
+pub(crate) fn deleted(view: &NshView) {
+    let Some(input) = view.state().input.clone() else {
+        return;
+    };
+    let editor = input.editor.borrow().clone();
+    input.clear_undo(&editor);
+}
+
+/// Reports how far a multiline input's text scrolled while a built-in bar
+/// takes the place of its indicator (`InputConfig::replaced`).
+fn report_scroll(surface: &Surface, view: &NshView, input: &InputState) {
+    if !input.config.borrow().replaced {
+        return;
+    }
+    let Editor::Area {
+        scroller,
+        view: text,
+        ..
+    } = &*input.editor.borrow()
+    else {
+        return;
+    };
+    // SAFETY: a scroll view's clip view (an `NSView`), always present.
+    let clip: Retained<NSView> = unsafe { msg_send![&**scroller, contentView] };
+    // The clip view is flipped as the text view is: its bounds origin is
+    // the offset from the top.
+    let bounds = clip.bounds();
+    let width = bounds.size.width as f32;
+    let page = bounds.size.height as f32;
+    let height = (text.frame().size.height as f32).max(page);
+    let id = view.state().id;
+    surface.control(|c| {
+        c.input_scroll(
+            id,
+            Point {
+                x: Points(0.0),
+                y: px(bounds.origin.y as f32),
+            },
+            Size {
+                width: px(width),
+                height: px(height),
+            },
+            Size {
+                width: px(width),
+                height: px(page),
+            },
+        );
+    });
+}
+
+/// `Command::ScrollTo` for a multiline input: scrolls its text (a built-in
+/// bar's drags).
+pub(crate) fn scroll_to(view: &NshView, y: Points, animated: bool) {
+    let Some(input) = view.state().input.clone() else {
+        return;
+    };
+    let Editor::Area {
+        scroller,
+        view: text,
+        ..
+    } = &*input.editor.borrow()
+    else {
+        return;
+    };
+    // SAFETY: a scroll view's clip view (an `NSView`), always present.
+    let clip: Retained<NSView> = unsafe { msg_send![&**scroller, contentView] };
+    let bounds = clip.bounds();
+    let max = (text.frame().size.height - bounds.size.height).max(0.0);
+    let origin = NSPoint::new(bounds.origin.x, (y.0 as CGFloat).clamp(0.0, max));
+    if animated {
+        // SAFETY: every view has an animator proxy, which answers the
+        // view's setters with an animation.
+        unsafe {
+            let animator: Retained<AnyObject> = msg_send![&clip, animator];
+            let _: () = msg_send![&animator, setBoundsOrigin: origin];
+        }
+    } else {
+        clip.setBoundsOrigin(origin);
+    }
+    // SAFETY: the scroll view's own clip view.
+    let _: () = unsafe { msg_send![&**scroller, reflectScrolledClipView: &*clip] };
 }
 
 /// The horizontal alignment of the text; natural follows the writing
@@ -1687,14 +2114,58 @@ fn alignment(align: TextAlign) -> NSTextAlignment {
     }
 }
 
-/// A text view's paragraph style: alignment and line height.
-fn paragraph(config: &InputConfig, align: NSTextAlignment) -> Retained<NSMutableParagraphStyle> {
+/// The height the text system gives a line of `font`.
+fn natural_height(font: &objc2_app_kit::NSFont) -> CGFloat {
+    objc2_app_kit::NSLayoutManager::new().defaultLineHeightForFont(font)
+}
+
+/// How a text view's lines take a configured line height. AppKit's caret
+/// is as tall as a line fragment, and a fragment with a minimum line height
+/// holds its extra space above the text: a caret that reaches well above
+/// the text, and text low in its line. So a fragment holds only the text
+/// (`fragment`), the next line starts `spacing` below it, and the text
+/// container's `inset` puts half of that above the first line and below the
+/// last, which AppKit leaves out: lines of the configured height with their
+/// text in the middle, as CSS's half-leading and the core's measure have it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct LineBox {
+    /// A line fragment's height (0: the font's).
+    fragment: CGFloat,
+    /// The space between line fragments.
+    spacing: CGFloat,
+    /// The space above the first line and below the last.
+    inset: CGFloat,
+}
+
+impl LineBox {
+    /// Lines of `line_height` (0: the font's) in a font whose lines are
+    /// `natural` tall. A line height below the font's clips the fragment.
+    fn new(line_height: CGFloat, natural: CGFloat) -> LineBox {
+        if line_height <= 0.0 {
+            return LineBox {
+                fragment: 0.0,
+                spacing: 0.0,
+                inset: 0.0,
+            };
+        }
+        let fragment = line_height.min(natural);
+        let spacing = line_height - fragment;
+        LineBox {
+            fragment,
+            spacing,
+            inset: spacing / 2.0,
+        }
+    }
+}
+
+/// A text view's paragraph style: alignment and lines.
+fn paragraph(line: LineBox, align: NSTextAlignment) -> Retained<NSMutableParagraphStyle> {
     let style = NSMutableParagraphStyle::new();
     style.setAlignment(align);
-    let line_height = config.style.line_height;
-    if line_height > Points::ZERO {
-        style.setMinimumLineHeight(line_height.0 as CGFloat);
-        style.setMaximumLineHeight(line_height.0 as CGFloat);
+    if line.fragment > 0.0 {
+        style.setMinimumLineHeight(line.fragment);
+        style.setMaximumLineHeight(line.fragment);
+        style.setLineSpacing(line.spacing);
     }
     style
 }
@@ -1744,7 +2215,7 @@ fn placeholder(
 fn auto_focus(surface: &Rc<Surface>, input: &Rc<InputState>) {
     let weak = Rc::downgrade(input);
     let mut frames = 0;
-    surface.add_frame_callback(move |_, _| {
+    surface.add_draw_callback(move |_, _| {
         frames += 1;
         let Some(input) = weak.upgrade() else {
             return false;
@@ -1759,9 +2230,21 @@ fn auto_focus(surface: &Rc<Surface>, input: &Rc<InputState>) {
     });
 }
 
+/// The input view's frame changed (`crate::view::NshView::place`): places
+/// the editor again, or hides it while the view has no area.
+pub(crate) fn resized(view: &NshView) {
+    let Some(input) = view.state().input.clone() else {
+        return;
+    };
+    place(view, &input);
+}
+
 /// Places the pad over the whole view and the editor (and a text view's
 /// placeholder) in it at the content box (`crate::native::resized` keeps
-/// the pad at the view's size).
+/// the pad at the view's size). While the view or its content box has no
+/// area (a `display: none` subtree lays its views out at a zero frame) the
+/// pad is hidden: it does not clip, so the editor would keep drawing at its
+/// last frame.
 fn place(view: &NshView, input: &InputState) {
     let frame = view.state().frame;
     let bounds = Bounds {
@@ -1775,7 +2258,12 @@ fn place(view: &NshView, input: &InputState) {
         },
     };
     let content = input.content.get().unwrap_or(bounds);
-    if content.size.width.0 <= 0.0 || content.size.height.0 <= 0.0 {
+    let empty = |r: Bounds<Points>| r.size.width.0 <= 0.0 || r.size.height.0 <= 0.0;
+    let hidden = empty(bounds) || empty(content);
+    if input.pad.isHidden() != hidden {
+        input.pad.setHidden(hidden);
+    }
+    if hidden {
         return;
     }
     view.set_native(&input.pad, bounds);
@@ -1798,7 +2286,8 @@ fn place(view: &NshView, input: &InputState) {
         // they were added.
         window.setAutorecalculatesKeyViewLoop(true);
     }
-    match &*input.editor.borrow() {
+    let editor = input.editor.borrow();
+    match &*editor {
         Editor::Line { field, .. } => {
             // One line, centered in the box as UIKit centers it; a box
             // shorter than the line grows around its center. The cell
@@ -1819,19 +2308,45 @@ fn place(view: &NshView, input: &InputState) {
             };
             host(field, rect);
         }
-        Editor::Area { scroller, .. } => {
+        Editor::Area { scroller, view, .. } => {
             // The placeholder goes first: hosted views stack in order. A
-            // label insets its text as a field does.
+            // label insets its text as a field does; it starts where the
+            // editor's first line of text does.
+            let top = px(view.textContainerInset().height as f32);
             let label = Bounds {
-                origin: Point::new(content.origin.x - px(FIELD_PADDING), content.origin.y),
+                origin: Point::new(content.origin.x - px(FIELD_PADDING), content.origin.y + top),
                 size: Size::new(
                     content.size.width + px(2.0 * FIELD_PADDING),
-                    content.size.height,
+                    content.size.height - top,
                 ),
             };
             host(&input.placeholder, label);
+            let before = scroller.frame().size;
             host(scroller, content);
+            if scroller.frame().size != before && editor.focused() {
+                reveal_caret_later(view);
+            }
         }
+    }
+}
+
+/// Keeps the caret of a multiline input being edited in view as the input
+/// is resized or its text styled again, as typing keeps it: an input that grows with its text (a
+/// paste past its maximum height) kept its old offset, the line being
+/// edited out of view until the next key. Its text may not be laid out yet
+/// (TextKit 2 lays it out lazily, from estimates: a paste scrolls to an
+/// estimate of the caret), so on the next turn of the run loop the text is
+/// laid out and the selection revealed.
+fn reveal_caret_later(view: &NSTextView) {
+    // SAFETY: the text view answers the selector (`TextArea`'s
+    // `nshRevealSelection`), which takes no argument.
+    unsafe {
+        let _: () = msg_send![
+            view,
+            performSelector: sel!(nshRevealSelection),
+            withObject: std::ptr::null::<AnyObject>(),
+            afterDelay: 0.0f64
+        ];
     }
 }
 
@@ -1917,27 +2432,57 @@ pub(crate) fn blur(view: &NshView) {
     }
 }
 
-/// Unfocuses whatever input of the surface has focus.
+/// Unfocuses whatever input of the surface has focus, in any of its
+/// windows (the main one and the app's own).
 pub(crate) fn blur_all(surface: &Rc<Surface>) {
-    if let Some(window) = surface.root.ns().window()
-        && editing(surface)
-    {
-        to_root(&window, surface);
+    let roots = std::iter::once(surface.root.clone()).chain(crate::window::roots(surface));
+    for root in roots {
+        if let Some(window) = root.ns().window()
+            && editing_in(&root)
+        {
+            to_root(&window, surface);
+        }
     }
 }
 
-/// Ends editing and gives the keyboard focus to the surface's root. The
-/// window takes it first: the root refuses it while a field edits during a
-/// click (a click elsewhere leaves the focus in the field).
-fn to_root(window: &objc2_app_kit::NSWindow, surface: &Surface) {
-    window.makeFirstResponder(None);
-    window.makeFirstResponder(Some(surface.root.ns()));
+/// Commits what an input method composes in `view` (its marked text) as
+/// the editor loses the focus, as a browser's blur does: the input method
+/// drops its session and the composed text is inserted as its commit
+/// inserts it, so the input reports the text before the composition's end.
+/// AppKit would unmark it in place, which the input hears of as a
+/// selection change while the text is being replaced, and so ended the
+/// composition first.
+fn commit_marked(view: &NSTextView) {
+    if !view.hasMarkedText() {
+        return;
+    }
+    let range = view.markedRange();
+    let composed = view.string().substringWithRange(range);
+    if let Some(context) = view.inputContext() {
+        context.discardMarkedText();
+    }
+    // SAFETY: an NSString over the marked range, which is in the text.
+    unsafe { view.insertText_replacementRange(&composed, range) };
 }
 
-/// Whether one of the surface's inputs has the keyboard focus (a click
-/// elsewhere leaves it there, as desktops do).
+/// Ends editing and gives the keyboard focus to the root `window` shows.
+/// The window takes it first: the root refuses it while a field edits
+/// during a click (a click elsewhere leaves the focus in the field).
+fn to_root(window: &objc2_app_kit::NSWindow, surface: &Surface) {
+    window.makeFirstResponder(None);
+    window.makeFirstResponder(Some(crate::input::root_in(surface, window).ns()));
+}
+
+/// Whether one of the surface's inputs has the keyboard focus in the window
+/// of the event being handled (a click elsewhere leaves it there, as
+/// desktops do).
 pub(crate) fn editing(surface: &Surface) -> bool {
-    let root = surface.root.ns();
+    editing_in(&crate::input::event_root(surface))
+}
+
+/// Whether an input under `root` has its window's keyboard focus.
+pub(crate) fn editing_in(root: &NshView) -> bool {
+    let root = root.ns();
     let Some(responder) = root.window().and_then(|w| w.firstResponder()) else {
         return false;
     };
@@ -1958,21 +2503,15 @@ pub(crate) fn set_selection(view: &NshView, start: u32, end: u32) {
     }
 }
 
-/// Sets the `focused` interaction state of `view`, if JS tracks it.
+/// Sets the `focused` interaction state of `view`, which the core hears
+/// whatever the view tracks (`nsh_core::input::reported_states`).
 fn set_focused(surface: &Surface, view: &NshView, on: bool) {
     let (id, next) = {
         let mut s = view.state_mut();
-        if s.tracked & state::FOCUSED == 0 {
+        let Some(next) = nsh_core::input::next_states(s.tracked, s.states, state::FOCUSED, on)
+        else {
             return;
-        }
-        let next = if on {
-            s.states | state::FOCUSED
-        } else {
-            s.states & !state::FOCUSED
         };
-        if next == s.states {
-            return;
-        }
         s.states = next;
         (s.id, next)
     };
@@ -2045,11 +2584,40 @@ mod tests {
                 assert_eq!(style.minimumLineHeight(), 0.0);
                 assert_eq!(style.maximumLineHeight(), 0.0);
             }
-            // Multiline editors keep the requested paragraph line height.
-            let style = paragraph(&config, NSTextAlignment::Left);
-            assert_eq!(style.minimumLineHeight(), line_height as CGFloat);
-            assert_eq!(style.maximumLineHeight(), line_height as CGFloat);
         }
+    }
+
+    #[test]
+    fn a_line_height_above_the_fonts_goes_around_the_text() {
+        let line = LineBox::new(24.0, 18.0);
+        assert_eq!(
+            line,
+            LineBox {
+                fragment: 18.0,
+                spacing: 6.0,
+                inset: 3.0,
+            }
+        );
+        let style = paragraph(line, NSTextAlignment::Left);
+        assert_eq!(style.minimumLineHeight(), 18.0);
+        assert_eq!(style.maximumLineHeight(), 18.0);
+        assert_eq!(style.lineSpacing(), 6.0);
+    }
+
+    #[test]
+    fn a_line_height_below_the_fonts_clips_the_lines() {
+        let line = LineBox::new(16.0, 18.0);
+        assert_eq!(line.fragment, 16.0);
+        assert_eq!(line.spacing, 0.0);
+        assert_eq!(line.inset, 0.0);
+    }
+
+    #[test]
+    fn no_line_height_leaves_the_fonts_lines() {
+        let style = paragraph(LineBox::new(0.0, 18.0), NSTextAlignment::Left);
+        assert_eq!(style.minimumLineHeight(), 0.0);
+        assert_eq!(style.maximumLineHeight(), 0.0);
+        assert_eq!(style.lineSpacing(), 0.0);
     }
 
     #[test]

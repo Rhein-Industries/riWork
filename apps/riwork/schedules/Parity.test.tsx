@@ -60,7 +60,10 @@ test("P6B-SCHED-PARITY-03 Muse is offered for fresh chats with Fast off", async 
   } finally { app.dispose(); }
 });
 
-test("P6B-SCHED-PARITY-04 pinned NSH focus API cannot traverse action controls", async () => {
+// NSH 0.3 moved the focus from a ref only to an Input (PANEL-113's blocker: this test pinned "axxx").
+// Since NSH 0.4 the same call reaches any Tab stop, so the typed keys no longer land in the input.
+// The app itself still keeps view focus off (keyboard.ts `focusView`) until its panels are made for it.
+test("P6B-SCHED-PARITY-04 pinned NSH focus API reaches action controls", async () => {
   const app = await open("./TraversalCapability.fixture.tsx", options);
   try {
     await app.type("id:capability-input", "a");
@@ -68,11 +71,11 @@ test("P6B-SCHED-PARITY-04 pinned NSH focus API cannot traverse action controls",
       await app.host.send("app.fixture.schedules.focus", target);
       await app.keyboard.press("x");
     }
-    expect(app.value("id:capability-input")).toBe("axxx");
-    // Positive control: the same ref.focus call DOES move to another Input.
+    expect(app.value("id:capability-input")).toBe("a");
+    // The same ref.focus call moves to another Input, as it always did.
     await app.host.send("app.fixture.schedules.focus", "other-input");
     await app.keyboard.press("y");
     expect(app.value("id:capability-other-input")).toBe("y");
-    expect(app.value("id:capability-input")).toBe("axxx");
+    expect(app.value("id:capability-input")).toBe("a");
   } finally { app.dispose(); }
 });

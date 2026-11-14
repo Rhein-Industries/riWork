@@ -2,7 +2,10 @@
 
 use nsh_core::{element::Style, prelude::*};
 
-use crate::popup::{OpenChangeReason, OpenState, lifecycle};
+use crate::{
+    popup::{OpenChangeReason, OpenState, PopupPresence, StateLooks, lifecycle},
+    roving::{bar_trigger, leave_bar, popup_bar},
+};
 
 /// The props of [`Popover`].
 #[derive(Debug, Clone, PartialEq, Props)]
@@ -42,6 +45,22 @@ pub struct PopoverProps {
     /// The inline style of the popup, over its classes.
     #[prop(default)]
     pub popup_style: Prop<Style>,
+    /// Classes the popup has in its first frame, which its `transition`
+    /// classes animate from (Tailwind's `starting:`, CSS's
+    /// `@starting-style`): its entrance. A state's classes apply over
+    /// `popupClass` and `popupStyle`, as a state's styles do.
+    pub popup_starting_class: Prop<Option<SharedString>>,
+    /// The inline style of the popup in its first frame, over
+    /// `popupStyle`.
+    #[prop(default)]
+    pub popup_starting_style: Prop<Style>,
+    /// Classes the popup has while it goes: it stays, taking no presses,
+    /// until the transitions it has then ran (`onClose` after), so they
+    /// run its exit.
+    pub popup_ending_class: Prop<Option<SharedString>>,
+    /// The inline style of the popup while it goes, over `popupStyle`.
+    #[prop(default)]
+    pub popup_ending_style: Prop<Style>,
     /// What opens it: pressing it toggles the popover, and the popover is
     /// placed against it.
     pub trigger: Prop<Option<Slot>>,
@@ -57,13 +76,19 @@ pub enum PopoverEvent {
     /// back), with why: set `open` to follow it.
     #[args(open, reason)]
     OpenChange(bool, OpenChangeReason),
-    /// It is shown.
+    /// It is shown, its content rendered: refs inside it name their views,
+    /// so focusing one here moves the keyboard focus into the popover.
     Open,
-    /// It is gone (also when the app closed it).
+    /// It is gone (also when the app closed it), after its exit.
     Close,
     /// The user tried to close it (Escape or back, a press outside),
     /// whether or not `closeOnEscape` / `closeOnPressOutside` let it close.
     Cancel,
+    /// The popup was placed: the side of the trigger it went on (the other
+    /// side of `placement` when only that one had room), its frame in the
+    /// root view and the room on that side.
+    #[args(placement, bounds, available)]
+    Position(Placement, Bounds<Points>, Size<Points>),
 }
 
 /// Content anchored to a trigger, shown on top of everything in its root
@@ -72,62 +97,122 @@ pub enum PopoverEvent {
 /// back button close it. It goes on the `placement` side of the trigger, on
 /// the other side when only that one has room, kept inside the safe area,
 /// and follows the trigger as it scrolls. It looks like nothing: style the
-/// popup with `popupClass` / `popupStyle` and the content as you like.
+/// popup with `popupClass` / `popupStyle` and the content as you like; its
+/// entrance and exit are the app's `transition` classes between the
+/// popup's look and its starting and ending looks (`popupStartingClass`,
+/// `popupEndingClass`).
 #[component]
 pub fn Popover(props: PopoverProps, cx: Scope<PopoverEvent>) -> impl IntoElement {
     let open = OpenState::new(props.open, props.default_open);
+    // Why it last closed: a press outside put the focus where it pressed.
+    let closed_by = stored(None::<OpenChangeReason>);
     let change = move |next: bool, reason: OpenChangeReason| {
-        if open.request(next) {
-            cx.emit(PopoverEvent::OpenChange(next, reason));
+        if !next {
+            closed_by.replace(Some(reason));
         }
+        open.request(next, || cx.emit(PopoverEvent::OpenChange(next, reason)));
     };
-    // A press outside or Escape: an attempt, which closes it when allowed.
+    // A press outside or Escape: an attempt, which closes it when allowed
+    // (none while it goes).
     let cancel = move |reason: OpenChangeReason, allowed: bool| {
+        if !open.get_untracked() {
+            return;
+        }
         cx.emit(PopoverEvent::Cancel);
         if allowed {
             change(false, reason);
         }
     };
-    lifecycle(
+    let presence = PopupPresence::new(
         move || open.get(),
-        move || cx.emit(PopoverEvent::Open),
-        move || cx.emit(PopoverEvent::Close),
+        StateLooks {
+            class: Some(props.popup_class),
+            style: Some(props.popup_style),
+            starting_class: props.popup_starting_class,
+            starting_style: props.popup_starting_style,
+            ending_class: props.popup_ending_class,
+            ending_style: props.popup_ending_style,
+        },
     );
     let anchor = element_ref();
     let desktop = is_desktop();
+    // The keyboard focus in the popup as it closes (Escape, a choice in
+    // it, the app closing it) goes back to the trigger as it starts to go,
+    // as a select's and a date picker's do; not after a press outside,
+    // which put the focus where it pressed.
+    if desktop {
+        presence.focus_back_on_close(
+            move || open.get(),
+            move || {
+                if closed_by.get() != Some(OpenChangeReason::PressOutside) {
+                    anchor.focus();
+                }
+            },
+        );
+    }
+    lifecycle(
+        move || presence.mounted(),
+        move || {
+            closed_by.replace(None);
+            cx.emit(PopoverEvent::Open);
+        },
+        move || {
+            cx.emit(PopoverEvent::Close);
+            closed_by.replace(None);
+        },
+    );
+    // In a toolbar, the trigger is one of its items.
+    let around = popup_bar();
     view()
         .child(props.trigger.place(move |trigger| {
-            trigger
+            let trigger = trigger
                 .element_ref(&anchor)
                 .accessibility_state(move || AccessibilityState {
                     expanded: Some(open.get()),
+                    has_popup: true,
                     ..AccessibilityState::default()
                 })
                 .on_press(move || {
                     change(!open.get_untracked(), OpenChangeReason::TriggerPress);
-                })
+                });
+            bar_trigger(around.clone(), trigger, anchor)
         }))
         .child(when(
-            move || open.get(),
+            move || presence.mounted(),
             move || {
-                // Touch screens: the press outside is the popover's.
-                let backdrop = when(
-                    move || !desktop && props.close_on_press_outside.get(),
-                    move || {
-                        overlay()
-                            .inset_0()
-                            .focusable(false)
-                            .on_press(move || cancel(OpenChangeReason::PressOutside, true))
-                    },
-                );
+                // The trigger may be a toolbar's item; the content is not.
+                leave_bar();
+                // Touch screens: the press outside is the popover's (not
+                // while it goes). Made with the popup and before it, as
+                // overlays shown together stack in the order they were made:
+                // one made later, in a region of its own, would cover the
+                // popup and take the presses on it.
+                let backdrop = (!desktop).then(|| {
+                    overlay()
+                        .inset_0()
+                        .focusable(false)
+                        .pointer_events(move || {
+                            if open.get() && props.close_on_press_outside.get() {
+                                PointerEvents::Auto
+                            } else {
+                                PointerEvents::None
+                            }
+                        })
+                        .on_press(move || cancel(OpenChangeReason::PressOutside, true))
+                        .into_element()
+                });
                 let popup = overlay()
                     .anchor_content(&anchor)
                     .placement(props.placement)
                     .align(props.align)
                     .offset(props.offset)
                     .margin(props.margin)
-                    .app_class(props.popup_class)
-                    .inline_style(props.popup_style)
+                    .element_ref(&presence.popup())
+                    .app_class(move || presence.class())
+                    .state_inline_style(move || presence.style())
+                    .on_position(move |p: &OverlayPosition| {
+                        cx.emit(PopoverEvent::Position(p.placement, p.bounds, p.available))
+                    })
                     .on_press_outside(move |_: &Point<Points>| {
                         // Touch screens: the backdrop took it.
                         if desktop {
@@ -142,7 +227,10 @@ pub fn Popover(props: PopoverProps, cx: Scope<PopoverEvent>) -> impl IntoElement
                         )
                     })
                     .child(props.children);
-                vec![backdrop.into_element(), popup.into_element()]
+                backdrop
+                    .into_iter()
+                    .chain([popup.into_element()])
+                    .collect::<Vec<_>>()
             },
         ))
 }

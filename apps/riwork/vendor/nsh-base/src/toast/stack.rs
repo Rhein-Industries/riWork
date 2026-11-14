@@ -145,14 +145,7 @@ fn distance(heights: &[Points], index: usize, gap: Points, peek: Points) -> (Poi
 /// A critically damped spring whose response is `duration` (no overshoot:
 /// a height or an opacity past its target reads as a glitch).
 fn spring_of(motion: ToastMotion) -> Spring {
-    let response = motion.duration.as_secs_f32().max(0.01);
-    let stiffness = (std::f32::consts::TAU / response).powi(2);
-    Spring {
-        stiffness,
-        damping: 2.0 * stiffness.sqrt(),
-        mass: 1.0,
-        velocity: None,
-    }
+    Spring::new((motion.duration.as_secs_f32() * 1000.0).max(10.0))
 }
 
 /// A deep toast stack, as `gpui-base`'s `ToastStack`: it measures its
@@ -165,8 +158,16 @@ fn spring_of(motion: ToastMotion) -> Spring {
 /// motion's `duration`. It hears Escape and back while it holds toasts
 /// (`onCancel`). It looks like nothing: its `class` and `style` give its
 /// width; the app places it.
+///
+/// In a terminal only the newest toast shows, on the status line: the
+/// viewport's bottom row, whatever the stack's place; a newer toast
+/// replaces it there, nothing expands or moves, and the stack takes no
+/// Cell of its own.
 #[component]
 pub fn ToastStack(props: ToastStackProps, cx: Scope<ToastStackEvent>) -> impl IntoElement {
+    if crate::terminal::is_terminal() {
+        return terminal_stack(props, cx).into_element();
+    }
     let hovered = signal(false);
     let touched = signal(false);
     let expanded = computed(move || hovered.get() || touched.get());
@@ -184,7 +185,7 @@ pub fn ToastStack(props: ToastStackProps, cx: Scope<ToastStackEvent>) -> impl In
     // The measured heights, oldest first.
     let heights = computed(move || {
         let mut all = items.get();
-        all.sort_by_key(|i| i.index);
+        crate::sort::sort_by_key(&mut all, |i| i.index);
         all.into_iter().map(|i| i.height).collect::<Vec<_>>()
     });
     let height = move || {
@@ -198,8 +199,8 @@ pub fn ToastStack(props: ToastStackProps, cx: Scope<ToastStackEvent>) -> impl In
     view()
         .relative()
         .style_with(move |s| s.h(height()))
-        .on_hover_in(move || hovered.set(true))
-        .on_hover_out(move || hovered.set(false))
+        .on_mouse_enter(move |_: &MouseEvent| hovered.set(true))
+        .on_mouse_leave(move |_: &MouseEvent| hovered.set(false))
         // Observed, never claimed: the toasts' presses and swipes go on.
         .on_touch(move |e: &TouchEvent| match e.phase {
             TouchPhase::Start => touched.set(true),
@@ -310,6 +311,49 @@ pub fn ToastStack(props: ToastStackProps, cx: Scope<ToastStackEvent>) -> impl In
         })
         // Escape and back, only while it holds toasts: an overlay of no
         // size, so nothing else loses them to an empty stack.
+        .child(when(
+            move || any() && props.close_on_escape.get(),
+            move || {
+                overlay()
+                    .size_0()
+                    .pointer_events(PointerEvents::None)
+                    .focusable(false)
+                    .on_cancel(move || cx.emit(ToastStackEvent::Cancel))
+            },
+        ))
+        .into_element()
+}
+
+/// A terminal's stack: its newest toast on the status line
+/// ([`crate::status_line`]), the bottom row, which a newer one takes over
+/// and which a hint (a tooltip) gets back once no toast is left. Nothing
+/// stacks, expands or moves: the others stay mounted, hidden, so the stack
+/// knows how many it holds. The stack itself takes no Cell where the app
+/// places it, and it hears Escape and back while it holds a toast.
+fn terminal_stack(props: ToastStackProps, cx: Scope<ToastStackEvent>) -> impl IntoElement {
+    let held = signal(0usize);
+    let any = move || held.get() > 0;
+    let on_line = crate::status_line::claim(crate::status_line::Claim::Toast, any);
+    view()
+        .size_0()
+        .child(
+            crate::status_line::row()
+                .style_when(move || !on_line.get(), |s| s.hidden())
+                .children_each(props.children, move |child, at| {
+                    held.update(|n| *n += 1);
+                    cleanup(move || {
+                        let _ = held.try_get().map(|n| held.try_set(n.saturating_sub(1)));
+                    });
+                    view()
+                        .flex_1()
+                        .min_w_0()
+                        .flex_row()
+                        .items_center()
+                        .pointer_events(PointerEvents::BoxNone)
+                        .style_when(move || at.index() + 1 != at.count(), |s| s.hidden())
+                        .child(child)
+                }),
+        )
         .child(when(
             move || any() && props.close_on_escape.get(),
             move || {

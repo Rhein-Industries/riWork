@@ -3,7 +3,12 @@
 
 use nsh_core::{element::Style, prelude::*};
 
-use crate::popup::{OpenChangeReason, OpenState, SheetMotion, lifecycle};
+use crate::{
+    popup::{
+        OpenChangeReason, OpenState, SheetMotion, bottom_panel_max_height, keyboard_lift, lifecycle,
+    },
+    roving::leave_bar,
+};
 
 /// The props of [`Sheet`].
 #[derive(Debug, Clone, PartialEq, Props)]
@@ -76,9 +81,7 @@ pub enum SheetEvent {
 pub fn Sheet(props: SheetProps, cx: Scope<SheetEvent>) -> impl IntoElement {
     let open = OpenState::new(props.open, props.default_open);
     let change = move |next: bool, reason: OpenChangeReason| {
-        if open.request(next) {
-            cx.emit(SheetEvent::OpenChange(next, reason));
-        }
+        open.request(next, || cx.emit(SheetEvent::OpenChange(next, reason)));
     };
     let motion = SheetMotion::new(move || open.get(), move || props.side.get());
     let height = animated_value(1.0);
@@ -116,6 +119,8 @@ pub fn Sheet(props: SheetProps, cx: Scope<SheetEvent>) -> impl IntoElement {
         move || cx.emit(SheetEvent::Close),
     );
     when(motion.shown, move || {
+        // Placed in a toolbar, its content is still no part of it.
+        leave_bar();
         let backdrop = overlay()
             .inset_0()
             .bind_opacity(&dragged_fade)
@@ -129,11 +134,24 @@ pub fn Sheet(props: SheetProps, cx: Scope<SheetEvent>) -> impl IntoElement {
                 }
             });
         let mut panel = overlay()
-            .style_with(move |s| match props.side.get() {
-                Placement::Bottom => s.left_0().right_0().bottom_0(),
-                Placement::Top => s.left_0().right_0().top_0(),
-                Placement::Left => s.top_0().bottom_0().left_0(),
-                Placement::Right => s.top_0().bottom_0().right_0(),
+            // What reaches the bottom of the screen ends above the
+            // keyboard. A bottom sheet the keyboard lifts stays below the
+            // status bar; otherwise its height is the app's (a web sheet's
+            // presented surface may be taller than the window).
+            .style_with(move |s| {
+                let lift = keyboard_lift();
+                let above = Length::from(lift);
+                match props.side.get() {
+                    Placement::Bottom if lift > Points::ZERO => s
+                        .left_0()
+                        .right_0()
+                        .bottom(above)
+                        .max_h(bottom_panel_max_height()),
+                    Placement::Bottom => s.left_0().right_0().bottom_0(),
+                    Placement::Top => s.left_0().right_0().top_0(),
+                    Placement::Left => s.top_0().bottom(above).left_0(),
+                    Placement::Right => s.top_0().bottom(above).right_0(),
+                }
             })
             .app_class(props.popup_class)
             .inline_style(props.popup_style)
@@ -154,6 +172,9 @@ pub fn Sheet(props: SheetProps, cx: Scope<SheetEvent>) -> impl IntoElement {
             .pan_values(None, Some(&motion.drag_y))
             .pan_enabled(move || swipe() && open.get() && motion.settled.get())
             .pan_scroll_handoff(swipe)
+            // At the start, as a stack's back swipe (#430): the keyboard
+            // would cover the panel the finger is moving.
+            .on_pan_start(|_: &PanEvent| dismiss_keyboard())
             .on_pan_end(move |e: &PanEvent| {
                 if !open.get_untracked() {
                     return;
@@ -178,6 +199,27 @@ pub fn Sheet(props: SheetProps, cx: Scope<SheetEvent>) -> impl IntoElement {
         // These bindings change in place when the permission changes;
         // children and scroll positions keep their state.
         panel = panel.bind_translate_y(&dragged_y);
-        vec![backdrop.into_element(), panel.into_element()]
+        let layers = vec![backdrop.into_element(), panel.into_element()];
+        if nsh_core::element::os() == nsh_core::platform::Os::Web {
+            // A web modal is a separately sized surface. The player's host
+            // can present it over the viewport, including outside an iframe,
+            // while the sheet keeps its own motion and controlled lifetime.
+            vec![
+                nsh_core::element::modal()
+                    .animation(nsh_core::ModalAnimation::None)
+                    .close_on_escape(false)
+                    .close_on_swipe(false)
+                    .on_cancel(move || {
+                        cx.emit(SheetEvent::Cancel);
+                        if props.close_on_escape.get_untracked() {
+                            change(false, OpenChangeReason::Cancel);
+                        }
+                    })
+                    .children(layers)
+                    .into_element(),
+            ]
+        } else {
+            layers
+        }
     })
 }

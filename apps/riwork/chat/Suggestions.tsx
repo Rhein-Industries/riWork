@@ -1,4 +1,4 @@
-import { Scroll, Text, View, cleanup, computed, effect, signal, type YNode } from "nsh";
+import { Scroll, Text, View, cleanup, computed, effect, signal, type ScrollRef } from "nsh";
 import type { ChatHandle, ChatSuggestion, ChatSuggestionResult } from "riwork/native";
 import { Icon, type IconName } from "../Icon";
 import type { InterfaceTheme } from "../appearance";
@@ -113,7 +113,7 @@ export function Suggestions(props: { control: SuggestionsController; theme: () =
   const current = () => rows()[control.highlighted()];
   const text = (size = 11, muted = false) => ({ fontFamily: theme().family, fontSize: size * theme().scale, color: muted ? theme().palette.muted : theme().palette.text });
   const rowHeight = () => 40 * theme().scale;
-  let scroll: YNode | undefined;
+  let scroll: ScrollRef | undefined;
   let offset = 0, viewport = 160;
   effect(() => {
     const top = control.highlighted() * rowHeight(), bottom = top + rowHeight();
@@ -133,17 +133,17 @@ export function Suggestions(props: { control: SuggestionsController; theme: () =
     {!!control.open()?.error && <Text role="text" style={{ ...text(11, true), padding: 8 }}>{`Suggestions unavailable: ${control.open()?.error}`}</Text>}
     {!control.open()?.loading && !control.open()?.error && !rows().length && <Text style={{ ...text(11, true), padding: 8 }}>No matching suggestions</Text>}
     {!!rows().length && <Scroll ref={(node) => { scroll = node; offset = 0; }} style={{ maxHeight: 160 * theme().scale }}
-      onLayout={(bounds) => { viewport = bounds.size.height; }} onScroll={(event) => { offset = event.offset.y; }}>
+      onLayout={({ bounds }) => { viewport = bounds.size.height; }} onScroll={(event) => { offset = event.offset.y; }}>
       {rows().map((row, index) => <View role="button" focusable={false} accessibilityLabel={`${row.title}, ${row.detail}`} accessibilityState={{ selected: control.highlighted() === index }}
-        onHoverIn={() => control.highlighted.set(index)} onPress={() => { control.accept(index); }}
+        onMouseEnter={() => control.highlighted.set(index)} onPress={() => { control.accept(index); }}
         style={{ height: rowHeight(), paddingHorizontal: 8, flexDirection: "row", alignItems: "center", gap: 8, backgroundColor: control.highlighted() === index ? theme().palette.panel : "transparent" }}>
         <Icon name={icon(row)} size={14 * theme().scale} color={control.highlighted() === index ? theme().palette.cyan : theme().palette.muted} />
-        <View style={{ flex: 1, gap: 2 }}><Text numberOfLines={1} style={text()}>{row.title}</Text><Text numberOfLines={1} style={text(10, true)}>{row.detail}</Text></View>
+        <View style={{ flex: 1, gap: 2 }}><Text style={{ ...text(), numberOfLines: 1 }}>{row.title}</Text><Text style={{ ...text(10, true), numberOfLines: 1 }}>{row.detail}</Text></View>
       </View>)}
     </Scroll>}
     {!!current() && <View style={{ padding: 8, gap: 3, borderTopWidth: 1, borderColor: theme().palette.divider }}>
-      {!!current()?.body.length && <Text numberOfLines={2} style={text(10, true)}>{current()?.body.join(" · ")}</Text>}
-      <Text numberOfLines={2} style={text(10, true)}>{current()?.effect}</Text>
+      {!!current()?.body.length && <Text style={{ ...text(10, true), numberOfLines: 2 }}>{current()?.body.join(" · ")}</Text>}
+      <Text style={{ ...text(10, true), numberOfLines: 2 }}>{current()?.effect}</Text>
     </View>}
     {control.open()?.result?.truncated && <Text style={{ ...text(10, true), paddingHorizontal: 8, paddingBottom: 6 }}>This folder’s listing reached its scan limit.</Text>}
   </View>}</View>;

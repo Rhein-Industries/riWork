@@ -1,8 +1,9 @@
-import { Clipboard, Overlay, Scroll, Text, View, cleanup, computed, effect, host, keymap, signal, type YNode } from "nsh";
+import { Clipboard, Overlay, Scroll, Text, View, cleanup, computed, effect, host, keymap, signal, type ScrollRef, type ViewRef } from "nsh";
 import { Accounts, Dashboard, Sessions, Store, Usage, type AccountsDto, type LayoutSession, type SessionMetricsSnapshot, type SettingsDto, type ShellSessionDto, type StoreState, type UsageDto } from "riwork/native";
 import { Settings } from "riwork/native";
 import { DEFAULT_THEME, space, type InterfaceTheme } from "./appearance";
 import { Icon } from "./Icon";
+import { focusView } from "./keyboard";
 import type { Wire } from "./dashboard/model";
 import { activePane, mainPaneSummary, type WorkspaceSnapshot } from "./model";
 import {
@@ -61,13 +62,13 @@ export function StatusBar(props: Props) {
   const metrics = signal<SessionMetricsSnapshot["metrics"]>([]);
   const activity = signal<Wire | null>(null);
   const globalView = signal<"dashboard" | "chat" | null>(null);
-  const layoutAnchor = signal<YNode | null>(null);
-  const globalAnchor = signal<YNode | null>(null);
-  const accountAnchor = signal<YNode | null>(null);
+  const layoutAnchor = signal<ViewRef | null>(null);
+  const globalAnchor = signal<ViewRef | null>(null);
+  const accountAnchor = signal<ViewRef | null>(null);
   const choosingAccount = signal(false);
   const focusedItem = signal<string | null>(null), focusedRow = signal<string | null>(null);
-  const menuRows = new Map<string, { node?: YNode; action: () => (() => void) | undefined }>();
-  let menuScroll: YNode | undefined, menuOffset = 0;
+  const menuRows = new Map<string, { node?: ViewRef; action: () => (() => void) | undefined }>();
+  let menuScroll: ScrollRef | undefined, menuOffset = 0;
   let sessionRev = -1;
   let storeRev = -1;
   let usageRev = -1;
@@ -180,12 +181,12 @@ export function StatusBar(props: Props) {
     const current = menu();
     const anchor = current === "layout" ? layoutAnchor() : current === "account" ? accountAnchor() : globalAnchor();
     menu.set(null);
-    if (restoreFocus) anchor?.focus();
+    if (restoreFocus) focusView(anchor);
   }
   function focusMenuRow(id: string) {
     const entry = menuRows.get(id);
     if (!entry?.action()) return;
-    focusedRow.set(id); entry.node?.focus();
+    focusedRow.set(id); focusView(entry.node);
     const scroll = menuScroll;
     if (!scroll || !entry.node) return;
     void Promise.all([entry.node.measure(), scroll.measure()]).then(([item, viewport]) => {
@@ -281,20 +282,20 @@ export function StatusBar(props: Props) {
     const label = segment.source === "codex" && mode === "all_accounts" ? segment.account ?? provider
       : segment.source === "claude" && mode === "all_accounts" ? "Claude session"
       : `${provider}${segment.number === undefined ? "" : ` A${segment.number}`}`;
-    return <View pointerEvents="none" accessible={false} style={{ flexDirection: "row", alignItems: "center", gap: space(5, theme().scale), flexShrink: 0 }}>
-      <Text numberOfLines={1} style={{ ...textStyle("usage"), maxWidth: space(96, theme().scale) }}>{`${label}${segment.freshness === "stale" ? "*" : ""}`}</Text>
+    return <View accessible={false} style={{ flexDirection: "row", alignItems: "center", gap: space(5, theme().scale), flexShrink: 0, pointerEvents: "none" }}>
+      <Text style={{ ...textStyle("usage"), maxWidth: space(96, theme().scale), numberOfLines: 1 }}>{`${label}${segment.freshness === "stale" ? "*" : ""}`}</Text>
       {windows.length ? <View style={{ gap: space(1, theme().scale), opacity: segment.freshness === "stale" ? 0.55 : 1 }}>
         {windows.map((window) => {
           const remaining = Math.max(0, Math.min(100, 100 - window.usedPercent));
           return <View style={{ flexDirection: "row", alignItems: "center", gap: space(3, theme().scale), height: space(8, theme().scale) }}>
-            <Text numberOfLines={1} style={{ ...textStyle("usage"), fontSize: 7 * theme().scale, width: space(16, theme().scale) }}>{window.label}</Text>
+            <Text style={{ ...textStyle("usage"), fontSize: 7 * theme().scale, width: space(16, theme().scale), numberOfLines: 1 }}>{window.label}</Text>
             <View style={{ width: space(30, theme().scale), height: space(3, theme().scale), borderRadius: 2, overflow: "hidden", backgroundColor: theme().palette.divider }}>
               <View style={{ width: `${remaining}%`, height: "100%", borderRadius: 2, backgroundColor: remaining < 15 ? theme().palette.gold : theme().palette.muted }} />
             </View>
             <Text style={{ ...textStyle("usage"), fontSize: 7 * theme().scale, width: space(24, theme().scale), textAlign: "right" }}>{`${whole(remaining)}%`}</Text>
           </View>;
         })}
-      </View> : <Text numberOfLines={1} style={{ ...textStyle("usage"), maxWidth: space(250, theme().scale) }}>{Settings.sentenceCase(segment.figures)}</Text>}
+      </View> : <Text style={{ ...textStyle("usage"), maxWidth: space(250, theme().scale), numberOfLines: 1 }}>{Settings.sentenceCase(segment.figures)}</Text>}
     </View>;
   }
   // What the items show, each read where it is drawn (StatusItem): a delivery of sessions,
@@ -353,8 +354,8 @@ export function StatusBar(props: Props) {
     const disabled = () => (kind === "session_id" && !selectedSession()) || (kind === "project_orchestrator" && !props.openProjectOrchestrator);
     // The label's text follows it in place; the usage readouts are drawn again when they change.
     const text = kind === "usage"
-      ? () => { const read = readouts(); return read ? read.map((segment) => usageReadout(segment, usageMode())) : <Text numberOfLines={1} style={textStyle(kind)}>{Settings.sentenceCase(label()!)}</Text>; }
-      : <If when={label()}><Text numberOfLines={1} style={textStyle(kind)}>{Settings.sentenceCase(label()!)}</Text></If>;
+      ? () => { const read = readouts(); return read ? read.map((segment) => usageReadout(segment, usageMode())) : <Text style={{ ...textStyle(kind), numberOfLines: 1 }}>{Settings.sentenceCase(label()!)}</Text>; }
+      : <If when={label()}><Text style={{ ...textStyle(kind), numberOfLines: 1 }}>{Settings.sentenceCase(label()!)}</Text></If>;
     return <View testID={kind === "global_orchestrator" ? "top-orchestrator" : `status-item-${key}`}
       ref={(node) => { if (kind === "layout") layoutAnchor.set(node); if (kind === "global_orchestrator") globalAnchor.set(node); if (kind === "codex_account") accountAnchor.set(node); }}
       accessibilityLabel={itemAria(kind, label(), readouts(), state())}
@@ -382,7 +383,7 @@ export function StatusBar(props: Props) {
     return <MenuRow id={id} label={label} shortcut={shortcut} action={action} detail={detail} />;
   }
   function MenuRow(props: { id: string; label: string; shortcut: string; action?: () => void; detail?: string }) {
-    const entry = { node: undefined as YNode | undefined, action: () => props.action };
+    const entry = { node: undefined as ViewRef | undefined, action: () => props.action };
     menuRows.set(props.id, entry);
     cleanup(() => { if (menuRows.get(props.id) === entry) menuRows.delete(props.id); });
     return <View testID={props.id} ref={(node) => { entry.node = node; }} accessibilityLabel={props.label} role="button" disabled={!props.action} onPress={() => props.action?.()}
@@ -421,8 +422,8 @@ export function StatusBar(props: Props) {
   }
   return <>
     {settings().enabled && <View testID="status-bar" style={{ position: "relative", height: space(STATUS_METRICS.height, theme().scale), flexShrink: 0, flexDirection: "row", alignItems: "center", paddingHorizontal: space(STATUS_METRICS.padding, theme().scale), gap: 8, backgroundColor: theme().palette.panel }}>
-      <View testID="status-bar-separator" pointerEvents="none" accessible={false}
-        style={{ position: "absolute", top: 0, left: 0, right: 0, height: 1, backgroundColor: theme().palette.divider, opacity: 0.55 }} />
+      <View testID="status-bar-separator" accessible={false}
+        style={{ position: "absolute", top: 0, left: 0, right: 0, height: 1, backgroundColor: theme().palette.divider, opacity: 0.55, pointerEvents: "none" }} />
       <Scroll testID="status-left" horizontal={true} style={{ flexShrink: 0, maxWidth: items("right").length ? "40%" : "100%" }} contentStyle={{ flexDirection: "row", alignItems: "center", gap: space(STATUS_METRICS.gap, theme().scale) }}>
         <Each of={kinds("left")}>{(kind) => <StatusItem kind={kind()} />}</Each>
       </Scroll>
@@ -430,8 +431,8 @@ export function StatusBar(props: Props) {
       <Scroll testID="status-right" horizontal={true} style={{ flexShrink: 1, minWidth: 0 }} contentStyle={{ flexDirection: "row", alignItems: "center", gap: space(STATUS_METRICS.gap, theme().scale) }}>
         {(props.addins?.() ?? []).map((entry) => <View testID={`status-addin:${entry.key}`} role="button" accessibilityLabel={entry.text}
           onPress={() => props.onAddin?.(entry.key)} style={{ paddingHorizontal: 4, borderRadius: 4 }} hoverStyle={{ backgroundColor: theme().palette.panelActive }}>
-          <Text numberOfLines={1} style={{ fontFamily: theme().family, fontSize: 11 * theme().scale,
-            color: entry.tone === "critical" ? theme().palette.danger : entry.tone === "warning" ? theme().palette.gold : theme().palette.muted }}>{entry.text}</Text>
+          <Text style={{ fontFamily: theme().family, fontSize: 11 * theme().scale,
+            color: entry.tone === "critical" ? theme().palette.danger : entry.tone === "warning" ? theme().palette.gold : theme().palette.muted, numberOfLines: 1 }}>{entry.text}</Text>
         </View>)}
         <Each of={kinds("right")}>{(kind) => <StatusItem kind={kind()} />}</Each>
       </Scroll>

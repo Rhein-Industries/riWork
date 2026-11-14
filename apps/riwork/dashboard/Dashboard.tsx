@@ -1,4 +1,4 @@
-import { Scroll, Text, View, cleanup, computed, signal, windowSize, type JSX, type YNode } from "nsh";
+import { Scroll, Text, View, cleanup, computed, signal, windowSize, type JSX, type ViewRef } from "nsh";
 import { Button, Input } from "nsh/base";
 import { Icon } from "../Icon";
 import { Segmented, StatusPill, buttonLook, focusRing, searchBox, type Tone } from "../PanelKit";
@@ -56,7 +56,7 @@ export function DashboardView(props: {
   const touchTarget = () => touch() ? { minHeight: 44, justifyContent: "center" as const } : {};
   // The body is drawn again only when this changes, not on every read or resize.
   const arrangement = computed(() => layout().arrangement);
-  let search: YNode | undefined;
+  let search: ViewRef | undefined;
   const searchFocused = signal(false);
   props.onSearch({ focus: () => search?.focus() });
   // The unfolded review lives here, not in its row, which an arrangement or a
@@ -83,7 +83,7 @@ export function DashboardView(props: {
       focusable={!!onPress} hoverStyle={onPress ? framed ? look.hoverStyle : { backgroundColor: palette().panelActive } : undefined} focusStyle={focusRing(palette(), framed ? 2 : 1)}
       style={{ ...(framed ? { ...look.style, minHeight: size(touch() ? 44 : 24), paddingHorizontal: size(9) } : { paddingHorizontal: size(icon ? 5 : 8), paddingVertical: size(4), borderRadius: size(8), ...touchTarget() }),
         backgroundColor: framed ? look.style.backgroundColor : selected ? palette().bg : "transparent", opacity: onPress ? 1 : 0.5 }}>
-      {icon ? <Icon name={label === "↻" ? "refresh" : "close"} size={(label === "↻" ? 13 : 11) * scale()} color={palette().muted} /> : <Text numberOfLines={1} style={framed ? { ...look.label, fontSize: 10.5 * scale() } : font(10, selected ? palette().text : palette().muted)}>{label}</Text>}
+      {icon ? <Icon name={label === "↻" ? "refresh" : "close"} size={(label === "↻" ? 13 : 11) * scale()} color={palette().muted} /> : <Text style={{ ...(framed ? { ...look.label, fontSize: 10.5 * scale() } : font(10, selected ? palette().text : palette().muted)), numberOfLines: 1 }}>{label}</Text>}
     </View>;
   }
   function section(id: string, title: string, children: JSX.Element | JSX.Element[], meta?: string) {
@@ -102,9 +102,9 @@ export function DashboardView(props: {
       hoverStyle={{ backgroundColor: palette().panelActive }} focusStyle={focusRing(palette(), -2)} style={{ gap: size(3), paddingHorizontal: size(8), paddingVertical: size(6), borderRadius: size(8), ...(target ? touchTarget() : {}) }}>
       {state ? <View style={{ flexDirection: "row", alignItems: "flex-start", gap: size(8) }}>
         <View style={{ paddingTop: size(1) }}><StatusPill theme={props.theme} tone={state.tone} label={state.label} /></View>
-        <Text numberOfLines={3} style={{ ...font(12, tone), flex: 1, minWidth: 0 }}>{headline}</Text>
-      </View> : <Text numberOfLines={3} style={font(12, tone)}>{headline}</Text>}
-      <Text numberOfLines={3} style={font(11, palette().muted)}>{detail}</Text>
+        <Text style={{ ...font(12, tone), flex: 1, minWidth: 0, numberOfLines: 3 }}>{headline}</Text>
+      </View> : <Text style={{ ...font(12, tone), numberOfLines: 3 }}>{headline}</Text>}
+      <Text style={{ ...font(11, palette().muted), numberOfLines: 3 }}>{detail}</Text>
     </View>;
   }
   /** A rail's line of words, on the same left edge as its title and rows. */
@@ -128,13 +128,13 @@ export function DashboardView(props: {
       <View style={{ ...searchBox(props.theme, searchFocused()).style, flex: layout().arrangement === "compact" ? 1 : undefined, width: layout().arrangement === "compact" ? undefined : size(260) }} hoverStyle={searchBox(props.theme, searchFocused()).hoverStyle}>
         <Icon name="search" size={11 * scale()} color={palette().muted} />
         <Input testID="dashboard-search" accessibilityLabel="Search the dashboard" placeholder={touch() ? TOUCH_SEARCH_PLACEHOLDER : SEARCH_PLACEHOLDER} value={props.query()}
-          ref={(node) => { search = node; }} onChange={(text) => props.query.set(text)} onFocus={() => searchFocused.set(true)} onBlur={() => searchFocused.set(false)}
+          ref={(node) => { search = node; }} onChange={({ value: text }) => props.query.set(text)} onFocus={() => searchFocused.set(true)} onBlur={() => searchFocused.set(false)}
           style={{ ...font(11), flex: 1, minWidth: 0, paddingVertical: 3, backgroundColor: "transparent" }} />
         {props.query() !== "" && button("dashboard-clear-search", "×", () => { props.query.set(""); search?.focus(); }, false, "Clear the search")}
       </View>
       {layout().arrangement !== "compact" && <Scroll horizontal={true} style={{ flex: 1, minWidth: 0 }}>{wire() && summaryStrip(wire()!)}</Scroll>}
       {fresh.warn ? <View testID="dashboard-freshness" style={{ flexShrink: 1, maxWidth: size(layout().arrangement === "compact" ? 140 : 280) }}><StatusPill theme={props.theme} tone="needs" label={fresh.text} /></View>
-        : <Text testID="dashboard-freshness" numberOfLines={1} style={{ ...font(10, palette().muted), flexShrink: 1, maxWidth: size(layout().arrangement === "compact" ? 105 : 260) }}>{fresh.text}</Text>}
+        : <Text testID="dashboard-freshness" style={{ ...font(10, palette().muted), flexShrink: 1, maxWidth: size(layout().arrangement === "compact" ? 105 : 260), numberOfLines: 1 }}>{fresh.text}</Text>}
       {button("dashboard-refresh", "↻", props.onRefresh, false, "Read everything again now")}
     </View>;
   }
@@ -187,10 +187,10 @@ export function DashboardView(props: {
         style={{ flexDirection: "row", alignItems: "center", gap: size(DASHBOARD_METRICS.cellGap), padding: size(DASHBOARD_METRICS.rowPad), borderRadius: 7, minHeight: 44 }}>
         <Text style={{ ...font(11, tone), width: size(DASHBOARD_METRICS.mark) }}>{state.mark}</Text>
         <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
-          <Text numberOfLines={1} style={font(12)}>{project.name}</Text>
-          {where && <Text numberOfLines={1} style={font(10, palette().muted)}>{where}</Text>}
-          <Text numberOfLines={1} style={font(10, palette().muted)}>{agents.length ? agents.map((part, index) => <Text style={{ color: toneOf(part.tone) }}>{`${index ? " " : ""}${part.text}`}</Text>) : "No agents"}{` · ${sessionsLine(project, read.chats_known)}`}</Text>
-          <Text numberOfLines={2} style={font(10, palette().muted)}>{`${tasks ? `${tasks[0]} · ${tasks[1]}` : "No tasks"} · ${age(now(), project.last_activity) ?? "—"}`}</Text>
+          <Text style={{ ...font(12), numberOfLines: 1 }}>{project.name}</Text>
+          {where && <Text style={{ ...font(10, palette().muted), numberOfLines: 1 }}>{where}</Text>}
+          <Text style={{ ...font(10, palette().muted), numberOfLines: 1 }}>{agents.length ? agents.map((part, index) => <Text style={{ color: toneOf(part.tone) }}>{`${index ? " " : ""}${part.text}`}</Text>) : "No agents"}{` · ${sessionsLine(project, read.chats_known)}`}</Text>
+          <Text style={{ ...font(10, palette().muted), numberOfLines: 2 }}>{`${tasks ? `${tasks[0]} · ${tasks[1]}` : "No tasks"} · ${age(now(), project.last_activity) ?? "—"}`}</Text>
           <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
             {button(`dashboard-tasks-${project.id}`, "Tasks", () => props.onPanel(project.id, "tasks"), false, undefined, "outlined")}
             {button(`dashboard-sessions-${project.id}`, "Sessions", () => props.onPanel(project.id, "shells"), false, undefined, "outlined")}
@@ -203,20 +203,20 @@ export function DashboardView(props: {
       style={{ flexDirection: "row", alignItems: "center", gap: size(DASHBOARD_METRICS.cellGap), padding: size(DASHBOARD_METRICS.rowPad), borderRadius: 7 }}>
       <Text style={{ ...font(11, tone), width: size(DASHBOARD_METRICS.mark) }}>{state.mark}</Text>
       <View style={{ flex: 1, minWidth: size(DASHBOARD_METRICS.projectMin), gap: 2 }}>
-        <Text numberOfLines={1} style={font(12)}>{project.name}</Text>
-        {where && <Text numberOfLines={1} style={font(10, palette().muted)}>{where}</Text>}
-        {columns.activity == null && <Text numberOfLines={1} style={font(10, palette().muted)}>{`${agents.map((part) => part.text).join(" ") || "No agents"} · ${sessionsLine(project, read.chats_known)}`}</Text>}
+        <Text style={{ ...font(12), numberOfLines: 1 }}>{project.name}</Text>
+        {where && <Text style={{ ...font(10, palette().muted), numberOfLines: 1 }}>{where}</Text>}
+        {columns.activity == null && <Text style={{ ...font(10, palette().muted), numberOfLines: 1 }}>{`${agents.map((part) => part.text).join(" ") || "No agents"} · ${sessionsLine(project, read.chats_known)}`}</Text>}
       </View>
       {columns.activity != null && <View style={{ width: size(columns.activity!), gap: 2 }}>
-        <Text numberOfLines={1} style={font(10, palette().muted)}>{agents.length ? agents.map((part, index) => <Text style={{ color: toneOf(part.tone) }}>{`${index ? " " : ""}${part.text}`}</Text>) : "No agents"}</Text>
-        <Text numberOfLines={1} style={font(10, palette().muted)}>{sessionsLine(project, read.chats_known)}</Text>
+        <Text style={{ ...font(10, palette().muted), numberOfLines: 1 }}>{agents.length ? agents.map((part, index) => <Text style={{ color: toneOf(part.tone) }}>{`${index ? " " : ""}${part.text}`}</Text>) : "No agents"}</Text>
+        <Text style={{ ...font(10, palette().muted), numberOfLines: 1 }}>{sessionsLine(project, read.chats_known)}</Text>
       </View>}
       <View style={{ width: size(columns.tasks), gap: 2 }}>
         <Text style={font(10)}>{tasks?.[0] ?? "No tasks"}</Text>
         {tasks && <Text style={font(10, palette().muted)}>{tasks[1]}</Text>}
       </View>
-      {columns.orchestrator != null && <Text numberOfLines={1} style={{ ...font(10, palette().muted), width: size(columns.orchestrator!) }}>{orchestrator ? `${orchestrator[0]} ${orchestrator[1]}` : "None"}</Text>}
-      <Text numberOfLines={1} style={{ ...font(10, palette().muted), width: size(columns.last) }}>{age(now(), project.last_activity) ?? "—"}</Text>
+      {columns.orchestrator != null && <Text style={{ ...font(10, palette().muted), width: size(columns.orchestrator!), numberOfLines: 1 }}>{orchestrator ? `${orchestrator[0]} ${orchestrator[1]}` : "None"}</Text>}
+      <Text style={{ ...font(10, palette().muted), width: size(columns.last), numberOfLines: 1 }}>{age(now(), project.last_activity) ?? "—"}</Text>
       <View style={{ width: size(columns.actions), flexDirection: "row", gap: 4 }}>
         {button(`dashboard-project-tasks-${project.id}`, "Tasks", () => props.onPanel(project.id, "tasks"), false, undefined, "outlined")}
         {button(`dashboard-project-sessions-${project.id}`, "Sessions", () => props.onPanel(project.id, "shells"), false, undefined, "outlined")}
@@ -225,7 +225,7 @@ export function DashboardView(props: {
   }
   function tableHead() {
     const columns = COLUMN_WIDTHS[layout().columns];
-    const label = (title: string, width: number) => <Text numberOfLines={1} style={{ ...font(9, palette().muted), fontWeight: "600", width: size(width) }}>{title}</Text>;
+    const label = (title: string, width: number) => <Text style={{ ...font(9, palette().muted), fontWeight: "600", width: size(width), numberOfLines: 1 }}>{title}</Text>;
     return <View testID="dashboard-table-head" style={{ flexDirection: "row", alignItems: "center", gap: size(DASHBOARD_METRICS.cellGap), paddingHorizontal: size(DASHBOARD_METRICS.rowPad), paddingVertical: size(3), borderBottomWidth: 1, borderColor: palette().divider }}>
       <View style={{ width: size(DASHBOARD_METRICS.mark) }} />
       <Text style={{ ...font(9, palette().muted), fontWeight: "600", flex: 1, minWidth: size(DASHBOARD_METRICS.projectMin) }}>Project</Text>
@@ -278,7 +278,7 @@ export function DashboardView(props: {
   }
   function decisionRow(decision: () => DecisionRow) {
     const id = decision().id, open = computed(() => review()?.decision.id === id);
-    let opener: YNode | undefined;
+    let opener: ViewRef | undefined;
     // A decision is a card of its own; its Review is the dashboard's one filled action.
     const action = () => buttonLook(props.theme, open() ? "default" : "primary", !!review()?.busy());
     return <View testID={`dashboard-decision-row-${id}`} style={{ borderRadius: size(14), borderWidth: 1, borderColor: open() ? palette().text : palette().divider, marginBottom: 8, backgroundColor: palette().bg }}>
@@ -287,8 +287,8 @@ export function DashboardView(props: {
         style={{ flexDirection: "row", alignItems: "center", gap: size(10), paddingHorizontal: size(12), paddingVertical: size(10), borderRadius: size(13) }}
         hoverStyle={{ backgroundColor: palette().panel }} focusStyle={focusRing(palette(), -2)}>
         <View style={{ flex: 1, minWidth: 0, gap: size(3) }}>
-          <Text numberOfLines={3} style={{ ...font(12), fontWeight: "600" }}>{`${sessionName(decision().session)} asks ${decision().kind === "approval" ? "for approval" : "a question"}`}</Text>
-          <Text numberOfLines={1} style={font(10, palette().muted)}>{`${decision().session.project_name ?? "Global"} · ${age(now(), decision().observed_at) ?? ""}`}</Text>
+          <Text style={{ ...font(12), fontWeight: "600", numberOfLines: 3 }}>{`${sessionName(decision().session)} asks ${decision().kind === "approval" ? "for approval" : "a question"}`}</Text>
+          <Text style={{ ...font(10, palette().muted), numberOfLines: 1 }}>{`${decision().session.project_name ?? "Global"} · ${age(now(), decision().observed_at) ?? ""}`}</Text>
         </View>
         <View style={{ ...action().style, minHeight: size(touch() ? 44 : 28), paddingHorizontal: size(14) }}>
           <Text style={action().label}>{open() ? "Hide" : "Review"}</Text>
@@ -347,8 +347,8 @@ export function DashboardView(props: {
       {section("dashboard-backends", "Backends", lines == null ? <Text style={note()}>Reading the app, the chat host and the providers…</Text>
         : lines.length === 0 ? <Text style={note()}>{allLines?.length ? `Nothing here matches “${props.query().trim()}”.` : "No provider CLI was found."}</Text>
           : <>{lines.map((line) => <View testID={`dashboard-backend-${line.key}`} accessibilityLabel={`${line.title}; ${line.detail}`} style={{ gap: 2, paddingHorizontal: size(8), paddingVertical: size(3) }}>
-            <Text numberOfLines={1} style={font(11, line.tone === "stale" ? palette().gold : line.tone === "current" ? palette().cyan : palette().muted)}>{`${mark[line.tone]} ${line.title}`}</Text>
-            <Text numberOfLines={1} style={font(10, palette().muted)}>{line.detail}</Text>
+            <Text style={{ ...font(11, line.tone === "stale" ? palette().gold : line.tone === "current" ? palette().cyan : palette().muted), numberOfLines: 1 }}>{`${mark[line.tone]} ${line.title}`}</Text>
+            <Text style={{ ...font(10, palette().muted), numberOfLines: 1 }}>{line.detail}</Text>
           </View>)}</>)}
     </>;
   }
@@ -369,7 +369,7 @@ export function DashboardView(props: {
       </View>
     </Scroll>;
   }
-  return <View testID="dashboard" onLayout={(event) => { if (event.size.width !== width()) width.set(event.size.width); }} style={{ flex: 1, minHeight: 0, gap: size(8), paddingBottom: size(8), backgroundColor: palette().panel }}>
+  return <View testID="dashboard" onLayout={({ bounds }) => { if (bounds.size.width !== width()) width.set(bounds.size.width); }} style={{ flex: 1, minHeight: 0, gap: size(8), paddingBottom: size(8), backgroundColor: palette().panel }}>
     {toolbar()}
     <If when={!!wire()} else={<View testID="dashboard-unread" style={{ flex: 1, alignItems: "center", justifyContent: "center", gap: 8, padding: 24 }}>
       <Text style={font(18, palette().muted)}>{props.dto()?.error ? "⚠" : "⧗"}</Text>

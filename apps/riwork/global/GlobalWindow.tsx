@@ -1,5 +1,5 @@
 import { Text, View, cleanup, effect, host, keymap, signal } from "nsh";
-import { Window } from "nsh/desktop";
+import { currentWindow } from "nsh/desktop";
 import { Dashboard, Sessions, Store, type GlobalWindowDto, type SettingsDto } from "riwork/native";
 import { Brand } from "../Brand";
 import { DEFAULT_THEME, type InterfaceTheme } from "../appearance";
@@ -59,8 +59,7 @@ export function GlobalWindow(props: { params: HostParams; theme?: () => Interfac
   cleanup(() => { alive = false; });
   // Native host owns the traffic lights; a height here installs an AppKit
   // toolbar that competes with its positioning while the window resizes.
-  Window.setTitleBar("hidden");
-  Window.setTitle("Somtus · Global");
+  currentWindow().set({ titleBar: { style: "hidden" }, title: "Somtus · Global" });
   host.post("window.setDockInfo", { project: "Global", branch: "" });
   cleanup(host.on("window.state", (next) => windowState.set(next as WindowState)));
 
@@ -217,13 +216,13 @@ export function GlobalWindow(props: { params: HostParams; theme?: () => Interfac
       <Text style={{ ...font(10), color: palette().muted }}>{agentsShown() ? "All connected hosts" : "This Mac · every project"}</Text>
     </View>
     <View style={{ flex: 1, minHeight: 0 }}>
-      {dashboardVisited() && <View style={{ flex: 1, minHeight: 0, display: view() === "dashboard" && !agentsShown() ? "flex" : "none" }}>
+      {dashboardVisited() && <View style={{ flex: 1, minHeight: 0, display: view() === "dashboard" && !agentsShown() ? "flex" : "none", flexDirection: "column" }}>
         <DashboardView dto={dashboard} theme={theme} filter={filter} sort={sort} query={query}
           onFilter={setFilter} onSort={setSort} onSearch={(node) => { search = node; }}
           onOpen={route} onPanel={openPanel} onGlobalChat={() => show("chat", true)}
           onRefresh={() => { void services.dashboard.refresh().catch((error: unknown) => notice.set(String(error))); }}
           plan={() => chat.control?.plan() ?? null} starting={() => chat.control?.starting() ?? false} decisions={services.dashboard.decisions} /></View>}
-      <View style={{flex:1,minHeight:0,display:agentsShown() ? "flex" : "none"}}>
+      <View style={{flex:1,minHeight:0,display:agentsShown() ? "flex" : "none",flexDirection:"column"}}>
         <Agents visible={() => visible() && agentsShown()} theme={theme} onOpen={openAgent} onNotice={text => notice.set(text)} onSearch={node => {agentsSearch=node;}} />
       </View>
       <GlobalChat visible={() => view() === "chat"} global={() => wire()?.global ?? { kind: "unknown" }} theme={theme}

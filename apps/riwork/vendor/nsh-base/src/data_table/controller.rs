@@ -5,6 +5,7 @@
 use std::{cell::RefCell, ops::Range, rc::Rc, time::Duration};
 
 use nsh_core::{
+    PressEvent,
     element::{ElementRef, Os},
     keymap::{Modifiers, When},
     prelude::*,
@@ -14,7 +15,7 @@ use super::{
     DataTableColumn, DataTableContextMenu, DataTableDump, DataTableEvent, DataTablePress,
     DataTableProps, DataTableRange, DataTableSelection, DataTableSort, DataTableSortDirection,
     DataTableTarget,
-    axis::Axis,
+    axis::{Anchor, Axis},
     columns::{Columns, Spec},
     selection::{self, Move, Nav, Selectable, Selection},
 };
@@ -45,16 +46,32 @@ pub(crate) struct Geo {
     pub(crate) header: f32,
     /// The width of the row header column.
     pub(crate) lead: f32,
-    /// The width of the fixed columns.
+    /// The width of the columns fixed at the start.
     pub(crate) fixed: f32,
+    /// The width of the columns fixed at the end.
+    pub(crate) end: f32,
     /// The rows' axis: the rows' extent and the height below the titles.
     pub(crate) y: Axis,
-    /// The scrolling columns' axis: their extent and the width right of the
+    /// The scrolling columns' axis: their extent and the width between the
     /// fixed columns.
     pub(crate) x: Axis,
     /// The content offsets (the scroll offsets, scaled).
     pub(crate) cx: f64,
     pub(crate) cy: f64,
+    /// The width the vertical scroll bar takes at the right: a terminal's
+    /// column of Cells once the rows overflow, where the core lays the
+    /// scroll view's content out beside its bar; the cells leave it free,
+    /// as the bar is not drawn over content. Elsewhere none, the bar lying
+    /// over the rows.
+    pub(crate) bar: f32,
+}
+
+impl Geo {
+    /// The width the columns are shown in: the fixed ones and the view of
+    /// the scrolling ones between them.
+    pub(crate) fn columns_view(&self) -> f64 {
+        self.fixed as f64 + self.x.viewport + self.end as f64
+    }
 }
 
 /// The state that is not a signal.
@@ -95,12 +112,25 @@ pub(crate) struct Dt {
     pub(crate) scroll_x: Signal<Points>,
     pub(crate) scroll_y: Signal<Points>,
     pub(crate) viewport: Signal<Size<Points>>,
+    /// The width of the hit layer's content, inside its scroll view: less
+    /// than the viewport's by the column a terminal's bar takes.
+    pub(crate) rows_width: Signal<Option<Points>>,
     pub(crate) hover: Signal<Option<usize>>,
     pub(crate) focused: Signal<bool>,
     pub(crate) column_drag: Signal<Option<MoveDrag>>,
     pub(crate) vscroll: ElementRef,
     pub(crate) hscroll: ElementRef,
     pub(crate) strip: ElementRef,
+    /// Scroll offsets are followed from an anchor (`axis.rs`): where the
+    /// scroll bar is not dragged, so a scaled axis moves as far as a finger.
+    anchored: bool,
+    anchor_x: Signal<Anchor>,
+    anchor_y: Signal<Anchor>,
+    // Web desktop wheels follow one-to-one; explicit drags still span the
+    // entire range. Touch idioms retain their existing anchored physics.
+    pub(super) web_desktop: bool,
+    drag_x: Signal<Option<Anchor>>,
+    drag_y: Signal<Option<Anchor>>,
     rows_window: RowWindow,
     cols_window: RowWindow,
     /// The width a resize drag started from.
@@ -108,6 +138,45 @@ pub(crate) struct Dt {
     /// The column whose handle was last pressed without a drag, and when:
     /// a second press within `DOUBLE_PRESS` fits the column.
     handle_tap: Rc<RefCell<Option<(usize, nsh_core::time::Instant)>>>,
+    /// The cells `renderCell` draws, which the hit layer passes presses
+    /// on to ([`Dt::press_with`]).
+    pub(crate) custom_cells: Rc<RefCell<CustomCells>>,
+}
+
+/// A cell `renderCell` draws: its view, and the row and column it shows
+/// now (its view is reused for others as the table scrolls).
+#[derive(Clone, Copy)]
+pub(crate) struct CustomCell {
+    pub(crate) view: ElementRef,
+    pub(crate) row: Memo<Option<usize>>,
+    pub(crate) def: Memo<Option<usize>>,
+}
+
+/// The cells `renderCell` draws, by a key of their own.
+#[derive(Default)]
+pub(crate) struct CustomCells {
+    cells: Vec<(u64, CustomCell)>,
+    next: u64,
+}
+
+impl CustomCells {
+    pub(crate) fn add(&mut self, cell: CustomCell) -> u64 {
+        self.next += 1;
+        self.cells.push((self.next, cell));
+        self.next
+    }
+
+    pub(crate) fn remove(&mut self, key: u64) {
+        self.cells.retain(|(k, _)| *k != key);
+    }
+
+    /// The view of the cell showing `row` of column `def`.
+    fn showing(&self, row: usize, def: usize) -> Option<ElementRef> {
+        self.cells.iter().find_map(|(_, c)| {
+            (c.row.get_untracked() == Some(row) && c.def.get_untracked() == Some(def))
+                .then_some(c.view)
+        })
+    }
 }
 
 fn spec_of(column: &DataTableColumn) -> Spec {
@@ -141,18 +210,31 @@ impl Dt {
             scroll_x: signal(Points::ZERO),
             scroll_y: signal(Points::ZERO),
             viewport: signal(Size::default()),
+            rows_width: signal(None),
             hover: signal(None),
             focused: signal(false),
             column_drag: signal(None),
             vscroll: element_ref(),
             hscroll: element_ref(),
             strip: element_ref(),
+            // A terminal's pointer is a mouse that drags the bar, as a
+            // desktop's does.
+            anchored: (!nsh_core::element::is_desktop()
+                || nsh_core::element::os() == nsh_core::platform::Os::Web)
+                && !crate::terminal::is_terminal(),
+            anchor_x: signal(Anchor::default()),
+            anchor_y: signal(Anchor::default()),
+            web_desktop: nsh_core::element::is_desktop()
+                && nsh_core::element::os() == nsh_core::platform::Os::Web,
+            drag_x: signal(None),
+            drag_y: signal(None),
             // Rows are short, columns wide: a window of columns reaches
             // less far.
-            rows_window: RowWindow::default(),
-            cols_window: RowWindow::reaching(1, 3),
+            rows_window: RowWindow::following(4),
+            cols_window: RowWindow::following(1),
             resizing: Rc::default(),
             handle_tap: Rc::default(),
+            custom_cells: Rc::default(),
         };
         dt.sync_columns();
         dt.sync_selection();
@@ -343,16 +425,26 @@ impl Dt {
 
     // Geometry.
 
+    /// A body row's height: the app's, or in a terminal one Cell, so rows
+    /// land on the grid's lines whatever the app gave.
     pub(crate) fn row_height(&self) -> f32 {
-        self.props.row_height.get().0.max(1.0)
+        crate::terminal::row_height(self.props.row_height.get())
+            .0
+            .max(1.0)
     }
 
-    /// The height of one title row.
+    /// The height of one title row: the app's, or in a terminal one Cell,
+    /// as a body row's: the titles stand apart by their band (a face is its
+    /// fill or its line, so a row for their rule would be blank) and their
+    /// type, right over the first row.
     fn header_row_height(&self) -> f32 {
+        if crate::terminal::is_terminal() {
+            return crate::terminal::cell_height().0.max(1.0);
+        }
         self.props
             .header_height
             .get()
-            .map_or_else(|| self.row_height(), |h| h.0.max(1.0))
+            .map_or_else(|| self.props.row_height.get().0.max(1.0), |h| h.0.max(1.0))
     }
 
     /// How many title rows there are: the group levels and the titles.
@@ -409,26 +501,41 @@ impl Dt {
         let header = self.header_row_height() * self.header_levels() as f32;
         let lead = self.lead_width();
         let rows = self.row_count();
-        let (fixed, scroll_width) = {
+        let (fixed, end, scroll_width) = {
             let st = self.st.borrow();
-            (st.columns.fixed_width() as f32, st.columns.scroll_width())
+            (
+                st.columns.fixed_width() as f32,
+                st.columns.end_width() as f32,
+                st.columns.scroll_width(),
+            )
         };
         let y = Axis::new(
             rows as f64 * row_height as f64,
             (height - header).max(0.0) as f64,
         );
-        let x = Axis::new(scroll_width, (width - lead - fixed).max(0.0) as f64);
-        let cx = x.content_offset(self.scroll_x.get().0 as f64);
-        let cy = y.content_offset(self.scroll_y.get().0 as f64);
+        // What the hit layer's scroll view keeps beside its content for its
+        // bar (a terminal's column): none until laid out.
+        let bar = self
+            .rows_width
+            .get()
+            .map_or(0.0, |rows| (width - rows.0).max(0.0));
+        let x = Axis::new(
+            scroll_width,
+            (width - lead - fixed - end - bar).max(0.0) as f64,
+        );
+        let cx = self.offset_on(&x, self.scroll_x.get(), self.anchor_x, self.drag_x);
+        let cy = self.offset_on(&y, self.scroll_y.get(), self.anchor_y, self.drag_y);
         Geo {
             row_height,
             header,
             lead,
             fixed,
+            end,
             y,
             x,
             cx,
             cy,
+            bar,
         }
     }
 
@@ -466,7 +573,7 @@ impl Dt {
             return Vec::new();
         }
         let window = self.cols_window.rows(visible, n);
-        (window.start.max(fixed)..window.end)
+        (window.start.max(fixed)..window.end.min(st.columns.end_start()))
             .map(|d| st.columns.def(d))
             .collect()
     }
@@ -572,6 +679,22 @@ impl Dt {
         let allowed = untracked(|| self.selectable_kinds());
         let rows = self.row_count();
         let columns = self.st.borrow().columns.len();
+        // A ref's command cannot throw: a row or column the table does not
+        // have leaves the selection as it is, logged.
+        let (row, column) = match next {
+            Selection::Row(r) => (Some(r), None),
+            Selection::Column(c) => (None, Some(c)),
+            Selection::Cell(r, c) => (Some(r), Some(c)),
+            Selection::None => (None, None),
+        };
+        if let Some(row) = row.filter(|&r| r >= rows) {
+            log::warn!("DataTable.select: row {row} out of range (the table has {rows})");
+            return;
+        }
+        if let Some(column) = column.filter(|&c| c >= columns) {
+            log::warn!("DataTable.select: column {column} out of range (the table has {columns})");
+            return;
+        }
         self.set_selection(selection::clamp(next, allowed, rows, columns), report);
         self.reveal_selection();
     }
@@ -610,6 +733,9 @@ impl Dt {
 
     fn bind_keys(&self) {
         let dt = self.clone();
+        // A terminal's Tab moves the focus on, out of the table, as Tab does
+        // everywhere in a terminal; the arrows move between the columns.
+        let tab = !crate::terminal::is_terminal();
         effect(move || {
             if !dt.focused.get() {
                 return;
@@ -627,12 +753,16 @@ impl Dt {
                 ("end", Move::Last, true),
             ];
             for (keys, movement, repeat) in moves {
+                if !tab && keys.ends_with("tab") {
+                    continue;
+                }
                 let dt = dt.clone();
                 on_key_with(
                     keys,
                     KeyOptions {
                         when: When::NotEditing,
                         repeat,
+                        ..Default::default()
                     },
                     move |_| dt.key_move(movement),
                 );
@@ -653,6 +783,7 @@ impl Dt {
                 KeyOptions {
                     when: When::NotEditing,
                     repeat: false,
+                    ..Default::default()
                 },
                 move |_| copy.copy_selection(),
             );
@@ -681,8 +812,7 @@ impl Dt {
         let top = row as f64 * g.row_height as f64;
         let to = g.y.reveal(g.cy, top, top + g.row_height as f64);
         if to != g.cy {
-            let y = g.y.scroll_points(to);
-            self.vscroll.scroll_to(Point { x: Points::ZERO, y }, false);
+            self.scroll_rows_to(&g, to, false);
         }
     }
 
@@ -694,7 +824,7 @@ impl Dt {
                 return;
             };
             // Fixed columns never scroll out.
-            if display < st.columns.fixed_len() {
+            if st.columns.is_fixed(display) {
                 return;
             }
             let start = st.columns.start(display) - st.columns.fixed_width();
@@ -702,21 +832,19 @@ impl Dt {
         };
         let to = g.x.reveal(g.cx, target.0, target.1);
         if to != g.cx {
-            let x = g.x.scroll_points(to);
-            self.hscroll.scroll_to(Point { x, y: Points::ZERO }, false);
+            self.scroll_columns_to(&g, to, false);
         }
     }
 
     pub(crate) fn scroll_to_row(&self, row: usize, animated: bool) {
         let g = untracked(|| self.geo());
         let rows = self.row_count();
-        if rows == 0 {
+        if row >= rows {
+            log::warn!("DataTable.scrollToRow: row {row} out of range (the table has {rows})");
             return;
         }
-        let top = row.min(rows - 1) as f64 * g.row_height as f64;
-        let y = g.y.scroll_points(top);
-        self.vscroll
-            .scroll_to(Point { x: Points::ZERO, y }, animated);
+        let top = row as f64 * g.row_height as f64;
+        self.scroll_rows_to(&g, top, animated);
     }
 
     pub(crate) fn scroll_to_column(&self, key: &str, animated: bool) {
@@ -724,19 +852,158 @@ impl Dt {
         let start = {
             let st = self.st.borrow();
             let Some(def) = st.defs.iter().position(|c| c.key == key) else {
+                log::warn!("DataTable.scrollToColumn: no column `{key}`");
                 return;
             };
             let Some(display) = st.columns.display_of(def) else {
                 return;
             };
-            if display < st.columns.fixed_len() {
+            if st.columns.is_fixed(display) {
                 return;
             }
             st.columns.start(display) - st.columns.fixed_width()
         };
-        let x = g.x.scroll_points(start);
+        self.scroll_columns_to(&g, start, animated);
+    }
+
+    /// The content offset scroll offset `scroll` of `axis` shows.
+    fn offset_on(
+        &self,
+        axis: &Axis,
+        scroll: Points,
+        anchor: Signal<Anchor>,
+        drag: Signal<Option<Anchor>>,
+    ) -> f64 {
+        let scroll = scroll.0 as f64;
+        if let Some(a) = drag.get() {
+            axis.content_offset_drag(scroll, a)
+        } else if self.anchored {
+            axis.content_offset_from(scroll, anchor.get())
+        } else {
+            axis.content_offset(scroll)
+        }
+    }
+
+    /// Explicit desktop drags (the web scrollbar) use the whole range;
+    /// wheels use the local anchor. Both start from the content now shown.
+    pub(crate) fn drag_started(&self, horizontal: bool, offset: Point<Points>) {
+        if !self.web_desktop {
+            return;
+        }
+        let (scroll, drag) = if horizontal {
+            (self.scroll_x, self.drag_x)
+        } else {
+            (self.scroll_y, self.drag_y)
+        };
+        scroll.set(if horizontal { offset.x } else { offset.y });
+        let g = untracked(|| self.geo());
+        drag.set(Some(Anchor {
+            scroll: f64::from(scroll.get_untracked().0),
+            content: if horizontal { g.cx } else { g.cy },
+        }));
+    }
+
+    pub(crate) fn drag_ended(&self, horizontal: bool, offset: Point<Points>) {
+        if !self.web_desktop {
+            return;
+        }
+        let (scroll, drag, anchor) = if horizontal {
+            (self.scroll_x, self.drag_x, self.anchor_x)
+        } else {
+            (self.scroll_y, self.drag_y, self.anchor_y)
+        };
+        scroll.set(if horizontal { offset.x } else { offset.y });
+        let g = untracked(|| self.geo());
+        // Take the drag's final content before switching back to local
+        // following. The subsequent rest recenters the invisible hit layer.
+        anchor.set(Anchor {
+            scroll: f64::from(scroll.get_untracked().0),
+            content: if horizontal { g.cx } else { g.cy },
+        });
+        drag.set(None);
+        self.rest();
+    }
+
+    /// Scrolls the rows to content offset `content` at the top.
+    pub(super) fn scroll_rows_to(&self, g: &Geo, content: f64, animated: bool) {
+        let y = self.offset_to(&g.y, g.cy, content, animated, self.anchor_y, self.scroll_y);
+        self.vscroll
+            .scroll_to(Point { x: Points::ZERO, y }, animated);
+    }
+
+    /// Scrolls the scrolling columns to content offset `content` at the
+    /// start.
+    fn scroll_columns_to(&self, g: &Geo, content: f64, animated: bool) {
+        let x = self.offset_to(&g.x, g.cx, content, animated, self.anchor_x, self.scroll_x);
         self.hscroll
             .scroll_to(Point { x, y: Points::ZERO }, animated);
+    }
+
+    /// The scroll offset that shows content offset `content`, from `from`.
+    /// Followed from an anchor, an animated scroll within reach moves one
+    /// to one from where it is (the content glides as far as the scroll);
+    /// any other takes the anchor of `content` ([`Axis::anchor_at`]),
+    /// proportional in the interior with native room reserved near either
+    /// end. The offset is taken at once so no frame shows the new anchor
+    /// with the old offset.
+    fn offset_to(
+        &self,
+        axis: &Axis,
+        from: f64,
+        content: f64,
+        animated: bool,
+        anchor: Signal<Anchor>,
+        scroll: Signal<Points>,
+    ) -> Points {
+        if !self.anchored || !axis.scaled() {
+            return axis.scroll_points(content);
+        }
+        let now = scroll.get_untracked();
+        if animated {
+            let here = Anchor {
+                scroll: now.0 as f64,
+                content: from,
+            };
+            let to = here.scroll + (content - from);
+            if (axis.content_offset_from(to, here) - content).abs() < 0.5 {
+                anchor.set(here);
+                return Points(to as f32);
+            }
+        }
+        let a = axis.anchor_at(content, f64::from(nsh_core::element::pixel_ratio()));
+        anchor.set(a);
+        scroll.set(Points(a.scroll as f32));
+        Points(a.scroll as f32)
+    }
+
+    /// A scroll came to rest: the anchor is retargeted to the content shown
+    /// ([`Axis::anchor_at`]), proportional in the interior with native room
+    /// reserved near either end. The scroll views move to that anchor,
+    /// unseen, when they are not already there ([`settle`]).
+    pub(crate) fn rest(&self) {
+        if !self.anchored {
+            return;
+        }
+        let g = untracked(|| self.geo());
+        let ratio = f64::from(nsh_core::element::pixel_ratio());
+        if g.y.scaled() && self.drag_y.get_untracked().is_none() {
+            let mut a = self.anchor_y.get_untracked();
+            let moved = settle(&g.y, g.cy, ratio, &mut a, self.scroll_y.get_untracked());
+            self.anchor_y.set(a);
+            if let Some(y) = moved {
+                self.scroll_y.set(y);
+                self.vscroll.scroll_to(Point { x: Points::ZERO, y }, false);
+            }
+        }
+        if g.x.scaled() && self.drag_x.get_untracked().is_none() {
+            let mut a = self.anchor_x.get_untracked();
+            let moved = settle(&g.x, g.cx, ratio, &mut a, self.scroll_x.get_untracked());
+            self.anchor_x.set(a);
+            if let Some(x) = moved {
+                self.scroll_x.set(x);
+                self.hscroll.scroll_to(Point { x, y: Points::ZERO }, false);
+            }
+        }
     }
 
     // Presses.
@@ -760,7 +1027,7 @@ impl Dt {
         let column = {
             let st = self.st.borrow();
             st.columns
-                .display_at(vx - g.lead as f64, g.cx)
+                .display_at(vx - g.lead as f64, g.cx, g.columns_view())
                 .map(|d| st.columns.def(d))
         };
         Hit {
@@ -770,16 +1037,33 @@ impl Dt {
         }
     }
 
-    /// A press (or tap) of the body at `position` with the modifier keys
-    /// held; `clicks` counts the presses in a row.
-    pub(crate) fn press_with(&self, position: Point<Points>, clicks: u32, modifiers: Modifiers) {
-        let hit = self.target_at(position);
-        self.press_hit(hit, clicks, modifiers);
+    /// A press (or tap) of the body, at `press.position` in the hit layer's
+    /// content. On a cell `renderCell` draws, a view of the app's there
+    /// that hears presses takes it (the body under the hit layer takes no
+    /// pointer); else it presses the row or cell.
+    pub(crate) fn press_with(&self, press: &PressEvent) {
+        let hit = self.target_at(press.position);
+        let (clicks, modifiers) = (press.clicks, press.modifiers);
+        let cell = match (hit.row, hit.column) {
+            (Some(row), Some(def)) if !hit.header => self.custom_cells.borrow().showing(row, def),
+            _ => None,
+        };
+        let Some(cell) = cell else {
+            self.press_hit(hit, clicks, modifiers);
+            return;
+        };
+        let taken = cell.press_at(*press);
+        let dt = self.clone();
+        spawn(async move {
+            if !taken.await {
+                dt.press_hit(hit, clicks, modifiers);
+            }
+        });
     }
 
     /// A press of a made row, the views that show the cells (a platform's
-    /// pointer reaches the hit layer instead; assistive technologies and
-    /// tests press what they see). `x` is in the row, whose left is where
+    /// pointer reaches the hit layer instead, as headless tests' presses
+    /// do; assistive technologies press what they see). `x` is in the row, whose left is where
     /// the region's cells start from: for the scrolling columns, the first
     /// of the chunk they are placed from (`origin`).
     pub(crate) fn press_row_with(
@@ -825,6 +1109,9 @@ impl Dt {
             let at = match region {
                 PressRegion::Lead => None,
                 PressRegion::Fixed => st.columns.display_at_table(x.0 as f64),
+                PressRegion::End => st
+                    .columns
+                    .display_at_table(st.columns.start(st.columns.end_start()) + x.0 as f64),
                 PressRegion::Scroll { origin } => st
                     .columns
                     .display_at_table(st.columns.start(origin.min(st.columns.len())) + x.0 as f64),
@@ -1044,7 +1331,7 @@ impl Dt {
             let Some(display) = st.columns.display_of(def) else {
                 return;
             };
-            if display < st.columns.fixed_len() {
+            if st.columns.is_fixed(display) {
                 return;
             }
             st.columns.start(display) - st.columns.fixed_width()
@@ -1055,8 +1342,7 @@ impl Dt {
         }
         let to = g.x.reveal(g.cx, end - 1.0, end);
         if to != g.cx {
-            let x = g.x.scroll_points(to);
-            self.hscroll.scroll_to(Point { x, y: Points::ZERO }, false);
+            self.scroll_columns_to(&g, to, false);
         }
     }
 
@@ -1101,8 +1387,11 @@ impl Dt {
 
     pub(crate) fn set_column_width(&self, key: &str, width: Points, report: bool) {
         let def = self.st.borrow().defs.iter().position(|c| c.key == key);
-        if let Some(def) = def {
-            self.set_width(def, width.0, report);
+        match def {
+            Some(def) => {
+                self.set_width(def, width.0, report);
+            }
+            None => log::warn!("DataTable.setColumnWidth: no column `{key}`"),
         }
     }
 
@@ -1116,10 +1405,18 @@ impl Dt {
             .collect()
     }
 
-    /// Fits the column `key` to its widest text and title.
-    pub(crate) fn fit_column(&self, key: &str) -> Option<Points> {
-        let def = self.st.borrow().defs.iter().position(|c| c.key == key)?;
-        self.fit(def).map(Points)
+    /// Fits the column `key` to its widest text and title; a `TypeError`
+    /// for a key no column has.
+    pub(crate) fn fit_column(&self, key: &str) -> Result<Points, JsError> {
+        let no_column = || JsError::Type(format!("DataTable.fitColumn: no column `{key}`"));
+        let def = self
+            .st
+            .borrow()
+            .defs
+            .iter()
+            .position(|c| c.key == key)
+            .ok_or_else(no_column)?;
+        self.fit(def).map(Points).ok_or_else(no_column)
     }
 
     pub(crate) fn fit(&self, def: usize) -> Option<f32> {
@@ -1170,20 +1467,13 @@ impl Dt {
         let g = untracked(|| self.geo());
         let to = {
             let st = self.st.borrow();
-            let n = st.columns.len();
-            let fixed = st.columns.fixed_len();
             let table_x = (x - g.lead) as f64;
-            let at = if table_x < g.fixed as f64 {
-                st.columns.display_at(table_x.max(0.0), 0.0)
-            } else {
-                st.columns.display_at(table_x, g.cx)
-            };
+            let at = st
+                .columns
+                .display_at(table_x.max(0.0), g.cx, g.columns_view());
             // Within the zone the column is in.
-            let (low, high) = if drag.from < fixed {
-                (0, fixed.saturating_sub(1))
-            } else {
-                (fixed, n.saturating_sub(1))
-            };
+            let zone = st.columns.zone_of(drag.from);
+            let (low, high) = (zone.start, zone.end.saturating_sub(1).max(zone.start));
             at.unwrap_or(if table_x < 0.0 { low } else { high })
                 .clamp(low, high)
         };
@@ -1297,6 +1587,8 @@ impl Dt {
 pub(crate) enum PressRegion {
     Lead,
     Fixed,
+    /// The columns fixed at the end.
+    End,
     /// The scrolling columns, placed from the column at display index
     /// `origin`.
     Scroll {
@@ -1348,6 +1640,28 @@ fn from_public(selection: DataTableSelection) -> Selection {
     }
 }
 
+/// A scroll came to rest on `axis` at scroll offset `scroll`, showing
+/// content offset `content`: `anchor` is retargeted by [`Axis::anchor_at`],
+/// proportional in the interior with native room reserved near either end.
+/// The scroll offset the scroll view moves to, unseen, is returned when it
+/// is not already there.
+///
+/// The anchor moves even when the scroll view does not. A drag back
+/// to the top ends at offset 0, already where the bar stands for the top;
+/// keeping the anchor that stood for the content before that drag makes the
+/// next one, followed from it, jump back toward that content.
+fn settle(
+    axis: &Axis,
+    content: f64,
+    pixel_ratio: f64,
+    anchor: &mut Anchor,
+    scroll: Points,
+) -> Option<Points> {
+    *anchor = axis.anchor_at(content, pixel_ratio);
+    let to = Points(anchor.scroll as f32);
+    (to != scroll).then_some(to)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1375,5 +1689,33 @@ mod tests {
         };
         let spec = spec_of(&column);
         assert!(spec.max >= spec.min);
+    }
+
+    #[test]
+    fn a_rest_at_the_top_retargets_the_anchor_without_moving() {
+        // A million rows of 28 points, dragged back to the top: the scroll
+        // view is at 0 and shows the top, already where the bar stands, while
+        // the anchor still stands for scaled content further down.
+        let axis = Axis::new(28_000_000.0, 600.0);
+        let mut anchor = axis.anchor_at(900_000.0, 2.0);
+        assert!(axis.content_offset_from(58.0, anchor) > 500.0);
+        let moved = settle(&axis, 0.0, 2.0, &mut anchor, Points::ZERO);
+        assert_eq!(moved, None, "the scroll view stays at the top");
+        // The next short drag is followed from the new anchor, one to one.
+        let next = axis.content_offset_from(58.0, anchor);
+        assert!((next - 58.0).abs() < 1e-6, "a drag of 58 shows {next}");
+    }
+
+    #[test]
+    fn a_rest_away_from_the_bar_moves_the_scroll_view_there() {
+        let axis = Axis::new(28_000_000.0, 600.0);
+        let content = 14_000_000.0;
+        let mut anchor = Anchor::default();
+        let moved = settle(&axis, content, 2.0, &mut anchor, Points(10.0));
+        assert_eq!(anchor, axis.anchor_at(content, 2.0));
+        assert_eq!(moved, Some(Points(anchor.scroll as f32)));
+        let at = Points(anchor.scroll as f32);
+        let again = settle(&axis, content, 2.0, &mut anchor, at);
+        assert_eq!(again, None, "once there, it stays");
     }
 }
