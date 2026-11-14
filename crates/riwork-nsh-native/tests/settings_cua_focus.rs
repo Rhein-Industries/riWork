@@ -16,6 +16,27 @@ use nsh_core::{
 use nsh_engine::{Bundle, Engine, EngineConfig, EngineControl, HostChannel};
 use serde_json::json;
 
+/// Whether the panel's initial focus reaches the platform as a Focus command on its target, a
+/// palette card or the Cua button. `apps/riwork/keyboard.ts` keeps that off (`FOCUSES_VIEWS`):
+/// NSH 0.3's macOS host carried a ref's `focus()` out for text inputs only, NSH 0.4+ for any Tab
+/// stop, and the app keeps what 0.3 did. Change both together.
+const FOCUSES_VIEWS: bool = false;
+
+/// The Focus commands the panel sends when it shows with the focus outside it.
+fn initial_focus(ready: bool) -> Vec<String> {
+    if !FOCUSES_VIEWS {
+        return vec![];
+    }
+    vec![
+        if ready {
+            "theme-choice-native"
+        } else {
+            "cua-primary"
+        }
+        .to_owned(),
+    ]
+}
+
 #[derive(Default)]
 struct Observed {
     names: HashMap<NodeId, String>,
@@ -153,28 +174,29 @@ impl App {
             observed,
             events: receive,
         };
+        // The palette cards load once the panel shows; its grid is there from the start.
+        app.wait_for("settings-theme-grid");
+        app
+    }
+    /// Waits for a view with test id `name`.
+    fn wait_for(&self, name: &str) {
         for _ in 0..50 {
-            app.settle();
-            if app
+            self.settle();
+            if self
                 .observed
                 .lock()
                 .unwrap()
                 .names
                 .values()
-                .any(|name| name == "theme-choice-native")
+                .any(|seen| seen == name)
             {
-                break;
+                return;
             }
         }
-        assert!(
-            app.observed
-                .lock()
-                .unwrap()
-                .names
-                .values()
-                .any(|name| name == "theme-choice-native")
-        );
-        app
+        let observed = self.observed.lock().unwrap();
+        let mut names: Vec<_> = observed.names.values().cloned().collect();
+        names.sort();
+        panic!("no view {name} mounted; test ids seen: {names:?}");
     }
     fn settle(&self) {
         self.host.send("app.fixture.settle", json!({})).unwrap();
@@ -254,14 +276,7 @@ fn delayed_cua_check_preserves_remote_settings_focus() {
             let expected = if inside.is_some() {
                 vec![]
             } else {
-                vec![
-                    if ready {
-                        "theme-choice-native"
-                    } else {
-                        "cua-primary"
-                    }
-                    .to_owned(),
-                ]
+                initial_focus(ready)
             };
             println!(
                 "remote delayed ready={ready} focus_before={inside:?}: expected={expected:?} actual={actual:?}"
@@ -296,20 +311,19 @@ fn combined_settings_cua_focus_commands() {
         ] {
             let app = App::start(ready, false);
             if let Some(name) = inside {
+                if name.starts_with("theme-choice-") {
+                    // The palette cards load when the panel first shows, and stay.
+                    app.show();
+                    app.wait_for(name);
+                    app.send("app.fixture.show", json!(false));
+                }
                 app.focus_event(name, EventKind::Focus);
             }
             let actual = app.show();
             let expected: Vec<String> = if inside.is_some() {
                 vec![]
             } else {
-                vec![
-                    if ready {
-                        "theme-choice-native"
-                    } else {
-                        "cua-primary"
-                    }
-                    .into(),
-                ]
+                initial_focus(ready)
             };
             println!(
                 "ready={ready} focus_before={inside:?}: expected={expected:?} actual={actual:?}"
@@ -326,14 +340,7 @@ fn combined_settings_cua_focus_commands() {
 #[ignore = "requires the isolated Phase 6c focus runner and compiled TSX fixture"]
 fn delayed_checks_and_focus_leaving_the_panel() {
     for ready in [false, true] {
-        let expected = vec![
-            if ready {
-                "theme-choice-native"
-            } else {
-                "cua-primary"
-            }
-            .to_owned(),
-        ];
+        let expected = initial_focus(ready);
         for inside in [
             None,
             Some("claude-api-key-input"),

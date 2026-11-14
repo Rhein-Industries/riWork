@@ -519,7 +519,9 @@ fn update_nsh_cli(
             }
             path
         }
-        None => find_tool("nsh", tool_path).ok_or_else(|| {
+        // The one kept under the Somtus data directory first, as the Zig toolchain is: `nsh` on
+        // PATH is whatever the person installed for other work, often another version.
+        None => kept_nsh().or_else(|| find_tool("nsh", tool_path)).ok_or_else(|| {
             format!("NSH {NSH_VERSION} is required to build this checkout. Set NSH_CLI to its absolute executable path.")
         })?,
     };
@@ -708,6 +710,17 @@ fn update_zig() -> Option<PathBuf> {
         return None;
     }
     find_zig(&crate::paths::riwork_home().ok()?.join("toolchains"))
+}
+
+/// The NSH CLI of the pinned version kept under the Somtus data directory
+/// (`toolchains/nsh-<version>/bin/nsh`), where add-in builds look for it too.
+fn kept_nsh() -> Option<PathBuf> {
+    find_nsh(&crate::paths::riwork_home().ok()?.join("toolchains"))
+}
+
+fn find_nsh(toolchains: &Path) -> Option<PathBuf> {
+    let nsh = toolchains.join(format!("nsh-{NSH_VERSION}/bin/nsh"));
+    nsh.is_file().then_some(nsh)
 }
 
 /// The newest `zig-0.16*/zig` in `toolchains` whose standard library is
@@ -1253,6 +1266,24 @@ mod tests {
     fn signal_state() -> MutexGuard<'static, ()> {
         static LOCK: Mutex<()> = Mutex::new(());
         LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    #[test]
+    fn the_kept_nsh_is_the_pinned_version_only() {
+        let temporary = StagingDirectory::new(
+            env::temp_dir().join(format!("riwork-update-nsh-{}", Uuid::new_v4())),
+        )
+        .unwrap();
+        let toolchains = temporary.path.as_path();
+        assert_eq!(find_nsh(toolchains), None, "nothing kept");
+        let other = toolchains.join("nsh-0.3.0/bin");
+        fs::create_dir_all(&other).unwrap();
+        fs::write(other.join("nsh"), "").unwrap();
+        assert_eq!(find_nsh(toolchains), None, "another version is not the pinned one");
+        let pinned = toolchains.join(format!("nsh-{NSH_VERSION}/bin"));
+        fs::create_dir_all(&pinned).unwrap();
+        fs::write(pinned.join("nsh"), "").unwrap();
+        assert_eq!(find_nsh(toolchains), Some(pinned.join("nsh")));
     }
 
     #[test]
