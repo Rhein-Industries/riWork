@@ -22,7 +22,7 @@ fi
 
 if [ ! -s "$ui/bundle.js" ]; then
     echo "The NSH UI is missing or empty: $ui/bundle.js" >&2
-    echo "Build the UI with NSH 0.5.1 before bundling; set NSH_CLI to its executable (see README.md):" >&2
+    echo "Build the UI with NSH 0.6.0 before bundling; set NSH_CLI to its executable (see README.md):" >&2
     if [ "$profile" = debug ]; then
         echo "  \"\$NSH_CLI\" build apps/riwork --out $ui" >&2
     else

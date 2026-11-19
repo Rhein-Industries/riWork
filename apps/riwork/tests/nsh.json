@@ -1,5 +1,5 @@
 {
   "name": "Somtus headless workspace fixture",
   "id": "dev.riwork.test.workspace",
-  "capabilities": { "host": ["app.fixture.*", "app.setAppearance", "window.*", "system.*"], "clipboard": true }
+  "capabilities": { "host": ["app.fixture.*", "app.setAppearance", "window.*", "system.*"], "clipboard": true, "application": true }
 }

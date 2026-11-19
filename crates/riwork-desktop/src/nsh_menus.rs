@@ -1,6 +1,6 @@
 //! Process-owned menus for the AppKit host (contracts §2.4).
 //!
-//! The model uses `nsh/desktop`'s Rust types. NSH's AppKit menu builder (0.5.1) is
+//! The model uses `nsh/desktop`'s Rust types. NSH's AppKit menu builder (0.6.0) is
 //! private and binds its callbacks to one AppView, so the host renders this
 //! model itself and resolves the key window at the time of an action.
 
@@ -274,7 +274,7 @@ impl MenuTarget {
         let key = event
             .charactersIgnoringModifiers()
             .map(|text| text.to_string());
-        // NSH 0.5.1 has no Menu key in its parser. Route the dedicated PC
+        // NSH 0.6.0 has no Menu key in its parser. Route the dedicated PC
         // application key through the same per-window command channel.
         if dedicated_menu_key(event.keyCode(), key.as_deref(), flags) {
             let app = NSApplication::sharedApplication(self.mtm());
@@ -548,6 +548,8 @@ fn item(label: &str, command: &str, shortcut: Option<&str>) -> MenuItem {
         role: None,
         when: When::Always,
         icon: None,
+        symbol: None,
+        destructive: false,
     })
 }
 
@@ -561,6 +563,8 @@ fn edit_item(label: &str, role: MenuRole) -> MenuItem {
         role: Some(role),
         when: When::Always,
         icon: None,
+        symbol: None,
+        destructive: false,
     })
 }
 
@@ -570,6 +574,8 @@ fn submenu(label: &str, items: Vec<MenuItem>) -> MenuItem {
         enabled: true,
         items,
         icon: None,
+        symbol: None,
+        inline: false,
     }
 }
 

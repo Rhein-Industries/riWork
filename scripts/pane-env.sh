@@ -1,4 +1,4 @@
-# Sourced by pane-shot.sh and pane-test.sh. Finds Somtus's nsh 0.5 and, unless RIWORK_HOME is
+# Sourced by pane-shot.sh and pane-test.sh. Finds Somtus's nsh 0.6 and, unless RIWORK_HOME is
 # already a /tmp fixture home, gives the run a private Somtus home, runtime folder and tmux
 # folder, so a fixture or a test can never change the person's own settings, layouts, projects
 # or Keychain key, nor read their Orca profile. RIWORK_NSH_FILES_FIXTURE=1 selects the fixture
@@ -9,7 +9,7 @@
 real_home=$HOME/.local/share/riwork
 nsh=${NSH_CLI:-}
 if [ -z "$nsh" ]; then
-	for candidate in "${RIWORK_HOME:-$real_home}"/toolchains/nsh-0.5*/bin/nsh "$real_home"/toolchains/nsh-0.5*/bin/nsh; do
+	for candidate in "${RIWORK_HOME:-$real_home}"/toolchains/nsh-0.6*/bin/nsh "$real_home"/toolchains/nsh-0.6*/bin/nsh; do
 		[ -x "$candidate" ] && { nsh=$candidate; break; }
 	done
 fi

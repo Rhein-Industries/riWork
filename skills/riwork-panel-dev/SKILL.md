@@ -64,7 +64,7 @@ small, focused changes in the panel's own files; leave unrelated code alone. The
 scripts/pane-test.sh NAME...                         # each existing test name, in a private home
 ```
 
-`NSH` is `$NSH_CLI`, else `~/.local/share/riwork/toolchains/nsh-0.5*/bin/nsh`. Fix what fails;
+`NSH` is `$NSH_CLI`, else `~/.local/share/riwork/toolchains/nsh-0.6*/bin/nsh`. Fix what fails;
 say which failures were there before your change.
 
 **Never run a test with plain `nsh test`.** Some tests open the whole app and save settings,

@@ -1,12 +1,12 @@
-# nsh-platform-macos 0.5.1, patched for Somtus
+# nsh-platform-macos 0.6.0, patched for Somtus
 
-The crates.io release (upstream commit `224d9a795c7ac9d10d75750de9351adac5549675`, archive
-SHA-256 `274ad01eb629fd822560ae40695af1b181baa44febdd2931b7749cc6f25d3b81`) with one change:
+The crates.io release (upstream commit `554163758e30d2f62f814096a6327937dcb4fe49`, archive
+SHA-256 `c8ac8f4406faafd7d2043ca85d06029f5a77ca2707d651a4d303ba463edb6b49`) with one change:
 `NSH_HIDDEN_WINDOW=1` keeps the app's window hidden (transparent, off screen, click-through).
 `scripts/pane-shot.sh` sets it, so `nsh test --target macos` can draw and photograph a pane
 while someone works. Without the variable it behaves exactly like the release.
 
-NSH 0.5 itself now runs test hosts in the background (`AppOptions::background`, the host's
+NSH itself runs test hosts in the background since 0.5 (`AppOptions::background`, the host's
 `--background`, which `nsh test --target macos` passes): the app never becomes active, takes
 no keyboard and has no Dock icon. That part of the 0.3.0 patch is gone. Upstream still shows
 the window, in front of the others, on a second display or, with only one, on the display in

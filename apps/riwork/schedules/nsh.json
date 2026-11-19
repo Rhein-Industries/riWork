@@ -1,5 +1,5 @@
 {
   "name": "Somtus automations headless fixtures",
   "id": "dev.riwork.test.schedules",
-  "capabilities": { "host": ["app.fixture.*", "window.*", "system.*"], "clipboard": true }
+  "capabilities": { "host": ["app.fixture.*", "window.*", "system.*"], "clipboard": true, "application": true }
 }

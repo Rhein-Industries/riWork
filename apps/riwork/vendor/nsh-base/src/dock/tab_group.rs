@@ -579,7 +579,7 @@ impl AreaCx {
 
     /// A tab's drag began at `pointer`: the groups are measured.
     pub(crate) fn start_drag(self, panel: PanelId, source: Option<NodeId>, pointer: Point<Points>) {
-        self.cx.emit(DockAreaEvent::DragChange(true));
+        self.emit(DockAreaEvent::DragChange(true));
         self.drag.set(Some(TabDrag {
             panel,
             source,
@@ -662,7 +662,7 @@ impl AreaCx {
         self.drag.set(None);
         self.zones.replace(Vec::new());
         let Some(at) = drag.target else {
-            self.cx.emit(DockAreaEvent::DragChange(false));
+            self.emit(DockAreaEvent::DragChange(false));
             return;
         };
         let target = match at.side {
@@ -681,7 +681,7 @@ impl AreaCx {
             self.current.set(Some(at.group));
         }
         self.edit(|area| area.move_panel(drag.panel, target));
-        self.cx.emit(DockAreaEvent::DragChange(false));
+        self.emit(DockAreaEvent::DragChange(false));
     }
 
     /// The drag ended without a drop.
@@ -689,7 +689,7 @@ impl AreaCx {
         let was_dragging = self.drag.get_untracked().is_some();
         self.drag.set(None);
         self.zones.replace(Vec::new());
-        if was_dragging { self.cx.emit(DockAreaEvent::DragChange(false)); }
+        if was_dragging { self.emit(DockAreaEvent::DragChange(false)); }
     }
 
     /// Where `drag` would land with the pointer at `at`.

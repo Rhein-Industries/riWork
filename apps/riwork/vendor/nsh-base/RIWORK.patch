@@ -1,15 +1,15 @@
 --- a/Cargo.toml
 +++ b/Cargo.toml
 @@ -159,6 +159,14 @@
- version = "0.5.1"
+ version = "0.6.0"
  features = ["declarations"]
  
 +[dev-dependencies.nsh-engine]
-+version = "=0.5.1"
++version = "=0.6.0"
 +default-features = false
 +
 +[dev-dependencies.nsh-testing]
-+version = "=0.5.1"
++version = "=0.6.0"
 +default-features = false
 +
  [target.'cfg(not(target_arch = "wasm32"))'.dependencies.chrono]
@@ -79,7 +79,19 @@
      /// The layout changed (a drag, a selection, a resize, a dock opened or
      /// closed, a method of the ref): the whole new layout, every id in it.
      /// Pass it back as `layout` (and save it, debounced: it comes on every
-@@ -1114,6 +1133,7 @@
+@@ -715,8 +734,9 @@
+         }
+     }
+ 
+-    /// Reports `event` to whoever renders the area.
+-    fn emit(self, event: DockAreaEvent) {
++    /// Reports `event` to whoever renders the area. Crate-visible for the tab drag's
++    /// `DragChange` (`tab_group.rs`).
++    pub(crate) fn emit(self, event: DockAreaEvent) {
+         // Called outside the stored value's borrow: a listener may reach the
+         // area again.
+         let emit = self.emit.get();
+@@ -1150,6 +1170,7 @@
      group.__element().__props_mut().handle_thumb_style = a.props.handle_thumb_style;
      let group = group
          .axis(move || axis.get())
@@ -87,27 +99,27 @@
          .handle_class(a.props.handle_class)
          .handle_thumb_class(a.props.handle_thumb_class)
          .handle_accessibility_label(a.props.handle_accessibility_label)
-@@ -1259,13 +1279,15 @@
-                         end_dock_drag(a, placement, drag.from + *offset * sign);
-                     })
-                     .child(
--                        // The indicator is the band's line, 1 point
--                        // across (the band stretches it along): the
--                        // app's class colors it, or makes it thicker.
-+                        // The indicator is a full-length one-point line.
-+                        // Its geometry does not depend on having content;
-+                        // the app's class or style only needs to color it.
-                         view()
-+                            .flex_none()
-+                            .pointer_events(PointerEvents::None)
-                             .map(|v| match axis {
--                                Axis::Horizontal => v.w(HANDLE_SIZE),
--                                Axis::Vertical => v.h(HANDLE_SIZE),
-+                                Axis::Horizontal => v.w(HANDLE_SIZE).h_full(),
-+                                Axis::Vertical => v.h(HANDLE_SIZE).w_full(),
-                             })
-                             .app_class(a.props.handle_class)
-                             .inline_style(a.props.handle_style),
+@@ -1298,13 +1319,15 @@
+                             end_dock_drag(a, placement, drag.from + *offset * sign);
+                         })
+                         .child(
+-                            // The indicator is the band's line, 1 point
+-                            // across (the band stretches it along): the
+-                            // app's class colors it, or makes it thicker.
++                            // The indicator is a full-length one-point line.
++                            // Its geometry does not depend on having content;
++                            // the app's class or style only needs to color it.
+                             view()
++                                .flex_none()
++                                .pointer_events(PointerEvents::None)
+                                 .map(|v| match axis {
+-                                    Axis::Horizontal => v.w(HANDLE_SIZE),
+-                                    Axis::Vertical => v.h(HANDLE_SIZE),
++                                    Axis::Horizontal => v.w(HANDLE_SIZE).h_full(),
++                                    Axis::Vertical => v.h(HANDLE_SIZE).w_full(),
+                                 })
+                                 .app_class(a.props.handle_class)
+                                 .inline_style(a.props.handle_style),
 --- a/src/dock/drag.rs
 +++ b/src/dock/drag.rs
 @@ -22,16 +22,24 @@
@@ -358,12 +370,10 @@
          .accessibility_state(move || AccessibilityState {
              selected: selected(),
              ..AccessibilityState::default()
-@@ -399,8 +517,49 @@
-     let pointer = if across { at.y } else { at.x };
-     let index = others.iter().filter(|(_, b)| key(b) < pointer).count();
+@@ -401,6 +519,47 @@
      (index, others.into_iter().map(|(p, _)| p.clone()).collect())
-+}
-+
+ }
+ 
 +/// Splits divide the whole pane, including its tab bar. Measuring only the
 +/// content made a horizontal split's midpoint one half-header too low.
 +fn pane_bounds(zone: &Zone, content: Bounds<Points>) -> Bounds<Points> {
@@ -374,8 +384,8 @@
 +        origin: Point::new(left, top),
 +        size: nsh_core::Size::new(content.right().max(bar.right()) - left, content.bottom().max(bar.bottom()) - top),
 +    }
- }
- 
++}
++
 +/// The same slot calculation used by the drop: a small line between the
 +/// measured visible tabs, clipped to the bar so scrolled tabs cannot put it
 +/// outside the pane. Compact bars use the same calculation along their axis.
@@ -412,7 +422,7 @@
  
      /// A tab's drag began at `pointer`: the groups are measured.
      pub(crate) fn start_drag(self, panel: PanelId, source: Option<NodeId>, pointer: Point<Points>) {
-+        self.cx.emit(DockAreaEvent::DragChange(true));
++        self.emit(DockAreaEvent::DragChange(true));
          self.drag.set(Some(TabDrag {
              panel,
              source,
@@ -424,7 +434,7 @@
 +        self.drag.set(None);
 +        self.zones.replace(Vec::new());
          let Some(at) = drag.target else {
-+            self.cx.emit(DockAreaEvent::DragChange(false));
++            self.emit(DockAreaEvent::DragChange(false));
              return;
          };
          let target = match at.side {
@@ -432,7 +442,7 @@
              self.current.set(Some(at.group));
          }
          self.edit(|area| area.move_panel(drag.panel, target));
-+        self.cx.emit(DockAreaEvent::DragChange(false));
++        self.emit(DockAreaEvent::DragChange(false));
      }
  
      /// The drag ended without a drop.
@@ -440,7 +450,7 @@
 +        let was_dragging = self.drag.get_untracked().is_some();
          self.drag.set(None);
          self.zones.replace(Vec::new());
-+        if was_dragging { self.cx.emit(DockAreaEvent::DragChange(false)); }
++        if was_dragging { self.emit(DockAreaEvent::DragChange(false)); }
      }
  
      /// Where `drag` would land with the pointer at `at`.
@@ -475,7 +485,7 @@
      /// The Tailwind classes of each handle's indicator, the part the app
      /// draws, centered on the boundary between two panels in the handle's
      /// band, along the whole boundary and 1 point across unless the
-@@ -126,8 +130,9 @@
+@@ -139,8 +143,9 @@
      view()
          .size_full()
          .style_with(move |s| match (props.axis.get(), terminal) {
@@ -486,8 +496,8 @@
 +            (Axis::Vertical, false) => s.flex_col().gap(props.divider_size.get().max(Points::ZERO)),
              // A terminal keeps no percentage height for a box of content:
              // the group grows to fill its parent instead.
-             (Axis::Horizontal, true) => s.flex_row().flex_grow(1.0).gap(px(8.0)),
-@@ -200,12 +205,16 @@
+             (Axis::Horizontal, true) => s.flex_row().flex_grow(1.0).gap(column),
+@@ -213,12 +218,16 @@
                  // (`terminal_band`), the app's line and thumb aside.
                  .when(!terminal, |v| {
                      v.child(
@@ -508,7 +518,7 @@
                              })
                              .app_class(props.handle_class)
                              .inline_style(props.handle_style)
-@@ -671,7 +680,14 @@
+@@ -697,7 +706,14 @@
              .map(|index| {
                  let gap = start(&frames[index + 1]) - end(&frames[index]);
                  at += sizes[index];
@@ -526,7 +536,7 @@
                      axis,
 --- a/src/switch.rs
 +++ b/src/switch.rs
-@@ -48,6 +48,10 @@
+@@ -55,6 +55,10 @@
  /// The events of a [`Switch`].
  #[derive(Debug, Clone, PartialEq, Event)]
  pub enum SwitchEvent {
@@ -537,7 +547,7 @@
      /// The switch was pressed (a tap, a click, Space or Return): the value
      /// it asks for, the opposite of `checked`.
      #[args(checked)]
-@@ -90,6 +94,8 @@
+@@ -101,6 +105,8 @@
          })
          .checked_style(props.checked_style)
          .hit_slop(props.hit_slop)
