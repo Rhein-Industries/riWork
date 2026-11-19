@@ -1149,10 +1149,14 @@ export function Workspace(props: WorkspaceProps) {
               style={{ flexDirection: "row", alignItems: "center" }}>
               {!tab.panel.startsWith("empty:") && tabCell(findPanel(snapshot(), tab.panel) ?? { id: tab.panel, title: tab.panel, kind: "empty" }, tab.active)}
             </View>}
-            renderPanel={(panel) => <View ref={(node) => { bodyRefs.set(panel.id, node); props.onViewRef?.(`panel:${panel.id}`, node); }} focusable={true} testID={`pane-${paneOf(panel.id)?.id}`} style={{ flex: 1, minHeight: 0 }}
+            renderPanel={(panel) => {
+              // The add-in this panel shows, if any. Read through a computed: a customization snapshot that
+              // leaves it as it was (every one at startup) must not build the panel's content again.
+              const addin = computed(() => panel.id.startsWith("panel:") ? customization.state().layout.panels[panel.id.slice(6)] : undefined);
+              return <View ref={(node) => { bodyRefs.set(panel.id, node); props.onViewRef?.(`panel:${panel.id}`, node); }} focusable={true} testID={`pane-${paneOf(panel.id)?.id}`} style={{ flex: 1, minHeight: 0 }}
               onPress={() => { action(() => panel.id.startsWith("empty:") ? session.selectPane(Number(panel.id.slice(6))) : session.selectPanel(panel.id)); focusActive(); }}>
-              {panel.id.startsWith("panel:") && customization.state().layout.panels[panel.id.slice(6)] ?
-                <AddinTab addin={{ key: customization.state().layout.panels[panel.id.slice(6)].addin, view: customization.state().layout.panels[panel.id.slice(6)].view, args: customization.state().layout.panels[panel.id.slice(6)].args ?? null }}
+              {addin() ?
+                <AddinTab addin={{ key: addin()!.addin, view: addin()!.view, args: addin()!.args ?? null }}
                   projectId={projectId} workspace={workspaceContext} theme={theme} visible={() => isVisible(panel.id)} onAction={(key, request) => void addinAction(key, request)} /> :
                 remoteProject() && panel.id.startsWith("panel:") && remotePanelUnavailable(panel.id.slice(6)) ?
                 <RemoteUnavailable hostLabel={remoteHostLabel(remote.data(), remoteProjectKey(projectId())!.host)} panel={panel.id.slice(6)} theme={theme} /> :
@@ -1235,7 +1239,7 @@ export function Workspace(props: WorkspaceProps) {
                   theme={theme} diagnostics={props.diagnostics}
                   visible={isVisible(panel.id)}
                   onPress={() => { action(() => panel.id.startsWith("empty:") ? session.selectPane(Number(panel.id.slice(6))) : session.selectPanel(panel.id)); focusActive(); }} />}
-            </View>} />}
+            </View>; }} />}
         </View>
       </View>
       {vimBar() && <View testID="vim-open-bar" style={{ gap: 4, paddingHorizontal: space(10, theme().scale), paddingVertical: space(6, theme().scale), borderTopWidth: 1, borderColor: theme().palette.divider, backgroundColor: theme().palette.panel }}>
