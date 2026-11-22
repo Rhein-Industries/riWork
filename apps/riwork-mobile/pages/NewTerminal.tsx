@@ -15,7 +15,6 @@ export const SHELL_KINDS: readonly { kind: ShellKind; label: string; detail: str
   { kind: "codex", label: "Codex", detail: "OpenAI's agent in a terminal", symbol: "sparkles" },
   { kind: "claude", label: "Claude", detail: "Anthropic's agent in a terminal", symbol: "sparkle" },
   { kind: "grok", label: "Grok", detail: "xAI's agent in a terminal", symbol: "bolt" },
-  { kind: "muse", label: "Muse", detail: "Muse's agent in a terminal", symbol: "wand.and.stars" },
 ];
 /** A remembered kind this form offers; the chat and orchestrator kinds (Swift's sheet) fall back to a shell. */
 export function shellKind(value: unknown): ShellKind {

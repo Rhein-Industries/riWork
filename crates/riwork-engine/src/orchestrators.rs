@@ -10,8 +10,8 @@
 //!
 //! **How a new one runs** is `plan`'s answer for its scope: a project's own choice
 //! (Project Settings), else Settings > Agent sessions. The default, `Automatic`,
-//! starts a Muse chat on Wonder Full and, when Muse cannot start, a Codex chat on
-//! GPT-6.1-Sol, and says so (`Created::fallback`); an explicit chat that cannot
+//! starts a Codex chat on GPT-6.1-Sol and, when Codex cannot start, a Claude chat on
+//! Opus, and says so (`Created::fallback`); an explicit chat that cannot
 //! start is an error, never replaced by another. The desktop, the CLI (and the
 //! phone through it) and the MCP tools all create through `plan` and `create`.
 //!

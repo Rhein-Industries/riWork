@@ -37,8 +37,8 @@ export interface CommandHooks {
   cycle: (direction: 1 | -1) => void;
   /** Dismiss workspace-owned transient UI on Escape. */
   escape: () => void;
-  /** A focused native preview owns Escape unless transient workspace UI does. */
-  previewOwnsEscape?: () => boolean;
+  /** Register Escape only while there is workspace UI to dismiss. */
+  ownsEscape?: () => boolean;
   /** The window's current project, which a panel project switch can change. */
   projectId: () => string | undefined;
   /** ⌘⌥O: the project's orchestrator, found or made as Settings say. */
@@ -89,7 +89,7 @@ export function workspaceCommands(
   });
   function dispatch(id: string, args?: { query?: string }) {
     if (hooks.customization?.(id)) return;
-    const agent = ({ openCodex: "codex", openClaude: "claude", openGrok: "grok", openMuse: "muse" } as Record<string, string>)[id];
+    const agent = ({ openCodex: "codex", openClaude: "claude", openGrok: "grok" } as Record<string, string>)[id];
     if (agent && !hooks.blocked() && hooks.remoteAgent?.(agent)) { stripOpen.set(false); return; }
     if ((id === "newChat" || id === "handOff") && !hooks.blocked() && hooks.remoteRefusal?.(id)) { stripOpen.set(false); return; }
     if (!hooks.blocked() && ["find", "search", "findNext", "findPrevious", "findClose"].includes(id)
@@ -135,11 +135,12 @@ export function workspaceCommands(
     if (context === "window" && key !== "mod+f" && id !== "newChat" && id !== "createProject") cleanup(keymap.bind(key, () => dispatch(id)));
   }
   effect(() => {
-    // NSH's local monitor consumes bindings before native keyDown. Remove this
-    // binding while preview owns Escape so its real key/down-up path receives it.
-    if (hooks.previewOwnsEscape?.() && !hooks.blocked() && !stripOpen()) return;
+    // NSH consumes a matching key before native keyDown, even if the JS
+    // handler does nothing. Leave Escape with the focused terminal/chat/preview
+    // unless the workspace actually has something to dismiss.
+    if (!stripOpen() && !hooks.ownsEscape?.()) return;
     return keymap.bind("escape", () => {
-      if (stripOpen()) stripOpen.set(false);
+      if (stripOpen()) { stripOpen.set(false); return; }
       hooks.escape();
     }, { when: "always" });
   });

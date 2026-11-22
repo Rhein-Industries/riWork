@@ -152,7 +152,7 @@ export function AutomationsPanel(props: {
       {field("title", "Title", () => e().title, (title) => patch({ title: singleLine(title) }), "e.g. Daily review", true)}
       {field("prompt", "Prompt · Single line", () => e().prompt, (prompt) => patch({ prompt: singleLine(prompt) }), "What should the agent do?")}
       {fresh() ? <>
-        {segments("automation-provider", "Provider", ["codex", "claude", "muse"].map((provider) => ({ id: `automation-provider-${provider}`, label: provider[0].toUpperCase() + provider.slice(1),
+        {segments("automation-provider", "Provider", ["codex", "claude"].map((provider) => ({ id: `automation-provider-${provider}`, label: provider[0].toUpperCase() + provider.slice(1),
           selected: e().options.provider === provider, disabled: pending() || !!e().previous, onPress: () => changeProvider(provider) })))}
         <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
           {field("model", "Model · Optional", () => e().options.model ?? "", (model) => options({ model }), "Default")}

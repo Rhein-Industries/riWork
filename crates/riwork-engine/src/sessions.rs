@@ -2628,6 +2628,9 @@ impl SessionManager {
     }
 
     fn new_tmux_session_with(&self, new: NewSession) -> Result<ShellSession, String> {
+        if new.harness == Some(HarnessKind::Muse) {
+            return Err(riwork_core::provider::MUSE_DISABLED.into());
+        }
         let NewSession {
             id,
             project_id,
@@ -5364,6 +5367,7 @@ pub enum ProgramLookup {
 /// has already read them (the GUI does at startup; asking the shell starts a process).
 /// Somtus's own launcher shims are skipped by their marker wherever they live.
 pub fn installed_harness_program(harness: HarnessKind) -> ProgramLookup {
+    if harness == HarnessKind::Muse { return ProgramLookup::Missing; }
     let shims = Path::new("/nonexistent/riwork-harness-bin");
     if let Some(program) = find_harness_program_in(harness, shims, executable_dirs()) {
         return ProgramLookup::Found(program);
@@ -5828,6 +5832,9 @@ fn codex_proxy_binding(
 }
 
 pub fn run_cua_harness(harness: HarnessKind, arguments: &[String]) -> Result<(), String> {
+    if harness == HarnessKind::Muse {
+        return Err(riwork_core::provider::MUSE_DISABLED.into());
+    }
     if harness == HarnessKind::Muse
         && !harness_utility_invocation(harness, arguments)
         && arguments
@@ -6880,6 +6887,12 @@ mod tmux_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn muse_launcher_is_disabled_before_discovery_or_process_start() {
+        assert!(run_cua_harness(HarnessKind::Muse, &[]).unwrap_err().contains("Muse is disabled"));
+        assert!(matches!(installed_harness_program(HarnessKind::Muse), ProgramLookup::Missing));
+    }
 
     #[test]
     #[ignore = "slow: isolated tmux server and input-lease timers"]

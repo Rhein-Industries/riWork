@@ -59,12 +59,12 @@ export function Handoff(props: HandoffProps) {
   const size = (value: number) => space(value, theme().scale);
   const text = (value = 11, muted = false) => ({ fontFamily: theme().family, fontSize: value * theme().scale, color: muted ? theme().palette.muted : theme().palette.text });
   const field = () => ({ ...text(), minHeight: size(28), paddingHorizontal: size(8), paddingVertical: size(5), borderRadius: 6, backgroundColor: theme().palette.bg });
-  const providers = (): Provider[] => kind() === "chat" ? ["codex", "claude", "muse"] : ["codex", "claude", "grok", "muse"];
+  const providers = (): Provider[] => kind() === "chat" ? ["codex", "claude"] : ["codex", "claude", "grok"];
   const suggestions = () => [...new Set(models().filter((chat) => chat.provider === provider() && chat.model).map((chat) => chat.model!))].slice(0, 8);
 
   void api.source(sourceId).then((value) => {
     if (!alive) return;
-    source.set(value); kind.set(value.kind); provider.set(value.provider);
+    source.set(value); kind.set(value.kind); provider.set(value.provider === "muse" ? "codex" : value.provider);
   }).catch((reason) => { if (alive) error.set(String(reason).replace(/^Error: /, "")); });
   void Accounts.list().then((value) => { if (alive) accounts.set(value); }).catch(() => {});
   void Chat.list().then((value) => { if (alive) models.set(value); }).catch(() => {});

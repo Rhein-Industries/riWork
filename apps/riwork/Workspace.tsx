@@ -150,6 +150,16 @@ export function Workspace(props: WorkspaceProps) {
   const tabHint = signal<{ id: string; text: string } | null>(null);
   const bodyRefs = new Map<string, YNode>();
   const terminalControls = new Map<string, TerminalController>();
+  const terminalControlsVersion = signal(0);
+  function registerTerminalControl(id: string, control: TerminalController) {
+    terminalControls.set(id, control);
+    terminalControlsVersion.set(untracked(() => terminalControlsVersion()) + 1);
+    return () => {
+      if (terminalControls.get(id) !== control) return;
+      terminalControls.delete(id);
+      terminalControlsVersion.set(untracked(() => terminalControlsVersion()) + 1);
+    };
+  }
   const tabRefs = new Map<string, YNode>();
   const chatUsage = signal<Record<string, NativeChatUsage>>({});
   let alive = true;
@@ -526,7 +536,7 @@ export function Workspace(props: WorkspaceProps) {
   }
   function newChatProvider(): "codex" | "claude" | "muse" {
     const provider = nativeChatUsage()?.provider;
-    return provider === "claude" || provider === "muse" ? provider : "codex";
+    return provider === "claude" ? provider : "codex";
   }
   function showHandoff() {
     if (localOnly() || busy() || switching()) return;
@@ -884,7 +894,7 @@ export function Workspace(props: WorkspaceProps) {
       { label: "Split down", shortcut: shortcut("splitDown", "mod+shift+d"), onSelect: () => { void createShell("down"); } },
       { type: "separator" },
       { label: "New", submenu: [
-        ...[["Codex", "mod+shift+c"], ["Claude", "mod+shift+l"], ["Grok", "mod+shift+g"], ["Muse", "mod+shift+u"]].map(([label, shortcut]): MenuItem => ({ label, shortcut, onSelect: () => { void createShell(undefined, label.toLowerCase()); } })),
+        ...[["Codex", "mod+shift+c"], ["Claude", "mod+shift+l"], ["Grok", "mod+shift+g"]].map(([label, shortcut]): MenuItem => ({ label, shortcut, onSelect: () => { void createShell(undefined, label.toLowerCase()); } })),
         { type: "separator" },
         { label: "Subshell", disabled: !selected()?.startsWith("shell:"), onSelect: () => { void createSubshell(); } },
         { label: "Open file in Vim…", onSelect: showVimBar },
@@ -893,7 +903,6 @@ export function Workspace(props: WorkspaceProps) {
       { label: "Sessions", submenu: [
         { label: "Existing sessions", shortcut: shortcut("openSessions", "mod+alt+s"), onSelect: () => { panelState.sessionFilter.set("all"); view("shells"); } },
         { label: "Existing Claude chats", onSelect: () => { panelState.sessionFilter.set("claude"); view("shells"); } },
-        { label: "Existing Muse chats", onSelect: () => { panelState.sessionFilter.set("muse"); view("shells"); } },
         { type: "separator" },
         { label: "Hand off…", disabled: !selected()?.startsWith("shell:") && !selected()?.startsWith("chat:"), onSelect: showHandoff },
       ] },
@@ -945,8 +954,12 @@ export function Workspace(props: WorkspaceProps) {
       return false;
     },
     blocked: () => switching(),
-    previewOwnsEscape: () => !!previewFocus() && isVisible(previewFocus()!) && !frozen() &&
-      !statusMenu() && !props.modalOpen?.() && !switching(),
+    ownsEscape: () => {
+      terminalControlsVersion(); // Controllers mount after the command effect.
+      return !!renaming() || (!!panelState.editor() && !panelState.pending()) ||
+        (!!panelState.closingShell() && !panelState.pending()) || vimBar() || allTabs() ||
+        selected() === "panel:preview" || !!terminalControls.get(selected() ?? "")?.finding();
+    },
     newShell: (split) => { allTabs.set(false); void createShell(split); },
     newAgent: (kind) => { allTabs.set(false); void createShell(undefined, kind); },
     newChat: showNewChat,
@@ -1194,7 +1207,7 @@ export function Workspace(props: WorkspaceProps) {
                 <RemoteTerminal desktopId={panel.id.split(":")[1]} shellId={panel.id.split(":")[2]} label={remoteHostLabel(remote.data(), panel.id.split(":")[1])}
                   link={remote.data().hosts.find((host) => host.id === panel.id.split(":")[1])?.link ?? null} visible={isVisible(panel.id)} focusOnAttach={pendingFocus() === panel.id}
                   colors={terminalColors()} frozen={terminalFrozen()} theme={theme} onNotice={(message) => notice.set(message)}
-                  onControl={(control) => { terminalControls.set(panel.id, control); return () => { if (terminalControls.get(panel.id) === control) terminalControls.delete(panel.id); }; }}
+                  onControl={(control) => registerTerminalControl(panel.id, control)}
                   onFocus={() => action(() => session.selectPanel(panel.id))} onAttached={() => { if (pendingFocus() === panel.id) pendingFocus.set(null); }} /> :
                 panel.id.startsWith("shell:") ?
                 <View testID={`panel:${panel.id}`} style={{ flex: 1, minHeight: 0 }}>
@@ -1207,12 +1220,7 @@ export function Workspace(props: WorkspaceProps) {
                     // that unmounts its view never arrives, and the shell is then released as before.
                     keepOnUnmount={switching()}
                     onMount={() => props.onTerminalMount?.(panel.id.slice(6))}
-                    onControl={(control) => {
-                      terminalControls.set(panel.id, control);
-                      return () => {
-                        if (terminalControls.get(panel.id) === control) terminalControls.delete(panel.id);
-                      };
-                    }}
+                    onControl={(control) => registerTerminalControl(panel.id, control)}
                     onAttached={() => { if (pendingFocus() === panel.id.slice(6)) pendingFocus.set(null); }}
                     onFocus={() => action(() => session.selectPanel(panel.id))} onLink={openLink} onNotice={(message) => notice.set(message)} />
                 </View> : panel.id.startsWith("remote-chat:") || panel.id.startsWith("chat:") || panel.id.startsWith("chat-pending:") ?

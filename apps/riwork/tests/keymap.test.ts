@@ -16,7 +16,7 @@ test("P1-KEYS-01 no key is bound twice and every GPUI chord is present", () => {
     "mod+w", "mod+shift+w", "ctrl+tab", "ctrl+shift+tab", "mod+shift+]", "mod+shift+[",
     "mod+1", "mod+2", "mod+3", "mod+4", "mod+5", "mod+6", "mod+7", "mod+8", "mod+9",
     "mod+b", "mod+f", "mod+shift+f", "mod+shift+o", "mod+alt+o", "mod+alt+g", "mod+shift+n",
-    "mod+shift+c", "mod+shift+l", "mod+shift+g", "mod+shift+u", "mod+alt+shift+c",
+    "mod+shift+c", "mod+shift+l", "mod+shift+g", "mod+alt+shift+c",
     "mod+=", "mod+-", "mod+0",
   ];
   const expected = [

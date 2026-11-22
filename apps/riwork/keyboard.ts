@@ -10,7 +10,6 @@ export const DEFERRED_KEYMAP = [
   ["mod+shift+c", "openCodex", "window"],
   ["mod+shift+l", "openClaude", "window"],
   ["mod+shift+g", "openGrok", "window"],
-  ["mod+shift+u", "openMuse", "window"],
   ["mod+alt+shift+c", "newChat", "window"],
   ["mod+n", "createProject", "window"],
   ["mod+f", "search", "window"],

@@ -637,7 +637,7 @@ const WONDER_FULL: &str = "muse-wonder-full-1.0";
 const SOL: &str = "gpt-6.1-sol";
 
 #[test]
-fn fresh_settings_start_a_muse_chat_on_wonder_full() {
+fn fresh_settings_start_codex_without_trying_muse() {
     let host = TestHost::new();
     let (sessions, _server) = sessions(&host);
     // Nothing saved: Settings say Automatic, and the global scope follows them.
@@ -650,14 +650,14 @@ fn fresh_settings_start_a_muse_chat_on_wonder_full() {
     assert!(made.created);
     assert_eq!(made.fallback, None);
     let (chat, _) = chat_of(made);
-    assert_eq!(chat.provider, Provider::Muse);
-    assert_eq!(chat.model.as_deref(), Some(WONDER_FULL));
+    assert_eq!(chat.provider, Provider::Codex);
+    assert_eq!(chat.model.as_deref(), Some(SOL));
     // The model reached the provider's start, and the entry says it.
     assert_eq!(
         starts(&chat),
-        [(Provider::Muse, Some(WONDER_FULL.to_owned()))]
+        [(Provider::Codex, Some(SOL.to_owned()))]
     );
-    // Under the secure default the Muse orchestrator runs with contributor mode off.
+    // Under the secure default the Codex orchestrator runs with contributor mode off.
     let started = fake_for(&chat.cwd).starts.lock().unwrap().clone();
     assert_eq!(
         started[0].contributor_mode,
@@ -670,7 +670,7 @@ fn fresh_settings_start_a_muse_chat_on_wonder_full() {
     let entry = chat_entry(&host.home, &chat);
     assert_eq!(
         (entry["provider"].clone(), entry["model"].clone()),
-        (json!("muse"), json!(WONDER_FULL))
+        (json!("codex"), json!(SOL))
     );
     // It was told what it is, with the skill, as any orchestrator is.
     assert_eq!(sent_texts(&chat).len(), 1);
@@ -678,11 +678,11 @@ fn fresh_settings_start_a_muse_chat_on_wonder_full() {
 }
 
 #[test]
-fn when_muse_cannot_start_automatic_runs_codex_on_sol_and_says_why() {
+fn when_codex_cannot_start_automatic_runs_claude_and_says_why() {
     let host = TestHost::with_providers(
         quick_options(),
         Providers {
-            muse: missing_start,
+            codex: missing_start,
             ..fake_providers()
         },
     );
@@ -690,32 +690,32 @@ fn when_muse_cannot_start_automatic_runs_codex_on_sol_and_says_why() {
     let made = create_planned(&sessions, &host.home, None).unwrap();
     let fallback = made.fallback.clone().expect("a fallback is disclosed");
     assert!(
-        fallback.contains("Muse chat on muse-wonder-full-1.0 did not start"),
+        fallback.contains("Codex chat on gpt-6.1-sol did not start"),
         "{fallback}"
     );
     assert!(
-        fallback.contains("muse is not installed or is not on PATH"),
+        fallback.contains("codex is not installed or is not on PATH"),
         "{fallback}"
     );
-    assert!(fallback.contains("Codex chat on gpt-6.1-sol"), "{fallback}");
+    assert!(fallback.contains("Claude chat on opus"), "{fallback}");
     let (chat, created) = chat_of(made);
     assert!(created);
     assert_eq!(
         (chat.provider, chat.model.as_deref()),
-        (Provider::Codex, Some(SOL))
+        (Provider::Claude, Some("opus"))
     );
-    // Muse was tried first, and its chat is not left behind.
+    // Codex was tried first, and its chat is not left behind.
     assert_eq!(
         starts(&chat),
         [
-            (Provider::Muse, Some(WONDER_FULL.to_owned())),
-            (Provider::Codex, Some(SOL.to_owned()))
+            (Provider::Codex, Some(SOL.to_owned())),
+            (Provider::Claude, Some("opus".to_owned()))
         ]
     );
     let listed = host.client().list().unwrap();
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].id, chat.id);
-    assert_eq!(sent_texts(&chat).len(), 1, "one startup message, to Codex");
+    assert_eq!(sent_texts(&chat).len(), 1, "one startup message, to Claude");
 }
 
 #[test]
@@ -723,7 +723,7 @@ fn when_neither_can_start_the_error_names_both_and_nothing_is_left() {
     let host = TestHost::with_providers(
         quick_options(),
         Providers {
-            muse: missing_start,
+            claude: missing_start,
             codex: missing_start,
             ..fake_providers()
         },
@@ -731,10 +731,10 @@ fn when_neither_can_start_the_error_names_both_and_nothing_is_left() {
     let (sessions, _server) = sessions(&host);
     let error = create_planned(&sessions, &host.home, None).unwrap_err();
     assert!(error.starts_with("No orchestrator could start."), "{error}");
-    assert!(error.contains("muse is not installed"), "{error}");
+    assert!(error.contains("claude is not installed"), "{error}");
     assert!(error.contains("codex is not installed"), "{error}");
     assert!(
-        error.contains(WONDER_FULL) && error.contains(SOL),
+        error.contains("opus") && error.contains(SOL),
         "{error}"
     );
     assert!(host.client().list().unwrap().is_empty());
@@ -761,7 +761,7 @@ fn explicit_settings_win_and_an_explicit_chat_that_cannot_start_is_not_replaced(
     );
     let error = create_planned(&sessions, &host.home, None).unwrap_err();
     assert!(
-        error.contains("could not start") && error.contains("muse"),
+        error.contains("Muse is disabled"),
         "{error}"
     );
     assert!(host.client().list().unwrap().is_empty());
@@ -853,7 +853,7 @@ fn a_project_choice_applies_to_its_own_orchestrator_only_and_inherit_follows_set
         chat_of(create_planned(&sessions, &host.home, Some((&theirs.id, &theirs.root))).unwrap());
     assert_eq!(
         (chat.provider, chat.model.as_deref()),
-        (Provider::Muse, Some(WONDER_FULL))
+        (Provider::Codex, Some(SOL))
     );
 
     // A choice this build cannot read is passed over, and said to be.
@@ -900,7 +900,7 @@ fn each_scope_is_told_its_resolved_delegation_policy_at_start_and_on_load_skill(
             policy.set_spread_work(Some(false));
             policy.set_parallel_shells(Some(6));
             policy
-                .set_route(Work::Workhorse, Some(Route::recommended(Provider::Muse)))
+                .set_route(Work::Workhorse, Some(Route::recommended(Provider::Claude)))
                 .unwrap();
         })
         .unwrap();
@@ -916,16 +916,16 @@ fn each_scope_is_told_its_resolved_delegation_policy_at_start_and_on_load_skill(
     let global_policy = "Delegation policy for this scope (Settings, else Somtus's default, \
                          as they stood when this message was written): spread work off; \
                          about 6 parallel worker shells; design work on claude, model opus; \
-                         workhorse work on muse, model muse-wonder-full-1.0.";
+                         workhorse work on claude, model opus.";
     let mine_policy = "Delegation policy for this scope (this project's override, else Settings, \
                        else Somtus's default, as they stood when this message was written): \
                        spread work on; about 2 parallel worker shells; design work on codex, \
-                       model gpt-6.1-sol; workhorse work on muse, model muse-wonder-full-1.0.";
+                       model gpt-6.1-sol; workhorse work on claude, model opus.";
     let theirs_policy = "Delegation policy for this scope (this project's override, else \
                          Settings, else Somtus's default, as they stood when this message was \
                          written): spread work off; about 6 parallel worker shells; design \
-                         work on claude, model opus; workhorse work on muse, model \
-                         muse-wonder-full-1.0.";
+                         work on claude, model opus; workhorse work on claude, model \
+                         opus.";
     let (global, _) = chat_of(create_planned(&sessions, &host.home, None).unwrap());
     let (mine_chat, _) =
         chat_of(create_planned(&sessions, &host.home, Some((&mine.id, &mine.root))).unwrap());
@@ -1010,7 +1010,7 @@ fn an_existing_orchestrator_is_reused_as_it_runs_whatever_the_settings_say_now()
     let (sessions, _server) = sessions(&host);
     let (first, created) = chat_of(create_planned(&sessions, &host.home, None).unwrap());
     assert!(created);
-    assert_eq!(first.provider, Provider::Muse);
+    assert_eq!(first.provider, Provider::Codex);
     for runs in [
         OrchestratorRuns::Chat {
             provider: Provider::Claude,
@@ -1027,7 +1027,7 @@ fn an_existing_orchestrator_is_reused_as_it_runs_whatever_the_settings_say_now()
         assert_eq!(again.id, first.id);
         assert_eq!(
             (again.provider, again.model.as_deref()),
-            (Provider::Muse, Some(WONDER_FULL))
+            (Provider::Codex, Some(SOL))
         );
     }
     assert_eq!(starts(&first).len(), 1, "never started again");
@@ -1040,11 +1040,11 @@ fn both_scopes_are_given_the_skill_with_model_routing_and_dashboard_briefs() {
     let skill = include_str!("../../skills/riwork-orchestrator/SKILL.md");
     for needle in [
         "## Model routing",
-        "`muse`, `muse-wonder-full-1.0`",
+        "`codex`, `gpt-6.1-sol`",
         "`claude`, `opus`",
         "`codex`, `gpt-6.1-sol`",
         "somtus chat new --provider",
-        "somtus shell create --worktree WORKTREE_ID --harness codex|claude|muse|grok --model MODEL",
+        "somtus shell create --worktree WORKTREE_ID --harness codex|claude|grok --model MODEL",
         "somtus handoff --from SHELL_OR_CHAT_ID",
         "somtus chat list --project PROJECT_ID --json",
         "Never fall back silently",

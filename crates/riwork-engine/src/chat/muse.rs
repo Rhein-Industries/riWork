@@ -170,6 +170,7 @@ fn cua_servers(
 }
 
 pub fn start(config: DriverConfig, events: Sender<ChatEvent>) -> Result<Box<dyn Driver>, String> {
+    riwork_core::provider::Provider::Muse.ensure_enabled()?;
     let servers = std::env::current_exe().ok().and_then(|executable| {
         cua_servers(
             &config,

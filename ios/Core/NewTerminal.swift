@@ -17,7 +17,7 @@ public enum NewTerminalKind: String, CaseIterable, Sendable, Codable, Identifiab
     public var id: String { rawValue }
     /// The kinds that make a tab of their own, a terminal or a chat. The orchestrators are not among them: there is one of each, and
     /// asking for it again opens the one that is there (`orchestratorKinds`).
-    public static var allCases: [NewTerminalKind] { [.shell, .codex, .claude, .grok, .muse, .chat] }
+    public static var allCases: [NewTerminalKind] { [.shell, .codex, .claude, .grok, .chat] }
     public static let orchestratorKinds: [NewTerminalKind] = [.projectOrchestrator, .globalOrchestrator]
     public var title: String {
         switch self {
@@ -54,7 +54,7 @@ public enum NewTerminalKind: String, CaseIterable, Sendable, Codable, Identifiab
         }
     }
     /// What every desktop can open.
-    public static let terminalKinds: [NewTerminalKind] = [.shell, .codex, .claude, .grok, .muse]
+    public static let terminalKinds: [NewTerminalKind] = [.shell, .codex, .claude, .grok]
     /// What the sheet offers: the chats only on a desktop that has them, the orchestrators only on one that opens them.
     public static func offered(chats: Bool, orchestrators: Bool = false) -> [NewTerminalKind] {
         (chats ? allCases : terminalKinds) + (orchestrators ? orchestratorKinds : [])

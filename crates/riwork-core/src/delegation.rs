@@ -81,8 +81,8 @@ impl Route {
 
     /// The routes Settings and Project Settings offer: each provider on its recommended
     /// model.
-    pub fn offered() -> [Self; 3] {
-        [Provider::Claude, Provider::Codex, Provider::Muse].map(Self::recommended)
+    pub fn offered() -> [Self; 2] {
+        [Provider::Claude, Provider::Codex].map(Self::recommended)
     }
 
     /// "claude, model opus": the harness and model id as the CLI takes them.
@@ -97,6 +97,7 @@ impl Route {
 
     /// Whether a session would take its model id, as reading a saved route requires.
     pub fn check(&self) -> Result<(), String> {
+        self.provider.ensure_enabled()?;
         if valid_model_id(&self.model) {
             Ok(())
         } else {
@@ -370,6 +371,14 @@ mod tests {
     }
 
     #[test]
+    fn saved_muse_route_is_preserved_but_not_used() {
+        let value = json!({"workhorse": {"provider": "muse", "model": "muse-wonder-full-1.0"}});
+        let policy = read(value.clone());
+        assert_eq!(resolve(&policy, None).workhorse, Work::Workhorse.built_in());
+        assert_eq!(serde_json::to_value(&policy).unwrap(), value);
+    }
+
+    #[test]
     fn nothing_chosen_is_the_built_in_policy_of_todays_routing() {
         let built_in = Delegation::built_in();
         assert!(built_in.spread_work);
@@ -400,7 +409,7 @@ mod tests {
         let settings = read(json!({
             "spread_work": false,
             "parallel_shells": 6,
-            "workhorse": {"provider": "muse", "model": "muse-wonder-full-1.0"}
+            "workhorse": {"provider": "claude", "model": "opus"}
         }));
         let project = read(json!({
             "parallel_shells": 2,
@@ -410,7 +419,7 @@ mod tests {
         assert!(!global.spread_work);
         assert_eq!(global.parallel_shells, 6);
         assert_eq!(global.design, Work::Design.built_in());
-        assert_eq!(global.workhorse, Route::recommended(Provider::Muse));
+        assert_eq!(global.workhorse, Route::recommended(Provider::Claude));
 
         let scoped = resolve(&settings, Some(&project));
         assert!(
@@ -419,7 +428,7 @@ mod tests {
         );
         assert_eq!(scoped.parallel_shells, 2, "the project's own choice");
         assert_eq!(scoped.design, Route::recommended(Provider::Codex));
-        assert_eq!(scoped.workhorse, Route::recommended(Provider::Muse));
+        assert_eq!(scoped.workhorse, Route::recommended(Provider::Claude));
         // A project that chooses nothing is Settings' policy.
         assert_eq!(
             resolve(&settings, Some(&DelegationPolicy::default())),
@@ -546,7 +555,7 @@ mod tests {
         );
         assert_eq!(
             Route::offered().map(|route| route.provider),
-            [Provider::Claude, Provider::Codex, Provider::Muse]
+            [Provider::Claude, Provider::Codex]
         );
     }
 }

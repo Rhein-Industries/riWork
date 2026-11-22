@@ -13,6 +13,16 @@ pub enum Provider {
     Acp,
 }
 
+/// Muse remains decodable so existing conversations and settings are preserved.
+/// It cannot launch work in this build.
+pub const MUSE_DISABLED: &str = "Muse is disabled in Somtus. Choose Codex or Claude.";
+
+impl Provider {
+    pub fn ensure_enabled(self) -> Result<(), String> {
+        if self == Self::Muse { Err(MUSE_DISABLED.into()) } else { Ok(()) }
+    }
+}
+
 /// Who pays for a Claude chat. `Subscription` starts the chat without
 /// `ANTHROPIC_API_KEY`, so it runs on the user's Claude sign-in. `ApiKey` gives it the
 /// Anthropic API key saved in the Keychain, or, with none saved, leaves the environment as
@@ -56,5 +66,18 @@ impl ClaudeBilling {
         } else {
             Self::ApiKey
         }
+    }
+}
+
+#[cfg(test)]
+mod availability_tests {
+    use super::*;
+    #[test]
+    fn muse_is_readable_but_cannot_launch() {
+        assert_eq!(serde_json::from_str::<Provider>("\"muse\"").unwrap(), Provider::Muse);
+        assert_eq!(Provider::Muse.ensure_enabled().unwrap_err(), MUSE_DISABLED);
+        assert!(Provider::Codex.ensure_enabled().is_ok());
+        assert!(Provider::Claude.ensure_enabled().is_ok());
+        assert!(crate::settings::AUTOMATIC_ORCHESTRATORS.iter().all(|(provider, _)| provider.ensure_enabled().is_ok()));
     }
 }

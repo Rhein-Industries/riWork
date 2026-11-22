@@ -33,6 +33,8 @@ extension KeyedDecodingContainer {
 
 public enum ChatProvider: String, Codable, Sendable, CaseIterable, Hashable {
     case codex, claude, muse, acp
+
+    public static var allCases: [ChatProvider] { [.codex, .claude, .acp] }
     public var title: String {
         switch self {
         case .codex: "Codex"

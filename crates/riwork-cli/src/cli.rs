@@ -76,7 +76,7 @@ somtus addin help                       Show where add-ins live and what trust c
 somtus setup                            Install and start Cua.ai Driver; link its skill into each CLI
 somtus cua setup|status|permissions      Manage native computer use (status only reads)
 somtus cua mcp                          Serve Cua.ai Driver over MCP stdio
-somtus cua harness codex|claude|grok|muse -- ARG...   Start a harness with shared Cua
+somtus cua harness codex|claude|grok -- ARG...   Start a harness with shared Cua
 somtus import orca [--preview]          Import local Orca projects and worktrees once
 somtus project add PATH [--name NAME]   Register a project and its root worktree
 somtus project create [PATH] [--name NAME] [--no-git] [--exclusive]   Create a project (Git by default)
@@ -106,7 +106,7 @@ somtus version | --version              Print the Somtus version
 somtus remote pair|revoke|devices|start|relay   Encrypted mobile access (standalone binary)
 somtus remote --help                    Pairing, relay and connector command options
 somtus shell create [--project ID | --worktree ID] [--command CMD] [--no-parent]
-somtus shell create [--worktree ID] --harness codex|claude|grok|muse [--model NAME] [--account LABEL_OR_ID] [--unrestricted | --as-settings]
+somtus shell create [--worktree ID] --harness codex|claude|grok [--model NAME] [--account LABEL_OR_ID] [--unrestricted | --as-settings]
                     [--contributor-on]   Muse runs with contributor mode off unless --contributor-on
 somtus shell list [--project ID | --all]
 somtus shell switch-account ID --account LABEL_OR_ID --expect-email EMAIL --when-idle
@@ -124,12 +124,12 @@ somtus shell cwd|metrics|attach|close ID
 somtus shell attach ID --exec [--ignore-size] [--read-only]   Become a tmux client of the shell (for remote terminals)
 somtus chat serve [--idle-seconds N]    Run the chat host in the foreground (exits after 15 idle minutes by default)
 somtus chat ensure                      Start the chat host if it is not running; print its socket
-somtus chat list [--project ID] [--json]   List Codex, Claude and Muse chats, running or not
+somtus chat list [--project ID] [--json]   List saved chats, running or not
 somtus chat open CHAT_ID                 Reopen an ordinary chat in its Mac project window
-somtus chat new --provider codex|claude|muse|acp [--project ID | --worktree ID] [--mode supervised|auto-edit|full|plan]
+somtus chat new --provider codex|claude|acp [--project ID | --worktree ID] [--mode supervised|auto-edit|full|plan]
                 [--model NAME] [--effort LEVEL] [--fast] [--contributor-on | --contributor-opt-out]
                 [--title TEXT] [--account LABEL_OR_ID]
-somtus chat models --provider codex|claude|muse|acp [--project ID] [--json]
+somtus chat models --provider codex|claude|acp [--project ID] [--json]
                                         The models chats of that provider reported, read from saved chats
 somtus chat suggestions CHAT_ID [--json]   The / commands, @ files and & models a chat's message box offers
 somtus chat send CHAT_ID TEXT           Send a message; a stopped chat is resumed first
@@ -137,17 +137,17 @@ somtus chat events CHAT_ID [--since N] [--wait-ms N] [--max N] [--max-bytes N] [
                                         Read a chat's events after N, waiting up to M ms for the first
 somtus chat command CHAT_ID (--command-json JSON | -- JSON) [--json]   Send one chat command (JSON)
 somtus chat stop CHAT_ID                Stop a chat's provider process and keep its history
-somtus chat fork CHAT_ID [--at ITEM_ID] [--provider codex|claude|muse] [--model NAME] [--effort LEVEL]
+somtus chat fork CHAT_ID [--at ITEM_ID] [--provider codex|claude] [--model NAME] [--effort LEVEL]
                 [--mode supervised|auto-edit|full|plan] [--title TEXT] [--json]
                                         A new chat that goes on from a point of this one
-somtus handoff [--from SHELL_OR_CHAT_ID] --to shell|chat --provider codex|claude|grok|muse
+somtus handoff [--from SHELL_OR_CHAT_ID] --to shell|chat --provider codex|claude|grok
                [--model NAME] [--effort LEVEL] [--account LABEL_OR_ID]
                [--mode supervised|auto-edit|full|plan] [--contributor-on]
                [--context transcript|summary] [--at ITEM_ID] [--note TEXT]
                                         Pass a conversation to a new shell or chat
 somtus orchestrator [--project ID]       Show the selected orchestrator status
 somtus orchestrator create [--project ID | --cwd PATH] [--command CMD] [--mode automatic|terminal|chat]
-                [--provider codex|claude|muse] [--model NAME]
+                [--provider codex|claude] [--model NAME]
 somtus orchestrator list [--project ID]   List global and project orchestrators, terminals and chats
 somtus orchestrator status|output|cwd|metrics|attach|close [--project ID]
 somtus orchestrator send [--project ID] TEXT   Send a line (a chat message) to the selected orchestrator
@@ -173,7 +173,7 @@ omitted fields use model defaults. Invalid or ignored values are refused without
 Running desktop windows poll settings every two seconds and apply interface preferences;
 launch defaults affect new sessions, and delegation changes reach an orchestrator when
 it starts or loads its skill. Run settings help for details and output shapes.
-The chat host (`chat serve`) owns the Codex, Claude and Muse processes behind chats so
+The chat host (`chat serve`) owns the Codex and Claude processes behind chats so
 they outlive app windows; `chat ensure` starts it detached, and it exits after
 15 minutes with no client and no chat at work. Chats are kept in RIWORK_HOME/chats.
 chat new --no-parent explicitly starts a root; otherwise a same-project caller is its parent.
@@ -335,7 +335,7 @@ The remote connector creates the phone's projects this way.
 
 const SCHEDULE_HELP: &str = "\
 Automations (schedule and automation are aliases):
-  somtus automation create --new-chat --scope project --project UUID --title TITLE --prompt TEXT --at RFC3339 [--provider codex|claude|muse] [--model MODEL] [--effort EFFORT] [--fast] [--permission supervised|auto-edit|full|plan] [--account ID] [--every-minutes N]
+  somtus automation create --new-chat --scope project --project UUID --title TITLE --prompt TEXT --at RFC3339 [--provider codex|claude] [--model MODEL] [--effort EFFORT] [--fast] [--permission supervised|auto-edit|full|plan] [--account ID] [--every-minutes N]
   somtus automation create --existing-shell --scope app|project|workspace --shell UUID --title TITLE --prompt TEXT --at RFC3339 [--project UUID] [--worktree UUID] [--every-minutes N]
 Explicit existing-shell mode pins the selected shell kind; project scope also
  accepts an ordinary project-root AI shell. Omitted preserves legacy semantics.
@@ -947,7 +947,7 @@ fn cua_command(mut args: Vec<String>, json: bool) -> Result<(), String> {
             Some("grok") => HarnessKind::Grok,
             Some("muse") => HarnessKind::Muse,
             _ => {
-                return Err("Usage: somtus cua harness codex|claude|grok|muse -- ARG...".to_owned());
+                return Err("Usage: somtus cua harness codex|claude|grok -- ARG...".to_owned());
             }
         };
         args.remove(0);
@@ -3192,11 +3192,11 @@ fn chat_client_command(
 }
 
 const CHAT_MODELS_USAGE: &str =
-    "Usage: somtus chat models --provider codex|claude|muse|acp [--project ID] [--json]";
+    "Usage: somtus chat models --provider codex|claude|acp [--project ID] [--json]";
 
-const CHAT_NEW_USAGE: &str = "Usage: somtus chat new --provider codex|claude|muse|acp [--project ID | --worktree ID] [--mode supervised|auto-edit|full|plan] [--model NAME] [--effort LEVEL] [--fast] [--contributor-on | --contributor-opt-out] [--title TEXT] [--account LABEL_OR_ID]";
+const CHAT_NEW_USAGE: &str = "Usage: somtus chat new --provider codex|claude|acp [--project ID | --worktree ID] [--mode supervised|auto-edit|full|plan] [--model NAME] [--effort LEVEL] [--fast] [--contributor-on | --contributor-opt-out] [--title TEXT] [--account LABEL_OR_ID]";
 
-const CHAT_FORK_USAGE: &str = "Usage: somtus chat fork CHAT_ID [--at ITEM_ID] [--provider codex|claude|muse] [--model NAME] [--effort LEVEL] [--mode supervised|auto-edit|full|plan] [--title TEXT] [--json]";
+const CHAT_FORK_USAGE: &str = "Usage: somtus chat fork CHAT_ID [--at ITEM_ID] [--provider codex|claude] [--model NAME] [--effort LEVEL] [--mode supervised|auto-edit|full|plan] [--title TEXT] [--json]";
 
 /// `somtus chat fork`: a new chat that goes on from a point of another (`handoff::fork`),
 /// with the provider's own copy of the thread when it reproduces the point, else a handoff

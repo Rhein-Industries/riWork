@@ -48,7 +48,7 @@ export interface NewChatProps {
 }
 
 type NewChatDefaults = NonNullable<SettingsPatch["newChatDefaults"]>;
-const PROVIDERS: Provider[] = ["codex", "claude", "muse", "acp"];
+const PROVIDERS: Provider[] = ["codex", "claude", "acp"];
 const providerName = (provider: Provider) => provider === "acp" ? "ACP" : provider[0].toUpperCase() + provider.slice(1);
 const MODES: { id: Mode; label: string; description: string }[] = [
   { id: "supervised", label: "Supervised", description: "Asks before commands and edits" },
@@ -70,9 +70,9 @@ export function NewChat(props: NewChatProps) {
   const location = () => locations[locationIndex()];
   const saved = signal<NewChatDefaultsDto | null>(props.defaults ?? null);
   const savedProvider = PROVIDERS.find((item) => item === saved()?.provider), savedMode = MODES.find((item) => item.id === saved()?.mode)?.id;
-  const provider = signal<Provider>(savedProvider ?? props.provider ?? "codex");
+  const provider = signal<Provider>(savedProvider ?? (props.provider === "muse" ? "codex" : props.provider) ?? "codex");
   const mode = signal<Mode>(props.unrestricted ? "full" : savedMode ?? "supervised");
-  const model = signal(saved()?.model ?? ""), query = signal(""), title = signal(""), message = signal("");
+  const model = signal(savedProvider ? saved()?.model ?? "" : ""), query = signal(""), title = signal(""), message = signal("");
   const effort = signal<string | null>(saved()?.effort ?? null), fast = signal(saved()?.fast ?? false);
   const catalogs = signal<Partial<Record<Provider, NewChatCatalog>>>({});
   const loading = signal(true), pending = signal(false), error = signal("");

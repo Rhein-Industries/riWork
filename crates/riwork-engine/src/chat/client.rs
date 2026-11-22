@@ -62,6 +62,17 @@ impl Client {
 
     /// One request and its answer, telling a refusal from a broken exchange.
     fn exchange(&mut self, request: Request) -> Result<Option<serde_json::Value>, CallError> {
+        // Refuse before writing: an older running host may still support Muse.
+        match &request {
+            Request::Create { chat, .. } => chat.provider.ensure_enabled().map_err(CallError::Refused)?,
+            Request::Command { command: ChatCommand::Switch { provider, .. }, .. } => provider.ensure_enabled().map_err(CallError::Refused)?,
+            Request::Command { chat_id, command: ChatCommand::Send { .. } | ChatCommand::SendAttachments { .. } | ChatCommand::Compact, .. } => {
+                if let Some(chat) = self.list().map_err(CallError::Refused)?.into_iter().find(|chat| chat.id == *chat_id) {
+                    chat.provider.ensure_enabled().map_err(CallError::Refused)?;
+                }
+            }
+            _ => {}
+        }
         let broken = |message: String| CallError::Broken(message);
         let attachment_variant = match &request {
             Request::StageAttachment { .. } => Some("stage_attachment"),
@@ -810,7 +821,7 @@ mod tests {
 
     /// Such a host answers `Create` as it did, with what it read of the request.
     #[test]
-    fn a_muse_chat_an_older_host_made_without_its_contributor_mode_is_not_kept() {
+    fn muse_creation_never_reaches_an_older_host() {
         for older in [OlderHost::BeforeOptOut, OlderHost::OptOutOnly] {
             for mode in [ContributorMode::Off, ContributorMode::On] {
                 let dir = std::env::temp_dir().join(format!("rwchat-{}", &new_id()[..8]));
@@ -866,41 +877,8 @@ mod tests {
                 });
                 drop(client);
                 let seen = host.join().unwrap();
-                // An off says so the older way too; on has no older way to say it.
-                let sent = &seen[0]["chat"];
-                match mode {
-                    ContributorMode::Off => {
-                        assert_eq!(sent["contributor_opt_out"], true);
-                        assert!(sent.get("contributor_mode").is_none(), "{sent}");
-                    }
-                    ContributorMode::On => {
-                        assert_eq!(sent["contributor_mode"], "on");
-                        assert!(sent.get("contributor_opt_out").is_none(), "{sent}");
-                    }
-                }
-                // Only a host that started it off as asked keeps it.
-                if (older, mode) == (OlderHost::OptOutOnly, ContributorMode::Off) {
-                    let info = created.unwrap();
-                    assert_eq!(info.reported_contributor_mode(), Some(ContributorMode::Off));
-                    assert_eq!(seen.len(), 1, "{seen:?}");
-                } else {
-                    let error = created.unwrap_err();
-                    assert!(
-                        error.contains("predates Somtus's contributor mode off by default")
-                            && error.contains("with your Muse settings")
-                            && error.contains(&format!(
-                                "instead of contributor mode {}",
-                                mode.as_str()
-                            ))
-                            && error.contains("was removed"),
-                        "{older:?} {mode:?}: {error}"
-                    );
-                    assert_eq!(seen.len(), 2, "{seen:?}");
-                    assert_eq!(
-                        (seen[1]["op"].as_str(), seen[1]["chat_id"].as_str()),
-                        (Some("delete"), Some("chat-1"))
-                    );
-                }
+                assert!(created.unwrap_err().contains("Muse is disabled"));
+                assert!(seen.is_empty(), "Muse must never reach an older host: {seen:?}");
                 let _ = std::fs::remove_dir_all(&dir);
             }
         }
@@ -1299,7 +1277,7 @@ mod tests {
             let mut stream = crate::chat::testing::bounded_fixture_accept(&listener);
             let mut reader = BufReader::new(stream.try_clone().unwrap());
             let mut requests = Vec::new();
-            for _ in 0..3 {
+            for _ in 0..5 {
                 let mut line = String::new();
                 reader.read_line(&mut line).unwrap();
                 let value: serde_json::Value = serde_json::from_str(&line).unwrap();
@@ -1310,17 +1288,18 @@ mod tests {
                         assert_eq!(text, "  plain text unchanged 🦀\n");
                         None
                     }
+                    Ok(OldRequest::List) => None,
                     Err(error) => Some(format!("unreadable request: {error}")),
                     _ => panic!("unexpected operation"),
                 };
                 let response = Response {
                     id: value["id"].as_str().unwrap().into(),
                     ok: error.is_none(),
-                    result: None,
+                    result: (value["op"] == "list").then(|| serde_json::json!([])),
                     error,
                 };
                 writeln!(stream, "{}", serde_json::to_string(&response).unwrap()).unwrap();
-                requests.push(value);
+                if value["op"] != "list" { requests.push(value); }
             }
             requests
         });

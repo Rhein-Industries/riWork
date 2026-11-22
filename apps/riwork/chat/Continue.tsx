@@ -8,7 +8,7 @@ import { Icon } from "../Icon";
 /** The agents a chat can go on with. */
 export type Agent = "codex" | "claude" | "muse";
 export const AGENTS: { id: Agent; label: string }[] = [
-  { id: "codex", label: "Codex" }, { id: "claude", label: "Claude" }, { id: "muse", label: "Muse" },
+  { id: "codex", label: "Codex" }, { id: "claude", label: "Claude" },
 ];
 export const agentLabel = (agent: string) => AGENTS.find((item) => item.id === agent)?.label ?? agent;
 

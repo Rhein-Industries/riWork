@@ -58,21 +58,21 @@ Both scopes use this routing whenever they choose a harness and model for new wo
 
 | Work | Prefer | Harness and model id |
 | --- | --- | --- |
-| Orchestration, delegation, fan-out, synthesis of several results | Muse Wonder Full | `muse`, `muse-wonder-full-1.0` |
+| Orchestration, delegation, fan-out, synthesis of several results | Codex Sol | `codex`, `gpt-6.1-sol` |
 | Architecture, the hardest reasoning, independent review, design | Claude Opus 5.5 | `claude`, `opus` |
 | High-volume implementation, test execution, mechanical work, long workhorse runs | Codex GPT-6.1-Sol | `codex`, `gpt-6.1-sol` |
 
 - Codex `gpt-6.1-sol` is also the fallback for every row.
 - An explicit choice wins over this table: a harness or model the user names, Somtus's settings (Settings > Agent sessions for orchestrators, a project's Project Settings override, and the delegation policy's design and workhorse choices in your startup message), and one an assignment names. Keep an existing session's harness and model; do not recreate or switch it to follow the table unless the user asks.
 - A `&model-id` mention in the user's instruction (`&opus`, `&gpt-6.1-sol`; Somtus's message box writes them) is the user's preferred model for the delegated work it introduces: honor it when that model is available and suitable, otherwise fall back per this table and say so; it never means switch your own model.
-- Always pass the model. Without one, each CLI starts its own default: Muse currently lists `muse-wonder-1.0`, not Wonder Full, as its default, and Claude's may be a smaller model than Opus. `opus` is Claude's alias: Claude's model list names it Opus 5.5, and a chat on it reports `opus`. `somtus chat models --provider codex|claude|muse --json` lists the ids each provider last reported.
+- Always pass the model. Without one, each CLI starts its own default: Claude's may be a smaller model than Opus. `opus` is Claude's alias: Claude's model list names it Opus 5.5, and a chat on it reports `opus`. `somtus chat models --provider codex|claude --json` lists the ids each provider last reported.
 - Choose them with:
   - a chat: `somtus chat new --provider muse|claude|codex --worktree WORKTREE_ID --model MODEL --json` (or `--project PROJECT_ID`; `--mode` and `--effort` as `somtus help` says);
-  - a terminal: `somtus shell create --worktree WORKTREE_ID --harness codex|claude|muse|grok --model MODEL --json` (`--model` needs `--harness`; Codex chats and terminals can pin a subscription with `--account LABEL_OR_ID`);
-  - existing work: `somtus handoff --from SHELL_OR_CHAT_ID --to shell|chat --provider codex|claude|muse --model MODEL` (Grok only with `--to shell`).
+  - a terminal: `somtus shell create --worktree WORKTREE_ID --harness codex|claude|grok --model MODEL --json` (`--model` needs `--harness`; Codex chats and terminals can pin a subscription with `--account LABEL_OR_ID`);
+  - existing work: `somtus handoff --from SHELL_OR_CHAT_ID --to shell|chat --provider codex|claude --model MODEL` (Grok only with `--to shell`).
 - Verify availability from the session actually created; never assume it. A chat's entry in `somtus chat list --json` names its `provider`, its `model` (absent: the provider's default) and its `state`; `{"state": "failed", "message": ...}` means the provider could not start, and why. A terminal's `somtus shell output SHELL_UUID --lines 60 --json` shows the CLI's start screen (most CLIs name their model there) or the error that stopped it. Check before sending work.
 - When the preferred harness or model is unavailable, use the fallback and say so: tell the user, and include it in your report to the global orchestrator, naming what was preferred, why it was unavailable, and what runs instead. Never fall back silently.
-- Somtus chooses how a new orchestrator runs. Its Automatic default starts a Muse chat on `muse-wonder-full-1.0`, or a Codex chat on `gpt-6.1-sol` when Muse cannot start; Settings and a project's override can name another mode, provider, or model. `somtus orchestrator status --json` shows an orchestrator's `mode` and, for a chat, its `provider` and `model`. An existing orchestrator keeps how it runs until it is closed and created again; do not close one just to change its model.
+- Somtus chooses how a new orchestrator runs. Its Automatic default starts a Codex chat on `gpt-6.1-sol`, or a Claude chat on `opus` when Codex cannot start; Settings and a project's override can name another mode, provider, or model. `somtus orchestrator status --json` shows an orchestrator's `mode` and, for a chat, its `provider` and `model`. An existing orchestrator keeps how it runs until it is closed and created again; do not close one just to change its model.
 
 ## Dashboard briefs
 
@@ -116,10 +116,10 @@ END RIWORK BRIEF TOKEN
 
 1. Translate the objective into project tasks with a clear outcome and acceptance checks. Read existing tasks first so repeated check-ins do not duplicate work.
 2. Choose or create the correct repository's worktree. Batch assignments with `somtus task assign WORKTREE_ID TASK_ID...`; then inspect `somtus worktree tasks WORKTREE_ID --json`.
-3. Reuse a live harness for follow-up work on its own task; start new ones for independent tasks as Fan out and relay says, each created for the kind of work as Model routing says: `somtus shell create --worktree WORKTREE_ID --harness codex --model gpt-6.1-sol --json`, `--harness claude --model opus`, `--harness muse --model muse-wonder-full-1.0`, or `--harness grok`. Normal presets use the harness's configured permissions. Do not choose `--unrestricted` unless the user requests it.
+3. Reuse a live harness for follow-up work on its own task; start new ones for independent tasks as Fan out and relay says, each created for the kind of work as Model routing says: `somtus shell create --worktree WORKTREE_ID --harness codex --model gpt-6.1-sol --json`, `--harness claude --model opus`, or `--harness grok`. Normal presets use the harness's configured permissions. Do not choose `--unrestricted` unless the user requests it.
 4. Read `somtus shell cwd SHELL_UUID --json` and `somtus shell output SHELL_UUID --lines 120 --json` before sending input. Confirm the session is in the intended worktree and at an input prompt. If it is still working, inspect progress instead of submitting another task. A terminal capture is its rendered screen, not a guaranteed complete conversation transcript.
 5. Use `somtus shell send SHELL_UUID TEXT` to submit one clear assignment. It presses Return. Include task IDs, repository/worktree path, scope, constraints, acceptance checks, the verification environment and targets, and the expected report (with its `verification_environment`). Use one physical line of text (join sections with spaces) and quote the whole prompt as one shell argument: embedded newlines are terminal key input and can submit fragments. Do not send input to a plain shell as if it were a harness, or answer a trust/login/approval prompt as if it were a task prompt.
-6. `somtus handoff --from SHELL_OR_CHAT_ID --to shell|chat --provider codex|claude|muse|grok [--model M] [--account LABEL]` (Grok only with `--to shell`) passes an existing conversation to a new shell or chat in the same worktree (see `somtus help`); use it to move work to another model or account instead of re-explaining it.
+6. `somtus handoff --from SHELL_OR_CHAT_ID --to shell|chat --provider codex|claude|grok [--model M] [--account LABEL]` (Grok only with `--to shell`) passes an existing conversation to a new shell or chat in the same worktree (see `somtus help`); use it to move work to another model or account instead of re-explaining it.
 7. Mark delegated tasks `in_progress` after successful submission. Give agents separate worktrees for overlapping edits, and state any dependencies before starting dependent work.
 
 ## Check progress and finish

@@ -65,12 +65,10 @@ impl OrchestratorMode {
     }
 }
 
-/// The chats `Automatic` starts an orchestrator as, in order: Muse on Wonder Full,
-/// the best delegator, and Codex on GPT-6.1-Sol, the workhorse, when Muse cannot
-/// start.
+/// Automatic starts Codex first, then Claude if Codex cannot start.
 pub const AUTOMATIC_ORCHESTRATORS: [(Provider, &str); 2] = [
-    (Provider::Muse, "muse-wonder-full-1.0"),
     (Provider::Codex, "gpt-6.1-sol"),
+    (Provider::Claude, "opus"),
 ];
 
 /// The model Somtus's routing prefers for each chat provider: Muse Wonder Full for
@@ -99,7 +97,7 @@ pub fn valid_model_id(model: &str) -> bool {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "mode", rename_all = "snake_case")]
 pub enum OrchestratorRuns {
-    /// A Muse chat on Wonder Full, else a Codex chat on GPT-6.1-Sol
+    /// A Codex chat on GPT-6.1-Sol, else a Claude chat on Opus
     /// (`AUTOMATIC_ORCHESTRATORS`), as the first that starts.
     Automatic,
     /// A Codex terminal, as orchestrators always ran.
@@ -1703,7 +1701,7 @@ mod tests {
                 settings.delegation_policy.set_parallel_shells(Some(6));
                 settings
                     .delegation_policy
-                    .set_route(Work::Design, Some(Route::recommended(Provider::Muse)))
+                    .set_route(Work::Design, Some(Route::recommended(Provider::Claude)))
                     .unwrap();
             })
             .unwrap();
@@ -1712,7 +1710,7 @@ mod tests {
             file["delegation_policy"],
             serde_json::json!({
                 "parallel_shells": 6,
-                "design": {"provider": "muse", "model": "muse-wonder-full-1.0"}
+                "design": {"provider": "claude", "model": "opus"}
             })
         );
         assert_eq!(file["theme"], "future_theme");
@@ -1721,7 +1719,7 @@ mod tests {
         let policy = resolve(&store.load().unwrap().delegation_policy, None);
         assert_eq!(policy.parallel_shells, 6);
         assert!(policy.spread_work);
-        assert_eq!(policy.design, Route::recommended(Provider::Muse));
+        assert_eq!(policy.design, Route::recommended(Provider::Claude));
 
         // Values this build cannot read stand down to the built-in policy, survive an
         // unrelated save and a change to another field of the policy, and go only when
@@ -2029,12 +2027,12 @@ mod tests {
         assert!(
             OrchestratorRuns::Automatic
                 .describe()
-                .contains("muse-wonder-full-1.0")
+                .contains("gpt-6.1-sol")
         );
         assert!(
             OrchestratorRuns::Automatic
                 .describe()
-                .contains("gpt-6.1-sol")
+                .contains("opus")
         );
         assert!(valid_model_id("gpt-6.1-sol"));
         assert!(!valid_model_id(" "));

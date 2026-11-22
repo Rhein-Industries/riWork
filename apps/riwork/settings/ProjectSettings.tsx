@@ -10,7 +10,7 @@ type ProjectSettingsProps = {
   projectId: () => string; theme?: () => InterfaceTheme; visible?: () => boolean;
   onControl?: (control: { revealMemo: () => void } | null) => void;
 };
-const providerChoices = ["codex", "claude", "muse"].map((id) => ({ id: `project-orchestrator-provider-${id}`, label: id[0].toUpperCase() + id.slice(1) }));
+const providerChoices = ["codex", "claude"].map((id) => ({ id: `project-orchestrator-provider-${id}`, label: id[0].toUpperCase() + id.slice(1) }));
 
 /** Metadata is an explicit form; account and agent choices persist independently. */
 export function ProjectSettingsPanel(props: ProjectSettingsProps) {

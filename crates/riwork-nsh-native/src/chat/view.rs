@@ -1764,7 +1764,7 @@ fn toolbar_dto(transcript: &Transcript, info: &riwork_engine::chat::model::ChatI
             .collect(),
         contributor_mode: (provider == Provider::Muse).then(|| info.reported_contributor_mode().map(|mode| wire_name(&mode))).flatten(),
         contributor_label: (provider == Provider::Muse).then(|| info.reported_contributor_mode().map(|mode| toolbar::contributor_label(!mode.is_off()).to_owned()).unwrap_or_else(|| toolbar::CONTRIBUTOR_SETTINGS_LABEL.to_owned())),
-        providers: [Provider::Codex, Provider::Claude, Provider::Muse]
+        providers: [Provider::Codex, Provider::Claude]
             .into_iter()
             .filter(|other| *other != provider)
             .map(|other| {

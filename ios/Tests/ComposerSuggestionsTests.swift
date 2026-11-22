@@ -173,7 +173,7 @@ final class ComposerSuggestionsTests: XCTestCase {
     func testEveryProvidersModelsRankAndReadAsTheSharedVectorsSay() throws {
         let fixture = try fixture()
         let table = fixture["mention_ranking"], list = try table["models"].decode([ComposerModelEntry].self)
-        XCTAssertEqual(Set(list.compactMap(\.provider)), [.codex, .claude, .muse])
+        XCTAssertEqual(Set(list.compactMap(\.provider)), [.codex, .claude])
         XCTAssertFalse(table["cases"].array.isEmpty || table["current"].array.isEmpty || fixture["mention_previews"].array.isEmpty)
         for vector in table["cases"].array {
             let query = try XCTUnwrap(vector["query"].string)
