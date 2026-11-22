@@ -120,6 +120,7 @@ pub enum RemoteError {
 #[derive(Clone, Debug)]
 pub struct RemoteCli {
     binary: PathBuf,
+    home: Option<PathBuf>,
     /// Upper bound on every subprocess timeout; only tests set it, so a hung fake CLI does not
     /// make them wait out the real limits.
     timeout_cap: Option<Duration>,
@@ -167,12 +168,62 @@ impl RemoteCli {
     pub fn at(binary: PathBuf) -> Self {
         Self {
             binary,
+            home: None,
             timeout_cap: None,
         }
     }
 
     pub fn binary(&self) -> &Path {
         &self.binary
+    }
+
+    /// Use the directory selected by the process owning the remote service.
+    pub fn with_home(mut self, home: PathBuf) -> Self {
+        self.home = Some(home);
+        self
+    }
+
+    /// Only offer a target from a saved SSH route with a pinned Somtus installation.
+    pub fn ssh_routes(&self) -> Result<Vec<(Host, String)>, String> {
+        let text = self.run(&argv(&["hosts", "list", "--json"]), CLI_TIMEOUT, &[])?;
+        let value: Value = serde_json::from_str(&text)
+            .map_err(|_| "Somtus returned an unreadable host registry".to_owned())?;
+        let entries = value
+            .as_array()
+            .or_else(|| value["hosts"].as_array())
+            .ok_or("Somtus returned a host registry without routes")?;
+        Ok(entries
+            .iter()
+            .filter_map(|entry| {
+                if entry["transport"] != "ssh"
+                    || entry["host_id"].as_str().is_none_or(str::is_empty)
+                {
+                    return None;
+                }
+                let target = entry["ssh"]["target"].as_str().filter(|t| !t.is_empty())?;
+                Some((host_from(entry)?, target.to_owned()))
+            })
+            .collect())
+    }
+
+    /// The companion verifies the SSH connection and pins the remote installation before saving.
+    pub fn add_ssh(
+        &self,
+        target: &str,
+        label: &str,
+        remote_bin: Option<&str>,
+        somtus: Option<&str>,
+    ) -> Result<(), String> {
+        let mut args = argv(&["hosts", "add-ssh", "--json"]);
+        args.push(format!("--target={target}").into());
+        args.push(format!("--label={label}").into());
+        for (key, value) in [("--remote-bin", remote_bin), ("--somtus", somtus)] {
+            if let Some(value) = value {
+                args.push(format!("{key}={value}").into());
+            }
+        }
+        self.run(&args, Duration::from_secs(30), &[])?;
+        Ok(())
     }
 
     /// The registered hosts, in registry order.
@@ -319,7 +370,11 @@ impl RemoteCli {
         );
         let hidden: Vec<&str> = hidden.iter().map(String::as_str).collect();
 
-        let mut child = Command::new(&self.binary)
+        let mut command = Command::new(&self.binary);
+        if let Some(home) = &self.home {
+            command.env("RIWORK_HOME", home);
+        }
+        let mut child = command
             .args(args)
             .stdin(if input.is_some() {
                 Stdio::piped()
@@ -1188,6 +1243,13 @@ case "$1" in
   hosts)
     case "$2" in
       list) cat "$DIR/hosts.json" ;;
+      add-ssh)
+        printf '%s\n' "$RIWORK_HOME" "$@" > "$DIR/ssh-argv"
+        if [ -e "$DIR/add_fail" ]; then
+          echo "SSH host identity changed" >&2
+          exit 2
+        fi
+        ;;
       add)
         cat > "$DIR/stdin"
         if [ -e "$DIR/add_fail" ]; then
@@ -1279,6 +1341,54 @@ exit 0
                 .expect("out has a parent")
                 .to_path_buf()
         }
+    }
+
+    #[test]
+    fn ssh_management_registers_with_literal_arguments_and_lists_only_verified_routes() {
+        let fake = FakeCli::new(Path::new("/tmp/unused.sock"));
+        let home = fake.dir.file("Somtus home");
+        let cli = fake.cli.clone().with_home(home.clone());
+        cli.add_ssh(
+            "user@100.90.0.4",
+            "Studio Mac",
+            Some("/My App/somtus-remote"),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            fake.dir.read("ssh-argv").lines().collect::<Vec<_>>(),
+            [
+                home.to_str().unwrap(),
+                "hosts",
+                "add-ssh",
+                "--json",
+                "--target=user@100.90.0.4",
+                "--label=Studio Mac",
+                "--remote-bin=/My App/somtus-remote",
+            ]
+        );
+        fake.dir.write("add_fail", "");
+        assert!(
+            cli.add_ssh("another", "New Mac", None, None)
+                .unwrap_err()
+                .contains("identity changed")
+        );
+        let rows = json!([
+            {"id":"relay","transport":"relay","host_id":"known","ssh":{"target":"relay"}},
+            {"id":"unverified","transport":"ssh","ssh":{"target":"other"}},
+            {"id":"stored","label":"Studio Mac","transport":"ssh","host_id":"verified","ssh":{"target":"user@100.90.0.4"}}
+        ]);
+        fake.dir.write("hosts.json", &rows.to_string());
+        assert_eq!(
+            cli.ssh_routes().unwrap(),
+            [(
+                Host {
+                    id: "stored".into(),
+                    label: "Studio Mac".into()
+                },
+                "user@100.90.0.4".into()
+            )]
+        );
     }
 
     fn echo_daemon() -> FakeDaemon {

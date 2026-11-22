@@ -18,6 +18,7 @@ pub mod dictation;
 pub mod dto;
 pub mod files;
 pub mod host_flush;
+pub mod host_management;
 pub mod hub;
 pub mod handoff;
 pub mod invoke;
@@ -76,6 +77,7 @@ fn native(registry: &mut Registry) {
         .module::<appearance::Appearance>()
         .module::<dashboard::Dashboard>()
         .module::<hosts::Hosts>()
+        .module::<host_management::HostManagement>()
         .module::<orchestrators::Orchestrators>()
         .module::<chat::Chat>()
         .module::<dictation::Dictation>()
@@ -438,6 +440,7 @@ mod tests {
                 "Dictation",
                 "Files",
                 "Handoff",
+                "HostManagement",
                 "Hosts",
                 "Layouts",
                 "OrcaImport",

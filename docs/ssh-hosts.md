@@ -71,10 +71,10 @@ SSH server's login or host-key configuration.
 
 ## Mac-to-Mac over Tailscale
 
-The current path is normal SSH over the tailnet. A direct authenticated Somtus
-network listener and automatic host discovery are not implemented. Real tailnet
-connectivity has not yet been tested; the integration fixture described above
-tests the application protocol after the SSH process boundary.
+On the controlling Mac, open **Global → Hosts → Your Macs on Tailscale**. Somtus
+asks the local Tailscale client for other Macs owned by your account. **Refresh**
+checks again. The online indicator comes from Tailscale. To open a Mac's projects
+and terminals, register it once over SSH.
 
 1. Install or update both Macs to the same Somtus build, including the bundled
    `somtus-remote`. On the execution Mac, set up tmux and the providers you want to
@@ -102,7 +102,14 @@ tests the application protocol after the SSH process boundary.
    ssh -T -o BatchMode=yes -o StrictHostKeyChecking=yes alice@studio-mac true
    ```
 
-4. On the client Mac, register the execution Mac using the installed bundle paths:
+4. On the controlling Mac, choose **Set up SSH** next to the execution Mac.
+   The form suggests its Tailscale IP. For **SSH target**, use the exact IP or
+   hostname you verified in step 3, including `username@` if your remote login
+   differs. Adjust the suggested bundle paths if Somtus is installed elsewhere.
+   Choose **Connect host**, then select that Mac in the host selector. Somtus
+   saves the verified route and reconnects when the Mac becomes reachable again.
+
+   You can also register the same route from the command line:
 
    ```sh
    somtus remote hosts add-ssh --target alice@studio-mac --label 'Studio Mac' \
@@ -111,11 +118,8 @@ tests the application protocol after the SSH process boundary.
    somtus remote hosts list --json
    ```
 
-   Adjust paths if the app is elsewhere. If `somtus` is not on the client PATH,
-   invoke `/Applications/Somtus.app/Contents/MacOS/somtus` instead. Select the
-   registered Mac in Somtus's host selector to open its projects and sessions;
-   the Agents view also includes its reported activity. Registration currently
-   uses the CLI; the existing pairing-link form is for relay hosts.
+   If `somtus` is not on the client PATH, invoke
+   `/Applications/Somtus.app/Contents/MacOS/somtus` instead.
 
 Tailscale-specific limitations: Somtus invokes `ssh`, not `tailscale ssh`. A
 userspace-only Tailscale client or unavailable OS MagicDNS needs working SSH

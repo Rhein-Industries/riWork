@@ -62,6 +62,8 @@ See [iOS build and pairing](ios/README.md), [phone access through an SSH gateway
 
 Open another host's projects, chats and persistent terminals through an authenticated connection. The execution host owns its processes and data; closing a client view preserves its shells.
 
+Open **Global → Hosts → Your Macs on Tailscale** to find another Mac on your account. Once Remote Login and SSH key access are set up, choose **Set up SSH** to save the connection.
+
 See [SSH hosts](docs/ssh-hosts.md), [multi-host agents and recovery](docs/multi-host-agents.md), and [paired Mac setup and behavior](docs/guides/remote-access.md#controlling-another-mac).
 
 ## Update and restart

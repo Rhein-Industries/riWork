@@ -12,6 +12,7 @@ use std::{
 
 use crate::{
     Subscription,
+    host_management::{AddSshRequest, SshRoute},
     hub::{Hub, Snapshot, TopicSubscription},
     service,
 };
@@ -310,6 +311,12 @@ pub trait RemoteBackend: Send + Sync {
     fn starting(&self, _host: &str) -> bool {
         false
     }
+    fn ssh_routes(&self) -> Result<Vec<SshRoute>, String> {
+        Err("unavailable: SSH route listing is unavailable on this backend".into())
+    }
+    fn add_ssh(&self, _request: &AddSshRequest) -> Result<(), String> {
+        Err("unavailable: SSH registration is unavailable on this backend".into())
+    }
     fn add_host(&self, link: &str, label: &str) -> Result<(), String>;
     fn remove_host(&self, host: &str) -> Result<(), String>;
     fn pair_desktop(&self, request: &PairRequest) -> Result<String, String>;
@@ -344,7 +351,7 @@ impl EngineBackend {
             return Ok(transport.clone());
         }
         // Failed discovery is not cached: an installed companion is found next time.
-        let cli = RemoteCli::locate()?;
+        let cli = RemoteCli::locate()?.with_home(service::process_home()?);
         let transport = Arc::new(Transport {
             daemons: Daemons::new(cli.clone()),
             cli,
@@ -407,6 +414,27 @@ impl RemoteBackend for EngineBackend {
                     .and_then(|v| tree::parse_shells(&v)),
             ),
         }
+    }
+    fn ssh_routes(&self) -> Result<Vec<SshRoute>, String> {
+        Ok(self
+            .transport()?
+            .cli
+            .ssh_routes()?
+            .into_iter()
+            .map(|(host, target)| SshRoute {
+                id: host.id,
+                label: host.label,
+                target,
+            })
+            .collect())
+    }
+    fn add_ssh(&self, request: &AddSshRequest) -> Result<(), String> {
+        self.transport()?.cli.add_ssh(
+            &request.target,
+            &request.label,
+            request.remote_bin.as_deref(),
+            request.somtus.as_deref(),
+        )
     }
     fn add_host(&self, link: &str, label: &str) -> Result<(), String> {
         self.transport()?.cli.add_host(link, label)
@@ -782,7 +810,7 @@ impl RemoteService {
         }
         Some(state.plan(now))
     }
-    fn poll(self: &Arc<Self>) {
+    pub(crate) fn poll(self: &Arc<Self>) {
         self.dispatch(self.plan(Instant::now()));
     }
     /// Hands planned requests to the workers, starting more of them while there is work they could
@@ -882,15 +910,26 @@ impl RemoteService {
         self.publish();
         Ok(())
     }
+    pub(crate) fn ssh_routes(&self) -> Result<Vec<SshRoute>, String> {
+        self.backend.ssh_routes()
+    }
+    pub(crate) fn add_ssh(&self, request: &AddSshRequest) -> Result<(), String> {
+        self.register_host(|| self.backend.add_ssh(request))
+    }
     pub fn add_host(&self, link: String, label: String) -> Result<(), String> {
         let link = check_link(&link)?;
+        self.register_host(|| {
+            self.backend
+                .add_host(&link, label.trim())
+                .map_err(|e| secret_error(&e, Some(&link)))
+        })
+    }
+    fn register_host(&self, register: impl FnOnce() -> Result<(), String>) -> Result<(), String> {
         let _mutation = self
             .host_mutation
             .try_lock()
             .map_err(|_| "conflict: a remote host change is already running")?;
-        self.backend
-            .add_host(&link, label.trim())
-            .map_err(|e| secret_error(&e, Some(&link)))?;
+        register()?;
         self.state
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -1383,7 +1422,7 @@ pub fn install_service(remote: Arc<RemoteService>) -> Result<(), String> {
         .set(remote)
         .map_err(|_| "conflict: remote service is already installed".into())
 }
-fn process() -> Result<Arc<RemoteService>, String> {
+pub(crate) fn process() -> Result<Arc<RemoteService>, String> {
     if let Some(remote) = PROCESS.get() {
         return Ok(remote.clone());
     }
