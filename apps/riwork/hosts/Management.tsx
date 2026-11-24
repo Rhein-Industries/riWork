@@ -1,4 +1,4 @@
-import { Scroll, Text, View, cleanup, effect, signal, untracked, type YNode } from "nsh";
+import { Scroll, Text, View, cleanup, effect, signal, untracked, type ViewRef } from "nsh";
 import { Button, Input } from "nsh/base";
 import type { HostManagement } from "riwork/native";
 import type { InterfaceTheme } from "../theme";
@@ -17,7 +17,7 @@ function unregisteredMacs(macs: Mac[], routes: Route[]) {
 }
 
 export function HostManagementPanel(props: {
-  visible: () => boolean; theme: () => InterfaceTheme; api: HostManagementApi; onSearch?: (node: YNode) => void;
+  visible: () => boolean; theme: () => InterfaceTheme; api: HostManagementApi; onSearch?: (node: ViewRef) => void;
 }) {
   const macs = signal<Mac[]>([]), routes = signal<Route[]>([]), query = signal("");
   const discoveryError = signal(""), routeError = signal(""), busy = signal(false);
@@ -76,7 +76,7 @@ export function HostManagementPanel(props: {
   function field(id: string, title: string, value: typeof target, placeholder?: string) {
     return <View style={{ gap: 3 }}><Text style={font(11, palette().muted)}>{title}</Text>
       <Input testID={id} accessibilityLabel={title} autoCorrect={false} value={value()} placeholder={placeholder}
-        disabled={connecting()} onChange={text => { value.set(text); error.set(""); }} style={input()} /></View>;
+        disabled={connecting()} onChange={({ value: text }) => { value.set(text); error.set(""); }} style={input()} /></View>;
   }
   const matches = (...values: (string | null | undefined)[]) => values.join(" ").toLocaleLowerCase().includes(query().trim().toLocaleLowerCase());
   const candidates = () => unregisteredMacs(macs(), routes()).filter(mac => matches(mac.label, mac.target, mac.dnsName));
@@ -85,7 +85,7 @@ export function HostManagementPanel(props: {
     <View style={{ ...row, padding: 12, borderBottomWidth: 1, borderColor: palette().divider }}>
       <Text role="header" style={{ ...font(15), fontWeight: "600" }}>Hosts</Text>
       <View style={{ flex: 1 }}><Input testID="host-management-search" ref={node => props.onSearch?.(node)} accessibilityLabel="Search hosts"
-        placeholder="Search hosts" value={query()} onChange={value => query.set(value)} style={input()} /></View>
+        placeholder="Search hosts" value={query()} onChange={({ value }) => query.set(value)} style={input()} /></View>
       {button("hosts-refresh", busy() ? "Refreshing…" : "Refresh", () => void refresh(), busy())}
       {button("hosts-add", "Add SSH host", () => openForm())}
     </View>
