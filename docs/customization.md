@@ -10,6 +10,11 @@ files and open the folder. Select an interface in the same settings section.
 `somtus customization init` also creates the files without overwriting existing
 ones. `somtus customization select sidebar` selects the supplied command sidebar.
 
+**Minimalist** is a bundled workspace mod. Enable it under **Settings → Mods**
+to keep Projects, Files, CLI terminals and Settings in your project windows.
+File previews open inside Files. Disable the mod to return to your previous
+interface and see the hidden tabs again. Running sessions continue to run.
+
 Files live under `RIWORK_HOME/ui` (`~/.local/share/riwork/ui` by default, retaining
 Somtus's existing data directory):
 
@@ -17,6 +22,7 @@ Somtus's existing data directory):
 | --- | --- |
 | `config.json` | Selected interface: `{"version":1,"layout":"sidebar"}` |
 | `layouts/<name>.json` | Personal interface composition |
+| `mods.json` | Active project workspace mod |
 | `keys.json` | Window and application shortcut overrides |
 | `README.md` | Local guide for you and your coding agent |
 
@@ -24,6 +30,21 @@ These are user files, separate from the app bundle. An app update does not
 replace them. To share a setup, copy its layout, key overrides, and referenced
 add-in sources. The receiving user chooses the layout and trusts any add-in
 permissions. The files contain no terminal sessions or project layout state.
+
+## Ship and share mods
+
+A workspace mod contributes code to the project workspace. Minimalist ships
+with its own [manifest](../apps/riwork/mods/minimalist/mod.json) and
+[TSX module](../apps/riwork/mods/minimalist/App.tsx). To ship another reviewed
+workspace mod, register its module in the [workspace mod registry](../apps/riwork/mods/index.ts)
+and its manifest in the [native catalog](../crates/riwork-core/src/customization.rs).
+The app build includes both. Mod authors can use TSX with the host's existing
+pane and command APIs. Extending the native APIs requires a rebuild of the app.
+
+Project add-ins can travel with their repository under `.ontack/addins`. Copy
+personal add-ins to `RIWORK_HOME/addins`. Somtus can load prebuilt add-in bundles,
+but `somtus addin pack`, `install`, and `catalog` are still unavailable. There is
+no automatic over-the-air distribution for mods today.
 
 ## Compose the interface
 
@@ -124,8 +145,7 @@ The complete example in `examples/addins/workspace-navigator` lists live panes
 and tabs and offers navigation/action buttons. Copy its directory under
 `RIWORK_HOME/addins`, copy `examples/customization/navigator.json` under
 `RIWORK_HOME/ui/layouts`, then select `navigator`. Review and trust the add-in in
-the app. Source add-in compilation uses the installed NSH toolchain, just like
-existing add-ins; selecting a JSON-only layout does not require a compiler.
+the app.
 
 ## Change shortcuts
 
@@ -156,8 +176,9 @@ to its defaults. Fix the file and save to resume live updates.
 **Control–Option–Shift–Escape** is handled by the native host and cannot be
 rebound. It restores the built-in interface and archives the custom shortcut
 file. **Reset interface and shortcuts** in Settings and
-`somtus customization reset` do the same. Your custom layout files, add-ins,
-project pane layouts, sessions and chats are retained.
+`somtus customization reset` do the same. Reset also disables the active
+workspace mod. Your custom layout files, add-ins, project pane layouts, sessions
+and chats are retained.
 
 The declarative composition currently applies to project windows. The Global
 dashboard/chat keeps its built-in interface and honors its supported shortcut

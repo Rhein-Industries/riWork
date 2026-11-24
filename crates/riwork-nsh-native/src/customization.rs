@@ -52,6 +52,10 @@ impl CustomizationService {
         let mut store = self.store.lock().unwrap();
         Ok(self.publish(store.select(name)?))
     }
+    pub fn set_workspace_mod(&self, id: Option<&str>) -> Result<CustomizationSnapshot, String> {
+        let mut store = self.store.lock().unwrap();
+        Ok(self.publish(store.set_workspace_mod(id)?))
+    }
     pub fn reset(&self) -> Result<CustomizationSnapshot, String> {
         let mut store = self.store.lock().unwrap();
         Ok(self.publish(store.reset()?))
@@ -139,6 +143,10 @@ impl Customization {
     }
     pub async fn select(name: String) -> Result<Value, String> {
         service::blocking(move || value(current()?.select(&name)?)).await
+    }
+    /// Select a bundled workspace mod, or clear the active mod with null.
+    pub async fn set_workspace_mod(id: Option<String>) -> Result<Value, String> {
+        service::blocking(move || value(current()?.set_workspace_mod(id.as_deref())?)).await
     }
     pub async fn reset() -> Result<Value, String> {
         service::blocking(|| value(current()?.reset()?)).await

@@ -31,6 +31,7 @@ interface PanelOptions {
   projectLabel: () => string;
   switchProject: (project: ProjectDto) => Promise<void>;
   openPanel: (panel: string) => void;
+  panelAvailable?: (panel: string) => boolean;
   showShell: (id: string) => void;
   showChat?: (id: string) => void;
   newChat?: () => void;
@@ -420,7 +421,7 @@ function ProjectItemRow(props: { item: () => ProjectTreeRow; controller: PanelCo
     void Menu.popup([
       { label: "Open project", onSelect: () => void c.activate(project()) },
       { label: "Open in another window", onSelect: openWindow },
-      { label: "Project settings…", onSelect: () => void settings() },
+      ...(c.panelAvailable?.("project_settings") === false ? [] : [{ label: "Project settings…", onSelect: () => void settings() }]),
       { label: pinned() ? "Unpin project" : "Pin project", checked: pinned(), disabled: c.panelSaving(), onSelect: () => c.pinProject(project().id) },
       { label: "Move to folder…", onSelect: () => c.folderMenu(project().id) },
       { type: "separator" },

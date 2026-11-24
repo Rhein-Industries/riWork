@@ -16,6 +16,7 @@ export const SETTINGS_SECTIONS = [
   { number: "07", title: "Status bar", description: "Choose what appears, which side it sits on, and its order." },
   { number: "08", title: "Remote", description: "Control other Macs' shells from here, or let another Mac control this one." },
   { number: "09", title: "Import from Orca", description: "Bring projects and worktrees over from Orca once." },
+  { number: "10", title: "Mods", description: "Enable a mod for your project workspace." },
 ] as const;
 export function sectionColumns(width: number): string[][] {
   const sections = SETTINGS_SECTIONS.map((section) => section.number);

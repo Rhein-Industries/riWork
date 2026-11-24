@@ -1,4 +1,4 @@
-//! User-authored UI composition and shortcuts. These files are separate from
+//! UI composition, workspace mods, and shortcuts. These files are separate from
 //! workspace layouts, sessions, and add-in trust. Reading never writes files.
 use fs2::FileExt;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -29,6 +29,9 @@ pub const BUILTIN_PANELS: &[&str] = &[
     "dashboard",
     "addins",
 ];
+const WORKSPACE_MOD_MANIFESTS: &[&str] = &[include_str!(
+    "../../../apps/riwork/mods/minimalist/mod.json"
+)];
 pub type Bindings = BTreeMap<String, Option<String>>;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -42,6 +45,20 @@ impl Default for Config {
         Self {
             version: VERSION,
             layout: "default".into(),
+        }
+    }
+}
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ModsDocument {
+    version: u32,
+    workspace_mod: Option<String>,
+}
+impl Default for ModsDocument {
+    fn default() -> Self {
+        Self {
+            version: VERSION,
+            workspace_mod: None,
         }
     }
 }
@@ -159,11 +176,24 @@ pub struct LayoutInfo {
     pub name: String,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceModInfo {
+    pub id: String,
+    pub name: String,
+    pub version: String,
+    pub description: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CustomizationSnapshot {
     pub layout: LayoutDocument,
     pub selected: String,
     pub layouts: Vec<LayoutInfo>,
+    #[serde(default)]
+    pub workspace_mod: Option<String>,
+    #[serde(default)]
+    pub mods: Vec<WorkspaceModInfo>,
     pub keys: Bindings,
     pub error: Option<String>,
     pub directory: String,
@@ -308,8 +338,8 @@ impl LayoutDocument {
     }
 }
 
-/// Keep this store alive to retain the most recent valid layout and keymap while
-/// an editor writes a partial/invalid file. A fresh process safely starts default.
+/// Keep this store alive to retain the most recent valid configuration while an
+/// editor writes a partial/invalid file. A fresh process starts with the defaults.
 pub struct CustomizationStore {
     directory: PathBuf,
     last: CustomizationSnapshot,
@@ -317,6 +347,13 @@ pub struct CustomizationStore {
 impl CustomizationStore {
     pub fn open(home: impl Into<PathBuf>) -> Result<Self, String> {
         let directory = home.into().join("ui");
+        let mods = WORKSPACE_MOD_MANIFESTS
+            .iter()
+            .map(|manifest| {
+                serde_json::from_str(manifest)
+                    .map_err(|error| format!("Built-in workspace mod: {error}"))
+            })
+            .collect::<Result<Vec<WorkspaceModInfo>, _>>()?;
         let last = CustomizationSnapshot {
             layout: LayoutDocument::default(),
             selected: "default".into(),
@@ -324,6 +361,8 @@ impl CustomizationStore {
                 id: "default".into(),
                 name: "Default".into(),
             }],
+            workspace_mod: None,
+            mods,
             keys: BTreeMap::new(),
             error: None,
             directory: directory.to_string_lossy().into_owned(),
@@ -340,6 +379,10 @@ impl CustomizationStore {
                 self.last.selected = selected;
                 self.last.layout = layout;
             }
+            Err(error) => errors.push(error),
+        }
+        match self.load_workspace_mod() {
+            Ok(workspace_mod) => self.last.workspace_mod = workspace_mod,
             Err(error) => errors.push(error),
         }
         match read_optional::<KeysDocument>(&self.directory.join("keys.json")).and_then(|keys| {
@@ -378,6 +421,24 @@ impl CustomizationStore {
         }
         let layout = self.load_layout(&config.layout)?;
         Ok((config.layout, layout))
+    }
+    fn load_workspace_mod(&self) -> Result<Option<String>, String> {
+        let config =
+            read_optional::<ModsDocument>(&self.directory.join("mods.json"))?.unwrap_or_default();
+        if config.version != VERSION {
+            return Err(format!("mods.json: unsupported version {}", config.version));
+        }
+        self.check_workspace_mod(config.workspace_mod.as_deref())
+            .map_err(|error| format!("mods.json: {error}"))?;
+        Ok(config.workspace_mod)
+    }
+    fn check_workspace_mod(&self, id: Option<&str>) -> Result<(), String> {
+        if let Some(id) = id
+            && !self.last.mods.iter().any(|module| module.id == id)
+        {
+            return Err(format!("Unknown workspace mod {id:?}"));
+        }
+        Ok(())
     }
     fn load_layout(&self, name: &str) -> Result<LayoutDocument, String> {
         if !valid_layout_id(name) {
@@ -457,9 +518,22 @@ impl CustomizationStore {
         )?;
         Ok(self.snapshot())
     }
+    pub fn set_workspace_mod(&mut self, id: Option<&str>) -> Result<CustomizationSnapshot, String> {
+        self.check_workspace_mod(id)?;
+        let _lock = self.write_lock()?;
+        write_json(
+            &self.directory.join("mods.json"),
+            &ModsDocument {
+                version: VERSION,
+                workspace_mod: id.map(str::to_owned),
+            },
+        )?;
+        Ok(self.snapshot())
+    }
     pub fn reset(&mut self) -> Result<CustomizationSnapshot, String> {
         let _lock = self.write_lock()?;
         write_json(&self.directory.join("config.json"), &Config::default())?;
+        write_json(&self.directory.join("mods.json"), &ModsDocument::default())?;
         let keys = self.directory.join("keys.json");
         match fs::symlink_metadata(&keys) {
             Ok(_) => {
@@ -575,8 +649,9 @@ These files customize presentation and shortcuts. They do not replace saved work
 
 - `config.json`: `{ "version": 1, "layout": "sidebar" }` selects `layouts/sidebar.json`.
 - `layouts/*.json`: a named layout; copy the sidebar example and give the file a new lowercase name.
+- `mods.json`: the workspace mod selected in Settings → Mods.
 - `keys.json`: `{ "version": 1, "bindings": { "newChat": "mod+shift+k" } }`; use `null` to unbind a supported command. Unsupported or conflicting chords are reported and the last valid keymap stays active.
-- `default` is reserved and always restores the original interface. `somtus customization reset` selects it and archives keys in `archive/`; it leaves custom layouts, workspace layouts, add-ins, and sessions intact.
+- `default` is reserved for the original interface. `somtus customization reset` selects it, turns off the workspace mod, and archives keys in `archive/`. It leaves custom layouts, workspace layouts, add-ins, and sessions intact.
 
 Run `somtus customization init` to create missing examples, `somtus customization select sidebar` to use the sidebar, and `somtus customization show --json` to inspect the effective configuration and any errors. Files reload automatically. Invalid edits retain the last valid configuration in a running app; a fresh app starts with the safe default if no valid configuration is available.
 
@@ -630,6 +705,72 @@ mod tests {
         assert_eq!(snapshot.selected, "default");
         assert!(snapshot.keys.is_empty() && snapshot.error.is_none());
         assert!(!temp.0.join("ui").exists());
+    }
+    #[test]
+    fn customization_workspace_mod_ships_separately_from_layouts_and_persists() {
+        let temp = Temp::new();
+        let mut store = temp.store();
+        let fresh = store.snapshot();
+        assert_eq!(fresh.workspace_mod, None);
+        let module = fresh
+            .mods
+            .iter()
+            .find(|module| module.id == "somtus.minimalist")
+            .unwrap();
+        assert_eq!(module.name, "Minimalist");
+        assert!(
+            !fresh
+                .layouts
+                .iter()
+                .any(|layout| layout.name == module.name)
+        );
+        assert!(!temp.0.join("ui").exists());
+
+        let enabled = store.set_workspace_mod(Some(&module.id)).unwrap();
+        assert_eq!(enabled.workspace_mod.as_deref(), Some(module.id.as_str()));
+        assert_eq!(enabled.layout, fresh.layout);
+        assert_eq!(enabled.selected, fresh.selected);
+        assert_eq!(temp.store().snapshot().workspace_mod, enabled.workspace_mod);
+
+        store.initialize_files().unwrap();
+        assert_eq!(
+            store.select("sidebar").unwrap().workspace_mod,
+            enabled.workspace_mod
+        );
+        let disabled = store.set_workspace_mod(None).unwrap();
+        assert_eq!(disabled.workspace_mod, None);
+        assert_eq!(disabled.selected, "sidebar");
+        assert_eq!(temp.store().snapshot().workspace_mod, None);
+
+        store.set_workspace_mod(Some(&module.id)).unwrap();
+        let reset = store.reset().unwrap();
+        assert_eq!(reset.workspace_mod, None);
+        assert_eq!(reset.selected, "default");
+        assert_eq!(temp.store().snapshot().workspace_mod, None);
+    }
+    #[test]
+    fn customization_workspace_mod_invalid_edits_keep_last_good_selection() {
+        let temp = Temp::new();
+        let mut store = temp.store();
+        let enabled = store.set_workspace_mod(Some("somtus.minimalist")).unwrap();
+        assert!(store.set_workspace_mod(Some("unknown.mod")).is_err());
+        assert_eq!(temp.store().snapshot().workspace_mod, enabled.workspace_mod);
+
+        for invalid in [
+            "{ incomplete",
+            r#"{"version":2}"#,
+            r#"{"version":1,"workspaceMod":"unknown.mod"}"#,
+        ] {
+            temp.write("ui/mods.json", invalid);
+            let current = store.snapshot();
+            assert_eq!(current.workspace_mod, enabled.workspace_mod);
+            assert!(current.error.unwrap().contains("mods.json"));
+            assert_eq!(temp.store().snapshot().workspace_mod, None);
+        }
+        temp.write("ui/mods.json", r#"{"version":1,"workspaceMod":null}"#);
+        let recovered = store.snapshot();
+        assert_eq!(recovered.workspace_mod, None);
+        assert_eq!(recovered.error, None);
     }
     #[test]
     fn customization_rejects_unknown_fields_versions_duplicates_and_workspace_counts() {

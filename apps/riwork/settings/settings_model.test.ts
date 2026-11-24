@@ -1,10 +1,10 @@
 import { expect, test } from "nsh/test";
 import { SETTINGS_SECTIONS, modelIdError, sectionColumns, settingsLayout } from "./settings_model";
 
-test("P6a settings width classes preserve the nine-section keyboard order", () => {
+test("P6a settings width classes preserve the section keyboard order", () => {
   for (const width of [0, 650, 700, 1199, 1200, 1700]) expect(sectionColumns(width).flat()).toEqual(SETTINGS_SECTIONS.map((section) => section.number));
   expect(settingsLayout(699).kind).toBe("narrow"); expect(settingsLayout(700).maxWidth).toBe(820); expect(settingsLayout(1200).maxWidth).toBe(1320);
-  expect(sectionColumns(1200)).toEqual([["01", "02", "03", "04"], ["05", "06", "07", "08", "09"]]);
+  expect(sectionColumns(1200)).toEqual([["01", "02", "03", "04"], ["05", "06", "07", "08", "09", "10"]]);
 });
 test("P6a custom orchestrator model validation never replaces an unreadable choice without a valid edit", () => {
   expect(modelIdError(" ")).toBe("Type a model ID first.");

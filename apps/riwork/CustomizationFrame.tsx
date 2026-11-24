@@ -10,6 +10,7 @@ const position = (rect: Rect) => ({ position: "absolute" as const, left: rect.x,
 export function CustomizationFrame(props: {
   layout: () => InterfaceLayout; custom: () => boolean; theme: () => InterfaceTheme;
   projectId: () => string; workspace: () => unknown; title: () => string;
+  titleActions?: () => JSX.Element;
   onCommand: (id: string) => void; onAction: (key: string, action: AddinAction) => void;
   onEdit: () => void; onReset: () => void; children?: JSX.Element;
 }) {
@@ -35,8 +36,10 @@ export function CustomizationFrame(props: {
   return <View testID="customization-frame" style={{ flex: 1, minHeight: 0 }}>
     <View testID="customization-titlebar" desktop={{ windowDrag: true }} style={{ height: props.custom() ? 28 : 0, overflow: "hidden", flexDirection: "row", alignItems: "center", paddingLeft: 94, paddingRight: 10, gap: 12, backgroundColor: theme().palette.panel }}>
       <Text numberOfLines={1} style={{ ...text(), flex: 1 }}>{props.title()}</Text>
-      <View role="button" accessibilityLabel="Edit interface" onPress={props.onEdit}><Text style={text()}>Edit</Text></View>
-      <View role="button" accessibilityLabel="Reset interface" onPress={props.onReset}><Text style={text()}>Reset</Text></View>
+      {props.titleActions?.() ?? <>
+        <View role="button" accessibilityLabel="Edit interface" onPress={props.onEdit}><Text style={text()}>Edit</Text></View>
+        <View role="button" accessibilityLabel="Reset interface" onPress={props.onReset}><Text style={text()}>Reset</Text></View>
+      </>}
     </View>
     <View testID="customization-body" onLayout={(event) => { const size = event.size; if (size.width !== extent().width || size.height !== extent().height) extent.set(size); }} style={{ flex: 1, minHeight: 0 }}>
       <View testID="customization-workspace" style={props.custom() ? position(geometry().workspace) : { flex: 1, minHeight: 0 }}>

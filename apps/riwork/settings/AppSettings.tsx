@@ -41,7 +41,7 @@ const nativeServices: AppSettingsServices = { settings: Settings, accounts: Acco
 export interface AppSettingsControl { revealApiKey(): void }
 export interface AppSettingsProps {
   theme?: () => InterfaceTheme; visible?: () => boolean; settings?: () => SettingsDto | null;
-  computerUse?: JSX.Element; remote?: JSX.Element;
+  computerUse?: JSX.Element; remote?: JSX.Element; workspaceMods?: JSX.Element;
   computerUseFocus?: () => { initialTarget(): YNode | null | undefined } | null;
   services?: AppSettingsServices; onError?: (reason: unknown) => void;
   onNotice?: (message: string) => void;
@@ -402,6 +402,7 @@ export function AppSettings(props: AppSettingsProps) {
       case "07": return statusBody();
       case "08": return props.remote ?? <Text style={muted()}>Remote settings are unavailable here.</Text>;
       case "09": return importBody();
+      case "10": return props.workspaceMods;
     }
   }
   // The header sits in the sections' column, and a failed save shows there, in view,
@@ -419,6 +420,7 @@ export function AppSettings(props: AppSettingsProps) {
     <Scroll testID="appearance-settings" ref={(node) => { page = node; scheduleReveal(); }} onScroll={(event) => { if (alive) scrollY.set(event.offset.y); }} style={{ flex: 1, minHeight: 0 }} contentStyle={{ paddingHorizontal: space(6, theme().scale), paddingBottom: space(12, theme().scale), alignItems: "center" }}>
       <View testID={`settings-layout-${settingsLayout(width()).kind}`} style={{ width: "100%", flexDirection: settingsLayout(width()).kind === "wide" ? "row" : "column", gap: settingsLayout(width()).gap }}>
         {sectionColumns(width()).map((column) => <View style={{ flex: 1, minWidth: 0, gap: 0 }}>{column.map((number) => {
+          if (number === "10" && !props.workspaceMods) return null;
           const section = SETTINGS_SECTIONS.find((section) => section.number === number)!;
           return <Section number={section.number} title={section.title} description={section.description} padding={settingsLayout(width()).card} theme={theme}>{body(number)}</Section>;
         })}</View>)}

@@ -25,7 +25,7 @@ function Body(props: { root: string; projectId: string }) {
   host.on("app.fixture.passive", (event) => {
     const path = (event as { path: string }).path;
     const entry = [...controller.listings().values()].flatMap((listing) => listing.entries).find((entry) => entry.relativePath === path);
-    if (entry) controller.select(entry, false);
+    if (entry) controller.select(entry, { explicit: false });
   });
   return <View style={{ flex: 1 }}>
     <View style={{ flexDirection: "row", gap: 8 }}>

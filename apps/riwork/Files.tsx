@@ -126,11 +126,11 @@ export function createFilesController(options: FilesOptions) {
   }
   /** Only drawn content zooms; a message (binary, error, PDF not yet asked for) has nothing to scale. */
   const zoomable = () => { const kind = preview()?.kind; return kind === "text" || kind === "image" || kind === "pdf"; };
-  function select(entry: FileEntry, explicit = true) {
+  function select(entry: FileEntry, { explicit = true, showPreview }: { explicit?: boolean; showPreview?: boolean } = {}) {
     clearTimeout(timer); previewGeneration++; previewLoading.set(false);
     selected.set(entry); notice.set(""); line.set(undefined); zoom.set(1);
     if (entry.kind === "directory") { toggle(entry); return; }
-    options.previewRequested();
+    options.previewRequested(showPreview);
     if (explicit) void loadPreview(entry, true);
     else { clearTimeout(timer); previewGeneration++; timer = setTimeout(() => void loadPreview(entry, false), 150); }
   }
@@ -316,7 +316,7 @@ export function FilesPanel(props: { controller: FilesController; surface?: strin
   function contextMenu(entry: FileEntry) {
     c.selected.set(entry);
     void Menu.popup([
-      { label: "Preview", disabled: entry.kind !== "file", onSelect: () => c.select(entry) },
+      { label: "Preview", disabled: entry.kind !== "file", onSelect: () => c.select(entry, { showPreview: true }) },
       { label: "Edit in Vim", disabled: entry.kind !== "file" || !entry.identity, onSelect: () => void c.edit(entry) },
       { label: "Open externally", disabled: entry.kind === "symlink", onSelect: () => void c.open(entry) },
       { type: "separator" },

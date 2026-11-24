@@ -6,6 +6,7 @@ export interface CustomizationService {
   snapshot(): Promise<unknown>;
   subscribe(listener: (event: { rev: number; data: unknown }) => void): { close(): void };
   select(name: string): Promise<unknown>;
+  setWorkspaceMod(id: string | null): Promise<unknown>;
   reset(): Promise<unknown>;
   initializeFiles(): Promise<unknown>;
   reveal(): Promise<unknown>;
@@ -33,6 +34,7 @@ export function useCustomization(service: CustomizationService = nativeCustomiza
   return {
     state, error: () => failure() || state().error || "",
     select: (name: string) => run(() => service.select(name)),
+    setWorkspaceMod: (id: string | null) => run(() => service.setWorkspaceMod(id)),
     reset: () => run(() => service.reset()),
     edit: () => run(async () => { await service.initializeFiles(); await service.reveal(); }),
   };

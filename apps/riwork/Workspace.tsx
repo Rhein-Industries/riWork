@@ -3,6 +3,7 @@ import { AddinTab, type AddinAction, type AddinInfo } from "./AddinTab";
 import { AddinsPanel } from "./AddinsPanel";
 import { CustomizationFrame } from "./CustomizationFrame";
 import { useCustomization, type CustomizationService } from "./customization";
+import { DEFAULT_CUSTOMIZATION, visibleWorkspace } from "./customization_model";
 import { CuaSetup, useCua, type CuaSetupControl } from "./CuaSetup";
 import { Clipboard, ErrorBoundary, Overlay, Scroll, Text, View, batch, cleanup, colorScheme, computed, effect, host, keymap, signal, untracked, type YNode } from "nsh";
 import { Button, Input, Popover, type DockAreaLayout, type DockNode } from "nsh/base";
@@ -35,6 +36,8 @@ import { filteredFolders, remoteHostLabel, remoteLocalOnly, remotePanelUnavailab
 import { workspaceRemote, type WorkspaceRemoteApi } from "./remote/workspace";
 import { AppSettings } from "./settings/AppSettings";
 import { ProjectSettingsPanel } from "./settings/ProjectSettings";
+import { WorkspaceModsSettings } from "./settings/WorkspaceModsSettings";
+import { findWorkspaceMod } from "./mods";
 
 type Extent = { width: number; height: number };
 interface WorkspaceProps {
@@ -86,7 +89,11 @@ type SetupTab =
 export function Workspace(props: WorkspaceProps) {
   const session = props.session;
   const customization = useCustomization(props.customizationService);
-  const customInterface = () => customization.state().selected !== "default";
+  const workspaceMod = computed(() => findWorkspaceMod(customization.state().workspaceMod));
+  const customInterface = () => !!workspaceMod() || customization.state().selected !== "default";
+  const interfaceLayout = () => workspaceMod() ? DEFAULT_CUSTOMIZATION.layout : customization.state().layout;
+  const workspaceTabs = () => workspaceMod()?.visibleTabs;
+  const allows = (key: string) => workspaceTabs()?.has(key) ?? true;
   function shortcut(command: string, original?: string): string | undefined {
     const keys = customization.state().keys;
     return Object.prototype.hasOwnProperty.call(keys, command) ? keys[command] ?? undefined : original;
@@ -100,6 +107,7 @@ export function Workspace(props: WorkspaceProps) {
     return key ? `${title} · ${key}` : title;
   }
   const snapshot = signal(session.snapshot() as WorkspaceSnapshot);
+  const displayed = computed(() => visibleWorkspace(snapshot(), workspaceTabs()));
   const dock = signal<DockAreaLayout | null>(null);
   // Keep the DockArea subtree mounted as its controlled layout changes. Using
   // dock() as the conditional value would reconstruct it for every projection.
@@ -180,9 +188,10 @@ export function Workspace(props: WorkspaceProps) {
     settings: props.settings,
     initialWorktree: snapshot().selectedWorktreeId,
     initialTask: snapshot().selectedTaskId,
-    openPanel: (id) => action(() => session.openPanel(id)),
+    openPanel: view,
+    panelAvailable: allows,
     showShell: (id) => { void openShell(id); },
-    showChat: (id) => action(() => session.openChat(id)),
+    showChat: (id) => { if (allows("chat")) action(() => session.openChat(id)); },
     newChat: () => showNewChat(),
     selectWorktree: (id) => { try { session.setSelectedWorktree(id); snapshot.set(session.snapshot() as WorkspaceSnapshot); } catch (error) { notice.set(String(error)); } },
     selectTask: (id) => { try { session.setSelectedTask(id); snapshot.set(session.snapshot() as WorkspaceSnapshot); } catch (error) { notice.set(String(error)); } },
@@ -220,7 +229,7 @@ export function Workspace(props: WorkspaceProps) {
     if (!status.installed) action(() => session.openCuaSetup());
   });
   function newAppPreview() {
-    if (localOnly()) return;
+    if (!allows("app_preview") || localOnly()) return;
     const cwd = filesRoot();
     if (!cwd) { notice.set("App previews require a local project folder."); return; }
     action(() => session.openAppPreview({ command: "", cwd, mode: "cooperative" }));
@@ -234,6 +243,15 @@ export function Workspace(props: WorkspaceProps) {
     }
     return panelState.state().projects.find((project) => project.id === projectId())?.root ?? null;
   }
+  const inlineFilePreview = signal(false);
+  function requestFilePreview(asked = false) {
+    const show = asked || (props.settings?.()?.openPreviewOnSelect ?? true);
+    if (allows("preview")) action(() => session.revealPanel("preview", asked, show));
+    else if (show && allows("files")) {
+      if (asked && selected() !== "panel:files") view("files");
+      inlineFilePreview.set(true);
+    }
+  }
   const fileState = createFilesController({
     root: filesRoot,
     label: () => {
@@ -244,14 +262,18 @@ export function Workspace(props: WorkspaceProps) {
     visible: () => isVisible("panel:files") || isVisible("panel:preview"),
     active: () => {
       if (switching() || panelState.editor()) return null;
-      const id = activePane(snapshot())?.activeTab;
+      const id = selected();
+      if (id === "panel:files" && !allows("preview") && inlineFilePreview() && fileState.focused() === "preview") return "preview";
       return id === "panel:files" ? "files" : id === "panel:preview" ? "preview" : null;
     },
-    previewRequested: (asked) => action(() => session.revealPanel("preview", !!asked, !!asked || (props.settings?.()?.openPreviewOnSelect ?? true))),
+    previewRequested: requestFilePreview,
     edit: (entry, line) => openEditor(entry.path, line, undefined, entry.identity),
     open: async (entry) => { await host.call("system.openWith", { path: entry.path }); },
     reveal: async (path) => { await host.call("system.revealInFinder", { path }); },
-    closePreview: () => action(() => session.closePanel("panel:preview", false)),
+    closePreview: () => {
+      if (allows("preview")) action(() => session.closePanel("panel:preview", false));
+      else { inlineFilePreview.set(false); fileState.focusTree("panel:files"); }
+    },
   });
   effect(() => updateTitle(remoteTitle(remote.data(), projectId()) ? `Somtus · ${remoteTitle(remote.data(), projectId())}` : panelState.state().projects.some((project) => project.id === projectId()) ? windowTitle(panelState.projectLabel()) : props.title));
   // The Dock label waits for stored project names and follows project switches.
@@ -259,7 +281,7 @@ export function Workspace(props: WorkspaceProps) {
   effect(() => updateDock(panelState.loaded() || !!snapshot().remoteProject, remoteTitle(remote.data(), projectId()) ?? panelState.state().projects.find((project) => project.id === projectId())?.name ?? props.projectLabel));
 
   const shared = () => Array.isArray(snapshot().sharedTabs) && !snapshot().remoteProject;
-  const selected = () => activePane(snapshot())?.activeTab;
+  function selected() { return activePane(displayed())?.activeTab; }
   const nativeChatUsage = (): NativeChatUsage | null => {
     const id = selected();
     if (!id || (!id.startsWith("chat:") && !id.startsWith("chat-pending:"))) return null;
@@ -291,7 +313,7 @@ export function Workspace(props: WorkspaceProps) {
   const frozen = () => menuOpen() || dragging() || allTabs();
   // A session layout that arrived while frozen (see the subscription below).
   let missed: unknown = null;
-  const sessions = () => (snapshot().panes.find((pane) => pane.id === (allTabsPane() ?? snapshot().activePane))?.tabs ?? []).filter((tab) => tab.kind !== "panel" && tab.kind !== "empty");
+  const sessions = () => (displayed().panes.find((pane) => pane.id === (allTabsPane() ?? displayed().activePane))?.tabs ?? []).filter((tab) => tab.kind !== "panel" && tab.kind !== "empty");
   const header = () => headerHeight(11 * theme().scale);
   effect(() => {
     const id = hovered();
@@ -311,7 +333,8 @@ export function Workspace(props: WorkspaceProps) {
     return ((value ? colorScheme() === "dark" ? value.terminalDark : value.terminalLight : null) ?? { source: "ghostty" }) as TerminalColors;
   }
   function isVisible(id: string): boolean {
-    return snapshot().panes.some((pane) => pane.activeTab === id && (!snapshot().focusMode || pane.id === snapshot().activePane));
+    const state = displayed();
+    return state.panes.some((pane) => pane.activeTab === id && (!state.focusMode || pane.id === state.activePane));
   }
   /** Shell titles prefer shared membership, then the session inventory. */
   const remoteChatTitles = signal<Record<string, string>>({});
@@ -339,7 +362,7 @@ export function Workspace(props: WorkspaceProps) {
     return UUID.test(project) ? project : null;
   }
   async function openShell(id: string) {
-    if (switching()) return;
+    if (!allows("cli") || switching()) return;
     const project = projectId(), token = panelState.generation(), membership = membershipProject(id);
     try {
       if (membership && !findPanel(snapshot(), `shell:${id}`)) {
@@ -366,6 +389,7 @@ export function Workspace(props: WorkspaceProps) {
    * as the project or Settings say (SHELL-217..219). A second request waits. */
   const orchestratorBusy = signal(false);
   async function openProjectOrchestrator() {
+    if (!allows("chat")) return;
     const project = projectId();
     if (remoteProjectKey(project)) { if (!orchestratorBusy() && !switching()) { orchestratorBusy.set(true); try { await remoteActions.orchestrator(); } catch (error) { if (alive) notice.set(String(error).replace(/^(?:Error: )?(?:invalid|io|refused|broken|unavailable): /u, "")); } finally { orchestratorBusy.set(false); } } return; }
     if (orchestratorBusy() || switching() || !UUID.test(project)) return;
@@ -380,13 +404,14 @@ export function Workspace(props: WorkspaceProps) {
     finally { if (alive) orchestratorBusy.set(false); }
   }
   function openGlobalOrchestrator() {
+    if (!allows("chat")) return;
     void host.call("window.open", { kind: "global", view: "chat", start: true, activate: true }).catch((error: unknown) => notice.set(String(error)));
   }
   /** One local-shell creation path: the layout session creates and places it. */
   // Add-ins: what they ask for happens here, where the person sees it.
   const addinStatus = signal<Record<string, { text: string; tone: string }>>({});
   function openAddin(key: string, view: string, title: string, args: unknown = null) {
-    action(() => session.openAddin({ addin: key, view, title, args }));
+    if (allows("addin")) action(() => session.openAddin({ addin: key, view, title, args }));
   }
   async function addinAction(key: string, request: AddinAction) {
     try {
@@ -394,7 +419,7 @@ export function Workspace(props: WorkspaceProps) {
         if (switching()) return;
         if (request.id === "selectTab") {
           const id = request.args?.id;
-          if (typeof id !== "string" || !findPanel(snapshot(), id)) throw new Error("That tab is no longer in this window.");
+          if (typeof id !== "string" || !findPanel(displayed(), id)) throw new Error("That tab is unavailable in this interface.");
           select(id);
         } else if (request.id === "selectPane") {
           const id = request.args?.id;
@@ -412,7 +437,7 @@ export function Workspace(props: WorkspaceProps) {
       } else if (request.type === "file") {
         const root = filesRoot();
         if (root && (request.path === root || request.path.startsWith(`${root}/`))) {
-          action(() => session.revealPanel("preview", true, true));
+          requestFilePreview(true);
           void fileState.reveal(request.path);
         } else await host.call("system.openWith", { path: request.path });
       } else if (request.type === "view") {
@@ -437,7 +462,7 @@ export function Workspace(props: WorkspaceProps) {
   }
 
   async function createShell(split?: "right" | "down", kind = "shell") {
-    if (busy() || switching() || panelState.pending()) return;
+    if (!allows("cli") || busy() || switching() || panelState.pending()) return;
     busy.set(true);
     const before = new Set(snapshot().panes.flatMap((pane) => pane.tabs.map((tab) => tab.id)));
     const tree = panelState.state().worktrees.find((tree) => tree.id === panelState.selectedWorktree() && tree.projectId === projectId());
@@ -456,7 +481,7 @@ export function Workspace(props: WorkspaceProps) {
     finally { if (alive) busy.set(false); thaw(); }
   }
   async function createSubshell(parentShellId = selected()?.startsWith("shell:") ? selected()!.slice(6) : undefined) {
-    if (localOnly()) return;
+    if (!allows("cli") || localOnly()) return;
     if (!parentShellId || busy() || switching()) return;
     busy.set(true);
     const project = projectId(), generation = panelState.generation();
@@ -469,7 +494,7 @@ export function Workspace(props: WorkspaceProps) {
     finally { if (alive) busy.set(false); thaw(); }
   }
   async function openEditor(path: string, line?: number, worktreeId?: string, identity?: string) {
-    if (localOnly()) return;
+    if (!allows("cli") || localOnly()) return;
     if (busy() || switching()) return;
     busy.set(true);
     const project = projectId(), generation = panelState.generation();
@@ -485,9 +510,9 @@ export function Workspace(props: WorkspaceProps) {
     } catch (error) { if (alive) notice.set(String(error)); }
     finally { if (alive) busy.set(false); thaw(); }
   }
-  function showVimBar() { if (!localOnly()) { vimPath.set(""); vimSuggestions.set([]); vimBar.set(true); } }
+  function showVimBar() { if (allows("cli") && !localOnly()) { vimPath.set(""); vimSuggestions.set([]); vimBar.set(true); } }
   function showNewChat() {
-    if (busy() || switching()) return;
+    if (!allows("chat") || busy() || switching()) return;
     const locations = chatLocations();
     if (!locations.length) { notice.set("Choose an available project or worktree folder before starting a chat."); return; }
     if (snapshot().panes.every((pane) => pane.locked)) { notice.set("Unlock a pane to open a new chat."); return; }
@@ -539,7 +564,7 @@ export function Workspace(props: WorkspaceProps) {
     return provider === "claude" ? provider : "codex";
   }
   function showHandoff() {
-    if (localOnly() || busy() || switching()) return;
+    if (!allows("chat") || localOnly() || busy() || switching()) return;
     const tab = selected();
     if (!tab || (!tab.startsWith("shell:") && !tab.startsWith("chat:"))) return;
     openSetup({ kind: "handoff", sourceId: tab.slice(tab.indexOf(":") + 1) });
@@ -584,8 +609,8 @@ export function Workspace(props: WorkspaceProps) {
     if (event.action === "edit" && event.kind === "file") { void openEditor(event.target, event.line); return; }
     const root = filesRoot();
     if (root && (event.target === root || event.target.startsWith(`${root}/`))) {
-      if (event.kind === "folder") action(() => session.revealPanel("files", true, true));
-      else action(() => session.revealPanel("preview", true, true));
+      if (event.kind === "folder" && allows("files")) action(() => session.revealPanel("files", true, true));
+      else if (event.kind === "file") requestFilePreview(true);
       void fileState.reveal(event.target, event.line);
       return;
     }
@@ -594,7 +619,7 @@ export function Workspace(props: WorkspaceProps) {
   }
   async function switchTo(id: string) {
     if (switching()) throw new Error("conflict: project switch is already in progress");
-    renaming.set(null); vimBar.set(false); closedTab.set(null); allTabs.set(false); allTabsPane.set(null);
+    renaming.set(null); vimBar.set(false); closedTab.set(null); allTabs.set(false); allTabsPane.set(null); inlineFilePreview.set(false);
     switching.set(true);
     const from = projectId();
     try {
@@ -748,9 +773,20 @@ export function Workspace(props: WorkspaceProps) {
     void Menu.popup(items).finally(() => { menuOpen.set(false); thaw(); });
   }
   function view(panel: string) {
+    if (panel === "preview" && !allows("preview")) { requestFilePreview(true); return; }
+    if (!allows(panel)) return;
     if (panel === "dashboard") {
       void host.call("window.open", { kind: "global", view: "dashboard", start: false }).catch((error) => notice.set(String(error)));
     } else action(() => session.openPanel(panel));
+  }
+  function showCli() {
+    const state = displayed();
+    const pane = activePane(state);
+    const isShell = (tab: PanelModel) => tab.kind === "shell" || tab.kind === "remote_shell";
+    const shell = pane?.tabs.find((tab) => tab.id === pane.activeTab && isShell(tab))
+      ?? pane?.tabs.find(isShell) ?? state.panes.flatMap((item) => item.tabs).find(isShell);
+    if (shell) select(shell.id);
+    else void createShell();
   }
   let settingsControl: { revealApiKey: () => void } | undefined;
   let projectSettingsControl: { revealMemo: () => void } | undefined;
@@ -782,7 +818,7 @@ export function Workspace(props: WorkspaceProps) {
     return space(M.menuButton + 12 + (buttons.lock ? button : 0) + (buttons.focus ? button : 0) + (buttons.main ? button : 0), theme().scale);
   }
   function paneButtons(id: number) {
-    const pane = snapshot().panes.find((pane) => pane.id === id);
+    const pane = displayed().panes.find((pane) => pane.id === id);
     const width = headerWidth(id);
     const main = !!pane?.main && width >= mainMarkerThreshold(snapshot().theme, snapshot().panelTabIcons);
     let lock = width >= M.lockAt, focus = width >= M.focusAt;
@@ -797,11 +833,11 @@ export function Workspace(props: WorkspaceProps) {
     return { main, lock, focus };
   }
   function panelCellWidth(id: number) {
-    const count = snapshot().panes.find((pane) => pane.id === id)?.tabs.filter((tab) => tab.kind === "panel").length ?? 1;
+    const count = displayed().panes.find((pane) => pane.id === id)?.tabs.filter((tab) => tab.kind === "panel").length ?? 1;
     return Math.min(space(M.panelCell, theme().scale), Math.max(space(18, theme().scale), (paneWidth(id) - controlInset(id) - controlsWidth(id)) / Math.max(1, count)));
   }
   function paneOverflow(id: number) {
-    const tabs = snapshot().panes.find((pane) => pane.id === id)?.tabs ?? [];
+    const tabs = displayed().panes.find((pane) => pane.id === id)?.tabs ?? [];
     return tabs.reduce((total, tab) => total + (tabWidths()[`${id}:${tab.id}`] ?? space(tab.kind === "panel" ? M.panelCell : sessionCellWidth(tab.title), theme().scale)), 0)
       > paneWidth(id) - controlInset(id) - controlsWidth(id);
   }
@@ -874,7 +910,7 @@ export function Workspace(props: WorkspaceProps) {
     </View>;
   }
   function paneMenu(id: number) {
-    const pane = snapshot().panes.find((pane) => pane.id === id);
+    const pane = displayed().panes.find((pane) => pane.id === id);
     if (!pane) return;
     action(() => session.selectPane(id));
     // What is used most stays on top; the rest is grouped in submenus.
@@ -887,11 +923,17 @@ export function Workspace(props: WorkspaceProps) {
     if (snapshot().panes.some((p) => p.main)) paneRows.push({ label: "Gather tabs into main pane", shortcut: shortcut("gatherTabs", "mod+shift+m"), onSelect: () => action(() => session.gather()) });
     if (!paneButtons(id).lock) paneRows.push({ label: pane.locked ? "Unlock pane" : "Lock pane", onSelect: () => action(() => session.toggleLock(id)) });
     if (!paneButtons(id).focus) paneRows.push({ label: snapshot().focusMode ? "Restore layout" : "Focus tab", shortcut: shortcut("toggleFocusMode", "mod+shift+f"), onSelect: () => action(() => session.toggleFocus()) });
-    popup([
-      { label: "Shell", shortcut: shortcut("newTab", "mod+t"), onSelect: () => { void createShell(); } },
-      { label: "New chat…", shortcut: shortcut("newChat", "mod+alt+shift+c"), onSelect: () => { commands.dispatch("newChat"); } },
+    const newShell: MenuItem = { label: "Shell", shortcut: shortcut("newTab", "mod+t"), onSelect: () => { void createShell(); } };
+    const newChat: MenuItem = { label: "New chat…", shortcut: shortcut("newChat", "mod+alt+shift+c"), onSelect: () => { commands.dispatch("newChat"); } };
+    const splits: MenuItem[] = [
       { label: "Split right", shortcut: shortcut("splitRight", "mod+d"), onSelect: () => { void createShell("right"); } },
       { label: "Split down", shortcut: shortcut("splitDown", "mod+shift+d"), onSelect: () => { void createShell("down"); } },
+    ];
+    const menuRows: MenuItem[] = workspaceTabs() ? [
+      ...(allows("cli") ? [newShell, ...splits] : []),
+      ...(allows("chat") ? [newChat, { label: "Hand off…", onSelect: showHandoff }] : []),
+      ...(allows("app_preview") ? [{ label: "App preview…", onSelect: newAppPreview }] : []),
+    ] : [newShell, newChat, ...splits,
       { type: "separator" },
       { label: "New", submenu: [
         ...[["Codex", "mod+shift+c"], ["Claude", "mod+shift+l"], ["Grok", "mod+shift+g"]].map(([label, shortcut]): MenuItem => ({ label, shortcut, onSelect: () => { void createShell(undefined, label.toLowerCase()); } })),
@@ -910,7 +952,10 @@ export function Workspace(props: WorkspaceProps) {
         { label: "Global", shortcut: shortcut("openGlobalChat", "mod+shift+o"), onSelect: openGlobalOrchestrator },
         { label: "Project", shortcut: shortcut("openProjectOrchestrator", "mod+alt+o"), disabled: !UUID.test(projectId()) && !remoteProjectKey(projectId()), onSelect: () => { void openProjectOrchestrator(); } },
       ] },
-      { label: "Views", submenu: VIEWS.map((panel): MenuItem => ({ label: panelTitle(panel), shortcut: shortcut(VIEW_COMMANDS[panel], VIEW_SHORTCUTS[panel]), onSelect: () => view(panel) })) },
+    ];
+    popup([
+      ...menuRows,
+      { label: "Views", submenu: VIEWS.filter(allows).map((panel): MenuItem => ({ label: panelTitle(panel), shortcut: shortcut(VIEW_COMMANDS[panel], VIEW_SHORTCUTS[panel]), onSelect: () => view(panel) })) },
       { label: "Pane", submenu: paneRows },
     ]);
   }
@@ -946,7 +991,7 @@ export function Workspace(props: WorkspaceProps) {
     if (title !== tab.title) action(() => session.renameTab(tab.id, title));
   }
 
-  const commands = workspaceCommands(session, snapshot, action, {
+  const commands = workspaceCommands(session, displayed, action, {
     keybindings: () => customization.state().keys,
     customization: (id) => {
       if (id === "openCustomization") { void customization.edit(); return true; }
@@ -977,18 +1022,18 @@ export function Workspace(props: WorkspaceProps) {
     appPreview: newAppPreview,
     find,
     closeTab: () => close(),
-    closePane: () => closePane(),
+    closePane: () => closePane(displayed().activePane),
     toggleFocus: () => { allTabs.set(false); action(() => session.toggleFocus()); thaw(); },
     toggleCentered: () => { action(() => session.toggleCentered()); thaw(); },
     tabContextMenu: () => { if (selected()) tabMenu(selected()!); },
     view: (panel) => { allTabs.set(false); view(panel); },
     selectNumbered: (n) => {
-      const pane = activePane(snapshot());
+      const pane = activePane(displayed());
       const tab = pane && numberedTab(pane, n, shared());
       if (tab) select(tab.id);
     },
     cycle: (direction) => {
-      const pane = activePane(snapshot());
+      const pane = activePane(displayed());
       const tab = pane && cycledTab(pane, pane.activeTab, direction);
       if (tab) select(tab.id);
     },
@@ -1014,10 +1059,10 @@ export function Workspace(props: WorkspaceProps) {
     const kind = step?.kind ?? step?.type ?? (step?.panel ? "panel" : undefined);
     if (kind === "showShell" && step?.shellId) void openShell(step.shellId);
     else if (kind === "panel" && step?.panel) view(step.panel);
-    else if (kind === "remoteShell" && step?.shellId && step.desktopId) action(() => session.openRemoteShell(step.desktopId!, step.shellId!));
-    else if (kind === "remoteChat" && step?.chatId && step.desktopId) action(() => session.openRemoteChat(step.desktopId!, step.chatId!));
-    else if (kind === "chat" && step?.chatId) action(() => session.openChat(step.chatId!));
-    else if (kind === "task" && step?.taskId) {
+    else if (kind === "remoteShell" && allows("cli") && step?.shellId && step.desktopId) action(() => session.openRemoteShell(step.desktopId!, step.shellId!));
+    else if (kind === "remoteChat" && allows("chat") && step?.chatId && step.desktopId) action(() => session.openRemoteChat(step.desktopId!, step.chatId!));
+    else if (kind === "chat" && allows("chat") && step?.chatId) action(() => session.openChat(step.chatId!));
+    else if (kind === "task" && allows("tasks") && step?.taskId) {
       try { session.setSelectedTask(step.taskId); } catch (error) { notice.set(String(error)); }
       action(() => session.openPanel("tasks"));
     }
@@ -1028,7 +1073,7 @@ export function Workspace(props: WorkspaceProps) {
       action(() => session.openPanel("settings"));
       settingsControl?.revealApiKey();
     }
-    else if (kind === "projectMemo") {
+    else if (kind === "projectMemo" && allows("project_settings")) {
       revealProjectMemo = !projectSettingsControl;
       action(() => session.openPanel("project_settings"));
       projectSettingsControl?.revealMemo();
@@ -1123,20 +1168,33 @@ export function Workspace(props: WorkspaceProps) {
   }
   const terminalFrozen = () => frozen() || statusMenu() || commands.stripOpen() || switching();
   const paneOf = (id: string) => snapshot().panes.find((pane) => pane.tabs.some((tab) => tab.id === id) || id === `empty:${pane.id}`);
+  const shownDockTabs = computed(() => {
+    const state = displayed();
+    return new Set(state.panes.filter((pane) => !state.focusMode || pane.id === state.activePane)
+      .flatMap((pane) => [...pane.tabs.map((tab) => tab.id), `empty:${pane.id}`]));
+  });
+  function modNavigation() {
+    const Navigation = workspaceMod()?.Navigation;
+    return Navigation && <Navigation theme={theme}
+      active={(key) => key === "cli" ? /^(shell:|remote:)/.test(selected() ?? "") : selected() === `panel:${key}`}
+      open={(key) => key === "cli" ? showCli() : view(key)} />;
+  }
+  const modeName = () => customization.state().mods.find((mod) => mod.id === workspaceMod()?.id)?.name ?? interfaceLayout().name;
 
   return (
     <View testID="workspace" ref={(node) => { root = node; }} focusable={true} onLayout={(bounds) => width.set(bounds.size.width)} style={{ flex: 1, backgroundColor: theme().palette.bg }}>
-      <CustomizationFrame layout={() => customization.state().layout} custom={customInterface} theme={theme}
-        projectId={projectId} workspace={workspaceContext} title={() => `${panelState.projectLabel()} · ${customization.state().layout.name}`}
+      <CustomizationFrame layout={interfaceLayout} custom={customInterface} theme={theme}
+        projectId={projectId} workspace={workspaceContext} title={() => `${panelState.projectLabel()} · ${modeName()}`}
+        titleActions={modNavigation}
         onCommand={(id) => commands.dispatch(id)} onAction={(key, request) => void addinAction(key, request)}
         onEdit={() => void customization.edit()} onReset={() => void customization.reset()}>
       <View testID="dock-container" onLayout={(bounds) => containerHeight.set(bounds.size.height)} style={{ flex: 1, minHeight: 0, alignItems: "center", paddingBottom: snapshot().focusMode && snapshot().focusCentered ? containerHeight() * M.focusBottomMargin : 0 }}>
         <View style={{ flex: 1, width: "100%", maxWidth: snapshot().focusMode && snapshot().focusCentered ? M.focusMaxWidth : undefined }} onLayout={(bounds) => measure(bounds.size)}>
           {dockReady() && <DockArea testID="workspace-dock" style={{ flex: 1, backgroundColor: theme().palette.panel }} layout={dock()!} compact={false} dividerSize={M.divider}
-            panels={panelIds(dock()!.center).map((id) => ({ id, closable: false, zoomable: false, visible: !snapshot().focusMode || !!snapshot().panes.find((pane) => pane.id === snapshot().activePane && (pane.tabs.some((tab) => tab.id === id) || id === `empty:${pane.id}`)) }))}
+            panels={panelIds(dock()!.center).map((id) => ({ id, closable: false, zoomable: false, visible: !workspaceTabs() && !snapshot().focusMode || shownDockTabs().has(id) }))}
             onLayoutChange={edit}
             onDragChange={(active) => { dragging.set(active); if (active) { hovered.set(null); freeze(); } else thaw(); }}
-            tabBarStyle={{ height: customization.state().layout.tabBar === "hidden" ? 0 : header(), flexDirection: "row", backgroundColor: theme().palette.panel, borderBottomWidth: 1, borderColor: theme().palette.divider, overflow: "hidden" }}
+            tabBarStyle={{ height: interfaceLayout().tabBar === "hidden" ? 0 : header(), flexDirection: "row", backgroundColor: theme().palette.panel, borderBottomWidth: 1, borderColor: theme().palette.divider, overflow: "hidden" }}
             tabStyle={{ padding: 0, minWidth: 0 }}
             contentStyle={{ flex: 1, backgroundColor: theme().palette.bg }}
             handleStyle={{ backgroundColor: theme().palette.divider, opacity: 0.55 }}
@@ -1161,8 +1219,8 @@ export function Workspace(props: WorkspaceProps) {
             </View>}
             renderPanel={(panel) => <View ref={(node) => { bodyRefs.set(panel.id, node); props.onViewRef?.(`panel:${panel.id}`, node); }} focusable={true} testID={`pane-${paneOf(panel.id)?.id}`} style={{ flex: 1, minHeight: 0 }}
               onPress={() => { action(() => panel.id.startsWith("empty:") ? session.selectPane(Number(panel.id.slice(6))) : session.selectPanel(panel.id)); focusActive(); }}>
-              {panel.id.startsWith("panel:") && customization.state().layout.panels[panel.id.slice(6)] ?
-                <AddinTab addin={{ key: customization.state().layout.panels[panel.id.slice(6)].addin, view: customization.state().layout.panels[panel.id.slice(6)].view, args: customization.state().layout.panels[panel.id.slice(6)].args ?? null }}
+              {panel.id.startsWith("panel:") && interfaceLayout().panels[panel.id.slice(6)] ?
+                <AddinTab addin={{ key: interfaceLayout().panels[panel.id.slice(6)].addin, view: interfaceLayout().panels[panel.id.slice(6)].view, args: interfaceLayout().panels[panel.id.slice(6)].args ?? null }}
                   projectId={projectId} workspace={workspaceContext} theme={theme} visible={() => isVisible(panel.id)} onAction={(key, request) => void addinAction(key, request)} /> :
                 remoteProject() && panel.id.startsWith("panel:") && remotePanelUnavailable(panel.id.slice(6)) ?
                 <RemoteUnavailable hostLabel={remoteHostLabel(remote.data(), remoteProjectKey(projectId())!.host)} panel={panel.id.slice(6)} theme={theme} /> :
@@ -1186,9 +1244,13 @@ export function Workspace(props: WorkspaceProps) {
                 </View> : panel.id === "panel:files" || panel.id === "panel:preview" || panel.id === "panel:project_settings" || panel.id === "panel:settings" ?
                 <View testID={`panel:${panel.id}`} style={{ flex: 1, minHeight: 0 }}>
                   {props.diagnostics && <MountProbe id={panel.id} visible={isVisible(panel.id)} theme={theme} />}
-                  {panel.id === "panel:files" ? <FilesPanel controller={fileState} surface={panel.id} /> :
+                  {panel.id === "panel:files" ? <>
+                    <View style={{ flex: 1, minHeight: 0 }}><FilesPanel controller={fileState} surface={panel.id} /></View>
+                    {!allows("preview") && inlineFilePreview() && <View style={{ flex: 1, minHeight: 0, borderTopWidth: 1, borderTopColor: theme().palette.divider }}><PreviewPanel controller={fileState} /></View>}
+                  </> :
                     panel.id === "panel:preview" ? <PreviewPanel controller={fileState} /> :
                     panel.id === "panel:settings" ? <AppSettings theme={theme} settings={props.settings} visible={() => isVisible(panel.id)} onError={(error) => notice.set(String(error))} onNotice={(message) => notice.set(message)}
+                      workspaceMods={<WorkspaceModsSettings customization={customization} theme={theme} />}
                       remote={<RemoteSettings controller={remote} />}
                       computerUseFocus={cuaFocus} computerUse={<CuaSetup theme={theme} visible={isVisible(panel.id)}
                         onControl={(control) => { cuaFocus.set(control); return () => { if (cuaFocus() === control) cuaFocus.set(null); }; }} />}
@@ -1260,7 +1322,7 @@ export function Workspace(props: WorkspaceProps) {
           </View>)}
         </View>}
       </View>}
-      {customization.state().layout.statusBar && <StatusBar session={session} snapshot={snapshot} projectId={projectId} projectLabel={() => remoteTitle(remote.data(), projectId()) ?? panelState.projectLabel()}
+      {(workspaceMod()?.showStatusBar ?? interfaceLayout().statusBar) && <StatusBar session={session} snapshot={snapshot} projectId={projectId} projectLabel={() => remoteTitle(remote.data(), projectId()) ?? panelState.projectLabel()}
         nativeChat={nativeChatUsage} addins={() => Object.entries(addinStatus()).map(([key, item]) => ({ key, ...item }))}
         onAddin={(key) => { const tab = snapshot().panes.flatMap((pane) => pane.tabs).find((tab) => tab.addin?.key === key); if (tab) action(() => session.selectPanel(tab.id)); }}
         settings={props.settings} theme={theme} action={action} onError={(error) => notice.set(String(error))} modalOpen={() => !!props.modalOpen?.() || switching()}

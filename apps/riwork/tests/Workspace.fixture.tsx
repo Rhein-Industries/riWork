@@ -9,14 +9,18 @@ function Fixture() {
   const params = host.params as { windowId: string; projectId: string; restore?: unknown; fixtureName?: string; customize?: boolean };
   let custom = DEFAULT_CUSTOMIZATION, customRev = 1;
   const customListeners = new Set<(event: { rev: number; data: unknown }) => void>();
+  function publishCustomization(value: CustomizationSnapshot) {
+    custom = value; customRev++;
+    for (const listener of customListeners) listener({ rev: customRev, data: custom });
+  }
   const customService: CustomizationService = {
     snapshot: async () => custom,
     subscribe: (listener) => { customListeners.add(listener); listener({ rev: customRev, data: custom }); return { close: () => { customListeners.delete(listener); } }; },
-    select: async () => {}, reset: async () => {}, initializeFiles: async () => {}, reveal: async () => {},
+    select: async () => {}, setWorkspaceMod: async (workspaceMod) => publishCustomization({ ...custom, workspaceMod }),
+    reset: async () => {}, initializeFiles: async () => {}, reveal: async () => {},
   };
   cleanup(host.on("app.fixture.customize", (value) => {
-    custom = value as unknown as CustomizationSnapshot; customRev++;
-    for (const listener of customListeners) listener({ rev: customRev, data: custom });
+    publishCustomization(value as unknown as CustomizationSnapshot);
   }));
   const session = signal<LayoutSession | null>(null);
   const error = signal("");

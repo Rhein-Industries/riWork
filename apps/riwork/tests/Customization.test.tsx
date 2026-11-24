@@ -1,6 +1,7 @@
 import { expect, open, test } from "nsh/test";
 import { DEFAULT_CUSTOMIZATION, interfaceGeometry, type InterfaceNode } from "../customization_model";
 import { latest, layout } from "./workspace-test-support";
+import minimalist from "../mods/minimalist/mod.json";
 
 const sidebar: InterfaceNode = { type: "row", id: "frame", children: [
   { type: "commands", id: "navigation", size: 200, items: [{ command: "nextTab", label: "Next session" }] },
@@ -48,6 +49,46 @@ test("CUSTOMIZE live composition changes preserve terminal mounts and session id
     await app.host.send("app.fixture.customize", DEFAULT_CUSTOMIZATION);
     expect(identities()).toEqual(original);
     expect(mounts().length).toBe(originalMounts);
+  } finally { app.dispose(); }
+});
+
+test("CUSTOMIZE Minimalist workspace mod hides restored tabs and can be disabled in Settings", async () => {
+  const restored = layout();
+  restored.panes["3"].active_tab_key = "panel:tasks";
+  const app = await open("./Workspace.fixture.tsx", {
+    platform: "macos", width: 1100, height: 800,
+    host: { params: { windowId: "minimalist", projectId: "minimalist", restore: restored, customize: true },
+      handlers: { "app.fixture.state": null, "app.fixture.terminalMount": null } },
+  });
+  try {
+    await app.waitFor("id:tab:panel:tasks");
+    const before = latest(app).snapshot.panes.find((pane) => pane.id === 3)!;
+    expect(before.activeTab).toBe("panel:tasks");
+    await app.host.send("app.fixture.customize", { ...DEFAULT_CUSTOMIZATION, workspaceMod: minimalist.id, mods: [minimalist] });
+    await app.waitFor("id:workspace-navigation:cli");
+    expect(app.shows("id:tab:panel:tasks")).toBe(false);
+    expect(app.shows("id:status-bar")).toBe(false);
+    expect(latest(app).snapshot.panes.find((pane) => pane.id === 3)).toEqual(before);
+    await app.waitFor("id:panel:shell:S3");
+    await app.press("id:workspace-navigation:files");
+    await app.waitFor("id:files-panel");
+    await app.host.send("command", { id: "openPreview" });
+    await app.waitFor("id:file-preview-panel");
+    expect(app.shows("id:tab:panel:preview")).toBe(false);
+    await app.press("id:preview-close");
+    expect(app.shows("id:file-preview-panel")).toBe(false);
+    await app.press("id:workspace-navigation:projects");
+    await app.waitFor("id:panel:panel:projects");
+    await app.press("id:workspace-navigation:cli");
+    expect(latest(app).snapshot.panes.find((pane) => pane.active)?.activeTab?.startsWith("shell:")).toBe(true);
+    await app.press("id:workspace-navigation:settings");
+    await app.waitFor("id:settings-panel");
+    await app.host.send("command", { id: "openTasks" });
+    expect(latest(app).snapshot.panes.find((pane) => pane.active)?.activeTab).toBe("panel:settings");
+    await app.press(`id:workspace-mod:${minimalist.id}`);
+    expect(app.shows("id:tab:panel:tasks")).toBe(true);
+    await app.press(`id:workspace-mod:${minimalist.id}`);
+    expect(app.shows("id:tab:panel:tasks")).toBe(false);
   } finally { app.dispose(); }
 });
 
