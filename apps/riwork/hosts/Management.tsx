@@ -98,7 +98,7 @@ export function HostManagementPanel(props: {
         {field("host-label", "Host label", label)}
         {field("host-remote-bin", "Remote companion path (optional)", companion, "somtus-remote")}
         {field("host-somtus", "Remote Somtus CLI path (optional)", cli)}
-        {!!error() && <Text role="alert" selectable style={font(11, palette().gold)}>{error()}</Text>}
+        {!!error() && <Text role="alert" style={{ ...font(11, palette().gold), userSelect: "text" }}>{error()}</Text>}
         <View style={row}>{button("host-connect", connecting() ? "Connecting…" : "Connect host", () => void connect(), !target().trim() || !label().trim())}
           {button("host-form-cancel", "Cancel", () => editing.set(false))}</View>
       </View>}
@@ -107,7 +107,7 @@ export function HostManagementPanel(props: {
         {!!discoveryError() && <Text testID="tailscale-discovery-error" style={font(11, palette().muted)}>{discoveryError()}</Text>}
         {!discoveryError() && !candidates().length && <Text style={font(11, palette().muted)}>{busy() ? "Looking for Macs…" : query().trim() ? "No matching Macs." : "No other Macs to add on this Tailscale account."}</Text>}
         {candidates().map(mac => <View testID={`tailscale-peer-${mac.id}`} style={row}>
-          <View style={{ flex: 1, gap: 3 }}><Text style={font()}>{mac.label}</Text><Text selectable style={font(10, palette().muted)}>{mac.dnsName || mac.target}</Text></View>
+          <View style={{ flex: 1, gap: 3 }}><Text style={font()}>{mac.label}</Text><Text style={{ ...font(10, palette().muted), userSelect: "text" }}>{mac.dnsName || mac.target}</Text></View>
           <Text style={font(11, mac.online ? palette().cyan : palette().muted)}>{mac.online ? "Online on Tailscale" : "Offline on Tailscale"}</Text>
           {button(`tailscale-setup-${mac.id}`, "Set up SSH", () => openForm(mac))}
         </View>)}
@@ -115,7 +115,7 @@ export function HostManagementPanel(props: {
       {(!!routeError() || saved().length > 0) && <View style={card()}>
         <Text role="header" style={{ ...font(13), fontWeight: "600" }}>Saved SSH hosts</Text>
         {!!routeError() && <Text role="alert" style={font(11, palette().gold)}>{routeError()}</Text>}
-        {saved().map(route => <View testID={`managed-host-${route.id}`} style={row}><Text style={font()}>{route.label}</Text><Text selectable style={font(11, palette().muted)}>{route.target}</Text></View>)}
+        {saved().map(route => <View testID={`managed-host-${route.id}`} style={row}><Text style={font()}>{route.label}</Text><Text style={{ ...font(11, palette().muted), userSelect: "text" }}>{route.target}</Text></View>)}
       </View>}
     </View></Scroll>
   </View>;
