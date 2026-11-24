@@ -27,7 +27,7 @@ pub(crate) fn backdrop_rgb(dark: bool) -> [u8; 3] {
 
 /// What a window shows behind the app: before its first frame, and where a growing window is
 /// not laid out yet. NSH 0.3 painted these colors itself under every `AppView`; an embedded
-/// view of NSH 0.6.0 paints nothing there and shows its host's window through (its
+/// view of NSH 0.6.1 paints nothing there and shows its host's window through (its
 /// `system.rs`), so the window carries them. They follow the window's appearance.
 pub(crate) fn backdrop() -> Retained<NSColor> {
     let color = |dark| {

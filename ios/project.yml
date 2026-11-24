@@ -17,7 +17,7 @@ settings:
     SWIFT_STRICT_CONCURRENCY: complete
     DEVELOPMENT_TEAM: ""
     CODE_SIGN_STYLE: Automatic
-    # The pinned NSH 0.6.0 iOS SDK ships Apple-silicon simulator slices.
+    # The pinned NSH 0.6.1 iOS SDK ships Apple-silicon simulator slices.
     "EXCLUDED_ARCHS[sdk=iphonesimulator*]": x86_64
 targets:
   RiWorkCore:
@@ -44,7 +44,7 @@ targets:
       - target: RiWorkCore
       - framework: Vendor/NativeShell.xcframework
         embed: false
-      # The NSH 0.6.0 runtime's web sign-in (`open_auth_session`) refers to this framework,
+      # The NSH 0.6.1 runtime's web sign-in (`open_auth_session`) refers to this framework,
       # which its static library does not link by itself.
       - sdk: AuthenticationServices.framework
     preBuildScripts:

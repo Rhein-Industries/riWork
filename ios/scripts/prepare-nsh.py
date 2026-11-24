@@ -11,7 +11,7 @@ import tempfile
 
 IOS = Path(__file__).resolve().parent.parent
 ROOT = IOS.parent
-VERSION = "0.6.0"
+VERSION = "0.6.1"
 remembered = IOS / ".nsh-cli"
 candidate = os.environ.get("NSH_CLI")
 if not candidate and remembered.exists():

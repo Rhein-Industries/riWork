@@ -11,7 +11,7 @@ import sys
 import time
 
 # The NSH CLI this checkout builds its UI with, matching the pinned Rust NSH crates.
-NSH_VERSION = "0.6.0"
+NSH_VERSION = "0.6.1"
 
 
 def run(command, *, cwd, env):

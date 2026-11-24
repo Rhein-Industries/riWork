@@ -1,7 +1,7 @@
 # iOS migration to NSH
 
 The `nsh` branch now uses `NSHMobileRoot` as its application entry UI. The
-packaged NSH 0.6.0 bundle in `apps/riwork-mobile` owns the navigation and the
+packaged NSH 0.6.1 bundle in `apps/riwork-mobile` owns the navigation and the
 pages: the hosts and the All hosts overview, a host's dashboard (the desktop's
 shared `DashboardView`), its projects, and a project's page with its tab strip
 and terminal, and the New terminal and New project forms. The window's width
@@ -385,7 +385,7 @@ run for this migration stage.
 ## Build and next boundaries
 
 See `ios/README.md` for the release build. `prepare-nsh.py` requires matching
-0.6.0 CLI/runtime versions, builds into a staging directory, and replaces the
+0.6.1 CLI/runtime versions, builds into a staging directory, and replaces the
 generated bundle only after success. Xcode links the static native framework
 and packages the UI; the installed app needs neither a CLI nor a checkout.
 The bundle identifier and Keychain ownership remain `com.riwork.remote`.

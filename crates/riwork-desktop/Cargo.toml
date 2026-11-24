@@ -40,11 +40,11 @@ riwork-nsh-native = { path = "../riwork-nsh-native" }
 riwork-nsh-terminal = { path = "../riwork-nsh-terminal" }
 riwork-nsh-workspace = { path = "../../apps/riwork" }
 tokio = { version = "1", features = ["rt-multi-thread"] }
-nsh-platform-macos = "=0.6.0"
-nsh-engine = "=0.6.0"
-nsh-core = "=0.6.0"
-nsh-base = "=0.6.0"
-nsh-dev = { version = "=0.6.0", features = ["client"], optional = true }
+nsh-platform-macos = "=0.6.1"
+nsh-engine = "=0.6.1"
+nsh-core = "=0.6.1"
+nsh-base = "=0.6.1"
+nsh-dev = { version = "=0.6.1", features = ["client"], optional = true }
 objc2-app-kit = { version = "0.3", default-features = false, features = ["NSAppearance", "NSColor", "NSColorList", "NSColorSpace", "NSFontManager", "NSOpenPanel", "NSSavePanel", "NSPanel", "block2"] }
 dispatch2 = "0.3"
 block2 = "0.6"

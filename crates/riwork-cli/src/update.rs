@@ -16,7 +16,7 @@ use uuid::Uuid;
 
 const BUILD_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const BUNDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
-const NSH_VERSION: &str = "0.6.0";
+const NSH_VERSION: &str = "0.6.1";
 const SMOKE_TIMEOUT: Duration = Duration::from_secs(30);
 /// Cargo and rustc get this long to exit on SIGTERM before the group is killed.
 const STAGE_TERMINATE_GRACE: Duration = Duration::from_secs(5);

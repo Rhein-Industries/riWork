@@ -1,4 +1,4 @@
-//! Builds an add-in's TSX into an NSH bundle with the NSH CLI (0.6.0, as `somtus update` uses).
+//! Builds an add-in's TSX into an NSH bundle with the NSH CLI (0.6.1, as `somtus update` uses).
 //!
 //! The author's folder is copied into a staging folder; Somtus writes its `nsh.json` there
 //! (the add-in's NSH id, and capabilities that allow exactly the add-in API's host calls and the
@@ -17,7 +17,7 @@ use serde_json::json;
 /// The add-in API's TypeScript, written into every add-in that is built.
 pub const SDK: &str = include_str!("../addin/addin-api.ts");
 pub const SDK_FILE: &str = "addin-api.ts";
-const NSH_VERSION: &str = "0.6.0";
+const NSH_VERSION: &str = "0.6.1";
 
 /// The NSH id of an add-in's bundle: its data and storage are kept under it.
 pub fn nsh_id(scope: &Scope, id: &str) -> String {
@@ -29,7 +29,7 @@ pub fn nsh_id(scope: &Scope, id: &str) -> String {
 }
 
 /// The NSH CLI: `NSH_CLI` (absolute), Somtus's toolchain folder, then `nsh` on PATH; it must
-/// be version 0.6.0, as Somtus's own UI build.
+/// be version 0.6.1, as Somtus's own UI build.
 pub fn find_nsh(home: &Path) -> Result<PathBuf, String> {
     let mut candidates = Vec::new();
     if let Some(path) = std::env::var_os("NSH_CLI").filter(|path| !path.is_empty()) {
@@ -258,7 +258,7 @@ mod tests {
     }
 
     /// The template, through the real NSH CLI: `cargo test -p riwork-engine --lib -- --ignored
-    /// builds_the_template` (needs NSH 0.6.0, found as `find_nsh` does).
+    /// builds_the_template` (needs NSH 0.6.1, found as `find_nsh` does).
     #[test]
     #[ignore = "runs the NSH CLI"]
     fn builds_the_template_with_the_nsh_cli() {

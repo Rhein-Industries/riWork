@@ -68,7 +68,7 @@ fn window_chrome(mtm: MainThreadMarker, _: &NSMenu, _: &nsh_menus::HostMenus) {
     assert_eq!(frame.origin.x, 10.);
     let top = window.frame().size.height - frame.origin.y - frame.size.height;
     assert_eq!(top, 8.);
-    // The backdrop an embedded NSH 0.6.0 view does not paint: by the appearance.
+    // The backdrop an embedded NSH 0.6.1 view does not paint: by the appearance.
     let background = window.backgroundColor();
     // SAFETY: immutable AppKit constants.
     let names = unsafe { [(NSAppearanceNameAqua, false), (NSAppearanceNameDarkAqua, true)] };

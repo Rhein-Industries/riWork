@@ -32,14 +32,14 @@ of this binary. This is the host foundation, not the completed Somtus UI port.
   the root `Cargo.lock` is its only lockfile.
 - A checkout build defaults to `apps/riwork/.nsh/out/bundle.js`, resolved from
   the desktop crate's compile-time source path, independently of the launch cwd.
-  Generate it with the pinned NSH **0.6.0** CLI (`docs/nsh-toolchain.md` records the earlier
+  Generate it with the pinned NSH **0.6.1** CLI (`docs/nsh-toolchain.md` records the earlier
   0.3.0 baseline):
   `"$NSH" build apps/riwork --out apps/riwork/.nsh/out`.
   This is the manual dev-source workflow: edit TSX, rebuild the bundle, restart
   the fixture. For automatic development reloads, use `scripts/dev-ui.py` with
   the pinned CLI, as documented in the root README. Its optional `dev-reload`
   host connection remounts views after flushing layouts/drafts and draining
-  terminal clients; NSH 0.6.0 does not expose its state-preserving embedding API either.
+  terminal clients; NSH 0.6.1 does not expose its state-preserving embedding API either.
 - For a built bundle independent of the checkout, run
   `"$NSH" build apps/riwork --out /absolute/output/riwork`, then set
   `RIWORK_NSH_BUNDLE=/absolute/output/riwork/bundle.js`. Keep generated assets,
@@ -72,7 +72,7 @@ equivalents and standard responder editing; paste remains deferred.
 Window-local title/chrome comes through `nsh/desktop`; the host supplies full-size
 transparent content, minimum 640×400, cascade and traffic-light placement. It also supplies
 what shows behind the app before its first frame (white or neutral-950 by the window's
-appearance, `nsh_chrome::backdrop`): an embedded `AppView` of NSH 0.6.0 paints no background
+appearance, `nsh_chrome::backdrop`): an embedded `AppView` of NSH 0.6.1 paints no background
 of its own, where 0.3 painted these colors.
 
 A per-home `run/desktop.lock` plus `run/desktop.sock` forwards later GUI launches

@@ -1,6 +1,6 @@
 # riwork/native (Phase 1 services, Phase 2a terminals and Phase 3 panels/files)
 
-NSH 0.6.0 bridge for the project, task, shell and shared-tab surfaces of the frozen contract in
+NSH 0.6.1 bridge for the project, task, shell and shared-tab surfaces of the frozen contract in
 [`docs/nsh-contracts.md` §1](../../docs/nsh-contracts.md). The root workspace's
 `crates/*` member pattern includes this crate; `Cargo.lock` pins its dependencies.
 It does not depend on the desktop crate or an AppKit host.

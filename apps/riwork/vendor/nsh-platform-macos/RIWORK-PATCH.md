@@ -1,7 +1,7 @@
-# nsh-platform-macos 0.6.0, patched for Somtus
+# nsh-platform-macos 0.6.1, patched for Somtus
 
-The crates.io release (upstream commit `554163758e30d2f62f814096a6327937dcb4fe49`, archive
-SHA-256 `c8ac8f4406faafd7d2043ca85d06029f5a77ca2707d651a4d303ba463edb6b49`) with one change:
+The crates.io release (upstream commit `2f51d8611677c8a6bbad937b39756e8d0cc45350`, archive
+SHA-256 `8fe81366570211925b77823c8210868d0943976da55944bb327eaa27f215d49e`) with one change:
 `NSH_HIDDEN_WINDOW=1` keeps the app's window hidden (transparent, off screen, click-through).
 `scripts/pane-shot.sh` sets it, so `nsh test --target macos` can draw and photograph a pane
 while someone works. Without the variable it behaves exactly like the release.
